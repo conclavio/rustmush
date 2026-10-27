@@ -72,7 +72,7 @@ fn lane_id() -> CanonicalId {
 /// rate a parameter (test 4's sky change), and optionally a lane booted in place
 /// of the shipped one as an operator seed (`commerce.rs`'s `Roster::seeded`).
 #[derive(Clone, Copy, Default)]
-struct Roster {
+pub(crate) struct Roster {
     sky_rate: u32,
     /// A lane booted instead of the shipped one (doc 19 cut A.8's `Throttle:`
     /// test), leaked so the roster stays `Copy`.
@@ -154,14 +154,14 @@ impl AccountIdentity for MapOracle {
 }
 
 /// A booted world, its oracle and the cumulative store (`coop.rs`'s rig).
-struct Rig {
-    tw: TestWorld,
+pub(crate) struct Rig {
+    pub(crate) tw: TestWorld,
     oracle: Arc<MapOracle>,
-    store: HashMap<SmolStr, mush_core::ModuleBootData>,
+    pub(crate) store: HashMap<SmolStr, mush_core::ModuleBootData>,
     typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
 }
 
-fn no_refused_writes(tw: &TestWorld) {
+pub(crate) fn no_refused_writes(tw: &TestWorld) {
     let refused = tw.world().refused_namespace_writes();
     assert!(refused.is_empty(), "refused namespace writes: {refused:?}");
 }
@@ -206,7 +206,7 @@ fn stocked_with(roster: Roster) -> Rig {
 }
 
 /// Fold every write since the first boot and reboot into `roster`.
-fn reboot_with(rig: Rig, roster: Roster) -> Rig {
+pub(crate) fn reboot_with(rig: Rig, roster: Roster) -> Rig {
     reboot_editing(rig, roster, |_| {})
 }
 
@@ -256,7 +256,7 @@ fn sweep(tw: &mut TestWorld, secs: i64) {
     let _ = tw.fire_due(t.saturating_mul(1000));
 }
 
-fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
+pub(crate) fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
     tw.seen_by(events, who).join("\n")
 }
 
@@ -265,7 +265,7 @@ fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
     said(tw, &events, who)
 }
 
-fn store(tw: &TestWorld) -> &TacsimStore {
+pub(crate) fn store(tw: &TestWorld) -> &TacsimStore {
     tw.world()
         .module_state::<TacsimStore>()
         .expect("tacsim state")
@@ -279,7 +279,7 @@ fn market(tw: &TestWorld) -> &MarketStore {
     tw.world().module_state::<MarketStore>().expect("market")
 }
 
-fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
+pub(crate) fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
     match store(tw).port_map(&lane_id(), &cid(entry)) {
         PortMapState::Present(map) => map.clone(),
         other => panic!("{entry}'s map: {other:?}"),
@@ -331,8 +331,11 @@ fn next_token() -> [u8; 16] {
 }
 
 /// Drive one queued submission the way the world task does, keeping its typed
-/// post-images for a reboot (`commerce.rs`'s `land`).
-fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+/// post-images for a reboot (`commerce.rs`'s `land`). **Doc 23 cut S.2**: on the world task's
+/// composed path (`excursions.rs`' since cut S.1), so the ship's epoch — its typed record and its
+/// black box line through the black box's owner participant — lands in its own bundle, and the
+/// line's chunk reaches the store a reboot boots from.
+pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
     let token = next_token();
     let tw = &mut rig.tw;
     let (action, resolved) = {
@@ -381,16 +384,17 @@ fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
     };
     let (prepared, _) = tw
         .engine_mut()
-        .prepare_registered_resolved_authoritative_action(
+        .prepare_registered_composed_resolved_authoritative_action(
             &action,
             &resolved,
             CommitToken::from_bytes(token),
         )
         .map_err(|error| format!("{error:?}"))?;
-    let (ops, install) = prepared.into_parts();
+    let (writes, install) = prepared.into_parts();
     tw.engine_mut()
-        .install_prepared_action(install)
+        .install_composed_action(install)
         .map_err(|error| format!("{error:?}"))?;
+    let (ops, ledger) = support::composed::split(&writes);
     for op in ops {
         match op.op {
             ModuleWrite::JsonSet { key, value } => {
@@ -402,12 +406,13 @@ fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
             ModuleWrite::StreamAppend { .. } => {}
         }
     }
+    fold_module_ops_into(&mut rig.store, ledger);
     Ok(())
 }
 
 /// Every queued submission of the port's lanes, dropping other modules'; asserts
 /// none kept of tacsim's is GOD's.
-fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
+pub(crate) fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     let mut kept = Vec::new();
     while let Some(submit) = tw.engine_mut().take_authoritative_submit() {
         let owner = submit.action.key().owner.as_str();
@@ -421,7 +426,7 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     kept
 }
 
-fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
         land(rig, submit).unwrap_or_else(|error| {
             panic!(
@@ -441,7 +446,7 @@ fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
 }
 
 /// One port-tick fire (6 s on), its submissions drained (not landed).
-fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
+pub(crate) fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
     let events = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -450,7 +455,7 @@ fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit
 }
 
 /// One fire whose background submissions are landed where they land.
-fn fire_quietly(rig: &mut Rig) -> Vec<(Audience, OutputEvent)> {
+pub(crate) fn fire_quietly(rig: &mut Rig) -> Vec<(Audience, OutputEvent)> {
     let (events, queued) = fire(rig);
     land_quietly(rig, &queued);
     events
@@ -482,7 +487,7 @@ fn stock(rig: &mut Rig) {
 }
 
 /// Read one typed value through an owner-stamped transaction.
-fn typed<K, V>(
+pub(crate) fn typed<K, V>(
     tw: &mut TestWorld,
     handle: &mush_core::StateFamilyHandle<K, V>,
     key: &K,
@@ -665,13 +670,13 @@ fn set_rate(tw: &mut TestWorld, rate: u32) {
     }
 }
 
-fn ic_now(tw: &TestWorld) -> i64 {
+pub(crate) fn ic_now(tw: &TestWorld) -> i64 {
     tw.world().world_ic_now().at
 }
 
 /// Sweep to the first real second whose IC instant is at or past `target`,
 /// landing the port's background submissions; the events.
-fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
+pub(crate) fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
     let rate = i64::from(world_rate(&rig.tw).max(1));
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = (ahead + rate - 1) / rate;
@@ -683,7 +688,7 @@ fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
     events
 }
 
-fn voyage(tw: &TestWorld, hull: ObjId) -> Option<Voyage> {
+pub(crate) fn voyage(tw: &TestWorld, hull: ObjId) -> Option<Voyage> {
     match store(tw).voyage_state(hull) {
         VoyageState::Present(voyage) => Some(voyage.clone()),
         VoyageState::Absent => None,
@@ -691,19 +696,19 @@ fn voyage(tw: &TestWorld, hull: ObjId) -> Option<Voyage> {
     }
 }
 
-fn handles(tw: &TestWorld) -> PortHandles {
+pub(crate) fn handles(tw: &TestWorld) -> PortHandles {
     tw.world()
         .module_state::<PortHandles>()
         .cloned()
         .expect("port handles")
 }
 
-fn ticket(tw: &mut TestWorld, hull: ObjId, seq: u32) -> Option<Ticket> {
+pub(crate) fn ticket(tw: &mut TestWorld, hull: ObjId, seq: u32) -> Option<Ticket> {
     let h = handles(tw);
     typed(tw, &h.families.tickets, &TicketId { hull, seq })
 }
 
-fn journey(tw: &TestWorld, hull: ObjId) -> Option<CarrierJourney> {
+pub(crate) fn journey(tw: &TestWorld, hull: ObjId) -> Option<CarrierJourney> {
     tw.world()
         .module_state::<JourneyBook>()
         .and_then(|book| book.get(hull).cloned())
@@ -727,7 +732,11 @@ fn domain_of(tw: &TestWorld, entry: &str) -> u64 {
 }
 
 /// `+ship/undock` with the queued submissions it staged.
-fn undock(rig: &mut Rig, pilot: ObjId, line: &str) -> (String, Vec<AuthoritativeSubmit>) {
+pub(crate) fn undock(
+    rig: &mut Rig,
+    pilot: ObjId,
+    line: &str,
+) -> (String, Vec<AuthoritativeSubmit>) {
     let out = run(&mut rig.tw, pilot, line);
     let queued = drain(&mut rig.tw);
     (out, queued)
@@ -778,7 +787,7 @@ fn disconnect(tw: &mut TestWorld, who: ObjId) {
 }
 
 /// A chartered pilot aboard the docked *Salt Moth* with the full load, at `rate`.
-fn aboard_with_load(rate: u32, tank: u64, locker: u64) -> (Rig, ObjId, HullRow) {
+pub(crate) fn aboard_with_load(rate: u32, tank: u64, locker: u64) -> (Rig, ObjId, HullRow) {
     let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     load(&mut rig, &row, tank, locker);
@@ -788,7 +797,11 @@ fn aboard_with_load(rate: u32, tank: u64, locker: u64) -> (Rig, ObjId, HullRow) 
 }
 
 /// Undock to Stickney and land the burn; the voyage's pending plan.
-fn undock_and_burn(rig: &mut Rig, pilot: ObjId, hull: ObjId) -> tacsim::port::PendingVoyage {
+pub(crate) fn undock_and_burn(
+    rig: &mut Rig,
+    pilot: ObjId,
+    hull: ObjId,
+) -> tacsim::port::PendingVoyage {
     let (out, queued) = undock(rig, pilot, "+ship/undock stickney");
     assert!(out.contains("Clearance filed for Stickney Yards"), "{out}");
     let pending = voyage(&rig.tw, hull)

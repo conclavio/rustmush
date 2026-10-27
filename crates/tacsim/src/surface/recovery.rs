@@ -190,7 +190,7 @@ fn facts(
     actor: ObjId,
     tv: ObjId,
     record: &RigRecord,
-    read_rig: &dyn Fn(ObjId) -> Option<RigRecord>,
+    reads: crate::surface::black_box::EpochReads<'_>,
 ) -> Option<RigFacts> {
     let (operator, hull, slot) = identity(w, tv, record)?;
     let assigned = crate::port::yard::rig_lease(w, tv)
@@ -246,7 +246,7 @@ fn facts(
     let parked = record.sortie.is_some() && act::parked_short(w, record, operator, battery);
     // The S.1 fix round's F3: the placement facts a close fencing out a finish reads.
     let in_any_bay = matches!(act::where_is(w, tv), Where::Bay { .. });
-    let epoch = crate::surface::black_box::epoch_facts(w, read_rig, record);
+    let epoch = crate::surface::black_box::epoch_facts(w, reads, record);
     let hopper = crate::port::vehicle::hopper_of(w, tv);
     let hold = view
         .as_ref()
@@ -334,7 +334,7 @@ impl RevisionValidator for RecoveryRevisionValidator {
             .cloned()
             .unwrap_or_else(|| RigRecord::fresh_unread(tv));
         let w = context.world();
-        let Some(fixed) = facts(w, actor, tv, &record, &|_| None) else {
+        let Some(fixed) = facts(w, actor, tv, &record, (&|_| None, &|_| None)) else {
             return Ok(None);
         };
         let hull = fixed.hull;
@@ -481,11 +481,13 @@ impl ActionProvider for RecoveryProvider {
         let reads = EngineReads(engine);
         // The S.1 fix round's F3: the epoch facts' site count reads the world's rigs.
         let read_rig = |other: ObjId| reads.rig(other).ok().flatten();
+        // Doc 23 cut S.2 (V7): the carrier's open epoch, its typed record.
+        let read_carrier = |hull: ObjId| crate::port::epoch::open_id_in(engine, hull);
         let mut rigs = BTreeMap::new();
         for tv in act::world_rigs(w) {
             let Ok(record) = reads.rig(tv) else { continue };
             let record = record.unwrap_or_else(|| RigRecord::fresh_unread(tv));
-            if let Some(fixed) = facts(w, query.actor(), tv, &record, &read_rig)
+            if let Some(fixed) = facts(w, query.actor(), tv, &record, (&read_rig, &read_carrier))
                 && (fixed.staff || fixed.finish)
             {
                 rigs.insert(tv.0.to_string(), fixed);
@@ -891,7 +893,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, word: &str, tv: ObjId) -> Result<(), Cm
         .rig(tv)
         .map_err(CmdError::msg)?
         .unwrap_or_else(|| RigRecord::fresh_unread(tv));
-    let fixed = facts(ctx.w, ctx.actor, tv, &record, &|_| None)
+    let fixed = facts(ctx.w, ctx.actor, tv, &record, (&|_| None, &|_| None))
         .ok_or_else(|| CmdError::msg("That rig has no recoverable assignment or excursion."))?;
     if operation != RecoveryOperation::Close
         && (!fixed.assigned
@@ -955,7 +957,13 @@ pub(crate) fn tick(
                 stats.deferred += 1;
                 continue;
             }
-            let fixed = facts(ctx.w, receipt.staff, record.tv, record, &|_| None);
+            let fixed = facts(
+                ctx.w,
+                receipt.staff,
+                record.tv,
+                record,
+                (&|_| None, &|_| None),
+            );
             let reason = if crate::port_tick::gone(ctx.w, receipt.staff) {
                 Some("the staff actor who requested it no longer exists")
             } else if fixed.as_ref().is_none_or(|fixed| {

@@ -530,6 +530,11 @@ pub struct PortFamilies {
     /// its site — the delivery's receipt and replay guard.
     pub dispatch:
         StateFamilyHandle<crate::port::yard::DispatchKey, crate::port::yard::DispatchLedger>,
+    /// **`tacsim.ship_epoch`** (doc 23 cut S.2): one record per ship, keyed by the hull — **the ship's
+    /// seal epoch** (the fix round's R1): the open epoch, the last end and the ends committed,
+    /// written only by `tacsim_voyage_epoch` in the bundle that carries its black box line.
+    pub epochs:
+        StateFamilyHandle<crate::port::epoch::EpochKey, crate::port::epoch::ShipEpochRecord>,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -612,7 +617,7 @@ pub(crate) fn family_descriptor(
 /// `tacsim.excursion`; doc 20 cut SM.4a's `tacsim.chart`; doc 20 cut SM.6's
 /// `tacsim.pockets`; doc 20 cut SM.10's `tacsim.claims`; relay cut R9a's
 /// `tacsim.relay_fabrications`; doc 20 cut SM.12a's `tacsim.port_mill`; doc 20 cut SM.12b's
-/// `tacsim.dispatch`), unconditionally.
+/// `tacsim.dispatch`; doc 23 cut S.2's `tacsim.ship_epoch`), unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -797,6 +802,21 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
             serde_json::to_value(value).map_err(|e| e.to_string())
         },
     )?;
+    // Doc 23 cut S.2: one epoch record per ship, keyed by the hull.
+    let epochs = reg
+        .state_family::<crate::port::epoch::EpochKey, crate::port::epoch::ShipEpochRecord, _, _, _, _>(
+            family_descriptor(
+                crate::port::epoch::EPOCH_FAMILY,
+                "tacsim.ship_epoch_key.v1",
+                "tacsim.ship_epoch",
+            )?,
+            |key: &crate::port::epoch::EpochKey| Ok(key.key_text()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::port::epoch::ShipEpochRecord| value.check(),
+            |value: &crate::port::epoch::ShipEpochRecord| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
     Ok(PortFamilies {
         relay_fabrications,
         port_stock,
@@ -808,6 +828,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         claims,
         mills,
         dispatch,
+        epochs,
     })
 }
 

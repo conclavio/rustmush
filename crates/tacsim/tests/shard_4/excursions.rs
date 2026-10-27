@@ -442,7 +442,7 @@ fn stock(rig: &mut Rig) {
     panic!("the ports were not stocked within 40 fires");
 }
 
-fn typed<K, V>(
+pub(crate) fn typed<K, V>(
     tw: &mut TestWorld,
     handle: &mush_core::StateFamilyHandle<K, V>,
     key: &K,
@@ -611,7 +611,7 @@ fn voyage(tw: &TestWorld, hull: ObjId) -> Option<Voyage> {
     }
 }
 
-fn handles(tw: &TestWorld) -> PortHandles {
+pub(crate) fn handles(tw: &TestWorld) -> PortHandles {
     tw.world()
         .module_state::<PortHandles>()
         .cloned()

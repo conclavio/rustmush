@@ -16,6 +16,13 @@
 //! `sortie_closed` when the epoch closes, with `IcCloseKind`'s own wire. Nothing in a line is a
 //! word a player sees: no verb prints it in S.1.
 //!
+//! **Doc 23 cut S.2** gives the ship its own pair (`crate::port::epoch`): `mind_sealed` with
+//! `host: port` and the hangar port it left ([`Hangar::Port`]) when the voyage's depart takes it
+//! off a hangar port, `sortie_closed` `returned_to_base` when it docks at one again; a rig
+//! launched from a ship under an open epoch names that epoch in its bay hangar (V7, D-23-2). The
+//! ship's epoch is its typed `tacsim.ship_epoch` record (`crate::port::epoch`), written by the act
+//! whose bundle carries the line through `append`, exactly as a rig's record is.
+//!
 //! **An append rides the authoritative act whose record move it records** (L4; the economy
 //! journal's pattern, `mush_economy::core_integration`): the launch's finish and the recover's
 //! finish (`tacsim_surface_done`) and a staff recovery (`tacsim_surface_recovery`) ask
@@ -79,27 +86,44 @@ pub fn hull_of_log(id: &str) -> Option<ObjId> {
     crate::port::families::strict_decimal_u32(digits).map(ObjId)
 }
 
-/// **Which host opened or closed an epoch** (doc 23 §6). One word in S.1; the voyage (S.2) and
-/// the drone phase (S.4) add theirs.
+/// **Which host opened or closed an epoch** (doc 23 §6). The surface excursion in S.1, the port
+/// voyage in S.2; the drone phase (S.4) adds its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EpochHost {
     /// The surface excursion (doc 20), the first host (D-23-7).
     Surface,
+    /// **The port voyage** (doc 18; doc 23 cut S.2): a ship's epoch, opened when the launch arm's
+    /// depart moves it off a hangar port and closed when it docks at one again.
+    Port,
 }
 
-/// **The hangar a hull left** (D-23-2: epochs nest by record, not by object): the carrier, the
-/// bay slot, and the carrier's own open epoch — `None` in S.1, where a ship has no epoch until
-/// the voyage carries one (S.2); the field exists now so the line's shape does not move then.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Hangar {
-    /// The carrier hull (the Dray-P whose bay the rig left).
-    pub hull: ObjId,
-    /// The rig's bay slot.
-    pub slot: u8,
-    /// The carrier's open epoch, when it has one (S.2 on).
-    pub sortie: Option<SortieId>,
+/// **The hangar a hull left** (D-23-2: epochs nest by record, not by object), in one of two
+/// shapes, untagged so the bay's JSON is cut S.1's byte for byte:
+///
+/// - **a carrier's bay** (S.1): the carrier hull, the bay slot, and the carrier's own open epoch
+///   — the ship's `Voyage::sortie` when it has one (cut S.2's V7), else `null`;
+/// - **a hangar port** (cut S.2's V4): a port is not a hull — the port entry the ship left and
+///   that port's host room.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Hangar {
+    /// A carrier's bay (`{"hull":n,"slot":k,"sortie":…}`).
+    Bay {
+        /// The carrier hull (the Dray-P whose bay the rig left).
+        hull: ObjId,
+        /// The rig's bay slot.
+        slot: u8,
+        /// The carrier's open epoch, when it has one (cut S.2 on).
+        sortie: Option<SortieId>,
+    },
+    /// A hangar port (`{"entry":"…","base":n}`; cut S.2).
+    Port {
+        /// The port entry left.
+        entry: CanonicalId,
+        /// That port's host room.
+        base: ObjId,
+    },
 }
 
 /// **The pool admission an IC dispatch records** (D-23-8: recorded, never refused): the hull's
@@ -108,13 +132,13 @@ pub struct Hangar {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Admitted {
-    /// The unit class (`vehicle` for a terrain vehicle); absent when no unit or catalog row
-    /// names it.
+    /// The unit class (`vehicle` for a terrain vehicle, `hauler` for a Dray); absent when no
+    /// unit or catalog row names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<UnitClass>,
     /// The host.
     pub host: EpochHost,
-    /// Open surface epochs on the site, this one included.
+    /// Open surface epochs on the site, this one included; `1` for a ship (one ship an epoch).
     pub count: u32,
 }
 
@@ -216,7 +240,8 @@ pub enum BlackBoxLine {
         host: EpochHost,
         /// The hangar it left (D-23-2).
         hangar: Hangar,
-        /// The site port entry it went down onto.
+        /// The site port entry it went down onto (a rig); the port entry it left (a ship, cut
+        /// S.2's V4).
         site: CanonicalId,
         /// The warrant principal (D-23-5): the actor of the plan the hull leaves under.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,33 +310,86 @@ impl BlackBoxLine {
         principal: Option<CharacterRef>,
         admitted: Admitted,
     ) -> BlackBoxLine {
-        let seal = opened.seal.as_ref();
-        BlackBoxLine::MindSealed {
-            unit: tv,
-            sortie: opened.id,
-            at_ic: opened.opened_ic,
-            host: EpochHost::Surface,
-            hangar: Hangar {
-                hull: opened.hull,
-                slot: opened.slot,
-                sortie: None,
-            },
-            site: opened.site.clone(),
+        sealed_line(
+            (tv, opened.id, opened.opened_ic),
+            (
+                EpochHost::Surface,
+                Hangar::Bay {
+                    hull: opened.hull,
+                    slot: opened.slot,
+                    sortie: None,
+                },
+                opened.site.clone(),
+            ),
             principal,
-            seal: if seal.is_some() {
-                SealWord::Sealed
-            } else {
-                SealWord::Absent
-            },
-            mind: seal.map(|s| s.mind.clone()),
-            source: seal.map(|s| s.source.clone()),
-            card_digest: seal.map(|s| s.card_digest.clone()),
-            class: seal.map(|s| s.class),
-            governed: seal.map(|s| s.governed),
-            licence: seal.map(|s| s.licence.clone()),
-            seal_digest: seal.map(|s| s.seal_digest.clone()),
-            fallback: seal.and_then(|s| s.fallback.clone()),
+            opened.seal.as_ref(),
             admitted,
+        )
+    }
+
+    /// **A rig's open line naming its carrier's open epoch** (doc 23 cut S.2, the lead's V7;
+    /// D-23-2): a bay hangar's `sortie` set to `carrier`; any other line unchanged.
+    #[must_use]
+    pub fn with_carrier(mut self, carrier: Option<SortieId>) -> BlackBoxLine {
+        if let BlackBoxLine::MindSealed {
+            hangar: Hangar::Bay { sortie, .. },
+            ..
+        } = &mut self
+        {
+            *sortie = carrier;
+        }
+        self
+    }
+
+    /// **A ship's open line** (doc 23 cut S.2, the lead's V4): `host: port`, the hangar port it
+    /// left as the hangar and the site, the filing's pilot as the warrant principal (D-23-5),
+    /// the ROM seal over the ship's unit (or `absent`), and one ship admitted (D-23-8: recorded,
+    /// never refused).
+    #[must_use]
+    pub fn ship_sealed(
+        hull: ObjId,
+        epoch: &crate::port::epoch::ShipEpoch,
+        class: Option<UnitClass>,
+    ) -> BlackBoxLine {
+        sealed_line(
+            (hull, epoch.id, epoch.opened_ic),
+            (
+                EpochHost::Port,
+                Hangar::Port {
+                    entry: epoch.from.clone(),
+                    base: epoch.base,
+                },
+                epoch.from.clone(),
+            ),
+            Some(CharacterRef::Character {
+                id: epoch.principal,
+            }),
+            epoch.seal.as_ref(),
+            Admitted {
+                class,
+                host: EpochHost::Port,
+                count: 1,
+            },
+        )
+    }
+
+    /// **A ship's close line** (doc 23 cut S.2, V4): closed `close` at `at_ic` — S.2 writes
+    /// `returned_to_base` into the arrival port's host room; `destroyed` is reserved (no wreck
+    /// path), and a ship is never abandoned in S.2 (no staff close for a ship until S.3).
+    #[must_use]
+    pub fn ship_closed(
+        hull: ObjId,
+        epoch: &crate::port::epoch::ShipEpoch,
+        at_ic: i64,
+        close: IcCloseKind,
+    ) -> BlackBoxLine {
+        BlackBoxLine::SortieClosed {
+            unit: hull,
+            sortie: epoch.id,
+            at_ic,
+            close,
+            abandoned: false,
+            unrecorded: epoch.unrecorded,
         }
     }
 
@@ -386,8 +464,18 @@ impl BlackBoxLine {
                 fallback,
                 ..
             } => {
-                if hangar.hull == hull || hangar.hull.0 == 0 || hangar.slot == 0 {
-                    return Err("a hull leaves another hull's bay slot".to_owned());
+                match hangar {
+                    Hangar::Bay { hull: of, slot, .. } => {
+                        if *of == hull || of.0 == 0 || *slot == 0 {
+                            return Err("a hull leaves another hull's bay slot".to_owned());
+                        }
+                    }
+                    // Doc 23 cut S.2 (V4): a ship leaves a port, another object.
+                    Hangar::Port { base, .. } => {
+                        if *base == hull || base.0 == 0 {
+                            return Err("a ship leaves another object's port".to_owned());
+                        }
+                    }
                 }
                 let all = mind.is_some()
                     && source.is_some()
@@ -426,6 +514,41 @@ impl BlackBoxLine {
             },
         }
         Ok(())
+    }
+}
+
+/// **One open line** (cut S.1's L7, shared with cut S.2's ship line): the epoch `(unit, sortie,
+/// at_ic)`, where it left `(host, hangar, site)`, the principal, the seal's facts (or `absent`)
+/// and the admission.
+fn sealed_line(
+    (unit, sortie, at_ic): (ObjId, SortieId, i64),
+    (host, hangar, site): (EpochHost, Hangar, CanonicalId),
+    principal: Option<CharacterRef>,
+    seal: Option<&SealFacts>,
+    admitted: Admitted,
+) -> BlackBoxLine {
+    BlackBoxLine::MindSealed {
+        unit,
+        sortie,
+        at_ic,
+        host,
+        hangar,
+        site,
+        principal,
+        seal: if seal.is_some() {
+            SealWord::Sealed
+        } else {
+            SealWord::Absent
+        },
+        mind: seal.map(|s| s.mind.clone()),
+        source: seal.map(|s| s.source.clone()),
+        card_digest: seal.map(|s| s.card_digest.clone()),
+        class: seal.map(|s| s.class),
+        governed: seal.map(|s| s.governed),
+        licence: seal.map(|s| s.licence.clone()),
+        seal_digest: seal.map(|s| s.seal_digest.clone()),
+        fallback: seal.and_then(|s| s.fallback.clone()),
+        admitted,
     }
 }
 
@@ -535,14 +658,27 @@ pub(crate) struct EpochFacts {
     pub(crate) class: Option<UnitClass>,
     /// Surface epochs open on the act's site on other rigs.
     pub(crate) site_epochs: u32,
+    /// **The carrier's open epoch** (doc 23 cut S.2, the lead's V7; D-23-2): the hull whose bay
+    /// the rig leaves, its `tacsim.ship_epoch` record's open id when one is open. Skipped when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) carrier: Option<SortieId>,
 }
+
+/// **The offer's typed reads the epoch facts take** (doc 23 cut S.1, S.2): another rig's record,
+/// and (S.2's V7) a carrier's open epoch id from its `tacsim.ship_epoch` record.
+pub(crate) type EpochReads<'a> = (
+    &'a dyn Fn(ObjId) -> Option<crate::surface::excursion::RigRecord>,
+    &'a dyn Fn(ObjId) -> Option<SortieId>,
+);
 
 /// **The epoch facts of `record`'s launching act, at its finish's offer** (see
 /// [`EpochFacts`]): `None` when nothing in flight leaves the bay. `read_rig` reads another rig's
-/// record (the offer's engine read); the site's count is over the world's rigs.
+/// record and `read_carrier` the carrier's open epoch (the offer's engine reads); the site's
+/// count is over the world's rigs.
 pub(crate) fn epoch_facts(
     w: &mush_core::World,
-    read_rig: &dyn Fn(ObjId) -> Option<crate::surface::excursion::RigRecord>,
+    (read_rig, read_carrier): EpochReads<'_>,
     record: &crate::surface::excursion::RigRecord,
 ) -> Option<EpochFacts> {
     let act = record.act.as_ref()?;
@@ -599,10 +735,13 @@ pub(crate) fn epoch_facts(
                 .is_some_and(|open| open.site == excursion.site)
         })
         .count();
+    // Doc 23 cut S.2 (V7): the carrier's open epoch, read from its sailing plan.
+    let carrier = read_carrier(excursion.hull);
     Some(EpochFacts {
         seal,
         class,
         site_epochs: u32::try_from(site_epochs).unwrap_or(u32::MAX),
+        carrier,
     })
 }
 
@@ -625,7 +764,9 @@ pub fn admits(line: &BlackBoxLine, len: u64, cap: u64) -> bool {
 /// `SortieId::ic(tv, launch_ic)`, the hangar the excursion left, opened at the act's due
 /// instant, the seal fixed at the offer (absent, paged, when there was none), the excursion's
 /// operator as the warrant principal and the site's admission count. `abandoned` and
-/// `unrecorded` start `false`; the caller sets them.
+/// `unrecorded` start `false`; the caller sets them. **Doc 23 cut S.2 (V7)**: the line's bay
+/// hangar names the carrier's open epoch, fixed at the offer ([`EpochFacts::carrier`]), else
+/// `null` as in S.1.
 pub(crate) fn open_epoch(
     tv: ObjId,
     excursion: &crate::surface::excursion::Excursion,
@@ -663,7 +804,8 @@ pub(crate) fn open_epoch(
             host: EpochHost::Surface,
             count: epoch.map_or(1, |facts| facts.site_epochs.saturating_add(1)),
         },
-    );
+    )
+    .with_carrier(epoch.and_then(|facts| facts.carrier));
     (opened, line)
 }
 
@@ -753,7 +895,8 @@ pub(crate) fn append(
 
 /// **The black box's owner participant** (doc 23 cut S.1; the economy journal's pattern): one
 /// line appended to one hull's log inside the authoritative act that asks for it. Registered on
-/// the store slot for `tacsim_surface_done` and `tacsim_surface_recovery` alone.
+/// the store slot for `tacsim_surface_done`, `tacsim_surface_recovery` and (doc 23 cut S.2) the
+/// ship's `tacsim_voyage_epoch`.
 pub(crate) struct BlackBoxParticipant;
 
 /// One line for one hull.
@@ -1055,6 +1198,150 @@ mod tests {
                 .check(ObjId(30))
                 .is_err(),
             "a hull closes into another hull"
+        );
+        // Doc 23 cut S.2 (V4): a ship's hangar is a port, `{entry, base}`, strict; the bay's shape
+        // above is S.1's byte for byte. (V7) A bay names its carrier's open epoch.
+        let port = Hangar::Port {
+            entry: CanonicalId::new("ceres_port").expect("an id"),
+            base: ObjId(7),
+        };
+        let value = serde_json::to_value(&port).expect("encodes");
+        assert_eq!(value, serde_json::json!({"entry": "ceres_port", "base": 7}));
+        assert_eq!(serde_json::from_value::<Hangar>(value).ok(), Some(port));
+        for strayed in [
+            serde_json::json!({"entry": "ceres_port", "base": 7, "slot": 1}),
+            serde_json::json!({"hull": 20, "slot": 1, "sortie": null, "base": 7}),
+            serde_json::json!({"entry": "ceres_port"}),
+        ] {
+            assert!(
+                serde_json::from_value::<Hangar>(strayed.clone()).is_err(),
+                "strict: {strayed}"
+            );
+        }
+        let carried = sealed.with_carrier(Some(SortieId::ic(ObjId(20), 100)));
+        assert_eq!(
+            serde_json::to_value(&carried).expect("encodes")["hangar"],
+            serde_json::json!({"hull": 20, "slot": 1, "sortie": {"ic": {"hull": 20, "at_ic": 100}}})
+        );
+        assert_eq!(carried.check(ObjId(30)), Ok(()));
+    }
+
+    /// **A rig's open line names its carrier's open epoch, or none** (doc 23 cut S.2, V7; the fix
+    /// round's R7): `open_epoch` with no carrier epoch fixed at the offer writes the bay hangar's
+    /// `sortie: null`, exactly S.1's line; with one it writes that id; with no offer facts at all
+    /// it writes `null` too.
+    #[test]
+    fn s2_open_epoch_names_the_carriers_epoch_or_null() {
+        let excursion = crate::surface::excursion::Excursion {
+            id: crate::surface::excursion::ExcursionId {
+                tv: ObjId(30),
+                launch_ic: 500,
+            },
+            operator: ObjId(10),
+            hull: ObjId(20),
+            slot: 1,
+            site: CanonicalId::new("ahuna_port").expect("an id"),
+        };
+        let facts_with = |carrier: Option<SortieId>| EpochFacts {
+            seal: Some(facts()),
+            class: Some(UnitClass::Vehicle),
+            site_epochs: 0,
+            carrier,
+        };
+        let hangar_of =
+            |line: &BlackBoxLine| serde_json::to_value(line).expect("encodes")["hangar"].clone();
+        let (_, null) = open_epoch(ObjId(30), &excursion, 800, Some(&facts_with(None)));
+        assert_eq!(
+            hangar_of(&null),
+            serde_json::json!({"hull": 20, "slot": 1, "sortie": null}),
+            "no carrier epoch: null, S.1's line"
+        );
+        let (_, bare) = open_epoch(ObjId(30), &excursion, 800, None);
+        assert_eq!(
+            hangar_of(&bare),
+            serde_json::json!({"hull": 20, "slot": 1, "sortie": null})
+        );
+        let ship = SortieId::ic(ObjId(20), 100);
+        let (opened, named) = open_epoch(ObjId(30), &excursion, 800, Some(&facts_with(Some(ship))));
+        assert_eq!(
+            hangar_of(&named),
+            serde_json::json!({"hull": 20, "slot": 1, "sortie": {"ic": {"hull": 20, "at_ic": 100}}})
+        );
+        assert_eq!(opened.id, SortieId::ic(ObjId(30), 500));
+        assert_eq!(named.check(ObjId(30)), Ok(()));
+    }
+
+    /// **A ship's two lines** (doc 23 cut S.2, V4): the open line is `host: port`, its hangar and
+    /// its site the port entry left, the pilot the principal, one hauler admitted; the close is
+    /// `returned_to_base` into the arrival port's host room, never abandoned. Both round-trip and
+    /// `check` holds each to its hull and to another object's port.
+    #[test]
+    fn s2_a_ship_leaves_and_reaches_a_port() {
+        let epoch = crate::port::epoch::ShipEpoch {
+            id: SortieId::ic(ObjId(40), 900),
+            from: CanonicalId::new("ceres_port").expect("an id"),
+            base: ObjId(7),
+            principal: ObjId(10),
+            opened_ic: 900,
+            unrecorded: false,
+            seal: Some(facts()),
+        };
+        let open = BlackBoxLine::ship_sealed(ObjId(40), &epoch, Some(UnitClass::Hauler));
+        let value = serde_json::to_value(&open).expect("encodes");
+        assert_eq!(value["kind"], "mind_sealed");
+        assert_eq!(value["host"], "port");
+        assert_eq!(
+            value["hangar"],
+            serde_json::json!({"entry": "ceres_port", "base": 7})
+        );
+        assert_eq!(value["site"], "ceres_port");
+        assert_eq!(value["at_ic"], 900);
+        assert_eq!(
+            value["principal"],
+            serde_json::json!({"kind": "character", "id": 10})
+        );
+        assert_eq!(
+            value["admitted"],
+            serde_json::json!({"class": "hauler", "host": "port", "count": 1})
+        );
+        assert_eq!(value["seal"], "sealed");
+        assert_eq!(
+            serde_json::from_value::<BlackBoxLine>(value).ok(),
+            Some(open.clone())
+        );
+        assert_eq!(open.check(ObjId(40)), Ok(()));
+        let home = crate::port::epoch::ShipEpoch {
+            base: ObjId(40),
+            ..epoch.clone()
+        };
+        assert!(
+            BlackBoxLine::ship_sealed(ObjId(40), &home, None)
+                .check(ObjId(40))
+                .is_err(),
+            "a ship leaves another object's port"
+        );
+        let closed = BlackBoxLine::ship_closed(
+            ObjId(40),
+            &epoch,
+            5_000,
+            IcCloseKind::ReturnedToBase { base: ObjId(8) },
+        );
+        assert_eq!(
+            serde_json::to_value(&closed).expect("encodes"),
+            serde_json::json!({
+                "kind": "sortie_closed",
+                "unit": 40,
+                "sortie": {"ic": {"hull": 40, "at_ic": 900}},
+                "at_ic": 5000,
+                "close": {"kind": "returned_to_base", "base": 8},
+                "abandoned": false,
+            })
+        );
+        assert_eq!(closed.check(ObjId(40)), Ok(()));
+        // A ship's line never carries a carrier: `with_carrier` touches a bay hangar only.
+        assert_eq!(
+            open.clone().with_carrier(Some(SortieId::ic(ObjId(1), 1))),
+            open
         );
     }
 

@@ -36,6 +36,11 @@
 //!   `accept_at`, `sell_into_bid`, the leg re-stages, or the `tacsim_port_burn`
 //!   submission), with its pull verification at the top of every fire
 //!   ([`crate::port::executor`]); a hull with a filed passage is the launch arm's.
+//! - doc 23 cut S.2 — **the epoch arm** (the ship's seal epoch, a pull reconciliation): one
+//!   agent per programme hull whose epoch open or close is due (agent = the hull, principal =
+//!   the epoch's warrant principal), submitting ONE `tacsim_voyage_epoch` as that principal
+//!   ([`crate::port::epoch`]); for the fire it takes the hull from the launch, recall and order
+//!   arms, so a close lands before the hull can leave again.
 //!
 //! **Doc 20 cut SM.3b** registers the surface layer's two providers here too, beside the
 //! burn and under the crate's one `outcome` and one `action` validator:
@@ -252,6 +257,11 @@ pub(crate) fn register_with_coverage(
         .get(crate::surface::survey::SURVEY_CANCEL_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("survey cancellation outcome missing"))?;
+    // Doc 23 cut S.2: the ship's epoch.
+    let epoch_outcome = outcome_refs
+        .get(crate::port::epoch::EPOCH_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the ship's epoch outcome did not register"))?;
     let mut actions = action_descriptors(
         (&stock_outcome, &mill_outcome),
         &relay_outcome,
@@ -283,6 +293,20 @@ pub(crate) fn register_with_coverage(
         crate::surface::survey::SURVEY_CANCEL_ACTION,
         json!({"subject":"self_actor","targets":0,"family":crate::surface::survey::SURVEY_FAMILY}),
     )?.with_references(vec![survey_cancel_outcome.clone()]));
+    // Doc 23 cut S.2: the ship's epoch writes its `tacsim.ship_epoch` record; its black box line
+    // rides the black box's participant.
+    actions.push(
+        descriptor(
+            "action",
+            crate::port::epoch::EPOCH_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::port::epoch::EPOCH_FAMILY,
+            }),
+        )?
+        .with_references(vec![epoch_outcome.clone()]),
+    );
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -395,6 +419,7 @@ pub(crate) fn register_with_coverage(
     // the tools table built; the definitions register regardless.
     // Doc 23 cut S.1 (§7, L2): the black box's owner participant, for the finish and the staff
     // recovery the two calls below register.
+    // Doc 23 cut S.2: and for the ship's epoch, on every roster.
     let black_box = register_black_box(
         reg,
         &action_refs,
@@ -407,7 +432,7 @@ pub(crate) fn register_with_coverage(
         (surface_act_outcome, surface_done_outcome),
         &port_families,
         inventory_families.as_ref(),
-        (surface_tools.as_ref(), black_box.0),
+        (surface_tools.as_ref(), black_box.done),
     )?;
     // Staff recovery is a separate capability from the player's surface acts.
     let surface_recovery = register_surface_recovery(
@@ -415,8 +440,28 @@ pub(crate) fn register_with_coverage(
         &action_refs,
         recovery_outcome,
         &port_families,
-        (inventory_families.as_ref(), black_box.1),
+        (inventory_families.as_ref(), black_box.recovery),
     )?;
+    // Doc 23 cut S.2 (V1): `tacsim_voyage_epoch`, the ship's epoch — its record's family, no
+    // inventory; the black box's participant appends the line.
+    let epoch_action = match (
+        action_refs.get(crate::port::epoch::EPOCH_ACTION).cloned(),
+        black_box.epoch,
+    ) {
+        (Some(action), Some(handle)) => {
+            reg.action_provider(
+                action.clone(),
+                crate::port::epoch::EpochProvider {
+                    action: action.clone(),
+                    outcome: epoch_outcome,
+                    records: port_families.epochs.clone(),
+                    black_box: handle,
+                },
+            )?;
+            Some(action)
+        }
+        _ => None,
+    };
     // Doc 20 cut SM.4a (D9): `+tv/forget` needs only the chart family.
     let chart_forget = match action_refs
         .get(crate::surface::chart::CHART_FORGET_ACTION)
@@ -539,7 +584,7 @@ pub(crate) fn register_with_coverage(
     reg.state(PortTickState::new(
         probe_action,
         stock_action,
-        mill_action,
+        (mill_action, epoch_action),
         dispatch_action,
     ));
     reg.tick(
@@ -607,17 +652,28 @@ type SurfaceTools = Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef
 type BlackBoxHandle =
     mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>;
 
+/// The black box participant's handles, one an action that asks for it.
+struct BlackBoxHandles {
+    /// `tacsim_surface_done`'s.
+    done: Option<BlackBoxHandle>,
+    /// `tacsim_surface_recovery`'s.
+    recovery: Option<BlackBoxHandle>,
+    /// Doc 23 cut S.2: `tacsim_voyage_epoch`'s.
+    epoch: Option<BlackBoxHandle>,
+}
+
 /// **The black box's owner participant** (doc 23 cut S.1; §7; the lead's L2): its definition
 /// and its kind's one validator, registered unconditionally (a definition is a fact about the
-/// crate); the participant itself, on the store slot, for exactly the actions the two calls
-/// after it register — the finish (`tacsim_surface_done`: the inventory cell and the tools
-/// table filled) and the staff recovery (the inventory cell filled) — and one handle each.
+/// crate); the participant itself, on the store slot, for exactly the actions the calls after
+/// it register — the finish (`tacsim_surface_done`: the inventory cell and the tools table
+/// filled), the staff recovery (the inventory cell filled) and, doc 23 cut S.2, the ship's epoch
+/// (`tacsim_voyage_epoch`, every roster) — and one handle each.
 fn register_black_box(
     reg: &mut Registrar<'_>,
     actions: &BTreeMap<String, DefinitionRef>,
     inventory: bool,
     tools: bool,
-) -> Result<(Option<BlackBoxHandle>, Option<BlackBoxHandle>), ModError> {
+) -> Result<BlackBoxHandles, ModError> {
     use crate::surface::black_box::{
         BlackBoxParticipant, PARTICIPANT_KIND, participant_descriptor,
     };
@@ -637,18 +693,31 @@ fn register_black_box(
         .get(crate::surface::recovery::RECOVERY_ACTION)
         .filter(|_| inventory)
         .cloned();
-    let allowed: BTreeSet<DefinitionRef> = done.iter().chain(recovery.iter()).cloned().collect();
+    let epoch = actions.get(crate::port::epoch::EPOCH_ACTION).cloned();
+    let allowed: BTreeSet<DefinitionRef> = done
+        .iter()
+        .chain(recovery.iter())
+        .chain(epoch.iter())
+        .cloned()
+        .collect();
     if allowed.is_empty() {
-        return Ok((None, None));
+        return Ok(BlackBoxHandles {
+            done: None,
+            recovery: None,
+            epoch: None,
+        });
     }
     reg.owner_participant(definition, allowed, BlackBoxParticipant)?;
-    let done = done
-        .map(|action| reg.request_owner_participant::<BlackBoxParticipant>(action))
-        .transpose()?;
-    let recovery = recovery
-        .map(|action| reg.request_owner_participant::<BlackBoxParticipant>(action))
-        .transpose()?;
-    Ok((done, recovery))
+    let mut request = |action: Option<DefinitionRef>| {
+        action
+            .map(|action| reg.request_owner_participant::<BlackBoxParticipant>(action))
+            .transpose()
+    };
+    Ok(BlackBoxHandles {
+        done: request(done)?,
+        recovery: request(recovery)?,
+        epoch: request(epoch)?,
+    })
 }
 
 /// Recovery needs inventory but does not depend on the player's tools table.
@@ -769,6 +838,12 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             "outcome",
             crate::port::yard::DISPATCH_OUTCOME,
             json!({ "fields": ["act", "actor", "receipt", "site", "t"] }),
+        )?,
+        // Doc 23 cut S.2: a ship's epoch opened or closed, and whether its line was written.
+        descriptor(
+            "outcome",
+            crate::port::epoch::EPOCH_OUTCOME,
+            json!({ "fields": ["actor", "hull", "op", "written"] }),
         )?,
     ];
     if test_world {
@@ -1079,13 +1154,23 @@ pub struct PortTickState {
     /// each is logged once. Bounded by `crate::port::stock::MAX_CLERK_ROWS`.
     pub(crate) dispatch_warned:
         BTreeSet<(ObjId, crate::port::yard::DispatchWarn, smol_str::SmolStr)>,
+    /// **Doc 23 cut S.2**: the registered `tacsim_voyage_epoch` action, set at `register`.
+    pub(crate) epoch_action: Option<DefinitionRef>,
+    /// **Doc 23 cut S.2**: each hull's due epoch open or close the arm submitted this boot, by
+    /// hull (`ObjId.0`); dropped once the target is no longer due. Bounded by the programme's
+    /// hulls.
+    pub(crate) epoch_tries: BTreeMap<u32, crate::port::epoch::EpochTry>,
+    /// **Doc 23 cut S.2**: the epoch arm's pages this boot, by `(hull, why)` — each once.
+    pub(crate) epoch_warned: BTreeSet<(u32, crate::port::epoch::EpochWarn)>,
+    /// **Doc 23 cut S.2**: the epoch arm's pages this boot (a count, for tests).
+    pub(crate) epoch_pages: u32,
 }
 
 impl PortTickState {
     fn new(
         probe_action: Option<DefinitionRef>,
         stock_action: Option<DefinitionRef>,
-        mill_action: Option<DefinitionRef>,
+        (mill_action, epoch_action): (Option<DefinitionRef>, Option<DefinitionRef>),
         dispatch_action: Option<DefinitionRef>,
     ) -> PortTickState {
         PortTickState {
@@ -1093,6 +1178,7 @@ impl PortTickState {
             stock_action,
             mill_action,
             dispatch_action,
+            epoch_action,
             ..PortTickState::default()
         }
     }
@@ -1128,11 +1214,14 @@ pub struct PortFireStats {
     /// **Doc 20 cut SM.12c**: the yard dispatchers' agents this fire (`Arm::Dispatch`). RAM only,
     /// never persisted, never shown to a player.
     pub dispatch: ArmFireStats,
+    /// **Doc 23 cut S.2**: the epoch arm's agents this fire (`Arm::Epoch`). RAM only, never
+    /// persisted, never shown to a player.
+    pub epoch: ArmFireStats,
 }
 
 /// **One arm's share of a port fire** (doc 20 cut SM.12c, the cost lane; doc 20a §5.6's "by
 /// arm"): counted in the walk beside [`PortFireStats`]' totals for the stock, site and dispatch
-/// arms (the other arms count only in the totals). `deferred` counts the `Fire::as_principal`
+/// arms and, doc 23 cut S.2, the epoch arm (the other arms count only in the totals). `deferred` counts the `Fire::as_principal`
 /// refusals that defer — the principal already acted this fire, owed its act to another agent,
 /// or has a submission still in flight (`Pending`). RAM only, never persisted, never shown to a
 /// player.
@@ -1429,6 +1518,9 @@ enum Arm {
     /// Doc 20 cut SM.12b: a yard's dispatcher — deliver the yard hold's ore, or file one rig's
     /// next plan ([`crate::port::yard::dispatch_step`]); agent and principal the dispatcher.
     Dispatch,
+    /// Doc 23 cut S.2: one hull's due epoch open or close, as its warrant principal
+    /// ([`crate::port::epoch::epoch_step`]).
+    Epoch,
     /// The test world's probe (lead ruling L3).
     Probe,
 }
@@ -1513,9 +1605,19 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // their hulls are dropped from the order agents before either is offered, so a
     // dormant hull with a waiting plan is recalled rather than offered to the order
     // arm every fire, and the duplicate rule never logs.
-    let recalls = crate::port::recall::recall_agents(ctx, state);
+    let mut recalls = crate::port::recall::recall_agents(ctx, state);
     let mut orders = crate::port::executor::order_agents(ctx.w, state);
     orders.retain(|(hull, _)| !recalls.iter().any(|(recalled, _)| recalled == hull));
+    // Doc 23 cut S.2 (V1; the fix round's R4): the epoch agents — and every hull whose epoch
+    // open or close is due, offered this fire or spacing out its retry, is withheld from the
+    // launch, recall and order arms (one arm an agent), so a close lands before the hull can leave
+    // again and an open before it moves on; they wait. A held or unwritable epoch withholds
+    // nothing (R2: it never wedges its hull).
+    let (epochs, withheld) = crate::port::epoch::epoch_agents(ctx, state);
+    let mut launches = launches;
+    launches.retain(|(hull, _)| !withheld.contains(hull));
+    recalls.retain(|(hull, _)| !withheld.contains(hull));
+    orders.retain(|(hull, _)| !withheld.contains(hull));
     // The agents: the union over the arms, agent -> (principal, arm). An agent
     // id belongs to one arm (hull ids and clerk ids are disjoint objects); a
     // duplicate offered by a later arm is refused and logged.
@@ -1567,6 +1669,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     for (hull, author) in orders {
         offer(hull, author, Arm::Order { hull: hull.0 });
     }
+    // Doc 23 cut S.2: one epoch agent per hull whose epoch open or close is due (agent = the
+    // hull, principal = the epoch's warrant principal).
+    for (hull, principal) in epochs {
+        offer(hull, principal, Arm::Epoch);
+    }
     if state.probe_action.is_some() {
         for (agent, probe) in &state.probes {
             offer(*agent, probe.principal, Arm::Probe);
@@ -1603,6 +1710,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
             Arm::Stock => fire.stats.stock.count(step),
             Arm::Site => fire.stats.site.count(step),
             Arm::Dispatch => fire.stats.dispatch.count(step),
+            Arm::Epoch => fire.stats.epoch.count(step),
             Arm::Release { .. }
             | Arm::Launch { .. }
             | Arm::Recall { .. }
@@ -1677,6 +1785,7 @@ fn step(
         }
         Arm::Site => crate::port::site::site_step(ctx, fire, agent),
         Arm::Dispatch => crate::port::yard::dispatch_step(ctx, state, fire, agent),
+        Arm::Epoch => crate::port::epoch::epoch_step(ctx, state, fire, agent, principal),
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),
             None => Step::Idle,
