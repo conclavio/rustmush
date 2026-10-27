@@ -147,6 +147,7 @@ pub(super) fn continue_scan(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
             account,
             actor: mush_core::GOD,
             nonce,
+            kind: super::super::model::WorkKind::Registry,
         },
     );
     runtime.registry.reconformance.preparing = true;

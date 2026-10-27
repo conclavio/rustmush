@@ -488,6 +488,36 @@ impl ShellReservations {
         Ok(image)
     }
 
+    /// 17g C2a (C2 plan §2.4): the request id of the calling actor's own open
+    /// reservation, or `None` when it has none. It exists for 17g C2's
+    /// `@mind/file`, which must know whether to reserve first or to file, and
+    /// which builds the filing's `shell_request` from this id.
+    ///
+    /// The service stays closed:
+    /// - it reads through the owner-read lens only (`OwnerReadContext`, the
+    ///   Roll owner's own read budget), so no mutable state, transaction or
+    ///   typed writer is reachable;
+    /// - it takes no actor argument: the key is `ctx.actor()`, the caller core
+    ///   minted from dispatch, so no one can read another actor's shell;
+    /// - it reads exactly one row, the `open` index of that actor, and checks
+    ///   its format and that its key's requester is that actor;
+    /// - it returns no object id, receipt or record, and creates, consumes or
+    ///   acknowledges nothing. Filing still resolves and consumes the shell
+    ///   inside its own transaction (`resolve`, `consume`).
+    pub fn open_request(
+        &self,
+        ctx: &crate::read_service::OwnerReadContext<'_>,
+    ) -> Result<Option<RequestUid>, crate::read_service::OwnerReadError> {
+        let actor = ctx.actor();
+        let Some(open) = ctx.action_state(&self.open, &actor)? else {
+            return Ok(None);
+        };
+        if open.format != FORMAT || open.key.requester != actor {
+            return Err(crate::read_service::OwnerReadError::Integrity);
+        }
+        Ok(Some(open.key.request))
+    }
+
     /// Both deployment markers must come from the same actual setup commit.
     pub fn verify_deployment(
         &self,

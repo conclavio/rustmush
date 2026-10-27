@@ -61,9 +61,17 @@ struct Birth {
     economics: PaidTermEconomicsV1,
 }
 fn birth() -> TestResult<Birth> {
+    birth_with(PaidTerms::original_personal_form(
+        RatingClass::I,
+        PaidForm::OpenResale {},
+        false,
+    )?)
+}
+/// The structural birth over the given accepted terms (17g C2b: the marked
+/// test builds them through the entitlement writer's own `personal_terms`).
+fn birth_with(terms: PaidTerms) -> TestResult<Birth> {
     let id = LicenceId::new(7)?;
     let one = TermGeneration::new(1)?;
-    let terms = PaidTerms::original_personal_form(RatingClass::I, PaidForm::OpenResale {}, false)?;
     let policy = RevisionPolicy::Pin {
         filed: FiledRevisionId::new(3)?,
         revision: identity()?,
@@ -530,6 +538,93 @@ fn exhausted_generation_refuses_before_any_new_offer_or_money() -> TestResult {
         b.economics.grant().clone(),
     )?;
     check!(RenewalBindingV1::capture(&licence, &term, &economics).is_err());
+    Ok(())
+}
+
+/// 17g C2b (D-UM-40, C2 plan §2.5; test 12): a licence granted from a listing
+/// the author marked `transferable: false` carries non-transferable terms
+/// (the entitlement writer's own `personal_terms`). Both of the paid-resale
+/// reader's gates refuse it: `observe`'s own check (`require_transferable` on
+/// the current term) and the resale binding it then builds
+/// (`PaidResaleBinding::validate`), so dropping either one still leaves this
+/// test red for the other. A renewal carries the predecessor's terms, so the
+/// renewed generation is refused the same way; a renewal binding that widens
+/// them refuses. The unmarked control passes both gates before and after its
+/// renewal, so the refusals are the mark's and nothing else's. The marked
+/// listing's own path into these terms (List → product → quote → grant terms)
+/// is mush-market's `the_transfer_mark_narrows_and_never_widens`; a full
+/// `observe` over a granted licence needs the real-engine resale harness.
+#[test]
+fn the_marked_licence_cannot_be_offered_for_resale() -> TestResult {
+    use crate::commerce::entitlement::writer::EntitlementPurchaseTerms;
+    use crate::commerce::paid_resale::PaidResaleBinding;
+    use crate::commerce::paid_resale::reader::require_transferable;
+    use crate::commerce::records::PublicationError;
+    use mush_economy::managed_paid_resale::{PaidBirthRefV1, PaidBirthRouteV1, PaidHolderRefV1};
+    // The binding `observe` builds over the current term, at its first holder.
+    let binding = |b: &Birth, term: &PaidTermRecord| PaidResaleBinding {
+        licence: term.licence(),
+        charter: b.licence.charter(),
+        line: b.licence.line(),
+        birth: PaidBirthRefV1 {
+            route: PaidBirthRouteV1::Entitlement,
+            operation: token(1),
+            digest: digest(9),
+        },
+        ownership: PaidHolderRefV1 {
+            generation: 1,
+            operation: token(1),
+            digest: digest(9),
+        },
+        term: term.clone(),
+        term_clock: ClockRef::WorldIc { generation: 1 },
+        economics_digest: digest(9),
+        royalty_chain_digest: digest(8),
+    };
+    for mark in [false, true] {
+        let terms = EntitlementPurchaseTerms::personal_terms(
+            RatingClass::I,
+            PaidForm::OpenResale {},
+            mark,
+        )?;
+        check_eq!(terms.transferable(), mark);
+        let b = birth_with(terms)?;
+        check_eq!(b.economics.grant().renewal().terms(), terms);
+        let renewed = granted_birth(&terminal(
+            &funded(&draft(&b, 10, 20, RenewalAttemptV1::Automatic {})?)?,
+            true,
+        )?)?;
+        check_eq!(renewed.term.generation().get(), 2);
+        check_eq!(renewed.term.terms(), terms);
+        for term in [&b.term, &renewed.term] {
+            if mark {
+                require_transferable(term)?;
+                binding(&b, term).validate()?;
+            } else {
+                check!(matches!(
+                    require_transferable(term),
+                    Err(PublicationError::Unavailable)
+                ));
+                check!(matches!(
+                    binding(&b, term).validate(),
+                    Err(PublicationError::Mismatch)
+                ));
+            }
+        }
+        if !mark {
+            // The renewal binding cannot widen the frozen terms: a predecessor
+            // whose terms were flipped no longer matches its own economics.
+            let widened = PaidTermRecord::original(
+                b.term.licence(),
+                b.term.generation(),
+                b.term.window(),
+                PaidTerms::original_personal_form(RatingClass::I, PaidForm::OpenResale {}, true)?,
+                b.term.policy(),
+                b.term.operation(),
+            )?;
+            check!(RenewalBindingV1::capture(&b.licence, &widened, &b.economics).is_err());
+        }
+    }
     Ok(())
 }
 

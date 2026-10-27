@@ -14,8 +14,9 @@
 //!   "come from doc 17");
 //! - the personal venue cut is 0 with no recipient (17f §2.3, a direct author
 //!   listing), for purchases and renewals alike;
-//! - personal licences are transferable, policy-wide (D-UM-40; the author's
-//!   non-transferable mark is not built, C1 plan §8).
+//! - personal licences are transferable, policy-wide (D-UM-40); the author's
+//!   per-listing non-transferable mark (17g C2b) only narrows it, listing by
+//!   listing (`@mind/publish ... transfer=no`, 17g C2c).
 use super::{
     LaunchDeployment,
     content::{self, bad},

@@ -937,6 +937,13 @@ impl MindCommerce {
         if self.state.marked_registry {
             layer.marked_registry = Some(self.manifest().clone());
         }
+        // 17g C2a (C2 plan §2.4): the line-mode command slot and its Roll read
+        // exist only when Active commerce composes the player market, the
+        // condition that selects `with_mind_entitlement_holdings` above. A
+        // format-1 House-only launch is Active without it.
+        if self.state.mode == CommerceMode::Active && self.state.entitlements.is_some() {
+            layer.mind_commands = Some(self.manifest().clone());
+        }
         layer.ic_minds = self
             .state
             .ic

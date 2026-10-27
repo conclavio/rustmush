@@ -34,9 +34,14 @@ A house's own licence to a mind it filed runs 365 game days, then 3 days of
 Grace; its catalogue sells through both and stops when the Grace ends. A paid
 House licence runs 90 game days and renews for another 90.
 
-House renewals use `house-renewal-draft`, `house-renewal-fund`,
-`house-renewal-grant`, `house-renewal-refund`, and `house-renewal-close`.
-Draft takes a `licence` or a `previous_operation` for a permitted retry. The
-other steps take the acknowledged renewal `operation`; Close also takes
-`reason` (`declined` or `expired`). Requesting an offer does not accept it.
-Both seat products use these same renewal actions with their captured terms.
+Your House Pins appear in `+minds/holdings`. Renew one with `+minds/renew <licence>` and
+its `/pay` and `/decline` steps, as for a personal licence, and resell one with
+`+minds/resell <licence>=<player> price=<credits>`. A buyer of a resold House Pin needs the
+same standing as a buyer of a new one. Buying a House Pin still uses the actions above.
+
+Where `+minds/renew` is not open, including any launch without the player market, a House
+Pin renews through the actions `house-renewal-draft`, `house-renewal-fund`,
+`house-renewal-grant`, `house-renewal-refund` and `house-renewal-close`, sent with `+act`.
+Draft takes the `licence`, or a `previous_operation` for a permitted retry; the other steps
+take the acknowledged renewal `operation`, and Close also takes `reason` (`declined` or
+`expired`). Requesting an offer does not accept it.

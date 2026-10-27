@@ -2506,6 +2506,15 @@ impl Registry {
         self.action_providers.as_ref()
     }
 
+    /// 17g C2a (C2 plan §2.4): the frozen composition's registered owner-read
+    /// services and requested grants, against `MAX_OWNER_READ_SERVICES` and
+    /// `MAX_OWNER_READ_GRANTS`. Counts only: no service, grant or handle is
+    /// reachable through it. `None` before the registry is frozen.
+    #[must_use]
+    pub fn owner_read_counts(&self) -> Option<(usize, usize)> {
+        self.owner_reads.as_ref().map(|reads| reads.counts())
+    }
+
     /// Exact, immutable revision-validator lookup after module composition.
     #[must_use]
     pub fn revision_validators(&self) -> Option<&crate::action::RevisionValidatorRegistry> {

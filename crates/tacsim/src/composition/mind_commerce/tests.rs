@@ -1299,3 +1299,88 @@ fn full_player_market_chain_registers_every_owner_in_builder_order() -> TestResu
     check_eq!(definitions_of(&reordered)?, definitions_of(&actual)?);
     Ok(())
 }
+
+/// 17g C2a test 3 (C2 plan §2.4): the line-mode command slot is composed
+/// exactly with the player market. The full chain, Active with entitlements,
+/// registers it; Initialize, an Active House-only chain (no entitlements, the
+/// format-1 launch's shape) and a layer with no commerce do not. No chain
+/// registers an owner read of the commands' own: their Roll kinds are folded
+/// into `original_owner_holding` (§2.4 fallback 1, because the format-2
+/// Active launch had no grant to spare), whose current version is 2
+/// wherever commerce is Active. The full chain's owner-read service and grant
+/// counts are printed against the caps of 32 each.
+#[test]
+fn the_command_service_is_composed_only_with_the_player_market() -> TestResult {
+    use crate::minds::market_commands::MindCommandService;
+    let caps = (
+        mush_core::read_service::MAX_OWNER_READ_SERVICES,
+        mush_core::read_service::MAX_OWNER_READ_GRANTS,
+    );
+    let composed = |engine: &Engine| {
+        (
+            engine.world.module_state::<MindCommandService>().is_some(),
+            has(engine, "roll", "owner_read", "mind_commands"),
+        )
+    };
+    let holdings_version = |engine: &Engine| {
+        engine.registry.definitions().and_then(|definitions| {
+            definitions.iter().find_map(|entry| {
+                let reference = entry.reference();
+                (reference.key().owner.as_str() == "roll"
+                    && reference.key().kind.as_str() == "owner_read"
+                    && reference.key().id.as_str() == "original_owner_holding")
+                    .then(|| reference.version())
+            })
+        })
+    };
+    let chain = player_market(true)?;
+    check!(chain.configure_tacsim(layer())?.mind_commands.is_some());
+    let full = house_engine(&chain, true)?;
+    let counts = full.registry.owner_read_counts().ok_or("frozen reads")?;
+    eprintln!(
+        "MIND_COMMANDS_OWNER_READS services={} grants={} caps={caps:?}",
+        counts.0, counts.1
+    );
+    check_eq!(
+        composed(&full),
+        (true, false),
+        "the full player market composes the slot and no read of its own; owner reads (services, grants) = {counts:?} of {caps:?}"
+    );
+    check_eq!(holdings_version(&full), Some(2), "the folded holdings read");
+    check!(counts.0 <= caps.0 && counts.1 <= caps.1, "{counts:?}");
+    // Initialize composes no market.
+    let initialize = prepare(CommerceMode::Initialize)?;
+    check!(
+        initialize
+            .configure_tacsim(layer())?
+            .mind_commands
+            .is_none()
+    );
+    check_eq!(
+        composed(&*engine(&initialize)?),
+        (false, false),
+        "Initialize"
+    );
+    // Active House-only: the House chain without entitlements.
+    let house = prepare(CommerceMode::Active)?
+        .with_house_filings()?
+        .with_house_minds(house_policy()?)?;
+    check!(house.configure_tacsim(layer())?.mind_commands.is_none());
+    check_eq!(
+        composed(&*house_engine(&house, true)?),
+        (false, false),
+        "an Active House-only chain"
+    );
+    // Active with the dependent-owner chain but no entitlements yet.
+    let dependent = entitlement_tests::prepared()?;
+    check!(dependent.configure_tacsim(layer())?.mind_commands.is_none());
+    // No commerce at all.
+    check!(layer().mind_commands.is_none());
+    let plain = compose_boxed(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(layer())],
+    )?;
+    check_eq!(composed(&plain), (false, false), "a layer with no commerce");
+    Ok(())
+}

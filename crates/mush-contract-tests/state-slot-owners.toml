@@ -426,7 +426,7 @@ map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_2/unloading.rs"
+path = "crates/tacsim/tests/shard_6/unloading.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -525,7 +525,7 @@ precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_2/deposits.rs"
+path = "crates/tacsim/tests/shard_3/deposits.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"

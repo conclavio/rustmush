@@ -756,6 +756,86 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     Ok(())
 }
 
+/// 17g C2a (reviewer F2): `@mind/rate`'s `RATING_BUSY` case. Admission
+/// answers Busy for the whole login account, but only this character's own
+/// Registry job, preparing or retained, is "already working on one of your
+/// revisions": another character's Registry preparation on the same account
+/// and this character's own proving or Conduct preparation are not.
+#[test]
+fn holds_rating_is_only_the_characters_own_registry_job() -> TestResult {
+    let cfg = BulkConfig::default();
+    let (wake, _receiver) = tokio::sync::mpsc::channel(1);
+    let service = world::BulkService::new(cfg.clone(), wake)?;
+    let mut runtime = service.0.lock().map_err(|_| "runtime poisoned")?;
+    let store = BulkStore::new(cfg)?;
+    let a = binding(7)?;
+    let alt = ObjId(a.character.0 + 1);
+    check!(!holds_rating(&runtime, a.character), "nothing held yet");
+    for kind in [WorkKind::Proving, WorkKind::Conduct] {
+        runtime.preparing.insert(
+            1,
+            Preparing {
+                account: a.account,
+                actor: a.character,
+                nonce: 1,
+                kind,
+            },
+        );
+        check_eq!(
+            runtime.ensure_admission(&store, a.account),
+            Err(BulkError::Busy),
+            "admission is busy for the account"
+        );
+        check!(
+            !holds_rating(&runtime, a.character),
+            "a {kind:?} preparation is not a rating"
+        );
+    }
+    runtime.preparing.insert(
+        1,
+        Preparing {
+            account: a.account,
+            actor: alt,
+            nonce: 1,
+            kind: WorkKind::Registry,
+        },
+    );
+    check!(
+        !holds_rating(&runtime, a.character),
+        "the alt's rating is not this character's"
+    );
+    check!(
+        holds_rating(&runtime, alt),
+        "the alt's own rating preparing"
+    );
+    runtime.preparing.remove(&1);
+    runtime.preparing.insert(
+        2,
+        Preparing {
+            account: a.account,
+            actor: a.character,
+            nonce: 2,
+            kind: WorkKind::Registry,
+        },
+    );
+    check!(
+        holds_rating(&runtime, a.character),
+        "its own rating preparing"
+    );
+    runtime.preparing.remove(&2);
+    let drops = Arc::new(AtomicUsize::new(0));
+    runtime
+        .registry
+        .entries
+        .insert(a.character, entry(a, TicketId::new(17)?, drops));
+    check!(
+        holds_rating(&runtime, a.character),
+        "its own rating retained"
+    );
+    check!(!holds_rating(&runtime, alt));
+    Ok(())
+}
+
 #[test]
 fn terminal_owner_apply_keeps_account_and_global_capacity_until_machine_readback() -> TestResult {
     let cfg = BulkConfig {
@@ -790,6 +870,7 @@ fn terminal_owner_apply_keeps_account_and_global_capacity_until_machine_readback
             account: b.account,
             actor: b.character,
             nonce: 1,
+            kind: WorkKind::Registry,
         },
     );
     check_eq!(

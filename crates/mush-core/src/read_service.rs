@@ -365,6 +365,10 @@ impl OwnerReadRegistry {
     pub(crate) fn is_empty(&self) -> bool {
         self.registrations.is_empty() && self.grants.is_empty()
     }
+    /// `(services, grants)` registered in this frozen composition.
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        (self.registrations.len(), self.grants.len())
+    }
     pub(crate) const fn fingerprint(&self) -> DefinitionDigest {
         self.fingerprint
     }
@@ -617,3 +621,25 @@ fn encoded_size<T: Serialize>(value: &T, max: usize) -> Result<usize, OwnerReadE
 
 #[cfg(test)]
 mod tests;
+
+/// Test-only: a read lens over `owner`'s live typed state for `caller`, for
+/// the unit tests of other core modules that read through the owner-read lens
+/// (17g C2a's `ShellReservations::open_request`).
+#[cfg(test)]
+impl<'a> OwnerReadContext<'a> {
+    pub(crate) fn for_test(
+        world: &'a World,
+        lens: TypedStateLens<'a>,
+        owner: &'a str,
+        caller: &'a OwnerReadCaller,
+    ) -> Self {
+        Self {
+            world,
+            typed: ModuleActionState::for_module(lens, Some(owner)),
+            caller,
+            reads: Cell::new(0),
+            rows: Cell::new(0),
+            exhausted: Cell::new(false),
+        }
+    }
+}

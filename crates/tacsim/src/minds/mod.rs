@@ -146,6 +146,8 @@ mod doctrine_library;
 pub mod fees;
 pub(crate) mod ic_sortie;
 pub mod kernels;
+/// 17g C2: the line-mode commands over the composed mind commerce.
+pub(crate) mod market_commands;
 #[cfg(test)]
 mod meridiani_field;
 pub(crate) mod metadata;

@@ -1876,7 +1876,8 @@ format-2 named launch in Active mode now composes the personal market beside the
 House chain. Where that composition departs from §20's decisions is recorded here;
 the full record is [17g §7](17g-m7-completion-plan.md#7-ledger).
 
-- **D-UM-40 (the author's non-transferable mark)**: not built. The launch composes
+- **D-UM-40 (the author's non-transferable mark)**: not built (built in 17g C2b,
+  below). The launch composes
   personal licences transferable policy-wide (`EntitlementPolicy.transferable`,
   set by `tacsim::launch::market::policies`), and the v3 list parameters
   (`owner_licence`, `form`, `royalty_permille`) carry no per-listing mark, so an
@@ -1895,6 +1896,60 @@ the full record is [17g §7](17g-m7-completion-plan.md#7-ledger).
   birth). A Pin bought from a `market-original-mind-offer` listing, the v2
   protocol the launch composes because forks need its source forms, does not
   renew, and `@mind/launch`'s market line says so.
+
+**17g C2 (M7: the operator commands, line mode) — built 2026-10-26/27
+(`bfc1b34e`, `337915c4`, `e54604ba`, `b3ce5a4f`, `3e4f7668`; PR #30, not merged;
+not deployed).** The author's `@mind` commands, the `+minds` forms and the
+`@registry` pair exist as line-mode handlers over the existing legal actions. Where
+the build departs from §20's decisions is recorded here; the full record is
+[17g §7](17g-m7-completion-plan.md#7-ledger), "C2 — as built".
+
+- **D-UM-40 (the author's non-transferable mark)**: built in C2b. The List request
+  of both entitlement protocols takes an optional `transferable` (absent is `true`),
+  frozen into the listing's product and so into the quote, the grant and the
+  renewal template; the mark only narrows the policy-wide
+  `EntitlementPolicy.transferable` and never widens it, a marked licence is refused
+  at resale (`require_transferable`) and renews non-transferable, and `@mind/publish
+  … transfer=no` (C2c) writes it. Departure: a `true` mark under a `false` policy is
+  accepted and silently narrowed, not refused. The C1 entry's "not built" above is
+  superseded. The same-account refusal of a sale by command (the alt refused at
+  Quote) is proven only by the unrun command story.
+- **D-UM-40 and §16 (the sale's price, seats and term)**: `@mind/publish <filed>
+  form=sealed|open|open-resale [royalty=<per mille>] [transfer=no]` takes `price=`,
+  `seats=` and `term=` only at the market's policy-wide values (the deployment price,
+  1 seat, 90 IC days), where §16 writes `@mind/publish Sentinel@2 price=400
+  terms=sealed seats=6`; per-listing terms are deferred (17g §1 ruling 6, a
+  provisional default). The verb the C1 entry names for a non-renewing Pin is
+  `market-original-mind-list` since C2a split the four shared verbs one per kind
+  (`market-original-mind-list|-quote|-retire-listing|-retire-quote|-expire`,
+  `-fund|-grant|-refund`, `paid-mind-resale-offer|-accept|-fund`,
+  `roll-retire-authored-draft-v1`); presentation only, no digest moved.
+- **D-UM-56 and §16 (filing and listing as separate acts)**: `@mind/file
+  <name>@<rev>[=<charter name>]` reserves a shell and files with the actor's own
+  completed rating (`@mind/rate <name>@<rev>` first; `NOT_RATED` otherwise), as
+  D-UM-56 says.
+  Departure from §16's prose: `@mind/publish <filed>` lists an already filed mind
+  and never files it first. The dependent route (`update_derived_mind`) and the
+  owner licence following the title after a charter transfer are built and untested
+  outside the unrun story.
+- **D-UM-39 (renewal as a fresh E4 contract) and §16's `+minds/renew`**: the
+  renewal services are unchanged and their player branch is factored into
+  `player_step`, but `+minds/renew`, `/pay` and `/decline` are held at `NOT_OPEN`
+  (`renew::RENEWALS_OPEN = false`): the services' reads refuse a tacsim dispatch
+  context, and the seam that runs the step under the market's identity is a lead
+  ruling. `@mindrenewal`, `@housemindrenewal` and `+act` remain the renewal path.
+- **§16 (buying, holdings, resale, charter transfer, recall and revocation by
+  command)**: `+minds`, `+minds <code>`, `/next` and the owner half of `/holdings`
+  are built over the market's bounded `MarketCommandReader` and Roll's folded
+  `original_owner_holding` v2 read, but the format-2 launch is at the 32/32
+  owner-read caps, so the market read is registered and ungranted and every
+  `+minds` form and `@mind/publish` answer `NOT_OPEN` until the lead raises the
+  caps. `+minds/buy`, the paid half of `/holdings`, `/resell`, `/charter` and both
+  accepts also wait for the owner indexes (refused by mush-core's terminal-key and
+  `exact_puts` checks; a lead ruling). `@registry/recall <filed>` and
+  `@registry/revoke <licence>` take no reason (the actions carry none) and make no
+  operator pre-check: the projection offers them to granted operators only, so a
+  non-operator reads the driver's line like an unknown number.
 
 Historical landed amendments follow unchanged.
 

@@ -32,6 +32,8 @@ mod composition_edges;
 mod definitions;
 #[path = "shard_3/deliberation.rs"]
 mod deliberation;
+#[path = "shard_3/deposits.rs"]
+mod deposits;
 #[path = "shard_3/drones.rs"]
 mod drones;
 #[path = "shard_3/e7c1.rs"]

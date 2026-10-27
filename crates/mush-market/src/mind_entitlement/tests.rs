@@ -203,6 +203,112 @@ fn fixture(
     reprice(&mut q)?;
     Ok(q)
 }
+/// 17g C2c: a listing row over `fixture`'s frozen product and subject,
+/// published under `publication` (the command read's tests, which page and
+/// look listings up by their token text).
+pub(crate) fn listing_fixture(
+    protocol: EntitlementProtocol,
+    depth: u64,
+    form: PaidForm,
+    publication: CommitToken,
+) -> TestResult<EntitlementListingV1> {
+    let q = fixture(protocol, depth, form)?;
+    let listing = EntitlementListingV1 {
+        format: 1,
+        publication,
+        subject: q.subject,
+        product: q.product,
+        royalty: q.royalty,
+        price: q.price,
+        instrument: q.instrument,
+        venue: q.venue,
+        registry: q.registry,
+        policy: q.policy,
+        observed_at_utc: 100,
+    };
+    listing.validate()?;
+    Ok(listing)
+}
+/// 17g C2c (the C2c fix round): a deployment configuration whose policy is
+/// `listing_fixture`'s own at `price_minor` (the instrument, the Registry and
+/// venue cuts), and a listing over `fixture`'s product that is current under
+/// it (`current_policy`): its price and policy reference are the
+/// configuration's. The command read's tests answer through these, so the
+/// policy filter they exercise is the real one.
+pub(crate) fn command_config(price_minor: i64) -> TestResult<super::EntitlementConfig> {
+    let policy = super::EntitlementPolicy {
+        price: Amount::from_minor(price_minor),
+        instrument: InstrumentId::new("cr").ok_or("instrument")?,
+        registry: GrossRecipientCut {
+            permille: 50,
+            recipient: Some(Recipient {
+                account: AccountId(11),
+                owner: mush_org::PrincipalId::System(
+                    mush_org::SystemPrincipalId::new("roll.registry").ok_or("system")?,
+                ),
+            }),
+        },
+        venue_name: crate::MarketId::new("registry").ok_or("venue")?,
+        venue: GrossRecipientCut {
+            permille: 20,
+            recipient: Some(Recipient {
+                account: AccountId(12),
+                owner: mush_org::PrincipalId::Object(ObjId(12)),
+            }),
+        },
+        transferable: true,
+        term_seconds: 900,
+        grace_seconds: 90,
+        quote_seconds: 60,
+        renewal_price: Amount::from_minor(600),
+        renewal_term_seconds: 800,
+        renewal_grace_seconds: 80,
+    };
+    Ok(super::EntitlementConfig::new(
+        policy,
+        definition("tacsim", "registry_manifest", "combat", 1)?,
+        PurchaseParticipants::new(
+            definition("economy", "owner_participant", "initial_filing", 1)?,
+            definition("roll", "owner_participant", "commercial_roots", 1)?,
+        )?,
+        mush_roll::commerce::entitlement::writer::EntitlementPurchaseWriter::new(),
+    )?)
+}
+/// 17g C2c: an original sealed listing over `fixture`'s subject, listed
+/// under `config` (its product built by `product_for`, its price, cuts and
+/// policy the configuration's), so `current_policy(config, ..)` admits it.
+pub(crate) fn current_listing_fixture(
+    config: &super::EntitlementConfig,
+    publication: CommitToken,
+) -> TestResult<EntitlementListingV1> {
+    let q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
+    let product = config.product_for(
+        EntitlementProtocol::OriginalV3,
+        &q.subject,
+        &q.royalty,
+        super::config::ProductChoice {
+            form: PaidForm::Sealed {},
+            royalty_permille: 0,
+            transferable: true,
+        },
+    )?;
+    let listing = EntitlementListingV1 {
+        format: 1,
+        publication,
+        subject: q.subject,
+        product,
+        royalty: q.royalty,
+        price: config.policy.price,
+        instrument: config.policy.instrument.clone(),
+        venue: config.policy.venue(),
+        registry: Cut(config.policy.registry.clone()),
+        policy: config.policy_ref()?,
+        observed_at_utc: 100,
+    };
+    listing.validate()?;
+    super::current_policy(config, &listing)?;
+    Ok(listing)
+}
 fn reprice(q: &mut EntitlementQuoteV1) -> TestResult {
     q.product_digest = q.product.digest()?;
     q.payouts = Bounded(
@@ -561,5 +667,207 @@ fn quote_bounds_and_measured_payouts_are_revalidated_after_repaired_hashes() -> 
     obj(&mut bad)?.insert("term".into(), json!("2"));
     obj(bad.get_mut("economics").ok_or("economics")?)?.insert("generation".into(), json!("2"));
     check!(serde_json::from_value::<EntitlementAllocationV1>(bad).is_err());
+    Ok(())
+}
+
+/// 17g C2b (D-UM-40, C2 plan §2.5; test 6): the author's per-listing transfer
+/// mark, through the code the List branch and `current_listing` run.
+/// - The List wire: an absent mark reads `true`, an explicit one is kept, and
+///   the request stays closed.
+/// - The List offer's projected schema (what `project_offer` hands core, which
+///   refuses any key the schema does not name) admits the mark as an optional
+///   boolean, and the marked and the unmarked request alike.
+/// - The product body (`EntitlementConfig::product_for`, which `product`
+///   runs over the captured sale facts): the request's own choice builds
+///   non-transferable terms and renewal template under a transferable policy;
+///   a policy of `false` stays `false` whatever the mark; the mark changes the
+///   product digest.
+/// - `current_listing`'s recompute (`ProductChoice::frozen`) reproduces the
+///   marked and the unmarked listed product exactly, so a marked listing stays
+///   current.
+/// - A quote over the marked listed product validates and hands the grant
+///   non-transferable terms; neither a half-widened product nor a quote whose
+///   product was swapped under its frozen digest validates.
+#[test]
+fn the_transfer_mark_narrows_and_never_widens() -> TestResult {
+    use super::config::ProductChoice;
+    use super::offers::{Kind, List, parameters};
+    use super::{EntitlementConfig, EntitlementPolicy};
+    use mush_core::ProjectedParameterKind as K;
+    let choice = |v: &Value| -> TestResult<ProductChoice> {
+        Ok(serde_json::from_value::<List>(v.clone())?.choice())
+    };
+    let with = |v: &Value, key: &str, mark: Value| -> TestResult<Value> {
+        let mut v = v.clone();
+        obj(&mut v)?.insert(key.into(), mark);
+        Ok(v)
+    };
+    // The List wire.
+    let base = json!({"owner_licence":"1","form":"sealed","royalty_permille":0});
+    let marked = with(&base, "transferable", json!(false))?;
+    check!(choice(&base)?.transferable, "absent is transferable");
+    check!(!choice(&marked)?.transferable);
+    check!(choice(&with(&base, "transferable", json!(true))?)?.transferable);
+    for bad in [json!("no"), json!(0), Value::Null] {
+        check!(choice(&with(&base, "transferable", bad)?).is_err());
+    }
+    check!(choice(&with(&base, "resale", json!(false))?).is_err());
+    // The projected schemas, as `project_offer` builds them.
+    let list = mush_core::ProjectedParameterSchema::new(parameters(Kind::List)?)?;
+    let shape = list
+        .parameters()
+        .iter()
+        .map(|p| (p.id.as_str().to_owned(), p.required))
+        .collect::<Vec<_>>();
+    check_eq!(
+        shape,
+        vec![
+            ("form".to_owned(), true),
+            ("owner_licence".to_owned(), true),
+            ("royalty_permille".to_owned(), true),
+            ("transferable".to_owned(), false),
+        ]
+    );
+    let mark = list
+        .parameters()
+        .iter()
+        .find(|p| p.id.as_str() == "transferable")
+        .ok_or("mark")?;
+    check_eq!(mark.kind, K::Boolean);
+    // Core's resolve rule over the schema: every supplied key is named, and
+    // every required one is supplied.
+    for supplied in [&base, &marked] {
+        let supplied = supplied.as_object().ok_or("object")?;
+        check!(
+            supplied
+                .keys()
+                .all(|k| list.parameters().iter().any(|p| p.id.as_str() == k))
+        );
+        check!(
+            list.parameters()
+                .iter()
+                .filter(|p| p.required)
+                .all(|p| supplied.contains_key(p.id.as_str()))
+        );
+    }
+    let quote = parameters(Kind::Quote)?;
+    check_eq!(quote.len(), 1);
+    check!(
+        quote
+            .iter()
+            .all(|p| p.required && p.id.as_str() == "listing")
+    );
+    // The deployment policy and the mark through the product body.
+    let config = |transferable: bool| -> TestResult<EntitlementConfig> {
+        let policy = EntitlementPolicy {
+            price: Amount::from_minor(400),
+            instrument: InstrumentId::new("cr").ok_or("instrument")?,
+            registry: GrossRecipientCut {
+                permille: 50,
+                recipient: Some(Recipient {
+                    account: AccountId(11),
+                    owner: mush_org::PrincipalId::System(
+                        mush_org::SystemPrincipalId::new("roll.registry").ok_or("system")?,
+                    ),
+                }),
+            },
+            venue_name: crate::MarketId::new("registry").ok_or("venue")?,
+            venue: GrossRecipientCut {
+                permille: 0,
+                recipient: None,
+            },
+            transferable,
+            term_seconds: 900,
+            grace_seconds: 90,
+            quote_seconds: 60,
+            renewal_price: Amount::from_minor(600),
+            renewal_term_seconds: 800,
+            renewal_grace_seconds: 80,
+        };
+        Ok(EntitlementConfig::new(
+            policy,
+            definition("tacsim", "registry_manifest", "combat", 1)?,
+            PurchaseParticipants::new(
+                definition("economy", "owner_participant", "initial_filing", 1)?,
+                definition("roll", "owner_participant", "commercial_roots", 1)?,
+            )?,
+            mush_roll::commerce::entitlement::writer::EntitlementPurchaseWriter::new(),
+        )?)
+    };
+    let open = config(true)?;
+    let closed = config(false)?;
+    let q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
+    let product = |c: &EntitlementConfig, choice: ProductChoice| {
+        c.product_for(
+            EntitlementProtocol::OriginalV3,
+            &q.subject,
+            &q.royalty,
+            choice,
+        )
+    };
+    for form in [
+        PaidForm::Sealed {},
+        PaidForm::Open {},
+        PaidForm::OpenResale {},
+    ] {
+        let at = |transferable| ProductChoice {
+            form,
+            royalty_permille: 0,
+            transferable,
+        };
+        let kept = product(&open, at(false))?;
+        let free = product(&open, at(true))?;
+        check!(!kept.terms.transferable());
+        check!(!kept.grant.renewal().terms().transferable());
+        check!(free.terms.transferable());
+        check!(free.grant.renewal().terms().transferable());
+        check!(
+            kept.digest()? != free.digest()?,
+            "the mark is in the digest"
+        );
+        // `current_listing`'s frozen recompute reproduces each listed product.
+        for listed in [&kept, &free] {
+            check_eq!(&product(&open, ProductChoice::frozen(listed))?, listed);
+        }
+        // A false policy never widens, whatever the mark says.
+        for mark in [true, false] {
+            let terms = closed.terms(RatingClass::II, form, mark)?;
+            check!(!terms.transferable(), "a false policy never widens");
+            check_eq!(terms.form(), form);
+            check_eq!(terms.class(), RatingClass::II);
+            check!(!product(&closed, at(mark))?.terms.transferable());
+        }
+        // The unmarked listing lapses when the policy closes, as before the
+        // mark: its frozen `true` is not what a false policy recomputes.
+        check!(product(&closed, ProductChoice::frozen(&free))? != free);
+    }
+    // The List request's own choice is what the branch builds from, and the
+    // listing's frozen choice reads it back.
+    let listed = product(&open, choice(&marked)?)?;
+    check!(!listed.terms.transferable());
+    check_eq!(ProductChoice::frozen(&listed), choice(&marked)?);
+    // A quote over the marked listed product validates, and the grant's
+    // terms and renewal template are non-transferable.
+    let mut sold = q.clone();
+    sold.product = listed.clone();
+    sold.policy = open.policy_ref()?;
+    reprice(&mut sold)?;
+    sold.validate()?;
+    check_eq!(sold.product_digest, listed.digest()?);
+    let granted = super::publication::terms(&sold);
+    check!(!granted.terms.transferable());
+    check!(!granted.grant.renewal().terms().transferable());
+    // A half-widened product (terms flipped, the frozen renewal template
+    // kept) breaks `EntitlementProductV1::validate`'s terms = template rule.
+    let mut widened = listed.clone();
+    widened.terms = product(&open, choice(&base)?)?.terms;
+    check!(widened.terms.transferable());
+    check!(widened.validate().is_err());
+    // A quote whose product is swapped for the unmarked one under the marked
+    // product's frozen digest no longer validates.
+    let mut swapped = sold.clone();
+    swapped.product = product(&open, choice(&base)?)?;
+    check!(swapped.product_digest != swapped.product.digest()?);
+    check!(swapped.validate().is_err());
     Ok(())
 }

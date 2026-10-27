@@ -90,10 +90,13 @@ fn register_personal_protocol(
     Ok(personal)
 }
 
+/// Returns the original-holdings grant so the line-mode command slot
+/// (`minds::market_commands`, 17g C2a) reads its folded kinds through the
+/// same grant: a requester holds one grant per definition.
 pub(crate) fn register_entitlements(
     reg: &mut Registrar<'_>,
     manifest: &DefinitionRef,
-) -> Result<(), ModError> {
+) -> Result<OwnerReadHandle<OriginalOwnerReader>, ModError> {
     if reg.module() != crate::NS {
         return Err(ModError::msg("entitlement holdings belong to Tacsim"));
     }
@@ -103,11 +106,11 @@ pub(crate) fn register_entitlements(
             reg, manifest,
         )?;
     reg.state(OriginalAccessSeam {
-        reader,
+        reader: reader.clone(),
         personal: None,
         entitlement: Some(entitlement),
     });
-    Ok(())
+    Ok(reader)
 }
 
 #[derive(Clone)]

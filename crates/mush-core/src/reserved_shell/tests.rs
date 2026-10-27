@@ -549,3 +549,38 @@ fn initialization_is_one_actual_operator_commit_and_cannot_repeat_over_live_fami
         }
     );
 }
+
+/// 17g C2a (C2 plan §2.4): `open_request` answers only for the calling actor,
+/// through the owner-read lens. Absent before any reservation, the request id
+/// of the actor's own open shell once reserved (unchanged when a new request
+/// re-acknowledges the same shell), absent again once filing consumed it, and
+/// another actor never sees the shell. It writes nothing.
+#[test]
+fn open_request_reads_only_the_callers_open_shell() {
+    use crate::read_service::{OwnerReadCaller, OwnerReadContext};
+    let mut f = fixture();
+    let god = OwnerReadCaller::object("roll", GOD).unwrap();
+    let other = OwnerReadCaller::object("roll", ObjId(GOD.0 + 41)).unwrap();
+    let read = |f: &Fixture, caller: &OwnerReadCaller| {
+        let ctx =
+            OwnerReadContext::for_test(&f.world, TypedStateLens::Live(&f.store), "roll", caller);
+        f.service.open_request(&ctx)
+    };
+    assert_eq!(read(&f, &god), Ok(None), "no shell before a reservation");
+    let (key, _) = f.reserve(1);
+    let before = f.store.len();
+    assert_eq!(read(&f, &god), Ok(Some(key.request())));
+    assert_eq!(key.request(), RequestUid::from_bytes([1; 16]));
+    assert_eq!(
+        read(&f, &other),
+        Ok(None),
+        "another actor's shell is invisible"
+    );
+    // A second reserve re-acknowledges the same shell: the same request id.
+    f.reserve(2);
+    assert_eq!(read(&f, &god), Ok(Some(key.request())));
+    assert_eq!(f.store.len(), before, "reading created nothing");
+    f.consume(key, 3);
+    assert_eq!(read(&f, &god), Ok(None), "a consumed shell is not open");
+    assert_eq!(read(&f, &other), Ok(None));
+}

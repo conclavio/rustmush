@@ -28,8 +28,6 @@ mod vertex;
 
 #[path = "shard_2/content.rs"]
 mod content;
-#[path = "shard_2/deposits.rs"]
-mod deposits;
 #[path = "shard_2/e7r1.rs"]
 mod e7r1;
 #[path = "shard_2/e7r2.rs"]
@@ -54,8 +52,6 @@ mod reflex;
 mod sight;
 #[path = "shard_2/twin.rs"]
 mod twin;
-#[path = "shard_2/unloading.rs"]
-mod unloading;
 #[path = "shard_2/voyage.rs"]
 mod voyage;
 #[path = "shard_2/weapons.rs"]

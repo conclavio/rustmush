@@ -333,6 +333,7 @@ fn start(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
             account,
             actor: GOD,
             nonce,
+            kind: super::model::WorkKind::Conduct,
         },
     );
     ctx.out.info(GOD, "Conduct trial preparation queued.");
