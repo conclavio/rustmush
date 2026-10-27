@@ -5,11 +5,12 @@
 //! example.
 //!
 //! What is drawn over the view is an [`Overlay`]: the flight HUD alone
-//! (heading tape, reticle, speed bar) by default — the text cockpit of
-//! 2026-10-22 puts the doll, the weapons, the heat and the contacts in
-//! terminal text under the picture, and the web's cockpit tab has its own
-//! — or every instrument inside the frame, the 640x480 cockpit of
-//! 2026-10-21.
+//! (heading tape, reticle, speed bar, and since doc 21 cut G.13 the
+//! overhead's inset in the top-left corner under them) by default — the
+//! text cockpit of 2026-10-22 puts the doll, the weapons, the heat and the
+//! contacts in terminal text under the picture, and the web's cockpit tab
+//! has its own — or every instrument inside the frame, the 640x480 cockpit
+//! of 2026-10-21.
 
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use serde_json::Value;
 use crate::Frame;
 use crate::heightfield::{self, Terrain};
 use crate::look::{self, Facing};
+use crate::overhead::{OverheadPicture, Up};
 use crate::overlay::{
     self, Facet, Heat, Hud, HudLock, LockAt, MapMark, Section, Spot, Status, TapeMark, WeaponRow,
 };
@@ -33,11 +35,17 @@ pub const ARENA_MAP_FEED: &str = "arena.map";
 /// The map drawn while no `arena.map` is held: open ground, big enough that
 /// the eye never sees its edge.
 const OPEN_MAP_CELLS: usize = 512;
+/// Which way is up in the HUD's inset (doc 21 cut G.13): the picture's own
+/// heading, so what the pilot looks at is up; [`Up::North`] is the one
+/// alternative, the camera's way.
+pub const INSET_UP: Up = Up::Camera;
 
 /// What a [`CockpitPicture`] draws over the view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Overlay {
-    /// The flight HUD: heading tape, reticle, speed bar ([`overlay::draw_hud`]).
+    /// The flight HUD: heading tape, reticle, speed bar
+    /// ([`overlay::draw_hud`]), the overhead's inset under them (G.13,
+    /// [`OverheadPicture::draw_inset`] at [`overlay::inset_rect`]).
     #[default]
     Hud,
     /// Every instrument in the frame: minimap, heat, weapons, the armour
@@ -64,6 +72,8 @@ pub struct CockpitPicture {
     /// Draws so far: the sprites' animation clock (a moving cycle steps every
     /// [`ANIMATION_DRAWS`] draws).
     draws: usize,
+    /// The HUD's inset (G.13): the overhead drawn small, with its own map.
+    inset: OverheadPicture,
 }
 
 /// How many draws a moving cycle's frame is held for: three at 20 Hz is a
@@ -92,6 +102,7 @@ impl CockpitPicture {
             terrain: None,
             overlay,
             draws: 0,
+            inset: OverheadPicture::new(),
         }
     }
 
@@ -148,7 +159,13 @@ impl Picture for CockpitPicture {
             None => render(frame, arena, &cam, &sprites),
         }
         match overlay {
+            // The inset first, the HUD over it (G.13): the tape, the lock's
+            // readout and the speed bar are never covered.
             Overlay::Hud => {
+                if let Some(rect) = overlay::inset_rect(frame) {
+                    self.inset
+                        .draw_inset(frame, cockpit, map, look, rect, INSET_UP);
+                }
                 overlay::draw_hud(frame, &hud(frame, arena, terrain, eye, cockpit, look, &cam))
             }
             // The owner's 640x480 target of 2026-10-21: minimap, heat,
@@ -795,6 +812,74 @@ mod tests {
         render(&mut frame, &arena, &cam, &sprites);
         draw_instruments(&mut frame, &arena, &cockpit, None, &cam);
         assert!(frame.count_colours(256) <= 256);
+    }
+
+    /// Doc 21 cut G.13: the flight HUD carries the overhead's inset in the
+    /// top-left corner — the tank at its centre, the contacts in their team
+    /// colours around it, the ground under them — at the text cockpit's
+    /// 640x256 and the 640x480 target, on the flat yard and on relief, and
+    /// the frame stays inside the palette; a look turns the inset (the
+    /// picture's heading is up) and the instruments overlay has no inset
+    /// (its own minimap is bottom-left).
+    #[test]
+    fn the_hud_carries_the_overhead_inset() {
+        use crate::overlay::{BLUE_TEAM, RED_TEAM, YOU};
+        let mut feeds = std::collections::HashMap::new();
+        feeds.insert(COCKPIT_FEED.to_string(), parsed(COCKPIT));
+        feeds.insert(ARENA_MAP_FEED.to_string(), parsed(MAP));
+        let has_in = |f: &Frame, (x, y, side): (i64, i64, usize), c: [u8; 3]| {
+            (y..y + side as i64)
+                .any(|yy| (x..x + side as i64).any(|xx| f.get(xx as usize, yy as usize) == c))
+        };
+        for (w, h) in [(640, 256), (640, 480)] {
+            let mut frame = Frame::new(w, h);
+            assert!(CockpitPicture::new().draw(&mut frame, &feeds, &Look::default()));
+            let rect = overlay::inset_rect(&frame).expect("an inset at {w}x{h}");
+            let (x, y, side) = rect;
+            let c = (x + side as i64 / 2) as usize;
+            assert_eq!(
+                frame.get(c, (y + side as i64 / 2) as usize),
+                YOU,
+                "{w}x{h}: the tank"
+            );
+            assert_eq!(
+                frame.get(c, (y + side as i64 / 2 - 5) as usize),
+                YOU,
+                "{w}x{h}: its ray up"
+            );
+            assert!(has_in(&frame, rect, BLUE_TEAM) && has_in(&frame, rect, RED_TEAM));
+            assert!(
+                has_in(&frame, rect, overlay::ground_rgb(Ground::Grass)),
+                "{w}x{h}: the ground"
+            );
+            assert!(frame.count_colours(256) <= 256, "{w}x{h}: in the palette");
+            // A look swings the picture and the inset turns with it: a
+            // colour of the ground (the pond) moves within the square.
+            let mut swung = Frame::new(w, h);
+            let look = Look {
+                offset_mdeg: 90_000,
+                ..Look::default()
+            };
+            assert!(CockpitPicture::new().draw(&mut swung, &feeds, &look));
+            let square = |f: &Frame| -> Vec<[u8; 3]> {
+                (y..y + side as i64)
+                    .flat_map(|yy| (x..x + side as i64).map(move |xx| (xx as usize, yy as usize)))
+                    .map(|(xx, yy)| f.get(xx, yy))
+                    .collect()
+            };
+            assert_ne!(square(&frame), square(&swung), "{w}x{h}: the inset turned");
+        }
+        let mut instruments = Frame::new(640, 480);
+        assert!(CockpitPicture::with(Overlay::Instruments).draw(
+            &mut instruments,
+            &feeds,
+            &Look::default()
+        ));
+        assert_ne!(
+            instruments.get(64, 64),
+            YOU,
+            "no inset under the instruments"
+        );
     }
 
     /// The dev2 smoke of 2026-10-22: out of the seat the picture is a plain

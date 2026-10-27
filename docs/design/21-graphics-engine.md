@@ -1,5 +1,12 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.22 — 2026-10-27, G.13: the overhead inset on the HUD.** The owner's first ask after
+flying G.12 on dev2: the minimap drawn on top of the first-person picture, not only as the second
+camera. §7.4 gains the inset — the overhead scene drawn small in the top-left corner of the
+first-person frame under the flight HUD, the picture's own heading at the top, the camera's reach
+rule at its half-side, clear of the heading tape, the lock readout and the speed bar — and §10 the
+cut. `v` still swaps to the full overhead (cut notes, "G.13").
+
 **Draft 0.21 — 2026-10-27, G.12: the cockpit's keys and screen 0.** The owner's keyboard for the
 cockpit view, §7.3: `a`/`d` turn, `w`/`s` step the speed, `x` all stop, `q`/`e`/`c` the look, `v`
 first person ↔ overhead (§7.4, a new camera on the replay's scene model, drawn by the TUI and by the
@@ -512,6 +519,44 @@ contacts the sim detected, nothing more), at the cockpit picture's own clock and
 overhead is the gateway's frame over the socket (the `picture` command carries a `kind`), the browser
 render staying first-person only until the wasm module carries the scene.
 
+**The inset — G.13 (2026-10-27).** The same scene drawn small over the first-person picture, so the
+pilot has the picture and the map at once; `v` keeps swapping to the full camera. As built, and
+where the alternatives went:
+
+- **Where and how big.** The top-left corner, square, `4s` in from the frame's edges (`s` the HUD's
+  scale: 2 at 640 wide, 1 at 320), with a one-pixel border: **112 pixels at (8, 8) on 640x480 and on
+  the text cockpit's 640x276; 104 on 640x256**; 56 at (4, 4) on 320x220. The side is
+  `min(56s, h/2 − 12s, w/5 − 8s)`: it ends `8s` short of the heading tape's panel (which starts at
+  `w/5`), `12s` over the frame's middle (the lock's off-side arrow sits on the left edge at
+  mid-height), and never nears the speed bar on the right; under 24 pixels a side there is none
+  (`overlay::inset_rect`). It is drawn **before** the flight HUD, so the tape, the lock's readout
+  and the speed bar always draw over it; the one HUD element that can land on it is a
+  `LockAt::Beyond` arrow for a lock clear over the top edge in the far-left columns, and then the
+  readout wins. *Alternatives:* bottom-left (the instruments overlay's minimap, and most games')
+  collides with the off-side arrow at 640x256 above ~104 pixels and with the bottom `Beyond`
+  readout at every size; the right corners are the speed bar's. Top-left covers sky, which is the
+  cheapest part of the picture to cover.
+- **Which way is up.** **The picture's heading** (`cockpit::INSET_UP = Up::Camera`): what the pilot
+  looks at is up, the look's wedge is always straight up, and the hull's ray parts from it where a
+  look has swung the camera, exactly as the heading tape's caret does; `N` is drawn on the rim where
+  north lies. *Alternatives, one constant each:* north-up (`Up::North`, the full camera's way, the
+  inset then a reduced copy of it with the wedge swinging); hull-up (not built: the tape is
+  camera-centred, and an inset that turned with the hull while the picture panned with the look
+  would disagree with both).
+- **Scale and reach.** The full camera's own rule at the inset's half-side: `sight_m × 1.15` clamped
+  to 150–3000 m from the tank to the nearest edge — 690 m over 56 pixels for the stock tank, about
+  12 m a pixel, the reach written in the bottom-right corner (`690M`). The rings are the same band
+  edges and the sight, without their metres; the contacts' designators are not drawn (at 12 m a
+  pixel they crowd the tank — the fixture's X3, 200 m off, is 15 pixels away — and they are on the
+  tape and the lock's readout already); the lock is ringed; the named spots keep their letters.
+- **The ground is flat**: the colour map alone, sampled a pixel through the turn, no relief shading.
+  At under a pixel a cell the shading is noise, and the first-person frame's palette is the
+  raycaster's closed 256 less the HUD's own colours; the fixture frames with the inset count 22.
+- **Determinism.** The turn and the rim go through `math::Det`'s sine and cosine; the inset's scene
+  works in pixels about the tank so the tank lands on the centre pixel exactly (a metres viewport
+  put it a pixel off at 112). The web's wasm render shares the crate and draws the same inset; the
+  web parity golden (`cockpit_hashes.json`) re-blessed, the full overhead's golden untouched.
+
 ## 8. The heightfield (G.7) — D-21-15
 
 The raycaster draws walls and floor: right for an arena of blocks and a corridor, wrong for a
@@ -556,6 +601,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | **G.9 the boards** | the strategic board and the investigation board; the player annotation store they share | L | G.5, an annotation store | two players see each other's pins |
 | **G.10 bells and sounds** | **Landed 2026-10-22** (the TUI; kitty gets BEL, the cut notes say why); the cockpit's notice kinds as sound names (`contact-gained`, `contact-lost`, `hit`, `overheat`, `power-online`, …; 1–64 of `[A-Za-z0-9_-]`); BEL for every terminal; **w11term's OSC 440, wire version 1** — `ESC ] 440 ; 1 ; play ; <name> ST` and `ESC ] 440 ; 1 ; pack ; <pack_version> ST`, four fields, no options, no loop (w11term's `docs/game-client-protocol.md`; mintty's older `440;file` form is NOT this and mintty gets BEL) — only for a terminal whose `XTVERSION` reply names w11term; kitty's OSC 99 with its `s=` sound for kitty; the client plays serially at a 40 ms floor with a 16-deep queue and ≤5 s clips, so an alarm is the server re-sending its name on a cadence, debounced server-side at one sound a kind per two seconds; `@sounds on|off`; **`XTVERSION` joins the `@tui` probe, which first needs the TUI key parser to swallow DCS (`ESC P … ESC \`) the way it swallows APC** — today that reply would decode as F1 plus typed text (D-21-24) | S | G.1 | a contact gained rings in w11term and in Windows Terminal's bell; the overheat alarm repeats while the frame says so and stops when it clears; the sound names are the notice kinds; a DCS reply never reaches the input line |
 | **G.11 assets over the player's own connection** | **Landed 2026-10-22** (the pack compiled into the binary rather than a deployed directory, so it ships with the gateway that serves it; sounds only, placeholders; the web Hello's `asset_pack` added 2026-10-23); the gateway's SSH server accepts the `sftp` subsystem (russh-sftp, **protocol v3**) over a READ-ONLY virtual tree rooted at a shipped `assets/` directory — open/read/close/opendir/readdir/stat/lstat/fstat/realpath only, paths canonicalised, a size cap a file and a bytes-a-second cap a connection; if it advertises `limits@openssh.com` its `read_len` is ≥ 16384 (the client reads 16 KiB and refuses larger-than-limit reads); `assets/manifest.json` as w11term's protocol defines it — schema `version` 1, `pack_version` an OSC-grammar token, `files[{name, path, kind, sha256, size}]`, every `size` > 0, names and the pack version 1–64 of `[A-Za-z0-9_-]`, sound names never `system`/`off`, paths of two or more segments with no `.`/`..`, `.wav` lower-case, no unknown fields (the schema is frozen at 1) — and the Hello's `asset_pack {version, pack_version, manifest}` for the web client; the gateway announces the pack once after login and once after a deploy (an announcement during a running sync is dropped by the client, so re-announce on a slow cadence, never per frame); the first pack stays small (sounds only, well under 10 MiB: sequential 16 KiB reads fetch ~25 MiB in the client's 180 s at 100 ms RTT); w11term syncs what changed into its per-host cache and OSC 440 names resolve there first; the sprite sheet, a font with the HUD's glyphs and the help topics ride the same manifest (D-21-25) | M | G.10, deploy.sh shipping `assets/` | w11term fetches the sound pack on first connect and plays G.10's sounds from it; a write, a rename or a `..` is refused; the manifest version in the Hello changes when the pack does |
+| **G.13 the overhead inset on the HUD** | **Landed 2026-10-27.** §7.4's inset: the overhead scene drawn small in the top-left corner of the first-person frame under the flight HUD — the picture's heading up, the camera's reach rule at its half-side, every contact in its team colour, the lock ringed, the spots lettered, the look as a wedge, `N` on the rim, the reach in the corner; `overlay::inset_rect` keeps it clear of the tape, the lock readout and the speed bar; `OverheadPicture::draw_inset`; `v` unchanged | S | G.12 | the inset at 640x256 and 640x480 pinned by `mush-pixel` tests; the web parity golden re-blessed; the full overhead's golden unchanged; the frame inside the palette |
 | **G.12 the cockpit's keys and screen 0** | §7.3 and §7.4: the picture as screen `0`'s own rendering (the digits switch screens; `p` the text cockpit; `^G` kept for the other pictures only); the full key map — `a`/`d` turn, `w`/`s` speed by steps, `q`/`e` look, `c` centre, `x` all stop, space steady, `v` overhead, `f` weapons free/hold, `g` the volley, `t`/`T` the lock cycle, `F1`–`F6` the `ORDER` prefills; the overhead picture; the web picture on the same keys with the overhead as the socket frame. **Split:** **G.12a** tacsim — `FIRE HOLD`/`FIRE FREE`, bare `FIRE ALL`, the three frame fields, `help cockpit`; **G.12b** the TUI — screen 0, the keys, the speed stepping, the lock cycle, the prefills, the overhead scene in `mush-pixel`, `help tui`; **G.12c** the web — `picture.ts` and `PictureView` on the same keys, the overhead frame | M | G.4, G.7b, G.8 | every key in §7.3 pinned by a TUI test and a web test; `w` from rest orders a tenth of the top speed and the HUD shows it; `f` flips `weapons_free` in the frame and a standing rule does not fire under hold; `g` fires each weapon in reach once; `t` walks the contacts in the stated order; `1` then `0` returns the picture with the helm intact; the overhead fixture golden |
 
 ## 11. Decisions taken here

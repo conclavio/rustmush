@@ -20,7 +20,9 @@
 //! under the picture, the picture keeps only what a pilot reads off the
 //! view itself — a heading tape across the top (the hull's heading, an
 //! ordered one and the contacts marked on it), the reticle in the centre
-//! boxing the lock, and a speed bar on the right.
+//! boxing the lock, and a speed bar on the right. Since doc 21 cut G.13 the
+//! overhead's inset sits in the top-left corner under it, where
+//! [`inset_rect`] puts it clear of all three.
 //!
 //! Everything is opaque and drawn from a small fixed set of colours, so the
 //! frame stays under the palette PNG's 256; there is no alpha blending here
@@ -679,6 +681,28 @@ fn arc_mdeg(from: i64, to: i64) -> i64 {
     (to - from + 180_000).rem_euclid(360_000) - 180_000
 }
 
+/// **Where the HUD's minimap inset goes** (doc 21 cut G.13): the top-left
+/// corner, `(x, y, side)` in pixels — square, `4s` in from the edges — kept
+/// clear of everything the HUD draws at a fixed place: the heading tape
+/// (its panel starts at `w/5`; the inset ends `8s` short of it), the lock's
+/// off-side arrow at mid-height on the left edge (the inset ends `12s` over
+/// the frame's middle), and the speed bar on the right. At 640 wide that is
+/// 112 pixels square at `(8, 8)` on the 640x480 and 640x276 frames and 104
+/// on the text cockpit's 640x256; at 320 wide, 56. `None` on a frame too
+/// short for one (under 24 pixels a side). A lock clear over the top edge
+/// in the far-left columns ([`LockAt::Beyond`]) puts its arrow and readout
+/// over the inset's top rows — the readout is drawn after it, so it wins.
+#[must_use]
+pub fn inset_rect(frame: &Frame) -> Option<(i64, i64, usize)> {
+    let s = scale_for(frame) as i64;
+    let (w, h) = (frame.width() as i64, frame.height() as i64);
+    let side = (56 * s).min(h / 2 - 12 * s).min(w / 5 - 8 * s);
+    usize::try_from(side)
+        .ok()
+        .filter(|side| *side >= 24)
+        .map(|side| (4 * s, 4 * s, side))
+}
+
 /// The flight HUD over the view: the heading tape, the reticle and the
 /// speed bar.
 pub fn draw_hud(frame: &mut Frame, hud: &Hud) {
@@ -873,6 +897,32 @@ fn draw_speed(frame: &mut Frame, speed_kph: i64, s: i64, w: i64, h: i64) {
 mod tests {
     use super::*;
     use crate::math::Det as _;
+
+    /// Doc 21 cut G.13: the inset's square at the frame sizes the picture
+    /// is drawn at, clear of the tape (which starts at `w/5`), the off-side
+    /// arrow at mid-height and the speed bar; none on a frame too short.
+    #[test]
+    fn the_inset_sits_top_left_clear_of_the_hud() {
+        for (w, h, want) in [
+            (640, 480, Some((8, 8, 112))),
+            (640, 276, Some((8, 8, 112))),
+            (640, 256, Some((8, 8, 104))),
+            (320, 220, Some((4, 4, 56))),
+            (640, 60, None),
+        ] {
+            let frame = Frame::new(w, h);
+            let got = inset_rect(&frame);
+            assert_eq!(got, want, "{w}x{h}");
+            if let Some((x, y, side)) = got {
+                let s = scale_for(&frame) as i64;
+                let (w, h) = (w as i64, h as i64);
+                let (right, bottom) = (x + side as i64 + 1, y + side as i64 + 1);
+                assert!(right < w / 5, "clear of the tape at {w}x{h}");
+                assert!(bottom < h / 2 - 5 * s, "clear of the off arrow at {w}x{h}");
+                assert!(right < w - 25 * s, "clear of the speed bar at {w}x{h}");
+            }
+        }
+    }
 
     /// The minimap as it was drawn before doc 21 cut G.5a re-based it on the
     /// scene model, kept to prove the scene draws it pixel for pixel.
