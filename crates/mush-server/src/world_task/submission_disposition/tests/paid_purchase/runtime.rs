@@ -1,7 +1,7 @@
 //! The actual server boot/loop, with a bounded in-process gateway recorder.
 use super::{TestResult, store::PurchaseFaultStore};
 use crate::gateway_sink::GatewaySink;
-use crate::world_task::{Gateway, PersistHandles, ServerDeps, WorldHandle};
+use crate::world_task::{Gateway, PersistHandles, ServerDeps, WorldHandle, WorldReadError};
 use mush_config::{config::Config, ipguard::IpGuard, metrics::Metrics};
 use mush_core::{
     CommitToken, ControlMsg, DefinitionRef, Engine, Inbound, ObjId, OfferRouteTable, PerceivedRef,
@@ -266,6 +266,13 @@ impl Running {
         })
     }
 
+    /// Attach `actor` on its own connection and prove the world tracks it.
+    ///
+    /// The attach itself is lifecycle custody: the world holds it behind a
+    /// pending commit and never refuses it. The two proofs after it are
+    /// reads, refused with a typed `Busy` once they outlive the defer bound
+    /// behind a commit, so each is re-asked, bounded like `legal_actions`
+    /// (50 tries, each under `STEP`, 50 ms apart).
     pub async fn connect(&self, actor: ObjId) -> TestResult {
         if !self
             .handle()?
@@ -279,15 +286,36 @@ impl Running {
         {
             return Err("server connection admission gone".into());
         }
-        timeout(STEP, self.handle()?.barrier_result()).await??;
-        if !self
-            .handle()?
-            .connection_ready(actor.0.into(), actor)
-            .await?
-        {
-            return Err("actual connection is not ready".into());
+        self.barrier_retried().await?;
+        let mut tries = 0;
+        loop {
+            match self.handle()?.connection_ready(actor.0.into(), actor).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => return Err("actual connection is not ready".into()),
+                Err(WorldReadError::Busy) if tries < 49 => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
-        Ok(())
+    }
+
+    /// The ordering barrier behind everything sent so far, re-asked while
+    /// the world answers `Busy` (a full defer queue or waiter cap), bounded
+    /// like `legal_actions` (50 tries, each under `STEP`, 50 ms apart).
+    async fn barrier_retried(&self) -> TestResult {
+        let mut tries = 0;
+        loop {
+            match timeout(STEP, self.handle()?.barrier_result()).await? {
+                Ok(()) => return Ok(()),
+                Err(WorldReadError::Busy) if tries < 49 => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     pub async fn command(&self, actor: ObjId, line: String) -> TestResult<Vec<String>> {
@@ -333,8 +361,7 @@ impl Running {
         {
             return Err("server command admission gone".into());
         }
-        timeout(STEP, self.handle()?.barrier_result()).await??;
-        Ok(())
+        self.barrier_retried().await
     }
 
     /// The actor's projected legal actions. 17g C2a (C1a's residual, C2 plan
@@ -365,6 +392,22 @@ impl Running {
         }
     }
 
+    /// One public offer as `actor`: the legal-action read, then the
+    /// submission, each resubmitted while the world answers `Busy`.
+    ///
+    /// `Busy` is the world task's typed refusal of work that meets a pending
+    /// commit (`RefusalReason::CommitPending`). Every durable flush of a
+    /// dirtied world gates the next mutation behind the writer's receipt, and
+    /// every periodic module tick is armed against the loaded world's clock at
+    /// engine construction, so the first Timer wake after a boot fires them
+    /// all and its flush is the process's first commit. A
+    /// `WorldMsg::AuthoritativeAction` that arrives in that window is refused
+    /// at once, with no defer-queue wait (a read gets 250 ms), and the gateway
+    /// turns the same answer into "The game is busy; try that action again":
+    /// this harness is that player. Nothing was submitted under a `Busy`; the
+    /// in-process path mints a fresh request sequence per call and no intent
+    /// exists under one until the writer owns it, so a resubmission cannot
+    /// double-apply.
     pub async fn offer(
         &self,
         actor: ObjId,
@@ -444,9 +487,9 @@ impl Running {
                     match self
                         .handle()?
                         .action_status(actor.0.into(), actor, &reference)
-                        .await?
+                        .await
                     {
-                        ProjectedActionStatus::Committed(receipt) => {
+                        Ok(ProjectedActionStatus::Committed(receipt)) => {
                             if receipt.status() != &reference {
                                 return Err("owned public receipt reference changed".into());
                             }
@@ -458,9 +501,16 @@ impl Running {
                             );
                             return Ok(receipt);
                         }
-                        ProjectedActionStatus::Pending { .. }
-                        | ProjectedActionStatus::Unavailable { .. } => {}
-                        _ => return Err("owned action did not retain a committed success".into()),
+                        // The status read waits in the defer queue behind the
+                        // very commit it asks after; its `Busy` is the queue's
+                        // bound, not an answer, so the poll goes on.
+                        Ok(ProjectedActionStatus::Pending { .. })
+                        | Ok(ProjectedActionStatus::Unavailable { .. })
+                        | Err(WorldReadError::Busy) => {}
+                        Ok(_) => {
+                            return Err("owned action did not retain a committed success".into());
+                        }
+                        Err(error) => return Err(error.into()),
                     }
                     if Instant::now() >= end {
                         return Err("owned public action hang guard".into());

@@ -935,10 +935,21 @@ on the CI dispatch before the merge (below).
     and balance checks after `refused_admission` follow a prepare-only refusal and
     cannot fail; the evidence is the (Err, Err) pair, the probe record and the
     byte-equal refusals.
-  - **Possible flake**: `initialized_active` retries only a `disposition=busy` submit,
-    not the typed `LegalActionReadError::Busy` from `Running::offer`'s own
-    `legal_actions` read; C1a's, C1b's and C1c's mush-server tests all reuse it. A small
-    retrying wrapper fixes it.
+  - **Possible flake** (RESOLVED 2026-10-27): `initialized_active` retried only a
+    `disposition=busy` submit, not the typed `LegalActionReadError::Busy` from
+    `Running::offer`'s own `legal_actions` read, and `paid_purchase`'s own offers
+    retried nothing. It materialised once, on PR #29's CI run 40440170786:
+    `public_commerce_setup_accepts_generic_committed_receipts` was answered `busy` on
+    `roll-reserve-mind-charter` right after its Active boot, because the world task
+    refuses an `AuthoritativeAction` at once while any commit is pending, and every
+    periodic module tick is armed against the loaded world's clock at engine
+    construction, so the first Timer wake after a boot fires them all and its flush is
+    the process's first commit (reproduced locally under parallel nextest). The
+    retry lives in the harness: `Running::offer` resubmits a `Busy` submission (17g C2
+    close) and its `legal_actions` read a `Busy` read (C2a), both bounded at 50 tries;
+    PR #34 re-asks `connect`'s and `command`'s barrier and readiness probes the same
+    way, keeps the owned-action poll going on a `Busy` status read, and drops
+    `submit_initialize`'s own loop.
   - **The market line.** It names only `paid-mind-resale` and the
     `market-original-mind-*` offers as waiting for C2, though
     `roll-retire-authored-draft` also projects two offers to every player and `+act`
