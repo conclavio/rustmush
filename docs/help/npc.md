@@ -51,6 +51,9 @@ Profile fields (`@agent/set <npc>/<field>=<value>`):
                   (";"-separated provider ids, e.g. help; coop).
   command_refs    Registered command names or aliases whose public help grounds
                   the NPC's advice (";"-separated, e.g. +coop; +licence).
+  public_faction  A public faction id or name: the organization this NPC openly
+                  represents. Empty clears it. Separate from the private intel
+                  principal; grants no membership or intel clearance.
 
 An empty value clears a field (e.g. `@agent/set bones/goals=` drops all goals).
 
@@ -127,8 +130,8 @@ Every entry has a **secrecy tier** that governs whether — and how freely — i
 be shared:
 
   public    Shared freely with anyone.
-  guarded   Known, but held back: revealed only to people the NPC actually knows
-            and trusts, never volunteered to strangers.
+  guarded   Delivered privately to a character whose personal trust is at least
+            20. Never included in the NPC's public dialogue prompt.
   secret    Plot-critical, staff-only. A SECRET entry is NEVER placed in any
             prompt, snapshot, or anything the NPC's LLM sees — it cannot influence
             the NPC on its own. It is a record for staff to act on through scripted
@@ -136,13 +139,44 @@ be shared:
             are filtered out when the turn is built and again when the prompt is
             rendered.)
 
-**Willingness to share** a guarded fact depends on how well the NPC knows the
-asker. The existing trust heuristic — *familiarity* — still uses legacy durable
-notes: no record means *stranger*, one means *acquaintance*, and three notes
-mean *known*. New experiences and beliefs never inflate this count. Guarded
-facts lean toward the people it knows. (Staff-set
-disposition — liking or distrusting a specific player regardless of memory — is a
-planned future iteration.)
+Use `+npc/lore <npc>=<topic>` to ask an enabled NPC in your room for an exact
+authored subject, for example `+npc/lore Bones=the sheriff`. The requester must
+be connected and both characters must be able to perceive each other. Staff can
+opt an NPC into the same private service with
+`@agent/set <npc>/interfaces=npc.lore` (include any other desired interfaces).
+The engine checks personal trust when delivering the reply. Guarded answers do
+not enter model output, room speech, conversation history, or remembered beliefs;
+an untrusted bystander cannot obtain them by joining the conversation. Secret
+entries remain excluded regardless of trust.
+
+### Personal relationships and public reputation
+
+Relationships follow character identity, including through a rename or restart.
+Familiarity grows from direct perceived contact, at most once per clock hour. Three
+separate contact periods make someone known. Conversation, repeated compliments,
+legacy notes, and the model's `remember` tool never raise trust.
+
+Trust and disposition are separate ratings from -100 to 100. Trust measures
+reliability; disposition shapes warmth or dislike. Both start neutral, including
+on old saves. Verified work and explicit staff adjudication can change them.
+Receipts retain the cause so a retry cannot award the same event twice.
+
+NPCs with a public affiliation can also see the present character's public
+standing with that faction and explain `+standing`. Reputation is separate from
+personal trust and never confers membership, spending authority, or intel access.
+Oduya openly represents the Co-op; Qureshi represents Occator. Completing a new
+paid Occator survey commission earns +10 public standing and, when Qureshi was
+the recorded representative and still holds that role, +10 personal trust and
++5 disposition with her. Staff clearing either affiliation remains respected.
+
+Staff can inspect and adjudicate a relationship:
+
+  @agent/relationship <npc>/<character>
+  @agent/relationship <npc>/<character>=trust:<delta>; disposition:<delta>; cause:<receipt>; reason:<reason>
+
+An adjudication needs a stable cause and a reason; conflicting reuse of a cause
+is rejected. Personal feelings are not automatically copied to every employee
+of the same organization.
 
 ### Authoring per-NPC lore (`@agent/lore`)
 
@@ -174,8 +208,10 @@ many entries at each tier, its tags, and which pools those tags resolve).
   @lore <tag>=clear                     Delete the whole pool.
 
 An NPC draws on a pool by tagging it (`@agent/lore <npc>=tags: <tag>`); the pool's
-public and guarded entries are unioned with the NPC's own lore each turn. A SECRET
-pool entry, like a secret per-NPC entry, is never sent to any NPC.
+public entries are combined with the NPC's own public lore each turn. Guarded
+pool entries are available only through the private trust-checked service. A
+SECRET pool entry, like a secret per-NPC entry, is never sent to the NPC's model
+or returned by that service.
 
 ## Tiers, cost, and cooldowns
 

@@ -104,6 +104,8 @@ async fn live_npc_dialogue_openrouter_smoke() {
                 name: "Alice".into(),
                 short_desc: "a road-worn traveler in a wet cloak".into(),
                 familiarity: Familiarity::default(),
+                personal_relation: Default::default(),
+                standing: None,
             }],
             time: "late evening".into(),
             weather: Some("rain".into()),

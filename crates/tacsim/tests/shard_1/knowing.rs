@@ -3438,6 +3438,59 @@ fn commission(tw: &mut TestWorld, offer: &str) -> Option<tacsim::surface::survey
     typed(tw, &family, &key)
 }
 
+fn put_commission(rig: &mut Rig, row: tacsim::surface::survey::SurveyRecord) {
+    let family = handles(&rig.tw).families.surveys;
+    let engine = rig.tw.engine_mut();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&family)
+            .expect("a survey transaction");
+        txn.replace(&family, &row.offer.clone(), row)
+            .expect("replace a retained receipt");
+        txn.prepare().expect("a prepared receipt")
+    };
+    let (ops, install) = prepared.into_parts();
+    engine
+        .install_prepared_action(install)
+        .expect("install the test receipt");
+    keep(rig, ops);
+}
+
+fn occator_standing(tw: &TestWorld, pilot: ObjId) -> i16 {
+    let organization = mush_org::OrgId(port_map(tw, "ceres_port").orgs[&cid("occator")].org);
+    let faction = tw
+        .world()
+        .module_state::<mush_faction::FactionState>()
+        .unwrap()
+        .factions
+        .values()
+        .find(|faction| faction.org == Some(organization))
+        .expect("Occator has its actual public faction")
+        .id;
+    mush_faction::public_standing(tw.world(), faction, pilot)
+        .expect("public standing")
+        .score
+}
+
+fn survey_relationship(
+    tw: &TestWorld,
+    row: &tacsim::surface::survey::SurveyRecord,
+) -> (i16, i16, usize) {
+    let npc = row
+        .standing
+        .as_ref()
+        .and_then(|terms| terms.representative)
+        .expect("acceptance freezes the publicly assigned survey representative");
+    tw.world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap()
+        .relationships
+        .record_for(npc, row.pilot)
+        .map_or((0, 0, 0), |relation| {
+            (relation.trust, relation.disposition, relation.effects.len())
+        })
+}
+
 fn survey_money(tw: &TestWorld, account: u64) -> (i64, i64) {
     let economy = tw
         .world()
@@ -3478,6 +3531,14 @@ fn accept_commission(
     let (out, queued) = tracing::dispatcher::with_default(&dispatch, || {
         command(rig, pilot, &format!("+survey/accept {offer} go"))
     });
+    assert!(
+        out.contains("Standing after completed work is paid:"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Your original public survey representative"),
+        "{out}"
+    );
     assert_eq!(
         queued.len(),
         1,
@@ -3492,6 +3553,16 @@ fn accept_commission(
     assert_eq!(queued[0].actor, pilot);
     land_all(rig, &queued);
     let accepted = commission(&mut rig.tw, offer).expect("a durable commission");
+    let standing = accepted
+        .standing
+        .as_ref()
+        .expect("newly accepted public standing terms");
+    assert_eq!(standing.delta, 10);
+    assert!(
+        standing.secondary.is_empty(),
+        "current surveys harm no rival"
+    );
+    assert!(standing.representative.is_some());
     assert_eq!(accepted.pilot, pilot);
     assert_eq!(accepted.covered(), 0);
     assert_eq!(accepted.reward_minor, 50_000);
@@ -3561,6 +3632,14 @@ fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forge
     }
     let (preview, queued) = command(&mut rig, pilot, "+survey/accept ahuna-a");
     assert!(queued.is_empty(), "a preview does not accept: {preview}");
+    assert!(
+        preview.contains("Occator Water & Propellant +10"),
+        "{preview}"
+    );
+    assert!(
+        preview.contains("+10 trust and +5 disposition"),
+        "{preview}"
+    );
     assert!(commission(&mut rig.tw, "ahuna-a").is_none());
 
     // This sounding completes after acceptance, but began before it: old work earns nothing.
@@ -3568,7 +3647,89 @@ fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forge
     survey_to_cell(&mut rig, tv, middles[0]);
     let _ = act_go(&mut rig, pilot, "+tv/1 sound go");
     let started_ic = ic_now(&rig.tw);
+    // Restore the content's unbound public-role state immediately before go.
+    // This exercises command-time initialization as an ordinary pilot, with no
+    // intervening coarse tick that could hide an attribute-owner regression.
+    let factor = rig
+        .tw
+        .world()
+        .module_state::<mush_content::ContentState>()
+        .unwrap()
+        .latches
+        .applied(&cid("neighborhood.ceres_freeport"))
+        .unwrap()
+        .entries()[&cid("npc.qureshi")]
+        .object()
+        .unwrap();
+    let profile = rig
+        .tw
+        .world()
+        .attr(factor, mush_npc::PROFILE_ATTR)
+        .unwrap()
+        .clone();
+    let content_owner = profile.owner;
+    assert_ne!(content_owner, pilot);
+    let mut unbound = profile.as_json().unwrap().clone();
+    unbound["public_faction"] = serde_json::Value::Null;
+    rig.tw
+        .world_mut()
+        .set_attr(
+            factor,
+            mush_npc::PROFILE_ATTR,
+            mush_core::Attr::json(unbound, content_owner),
+        )
+        .unwrap();
+    rig.tw
+        .world_mut()
+        .remove_attr(factor, "tacsim.public_desk_binding")
+        .unwrap();
+    let unbound_profile = rig
+        .tw
+        .world()
+        .attr(factor, mush_npc::PROFILE_ATTR)
+        .unwrap()
+        .clone();
+    let (preview, queued) = command(&mut rig, pilot, "+survey/accept ahuna-a");
+    assert!(queued.is_empty(), "a preview does not accept: {preview}");
+    assert!(
+        preview.contains(
+            "An assigned public survey representative gains +10 trust and +5 disposition"
+        ),
+        "{preview}"
+    );
+    assert_eq!(
+        rig.tw.world().attr(factor, mush_npc::PROFILE_ATTR),
+        Some(&unbound_profile)
+    );
+    assert!(
+        rig.tw
+            .world()
+            .attr(factor, "tacsim.public_desk_binding")
+            .is_none()
+    );
     let accepted = accept_commission(&mut rig, pilot, "ahuna-a");
+    assert_eq!(
+        rig.tw
+            .world()
+            .attr(factor, mush_npc::PROFILE_ATTR)
+            .unwrap()
+            .owner,
+        content_owner
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .attr(factor, "tacsim.public_desk_binding")
+            .unwrap()
+            .owner,
+        GOD
+    );
+    assert_eq!(
+        accepted.standing.as_ref().unwrap().representative,
+        Some(factor)
+    );
+    assert_eq!(occator_standing(&rig.tw, pilot), 0);
+    assert_eq!(survey_relationship(&rig.tw, &accepted), (0, 0, 0));
     assert_eq!(
         accepted.accepted_ic, started_ic,
         "earlier work in the same IC second is stale too"
@@ -3591,6 +3752,11 @@ fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forge
     assert!(half.completed.is_none());
     survey_sweep(&mut rig);
     assert_eq!(survey_money(&rig.tw, accepted.payee), payee_before);
+    assert_eq!(
+        occator_standing(&rig.tw, pilot),
+        0,
+        "partial work earns no standing"
+    );
     assert_eq!(
         survey_money(&rig.tw, accepted.sponsor_account),
         sponsor_before
@@ -3616,6 +3782,26 @@ fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forge
     assert_eq!(completed.covered(), 256);
     assert_eq!(completed.completed.as_ref().unwrap().tv, tv);
     assert_eq!(survey_money(&rig.tw, accepted.payee), payee_before);
+    assert_eq!(
+        occator_standing(&rig.tw, pilot),
+        0,
+        "complete but unpaid work has no grant"
+    );
+    // A retained row cannot enlarge its public effects after acceptance. Even a
+    // well-shaped edit breaks the fact reference frozen in both parties' consent.
+    let mut forged = completed.clone();
+    forged.standing.as_mut().unwrap().delta = 20;
+    put_commission(&mut rig, forged);
+    survey_sweep(&mut rig);
+    assert!(!matches!(
+        survey_contract(&rig.tw, accepted.contract),
+        mush_economy::ContractState::Settled { .. }
+    ));
+    assert_eq!(survey_money(&rig.tw, accepted.payee), payee_before);
+    assert_eq!(occator_standing(&rig.tw, pilot), 0);
+    assert_eq!(survey_relationship(&rig.tw, &accepted), (0, 0, 0));
+    put_commission(&mut rig, completed.clone());
+    rig = reboot(rig, &[pilot]);
     for _ in 0..8 {
         survey_sweep(&mut rig);
         if matches!(
@@ -3630,6 +3816,11 @@ fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forge
         settled,
         mush_economy::ContractState::Settled { .. }
     ));
+    // The standing reconciler may run before settlement in this same scheduler
+    // fire; the next pass repairs it without depending on an observer event.
+    survey_sweep(&mut rig);
+    assert_eq!(occator_standing(&rig.tw, pilot), 10);
+    assert_eq!(survey_relationship(&rig.tw, &accepted), (10, 5, 1));
     let sponsor_paid = survey_money(&rig.tw, accepted.sponsor_account);
     let payee_paid = survey_money(&rig.tw, accepted.payee);
     assert_eq!(
@@ -3663,6 +3854,12 @@ fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forge
         sponsor_paid
     );
     assert_eq!(survey_money(&rig.tw, accepted.payee), payee_paid);
+    assert_eq!(
+        occator_standing(&rig.tw, pilot),
+        10,
+        "restart and replay grant only once"
+    );
+    assert_eq!(survey_relationship(&rig.tw, &accepted), (10, 5, 1));
     no_refused_writes(&rig.tw);
 }
 
@@ -3746,6 +3943,12 @@ fn survey_commission_rejects_another_pilots_work_wrong_block_and_wrong_site() {
     );
     assert_eq!(survey_money(&rig.tw, accepted.payee), payee);
     assert_eq!(
+        occator_standing(&rig.tw, pilot),
+        0,
+        "a settled cancellation is not paid work"
+    );
+    assert_eq!(survey_relationship(&rig.tw, &accepted), (0, 0, 0));
+    assert_eq!(
         survey_money(&rig.tw, accepted.sponsor_account),
         (sponsor.0, sponsor.1 - 50_000)
     );
@@ -3776,6 +3979,9 @@ fn survey_commission_rejects_another_pilots_work_wrong_block_and_wrong_site() {
     assert!(untouched.completed.is_none());
     survey_sweep(&mut rig);
     assert_eq!(survey_money(&rig.tw, kerwan.payee), payee);
+    for character in [pilot, other, sibling] {
+        assert_eq!(occator_standing(&rig.tw, character), 0);
+    }
     assert_eq!(
         survey_contract(&rig.tw, kerwan.contract),
         mush_economy::ContractState::Active
@@ -3824,6 +4030,12 @@ fn survey_commission_expiry_refunds_escrow_and_reopens_with_a_new_contract() {
         (sponsor.0, sponsor.1 - 50_000)
     );
     let renewed = accept_commission(&mut rig, pilot, "juling-k");
+    assert_eq!(
+        occator_standing(&rig.tw, pilot),
+        0,
+        "expiry refunds earn no standing"
+    );
+    assert_eq!(survey_relationship(&rig.tw, &accepted), (0, 0, 0));
     assert_ne!(renewed.contract, accepted.contract);
     assert!(renewed.accepted_ic > accepted.deadline_ic);
     assert_eq!(renewed.covered(), 0);
@@ -3886,6 +4098,7 @@ fn survey_commission_does_not_offer_an_unfunded_reward() {
         contracts,
         "insufficient funds do not leave an offered contract behind"
     );
+    assert_eq!(occator_standing(&rig.tw, pilot), 0);
     no_refused_writes(&rig.tw);
 }
 
@@ -3953,6 +4166,11 @@ fn survey_commission_uncommitted_filing_stays_unfunded_and_expires_after_restart
     assert!(commission(&mut rig.tw, "occator-p").is_none());
     assert_eq!(survey_money(&rig.tw, sponsor), before);
     let retry = accept_commission(&mut rig, pilot, "occator-p");
+    assert_eq!(
+        occator_standing(&rig.tw, pilot),
+        0,
+        "an orphaned filing proves no work"
+    );
     assert_ne!(retry.contract, contract);
     no_refused_writes(&rig.tw);
 }
@@ -4049,5 +4267,6 @@ fn survey_commission_refuses_generic_amendment_but_reopens_after_unfunded_cancel
     survey_sound(&mut rig, pilot, tv, (48, 208), false);
     assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 64);
     assert_eq!(survey_money(&rig.tw, renewed.payee), payee);
+    assert_eq!(occator_standing(&rig.tw, pilot), 0);
     no_refused_writes(&rig.tw);
 }

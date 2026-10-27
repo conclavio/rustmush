@@ -14,7 +14,7 @@ use mush_core::{
     RevisionKey, RevisionKind, RevisionSet, RevisionStamp, RevisionValidator,
     RevisionValidatorContext, RulesValue, StateFamilyHandle, SubjectKey, World,
 };
-use mush_org::PrincipalId;
+use mush_org::{OrgId, PrincipalId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -73,6 +73,43 @@ pub struct SurveyCancellation {
     pub at_utc: i64,
 }
 
+/// An explicitly authored consequence for another institution. The actual legal
+/// person, rather than its mutable display name, is frozen at acceptance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyStandingEffect {
+    pub organization: OrgId,
+    pub delta: i16,
+}
+
+/// Public consequences accepted with this exact commission. Legacy attempts
+/// have no such terms and never acquire consequences after acceptance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyStandingTerms {
+    pub beneficiary: OrgId,
+    pub delta: i16,
+    pub secondary: Vec<SurveyStandingEffect>,
+    pub representative: Option<ObjId>,
+}
+
+impl SurveyStandingTerms {
+    pub fn check(&self, sponsor: &PrincipalId) -> Result<(), String> {
+        let mut organizations = std::collections::BTreeSet::from([self.beneficiary]);
+        if sponsor != &PrincipalId::Organization(self.beneficiary)
+            || !(1..=100).contains(&self.delta)
+            || self.secondary.len() > 4
+            || self.representative.is_some_and(|npc| npc.0 == 0)
+            || self.secondary.iter().any(|effect| {
+                !(-100..=-1).contains(&effect.delta) || !organizations.insert(effect.organization)
+            })
+        {
+            return Err("the survey standing terms are invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
 /// One world's current attempt on one authored offer. Completed rows are permanent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +135,8 @@ pub struct SurveyRecord {
     /// Contractor cancellation is retained until the contract refunds its sponsor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled: Option<SurveyCancellation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<SurveyStandingTerms>,
 }
 
 impl SurveyRecord {
@@ -111,6 +150,9 @@ impl SurveyRecord {
 
     /// Validate bounded shape and the frozen authored terms, never chart contents.
     pub fn check(&self) -> Result<(), String> {
+        if let Some(standing) = &self.standing {
+            standing.check(&self.sponsor)?;
+        }
         let offer = crate::port::survey::offer(self.offer.as_str())
             .ok_or_else(|| "the survey offer is not on the board".to_owned())?;
         if self.schema != SURVEY_SCHEMA

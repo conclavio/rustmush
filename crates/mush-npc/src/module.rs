@@ -30,8 +30,8 @@ use crate::intel::{
 };
 use crate::knowledge::{
     Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, MAX_LORE_POOLS, MAX_LORE_TAG_BYTES,
-    MAX_RESOLVED_LORE_BYTES, MAX_RESOLVED_LORE_ENTRIES, NpcKnowledge, Secrecy, familiarity_of,
-    pool_key, validate_lore_tag,
+    MAX_RESOLVED_LORE_BYTES, MAX_RESOLVED_LORE_ENTRIES, NpcKnowledge, Secrecy, pool_key,
+    validate_lore_tag,
 };
 use crate::memory::{
     MAX_MEMORY_SUBJECT_BYTES, MAX_MEMORY_SUMMARY_CHARS, MemoryContext, MemoryKind, MemoryRecord,
@@ -117,6 +117,7 @@ impl GameModule for NpcModule {
             crate::interface::HELP_INTERFACE,
             Arc::new(crate::interface::HelpInterface),
         )?;
+        crate::private_lore::register(reg)?;
         let mut state = NpcHostState::new(panel);
         state.config.scene_turn_deadline_secs = self.scene_turn_deadline_secs;
         let tick_period = state.config.tick;
@@ -200,6 +201,7 @@ impl GameModule for NpcModule {
                     "audit".into(),
                     "sheet".into(),
                     "lore".into(),
+                    "relationship".into(),
                     "show".into(),
                     "poke".into(),
                     "enable".into(),
@@ -217,7 +219,8 @@ impl GameModule for NpcModule {
                        clears), loyal (yes|no; the willingness gate), watch (\";\"-separated \
                        names/topics of interest), interfaces (\";\"-separated ids of the \
                        interfaces the NPC fronts), command_refs (registered command names \
-                       whose public help grounds this NPC's advice). \
+                       whose public help grounds this NPC's advice), public_faction \
+                       (an explicitly public faction name/id, empty clears). \
                        List fields (goals/fallback/knows/does_not_know/watch/interfaces/command_refs) take \
                        \";\"-separated values; an empty value clears a field.\n\
                        @agent/sheet <npc>[=<template>] -- give it the game's character sheet so \
@@ -228,6 +231,8 @@ impl GameModule for NpcModule {
                        @agent/lore <npc>=<public|guarded|secret> [subject:] <fact> adds an \
                        entry; =tags: <t1>; <t2> sets shared-pool tags; =del <n> / =clear \
                        remove entries. See also @lore for the shared pools.\n\
+                       @agent/relationship <npc>/<character> -- inspect personal familiarity, trust, disposition and receipts.\n\
+                       @agent/relationship <npc>/<character>=trust:<delta>; disposition:<delta>; cause:<receipt>; reason:<reason> -- adjudicate a sourced change; cause and reason required.\n\
                        @agent/show <npc> (or bare @agent <npc>) -- profile + runtime status.\n\
                        @agent/enable <npc> / @agent/disable <npc> -- wake or park the agent.\n\
                        @agent/poke <npc>=<note> -- prod the agent with an out-of-band note.\n\
@@ -309,12 +314,27 @@ impl GameModule for NpcModule {
     ) -> Result<(), ModError> {
         let mut store = crate::memory::LongTermStore::default();
         let mut personal_memory = PersonalMemoryStore::default();
+        let mut relationships = crate::relationships::RelationshipStore::default();
         let mut pools = crate::knowledge::LorePools::default();
         let mut intel = IntelStore::default();
         let mut pool_docs = std::collections::BTreeMap::new();
         let mut dropped_pool_docs = 0_usize;
         for (key, value) in boot.kv {
-            if key.starts_with("mind:") {
+            if key.starts_with("relation:") {
+                let record =
+                    serde_json::from_value::<crate::relationships::RelationshipRecord>(value)
+                        .map_err(|error| {
+                            ModError::msg(format!("npc: invalid relationship {key}: {error}"))
+                        })?;
+                if crate::relationships::relationship_key(record.npc, record.character) != key {
+                    return Err(ModError::msg(format!(
+                        "npc: relationship key mismatch: {key}"
+                    )));
+                }
+                relationships.insert(record).map_err(|error| {
+                    ModError::msg(format!("npc: invalid relationship {key}: {error}"))
+                })?;
+            } else if key.starts_with("mind:") {
                 match serde_json::from_value::<PersonalMemoryRecord>(value) {
                     Ok(record) if mind_key(record.npc) == key => {
                         if let Err(error) = personal_memory.insert(record) {
@@ -412,6 +432,7 @@ impl GameModule for NpcModule {
         if let Some(h) = ctx.state_mut::<NpcHostState>() {
             h.long_term = store;
             h.personal_memory = personal_memory;
+            h.relationships = relationships;
             h.lore_pools = pools;
             h.intel = intel;
         }
@@ -818,6 +839,15 @@ fn remember_and_enqueue(ctx: &mut Ctx<'_>, npc: ObjId, stim: Stimulus, line: &st
     // public exchange is evidence: staff pokes and generic runtime notices are
     // not observations, and private service replies never pass through here.
     if let Stimulus::SpokenTo { by, .. } = &stim {
+        let now = ctx.w.now();
+        let update = ctx
+            .state_mut::<NpcHostState>()
+            .map(|host| host.relationships.contact(npc, *by, now));
+        match update {
+            Some(Ok(Some(record))) => persist_relationship(ctx, &record),
+            Some(Err(error)) => tracing::warn!(%error, "npc: relationship contact refused"),
+            _ => {}
+        }
         let speaker_name = display_name(ctx.w, *by);
         observe_experience(
             ctx,
@@ -1856,6 +1886,223 @@ fn announce_power_use(
 // @agent staff command
 // ----------------------------------------------------------------------
 
+/// The stored explicit affiliation, even if the faction later becomes hidden
+/// or disappears. Presentation must separately use `public_standing`.
+#[must_use]
+pub fn public_faction_for(w: &World, npc: ObjId) -> Option<FactionId> {
+    read_profile(w, npc).and_then(|profile| profile.public_faction)
+}
+
+/// Owner API for deliberate public role binding. It never changes intel roles.
+pub fn set_public_faction(
+    ctx: &mut Ctx<'_>,
+    npc: ObjId,
+    faction: Option<FactionId>,
+) -> Result<(), String> {
+    if ctx.w.get(npc).is_none_or(|object| {
+        object.kind != ObjKind::Npc || object.flags.contains(mush_core::Flags::GOING)
+    }) {
+        return Err("Public affiliation requires a live NPC".into());
+    }
+    let mut profile = read_profile(ctx.w, npc).ok_or("NPC profile unavailable")?;
+    if profile.public_faction == faction {
+        return Ok(());
+    }
+    if let Some(id) = faction
+        && ctx
+            .w
+            .module_state::<FactionState>()
+            .and_then(|state| state.factions.get(&id))
+            .is_none_or(|faction| faction.hidden)
+    {
+        return Err("No such public faction".into());
+    }
+    profile.public_faction = faction;
+    profile.validate().map_err(|error| error.to_string())?;
+    let value = serde_json::to_value(&profile).map_err(|error| error.to_string())?;
+    let owner = ctx
+        .w
+        .attr(npc, PROFILE_ATTR)
+        .map(|attr| attr.owner)
+        .or_else(|| ctx.w.get(npc).map(|object| object.owner))
+        .ok_or("NPC unavailable")?;
+    let mut attr = Attr::json(value, owner);
+    if let Some(old) = ctx.w.attr(npc, PROFILE_ATTR) {
+        attr.flags = old.flags;
+    }
+    ctx.w
+        .set_attr(npc, PROFILE_ATTR, attr)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Apply a game owner's verified completed-work result, once per cause. This
+/// is an owner API, not an NPC tool; model prose cannot invoke it.
+pub fn record_completed_work_relationship(
+    ctx: &mut Ctx<'_>,
+    npc: ObjId,
+    character: ObjId,
+    cause: &str,
+    reason: &str,
+) -> Result<bool, String> {
+    validate_relationship_parties(ctx.w, npc, character)?;
+    let effect = crate::relationships::RelationshipEffect {
+        cause: cause.to_owned(),
+        reason: reason.to_owned(),
+        source: crate::relationships::RelationshipSource::CompletedWork,
+        trust_delta: 10,
+        disposition_delta: 5,
+        at: ctx.w.now(),
+    };
+    // Deliberate owner API: TacSim calls with its own Ctx. Mutation stays here
+    // in the NPC owner; the registered persistence delegation covers its writes.
+    let record = ctx
+        .w
+        .module_state_mut::<NpcHostState>()
+        .ok_or("NPC relationships unavailable")?
+        .relationships
+        .apply(npc, character, effect)?;
+    if let Some(record) = record {
+        persist_relationship(ctx, &record);
+        ctx.out.pin_deferred();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn validate_relationship_parties(w: &World, npc: ObjId, character: ObjId) -> Result<(), String> {
+    if w.get(npc).is_none_or(|object| {
+        object.kind != ObjKind::Npc || object.flags.contains(mush_core::Flags::GOING)
+    }) || w.get(character).is_none_or(|object| {
+        !matches!(object.kind, ObjKind::Player | ObjKind::Npc)
+            || object.flags.contains(mush_core::Flags::GOING)
+    }) || read_profile(w, npc).is_none()
+    {
+        return Err("Relationship requires a live NPC and character".into());
+    }
+    Ok(())
+}
+
+fn persist_relationship(ctx: &mut Ctx<'_>, record: &crate::relationships::RelationshipRecord) {
+    match serde_json::to_value(record) {
+        Ok(value) => ctx.persist(ModuleOp {
+            ns: NS.into(),
+            op: ModuleWrite::JsonSet {
+                key: crate::relationships::relationship_key(record.npc, record.character),
+                value,
+            },
+        }),
+        Err(error) => tracing::error!(%error, "npc: could not serialize relationship"),
+    }
+}
+
+fn agent_relationship(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
+    let target = lhs.split_once('/').map(|(_, target)| target.trim()).filter(|target| !target.is_empty())
+        .ok_or_else(|| CmdError::msg("Usage: @agent/relationship <npc>/<character>[=trust:<delta>; disposition:<delta>; cause:<receipt>; reason:<reason>]."))?;
+    let character = mush_core::match_object(ctx.w, ctx.actor, target)?;
+    validate_relationship_parties(ctx.w, npc, character).map_err(CmdError::msg)?;
+    if let Some(rhs) = ctx
+        .args
+        .rhs()
+        .map(str::to_owned)
+        .filter(|value| !value.trim().is_empty())
+    {
+        let mut fields = std::collections::BTreeMap::new();
+        for part in rhs.split(';') {
+            let (key, value) = part
+                .trim()
+                .split_once(':')
+                .ok_or_else(|| CmdError::msg("Relationship changes use field:value."))?;
+            let key = key.trim().to_ascii_lowercase();
+            if !matches!(key.as_str(), "trust" | "disposition" | "cause" | "reason")
+                || fields.insert(key, value.trim().to_owned()).is_some()
+            {
+                return Err(CmdError::msg("Unknown or repeated relationship field."));
+            }
+        }
+        if !fields.contains_key("trust") && !fields.contains_key("disposition") {
+            return Err(CmdError::msg("Give a trust or disposition delta."));
+        }
+        let delta = |name| -> Result<i16, CmdError> {
+            fields.get(name).map_or(Ok(0), |value| {
+                value
+                    .parse::<i16>()
+                    .map_err(|_| CmdError::msg("Relationship deltas must be -100 through 100."))
+            })
+        };
+        let effect = crate::relationships::RelationshipEffect {
+            cause: fields
+                .get("cause")
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| CmdError::msg("A permanent cause receipt is required."))?
+                .clone(),
+            reason: fields
+                .get("reason")
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| CmdError::msg("An audit reason is required."))?
+                .clone(),
+            source: crate::relationships::RelationshipSource::Staff { actor: ctx.actor },
+            trust_delta: delta("trust")?,
+            disposition_delta: delta("disposition")?,
+            at: ctx.w.now(),
+        };
+        let record = ctx
+            .state_mut::<NpcHostState>()
+            .ok_or_else(|| CmdError::msg("NPC relationships unavailable."))?
+            .relationships
+            .apply(npc, character, effect)
+            .map_err(CmdError::msg)?;
+        if let Some(record) = record {
+            persist_relationship(ctx, &record);
+            ctx.out.pin_deferred();
+        } else {
+            ctx.out.info(
+                ctx.actor,
+                "That exact relationship receipt was already applied.",
+            );
+        }
+    }
+    let record = ctx
+        .state::<NpcHostState>()
+        .and_then(|host| host.relationships.record_for(npc, character))
+        .cloned();
+    if let Some(record) = record {
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "Relationship #{} -> #{}: {:?}; {} distinct encounters; trust {}; disposition {}.",
+                npc.0,
+                character.0,
+                record.familiarity(),
+                record.encounters,
+                record.trust,
+                record.disposition
+            ),
+        );
+        for effect in record.effects.iter().rev().take(8) {
+            ctx.out.info(
+                ctx.actor,
+                format!(
+                    "  {}: trust {:+}, disposition {:+}; {:?}; {} — {}",
+                    effect.cause,
+                    effect.trust_delta,
+                    effect.disposition_delta,
+                    effect.source,
+                    effect.at,
+                    effect.reason
+                ),
+            );
+        }
+    } else {
+        ctx.out.info(
+            ctx.actor,
+            "Relationship: Stranger; trust 0; disposition 0; no receipts.",
+        );
+    }
+    Ok(())
+}
+
 fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // `create` runs before target resolution (the target does not exist yet).
     // S6: the audit is a read over every NPC; it needs no target.
@@ -1889,6 +2136,9 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
     if ctx.switches.has("lore") {
         return agent_lore(ctx, npc);
     }
+    if ctx.switches.has("relationship") {
+        return agent_relationship(ctx, npc, &lhs);
+    }
 
     if ctx.switches.has("poke") {
         let note = ctx
@@ -1921,6 +2171,18 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
     // Default: show profile + status.
     let profile = read_profile_raw(ctx.w, npc).unwrap_or_default();
     let name = display_name(ctx.w, npc);
+    if let Some(faction) = profile.public_faction {
+        let label = ctx
+            .w
+            .module_state::<FactionState>()
+            .and_then(|state| state.factions.get(&faction))
+            .filter(|faction| !faction.hidden)
+            .map_or("unavailable public affiliation".to_owned(), |faction| {
+                faction.name.to_string()
+            });
+        ctx.out
+            .info(ctx.actor, format!("  Public affiliation: {label}."));
+    }
     ctx.out.info(
         ctx.actor,
         format!(
@@ -2180,6 +2442,25 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
         "cooldown" | "cooldown_s" => profile.cooldown_s = parse_opt_u32(&value)?,
         "daily_tokens" | "budget" => profile.daily_tokens = parse_opt_u64(&value)?,
         "enabled" => profile.enabled = parse_bool(&value)?,
+        "public_faction" => {
+            profile.public_faction = if value.is_empty() {
+                None
+            } else {
+                let state = ctx
+                    .w
+                    .module_state::<FactionState>()
+                    .ok_or_else(|| CmdError::msg("Factions unavailable."))?;
+                let faction = value
+                    .trim_start_matches('#')
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|id| state.factions.get(&FactionId(id)))
+                    .or_else(|| state.faction_by_name(&value))
+                    .filter(|faction| !faction.hidden)
+                    .ok_or_else(|| CmdError::msg("No such public faction."))?;
+                Some(faction.id)
+            };
+        }
         // S6: the interface providers the NPC fronts; an id the server does
         // not compose is kept (content may run ahead of composition) and
         // simply offers nothing.
@@ -2240,7 +2521,7 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
             return Err(CmdError::msg(format!(
                 "Unknown agent field {field:?}. Fields: persona, background, speech, goals, \
                  fallback, knows, does_not_know, tier, cooldown, daily_tokens, enabled, \
-                 principal, loyal, watch, interfaces, command_refs."
+                 principal, loyal, watch, interfaces, command_refs, public_faction."
             )));
         }
     }
@@ -2762,6 +3043,7 @@ fn is_clearable(field: &str) -> bool {
             | "daily_tokens"
             | "budget"
             | "principal"
+            | "public_faction"
             | "watch"
             | "interfaces"
             | "command_refs"
@@ -2850,7 +3132,7 @@ fn build_dialogue_snapshot(
             }
         }
     }
-    let mut scene = build_scene(ctx, npc, room, &prioritized_present);
+    let scene = build_scene(ctx, npc, room, &prioritized_present);
     let agent_profile = grounding.profile(ctx.w, npc).and_then(|profile| {
         if let Err(error) = validate_agent_capability_profile(&profile) {
             tracing::error!(npc = npc.0, %error, "npc: invalid ruleset capability profile omitted");
@@ -2913,21 +3195,25 @@ fn build_dialogue_snapshot(
         });
     // S6: the interface abilities the profile names, from the registry.
     let interfaces = crate::interface::tools_for(ctx.reg, profile);
-    let command_guidance = crate::interface::command_guidance_for(ctx.reg, ctx.w, profile, actor);
+    let mut guidance_profile = profile.clone();
+    if profile.public_faction.is_some()
+        && guidance_profile.command_refs.len() < crate::profile::MAX_PROFILE_COMMAND_REFS
+        && !guidance_profile
+            .command_refs
+            .iter()
+            .any(|command| command == "+standing")
+    {
+        guidance_profile.command_refs.push("+standing".into());
+    }
+    let command_guidance =
+        crate::interface::command_guidance_for(ctx.reg, ctx.w, &guidance_profile, actor);
 
     // World / semantic knowledge: per-NPC lore UNION resolved shared-pool
-    // entries, filtered to shareable (Public + Guarded) — a Secret entry never
-    // enters the snapshot (defense-in-depth layer (a)).
+    // entries, filtered to Public — Guarded and Secret text never enters the
+    // snapshot (defense-in-depth layer (a)).
     let knowledge = resolve_shareable_knowledge(ctx, npc);
 
-    // Per-asker Familiarity (volatile trust) is annotated onto each present
-    // player from durable memory, so the volatile user prompt can frame guarded
-    // sharing. `build_scene` has no state, so we set it here by name.
-    if let Some(h) = ctx.state::<NpcHostState>() {
-        for pp in &mut scene.present {
-            pp.familiarity = familiarity_of(&h.long_term, npc, &pp.name);
-        }
-    }
+    // `build_scene` projects identity-keyed relationships and public standing.
 
     TurnSnapshot {
         kind: TurnKind::Dialogue,
@@ -2951,18 +3237,32 @@ fn build_dialogue_snapshot(
 
 /// Resolve `npc`'s world knowledge for a turn: per-NPC [`LoreEntry`]s
 /// ([`KNOWLEDGE_ATTR`]) unioned with the entries of every shared pool it tags,
-/// then filtered to the **shareable** (Public + Guarded) entries. A
-/// [`Secrecy::Secret`] fact is dropped here
-/// so it never enters the [`TurnSnapshot`].
+/// then filtered to Public entries. Guarded and Secret text never enters the
+/// [`TurnSnapshot`]; guarded delivery uses a separate private service.
 fn resolve_shareable_knowledge(ctx: &Ctx<'_>, npc: ObjId) -> Vec<crate::knowledge::LoreEntry> {
+    resolve_lore(ctx, npc, false)
+}
+
+/// Guarded entries are available only to the private live-authorized service.
+pub(crate) fn resolve_lore(
+    ctx: &Ctx<'_>,
+    npc: ObjId,
+    guarded: bool,
+) -> Vec<crate::knowledge::LoreEntry> {
     let knowledge = read_knowledge(ctx.w, npc);
     let mut all = knowledge.lore;
     if let Some(h) = ctx.state::<NpcHostState>() {
-        all.extend(h.lore_pools.resolve_shareable(&knowledge.tags));
+        all.extend(if guarded {
+            h.lore_pools.resolve_shareable(&knowledge.tags)
+        } else {
+            h.lore_pools.resolve_public(&knowledge.tags)
+        });
     }
     let mut resolved = Vec::new();
     let mut bytes = 0_usize;
-    for entry in all.into_iter().filter(LoreEntry::is_shareable) {
+    for entry in all.into_iter().filter(|entry| {
+        entry.secrecy == Secrecy::Public || (guarded && entry.secrecy == Secrecy::Guarded)
+    }) {
         if resolved.len() >= MAX_RESOLVED_LORE_ENTRIES {
             break;
         }
@@ -3033,7 +3333,21 @@ fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> Sce
             // Volatile per-asker trust is filled in by the dialogue-snapshot
             // builder (which has host state); the summarize path leaves the
             // default (Stranger).
-            familiarity: Familiarity::default(),
+            familiarity: ctx
+                .state::<NpcHostState>()
+                .map_or(Familiarity::Stranger, |host| {
+                    host.relationships.familiarity(npc, p)
+                }),
+            personal_relation: ctx
+                .state::<NpcHostState>()
+                .map_or_else(Default::default, |host| host.relationships.personal(npc, p)),
+            standing: public_faction_for(ctx.w, npc)
+                .and_then(|faction| mush_faction::public_standing(ctx.w, faction, p))
+                .map(|standing| crate::relationships::PublicStanding {
+                    name: bounded_text(standing.name, MAX_SNAPSHOT_NAME_BYTES),
+                    score: standing.score,
+                    band: bounded_text(standing.band.to_owned(), 64),
+                }),
         })
         .collect();
     let exits = ctx

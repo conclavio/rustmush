@@ -124,12 +124,16 @@ pub struct PresentPlayer {
     pub name: String,
     /// One-line short description (empty if none).
     pub short_desc: String,
-    /// How well the NPC knows this player, derived from episodic memory
-    /// (design: M10d). Volatile per-asker trust — drives whether a
-    /// [`Secrecy::Guarded`](crate::knowledge::Secrecy::Guarded) fact may be
-    /// shared. Set on the world loop at snapshot time.
+    /// How often the NPC has encountered this identity, independent of trust.
+    /// Set on the world loop from distinct observed contact buckets.
     #[serde(default)]
     pub familiarity: Familiarity,
+    /// Personal trust and disposition, unrelated to faction standing or authority.
+    #[serde(default)]
+    pub personal_relation: crate::relationships::PersonalRelation,
+    /// Only the live public standing of this NPC's explicit public affiliation.
+    #[serde(default)]
+    pub standing: Option<crate::relationships::PublicStanding>,
 }
 
 /// The public scene the NPC can perceive.
@@ -240,13 +244,8 @@ pub struct TurnSnapshot {
     pub agent_profile: Option<AgentCapabilityProfile>,
     /// The perceivable scene.
     pub scene: SceneView,
-    /// The resolved, **shareable** world knowledge for this turn (per-NPC lore
-    /// UNION shared-pool entries; design: M10d). Load-bearing invariant: this
-    /// holds only [`Secrecy::Public`](crate::knowledge::Secrecy::Public) and
-    /// [`Secrecy::Guarded`](crate::knowledge::Secrecy::Guarded) entries — a
-    /// [`Secrecy::Secret`](crate::knowledge::Secrecy::Secret) fact is filtered
-    /// out at the builder so it **never** enters a [`TurnSnapshot`] (nor its
-    /// serialized JSON), let alone a prompt.
+    /// Public authored knowledge only. Guarded and Secret facts are filtered
+    /// before this snapshot crosses the async boundary.
     #[serde(default)]
     pub knowledge: Vec<LoreEntry>,
     /// The persisted rolling summary.
@@ -399,6 +398,13 @@ fn validate_scene(scene: &SceneView) -> Result<(), SnapshotValidationError> {
         || scene.present.iter().any(|player| {
             player.name.len() > MAX_SNAPSHOT_NAME_BYTES
                 || player.short_desc.len() > MAX_PRESENT_DESCRIPTION_BYTES
+                || !(-100..=100).contains(&player.personal_relation.trust)
+                || !(-100..=100).contains(&player.personal_relation.disposition)
+                || player.standing.as_ref().is_some_and(|standing| {
+                    standing.name.len() > MAX_SNAPSHOT_NAME_BYTES
+                        || standing.band.len() > 64
+                        || !(-100..=100).contains(&standing.score)
+                })
         })
         || scene
             .exits
@@ -648,6 +654,8 @@ mod tests {
                 name: format!("player {index}"),
                 short_desc: String::new(),
                 familiarity: Familiarity::Stranger,
+                personal_relation: Default::default(),
+                standing: None,
             })
             .collect();
         assert_eq!(
@@ -672,6 +680,26 @@ mod tests {
         let decoded: TurnSnapshot = serde_json::from_value(wire).expect("older snapshot");
         assert!(decoded.command_guidance.is_empty());
         assert!(decoded.validate().is_ok());
+    }
+
+    #[test]
+    fn old_present_people_default_to_neutral_and_new_projection_is_bounded() {
+        let old: PresentPlayer =
+            serde_json::from_value(serde_json::json!({"name":"Alice","short_desc":""}))
+                .expect("legacy person");
+        assert_eq!(old.personal_relation, Default::default());
+        assert!(old.standing.is_none());
+        let mut snap = snapshot();
+        snap.scene.present = vec![old];
+        snap.scene.present[0].personal_relation.trust = 101;
+        assert!(snap.validate().is_err());
+        snap.scene.present[0].personal_relation.trust = 0;
+        snap.scene.present[0].standing = Some(crate::PublicStanding {
+            name: "x".repeat(MAX_SNAPSHOT_NAME_BYTES + 1),
+            score: 0,
+            band: "neutral".into(),
+        });
+        assert!(snap.validate().is_err());
     }
 
     #[test]

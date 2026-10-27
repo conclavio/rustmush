@@ -191,6 +191,10 @@ fn cmd_faction(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         faction_uncontrol(ctx)
     } else if ctx.switches.has("contest") {
         faction_contest(ctx)
+    } else if ctx.switches.has("incident") {
+        crate::reputation::command_incident(ctx)
+    } else if ctx.switches.has("publish-incident") {
+        crate::reputation::command_publish(ctx)
     } else if ctx.switches.has("show") {
         faction_show(ctx)
     } else {
@@ -1692,6 +1696,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "control".into(),
                 "uncontrol".into(),
                 "contest".into(),
+                "incident".into(),
+                "publish-incident".into(),
                 "show".into(),
             ],
             help: "@faction  --  Staff faction registry (Royalty+ or the FACTION_ADMIN power). \
@@ -1722,11 +1728,29 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @faction/control <region>=<f>/<kind>[/strength:<n>][/vis:<v>]  (kinds: dejure, \
                    defacto, covert, economic) ; @faction/uncontrol <region>=<f>/<kind> ; \
                    @faction/contest <region>=<holder>/<kind>/<challenger>  (toggle)\n\
+                   @faction/incident <cause>=<f>/<victim #id>/<attacker #id|unknown>/<reason> \
+                   records a PRIVATE adjudicated report, with no standing change. Without '=', \
+                   inspect the report. @faction/publish-incident <cause> explicitly publishes \
+                   it and applies -20 standing to an identified attacker, once. Ordinary combat \
+                   and unverified rumors do not publish incidents automatically.\n\
                    @faction/show <f>  --  full staff dump (truth, all visibilities)."
                 .into(),
             ..CommandSpec::default()
         },
         Arc::new(cmd_faction),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: "+standing".into(),
+            shape: ArgShape::Raw,
+            help: "+standing [<faction>]  --  Your standing with public factions, from verified \
+                   work and explicitly published incidents. Name one faction for the last ten \
+                   causes. Scores range from -100 to 100. Standing does not grant membership, \
+                   rank, intelligence clearance, or spending authority."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::reputation::command_standing),
     )?;
     reg.command(
         CommandSpec {

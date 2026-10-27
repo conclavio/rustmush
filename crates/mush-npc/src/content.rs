@@ -159,6 +159,7 @@ fn profile_of(def: &NpcDef) -> Result<AgentProfile, String> {
         enabled: def.profile.enabled.unwrap_or(true),
         fallback_lines: def.profile.fallback.clone(),
         principal: None,
+        public_faction: None,
         loyal: true,
         watch: def.profile.watch.clone(),
         interfaces: def
@@ -217,7 +218,12 @@ fn create_npc(
     {
         return Err(format!("{id}: {name:?} is not an NPC name"));
     }
-    let profile = profile_of(&def).map_err(|e| format!("{id}: {e}"))?;
+    let mut profile = profile_of(&def).map_err(|e| format!("{id}: {e}"))?;
+    // Public affiliation is a runtime role binding/staff choice, not an authored
+    // pack default. Reapplying prose must not reset that independent decision.
+    if let Some(old) = existing.and_then(|npc| crate::module::read_profile(ctx.w, npc)) {
+        profile.public_faction = old.public_faction;
+    }
     let knowledge = knowledge_of(&def).map_err(|e| format!("{id}: {e}"))?;
     let room_id = CanonicalId::new(def.room.trim()).map_err(|e| format!("{id}: room: {e}"))?;
     let room = placed
