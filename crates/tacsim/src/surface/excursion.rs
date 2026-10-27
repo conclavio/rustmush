@@ -1057,6 +1057,9 @@ pub struct RigRecord {
     /// Skipped at 0.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub plans: u32,
+    /// Last staff recovery; a pending home owns the otherwise idle rig.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<Box<crate::surface::recovery::RecoveryReceipt>>,
 }
 
 /// serde's `skip_serializing_if` for [`RigRecord::plans`].
@@ -1119,6 +1122,7 @@ impl RigRecord {
             queued: None,
             plan: None,
             plans: 0,
+            recovery: None,
         }
     }
 
@@ -1145,6 +1149,7 @@ impl RigRecord {
             queued: None,
             plan: None,
             plans: 0,
+            recovery: None,
         }
     }
 
@@ -1169,6 +1174,9 @@ impl RigRecord {
                 "an excursion record is schema {EXCURSION_SCHEMA}, not {}",
                 self.schema
             ));
+        }
+        if let Some(recovery) = &self.recovery {
+            recovery.check(self)?;
         }
         // Doc 20 cut SM.7 (lead ruling 1, decision R1): the run in the cycle slot, and the one
         // kind of act that may share the rig with it.
@@ -1916,6 +1924,12 @@ pub struct TvRec {
     /// ordinal and may finish after a later scan's. Skipped at 0.
     #[serde(default, skip_serializing_if = "is_zero_cycle")]
     pub told_cycle: u8,
+    /// Staff receipt already reported, independent of the current work ordinal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_told: Option<u32>,
+    /// Pending staff receipt whose blocked placement has been reported once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_wait_told: Option<u32>,
     /// **The run in flight** (doc 20 cut SM.7), as [`RunView`] shows it; skipped when `None`. Boxed
     /// so [`TvRecState`] stays within clippy's `large_enum_variant` (the wire form is the view's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1956,6 +1970,8 @@ impl TvRec {
             applied: 0,
             told: 0,
             told_cycle: 0,
+            recovery_told: None,
+            recovery_wait_told: None,
             run: None,
             log: Vec::new(),
             plan: None,
@@ -2459,6 +2475,7 @@ mod tests {
             queued: None,
             plan: None,
             plans: 0,
+            recovery: None,
         }
     }
 

@@ -71,12 +71,12 @@ use mush_core::{
     ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
     RevisionSet, RulesValue, SceneId, StateFamilyHandle, SubjectKey, World,
 };
-use mush_inventory::InventoryHandleCell;
+use mush_inventory::{InventoryFamilies, InventoryHandleCell};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
-use crate::port::families::{self, PortHandles};
+use crate::port::families::{self, PortFamilies, PortHandles};
 use crate::store::{TacsimStore, push_op};
 
 /// The tick's tag.
@@ -154,6 +154,13 @@ pub(crate) fn register_with_coverage(
     coverage: Option<&crate::underwriting::registration::Registration>,
 ) -> Result<(), ModError> {
     let port_families = families::register(reg)?;
+    reg.revision_validator(
+        crate::surface::recovery::revision_kind()
+            .map_err(|error| ModError::msg(error.to_string()))?,
+        crate::surface::recovery::RecoveryRevisionValidator {
+            excursions: port_families.excursions.clone(),
+        },
+    )?;
     crate::surface::survey::register(reg, port_families.surveys.clone())?;
     crate::surface::survey_facts::register(
         reg,
@@ -216,6 +223,10 @@ pub(crate) fn register_with_coverage(
         .get(crate::surface::act::SURFACE_DONE_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the surface finish's outcome did not register"))?;
+    let recovery_outcome = outcome_refs
+        .get(crate::surface::recovery::RECOVERY_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the staff recovery outcome did not register"))?;
     let chart_forget_outcome = outcome_refs
         .get(crate::surface::chart::CHART_FORGET_OUTCOME)
         .cloned()
@@ -250,6 +261,18 @@ pub(crate) fn register_with_coverage(
         (&site_work_outcome, &dispatch_outcome),
         probe_outcome.as_ref(),
     )?;
+    actions.push(
+        descriptor(
+            "action",
+            crate::surface::recovery::RECOVERY_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::excursion::EXCURSION_FAMILY,
+            }),
+        )?
+        .with_references(vec![recovery_outcome.clone()]),
+    );
     actions.push(descriptor(
         "action",
         crate::surface::survey::SURVEY_ACTION,
@@ -370,50 +393,23 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.3b: `tacsim_surface_act` and `tacsim_surface_done` — registered only when
     // the inventory cell is filled (the dump moves pools through the delegated families) and
     // the tools table built; the definitions register regardless.
-    let surface_act_action = action_refs
-        .get(crate::surface::act::SURFACE_ACT_ACTION)
-        .cloned();
-    let surface_done_action = action_refs
-        .get(crate::surface::act::SURFACE_DONE_ACTION)
-        .cloned();
-    let (surface_act, surface_done) = match (
-        surface_act_action,
-        surface_done_action,
-        inventory_families.clone(),
-        surface_tools.clone(),
-    ) {
-        (Some(act), Some(done), Some(inventory), Some(tools)) => {
-            reg.action_provider(
-                act.clone(),
-                crate::surface::act::SurfaceActProvider {
-                    action: act.clone(),
-                    outcome: surface_act_outcome,
-                    excursions: port_families.excursions.clone(),
-                    charts: port_families.charts.clone(),
-                    pockets: port_families.pockets.clone(),
-                    inventory: inventory.clone(),
-                    tools: Arc::clone(&tools),
-                },
-            )?;
-            reg.action_provider(
-                done.clone(),
-                crate::surface::act::SurfaceDoneProvider {
-                    action: done.clone(),
-                    outcome: surface_done_outcome,
-                    excursions: port_families.excursions.clone(),
-                    charts: port_families.charts.clone(),
-                    surveys: port_families.surveys.clone(),
-                    pockets: port_families.pockets.clone(),
-                    inventory,
-                    tools,
-                },
-            )?;
-            (Some(act), Some(done))
-        }
-        _ => (None, None),
-    };
-    // Doc 20 cut SM.4a (D9): `tacsim_chart_forget`, `+tv/forget`'s own action — registered on
-    // every roster, since it needs only the chart family.
+    let (surface_act, surface_done) = register_surface_acts(
+        reg,
+        &action_refs,
+        (surface_act_outcome, surface_done_outcome),
+        &port_families,
+        inventory_families.as_ref(),
+        surface_tools.as_ref(),
+    )?;
+    // Staff recovery is a separate capability from the player's surface acts.
+    let surface_recovery = register_surface_recovery(
+        reg,
+        &action_refs,
+        recovery_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
+    // Doc 20 cut SM.4a (D9): `+tv/forget` needs only the chart family.
     let chart_forget = match action_refs
         .get(crate::surface::chart::CHART_FORGET_ACTION)
         .cloned()
@@ -524,6 +520,7 @@ pub(crate) fn register_with_coverage(
         burn: burn_registered,
         surface_act,
         surface_done,
+        surface_recovery,
         surface_tools,
         chart_forget,
         survey_accept,
@@ -546,6 +543,79 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots.
     crate::surface::tick::register(reg)?;
     Ok(())
+}
+
+/// Build the paired providers in their own frame: each carries several typed
+/// family handles, which must not accumulate on the main registration stack.
+fn register_surface_acts(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcomes: (DefinitionRef, DefinitionRef),
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+    tools: Option<&Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>>>,
+) -> Result<(Option<DefinitionRef>, Option<DefinitionRef>), ModError> {
+    let (Some(act), Some(done), Some(inventory), Some(tools)) = (
+        actions.get(crate::surface::act::SURFACE_ACT_ACTION),
+        actions.get(crate::surface::act::SURFACE_DONE_ACTION),
+        inventory,
+        tools,
+    ) else {
+        return Ok((None, None));
+    };
+    reg.action_provider(
+        act.clone(),
+        crate::surface::act::SurfaceActProvider {
+            action: act.clone(),
+            outcome: outcomes.0,
+            excursions: families.excursions.clone(),
+            charts: families.charts.clone(),
+            pockets: families.pockets.clone(),
+            inventory: inventory.clone(),
+            tools: Arc::clone(tools),
+        },
+    )?;
+    reg.action_provider(
+        done.clone(),
+        crate::surface::act::SurfaceDoneProvider {
+            action: done.clone(),
+            outcome: outcomes.1,
+            excursions: families.excursions.clone(),
+            charts: families.charts.clone(),
+            surveys: families.surveys.clone(),
+            pockets: families.pockets.clone(),
+            inventory: inventory.clone(),
+            tools: Arc::clone(tools),
+        },
+    )?;
+    Ok((Some(act.clone()), Some(done.clone())))
+}
+
+/// Recovery needs inventory but does not depend on the player's tools table.
+fn register_surface_recovery(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) = (
+        actions.get(crate::surface::recovery::RECOVERY_ACTION),
+        inventory,
+    ) else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::surface::recovery::RecoveryProvider {
+            action: action.clone(),
+            outcome,
+            excursions: families.excursions.clone(),
+            pockets: families.pockets.clone(),
+            inventory: inventory.clone(),
+        },
+    )?;
+    Ok(Some(action.clone()))
 }
 
 fn kind(word: &str) -> Result<DefinitionKind, ModError> {
@@ -614,6 +684,11 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             "outcome",
             crate::surface::act::SURFACE_DONE_OUTCOME,
             json!({ "fields": ["actor", "ordinal", "result", "tv"] }),
+        )?,
+        descriptor(
+            "outcome",
+            crate::surface::recovery::RECOVERY_OUTCOME,
+            json!({ "fields": ["actor", "tv", "ordinal", "operation", "pending", "moved"] }),
         )?,
         // Doc 20 cut SM.4a (D9): `+tv/forget`'s own action.
         descriptor(

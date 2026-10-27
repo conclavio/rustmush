@@ -113,11 +113,12 @@ Every new player- and staff-facing text since SM.2 is in the same position.
 
 ## 5. Features deliberately not built
 
-**DF-1 — staff remedies the texts already promise.** No staff verb closes an excursion or brings a rig in
-(`@tacsim/tv close|home`, O-17, deferred to "a named follow-up cut" that was never named), though `STRANDED`,
-`TV_AWAY` and `RIG_LOGGED_OUT` point to staff and `HOPPER_LOADED_AWAY` says "staff must empty it". Also not built:
-a staff ring clear (O-22), clearing another pilot's plan, and a remedy for a queued unload with no plan whose
-operator lost the helm (it retries forever) (doc 20a:549; `docs/ops.md:1144`).
+**DF-1 — staff remedies the texts already promise. Recovery implemented in the follow-up.**
+`@tacsim/tv close|home|unload #<rig>` stops orphaned work, returns a stranded rig to its assigned bay,
+and transfers a loaded hopper into its docked hull's hold. Staff can clear another pilot's plan and
+queued unload without impersonating that pilot. Recovery preserves ore, leases and action ordinals;
+home uses a durable request completed by the surface tick. See [the operator procedure](../ops.md#staff-rig-recovery).
+The staff marker-ring clear (O-22) remains unbuilt and is outside this recovery cut.
 
 **DF-2 — player features owned by no row:** the licence's "4 d left" on `+chart`'s site line; the desk's `look`
 listing the `+tv` verbs; a quarry-screen key for `+tv/plan show`; gifted or bought readings (`Reported`); clients

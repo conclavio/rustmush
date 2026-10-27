@@ -4199,6 +4199,73 @@ fn sm12b_a_pack_apply_lays_the_yard_on_a_kept_world() {
 
 /// The production roster seeded with `seed` as its lane, with `next` shelved and loaded
 /// (`mill.rs`'s `Roster`).
+/// House rigs use a synthetic assignment, never a player lease. Staff can return
+/// one from the ground across a restart without emptying its hopper or leasing it.
+#[test]
+fn staff_home_recovers_a_house_rig_without_creating_a_lease() {
+    let mut rig = yard_world();
+    let tv = yard_rigs(&rig.tw)[0];
+    let hull = yard_hull(&rig.tw);
+    let hop = tacsim::port::vehicle::hopper_of(rig.tw.world(), tv).expect("the yard hopper");
+    let assignment =
+        tacsim::port::yard::rig_lease(rig.tw.world(), tv).expect("the synthetic house assignment");
+    assert!(assignment.is_house());
+    assert!(store(&rig.tw).tv_lease_on(tv).is_none());
+    let bay = tacsim::port::ship::hull_view(rig.tw.world(), hull)
+        .and_then(|view| view.bay().map(|(_, room)| room))
+        .expect("the existing yard bay");
+    to_cell_on(&mut rig, OCCATOR, tv, (128, 120));
+    seed_pool(&mut rig, hop, "ice_ore", 4, LotId(98_251));
+    let staff = rig.tw.spawn_player("Recovery staff");
+    rig.tw
+        .world_mut()
+        .get_mut(staff)
+        .expect("staff")
+        .powers
+        .insert(mush_core::Powers::SIM_ADMIN);
+    let (out, queued) = command(&mut rig, staff, &format!("@tacsim/tv home #{}", tv.0));
+    assert_eq!(queued.len(), 1, "staff may recover a house rig: {out}");
+    assert_eq!(queued[0].actor, staff);
+    assert_eq!(
+        queued[0].action.key().id.as_str(),
+        "tacsim_surface_recovery"
+    );
+    land_all(&mut rig, &queued);
+    assert!(
+        record_of(&mut rig.tw, tv)
+            .is_some_and(|record| record.recovery.is_some_and(|receipt| receipt.pending))
+    );
+
+    let mut rig = reboot(rig, &[staff]);
+    let (_, queued) = fire(&mut rig);
+    let done: Vec<_> = queued
+        .iter()
+        .filter(|submit| submit.action.key().id.as_str() == "tacsim_surface_recovery")
+        .collect();
+    assert_eq!(done.len(), 1, "the house recovery resumes after restart");
+    land(&mut rig, done[0]).expect("the durable house recovery finishes");
+    let mut rig = reboot(rig, &[staff]);
+    let record = record_of(&mut rig.tw, tv).expect("the house recovery record");
+    assert!(record.recovery.is_some_and(|receipt| !receipt.pending));
+    assert!(record.excursion.is_none() && record.act.is_none() && record.run.is_none());
+    assert!(record.plan.is_none() && record.queued.is_none());
+    assert!(record.charge.in_bay);
+    assert!(matches!(
+        rig.tw.world().module_state::<mush_sim::data::SpatialState>()
+            .expect("spatial state").parent_of(tv),
+        mush_sim::data::SpatialParent::Interior { space, slot: Some(slot) }
+            if space == bay && slot.as_str() == "rigs"
+    ));
+    assert_eq!(pool(&mut rig.tw, hop, "ice_ore"), 4);
+    assert_eq!(
+        tacsim::port::yard::rig_lease(rig.tw.world(), tv),
+        Some(assignment),
+        "the house's synthetic assignment is unchanged"
+    );
+    assert!(store(&rig.tw).tv_lease_on(tv).is_none());
+    no_refused_writes(&rig.tw);
+}
+
 fn upgrade_modules(seed: &str, next: &str) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
     let llm = Arc::new(

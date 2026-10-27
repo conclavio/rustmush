@@ -180,6 +180,14 @@ before its own unload starts â€” a dump, a launch, your own `+tv/1 unload go` â€
 takes its place. `+ship/lift ceres` lifts the Dray-P off the pad once every rig is
 in her bay and every hopper is empty (`help ships`).
 
+If the rig cannot get home, or its queued unload is stuck after a change of helm,
+ask staff for recovery. Staff can stop its work in place, bring it into its assigned
+ship's bay, and unload its hopper into the docked ship's hold. Recovery keeps the ore;
+the hold must have room for every kind of ore in the whole hopper. It does not renew
+or return the rig's lease or refund its deposit. Wait for the recovery result before
+starting more work, departing or returning the rig. If bringing it home is blocked,
+staff receive the reason and can correct the problem or cancel the request.
+
   +tv/<n> recover [go]     back up the ramp into the bay; from further off the
                            rig drives to the ramp first, in the same act; a
                            loaded hopper then unloads into the hold

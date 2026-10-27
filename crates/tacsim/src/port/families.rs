@@ -558,6 +558,8 @@ pub struct PortHandles {
     /// finish, submitted by the `tacsim.surface` tick as the operator); `Some` exactly
     /// when its provider registered.
     pub surface_done: Option<mush_core::DefinitionRef>,
+    /// Staff recovery of a rig's work, placement and hopper, through the authoritative lane.
+    pub surface_recovery: Option<mush_core::DefinitionRef>,
     /// **Doc 20 cut SM.3b** (finding F5): the one tools table the surface providers, the
     /// command's preview, `+tv` status and the departure's bay gate read — the battery
     /// has one source. `None` when the table did not build (logged; the providers are

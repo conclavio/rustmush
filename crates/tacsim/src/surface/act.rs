@@ -7017,7 +7017,7 @@ fn apply_update(record: &mut RigRecord, binding: &PlanFixed, now: i64) -> Result
 }
 
 /// The family's record, cloned; `None` when absent.
-fn read_record(
+pub(super) fn read_record(
     txn: &mut ActionTxn<'_>,
     family: &StateFamilyHandle<RigKey, RigRecord>,
     tv: ObjId,
@@ -7044,7 +7044,7 @@ fn read_record(
 }
 
 /// Write `record` under its own key (insert or replace).
-fn write_record(
+pub(super) fn write_record(
     txn: &mut ActionTxn<'_>,
     family: &StateFamilyHandle<RigKey, RigRecord>,
     record: RigRecord,
@@ -7441,6 +7441,17 @@ impl ActionProvider for SurfaceActProvider {
         let ordinal = ordinal_of(parameters)?;
         let now = now_of(parameters)?;
         let word = act_param(parameters)?;
+        if read_record(txn, &self.excursions, tv)?.is_some_and(|record| {
+            record
+                .recovery
+                .as_ref()
+                .is_some_and(|receipt| receipt.pending)
+        }) {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                "staff recovery is pending; wait for the rig to reach its bay",
+            ));
+        }
         // Doc 20 cut SM.8 (decision R15): `how` and `qty` belong to an unload's start alone.
         let unloading = matches!(
             word,
@@ -7627,6 +7638,36 @@ impl ActionProvider for SurfaceActProvider {
         if kind == ActKind::Unload {
             return self.start_unload(invocation, txn, (actor, tv, ordinal, now), rig, &plan);
         }
+        self.start_act(
+            invocation,
+            txn,
+            (actor, tv, ordinal, now),
+            (kind, quiet),
+            rig,
+            &plan,
+            &world,
+            &stamp,
+        )
+    }
+}
+
+impl SurfaceActProvider {
+    /// Stage a non-mining, non-unloading act after its fixed plan and control binding
+    /// have been checked. Keep the transactional record work separate from dispatch
+    /// so the two paths do not share one large stack frame.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one ordered list, one bundle
+    fn start_act(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (actor, tv, ordinal, now): (ObjId, ObjId, u32, i64),
+        (kind, quiet): (ActKind, bool),
+        rig: &FixedRig,
+        plan: &FixedPlan,
+        world: &[u32],
+        stamp: &Stamp,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let parameters = parameters_of(invocation)?;
         let site = plan
             .site
             .clone()
@@ -7697,7 +7738,7 @@ impl ActionProvider for SurfaceActProvider {
                 ));
             }
             let mut counts = ExcursionCounts::default();
-            for other in world {
+            for &other in world {
                 if let Some(found) = read_record(txn, &self.excursions, ObjId(other))?
                     && let Some(excursion) = &found.excursion
                 {
@@ -7897,7 +7938,7 @@ impl ActionProvider for SurfaceActProvider {
 }
 
 /// A pocket cursor read in the transaction, its key re-checked (the families rule).
-fn read_cursor(
+pub(super) fn read_cursor(
     txn: &mut ActionTxn<'_>,
     family: &StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     deposit: mush_industry::OreDepositId,
@@ -7924,7 +7965,7 @@ fn read_cursor(
 
 /// **Stage a cursor's new state** (insert, replace or remove; `before` is whether one stood):
 /// `None` removes it (an emptied cursor), and nothing is staged when none stood and none is due.
-fn write_cursor(
+pub(super) fn write_cursor(
     txn: &mut ActionTxn<'_>,
     family: &StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     deposit: mush_industry::OreDepositId,

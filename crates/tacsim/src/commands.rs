@@ -70,12 +70,15 @@ pub const NOT_ENABLED: &str = "TacSim is not enabled on this server.";
 ///
 /// [`ModError`] if the name is already taken.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    // Like +ship and +tv, the primary verb takes the ceiling class of its switches:
+    // /tv submits a staff recovery; the existing content and time switches keep their lanes.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.state(crate::port::survey::AttachmentCandidate::default());
     reg.command(
         CommandSpec {
             name: "@tacsim".into(),
             shape: ArgShape::EqPair,
-            switches: ["pack", "seed", "pin", "time", "port"]
+            switches: ["pack", "seed", "pin", "time", "port", "tv"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -103,12 +106,16 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @tacsim/time show                   the live world-time generation, its rate,                    the generations left, and each subsystem's declared catch-up policy.
                    @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each subsystem's                    declared policy for it. It is one attributed act on the kernel's own                    timeline: no second timeline is created and no earlier fact is reinterpreted.
                    @tacsim/port status                 (staff) the port readiness report: every binding the port entries made — rooms, domains, orgs, accounts and capital — with the lane, the sky and the world rate.
-                   @tacsim/port clear #<hull>          (staff) stand down a programme hull's filed clearance whose launch is held: the pending passage is cleared, its burn sequence kept, the ticket (if burned) kept as the record; nothing is refunded and the pilot is told."
+                   @tacsim/port clear #<hull>          (staff) stand down a programme hull's filed clearance whose launch is held: the pending passage is cleared, its burn sequence kept, the ticket (if burned) kept as the record; nothing is refunded and the pilot is told.\n\
+                   @tacsim/tv close #<rig>             (staff) stop a rig's work and clear its plan and queued unload in place.\n\
+                   @tacsim/tv home #<rig>              (staff) stop work and bring a stranded rig into its assigned hull's bay, preserving its hopper.\n\
+                   @tacsim/tv unload #<rig>            (staff) transfer the whole hopper into its docked hull's hold, if it fits."
                 .into(),
             ..CommandSpec::default()
         },
         Arc::new(tacsim_cmd),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- E7r1: R2 — `@corridor`, a ReadOnly group of its own (10b §15.1 item 7) ----
     //
     // K8.5: the class is declared **before** the `reg.command` it applies to, and the
@@ -434,9 +441,34 @@ fn tacsim_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         time_cmd(ctx)
     } else if ctx.switches.has("port") {
         port_cmd(ctx)
+    } else if ctx.switches.has("tv") {
+        tv_recovery_cmd(ctx)
     } else {
         pack_cmd(ctx)
     }
+}
+
+/// Staff rig recovery uses an explicit object id; the staff gate precedes even parsing.
+fn tv_recovery_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    require_enabled(ctx)?;
+    require_staff(ctx)?;
+    const USAGE: &str = "Usage: @tacsim/tv close|home|unload #<rig>";
+    let mut words = ctx.args.raw().split_whitespace();
+    let operation = words.next().ok_or_else(|| CmdError::msg(USAGE))?;
+    if !matches!(operation, "close" | "home" | "unload") {
+        return Err(CmdError::msg(USAGE));
+    }
+    let tv = words
+        .next()
+        .and_then(|word| word.strip_prefix('#'))
+        .and_then(crate::port::families::strict_decimal_u32)
+        .map(ObjId)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
+    if words.next().is_some() {
+        return Err(CmdError::msg(USAGE));
+    }
+    let operation = operation.to_owned();
+    crate::surface::recovery::command(ctx, &operation, tv)
 }
 
 // ---- E7r1: R5(a) — `@tacsim/time`, the rate policy's caller ---------------

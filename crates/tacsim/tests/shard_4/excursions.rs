@@ -3714,3 +3714,371 @@ fn sm7_a_drilling_rig_holds_the_return_and_the_repossession() {
     assert!(!in_bay(&rig.tw, tv_o, &row_o), "repossessed");
     no_refused_writes(&rig.tw);
 }
+
+// The staff recovery command uses the same authoritative landing path as a pilot act.
+fn recovery_staff(tw: &mut TestWorld) -> ObjId {
+    let staff = tw.spawn_player("Recovery staff");
+    tw.world_mut()
+        .get_mut(staff)
+        .expect("the staff character")
+        .flags
+        .insert(mush_core::Flags::ROYALTY);
+    staff
+}
+
+fn recovery_order(rig: &mut Rig, staff: ObjId, operation: &str, tv: ObjId) {
+    let line = format!("@tacsim/tv {operation} #{}", tv.0);
+    let (out, queued) = command(rig, staff, &line);
+    assert_eq!(queued.len(), 1, "{line}: {out}");
+    assert_eq!(queued[0].actor, staff, "the repair is attributed to staff");
+    assert_eq!(
+        queued[0].action.key().id.as_str(),
+        "tacsim_surface_recovery"
+    );
+    land_all(rig, &queued);
+}
+
+/// A repair cannot be used by the rig's ordinary owner, including on an invalid target.
+/// The denied commands leave both the physical and the authoritative records untouched.
+#[test]
+fn staff_recovery_requires_staff_before_target_lookup() {
+    let mut rig = stocked();
+    let (pilot, row) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    lease_one(&mut rig, pilot);
+    let tv = rigs_of(&rig.tw, pilot)[0];
+    let before = record_of(&mut rig.tw, tv);
+    let placed = parent(&rig.tw, tv);
+    let lease = store(&rig.tw).tv_lease_on(tv).cloned();
+    let _ = rig.tw.take_module_ops();
+    for operation in ["close", "home", "unload"] {
+        for target in [format!("#{}", tv.0), "#4294967295".to_owned()] {
+            let (out, queued) =
+                command(&mut rig, pilot, &format!("@tacsim/tv {operation} {target}"));
+            assert_eq!(out.trim(), "Permission denied.");
+            assert!(queued.is_empty(), "a denied repair queues no action");
+            assert!(
+                rig.tw.take_module_ops().is_empty(),
+                "a denied repair writes nothing"
+            );
+            assert_eq!(record_of(&mut rig.tw, tv), before);
+            assert_eq!(parent(&rig.tw, tv), placed);
+            assert_eq!(store(&rig.tw).tv_lease_on(tv), lease.as_ref());
+            assert!(in_bay(&rig.tw, tv, &row));
+        }
+    }
+    no_refused_writes(&rig.tw);
+}
+
+/// A launch whose tick already placed the rig must not complete after staff close it.
+/// Closing keeps its location and ore, and no later tick reopens the excursion.
+#[test]
+fn staff_close_cancels_a_captured_finish_without_moving_or_spending() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let staff = recovery_staff(&mut rig.tw);
+    fill_hopper(&mut rig, tv, 3, 98_101);
+    let hop = hopper(&rig.tw, tv);
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let due = due_of(&mut rig.tw, tv);
+    let (_, queued) = advance_to(&mut rig, due);
+    let done = finishes(&queued);
+    assert_eq!(done.len(), 1, "the launch finish is held before landing");
+    let before = record_of(&mut rig.tw, tv).expect("the launch record");
+    let placed = parent(&rig.tw, tv);
+
+    recovery_order(&mut rig, staff, "close", tv);
+    let closed = record_of(&mut rig.tw, tv).expect("the closed record");
+    assert!(closed.ordinal > before.ordinal, "old work is fenced out");
+    assert!(closed.act.is_none() && closed.run.is_none() && closed.queued.is_none());
+    assert!(closed.plan.is_none() && closed.excursion.is_none());
+    assert_eq!(parent(&rig.tw, tv), placed);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 3);
+    assert!(land(&mut rig, done[0]).is_err(), "the old finish is stale");
+    for _ in 0..3 {
+        let (_, queued) = fire(&mut rig);
+        land_all(&mut rig, &queued);
+    }
+    assert_eq!(parent(&rig.tw, tv), placed);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 3);
+    let after = record_of(&mut rig.tw, tv).expect("the closed record survives ticks");
+    assert!(after.act.is_none() && after.run.is_none() && after.queued.is_none());
+    assert!(after.plan.is_none() && after.excursion.is_none());
+    assert_eq!(after.charge.value_cu, closed.charge.value_cu);
+    no_refused_writes(&rig.tw);
+}
+
+/// The home receipt survives a restart before placement. An empty battery and a loaded
+/// hopper do not prevent the staff rescue, and neither ore nor charge is created by it.
+#[test]
+fn staff_home_survives_restart_and_preserves_a_stranded_rigs_hopper() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let staff = recovery_staff(&mut rig.tw);
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    staff_place(&mut rig, tv, RAMP.0 + 20_000, RAMP.1 + 20_000);
+    put_charge(&mut rig, tv, 0);
+    fill_hopper(&mut rig, tv, 4, 98_102);
+    let hop = hopper(&rig.tw, tv);
+    let lease = store(&rig.tw).tv_lease_on(tv).cloned();
+    assert!(!in_bay(&rig.tw, tv, &row));
+
+    recovery_order(&mut rig, staff, "home", tv);
+    let mut rig = reboot_with(rig, &[pilot, staff]);
+    for _ in 0..3 {
+        let (_, queued) = fire(&mut rig);
+        land_all(&mut rig, &queued);
+    }
+    assert!(in_bay(&rig.tw, tv, &row));
+    let home = record_of(&mut rig.tw, tv).expect("the repaired record");
+    assert!(home.act.is_none() && home.run.is_none() && home.queued.is_none());
+    assert!(home.excursion.is_none() && home.plan.is_none());
+    assert!(home.charge.in_bay);
+    assert_eq!(
+        home.charge.value_cu, 0,
+        "the rescue does not refill the battery"
+    );
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 4);
+    assert_eq!(store(&rig.tw).tv_lease_on(tv), lease.as_ref());
+
+    let mut rig = reboot_with(rig, &[pilot, staff]);
+    assert!(in_bay(&rig.tw, tv, &row));
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 4);
+    assert!(record_of(&mut rig.tw, tv).is_some_and(|r| r.excursion.is_none()));
+    no_refused_writes(&rig.tw);
+}
+
+/// Placement alone does not release the hull or its rig lease. The committed rescue
+/// still finishes after the authorizing staff member loses their role and a restart.
+#[test]
+fn staff_home_holds_departure_and_return_until_its_durable_finish() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let staff = recovery_staff(&mut rig.tw);
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let hop = hopper(&rig.tw, tv);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 0);
+    recovery_order(&mut rig, staff, "home", tv);
+    rig.tw
+        .world_mut()
+        .get_mut(staff)
+        .expect("staff")
+        .flags
+        .remove(mush_core::Flags::ROYALTY);
+    let mut rig = reboot_with(rig, &[pilot, staff]);
+    let (_, pending) = fire(&mut rig);
+    let home_done: Vec<_> = pending
+        .iter()
+        .filter(|submit| submit.action.key().id.as_str() == "tacsim_surface_recovery")
+        .collect();
+    assert_eq!(
+        home_done.len(),
+        1,
+        "the revoked staffer's authorized rescue completes"
+    );
+    assert!(
+        in_bay(&rig.tw, tv, &row),
+        "placement happened before the finish"
+    );
+    assert!(
+        record_of(&mut rig.tw, tv)
+            .is_some_and(|record| { record.recovery.is_some_and(|receipt| receipt.pending) })
+    );
+    let lease = store(&rig.tw).tv_lease_on(tv).cloned();
+    let (out, queued) = command(&mut rig, pilot, "+ship/lift ceres");
+    let busy = TV_BUSY
+        .replace("{n}", "1")
+        .replace("{doing}", "climbing the stern ramp")
+        .replace("{name}", "Salt Moth");
+    assert_eq!(
+        out.trim(),
+        busy,
+        "an empty hopper cannot mask the recovery gate"
+    );
+    assert!(queued.is_empty(), "the departure is not admitted");
+
+    // Returning a lease first requires its hull to be at Ceres. Staff move the
+    // hull without finishing the pending rescue, preserving the held boundary.
+    let ceres = mush_sim::DomainId(
+        port_map(&rig.tw, "ceres_port")
+            .domain
+            .expect("Ceres domain"),
+    );
+    staff_place_on(&mut rig, ObjId(row.hull), ceres, 0, 0);
+    assert!(matches!(
+        tacsim::port::ship::berth_of(rig.tw.world(), ObjId(row.hull)),
+        tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == "ceres_port"
+    ));
+    keeping(&mut rig, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff recovery test visits the lease counter")
+    })
+    .expect("staff release the pilot's spatial custody before moving to the counter");
+    let counter = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
+    teleport(&mut rig.tw, pilot, counter);
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 lease return go");
+    assert!(
+        out.contains("climbing the stern ramp"),
+        "the lease is held too: {out}"
+    );
+    assert!(queued.is_empty());
+    assert_eq!(store(&rig.tw).tv_lease_on(tv), lease.as_ref());
+    land(&mut rig, home_done[0]).expect("the already authorized rescue finishes after demotion");
+    let (out, queued) = command(&mut rig, staff, &format!("@tacsim/tv close #{}", tv.0));
+    assert_eq!(
+        out.trim(),
+        "Permission denied.",
+        "demotion forbids new repairs"
+    );
+    assert!(queued.is_empty());
+    let mut rig = reboot_with(rig, &[pilot]);
+    assert!(in_bay(&rig.tw, tv, &row));
+    assert!(
+        record_of(&mut rig.tw, tv)
+            .is_some_and(|record| { record.recovery.is_some_and(|receipt| !receipt.pending) })
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// A committed repair's notice is independent of later ordinary work. Reporting the
+/// close must neither erase the new recover's projection nor replay after a restart.
+#[test]
+fn staff_close_is_reported_once_after_a_new_action_starts() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let staff = recovery_staff(&mut rig.tw);
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    staff_place(&mut rig, tv, RAMP.0, RAMP.1 - 2_000);
+    recovery_order(&mut rig, staff, "close", tv);
+    let receipt = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.recovery)
+        .expect("the committed close receipt");
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    let current = record_of(&mut rig.tw, tv).expect("the new recover");
+    let recover = current.act.as_ref().expect("the new recover is active");
+    assert!(recover.ordinal > receipt.ordinal);
+    let notice = format!(
+        "Staff closed rig #{}'s excursion and cancelled its work. Its location and hopper are unchanged.",
+        tv.0
+    );
+
+    let (events, queued) = fire(&mut rig);
+    assert_eq!(count(&said(&rig.tw, &events, staff), &notice), 1);
+    assert_eq!(count(&said(&rig.tw, &events, pilot), &notice), 1);
+    land_all(&mut rig, &queued);
+    assert_eq!(record_of(&mut rig.tw, tv), Some(current.clone()));
+    let view = projection(&rig.tw, tv).expect("the current recover projection");
+    assert_eq!(view.recovery_told, Some(receipt.ordinal));
+    assert_eq!(
+        view.act.as_ref().map(|act| (act.ordinal, act.kind)),
+        Some((recover.ordinal, ActKind::Recover))
+    );
+    assert!(
+        view.leg.is_some(),
+        "the new recover's travel leg is visible"
+    );
+    assert_eq!(
+        view.excursion,
+        current.excursion.as_ref().map(|open| open.id)
+    );
+    assert!(!in_bay(&rig.tw, tv, &row), "the new recover is not due yet");
+
+    let mut rig = reboot_with(rig, &[pilot, staff]);
+    let (events, queued) = fire(&mut rig);
+    assert_eq!(count(&said(&rig.tw, &events, staff), &notice), 0);
+    assert_eq!(count(&said(&rig.tw, &events, pilot), &notice), 0);
+    land_all(&mut rig, &queued);
+    assert_eq!(record_of(&mut rig.tw, tv), Some(current));
+    assert_eq!(
+        projection(&rig.tw, tv).and_then(|view| view.recovery_told),
+        Some(receipt.ordinal)
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// A blocked bay must not consume the staff actor's only completion opportunity
+/// on every tick, starving a second independently recoverable rig forever.
+#[test]
+fn staff_home_a_blocked_bay_does_not_starve_the_same_staffers_next_rig() {
+    let mut rig = stocked();
+    let (a, row_a, tvs_a) = on_pad_as(&mut rig, "Pilot", 1, "Salt Moth", 1);
+    let (b, row_b, tvs_b) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);
+    let (tv_a, tv_b) = (tvs_a[0], tvs_b[0]);
+    let _ = act_go(&mut rig, a, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv_a, a);
+    let _ = act_go(&mut rig, b, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv_b, b);
+    let staff = recovery_staff(&mut rig.tw);
+    let ((first, first_row), (second, second_row)) = if tv_a < tv_b {
+        ((tv_a, &row_a), (tv_b, &row_b))
+    } else {
+        ((tv_b, &row_b), (tv_a, &row_a))
+    };
+    let blocked_bay = ObjId(first_row.rooms[&cid("bay")]);
+    keeping(&mut rig, |ctx| {
+        mush_sim::declare_compartment(
+            ctx,
+            blocked_bay,
+            mush_sim::SlotId::new("rigs").expect("slot"),
+            Some(0),
+        )
+    })
+    .expect("staff temporarily close the first bay");
+    recovery_order(&mut rig, staff, "home", first);
+    recovery_order(&mut rig, staff, "home", second);
+
+    let (_, queued) = fire(&mut rig);
+    let finishes: Vec<_> = queued
+        .iter()
+        .filter(|submit| submit.action.key().id.as_str() == "tacsim_surface_recovery")
+        .collect();
+    assert_eq!(
+        finishes.len(),
+        1,
+        "one recovery can finish for this staffer"
+    );
+    assert_eq!(
+        finishes[0].parameters["tv"],
+        serde_json::json!(second.0.to_string())
+    );
+    assert!(
+        !in_bay(&rig.tw, first, first_row),
+        "the closed bay refuses placement"
+    );
+    assert!(
+        in_bay(&rig.tw, second, second_row),
+        "the second recovery is not starved"
+    );
+    land_all(&mut rig, &queued);
+    assert!(
+        record_of(&mut rig.tw, first)
+            .is_some_and(|record| record.recovery.is_some_and(|r| r.pending))
+    );
+    assert!(
+        record_of(&mut rig.tw, second)
+            .is_some_and(|record| record.recovery.is_some_and(|r| !r.pending))
+    );
+
+    keeping(&mut rig, |ctx| {
+        mush_sim::declare_compartment(
+            ctx,
+            blocked_bay,
+            mush_sim::SlotId::new("rigs").expect("slot"),
+            Some(2),
+        )
+    })
+    .expect("staff reopen the bay");
+    let (_, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    assert!(in_bay(&rig.tw, first, first_row));
+    assert!(
+        record_of(&mut rig.tw, first)
+            .is_some_and(|record| record.recovery.is_some_and(|r| !r.pending))
+    );
+    no_refused_writes(&rig.tw);
+}

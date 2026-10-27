@@ -783,6 +783,8 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     };
     let now = ctx.w.world_ic_now().at;
     let (records, complete) = scan(ctx, &handles, state);
+    // Durable staff recovery shares this fire's work ceiling.
+    crate::surface::recovery::tick(ctx, &handles, &records, &mut stats);
     // Doc 20 cut SM.7 (the lead's pre-commit round, item 5): a mining order whose start landed (or
     // was overtaken) leaves the RAM slot, read against the whole family — never a capped scan.
     if complete {
@@ -1264,7 +1266,7 @@ fn carried_for(mut rec: TvRec, operator: ObjId, excursion: Option<ExcursionId>) 
 }
 
 /// The ground pose of `tv`, when it stands `Direct`.
-fn pose_of(w: &World, tv: ObjId) -> Option<TvPose> {
+pub(super) fn pose_of(w: &World, tv: ObjId) -> Option<TvPose> {
     match where_is(w, tv) {
         Where::Ground {
             x_cm,
@@ -1283,7 +1285,7 @@ fn pose_of(w: &World, tv: ObjId) -> Option<TvPose> {
 /// Write `rec` unless the store already holds it. **`true` when the store now holds it**
 /// (already equal, or written); `false` on a `check` or serialise refusal (doc 20 cut SM.4a,
 /// D24: the tell sends a heard line only on `true`).
-fn write_projection(ctx: &mut Ctx<'_>, rec: &TvRec) -> bool {
+pub(super) fn write_projection(ctx: &mut Ctx<'_>, rec: &TvRec) -> bool {
     // Doc 20 cut SM.4b (decision P7): a full leg and a full log do not fit 4 KiB together; the
     // oldest log lines go, never the leg.
     let mut rec = rec.clone();
@@ -3180,6 +3182,7 @@ mod tests {
             run: None,
             plan: None,
             plans: 0,
+            recovery: None,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
         let mut records: Vec<RigRecord> = (1..=over)
@@ -3236,6 +3239,7 @@ mod tests {
             run: None,
             plan: None,
             plans: 0,
+            recovery: None,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
         let mut records: Vec<RigRecord> = (1..=stuck)
@@ -3401,6 +3405,7 @@ mod tests {
             run: None,
             plan: None,
             plans: 0,
+            recovery: None,
         };
         let state = SurfaceTickState::default();
         let records = vec![
@@ -3517,6 +3522,7 @@ mod tests {
             }),
             plan: None,
             plans: 0,
+            recovery: None,
         }
     }
 

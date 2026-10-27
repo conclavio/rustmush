@@ -150,7 +150,7 @@ pub const DISPATCH_LICENCE_INACTIVE: &str =
     "{entry} dispatch {org}: its licence account is not active.";
 /// Order 5a (Flagged): `{n}`, `{mark}` — while the rig is out of the bay; once staff have brought
 /// it in, its stranded plan reads order 5b (clear it to start the rig again).
-pub const DISPATCH_STRANDED: &str = "{entry} dispatch {org}: rig {n} ({mark}) is stranded on the ground. Staff bring it in by placing it on the pad, then recover it as the dispatcher.";
+pub const DISPATCH_STRANDED: &str = "{entry} dispatch {org}: rig {n} ({mark}) is stranded on the ground. Staff bring it into its bay with @tacsim/tv home #{tv}.";
 /// Order 5b (Flagged): `{n}`, `{mark}`, `{why}` (`PlanEnd::word`; "stranded" for a stranded rig
 /// back in the bay).
 pub const DISPATCH_STOPPED: &str = "{entry} dispatch {org}: rig {n} ({mark}) stopped: {why}. Staff clear its plan to start it again.";
@@ -2191,6 +2191,10 @@ pub(crate) fn dispatch_step(
         if record.act.is_some()
             || record.run.is_some()
             || record.queued.is_some()
+            || record
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.pending)
             || record.live_plan_for(dispatcher).is_some()
         {
             continue;
@@ -2421,6 +2425,8 @@ pub(crate) enum DispatchRead {
         n: u8,
         /// Its mark.
         mark: String,
+        /// The rig to name in the staff recovery command.
+        tv: ObjId,
     },
     /// Order 5b: a rig whose plan stopped on a right, the dark registry or a full chart — or
     /// ended stranded, the rig since brought back into the bay by staff (5a's remedy followed).
@@ -2519,9 +2525,10 @@ pub(crate) fn dispatch_line_text(
         ),
         DispatchRead::NoInstrument => (LineState::Flagged, head(DISPATCH_NO_INSTRUMENT)),
         DispatchRead::LicenceInactive => (LineState::Flagged, head(DISPATCH_LICENCE_INACTIVE)),
-        DispatchRead::Stranded { n, mark } => {
-            (LineState::Flagged, rig(DISPATCH_STRANDED, *n, mark))
-        }
+        DispatchRead::Stranded { n, mark, tv } => (
+            LineState::Flagged,
+            rig(DISPATCH_STRANDED, *n, mark).replace("{tv}", &tv.0.to_string()),
+        ),
         DispatchRead::Stopped { n, mark, why } => (
             LineState::Flagged,
             rig(DISPATCH_STOPPED, *n, mark).replace("{why}", why.word()),
@@ -2673,6 +2680,10 @@ fn dispatch_line_read(
             record.act.is_none()
                 && record.run.is_none()
                 && record.queued.is_none()
+                && !record
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|recovery| recovery.pending)
                 && record.live_plan_for(dispatcher).is_none()
         });
         let hold_full = rig.record.as_ref().is_some_and(|record| {
@@ -2784,6 +2795,10 @@ fn dispatch_line_read(
             record.act.is_none()
                 && record.run.is_none()
                 && record.plan.is_none()
+                && !record
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|recovery| recovery.pending)
                 && matches!(
                     crate::surface::act::where_is(w, rig.tv),
                     crate::surface::act::Where::Ground { .. }
@@ -2806,8 +2821,20 @@ fn dispatch_line_read(
             Some(why @ PlanEnd::Stranded) if in_bay => {
                 return DispatchRead::Stopped { n, mark, why };
             }
-            Some(PlanEnd::Stranded) => return DispatchRead::Stranded { n, mark },
-            _ if parked_idle => return DispatchRead::Stranded { n, mark },
+            Some(PlanEnd::Stranded) => {
+                return DispatchRead::Stranded {
+                    n,
+                    mark,
+                    tv: rig.tv,
+                };
+            }
+            _ if parked_idle => {
+                return DispatchRead::Stranded {
+                    n,
+                    mark,
+                    tv: rig.tv,
+                };
+            }
             Some(
                 why @ (PlanEnd::Licence { .. }
                 | PlanEnd::Claimed
@@ -3216,13 +3243,14 @@ mod tests {
         assert_eq!(
             line(DispatchRead::Stranded {
                 n: 1,
-                mark: "OWP-YT-01".to_owned()
+                mark: "OWP-YT-01".to_owned(),
+                tv: ObjId(71),
             }),
             (
                 LineState::Flagged,
                 format!(
-                    "{head}rig 1 (OWP-YT-01) is stranded on the ground. Staff bring it in by \
-                     placing it on the pad, then recover it as the dispatcher."
+                    "{head}rig 1 (OWP-YT-01) is stranded on the ground. Staff bring it into its \
+                     bay with @tacsim/tv home #71."
                 )
             )
         );

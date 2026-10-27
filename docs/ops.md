@@ -1151,20 +1151,66 @@ in all."; `[pending]` "waiting on the Registry's seeds, licence and survey."; an
 `[missing]` "the yard is not laid up.". `[flagged]` is "{what} cannot be read."
 (a rig's record or hopper, the delivery ledger, the yard hold, the storefront),
 "its licence account is not active.", or one of four rig orders, each naming its
-remedy. No staff close or bring-in verb exists yet (O-17):
+remedy. The staff recovery commands below replace the old pad-placement workaround:
 
-- "rig {n} ({mark}) is stranded on the ground. Staff bring it in by placing it on
-  the pad, then recover it as the dispatcher." — place the rig on the pad, then
-  `+tv/{n} recover go` as the dispatcher.
+- "rig {n} ({mark}) is stranded on the ground. Staff bring it into its bay with
+  @tacsim/tv home #{tv}." — run the named command and wait for completion.
 - "rig {n} ({mark}) stopped: {why}. Staff clear its plan to start it again." — a
   plan ended on a right, the dark registry or a full chart, or a stranded rig
-  staff have since brought back into the bay ("stranded").
+  staff have since brought back into the bay ("stranded"). Use `@tacsim/tv close #<rig>`
+  to clear its work after correcting the cause.
 - "rig {n} ({mark}) is held by staff; strike its plan to start it again." — a
-  plan staff cleared. `+tv/{n} plan clear` on an ended plan strikes it from the
-  record, and the dispatcher files afresh.
+  plan staff cleared. `@tacsim/tv close #<rig>` removes it, and the dispatcher
+  may file afresh.
 - "rig {n} ({mark}) holds ore its last unload left in the hopper. Staff unload it
-  as the dispatcher (+tv/{n} unload go) to start it again." — a stalled rig; the
-  bare `+tv/{n} unload` only previews (the text names `go` since `f171b36c`).
+  as the dispatcher (+tv/{n} unload go) to start it again." — use
+  `@tacsim/tv unload #<rig>` once the hold has room for the whole hopper.
+
+### Staff rig recovery
+
+Royalty or a character with `SIM_ADMIN` can operate on an explicit rig object id:
+
+```text
+@tacsim/tv close #<rig>
+@tacsim/tv home #<rig>
+@tacsim/tv unload #<rig>
+```
+
+`close` closes the excursion, cancels the rig's active work, fill plan and queued
+unload, and releases its mining pocket locks. It leaves the rig where it stands
+and preserves its hopper and charge.
+Use it to clear another pilot's orphaned work after correcting the underlying cause.
+
+`home` performs the same cancellation and requests return to the rig's existing
+assigned bay room and compartment. The hull must be docked at a site or normal port.
+The request is durable before placement; the surface tick completes it, including
+after restart. It preserves the hopper and charge; bay charging starts when the
+return is confirmed. Use this for a stranded rig or a rig staff moved out of place.
+
+A blocked home reports its reason once to the staff member and operator. Correct
+the cause and let it retry, or issue `@tacsim/tv home #<rig>` to replace the request
+with the current assignment. `@tacsim/tv close #<rig>` cancels a pending home in
+place, including when its original staff member is no longer available. The
+original staff member's committed request can finish after their role is revoked;
+starting another recovery still requires current staff permission.
+
+`unload` transfers the whole hopper to the assigned hull's hold while the rig is in
+its bay and the hull is docked, including at a normal port. Every kind of ore must
+fit together within the hold's capacity. Reserved hopper stock, unreadable inventory
+or insufficient room refuses the entire operation without moving ore or cancelling
+work. A successful unload also closes the excursion and clears active work, the
+fill plan and any queued unload left behind by an operator who lost the helm.
+
+These operations retain the lease and deposit: they do not refund, renew, return or
+reassign a lease. They keep action ordinals and inventory history, so an old completion
+cannot resume cancelled work. A request acknowledgment is not completion; wait for
+the recovery result. A pending home holds new rig work, departure, lease return and
+repossession until it completes or staff cancel it.
+
+**Pre-launch compatibility:** the optional recovery receipt and notification fields
+keep schema 1 and need no migration; existing records without them still load.
+Older binaries cannot read records carrying these fields, so rolling back past
+this change requires a matching earlier snapshot.
 
 ### Survey commissions (surface mining, doc 20 phase 2)
 

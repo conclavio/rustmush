@@ -4238,6 +4238,15 @@ pub(crate) fn rig_flight(ctx: &Ctx<'_>, tv: ObjId) -> Result<RigFlight, String> 
             tv.0, record.tv.0
         ));
     }
+    // A staff home operation holds the rig until its durable finish, including the
+    // interval after the normal-lane placement has already put it in the bay.
+    if let Some(recovery) = record.recovery.as_ref().filter(|recovery| recovery.pending) {
+        return Ok(RigFlight::Busy {
+            kind: crate::surface::excursion::ActKind::Recover,
+            due_ic: recovery.at_ic,
+            params: crate::surface::excursion::ActParams::None {},
+        });
+    }
     // An act in flight outranks a run (a scan from a drilling rig names the scan); a run
     // outranks the open excursion it drills from (the SM.7 lead's pre-commit round, item 2); doc
     // 20 cut SM.11: a live plan of the rig's lessee is read between the two.
@@ -4292,7 +4301,13 @@ pub(crate) fn rig_parked(
     let Some(record) = record else {
         return in_this_bay;
     };
-    let quiet = record.act.is_none() && record.run.is_none() && record.queued.is_none();
+    let quiet = record.act.is_none()
+        && record.run.is_none()
+        && record.queued.is_none()
+        && !record
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.pending);
     if !quiet {
         return false;
     }
