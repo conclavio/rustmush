@@ -22,13 +22,14 @@
 //! its reason.
 //!
 //! C2a builds the mechanism and the author's commands (`author`); C2c adds
-//! `market` (`+minds`, `+minds/buy`, `@mind/publish`) and `holdings`
-//! (`+minds/holdings`); C2d adds `renew` (`+minds/renew`, a front over the
-//! renewal services' `player_step`, the one command that submits through a
-//! service rather than `submit`; held at `renew::RENEWALS_OPEN`), `trade`
-//! (`+minds/resell`, `+minds/charter` and their `/accept`s; held at
-//! `trade::NAMED_OFFERS_OPEN`) and `registry` (`@registry/recall` and
-//! `@registry/revoke`).
+//! `market` (`+minds`, `+minds/buy` and its steps, `@mind/publish`) and
+//! `holdings` (`+minds/holdings`); C2d adds `renew` (`+minds/renew`, a front
+//! over the renewal services' `player_step`, the one command that submits
+//! through a service rather than `submit`; held at `renew::RENEWALS_OPEN`),
+//! `trade` (`+minds/resell`, `+minds/charter` and their `/accept`s) and
+//! `registry` (`@registry/recall` and `@registry/revoke`). 17g C2g opens the
+//! buy steps, the paid holdings and the named offers over 17g C2f's owner
+//! indexes (each module's doc).
 
 pub(crate) mod author;
 pub(crate) mod holdings;
@@ -113,6 +114,36 @@ pub(crate) fn service<'a>(ctx: &'a Ctx<'_>) -> Result<&'a MindCommandService, Cm
 /// IC second and counts up within one, so a deliberately retyped command is a
 /// new request while the driver retrying one submission is still one commit.
 /// A key outside the key grammar refuses `NOT_OPEN`.
+///
+/// 17g C2g: the subject is what the request acts on. A restart starts the
+/// ordinal again at 0, so under a stopped IC clock a request after the
+/// restart meets the key of one before it whenever verb, subject, IC second
+/// and ordinal all match, and the driver answers it as that earlier request.
+/// The buy steps and the accepts make such a meeting the SAME request: their
+/// subject is a token that names exactly what they act on
+/// (`market::pay_key`, `settle_key`; `trade::accept_key`): `/buy/pay` keys
+/// on the quote's token (`mind.buy.pay.<token>.<at>.<ordinal>`),
+/// `/buy/complete` and `/buy/refund` on the funded purchase's operation
+/// token, and the two accepts on the offer's token. `+minds/buy` keys on the
+/// listing's token followed by the token of the actor's most recently quoted
+/// own record there, quote or funded purchase (`market::buy_key`,
+/// `OwnPurchaseView::latest`), so a re-quote after a committed Quote or Fund
+/// is a new key.
+///
+/// The residual, owed to a 17g C4 ledger item and fixed in neither C2g nor
+/// C2h (the lead's ruling 3 after C2g, for the seller and author forms; the
+/// C2g fix round 2 adds `+minds/buy`'s):
+/// - the seller forms (`+minds/resell` on the licence number,
+///   `+minds/charter` on the filed number), `@registry` and C2a's author
+///   forms key on the number they act on;
+/// - `+minds/buy` after a Grant or a Refund (the C2g fix round 2): those take
+///   the funded purchase out of the actor's own index, so the subject can be
+///   an earlier record's again, or the bare listing once no record is left.
+///
+/// After a restart under a stopped IC clock, a DIFFERENT request of one of
+/// them (another buyer or price, or a second purchase of one listing) that
+/// meets an earlier key that way is answered as the earlier request; a retype
+/// takes the next ordinal.
 pub(crate) fn next_key(
     attempts: &Mutex<(i64, u64)>,
     verb: &str,
@@ -170,6 +201,43 @@ pub(crate) fn submit(
     let key = next_key(&service(ctx)?.attempts, verb, subject, at)?;
     ctx.out.info(actor, request.to_owned());
     ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
+    Ok(())
+}
+
+/// 17g C2g: one line of a command's reply, to the actor alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Said {
+    /// An error line (`Output::error`).
+    Error(String),
+    /// An info line (`Output::info`).
+    Info(String),
+}
+
+/// 17g C2g: a refusal of one or more lines, the first the refusal sentence.
+/// One line is the returned error, which the dispatcher prints; more lines
+/// are a reply to `say`: the refusal as an error line, then the rest as info
+/// lines, and the command returns `Ok`, having printed its whole reply and
+/// submitted nothing (`+minds <code>`'s refusal followed by the own-purchase
+/// line, an accept's `NO_OFFER_AT` followed by the live offers).
+pub(crate) fn refusal(lines: Vec<String>) -> Result<Vec<Said>, CmdError> {
+    let mut lines = lines.into_iter();
+    let first = lines.next().unwrap_or_default();
+    let rest: Vec<Said> = lines.map(Said::Info).collect();
+    if rest.is_empty() {
+        return Err(CmdError::msg(first));
+    }
+    Ok(std::iter::once(Said::Error(first)).chain(rest).collect())
+}
+
+/// 17g C2g: print `lines` to the actor in order.
+pub(crate) fn say(ctx: &mut Ctx<'_>, lines: Vec<Said>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    for line in lines {
+        match line {
+            Said::Error(line) => ctx.out.error(actor, line),
+            Said::Info(line) => ctx.out.info(actor, line),
+        }
+    }
     Ok(())
 }
 

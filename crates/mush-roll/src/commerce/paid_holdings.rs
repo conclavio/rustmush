@@ -5,9 +5,9 @@
 //! (zero-padded decimal holder, so one holder's rows are contiguous and a
 //! prefix page never reaches a neighbour's). It **authorizes nothing**, like
 //! v2's `ActorOffers`: it only lets `+minds/holdings` find the licences the
-//! actor holds with a bounded read (`page`, C2g's `OwnHoldings { section:
-//! Paid }`); every fact a row shows is reread from the licence's own rows
-//! (`command_reader::own_paid`).
+//! actor holds with a bounded read (`page`, behind Roll's `OwnHoldings {
+//! section: Paid }` command kind since 17g C2g); every fact a row shows is
+//! reread from the licence's own rows (`command_reader::own_paid`).
 //!
 //! It is written wherever a paid-licence pointer's holder is SET, inside the
 //! same money transaction as the pointer, and nowhere else:
@@ -221,9 +221,8 @@ impl PaidHoldingsPage {
 /// telling whether more follow), cut by `cut` at the first key outside the
 /// holder's prefix, so it never returns a neighbour's row. Each row is built
 /// exactly as `command_reader::own_paid` builds a `PaidHoldingView`.
-/// Own-only: a `holder` other than the calling actor is `Refused`.
-/// Unused until C2g wires the read kind to it (the allowance goes then).
-#[allow(dead_code)]
+/// Own-only: a `holder` other than the calling actor is `Refused`. 17g C2g:
+/// Roll's `OwnHoldings { section: Paid }` command kind answers through it.
 pub(crate) fn page(
     ctx: &OwnerReadContext<'_>,
     families: &CommerceFamilies,
@@ -253,7 +252,6 @@ pub(crate) fn page(
 /// Where a holder's page scan starts (exclusively): the holder's bare prefix
 /// `{holder:020}/`, which sorts before every one of its rows, or the row the
 /// previous page ended on.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn page_start(holder: ObjId, after: Option<LicenceId>) -> String {
     after.map_or_else(
         || format!("{}/", holder_prefix(holder)),
@@ -265,7 +263,6 @@ pub(crate) fn page_start(holder: ObjId, after: Option<LicenceId>) -> String {
 /// the rows under `holder`'s prefix only, stopping at the first other key;
 /// `row_of` each of the first `PAID_ROWS_PER_READ`; the cursor is the last
 /// row's licence when one more of the holder's rows follows.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn cut<T>(
     entries: &[(String, PaidHolding)],
     holder: ObjId,

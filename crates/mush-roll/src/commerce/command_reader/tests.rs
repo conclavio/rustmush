@@ -52,6 +52,13 @@ impl mush_core::module::QueryHandler for Query {
         {
             // 17g C2d: `{"paid": <licence>}`.
             RollCommandReadRequest::own_paid(licence)
+        } else if let Some(filed) = args
+            .get("charter_offers")
+            .and_then(Value::as_u64)
+            .and_then(|n| FiledRevisionId::new(n).ok())
+        {
+            // 17g C2g: `{"charter_offers": <filed>}`.
+            RollCommandReadRequest::charter_offers(filed)
         } else if let Some(names) = args.get("names").and_then(Value::as_array) {
             RollCommandReadRequest::charter_names(
                 names
@@ -295,13 +302,18 @@ fn owner_phase_rounds_whole_ic_days_up_and_reads_grace_and_lapse() -> TestResult
 /// The page cuts (`OWNER_ROWS_PER_READ`, `OWN_ASSETS_PER_READ`) and their
 /// cursors are `page`'s, proven below over synthetic assets.
 ///
-/// Not proven here (no fixture, or not built): the dependent owner row (no
-/// dependent filing in this crate's fixture, as C2a's residual says), the
-/// personal paid and House Pin rows and `revoked` (the paid section waits
-/// for the index), and another player's own filing kept off the author's
-/// page (a second filing needs a second shell, rating and filing, which this
-/// fixture does not build; the read walks only the actor's own E4 titles,
-/// and the other direction is checked).
+/// 17g C2g (C2c test 3's owed cases, the C2e plan §4.1 item 1): the paid
+/// section through the real read (`paid_section_pages_own_rows`).
+///
+/// Not proven here (no fixture): the dependent owner row (no dependent
+/// filing in this crate's fixture, as C2a's residual says; owed to the
+/// story), the House Pin row and the selling flag (both protocol-owned rows
+/// mush-core refuses outside their protocol; `paid_section_pages_own_rows`'
+/// doc quotes the refusals; owed to the C2h story beside the dependent row,
+/// pending the lead's disposition), and another player's own
+/// filing kept off the author's page (a second filing needs a second shell,
+/// rating and filing, which this fixture does not build; the read walks only
+/// the actor's own E4 titles, and the other direction is checked).
 #[test]
 fn command_reader_pages_own_holdings_of_every_kind() -> TestResult {
     let mut f = Fixture::new_with_reads(true, tacsim_reads, true);
@@ -352,11 +364,8 @@ fn command_reader_pages_own_holdings_of_every_kind() -> TestResult {
     let theirs = read(&mut f, other, json!({"holdings": null}))??;
     let theirs = theirs.0.into_owner_holdings().ok_or("a page")?;
     check!(theirs.rows().is_empty(), "another player's page is empty");
-    // The paid section waits for the per-holder index.
-    check_eq!(
-        read(&mut f, GOD, json!({"holdings": null, "paid": true}))?,
-        Err(OwnerReadError::Unavailable)
-    );
+    // 17g C2g: the paid section, through the per-holder index.
+    paid_section_pages_own_rows(&mut f, other)?;
 
     // Names only, for anyone; an unknown charter is left out.
     for actor in [GOD, other] {
@@ -628,12 +637,14 @@ fn renewal_rows(
 ///   `Paid`, and the foreign and missing reads stay `Refused` alike while
 ///   it is pending; `renewal_mark` maps any other phase to none.
 ///
-/// Not proven here: the House Pin, revoked and selling flags through real
-/// rows (no House catalogue, revocation or funded resale fixture here; each
-/// is one point read of its own family, and the House renewal head is read
-/// only when the House allocation row exists), and `CharterOffers` and
-/// `ResaleStep`, which wait for the per-buyer offer indexes (the module
-/// doc).
+/// Not proven here: the House Pin flag through real rows (mush-core refuses
+/// a House allocation row outside a House purchase invocation; it is one
+/// point read of `house_allocations`, and the House renewal head is read
+/// only when that row exists; `paid_section_pages_own_rows`' doc). The
+/// revoked flag is `paid_section_pages_own_rows`' (17g C2g), selling owed
+/// as its doc says;
+/// `CharterOffers` is `charter_offers_answer_only_the_named_buyer`'s and the
+/// named buyer's resale step `resale_step_on_a_granted_transferable_licence`'s.
 #[test]
 fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
     use crate::commerce::paid::{PaidForm, PaidTermRecord, PaidTerms, PersonalPaidLicence};
@@ -785,6 +796,383 @@ fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
     check_eq!(
         serde_json::to_value(RenewalMark::Offered)?,
         json!("offered")
+    );
+    Ok(())
+}
+
+/// 17g C2g (C2c test 3's paid, revoked and neighbour cases, through
+/// `command_reader_pages_own_holdings_of_every_kind`): over the real filing
+/// fixture, the paid licences 41 to 44 held by the author (God) and 45 by
+/// another player, each a pointer, its current term and its per-holder index
+/// row written beside the filing, and 42's current term revoked by the
+/// Registry (its `roll_registry_revoked_terms` row):
+/// - the author's paid section pages three rows at a time in licence order
+///   (`PAID_ROWS_PER_READ`), the cursor the last row's licence, and the
+///   second page ends with no cursor; the neighbour's row (the next key
+///   after the author's prefix) never appears;
+/// - each row is exactly `OwnPaid`'s view of that licence, with `revoked`
+///   on 42 only and no row selling;
+/// - the neighbour reads only 45, a third player nothing;
+/// - no answer carries a digest, account, rating, source or revision.
+///
+/// Not fixtured here, although C2c test 3 names them (the C2g fix round,
+/// reviewers C2G-2, F4 and T3; the brief exempted only the dependent row):
+/// - `selling` through a real row: mush-core refuses a funded resale head
+///   written outside the paid-resale protocol (`terminal_capacity::
+///   paid_resale::transition`, "resale writes without protocol", the head
+///   being one of the protocol's own families), as it refuses C2c's pending
+///   head; the flag is one point read of `paid_resale_heads` (`own_paid`);
+/// - the House Pin row (`house`, and the House renewal head read only
+///   then): mush-core refuses any `roll_mind_house_purchase` write outside
+///   an actual House purchase invocation (`terminal_capacity::house::
+///   validate_changes`: "house writes require registered protocol" without
+///   the protocol, "purchase write lacks actual invocation" with it), so
+///   this transaction, which carries no invocation, cannot hold the
+///   `house_allocations` row `own_paid` reads by the birth operation.
+///
+/// Both are owed to the C2h story (a funded resale's holder reading
+/// `; selling` in story part 3; a House Pin holder's row reading `House
+/// Pin`, which needs a House purchase in a story), pending the lead's
+/// disposition.
+fn paid_section_pages_own_rows(f: &mut Fixture, other: ObjId) -> TestResult {
+    use crate::commerce::paid::{PaidForm, PaidTermRecord, PaidTerms, PersonalPaidLicence};
+    use crate::commerce::paid_holdings::PaidHolding;
+    use crate::commerce::rating::RatingClass;
+    use crate::commerce::records::RevisionPolicy;
+    use crate::commerce::{TermGeneration, TermWindow};
+    let filed = FiledRevisionId::new(1)?;
+    let content = f
+        .engine
+        .action_state()
+        .get(&f.families.filed, &filed.key())?
+        .ok_or("the filed row")?
+        .content()
+        .clone();
+    let one = TermGeneration::new(1)?;
+    let now = f.engine.world.game_now_unix();
+    let window = TermWindow::new(
+        WorldIcSeconds(now),
+        WorldIcSeconds(now),
+        WorldIcSeconds(now + 90 * DAY),
+        WorldIcSeconds(now + 93 * DAY),
+    )?;
+    let terms = PaidTerms::original_personal_form(RatingClass::I, PaidForm::OpenResale {}, true)?;
+    let families = f.families.clone();
+    let mut txn = f.engine.action_transaction(&families.paid_licences)?;
+    for (n, holder) in [(41, GOD), (42, GOD), (43, GOD), (44, GOD), (45, other)] {
+        let licence = LicenceId::new(n)?;
+        let birth = token(u8::try_from(n)?);
+        let pointer = PersonalPaidLicence::original(
+            licence,
+            content.position().charter,
+            content.position().line,
+            holder,
+            one,
+            birth,
+        )?;
+        let term = PaidTermRecord::original(
+            licence,
+            one,
+            window,
+            terms,
+            RevisionPolicy::Pin {
+                filed,
+                revision: content.revision(),
+            },
+            birth,
+        )?;
+        txn.insert(&families.paid_licences, &licence.key(), pointer)?;
+        txn.insert(
+            &families.paid_terms,
+            &format!("{}/{}", licence.key(), one.key()),
+            term,
+        )?;
+        let row = PaidHolding::new(holder, licence)?;
+        txn.insert(&families.paid_holdings, &row.key(), row.clone())?;
+    }
+    let (_, install) = txn.prepare()?.into_parts();
+    f.engine.install_prepared_action(install)?;
+    // 42's current term revoked.
+    let revoked = crate::commerce::registry_revocation::records::RevokedTerm {
+        format: 1,
+        licence: LicenceId::new(42)?,
+        generation: one,
+        operation: token(60),
+        term_digest: mush_core::DefinitionDigest::from_bytes([6; 32]),
+        window,
+    };
+    let mut txn = f.engine.action_transaction(&families.revoked_terms)?;
+    txn.insert(&families.revoked_terms, &revoked.key(), revoked.clone())?;
+    let (_, install) = txn.prepare()?.into_parts();
+    f.engine.install_prepared_action(install)?;
+
+    /// One paid page: its licence numbers, its cursor and its encoding.
+    type Page = (Vec<u64>, Option<u64>, String);
+    let page = |f: &mut Fixture, actor, after: Value| -> Result<Page, Box<dyn std::error::Error>> {
+        let (answer, encoded) = read(f, actor, json!({"holdings": after, "paid": true}))??;
+        let page = answer.into_paid_holdings().ok_or("a paid page")?;
+        Ok((
+            page.rows().iter().map(|r| r.licence().get()).collect(),
+            page.next().map(LicenceId::get),
+            encoded,
+        ))
+    };
+    let (first, next, encoded) = page(f, GOD, Value::Null)?;
+    check_eq!(
+        (first, next),
+        (vec![41, 42, 43], Some(43)),
+        "three rows, then the cursor"
+    );
+    for forbidden in ["digest", "account", "payer", "rating", "source", "revision"] {
+        check!(!encoded.contains(forbidden), "{forbidden} in {encoded}");
+    }
+    let (second, next, _) = page(f, GOD, json!(43))?;
+    check_eq!(
+        (second, next),
+        (vec![44], None),
+        "the neighbour's 45 never appears"
+    );
+    let (theirs, next, _) = page(f, other, Value::Null)?;
+    check_eq!(
+        (theirs, next),
+        (vec![45], None),
+        "the neighbour reads its own"
+    );
+    let third = f.engine.world.create(
+        mush_core::ObjKind::Player,
+        "Third",
+        GOD,
+        Some(mush_core::LIMBO),
+    )?;
+    let (none, next, _) = page(f, third, Value::Null)?;
+    check!(
+        none.is_empty() && next.is_none(),
+        "a third player holds nothing"
+    );
+    // Each row is `OwnPaid`'s view; the flags are the licence's own.
+    let (answer, _) = read(f, GOD, json!({"holdings": null, "paid": true}))??;
+    let rows = answer.into_paid_holdings().ok_or("a paid page")?;
+    for row in rows.rows() {
+        let n = row.licence().get();
+        let (own, _) = read(f, GOD, json!({"paid": n}))??;
+        check_eq!(Some(row.clone()), own.into_own_paid(), "licence {n}");
+        check_eq!(
+            (row.revoked(), row.selling(), row.house(), row.renewal()),
+            (n == 42, false, false, None),
+            "licence {n}"
+        );
+        check!(row.transferable() && row.name() == "Original");
+        check_eq!(row.phase(), OwnerPhase::Active { days_left: 90 });
+    }
+    Ok(())
+}
+
+/// 17g C2g (the C2e plan §4.1 item 4, C2d test 2's Roll twin): `CharterOffers`
+/// answers only the live pending-charter offers naming the actor on the
+/// filed mind's charter.
+/// - Over real pending offer rows (`charter_pending`'s `offer` fixture; a
+///   pending offer row cannot be written outside the composed protocol, so
+///   `named_offers`, the read's own answer, is called with them): the
+///   actor's two live offers are listed with their frozen prices and
+///   expiries, its offer at its expiry is not, no row is the empty list, and
+///   a row naming another buyer's offer, or an offer on another charter, is
+///   `Integrity`;
+/// - through the real read on the filing fixture: a filed number that does
+///   not exist is `Refused`, the real filed mind with no row naming the
+///   actor is the empty list, for the author and another player alike (the
+///   command prints both as `NO_CHARTER_OFFER`), and the encoding carries no
+///   seller, account or digest.
+#[test]
+fn charter_offers_answer_only_the_named_buyer() -> TestResult {
+    use crate::commerce::charter_pending::records::{PendingBuyerOffers, PendingOffer};
+    use crate::commerce::charter_pending::tests::buyer_offers::offer;
+    let me = ObjId(8);
+    let charter = CharterId::new(100)?;
+    let now = 5_000;
+    let cheap = offer(10, me, 100, now - 400)?; // expires now + 600
+    let mut dear_value = serde_json::to_value(offer(11, me, 100, now)?)?;
+    dear_value["price"] = json!(500);
+    let dear: PendingOffer = serde_json::from_value(dear_value)?;
+    let lapsed = offer(12, me, 100, now - 1_000)?; // expires now
+    let theirs = offer(13, ObjId(9), 100, now)?;
+    let elsewhere = offer(14, me, 101, now)?;
+    let rows: std::collections::BTreeMap<String, PendingOffer> =
+        [&cheap, &dear, &lapsed, &theirs, &elsewhere]
+            .into_iter()
+            .map(|o| (o.operation.to_hex(), o.clone()))
+            .collect();
+    let index = |offers: &[&PendingOffer]| PendingBuyerOffers {
+        format: 1,
+        buyer: me,
+        charter,
+        offers: offers.iter().map(|o| o.operation).collect(),
+    };
+    let lookup = |keys: &[String]| -> Result<Vec<Option<&PendingOffer>>, OwnerReadError> {
+        Ok(keys.iter().map(|k| rows.get(k)).collect())
+    };
+    let mine = named_offers(
+        me,
+        charter,
+        Some(&index(&[&cheap, &dear, &lapsed])),
+        now,
+        lookup,
+    )?;
+    check_eq!(
+        mine.iter()
+            .map(|v| (v.offer(), v.price_minor(), v.expires_at_utc()))
+            .collect::<Vec<_>>(),
+        vec![
+            (cheap.operation, cheap.price.minor(), now + 600),
+            (dear.operation, 500, now + 1_000),
+        ],
+        "the two live offers naming me; the lapsed one is left out"
+    );
+    check_eq!(named_offers(me, charter, None, now, lookup)?, Vec::new());
+    for crossed in [index(&[&theirs]), index(&[&elsewhere])] {
+        check_eq!(
+            named_offers(me, charter, Some(&crossed), now, lookup),
+            Err(OwnerReadError::Integrity)
+        );
+    }
+    let serialized = serde_json::to_string(&RollCommandReadResult::CharterOffers { offers: mine })?;
+    for forbidden in ["seller", "account", "digest", "buyer"] {
+        check!(
+            !serialized.contains(forbidden),
+            "{forbidden} in {serialized}"
+        );
+    }
+
+    // Through the real read.
+    let mut f = Fixture::new_with_reads(true, tacsim_reads, true);
+    let other = f.engine.world.create(
+        mush_core::ObjKind::Player,
+        "Other",
+        GOD,
+        Some(mush_core::LIMBO),
+    )?;
+    check_eq!(
+        read(&mut f, GOD, json!({"charter_offers": 1}))?,
+        Err(OwnerReadError::Refused),
+        "no filed mind 1 yet"
+    );
+    let request = f.request();
+    let (prepared, _) = f.engine.prepare_registered_composed_authoritative_action(
+        &config().initial_filing_action()?,
+        &request,
+        token(4),
+    )?;
+    let (_, install) = prepared.into_parts();
+    f.engine.install_composed_action(install)?;
+    let mut answers = Vec::new();
+    for actor in [GOD, other] {
+        let (answer, encoded) = read(&mut f, actor, json!({"charter_offers": 1}))??;
+        check_eq!(
+            answer.into_charter_offers(),
+            Some(Vec::new()),
+            "#{}",
+            actor.0
+        );
+        answers.push(encoded);
+    }
+    check_eq!(answers.first(), answers.get(1), "alike for every actor");
+    check_eq!(
+        read(&mut f, other, json!({"charter_offers": 99}))?,
+        Err(OwnerReadError::Refused)
+    );
+    Ok(())
+}
+
+/// 17g C2g (the C2e plan §4.1 item 4): the named buyer's resale step
+/// (`paid_resale::reader::ResaleStep`), by the provider's own claim test,
+/// on a granted transferable licence from the renewal rig's `birth` (born
+/// transferable and renewed once, so the term the step is asked for is a
+/// granted generation the resale reader admits: `require_transferable`):
+/// - no open paid claim is `Accept`, one or more is `Fund`, whatever the
+///   claim census's generation; an observation that does not validate is
+///   refused;
+/// - `resale_step` over a world reads Roll's own live claim census, keyed
+///   by the licence alone: a world with no Roll store is `Unavailable`; the
+///   filing fixture's ready Roll store, whose IC claims are unwired as in
+///   production, answers `Accept`; with a census holding one open paid-seat
+///   claim on the granted licence (`ic_claims::tests::row`, installed by
+///   `RollStore::replace_ic_claims_for_tests`), that licence is `Fund` and
+///   another licence stays `Accept`, so the step is the asked licence's own.
+///
+/// The step reads no pointer, term or offer: whether the licence is held,
+/// granted and transferable is the resale provider's own `observe` at
+/// preparation, and the market read asks for the step only on a licence it
+/// found an offer naming the actor on (`mush_market::mind_commands`).
+#[test]
+fn resale_step_on_a_granted_transferable_licence() -> TestResult {
+    use crate::commerce::entitlement::writer::EntitlementPurchaseTerms;
+    use crate::commerce::paid::PaidForm;
+    use crate::commerce::paid_resale::ResaleClaimObservation;
+    use crate::commerce::paid_resale::reader::{ResaleStep, require_transferable, resale_step};
+    use crate::commerce::rating::RatingClass;
+    use crate::commerce::records::PublicationError;
+    use crate::commerce::renewal::RenewalAttemptV1;
+    use crate::commerce::renewal::tests::{birth_with, draft, funded, granted_birth, terminal};
+    let terms =
+        EntitlementPurchaseTerms::personal_terms(RatingClass::I, PaidForm::OpenResale {}, true)?;
+    let born = birth_with(terms)?;
+    let renewed = granted_birth(&terminal(
+        &funded(&draft(&born, 10, 20, RenewalAttemptV1::Automatic {})?)?,
+        true,
+    )?)?;
+    check_eq!(renewed.term.generation().get(), 2, "a granted generation");
+    require_transferable(&renewed.term)?;
+    let licence = renewed.licence.id();
+    let claims = |generation, next_transition, open_paid| ResaleClaimObservation {
+        generation,
+        next_transition,
+        open_paid,
+    };
+    check_eq!(
+        ResaleStep::of(&claims(0, 1, 0)),
+        Ok(ResaleStep::Accept),
+        "unwired"
+    );
+    check_eq!(ResaleStep::of(&claims(3, 9, 0)), Ok(ResaleStep::Accept));
+    check_eq!(ResaleStep::of(&claims(3, 9, 1)), Ok(ResaleStep::Fund));
+    check_eq!(ResaleStep::of(&claims(3, 9, 7)), Ok(ResaleStep::Fund));
+    check_eq!(
+        ResaleStep::of(&claims(0, 1, 1)),
+        Err(PublicationError::Invalid),
+        "no open claim without a census"
+    );
+    check_eq!(serde_json::to_value(ResaleStep::Fund)?, json!("fund"));
+    check_eq!(
+        resale_step(&World::new_minimal(), licence),
+        Err(PublicationError::Unavailable),
+        "no Roll store"
+    );
+    let mut f = Fixture::new_with_reads(true, tacsim_reads, true);
+    check_eq!(
+        resale_step(&f.engine.world, licence),
+        Ok(ResaleStep::Accept),
+        "Roll's own census, claims unwired"
+    );
+    {
+        use crate::commerce::ic_claims::ClaimInventory;
+        use crate::commerce::ic_claims::tests::{one_seat, row};
+        let census = ClaimInventory::reconstruct(vec![row(1, licence.get(), one_seat()?)?])?;
+        check_eq!(census.paid_open(licence), 1);
+        f.engine
+            .world
+            .module_state_mut::<crate::RollStore>()
+            .ok_or("the Roll store")?
+            .replace_ic_claims_for_tests(Some(census));
+    }
+    check_eq!(
+        resale_step(&f.engine.world, licence),
+        Ok(ResaleStep::Fund),
+        "an open paid claim on the granted licence"
+    );
+    let another = LicenceId::new(licence.get().checked_add(1).ok_or("licence")?)?;
+    check_eq!(
+        resale_step(&f.engine.world, another),
+        Ok(ResaleStep::Accept),
+        "no claim on another licence"
     );
     Ok(())
 }

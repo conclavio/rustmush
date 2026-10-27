@@ -827,7 +827,7 @@ impl GameModule for MarketModule {
             let families = crate::mind_entitlement::register_with_house_definitions(
                 reg,
                 config,
-                gate.clone(),
+                gate,
                 lot_registered || self.state.original_mind_quotes.is_some(),
                 &house_definitions
                     .iter()
@@ -836,9 +836,6 @@ impl GameModule for MarketModule {
                     .cloned()
                     .collect::<Vec<_>>(),
             )?;
-            // 17g C2c (C2 plan §2.4): the `+minds` commands' bounded read of
-            // these listings, granted to TacSim, beside the families it reads.
-            crate::mind_commands::register(reg, families.clone(), config, gate)?;
             self.state.entitlement_families = Some(families);
         }
         if let Some(config) = &self.state.house_minds {
@@ -887,6 +884,27 @@ impl GameModule for MarketModule {
                 config,
                 self.state.original_purchase_families.clone(),
             )?);
+        }
+        // 17g C2c (C2 plan §2.4): the `+minds` commands' bounded read of the
+        // entitlement listings, granted to TacSim. 17g C2g: registered after
+        // the paid-resale families, which its `ResaleOffers` kind reads when
+        // the market composes paid resale.
+        if let (Some(config), Some(families)) = (
+            &self.state.mind_entitlements,
+            &self.state.entitlement_families,
+        ) {
+            let gate = self
+                .state
+                .venue_gate
+                .clone()
+                .ok_or_else(|| ModError::msg("entitlements require the actual venue gate"))?;
+            crate::mind_commands::register(
+                reg,
+                families.clone(),
+                self.state.paid_resale_families.clone(),
+                config,
+                gate,
+            )?;
         }
         crate::commands::register(reg)?;
         Ok(())

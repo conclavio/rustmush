@@ -10,7 +10,7 @@
 //! The comparison rule (plan §2.8) is `same_refusal` and `assert_private`;
 //! C2c and C2d reuse both, with `world` and `saved`.
 use super::paid_purchase::{
-    auth_account,
+    auth_account, open_wallet,
     runtime::{Running, STEP, Seen, rows},
 };
 use super::player_market::{
@@ -698,6 +698,16 @@ async fn author_commands_are_not_open_on_a_house_only_launch() -> TestResult {
 const EMPTY: &str = "No minds are for sale at this counter.";
 const COUNTER: &str = "Listing and buying minds happen at a market counter.";
 const HOLD_HEAD: &str = "Your mind licences:";
+/// 17g C2g: bare `+minds/holdings` with nothing in either section.
+const HOLD_EMPTY: &str = "You hold no mind licences.";
+/// 17g C2g: `/buy/pay` without exactly one personal credit account.
+const ACCOUNT: &str = "This needs exactly one personal credit account in your name.";
+fn no_quote(code: &str) -> String {
+    format!("You have no quote on listing {code}. Ask for one with +minds/buy {code}.")
+}
+fn no_purchase(code: &str) -> String {
+    format!("You have no paid purchase waiting on listing {code}.")
+}
 /// `TERMS` filled with the provisional counter's price (400cr) and the
 /// personal term (90 IC days).
 const TERMS_400: &str = "Listings here sell at 400cr for one seat and 90 IC days; per-listing terms are not available yet.";
@@ -763,9 +773,9 @@ async fn listings_are_identical_for_every_principal_at_the_counter() -> TestResu
     result?
 }
 
-/// 17g C2c test 8's publish half under its binding name (17g C2e, C2e plan
-/// §2.4 item 4; the `/buy` half joins it in C2g), through the real granted
-/// reads on the format-2 Active launch:
+/// 17g C2c test 8 under its binding name (the publish half 17g C2e's, C2e
+/// plan §2.4 item 4; the `/buy` half 17g C2g's, §4.4), through the real
+/// granted reads on the format-2 Active launch:
 /// - `@mind/publish 1 form=sealed` away from the counter is `COUNTER`;
 /// - at the counter, a `price=`, `seats=` or `term=` other than the
 ///   market's own is `TERMS` filled with the counter's price and term, and
@@ -775,6 +785,21 @@ async fn listings_are_identical_for_every_principal_at_the_counter() -> TestResu
 ///   allocate and a far one (both missing here, as in C2a's test 9; the real
 ///   foreign filed number is story part 2's);
 /// - `+minds feed0001` and `+minds/next feed0001` are `NO_LISTING`.
+/// - 17g C2g, the `/buy` half (no own record exists in the fast suite: a
+///   listing needs a genuine rating, story part 2's): at the counter the
+///   buyer's `+minds/buy feed0001` is `NO_LISTING`; `+minds/buy/pay
+///   feed0001` is `NO_QUOTE` (the market read's own-purchase kind over the
+///   buyer's own index, which holds nothing); `/buy/complete` and
+///   `/buy/refund` are `NO_PURCHASE`; and none prints a request line;
+/// - `/buy/complete` by another character (the author) on nothing reads
+///   byte-identically under `same_refusal`, and the author's `/buy/refund`
+///   of another code alike;
+/// - `/buy/pay` by a character with two personal credit accounts (the
+///   author's alt, given two by GOD) is `ACCOUNT`, before any own-record
+///   read;
+/// - away from the counter (Limbo), `+minds/buy`, `/buy/pay` and
+///   `/buy/complete` are `COUNTER` and `/buy/refund` (anywhere) is
+///   `NO_PURCHASE`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn market_commands_refuse_without_own_records() -> TestResult {
     let mut w = world("mush-c2e-refusals", 2).await?;
@@ -799,6 +824,22 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
             vec![COUNTER.to_owned()],
             "away from the counter"
         );
+        // 17g C2g (the C2g fix round's tests/T4): the buy steps' counter
+        // rule, away from the counter: `/buy`, `/pay` and `/complete` are
+        // `COUNTER` before any read; `/refund` runs anywhere, so it reaches
+        // the own-purchase read and is `NO_PURCHASE`.
+        for (line, reply) in [
+            ("+minds/buy feed0001", COUNTER.to_owned()),
+            ("+minds/buy/pay feed0001", COUNTER.to_owned()),
+            ("+minds/buy/complete feed0001", COUNTER.to_owned()),
+            ("+minds/buy/refund feed0001", no_purchase("feed0001")),
+        ] {
+            check_eq!(
+                w.server.command(p.buyer, line.into()).await?,
+                vec![reply],
+                "away from the counter: {line}"
+            );
+        }
         w.server
             .command(
                 GOD,
@@ -846,6 +887,63 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
                 "{line}"
             );
         }
+        // 17g C2g: the `/buy` half.
+        for (line, reply) in [
+            ("+minds/buy feed0001", no_listing("feed0001")),
+            ("+minds/buy/pay feed0001", no_quote("feed0001")),
+            ("+minds/buy/complete feed0001", no_purchase("feed0001")),
+            ("+minds/buy/refund feed0001", no_purchase("feed0001")),
+        ] {
+            check_eq!(
+                w.server.command(p.buyer, line.into()).await?,
+                vec![reply],
+                "{line}"
+            );
+        }
+        let buyer = w
+            .server
+            .command(p.buyer, "+minds/buy/complete feed0001".into())
+            .await?;
+        let author = w
+            .server
+            .command(p.author, "+minds/buy/complete feed0001".into())
+            .await?;
+        check_eq!(
+            &buyer,
+            &author,
+            "another character on nothing: the same bytes"
+        );
+        let other_code = w
+            .server
+            .command(p.author, "+minds/buy/refund 0fffffff".into())
+            .await?;
+        check_eq!(&other_code, &vec![no_purchase("0fffffff")]);
+        check!(
+            same_refusal(
+                &w.server
+                    .command(p.buyer, "+minds/buy/refund feed0001".into())
+                    .await?,
+                "feed0001",
+                &other_code,
+                "0fffffff"
+            ),
+            "NO_PURCHASE reads alike for any code"
+        );
+        for _ in 0..2 {
+            open_wallet(
+                &w.server,
+                &w.launch.store,
+                mush_org::PrincipalId::Object(w.alt),
+            )
+            .await?;
+        }
+        check_eq!(
+            w.server
+                .command(w.alt, "+minds/buy/pay feed0001".into())
+                .await?,
+            vec![ACCOUNT.to_owned()],
+            "two personal accounts"
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })
     .await;
@@ -914,11 +1012,20 @@ async fn market_commands_are_not_open_on_a_house_only_launch() -> TestResult {
 /// stand as they were. Every principal stands at the counter: `+minds` is
 /// `EMPTY`; `+minds feed0001` and `+minds/next feed0001` are `NO_LISTING`;
 /// `+minds/holdings owner 1` is `HOLD_HEAD` alone (the live Roll read, for a
-/// character with no charters: no row and no `HOLD_MORE`); bare
-/// `+minds/holdings`, its paid section, `+minds/buy` and its three steps
-/// still refuse `NOT_OPEN` (they wait for 17g C2g); both `@mind/publish`
-/// forms are `NO_FILED` (the counter admits; nobody owns filed mind 1); a
-/// malformed form is `BAD_FORM` and an unknown switch set the `+minds` help.
+/// character with no charters: no row and no `HOLD_MORE`); both
+/// `@mind/publish` forms are `NO_FILED` (the counter admits; nobody owns
+/// filed mind 1); a malformed form is `BAD_FORM` and an unknown switch set
+/// the `+minds` help.
+///
+/// 17g C2g (C2e plan §4.4) re-blesses the forms it opens, each printing its
+/// refusal and never a request line with no own records: bare
+/// `+minds/holdings` is `HOLD_EMPTY` alone (nothing in either section, no
+/// waiting purchase); `+minds/holdings paid 1` is `HOLD_HEAD` alone (the
+/// live paid section past an empty prefix: no row and no `HOLD_MORE`);
+/// `+minds/buy feed0001` is `NO_LISTING`; `+minds/buy/pay feed0001` is
+/// `NO_QUOTE` for the author and the buyer and `ACCOUNT` for the bystander,
+/// who has no personal credit account; `/buy/complete` and `/buy/refund` are
+/// `NO_PURCHASE`.
 ///
 /// The refusals 17g C2e made reachable are under the same lens (the C2e fix
 /// round, reviewer tests/T3): `@mind/publish` with a zero price (edge b) or
@@ -962,17 +1069,19 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
             );
         }
         let no_listing = no_listing("feed0001");
+        let no_quote = no_quote("feed0001");
+        let no_purchase = no_purchase("feed0001");
         let lines = [
             ("+minds", EMPTY),
             ("+minds feed0001", no_listing.as_str()),
             ("+minds/next feed0001", no_listing.as_str()),
-            ("+minds/holdings", NOT_OPEN),
+            ("+minds/holdings", HOLD_EMPTY),
             ("+minds/holdings owner 1", HOLD_HEAD),
-            ("+minds/holdings paid 1", NOT_OPEN),
-            ("+minds/buy feed0001", NOT_OPEN),
-            ("+minds/buy/pay feed0001", NOT_OPEN),
-            ("+minds/buy/complete feed0001", NOT_OPEN),
-            ("+minds/buy/refund feed0001", NOT_OPEN),
+            ("+minds/holdings paid 1", HOLD_HEAD),
+            ("+minds/buy feed0001", no_listing.as_str()),
+            ("+minds/buy/pay feed0001", no_quote.as_str()),
+            ("+minds/buy/complete feed0001", no_purchase.as_str()),
+            ("+minds/buy/refund feed0001", no_purchase.as_str()),
             ("+minds/next/pay x", MINDS_HELP),
             ("@mind/publish 1 form=sealed", "You own no filed mind 1."),
             (
@@ -1004,6 +1113,12 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
                 quiet(&late, actor, "the settle window")?;
                 let seen = w.server.command_seen(actor, line.into()).await?;
                 quiet(&seen, actor, line)?;
+                // The bystander has no personal credit account (17g C2g).
+                let reply = if actor == w.bystander && line == "+minds/buy/pay feed0001" {
+                    ACCOUNT
+                } else {
+                    reply
+                };
                 check_eq!(seen.own, vec![reply.to_owned()], "#{} {line}", actor.0);
             }
         }
@@ -1139,10 +1254,12 @@ async fn registry_commands_refuse_alike_for_every_principal_on_unknown_targets()
 /// - a missing player is `NO_PLAYER`, checked before the actor's own record
 ///   (a player's existence is public);
 /// - `price=0` is `BAD_PRICE`, before anything is read;
-/// - the two accepts parse, then refuse `NOT_OPEN`: the offers naming the
-///   actor are found only through the per-buyer offer indexes C2b did not
-///   land (the C2d builder's report), so `NO_OFFER` and `NO_CHARTER_OFFER`
-///   wait with them; a malformed accept is still the help.
+/// - 17g C2g: the two accepts read the offers naming the actor through the
+///   per-buyer offer indexes (the market's `ResaleOffers`, Roll's
+///   `CharterOffers`), so with none `+minds/resell/accept 999` is
+///   `NO_OFFER` and `+minds/charter/accept 999` `NO_CHARTER_OFFER`, with or
+///   without `price=` (a filed number that does not exist reads as one with
+///   no offer); a malformed accept is still the help.
 ///
 /// The fast suite has no filing or licence (a genuine rating), so "foreign"
 /// is the story's; here both numbers are missing, as in C2a's test 9.
@@ -1196,10 +1313,10 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
                     "+minds/charter 999=LaunchAuthor price=1.234",
                     "price is in credits, from 0.01 to 1000000, such as price=12.50.",
                 ),
-                ("+minds/resell/accept 999", NOT_OPEN),
-                ("+minds/resell/accept 999 price=0.21", NOT_OPEN),
-                ("+minds/charter/accept 999", NOT_OPEN),
-                ("+minds/charter/accept 999 price=1", NOT_OPEN),
+                ("+minds/resell/accept 999", NO_OFFER_999),
+                ("+minds/resell/accept 999 price=0.21", NO_OFFER_999),
+                ("+minds/charter/accept 999", NO_CHARTER_OFFER_999),
+                ("+minds/charter/accept 999 price=1", NO_CHARTER_OFFER_999),
             ] {
                 check_eq!(
                     w.server.command(actor, line.into()).await?,
@@ -1231,6 +1348,11 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
 /// chosen buyer may be named only on `RESELLING` and `CHARTERING` (the
 /// buyer's name is then exempt from the check below); no other line names
 /// another character. Room speech is the positive control.
+///
+/// 17g C2g extends the table to the forms it opens: the two accepts now
+/// read the per-buyer offer indexes (`NO_OFFER`, `NO_CHARTER_OFFER`), and a
+/// seller form naming a licence the actor does not hold (`+minds/resell
+/// 1=LaunchAlt price=1`) is `NO_LICENCE`, exactly, under the same lens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn trade_replies_reach_only_the_actor() -> TestResult {
     let mut w = world("mush-c2d-observer", 2).await?;
@@ -1296,6 +1418,7 @@ async fn trade_replies_reach_only_the_actor() -> TestResult {
             ("+minds/charter 999=LaunchAlt price=1", false),
             ("+minds/charter/accept 999 price=1", false),
             ("+minds/renew/resell x", false),
+            ("+minds/resell 1=LaunchAlt price=1", false),
             ("@registry/recall 999", true),
             ("@registry/revoke 999", true),
         ];
@@ -1310,6 +1433,18 @@ async fn trade_replies_reach_only_the_actor() -> TestResult {
                 }
                 check!(!seen.own.is_empty(), "#{} {line} answers", actor.0);
                 quiet(&seen, actor, line)?;
+                // 17g C2g: the live lines, exactly.
+                let exact = match line {
+                    "+minds/resell/accept 999" | "+minds/resell/accept 999 price=0.21" => {
+                        Some(NO_OFFER_999)
+                    }
+                    "+minds/charter/accept 999 price=1" => Some(NO_CHARTER_OFFER_999),
+                    "+minds/resell 1=LaunchAlt price=1" => Some("You hold no licence 1."),
+                    _ => None,
+                };
+                if let Some(exact) = exact {
+                    check_eq!(seen.own, vec![exact.to_owned()], "#{} {line}", actor.0);
+                }
             }
         }
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -1364,6 +1499,10 @@ async fn trade_commands_are_not_open_on_a_house_only_launch() -> TestResult {
     let _ = std::fs::remove_dir_all(&w.data_dir);
     result?
 }
+
+/// 17g C2g: the accepts with no offer naming the actor.
+const NO_OFFER_999: &str = "You have no offer for licence 999.";
+const NO_CHARTER_OFFER_999: &str = "You have no offer for filed mind 999.";
 
 /// `@registry`'s help (17g C2d).
 const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)";

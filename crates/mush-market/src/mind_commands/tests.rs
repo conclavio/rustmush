@@ -2,7 +2,10 @@
 //! over real listing rows (`mind_entitlement::tests::listing_fixture`, whose
 //! frozen product, cuts and royalty chain pass `validate`), through an
 //! in-memory listing family that records every scan it is asked for; and the
-//! captured entitlement actions.
+//! captured entitlement actions. 17g C2g: the own kinds over real quote,
+//! purchase and resale offer rows (`command_quote`, `command_purchase`,
+//! `command_offer`) and real index rows, through in-memory point reads that
+//! record every read they are asked for.
 use super::*;
 use crate::mind_entitlement::tests::listing_fixture;
 use mush_core::mechanics::{
@@ -14,11 +17,67 @@ use std::collections::BTreeMap;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 /// A listing family in key order, as the typed store scans one: `after`
-/// excluded, at most `limit` rows, and whether more follow.
+/// excluded, at most `limit` rows, and whether more follow. 17g C2g: and the
+/// own kinds' families, read by key, each read recorded as `(family, rows)`;
+/// `step` is what Roll's claim census answers for every licence, and
+/// `steps` counts the times it is asked.
 #[derive(Default)]
 struct Memory {
     rows: BTreeMap<String, EntitlementListingV1>,
     scans: RefCell<Vec<(Option<String>, usize)>>,
+    actors: BTreeMap<ObjId, EntitlementActorIndex>,
+    quotes: BTreeMap<CommitToken, EntitlementQuoteV1>,
+    operations: BTreeMap<CommitToken, EntitlementPurchaseV1>,
+    buyer_offers: BTreeMap<(ObjId, LicenceId), ResaleBuyerOffers>,
+    offers: BTreeMap<CommitToken, MindPaidResaleOffer>,
+    step: Option<ResaleKind>,
+    reads: RefCell<Vec<(&'static str, usize)>>,
+    steps: RefCell<usize>,
+}
+impl<'a> OwnSource<'a> for &'a Memory {
+    fn actor_row(&self, actor: ObjId) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError> {
+        self.reads.borrow_mut().push(("actors", 1));
+        Ok(self.actors.get(&actor))
+    }
+    fn quotes(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a EntitlementQuoteV1>>, OwnerReadError> {
+        if !tokens.is_empty() {
+            self.reads.borrow_mut().push(("quotes", tokens.len()));
+        }
+        Ok(tokens.iter().map(|t| self.quotes.get(t)).collect())
+    }
+    fn operations(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a EntitlementPurchaseV1>>, OwnerReadError> {
+        if !tokens.is_empty() {
+            self.reads.borrow_mut().push(("operations", tokens.len()));
+        }
+        Ok(tokens.iter().map(|t| self.operations.get(t)).collect())
+    }
+    fn buyer_offers(
+        &self,
+        buyer: ObjId,
+        licence: LicenceId,
+    ) -> Result<Option<&'a ResaleBuyerOffers>, OwnerReadError> {
+        self.reads.borrow_mut().push(("buyer_offers", 1));
+        Ok(self.buyer_offers.get(&(buyer, licence)))
+    }
+    fn resale_offers(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a MindPaidResaleOffer>>, OwnerReadError> {
+        if !tokens.is_empty() {
+            self.reads.borrow_mut().push(("offers", tokens.len()));
+        }
+        Ok(tokens.iter().map(|t| self.offers.get(t)).collect())
+    }
+    fn resale_step(&self, _: LicenceId) -> Result<ResaleKind, OwnerReadError> {
+        *self.steps.borrow_mut() += 1;
+        self.step.ok_or(OwnerReadError::Unavailable)
+    }
 }
 impl<'a> ListingSource<'a> for &'a Memory {
     fn scan(
@@ -44,6 +103,16 @@ impl Memory {
     }
     fn take_scans(&self) -> Vec<(Option<String>, usize)> {
         std::mem::take(&mut *self.scans.borrow_mut())
+    }
+    fn take_reads(&self) -> Vec<(&'static str, usize)> {
+        std::mem::take(&mut *self.reads.borrow_mut())
+    }
+}
+/// Whom the in-memory reads answer for, at world UTC second 1,000.
+fn own(actor: u32) -> Own {
+    Own {
+        actor: ObjId(actor),
+        now: 1_000,
     }
 }
 fn token(prefix: [u8; 4], n: u8) -> CommitToken {
@@ -72,8 +141,10 @@ fn listing(publication: CommitToken) -> TestResult<EntitlementListingV1> {
 ///   row's token as the cursor, skipping non-current rows, and ends with no
 ///   cursor; every scan is one bounded page of 64.
 /// - A code lookup is one scan of two rows after the code: one current
-///   listing is `One`, two tokens sharing the 8 characters are `Ambiguous`,
-///   none or a non-current one is `Refused`, and a 7- or 9-character (or
+///   listing is `One`, two CURRENT listings sharing the 8 characters are
+///   `Ambiguous` (17g C2e: only current rows count, `by_code_counts_only_
+///   current_rows_for_ambiguity`), none or a non-current one is `Refused`,
+///   and a 7- or 9-character (or
 ///   upper-case) code is refused before any scan.
 /// - The serialized results carry no seller, account id, revision, rating or
 ///   digest, and the view carries the venue cut, the levy and the parents'
@@ -86,8 +157,24 @@ fn listing(publication: CommitToken) -> TestResult<EntitlementListingV1> {
 ///   resolves it in one scan of two rows and pages on to the current ones
 ///   with the 7 scans left.
 ///
-/// `OwnPurchase` and `OwnOpen` are not built (the per-buyer index C2b did
-/// not land), so their own-only cases are not here.
+/// 17g C2g adds the own kinds (C2c test 1's owed cases, the C2e plan §4.1
+/// item 1), through `answer`, over the actor's real index row and real quote
+/// and purchase rows:
+/// - `OwnPurchase { code }` answers the NEWEST indexed quote on the listing
+///   the code names, expired or not (the read takes no clock), beside the
+///   funded purchase on it, and a funded purchase whose listing is gone (no
+///   listing row at all: withdrawn after Fund) is still found;
+/// - it is own-only: another actor's quote and purchase on the same listing
+///   are absent, and a code only another actor holds a purchase on answers
+///   byte-identically to a code nobody holds one on;
+/// - it is bounded: one read of the actor's own index row, then one batched
+///   read of the quotes and one of the operations the row names (at most
+///   `MAX_BUYER_QUOTES` + `MAX_BUYER_PURCHASES` rows); a malformed code reads
+///   nothing; an actor with no row reads one row;
+/// - `OwnOpen` lists the actor's funded purchases only, with their codes;
+/// - an index row naming another buyer's quote is `Integrity`;
+/// - neither result carries the seller, an account, a digest or another
+///   buyer.
 #[test]
 fn market_command_reader_is_bounded_and_seller_free() -> TestResult {
     let mut memory = Memory::default();
@@ -324,6 +411,485 @@ fn market_command_reader_is_bounded_and_seller_free() -> TestResult {
         .map(str::to_owned)
         .collect::<BTreeSet<_>>(),
         "exactly the public fields"
+    );
+    own_kinds_are_own_only_and_bounded()
+}
+
+/// A quote by `buyer` on `listing` (`command_quote`), published as the
+/// token of `n`, inserted into `memory`; its token. Apart from the tests so
+/// their frames stay under the M7 memory-size limit.
+fn quote_into(
+    memory: &mut Memory,
+    n: u8,
+    listing: CommitToken,
+    buyer: ObjId,
+    quoted: i64,
+    expires: i64,
+) -> TestResult<CommitToken> {
+    let quote = Box::new(crate::mind_entitlement::tests::command_quote(
+        token([n, 0, 0, 0], 1),
+        listing,
+        buyer,
+        quoted,
+        expires,
+    )?);
+    let publication = quote.publication();
+    memory.quotes.insert(publication, *quote);
+    Ok(publication)
+}
+/// A funded purchase by `buyer` on `listing` (its quote, the token of `n`,
+/// quoted at `quoted`, consumed; its operation the token of `n` + 0x10),
+/// inserted into `memory`; its operation token.
+fn purchase_into(
+    memory: &mut Memory,
+    n: u8,
+    listing: CommitToken,
+    buyer: ObjId,
+    quoted: i64,
+) -> TestResult<CommitToken> {
+    use crate::mind_entitlement::tests::{command_purchase, command_quote};
+    let quote = command_quote(token([n, 0, 0, 0], 1), listing, buyer, quoted, quoted + 60)?;
+    let purchase = Box::new(command_purchase(
+        quote,
+        token([n.wrapping_add(0x10), 0, 0, 0], 2),
+    )?);
+    let operation = purchase.operation();
+    memory.operations.insert(operation, *purchase);
+    Ok(operation)
+}
+
+/// The own kinds' half of `market_command_reader_is_bounded_and_seller_free`
+/// (its doc), apart from it so each test's frame stays small. The C2g fix
+/// round 2 adds (reviewers tests/T-2 and tests/T-3): every own kind answers
+/// the same away from a counter (`here` false) as at one, so
+/// `+minds/buy/refund` and `+minds <code>`'s own line work anywhere; and no
+/// own kind ever scans the listing family (`by_code` included): their reads
+/// are the index row and the rows it names, nothing else.
+fn own_kinds_are_own_only_and_bounded() -> TestResult {
+    use crate::mind_entitlement::tests::command_index;
+    let config = crate::mind_entitlement::tests::command_config(400)?;
+    let (me, other) = (ObjId(8), ObjId(9));
+    let listed = token([0x30, 0, 0, 1], 1);
+    let elsewhere = token([0x31, 0, 0, 1], 1);
+    let withdrawn = token([0x32, 0, 0, 1], 1);
+    let theirs = token([0x33, 0, 0, 1], 1);
+    let mut memory = Memory::default();
+    memory.add(listing(listed)?);
+    memory.add(listing(elsewhere)?);
+    // Mine: an older and a newer quote on `listed` (both past the read's
+    // clock of 1,000: expired), a quote on `elsewhere`, a funded purchase
+    // on `listed` and one on `withdrawn` (no listing row).
+    let older = quote_into(&mut memory, 0xa0, listed, me, 100, 160)?;
+    let newer = quote_into(&mut memory, 0xa1, listed, me, 120, 180)?;
+    let aside = quote_into(&mut memory, 0xa2, elsewhere, me, 130, 190)?;
+    let paid = purchase_into(&mut memory, 0xa3, listed, me, 90)?;
+    let gone = purchase_into(&mut memory, 0xa4, withdrawn, me, 90)?;
+    // Another buyer's quote on `listed` and purchase on `theirs`.
+    let their_quote = quote_into(&mut memory, 0xa5, listed, other, 140, 700)?;
+    let their_paid = purchase_into(&mut memory, 0xa6, theirs, other, 90)?;
+    memory.actors.insert(
+        me,
+        command_index(me, &[older, newer, aside], &[paid, gone])?,
+    );
+    memory
+        .actors
+        .insert(other, command_index(other, &[their_quote], &[their_paid])?);
+    let source = &memory;
+    let ask = |actor: u32, request| answer(&source, own(actor), || true, &config, request);
+
+    let mine = ask(8, MarketCommandRequest::own_purchase(&code(listed)))?
+        .into_own_purchase()
+        .ok_or("an own-purchase answer")?
+        .ok_or("my record")?;
+    check_eq!(mine.code(), code(listed));
+    check_eq!(mine.protocol(), Protocol::Original);
+    let quote = mine.quote().ok_or("my quote")?;
+    check_eq!(quote.quote(), newer, "the newest quote");
+    check_eq!(
+        (quote.price_minor(), quote.expires_at_utc()),
+        (400, 180),
+        "even though it has expired"
+    );
+    check_eq!(mine.funded(), Some(paid));
+    check_eq!(
+        mine.latest(),
+        newer,
+        "the newest quote outranks an older Fund"
+    );
+    check_eq!(
+        memory.take_reads(),
+        vec![("actors", 1), ("quotes", 3), ("operations", 2)],
+        "one index read, then one batched read each"
+    );
+    let gone_view = ask(8, MarketCommandRequest::own_purchase(&code(withdrawn)))?
+        .into_own_purchase()
+        .ok_or("an answer")?
+        .ok_or("the withdrawn listing's purchase")?;
+    check_eq!(
+        (gone_view.quote(), gone_view.funded(), gone_view.latest()),
+        (None, Some(gone), gone),
+        "found through the index, with no listing row"
+    );
+    // Own-only: another buyer's purchase reads as none, byte for byte.
+    let foreign = ask(8, MarketCommandRequest::own_purchase(&code(theirs)))?;
+    let none = ask(8, MarketCommandRequest::own_purchase("0fffffff"))?;
+    check_eq!(foreign.clone().into_own_purchase(), Some(None));
+    check_eq!(
+        serde_json::to_string(&foreign)?,
+        serde_json::to_string(&none)?,
+        "a foreign purchase is the same answer as none"
+    );
+    let their_view = ask(9, MarketCommandRequest::own_purchase(&code(listed)))?
+        .into_own_purchase()
+        .ok_or("an answer")?
+        .ok_or("their record")?;
+    check_eq!(
+        (their_view.quote().map(|q| q.quote()), their_view.funded()),
+        (Some(their_quote), None),
+        "each actor reads its own quote on one listing"
+    );
+    memory.take_reads();
+    check_eq!(
+        ask(10, MarketCommandRequest::own_purchase(&code(listed)))?.into_own_purchase(),
+        Some(None)
+    );
+    check_eq!(memory.take_reads(), vec![("actors", 1)], "no row, one read");
+    for malformed in ["3000000", "300000011", "3000000G"] {
+        check_eq!(
+            ask(8, MarketCommandRequest::own_purchase(malformed)),
+            Err(OwnerReadError::Refused)
+        );
+    }
+    check!(
+        memory.take_reads().is_empty(),
+        "a malformed code reads nothing"
+    );
+    check!(
+        memory.take_scans().is_empty(),
+        "OwnPurchase never scans the listings (no `by_code`)"
+    );
+
+    // OwnOpen: the actor's funded purchases, with their codes.
+    let open = ask(8, MarketCommandRequest::own_open())?
+        .into_own_open()
+        .ok_or("an open answer")?;
+    check_eq!(
+        open.iter()
+            .map(|v| (v.operation(), v.code().to_owned(), v.protocol()))
+            .collect::<Vec<_>>(),
+        vec![
+            (paid, code(listed), Protocol::Original),
+            (gone, code(withdrawn), Protocol::Original),
+        ]
+    );
+    check_eq!(
+        ask(9, MarketCommandRequest::own_open())?
+            .into_own_open()
+            .map(|open| open.iter().map(OwnOpenView::operation).collect::<Vec<_>>()),
+        Some(vec![their_paid])
+    );
+    check_eq!(
+        ask(10, MarketCommandRequest::own_open())?.into_own_open(),
+        Some(Vec::new())
+    );
+    check!(
+        memory.take_scans().is_empty(),
+        "OwnOpen never scans the listings"
+    );
+
+    // Away from a counter every own kind answers exactly as at one.
+    let away = |actor: u32, request| answer(&source, own(actor), || false, &config, request);
+    let codes = [code(listed), code(withdrawn), code(theirs)];
+    for (actor, which) in [
+        (8, Some(&codes[0])),
+        (8, Some(&codes[1])),
+        (8, Some(&codes[2])),
+        (8, None),
+        (9, None),
+    ] {
+        let request = || {
+            which.map_or_else(MarketCommandRequest::own_open, |c| {
+                MarketCommandRequest::own_purchase(c)
+            })
+        };
+        check_eq!(
+            away(actor, request()),
+            ask(actor, request()),
+            "an own kind needs no counter"
+        );
+    }
+    memory.take_reads();
+    check!(
+        memory.take_scans().is_empty(),
+        "nor scans the listings away from one"
+    );
+
+    // Privacy of every own answer.
+    for value in [
+        serde_json::to_value(ask(8, MarketCommandRequest::own_purchase(&code(listed)))?)?,
+        serde_json::to_value(ask(8, MarketCommandRequest::own_open())?)?,
+    ] {
+        let text = value.to_string();
+        for private in ["seller", "account", "payer", "digest", "buyer", "author"] {
+            check!(!text.contains(private), "{private} in {text}");
+        }
+        for id in [7, 9, 11, 12] {
+            check!(!text.contains(&format!(":{id},")) && !text.contains(&format!(":{id}}}")));
+        }
+    }
+
+    // An index row naming another buyer's quote is corrupt.
+    memory
+        .actors
+        .insert(me, command_index(me, &[their_quote], &[])?);
+    let source = &memory;
+    check_eq!(
+        answer(
+            &source,
+            own(8),
+            || true,
+            &config,
+            MarketCommandRequest::own_purchase(&code(listed))
+        ),
+        Err(OwnerReadError::Integrity)
+    );
+    Ok(())
+}
+
+/// 17g C2g, the C2g fix round 2 (reviewers correctness/C2G-R2-1,
+/// conformance/F1 and tests/T-1): `OwnPurchaseView::latest`, `+minds/buy`'s
+/// key subject, names the actor's most recently quoted own record on the
+/// listing, a funded purchase included, through the actor's index states of
+/// one buyer's life on one listing:
+/// - a quote Q1 names Q1; once funded (Q1 leaves the index), the purchase's
+///   operation P1, never the bare listing again;
+/// - a second quote Q2 beside P1 names Q2; once funded, P2 (beside P1);
+/// - a quote quoted in the same second as a funded purchase's quote ranks
+///   after the purchase (it was quoted after that purchase's Fund);
+/// - every Quote and Fund so far made a token the listing's earlier states
+///   never named, so a `+minds/buy` after any of them keys anew;
+/// - the stated residual: a Grant or Refund of P2 takes it out of the index
+///   and the subject is P1's again, and a Grant or Refund of the last
+///   record leaves no record at all (`None`, the bare listing): a re-buy
+///   after a restart under a stopped IC clock can then meet the key of an
+///   earlier `+minds/buy` (tacsim's `next_key` doc).
+#[test]
+fn own_purchase_latest_names_the_newest_own_record() -> TestResult {
+    use crate::mind_entitlement::tests::command_index;
+    let config = crate::mind_entitlement::tests::command_config(400)?;
+    let me = ObjId(8);
+    let listed = token([0x40, 0, 0, 1], 1);
+    let mut memory = Memory::default();
+    let q1 = quote_into(&mut memory, 0xb0, listed, me, 100, 160)?;
+    let p1 = purchase_into(&mut memory, 0xb0, listed, me, 100)?;
+    let q2 = quote_into(&mut memory, 0xb1, listed, me, 120, 180)?;
+    let p2 = purchase_into(&mut memory, 0xb1, listed, me, 120)?;
+    let q3 = quote_into(&mut memory, 0xb2, listed, me, 120, 180)?;
+    let states: [(&[CommitToken], &[CommitToken], Option<CommitToken>); 7] = [
+        (&[q1], &[], Some(q1)),
+        (&[], &[p1], Some(p1)),
+        (&[q2], &[p1], Some(q2)),
+        (&[], &[p1, p2], Some(p2)),
+        (&[q3], &[p1, p2], Some(q3)),
+        (&[], &[p1], Some(p1)),
+        (&[], &[], None),
+    ];
+    let mut seen = vec![None];
+    for (n, (quotes, operations, expected)) in states.into_iter().enumerate() {
+        // An empty row is never written: the release deletes it.
+        if quotes.is_empty() && operations.is_empty() {
+            memory.actors.remove(&me);
+        } else {
+            memory
+                .actors
+                .insert(me, command_index(me, quotes, operations)?);
+        }
+        let source = &memory;
+        let latest = answer(
+            &source,
+            own(8),
+            || true,
+            &config,
+            MarketCommandRequest::own_purchase(&code(listed)),
+        )?
+        .into_own_purchase()
+        .ok_or("an own-purchase answer")?
+        .map(|view| view.latest());
+        check_eq!(latest, expected, "state {n}");
+        if n < 5 {
+            check!(!seen.contains(&latest), "state {n} keys anew");
+        } else {
+            check!(seen.contains(&latest), "state {n}: the stated residual");
+        }
+        seen.push(latest);
+    }
+    Ok(())
+}
+
+/// 17g C2d test 2 under its binding name (the C2e plan §4.1 item 4, review
+/// FE-F14): `ResaleOffers { licence }` lists only the live seller offers
+/// naming the actor on that licence, from the actor's own `(buyer,
+/// licence)` index row and the offer rows it names, through `answer`:
+/// - the actor's two live offers on licence 41 are listed with their frozen
+///   prices, expiries and the acceptance step Roll's claim census answers;
+///   the actor's offer at its expiry is not (the economy refuses an
+///   acceptance at or after it);
+/// - another buyer's offer on the same licence and the actor's offer on
+///   another licence are absent; a licence nobody offered the actor answers
+///   byte-identically to one that does not exist;
+/// - Roll is asked for the step only when a live offer naming the actor
+///   exists (never for an empty or all-expired row), so the step is no
+///   oracle;
+/// - an index row naming an offer to another buyer is `Integrity`;
+/// - no answer carries the seller, an account or a digest.
+#[test]
+fn market_command_reader_lists_only_the_actors_resale_offers() -> TestResult {
+    use crate::mind_paid_resale::{command_buyer_offers, command_offer};
+    let config = crate::mind_entitlement::tests::command_config(400)?;
+    let (me, other) = (ObjId(8), ObjId(9));
+    let now = own(8).now;
+    let cheap = command_offer(2, me, 41, 21, now + 600)?;
+    let dear = command_offer(3, me, 41, 500, now + 1_201)?;
+    let lapsed = command_offer(4, me, 41, 21, now)?;
+    let theirs = command_offer(5, other, 41, 21, now + 600)?;
+    let aside = command_offer(6, me, 42, 21, now + 600)?;
+    let lapsed_only = command_offer(7, me, 43, 21, now - 1)?;
+    let mut memory = Memory {
+        step: Some(ResaleKind::Fund),
+        ..Memory::default()
+    };
+    for offer in [&cheap, &dear, &lapsed, &theirs, &aside, &lapsed_only] {
+        memory.offers.insert(offer.operation(), offer.clone());
+    }
+    let licence = |n: u64| LicenceId::new(n);
+    memory.buyer_offers.insert(
+        (me, licence(41)?),
+        command_buyer_offers(
+            me,
+            41,
+            &[cheap.operation(), dear.operation(), lapsed.operation()],
+        )?,
+    );
+    memory.buyer_offers.insert(
+        (other, licence(41)?),
+        command_buyer_offers(other, 41, &[theirs.operation()])?,
+    );
+    memory.buyer_offers.insert(
+        (me, licence(42)?),
+        command_buyer_offers(me, 42, &[aside.operation()])?,
+    );
+    memory.buyer_offers.insert(
+        (me, licence(43)?),
+        command_buyer_offers(me, 43, &[lapsed_only.operation()])?,
+    );
+    let source = &memory;
+    let ask = |actor: u32, n: u64| -> Result<MarketCommandResult, Box<dyn std::error::Error>> {
+        Ok(answer(
+            &source,
+            own(actor),
+            || true,
+            &config,
+            MarketCommandRequest::resale_offers(licence(n)?),
+        )?)
+    };
+
+    let mine = ask(8, 41)?.into_resale_offers().ok_or("offers")?;
+    check_eq!(
+        mine.iter()
+            .map(|v| (v.offer(), v.price_minor(), v.expires_at_utc(), v.step()))
+            .collect::<Vec<_>>(),
+        vec![
+            (cheap.operation(), 21, now + 600, ResaleKind::Fund),
+            (dear.operation(), 500, now + 1_201, ResaleKind::Fund),
+        ],
+        "the two live offers naming me; the lapsed one is left out"
+    );
+    check_eq!(*memory.steps.borrow(), 1, "the step is asked once");
+    check_eq!(
+        memory.take_reads(),
+        vec![("buyer_offers", 1), ("offers", 3)],
+        "one index read and one batched offer read"
+    );
+    // Away from a counter the answer is the same (the C2g fix round 2,
+    // reviewer tests/T-2), and no listing is ever scanned.
+    let away = answer(
+        &source,
+        own(8),
+        || false,
+        &config,
+        MarketCommandRequest::resale_offers(licence(41)?),
+    )?;
+    check_eq!(away.into_resale_offers().as_ref(), Some(&mine));
+    check!(memory.take_scans().is_empty(), "no listing scan");
+    memory.take_reads();
+    check_eq!(
+        ask(9, 41)?.into_resale_offers().map(|offers| offers
+            .iter()
+            .map(ResaleOfferView::offer)
+            .collect::<Vec<_>>()),
+        Some(vec![theirs.operation()]),
+        "the other buyer reads only its own"
+    );
+    check_eq!(
+        ask(8, 42)?.into_resale_offers().map(|offers| offers
+            .iter()
+            .map(ResaleOfferView::offer)
+            .collect::<Vec<_>>()),
+        Some(vec![aside.operation()]),
+        "an offer on another licence is that licence's"
+    );
+    let steps = *memory.steps.borrow();
+    let unoffered = ask(10, 41)?;
+    let missing = ask(8, 999)?;
+    check_eq!(unoffered.clone().into_resale_offers(), Some(Vec::new()));
+    check_eq!(
+        serde_json::to_string(&unoffered)?,
+        serde_json::to_string(&missing)?,
+        "nobody's offer to me reads as a missing licence"
+    );
+    check_eq!(
+        ask(8, 43)?.into_resale_offers(),
+        Some(Vec::new()),
+        "an all-expired row lists nothing"
+    );
+    check_eq!(
+        *memory.steps.borrow(),
+        steps,
+        "no live offer, no step asked"
+    );
+    for value in [
+        serde_json::to_value(ask(8, 41)?)?,
+        serde_json::to_value(ask(9, 41)?)?,
+    ] {
+        let text = value.to_string();
+        for private in ["seller", "account", "payer", "digest", "buyer"] {
+            check!(!text.contains(private), "{private} in {text}");
+        }
+        for id in [7, 10] {
+            check!(!text.contains(&format!(":{id},")) && !text.contains(&format!(":{id}}}")));
+        }
+        let longest = text
+            .split(|c: char| !(c.is_ascii_digit() || ('a'..='f').contains(&c)))
+            .map(str::len)
+            .max()
+            .unwrap_or(0);
+        check!(longest < 64, "a digest-length run in {text}");
+    }
+    // A row naming an offer to another buyer is corrupt.
+    memory.buyer_offers.insert(
+        (me, licence(44)?),
+        command_buyer_offers(me, 44, &[theirs.operation()])?,
+    );
+    let source = &memory;
+    check_eq!(
+        answer(
+            &source,
+            own(8),
+            || true,
+            &config,
+            MarketCommandRequest::resale_offers(licence(44)?)
+        ),
+        Err(OwnerReadError::Integrity)
     );
     Ok(())
 }
@@ -603,7 +1169,7 @@ fn market_command_read_answers_the_counter_rule_and_the_policy() -> TestResult {
         .is_err()
     );
     let source = &memory;
-    let ask = |here: bool, request| answer(&source, || here, &config, request);
+    let ask = |here: bool, request| answer(&source, own(8), || here, &config, request);
 
     check_eq!(
         ask(true, MarketCommandRequest::at_counter())?.at_counter(),

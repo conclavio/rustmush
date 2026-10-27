@@ -54,6 +54,22 @@ impl ResaleBuyerOffers {
     pub fn key(&self) -> String {
         Self::key_for(self.buyer, self.licence)
     }
+    /// 17g C2g: the named buyer this row indexes.
+    #[must_use]
+    pub const fn buyer(&self) -> ObjId {
+        self.buyer
+    }
+    /// 17g C2g: the licence the offers sell.
+    #[must_use]
+    pub const fn licence(&self) -> LicenceId {
+        self.licence
+    }
+    /// 17g C2g: the retained offer tokens (live, or expired and not yet
+    /// pruned by the seller's next Offer).
+    #[must_use]
+    pub const fn offers(&self) -> &BTreeSet<CommitToken> {
+        &self.offers
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.format != 1
             || self.buyer.0 == 0

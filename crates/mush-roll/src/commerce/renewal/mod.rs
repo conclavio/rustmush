@@ -17,7 +17,7 @@ pub use records::{
 };
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub mod writer;
 

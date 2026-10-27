@@ -33,9 +33,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The C2b bound on one buyer's live, unfunded quotes.
-pub(super) const MAX_BUYER_QUOTES: usize = 8;
+pub(crate) const MAX_BUYER_QUOTES: usize = 8;
 /// The C2b bound on one buyer's open (funded) purchases.
-pub(super) const MAX_BUYER_PURCHASES: usize = 8;
+pub(crate) const MAX_BUYER_PURCHASES: usize = 8;
 
 /// The three families the index joins: the retained quotes and operations
 /// (its heads) and the index itself. `Families::index` lends them; the
@@ -66,6 +66,18 @@ impl EntitlementActorIndex {
     }
     fn is_empty(&self) -> bool {
         self.quotes.is_empty() && self.operations.is_empty()
+    }
+    /// 17g C2g: the buyer this row indexes.
+    pub(crate) const fn actor(&self) -> ObjId {
+        self.actor
+    }
+    /// 17g C2g: the buyer's indexed (unfunded) quotes, live or expired.
+    pub(crate) const fn quotes(&self) -> &BTreeSet<CommitToken> {
+        &self.quotes
+    }
+    /// 17g C2g: the buyer's open (funded) purchases.
+    pub(crate) const fn operations(&self) -> &BTreeSet<CommitToken> {
+        &self.operations
     }
 }
 impl Row for EntitlementActorIndex {

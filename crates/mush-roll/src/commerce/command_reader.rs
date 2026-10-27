@@ -37,8 +37,13 @@
 //!   (a title in transit) is left out. At most `OWNER_ROWS_PER_READ` rows
 //!   and `OWN_ASSETS_PER_READ` assets per read, inside the declared
 //!   `MAXIMUM_ROWS`; the command pages with the asset cursor.
-//!   `section: Paid` is `Unavailable` until the per-holder paid index lands
-//!   (`roll_mind_paid_holdings`, C2 plan §2.5 item 2, held at C2b).
+//! - `OwnHoldings { section: Paid, after }` (17g C2g, the C2e plan §4.1
+//!   item 1): the paid licences the actor holds now, through 17g C2f's
+//!   per-holder index (`roll_mind_paid_holdings`, `paid_holdings::page`):
+//!   one bounded scan of the actor's own key prefix, so a neighbour holder's
+//!   rows are never read, and each row built exactly as `OwnPaid` builds
+//!   one (`own_paid`). At most `paid_holdings::PAID_ROWS_PER_READ` rows a
+//!   read; the cursor is the last row's licence number.
 //! - `CharterNames { charters }` (17g C2c): the public Roll name of up to
 //!   `MAX_CHARTER_NAMES` charters, in one batched read; an unknown charter
 //!   is left out. Names only.
@@ -52,26 +57,25 @@
 //!   character holds, a missing one and a row that cannot be read are
 //!   `Refused`, identically. Point reads of the licence's own rows only.
 //!
-//! **Not built (the C2d builder's report):** `CharterOffers { filed }`, the
-//! live pending-charter offers naming the actor, reads the per-(buyer,
-//! charter) offer index (`roll_mind_charter_pending_buyer_offers`, C2 plan
-//! §2.5 item 4), which C2b held for the lead's mush-core ruling; the offers
-//! are otherwise keyed only by their own operation, so there is no bounded
-//! lookup. It waits for the index sub-cut.
+//! - `CharterOffers { filed }` (17g C2g, the C2e plan §4.1 item 4): the live
+//!   pending-charter offers naming the actor on the filed mind's charter
+//!   (the filed revision's charter is public), through 17g C2f's per-(buyer,
+//!   charter) index (`roll_mind_charter_pending_buyer_offers`) keyed by the
+//!   actor, then each offer row the actor's row names, whose named buyer and
+//!   charter are checked: `{ offer, price_minor, expires_at_utc }` each, at
+//!   most `MAX_BUYER_OFFERS`, an offer at or past its expiry left out. A
+//!   filed number that does not exist is `Refused` and a charter nobody
+//!   offered the actor the empty list, which the command prints alike, so
+//!   the read is no oracle.
 //!
-//! **Held (the C2d fix round, reviewers C2D-R2, C2D-R3, F2 and T3):**
-//! `ResaleStep { licence }`, the named buyer's choice between the resale's
-//! immediate Accept and its escrowed Fund (the paid-resale reader's own
-//! `observe` with the actor as the buyer and the pointer's holder as the
-//! seller, Accept exactly when `claims().open_paid() == 0`). `observe` checks
-//! no offer naming the buyer, so for any third party it would answer
-//! whether a licence exists, is resellable and has a sortie out under it,
-//! where a missing licence is `Refused`: it is not own-only, as this read's
-//! descriptor promises (`commands.own_only`). Its only caller, the live
-//! `+minds/resell/accept`, waits for the per-(buyer, licence) offer index,
-//! and no fixture here can reach a granted, transferable licence for a
-//! positive test, so it waits with them: the index sub-cut builds it with
-//! the offer's committed (buyer, licence) binding as its evidence.
+//! The named buyer's resale step (immediate Accept or escrowed Fund) is not
+//! a kind of this read: the C2d fix round removed a `ResaleStep` kind that
+//! ran the paid-resale reader's `observe` for any licence (reviewers C2D-R2
+//! and C2D-R3: an existence and open-claim oracle, not own-only as this
+//! read's descriptor promises). 17g C2g rebuilt it on the offer's committed
+//! evidence: the market's own-only `ResaleOffers` read asks Roll's
+//! `paid_resale::reader::resale_step` only for a licence on which it found a
+//! live offer naming the actor.
 
 use super::families::CommerceFamilies;
 use super::paid::PaidForm;
@@ -113,6 +117,9 @@ enum ReadKind {
     OwnPaid {
         licence: LicenceId,
     },
+    CharterOffers {
+        filed: FiledRevisionId,
+    },
 }
 /// 17g C2c: the two halves of `+minds/holdings`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -120,8 +127,8 @@ enum ReadKind {
 pub enum HoldingSection {
     /// The filed minds the actor owns (their owner licences).
     Owner,
-    /// The paid licences the actor holds: `Unavailable` until the
-    /// per-holder paid index (`roll_mind_paid_holdings`) lands.
+    /// The paid licences the actor holds (17g C2g: through the per-holder
+    /// paid index, `roll_mind_paid_holdings`).
     Paid,
 }
 /// 17g C2c: owner rows one `OwnHoldings` read answers at most.
@@ -146,7 +153,8 @@ impl RollCommandReadRequest {
         }
     }
     /// 17g C2c: one page of the actor's own holdings in `section`, after the
-    /// cursor a previous page returned (an E4 asset id for `Owner`).
+    /// cursor a previous page returned (an E4 asset id for `Owner`; 17g C2g:
+    /// a licence number for `Paid`).
     #[must_use]
     pub const fn own_holdings(section: HoldingSection, after: Option<u64>) -> Self {
         Self {
@@ -166,6 +174,39 @@ impl RollCommandReadRequest {
         Self {
             kind: ReadKind::OwnPaid { licence },
         }
+    }
+    /// 17g C2g: the live pending-charter offers naming the actor on the
+    /// charter of filed revision `filed`.
+    #[must_use]
+    pub const fn charter_offers(filed: FiledRevisionId) -> Self {
+        Self {
+            kind: ReadKind::CharterOffers { filed },
+        }
+    }
+}
+
+/// 17g C2g: one live pending-charter offer naming the actor
+/// (`CharterOffers`): its token (the Fund's `offer`), the frozen price in
+/// minor units and its expiry (world UTC seconds; the provider refuses a
+/// Fund at or after it). No seller, account, digest or other buyer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct CharterOfferView {
+    offer: mush_core::CommitToken,
+    price_minor: i64,
+    expires_at_utc: i64,
+}
+impl CharterOfferView {
+    #[must_use]
+    pub const fn offer(&self) -> mush_core::CommitToken {
+        self.offer
+    }
+    #[must_use]
+    pub const fn price_minor(&self) -> i64 {
+        self.price_minor
+    }
+    #[must_use]
+    pub const fn expires_at_utc(&self) -> i64 {
+        self.expires_at_utc
     }
 }
 
@@ -399,6 +440,12 @@ pub enum RollCommandReadResult {
     },
     /// 17g C2d: `OwnPaid`.
     OwnPaid(PaidHoldingView),
+    /// 17g C2g: `OwnHoldings { section: Paid }`.
+    PaidHoldings(super::paid_holdings::PaidHoldingsPage),
+    /// 17g C2g: `CharterOffers`, in offer token order.
+    CharterOffers {
+        offers: Vec<CharterOfferView>,
+    },
 }
 impl RollCommandReadResult {
     /// The open-shell answer, or `None` if this answered another kind.
@@ -441,6 +488,23 @@ impl RollCommandReadResult {
             _ => None,
         }
     }
+    /// 17g C2g: the paid-holdings page, or `None` for another kind.
+    #[must_use]
+    pub fn into_paid_holdings(self) -> Option<super::paid_holdings::PaidHoldingsPage> {
+        match self {
+            Self::PaidHoldings(page) => Some(page),
+            _ => None,
+        }
+    }
+    /// 17g C2g: the live charter offers naming the actor, or `None` for
+    /// another kind.
+    #[must_use]
+    pub fn into_charter_offers(self) -> Option<Vec<CharterOfferView>> {
+        match self {
+            Self::CharterOffers { offers } => Some(offers),
+            _ => None,
+        }
+    }
 }
 
 /// Answer one command kind for the calling actor. `shells` is the Roll
@@ -468,14 +532,91 @@ pub(super) fn read(
         } => owner_holdings(ctx, roll, families, after).map(RollCommandReadResult::OwnerHoldings),
         ReadKind::OwnHoldings {
             section: HoldingSection::Paid,
-            ..
-        } => Err(OwnerReadError::Unavailable),
+            after,
+        } => {
+            let after = after
+                .map(LicenceId::new)
+                .transpose()
+                .map_err(|_| OwnerReadError::Refused)?;
+            super::paid_holdings::page(ctx, families, ctx.actor(), after)
+                .map(RollCommandReadResult::PaidHoldings)
+        }
         ReadKind::CharterNames { charters } => charter_names(ctx, families, &charters)
             .map(|names| RollCommandReadResult::CharterNames { names }),
         ReadKind::OwnPaid { licence } => own_paid(ctx, families, licence)
             .map(RollCommandReadResult::OwnPaid)
             .map_err(|_| OwnerReadError::Refused),
+        ReadKind::CharterOffers { filed } => charter_offers(ctx, families, filed)
+            .map(|offers| RollCommandReadResult::CharterOffers { offers }),
     }
+}
+
+/// 17g C2g: the live pending-charter offers naming the actor on the charter
+/// of `filed` (the module doc). A missing filed number is `Refused`; the
+/// actor's own `(buyer, charter)` index row is one point read and the offer
+/// rows it names one batched read (`named_offers`).
+fn charter_offers(
+    ctx: &OwnerReadContext<'_>,
+    families: &CommerceFamilies,
+    filed: FiledRevisionId,
+) -> Result<Vec<CharterOfferView>, OwnerReadError> {
+    let actor = ctx.actor();
+    let charter = row(ctx, &families.filed, filed.key())?
+        .content()
+        .position()
+        .charter;
+    let key = super::charter_pending::records::PendingBuyerOffers::key_for(actor, charter);
+    let index = ctx.action_state(&families.charter_pending_buyer_offers, &key)?;
+    named_offers(actor, charter, index, ctx.world().now(), |keys| {
+        ctx.action_states(&families.charter_pending_offers, keys)
+    })
+}
+
+/// 17g C2g: `CharterOffers`' answer from the actor's own index row (`index`,
+/// `None` for no row) and the offer rows it names (`offers`, one batched
+/// read by token key): each row must be that token's and name this buyer
+/// and charter (else `Integrity`); an offer at or past its expiry at `now`
+/// (world UTC seconds) is left out. Kept apart from the owner lens so the
+/// tests prove it over real offer rows (a pending offer row cannot be
+/// written outside the composed protocol).
+pub(super) fn named_offers<'a>(
+    actor: mush_core::ObjId,
+    charter: CharterId,
+    index: Option<&super::charter_pending::records::PendingBuyerOffers>,
+    now: i64,
+    offers: impl FnOnce(
+        &[String],
+    ) -> Result<
+        Vec<Option<&'a super::charter_pending::records::PendingOffer>>,
+        OwnerReadError,
+    >,
+) -> Result<Vec<CharterOfferView>, OwnerReadError> {
+    use super::charter_pending::records::MAX_BUYER_OFFERS;
+    let Some(index) = index else {
+        return Ok(Vec::new());
+    };
+    index.validate().map_err(|_| OwnerReadError::Integrity)?;
+    if index.buyer != actor || index.charter != charter || index.offers.len() > MAX_BUYER_OFFERS {
+        return Err(OwnerReadError::Integrity);
+    }
+    let tokens: Vec<mush_core::CommitToken> = index.offers.iter().copied().collect();
+    let keys: Vec<String> = tokens.iter().map(|token| token.to_hex()).collect();
+    let mut live = Vec::new();
+    for (token, offer) in tokens.iter().zip(offers(&keys)?) {
+        let offer = offer.ok_or(OwnerReadError::Integrity)?;
+        offer.validate().map_err(|_| OwnerReadError::Integrity)?;
+        if offer.operation != *token || offer.buyer != actor || offer.charter != charter {
+            return Err(OwnerReadError::Integrity);
+        }
+        if now < offer.expires_at_utc {
+            live.push(CharterOfferView {
+                offer: offer.operation,
+                price_minor: offer.price.minor(),
+                expires_at_utc: offer.expires_at_utc,
+            });
+        }
+    }
+    Ok(live)
 }
 
 /// 17g C2d: the paid licence `licence` when the actor holds it now (`read`

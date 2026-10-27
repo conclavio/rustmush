@@ -68,6 +68,6 @@ impl PendingCharterTransferConfig {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) use provider::register;

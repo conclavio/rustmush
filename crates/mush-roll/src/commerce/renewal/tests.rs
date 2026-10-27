@@ -55,10 +55,12 @@ fn identity() -> TestResult<RevisionIdentity> {
         "digest":digest(1)},"source":digest(2)}),
     )?)
 }
-struct Birth {
-    licence: PersonalPaidLicence,
-    term: PaidTermRecord,
-    economics: PaidTermEconomicsV1,
+/// 17g C2g: `pub(crate)` with the helpers below, for Roll's command-read
+/// tests (the named buyer's resale step on a granted licence).
+pub(crate) struct Birth {
+    pub(crate) licence: PersonalPaidLicence,
+    pub(crate) term: PaidTermRecord,
+    pub(crate) economics: PaidTermEconomicsV1,
 }
 fn birth() -> TestResult<Birth> {
     birth_with(PaidTerms::original_personal_form(
@@ -69,7 +71,7 @@ fn birth() -> TestResult<Birth> {
 }
 /// The structural birth over the given accepted terms (17g C2b: the marked
 /// test builds them through the entitlement writer's own `personal_terms`).
-fn birth_with(terms: PaidTerms) -> TestResult<Birth> {
+pub(crate) fn birth_with(terms: PaidTerms) -> TestResult<Birth> {
     let id = LicenceId::new(7)?;
     let one = TermGeneration::new(1)?;
     let policy = RevisionPolicy::Pin {
@@ -118,7 +120,12 @@ fn birth_with(terms: PaidTerms) -> TestResult<Birth> {
         economics: PaidTermEconomicsV1::capture(id, one, token(1), digest(9), grant)?,
     })
 }
-fn draft(b: &Birth, n: u8, at: i64, attempt: RenewalAttemptV1) -> TestResult<RenewalOperationV1> {
+pub(crate) fn draft(
+    b: &Birth,
+    n: u8,
+    at: i64,
+    attempt: RenewalAttemptV1,
+) -> TestResult<RenewalOperationV1> {
     let row = RenewalOperationV1 {
         format: 1,
         operation: token(n),
@@ -139,7 +146,7 @@ fn draft(b: &Birth, n: u8, at: i64, attempt: RenewalAttemptV1) -> TestResult<Ren
     row.validate()?;
     Ok(row)
 }
-fn funded(row: &RenewalOperationV1) -> TestResult<RenewalOperationV1> {
+pub(crate) fn funded(row: &RenewalOperationV1) -> TestResult<RenewalOperationV1> {
     let n = u8::try_from(row.created_at_utc)?;
     let receipt: RenewalFundingReceiptV1 = serde_json::from_value(
         json!({"format":1,"commit":token(n+1),
@@ -154,7 +161,7 @@ fn funded(row: &RenewalOperationV1) -> TestResult<RenewalOperationV1> {
     next.follows(row)?;
     Ok(next)
 }
-fn terminal(row: &RenewalOperationV1, grant: bool) -> TestResult<RenewalOperationV1> {
+pub(crate) fn terminal(row: &RenewalOperationV1, grant: bool) -> TestResult<RenewalOperationV1> {
     let funding = row.state.funding().ok_or("funding")?.clone();
     let n = u8::try_from(row.created_at_utc)?;
     let at = stamp(i64::from(n) + 2);
@@ -199,7 +206,7 @@ fn closed(row: &RenewalOperationV1) -> TestResult<RenewalOperationV1> {
     next.follows(row)?;
     Ok(next)
 }
-fn granted_birth(row: &RenewalOperationV1) -> TestResult<Birth> {
+pub(crate) fn granted_birth(row: &RenewalOperationV1) -> TestResult<Birth> {
     let (licence, term, economics) = row.granted_rows()?;
     Ok(Birth {
         licence,

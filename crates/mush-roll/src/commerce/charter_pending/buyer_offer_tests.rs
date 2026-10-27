@@ -38,7 +38,7 @@ fn tokens(ids: &[u8]) -> BTreeSet<CommitToken> {
 }
 /// The seller's pending offer `id` of `charter` naming `buyer`, offered at
 /// `offered` and expiring 1000 seconds later (`wide_offer`'s shape).
-fn offer(id: u8, buyer: ObjId, charter: u32, offered: i64) -> Result<PendingOffer> {
+pub(crate) fn offer(id: u8, buyer: ObjId, charter: u32, offered: i64) -> Result<PendingOffer> {
     let mut value = serde_json::to_value(super::wide_offer()?)?;
     value["operation"] = serde_json::json!(token(id));
     value["buyer"] = serde_json::json!(buyer);

@@ -61,7 +61,12 @@ fn binding(licence: u64) -> TestResult<PaidResaleBinding> {
 }
 /// The seller's offer `id` of `licence` naming `buyer`, offered at
 /// `offered` and expiring 1000 seconds later.
-fn offer(id: u8, buyer: ObjId, licence: u64, offered: i64) -> TestResult<Box<MindPaidResaleOffer>> {
+pub(in crate::mind_paid_resale) fn offer(
+    id: u8,
+    buyer: ObjId,
+    licence: u64,
+    offered: i64,
+) -> TestResult<Box<MindPaidResaleOffer>> {
     let binding = binding(licence)?;
     let action = protocol::actions()?[0].clone();
     let row = MindPaidResaleOffer {

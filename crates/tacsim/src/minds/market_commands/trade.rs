@@ -21,10 +21,8 @@
 //!   line for each live offer naming the actor and how to accept it, and
 //!   nothing is submitted; with `price=`, the live offer whose frozen price
 //!   equals it (an equal-price tie takes the one expiring last), submitted
-//!   as the resale's Accept or Fund (the provider's own open-claim test,
-//!   through Roll's `ResaleStep` read, held with the accept: Roll's
-//!   `command_reader` doc) or the pending charter's Fund, `{"offer",
-//!   "payer"}`.
+//!   as the resale's Accept or Fund or the pending charter's Fund, `{"offer",
+//!   "payer"}` with the actor's one personal account (`ACCOUNT`).
 //!   No offer is `NO_OFFER` / `NO_CHARTER_OFFER`; no offer at that price is
 //!   `NO_OFFER_AT` / `NO_CHARTER_OFFER_AT` and the listing (`accept_plan`).
 //!
@@ -33,40 +31,55 @@
 //! form checks, in order: its shape and price (the help, `BAD_PRICE`), the
 //! command slot (`NOT_OPEN`), the player (`NO_PLAYER`, public: `page` and
 //! `WHO` answer it too), then the actor's own record (`NO_LICENCE`,
-//! `NO_FILED`). A price is
-//! `<whole>[.<one or two digits>]` with an optional `cr`, from 0.01 to
-//! 1,000,000 (`market::credits_minor`; `BAD_PRICE`). The seller's request
-//! lines name the buyer the seller chose; a buyer's lines name no seller.
+//! `NO_FILED`), then that the player is not the actor itself (17g C2g: an
+//! offer to oneself is `NO_PLAYER` with the name as typed, before any line
+//! prints). The buyer the offer's parameters and request line name is the
+//! one `other_player` hands back, so neither form can name a buyer that
+//! check has not passed. The dispatched proof needs a held licence and an
+//! owned filed mind, which the fast suites cannot make (the brief's
+//! fixtures rule): owed to the C2h story's part 3 (a holder's
+//! `+minds/resell <licence>=<own name> price=1` and an owner's
+//! `+minds/charter <filed>=<own name> price=1` each read `No player is named
+//! <own name>.`, with no request line and nothing submitted). The alt pair, two characters of one account, stays the
+//! provider's refusal through the lobby's `AccountId` oracle (D-UM-40),
+//! the driver's one line. A price is `<whole>[.<one or two digits>]` with an
+//! optional `cr`, from 0.01 to 1,000,000 (`market::credits_minor`;
+//! `BAD_PRICE`). The seller's request lines name the buyer the seller
+//! chose; a buyer's lines name no seller.
 //!
-//! **Held (the C2d builder's report).** A buyer finds the offers naming them
-//! only through the per-(buyer, licence) and per-(buyer, charter) offer
-//! indexes (C2 plan §2.5 items 3 and 4), which C2b did not land (held for
-//! the lead's mush-core ruling), and the resale offers through the market's
-//! command read's `ResaleOffers` kind, which waits for 17g C2g over those
-//! indexes (the read itself is granted since 17g C2e).
-//! So both accepts parse and then refuse `NOT_OPEN`, and their listing and
-//! price rule (`accept_plan`) wait, built and tested. By C2c's rule for
-//! `+minds/buy` (reviewer C2C-3: never make an offer no command can take),
-//! the two seller forms run every check of their own and then refuse
-//! `NOT_OPEN` at `NAMED_OFFERS_OPEN` instead of submitting; the index
-//! sub-cut flips that one constant. Their parameter objects are proven
-//! against the registered providers now (`hardware::flow::launch`'s
-//! `trade_parameters_satisfy_the_registered_providers`).
+//! **The named offers (17g C2g, the C2e plan §4.1 item 4).** A buyer finds
+//! the offers naming them only through 17g C2f's per-buyer offer indexes,
+//! each written inside the money transaction it follows: the market read's
+//! own-only `ResaleOffers { licence }` (the actor's `(buyer, licence)` row of
+//! `market_mind_paid_resale_buyer_offers` and the offer rows it names) and
+//! Roll's own-only `CharterOffers { filed }` (the actor's `(buyer, charter)`
+//! row of `roll_mind_charter_pending_buyer_offers`). So `accept_plan` runs
+//! over the offers whose COMMITTED buyer is the actor, with their frozen
+//! price and expiry, and another buyer's offer is absent exactly as none
+//! is. The resale's step, Accept or Fund, comes with each `ResaleOffers` view
+//! (`ResaleOfferView::step`): the market read asks Roll's
+//! `mush_roll::commerce::paid_resale::reader::resale_step` (the provider's
+//! own claim test over Roll's live claim census) only for a licence on which
+//! an offer naming the actor was found, so the step is decided beside the
+//! offer's committed evidence and never here. The seller forms submit
+//! (`RESELL_TELL` and `CHARTER_TELL` are the SELLER's second line: no line
+//! reaches the named buyer, whose offers-to-you list is an open owner
+//! question, 17g §5). Every
+//! parameter object is proven against the registered providers
+//! (`hardware::flow::launch`'s `trade_parameters_satisfy_the_registered_
+//! providers`).
 
+use mush_core::read_service::OwnerReadError;
 use mush_core::{CmdError, CommitToken, Ctx, Flags, ObjId, ObjKind};
-use mush_market::mind_commands::{MarketCommandActions, ResaleKind};
+use mush_market::mind_commands::{MarketCommandActions, MarketCommandRequest, ResaleKind};
 use mush_roll::commerce::command_actions::RollCommandActions;
-use mush_roll::commerce::{CharterId, LicenceId};
+use mush_roll::commerce::command_reader::{RollCommandReadRequest, RollCommandReadResult};
+use mush_roll::commerce::holding_reader::OriginalReadRequest;
+use mush_roll::commerce::{CharterId, FiledRevisionId, LicenceId};
 use serde_json::json;
 
 use super::market::{HELP, credits_minor};
 use super::words::{self, fill};
-
-/// Whether a buyer can find the offers naming them, so a seller's offer can
-/// be taken by command: false until the per-buyer offer indexes and the
-/// market's command read land (module doc). The seller forms refuse
-/// `NOT_OPEN` just before submitting while it is false.
-pub(crate) const NAMED_OFFERS_OPEN: bool = false;
 
 /// The pending charter offer's window, in seconds: the protocol's longest
 /// (`charter_transfer::records::MAX_OFFER_SECONDS`), as the resale's.
@@ -184,15 +197,29 @@ fn player(ctx: &Ctx<'_>, typed: &str) -> Result<(ObjId, String), CmdError> {
     Ok((object.0, object.1.name.clone()))
 }
 
+/// 17g C2g: the seller's chosen buyer (`player`'s id and name), unless it is
+/// the seller itself: an offer to oneself is `NO_PLAYER` with the name as
+/// typed (checked after the seller's own record, so it never tells anyone
+/// anything they did not know). The seller forms take the buyer they submit
+/// from what this hands back (the C2g fix round 2, reviewer tests/T-4).
+pub(crate) fn other_player(
+    actor: ObjId,
+    buyer: (ObjId, String),
+    typed: &str,
+) -> Result<(ObjId, String), CmdError> {
+    if buyer.0 == actor {
+        return Err(CmdError::msg(fill(words::NO_PLAYER, &[("name", typed)])));
+    }
+    Ok(buyer)
+}
+
 /// `+minds/resell <licence>=<player> price=<credits>`.
 pub(crate) fn resell(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let args = trade_arguments(text).map_err(TradeRefusal::error)?;
     super::service(ctx)?;
-    let (buyer, name) = player(ctx, &args.player)?;
+    let named = player(ctx, &args.player)?;
     let held = super::renew::own_paid(ctx, args.subject)?;
-    if !NAMED_OFFERS_OPEN {
-        return Err(not_open());
-    }
+    let (buyer, name) = other_player(ctx.actor, named, &args.player)?;
     let action = ctx
         .reg
         .definitions()
@@ -222,11 +249,9 @@ pub(crate) fn resell(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
 pub(crate) fn charter(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let args = trade_arguments(text).map_err(TradeRefusal::error)?;
     super::service(ctx)?;
-    let (buyer, name) = player(ctx, &args.player)?;
+    let named = player(ctx, &args.player)?;
     let owned = super::author::own_filed(ctx, args.subject)?;
-    if !NAMED_OFFERS_OPEN {
-        return Err(not_open());
-    }
+    let (buyer, name) = other_player(ctx.actor, named, &args.player)?;
     let action = ctx
         .reg
         .definitions()
@@ -252,12 +277,120 @@ pub(crate) fn charter(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// `+minds/resell/accept <licence> [price=<credits>]` and
-/// `+minds/charter/accept <filed> [price=<credits>]`: held (module doc).
-pub(crate) fn accept(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    accept_arguments(text).map_err(TradeRefusal::error)?;
+/// 17g C2g: `+minds/resell/accept <licence> [price=<credits>]` and
+/// `+minds/charter/accept <filed> [price=<credits>]` (module doc): the live
+/// offers naming the actor (`resale_offers`, `charter_offers`), then
+/// `accept_plan`: its lines and nothing submitted, its refusal, or the one
+/// confirmed offer submitted with the request line it names, as the resale's
+/// Accept or Fund (the step its view carries) or the pending charter's Fund,
+/// paid from the actor's one personal account (`ACCOUNT`). The key's subject
+/// is the offer's token.
+pub(crate) fn accept(ctx: &mut Ctx<'_>, text: &str, named: Named) -> Result<(), CmdError> {
+    let args = accept_arguments(text).map_err(TradeRefusal::error)?;
     super::service(ctx)?;
-    Err(not_open())
+    let (offers, step) = match named {
+        Named::Resale => resale_offers(ctx, args.subject)?,
+        Named::Charter => (charter_offers(ctx, args.subject)?, None),
+    };
+    let now = ctx.w.now();
+    let actor = ctx.actor;
+    match accept_plan(named, args.subject, &offers, args.price_minor, now) {
+        AcceptPlan::Show(lines) => {
+            for line in lines {
+                ctx.out.info(actor, line);
+            }
+            Ok(())
+        }
+        // One line is the returned error; `NO_OFFER_AT` and the live offers
+        // are an error line then info lines (`market_commands::refusal`).
+        AcceptPlan::Refuse(lines) => super::say(ctx, super::refusal(lines)?),
+        AcceptPlan::Submit(offer, request) => {
+            let definitions = ctx.reg.definitions().ok_or_else(not_open)?;
+            let action = match named {
+                Named::Resale => MarketCommandActions::capture(definitions)
+                    .resale(step.ok_or_else(not_open)?)
+                    .ok_or_else(not_open)?,
+                Named::Charter => RollCommandActions::capture(definitions)
+                    .pending_charter_fund()
+                    .ok_or_else(not_open)?,
+            };
+            let payer = super::personal_account(ctx)?;
+            let parameters = match named {
+                Named::Resale => resale_accept_parameters(offer.offer, payer),
+                Named::Charter => charter_fund_parameters(offer.offer, payer),
+            };
+            let (verb, subject) = accept_key(named, offer.offer);
+            super::submit(ctx, verb, &subject, action, parameters, &request)
+        }
+    }
+}
+
+/// 17g C2g: an accept's idempotency verb and subject (`next_key`): the
+/// offer's own token, never the licence or filed number the buyer typed.
+pub(crate) fn accept_key(named: Named, offer: CommitToken) -> (&'static str, String) {
+    let verb = match named {
+        Named::Resale => "resell.accept",
+        Named::Charter => "charter.accept",
+    };
+    (verb, offer.to_string())
+}
+
+/// 17g C2g: the live resale offers naming the actor on licence `subject`,
+/// through the market read's own-only `ResaleOffers`, and the acceptance
+/// step their views carry (one licence, one claim census, one step). A
+/// licence number nobody offered the actor, a foreign one included, is the
+/// empty list; a read that cannot run is `NOT_OPEN`.
+fn resale_offers(
+    ctx: &Ctx<'_>,
+    subject: u64,
+) -> Result<(Vec<NamedOffer>, Option<ResaleKind>), CmdError> {
+    let Ok(licence) = LicenceId::new(subject) else {
+        return Ok((Vec::new(), None));
+    };
+    let (market, _) = super::market::handles(ctx)?;
+    let views = match ctx.read_owner(&market, MarketCommandRequest::resale_offers(licence)) {
+        Ok(result) => result.into_resale_offers().ok_or_else(not_open)?,
+        Err(OwnerReadError::Refused) => Vec::new(),
+        Err(_) => return Err(not_open()),
+    };
+    let step = views.first().map(|view| view.step());
+    let offers = views
+        .iter()
+        .map(|view| NamedOffer {
+            offer: view.offer(),
+            price_minor: view.price_minor(),
+            expires_at_utc: view.expires_at_utc(),
+        })
+        .collect();
+    Ok((offers, step))
+}
+
+/// 17g C2g: the live pending-charter offers naming the actor on the charter
+/// of filed mind `subject`, through Roll's own-only `CharterOffers`. A filed
+/// number that does not exist (Roll's `Refused`) and a charter nobody offered
+/// the actor are both the empty list; a read that cannot run is `NOT_OPEN`.
+fn charter_offers(ctx: &Ctx<'_>, subject: u64) -> Result<Vec<NamedOffer>, CmdError> {
+    let Ok(filed) = FiledRevisionId::new(subject) else {
+        return Ok(Vec::new());
+    };
+    let service = super::service(ctx)?;
+    let request = OriginalReadRequest::command(RollCommandReadRequest::charter_offers(filed));
+    let views = match ctx.read_owner(&service.roll, request) {
+        Ok(result) => result
+            .into_command()
+            .and_then(RollCommandReadResult::into_charter_offers)
+            .ok_or_else(not_open)?,
+        Err(OwnerReadError::Refused) => Vec::new(),
+        Err(_) => return Err(not_open()),
+    };
+    Ok(views
+        .iter()
+        .map(|view| NamedOffer {
+            offer: view.offer(),
+            price_minor: view.price_minor(),
+            expires_at_utc: view.expires_at_utc(),
+        })
+        .collect())
 }
 
 /// The paid-resale Offer's wire (`OfferParameters`): numbers, not strings.
@@ -275,9 +408,7 @@ pub(crate) fn resale_offer_parameters(
     })
 }
 
-/// The paid-resale Accept's and Fund's wire (`AcceptParameters`). Held with
-/// the accepts (module doc).
-#[cfg_attr(not(test), allow(dead_code))]
+/// The paid-resale Accept's and Fund's wire (`AcceptParameters`).
 pub(crate) fn resale_accept_parameters(
     offer: CommitToken,
     payer: mush_economy::AccountId,
@@ -303,8 +434,7 @@ pub(crate) fn charter_offer_parameters(
 }
 
 /// The pending charter Fund's wire (`FundWire`): the offer token and the
-/// payer as a decimal string. Held with the accepts (module doc).
-#[cfg_attr(not(test), allow(dead_code))]
+/// payer as a decimal string.
 pub(crate) fn charter_fund_parameters(
     offer: CommitToken,
     payer: mush_economy::AccountId,
@@ -312,10 +442,10 @@ pub(crate) fn charter_fund_parameters(
     json!({"offer": offer, "payer": payer.0.to_string()})
 }
 
-// ---- the named buyer's listing and price rule (held: module doc) ----
+// ---- the named buyer's listing and price rule ----
 
-/// One live offer naming the actor, as the offer indexes will answer it.
-#[cfg_attr(not(test), allow(dead_code))]
+/// One offer naming the actor, as the offer indexes answer it: the offer's
+/// committed token, frozen price and expiry (world UTC seconds).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NamedOffer {
     pub(crate) offer: CommitToken,
@@ -324,7 +454,6 @@ pub(crate) struct NamedOffer {
 }
 
 /// A resale offer (on a licence) or a charter offer (on a filed mind).
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Named {
     Resale,
@@ -332,7 +461,6 @@ pub(crate) enum Named {
 }
 
 /// What an accept does with the live offers naming the actor.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AcceptPlan {
     /// Print these lines and submit nothing (no `price=`, or a refusal).
@@ -353,7 +481,6 @@ pub(crate) enum AcceptPlan {
 ///   expiring last among those at that price, with `ACCEPTING` /
 ///   `FUNDING_CHARTER`.
 /// - Else `Refuse([NO_OFFER_AT / NO_CHARTER_OFFER_AT, the lines…])`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn accept_plan(
     named: Named,
     subject: u64,
@@ -415,7 +542,6 @@ pub(crate) fn accept_plan(
 }
 
 /// Each live offer's line and its confirming line, in the order given.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn offer_lines(
     named: Named,
     subject: &str,
@@ -447,7 +573,6 @@ pub(crate) fn offer_lines(
 }
 
 /// Whole minutes from `now` to `until`, rounded up, never below 0.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn minutes_left(until: i64, now: i64) -> i64 {
     until.saturating_sub(now).max(0).saturating_add(59) / 60
 }

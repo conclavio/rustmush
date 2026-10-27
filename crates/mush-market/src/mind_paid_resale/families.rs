@@ -83,6 +83,20 @@ impl Families {
             buyer_offers: super::index::register(reg)?,
         })
     }
+    /// 17g C2g: the seller offers and the per-(buyer, licence) offer index,
+    /// which `mind_commands`' `ResaleOffers` point-reads for the calling
+    /// actor only (read only; every write stays in this module).
+    pub(crate) const fn offers(&self) -> &StateFamilyHandle<CommitToken, MindPaidResaleOffer> {
+        &self.offers
+    }
+    pub(crate) const fn buyer_offers(
+        &self,
+    ) -> &StateFamilyHandle<
+        (mush_core::ObjId, mush_roll::commerce::LicenceId),
+        super::index::ResaleBuyerOffers,
+    > {
+        &self.buyer_offers
+    }
 }
 pub(super) fn envelope<R: Row>(
     family: &StateFamilyHandle<CommitToken, R>,

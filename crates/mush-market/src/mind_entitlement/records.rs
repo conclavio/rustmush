@@ -343,6 +343,32 @@ impl EntitlementQuoteV1 {
     pub const fn publication(&self) -> CommitToken {
         self.publication
     }
+    /// 17g C2g: the listing this quote prices (its publication token), which
+    /// `mind_commands`' own-purchase read matches a typed code against.
+    pub(crate) const fn listing(&self) -> CommitToken {
+        self.listing
+    }
+    /// 17g C2g: the quoting buyer.
+    pub(crate) const fn buyer(&self) -> ObjId {
+        self.buyer
+    }
+    /// 17g C2g: the frozen price, in minor units.
+    pub(crate) const fn price_minor(&self) -> i64 {
+        self.price.minor()
+    }
+    /// 17g C2g: when the quote was made, world UTC seconds.
+    pub(crate) const fn quoted_at_utc(&self) -> i64 {
+        self.quoted_at_utc
+    }
+    /// 17g C2g: when the quote stops being fundable, world UTC seconds
+    /// (`provider::current` refuses a Fund at or after it).
+    pub(crate) const fn expires_at_utc(&self) -> i64 {
+        self.expires_at_utc
+    }
+    /// 17g C2g: the entitlement protocol of the quote's product.
+    pub(crate) const fn protocol(&self) -> EntitlementProtocol {
+        self.product.protocol
+    }
     pub(super) fn economic_data(
         &self,
         quote_digest: DefinitionDigest,

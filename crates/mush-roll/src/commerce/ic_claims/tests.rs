@@ -49,7 +49,7 @@ fn stamp(at: i64) -> ClockStamp {
 fn world(at: i64) -> TestResult<WorldIcSeconds> {
     Ok(WorldIcSeconds::from_stamp(&stamp(at))?)
 }
-fn row(number: u64, licence: u64, capacity: Capacity) -> TestResult<ClaimRecord> {
+pub(crate) fn row(number: u64, licence: u64, capacity: Capacity) -> TestResult<ClaimRecord> {
     let protocol = protocol()?;
     let row = ClaimRecord {
         format: 1,
@@ -86,7 +86,7 @@ fn row(number: u64, licence: u64, capacity: Capacity) -> TestResult<ClaimRecord>
     row.validate()?;
     Ok(row)
 }
-fn one_seat() -> TestResult<Capacity> {
+pub(crate) fn one_seat() -> TestResult<Capacity> {
     Ok(Capacity::PaidSeats {
         seats: PaidSeats::new(1)?,
     })

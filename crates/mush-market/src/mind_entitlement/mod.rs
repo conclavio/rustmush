@@ -22,6 +22,8 @@ pub use config::{EntitlementConfig, EntitlementPolicy};
 pub(crate) use families::Families;
 // 17g C2c: the command read's (`crate::mind_commands`) view of this owner.
 pub(crate) use guard::EntitlementGuard;
+// 17g C2g: the per-buyer index the own-purchase reads point-read.
+pub(crate) use index::{EntitlementActorIndex, MAX_BUYER_PURCHASES, MAX_BUYER_QUOTES};
 pub(crate) use offers::current_policy;
 pub(crate) use registration::register_with_house_definitions;
 

@@ -41,6 +41,11 @@ impl EntitlementPurchaseV1 {
     pub const fn phase(&self) -> PurchasePhase {
         self.phase
     }
+    /// 17g C2g: the funded quote this purchase froze (its listing, buyer and
+    /// protocol), for `mind_commands`' own-purchase read.
+    pub(crate) const fn quote_row(&self) -> &EntitlementQuoteV1 {
+        &self.quote
+    }
     pub(super) fn matches_allocation(&self, a: &EntitlementAllocationV1) -> Result<(), String> {
         self.validate()?;
         let q = &self.quote;

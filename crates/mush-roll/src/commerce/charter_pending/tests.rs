@@ -193,4 +193,4 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
 
 /// 17g C2f: the per-(buyer, charter) pending offer index (test 11).
 #[path = "buyer_offer_tests.rs"]
-mod buyer_offers;
+pub(crate) mod buyer_offers;

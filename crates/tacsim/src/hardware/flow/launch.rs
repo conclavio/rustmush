@@ -1345,8 +1345,10 @@ async fn author_parameters_satisfy_the_registered_providers() -> Result {
 /// fingerprint are printed, the counts pinned). With the
 /// buyer at the counter, the parameter objects `@mind/publish` builds for
 /// the List offer, with and without the transfer mark, and `+minds/buy`'s
-/// Quote, and the Fund, Grant and Refund wires the pending steps will submit
-/// (`{"quote"}` and `{"operation"}`, `mind_entitlement::provider`'s own),
+/// Quote, and the Fund, Grant and Refund wires `+minds/buy/pay`,
+/// `/complete` and `/refund` submit (17g C2g: `market::fund_parameters` and
+/// `terminal_parameters`, `{"quote"}` and `{"operation"}`,
+/// `mind_entitlement::provider`'s own),
 /// each resolve against the player's own projected offer for the action
 /// `MarketCommandActions` captured, in both protocols, and pass
 /// `validate_invocation`.
@@ -1421,9 +1423,9 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
                 market::list_parameters(licence, "open_resale", 300, false),
             ),
             (protocol, Step::Quote, market::quote_parameters(token)),
-            (protocol, Step::Fund, json!({"quote": token})),
-            (protocol, Step::Grant, json!({"operation": token})),
-            (protocol, Step::Refund, json!({"operation": token})),
+            (protocol, Step::Fund, market::fund_parameters(token)),
+            (protocol, Step::Grant, market::terminal_parameters(token)),
+            (protocol, Step::Refund, market::terminal_parameters(token)),
         ]);
     }
     e.set_offer_keys(mush_core::OfferKeyRing::new(

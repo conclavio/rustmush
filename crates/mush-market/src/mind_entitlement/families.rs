@@ -130,6 +130,20 @@ impl Families {
     pub(crate) const fn listings(&self) -> &StateFamilyHandle<CommitToken, EntitlementListingV1> {
         &self.listings
     }
+    /// 17g C2g: the retained quotes, the purchase operations and the per-buyer
+    /// index, which `mind_commands`' own-purchase reads point-read for the
+    /// calling actor only (read only, as `listings`).
+    pub(crate) const fn quotes(&self) -> &StateFamilyHandle<CommitToken, EntitlementQuoteV1> {
+        &self.quotes
+    }
+    pub(crate) const fn operations(
+        &self,
+    ) -> &StateFamilyHandle<CommitToken, EntitlementPurchaseV1> {
+        &self.operations
+    }
+    pub(crate) const fn actors(&self) -> &StateFamilyHandle<ObjId, EntitlementActorIndex> {
+        &self.actors
+    }
     pub(super) fn register(
         reg: &mut Registrar<'_>,
         config: &EntitlementConfig,
