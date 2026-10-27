@@ -121,7 +121,8 @@ and the cockpit screen's picture below, whose keys are a pilot's controls.
 **The cockpit screen as a picture.** In a tank's seat, on a terminal that can
 show pictures, screen `0` is a first-person picture of the arena with your
 armour, weapons, contacts and the comms as text under it, and its own keys:
-`a`/`d` and the arrows turn, `w`/`s` change speed a step, `x` all stop,
+`a`/`d` and the arrows turn (held down, on a terminal that reports when a key
+is let go; press and press again elsewhere), `w`/`s` change speed a step, `x` all stop,
 `q`/`e` look, `c` centre, space steady, `v` the overhead, `f` weapons
 free/hold, `g` a volley, `t`/`T` the lock cycle, `F1`–`F6` an `ORDER` ready in
 the chat line, Enter the chat line. Each sends the line you would have typed

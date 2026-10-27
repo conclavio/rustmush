@@ -2634,8 +2634,8 @@ impl TuiApp {
                 r.redraw = false;
                 return;
             }
-            Key::KeyboardFlags(_) => {
-                self.pixel.keyboard_reply();
+            Key::KeyboardFlags(flags) => {
+                self.pixel.keyboard_reply(flags);
                 r.redraw = false;
                 return;
             }
@@ -2682,7 +2682,7 @@ impl TuiApp {
                 }
             }
             // A held key's repeat or release that outlived the view.
-            Key::Repeat(_) | Key::Release(_) => {
+            Key::Repeat(_) | Key::Release(_) | Key::CharRepeat(_) | Key::CharRelease(_) => {
                 r.redraw = false;
                 return;
             }
@@ -2801,7 +2801,10 @@ impl TuiApp {
                     };
                     self.input_key(key, r);
                 }
-                Key::Release(_) | Key::Alt(_) => r.redraw = false,
+                // A held letter's repeats type it again (doc 21 cut G.12,
+                // `W-G12-1`); its release is nothing.
+                Key::CharRepeat(c) => self.input_key(Key::Char(c), r),
+                Key::Release(_) | Key::CharRelease(_) | Key::Alt(_) => r.redraw = false,
                 Key::Esc if self.order_prefill => self.leave_input(false),
                 Key::Enter => {
                     self.input_key(key, r);

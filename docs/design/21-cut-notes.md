@@ -451,10 +451,11 @@ in the same session on top of doc 23. Rulings taken here, each cheap to unwind:
 - **Weapons free is the default** (Q-21-9): a `FIRE … WHEN` rule fires the moment it is armed, as
   every story and bot pilot assumes; `f` is therefore the hold key first. The alternative is one
   constant and a sweep of the stories.
-- **`a`/`d` stay toggled on every terminal, the arrows are held where the protocol reports
-  releases.** The kitty protocol as the view pushes it (`CSI >3u`) sends an unmodified letter as
-  text with no release event; holding a letter needs flag 8 (every key as an escape code), which
-  re-encodes shifted letters too (`T` among them). Not pushed in this cut; a follow-up, `W-G12-1`.
+- **`a`/`d` are held where the terminal reports a letter's release, toggled elsewhere** — the same
+  rule as the arrows, built the same day as `W-G12-1` (below). The protocol as G.12 first pushed
+  it (`CSI >3u`) sent an unmodified letter as text with no release event; holding a letter needs
+  flag 8 (every key as an escape code), which re-encodes every other key the picture passes
+  through, and flag 4 to tell `T` from `t`.
 - **Unbound letters are swallowed while the picture shows.** The text cockpit's own bindings (`k`,
   `h`, `m`) do nothing under the picture; `p` brings the text cockpit back with them. Only the
   digits, Enter, `"` `:` `;` `\` `/` `?`, `p`, Esc, `F7`+ and the Ctrl/Alt chords pass through.
@@ -480,7 +481,8 @@ in the same session on top of doc 23. Rulings taken here, each cheap to unwind:
   gateway's frame over the socket (the `picture` command's `kind`), the browser render staying
   first-person until the wasm module carries the scene.
 - **`r` joins `u` behind `[pixel] diagnostics`**; both draw on the top line, the 120-column legend
-  has no room for them. The legend is `key:label`, 108 characters toggled and 113 held, held to 120
+  has no room for them. The legend is `key:label`, 108 characters toggled, 118 with the arrows
+  held and 113 with the letters held too (`W-G12-1`), held to 120
   by a test.
 
 ### G.12b — the TUI
@@ -521,6 +523,48 @@ screen 0, `1` then `0` returning the picture with the helm, `p`, and the `F1`/`F
 `g12b_*` tests in `pixel.rs` and `app.rs`, three throttle and lock tests in `helm.rs`, a keys test
 for the protocol's F-keys); `--test tui_golden` 25 with the frames unchanged. fmt, clippy
 `-D warnings` and rustdoc `-D warnings` clean.
+
+#### W-G12-1 — `a`/`d` held (2026-10-27, the same day)
+
+The letters are held turns where the terminal reports their release, as the arrows are, toggled
+everywhere else. What changed (`crates/mush-net-ssh/src/tui/{pixel,keys,app}.rs`):
+
+- **The push is `CSI >15u`**: flags 1 (disambiguate) and 2 (event types) as before, plus **8**
+  (every key as an escape code, with its repeat and release) and **4** (alternate keys). The brief
+  asked for 1+2+8; flag 4 was added because the protocol carries the character shift makes
+  (`T` as `CSI 116:84;2u`, `"` as `CSI 39:34;2u`, `:` as `CSI 59:58;2u`) **only** under flag 4 —
+  with 8 alone `T` arrives as `CSI 116;2u`, from which a letter's case can be recovered but a
+  shifted punctuation key (`:` from `;`, `?` from `/`) cannot. The parser takes the alternate
+  field when shift is down, upper-cases an ASCII letter where a terminal reports shift without it
+  (flag 8 without 4), and swaps a letter's case under caps lock (bit 64).
+- **The flags are asked for again after the push** (`CSI ? u`), and the reply decides the letters:
+  `PixelView::keyboard_reply(flags)` records whether flag 8 is among the flags the terminal took,
+  and `a`/`d` are held only then. Until that reply, and on a terminal that took the protocol
+  without flag 8, the letters stay toggled — a release still stops a turn whichever way it was
+  started, so a reply landing mid-press costs nothing. The probe's own reply (before any push)
+  still only says the terminal speaks the protocol.
+- **The parser** decodes a printable key's repeat and release as two new keys,
+  `Key::CharRepeat(char)` and `Key::CharRelease(char)`; a non-printable key's release (Enter,
+  Esc, a Ctrl chord, an F-key in its `~` or `P/Q/S` form) is still nothing; the private-use range
+  flag 8 reports (the modifier keys on their own, the media keys) is nothing, except the keypad,
+  which types its digits, operators and Enter; Shift-Tab in the `CSI 9;2u` form is BackTab.
+- **The view** starts a turn on `a`/`d`'s press, ignores their repeats, and stops on their
+  release (as the arrows); every other key's repeat is the key again (a held `w` steps on, a
+  held `t` walks the contacts, as a terminal's own autorepeat always did) so nothing the picture
+  passes through — `p`, the digits, Enter, `"` `:` `;` `\` `/` `?`, Esc, `F7`+, the Ctrl and Alt
+  chords — changed. In the chat line a held letter's repeats type it again and its release is
+  nothing; a repeat or release that outlives the view is dropped by the app. The legend reads
+  `a/d ←/→:hold-turn` with both held, `←/→:hold-turn a/d:turn` with the arrows alone.
+
+**Verified.** `cargo test -p mush-net-ssh --lib` 331 (the parser: a letter's press, repeat and
+release, `T` with and without the alternate field, the shifted punctuation, `p`, the digits,
+Enter, Esc, the F-keys in both forms, the chords, Shift-Tab, caps lock, the modifier and media
+keys swallowed, the keypad; the view: the letters toggled until the reply, held after it with the
+repeat ignored and the release stopping, the other letter's release ignored, a held `w` still
+stepping, a terminal that took flags 3 keeping the letters toggled, both legends);
+`--test tui_golden` 25; fmt, clippy `-D warnings`, rustdoc `-D warnings`. **Not smoked live**:
+whether w11term (the owner's reference client) takes flags 4 and 8 is unseen — the re-query makes
+either answer safe, and the legend says which it gave.
 
 ### G.12c — the web
 
