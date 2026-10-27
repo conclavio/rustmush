@@ -887,7 +887,7 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     // cut IC8's P11 fittings card), the two region packs at 1; doc 18 cut IC14
     // re-published Stickney at 4 (three verb meta-text clauses struck).
     let station_version = |pack: &str| match pack {
-        CERES_PACK => 3,
+        CERES_PACK => 4,
         STICKNEY_PACK => 4,
         _ => 1,
     };
@@ -911,8 +911,8 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     }
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
-    // Oduya guidance: relay v5 also requires Ceres v3.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(5));
+    // Qureshi's trust service: relay v6 requires Ceres v4.
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(6));
     assert_eq!(
         after.len(),
         35,

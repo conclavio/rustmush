@@ -123,6 +123,14 @@ pub struct PersonalRecall {
     pub belief_ids: Vec<u64>,
 }
 
+/// A character the NPC currently perceives. Identity is used only for matching
+/// retained evidence; internal object IDs never appear in rendered recall.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecallPerson {
+    pub id: ObjId,
+    pub name: String,
+}
+
 /// Why an observation, interpretation, or persisted document was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PersonalMemoryError {
@@ -490,15 +498,54 @@ impl PersonalMemoryStore {
             .map_or(0, |record| record.beliefs.len())
     }
 
-    /// Deterministic, bounded recall. Explicit topic cues rank first, present
-    /// speakers second, then recent context. Age changes availability and its
-    /// label, never the stored text. Superseded interpretations are not active
-    /// claims; their successor names the revision explicitly.
+    /// Legacy name-based recall for callers without perceived identities.
+    /// Live dialogue should use [`Self::recall_for_people`] so names cannot
+    /// associate a different character with an earlier speaker's evidence.
     #[must_use]
     pub fn recall(
         &self,
         npc: ObjId,
         present_names: &[String],
+        cue: &str,
+        now: i64,
+        top_n: usize,
+    ) -> Vec<PersonalRecall> {
+        let names = present_names
+            .iter()
+            .take(64)
+            .map(|name| crate::memory::slug(name))
+            .collect();
+        self.recall_with_audience(npc, RecallAudience::Names(names), cue, now, top_n)
+    }
+
+    /// Deterministic, bounded recall for currently perceived identities. Topic
+    /// cues rank first, matching evidence speakers second, then recent context.
+    /// Names alone never grant a present-person boost. Age and uncertainty stay
+    /// attached to original evidence, including evidence copied into beliefs.
+    #[must_use]
+    pub fn recall_for_people(
+        &self,
+        npc: ObjId,
+        people: &[RecallPerson],
+        cue: &str,
+        now: i64,
+        top_n: usize,
+    ) -> Vec<PersonalRecall> {
+        let people: Vec<_> = people
+            .iter()
+            .take(64)
+            .filter(|person| {
+                !person.name.trim().is_empty() && person.name.len() <= MAX_PERSONAL_NAME_BYTES
+            })
+            .cloned()
+            .collect();
+        self.recall_with_audience(npc, RecallAudience::People(&people), cue, now, top_n)
+    }
+
+    fn recall_with_audience(
+        &self,
+        npc: ObjId,
+        audience: RecallAudience<'_>,
         cue: &str,
         now: i64,
         top_n: usize,
@@ -510,11 +557,6 @@ impl PersonalMemoryStore {
         if limit == 0 {
             return Vec::new();
         }
-        let names: BTreeSet<String> = present_names
-            .iter()
-            .take(64)
-            .map(|name| crate::memory::slug(name))
-            .collect();
         let cue = cue_tokens(cue);
         let superseded: BTreeSet<u64> = record
             .beliefs
@@ -533,15 +575,14 @@ impl PersonalMemoryStore {
             if age == Age::Old && !explicit {
                 continue;
             }
-            let present = names.contains(&event.subject)
-                || names.contains(&crate::memory::slug(&event.speaker_name));
+            let present = audience.is_present(&event.subject, Some(event));
             candidates.push(RecallCandidate {
                 priority: u8::from(explicit) * 2 + u8::from(present),
                 id: event.id,
                 evidence_id: Some(event.id),
                 belief_id: None,
                 subject: &event.subject,
-                text: render_experience(event, age),
+                text: render_experience(event, age, &audience),
             });
         }
         for belief in &active {
@@ -560,11 +601,7 @@ impl PersonalMemoryStore {
             if age == Age::Old && !explicit {
                 continue;
             }
-            let present = names.contains(&belief.subject)
-                || belief
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|event| names.contains(&crate::memory::slug(&event.speaker_name)));
+            let present = audience.is_present(&belief.subject, belief.evidence.as_ref());
             let disputed = belief.disputes.is_some()
                 || active.iter().any(|other| other.disputes == Some(belief.id));
             candidates.push(RecallCandidate {
@@ -573,7 +610,7 @@ impl PersonalMemoryStore {
                 evidence_id: belief.evidence.as_ref().map(|event| event.id),
                 belief_id: Some(belief.id),
                 subject: &belief.subject,
-                text: render_belief(belief, age, disputed),
+                text: render_belief(belief, age, disputed, &audience),
             });
         }
         candidates.sort_by(|left, right| {
@@ -623,6 +660,72 @@ impl PersonalMemoryStore {
             }
         }
         result
+    }
+}
+
+enum RecallAudience<'a> {
+    Names(BTreeSet<String>),
+    People(&'a [RecallPerson]),
+}
+
+impl RecallAudience<'_> {
+    fn is_present(&self, subject: &str, evidence: Option<&Experience>) -> bool {
+        match self {
+            Self::Names(names) => {
+                names.contains(subject)
+                    || evidence.is_some_and(|event| {
+                        names.contains(&crate::memory::slug(&event.speaker_name))
+                    })
+            }
+            Self::People(people) => evidence
+                .and_then(|event| event.speaker)
+                .is_some_and(|id| people.iter().any(|person| person.id == id)),
+        }
+    }
+
+    fn source(&self, event: &Experience) -> String {
+        let historical = event.speaker_name.trim();
+        let speaker = quote_excerpt(
+            if historical.is_empty() {
+                "unknown speaker"
+            } else {
+                historical
+            },
+            256,
+        );
+        let Self::People(people) = self else {
+            return speaker;
+        };
+        let Some(id) = event.speaker else {
+            return format!("{speaker} (historical name; identity unverified)");
+        };
+        if let Some(person) = people.iter().find(|person| person.id == id) {
+            if people.iter().any(|other| {
+                other.id != id && other.name.trim().eq_ignore_ascii_case(person.name.trim())
+            }) {
+                return format!(
+                    "{speaker} (one of the present characters named {}; name alone does not distinguish them)",
+                    quote_excerpt(person.name.trim(), 256)
+                );
+            }
+            if person.name.trim().eq_ignore_ascii_case(historical) {
+                return format!("{speaker} (same observed character now present)");
+            }
+            return format!(
+                "{speaker} (same observed character now known here as {})",
+                quote_excerpt(person.name.trim(), 256)
+            );
+        }
+        if !historical.is_empty()
+            && people
+                .iter()
+                .any(|person| person.name.trim().eq_ignore_ascii_case(historical))
+        {
+            return format!(
+                "{speaker} (a different character from the person now present with this name)"
+            );
+        }
+        speaker
     }
 }
 
@@ -693,21 +796,16 @@ fn can_correct(evidence: &Experience, old: &Belief) -> bool {
     }
 }
 
-fn render_experience(event: &Experience, age: Age) -> String {
+fn render_experience(event: &Experience, age: Age, audience: &RecallAudience<'_>) -> String {
     let source = match event.kind {
         ExperienceKind::Speech => "reported speech (not verified truth)",
         ExperienceKind::Outcome => "observed outcome",
-    };
-    let speaker = if event.speaker_name.trim().is_empty() {
-        "unknown speaker"
-    } else {
-        &event.speaker_name
     };
     let prefix = format!(
         "experience #{} [{}; {source}; source {}]: ",
         event.id,
         age.label(),
-        quote_excerpt(speaker, 256)
+        audience.source(event)
     );
     let text = quote_excerpt(
         &event.text,
@@ -716,7 +814,12 @@ fn render_experience(event: &Experience, age: Age) -> String {
     format!("{prefix}{text}")
 }
 
-fn render_belief(belief: &Belief, age: Age, disputed: bool) -> String {
+fn render_belief(
+    belief: &Belief,
+    age: Age,
+    disputed: bool,
+    audience: &RecallAudience<'_>,
+) -> String {
     let status = if disputed { "disputed" } else { "current" };
     let revision = belief.replaces.map_or_else(String::new, |id| {
         format!("; revises belief #{id} (prior interpretation superseded)")
@@ -730,17 +833,12 @@ fn render_belief(belief: &Belief, age: Age, disputed: bool) -> String {
                 ExperienceKind::Speech => "reported speech, not verified truth",
                 ExperienceKind::Outcome => "observed outcome",
             };
-            let speaker = if event.speaker_name.trim().is_empty() {
-                "unknown speaker"
-            } else {
-                &event.speaker_name
-            };
             let prefix = format!(
                 "belief #{} [uncertain belief; {status}; {}{revision}{dispute}; from experience #{} ({source}; source {})]: ",
                 belief.id,
                 age.label(),
                 event.id,
-                quote_excerpt(speaker, 256)
+                audience.source(event)
             );
             let separator = " — original observation: ";
             let budget =
@@ -1298,6 +1396,190 @@ mod tests {
             store.recall(NPC, &["Bob".into()], "fuel_depot", 13, 2)
         );
         assert!(store.recall(NPC, &[], "", 13, 0).is_empty());
+    }
+
+    #[test]
+    fn identity_recall_follows_a_rename_without_rewriting_the_observation() {
+        let mut store = PersonalMemoryStore::default();
+        let alice = observed(&mut store, ALICE, "Alice says the fuel depot is open.", 10);
+        observed(&mut store, BOB, "Bob has a newer unrelated report.", 11);
+        let before = store.record_for(NPC).cloned();
+        let people = [RecallPerson {
+            id: ALICE,
+            name: "Beatrice".into(),
+        }];
+        let recall = store.recall_for_people(NPC, &people, "", 12, 1);
+        let item = recall.first().expect("renamed speaker prioritized");
+        assert_eq!(item.evidence_ids, vec![alice]);
+        let note = &item.notes[0];
+        assert!(
+            note.contains(
+                "source \"Alice\" (same observed character now known here as \"Beatrice\")"
+            )
+        );
+        assert!(note.contains("Alice says the fuel depot is open."));
+        assert!(note.contains("reported speech (not verified truth)"));
+        assert_eq!(store.record_for(NPC), before.as_ref());
+    }
+
+    #[test]
+    fn same_name_different_identity_does_not_gain_presence_priority() {
+        let mut store = PersonalMemoryStore::default();
+        let original = observed(&mut store, ALICE, "The original manifest was delayed.", 10);
+        let newer = observed(&mut store, BOB, "The gardens are quiet.", 11);
+        let people = [RecallPerson {
+            id: ObjId(987654),
+            name: "Alice".into(),
+        }];
+        let ordinary = store.recall_for_people(NPC, &people, "", 12, 1);
+        assert_eq!(ordinary[0].evidence_ids, vec![newer]);
+        let cued = store.recall_for_people(NPC, &people, "original manifest", 12, 1);
+        assert_eq!(cued[0].evidence_ids, vec![original]);
+        assert!(
+            cued[0].notes[0]
+                .contains("a different character from the person now present with this name")
+        );
+        assert!(!cued[0].notes[0].contains("987654"));
+        assert!(cued[0].notes[0].contains("not verified truth"));
+    }
+
+    #[test]
+    fn grounded_beliefs_use_copied_evidence_identity_after_source_eviction() {
+        let mut store = PersonalMemoryStore::default();
+        let event = observed(&mut store, ALICE, "The original fuel depot report.", 10);
+        let belief = believed(&mut store, "The depot may be open.", event, None, 11);
+        for index in 0..MAX_EXPERIENCES {
+            observed(
+                &mut store,
+                BOB,
+                "A newer garden observation.",
+                12 + index as i64,
+            );
+        }
+        let before = store.record_for(NPC).cloned();
+        assert!(
+            !before
+                .as_ref()
+                .expect("record")
+                .experiences
+                .iter()
+                .any(|row| row.id == event)
+        );
+        let people = [RecallPerson {
+            id: ALICE,
+            name: "Beatrice".into(),
+        }];
+        let recall = store.recall_for_people(NPC, &people, "", 100, 1);
+        assert_eq!(recall[0].evidence_ids, vec![event]);
+        assert_eq!(recall[0].belief_ids, vec![belief]);
+        assert!(recall[0].notes[0].contains("uncertain belief"));
+        assert!(
+            recall[0].notes[0].contains("same observed character now known here as \"Beatrice\"")
+        );
+        assert!(recall[0].notes[0].contains("The original fuel depot report."));
+        assert_eq!(store.record_for(NPC), before.as_ref());
+
+        let imposter = [RecallPerson {
+            id: BOB,
+            name: "Alice".into(),
+        }];
+        let recall = store.recall_for_people(NPC, &imposter, "", 100, 1);
+        assert!(
+            recall[0].belief_ids.is_empty(),
+            "a belief's old speaker name cannot override a mismatched identity"
+        );
+    }
+
+    #[test]
+    fn unknown_speakers_and_unsupported_beliefs_cannot_claim_a_present_identity() {
+        let mut store = PersonalMemoryStore::default();
+        store
+            .observe(
+                NPC,
+                "Alice",
+                "The unauthenticated report.",
+                None,
+                "Alice",
+                None,
+                ExperienceKind::Speech,
+                10,
+            )
+            .expect("unknown speaker");
+        store
+            .believe(
+                NPC,
+                "Alice",
+                "An unsupported interpretation.",
+                None,
+                None,
+                11,
+            )
+            .expect("legacy-compatible inference");
+        let bob = observed(&mut store, BOB, "The latest gardens report.", 12);
+        let people = [RecallPerson {
+            id: ALICE,
+            name: "Alice".into(),
+        }];
+        let recall = store.recall_for_people(NPC, &people, "", 13, 1);
+        assert_eq!(recall[0].evidence_ids, vec![bob]);
+        let recall = store.recall_for_people(NPC, &people, "Alice", 13, 2);
+        let text = recall
+            .iter()
+            .flat_map(|item| &item.notes)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("identity unverified"));
+        assert!(text.contains("unsupported inference"));
+        assert!(text.contains("no observed evidence"));
+        assert!(!text.contains("same observed character"));
+    }
+
+    #[test]
+    fn identity_recall_preserves_age_and_budgets_with_long_current_names() {
+        let mut store = PersonalMemoryStore::default();
+        let body = format!("The fuel depot report {}", "水".repeat(1200));
+        for index in 0..MAX_EXPERIENCES {
+            observed(&mut store, ALICE, &body, 100 + index as i64);
+        }
+        let people = [RecallPerson {
+            id: ALICE,
+            name: "新".repeat(80),
+        }];
+        let now = 200 + FADING_AFTER_SECS;
+        let recall = store.recall_for_people(NPC, &people, "fuel depot", now, usize::MAX);
+        assert_eq!(
+            recall,
+            store.recall_for_people(NPC, &people, "fuel depot", now, usize::MAX)
+        );
+        let count: usize = recall.iter().map(|item| item.notes.len()).sum();
+        let bytes: usize = recall
+            .iter()
+            .map(|item| {
+                item.subject.len() + 1 + item.notes.iter().map(|note| note.len() + 1).sum::<usize>()
+            })
+            .sum();
+        assert!(count > 0 && count <= MAX_PERSONAL_RECALL_ENTRIES);
+        assert!(bytes <= MAX_PERSONAL_RECALL_BYTES);
+        assert!(
+            recall
+                .iter()
+                .flat_map(|item| &item.notes)
+                .all(|note| note.len() <= MAX_PERSONAL_RECALL_NOTE_BYTES
+                    && note.contains("fading; uncertain recall"))
+        );
+        assert!(
+            store
+                .recall_for_people(NPC, &people, "", 200 + OLD_AFTER_SECS, 16)
+                .is_empty()
+        );
+        let old = store.recall_for_people(NPC, &people, "fuel depot", 200 + OLD_AFTER_SECS, 1);
+        assert!(old[0].notes[0].contains("old; uncertain recall"));
+        assert!(
+            store
+                .recall_for_people(NPC, &people, "fuel depot", now, 0)
+                .is_empty()
+        );
     }
 
     #[test]

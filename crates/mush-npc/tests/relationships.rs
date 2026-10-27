@@ -23,7 +23,10 @@ struct Lot {
 }
 
 fn lot() -> Lot {
-    let mut world = TestWorld::with_modules(vec![Box::new(NpcModule::new())]);
+    let mut world = TestWorld::with_modules(vec![
+        Box::new(mush_faction::FactionModule),
+        Box::new(NpcModule::new()),
+    ]);
     world.set_now(1000);
     let room = world
         .world_mut()
@@ -45,7 +48,7 @@ fn lot() -> Lot {
         .create(ObjKind::Npc, "Clerk", GOD, Some(room))
         .expect("clerk");
     let profile = AgentProfile {
-        interfaces: vec!["npc.lore".into()],
+        interfaces: vec!["npc.lore".into(), "npc.relationship".into()],
         ..AgentProfile::default()
     };
     world
@@ -135,8 +138,23 @@ fn capture(lot: &mut Lot) -> (u64, TurnSnapshot) {
 }
 
 fn complete(lot: &mut Lot, correlation: u64, topic: &str) -> Vec<(Audience, OutputEvent)> {
+    complete_ability(
+        lot,
+        correlation,
+        "npc.lore.read",
+        serde_json::json!({"topic":topic}),
+    )
+}
+
+fn complete_ability(
+    lot: &mut Lot,
+    correlation: u64,
+    ability: &str,
+    input: serde_json::Value,
+) -> Vec<(Audience, OutputEvent)> {
     let payload = serde_json::json!({"status":"ok", "npc":lot.npc, "asker":lot.alice,
-        "actions":[{"action":{"action":"use_ability","name":"npc.lore.read","input":{"topic":topic}}}]}).to_string();
+        "actions":[{"action":{"action":"use_ability","name":ability,"input":input}}]})
+    .to_string();
     let (mut out, mut effects) = (Outbox::new(), Effects::new());
     lot.world.engine_mut().step(
         Inbound::Apply(WorldCommand::ModuleAsyncDone {
@@ -149,6 +167,213 @@ fn complete(lot: &mut Lot, correlation: u64, topic: &str) -> Vec<(Audience, Outp
         &mut effects,
     );
     out.take()
+}
+
+#[test]
+fn relationship_query_is_private_self_only_and_does_not_create_contact_or_trust() {
+    let mut lot = lot();
+    relationship(&mut lot, 25, -25, "private-staff-cause");
+    let query = format!("+npc/relationship #{}", lot.npc.0);
+    let before = lot
+        .world
+        .world()
+        .module_state::<NpcHostState>()
+        .unwrap()
+        .relationships
+        .record_for(lot.npc, lot.alice)
+        .unwrap()
+        .clone();
+    for _ in 0..3 {
+        let events = lot.world.run(lot.alice, &query);
+        let mine = lot.world.seen_by(&events, lot.alice).join("\n");
+        assert!(mine.contains("Familiarity: stranger"), "{mine}");
+        assert!(mine.contains("Trust: trusting"), "{mine}");
+        assert!(mine.contains("Disposition: cold"), "{mine}");
+        assert!(!mine.contains("private-staff-cause"));
+        assert!(!mine.contains("Staff verified"));
+        assert!(
+            !lot.world
+                .seen_by(&events, lot.bob)
+                .join("\n")
+                .contains("Trust:")
+        );
+    }
+    assert_eq!(
+        lot.world
+            .world()
+            .module_state::<NpcHostState>()
+            .unwrap()
+            .relationships
+            .record_for(lot.npc, lot.alice),
+        Some(&before)
+    );
+    let bob = run(&mut lot.world, lot.bob, &query);
+    assert!(bob.contains("Trust: unproven"), "{bob}");
+    assert!(bob.contains("Disposition: neutral"), "{bob}");
+    let targeted = run(
+        &mut lot.world,
+        lot.bob,
+        &format!("{query}=#{}", lot.alice.0),
+    );
+    assert!(targeted.contains("Usage:"));
+    assert!(!targeted.contains("Trust: trusting"));
+    assert!(
+        lot.world
+            .world()
+            .module_state::<NpcHostState>()
+            .unwrap()
+            .relationships
+            .record_for(lot.npc, lot.bob)
+            .is_none()
+    );
+}
+
+#[test]
+fn relationship_query_exposes_only_explicit_public_affiliation() {
+    let mut lot = lot();
+    run(&mut lot.world, GOD, "@faction/create VisibleAssociation");
+    run(&mut lot.world, GOD, "@faction/create PrivatePatron");
+    let factions = lot
+        .world
+        .world()
+        .module_state::<mush_faction::FactionState>()
+        .unwrap();
+    let public = factions.faction_by_name("VisibleAssociation").unwrap().id;
+    let private = factions.faction_by_name("PrivatePatron").unwrap().id;
+    let mut profile: AgentProfile = serde_json::from_value(
+        lot.world
+            .world()
+            .attr(lot.npc, PROFILE_ATTR)
+            .unwrap()
+            .as_json()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    profile.principal = Some(mush_faction::Principal::faction(private));
+    profile.public_faction = Some(public);
+    lot.world
+        .world_mut()
+        .set_attr(
+            lot.npc,
+            PROFILE_ATTR,
+            Attr::json(serde_json::to_value(profile).unwrap(), GOD),
+        )
+        .unwrap();
+    let query = format!("+npc/relationship #{}", lot.npc.0);
+    let visible = run(&mut lot.world, lot.alice, &query);
+    assert!(
+        visible.contains("Public standing with VisibleAssociation: neutral"),
+        "{visible}"
+    );
+    assert!(!visible.contains("PrivatePatron"));
+    run(
+        &mut lot.world,
+        GOD,
+        "@faction/set VisibleAssociation=hidden:yes",
+    );
+    let hidden = run(&mut lot.world, lot.alice, &query);
+    assert!(!hidden.contains("VisibleAssociation"));
+    assert!(!hidden.contains("PrivatePatron"));
+    assert!(hidden.contains("Trust: unproven"));
+}
+
+#[test]
+fn async_relationship_uses_live_values_privately_and_rejects_third_party_parameters() {
+    for targeted in [false, true] {
+        let mut lot = lot();
+        relationship(&mut lot, 25, -25, "private-staff-cause");
+        let (correlation, snapshot) = capture(&mut lot);
+        assert!(
+            snapshot
+                .interfaces
+                .iter()
+                .any(|tool| tool.ability.name == "npc.relationship.read")
+        );
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("private-staff-cause")
+        );
+        relationship(&mut lot, -50, 50, "private-change");
+        let input = if targeted {
+            serde_json::json!({"character":lot.bob})
+        } else {
+            serde_json::json!({})
+        };
+        let events = complete_ability(&mut lot, correlation, "npc.relationship.read", input);
+        let mine = lot.world.seen_by(&events, lot.alice).join("\n");
+        if targeted {
+            assert!(!mine.contains("Trust:"), "{mine}");
+        } else {
+            assert!(mine.contains("Trust: distrustful"), "{mine}");
+            assert!(mine.contains("Disposition: friendly"), "{mine}");
+        }
+        assert!(
+            !lot.world
+                .seen_by(&events, lot.bob)
+                .join("\n")
+                .contains("Trust:")
+        );
+        assert!(!mine.contains("private-change"));
+        let host = lot.world.world().module_state::<NpcHostState>().unwrap();
+        let transcript = host.runtime(lot.npc).unwrap().memory.transcript(100_000);
+        assert!(!transcript.contains("Trust:"));
+        let memory =
+            serde_json::to_string(host.personal_memory.record_for(lot.npc).unwrap()).unwrap();
+        assert!(!memory.contains("Trust:"));
+    }
+}
+
+#[test]
+fn private_relationship_rechecks_live_audience_at_delivery() {
+    for changed in ["departure", "disconnected", "disabled", "npc_departure"] {
+        let mut lot = lot();
+        let (correlation, _) = capture(&mut lot);
+        match changed {
+            "departure" => {
+                lot.world
+                    .world_mut()
+                    .move_to(lot.alice, lot.elsewhere)
+                    .unwrap();
+            }
+            "disconnected" => {
+                lot.world.world_mut().set_connected(lot.alice, false);
+            }
+            "disabled" => {
+                run(
+                    &mut lot.world,
+                    GOD,
+                    &format!("@agent/disable #{}", lot.npc.0),
+                );
+            }
+            "npc_departure" => {
+                lot.world
+                    .world_mut()
+                    .move_to(lot.npc, lot.elsewhere)
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let direct = run(
+            &mut lot.world,
+            lot.alice,
+            &format!("+npc/relationship #{}", lot.npc.0),
+        );
+        assert!(!direct.contains("Trust:"), "{changed}: {direct}");
+        let events = complete_ability(
+            &mut lot,
+            correlation,
+            "npc.relationship.read",
+            serde_json::json!({}),
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|(_, event)| text_of(event).contains("Trust:")),
+            "{changed}"
+        );
+    }
 }
 
 fn assert_no_private_memory(lot: &mut Lot) {

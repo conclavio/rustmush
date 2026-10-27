@@ -399,7 +399,7 @@ note = "@agent/relationship's character target; cmd_agent requires Builder befor
 file = "mush-npc/src/private_lore.rs"
 function = "command"
 guard = "perceive"
-note = "+npc/lore resolves only a live NPC in the asker's room, with mutual can_perceive checks before replying; missing, hidden, and untrusted lore is refused without disclosure."
+note = "+npc/lore and +npc/relationship resolve only a live NPC in the asker's room, with mutual can_perceive checks before replying. Relationship queries read only the current asker; missing, hidden, and untrusted lore is refused without disclosure."
 
 [[site]]
 file = "mush-npc/src/module.rs"

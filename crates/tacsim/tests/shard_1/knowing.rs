@@ -3620,6 +3620,187 @@ fn survey_sound(rig: &mut Rig, pilot: ObjId, tv: ObjId, cell: (i64, i64), quiet:
 }
 
 #[test]
+fn qureshi_shares_her_private_story_after_two_real_paid_surveys() {
+    const STORY: &str = "My first Occator stamp came back backwards.";
+
+    // Interplanetary travel also advances house rigs. Finish this captain's exact act
+    // once while landing the background work that became due during the journey.
+    fn finish_with_background(rig: &mut Rig, tv: ObjId, pilot: ObjId) {
+        let act = record_of(&mut rig.tw, tv).unwrap().act.unwrap();
+        let (_, queued) = advance_to(rig, act.due_ic);
+        let tv_text = tv.0.to_string();
+        assert_eq!(
+            finishes(&queued)
+                .into_iter()
+                .filter(|submit| {
+                    submit.actor == pilot
+                        && submit
+                            .parameters
+                            .get("tv")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(tv_text.as_str())
+                        && submit
+                            .parameters
+                            .get("ordinal")
+                            .and_then(serde_json::Value::as_u64)
+                            == Some(u64::from(act.ordinal))
+                })
+                .count(),
+            1,
+            "one finish for this rig and ordinal: {queued:?}"
+        );
+        land_all(rig, &queued);
+        let after = record_of(&mut rig.tw, tv).unwrap();
+        assert!(after.act.is_none());
+        let last = after.last.unwrap();
+        assert_eq!(last.ordinal, act.ordinal);
+        assert_eq!(last.result, ActResult::Done);
+        let (_, queued) = fire(rig);
+        land_all(rig, &queued);
+    }
+
+    let mut rig = stocked();
+    let (pilot, hull, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let hull_id = ObjId(hull.hull);
+    launched(&mut rig, pilot, tv);
+    let first = accept_commission(&mut rig, pilot, "ahuna-a");
+    let factor = first.standing.as_ref().unwrap().representative.unwrap();
+    for cell in [(16, 208), (48, 208), (16, 240), (48, 240)] {
+        survey_sound(&mut rig, pilot, tv, cell, false);
+    }
+    for _ in 0..8 {
+        survey_sweep(&mut rig);
+        if survey_relationship(&rig.tw, &first).0 == 10 {
+            break;
+        }
+    }
+    assert_eq!(survey_relationship(&rig.tw, &first), (10, 5, 1));
+
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    finish_with_background(&mut rig, tv, pilot);
+    let passage = file_and_launch(&mut rig, pilot, hull_id, "+ship/undock ceres");
+    let _ = to_ic(&mut rig, passage.plan.depart_ic + passage.plan.total_s);
+    let left = run(&mut rig.tw, pilot, "+ship/leave");
+    let exchange = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
+    teleport(&mut rig.tw, pilot, exchange);
+    let hint = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+npc/lore {factor}=Qureshi's stories"),
+    );
+    assert!(
+        hint.contains("The first stamp"),
+        "public exact-topic hint: {hint}; {left}"
+    );
+    let query = "+npc/lore Rosalind=The first stamp";
+    let refused = run(&mut rig.tw, pilot, query);
+    assert!(
+        refused.contains("No lore is available"),
+        "one completed survey is insufficient: {refused}"
+    );
+    assert!(!refused.contains(STORY));
+
+    let mut kept = Vec::new();
+    support::sites::open_site_keeping(&mut rig.tw, "kerwan_port", &mut |ops| kept.push(ops));
+    for ops in kept {
+        keep(&mut rig, ops);
+    }
+    board(&mut rig, pilot);
+    let passage = file_and_launch(&mut rig, pilot, hull_id, "+ship/undock kerwan");
+    let _ = to_ic(&mut rig, passage.plan.depart_ic + passage.plan.total_s);
+    assert!(
+        matches!(tacsim::port::ship::berth_of(rig.tw.world(), hull_id),
+        tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == "kerwan_port")
+    );
+    for _ in 0..8 {
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    let second = accept_commission(&mut rig, pilot, "kerwan-f");
+    assert_eq!(
+        second.standing.as_ref().unwrap().representative,
+        Some(factor)
+    );
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    finish_with_background(&mut rig, tv, pilot);
+    let domain = mush_sim::DomainId(port_map(&rig.tw, "kerwan_port").domain.unwrap());
+    for cell in [(80, 144), (112, 144), (80, 176), (112, 176)] {
+        let staff = support::place_keeping(&mut rig.tw, domain, tv, cell);
+        fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+        fold_module_ops_into(&mut rig.store, staff);
+        let _ = act_go(&mut rig, pilot, "+tv/1 sound go");
+        finish_with_background(&mut rig, tv, pilot);
+    }
+    assert_eq!(commission(&mut rig.tw, "kerwan-f").unwrap().covered(), 256);
+    for _ in 0..8 {
+        survey_sweep(&mut rig);
+        if survey_relationship(&rig.tw, &second).0 == 20 {
+            break;
+        }
+    }
+    assert_eq!(survey_relationship(&rig.tw, &second), (20, 10, 2));
+    assert_eq!(occator_standing(&rig.tw, pilot), 20);
+    assert!(matches!(
+        survey_contract(&rig.tw, second.contract),
+        mush_economy::ContractState::Settled { .. }
+    ));
+
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    finish_with_background(&mut rig, tv, pilot);
+    let passage = file_and_launch(&mut rig, pilot, hull_id, "+ship/undock ceres");
+    let _ = to_ic(&mut rig, passage.plan.depart_ic + passage.plan.total_s);
+    let _ = run(&mut rig.tw, pilot, "+ship/leave");
+    teleport(&mut rig.tw, pilot, exchange);
+    rig = reboot(rig, &[pilot]);
+    let bystander = self::pilot(&mut rig, "Listener", 2);
+    teleport(&mut rig.tw, bystander, exchange);
+    let events = rig.tw.run(pilot, query);
+    assert!(
+        said(&rig.tw, &events, pilot).contains(STORY),
+        "earned story persists across reboot"
+    );
+    assert!(
+        !said(&rig.tw, &events, bystander).contains(STORY),
+        "the reply is private"
+    );
+    let stranger = run(&mut rig.tw, bystander, query);
+    assert!(
+        !stranger.contains(STORY),
+        "another character cannot borrow earned trust"
+    );
+    let relationship = run(&mut rig.tw, pilot, "+npc/relationship Rosalind");
+    assert!(
+        relationship.contains("Trust: trusting.")
+            && relationship.contains("Disposition: warm.")
+            && relationship.contains("Public standing with Occator Water & Propellant: friendly."),
+        "current personal relationship: {relationship}"
+    );
+    let host = rig
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    assert!(
+        !host
+            .runtime(factor)
+            .map(|runtime| runtime.memory.transcript(16_384))
+            .unwrap_or_default()
+            .contains(STORY)
+    );
+    assert!(
+        !host
+            .personal_memory
+            .record_for(factor)
+            .map(|record| serde_json::to_string(record).unwrap())
+            .unwrap_or_default()
+            .contains(STORY)
+    );
+    assert_eq!(survey_relationship(&rig.tw, &second), (20, 10, 2));
+    no_refused_writes(&rig.tw);
+}
+
+#[test]
 fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forgetting() {
     let mut rig = stocked();
     let (pilot, _, tvs) = on_pad(&mut rig, 1);

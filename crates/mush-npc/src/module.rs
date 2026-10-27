@@ -23,7 +23,9 @@ use smol_str::SmolStr;
 use mush_faction::{FactionId, FactionState, Principal};
 
 use crate::action::NpcAction;
-use crate::experience::{ExperienceKind, PersonalMemoryRecord, PersonalMemoryStore, mind_key};
+use crate::experience::{
+    ExperienceKind, PersonalMemoryRecord, PersonalMemoryStore, RecallPerson, mind_key,
+};
 use crate::intel::{
     IntelKind, IntelRecord, IntelStore, MAX_INTEL_READABLE_POOLS, finalize_projection, intel_key,
     parse_intel_key_id, push_newest_projection,
@@ -688,7 +690,8 @@ pub const MAX_TURN_PERSONA_BYTES: usize = 4 * 1024;
 
 /// H2b: the public-safe context an NPC's scene turn carries — the room, who
 /// is present, the exits and the NPC's own persona, every field bounded. No
-/// memories in v1, no truth ids: names only.
+/// memories in this base layout, no truth ids: names only. The live observer
+/// replaces occupancy with its perception-filtered view before capture.
 pub fn scene_turn_context(
     w: &World,
     profile: &AgentProfile,
@@ -745,12 +748,30 @@ fn on_scene_turn(ctx: &mut Ctx<'_>, scene: u64, actor: ObjId, round: u32) {
     // Scene decisions receive the same bounded public working context as
     // ordinary dialogue. Only rendered recollections cross the boundary, never
     // participant IDs or the contents of private interface replies.
-    let present_names: Vec<String> = players_present(ctx.w, room)
+    let present: Vec<ObjId> = players_present(ctx.w, room)
         .into_iter()
+        .filter(|&who| who != actor && ctx.can_perceive(actor, who))
         .take(MAX_TURN_PRESENT)
-        .map(|who| display_name(ctx.w, who))
         .collect();
-    let (summary, transcript, recalled) = memory_context(ctx, actor, &present_names, "");
+    context["present"] = serde_json::json!(
+        present
+            .iter()
+            .map(|&who| bounded_text(display_name(ctx.w, who), MAX_TURN_NAME_BYTES))
+            .collect::<Vec<_>>()
+    );
+    context["social_context"] = serde_json::json!({
+        "guidance": crate::relationships::SOCIAL_GUIDANCE,
+        "people": present.iter().map(|&who| {
+            let person = present_player(ctx, actor, who);
+            serde_json::json!({
+                "name": bounded_text(person.name, MAX_TURN_NAME_BYTES),
+                "stance": crate::relationships::social_stance(
+                    person.familiarity, person.personal_relation, person.standing.as_ref()
+                ),
+            })
+        }).collect::<Vec<_>>(),
+    });
+    let (summary, transcript, recalled) = memory_context(ctx, actor, &present, "");
     let recollections = recalled
         .iter()
         .flat_map(|memory| {
@@ -785,6 +806,21 @@ fn on_scene_turn(ctx: &mut Ctx<'_>, scene: u64, actor: ObjId, round: u32) {
             }
             context["working_memory"][field] =
                 serde_json::Value::String(bounded_text(text.to_string(), text.len() / 2));
+        }
+    }
+    // Retain whole person projections if an unusually crowded or heavily
+    // escaped room exhausts the remaining encoded budget.
+    while mush_core::canonical_json_bytes_with_limit(
+        &context,
+        mush_core::MAX_DECISION_CONTEXT_BYTES,
+    )
+    .is_err()
+    {
+        let Some(people) = context["social_context"]["people"].as_array_mut() else {
+            break;
+        };
+        if people.pop().is_none() {
+            break;
         }
     }
     let (Ok(cause_kind), Ok(instance), Ok(replaceable)) = (
@@ -1313,7 +1349,10 @@ impl NpcTick {
         let Some(room) = ctx.w.get(npc).and_then(|o| o.location) else {
             return;
         };
-        let present = players_present(ctx.w, room);
+        let present: Vec<_> = players_present(ctx.w, room)
+            .into_iter()
+            .filter(|&who| ctx.can_perceive(npc, who))
+            .collect();
 
         // Decide the turn kind + readiness from the runtime.
         let (summarize, fold_due, ready) = {
@@ -3124,7 +3163,8 @@ fn build_dialogue_snapshot(
         let is_present_player =
             ctx.w.get(subject).is_some_and(|object| {
                 object.kind == ObjKind::Player && object.location == Some(room)
-            }) && ctx.w.is_connected(subject);
+            }) && ctx.w.is_connected(subject)
+                && ctx.can_perceive(npc, subject);
         if is_present_player && !prioritized_present.contains(&subject) {
             prioritized_present.push(subject);
             if prioritized_present.len() == MAX_SCENE_PRESENT {
@@ -3140,12 +3180,6 @@ fn build_dialogue_snapshot(
         }
         Some(profile)
     });
-    let present_names: Vec<String> = scene
-        .present
-        .iter()
-        .map(|player| player.name.clone())
-        .collect();
-
     let cue = batch
         .iter()
         .filter_map(|stim| match stim {
@@ -3176,7 +3210,7 @@ fn build_dialogue_snapshot(
         .filter(|word| !address_words.iter().any(|address| address == word))
         .collect::<Vec<_>>()
         .join(" ");
-    let (summary, transcript, recalled) = memory_context(ctx, npc, &present_names, &cue);
+    let (summary, transcript, recalled) = memory_context(ctx, npc, &prioritized_present, &cue);
     let stimuli = batch.iter().map(|s| render_line(ctx.w, s)).collect();
     // Attribution follows the latest speaker in the active exchange. Presence
     // events do not give an interface turn anyone's authority.
@@ -3324,31 +3358,7 @@ fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> Sce
         .iter()
         .filter(|&&p| p != npc)
         .take(MAX_SCENE_PRESENT)
-        .map(|&p| PresentPlayer {
-            name: bounded_text(display_name(ctx.w, p), MAX_SNAPSHOT_NAME_BYTES),
-            short_desc: bounded_text(
-                attr_text(ctx.w, p, "short_desc").unwrap_or_default(),
-                MAX_PRESENT_DESCRIPTION_BYTES,
-            ),
-            // Volatile per-asker trust is filled in by the dialogue-snapshot
-            // builder (which has host state); the summarize path leaves the
-            // default (Stranger).
-            familiarity: ctx
-                .state::<NpcHostState>()
-                .map_or(Familiarity::Stranger, |host| {
-                    host.relationships.familiarity(npc, p)
-                }),
-            personal_relation: ctx
-                .state::<NpcHostState>()
-                .map_or_else(Default::default, |host| host.relationships.personal(npc, p)),
-            standing: public_faction_for(ctx.w, npc)
-                .and_then(|faction| mush_faction::public_standing(ctx.w, faction, p))
-                .map(|standing| crate::relationships::PublicStanding {
-                    name: bounded_text(standing.name, MAX_SNAPSHOT_NAME_BYTES),
-                    score: standing.score,
-                    band: bounded_text(standing.band.to_owned(), 64),
-                }),
-        })
+        .map(|&p| present_player(ctx, npc, p))
         .collect();
     let exits = ctx
         .w
@@ -3373,11 +3383,38 @@ fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> Sce
     }
 }
 
+fn present_player(ctx: &Ctx<'_>, npc: ObjId, player: ObjId) -> PresentPlayer {
+    PresentPlayer {
+        name: bounded_text(display_name(ctx.w, player), MAX_SNAPSHOT_NAME_BYTES),
+        short_desc: bounded_text(
+            attr_text(ctx.w, player, "short_desc").unwrap_or_default(),
+            MAX_PRESENT_DESCRIPTION_BYTES,
+        ),
+        familiarity: ctx
+            .state::<NpcHostState>()
+            .map_or(Familiarity::Stranger, |host| {
+                host.relationships.familiarity(npc, player)
+            }),
+        personal_relation: ctx
+            .state::<NpcHostState>()
+            .map_or_else(Default::default, |host| {
+                host.relationships.personal(npc, player)
+            }),
+        standing: public_faction_for(ctx.w, npc)
+            .and_then(|faction| mush_faction::public_standing(ctx.w, faction, player))
+            .map(|standing| crate::relationships::PublicStanding {
+                name: bounded_text(standing.name, MAX_TURN_NAME_BYTES),
+                score: standing.score,
+                band: bounded_text(standing.band.to_owned(), 64),
+            }),
+    }
+}
+
 /// Read the summary + recent transcript + recalled memories for the prompt.
 fn memory_context(
     ctx: &Ctx<'_>,
     npc: ObjId,
-    present_names: &[String],
+    present: &[ObjId],
     cue: &str,
 ) -> (String, String, Vec<RecalledMemory>) {
     let attr_summary = read_summary(ctx.w, npc);
@@ -3401,9 +3438,17 @@ fn memory_context(
         .map(|rt| rt.memory.summary.clone())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(attr_summary);
+    let people: Vec<_> = present
+        .iter()
+        .map(|&id| RecallPerson {
+            id,
+            name: bounded_text(display_name(ctx.w, id), MAX_SNAPSHOT_NAME_BYTES),
+        })
+        .collect();
+    let present_names: Vec<_> = people.iter().map(|person| person.name.clone()).collect();
     let mut recalled: Vec<RecalledMemory> = h
         .personal_memory
-        .recall(npc, present_names, cue, ctx.w.now(), h.config.recall_top_n)
+        .recall_for_people(npc, &people, cue, ctx.w.now(), h.config.recall_top_n)
         .into_iter()
         .map(|record| RecalledMemory {
             subject: record.subject,
@@ -3414,7 +3459,7 @@ fn memory_context(
         .collect();
     let legacy = h
         .long_term
-        .recall(npc, present_names, h.config.recall_top_n)
+        .recall(npc, &present_names, h.config.recall_top_n)
         .into_iter()
         .map(|r| RecalledMemory {
             subject: r.subject,
