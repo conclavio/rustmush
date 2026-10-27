@@ -3034,6 +3034,9 @@ pub(crate) fn prepare_departure(
         return Err(refusal(K::NotDocked, NOT_DOCKED.replace("{name}", &name)));
     };
     let here = port_name(def);
+    if let Some(line) = crate::port::passenger::departure_refusal(ctx, hull) {
+        return Err(refusal(K::PlanDark, line.to_owned()));
+    }
     let dests = destinations(w, def);
     // Doc 18 cut IC14 row 25: a queued depart resolves its stored venue word exactly;
     // the live `+ship/undock` keeps the prefix matcher.

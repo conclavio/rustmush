@@ -790,3 +790,13 @@ file = "mush-worldgen/src/commands.rs"
 function = "llm_toggle_npc"
 guard = "staff"
 note = "@llm/kill and /revive; the verb is Wizard."
+
+# ---------------------------------------------------------------------------
+# tacsim
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "tacsim/src/port/passenger/commands.rs"
+function = "resolve"
+guard = "perceive"
+note = "+passage and its offer/accept/board/cancel selectors: a matched traveller must be an enabled live NPC in the connected actor's room, with mutual can_perceive, before the match is used. The separate remote lookup reads only bookings whose captain is the actor; unavailable or ambiguous targets share one refusal."

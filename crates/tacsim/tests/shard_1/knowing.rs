@@ -26,6 +26,11 @@ use crate::support;
 
 use crate::geology_keyed;
 
+// Passenger journeys share this production roster, typed commit/restart path,
+// and stocked ship fixture; no separate large integration binary is needed.
+#[path = "passengers.rs"]
+mod passengers;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 

@@ -66,6 +66,11 @@ arguments. At most eight references are accepted. Missing commands are omitted;
 staff-only help never enters conversational guidance, even when staff are asking.
 Advice does not execute a command or bypass its normal eligibility checks.
 
+Travellers can also use the `passenger` service to discuss a real passage and
+quote a fare. The captain accepts the exact quote and arranges boarding;
+conversation alone does neither. See [Passengers](passengers.md) for Leila at
+Stickney's Shift Board and the reusable traveller content template.
+
 The `help` service can look up command names and aliases as well as prose topics.
 Command help is sent privately to the asker and uses that player's permissions.
 
