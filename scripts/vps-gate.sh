@@ -22,6 +22,12 @@
 #   scripts/vps-gate.sh --kind cost-lane     scripts/cost-lane.sh on the VPS
 #   scripts/vps-gate.sh --ref <branch>       a branch already on origin, not pushed here
 #   scripts/vps-gate.sh --no-push            the current branch as origin has it
+#   scripts/vps-gate.sh --runner conclav-dev the box, by label: `vps` (the default
+#                                            for a sweep: whichever box is idle),
+#                                            `conclav-dev` (32 cores) or `conclav-io`
+#                                            (8 cores; the default for harness and
+#                                            cost-lane, whose timing gates are live
+#                                            on that host alone)
 #
 # The cut loop's gate runner calls `scripts/vps-gate.sh --wip` for the
 # workspace sweep, after its targeted commands, instead of running the sweep on
@@ -32,6 +38,7 @@
 set -euo pipefail
 
 kind=sweep
+runner=""
 packages=""
 extra=""
 redis=true
@@ -41,17 +48,25 @@ push=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --kind) kind="$2"; shift 2 ;;
+    --runner) runner="$2"; shift 2 ;;
     --packages) packages="$2"; shift 2 ;;
     --extra) extra="$2"; shift 2 ;;
     --no-redis) redis=false; shift ;;
     --wip) wip=1; shift ;;
     --ref) ref="$2"; shift 2 ;;
     --no-push) push=0; shift ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 case "$kind" in sweep|harness|cost-lane) ;; *) echo "--kind is sweep, harness or cost-lane" >&2; exit 2 ;; esac
+# A sweep goes to whichever box is idle; the harness and the cost lane go to
+# conclav.io, the host whose name blessed their baselines (their timing gates
+# are dormant anywhere else), unless the dispatch says otherwise.
+if [ -z "$runner" ]; then
+  if [ "$kind" = sweep ]; then runner=vps; else runner=conclav-io; fi
+fi
+case "$runner" in vps|conclav-dev|conclav-io) ;; *) echo "--runner is vps, conclav-dev or conclav-io" >&2; exit 2 ;; esac
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
@@ -82,7 +97,7 @@ since="$(date -u +%s)"
 # GitHub finds a workflow to dispatch by its file on the DEFAULT branch (the
 # ref's copy is what runs); until gate.yml is on main the dispatch is a 404.
 if ! gh workflow run gate.yml --repo "$repo" --ref "$ref" \
-  -f "kind=$kind" -f "packages=$packages" -f "extra=$extra" -f "redis=$redis"; then
+  -f "kind=$kind" -f "runner=$runner" -f "packages=$packages" -f "extra=$extra" -f "redis=$redis"; then
   echo "the dispatch failed: if gate.yml is not on the default branch yet, nothing can dispatch it (a 404 above); otherwise see the error" >&2
   exit 1
 fi
@@ -101,7 +116,7 @@ if [ -z "$id" ]; then
   echo "no gate run appeared on $ref within 150 s; is the runner online? (gh api repos/$repo/actions/runners)" >&2
   exit 1
 fi
-echo "gate run $id ($kind on $ref): https://github.com/$repo/actions/runs/$id"
+echo "gate run $id ($kind on $ref, runner $runner): https://github.com/$repo/actions/runs/$id"
 
 # Wait. `gh run watch` can drop on a network timeout (the client, not the
 # run), so it is retried until the run is complete.

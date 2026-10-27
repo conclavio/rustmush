@@ -1,11 +1,18 @@
 name: Gate (VPS)
 
-# Test-strategy cut T.2 (2026-10-26): the gate on the owner's VPS.
+# Test-strategy cut T.2 (2026-10-26): the gate on the owner's VPS boxes.
 #
-# conclav.io is a self-hosted runner (label `vps`; deploy/vps-runner/ is how it
-# is provisioned): 8 cores, 31 GB, a warm target directory, Rust pinned by
-# rust-toolchain.toml and cargo-nextest at the version .config/nextest.toml
-# names. The cut loop's gate runs HERE instead of on the owner's Windows box
+# Two self-hosted runners (deploy/vps-runner/ is how each is provisioned), each
+# with a warm target directory, Rust pinned by rust-toolchain.toml and
+# cargo-nextest at the version .config/nextest.toml names:
+#   * conclav.io  (runner `conclav-vps`, labels `vps` and `conclav-io`): 8
+#     cores, 31 GB, shared with the dev1/dev2 game servers and the production
+#     Redis; the host whose name blessed the harness baseline;
+#   * conclav.dev (runner `conclav-dev`, labels `vps` and `conclav-dev`): 32
+#     cores, 62 GB, nothing else on it (added 2026-10-27).
+# The `runner` input is the label: `vps` (the default) is the one both carry,
+# so whichever box is idle takes the job; `conclav-dev` and `conclav-io` pin
+# it. The cut loop's gate runs HERE instead of on the owner's Windows box
 # (scripts/vps-gate.sh pushes the tree, dispatches this workflow and waits), so
 # the box stays free for the sessions that need it, and a sweep compiles only
 # what changed instead of the from-scratch compile every hosted shard pays.
@@ -13,27 +20,38 @@ name: Gate (VPS)
 # THE RULES OF A SELF-HOSTED RUNNER ON A PUBLIC REPOSITORY:
 #   * this workflow runs on `workflow_dispatch` ONLY — never on push, never on
 #     pull_request, never on a schedule. A fork's pull request must never
-#     reach the production box; a dispatch needs write access to this
+#     reach the owner's boxes; a dispatch needs write access to this
 #     repository, which is the owner. Do not add a trigger here.
 #   * the runner is its own user (`ghrunner`, no sudo) with its own Rust and
-#     cargo home, under a systemd service niced below the dev1/dev2 game
-#     servers and the production Redis it shares the box with
-#     (deploy/vps-runner/runner-override.conf), and the jobs talk to a private
-#     Redis of their own on 127.0.0.1:6799 (deploy/vps-runner/redis-gate.conf),
-#     wiped before every sweep; the instances on 6379, 6788, 6791 and 6798 are
-#     never touched.
-#   * one job at a time (the `concurrency` group queues, never cancels): one
-#     runner, one target directory.
+#     cargo home, under a niced systemd service
+#     (deploy/vps-runner/runner-override.conf: on conclav.io below the
+#     dev1/dev2 game servers and the production Redis it shares the box with),
+#     and the jobs talk to a private Redis of their own on 127.0.0.1:6799
+#     (deploy/vps-runner/redis-gate.conf), wiped before every sweep;
+#     conclav.io's instances on 6379, 6788, 6791 and 6798 are never touched.
+#   * one job at a time PER BOX: a runner takes one job, so two jobs never
+#     share a target directory, and the `concurrency` group is per `runner`
+#     input (it queues, never cancels a running job), so the two boxes work
+#     in parallel and each label's dispatches serialise among themselves.
+#     GitHub keeps one running and one pending run per group: a third
+#     dispatch while one runs and one waits replaces the waiting one.
+#   * each job sizes itself for its box (the "Sized for the box" step):
+#     conclav.io compiles with six jobs and tests with the `ci` profile's
+#     num-cpus, conclav.dev with 24 jobs and 32 test threads.
 #
 # Three kinds. `sweep` is the gate: the workspace's tests under nextest's `ci`
 # profile with REDIS_URL set (so every REDIS_URL-reading test takes its Redis
-# branch, serialized by .config/nextest.toml's `redis` group), the bot on its
-# own feature set, then the doc-tests; or only the packages the dispatch names.
+# branch, serialized by .config/nextest.toml's `redis` group), the doc-tests,
+# and the bot on its own feature set in the background under both (the
+# `ci-bot` profile; its nine-minute mining canary was the sweep's tail); or
+# only the packages the dispatch names.
 # `harness` and `cost-lane` run scripts/harness-weekly.sh and
-# scripts/cost-lane.sh by their own rules: this is the host whose host name
-# blessed the harness baseline (16c T-109), so the timing gate is LIVE here
-# where it is dormant on a hosted runner; the owner dispatches them on a box
-# not serving players (pre-launch: dev1 and dev2 are the owner's own smokes).
+# scripts/cost-lane.sh by their own rules: conclav.io is the host whose host
+# name blessed the harness baseline (16c T-109), so the timing gate is LIVE
+# there and dormant on conclav.dev as on a hosted runner (scripts/vps-gate.sh
+# pins those two kinds to `conclav-io` unless told otherwise); the owner
+# dispatches them on a box not serving players (pre-launch: dev1 and dev2 are
+# the owner's own smokes).
 
 on:
   workflow_dispatch:
@@ -43,6 +61,11 @@ on:
         type: choice
         options: [sweep, harness, cost-lane]
         default: sweep
+      runner:
+        description: "the box, by label: vps (either: whichever is idle), conclav-dev (32 cores) or conclav-io (8 cores; the harness's blessing host)"
+        type: choice
+        options: [vps, conclav-dev, conclav-io]
+        default: vps
       packages:
         description: "sweep: the packages to run, space-separated (`-p` each; mush-bot runs on its own); empty = the whole workspace"
         type: string
@@ -60,13 +83,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: vps-gate
+  # Per label: the boxes run in parallel, each label's queue serialises.
+  group: vps-gate-${{ inputs.runner }}
   cancel-in-progress: false
 
 jobs:
   gate:
-    name: ${{ inputs.kind }} on conclav.io
-    runs-on: [self-hosted, linux, vps]
+    name: ${{ inputs.kind }} on ${{ inputs.runner }}
+    runs-on: [self-hosted, linux, "${{ inputs.runner }}"]
     timeout-minutes: 300
     env:
       CARGO_TERM_COLOR: always
@@ -76,9 +100,8 @@ jobs:
       # _work/rustmush/target, kept across runs; the owner may `rm -rf` it on
       # the box to start cold.
       CARGO_TARGET_DIR: ${{ github.workspace }}/../target
-      # Six of the eight cores for the compile; the service's Nice=10 yields
-      # the rest to the game servers under contention.
-      CARGO_BUILD_JOBS: "6"
+      # CARGO_BUILD_JOBS and the test threads are per box: the "Sized for the
+      # box" step below, through GITHUB_ENV.
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain (pinned by rust-toolchain.toml) and cargo-nextest
@@ -94,9 +117,32 @@ jobs:
       # context is not allowed in a job-level env (GitHub rejected the file).
       - name: The job's own temporary directory
         run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      # The box's share of its own cores, by the runner's name (RUNNER_NAME
+      # is set for every step). conclav.io: six of its eight for the compile
+      # and the `ci` profile's num-cpus (eight) for the tests, as cut T.2 ran
+      # it; the service's Nice=10 yields the rest to the game servers under
+      # contention. conclav.dev: 24 of its 32 for the compile (a 32-way link
+      # storm is what the memory ceiling is for) and 32 test threads
+      # (NEXTEST_TEST_THREADS overrides the profile's num-cpus, which is the
+      # same number here; it is named so the pool is a decision, not a
+      # default): the first cold sweep ran 16 threads at a load average of
+      # five, its tests waiting on clocks more than computing, and the
+      # load-sensitive group is held to two by its own group whatever the
+      # pool. A box this file does not know compiles on three quarters of its
+      # cores and tests on the profile's.
+      - name: Sized for the box
+        run: |
+          case "$RUNNER_NAME" in
+            conclav-dev) jobs=24; threads=32 ;;
+            conclav-vps) jobs=6; threads="" ;;
+            *) jobs=$(( $(nproc) * 3 / 4 )); threads="" ;;
+          esac
+          echo "CARGO_BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
+          if [ -n "$threads" ]; then echo "NEXTEST_TEST_THREADS=$threads" >> "$GITHUB_ENV"; fi
+          echo "$RUNNER_NAME: $(nproc) cores; CARGO_BUILD_JOBS=$jobs; test threads ${threads:-num-cpus (the ci profile)}"
       - name: The box before the run
         run: |
-          nproc; free -m; df -h /; cat /proc/loadavg
+          hostname; nproc; free -m; df -h /; cat /proc/loadavg
           du -sh "$CARGO_TARGET_DIR" 2>/dev/null || echo "cold target directory"
       - name: The gate's private Redis, wiped
         if: inputs.kind == 'sweep' && inputs.redis
@@ -123,14 +169,14 @@ jobs:
             if [ "$p" = mush-bot ]; then bot=1; else engine+=(-p "$p"); fi
           done
           status=0
-          # Each nextest invocation writes THE junit.xml of the ci profile
-          # under the store directory — the CHECKOUT's own target/nextest
-          # (the workspace root's), whatever CARGO_TARGET_DIR says (seen
+          # Each nextest invocation writes THE junit.xml of its profile under
+          # the store directory — the CHECKOUT's own target/nextest (the
+          # workspace root's), whatever CARGO_TARGET_DIR says (seen
           # 2026-10-26) — so each one is kept under its own name for the
-          # artifact, before the next invocation replaces it.
+          # artifact, before another invocation of the profile replaces it.
           reports=0
           keep_junit() {
-            for f in target/nextest/ci/junit.xml "$CARGO_TARGET_DIR/nextest/ci/junit.xml"; do
+            for f in "target/nextest/$1/junit.xml" "$CARGO_TARGET_DIR/nextest/$1/junit.xml"; do
               if [ -f "$f" ]; then
                 reports=$((reports + 1))
                 mv -f "$f" "gate-junit-$reports.xml"
@@ -138,23 +184,51 @@ jobs:
               fi
             done
           }
-          run() { echo "::group::$*"; "$@" || status=1; echo "::endgroup::"; keep_junit; }
+          run() { echo "::group::$*"; "$@" || status=1; echo "::endgroup::"; keep_junit ci; }
+          # The bot's invocation (its own feature set; the servers'
+          # dev-dependencies unify the debug-checks and fault-injection
+          # features on in the engine's, as the hosted rest-libs line names
+          # them) runs in the BACKGROUND under the engine's, under the
+          # `ci-bot` profile so its JUnit lands apart from the engine's. Its
+          # mining canary is nine minutes of game clock on one thread and its
+          # two arena stories two more, and run after the engine's crates they
+          # were the sweep's tail (2026-10-27, conclav.dev cold: the bot's
+          # invocation 15 of the sweep's 40 minutes, the canary alone at the
+          # end). cargo's build lock serialises the two builds, so nothing
+          # compiles twice or at once; the bot's tests then run while the
+          # engine's compile and run. Four threads: the bot's tests wait on
+          # game clocks more than they compute, and the engine's sweep keeps
+          # the box's pool. Its log is printed, whole, once it is done.
+          bot_pid=""
+          bot_log="$RUNNER_TEMP/bot-sweep.log"
+          start_bot() {
+            echo "started in the background: cargo nextest run -P ci-bot -p mush-bot --test-threads 4 ${extra_args[*]}"
+            cargo nextest run -P ci-bot -p mush-bot --test-threads 4 "${extra_args[@]}" > "$bot_log" 2>&1 &
+            bot_pid=$!
+          }
+          finish_bot() {
+            if [ -z "$bot_pid" ]; then return 0; fi
+            echo "::group::cargo nextest run -P ci-bot -p mush-bot (ran in the background under the engine sweep)"
+            wait "$bot_pid" || status=1
+            cat "$bot_log"
+            echo "::endgroup::"
+            keep_junit ci-bot
+          }
           if [ -z "$PACKAGES" ]; then
-            # The whole workspace: the engine's crates as one invocation (the
-            # servers' dev-dependencies unify the debug-checks and
-            # fault-injection features on, as the hosted rest-libs line names
-            # them), the bot on its own feature set, then the doc-tests.
+            # The whole workspace: the bot first and in the background, the
+            # engine's crates as one invocation, the doc-tests, then the bot's
+            # result.
+            start_bot
             run cargo nextest run -P ci --workspace --exclude mush-bot "${extra_args[@]}"
-            run cargo nextest run -P ci -p mush-bot "${extra_args[@]}"
             run cargo test --doc --workspace --exclude mush-bot --no-fail-fast
+            finish_bot
           else
+            if [ "$bot" = 1 ]; then start_bot; fi
             if [ "${#engine[@]}" -gt 0 ]; then
               run cargo nextest run -P ci "${engine[@]}" "${extra_args[@]}"
               run cargo test --doc "${engine[@]}" --no-fail-fast
             fi
-            if [ "$bot" = 1 ]; then
-              run cargo nextest run -P ci -p mush-bot "${extra_args[@]}"
-            fi
+            finish_bot
           fi
           exit "$status"
       - name: Harness (scripts/harness-weekly.sh; the timing gate is live on this host)
