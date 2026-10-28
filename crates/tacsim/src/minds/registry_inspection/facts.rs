@@ -117,6 +117,11 @@ pub fn seal_check(seal: Option<&SealFacts>, hardware: Option<&CoreHardware>) -> 
     let Some(seal) = seal else {
         return SealCheck::NoSeal;
     };
+    // A seal with no `core` reads as the ROM's (no component, class 0, governed). Against a
+    // cored hull that differs, which is right: such a seal was sealed on a hull with no core.
+    // No older seal can stand on a cored hull and read `Differs` for want of the component —
+    // pre-launch, no IC hull carried a core before M8b, so every seal of a cored hull is
+    // written with its component.
     let sealed = (
         seal.core.as_deref(),
         seal.core_class.unwrap_or(CoreClass::Zero),

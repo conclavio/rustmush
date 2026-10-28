@@ -1418,17 +1418,25 @@ fn m8a_the_owner_reads_the_box_and_nobody_else() {
     // title-holding character nor a lessee (the readers of doc 17h §2.5); staff read it.
     let (out, _) = command(&mut rig, pilot, &format!("+hull/box #{}", hull.0));
     assert_eq!(out, no_box);
-    // The ship's open line: two rows when its epoch was sealed, one (`· no seal`) when not;
-    // this is the ship/port-epoch branch the inspection reads too.
-    let sealed_ship = ship_epoch(&mut rig, hull).is_some_and(|open| open.seal.is_some());
+    // The ship's open line: its port epoch opened under the ROM's seal (S.2: the line names
+    // `doctrine`, `s2_a_ship_leaves_and_reaches_a_port`), so it is two rows, the second the
+    // seal's (the ship/port-epoch branch the inspection reads too).
+    let ship_seal = ship_epoch(&mut rig, hull)
+        .and_then(|open| open.seal)
+        .expect("the Dray-P's port epoch is sealed");
     let staff = recovery_staff(&mut rig.tw);
     let (out, _) = command(&mut rig, staff, &format!("+hull/box #{}", hull.0));
-    assert_eq!(
-        out.lines().count(),
-        if sealed_ship { 2 } else { 1 },
+    let rows: Vec<&str> = out.lines().collect();
+    assert_eq!(rows.len(), 2, "{out}");
+    assert!(rows[0].contains(" out · port from "), "{out}");
+    assert!(
+        rows[1].starts_with("  Standard Doctrine · ")
+            && rows[1].ends_with(&format!(
+                " · licence doctrine · seal {}",
+                &ship_seal.seal_digest[..8]
+            )),
         "{out}"
     );
-    assert!(out.contains(" out · port from "), "{out}");
 
     // The absences (A7): one sentence each, nothing else.
     let (other, _, _) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);
@@ -1732,22 +1740,23 @@ Queued.",
         .into_iter()
         .find(|record| record.hull == ship)
         .expect("the ship's record");
-    match ship_open.seal.as_ref() {
-        Some(seal) => {
-            assert_eq!(
-                shipped.seal_digest.as_deref(),
-                Some(seal.seal_digest.as_str())
-            );
-            assert!(
-                receipt.contains(&format!("seal {}", &seal.seal_digest[..8])),
-                "{receipt}"
-            );
-        }
-        None => {
-            assert_eq!(shipped.seal_digest, None);
-            assert!(receipt.ends_with(" · no seal"), "{receipt}");
-        }
-    }
+    // The Dray-P's port epoch is sealed (the box test above pins it): the record carries that
+    // seal's digest and its doctrine state, checked against the ship's hardware unchanged
+    // since the seal, and the receipt ends with the match.
+    let seal = ship_open
+        .seal
+        .as_ref()
+        .expect("the Dray-P's port epoch is sealed");
+    assert_eq!(
+        shipped.seal_digest.as_deref(),
+        Some(seal.seal_digest.as_str())
+    );
+    assert_eq!(shipped.seal_check, SealCheck::Matches);
+    assert_eq!(shipped.licence_state, Some(SealLicenceState::Doctrine));
+    assert!(
+        receipt.ends_with(&format!(" · seal {} matches", &seal.seal_digest[..8])),
+        "{receipt}"
+    );
     let records: Vec<_> = inspections(&rig.tw)
         .into_iter()
         .filter(|record| record.hull == tv)

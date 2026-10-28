@@ -23,10 +23,11 @@ pub enum HullClass {
     III,
 }
 
-/// **Where a core came from** (doc 17h §2.3, A6): `certified` when its title was born of a
-/// completed core integration whose die lot carries the industry's certificate as its origin,
-/// naming the importer whose stock the die came from and the class ordered (the die's grade),
-/// both read from the retained die certificate; `unknown` otherwise. `heirloom` and `grey`
+/// **Where a core came from** (doc 17h §2.3, A6; the M8a fix round's F6): `certified` when its
+/// title was born of a completed core integration and the industry's retained die certificate
+/// its funding named agrees with that birth (its operation, die lot and class), naming the
+/// importer the certificate's policy names and the certificate's class (the die's grade);
+/// `unknown` when there is no such birth or certificate, or they disagree. `heirloom` and `grey`
 /// arrive in cut M8b; M8a's read never returns them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

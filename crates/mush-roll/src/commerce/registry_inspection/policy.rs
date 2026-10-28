@@ -195,7 +195,7 @@ impl RegistryInspectionPolicy {
         let outcome = descriptor(
             "outcome",
             "registry_mind_inspected",
-            json!({"format": 1, "fields": ["inspection", "hull"]}),
+            json!({"format": 1, "fields": ["inspection", "hull", "operator", "summary"]}),
         )?;
         Ok([authority, action, outcome])
     }
