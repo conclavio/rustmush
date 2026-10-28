@@ -141,6 +141,7 @@ use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::arena::catchup::{Catchup, MAX_CATCHUP_CONTACTS, SectionWords};
+use crate::arena::condition::{ConditionTier, MAX_SCANNED_SECTIONS};
 use crate::arena::conditions::{
     ASPECTS_ANY, Arming, FireCondition, HeldWhy, SlotTarget, aspect_in,
 };
@@ -6683,9 +6684,59 @@ pub const RETAIN_LATEST: &str = "latest";
 /// person in the seat is not a version. It rides only this, the seated
 /// pilot's own frame (the replay builds its window from the tape, and a
 /// mind's view never copies it).
+///
+/// **Doc 21 cut G.14** (2026-10-27) added one key per contact, `health`: the
+/// one word the picture gauges the hull by — `intact`, `damaged`, `crippled`
+/// or `wreck` ([`contact_health`]) — and `null` on every row the platform
+/// holds no reading of, which is every unidentified return and every
+/// classified one it has not been close enough to for a look. A summary of
+/// the row's own `condition` bands and `reads_dead`, never a number, and on
+/// every hull armed or not; [`FRAME_VERSION`] stays `7`: a field added is not
+/// a version.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     status_frame_held(match_id, frame, &BTreeMap::new())
+}
+
+/// **The one word the picture gauges a contact by** (doc 21 cut G.14;
+/// [`ConditionTier`]), or `None`.
+///
+/// The frame's own `reads_dead` says `wreck` outright — the platform's own
+/// kill, or a held reading that shows a fatal section destroyed
+/// ([`crate::arena::perception::FrameContact::reads_dead`]). Otherwise it is
+/// the held reading's [`crate::arena::condition::Condition::tier`], the fatal mask resolved from the
+/// row's `fatal` words through its scan table's order — so an unarmed hull,
+/// whose rows carry no `reads_dead`, reads a wreck off the same reading an
+/// armed one would. A row with no reading has no word: every unidentified
+/// return (a reading is taken only while classified) and every classified
+/// contact the platform has not had close enough for a look. The picture
+/// then draws no gauge, which is the observer rule on this surface: a return
+/// the scope has not read is not shown whole.
+///
+/// Never a number. The tier is the worst band the platform already holds and
+/// nothing finer, so no exact figure reaches a surface that was not given
+/// one by `SCAN`.
+#[must_use]
+pub fn contact_health(
+    frame: &Frame,
+    held: &crate::arena::perception::FrameContact,
+) -> Option<ConditionTier> {
+    if held.reads_dead == Some(true) {
+        return Some(ConditionTier::Wreck);
+    }
+    let reading = held.condition?;
+    let names: &[SmolStr] = frame
+        .scan_tables
+        .get(usize::from(reading.table))
+        .map_or(&[], Vec::as_slice);
+    let fatal: &[SmolStr] = held.fatal.as_deref().unwrap_or(&[]);
+    let mut mask = 0_u32;
+    for (index, name) in names.iter().enumerate().take(MAX_SCANNED_SECTIONS) {
+        if fatal.contains(name) {
+            mask |= 1_u32 << index;
+        }
+    }
+    Some(reading.bands.tier(mask))
 }
 
 /// **The cockpit keyframe with each contact's `range_m` held** (16b cut B.4,
@@ -6739,6 +6790,14 @@ pub fn status_frame_held(
                         "bands": reading.bands.letters(),
                         "age_ms": reading.age_ms,
                     })),
+                // **Doc 21 cut G.14**: the one word the picture gauges this
+                // hull by, summed from the bands above and `reads_dead`
+                // ([`contact_health`]), or `null` with no reading — so a
+                // return the scope has not read gets no gauge rather than a
+                // full one.
+                "health": held
+                    .and_then(|held| contact_health(frame, held))
+                    .map(|tier| tier.as_str()),
                 // **17b cut M1a.3** (doc 17 §3, D-UM-5): the FACET word the
                 // contact's plot was showing — `front`, `left`, `right` or
                 // `rear`; the row prints its side word — and, beside a held

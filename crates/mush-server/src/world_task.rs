@@ -18309,48 +18309,50 @@ mod tests {
         world.set_output_prefix(1, Some(">>>".to_owned()));
         world.set_output_suffix(1, Some("<<<".to_owned()));
 
-        let msg = defer_line(1, "look");
-        let brackets = output_brackets_of(&world, &msg);
-        refuse_world_msg(msg, RefusalReason::CommitPending, &gateway, brackets);
-        // ONE transmit: nothing the world sends can land between the three.
-        let batches =
-            std::mem::take(&mut *recorder.batches.lock().expect("recording gateway poisoned"));
-        assert_eq!(batches, vec![3], "one batch of three");
-        let sends =
-            std::mem::take(&mut *recorder.sends.lock().expect("recording gateway poisoned"));
-        let shaped: Vec<(SendTarget, Option<String>, String)> = sends
-            .iter()
-            .map(|(target, event)| match event.as_ref() {
-                OutputEvent::Sys(text) => (
-                    target.clone(),
-                    text.spans()
-                        .first()
-                        .and_then(|span| span.tag.as_deref().map(str::to_owned)),
-                    text.to_plain_text(),
-                ),
-                other => panic!("only Sys lines: {other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            shaped,
-            vec![
-                (
-                    SendTarget::Conn(1),
-                    Some(OUTPUT_PREFIX_TAG.to_owned()),
-                    ">>>".to_owned()
-                ),
-                (
-                    SendTarget::Conn(1),
-                    Some("system".to_owned()),
-                    RefusalReason::CommitPending.text().to_owned()
-                ),
-                (
-                    SendTarget::Conn(1),
-                    Some(OUTPUT_SUFFIX_TAG.to_owned()),
-                    "<<<".to_owned()
-                ),
-            ]
-        );
+        for reason in [RefusalReason::CommitPending, RefusalReason::CommitTimedOut] {
+            let msg = defer_line(1, "look");
+            let brackets = output_brackets_of(&world, &msg);
+            refuse_world_msg(msg, reason, &gateway, brackets);
+            // ONE transmit: nothing the world sends can land between the three.
+            let batches =
+                std::mem::take(&mut *recorder.batches.lock().expect("recording gateway poisoned"));
+            assert_eq!(batches, vec![3], "one batch of three");
+            let sends =
+                std::mem::take(&mut *recorder.sends.lock().expect("recording gateway poisoned"));
+            let shaped: Vec<(SendTarget, Option<String>, String)> = sends
+                .iter()
+                .map(|(target, event)| match event.as_ref() {
+                    OutputEvent::Sys(text) => (
+                        target.clone(),
+                        text.spans()
+                            .first()
+                            .and_then(|span| span.tag.as_deref().map(str::to_owned)),
+                        text.to_plain_text(),
+                    ),
+                    other => panic!("only Sys lines: {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                shaped,
+                vec![
+                    (
+                        SendTarget::Conn(1),
+                        Some(OUTPUT_PREFIX_TAG.to_owned()),
+                        ">>>".to_owned()
+                    ),
+                    (
+                        SendTarget::Conn(1),
+                        Some("system".to_owned()),
+                        reason.text().to_owned()
+                    ),
+                    (
+                        SendTarget::Conn(1),
+                        Some(OUTPUT_SUFFIX_TAG.to_owned()),
+                        "<<<".to_owned()
+                    ),
+                ]
+            );
+        }
 
         // A prefix alone frames the refusal from one side only.
         world.set_output_suffix(1, None);

@@ -717,6 +717,15 @@ the contacts list does (`friend`), and the lock's box is yellow whoever it is
 on. A machine your scope does not hold is not drawn at all, however close it
 is.
 
+**Health.** Over a contact your scope has had a close look at (the same look
+`SCAN` reads: identified, and within half your sight once), three small pips
+say how it stands: three green for intact, two amber for damaged, one red for
+crippled (a section red, or one gone that the machine survives) — and none
+for a wreck, which is drawn as one. The pips are the worst of the look's
+bands and nothing finer, and they are as old as the look. A contact with no
+pips is one you have not read yet: close the range. On the overhead the same
+pips sit beside the mark under its name.
+
 While the picture is showing (the bottom line names the keys):
 
   a, d or Left, Right

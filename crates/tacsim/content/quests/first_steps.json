@@ -1,0 +1,114 @@
+{
+  "manifest": {
+    "id": "tacsim.quests.first_steps",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "c982d6ce6378044f8a8f3e682c89ee7ebc324d192615e54439746d80f0611ee2",
+    "requires": [
+      { "id": "neighborhood.ceres_freeport", "version": 4 },
+      { "id": "neighborhood.stickney_yards", "version": 4 },
+      { "id": "tacsim.passengers.ceres", "version": 1 }
+    ]
+  },
+  "brief": {
+    "prose": "Four independent invitations to try existing services: a Co-op charter, a small fittings trade, meeting a real traveller and ordinary surface readings. Each can be declined or left alone. None unlocks another or gates the services it explains. Verified completion gives a one-time personal relationship bonus with its giver, not credits or faction standing. Existing NPC identities, profiles and authority remain their own."
+  },
+  "entries": {
+    "quest.oduya_first_hull": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.oduya",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": "open",
+        "title": "The papers behind a captain",
+        "introduction": "If the First Captain programme suits you, I can help you find your feet with the paperwork. Read +coop for the current terms before deciding. This invitation is optional: signing with the Co-op is your decision, and you can use the programme without taking this job.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "enrolment",
+            "title": "Confirm your own Co-op enrolment",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c05_registry",
+            "instructions": "At the Registry & Co-op Desk, +coop reads the terms and +coop/enrol <ship name> enrols you if eligible. Enrolment is once per account, so do not sign just to clear a journal entry. Use +coop/statement for your own record, then +quest/check Ilse here to verify an actual enrolment. Finish with +quest/finish Ilse.",
+            "objective": { "kind": "coop_enrolment" }
+          }
+        ],
+        "completion": "The captain brought their own completed Co-op enrolment back to my desk. Their papers came through the actual programme, and I have recorded that follow-through."
+      }
+    },
+    "quest.dov_fittings": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.akintola",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": "open",
+        "title": "A small useful cargo",
+        "introduction": "The fleet uses the Yard's crated fittings. If a Stickney run fits your plans, try buying one tonne there and selling it into our bid here. Read both live boards and your ship's plan; I am not promising a price or profit. Take any other work you like as well. This is an optional bit of practice, not a sailing order.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "fittings_trade",
+            "title": "Complete a Stickney-to-Ceres fittings trade",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c08_chandlery",
+            "instructions": "At Stickney's Materials Exchange or Service Counter, use +market/list to find crated fittings (industrial_parts), then +market/quote <listing>=1 and accept the exact quote with +market/accept. +ship/plan ceres checks the voyage; allow for fuel and provisions. At Ceres's Co-op Chandlery, read +market/list and sell at least one tonne to the Co-op bid with +market/sell <listing>=1. Let delivery and payment finish, then +quest/check Dov and +quest/finish Dov here. Existing cargo or an unaccepted quote is not proof of this trade.",
+            "objective": { "kind": "trade", "origin": "stickney", "destination": "ceres", "commodity": "industrial_parts", "quantity": 1 }
+          }
+        ],
+        "completion": "The captain completed a real purchase of the Yard's fittings at Stickney and a delivered sale to the Co-op at Ceres. They came back to the chandlery with that small piece of trade behind them."
+      }
+    },
+    "quest.ma_connections": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.petrossian",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": "open",
+        "title": "Someone at the next table",
+        "introduction": "Work is not all boards and cargo, crew. Nadia Okafor-Sato is a maintenance scheduler who has been spending time here while arranging a trip to Stickney. Find out her actual situation if she is still here; you might enjoy meeting her whether or not your plans match. You do not have to offer a berth or book a passage to do me this favor.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "meet_nadia",
+            "title": "Meet Nadia and learn her public route",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c10_slack_line",
+            "instructions": "Find Nadia Okafor-Sato in the Slack Line, south of the Freeport Concourse. With Nadia present, +quest/check Yusra records meeting her and learning her public route; then +quest/finish Yusra returns to Ma. Booking is optional. +passage Nadia reads her actual travel situation. If you both want a passage, +passage/offer Nadia and the exact acceptance it prints are separate decisions. Nadia may already have arrangements or have left; this job never summons or resets her.",
+            "objective": { "kind": "passenger", "npc": "npc.nadia_okafor_sato", "npc_pack": "tacsim.passengers.ceres" }
+          }
+        ],
+        "completion": "The captain found Nadia in person and learned her public route, then came back to me. An introduction made, without treating anyone as an obligation to book a passage."
+      }
+    },
+    "quest.qureshi_first_readings": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.qureshi",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": "open",
+        "title": "Wide first, then close",
+        "introduction": "A scan gives you the broad reading; a sounding examines the pockets beneath it. Try both on a real site and bring the work back to me. This is practice with your own instruments, not one of Occator's paid survey commissions, and it needs no commission slot. The ground and your chart remain your business.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "scan",
+            "title": "Complete an ordinary surface scan",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "instructions": "If needed, help mining explains the licence, Dray-P refit and rig lease. Choose a real site with +chart/ground and plan the outward and home legs. Use +tv/1 scan to preview, then +tv/1 scan go to complete an actual scan. You may also finish the sounding on this trip. Return to Qureshi at Ceres's Exchange Hall and use +quest/check Rosalind to record the scan receipt.",
+            "objective": { "kind": "survey", "mode": "scan" }
+          },
+          {
+            "id": "sound",
+            "title": "Complete an ordinary surface sounding",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "instructions": "On a real site, +tv/1 sound previews the sounding; +tv/1 sound go completes it. A quiet sounding is also useful. After returning to Ceres's Exchange Hall and recording the scan, use +quest/check Rosalind again for the sounding, then +quest/finish Rosalind. No paid commission, mineral sale or chart disclosure is required.",
+            "objective": { "kind": "survey", "mode": "sound" }
+          }
+        ],
+        "completion": "The captain completed both a surface scan and a sounding, then returned to the Exchange to account for the work. I have recorded that practical follow-through without taking their private chart or claiming they completed a paid commission."
+      }
+    }
+  }
+}

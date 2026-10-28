@@ -21,7 +21,8 @@ use crate::heightfield::{self, Terrain};
 use crate::look::{self, Facing};
 use crate::overhead::{OverheadPicture, Up};
 use crate::overlay::{
-    self, Facet, Heat, Hud, HudLock, LockAt, MapMark, Section, Spot, Status, TapeMark, WeaponRow,
+    self, Facet, Health, HealthMark, Heat, Hud, HudLock, LockAt, MapMark, Section, Spot, Status,
+    TapeMark, WeaponRow,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::raycast::{
@@ -419,9 +420,22 @@ pub fn contacts_as_sprites(cockpit: &Value, cam: &Camera, step: usize) -> Vec<Sp
         .collect()
 }
 
+/// **A contact's health word as the gauge it draws** (doc 21 cut G.14): the
+/// row's `health`, which the sim writes only on a row it holds a reading of
+/// (`null` on an unidentified return and on a classified one never close
+/// enough for a look); a `wreck` draws no gauge, being drawn as a wreck.
+#[must_use]
+pub fn contact_health(c: &Value) -> Option<Health> {
+    if contact_kind(c) == SpriteKind::Wreck {
+        return None;
+    }
+    Health::from_word(c.get("health").and_then(Value::as_str))
+}
+
 /// The flight HUD's inputs: the camera's heading, the hull's (the sim's
 /// turned by the helm's prediction) and an ordered one from `look`, the
-/// speed, the contacts for the tape, and the lock placed in the picture as
+/// speed, the contacts for the tape, the health gauges over the identified
+/// contacts in view (G.14), and the lock placed in the picture as
 /// the picture drew it — boxed where it stands, an arrow at the top or
 /// bottom edge it lies clear over, or off a side. The picture
 /// is the heightfield's over `terrain` from the eye at `eye_cm` where the
@@ -452,21 +466,42 @@ pub fn hud(
             kind: contact_kind(c),
         })
         .collect();
+    let (w, h) = (frame.width(), frame.height());
+    // A contact placed as the picture draws it — its type's sheet gives its
+    // size; the step picks the moving cycle's frame, never the size — by
+    // whichever of the heightfield and the raycaster drew the view, so the
+    // lock's box and a health gauge land on the drawn sprite.
+    let place = |c: &Value| {
+        let sprite = contact_sprite(c, cam, 0);
+        match terrain {
+            Some(terrain) => heightfield::project(terrain, cam, eye_cm, w, h, &sprite),
+            None => project(arena, cam, w, h, &sprite),
+        }
+    };
+    // G.14: a gauge over each contact in the view's columns with any of its
+    // sprite in the view, where the frame gives a word for it.
+    let health = contacts
+        .iter()
+        .filter_map(|c| {
+            let health = contact_health(c)?;
+            let p = place(c)?;
+            let top = p.bottom - p.height;
+            let in_view =
+                p.screenx >= 0.0 && p.screenx < w as f32 && p.bottom >= 0.0 && top < h as f32;
+            in_view.then_some(HealthMark {
+                x: p.screenx as i64,
+                top: top as i64,
+                health,
+            })
+        })
+        .collect();
     let lock_id = cockpit.get("lock").and_then(Value::as_str);
     let lock = contacts
         .iter()
         .find(|c| lock_id.is_some() && c.get("id").and_then(Value::as_str) == lock_id)
         .map(|c| {
             let range_m = c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0);
-            // The sprite as the picture draws this contact — its type's
-            // sheet gives its size; the step picks the moving cycle's frame,
-            // never the size — so the box is the drawn sprite's.
-            let sprite = contact_sprite(c, cam, 0);
-            let (w, h) = (frame.width(), frame.height());
-            let placed = match terrain {
-                Some(terrain) => heightfield::project(terrain, cam, eye_cm, w, h, &sprite),
-                None => project(arena, cam, w, h, &sprite),
-            };
+            let placed = place(c);
             let at = match placed {
                 // In the view's columns: boxed where it stands — or, its
                 // whole box over the top edge or under the bottom (close
@@ -519,6 +554,7 @@ pub fn hud(
         speed_kph: num(cockpit.get("speed_kph")),
         marks,
         lock,
+        health,
     }
 }
 
@@ -1160,6 +1196,101 @@ mod tests {
         assert!(
             rows.iter().any(|&r| (r as i64) < y - 2),
             "the label over the box: rows {rows:?}, box top {y}"
+        );
+    }
+
+    /// Doc 21 cut G.14: a health gauge over each identified contact in view
+    /// the frame gives a word for — the fixture's BA (`crippled`: one red
+    /// pip and two grey, centred on its sprite, `4s` over its top and so
+    /// `2s` clear of the lock's box) and none for RB (classified, never
+    /// read) nor X3 and X4 (unidentified); a word on a wreck draws none, and
+    /// a word on a contact behind the camera draws none; and with the lock's
+    /// readout over its box (BA 60 m out on the wide frame, the box running
+    /// off the bottom) the gauge sits over the readout rather than on it.
+    #[test]
+    fn the_hud_gauges_an_identified_contact_s_health() {
+        let mut cockpit = parsed(COCKPIT);
+        let arena = map_from_feed(&parsed(MAP));
+        let look = Look::default();
+        let cam = camera(&cockpit, &look);
+        let frame = Frame::new(640, 480);
+        let flight = hud(&frame, &arena, None, None, &cockpit, &look, &cam);
+        assert_eq!(flight.health.len(), 1, "BA alone: {:?}", flight.health);
+        let mark = flight.health[0];
+        assert_eq!(mark.health, Health::Crippled);
+        let LockAt::Box(x, y, w, _) = flight.lock.as_ref().expect("BA is locked").at else {
+            panic!("BA dead ahead is boxed");
+        };
+        assert_eq!(mark.top, y, "the sprite's own top row");
+        assert!(x <= mark.x && mark.x <= x + w, "on the sprite's column");
+        // Drawn: one red pip and two grey, 4s over the sprite, the lock's
+        // box edge still the lock's under it.
+        let mut drawn = Frame::new(640, 480);
+        overlay::draw_hud(&mut drawn, &flight);
+        let (gx, gy, gw, gh) = overlay::health_rect(&mark, None, 2, 640, 480);
+        assert_eq!((gw, gh), (16, 4));
+        assert_eq!(gy + gh, mark.top - 8);
+        let at = |dx: i64, dy: i64| drawn.get((gx + dx) as usize, (gy + dy) as usize);
+        assert_eq!(at(0, 0), overlay::BAD);
+        assert_eq!(at(3, 3), overlay::BAD);
+        assert_eq!(at(6, 0), overlay::GONE);
+        assert_eq!(at(12, 3), overlay::GONE);
+        assert_eq!(at(4, 0), [0, 0, 0], "the gap between pips");
+        assert_eq!(drawn.get(mark.x as usize, (y - 4) as usize), overlay::LOCK);
+        assert!(drawn.count_colours(256) <= 256);
+
+        // A wreck's word draws no gauge; a word on a contact behind the
+        // camera (X3, off to the left-rear) draws none.
+        cockpit["contacts"][0]["health"] = serde_json::json!("wreck");
+        cockpit["contacts"][0]["reads_dead"] = serde_json::json!(true);
+        cockpit["contacts"][2]["health"] = serde_json::json!("intact");
+        let flight = hud(&frame, &arena, None, None, &cockpit, &look, &cam);
+        assert!(flight.health.is_empty(), "{:?}", flight.health);
+        assert_eq!(contact_health(&cockpit["contacts"][0]), None);
+        assert_eq!(
+            contact_health(&cockpit["contacts"][2]),
+            Some(Health::Intact)
+        );
+        // X4 is dead ahead: a word on it is a gauge, two pips lit.
+        cockpit["contacts"][3]["health"] = serde_json::json!("damaged");
+        let flight = hud(&frame, &arena, None, None, &cockpit, &look, &cam);
+        assert_eq!(
+            flight.health.iter().map(|m| m.health).collect::<Vec<_>>(),
+            [Health::Damaged]
+        );
+
+        // The readout over the box: the gauge over the readout.
+        let mut cockpit = parsed(COCKPIT);
+        cockpit["contacts"][0]["range_m"] = serde_json::json!(60);
+        let cam = camera(&cockpit, &look);
+        let eye = eye_cm(&cockpit);
+        let mut terrain = Terrain::new(arena.clone());
+        for y in 0..arena.height() {
+            for x in 0..arena.width() {
+                terrain.set_elev_cm(x, y, -1_400);
+            }
+        }
+        let (w, h) = (640usize, 256usize);
+        let frame = Frame::new(w, h);
+        let flight = hud(&frame, &arena, Some(&terrain), eye, &cockpit, &look, &cam);
+        assert!(matches!(
+            flight.lock.as_ref().map(|l| l.at),
+            Some(LockAt::Box(..))
+        ));
+        assert_eq!(flight.health.len(), 1);
+        let mut drawn = Frame::new(w, h);
+        overlay::draw_hud(&mut drawn, &flight);
+        let rows = |px: [u8; 3]| -> Vec<usize> {
+            (0..h)
+                .filter(|&y| (0..w).any(|x| drawn.get(x, y) == px))
+                .collect()
+        };
+        let gauge = rows(overlay::BAD);
+        let lock = rows(overlay::LOCK);
+        assert_eq!(gauge.len(), 4, "one red pip: {gauge:?}");
+        assert!(
+            gauge.iter().max() < lock.iter().min(),
+            "the gauge over the readout: gauge {gauge:?}, lock {lock:?}"
         );
     }
 }

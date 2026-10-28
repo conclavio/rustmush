@@ -5,6 +5,13 @@ their plans can come up in conversation. Leila Mensah-Kovács is at the Shift
 Board, the mess and bar off Stickney's Yard Concourse on Phobos. Her calibration
 job is finished and she wants to return to Ceres Freeport.
 
+At Ceres's Slack Line, Nadia Okafor-Sato is a maintenance scheduler arranging a
+trip to Stickney. `+passage Nadia` reads her current situation. Ma can introduce
+you through an optional quest, but meeting, talking with or carrying Nadia does
+not require it. Neither an introduction nor a quest commits you to a booking.
+Both travellers are shared, persistent people; check the live service rather
+than assuming they are still looking for a captain.
+
 Conversation can produce a real fare quote. A promise in dialogue is not a
 booking: the captain must accept the exact quote the service prints.
 
@@ -101,6 +108,9 @@ installs it at its next boot; a world with older Ceres or Stickney content waits
 for staff to upgrade those dependencies. Use `@atlas/pack plan <pack>` and
 `@atlas/pack apply <fingerprint>`, then apply the passenger pack or restart.
 Existing station versions are never upgraded automatically.
+The independent `tacsim.passengers.ceres@1` adds Nadia at the Slack Line using
+the same traveller template and dependency rules. It does not require the
+optional `tacsim.quests.first_steps` pack.
 Worlds that already applied passenger version 1 can plan and apply version 2
 through the same commands. The upgrade adds Leila's quest role to her existing
 identity, including if she has already reached Ceres.

@@ -3,14 +3,16 @@
 
 mod commands;
 pub mod content;
+pub(crate) mod evidence;
 pub(crate) mod model;
+pub mod packs;
 pub(crate) mod registration;
 pub(crate) mod store;
 
 use mush_core::{AttrFlags, Ctx, Flags, GOD, ObjId, ObjKind, World};
 
 use crate::port::passenger::{economy, store as passengers};
-use model::{Checkpoint, QuestDef, QuestRecord};
+use model::{Checkpoint, Objective, Prerequisite, QuestDef, QuestRecord};
 
 pub const DEFINITION_ATTR: &str = "quest:definition";
 pub(crate) use commands::register;
@@ -98,6 +100,24 @@ fn paid(
         && economy::settled(w, booking)
 }
 
+/// Availability belongs to the service, including shared travellers who may
+/// already have left. Accepting a lesson never creates its prerequisites.
+fn available(w: &World, def: &QuestDef) -> bool {
+    def.checkpoints
+        .iter()
+        .all(|checkpoint| match checkpoint.objective {
+            Objective::Observation => detail(w, checkpoint).is_some(),
+            Objective::Passenger { npc } => {
+                crate::port::passenger::traveller(w, npc).is_some_and(|traveller| {
+                    w.get(npc)
+                        .is_some_and(|o| o.location == Some(checkpoint.room))
+                        && crate::port::passenger::at_station(w, npc, &traveller.origin)
+                })
+            }
+            _ => true,
+        })
+}
+
 /// Rechecked at action commit, after resolution may have yielded to other work.
 pub(crate) fn transition_allowed(
     w: &World,
@@ -106,7 +126,13 @@ pub(crate) fn transition_allowed(
 ) -> bool {
     if next.check().is_err()
         || !w.is_connected(next.actor)
-        || !paid(w, &next.passage, next.actor, next.npc, &next.definition)
+        || match next.definition.prerequisite {
+            Prerequisite::PaidPassage => !next
+                .passage
+                .as_ref()
+                .is_some_and(|passage| paid(w, passage, next.actor, next.npc, &next.definition)),
+            Prerequisite::Open => next.passage.is_some() || next.key.actor != Some(next.actor),
+        }
     {
         return false;
     }
@@ -118,11 +144,7 @@ pub(crate) fn transition_allowed(
                 && definition(w, next.npc).as_ref() == Some(&next.definition)
                 && close_world(w, next.npc, next.actor)
                 && crate::port::passenger::at_station(w, next.npc, &next.definition.destination)
-                && next
-                    .definition
-                    .checkpoints
-                    .iter()
-                    .all(|c| detail(w, c).is_some())
+                && available(w, &next.definition)
         }
         Some(old) => {
             if old.completed.is_some()
@@ -139,6 +161,7 @@ pub(crate) fn transition_allowed(
             if next.completed.is_some() {
                 return next.checks == old.checks
                     && old.checks.len() == old.definition.checkpoints.len()
+                    && evidence::completion_ready(w, old)
                     && close_world(w, next.npc, next.actor)
                     && crate::port::passenger::at_station(
                         w,
@@ -155,6 +178,17 @@ pub(crate) fn transition_allowed(
             let Some(evidence) = next.checks.last() else {
                 return false;
             };
+            if !w.get(checkpoint.room).is_some_and(|room| {
+                room.kind == ObjKind::Room && !room.flags.contains(Flags::GOING)
+            }) {
+                return false;
+            }
+            if !matches!(checkpoint.objective, Objective::Observation) {
+                return w.get(next.actor).is_some_and(|p| {
+                    p.location == Some(checkpoint.room) && !p.flags.contains(Flags::GOING)
+                }) && !mush_sim::deployed::is_custodied(w, next.actor)
+                    && evidence::guard(w, old, evidence);
+            }
             w.get(next.actor).is_some_and(|p| {
                 p.location == Some(checkpoint.room) && !p.flags.contains(Flags::GOING)
             }) && !mush_sim::deployed::is_custodied(w, next.actor)
@@ -173,8 +207,27 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     if store::refresh(ctx).is_err() {
         return;
     }
-    let Ok(rows) = store::list(ctx) else { return };
+    let mut rows = store::list(ctx).unwrap_or_default();
+    let actors: Vec<_> = ctx
+        .w
+        .connected()
+        .filter(|actor| *actor != ctx.actor)
+        .collect();
+    for actor in actors {
+        if let Ok(own) = store::refresh_for(ctx, actor) {
+            rows.extend(own);
+        }
+    }
+    rows.sort_by(|a, b| a.key.cmp(&b.key));
+    rows.dedup_by(|a, b| a.key == b.key);
+    for row in rows.iter().filter(|row| row.completed.is_none()) {
+        let _ = evidence::watch(ctx, row);
+    }
+    evidence::reconcile(ctx);
     for row in rows.into_iter().filter(|r| r.completed.is_some()) {
+        if !evidence::completion_ready(ctx.w, &row) {
+            continue;
+        }
         let Ok(hash) = mush_core::CanonicalHash::for_canonical_value(
             "tacsim.quest_reward.v1",
             1,

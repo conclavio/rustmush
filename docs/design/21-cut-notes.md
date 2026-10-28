@@ -727,3 +727,80 @@ the re-blessed golden natively); `mush-net-web --lib picture` 4; `mush-net-ssh -
 `--test tui_golden` 25. fmt, clippy `-D warnings` (mush-pixel, mush-pixel-wasm, all targets) and
 rustdoc `-D warnings` clean. Not run here: the browser's `pixel.test.ts` (it needs the wasm build;
 it reads the same re-blessed hashes the wasm crate's native test passes). No deploy.
+
+## G.14 (2026-10-27): health gauges on the picture's contacts
+
+The owner's second ask after flying G.12 live on dev2: *it is hard to tell the enemy units' status
+— health bars for enemy units.* One tacsim change, one `mush-pixel` change, no new mechanism.
+
+**What the frame already knew.** Since 16b cut Q.2 a keyframe contact carries `condition` — one
+green/yellow/red/destroyed band a section, read off the target's armour and internals by
+`Condition::of` — but only while the contact is classified **and** inside
+`[tacsim.sensors].condition_reach_permille` (half) of the pass's effective reach, and it keeps the
+last such look with its age (`SCAN` reads it). That is the Epistemic Engine's answer already made:
+the sight is worth four words a section and no number. So G.14 adds **no second read of the target's
+hull** — a tier computed fresh from the live unit would hand a pilot a gauge on a contact their scope
+has only ever classified at long range, which the reading rule deliberately refuses. The tier is a
+summary of the bands the platform holds.
+
+**The ruling: one word, `health`, on every keyframe contact** (`status_frame`, `FRAME_VERSION`
+stays 7: a field added is not a version):
+
+| word | when |
+|---|---|
+| `wreck` | the row's own `reads_dead` (the own kill, or a held reading showing a fatal section destroyed), or — on an unarmed hull, whose rows carry no `reads_dead` — the held reading's destroyed sections meeting the row's `fatal` words |
+| `crippled` | a section reads red, or one reads destroyed that the chassis survives (a track, the turret) |
+| `damaged` | yellow at worst |
+| `intact` | every section green |
+| `null` | no reading held: every unidentified return, and every classified contact the platform has not been close enough to for a look |
+
+`ConditionTier` and `Condition::tier(fatal_mask)` in `arena::condition`; `cockpit::contact_health`
+resolves the fatal mask through the row's scan table. *Alternatives weighed:* a whole-hull fraction
+or band (the arena's `health_permille` of the target) — rejected, it is a figure the scope never took;
+`identified` alone as the gate — rejected for the same reason, classification is a chassis tell at
+sight range and says nothing about armour. The gauge is therefore **coarser in reach than the sprite**:
+a classified contact at 500 m draws in its team colour with no gauge until the pilot (or a teammate
+whose share carries the reading) has been within the close-look reach once; the fixture's BA
+(`ggyrd`: a red track, the turret gone, the hull green) reads `crippled`.
+
+**Drawn** (`mush-pixel`, every renderer: the TUI's kitty/sixel stream, the gateway's web frame, the
+browser's wasm render):
+
+- **First person**: three pips `2s` square a gap `s` apart (`8s` by `2s`), centred on the sprite's
+  column, their bottom `4s` over the sprite's top row — `2s` clear of the lock's box, which starts
+  `2s` over the sprite — the lit pips in the doll's green / amber / red (3 / 2 / 1), the rest in its
+  `gone` grey. Over every identified contact in the view's columns with any of its sprite in view,
+  by the same projection the lock's box uses (`heightfield::project` on relief, the raycaster's on
+  flat ground), so the gauge stands on the drawn sprite. **The lock's readout keeps its place**: the
+  gauges are drawn after the reticle, and where the readout is drawn *over* the box (the box running
+  off the bottom of the view) and the gauge would land on it, the gauge moves up over the readout
+  (`overlay::health_rect`). A wreck is drawn as one and gets no gauge. Known and accepted: as with
+  the lock's box, a sprite behind a wall still gets its gauge, since the projection carries no
+  occlusion.
+- **The overhead camera**: the same three pips under the designator, right of the mark
+  (`6s` over, `s` down), the lock ringed as before — a new scene item, `Item::Pips`.
+- **The inset draws none**, as it draws no designators (G.13: at 12 m a pixel they crowd the tank),
+  and its contacts carry their gauges over their sprites in the picture itself.
+- **Palette**: no new colour — the doll's `GOOD`, `WARN`, `BAD`, `GONE`.
+
+**Help.** `help cockpit` "The picture" says what the pips are and when a contact has none.
+
+**Goldens.** `web/src/lib/fixtures/cockpit/cockpit_frame.json` re-blessed (`TACSIM_BLESS=1`, the
+new key on every contact); `web/src/lib/fixtures/pixel/cockpit_hashes.json` and
+`tests/golden/overhead_hashes.json` re-blessed (`PIXEL_BLESS=1`): BA now carries one red pip in
+every case. `mush-net-ssh` and `mush-net-web` pin no picture bytes of their own.
+
+**Verified.** `cargo test -p tacsim --test shard_6 cockpit::` 188 (new
+`g14_each_contact_carries_one_health_word_or_null`; the fixture re-blessed with `TACSIM_BLESS=1`,
+`view_frame.json` carrying the key as well); `cargo test -p mush-pixel` lib 79 (new
+`the_hud_gauges_an_identified_contact_s_health`, `the_overhead_marks_a_contact_s_health_beside_it`),
+overhead golden 1 and web golden 1 (both re-blessed), proving ground 2; `mush-pixel-wasm` 2 (the
+module draws the re-blessed golden natively); `mush-net-ssh --lib pixel` 28 and `--test tui_golden`
+25; `mush-net-web --lib picture` 4 and `--test ws` 25; `mush-contract-tests --test help_commands` 4.
+fmt, clippy `-D warnings` (tacsim, mush-pixel, mush-pixel-wasm, all targets) and rustdoc
+`-D warnings` clean. The fixture example's `fixture.png` looked at: one red pip and two grey over
+BA, clear of the box, the readout where it was. Not run here: the browser's `pixel.test.ts` (it
+needs the wasm build; it reads the same re-blessed hashes the wasm crate's native test passes) and
+the web's vitest (`web/src/lib/cockpit.ts` ignores the new key and does not type it yet — the web
+cockpit tab's contacts list showing the word is a small follow-up). No live smoke on dev2 or
+w11term; the owner may want the pips' size and the `4s` clearance re-judged live. No deploy.

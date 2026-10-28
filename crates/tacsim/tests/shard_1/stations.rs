@@ -502,6 +502,8 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             "neighborhood.mercury_relay",
             "tacsim.relay.luna_ceres",
             "tacsim.passengers.stickney",
+            "tacsim.passengers.ceres",
+            "tacsim.quests.first_steps",
         ]
         .into_iter()
         .map(str::to_string),
@@ -509,9 +511,9 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        36,
+        38,
         "three starter, two proving ground, ten stations, the twelve site packs (doc 20 cut \
-         SM.2), the lane, seven R10 relay/geography packs and one passenger pack"
+         SM.2), the lane, seven R10 relay/geography packs, two passenger packs and the optional quests"
     );
     let site_regions: Vec<&str> = SITE_SOURCES
         .iter()
@@ -567,9 +569,17 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             "neighborhood.mercury_relay" => {
                 assert_eq!(requires, vec![("region.mercury_relay".into(), 1)])
             }
-            "tacsim.passengers.stickney" => assert_eq!(
+            "tacsim.passengers.stickney" | "tacsim.passengers.ceres" => assert_eq!(
                 requires,
                 vec![(CERES_PACK.into(), 4), (STICKNEY_PACK.into(), 4)]
+            ),
+            "tacsim.quests.first_steps" => assert_eq!(
+                requires,
+                vec![
+                    (CERES_PACK.into(), 4),
+                    (STICKNEY_PACK.into(), 4),
+                    ("tacsim.passengers.ceres".into(), 1),
+                ]
             ),
             // Doc 20 cut SM.2: the site regions require nothing; each site
             // neighborhood requires its region at 1.
@@ -590,11 +600,13 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     }
     assert!(!starter_only.iter().any(|p| p == LANE_PACK), "nor the lane");
     assert!(!starter_only.iter().any(|p| p == "tacsim.relay.luna_ceres"));
-    assert!(
-        !starter_only
-            .iter()
-            .any(|p| p == "tacsim.passengers.stickney")
-    );
+    for name in [
+        "tacsim.passengers.stickney",
+        "tacsim.passengers.ceres",
+        "tacsim.quests.first_steps",
+    ] {
+        assert!(!starter_only.iter().any(|p| p == name), "{name}");
+    }
     // On the production roster the shelf lists all ten, latched, and (doc 20 cut SM.2)
     // the twelve site packs at 1.
     let mut tw = booted();
@@ -610,6 +622,8 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         assert!(out.contains(&format!(" {name}@1 (")), "{name}:\n{out}");
     }
     assert!(out.contains(" tacsim.passengers.stickney@2 ("), "{out}");
+    assert!(out.contains(" tacsim.passengers.ceres@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.first_steps@1 ("), "{out}");
     // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
         out.contains(&format!(" {LANE_PACK}@{LANE_VERSION} (")),
@@ -1225,8 +1239,8 @@ fn ic1_a_fresh_world_boots_the_stations() {
     // Doc 19 cut A.8: the moon stations' 30 (cast and principals) joined the 22.
     assert_eq!(
         npcs.len(),
-        53,
-        "the station cast and one independent traveller"
+        54,
+        "the station cast and two independent travellers"
     );
     let leila = obj(&tw, "tacsim.passengers.stickney", "npc.leila_mensah_kovacs");
     assert_eq!(
@@ -1239,6 +1253,17 @@ fn ic1_a_fresh_world_boots_the_stations() {
             .iter()
             .any(|id| id == "passenger")
     );
+    let nadia = obj(&tw, "tacsim.passengers.ceres", "npc.nadia_okafor_sato");
+    assert_eq!(
+        location(&tw, nadia),
+        Some(obj(&tw, CERES_PACK, "room.c10_slack_line"))
+    );
+    assert!(
+        profile(&tw, nadia)
+            .interfaces
+            .iter()
+            .any(|id| id == "passenger")
+    );
     let providers = [
         "atlas",
         "travel",
@@ -1247,6 +1272,7 @@ fn ic1_a_fresh_world_boots_the_stations() {
         "coop",
         "npc.lore",
         "npc.relationship",
+        "quest",
     ];
     for entry in CAST {
         let p = profile(&tw, obj(&tw, npc_pack(entry), entry));
@@ -1343,8 +1369,8 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     }
     assert_eq!(
         after.len(),
-        36,
-        "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography packs and one passenger pack"
+        38,
+        "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography packs, two passenger packs and the optional quests"
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
@@ -1354,6 +1380,9 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         after.get("tacsim.passengers.stickney").map(|l| l.0),
         Some(2)
     );
+    for name in ["tacsim.passengers.ceres", "tacsim.quests.first_steps"] {
+        assert_eq!(after.get(name).map(|l| l.0), Some(1), "{name}");
+    }
     assert_eq!(
         location(&tw, walker),
         Some(ooc),
@@ -1615,7 +1644,7 @@ fn ic1_the_principals_never_wake() {
                     serde_json::from_str(&payload).expect("Oduya's real turn");
                 snap.validate().expect("bounded service context");
                 assert_eq!(snap.actor, Some(pilot));
-                assert_eq!(snap.command_guidance.len(), 6);
+                assert_eq!(snap.command_guidance.len(), 7);
                 assert!(
                     snap.interfaces
                         .iter()
@@ -1629,6 +1658,7 @@ fn ic1_the_principals_never_wake() {
                     "+claim/stake",
                     "+survey",
                     "+standing",
+                    "+quest/offer",
                 ] {
                     assert!(prompt.contains(command), "missing command {command}");
                 }
@@ -2207,7 +2237,10 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
     packs.retain(|pack| {
         !matches!(
             pack.manifest().id().as_str(),
-            "tacsim.relay.luna_ceres" | "tacsim.passengers.stickney"
+            "tacsim.relay.luna_ceres"
+                | "tacsim.passengers.stickney"
+                | "tacsim.passengers.ceres"
+                | "tacsim.quests.first_steps"
         )
     });
     for pack in &mut packs {
@@ -2218,7 +2251,7 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
     // Qureshi must countersign the lane's initial vendor bootstrap at her authored
     // desk before this kept world moves her or changes her mutable affiliation.
     // Keep the genuine site's prerequisites. This older world predates the relay
-    // and passenger packs; the production reboot defers both until Ceres v4.
+    // and passenger/quest packs; the production reboot defers them until Ceres v4.
     let mut tw = TestWorld::with_modules(support::roster_booting(config(), packs));
     assert_eq!(
         content(&tw)
@@ -2271,13 +2304,16 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
     let mut tw = tw
         .reboot_into(production_roster_with_starter(config()), saved)
         .unwrap();
-    assert!(
-        content(&tw)
-            .latches
-            .applied(&id("tacsim.passengers.stickney"))
-            .is_none(),
-        "the new passenger pack waits for the kept world's Ceres upgrade"
-    );
+    for name in [
+        "tacsim.passengers.stickney",
+        "tacsim.passengers.ceres",
+        "tacsim.quests.first_steps",
+    ] {
+        assert!(
+            content(&tw).latches.applied(&id(name)).is_none(),
+            "{name} waits for the kept world's Ceres upgrade"
+        );
+    }
     assert!(
         !profile(&tw, qureshi)
             .interfaces

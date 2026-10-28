@@ -1772,6 +1772,9 @@ pub struct CoopObserver;
 
 impl EconomyObserver for CoopObserver {
     fn on_economic_event(&self, ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
+        // Composition places the market observer first: its owner settlement
+        // stamp exists before the optional lesson retains a permanent copy.
+        crate::quest::evidence::on_economic_event(ctx, ev);
         match ev {
             EconomicEvent::ContractChanged { id, state, .. } => match state {
                 ContractStateKind::Settled
