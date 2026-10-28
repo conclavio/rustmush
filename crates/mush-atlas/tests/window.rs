@@ -80,6 +80,10 @@ fn with_ctx<T: Send + 'static>(
 }
 
 fn modules() -> Vec<Box<dyn GameModule>> {
+    modules_with_shelf(starter::packs().expect("shelf"))
+}
+
+fn modules_with_shelf(shelf: Vec<mush_content::Pack>) -> Vec<Box<dyn GameModule>> {
     let mut appliers = Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
     mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -90,7 +94,7 @@ fn modules() -> Vec<Box<dyn GameModule>> {
         Box::new(Probe),
         Box::new(mush_npc::NpcModule::new()),
         Box::new(SimulationModule::new()),
-        Box::new(AtlasModule::new().with_shelf(starter::packs().expect("shelf"))),
+        Box::new(AtlasModule::new().with_shelf(shelf)),
         Box::new(content),
     ]
 }
@@ -208,25 +212,11 @@ fn open_over(tw: &mut TestWorld, actor: ObjId, rooms: &str) -> (DomainId, String
     (domain, digest)
 }
 
-fn reboot(tw: &mut TestWorld) -> TestWorld {
-    let ops = tw.take_module_ops();
-    let mut boot: HashMap<SmolStr, ModuleBootData> = HashMap::new();
-    for op in ops {
-        let data = boot.entry(op.ns.clone()).or_default();
-        match op.op {
-            ModuleWrite::JsonSet { key, value } => {
-                data.kv.retain(|(k, _)| *k != key);
-                data.kv.push((key, value));
-            }
-            ModuleWrite::Del { key } => data.kv.retain(|(k, _)| *k != key),
-            _ => {}
-        }
-    }
-    let mut tw2 = TestWorld::with_modules(modules());
-    // Carry the world's objects over exactly.
-    *tw2.world_mut() = tw.world().clone();
-    tw2.modules_loaded(boot);
-    tw2
+fn reboot(mut tw: TestWorld) -> TestWorld {
+    let boot = boot_data(&mut tw);
+    // Keep objects and persisted documents while installing this composition's
+    // fresh runtime handles; copying old module slots would cross registries.
+    tw.reboot_into(modules(), boot).expect("atlas restart")
 }
 
 #[test]
@@ -265,7 +255,7 @@ fn a_window_over_the_coffee_shop_composites_the_same_bytes_twice_and_after_a_res
     assert_eq!(again.digest, first);
     assert_eq!(again, *composite);
     // A restart reads the document back, whole.
-    let tw2 = reboot(&mut tw);
+    let tw2 = reboot(tw);
     let entry2 = atlas(&tw2)
         .windows
         .open
@@ -716,17 +706,15 @@ fn a_destroyed_counter_survives_a_pack_update_and_shows_in_the_next_composite() 
     doc["manifest"]["version"] = serde_json::json!(next);
     doc["entries"]["room.lobby"]["def"]["desc"] = serde_json::json!("Reception, repainted.");
     let v3 = signed(doc);
-    let mut tw2 = TestWorld::with_modules(modules());
-    // The world (its objects and its module slots) carries over; the shelf then
-    // gains the new version, as an operator's `[atlas].pack_paths` would give it.
-    *tw2.world_mut() = tw.world().clone();
-    tw2.world_mut()
-        .module_state_mut::<AtlasState>()
-        .expect("atlas")
-        .shelf
-        .insert(v3.manifest().id().clone(), v3);
+    // Configure the new binary's shelf before composition, as an operator's
+    // `[atlas].pack_paths` would, then reload persisted state with fresh handles.
+    let mut shelf = starter::packs().expect("shelf");
+    shelf.retain(|pack| pack.manifest().id() != v3.manifest().id());
+    shelf.push(v3);
     let boot = boot_data(&mut tw);
-    tw2.modules_loaded(boot);
+    let mut tw2 = tw
+        .reboot_into(modules_with_shelf(shelf), boot)
+        .expect("atlas restart with updated shelf");
     let lobby = room_named(&tw2, "Lobby");
     tw2.world_mut()
         .move_to(staff, lobby)
