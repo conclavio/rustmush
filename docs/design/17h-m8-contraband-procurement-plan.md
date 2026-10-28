@@ -504,6 +504,18 @@ seal-mark ring keeps 64 marks per licence, evicting the oldest **governed** mark
 ungoverned flight inside a term is never washed out by later governed ones; an ungoverned mark is
 evicted only when the whole ring is ungoverned.
 
+**The M8d wording, approved by the owner on 2026-10-28 as written:**
+- The canon line per finding: "A Registry inspection found an ungoverned core." It names no hull,
+  mind or person.
+- The Red Dies front's opening line: "The Red Dies: the Republic watches for ungoverned cores."
+- Its clock title: "Ungoverned cores found", six segments.
+- The line when the clock ends: "The Red Dies: the Registry has found ungoverned cores enough to
+  move the Republic."
+
+M8d's seizure (the removal order, seize and forfeit) is split to a cut **M8d2** under §6's risk.
+It needs one act spanning four owners: the economy, the industry refit, tactics and the Registry.
+The economy cannot read the Registry's inspection records.
+
 1. **Q-M8-1, the tier-2 split.** S.4a (the sealed, dormant mind aboard a rig) built as M8e now;
    the thinking mind (the drone phase) after M8; doc 23 §9's "lands inside D-UM-47's cut, not
    before" amended to say so; the claim half of 17g §4's "IC claims and hull cover in live play"
