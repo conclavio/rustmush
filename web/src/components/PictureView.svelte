@@ -1,14 +1,13 @@
 <script lang="ts">
-  // The cockpit's picture in the web client (doc 21 cut G.3c): the
-  // first-person view the gateway draws from this connection's own feeds —
-  // the flight HUD over it, the other machines in their team's colours — sent
-  // as one PNG a binary message while asked for (`app.setPicture`), and drawn
-  // here as it arrives.
+  // The cockpit's picture in the web client (doc 21 cut G.3c, doc 22 cut
+  // P.10, doc 28 P2): the first-person or overhead view drawn locally by
+  // `mush-pixel-wasm` from this connection's own `helm.cockpit` and
+  // `arena.map` feeds — the flight HUD over it, the other machines in their
+  // team's colours — rendered at the browser's refresh rate on `<canvas>`.
   //
-  // It is asked for only while wanted AND the page is visible, and stopped
-  // when this view goes (the tab changes, the pilot leaves the seat): a
-  // picture nobody is looking at costs the gateway a render and 100 KB/s.
-  // Whether the viewer wants it is remembered in this browser alone.
+  // It is drawn only while wanted AND the page is visible, and paused when
+  // this view goes (the tab changes, the pilot leaves the seat). Whether the
+  // viewer wants it is remembered in this browser alone.
   //
   // Keys, while the picture has focus (click it): the arrows turn the tank
   // (held) — `HEADING` orders, sent as the SSH TUI's view sends them, the one
@@ -31,18 +30,14 @@
   // family here that prefills rather than sends, through the screen's own
   // `prefill`. Every line goes through `app.helm`, as the turn's does.
   //
-  // **The overhead** (doc 21 §7.4): the gateway's frame over the socket, the
-  // `picture` command carrying `kind: "overhead"`; while it is up the
-  // browser's own render stands aside (it draws first person only) and the
-  // server's path below shows the frame.
+  // **The overhead** (doc 21 §7.4; doc 28 P2): the cockpit's second camera,
+  // drawn client-side by the same wasm module (`KIND_OVERHEAD`) from the same
+  // `arena.cockpit` and `arena.map` keyframes; `v` swaps between first person
+  // and overhead.
   //
-  // **Drawn here** (doc 21 cut G.3b): where the browser can (WebAssembly and
-  // `ImageData`), the picture is drawn in it, by the engine's own renderer
-  // built to wasm, from the keyframes this connection already holds — the
-  // gateway is not asked and draws nothing. The server's picture is the
-  // fallback (a module that will not load or that traps) and a choice the
-  // header offers, remembered in this browser. Drawn here, the look is the
-  // store's alone and nothing is sent for it.
+  // **Drawn here** (doc 21 cut G.3b; doc 28 P2): every web picture is drawn in
+  // the browser by `mush-pixel-wasm` from the keyframes this connection
+  // already holds — the gateway is never asked and draws nothing.
   import type { CockpitFrame } from "$lib/cockpit";
   import type { GameApp } from "$lib/game.svelte";
   import {
@@ -68,7 +63,6 @@
     FRAME_W,
     LOCAL_FRAME_MS,
     LocalPicture,
-    PICTURE_SOURCE_KEY,
     localCapable,
     pixelModule,
   } from "$lib/pixel/local";
@@ -100,11 +94,6 @@
   /** The held turn: `-1` left, `0` none, `1` right. */
   let turning = $state<-1 | 0 | 1>(0);
 
-  /** Drawn here or by the server, as this browser chose (here by default,
-   * where it can be). */
-  let source = $state<"here" | "server">(
-    storageGet(PICTURE_SOURCE_KEY) === "server" || !localCapable() ? "server" : "here",
-  );
   /** Why the picture could not be drawn here, once it could not. */
   let localFailed = $state<string | null>(null);
   let local = $state.raw<LocalPicture | null>(null);
@@ -115,27 +104,14 @@
   let painted = $state.raw<HTMLCanvasElement | null>(null);
   /** A frame has been drawn here, on the canvas that is up. */
   const drawnHere = $derived(painted !== null && painted === canvas);
-  /** The overhead is chosen (doc 21 cut G.12c): only the gateway draws it. */
+  /** The overhead is chosen (doc 21 cut G.12c; doc 28 P2). */
   const overhead = $derived(app.picture.kind === "overhead");
-  const here = $derived(source === "here" && localFailed === null && !overhead);
-  /** Whether the picture is up: drawn here while wanted and visible, or the
-   * server's while asked for. */
-  const active = $derived(here ? wanted && visible : app.picture.on);
+  /** Whether the picture is up: wanted, visible, and not failed. */
+  const active = $derived(wanted && visible && localFailed === null);
 
-  function toggleSource(): void {
-    source = source === "here" ? "server" : "here";
-    storageSet(PICTURE_SOURCE_KEY, source);
-    localFailed = null;
-  }
-
-  /** The look, in millidegrees: the store's alone while drawn here, asked of
-   * the server otherwise. */
+  /** The look, in millidegrees: the store's alone. */
   function lookTo(mdeg: number): void {
-    if (here) {
-      app.picture.lookMdeg = mdeg;
-    } else {
-      app.setPicture(true, mdeg);
-    }
+    app.picture.lookMdeg = mdeg;
   }
 
   function fail(err: unknown): void {
@@ -154,16 +130,19 @@
     storageSet(PICTURE_PREF_KEY, wanted ? "on" : "off");
   }
 
-  // The server's picture: asked for while wanted and visible and not drawn
-  // here; stopped when any of those goes, and when the view is torn down.
-  // The camera is read here too, so a change of camera alone asks again (doc
-  // 21 cut G.12c): the cleanup stops the old picture, the new run asks for
-  // the new one — `setPicture` sends the store's camera, which `v` set.
+  // Keep the store's `on` and `lookMdeg` aligned with whether the picture is
+  // active, and reset them when the picture hides or the view is torn down.
   $effect(() => {
-    const want = wanted && visible && !here;
-    void app.picture.kind;
-    untrack(() => app.setPicture(want, want ? app.picture.lookMdeg : 0));
-    return () => untrack(() => app.setPicture(false, 0));
+    const on = active;
+    untrack(() => {
+      app.picture.on = on;
+      if (!on) app.picture.lookMdeg = 0;
+    });
+    return () =>
+      untrack(() => {
+        app.picture.on = false;
+        app.picture.lookMdeg = 0;
+      });
   });
 
   // The page's visibility, and the two ways a key's release can go unseen:
@@ -188,7 +167,7 @@
 
   // Drawn here: the module loaded once, while wanted.
   $effect(() => {
-    if (!(wanted && here) || local !== null) return;
+    if (!active || local !== null || !localCapable()) return;
     let live = true;
     pixelModule().then(
       (m) => {
@@ -209,7 +188,7 @@
   $effect(() => {
     const l = local;
     const c = canvas;
-    if (!l || !c || !(wanted && visible && here)) return;
+    if (!l || !c || !active) return;
     if (untrack(() => painted) !== c) l.forget();
     let raf = 0;
     let last = -Infinity;
@@ -218,7 +197,14 @@
       if (t - last < LOCAL_FRAME_MS) return;
       last = t;
       try {
-        if (l.draw(app.picture.cockpitData, app.picture.mapData, app.picture.lookMdeg)) {
+        if (
+          l.draw(
+            app.picture.cockpitData,
+            app.picture.mapData,
+            app.picture.lookMdeg,
+            app.picture.kind,
+          )
+        ) {
           if (c.width !== FRAME_W || c.height !== FRAME_H) {
             c.width = FRAME_W;
             c.height = FRAME_H;
@@ -233,30 +219,6 @@
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  });
-
-  // The server's frames drawn as they arrive, at their own size; CSS scales
-  // the canvas.
-  $effect(() => {
-    const blob = app.picture.frame;
-    const c = canvas;
-    if (!blob || !c || typeof createImageBitmap === "undefined") return;
-    let live = true;
-    void createImageBitmap(blob).then((bmp) => {
-      if (live) {
-        c.width = bmp.width;
-        c.height = bmp.height;
-        c.getContext("2d")?.drawImage(bmp, 0, 0);
-        // The canvas now holds the server's frame: whatever the picture
-        // drawn here last painted on it is gone, and its loop paints again
-        // when it next runs here.
-        painted = null;
-      }
-      bmp.close();
-    });
-    return () => {
-      live = false;
-    };
   });
 
   // The look swings while `lookTurn` is set, sent again each step.
@@ -454,23 +416,6 @@
         F1–F6 order</span
       >
     {/if}
-    {#if wanted}
-      {#if overhead}
-        <!-- Only the gateway draws the overhead: nothing to choose. -->
-        <button type="button" class="toggle" disabled title="the overhead is drawn by the server">
-          overhead: drawn by the server
-        </button>
-      {:else}
-        <button
-          type="button"
-          class="toggle"
-          onclick={toggleSource}
-          title={localFailed ?? (here ? "drawn by this browser" : "drawn by the server")}
-        >
-          {here ? "drawn here" : localFailed ? "drawn by the server (could not draw here)" : "drawn by the server"}
-        </button>
-      {/if}
-    {/if}
     <button type="button" class="toggle" onclick={toggle}>
       {wanted ? "Hide the picture" : "Show the picture"}
     </button>
@@ -490,8 +435,10 @@
       onblur={release}
     >
       <canvas bind:this={canvas} aria-hidden="true"></canvas>
-      {#if here ? !drawnHere : app.picture.frame === null}
-        <p class="muted waiting">Waiting for the first picture…</p>
+      {#if !drawnHere}
+        <p class="muted waiting">
+          {localFailed !== null ? "Could not draw the picture." : "Waiting for the first picture…"}
+        </p>
       {/if}
     </div>
   {/if}

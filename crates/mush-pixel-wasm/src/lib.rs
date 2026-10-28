@@ -1,29 +1,36 @@
-//! **The cockpit picture in the browser** (doc 21 cut G.3b): `mush-pixel`'s
-//! `CockpitPicture` built for `wasm32-unknown-unknown` with plain exports and
-//! no wasm-bindgen, so the web client draws the picture from its own feeds
-//! and the gateway draws nothing for it.
+//! **The pixel engine in the browser** (doc 21 cut G.3b; doc 28 P2):
+//! `mush-pixel`'s pictures ([`CockpitPicture`], [`OverheadPicture`],
+//! [`ChartPicture`], [`DollPicture`], [`ReplayPicture`]) built for
+//! `wasm32-unknown-unknown` with plain exports and no wasm-bindgen, so the web
+//! client draws every picture from its own feeds and the gateway draws nothing
+//! for it.
 //!
 //! **The ABI** (version [`ABI_VERSION`]; `web/src/lib/pixel/wasm.ts` is its
 //! one caller). Every argument and result is a number; text crosses through
 //! a buffer the module owns:
 //!
 //! - `mp_abi() -> u32` — the ABI version, checked before anything else.
+//! - `mp_kind(kind) -> u32` — choose which picture `mp_render` draws
+//!   ([`KIND_COCKPIT`], [`KIND_OVERHEAD`], [`KIND_CHART`], [`KIND_DOLL`],
+//!   [`KIND_REPLAY`]; [`KIND_COCKPIT`] by default); `1` kept, `0` refused.
 //! - `mp_input(len) -> ptr` — a buffer of `len` bytes for the caller to write
 //!   one feed's JSON into (it lives until the next `mp_input`).
 //! - `mp_feed(feed, len) -> u32` — read the buffer's first `len` bytes as a
-//!   keyframe of `feed` ([`FEED_COCKPIT`], [`FEED_MAP`]); `1` kept, `0`
-//!   refused (not JSON, no such feed). `len == 0` forgets the feed, and a
-//!   cockpit keyframe that says `seated: false` forgets the cockpit, as the
-//!   gateway's own picture does.
+//!   keyframe of `feed` ([`FEED_COCKPIT`], [`FEED_MAP`], [`FEED_CHART`],
+//!   [`FEED_REPLAY`], [`FEED_REPLAY_CURSOR`]); `1` kept, `0` refused (not
+//!   JSON, no such feed). `len == 0` forgets the feed, and a cockpit keyframe
+//!   that says `seated: false` forgets the cockpit.
 //! - `mp_render(w, h, look_mdeg, hull_mdeg, ordered_mdeg, has_ordered) -> u32`
-//!   — draw a `w` x `h` frame (at most [`MAX_SIDE`] a side) for that look;
-//!   `1` drawn, `0` nothing to draw (no cockpit held, a bad size).
+//!   — draw a `w` x `h` frame (at most [`MAX_SIDE`] a side) of the chosen
+//!   picture for that look; `1` drawn, `0` nothing to draw (missing feed, a
+//!   bad size).
 //! - `mp_pixels() -> ptr` — the last frame as RGBA, `w * h * 4` bytes, for an
 //!   `ImageData` over the module's memory without a copy.
 //! - `mp_hash_hi() / mp_hash_lo() -> u32` — the last frame's
 //!   [`mush_pixel::Frame::hash`], split so no `BigInt` crosses.
-//! - `mp_reset()` — a fresh picture (its animation counter from zero), the
-//!   feeds kept: what the parity test draws each case from.
+//! - `mp_reset()` — fresh pictures (their animation counters and ground caches
+//!   from zero), the feeds and chosen kind kept: what the parity test draws
+//!   each case from.
 //!
 //! A buffer the module hands out moves when its memory grows, so the caller
 //! takes a fresh view of `memory.buffer` after every call that may allocate.
@@ -46,12 +53,16 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use mush_pixel::Frame;
+use mush_pixel::chart::{ChartPicture, SKY_CHART_FEED};
 use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture};
+use mush_pixel::doll::DollPicture;
+use mush_pixel::overhead::OverheadPicture;
 use mush_pixel::picture::{Look, Picture};
+use mush_pixel::replay::{REPLAY_CURSOR_FEED, REPLAY_FEED, ReplayPicture};
 use serde_json::Value;
 
 /// The ABI's version: the caller refuses a module that answers another.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// `mp_feed`'s number for `arena.cockpit`.
 pub const FEED_COCKPIT: u32 = 1;
@@ -59,15 +70,44 @@ pub const FEED_COCKPIT: u32 = 1;
 /// `mp_feed`'s number for `arena.map`.
 pub const FEED_MAP: u32 = 2;
 
+/// `mp_feed`'s number for `sky.chart`.
+pub const FEED_CHART: u32 = 3;
+
+/// `mp_feed`'s number for `arena.replay`.
+pub const FEED_REPLAY: u32 = 4;
+
+/// `mp_feed`'s number for `replay.cursor`.
+pub const FEED_REPLAY_CURSOR: u32 = 5;
+
+/// `mp_kind`'s number for the first-person cockpit ([`CockpitPicture`]).
+pub const KIND_COCKPIT: u32 = 1;
+
+/// `mp_kind`'s number for the cockpit's overhead camera ([`OverheadPicture`]).
+pub const KIND_OVERHEAD: u32 = 2;
+
+/// `mp_kind`'s number for the orbital sky chart ([`ChartPicture`]).
+pub const KIND_CHART: u32 = 3;
+
+/// `mp_kind`'s number for the armour doll page ([`DollPicture`]).
+pub const KIND_DOLL: u32 = 4;
+
+/// `mp_kind`'s number for the match replay ([`ReplayPicture`]).
+pub const KIND_REPLAY: u32 = 5;
+
 /// The largest frame side drawn, pixels.
 pub const MAX_SIDE: u32 = 2048;
 
-/// The module's state: the input buffer, the feeds, the picture, the frame
+/// The module's state: the input buffer, the feeds, the pictures, the frame
 /// and its RGBA.
 struct State {
     input: Vec<u8>,
     feeds: HashMap<String, Value>,
-    picture: CockpitPicture,
+    kind: u32,
+    cockpit: CockpitPicture,
+    overhead: OverheadPicture,
+    chart: ChartPicture,
+    doll: DollPicture,
+    replay: ReplayPicture,
     frame: Frame,
     rgba: Vec<u8>,
 }
@@ -77,7 +117,12 @@ impl State {
         State {
             input: Vec::new(),
             feeds: HashMap::new(),
-            picture: CockpitPicture::new(),
+            kind: KIND_COCKPIT,
+            cockpit: CockpitPicture::new(),
+            overhead: OverheadPicture::new(),
+            chart: ChartPicture::new(),
+            doll: DollPicture::new(),
+            replay: ReplayPicture::new(),
             frame: Frame::new(1, 1),
             rgba: Vec::new(),
         }
@@ -96,8 +141,29 @@ fn feed_name(feed: u32) -> Option<&'static str> {
     match feed {
         FEED_COCKPIT => Some(COCKPIT_FEED),
         FEED_MAP => Some(ARENA_MAP_FEED),
+        FEED_CHART => Some(SKY_CHART_FEED),
+        FEED_REPLAY => Some(REPLAY_FEED),
+        FEED_REPLAY_CURSOR => Some(REPLAY_CURSOR_FEED),
         _ => None,
     }
+}
+
+fn valid_kind(kind: u32) -> bool {
+    matches!(
+        kind,
+        KIND_COCKPIT | KIND_OVERHEAD | KIND_CHART | KIND_DOLL | KIND_REPLAY
+    )
+}
+
+/// Choose which picture [`render`] draws (see the crate's ABI): whether `kind`
+/// is a known picture kind.
+#[must_use]
+pub fn set_kind(kind: u32) -> bool {
+    if !valid_kind(kind) {
+        return false;
+    }
+    with(|s| s.kind = kind);
+    true
 }
 
 /// Keep `json` as `feed`'s keyframe (see the crate's ABI): whether it was.
@@ -123,8 +189,8 @@ pub fn feed(feed: u32, json: &[u8]) -> bool {
     })
 }
 
-/// Draw a `w` x `h` frame for the look (see the crate's ABI): whether one
-/// was drawn.
+/// Draw a `w` x `h` frame of the chosen picture for the look (see the crate's
+/// ABI): whether one was drawn.
 #[must_use]
 pub fn render(w: u32, h: u32, look: Look) -> bool {
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
@@ -137,12 +203,25 @@ pub fn render(w: u32, h: u32, look: Look) -> bool {
         }
         let State {
             feeds,
-            picture,
+            kind,
+            cockpit,
+            overhead,
+            chart,
+            doll,
+            replay,
             frame,
             rgba,
             ..
         } = s;
-        if !picture.draw(frame, feeds, &look) {
+        let drawn = match *kind {
+            KIND_COCKPIT => cockpit.draw(frame, feeds, &look),
+            KIND_OVERHEAD => overhead.draw(frame, feeds, &look),
+            KIND_CHART => chart.draw(frame, feeds, &look),
+            KIND_DOLL => doll.draw(frame, feeds, &look),
+            KIND_REPLAY => replay.draw(frame, feeds, &look),
+            _ => false,
+        };
+        if !drawn {
             return false;
         }
         rgba.clear();
@@ -167,9 +246,15 @@ pub fn pixels() -> Vec<u8> {
     with(|s| s.rgba.clone())
 }
 
-/// A fresh picture, the feeds kept.
+/// Fresh pictures, the feeds and chosen kind kept.
 pub fn reset() {
-    with(|s| s.picture = CockpitPicture::new());
+    with(|s| {
+        s.cockpit = CockpitPicture::new();
+        s.overhead = OverheadPicture::new();
+        s.chart = ChartPicture::new();
+        s.doll = DollPicture::new();
+        s.replay = ReplayPicture::new();
+    });
 }
 
 // ---- the exports -------------------------------------------------------------
@@ -178,6 +263,12 @@ pub fn reset() {
 #[unsafe(no_mangle)]
 pub extern "C" fn mp_abi() -> u32 {
     ABI_VERSION
+}
+
+/// Choose which picture `mp_render` draws.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_kind(kind: u32) -> u32 {
+    u32::from(set_kind(kind))
 }
 
 /// A buffer of `len` bytes for the caller to write a feed's JSON into.
@@ -259,6 +350,7 @@ mod tests {
             "../../../web/src/lib/fixtures/pixel/cockpit_hashes.json"
         ))
         .unwrap();
+        assert!(set_kind(KIND_COCKPIT));
         assert!(feed(FEED_COCKPIT, fixture("cockpit").as_bytes()));
         let (w, h) = (
             golden["width"].as_u64().unwrap(),
@@ -289,10 +381,114 @@ mod tests {
         }
     }
 
-    /// Refusals: no cockpit, a bad size, not JSON, no such feed; an unseated
-    /// cockpit forgets the held one.
+    /// Doc 28 P2: the module draws the overhead golden's eight frames hash for
+    /// hash (`mush-pixel/tests/golden/overhead_hashes.json`).
+    #[test]
+    fn the_module_draws_the_overhead_golden() {
+        let golden: Value = serde_json::from_str(include_str!(
+            "../../mush-pixel/tests/golden/overhead_hashes.json"
+        ))
+        .unwrap();
+        assert!(set_kind(KIND_OVERHEAD));
+        assert!(feed(FEED_COCKPIT, fixture("cockpit").as_bytes()));
+        for case in golden["cases"].as_array().unwrap() {
+            let map = match case["map"].as_str() {
+                Some("relief") => fixture("relief").to_string(),
+                _ => {
+                    let mut flat: Value = serde_json::from_str(fixture("map")).unwrap();
+                    flat.as_object_mut().unwrap().remove("elev");
+                    flat.to_string()
+                }
+            };
+            assert!(feed(FEED_MAP, map.as_bytes()));
+            reset();
+            let size = case["size"].as_array().unwrap();
+            let (w, h) = (size[0].as_u64().unwrap(), size[1].as_u64().unwrap());
+            let offset_mdeg = case["look_mdeg"].as_i64().unwrap();
+            let look = if offset_mdeg == 0 {
+                Look::default()
+            } else {
+                Look {
+                    offset_mdeg,
+                    hull_offset_mdeg: 10_000,
+                    ordered_mdeg: Some(90_000),
+                }
+            };
+            assert!(render(w as u32, h as u32, look));
+            assert_eq!(format!("{:016x}", hash()), case["hash"].as_str().unwrap());
+            let px = pixels();
+            assert_eq!(px.len() as u64, w * h * 4);
+            assert!(px.as_chunks::<4>().0.iter().all(|p| p[3] == 255), "opaque");
+        }
+        assert!(set_kind(KIND_COCKPIT));
+    }
+
+    /// Doc 28 P2: the remaining bucket-B pictures (`ChartPicture`, `DollPicture`,
+    /// `ReplayPicture`) draw through the WASM ABI and match native `mush-pixel`
+    /// hash for hash.
+    #[test]
+    fn the_module_draws_the_bucket_b_pictures() {
+        // DollPicture over the committed cockpit fixture.
+        assert!(set_kind(KIND_DOLL));
+        assert!(feed(FEED_COCKPIT, fixture("cockpit").as_bytes()));
+        assert!(render(640, 480, Look::default()));
+        let mut native = Frame::new(640, 480);
+        let feeds: HashMap<String, Value> = [(
+            COCKPIT_FEED.to_string(),
+            serde_json::from_str(fixture("cockpit")).unwrap(),
+        )]
+        .into_iter()
+        .collect();
+        assert!(DollPicture::new().draw(&mut native, &feeds, &Look::default()));
+        assert_eq!(hash(), native.hash());
+
+        // ChartPicture: requires `sky.chart`, and draws the refusal card when the
+        // chart block is absent.
+        assert!(set_kind(KIND_CHART));
+        assert!(feed(FEED_CHART, b""));
+        assert!(!render(640, 480, Look::default()), "no chart feed");
+        assert!(feed(FEED_CHART, br#"{"refused": true}"#));
+        assert!(render(640, 480, Look::default()));
+        let chart_feeds: HashMap<String, Value> = [(
+            SKY_CHART_FEED.to_string(),
+            serde_json::json!({"refused": true}),
+        )]
+        .into_iter()
+        .collect();
+        let mut native_chart = Frame::new(640, 480);
+        assert!(ChartPicture::new().draw(&mut native_chart, &chart_feeds, &Look::default()));
+        assert_eq!(hash(), native_chart.hash());
+
+        // ReplayPicture: draws its waiting card before a document arrives, and
+        // accepts `arena.replay` + `replay.cursor`.
+        assert!(set_kind(KIND_REPLAY));
+        assert!(feed(FEED_REPLAY, b""));
+        assert!(feed(
+            FEED_REPLAY_CURSOR,
+            br#"{"match": 1, "t_ms": 0, "focus": 0}"#
+        ));
+        assert!(render(640, 480, Look::default()));
+        let replay_feeds: HashMap<String, Value> = [(
+            REPLAY_CURSOR_FEED.to_string(),
+            serde_json::json!({"match": 1, "t_ms": 0, "focus": 0}),
+        )]
+        .into_iter()
+        .collect();
+        let mut native_replay = Frame::new(640, 480);
+        assert!(ReplayPicture::new().draw(&mut native_replay, &replay_feeds, &Look::default()));
+        assert_eq!(hash(), native_replay.hash());
+
+        assert!(set_kind(KIND_COCKPIT));
+    }
+
+    /// Refusals: no cockpit, a bad size, not JSON, no such feed, no such kind;
+    /// an unseated cockpit forgets the held one.
     #[test]
     fn what_cannot_be_drawn_is_not() {
+        assert!(!set_kind(0));
+        assert!(!set_kind(99));
+        assert_eq!(mp_kind(0), 0);
+        assert_eq!(mp_kind(KIND_COCKPIT), 1);
         assert!(feed(FEED_COCKPIT, b""));
         assert!(!render(320, 220, Look::default()), "no cockpit");
         assert!(!feed(FEED_COCKPIT, b"{not json"));

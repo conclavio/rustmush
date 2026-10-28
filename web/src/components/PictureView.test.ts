@@ -34,21 +34,32 @@ import {
   swingLook,
   type PictureKind,
 } from "$lib/picture";
-import { LOCAL_FRAME_MS, PICTURE_SOURCE_KEY } from "$lib/pixel/local";
+import { LOCAL_FRAME_MS } from "$lib/pixel/local";
+import { KIND_COCKPIT, KIND_OVERHEAD } from "$lib/pixel/wasm";
 import { PictureStore } from "$lib/stores/picture.svelte";
 
-/** The engine's module, faked: every render succeeds and hashes the same,
- * as an unchanged scene does. */
-const fake = vi.hoisted(() => ({
-  module: {
-    feed: () => true,
-    render: () => true,
-    hash: () => "the same frame",
-    image: () => ({ width: 1, height: 1, data: new Uint8ClampedArray(4) }),
-    pixels: () => new Uint8Array(0),
-    reset: () => {},
-  },
-}));
+/** The engine's module, faked: every render succeeds and hashes by camera kind
+ * (`KIND_COCKPIT` vs `KIND_OVERHEAD`), as an unchanged scene does. */
+const fake = vi.hoisted(() => {
+  let kind = 1;
+  return {
+    resetKind: () => {
+      kind = 1;
+    },
+    module: {
+      setKind: (k: number) => {
+        kind = k;
+        return true;
+      },
+      feed: () => true,
+      render: () => true,
+      hash: () => (kind === 2 ? "overhead frame" : "cockpit frame"),
+      image: () => ({ width: 1, height: 1, data: new Uint8ClampedArray(4) }),
+      pixels: () => new Uint8Array(0),
+      reset: () => {},
+    },
+  };
+});
 
 vi.mock("$lib/pixel/local", async (importOriginal) => {
   const orig = await importOriginal<typeof import("$lib/pixel/local")>();
@@ -72,9 +83,6 @@ function mount(cockpit: CockpitFrame | null = null): {
   unmount: () => void;
 } {
   const picture = new PictureStore();
-  // The real `setPicture`'s bookkeeping, less the socket: a camera given is
-  // kept, none leaves the store's, as `GameApp.setPicture` does (doc 21 cut
-  // G.12c).
   const setPicture = vi.fn((on: boolean, look: number, kind?: PictureKind) => {
     picture.on = on;
     picture.lookMdeg = look;
@@ -108,8 +116,8 @@ function setVisibility(state: "visible" | "hidden"): void {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  fake.resetKind();
   localStorage.setItem(PICTURE_PREF_KEY, "on");
-  localStorage.setItem(PICTURE_SOURCE_KEY, "server");
 });
 
 afterEach(() => {
@@ -118,7 +126,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   localStorage.removeItem(PICTURE_PREF_KEY);
-  localStorage.removeItem(PICTURE_SOURCE_KEY);
   delete (document as { visibilityState?: unknown }).visibilityState;
 });
 
@@ -138,7 +145,7 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
   });
 
   it("stops the turn when the page goes hidden, and orders nothing more", async () => {
-    const { picture, setPicture, helm, frame } = mount();
+    const { picture, helm, frame } = mount();
     await tick();
     await fireEvent.keyDown(frame, { key: "ArrowRight" });
     expect(helm.mock.calls).toEqual([["HEADING 75 QUIET"]]);
@@ -150,11 +157,11 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
     await fireEvent.keyUp(frame, { key: "ArrowRight" });
     expect(helm.mock.calls).toHaveLength(2);
-    // The picture itself is stopped while hidden and asked for again after.
+    // The picture itself is off while hidden and on again after.
     expect(picture.on).toBe(false);
     setVisibility("visible");
     await tick();
-    expect(setPicture.mock.calls.at(-1)).toEqual([true, 0]);
+    expect(picture.on).toBe(true);
   });
 
   it("stops the turn when the window loses focus", async () => {
@@ -180,18 +187,17 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
   });
 
   it("stops the look's swing when the page goes hidden", async () => {
-    const { setPicture, frame } = mount();
+    const { picture, frame } = mount();
     await tick();
     await fireEvent.keyDown(frame, { key: "," });
     vi.advanceTimersByTime(LOOK_STEP_MS);
     const step = swingLook(0, -1, LOOK_STEP_MS);
-    expect(setPicture.mock.calls.at(-1)).toEqual([true, step]);
+    expect(picture.lookMdeg).toBe(step);
     setVisibility("hidden");
     await tick();
-    expect(setPicture.mock.calls.at(-1)).toEqual([false, 0]);
-    const asked = setPicture.mock.calls.length;
+    expect(picture.lookMdeg).toBe(0);
     vi.advanceTimersByTime(LOOK_STEP_MS * 5);
-    expect(setPicture.mock.calls).toHaveLength(asked);
+    expect(picture.lookMdeg).toBe(0);
   });
 });
 
@@ -387,32 +393,30 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
   });
 
   it("q and e swing the look as , and . do", async () => {
-    const { setPicture, frame } = mount(fixtureFrame());
+    const { picture, frame } = mount(fixtureFrame());
     await tick();
     await press(frame, "q");
     vi.advanceTimersByTime(LOOK_STEP_MS);
-    expect(setPicture.mock.calls.at(-1)).toEqual([true, swingLook(0, -1, LOOK_STEP_MS)]);
+    expect(picture.lookMdeg).toBe(swingLook(0, -1, LOOK_STEP_MS));
     await press(frame, "q");
     await press(frame, "c");
-    expect(setPicture.mock.calls.at(-1)).toEqual([true, 0]);
+    expect(picture.lookMdeg).toBe(0);
     await press(frame, "e");
     vi.advanceTimersByTime(LOOK_STEP_MS);
-    expect(setPicture.mock.calls.at(-1)).toEqual([true, swingLook(0, 1, LOOK_STEP_MS)]);
+    expect(picture.lookMdeg).toBe(swingLook(0, 1, LOOK_STEP_MS));
   });
 
-  it("v asks the gateway for the overhead and back, the server's frame shown meanwhile", async () => {
+  it("v swaps between the first-person cockpit and the overhead camera locally (doc 28 P2)", async () => {
     const { picture, setPicture, frame } = mount(fixtureFrame());
     await tick();
     await press(frame, "v");
     await tick();
     expect(picture.kind).toBe("overhead");
     expect(picture.on).toBe(true);
-    expect(setPicture.mock.calls.at(-1)?.[0]).toBe(true);
-    expect(screen.getByRole("button", { name: "overhead: drawn by the server" })).toBeTruthy();
+    expect(setPicture).not.toHaveBeenCalled();
     await press(frame, "v");
     await tick();
     expect(picture.kind).toBe("cockpit");
-    expect(screen.getByRole("button", { name: "drawn by the server" })).toBeTruthy();
   });
 
   it("lists the keys in the header", async () => {
@@ -426,23 +430,17 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
 
 describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
   /** Every canvas's 2D context, recording the frames put on it by the
-   * picture drawn here (`paints`) and by the server's bitmaps (`draws`). */
+   * picture drawn here (`paints`). */
   let paints: Map<HTMLCanvasElement, number>;
-  let draws: Map<HTMLCanvasElement, number>;
   let getContext: typeof HTMLCanvasElement.prototype.getContext;
 
   beforeEach(() => {
-    localStorage.setItem(PICTURE_SOURCE_KEY, "here");
     paints = new Map();
-    draws = new Map();
     getContext = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
       return {
         putImageData: () => {
           paints.set(this, (paints.get(this) ?? 0) + 1);
-        },
-        drawImage: () => {
-          draws.set(this, (draws.get(this) ?? 0) + 1);
         },
       };
     } as unknown as typeof HTMLCanvasElement.prototype.getContext;
@@ -473,7 +471,7 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     const { setPicture, unmount } = mount();
     await settle();
     // Drawn here: the server is never asked.
-    expect(setPicture.mock.calls.filter((c) => c[0] === true)).toHaveLength(0);
+    expect(setPicture).not.toHaveBeenCalled();
     const first = document.querySelector("canvas");
     expect(first).not.toBeNull();
     expect(screen.getByText("Waiting for the first picture…")).toBeTruthy();
@@ -501,56 +499,36 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     unmount();
   });
 
-  it("stands aside for the overhead, which only the gateway draws (doc 21 cut G.12c)", async () => {
+  it("paints the overhead camera locally on v and first person again on v back (doc 28 P2)", async () => {
+    const setKind = vi.spyOn(fake.module, "setKind");
     const { picture, setPicture, frame, unmount } = mount(fixtureFrame());
     await settle();
     await frameTime();
     const c = document.querySelector("canvas") as HTMLCanvasElement;
     expect(paints.get(c)).toBe(1);
-    expect(setPicture.mock.calls.filter((call) => call[0] === true)).toHaveLength(0);
+    expect(setKind).toHaveBeenLastCalledWith(KIND_COCKPIT);
+    expect(setPicture).not.toHaveBeenCalled();
+
     await fireEvent.keyDown(frame, { key: "v" });
     await settle();
-    // The gateway is asked, for the overhead; nothing more is painted here.
+    await frameTime();
     expect(picture.kind).toBe("overhead");
     expect(picture.on).toBe(true);
-    expect(screen.getByRole("button", { name: "overhead: drawn by the server" })).toBeTruthy();
-    picture.receive(new Blob([new Uint8Array([0x89, 0x50])], { type: "image/png" }));
-    await frameTime();
-    await frameTime();
-    expect(paints.get(c)).toBe(1);
-    // Back to first person: drawn here again, the gateway's picture stopped.
-    await fireEvent.keyDown(frame, { key: "v" });
-    await settle();
-    expect(picture.kind).toBe("cockpit");
-    expect(picture.on).toBe(false);
-    expect(screen.getByRole("button", { name: "drawn here" })).toBeTruthy();
-    unmount();
-  });
+    expect(setKind).toHaveBeenLastCalledWith(KIND_OVERHEAD);
+    expect(paints.get(c)).toBe(2);
+    expect(setPicture).not.toHaveBeenCalled();
 
-  it("paints the unchanged frame again over a server frame once drawn here again", async () => {
-    // The server's frames are drawn through createImageBitmap, which jsdom
-    // lacks: a bitmap of the frame's size.
-    vi.stubGlobal("createImageBitmap", () =>
-      Promise.resolve({ width: 640, height: 480, close: () => {} }),
-    );
-    const { picture, unmount } = mount();
-    await settle();
-    await frameTime();
-    const c = document.querySelector("canvas") as HTMLCanvasElement;
-    expect(paints.get(c)).toBe(1);
-    // The viewer chooses the server's picture; its frame lands on the same
-    // canvas.
-    await fireEvent.click(screen.getByRole("button", { name: "drawn here" }));
-    expect(picture.on).toBe(true);
-    picture.receive(new Blob([new Uint8Array([0x89, 0x50])], { type: "image/png" }));
-    await settle();
-    expect(draws.get(c)).toBe(1);
-    // Back to drawn here: the picture's frame is unchanged, and goes over
-    // the server's all the same.
-    await fireEvent.click(screen.getByRole("button", { name: "drawn by the server" }));
-    await settle();
+    // Unchanged overhead: no extra paint.
     await frameTime();
     expect(paints.get(c)).toBe(2);
+
+    // Back to first person: painted here again, the server still never asked.
+    await fireEvent.keyDown(frame, { key: "v" });
+    await settle();
+    await frameTime();
+    expect(picture.kind).toBe("cockpit");
+    expect(setKind).toHaveBeenLastCalledWith(KIND_COCKPIT);
+    expect(paints.get(c)).toBe(3);
     unmount();
   });
 });

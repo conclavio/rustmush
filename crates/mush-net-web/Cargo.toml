@@ -14,8 +14,6 @@ tls = ["dep:axum-server", "dep:rustls"]
 [dependencies]
 mush-config.workspace = true
 mush-proto.workspace = true
-# Doc 21 cut G.3: the web viewer's picture, drawn per connection.
-mush-pixel.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
