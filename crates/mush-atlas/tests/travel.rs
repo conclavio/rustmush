@@ -1080,6 +1080,138 @@ fn k1_travel_lists_only_known_places() {
 }
 
 #[test]
+fn dt_movement_capture_matches_real_discovery_writes_and_duplicate_visits() {
+    for kind in [ObjKind::Player, ObjKind::Npc] {
+        let mut tw = valley();
+        let west_gate = room(&tw, "West Gate");
+        let shed = room(&tw, "Shed");
+        let actor = tw
+            .world_mut()
+            .create(kind, "Walker", GOD, Some(west_gate))
+            .expect("walker");
+        let _ = tw.take_module_ops();
+        let capture = mush_atlas::movement::capture(tw.world(), actor, Some(west_gate), shed, T0)
+            .expect("bounded Atlas capture");
+        let planned = capture.planned_known();
+        assert_eq!(planned.is_some(), kind == ObjKind::Player);
+        assert_eq!(loc(&tw, actor), Some(west_gate));
+        assert!(tw.take_module_ops().is_empty(), "capture publishes nothing");
+        assert!(
+            !tw.world()
+                .module_state::<AtlasState>()
+                .expect("Atlas")
+                .travel
+                .known
+                .contains_key(&actor)
+        );
+
+        tw.run(actor, "shed");
+        assert_eq!(loc(&tw, actor), Some(shed));
+        let key = format!("known:{}", actor.0);
+        let writes: Vec<_> = tw
+            .take_module_ops()
+            .into_iter()
+            .filter_map(|op| {
+                if op.ns.as_str() != "atlas" {
+                    return None;
+                }
+                match op.op {
+                    ModuleWrite::JsonSet {
+                        key: written,
+                        value,
+                    } if written.as_str() == key => Some(value),
+                    _ => None,
+                }
+            })
+            .collect();
+        let expected: Vec<_> = planned
+            .as_ref()
+            .map(|doc| serde_json::to_value(doc).expect("known document"))
+            .into_iter()
+            .collect();
+        assert_eq!(
+            writes, expected,
+            "actual observer persists exactly the planned document"
+        );
+        assert_eq!(
+            tw.world()
+                .module_state::<AtlasState>()
+                .expect("Atlas")
+                .travel
+                .known
+                .get(&actor),
+            planned.as_ref().map(|doc| &doc.places)
+        );
+
+        let revisit = mush_atlas::movement::capture(tw.world(), actor, Some(shed), west_gate, T0)
+            .expect("duplicate visit capture");
+        assert!(revisit.planned_known().is_none());
+        tw.run(actor, "gate");
+        assert_eq!(loc(&tw, actor), Some(west_gate));
+        assert!(
+            !tw.take_module_ops().iter().any(|op| {
+                op.ns.as_str() == "atlas"
+                    && matches!(&op.op,
+                ModuleWrite::JsonSet { key: written, .. } if written.as_str() == key)
+            }),
+            "revisiting a known place must not rewrite or reorder it"
+        );
+    }
+}
+
+#[test]
+fn dt_self_loop_exit_still_teaches_its_neighborhood() {
+    let mut tw = valley();
+    let west_gate = room(&tw, "West Gate");
+    let actor = player(&mut tw, "Loop Walker", west_gate);
+    let exit = tw
+        .world_mut()
+        .create(ObjKind::Exit, "circle", GOD, Some(west_gate))
+        .expect("self-loop exit");
+    tw.world_mut()
+        .link_exit(exit, Some(west_gate))
+        .expect("self-loop destination");
+    let _ = tw.take_module_ops();
+    let capture = mush_atlas::movement::capture(tw.world(), actor, Some(west_gate), west_gate, T0)
+        .expect("self-loop capture");
+    let planned = capture
+        .planned_known()
+        .expect("self-loop discovers the place");
+    tw.run(actor, "circle");
+    assert_eq!(loc(&tw, actor), Some(west_gate));
+    assert_eq!(
+        tw.world()
+            .module_state::<AtlasState>()
+            .expect("Atlas")
+            .travel
+            .known
+            .get(&actor),
+        Some(&planned.places)
+    );
+    let key = format!("known:{}", actor.0);
+    let writes: Vec<_> = tw
+        .take_module_ops()
+        .into_iter()
+        .filter_map(|op| {
+            if op.ns.as_str() != "atlas" {
+                return None;
+            }
+            match op.op {
+                ModuleWrite::JsonSet {
+                    key: written,
+                    value,
+                } if written.as_str() == key => Some(value),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(
+        writes,
+        vec![serde_json::to_value(planned).expect("known document")]
+    );
+}
+
+#[test]
 fn k2_intercept_reveals_no_destination_and_no_route() {
     let mut tw = valley();
     let west_gate = room(&tw, "West Gate");

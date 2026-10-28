@@ -63,6 +63,29 @@ Scenes observer; Atlas, NPC, weather, Tacsim and script effects remain blockers
 to switching ordinary walking to the prepared path. Personnel crossing evidence
 remains explicitly uncertified.
 
+## Atlas discovery and window capture
+
+Atlas has a separate bounded, pure movement capture for its two actual observers.
+Discovery shares the legacy known-place planner: only Players learn, duplicate
+visits preserve order without a write, and a new place evicts the oldest entries
+above the existing 512-place limit. A self-loop still discovers its neighborhood.
+The capture retains absent versus empty known-place records and the original
+actor, route and UTC; it produces no state or persistence work.
+
+Window capture records the actual direct-placement and ordered covering-window
+observations. It preserves the first matching window rule, including an undrawn
+window masking a later drawn one. The result distinguishes no selected legacy
+effect from work needing a Sim owner join: release, placement, or re-posing.
+It does not select a free cell, promise placement success, or execute map output.
+Missing Atlas and Sim slots remain explicit observations, not owner readiness.
+
+Bounds apply before copying known keys or window observations; the legacy
+callbacks retain their existing behavior even when explicit capture refuses an
+oversized input. The strict capture codec and real-command parity tests establish
+selection behavior only. An atomic adapter still needs the actual owner slots,
+exact observer references, final read fences, and one coordinated Sim placement
+patch. Atlas remains a live-migration blocker.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
