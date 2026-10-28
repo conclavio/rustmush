@@ -1168,8 +1168,18 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // once: the one pending row leaves `funded` for `settled`, its transfer a
     // later ownership generation than the offer's.
     let end = Instant::now() + STEP;
+    // The clerk's own lines while it settles (a refused service submission
+    // reaches the clerk as the driver's generic line), for the diagnosis.
+    let clerk = w
+        .launch
+        .deployment
+        .market
+        .as_ref()
+        .map(|m| m.clerk)
+        .ok_or("the launch's player market")?;
+    let mut clerk_lines = Vec::new();
     let settled = loop {
-        let _ = w.server.take_seen(cy)?;
+        clerk_lines.extend(w.server.take_seen(clerk)?.own);
         let pending = rows(&w.launch.store, "roll", "roll_mind_charter_pending").await?;
         if let Some(row) = pending
             .iter()
@@ -1177,10 +1187,13 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         {
             break row.clone();
         }
-        check!(
-            Instant::now() < end,
-            "the charter settles to Cy; the pending rows: {pending:?}"
-        );
+        if Instant::now() >= end {
+            let heads = rows(&w.launch.store, "roll", "roll_mind_charter_pending_head").await?;
+            check!(
+                false,
+                "the charter settles to Cy; the pending rows: {pending:?}; the heads: {heads:?}; the clerk's lines: {clerk_lines:?}"
+            );
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
     let generation = |path: &str| settled.pointer(path).and_then(Value::as_u64);
@@ -1450,6 +1463,15 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "17g C2 command story: one genuine Registry rating; run by the mind-commerce-acceptance dispatch"]
 async fn player_market_commands_story_two_accounts_alt_stale_tiny_and_restart() -> TestResult {
+    // The server's own account of a refused service submission (world_task's
+    // info line carries the refusal) and the charter clerk's debug trace, in
+    // the captured output of a failing run.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "warn,mush_server::world_task=info,mush_roll::commerce::charter_pending=debug",
+        ))
+        .with_test_writer()
+        .try_init();
     let market = tacsim::launch::MarketTerms {
         quote_seconds: 30,
         ..tacsim::launch::MarketTerms::PROVISIONAL

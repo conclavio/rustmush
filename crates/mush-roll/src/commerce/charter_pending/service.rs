@@ -451,17 +451,21 @@ fn tick(ctx: &mut Ctx<'_>, service: &Service) -> Result<(), PublicationError> {
     let mut state = service.runtime.0.lock().map_err(bad)?;
     if let Some(p) = state.pending.as_mut() {
         if installed(ctx, service, &p.intent)? {
+            tracing::debug!(reason = ?p.intent.reason, "pending charter attempt installed");
             state.pending = None;
-        } else if p
-            .observation
-            .as_mut()
-            .is_some_and(|o| o.take_terminal().is_some())
-        {
+        } else if let Some(terminal) = p.observation.as_mut().and_then(|o| o.take_terminal()) {
+            tracing::debug!(
+                ?terminal,
+                reason = ?p.intent.reason,
+                "pending charter attempt ended without installing"
+            );
             p.observation = None;
             if p.intent.fresh(ctx.w).is_err() {
+                tracing::debug!("pending charter attempt dropped: no longer fresh");
                 state.pending = None;
             }
         } else if p.observation.is_none() && p.intent.fresh(ctx.w).is_err() {
+            tracing::debug!("pending charter attempt dropped before submission: no longer fresh");
             state.pending = None;
         }
     }
@@ -494,6 +498,7 @@ fn tick(ctx: &mut Ctx<'_>, service: &Service) -> Result<(), PublicationError> {
                 .ok_or(PublicationError::Missing)?;
             head.matches(row)?;
             if let Some(intent) = discover(ctx, &service.f, row, service.config.service_actor)? {
+                tracing::debug!(reason = ?intent.reason, "pending charter attempt discovered");
                 state.pending = Some(Attempt {
                     intent,
                     observation: None,
@@ -528,13 +533,16 @@ fn drive(ctx: &mut Ctx<'_>, service: &Service) -> Result<(), CmdError> {
         return Ok(());
     }
     p.intent.fresh(ctx.w).map_err(|_| unavailable())?;
-    p.observation = Some(ctx.submit_authoritative_observed(
-        p.intent.action.clone(),
-        PerceivedRef::SelfActor,
-        vec![],
-        serde_json::json!({}),
-        p.intent.key.clone(),
-    )?);
+    p.observation = Some(
+        ctx.submit_authoritative_observed(
+            p.intent.action.clone(),
+            PerceivedRef::SelfActor,
+            vec![],
+            serde_json::json!({}),
+            p.intent.key.clone(),
+        )
+        .inspect_err(|error| tracing::debug!(?error, "pending charter submission refused"))?,
+    );
     Ok(())
 }
 pub(super) fn register(
@@ -572,7 +580,9 @@ pub(super) fn register(
         TickCadence::Coarse(Duration::from_secs(1)),
         Arc::new(
             move |ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>| {
-                let _ = tick(ctx, &service);
+                if let Err(error) = tick(ctx, &service) {
+                    tracing::debug!(?error, "pending charter tick did not progress");
+                }
             },
         ),
     )
