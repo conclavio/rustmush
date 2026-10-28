@@ -970,7 +970,8 @@ async fn owner_row_matches_the_line(
 ///   outcome either the provider's commit or the driver's refusal, every
 ///   account's sum unchanged either way);
 /// - the author's typed `Withdraw` stages `WITHDRAWING`, and `mind.market`
-///   then lists no row (`EMPTY`);
+///   then lists the same rows: the Registry stops new sales, but the counter
+///   is policy-current only (17g C2e; the C4 ledger item in the C2e record);
 /// - after a restart, `mind.holdings` for the licence's holder is the same
 ///   bytes.
 ///
@@ -1325,7 +1326,19 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
             buyer
         };
 
-        // The author's typed withdrawal.
+        // The author's typed withdrawal: the Registry stops new sales of the
+        // revision (a fresh quote on it is refused by the provider, as the
+        // command story's part 3 pins on the line), but the counter is
+        // policy-current only (17g C2e: `current_policy` reads the listing
+        // row, never the revision's status), so the panel reads the same rows
+        // after it. Hiding a withdrawn revision's listings is a C4 ledger item
+        // (17g section 7, C2e as built).
+        let listed =
+            rows_of(&panel(&w.server, buyer, "mind.market", json!({"after": null})).await?)?;
+        check!(
+            !listed.is_empty(),
+            "the listing is on the counter before the withdrawal"
+        );
         let (line, outcome) = staged(&w, author, MarketAction::Withdraw { filed }).await?;
         check_eq!(line, format!("Withdrawing filed revision {filed}."));
         check_eq!(
@@ -1333,9 +1346,8 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
             Some("Done."),
             "{outcome:?}"
         );
-        let gone = panel(&w.server, buyer, "mind.market", json!({"after": null})).await?;
-        check_eq!(rows_of(&gone)?, Vec::<Value>::new(), "{gone}");
-        check_eq!(gone.get("notice"), Some(&json!(EMPTY)));
+        let after = panel(&w.server, buyer, "mind.market", json!({"after": null})).await?;
+        check_eq!(rows_of(&after)?, listed, "{after}");
 
         // A restart: the holder's paid section reads the same bytes.
         let section = json!({"section": "paid", "after": null});
