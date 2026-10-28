@@ -4411,6 +4411,15 @@ pub fn register(
         .egress_sender()
         .ok_or_else(|| ModError::msg("new arena task egress is unavailable"))?;
     let bulk_cfg = minds_cfg.bulk();
+    // The maintenance pulse: production's second (`Coarse`), or the
+    // sub-second pace the acceptance stories' harness sets (`Fast`, the
+    // kernel's name for a sub-second period; the loop arms both alike).
+    let maintenance = Duration::from_millis(bulk_cfg.maintenance_ms);
+    let maintenance_cadence = if maintenance >= Duration::from_secs(1) {
+        mush_core::TickCadence::Coarse(maintenance)
+    } else {
+        mush_core::TickCadence::Fast(maintenance)
+    };
     let bulk = crate::minds::bulk::world::BulkService::new(bulk_cfg.clone(), egress.clone())
         .map_err(|e| ModError::msg(e.to_string()))?;
     reg.state(
@@ -4431,7 +4440,7 @@ pub fn register(
     )?;
     reg.tick(
         "mind-bulk-maintenance",
-        mush_core::TickCadence::Coarse(Duration::from_secs(1)),
+        maintenance_cadence,
         Arc::new(
             |ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>| {
                 crate::minds::bulk::world::drain(ctx)

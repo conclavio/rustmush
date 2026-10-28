@@ -179,6 +179,8 @@ pub(super) fn config() -> Config {
     config.tacsim.enabled = true;
     config.store.store = "memory".into();
     config.game.ic_ratio = 24;
+    // The genuine rating's pace in the two market stories (`MIND_PULSE_MS`).
+    super::paid_purchase::mind_pulse(&mut config);
     config
 }
 fn system(name: &str) -> TestResult<SystemPrincipalId> {

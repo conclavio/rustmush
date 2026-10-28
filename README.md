@@ -52,8 +52,8 @@ Getting a dev Redis, in order of preference:
   `ssh -N -L 6379:127.0.0.1:6379 you@your-vps`.
 
 ```bash
-cargo nextest run --workspace --exclude mush-bot
-cargo test --doc --workspace --exclude mush-bot
+cargo nextest run --workspace
+cargo test --doc --workspace
 ```
 
 [cargo-nextest](https://nexte.st) (`cargo install cargo-nextest --locked`) is the test
@@ -65,19 +65,18 @@ the one-crate sweep, `-E 'test(name)'` the filter, `--run-ignored only` the
 `#[ignore]`d. nextest runs no doc-tests: `cargo test --doc` beside it, as above.
 `cargo test` still works as it always did, one binary at a time.
 
-Run `cargo nextest run -p mush-bot` separately: its JSON feature set must not unify into
-the engine tests. Everything runs against the in-memory store by default; the Redis-backed integration tests
+Everything runs against the in-memory store by default; the Redis-backed integration tests
 (store behavior suite, boot round trip, the kill-9 durability test) run only when `REDIS_URL`
 is set, and skip with a note otherwise. The store behavior suite is also ignored
 by default: run `cargo test -p mush-store --test redis_suite -- --ignored` explicitly
 against that disposable store.
 
 ```bash
-REDIS_URL=redis://127.0.0.1:6379 cargo test --workspace --exclude mush-bot          # bash
+REDIS_URL=redis://127.0.0.1:6379 cargo test --workspace          # bash
 ```
 
 ```powershell
-$env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace --exclude mush-bot  # PowerShell
+$env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace  # PowerShell
 ```
 
 Point `REDIS_URL` at a **disposable** instance: the gated tests wipe their key namespaces

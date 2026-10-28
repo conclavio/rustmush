@@ -727,7 +727,8 @@ fn answered(line: &str) -> bool {
 /// which `@mind/file` finds the finished run.
 async fn rated(w: &World, author: ObjId, revision: &mush_roll::Revision) -> TestResult {
     let identity = mush_roll::commerce::RevisionIdentity::capture(revision)?;
-    let end = Instant::now() + Duration::from_secs(14_400);
+    let started = Instant::now();
+    let end = started + Duration::from_secs(14_400);
     let mut settled = false;
     let mut completed: Option<Instant> = None;
     loop {
@@ -755,7 +756,15 @@ async fn rated(w: &World, author: ObjId, revision: &mush_roll::Revision) -> Test
             }
         }
         match completed {
-            Some(_) if settled => return Ok(()),
+            Some(_) if settled => {
+                // The rating's wall, for the dispatch log (as C2's story).
+                eprintln!(
+                    "M7_STORY_RATED elapsed_s={} pulse_ms={}",
+                    started.elapsed().as_secs(),
+                    w.launch.config.tacsim.minds.bulk_maintenance_ms
+                );
+                return Ok(());
+            }
             Some(at) => check!(
                 at.elapsed() < STEP,
                 "Registry work finished. after the completion"

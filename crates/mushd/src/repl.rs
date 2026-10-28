@@ -14,7 +14,7 @@ use mush_core::{
     Audience, Effect, Effects, GOD, Inbound, Outbox, StepOutcome, StoreReadResult, TypedStateLens,
     WorldCommand, can_perceive, event_subject,
 };
-use mush_testkit::text_of;
+use mush_proto::text_of;
 
 use crate::world_task::boot_engine;
 use crate::{unix_now_ms, unix_now_s};

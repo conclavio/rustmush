@@ -100,7 +100,8 @@ fn number(row: &Value, field: &str) -> TestResult<String> {
 /// completed row.
 async fn rated(w: &World, author: ObjId, revision: &mush_roll::Revision) -> TestResult {
     let identity = mush_roll::commerce::RevisionIdentity::capture(revision)?;
-    let end = Instant::now() + REGISTRY_GUARD;
+    let started = Instant::now();
+    let end = started + REGISTRY_GUARD;
     let mut settled = false;
     let mut completed: Option<Instant> = None;
     loop {
@@ -128,7 +129,17 @@ async fn rated(w: &World, author: ObjId, revision: &mush_roll::Revision) -> Test
             }
         }
         match completed {
-            Some(_) if settled => return Ok(()),
+            Some(_) if settled => {
+                // The rating's wall, for the dispatch log: the pace the
+                // harness set (`MIND_PULSE_MS`, `paid_purchase::mind_pulse`)
+                // and the worker's own quanta.
+                eprintln!(
+                    "M7_STORY_RATED elapsed_s={} pulse_ms={}",
+                    started.elapsed().as_secs(),
+                    w.launch.config.tacsim.minds.bulk_maintenance_ms
+                );
+                return Ok(());
+            }
             Some(at) => check!(
                 at.elapsed() < STEP,
                 "Registry work finished. after the completion"
