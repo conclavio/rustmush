@@ -45,6 +45,8 @@ mod handoff;
 pub mod ic_exclusion;
 pub mod journey;
 pub mod links;
+mod personnel;
+mod personnel_capture;
 pub mod physical;
 pub mod relay;
 pub mod route;

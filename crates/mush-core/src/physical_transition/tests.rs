@@ -39,10 +39,13 @@ impl BoundParticipant for Bound<'_> {
     }
 }
 fn participant_descriptor() -> DefinitionDescriptor {
+    participant_descriptor_version(2)
+}
+fn participant_descriptor_version(version: u32) -> DefinitionDescriptor {
     DefinitionDescriptor::new(
         DefinitionKind::new("owner_participant").unwrap(),
         DefinitionId::new(PARTICIPANT).unwrap(),
-        1,
+        version,
         json!({"fixture":"structural"}),
     )
     .unwrap()
@@ -166,20 +169,32 @@ impl crate::EventHook for Hook {
 struct Handles {
     service: CorePhysicalTransitions<Adapter>,
     action: DefinitionRef,
+    audited: Arc<Mutex<Vec<PhysicalTransitionReceipt>>>,
+}
+#[derive(Clone, Copy)]
+enum History {
+    None,
+    Registered,
+    Missing,
 }
 struct Sim {
     request: Arc<Mutex<Request>>,
     hook: Arc<Hook>,
     handles: Arc<Mutex<Option<Handles>>>,
+    history: History,
 }
-fn validator(reg: &mut Registrar<'_>, descriptor: DefinitionDescriptor) -> Result<(), ModError> {
-    let kind = descriptor.kind().clone();
+fn validator(
+    reg: &mut Registrar<'_>,
+    descriptors: Vec<DefinitionDescriptor>,
+) -> Result<(), ModError> {
+    let kind = descriptors[0].kind().clone();
     reg.definition_validator(kind, move |ctx: &DefinitionValidationContext<'_>| {
         let d = ctx.definition();
-        if d.reference().key().id == *descriptor.id()
-            && d.reference().version() == descriptor.version()
-            && d.payload() == descriptor.payload()
-        {
+        if descriptors.iter().any(|descriptor| {
+            d.reference().key().id == *descriptor.id()
+                && d.reference().version() == descriptor.version()
+                && d.payload() == descriptor.payload()
+        }) {
             Ok(())
         } else {
             Err("unexpected physical descriptor".into())
@@ -198,9 +213,12 @@ impl GameModule for Sim {
             json!({}),
         )
         .unwrap();
-        validator(reg, action_descriptor()?)?;
-        validator(reg, participant_descriptor())?;
-        validator(reg, outcome.clone())?;
+        validator(reg, vec![action_descriptor()?, action_descriptor_v1()?])?;
+        validator(
+            reg,
+            vec![participant_descriptor(), participant_descriptor_version(1)],
+        )?;
+        validator(reg, vec![outcome.clone()])?;
         reg.state(PhysicalFixtureState(0));
         let action = reg.definition(action_descriptor()?)?;
         let participant = reg.definition(participant_descriptor())?;
@@ -210,7 +228,35 @@ impl GameModule for Sim {
             BTreeSet::from([action.clone()]),
             Adapter,
         )?;
-        let service = CorePhysicalTransitions::register(reg, action.clone(), participant)?;
+        let service = match self.history {
+            History::None => CorePhysicalTransitions::register(reg, action.clone(), participant)?,
+            History::Registered | History::Missing => {
+                let old_action = action_descriptor_v1()?;
+                let old_participant = participant_descriptor_version(1);
+                let retained = if matches!(self.history, History::Registered) {
+                    (
+                        reg.definition(old_action)?,
+                        reg.definition(old_participant)?,
+                    )
+                } else {
+                    let mut definitions = crate::DefinitionRegistryBuilder::new();
+                    (
+                        definitions
+                            .register(OwnerId::new("sim").unwrap(), old_action)
+                            .unwrap(),
+                        definitions
+                            .register(OwnerId::new("sim").unwrap(), old_participant)
+                            .unwrap(),
+                    )
+                };
+                CorePhysicalTransitions::register_with_history(
+                    reg,
+                    action.clone(),
+                    participant,
+                    vec![retained],
+                )?
+            }
+        };
         reg.hook(crate::HookPoint::CarryAttempt, self.hook.clone());
         reg.hook(crate::HookPoint::MoveAttempt, self.hook.clone());
         reg.action_provider(
@@ -221,18 +267,53 @@ impl GameModule for Sim {
                 outcome,
             },
         )?;
-        *self.handles.lock().unwrap() = Some(Handles { service, action });
+        *self.handles.lock().unwrap() = Some(Handles {
+            service,
+            action,
+            audited: Arc::new(Mutex::new(Vec::new())),
+        });
         Ok(())
     }
     fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
-        self.handles
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .service
-            .audit(ctx)
-            .map_err(bad)
+        let handles = self.handles.lock().unwrap().clone().unwrap();
+        handles.service.audit(ctx).map_err(bad)?;
+        assert!(handles.service.scan_receipts(ctx, None, 0).is_err());
+        assert!(
+            handles
+                .service
+                .scan_receipts(ctx, None, MAX_PHYSICAL_RECEIPT_SCAN + 1)
+                .is_err()
+        );
+        assert!(
+            handles
+                .service
+                .read_receipt(ctx, &CommitToken::from_bytes([0; 16]))
+                .map_err(bad)?
+                .is_none()
+        );
+        let mut after = None;
+        let mut receipts = Vec::new();
+        loop {
+            let page = handles
+                .service
+                .scan_receipts(ctx, after.as_deref(), 1)
+                .map_err(bad)?;
+            for receipt in page.entries() {
+                let one = handles
+                    .service
+                    .read_receipt(ctx, &receipt.commit())
+                    .map_err(bad)?
+                    .unwrap();
+                assert_eq!(one.row, receipt.row);
+                receipts.push(one);
+            }
+            after = page.next_after().map(ToString::to_string);
+            if after.is_none() {
+                break;
+            }
+        }
+        *handles.audited.lock().unwrap() = receipts;
+        Ok(())
     }
 }
 struct Provider {
@@ -288,6 +369,9 @@ fn token() -> CommitToken {
     CommitToken::from_bytes([7; 16])
 }
 fn rig() -> Rig {
+    rig_with_history(History::None)
+}
+fn rig_with_history(history: History) -> Rig {
     let mut world = World::new_minimal();
     world.set_now(100);
     let source = world.create(ObjKind::Room, "source", GOD, None).unwrap();
@@ -334,6 +418,7 @@ fn rig() -> Rig {
             request: Arc::clone(&request),
             hook: Arc::clone(&hook),
             handles: Arc::clone(&handles),
+            history,
         })],
     )
     .unwrap();
@@ -738,6 +823,156 @@ fn strict_receipt_hydration_and_crossed_key_audit() {
             assert!(fresh.committed());
         }
     }
+}
+
+fn receipt_boot_record(r: &mut Rig) -> crate::action_state::ActionStateBootRecord {
+    let p = r.prepare().unwrap();
+    p.0.authoritative_replay_writes()
+        .into_iter()
+        .find_map(|write| match write {
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } if namespace.as_str() == "sim" && key.as_str() != "physical_fixture" => Some(
+                crate::action_state::ActionStateBootRecord::new("sim", key.as_str(), value),
+            ),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn retained_v1_and_current_v2_receipts_have_exact_paginated_readonly_metadata() {
+    let mut r = rig_with_history(History::Registered);
+    let current = receipt_boot_record(&mut r);
+    let mut legacy = current.clone();
+    let old_commit = CommitToken::from_bytes([6; 16]);
+    let (old_action, old_participant) = &r.handles.service.retained[0];
+    legacy.key = legacy
+        .key
+        .replace(&token().to_string(), &old_commit.to_string())
+        .into();
+    legacy.value["key"] = json!(old_commit.to_string());
+    legacy.value["value"]["commit"] = json!(old_commit);
+    legacy.value["value"]["action"] = json!(old_action);
+    legacy.value["value"]["participant"] = json!(old_participant);
+    legacy.value["value"]["at_utc"] = json!(99);
+    let mut fresh = rig_with_history(History::Registered);
+    fresh
+        .engine
+        .hydrate_action_state(vec![current, legacy.clone()])
+        .unwrap();
+    fresh
+        .engine
+        .all_modules_loaded(
+            &mut crate::Outbox::new(),
+            &mut crate::engine::Effects::new(),
+        )
+        .unwrap();
+    let rows = fresh.handles.audited.lock().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].commit(), old_commit);
+    assert_eq!(rows[0].action(), old_action);
+    assert_eq!(rows[0].participant(), old_participant);
+    assert_eq!(rows[0].at_utc(), 99);
+    assert_eq!(rows[1].commit(), token());
+    assert_eq!(rows[1].action(), &fresh.handles.action);
+    assert_eq!(rows[1].action().version(), 2);
+    assert_eq!(rows[1].participant(), &fresh.handles.service.participant);
+    assert_eq!(rows[1].actor(), fresh.actor);
+    assert_eq!(rows[1].root(), fresh.first);
+    assert_eq!(rows[1].at_utc(), 100);
+    assert_eq!(rows[1].structural_digest(), &rows[0].row.structural_digest);
+    assert!(!rows[1].object_digests().is_empty());
+
+    // Supporting the family decoder is insufficient: the owner must explicitly
+    // retain this exact historical pair before it can inspect the row.
+    let mut unsupported = rig();
+    unsupported
+        .engine
+        .hydrate_action_state(vec![legacy])
+        .unwrap();
+    assert!(
+        unsupported
+            .engine
+            .all_modules_loaded(
+                &mut crate::Outbox::new(),
+                &mut crate::engine::Effects::new()
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn receipt_versions_and_registered_participant_digests_fail_closed() {
+    let mut r = rig_with_history(History::Registered);
+    let valid = receipt_boot_record(&mut r);
+    let (old_action, old_participant) = r.handles.service.retained[0].clone();
+    let other_participant = crate::DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new("sim").unwrap(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("owner_participant").unwrap(),
+                DefinitionId::new(PARTICIPANT).unwrap(),
+                2,
+                json!({"fixture":"different"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let other_action = crate::DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new("sim").unwrap(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("action").unwrap(),
+                DefinitionId::new(ACTION).unwrap(),
+                2,
+                json!({"protocol":"different"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    for case in 0..4 {
+        let mut record = valid.clone();
+        match case {
+            0 => record.value["value"]["participant"] = json!(old_participant),
+            1 => record.value["value"]["action"] = json!(old_action),
+            2 => record.value["value"]["participant"] = json!(other_participant),
+            _ => record.value["value"]["action"] = json!(other_action),
+        }
+        let mut fresh = rig_with_history(History::Registered);
+        let hydration = fresh.engine.hydrate_action_state(vec![record]);
+        if case == 2 {
+            hydration.unwrap();
+            assert!(
+                fresh
+                    .engine
+                    .all_modules_loaded(
+                        &mut crate::Outbox::new(),
+                        &mut crate::engine::Effects::new()
+                    )
+                    .is_err()
+            );
+        } else {
+            assert!(
+                hydration.is_err(),
+                "crossed or inexact definition case {case}"
+            );
+        }
+    }
+    // Even an empty store must not accept configured history that was never
+    // registered by the actual owner composition.
+    let mut missing = rig_with_history(History::Missing);
+    assert!(
+        missing
+            .engine
+            .all_modules_loaded(
+                &mut crate::Outbox::new(),
+                &mut crate::engine::Effects::new()
+            )
+            .is_err()
+    );
 }
 
 #[test]

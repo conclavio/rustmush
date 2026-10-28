@@ -1,10 +1,11 @@
-//! Closed, durable structural transitions (DT.2b2a).
+//! Closed structural transitions with same-commit personnel crossings (DT.2b2b.1).
 //!
 //! This is an internal preparation seam, not a new movement command. It accepts
 //! actual transition requests, never caller-built `Plan`s or object postimages.
 //! Existing synchronous movement callers are deliberately not redirected here.
-//! Receipts establish only the paired structural change: they are not personnel
-//! embarkation intervals, last-port proofs, mission admission, or unit authority.
+//! Version two pairs structural receipts with bounded crossing captures at the
+//! actual preparation's world-IC stamp. These are not personnel embarkation
+//! intervals, last-port proofs, mission admission, or unit authority.
 //! Walking, raw movement/create/destroy, custody, journey and boot repair paths
 //! must be migrated or refused before any personnel history is authoritative.
 //! CarrierMove, Quarantine and Retire require their journey/destruction/domain
@@ -26,12 +27,12 @@ use mush_core::physical_transition::{
 };
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionPresentation, ActionProvider, ActionTxn,
-    AuthoritativeActionOutput, AuthoritativeKey, BehaviorId, CanonicalHash, CanonicalId, Ctx,
-    DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef, Engine,
-    Flags, IdempotencyKeyText, LegalActionQuery, ModError, ObjId, ObjKind, OwnerId, PerceivedRef,
-    PrepareCtx, PreparedLedgerAppend, PrincipalId, ProjectedParameter, ProjectedParameterKind,
-    ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, Registrar, ReplayWrite,
-    RevisionSet, RulesValue, SubjectKey, World,
+    AuthoritativeActionOutput, AuthoritativeKey, BehaviorId, CanonicalHash, CanonicalId, ClockRef,
+    ClockStamp, Ctx, DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind,
+    DefinitionRef, Engine, Flags, IdempotencyKeyText, LegalActionQuery, ModError, ObjId, ObjKind,
+    OwnerId, PerceivedRef, PrepareCtx, PreparedLedgerAppend, PrincipalId, ProjectedParameter,
+    ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
+    Registrar, ReplayWrite, RevisionSet, RulesValue, SubjectKey, World,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -154,6 +155,14 @@ struct Intent {
     transition: Transition,
     before: DefinitionDigest,
 }
+/// Only the real provider constructs this request after reading current Sim
+/// truth. The participant independently derives and verifies every capture.
+#[derive(Clone, Debug, PartialEq)]
+struct PreparedCrossingIntent {
+    intent: Intent,
+    prepared_at: ClockStamp,
+    capture_digest: DefinitionDigest,
+}
 impl Intent {
     fn current(&self, now: i64) -> bool {
         now.checked_sub(self.at)
@@ -166,20 +175,33 @@ struct PhysicalPending(BTreeMap<ObjId, Intent>);
 struct Handles {
     action: DefinitionRef,
     service: CorePhysicalTransitions<SpatialParticipant>,
+    personnel: crate::personnel::PersonnelCrossings,
 }
 
-pub(crate) fn outcome_descriptor() -> Result<DefinitionDescriptor, ModError> {
+/// Retained immutable v1 identity; only v2 remains an authoring default.
+pub(crate) fn outcome_descriptor_v1() -> Result<DefinitionDescriptor, ModError> {
     DefinitionDescriptor::new(
         DefinitionKind::new("outcome").map_err(|e| ModError::msg(e.to_string()))?,
         DefinitionId::new(OUTCOME).map_err(|e| ModError::msg(e.to_string()))?,
         1,
         json!({"fields":["root","structural_digest"],"personnel_eligibility":false}),
     )
+    .map_err(|e| ModError::msg(e.to_string()))
+}
+
+pub(crate) fn outcome_descriptor() -> Result<DefinitionDescriptor, ModError> {
+    DefinitionDescriptor::new(
+        DefinitionKind::new("outcome").map_err(|e| ModError::msg(e.to_string()))?,
+        DefinitionId::new(OUTCOME).map_err(|e| ModError::msg(e.to_string()))?,
+        2,
+        json!({"fields":["root","structural_digest"],"capture":"sim.personnel_crossings",
+            "personnel_eligibility":false}),
+    )
     .map(|d| d.as_current())
     .map_err(|e| ModError::msg(e.to_string()))
 }
 
-pub(crate) fn participant_descriptor() -> Result<DefinitionDescriptor, ModError> {
+pub(crate) fn participant_descriptor_v1() -> Result<DefinitionDescriptor, ModError> {
     DefinitionDescriptor::new(
         DefinitionKind::new("owner_participant").map_err(|e| ModError::msg(e.to_string()))?,
         DefinitionId::new(mush_core::physical_transition::PARTICIPANT)
@@ -192,9 +214,24 @@ pub(crate) fn participant_descriptor() -> Result<DefinitionDescriptor, ModError>
     .map_err(|e| ModError::msg(e.to_string()))
 }
 
+pub(crate) fn participant_descriptor() -> Result<DefinitionDescriptor, ModError> {
+    DefinitionDescriptor::new(
+        DefinitionKind::new("owner_participant").map_err(|e| ModError::msg(e.to_string()))?,
+        DefinitionId::new(mush_core::physical_transition::PARTICIPANT)
+            .map_err(|e| ModError::msg(e.to_string()))?,
+        2,
+        json!({"state":"SpatialState","documents":["placement","space"],
+            "ledger":RECOVERY_LOG,"operations":["place","unplace","space","members"],
+            "protocol":"sim_structural_personnel_capture_v2","capture":"sim.personnel_crossings",
+            "authority":"sim_admin","personnel_eligibility":false}),
+    )
+    .map_err(|e| ModError::msg(e.to_string()))
+}
+
 pub(crate) fn register(reg: &mut Registrar<'_>, ic_custody: bool) -> Result<(), ModError> {
     let descriptor = participant_descriptor()?;
-    let expected = descriptor.clone();
+    let historical = participant_descriptor_v1()?;
+    let expected = [descriptor.clone(), historical.clone()];
     // A configured IC custody owner installs the one exact participant
     // validator for both descriptors, retaining its composition references.
     if !ic_custody {
@@ -202,12 +239,13 @@ pub(crate) fn register(reg: &mut Registrar<'_>, ic_custody: bool) -> Result<(), 
             DefinitionKind::new("owner_participant").map_err(|e| ModError::msg(e.to_string()))?,
             move |ctx: &mush_core::DefinitionValidationContext<'_>| {
                 let definition = ctx.definition();
-                if &definition.reference().key().id == expected.id()
-                    && definition.reference().version() == expected.version()
-                    && definition.payload() == expected.payload()
-                    && definition.references() == expected.references()
-                    && definition.is_current() == expected.is_current()
-                {
+                if expected.iter().any(|expected| {
+                    &definition.reference().key().id == expected.id()
+                        && definition.reference().version() == expected.version()
+                        && definition.payload() == expected.payload()
+                        && definition.references() == expected.references()
+                        && definition.is_current() == expected.is_current()
+                }) {
                     Ok(())
                 } else {
                     Err("unknown Sim structural participant definition".into())
@@ -215,6 +253,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>, ic_custody: bool) -> Result<(), 
             },
         )?;
     }
+    let historical_participant = reg.definition(historical)?;
+    let historical_action =
+        reg.definition(mush_core::physical_transition::action_descriptor_v1()?)?;
+    reg.definition(outcome_descriptor_v1()?)?;
     let participant = reg.definition(descriptor)?;
     let action = reg.definition(mush_core::physical_transition::action_descriptor()?)?;
     let outcome = reg.definition(outcome_descriptor()?)?;
@@ -223,17 +265,27 @@ pub(crate) fn register(reg: &mut Registrar<'_>, ic_custody: bool) -> Result<(), 
         BTreeSet::from([action.clone()]),
         SpatialParticipant,
     )?;
-    let service =
-        CorePhysicalTransitions::<SpatialParticipant>::register(reg, action.clone(), participant)?;
+    let service = CorePhysicalTransitions::<SpatialParticipant>::register_with_history(
+        reg,
+        action.clone(),
+        participant,
+        vec![(historical_action, historical_participant)],
+    )?;
+    let personnel = crate::personnel::PersonnelCrossings::register(reg)?;
     reg.action_provider(
         action.clone(),
         Provider {
             action: action.clone(),
             outcome,
             service: service.clone(),
+            personnel: personnel.clone(),
         },
     )?;
-    reg.state(Handles { action, service });
+    reg.state(Handles {
+        action,
+        service,
+        personnel,
+    });
     reg.state(PhysicalPending::default());
     Ok(())
 }
@@ -246,6 +298,10 @@ pub(crate) fn loaded(ctx: &mush_core::ModuleCtx<'_>) -> Result<(), ModError> {
     handles
         .service
         .audit(ctx)
+        .map_err(|e| ModError::msg(e.to_string()))?;
+    handles
+        .personnel
+        .audit(ctx, &handles.service)
         .map_err(|e| ModError::msg(e.to_string()))
 }
 
@@ -402,6 +458,55 @@ fn dependencies(
     Ok((root, nodes, domains))
 }
 
+/// Apply the same lifecycle and control exclusions to every actual affected
+/// object, including people and hulls discovered only by physical capture.
+fn check_affected_nodes(
+    state: &SpatialState,
+    world: &World,
+    nodes: &BTreeSet<ObjId>,
+) -> Result<(), ParticipantError> {
+    if nodes.len() > MAX_DEPENDENCIES {
+        return Err(refused("structural dependency limit exceeded"));
+    }
+    let focus = world.module_state::<crate::focus::FocusState>();
+    let journeys = world.module_state::<crate::journey::JourneyBook>();
+    if journeys.is_some_and(|book| !book.held.is_empty()) {
+        return Err(refused("held journey facts require repair"));
+    }
+    for &node in nodes {
+        if world
+            .get(node)
+            .is_none_or(|object| object.flags.contains(Flags::GOING))
+        {
+            return Err(refused("affected object is unavailable"));
+        }
+        if state.held_placements.contains_key(&node) || state.is_quarantined(node) {
+            return Err(refused("affected placement requires recovery or repair"));
+        }
+        crate::deployed::refuse_if_custodied(world, node)
+            .map_err(|_| refused("affected object is held by simulation authority"))?;
+        // The existing placement/unplacement contract advances cgen for any
+        // station or assignment host, including empty records. Until that
+        // control owner joins this commit, no such host is admitted here.
+        if state.stations.contains_key(&node)
+            || state.assignments.contains_key(&node)
+            || state.held_assignments.contains_key(&node)
+            || focus.is_some_and(|f| f.has_focus_on(node) || f.focus_of_actor(node).is_some())
+        {
+            return Err(refused(
+                "affected control requires an atomic control refresh",
+            ));
+        }
+        if journeys.is_some_and(|book| {
+            crate::journey::under_way_root_of(state, book, node).is_some()
+                || (book.get(node).is_some() && !state.is_placed(node))
+        }) {
+            return Err(refused("affected journey requires its lifecycle owner"));
+        }
+    }
+    Ok(())
+}
+
 fn current_facts(
     state: &SpatialState,
     world: &World,
@@ -440,44 +545,12 @@ fn current_facts(
         _ => {}
     }
     let (root, nodes, domains) = dependencies(state, world, transition)?;
-    let focus = world.module_state::<crate::focus::FocusState>();
+    check_affected_nodes(state, world, &nodes)?;
     let journeys = world.module_state::<crate::journey::JourneyBook>();
-    if journeys.is_some_and(|book| !book.held.is_empty()) {
-        return Err(refused("held journey facts require repair"));
-    }
     let mut records = Vec::with_capacity(nodes.len());
     let mut relations = 0usize;
     let mut remaining_bytes = MAX_FACT_BYTES;
     for node in nodes {
-        if world
-            .get(node)
-            .is_none_or(|object| object.flags.contains(Flags::GOING))
-        {
-            return Err(refused("affected object is unavailable"));
-        }
-        if state.held_placements.contains_key(&node) || state.is_quarantined(node) {
-            return Err(refused("affected placement requires recovery or repair"));
-        }
-        crate::deployed::refuse_if_custodied(world, node)
-            .map_err(|_| refused("affected object is held by simulation authority"))?;
-        // The existing placement/unplacement contract advances cgen for any
-        // station or assignment host, including empty records. Until that
-        // control owner joins this commit, no such host is admitted here.
-        if state.stations.contains_key(&node)
-            || state.assignments.contains_key(&node)
-            || state.held_assignments.contains_key(&node)
-            || focus.is_some_and(|f| f.has_focus_on(node) || f.focus_of_actor(node).is_some())
-        {
-            return Err(refused(
-                "affected control requires an atomic control refresh",
-            ));
-        }
-        if journeys.is_some_and(|book| {
-            crate::journey::under_way_root_of(state, book, node).is_some()
-                || (book.get(node).is_some() && !state.is_placed(node))
-        }) {
-            return Err(refused("affected journey requires its lifecycle owner"));
-        }
         let presentation = state.derived.presentation_of.get(&node);
         relations = relations.saturating_add(state.children_of(node).len());
         if relations > MAX_DEPENDENCIES {
@@ -559,6 +632,103 @@ fn evaluate(
     Ok((root, plan, digest))
 }
 
+struct CapturedPlan {
+    root: ObjId,
+    plan: Plan,
+    plan_digest: DefinitionDigest,
+    capture: crate::personnel_capture::CaptureFacts,
+    digest: DefinitionDigest,
+    nodes: BTreeSet<ObjId>,
+    domains: BTreeSet<DomainId>,
+}
+
+/// Preparation stamps are exact live truth; later rechecks retain that stamp
+/// and permit only forward progress within its original world-IC generation.
+fn check_capture_clock(
+    world: &World,
+    prepared_at: &ClockStamp,
+    preparing: bool,
+) -> Result<(), ParticipantError> {
+    let now = world.world_ic_now();
+    if !matches!(prepared_at.clock, ClockRef::WorldIc { generation } if generation != 0)
+        || now.clock != prepared_at.clock
+        || now.at < prepared_at.at
+        || (preparing && now.at != prepared_at.at)
+    {
+        return Err(refused("personnel capture clock changed"));
+    }
+    Ok(())
+}
+
+fn capture_plan(
+    state: &SpatialState,
+    world: &World,
+    actor: ObjId,
+    intent: &Intent,
+    prepared_at: &ClockStamp,
+) -> Result<CapturedPlan, ParticipantError> {
+    let (root, plan, plan_digest) = evaluate(state, world, actor, intent)?;
+    let (_, mut nodes, mut domains) = dependencies(state, world, &intent.transition)?;
+    let capture = crate::personnel_capture::derive(
+        state,
+        world,
+        &intent.transition,
+        &plan,
+        prepared_at,
+        &nodes,
+    )?;
+    for node in &capture.read_dependencies {
+        add(&mut nodes, *node)?;
+    }
+    // Capturing dependencies is not admission: a physically nested hull or
+    // unplaced cabin occupant may be absent from the structural subtree.
+    check_affected_nodes(state, world, &nodes)?;
+    // Capture may visit an actual walker's enclosing space even when the
+    // walker has no structural placement. Fence those canonical rows at bind
+    // too, including any domain record an added ancestry node consulted.
+    for node in &nodes {
+        if let SpatialParent::Direct { domain, .. } = state.parent_of(*node) {
+            domains.insert(domain);
+        }
+        if let Some(SpaceAnchor::FixedDomain { domain, .. }) =
+            state.spaces.get(node).map(|space| &space.anchor)
+        {
+            domains.insert(*domain);
+        }
+        if let Some(domain) = state.derived.domain_by_host.get(node) {
+            domains.insert(*domain);
+        }
+        if domains.len() > MAX_DEPENDENCIES {
+            return Err(refused("structural domain dependency limit exceeded"));
+        }
+    }
+    let digest = crate::personnel::combined_digest(&plan_digest, &capture.capture_digest)?;
+    Ok(CapturedPlan {
+        root,
+        plan,
+        plan_digest,
+        capture,
+        digest,
+        nodes,
+        domains,
+    })
+}
+
+fn evaluate_capture(
+    state: &SpatialState,
+    world: &World,
+    actor: ObjId,
+    request: &PreparedCrossingIntent,
+    preparing: bool,
+) -> Result<CapturedPlan, ParticipantError> {
+    check_capture_clock(world, &request.prepared_at, preparing)?;
+    let captured = capture_plan(state, world, actor, &request.intent, &request.prepared_at)?;
+    if captured.capture.capture_digest != request.capture_digest {
+        return Err(refused("personnel capture facts changed"));
+    }
+    Ok(captured)
+}
+
 fn write(key: String, value: &impl Serialize) -> Result<ReplayWrite, ParticipantError> {
     Ok(ReplayWrite::ModuleJsonSet {
         namespace: owner()?,
@@ -569,7 +739,7 @@ fn write(key: String, value: &impl Serialize) -> Result<ReplayWrite, Participant
 
 struct SpatialParticipant;
 struct Patch {
-    intent: Intent,
+    intent: PreparedCrossingIntent,
     digest: DefinitionDigest,
     plan: Plan,
     audit: PreparedLedgerAppend,
@@ -651,7 +821,7 @@ impl BoundParticipant for Bound<'_> {
 }
 impl OwnerParticipant for SpatialParticipant {
     type State = SpatialState;
-    type Request = Intent;
+    type Request = PreparedCrossingIntent;
     type Output = PhysicalTransitionDraft;
     type Patch = Patch;
     type Bound<'a> = Bound<'a>;
@@ -660,11 +830,18 @@ impl OwnerParticipant for SpatialParticipant {
         &self,
         state: &SpatialState,
         ctx: &OwnerPrepareContext<'_>,
-        intent: Intent,
+        intent: PreparedCrossingIntent,
     ) -> Result<OwnerPreparation<Self::Output, Patch>, ParticipantError> {
         let actor = ctx.invocation().actor();
-        require_pending(ctx.world(), actor, &intent)?;
-        let (root, plan, digest) = evaluate(state, ctx.world(), actor, &intent)?;
+        require_pending(ctx.world(), actor, &intent.intent)?;
+        let CapturedPlan {
+            root,
+            plan,
+            digest,
+            nodes,
+            domains,
+            ..
+        } = evaluate_capture(state, ctx.world(), actor, &intent, true)?;
         let moves = plan
             .projections
             .iter()
@@ -677,7 +854,6 @@ impl OwnerParticipant for SpatialParticipant {
                 })
             })
             .collect();
-        let (_, nodes, domains) = dependencies(state, ctx.world(), &intent.transition)?;
         let output = PhysicalTransitionDraft::new(ctx, root, digest, moves, nodes.clone())?;
         let mut writes = Vec::new();
         for placement in &plan.set_placements {
@@ -722,9 +898,14 @@ impl OwnerParticipant for SpatialParticipant {
         ctx: &OwnerPrepareContext<'_>,
         patch: &Patch,
     ) -> Result<(), ParticipantError> {
-        require_pending(ctx.world(), ctx.invocation().actor(), &patch.intent)?;
-        let (_, plan, digest) =
-            evaluate(state, ctx.world(), ctx.invocation().actor(), &patch.intent)?;
+        require_pending(ctx.world(), ctx.invocation().actor(), &patch.intent.intent)?;
+        let CapturedPlan { plan, digest, .. } = evaluate_capture(
+            state,
+            ctx.world(),
+            ctx.invocation().actor(),
+            &patch.intent,
+            false,
+        )?;
         if digest != patch.digest {
             return Err(refused("structural plan changed"));
         }
@@ -823,6 +1004,7 @@ struct Provider {
     action: DefinitionRef,
     outcome: DefinitionRef,
     service: CorePhysicalTransitions<SpatialParticipant>,
+    personnel: crate::personnel::PersonnelCrossings,
 }
 impl Provider {
     fn input(&self, invocation: &ActionInvocation) -> Result<Intent, ActionError> {
@@ -928,9 +1110,34 @@ impl ActionProvider for Provider {
         context: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let input = self.input(invocation)?;
+        let captured = {
+            let world = context
+                .world()
+                .map_err(|_| error("structural world unavailable"))?;
+            let state = crate::state(world).ok_or_else(|| error("spatial state unavailable"))?;
+            capture_plan(
+                state,
+                world,
+                invocation.actor(),
+                &input,
+                &world.world_ic_now(),
+            )
+            .map_err(|_| error("personnel capture unavailable"))?
+        };
+        let request = PreparedCrossingIntent {
+            intent: input,
+            prepared_at: captured.capture.prepared_at.clone(),
+            capture_digest: captured.capture.capture_digest,
+        };
         let receipt = context
-            .prepare_physical_transition(&self.service, txn, input)
+            .prepare_physical_transition(&self.service, txn, request)
             .map_err(|_| error("structural transition refused"))?;
+        if receipt.structural_digest() != &captured.digest {
+            return Err(error("personnel capture receipt differs"));
+        }
+        self.personnel
+            .append(txn, &receipt, &captured.capture, &captured.plan_digest)
+            .map_err(|_| error("personnel capture could not be recorded"))?;
         let outcome = RulesValue::new(
             self.outcome.clone(),
             json!({
