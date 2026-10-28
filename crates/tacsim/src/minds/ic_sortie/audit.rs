@@ -50,29 +50,30 @@ pub(super) fn claims(
     }
     Ok(())
 }
-fn verify(row: &Record, claim: &IcClaimHistory) -> Result<(), ModError> {
-    row.validate().map_err(bad)?;
-    let open = &row.open;
-    if open.action != *claim.action()
-        || open.protocol.manifest != *claim.manifest()
-        || open.protocol.participants != claim.participants()
-        || open.dispatcher != claim.dispatcher()
-        || open.admission_digest != claim.admission_digest().map_err(bad)?
-        || open.at_ic != *claim.opened_at_ic()
-        || open.execution.seal.unit != claim.unit()
-        || open.execution.seal.sortie.as_match_packed() != Some(claim.sortie())
-        || open.execution.digest() != claim.seal_digest()
-    {
-        return Err(bad("open"));
-    }
-    let certificate = open
-        .execution
-        .seal
-        .requested
-        .origin
-        .certificate()
-        .ok_or_else(|| bad("certificate"))?;
+/// **An uncertified seal's audit** (doc 17h cut M8b G4): admitted only on an ungoverned core,
+/// and only for the claim's own source digest.
+pub(super) fn unfiled_matches(
+    seal: &crate::arena::mind::MindSeal,
+    source: &mush_core::DefinitionDigest,
+) -> bool {
+    seal.lifts_floor() && seal.requested.source_sha256 == *source.as_bytes()
+}
+
+/// **The sealed identity against the claim** (doc 17h cut M8b G4): a filed certificate
+/// matches the claim's revision and rating exactly; a seal with no certificate — an unfiled
+/// personal draft, which IC execution admits only on an ungoverned core (D-UM-41, D-UM-42) —
+/// is held to the claim's source digest alone, and refused on a governed seal.
+fn verify_identity(
+    seal: &crate::arena::mind::MindSeal,
+    claim: &IcClaimHistory,
+) -> Result<(), ModError> {
     let identity = claim.revision();
+    let Some(certificate) = seal.requested.origin.certificate() else {
+        if !unfiled_matches(seal, &identity.source()) {
+            return Err(bad("certificate"));
+        }
+        return Ok(());
+    };
     let revision = identity.revision();
     let rating = claim.rating();
     if certificate.revision_character != revision.key.character
@@ -88,6 +89,24 @@ fn verify(row: &Record, claim: &IcClaimHistory) -> Result<(), ModError> {
     {
         return Err(bad("immutable certificate"));
     }
+    Ok(())
+}
+fn verify(row: &Record, claim: &IcClaimHistory) -> Result<(), ModError> {
+    row.validate().map_err(bad)?;
+    let open = &row.open;
+    if open.action != *claim.action()
+        || open.protocol.manifest != *claim.manifest()
+        || open.protocol.participants != claim.participants()
+        || open.dispatcher != claim.dispatcher()
+        || open.admission_digest != claim.admission_digest().map_err(bad)?
+        || open.at_ic != *claim.opened_at_ic()
+        || open.execution.seal.unit != claim.unit()
+        || open.execution.seal.sortie.as_match_packed() != Some(claim.sortie())
+        || open.execution.digest() != claim.seal_digest()
+    {
+        return Err(bad("open"));
+    }
+    verify_identity(&open.execution.seal, claim)?;
     let core = crate::arena::core::read_core(&open.unit);
     let (component, class, governed) = core
         .map_or((None, crate::arena::core::CoreClass::Zero, true), |c| {

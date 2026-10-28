@@ -146,6 +146,15 @@ impl FacilityRecord {
         if capacity_revision == 0 || policy_revision == 0 {
             return Err(IndustryRecordError::ZeroRevision);
         }
+        // Doc 17h cut M8b C2 (doc 17 §10, D-UM-42): "a facility without a
+        // `core_integration` charter" is one holding `core_ungovern` and not
+        // `core_refit`; one declaring both is refused, at open and at decode.
+        if ["core_refit", "core_ungovern"]
+            .iter()
+            .all(|word| capabilities.iter().any(|c| c.as_str() == *word))
+        {
+            return Err(IndustryRecordError::FacilityChartedAndUngoverning);
+        }
         Ok(Self {
             object,
             owner,
@@ -392,5 +401,44 @@ impl AuthorityGuardValidator for CapacityGuardValidator {
             .is_some_and(|record| {
                 record.state() == ReservationState::Held && record.revision() == *revision
             }))
+    }
+}
+
+#[cfg(test)]
+mod m8b_tests {
+    use super::*;
+
+    /// **Doc 17h cut M8b G11**: a facility holding both `core_refit` and `core_ungovern` is
+    /// refused at construction and at decode; either alone stands.
+    #[test]
+    fn m8b_a_facility_declaring_both_recipes_is_refused_at_decode() {
+        let words = |list: &[&str]| -> BTreeSet<CanonicalId> {
+            list.iter()
+                .map(|w| CanonicalId::new(*w).expect("a word"))
+                .collect()
+        };
+        let owner = PrincipalId::Object(ObjId(1));
+        for alone in ["core_refit", "core_ungovern"] {
+            assert!(FacilityRecord::new(ObjId(7), owner.clone(), words(&[alone]), 2).is_ok());
+        }
+        assert_eq!(
+            FacilityRecord::new(
+                ObjId(7),
+                owner.clone(),
+                words(&["core_refit", "core_ungovern"]),
+                2
+            ),
+            Err(IndustryRecordError::FacilityChartedAndUngoverning)
+        );
+        let one =
+            FacilityRecord::new(ObjId(7), owner, words(&["core_refit"]), 2).expect("one recipe");
+        let mut value = serde_json::to_value(&one).expect("encodes");
+        let text = value.to_string();
+        assert!(text.contains("core_refit"));
+        value = serde_json::from_str(
+            &text.replace("\"core_refit\"", "\"core_refit\",\"core_ungovern\""),
+        )
+        .expect("json");
+        assert!(serde_json::from_value::<FacilityRecord>(value).is_err());
     }
 }

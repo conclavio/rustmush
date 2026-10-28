@@ -157,6 +157,9 @@ impl Rules {
             factory: f.payment.factory,
             recipe: self.recipe_ref()?,
             fitted_units,
+            families: Vec::new(),
+            ungovern: None,
+            coreless: Vec::new(),
         };
         let action = payment.action_ref(refit::INSTALL)?;
         let component = ComponentId::new("core")?;

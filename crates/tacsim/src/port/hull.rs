@@ -223,8 +223,15 @@ pub(crate) fn unit_record_claims(w: &World, hull: ObjId) -> bool {
 /// when no live record holds it).
 #[must_use]
 pub(crate) fn live_unit_id(w: &World, hull: ObjId) -> Option<CanonicalId> {
-    mush_tactics::module::unit_of(w, hull)
-        .and_then(|unit| CanonicalId::new(unit.schema().key().id.as_str()).ok())
+    mush_tactics::module::unit_of(w, hull).and_then(|unit| {
+        // Doc 17h cut M8b G1: a fitted root reads as its base chassis — it differs only in
+        // the core mount, and the store's surface specs (interior, logistics, rates) are the
+        // fielded catalog's, which never carries the fitted roots.
+        CanonicalId::new(crate::definitions::core_replacement::surface_chassis(
+            unit.schema().key().id.as_str(),
+        ))
+        .ok()
+    })
 }
 
 /// **One fielded unit's interior and logistics**, both present (doc 20 cut

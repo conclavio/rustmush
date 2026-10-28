@@ -31,7 +31,7 @@ use mush_core::{DefinitionDescriptor, DefinitionRef, ModError, Registrar};
 pub use mush_roll::commerce::registry_inspection::{
     HullClass, InspectionFacts, InspectionRecord, InspectionWriter, Provenance,
     REGISTRY_INSPECTION_CAPABILITY, RegisteredInspectionWriter, RegistryInspectionPolicy,
-    SealCheck,
+    SealCheck, UngovernedNote,
 };
 
 /// The inspection action's id (the Roll's policy's).

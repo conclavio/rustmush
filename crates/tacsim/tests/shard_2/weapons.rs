@@ -672,6 +672,7 @@ fn an_accepted_shot_sets_the_cycle_spends_the_burst_and_schedules_one_impact() {
             rounds: 1,
             by: None,
             slot: None,
+            unlawful: false,
         }
     );
     assert!(entry.draws.is_empty(), "cut W.1 draws nothing");

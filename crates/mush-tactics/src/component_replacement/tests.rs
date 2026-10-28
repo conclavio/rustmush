@@ -788,3 +788,32 @@ fn local_bind_refusal_after_custody_cannot_partially_publish() -> Result {
     check_eq!(stored(&f), before);
     Ok(())
 }
+
+/// **Doc 17h cut M8b G12**: the frozen root set's boundary — sixteen roots register, a
+/// seventeenth is refused.
+#[test]
+fn m8b_sixteen_replacement_roots_register_and_seventeen_refuse() -> Result {
+    let mint = |kind: &str, id: String| -> Result<DefinitionRef> {
+        Ok(DefinitionRegistryBuilder::new().register(
+            OwnerId::new("tacsim")?,
+            DefinitionDescriptor::new(
+                DefinitionKind::new(kind)?,
+                DefinitionId::new(&id)?,
+                1,
+                json!({"fixture": id}),
+            )?,
+        )?)
+    };
+    let action = mint("action", "install_fixture".into())?;
+    let component = ComponentId::new("core")?;
+    let roots = |n: usize| -> Result<BTreeSet<DefinitionRef>> {
+        (0..n).map(|i| mint("unit", format!("root_{i}"))).collect()
+    };
+    if participant_descriptor(&action, &component, &roots(MAX_REPLACEMENT_ROOTS)?).is_err() {
+        return Err("sixteen roots register".into());
+    }
+    if participant_descriptor(&action, &component, &roots(MAX_REPLACEMENT_ROOTS + 1)?).is_ok() {
+        return Err("a seventeenth is refused".into());
+    }
+    Ok(())
+}

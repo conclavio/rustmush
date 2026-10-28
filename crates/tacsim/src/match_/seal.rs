@@ -556,6 +556,16 @@ pub(crate) fn seal_with_policy(
         None => (None, CoreClass::Zero, true),
     };
     let class = terms.rated.min(core_class).min(terms.class_cap);
+    // Doc 17h cut M8b C4 (D-UM-17's first point; D-UM-42): an ungoverned core alone
+    // skips the floor check at the seal — its cards are held to no floor, and what that
+    // admitted is the seal's lines' `admissions` field (`MindSeal::admissions`), never a
+    // refusal and never a notice. The seal keeps the captured floor, so a governed seal's
+    // bytes are what they were.
+    let floor = if core.is_some() && !governed {
+        0
+    } else {
+        terms.odds_floor_permille
+    };
     if let Some(certificate) = terms.identity.origin.certificate() {
         let definition = terms.authored.ok_or_else(|| {
             SealError::Schema(crate::arena::schema::SchemaError {
@@ -593,7 +603,7 @@ pub(crate) fn seal_with_policy(
             Some(SmolStr::new_static(NO_CORE_FALLBACK)),
         )
     } else {
-        let cards = prepare_policy_cards(terms, class, weapons, &channels)?;
+        let cards = prepare_policy_cards(terms, class, weapons, &channels, floor)?;
         (
             (*terms.identity).clone(),
             terms.engine_for_minds,
@@ -636,13 +646,22 @@ pub fn prepare_cards(
     weapons: &[crate::arena::rules::RuleWeapon],
     channels: &[Channel],
 ) -> Result<SealedCards, SealError> {
-    prepare_policy_cards(&SealPolicy::from(terms), class, weapons, channels)
+    prepare_policy_cards(
+        &SealPolicy::from(terms),
+        class,
+        weapons,
+        channels,
+        terms.odds_floor_permille,
+    )
 }
+/// `floor` is the floor the cards are held to: the captured Compact floor, or none on an
+/// ungoverned core (doc 17h cut M8b C4).
 fn prepare_policy_cards(
     terms: &SealPolicy<'_>,
     class: CoreClass,
     weapons: &[crate::arena::rules::RuleWeapon],
     channels: &[Channel],
+    floor: u32,
 ) -> Result<SealedCards, SealError> {
     terms.identity.validate()?;
     let (definition, names) = if let Some(definition) = terms.authored {
@@ -670,9 +689,7 @@ fn prepare_policy_cards(
         let selected = sealed_set(terms)?;
         for (name, card) in &selected {
             card.pair(name).map_err(SealError::Card)?;
-            if channels.contains(&Channel::Fire)
-                && !odds_are_lawful(card, terms.odds_floor_permille)
-            {
+            if channels.contains(&Channel::Fire) && !odds_are_lawful(card, floor) {
                 return Err(SealError::Unlawful {
                     floor: terms.odds_floor_permille,
                 });
@@ -691,7 +708,7 @@ fn prepare_policy_cards(
         &terms.classes.row(class),
         weapons,
         channels,
-        terms.odds_floor_permille,
+        floor,
     )?)
 }
 

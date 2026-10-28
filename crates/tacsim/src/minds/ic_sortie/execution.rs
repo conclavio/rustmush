@@ -146,7 +146,12 @@ impl Execution {
             || self.source.contains('\0')
             || self.seal.sortie.as_match_packed().is_none_or(|n| n == 0)
             || self.seal.requested.source_sha256 != digest
-            || self.seal.requested.origin.certificate().is_none()
+            // Doc 17h cut M8b C4 (D-UM-41, D-UM-42): a governed core refuses an unfiled
+            // digest; an ungoverned one admits the personal draft (sealed with the draft's own
+            // authored definition and its source digest, no certificate), and the seal's lines
+            // record it (`Admission::Unfiled`); the audit holds it to the same rule
+            // (`audit::unfiled_matches`).
+            || (self.seal.requested.origin.certificate().is_none() && !self.seal.lifts_floor())
             || (self.seal.engine == SealEngine::Scripted && self.seal.source_sha256 != digest)
         {
             return Err(bad("immutable source"));

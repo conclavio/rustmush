@@ -2249,6 +2249,10 @@ pub enum IndustryRecordError {
         /// The cap.
         max: usize,
     },
+    /// A facility declaring both the chartered fitting and the ungoverning one
+    /// (doc 17h cut M8b C2): an ungoverning shop is one WITHOUT the charter.
+    #[error("a facility runs core_refit or core_ungovern, never both")]
+    FacilityChartedAndUngoverning,
     /// A work order input line count past the cap (E7c4 B3).
     #[error("a work order names at most {max} material inputs")]
     WorkOrderInputs {

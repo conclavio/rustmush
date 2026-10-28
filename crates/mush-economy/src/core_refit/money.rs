@@ -411,7 +411,7 @@ impl AuthEval for RefitAuth<'_> {
             return false;
         }
         if account.id == self.intent.subject.payer {
-            return delta.checked_neg() == Some(self.intent.price())
+            return delta.checked_neg() == self.intent.price().ok()
                 && account.owner == PrincipalId::Object(self.intent.subject.requester)
                 && (self.phase == Transition::Install
                     || self.world.authorize(
@@ -420,9 +420,14 @@ impl AuthEval for RefitAuth<'_> {
                         delta,
                     ));
         }
+        // Doc 17h cut M8b G3: the provider is credited the subject's recipe's own fee
+        // (`core_ungovern` charges `ungovern_minor`), never a fixed fitting fee.
         self.phase == Transition::Install
-            && (account.id == self.intent.policy.provider.account
-                && delta.minor() == super::FITTING_MINOR)
+            && self
+                .intent
+                .provider_account()
+                .is_ok_and(|provider| account.id == provider)
+            && self.intent.price().is_ok_and(|price| delta == price)
     }
     fn authorize_hold(&self, actor: &PrincipalId, hold: &Hold, op: &HoldOp) -> bool {
         if actor != &PrincipalId::System(self.intent.policy.issuer.clone())
@@ -432,7 +437,7 @@ impl AuthEval for RefitAuth<'_> {
         }
         match (self.phase, op) {
             (Transition::Install, HoldOp::Capture { hold: id, amount }) => {
-                *id == hold.id && *amount == self.intent.price()
+                *id == hold.id && self.intent.price().is_ok_and(|price| *amount == price)
             }
             (Transition::Cancel, HoldOp::Release { hold: id }) => *id == hold.id,
             _ => false,

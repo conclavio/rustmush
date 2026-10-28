@@ -6,8 +6,8 @@ use mush_economy::{
     AccountId,
     core_integration::CoreClass,
     core_refit::{
-        RefitFundingReceipt, RefitPaymentHistory, RefitPaymentPolicy, RefitSubject,
-        RefitTerminalReceipt, RefitTerminalResult,
+        RefitFundingReceipt, RefitKind, RefitPaymentHistory, RefitPaymentPolicy, RefitSite,
+        RefitSubject, RefitTerminalReceipt, RefitTerminalResult,
     },
 };
 use mush_tactics::unit::replacement::{ComponentState, ReplacementJournal};
@@ -49,6 +49,18 @@ impl SavedComponent {
             &ComponentState::capture(unit, component).map_err(bad)?,
         ))
     }
+    /// The unit's component, or `None` when the unit has no such mount (doc 17h cut M8b G2:
+    /// a coreless base chassis).
+    pub(crate) fn of_unit(
+        unit: &TacticalUnit,
+        component: &ComponentId,
+    ) -> Result<Option<Self>, Error> {
+        if unit.components().any(|(id, _)| id == component) {
+            Self::from_unit(unit, component).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
     fn validate(&self) -> Result<(), Error> {
         // The actual registered Tactics producer validates semantic ranges.
         // This outer shape is bounded before public strict decoder allocation.
@@ -75,7 +87,10 @@ pub(crate) struct ReplacementEvidence {
     pub(crate) component: ComponentId,
     pub(crate) before: DefinitionRef,
     pub(crate) after: DefinitionRef,
-    pub(crate) displaced: SavedComponent,
+    /// `None` for a fitting into a coreless base (doc 17h cut M8b G2); absent then, so every
+    /// replacement's evidence reads and digests as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) displaced: Option<SavedComponent>,
     pub(crate) inserted: SavedComponent,
 }
 impl ReplacementEvidence {
@@ -87,12 +102,14 @@ impl ReplacementEvidence {
             component: j.component.clone(),
             before: j.before.clone(),
             after: j.after.clone(),
-            displaced: SavedComponent::capture(&j.displaced),
+            displaced: j.displaced.as_ref().map(SavedComponent::capture),
             inserted: SavedComponent::capture(&j.inserted),
         }
     }
     pub(crate) fn digest(&self) -> Result<DefinitionDigest, Error> {
-        self.displaced.validate()?;
+        if let Some(displaced) = &self.displaced {
+            displaced.validate()?;
+        }
         self.inserted.validate()?;
         if self.from_revision.checked_add(1) != Some(self.to_revision)
             || self.inserted.installed.asset.is_none()
@@ -120,12 +137,31 @@ pub(crate) struct RefitOffer {
     pub(crate) unit_revision: u64,
     pub(crate) before: DefinitionRef,
     pub(crate) component: ComponentId,
-    pub(crate) displaced: SavedComponent,
+    /// The mount's present component; `None` when the hull is a coreless base (doc 17h cut
+    /// M8b G2), absent on the wire then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) displaced: Option<SavedComponent>,
     pub(crate) observed_ic: ClockStamp,
     pub(crate) observed_utc: i64,
     pub(crate) expires_utc: i64,
+    /// The recipe (doc 17h cut M8b C2); absent for `core_refit`, which has no other
+    /// encoding (a present `core_refit` is refused, G12).
+    #[serde(
+        default,
+        skip_serializing_if = "RefitKind::is_refit",
+        deserialize_with = "mush_economy::core_refit::present_ungovern"
+    )]
+    pub(crate) kind: RefitKind,
 }
 impl RefitOffer {
+    /// The displaced core's asset, if the mount holds one.
+    pub(crate) fn displaced_asset(&self) -> Option<ObjId> {
+        self.displaced.as_ref().and_then(|d| d.installed.asset)
+    }
+    /// The site this offer's recipe runs at.
+    pub(crate) fn site(&self) -> Result<RefitSite<'_>, Error> {
+        self.policy.site(self.kind).map_err(bad)
+    }
     pub(crate) fn class(&self) -> CoreClass {
         match self.recipe.class() {
             crate::core_production::DieClass::I => CoreClass::I,
@@ -136,32 +172,26 @@ impl RefitOffer {
     pub(crate) fn validate(&self) -> Result<(), Error> {
         self.policy.validate().map_err(bad)?;
         self.recipe.validate()?;
-        self.displaced.validate()?;
+        if let Some(displaced) = &self.displaced {
+            displaced.validate()?;
+        }
+        let site = self.site()?;
         if self.format != 1
             || !(1..=MAX_ORDERS).contains(&self.sequence)
             || self.action != self.policy.action_ref(super::OFFER).map_err(bad)?
-            || self.facility.object() != self.policy.factory
+            || self.facility.object() != site.factory
             || self.facility.owner()
-                != &mush_org::PrincipalId::Organization(self.policy.provider.organization)
-            || !self
-                .facility
-                .capabilities()
-                .iter()
-                .any(|c| c.as_str() == "core_refit")
-            || self.recipe.definition() != &self.policy.recipe
-            || !self.policy.fitted_units.contains(&self.before)
+                != &mush_org::PrincipalId::Organization(site.provider.organization)
+            || !super::authority::holds_recipe(&self.facility, self.kind)
+            || self.recipe.definition() != site.recipe
+            || self.recipe.kind() != self.kind
+            || !self.policy.fits(&self.before)
             || self.unit_revision == u64::MAX
             || [self.hull, self.incoming].contains(&self.requester)
             || self.hull == self.incoming
-            || [self.requester, self.hull, self.incoming].contains(&self.policy.factory)
-            || self.displaced.installed.asset.is_some_and(|a| {
-                [
-                    self.requester,
-                    self.hull,
-                    self.incoming,
-                    self.policy.factory,
-                ]
-                .contains(&a)
+            || [self.requester, self.hull, self.incoming].contains(&site.factory)
+            || self.displaced_asset().is_some_and(|a| {
+                [self.requester, self.hull, self.incoming, site.factory].contains(&a)
             })
             || self.observed_utc.checked_add(OFFER_SECONDS) != Some(self.expires_utc)
             || !matches!(self.observed_ic.clock,ClockRef::WorldIc{generation}if generation>0)
@@ -201,7 +231,7 @@ impl AcceptedIntent {
         self.offer.validate()?;
         if self.accepted_at.clock != self.offer.observed_ic.clock
             || self.accepted_at.at < self.offer.observed_ic.at
-            || self.payer == self.offer.policy.provider.account
+            || self.payer == self.offer.site()?.provider.account
             || self.expires_at
                 != mush_inventory::reservation_deadline(&self.accepted_at).map_err(bad)?
         {
@@ -224,12 +254,17 @@ impl AcceptedIntent {
             incoming: o.incoming,
             hull: o.hull,
             unit_revision: o.unit_revision,
-            target: o.policy.target(o.class()).map_err(bad)?.clone(),
+            target: o
+                .policy
+                .target_for(o.kind, &o.before, o.class())
+                .map_err(bad)?
+                .clone(),
             class: o.class(),
-            displaced: o.displaced.installed.asset,
+            displaced: o.displaced_asset(),
             policy: o.policy.digest().map_err(bad)?,
             accepted_at: self.accepted_at.clone(),
             expires_at: self.expires_at.clone(),
+            kind: o.kind,
         };
         s.validate().map_err(bad)?;
         Ok(s)
@@ -353,7 +388,7 @@ impl RefitOrder {
             || core.unit_revision() != o.unit_revision
             || core.incoming() != o.incoming
             || core.source() != o.requester
-            || core.displaced() != o.displaced.installed.asset.map(|a| (a, o.requester))
+            || core.displaced() != o.displaced_asset().map(|a| (a, o.requester))
             || core.at_utc() != t.posted_at_utc()
         {
             return Err(Error::Integrity);
@@ -386,7 +421,7 @@ impl RefitOrder {
             || core.unit_revision() != o.unit_revision
             || core.incoming() != o.incoming
             || core.source() != o.requester
-            || core.displaced() != o.displaced.installed.asset.map(|a| (a, o.requester))
+            || core.displaced() != o.displaced_asset().map(|a| (a, o.requester))
             || core.at_utc() != i.at_utc
             || core.digest().map_err(bad)? != i.core_receipt
         {

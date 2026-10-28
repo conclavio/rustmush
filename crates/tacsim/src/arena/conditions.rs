@@ -1763,7 +1763,6 @@ impl Arena {
         at_ms: i64,
         protected: u8,
     ) -> Result<Option<u8>, Refusal> {
-        let _ = at_ms;
         match arming {
             Arming::Arm(cond) => {
                 let Some(state) = self.unit(unit) else {
@@ -1775,9 +1774,19 @@ impl Arena {
                 if state.weapon(&cond.weapon).is_none() {
                     return Err(Refusal::NoWeapon);
                 }
-                condition_is_lawful(cond, self.odds_floor_permille)?;
+                // Doc 17h cut M8b C4 (D-UM-17's second point, D-UM-42): an
+                // ungoverned core alone skips the floor; its unlawful arming
+                // lands and is journalled (`EventKind::Armed`).
+                let lifted = self.floor_lifted(unit);
+                if !lifted {
+                    condition_is_lawful(cond, self.odds_floor_permille)?;
+                }
                 validate_rule_shape(&Rule::fire_rule(cond.clone(), Vec::new()))?;
-                self.rule_contact_is_lawful(unit, cond)?;
+                if !lifted {
+                    self.rule_contact_is_lawful(unit, cond)?;
+                }
+                let unlawful =
+                    lifted && self.rule_unlawful(unit, &Rule::fire_rule(cond.clone(), Vec::new()));
                 // 17b cut M3.1 (D-UM-35): the hull's own capacity, its core's —
                 // and, since 17b cut M3.4, Class 0's one on a mind's hull
                 // dropped to the ROM (`Arena::arming_capacity`).
@@ -1794,6 +1803,9 @@ impl Arena {
                     armed => armed?,
                 };
                 self.forget_held_said(unit, &[n]);
+                if unlawful {
+                    self.journal_unlawful_arming(unit, &cond.weapon, n, at_ms);
+                }
                 Ok(Some(n))
             }
             Arming::Disarm { weapon } => {
@@ -1819,6 +1831,10 @@ impl Arena {
                 if state.limits.wreck {
                     return Err(Refusal::Wreck);
                 }
+                // Doc 17h cut M8b C4: as `Arm`'s, the floor lifted on an
+                // ungoverned core, the unlawful rows journalled once they land.
+                let lifted = self.floor_lifted(unit);
+                let mut unlawful = Vec::new();
                 for rule in rules {
                     validate_rule_shape(rule)?;
                     if rule
@@ -1828,7 +1844,8 @@ impl Arena {
                         return Err(Refusal::NoWeapon);
                     }
                     for predicate in rule.predicates() {
-                        if matches!(predicate, RulePredicate::Odds { min_permille, .. } if u32::from(*min_permille) < self.odds_floor_permille)
+                        if !lifted
+                            && matches!(predicate, RulePredicate::Odds { min_permille, .. } if u32::from(*min_permille) < self.odds_floor_permille)
                         {
                             return Err(Refusal::Unlawful);
                         }
@@ -1841,16 +1858,24 @@ impl Arena {
                             return Err(Refusal::NoWeapon);
                         }
                     }
-                    if let Some(condition) = rule.fire() {
+                    if !lifted && let Some(condition) = rule.fire() {
                         condition_is_lawful(condition, self.odds_floor_permille)?;
                         self.rule_contact_is_lawful(unit, condition)?;
                     }
+                    // G7: one rule of the law for the record — every row, fire or not.
+                    unlawful.push(lifted && self.rule_unlawful(unit, rule));
                 }
                 let capacity = self.arming_capacity(unit);
                 let written = self
                     .conditions
                     .set_rules_avoiding(unit, *slot, rules, capacity, protected)?;
                 self.forget_held_said(unit, &written);
+                for ((n, rule), unlawful) in written.iter().zip(rules).zip(unlawful) {
+                    if unlawful {
+                        let weapon = rule.weapon().cloned().unwrap_or_default();
+                        self.journal_unlawful_arming(unit, &weapon, *n, at_ms);
+                    }
+                }
                 Ok(written.first().copied())
             }
             Arming::Remove { slot, channel } => {
@@ -1972,6 +1997,50 @@ impl Arena {
             }
         }
         Ok(result)
+    }
+
+    /// **Whether `unit`'s floor is lifted** (doc 17h cut M8b C4; D-UM-17 "an ungoverned core
+    /// alone skips it", D-UM-42): its seal is ungoverned AND the hull still carries a core —
+    /// once `destroy_core` takes it the hull flies the ROM and the floor is back (G6). The one
+    /// definition of the rule. Every pod core is governed (D-UM-41), so in play this is false.
+    #[must_use]
+    pub fn floor_lifted(&self, unit: ObjId) -> bool {
+        self.unit(unit).is_some_and(|state| {
+            !state.seal.governed && crate::arena::core::read_core(&state.unit).is_some()
+        })
+    }
+
+    /// **Whether `rule` breaks the law it would be held to** (doc 17h cut M8b C5, G7): an odds
+    /// predicate under the arena's floor, or its fire condition's odds under the floor, or a
+    /// contact target the hull has not classified. The one rule for the record, at the arming
+    /// and at the fire; asked only where the floor is lifted.
+    #[must_use]
+    pub fn rule_unlawful(&self, unit: ObjId, rule: &Rule) -> bool {
+        rule.predicates().iter().any(|predicate| {
+            matches!(predicate, RulePredicate::Odds { min_permille, .. }
+                if u32::from(*min_permille) < self.odds_floor_permille)
+        }) || rule.fire().is_some_and(|condition| {
+            condition_is_lawful(condition, self.odds_floor_permille).is_err()
+                || self.rule_contact_is_lawful(unit, condition).is_err()
+        })
+    }
+
+    /// **Journal an unlawful arming** (doc 17h cut M8b C5): one `armed` line, the record and
+    /// never a notice. Best-effort like its siblings (`MindDropped`, `OrderExpired`): a full
+    /// ledger drops it, and the arming still stands — the ledger-full end is the match's own.
+    fn journal_unlawful_arming(&mut self, unit: ObjId, weapon: &SmolStr, slot: u8, at_ms: i64) {
+        let hash = self.event_hash();
+        let _ = self.ledger.append(
+            at_ms,
+            crate::arena::ledger::EventKind::Armed {
+                unit,
+                weapon: weapon.clone(),
+                slot,
+                unlawful: true,
+            },
+            Vec::new(),
+            hash,
+        );
     }
 
     fn rule_contact_is_lawful(

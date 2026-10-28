@@ -200,12 +200,12 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, r: &Runtime) -> Result<Projection, Erro
             {
                 return Err(Error::Integrity);
             }
-            match (hulls.get(&o.hull), o.displaced.installed.asset) {
+            match (hulls.get(&o.hull), o.displaced_asset()) {
                 (None, None) => {}
                 (Some(h), old) if h.pending.is_none() && h.mounted == old => {}
                 _ => return Err(Error::Integrity),
             }
-            if let Some(old) = o.displaced.installed.asset
+            if let Some(old) = o.displaced_asset()
                 && assets.get(&old).is_none_or(
                     |a| !matches!(a.position,AssetPosition::Mounted{hull,..}if hull==o.hull),
                 )
@@ -228,7 +228,7 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, r: &Runtime) -> Result<Projection, Erro
                     hull: o.hull,
                     operation: row.accepted,
                     pending: Some(*id),
-                    mounted: o.displaced.installed.asset,
+                    mounted: o.displaced_asset(),
                 },
             );
         } else {
@@ -237,7 +237,7 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, r: &Runtime) -> Result<Projection, Erro
             let h = hulls.get(&o.hull).ok_or(Error::Integrity)?;
             if a.position != (AssetPosition::Pending { order: *id })
                 || h.pending != Some(*id)
-                || h.mounted != o.displaced.installed.asset
+                || h.mounted != o.displaced_asset()
             {
                 return Err(Error::Integrity);
             }
@@ -268,11 +268,11 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, r: &Runtime) -> Result<Projection, Erro
                     mounted: if installed {
                         Some(o.incoming)
                     } else {
-                        o.displaced.installed.asset
+                        o.displaced_asset()
                     },
                 },
             );
-            if installed && let Some(old) = o.displaced.installed.asset {
+            if installed && let Some(old) = o.displaced_asset() {
                 if assets.get(&old).is_none_or(
                     |a| !matches!(a.position,AssetPosition::Mounted{hull,..}if hull==o.hull),
                 ) {
@@ -289,7 +289,7 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, r: &Runtime) -> Result<Projection, Erro
                             from_hull: o.hull,
                             condition: digest(
                                 "industry.core_refit.displaced.v1",
-                                &o.displaced,
+                                &o.displaced.as_ref().ok_or(Error::Integrity)?,
                                 ASSET_BYTES,
                             )?,
                         },
@@ -399,8 +399,8 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, r: &Runtime) -> Result<Projection, Erro
     })
 }
 fn capacity(ctx: &ModuleCtx<'_>, r: &Runtime, row: &RefitOrder) -> Result<(), Error> {
-    let resource =
-        crate::facility::facility_resource(row.intent.offer.policy.factory).map_err(bad)?;
+    let factory = row.intent.offer.site()?.factory;
+    let resource = crate::facility::facility_resource(factory).map_err(bad)?;
     let holder = crate::workorder::wo_holder(row.intent.order).map_err(bad)?;
     let id = ReservationId::derive(&holder, &resource).map_err(bad)?;
     if row.capacity != id {
@@ -408,8 +408,7 @@ fn capacity(ctx: &ModuleCtx<'_>, r: &Runtime, row: &RefitOrder) -> Result<(), Er
     }
     let initial = ReservationRecord::held(id, resource, holder, 1, row.intent.expires_at.clone())
         .map_err(bad)?;
-    let key =
-        crate::facility::facility_capacity_key(row.intent.offer.policy.factory).map_err(bad)?;
+    let key = crate::facility::facility_capacity_key(factory).map_err(bad)?;
     let book = ctx
         .action_state(&r.industry.facility_books, &key)
         .map_err(bad)?;

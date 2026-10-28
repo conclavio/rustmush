@@ -380,7 +380,75 @@ impl Rig {
                 )?;
             }
         }
+        // Doc 17h cut M8b C2: an ungoverning shop beside the chartered one, its own
+        // organization paid, holding `core_ungovern` and not `core_refit`.
+        let shop = w
+            .world_mut()
+            .create(ObjKind::Thing, "Back-room shop", GOD, None)?;
+        for line in ["@org/create Tether", "@org/scope create Tether=backroom"] {
+            command(&mut w, GOD, line)?;
+        }
+        let tether = w
+            .world()
+            .module_state::<OrgStore>()
+            .ok_or("Org owner")?
+            .state()
+            .orgs()
+            .find(|o| o.name.as_str() == "Tether")
+            .ok_or("actual Tether organization")?
+            .id;
+        let backroom = w
+            .world()
+            .module_state::<OrgStore>()
+            .ok_or("Org owner")?
+            .state()
+            .scopes_in(tether)
+            .find(|s| s.name.as_str() == "backroom")
+            .map(|s| s.id)
+            .ok_or("actual back-room scope")?;
+        command(
+            &mut w,
+            GOD,
+            &format!("@account/open org:Tether/{}=tacsim.credit", backroom.0),
+        )?;
+        let shop_account = w
+            .world()
+            .module_state::<EconomyStore>()
+            .ok_or("Economy owner")?
+            .snapshot()
+            .accounts()
+            .find(|a| a.owner == PrincipalId::Organization(tether))
+            .map(|a| a.id)
+            .ok_or("actual back-room treasury")?;
+        for line in [
+            format!("@facility/open {}=2 core_ungovern", shop.0),
+            format!("@facility/owner {}=org:Tether", shop.0),
+            format!("@asset/title #{}=org:Tether scope={}", shop.0, backroom.0),
+        ] {
+            command(&mut w, GOD, &line)?;
+        }
+        for actor in [GOD, agent] {
+            command(
+                &mut w,
+                GOD,
+                &format!(
+                    "@org/grant #{}=Tether industry.core.ungovern scope=#{}",
+                    actor.0, backroom.0
+                ),
+            )?;
+        }
         let deployment = HardwareDeployment {
+            ungovern: Some(super::UngoverningSite {
+                provider: ScopedCoreAccount {
+                    account: shop_account,
+                    organization: tether,
+                    scope: backroom,
+                },
+                factory: shop,
+                // Doc 17h cut M8b G3: unequal to the fitting fee, so the settlement is
+                // proved to credit the recipe's own fee.
+                fee_minor: Some(SHOP_FEE),
+            }),
             importer: org,
             stock_scope,
             depot,
@@ -743,6 +811,318 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
             )
         );
     }
+    Ok(())
+}
+
+/// The back-room shop's fee in the test rig (doc 17h cut M8b G3): not the fitting fee.
+const SHOP_FEE: i64 = 25_000;
+
+/// One Class I core, integrated from a certified die and delivered to the buyer: the
+/// acceptance's commit and the core.
+fn integrate_class_one(r: &mut Rig) -> Result<(CommitToken, ObjId)> {
+    let buyer = r.buyer;
+    let agent = r.deployment.agents[1].actor;
+    let (_, die) = r.perform("industry", "issue_core_die", agent, json!({"class":"i"}))?;
+    let lot = serde_json::from_value::<mush_inventory::LotId>(die["lot"].clone())?;
+    let (offer, _) = r.perform(
+        "industry",
+        "offer_core_integration",
+        agent,
+        json!({"requester":buyer.0,"class":"i","supplier_lot":lot.to_string()}),
+    )?;
+    let (accept, order) = r.perform(
+        "industry",
+        "accept_core_integration",
+        buyer,
+        json!({"offer":offer.to_hex(),"payer":r.payer.0.to_string()}),
+    )?;
+    let id =
+        serde_json::from_value::<mush_industry::workorder::WorkOrderId>(order["order"].clone())?
+            .to_string();
+    let params = json!({"order":id});
+    r.perform("industry", "reserve_core_output", buyer, params.clone())?;
+    r.progress("advance_core_integration", 24)?;
+    let (_, completed) = r.perform(
+        "industry",
+        "complete_core_integration",
+        buyer,
+        params.clone(),
+    )?;
+    let output = serde_json::from_value::<ObjId>(completed["object"].clone())?;
+    r.perform("industry", "deliver_core_output", buyer, params)?;
+    Ok((accept, output))
+}
+
+/// Refit `hull` with `incoming` (Class I) under `recipe`, the agent offering and the buyer
+/// accepting and installing; the hull and the buyer stand in the recipe's facility.
+fn refit_class_one(
+    r: &mut Rig,
+    hull: ObjId,
+    incoming: ObjId,
+    accept: CommitToken,
+    recipe: Option<&str>,
+) -> Result {
+    let buyer = r.buyer;
+    let agent = r.deployment.agents[1].actor;
+    let mut params = json!({"requester":buyer.0,"hull":hull.0,"incoming":incoming.0,
+        "manufacture":accept.to_hex(),"class":"i"});
+    if let Some(recipe) = recipe {
+        params["recipe"] = json!(recipe);
+    }
+    let (offer, _) = r.perform("industry", "offer_core_refit", agent, params)?;
+    let (_, order) = r.perform(
+        "industry",
+        "accept_core_refit",
+        buyer,
+        json!({"offer":offer.to_hex(),"payer":r.payer.0.to_string()}),
+    )?;
+    let id =
+        serde_json::from_value::<mush_industry::workorder::WorkOrderId>(order["order"].clone())?
+            .to_string();
+    r.progress("advance_core_refit", 1)?;
+    r.perform(
+        "industry",
+        "install_core_component",
+        buyer,
+        json!({"order":id}),
+    )?;
+    Ok(())
+}
+
+/// The ROM seal an IC epoch would take over `hull` now, under the shipped minds defaults.
+fn rom_seal(r: &Rig, hull: ObjId) -> Result<crate::arena::mind::MindSeal> {
+    let unit = mush_tactics::module::unit_of(r.world().world(), hull).ok_or("the rig's unit")?;
+    let minds = crate::config::MindsConfig::default();
+    let reflex = crate::config::ReflexConfig::default();
+    Ok(crate::match_::seal::seal_rom_for(
+        hull,
+        unit,
+        &[],
+        crate::arena::mind::SortieId::ic(hull, 1_000),
+        &crate::match_::seal::IcSealConfig {
+            minds: &minds,
+            reflex: &reflex,
+            principal: None,
+        },
+    )?)
+}
+
+/// **Doc 17h cut M8b, the gate's tests 1 and 2** (C1, C2, G2): a stock, coreless terrain
+/// vehicle is fitted at the chartered shop (Stickney's "Basin") with a certified Class I core
+/// — `core_refit` fits it into the empty mount, its root becomes the rig family's Class I
+/// with no core displaced, it seals Class I governed, and
+/// M8a's inspection reads the core `certified`. Moved to the back-room shop (a facility
+/// holding `core_ungovern` and not `core_refit`, its own organization paid the
+/// `ungovern_minor` fee), the ungoverning refit fits a second certified core as the ungoverned
+/// twin: `read_core` reads ungoverned, the economy carries the provenance note on that core's
+/// title (the shop, the completion's IC second), the inspection record's `ungoverned_note`
+/// says so, its provenance is still `certified` (the birth is the provenance; the note is the
+/// crime), and the next seal's line is `governed: false`. A facility declaring both recipes is
+/// refused at open.
+#[tokio::test(flavor = "current_thread")]
+async fn m8b_a_rig_is_fitted_at_stickney_then_ungoverned_in_the_back_room() -> Result {
+    use crate::definitions::core_replacement::{RIG_I, RIG_I_UNGOVERNED};
+    use crate::minds::registry_inspection::facts::{StoreRead, read_unit as read};
+    use crate::minds::registry_inspection::{HullClass, Provenance, UngovernedNote};
+    let mut r = Rig::new()?;
+    let buyer = r.buyer;
+    let (first_accept, first) = integrate_class_one(&mut r)?;
+    let (second_accept, second) = integrate_class_one(&mut r)?;
+    let factory = r.deployment.factory;
+    let shop = r
+        .deployment
+        .ungovern
+        .as_ref()
+        .ok_or("the back-room shop")?
+        .clone();
+    r.world_mut().world_mut().move_to(buyer, factory)?;
+    let hull =
+        r.world_mut()
+            .world_mut()
+            .create(ObjKind::Thing, "Prospector rig", buyer, Some(factory))?;
+    command(
+        r.world_mut(),
+        GOD,
+        &format!(
+            "@unit/create #{}={}",
+            hull.0,
+            crate::definitions::content::TV_PROSPECTOR
+        ),
+    )?;
+    command(
+        r.world_mut(),
+        GOD,
+        &format!("@asset/title #{}=#{}", hull.0, buyer.0),
+    )?;
+    r.flush();
+    // The shipped rig is coreless (Class 0, the ROM).
+    check_eq!(
+        mush_tactics::module::unit_of(r.world().world(), hull)
+            .and_then(crate::arena::core::read_core),
+        None
+    );
+    // What the surface reads of the stock rig: its drive rates and its hopper (G1).
+    let surface = |r: &Rig| -> Result<_> {
+        let w = r.world().world();
+        let unit = crate::port::hull::live_unit_id(w, hull).ok_or("the rig's chassis")?;
+        check_eq!(unit.as_str(), crate::definitions::content::TV_PROSPECTOR);
+        let store = w.module_state::<crate::TacsimStore>().ok_or("the store")?;
+        let (_, logistics) =
+            crate::port::hull::spec_for(store, &unit).ok_or("the rig's interior and hopper")?;
+        Ok((
+            crate::surface::act::rig_rates(w, hull, None).ok_or("the rig's drive rates")?,
+            logistics.clone(),
+        ))
+    };
+    let stock = surface(&r)?;
+    // The chartered fitting into the coreless base (doc 17h cut M8b G2, the lead's ruling):
+    // the rig's Class I root, governed, certified, nothing displaced.
+    refit_class_one(&mut r, hull, first, first_accept, None)
+        .map_err(|e| format!("the chartered fitting: {e}"))?;
+    let fitted = mush_tactics::module::unit_of(r.world().world(), hull)
+        .ok_or("the fitted rig")?
+        .clone();
+    check_eq!(fitted.schema().key().id.as_str(), RIG_I);
+    check_eq!(
+        crate::arena::core::read_core(&fitted).map(|hw| (hw.class, hw.governed)),
+        Some((crate::arena::core::CoreClass::I, true))
+    );
+    check_eq!(
+        surface(&r)?,
+        stock,
+        "a fitted rig drives and mines as the stock one"
+    );
+    let seal = rom_seal(&r, hull)?;
+    check_eq!(
+        (seal.core_class, seal.class, seal.governed),
+        (
+            crate::arena::core::CoreClass::I,
+            crate::arena::core::CoreClass::I,
+            true
+        )
+    );
+    check!(
+        seal.admissions(crate::minds::licence_state::SealLicenceState::Doctrine)
+            .is_empty()
+    );
+    let certified = Provenance::Certified {
+        importer: r.deployment.importer,
+        grade: mush_economy::core_integration::CoreClass::I,
+    };
+    {
+        let engine = r.world().engine();
+        let mut reader = StoreRead(engine.action_state());
+        let found = read(&engine.world, &mut reader, hull).ok_or("the fitted rig reads")?;
+        check_eq!(found.facts.core, Some(first));
+        check_eq!(found.facts.class, HullClass::I);
+        check_eq!(found.facts.governed, Some(true));
+        check_eq!(found.facts.provenance, certified.clone());
+        check_eq!(found.facts.ungoverned_note, None);
+    }
+    // A facility declaring both recipes is refused at open.
+    let both = r
+        .world_mut()
+        .world_mut()
+        .create(ObjKind::Thing, "Two-faced shop", GOD, None)?;
+    check!(
+        command(
+            r.world_mut(),
+            GOD,
+            &format!("@facility/open {}=2 core_refit core_ungovern", both.0),
+        )
+        .is_err_and(|refused| refused
+            .to_string()
+            .contains("a facility runs core_refit or core_ungovern, never both"))
+    );
+    // The ungoverning refit, in the back room.
+    let money = (r.money(r.payer)?, r.money(shop.provider.account)?);
+    r.world_mut().world_mut().move_to(buyer, shop.factory)?;
+    r.world_mut().world_mut().move_to(hull, shop.factory)?;
+    r.flush();
+    refit_class_one(&mut r, hull, second, second_accept, Some("core_ungovern"))
+        .map_err(|e| format!("the ungoverning refit: {e}"))?;
+    let ungoverned = mush_tactics::module::unit_of(r.world().world(), hull)
+        .ok_or("the ungoverned rig")?
+        .clone();
+    check_eq!(ungoverned.schema().key().id.as_str(), RIG_I_UNGOVERNED);
+    check_eq!(
+        surface(&r)?,
+        stock,
+        "an ungoverned rig drives and mines as the stock one"
+    );
+    check_eq!(
+        crate::arena::core::read_core(&ungoverned).map(|hw| (hw.class, hw.governed)),
+        Some((crate::arena::core::CoreClass::I, false))
+    );
+    // C7: the catalogue's `ungovern_minor` is provisionally the fitting fee; this shop
+    // charges its own (G3), and exactly that moves.
+    check_eq!(
+        PublishedHardware::shipped()?.catalogue().ungovern_minor(),
+        mush_economy::core_refit::FITTING_MINOR
+    );
+    let fee = SHOP_FEE;
+    check!(fee != mush_economy::core_refit::FITTING_MINOR);
+    check_eq!(r.money(r.payer)?.0, money.0.0 - fee);
+    check_eq!(r.money(shop.provider.account)?.0, money.1.0 + fee);
+    let note = r
+        .world()
+        .world()
+        .module_state::<EconomyStore>()
+        .ok_or("the economy")?
+        .core_provenance_note(second)?
+        .ok_or("the provenance note")?;
+    let mush_economy::CoreProvenanceNote::Ungoverned { facility, at_ic } = note;
+    check_eq!(facility, shop.factory);
+    check!(at_ic > 0);
+    check_eq!(
+        r.world()
+            .world()
+            .module_state::<EconomyStore>()
+            .ok_or("the economy")?
+            .core_provenance_note(first)?,
+        None
+    );
+    {
+        let engine = r.world().engine();
+        let mut reader = StoreRead(engine.action_state());
+        let found = read(&engine.world, &mut reader, hull).ok_or("the ungoverned rig reads")?;
+        check_eq!(found.facts.core, Some(second));
+        check_eq!(found.facts.governed, Some(false));
+        check_eq!(found.facts.provenance, certified);
+        check_eq!(
+            found.facts.ungoverned_note,
+            Some(UngovernedNote {
+                facility: shop.factory,
+                at_ic
+            })
+        );
+    }
+    let seal = rom_seal(&r, hull)?;
+    check!(!seal.governed && seal.lifts_floor());
+    match seal.sealed_line(crate::minds::licence_state::SealLicenceState::Doctrine) {
+        crate::arena::ledger::EventKind::MindSealed {
+            governed,
+            admissions,
+            ..
+        } => {
+            check!(!governed);
+            check!(admissions.is_empty(), "Standard Doctrine admits nothing");
+        }
+        other => return Err(format!("a sealed line: {other:?}").into()),
+    }
+    r.reboot(CoreOriginMode::Active)?;
+    check_eq!(
+        mush_tactics::module::unit_of(r.world().world(), hull),
+        Some(&ungoverned)
+    );
+    check_eq!(
+        r.world()
+            .world()
+            .module_state::<EconomyStore>()
+            .ok_or("the economy")?
+            .core_provenance_note(second)?,
+        Some(note)
+    );
     Ok(())
 }
 

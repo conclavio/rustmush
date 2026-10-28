@@ -42,11 +42,14 @@ fn replacement_from(
     if current.object() != o.hull
         || current.revision() != o.unit_revision
         || current.schema() != &o.before
-        || SavedComponent::from_unit(current, &c.component)? != o.displaced
+        || SavedComponent::of_unit(current, &c.component)? != o.displaced
     {
         return Err(Error::Unavailable);
     }
-    let target = c.payment.target(o.class()).map_err(bad)?;
+    let target = c
+        .payment
+        .target_for(o.kind, &o.before, o.class())
+        .map_err(bad)?;
     registry.get_exact(target).map_err(bad)?;
     let spec = mush_tactics::unit::replacement::registered_spec(registry, target).map_err(bad)?;
     let baseline = TacticalUnit::from_spec(&spec, o.hull).map_err(bad)?;
@@ -186,7 +189,7 @@ impl ExchangePolicy {
             o.unit_revision,
             o.incoming,
             actor,
-            o.displaced.installed.asset.map(|a| (a, actor)),
+            o.displaced_asset().map(|a| (a, actor)),
         )
         .map_err(|_| OwnerReadError::Integrity)
     }
@@ -306,9 +309,9 @@ impl CustodyHook {
             || exact.unit_revision() != o.unit_revision
             || exact.incoming() != o.incoming
             || exact.source() != actor
-            || exact.displaced() != o.displaced.installed.asset.map(|v| (v, actor))
+            || exact.displaced() != o.displaced_asset().map(|v| (v, actor))
             || !((object == o.incoming && destination == o.hull)
-                || (Some(object) == o.displaced.installed.asset && destination == actor))
+                || (Some(object) == o.displaced_asset() && destination == actor))
         {
             return Err(Error::Unavailable);
         }
@@ -316,7 +319,7 @@ impl CustodyHook {
             .action_state(&self.families.hulls, &o.hull)
             .map_err(bad)?
             .ok_or(Error::Integrity)?;
-        if pending.pending != Some(id) || pending.mounted != o.displaced.installed.asset {
+        if pending.pending != Some(id) || pending.mounted != o.displaced_asset() {
             return Err(Error::Integrity);
         }
         Ok(())

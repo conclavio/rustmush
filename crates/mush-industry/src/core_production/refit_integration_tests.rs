@@ -564,7 +564,7 @@ fn actual_second_refit_returns_displaced_core_with_retained_condition_and_curren
             .ok_or("installed")?
             .replacement
             .displaced,
-        displaced
+        Some(displaced)
     );
     check!(
         matches!(s.position(old)?,AssetPosition::Detached{order,from_hull,..}if order==second&&from_hull==s.hull)

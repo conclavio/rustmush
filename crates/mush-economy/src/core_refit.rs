@@ -19,7 +19,10 @@ pub use authority::CoreRefitConfig;
 pub use consent::{RefitOfferAttribution, RefitOrderAttribution, RefitOwnerAuthority};
 use mush_core::CommitToken;
 use mush_core::participant::ParticipantError;
-pub use subject::{RefitPaymentPolicy, RefitSubject};
+pub use subject::{
+    CorelessBase, RefitKind, RefitPaymentPolicy, RefitSite, RefitSubject, UngovernTerms,
+    present_ungovern,
+};
 pub const OFFER_ACTION: &str = "offer_core_refit";
 pub const ACCEPT_ACTION: &str = "accept_core_refit";
 pub const INSTALL_ACTION: &str = "install_core_component";

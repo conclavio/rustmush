@@ -140,3 +140,53 @@ pub(crate) fn require_unmanaged_mutations(
     }
     Ok(())
 }
+
+/// **A note on a core's managed title** (doc 17h cut M8b C2; doc 17 §10, D-UM-42): what was
+/// done to the core after its birth. A record, never a notice and never a right: M8a's
+/// inspection carries it as a record field for M8d's seizure, and nothing prints it to a
+/// player. The birth stays the provenance; the note is the crime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoreProvenanceNote {
+    /// The core was fitted by the ungoverning refit (`core_ungovern`) at `facility`, its
+    /// fitting completing at IC second `at_ic`.
+    Ungoverned { facility: ObjId, at_ic: i64 },
+}
+
+impl crate::EconomyStore {
+    /// **The provenance note on `core`'s managed title** (doc 17h cut M8b C2): written by the
+    /// completion of an ungoverning refit that installed `core`, read back from the refit's
+    /// replay-verified payment history (the journal is the record, as the title index is a
+    /// projection of it: no new persisted row). The latest such fitting wins; `Ok(None)` for
+    /// a core never ungoverned or an unmanaged object.
+    ///
+    /// # Errors
+    ///
+    /// The history's own error when it cannot be read (a frozen economy, an incomplete
+    /// replay): the note fails closed (G9), so a reader refuses rather than record "none".
+    pub fn core_provenance_note(
+        &self,
+        core: ObjId,
+    ) -> Result<Option<CoreProvenanceNote>, crate::core_refit::RefitError> {
+        let histories = self.core_refit_histories()?;
+        if self.snapshot().managed_titles.core(core).is_none() {
+            return Ok(None);
+        }
+        Ok(histories
+            .filter(|history| {
+                history.subject().kind == crate::core_refit::RefitKind::CoreUngovern
+                    && history.subject().incoming == core
+            })
+            .filter_map(|history| {
+                let terminal = history.terminal()?;
+                terminal.result().replacement()?;
+                let facility = history.policy().ungovern.as_ref()?.factory;
+                Some(CoreProvenanceNote::Ungoverned {
+                    facility,
+                    at_ic: terminal.at_ic().at,
+                })
+            })
+            .max_by_key(|note| match note {
+                CoreProvenanceNote::Ungoverned { at_ic, .. } => *at_ic,
+            }))
+    }
+}

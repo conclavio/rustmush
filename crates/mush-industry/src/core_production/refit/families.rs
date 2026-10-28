@@ -94,14 +94,14 @@ impl Families {
             }
         }
         let h = txn.get(&self.hulls, &o.hull).map_err(bad)?.cloned();
-        match (&h, o.displaced.installed.asset) {
+        match (&h, o.displaced_asset()) {
             (None, None) => {}
             (Some(h), a) if h.pending.is_none() && h.mounted == a => {
                 h.validate()?;
             }
             _ => return Err(Error::Unavailable),
         }
-        if let Some(old) = o.displaced.installed.asset {
+        if let Some(old) = o.displaced_asset() {
             let a = txn
                 .get(&self.assets, &old)
                 .map_err(bad)?
@@ -126,7 +126,7 @@ impl Families {
             hull: o.hull,
             operation: row.accepted,
             pending: Some(id),
-            mounted: o.displaced.installed.asset,
+            mounted: o.displaced_asset(),
         };
         if h.is_some() {
             txn.replace(&self.hulls, &o.hull, next).map_err(bad)?;
@@ -157,7 +157,7 @@ impl Families {
         if a.object != o.incoming
             || a.position != (AssetPosition::Pending { order: id })
             || h.pending != Some(id)
-            || h.mounted != o.displaced.installed.asset
+            || h.mounted != o.displaced_asset()
         {
             return Err(Error::Integrity);
         }
@@ -195,7 +195,7 @@ impl Families {
             },
         )
         .map_err(bad)?;
-        if installed && let Some(old) = o.displaced.installed.asset {
+        if installed && let Some(old) = o.displaced_asset() {
             let a = txn
                 .get(&self.assets, &old)
                 .map_err(bad)?
@@ -214,7 +214,7 @@ impl Families {
                         from_hull: o.hull,
                         condition: digest(
                             "industry.core_refit.displaced.v1",
-                            &o.displaced,
+                            &o.displaced.as_ref().ok_or(Error::Integrity)?,
                             ASSET_BYTES,
                         )?,
                     },

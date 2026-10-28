@@ -1226,6 +1226,8 @@ fn the_org_vocabulary_admits_every_named_launch_grant() -> Result {
         "vault.withdraw",
         "industry.core.integrate",
         "industry.core.refit",
+        // Doc 17h cut M8b G8.
+        "industry.core.ungovern",
         "roll.registry.recall",
         "roll.registry.revoke",
         "roll.registry.inspect",

@@ -6,6 +6,7 @@ use super::{
     RefitError as Error, RefitOfferAttribution, RefitOrderAttribution, RefitOwnerAuthority,
     RefitPaymentPolicy, RefitSubject,
 };
+use crate::core_integration::ScopedCoreAccount;
 use crate::{
     Account, AccountStatus, AssetLifecycle, EconomicAsset, EconomyStore, InstrumentDef,
     InstrumentKind, InstrumentStatus,
@@ -68,7 +69,8 @@ impl CoreRefitConfig {
         let d = self.definitions.get().ok_or(Error::Unavailable)?;
         for r in [&self.industry_owner, &self.policy.recipe]
             .into_iter()
-            .chain(self.policy.fitted_units.iter())
+            .chain(self.policy.ungovern.iter().map(|u| &u.recipe))
+            .chain(self.policy.roots())
         {
             d.get_exact(r).map_err(|_| Error::Unavailable)?;
         }
@@ -101,15 +103,13 @@ fn live(w: &World, id: ObjId, kind: Option<ObjKind>) -> Result<(), Error> {
     }
     Ok(())
 }
-fn organization(w: &World, p: &RefitPaymentPolicy) -> Result<(), Error> {
+fn organization(w: &World, p: &ScopedCoreAccount) -> Result<(), Error> {
     let state = w
         .module_state::<OrgStore>()
         .ok_or(Error::Unavailable)?
         .state();
-    let org = state
-        .org(p.provider.organization)
-        .ok_or(Error::Unavailable)?;
-    let scope = state.scope(p.provider.scope).ok_or(Error::Unavailable)?;
+    let org = state.org(p.organization).ok_or(Error::Unavailable)?;
+    let scope = state.scope(p.scope).ok_or(Error::Unavailable)?;
     if org.status != OrgStatus::Active || scope.org != org.id || scope.status != ScopeStatus::Active
     {
         return Err(Error::Unavailable);
@@ -143,23 +143,27 @@ fn current(
     config.ready(w)?;
     s.matches_policy(&config.policy)?;
     let p = &config.policy;
+    // Doc 17h cut M8b C2: the subject's recipe names its site (the provider
+    // paid, the facility it runs in); `core_refit` is the policy's own.
+    let site = p.site(s.kind)?;
     let at = w.world_ic_now();
     if at.clock != s.accepted_at.clock || at.at < s.accepted_at.at || at.at >= s.expires_at.at {
         return Err(Error::Unavailable);
     }
     live(w, s.requester, Some(ObjKind::Player))?;
-    live(w, p.factory, None)?;
+    live(w, site.factory, None)?;
     live(w, s.hull, Some(ObjKind::Thing))?;
     live(w, s.incoming, Some(ObjKind::Thing))?;
     if w.get(s.incoming)
         .is_none_or(|o| o.location != Some(s.requester))
         || w.get(s.requester)
-            .is_none_or(|o| o.location != Some(p.factory))
-        || w.get(s.hull).is_none_or(|o| o.location != Some(p.factory))
+            .is_none_or(|o| o.location != Some(site.factory))
+        || w.get(s.hull)
+            .is_none_or(|o| o.location != Some(site.factory))
     {
         return Err(Error::Unavailable);
     }
-    organization(w, p)?;
+    organization(w, site.provider)?;
     let currency = state
         .snapshot()
         .instrument(&p.instrument)
@@ -177,14 +181,14 @@ fn current(
         .ok_or(Error::Unavailable)?;
     let provider = state
         .snapshot()
-        .account(p.provider.account)
+        .account(site.provider.account)
         .ok_or(Error::Unavailable)?;
     if payer.owner != PrincipalId::Object(s.requester)
         || payer.scope.is_some()
         || payer.status != AccountStatus::Active
         || payer.instrument != p.instrument
-        || provider.owner != PrincipalId::Organization(p.provider.organization)
-        || provider.scope != Some(p.provider.scope)
+        || provider.owner != PrincipalId::Organization(site.provider.organization)
+        || provider.scope != Some(site.provider.scope)
         || provider.status != AccountStatus::Active
         || provider.instrument != p.instrument
     {
@@ -208,9 +212,9 @@ fn current(
         title(state, s.hull, &PrincipalId::Object(s.requester), None)?,
         title(
             state,
-            p.factory,
-            &PrincipalId::Organization(p.provider.organization),
-            Some(p.provider.scope),
+            site.factory,
+            &PrincipalId::Organization(site.provider.organization),
+            Some(site.provider.scope),
         )?,
     ];
     if let Some(displaced) = s.displaced {
@@ -285,8 +289,8 @@ pub(super) fn funding(
         w,
         &AuthRequest {
             actor: supplier.operator,
-            capability: CapabilityId::new("industry.core.refit").ok_or(Error::Invalid)?,
-            scope: config.policy.provider.scope,
+            capability: CapabilityId::new(s.kind.operator_capability()).ok_or(Error::Invalid)?,
+            scope: config.policy.site(s.kind)?.provider.scope,
             now: w.now(),
             amount: Some(1),
         },
