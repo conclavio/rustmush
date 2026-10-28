@@ -2832,7 +2832,19 @@ owner-read caps and granted the market read, put the four owner indexes inside t
 money transactions and delegated the renewal `front` to tacsim; all run live on a
 format-2 Active launch, the empty paths proven by the production-composition tests
 and the listing- and licence-dependent paths only by the unrun command story;
-pin/follow is Pin only; the typed web and TUI actions are 17g C3.
+pin/follow is Pin only. The typed web and TUI actions are 17g C3 (2026-10-27/28,
+`4f28314f`, `322648f9`, `07ea81f3`; PR #54, a draft; the record is 17g §7 "C3 — as
+built"): the thirteen player commands (`+minds/buy` and its three steps, `/renew` and
+its two, `/resell` and `/charter` with their accepts, `@mind/publish`, `@mind/withdraw`)
+as one closed `MindRequest::Market { action }`, dispatched before the workshop's
+principal gate into the same post-parse functions the line calls, so no client
+synthesizes command text and every refusal is the line's bytes under the word's code;
+two pulled panels, `mind.market` and `mind.holdings`, over the same bounded reads; the
+TUI's lettered market screen `m` and its legal-actions panel's typed `SubmitSelf`; the
+web's market screen on the same key table. `@mind/rate|file|update|attest|fork` and
+`@registry/recall|revoke` stay on the line (the operators reach granted staff through
+the typed legal-actions submit): a recorded scope cut against this inventory's "same
+typed actions". The populated typed paths are proven only by the unrun typed story.
 
 Gate: end-user right revoked between quote/accept/settle; direct title/service
 bypass; scope/issuer failures; prices and lawful rounding; real hardware story;
