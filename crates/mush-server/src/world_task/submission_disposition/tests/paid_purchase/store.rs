@@ -132,9 +132,18 @@ impl PurchaseFaultStore {
         {
             return Ok(None);
         }
-        if bundle.action().version() != 1 {
-            return Err(invalid("unexpected paid action version"));
-        }
+        // The two original-mind protocols share the three action ids: the
+        // author/buyer lifecycle's version 1 (`mind_trade`, the
+        // `market_mind_purchase` row) and the player market's version 3
+        // (17g C2, `mind_entitlement`'s OriginalV3, the
+        // `market_mind_entitlement_purchase` row). Both rows carry the
+        // operation token and the quote's publication token at the same
+        // paths, so one parse serves both once the family is chosen.
+        let family = match bundle.action().version() {
+            1 => "market_mind_purchase",
+            3 => "market_mind_entitlement_purchase",
+            _ => return Err(invalid("unexpected paid action version")),
+        };
         let rows = bundle
             .writes()
             .iter()
@@ -150,7 +159,7 @@ impl PurchaseFaultStore {
                         .get("family")
                         .and_then(|f| f.get("id"))
                         .and_then(serde_json::Value::as_str)
-                        == Some("market_mind_purchase"))
+                        == Some(family))
                 .then(|| value.get("value"))
                 .flatten()
             })
