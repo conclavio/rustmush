@@ -73,8 +73,6 @@ pub mod overlay;
 pub mod picture;
 #[cfg(feature = "encode")]
 pub mod png;
-#[cfg(feature = "poc-units")]
-pub mod poc_units;
 pub mod raycast;
 pub mod replay;
 pub mod scene;

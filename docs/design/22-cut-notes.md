@@ -83,9 +83,11 @@ The art. The three sheets U.3 shipped as placeholders — the tank, the biped an
 
 ## Sprite vs voxel PoC (2026-10-28) — D-22-9
 
-Throwaway, behind `mush-pixel`'s `poc-units` feature (`src/poc_units.rs`, `examples/unit_poc.rs`,
-and a `render_with` hook in `raycast.rs` that leaves `render` unchanged); the bake tools are kept
-as `scripts/unit-bake/`. The owner's question: can the purchased Unity assets become sheets, and
+Throwaway. The code (`mush-pixel`'s `poc-units` feature: `src/poc_units.rs`,
+`examples/unit_poc.rs`, a `render_with` hook in `raycast.rs`) landed on main as eeffebcb and was
+taken back out the same day — it tripped four contract guards (the feature census, the panic
+budget, the restriction lints) — so it lives in history only; check out eeffebcb to re-run it.
+The bake tools are kept as `scripts/unit-bake/`. The owner's question: can the purchased Unity assets become sheets, and
 what do flat sprites cost against voxel models?
 
 - **The bake**: one light mech from a Unity mech-constructor kit (cannon right, machine gun left,

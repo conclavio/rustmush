@@ -601,16 +601,16 @@ impl Column {
 /// The camera in cell units: where the eye stands, the way it looks, the
 /// camera plane across it, and the heights that matter, in cells.
 #[derive(Clone, Copy)]
-pub(crate) struct Eye {
-    pub(crate) cell: f32,
-    pub(crate) posx: f32,
-    pub(crate) posy: f32,
-    pub(crate) dirx: f32,
-    pub(crate) diry: f32,
-    pub(crate) planex: f32,
-    pub(crate) planey: f32,
+struct Eye {
+    cell: f32,
+    posx: f32,
+    posy: f32,
+    dirx: f32,
+    diry: f32,
+    planex: f32,
+    planey: f32,
     /// The eye's height above the ground, cells.
-    pub(crate) eye: f32,
+    eye: f32,
 }
 
 impl Eye {
@@ -667,23 +667,6 @@ fn block_base(ground: Ground, side: u8) -> Base {
 
 /// Draw the scene into `frame`.
 pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
-    render_with(frame, map, cam, sprites, &mut |_, _, _, _| {});
-}
-
-/// What [`render_with`]'s extra pass is handed: the frame, the shade
-/// tables, the eye, and the depth each pixel was drawn at.
-pub(crate) type ExtraDraw<'a> =
-    dyn FnMut(&mut Frame, &Shades, &Eye, &dyn Fn(usize, usize) -> f32) + 'a;
-
-/// [`render`], then `extra` over the finished picture (the unit PoC's units,
-/// drawn against the same depth and fog).
-pub(crate) fn render_with(
-    frame: &mut Frame,
-    map: &Map,
-    cam: &Camera,
-    sprites: &[Sprite],
-    extra: &mut ExtraDraw<'_>,
-) {
     let (w, h) = (frame.width(), frame.height());
     if w == 0 || h == 0 {
         return;
@@ -781,7 +764,6 @@ pub(crate) fn render_with(
     for at in placed {
         draw_sprite(frame, &shades, at, &depth);
     }
-    extra(frame, &shades, &e, &depth);
 }
 
 /// Where `sprite` stands in a `w` by `h` picture of flat `map` from `cam`:

@@ -26,14 +26,8 @@ workspace = true
 # `mush-pixel-wasm`) draws into a canvas and leaves them out.
 default = ["encode"]
 encode = ["dep:flate2"]
-# THROWAWAY: the flat-sprite vs voxel unit PoC (`poc_units`, `examples/unit_poc.rs`).
-poc-units = []
 
 [[example]]
 name = "fixture"
 required-features = ["encode"]
 
-
-[[example]]
-name = "unit_poc"
-required-features = ["encode", "poc-units"]
