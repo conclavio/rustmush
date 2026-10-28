@@ -366,6 +366,9 @@ fn e7c10_b1_an_over_cap_granted_set_refuses_on_load() {
 /// Where a file's in-crate unit-test module begins (everything after it is a
 /// fixture, not production code).
 fn test_module_start(text: &str) -> usize {
+    if text.trim_start().starts_with("#![cfg(test)]") {
+        return 0;
+    }
     text.find(
         "
 #[cfg(test)]
