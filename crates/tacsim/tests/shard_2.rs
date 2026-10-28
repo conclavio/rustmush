@@ -34,6 +34,8 @@ mod e7r1;
 mod e7r2;
 #[path = "shard_2/extensions.rs"]
 mod extensions;
+#[path = "shard_2/ic_sortie_voyages.rs"]
+mod ic_sortie_voyages;
 #[path = "shard_2/minds.rs"]
 mod minds;
 #[path = "shard_2/minds_pool.rs"]

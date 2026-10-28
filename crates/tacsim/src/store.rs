@@ -361,6 +361,19 @@ pub struct TacsimStore {
     /// R8 rule): a claimed key with no readable body is
     /// [`crate::port::licence::LicenceState::Unreadable`] and bars that account.
     pub(crate) licence_keys: BTreeSet<SmolStr>,
+    /// **Doc 23 cut S.1** (§7; the lead's L2) — `log:hull.<n>`: every hull's black box, one
+    /// `mush_core::Ledger` log per hull ([`crate::surface::black_box::log_id`]), its open
+    /// tails restored from history at boot ([`crate::surface::black_box::restore`]). Appended
+    /// only through the black box's owner participant
+    /// ([`crate::surface::black_box::BlackBoxParticipant`]), inside the authoritative act
+    /// whose record move it records — the launch's finish, the recover's finish, a staff
+    /// recovery — and installed when that act's composed commit installs.
+    pub(crate) black_boxes: mush_core::Ledger,
+    /// **Whether the boot could not restore the black boxes** (doc 23 cut S.1): a refused
+    /// restore pages and leaves every black box dark — no append, so no chunk the corrupt
+    /// history holds is ever overwritten by a fresh chunk 0 (a corrupt stored row fails closed,
+    /// never re-creates). Staff repair the `log:hull.*` documents and restart.
+    pub(crate) black_box_dark: bool,
 }
 
 impl TacsimStore {
@@ -368,6 +381,50 @@ impl TacsimStore {
     #[must_use]
     pub fn config(&self) -> &TacsimConfig {
         &self.cfg
+    }
+
+    /// **A hull's black box, its open tail** (doc 23 cut S.1, §7; the read seam an inspection
+    /// uses): the entries of `log:hull.<n>`'s open (unsealed) chunk, in order — sealed history
+    /// is on disk, read through [`crate::surface::black_box::history`] over the chunk
+    /// documents. Empty for a hull that never sealed, or whose open chunk just rolled over.
+    #[must_use]
+    pub fn black_box(&self, hull: ObjId) -> &[mush_core::LedgerEntry] {
+        self.black_boxes
+            .open_entries(crate::surface::black_box::log_id(hull).as_str())
+    }
+
+    /// **A hull's black box, its open tail decoded** (doc 23 cut S.1): [`TacsimStore::black_box`]'s
+    /// entries as `(seq, line)`, and how many entries did not decode as a
+    /// [`crate::surface::black_box::BlackBoxLine`] (the S.1 fix round's F4: never dropped
+    /// silently; the participant writes nothing else, so a non-zero count is a corrupt chunk).
+    #[must_use]
+    pub fn black_box_lines(
+        &self,
+        hull: ObjId,
+    ) -> (Vec<(u64, crate::surface::black_box::BlackBoxLine)>, usize) {
+        let mut lines = Vec::new();
+        let mut skipped = 0_usize;
+        for entry in self.black_box(hull) {
+            match serde_json::from_value(entry.value.clone()) {
+                Ok(line) => lines.push((entry.seq, line)),
+                Err(_) => skipped = skipped.saturating_add(1),
+            }
+        }
+        (lines, skipped)
+    }
+
+    /// **Lines ever written to a hull's black box** (doc 23 cut S.1): the log's next sequence
+    /// number — what the line cap (`[tacsim.surface].black_box_max_lines`) is held against.
+    #[must_use]
+    pub fn black_box_len(&self, hull: ObjId) -> u64 {
+        self.black_boxes
+            .next_seq(crate::surface::black_box::log_id(hull).as_str())
+    }
+
+    /// Whether the boot left every black box dark (a refused restore; doc 23 cut S.1).
+    #[must_use]
+    pub fn black_box_dark(&self) -> bool {
+        self.black_box_dark
     }
 
     /// **Test hook** (17b cut M1b.5): replace the `[tacsim.minds]` block this

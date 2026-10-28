@@ -409,6 +409,38 @@ pub fn berth_of(w: &World, hull: ObjId) -> Berth<'_> {
     }
 }
 
+/// **Whether a port entry is a hangar port** (doc 23 cut S.2, the lead's V3; D-23-1, D-23-3; §9's
+/// S.0 note that the port entries' hangar kind is declared in content): a port entry with no
+/// `site` block — the corridor's five stations today — is a hangar, where a ship's epoch closes;
+/// a site (a mining or field site, `def.site` present) is the field, where a landed ship never
+/// ends its passage. **The one place the tree decides "hangar"**: every caller asks this, or
+/// [`hangar_port_of`] / [`Berth::hangar`] over it.
+#[must_use]
+pub fn is_hangar_port(def: &PortDef) -> bool {
+    def.site.is_none()
+}
+
+impl<'a> Berth<'a> {
+    /// **The hangar port the hull is docked at** (doc 23 cut S.2, V3): `Docked` at a port entry
+    /// [`is_hangar_port`] admits, with its map (the host room a ship's epoch closes into);
+    /// `None` under way, elsewhere, or settled on a site's pad (D-23-3).
+    #[must_use]
+    pub fn hangar(&self) -> Option<(&'a PortMap, &'a PortDef)> {
+        match *self {
+            Berth::Docked { map, def } if is_hangar_port(def) => Some((map, def)),
+            Berth::Docked { .. } | Berth::UnderWay | Berth::Elsewhere => None,
+        }
+    }
+}
+
+/// **The hangar port `hull` is docked at** (doc 23 cut S.2, the lead's V3): [`berth_of`]'s
+/// `Docked` at an entry [`is_hangar_port`] admits — `None` under way, elsewhere, or on a site's
+/// pad (D-23-3: a site is the field).
+#[must_use]
+pub fn hangar_port_of(w: &World, hull: ObjId) -> Option<&PortDef> {
+    berth_of(w, hull).hangar().map(|(_, def)| def)
+}
+
 /// **The hull's hold vault**: the vault backed by its stowage.
 #[must_use]
 pub fn hold_vault(w: &World, view: &HullView<'_>) -> Option<VaultId> {
@@ -1295,4 +1327,32 @@ impl EventHook for ShipLook {
 pub fn register_hooks(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.hook(HookPoint::LookRendered, Arc::new(ShipLook));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The hangar kind is the content's** (doc 23 cut S.2, the lead's V3; D-23-3): on the
+    /// shipped lane every station entry is a hangar port and every site entry is not — Ceres and
+    /// Stickney yes, Ahuna Flank no — and nothing but `is_hangar_port` decides it.
+    #[test]
+    fn s2_a_station_is_a_hangar_and_a_site_is_the_field() {
+        let pack = crate::pack::load_pack(crate::definitions::content::LANE_JSON).expect("lane");
+        let port = |entry: &str| -> PortDef {
+            let id = CanonicalId::new(entry).expect("an id");
+            match pack.entry(&id) {
+                Some(crate::pack::PackEntry::Port(def)) => def.clone(),
+                _ => panic!("{entry} is a port entry"),
+            }
+        };
+        for station in ["ceres_port", "stickney_port"] {
+            assert!(is_hangar_port(&port(station)), "{station} is a hangar");
+        }
+        for site in ["ahuna_port", "occator_port"] {
+            assert!(!is_hangar_port(&port(site)), "{site} is the field");
+        }
+        assert!(Berth::UnderWay.hangar().is_none());
+        assert!(Berth::Elsewhere.hangar().is_none());
+    }
 }

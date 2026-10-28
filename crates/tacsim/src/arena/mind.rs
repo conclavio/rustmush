@@ -282,29 +282,146 @@ impl DropCause {
     }
 }
 
-/// **A sortie's id** (17b cut M3.2; doc 17 §13, D-UM-45): one hull's one
-/// match, minted at the seal as [`SortieId::in_match`] — unique per (unit,
-/// match) by construction, deterministic (no clock, no counter).
-/// `#[serde(transparent)]`: the number.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
-#[serde(transparent)]
-pub struct SortieId(pub u64);
+/// **A sortie's id** (17b cut M3.2; doc 17 §13, D-UM-45; doc 23 §7, D-23-10):
+/// one hull's one seal epoch, deterministic — no clock read at the mint, no
+/// counter. **Two kinds** (doc 23 cut S.1, the lead's L1): a match is a
+/// simulator concept, not an IC one (D-23-10), so an IC epoch never shares the
+/// arena's packing.
+///
+/// - [`SortieId::Packed`] — **the arena's**: one hull's one match, minted at
+///   the seal as [`SortieId::in_match`], unique per (unit, match) by
+///   construction. Serialised exactly as it always was, the bare number, so
+///   every pinned tape, record and snapshot is byte-identical. The IC claim
+///   book's transition ordinal (`crate::minds::ic_sortie`) rides this kind
+///   until the cut that flies a mind IC (doc 23 cut S.4) makes the book carry
+///   its host's id.
+/// - [`SortieId::Ic`] — **an IC epoch** (doc 23 §6): the hull and the IC
+///   instant its leaving began (a surface excursion's
+///   `crate::surface::ExcursionId::launch_ic`; the voyage's undock in S.2) —
+///   unique per hull by construction. Serialised as the tagged object
+///   `{"ic":{"hull":<n>,"at_ic":<t>}}`.
+///
+/// The decode accepts either form. `Ord` puts every arena id before every IC
+/// one; within a kind, the number, then the hull and the instant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SortieId {
+    /// The arena's packed `(match, unit)` number ([`SortieId::in_match`]).
+    Packed(u64),
+    /// An IC epoch: the hull, and the IC instant its leaving began.
+    Ic {
+        /// The hull whose epoch it is.
+        hull: ObjId,
+        /// The IC instant (IC seconds) the hull's leaving began.
+        at_ic: i64,
+    },
+}
+
+impl Default for SortieId {
+    /// [`SortieId::none`].
+    fn default() -> SortieId {
+        SortieId::none()
+    }
+}
 
 impl SortieId {
     /// **The sortie of `unit` in match `match_id`**: `(match_id << 32) |
     /// unit` — the match in the high word, the object number in the low.
     #[must_use]
     pub fn in_match(match_id: u64, unit: ObjId) -> SortieId {
-        SortieId((match_id << 32) | u64::from(unit.0))
+        SortieId::Packed((match_id << 32) | u64::from(unit.0))
     }
 
-    /// **No sortie** — `0`, what [`SealRef::none`] carries until 17b cut
-    /// M3.3 lays seals down.
+    /// **The IC epoch of `hull` that began leaving at `at_ic`** (doc 23 §7,
+    /// cut S.1's L1): the surface excursion mints it at the launch's end from
+    /// `(tv, launch_ic)`.
+    #[must_use]
+    pub const fn ic(hull: ObjId, at_ic: i64) -> SortieId {
+        SortieId::Ic { hull, at_ic }
+    }
+
+    /// **No sortie** — the arena kind at `0`, what [`SealRef::none`] carries
+    /// until 17b cut M3.3 lays seals down.
     #[must_use]
     pub const fn none() -> SortieId {
-        SortieId(0)
+        SortieId::Packed(0)
+    }
+
+    /// Whether this is an IC epoch's id ([`SortieId::Ic`]).
+    #[must_use]
+    pub const fn is_ic(self) -> bool {
+        matches!(self, SortieId::Ic { .. })
+    }
+
+    /// **The arena's packed number**, `None` for an IC epoch — what every
+    /// reader that once read the bare `.0` reads now (the arena's report
+    /// lines; the IC claim book's transition order until S.4).
+    #[must_use]
+    pub const fn as_match_packed(self) -> Option<u64> {
+        match self {
+            SortieId::Packed(n) => Some(n),
+            SortieId::Ic { .. } => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SortieId {
+    /// The arena's kind as its bare number (the report lines' `sortie=` word, unchanged); an IC
+    /// epoch as `<hull>@<at_ic>`, `crate::surface::ExcursionId`'s shape.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SortieId::Packed(n) => write!(f, "{n}"),
+            SortieId::Ic { hull, at_ic } => write!(f, "{}@{at_ic}", hull.0),
+        }
+    }
+}
+
+/// The IC kind's wire: `{"ic":{"hull":<n>,"at_ic":<t>}}`, strict.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IcSortieWire {
+    ic: IcEpochWire,
+}
+
+/// The IC kind's inner object.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IcEpochWire {
+    hull: ObjId,
+    at_ic: i64,
+}
+
+impl Serialize for SortieId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match *self {
+            SortieId::Packed(n) => serializer.serialize_u64(n),
+            SortieId::Ic { hull, at_ic } => IcSortieWire {
+                ic: IcEpochWire { hull, at_ic },
+            }
+            .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SortieId {
+    /// Either form, through a JSON value: every store the id lives in is JSON, and the value
+    /// route keeps the bare number exact under `serde_json/arbitrary_precision` too (the bot
+    /// lab's build), where a buffered untagged decode would not.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<SortieId, D::Error> {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(n) = value.as_u64() {
+            return Ok(SortieId::Packed(n));
+        }
+        if value.is_object() {
+            let wire: IcSortieWire = serde_json::from_value(value).map_err(D::Error::custom)?;
+            return Ok(SortieId::Ic {
+                hull: wire.ic.hull,
+                at_ic: wire.ic.at_ic,
+            });
+        }
+        Err(D::Error::custom(
+            "a sortie id is the arena's number or {\"ic\":{\"hull\":..,\"at_ic\":..}}",
+        ))
     }
 }
 
@@ -5067,22 +5184,28 @@ mod tests {
     fn m3_the_seal_and_the_drop_carry_their_values_and_words() {
         use crate::arena::core::CoreClass;
         use crate::arena::snapshot::Snapshot;
-        assert_eq!(SortieId::in_match(7, ObjId(4)), SortieId((7_u64 << 32) | 4));
-        assert_eq!(SortieId::in_match(7, ObjId(4)).0, 30_064_771_076);
         assert_eq!(
-            SortieId::in_match(1, ObjId(u32::MAX)).0,
-            (1_u64 << 32) | u64::from(u32::MAX),
+            SortieId::in_match(7, ObjId(4)),
+            SortieId::Packed((7_u64 << 32) | 4)
+        );
+        assert_eq!(
+            SortieId::in_match(7, ObjId(4)).as_match_packed(),
+            Some(30_064_771_076)
+        );
+        assert_eq!(
+            SortieId::in_match(1, ObjId(u32::MAX)).as_match_packed(),
+            Some((1_u64 << 32) | u64::from(u32::MAX)),
             "the object number fills the low word and never carries"
         );
-        assert_eq!(SortieId::none(), SortieId(0));
+        assert_eq!(SortieId::none(), SortieId::Packed(0));
         assert_eq!(SortieId::default(), SortieId::none());
         assert_eq!(
-            serde_json::to_value(SortieId(9)).ok(),
+            serde_json::to_value(SortieId::Packed(9)).ok(),
             Some(serde_json::json!(9)),
             "transparent: the number"
         );
         let none = SealRef::none();
-        assert_eq!(none.sortie, SortieId(0));
+        assert_eq!(none.sortie, SortieId::Packed(0));
         assert_eq!(none.digest, [0_u8; 32]);
         assert_eq!(none.core_class, CoreClass::Zero);
         assert_eq!(none.class, CoreClass::Zero);
@@ -5203,6 +5326,61 @@ mod tests {
             back.unit(BLUE).map(|unit| unit.seal.clone()),
             arena.unit(BLUE).map(|unit| unit.seal.clone())
         );
+    }
+
+    /// **Doc 23 cut S.1 (the lead's L1; D-23-10): an IC epoch's id never collides with the
+    /// arena's.** `ic(#4, 0)` and `in_match(0, #4)` — the very collision doc 23 §7 names, the
+    /// claim book's ordinal 4 against match 0 — are different ids; each round-trips; the arena
+    /// kind is still the bare number on the wire and the IC kind the tagged object; either form
+    /// decodes, and nothing else does (an unknown field, a negative number, a string).
+    #[test]
+    fn s1_an_ic_epoch_id_never_collides_with_the_arenas() {
+        let ic = SortieId::ic(ObjId(4), 0);
+        let arena = SortieId::in_match(0, ObjId(4));
+        assert_ne!(ic, arena, "the kind separates them");
+        assert!(ic.is_ic() && !arena.is_ic());
+        assert_eq!(ic.as_match_packed(), None);
+        assert_eq!(arena.as_match_packed(), Some(4));
+        assert_eq!(serde_json::to_value(arena).ok(), Some(serde_json::json!(4)));
+        assert_eq!(
+            serde_json::to_value(ic).ok(),
+            Some(serde_json::json!({"ic": {"hull": 4, "at_ic": 0}}))
+        );
+        let later = SortieId::ic(ObjId(4), 1_234_567);
+        for id in [
+            ic,
+            arena,
+            later,
+            SortieId::none(),
+            SortieId::Packed(u64::MAX),
+        ] {
+            let text = serde_json::to_string(&id).expect("a sortie id encodes");
+            assert_eq!(
+                serde_json::from_str::<SortieId>(&text).ok(),
+                Some(id),
+                "{text}"
+            );
+            let value = serde_json::to_value(id).expect("a sortie id encodes");
+            assert_eq!(serde_json::from_value::<SortieId>(value).ok(), Some(id));
+        }
+        assert_eq!(
+            serde_json::from_str::<SortieId>(r#"{"ic":{"hull":9,"at_ic":-5}}"#).ok(),
+            Some(SortieId::ic(ObjId(9), -5))
+        );
+        for bad in [
+            r#"{"ic":{"hull":9,"at_ic":1,"x":0}}"#,
+            r#"{"ic":{"hull":9},"x":0}"#,
+            r#"{"arena":4}"#,
+            "-4",
+            r#""4""#,
+        ] {
+            assert!(serde_json::from_str::<SortieId>(bad).is_err(), "{bad}");
+        }
+        // Every arena id orders before every IC one, so a book keyed by the id lists the
+        // arena's first and nothing about the arena's order moves.
+        assert!(SortieId::Packed(u64::MAX) < ic);
+        assert!(SortieId::in_match(0, ObjId(3)) < arena);
+        assert!(ic < later);
     }
 
     // -----------------------------------------------------------------------

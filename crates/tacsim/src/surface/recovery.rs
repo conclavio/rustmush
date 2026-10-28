@@ -14,6 +14,7 @@ use mush_core::{
 };
 use mush_economy::VaultId;
 use mush_inventory::{InventoryFamilies, record::EndpointRef};
+use mush_roll::commerce::ic_claims::IcCloseKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -23,7 +24,7 @@ use crate::port::site_map::{EngineReads, SurfaceReads};
 use crate::port_tick::port_error;
 use crate::surface::act::{self, Where};
 use crate::surface::cursor::{PocketCursor, PocketLock};
-use crate::surface::excursion::{Charge, RigKey, RigRecord, TvState};
+use crate::surface::excursion::{ActKind, Charge, RigKey, RigRecord, TvState};
 
 /// Registered action and result; kept separate from player work permissions.
 pub const RECOVERY_ACTION: &str = "tacsim_surface_recovery";
@@ -146,6 +147,17 @@ struct RigFacts {
     charge: Charge,
     staff: bool,
     finish: bool,
+    /// **Doc 23 cut S.1** (L6): whether the rig, its epoch open, is parked short of its way
+    /// home ([`act::parked_short`]) — a home then closes the epoch `RecoveredToBase`.
+    parked: bool,
+    /// **The S.1 fix round's F3**: whether the rig stands in any bay (the tick's placement of a
+    /// leaving act puts it in none).
+    in_any_bay: bool,
+    /// **The S.1 fix round's F3**: what the act in flight's finish would open the epoch with,
+    /// when it leaves the bay (`crate::surface::black_box::epoch_facts`) — a close that fences
+    /// that finish out opens the epoch from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    epoch: Option<crate::surface::black_box::EpochFacts>,
 }
 
 fn identity(w: &World, tv: ObjId, record: &RigRecord) -> Option<(ObjId, ObjId, u8)> {
@@ -173,7 +185,13 @@ fn identity(w: &World, tv: ObjId, record: &RigRecord) -> Option<(ObjId, ObjId, u
         .map(|r| (r.operator, r.hull, r.slot))
 }
 
-fn facts(w: &World, actor: ObjId, tv: ObjId, record: &RigRecord) -> Option<RigFacts> {
+fn facts(
+    w: &World,
+    actor: ObjId,
+    tv: ObjId,
+    record: &RigRecord,
+    reads: crate::surface::black_box::EpochReads<'_>,
+) -> Option<RigFacts> {
     let (operator, hull, slot) = identity(w, tv, record)?;
     let assigned = crate::port::yard::rig_lease(w, tv)
         .is_some_and(|lease| lease.hull == hull && lease.slot == slot);
@@ -224,6 +242,11 @@ fn facts(w: &World, actor: ObjId, tv: ObjId, record: &RigRecord) -> Option<RigFa
             && r.bay_room == bay.map(|(_, room)| room)
             && r.bay_slot.as_deref() == bay.map(|(bay, _)| bay.slot.id.as_str())
     });
+    // Doc 23 cut S.1 (L6): read only for a rig whose epoch is open (a home then closes it).
+    let parked = record.sortie.is_some() && act::parked_short(w, record, operator, battery);
+    // The S.1 fix round's F3: the placement facts a close fencing out a finish reads.
+    let in_any_bay = matches!(act::where_is(w, tv), Where::Bay { .. });
+    let epoch = crate::surface::black_box::epoch_facts(w, reads, record);
     let hopper = crate::port::vehicle::hopper_of(w, tv);
     let hold = view
         .as_ref()
@@ -256,6 +279,9 @@ fn facts(w: &World, actor: ObjId, tv: ObjId, record: &RigRecord) -> Option<RigFa
         },
         staff,
         finish,
+        parked,
+        in_any_bay,
+        epoch,
     })
 }
 
@@ -308,7 +334,7 @@ impl RevisionValidator for RecoveryRevisionValidator {
             .cloned()
             .unwrap_or_else(|| RigRecord::fresh_unread(tv));
         let w = context.world();
-        let Some(fixed) = facts(w, actor, tv, &record) else {
+        let Some(fixed) = facts(w, actor, tv, &record, (&|_| None, &|_| None)) else {
             return Ok(None);
         };
         let hull = fixed.hull;
@@ -316,10 +342,15 @@ impl RevisionValidator for RecoveryRevisionValidator {
             .map_err(|_| integrity("the recovery revision cannot encode its facts"))?;
         // Passage of time alone does not change authority or placement. Charge
         // was settled at the offer instant; its input record remains guarded.
-        facts
+        let map = facts
             .as_object_mut()
-            .ok_or_else(|| integrity("the recovery revision facts are not a map"))?
-            .remove("charge");
+            .ok_or_else(|| integrity("the recovery revision facts are not a map"))?;
+        map.remove("charge");
+        // The S.1 fix round's F3: the epoch facts are what a fenced-out finish would record
+        // (the seal, the class, the site's open epochs, read across other rigs); they carry no
+        // authority, so another rig's epoch moving between the offer and the commit does not
+        // fence this recovery. The placement they depend on is guarded above.
+        map.remove("epoch");
         let spatial = w.module_state::<mush_sim::SpatialState>();
         let battery = w
             .module_state::<PortHandles>()
@@ -401,6 +432,11 @@ pub(crate) struct RecoveryProvider {
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
     pub pockets: StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     pub inventory: InventoryFamilies,
+    /// **Doc 23 cut S.1** (L4, L6): the black box participant's handle for this action — a
+    /// staff home's close line.
+    pub black_box: Option<
+        mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>,
+    >,
 }
 
 impl ActionProvider for RecoveryProvider {
@@ -443,11 +479,15 @@ impl ActionProvider for RecoveryProvider {
             return Ok(None);
         }
         let reads = EngineReads(engine);
+        // The S.1 fix round's F3: the epoch facts' site count reads the world's rigs.
+        let read_rig = |other: ObjId| reads.rig(other).ok().flatten();
+        // Doc 23 cut S.2 (V7): the carrier's open epoch, its typed record.
+        let read_carrier = |hull: ObjId| crate::port::epoch::open_id_in(engine, hull);
         let mut rigs = BTreeMap::new();
         for tv in act::world_rigs(w) {
             let Ok(record) = reads.rig(tv) else { continue };
             let record = record.unwrap_or_else(|| RigRecord::fresh_unread(tv));
-            if let Some(fixed) = facts(w, query.actor(), tv, &record)
+            if let Some(fixed) = facts(w, query.actor(), tv, &record, (&read_rig, &read_carrier))
                 && (fixed.staff || fixed.finish)
             {
                 rigs.insert(tv.0.to_string(), fixed);
@@ -490,10 +530,13 @@ impl ActionProvider for RecoveryProvider {
         .map(Some)
     }
 
-    fn prepare_authoritative(
+    /// **Doc 23 cut S.1** (L4, L6): the recovery takes its preparation context, through which a
+    /// staff home appends the epoch's close line in this act's own bundle.
+    fn prepare_authoritative_with_context(
         &self,
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
+        context: &mut mush_core::PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let p = parameters(invocation)?;
         let (tv, ordinal, operation) = request(p)?;
@@ -516,6 +559,8 @@ impl ActionProvider for RecoveryProvider {
         let found = act::read_record(txn, &self.excursions, tv)?;
         let existed = found.is_some();
         let mut record = found.unwrap_or_else(|| RigRecord::fresh_unread(tv));
+        // Doc 23 cut S.1: the epoch's close line a staff home owes, appended below.
+        let mut closing = None;
         record.check().map_err(|_| {
             integrity("the rig record cannot be recovered until its corruption is repaired")
         })?;
@@ -586,6 +631,75 @@ impl ActionProvider for RecoveryProvider {
                 BTreeMap::new()
             };
             self.release_locks(txn, tv, &record)?;
+            // Doc 23 cut S.1 (§6, D-23-1, D-23-4; L5, L6): the epoch at a staff recovery. A
+            // close cancels the work and keeps the epoch, flagged abandoned — abandonment never
+            // closes one; the close receipt's own line is the owner's one notice. A home closes
+            // it at the receipt (the placement is the tick's, but the custody decision is the
+            // staff's and is durable here): `RecoveredToBase` for a rig that was parked short of
+            // its way home (the record's and the ground's facts, `RigFacts::parked`), else
+            // `ReturnedToBase`, into the assigned hull. An unload, from the bay, moves neither.
+            // `PoweredDownInBase` is unused (a rig's park is the bay) and `Destroyed` reserved.
+            //
+            // The S.1 fix round's F3: a close that lands between the tick's placement and the
+            // finish (which it fences out) settles the custody fact the finish would have — an
+            // act leaving the bay whose rig the tick already put out of every bay opens the
+            // epoch here, flagged abandoned on the record (never on the open line); a recover
+            // whose rig the tick already put in its bay closes it `ReturnedToBase`.
+            match operation {
+                RecoveryOperation::Close => {
+                    let leaving = record
+                        .act
+                        .as_ref()
+                        .filter(|act| act.kind == ActKind::Launch || act.params.launches());
+                    let recovering = record
+                        .act
+                        .as_ref()
+                        .filter(|act| act.kind == ActKind::Recover);
+                    if let (Some(act), None, Some(excursion), false) = (
+                        leaving,
+                        record.sortie.as_ref(),
+                        record.excursion.as_ref(),
+                        fixed.in_any_bay,
+                    ) {
+                        let (mut opened, line) = crate::surface::black_box::open_epoch(
+                            tv,
+                            excursion,
+                            act.due_ic,
+                            fixed.epoch.as_ref(),
+                        );
+                        opened.abandoned = true;
+                        record.sortie = Some(opened);
+                        closing = Some(line);
+                    } else if recovering.is_some() && fixed.in_bay {
+                        if let Some(open) = record.sortie.take() {
+                            closing = Some(crate::surface::black_box::BlackBoxLine::sortie_closed(
+                                tv,
+                                &open,
+                                now,
+                                IcCloseKind::ReturnedToBase { base: fixed.hull },
+                            ));
+                        }
+                    } else if let Some(open) = record.sortie.as_mut() {
+                        open.abandoned = true;
+                    }
+                }
+                RecoveryOperation::Home => {
+                    if let Some(open) = record.sortie.take() {
+                        let base = fixed.hull;
+                        closing = Some(crate::surface::black_box::BlackBoxLine::sortie_closed(
+                            tv,
+                            &open,
+                            now,
+                            if fixed.parked {
+                                IcCloseKind::RecoveredToBase { base }
+                            } else {
+                                IcCloseKind::ReturnedToBase { base }
+                            },
+                        ));
+                    }
+                }
+                RecoveryOperation::Unload => {}
+            }
             record.ordinal = ordinal;
             record.charge = fixed.charge;
             if operation == RecoveryOperation::Home {
@@ -623,6 +737,22 @@ impl ActionProvider for RecoveryProvider {
             }),
         )
         .map_err(|_| integrity("the recovery result is out of bounds"))?;
+        // The line rides this bundle; an open whose line was not written is recorded on the
+        // epoch in the same record write (the S.1 fix round's F2).
+        if let Some(line) = closing {
+            let opens = matches!(
+                line,
+                crate::surface::black_box::BlackBoxLine::MindSealed { .. }
+            );
+            let written =
+                crate::surface::black_box::append(context, self.black_box.as_ref(), tv, line)?;
+            if opens
+                && !written
+                && let Some(open) = record.sortie.as_mut()
+            {
+                open.unrecorded = true;
+            }
+        }
         act::write_record(txn, &self.excursions, record, existed)?;
         Ok(AuthoritativeActionOutput::new(outcome)
             .with_eligible_witnesses(vec![invocation.principal().clone()]))
@@ -763,7 +893,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, word: &str, tv: ObjId) -> Result<(), Cm
         .rig(tv)
         .map_err(CmdError::msg)?
         .unwrap_or_else(|| RigRecord::fresh_unread(tv));
-    let fixed = facts(ctx.w, ctx.actor, tv, &record)
+    let fixed = facts(ctx.w, ctx.actor, tv, &record, (&|_| None, &|_| None))
         .ok_or_else(|| CmdError::msg("That rig has no recoverable assignment or excursion."))?;
     if operation != RecoveryOperation::Close
         && (!fixed.assigned
@@ -827,7 +957,13 @@ pub(crate) fn tick(
                 stats.deferred += 1;
                 continue;
             }
-            let fixed = facts(ctx.w, receipt.staff, record.tv, record);
+            let fixed = facts(
+                ctx.w,
+                receipt.staff,
+                record.tv,
+                record,
+                (&|_| None, &|_| None),
+            );
             let reason = if crate::port_tick::gone(ctx.w, receipt.staff) {
                 Some("the staff actor who requested it no longer exists")
             } else if fixed.as_ref().is_none_or(|fixed| {

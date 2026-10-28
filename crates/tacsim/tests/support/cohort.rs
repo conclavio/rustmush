@@ -214,7 +214,10 @@ pub const WRITE_GATES: &[Gate] = &[
     act("start.sound.plan"),
     act("start.recover.idle"),
     act("start.unload.queued"),
-    // The completions (the surface tick's finish, `tacsim_surface_done`).
+    // The completions (the surface tick's finish, `tacsim_surface_done`). Doc 23 cut S.1: the
+    // black box pair — `done.launch` (and a scan's, a sounding's or a drive's from the bay, an
+    // implied launch) gains one `log:hull.<n>` chunk when the epoch opens, `done.recover` one when
+    // it closes; each stays inside §11's 8 (`assert_black_box_pair` in `tests/cost_lane.rs`).
     done("done.drive"),
     done("done.dump"),
     done("done.launch"),
@@ -280,12 +283,20 @@ pub const WRITE_GATES: &[Gate] = &[
         lane: Lane::Bundle,
     },
     act("dispatch.survey"),
+    // Doc 23 cut S.2 (the fix round's R9): the ship's epoch, the port tick's `tacsim_voyage_epoch`
+    // (no mining-layer id, so its kind stays `other.*`): its `tacsim.ship_epoch` record and its
+    // `log:hull.<n>` chunk, two writes an end.
+    measured("other.tacsim_voyage_epoch", 2, Lane::Bundle),
 ];
 
 /// **Where each exact pin is asserted** (SM.8's T6 style): every `Measured` gate's ceiling — and
 /// `done.unload`'s constructed maximum — is asserted equal to the constructed maximum by the
 /// census test named here, the one whose script builds that kind's largest variant.
 pub const MEASURED_AT: &[(&str, &str)] = &[
+    (
+        "other.tacsim_voyage_epoch",
+        "sm12c_every_act_kind_counts_its_writes_on_the_surface",
+    ),
     (
         "done.unload",
         "sm12c_every_act_kind_counts_its_writes_on_the_surface",
@@ -382,6 +393,7 @@ pub const CENSUS: &[(&str, &[&str])] = &[
             "tvpref",
             "licence.buy",
             "lease.take",
+            "other.tacsim_voyage_epoch",
         ],
     ),
     (
@@ -408,6 +420,7 @@ pub const CENSUS: &[(&str, &[&str])] = &[
             "done.unload",
             "licence.buy",
             "lease.take",
+            "other.tacsim_voyage_epoch",
         ],
     ),
     (
@@ -440,6 +453,7 @@ pub const CENSUS: &[(&str, &[&str])] = &[
             "claim.seed",
             "site.open",
             "site.worked",
+            "other.tacsim_voyage_epoch",
         ],
     ),
     (

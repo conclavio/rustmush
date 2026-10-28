@@ -3183,6 +3183,7 @@ mod tests {
             plan: None,
             plans: 0,
             recovery: None,
+            sortie: None,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
         let mut records: Vec<RigRecord> = (1..=over)
@@ -3240,6 +3241,7 @@ mod tests {
             plan: None,
             plans: 0,
             recovery: None,
+            sortie: None,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
         let mut records: Vec<RigRecord> = (1..=stuck)
@@ -3406,6 +3408,7 @@ mod tests {
             plan: None,
             plans: 0,
             recovery: None,
+            sortie: None,
         };
         let state = SurfaceTickState::default();
         let records = vec![
@@ -3523,6 +3526,7 @@ mod tests {
             plan: None,
             plans: 0,
             recovery: None,
+            sortie: None,
         }
     }
 
@@ -4133,6 +4137,18 @@ mod tests {
             vec![(true, false, (1_000, 1))],
             "untold even inside the step's back-off"
         );
+    }
+
+    /// **A live plan's and an idle rig's keys are still due** (doc 20 cut SM.11; the brief's
+    /// 3.8): a planned rig's `PLAN_CYCLE` key and an idle rig's `IDLE_CYCLE` key both read in
+    /// `still_due`. Its own test since doc 23 cut S.1 (`RigRecord` grew its open sortie, and
+    /// the two records here were the last straw for the candidates test's stack frame under the
+    /// M7 memory-size limits).
+    #[test]
+    fn sm11_the_plan_and_idle_keys_are_still_due() {
+        use crate::surface::plan::IDLE_PARK_IC_SECS;
+        let now = 100_000;
+        let launched = now - IDLE_PARK_IC_SECS;
         let due = still_due(&[planned(1, 1_000), out_idle(2, launched)], now);
         assert!(due.contains(&(1, 6, PLAN_CYCLE)), "{due:?}");
         assert!(due.contains(&(2, 6, IDLE_CYCLE)), "{due:?}");

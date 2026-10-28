@@ -121,6 +121,13 @@
 //! - the idle return: a rig left on the ground with nothing to do for a day is recovered by the
 //!   tick as its operator, or reported parked where it stands.
 //!
+//! **Doc 23 cut S.1** makes the excursion the first IC sortie (doc 23 §6, D-23-7): the rig's
+//! seal epoch opens when it leaves the bay at its launch's end and closes at the recover's end
+//! or a staff home, on the record (`RigRecord::sortie`, an
+//! [`OpenSortie`](crate::surface::excursion::OpenSortie)) and in the hull's durable
+//! [`black_box`](crate::surface::black_box) — one `mush_core::Ledger` log per hull, appended by
+//! its owner participant inside the finish or the staff recovery that moves the record.
+//!
 //! **The site ground is warmed off the act's path** (lead ruling 6, D11): the command, the
 //! start's offer and `+tv` status only peek the cache
 //! ([`ground::site_ground_cached`](crate::surface::ground::site_ground_cached)); a cold peek
@@ -139,6 +146,7 @@
 
 pub mod act;
 pub mod address;
+pub mod black_box;
 pub mod chart;
 pub mod claims;
 pub mod commands;

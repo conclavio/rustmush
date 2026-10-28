@@ -36,6 +36,11 @@
 //!   `accept_at`, `sell_into_bid`, the leg re-stages, or the `tacsim_port_burn`
 //!   submission), with its pull verification at the top of every fire
 //!   ([`crate::port::executor`]); a hull with a filed passage is the launch arm's.
+//! - doc 23 cut S.2 — **the epoch arm** (the ship's seal epoch, a pull reconciliation): one
+//!   agent per programme hull whose epoch open or close is due (agent = the hull, principal =
+//!   the epoch's warrant principal), submitting ONE `tacsim_voyage_epoch` as that principal
+//!   ([`crate::port::epoch`]); for the fire it takes the hull from the launch, recall and order
+//!   arms, so a close lands before the hull can leave again.
 //!
 //! **Doc 20 cut SM.3b** registers the surface layer's two providers here too, beside the
 //! burn and under the crate's one `outcome` and one `action` validator:
@@ -269,6 +274,11 @@ pub(crate) fn register_with_coverage(
         .get(crate::surface::survey::SURVEY_CANCEL_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("survey cancellation outcome missing"))?;
+    // Doc 23 cut S.2: the ship's epoch.
+    let epoch_outcome = outcome_refs
+        .get(crate::port::epoch::EPOCH_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the ship's epoch outcome did not register"))?;
     let passenger_outcome = outcome_refs
         .get(crate::port::passenger::store::OUTCOME)
         .cloned()
@@ -287,7 +297,7 @@ pub(crate) fn register_with_coverage(
         &recovery_outcome,
         &survey_outcome,
         &survey_cancel_outcome,
-        &passenger_outcome,
+        (&passenger_outcome, &epoch_outcome),
     )?;
     actions.push(crate::quest::registration::action(&outcome_refs)?);
     if let Some(ic) = ic {
@@ -336,37 +346,23 @@ pub(crate) fn register_with_coverage(
     // registered only when the inventory cell is filled (its prepare mints through
     // the delegated inventory families); the definitions register regardless.
     let stock_action = action_refs.get(crate::port::stock::STOCK_ACTION).cloned();
-    if let (Some(action), Some(inventory)) = (stock_action.clone(), inventory_families.clone()) {
-        reg.action_provider(
-            action.clone(),
-            crate::port::stock::StockProvider {
-                action,
-                outcome: stock_outcome,
-                receipts: port_families.port_stock.clone(),
-                inventory,
-            },
-        )?;
-    }
+    register_stock(
+        reg,
+        stock_action.as_ref(),
+        stock_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     // Doc 18 cut IC9: `tacsim_port_burn` — registered only when the inventory cell
     // is filled (its prepare debits through the delegated families) AND the drive
     // table built (the stock precedent); the definitions register regardless.
-    let burn_action = action_refs.get(crate::port::burn::BURN_ACTION).cloned();
-    let burn_registered = match (burn_action.clone(), inventory_families.clone(), burn) {
-        (Some(action), Some(inventory), Some(table)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::burn::BurnProvider {
-                    action: action.clone(),
-                    outcome: burn_outcome,
-                    tickets: port_families.tickets.clone(),
-                    inventory,
-                    table,
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
+    let burn_registered = register_burn(
+        reg,
+        &action_refs,
+        burn_outcome,
+        &port_families,
+        (inventory_families.as_ref(), burn),
+    )?;
     // Doc 20 cut SM.3b (finding F5): the one tools table, built once — never a `ModError`
     // (the burn precedent: a bad table leaves one feature unwired, it does not fail the
     // layer's registration).
@@ -384,13 +380,22 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.3b: `tacsim_surface_act` and `tacsim_surface_done` — registered only when
     // the inventory cell is filled (the dump moves pools through the delegated families) and
     // the tools table built; the definitions register regardless.
+    // Doc 23 cut S.1 (§7, L2): the black box's owner participant, for the finish and the staff
+    // recovery the two calls below register.
+    // Doc 23 cut S.2: and for the ship's epoch, on every roster.
+    let black_box = register_black_box(
+        reg,
+        &action_refs,
+        inventory_families.is_some(),
+        surface_tools.is_some(),
+    )?;
     let (surface_act, surface_done) = register_surface_acts(
         reg,
         &action_refs,
         (surface_act_outcome, surface_done_outcome),
         &port_families,
         inventory_families.as_ref(),
-        surface_tools.as_ref(),
+        (surface_tools.as_ref(), black_box.done),
     )?;
     // Staff recovery is a separate capability from the player's surface acts.
     let surface_recovery = register_surface_recovery(
@@ -398,7 +403,16 @@ pub(crate) fn register_with_coverage(
         &action_refs,
         recovery_outcome,
         &port_families,
-        inventory_families.as_ref(),
+        (inventory_families.as_ref(), black_box.recovery),
+    )?;
+    // Doc 23 cut S.2 (V1): `tacsim_voyage_epoch`, the ship's epoch — its record's family, no
+    // inventory; the black box's participant appends the line.
+    let epoch_action = register_epoch(
+        reg,
+        &action_refs,
+        epoch_outcome,
+        &port_families,
+        black_box.epoch,
     )?;
     // Doc 20 cut SM.4a (D9): `+tv/forget` needs only the chart family.
     let chart_forget = match action_refs
@@ -421,88 +435,40 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.6 (§3.4): `tacsim_site_work`, the site clerk's worked transfer —
     // registered when the inventory cell is filled (the transfer rides the delegated
     // families; the stock provider's rule); the definitions register regardless.
-    let site_work = match (
-        action_refs
-            .get(crate::port::site::SITE_WORK_ACTION)
-            .cloned(),
-        inventory_families.clone(),
-    ) {
-        (Some(action), Some(inventory)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::site::SiteWorkProvider {
-                    action: action.clone(),
-                    outcome: site_work_outcome,
-                    pockets: port_families.pockets.clone(),
-                    inventory,
-                    warned: std::sync::Mutex::new(BTreeSet::new()),
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
-    let relay_fabricate = if let (Some(action), Some(inventory)) = (
-        action_refs.get(crate::relay_foundry::ACTION).cloned(),
-        inventory_families.clone(),
-    ) {
-        reg.action_provider(
-            action.clone(),
-            crate::relay_foundry::Provider {
-                action: action.clone(),
-                outcome: relay_outcome,
-                inventory,
-                book: port_families.relay_fabrications.clone(),
-            },
-        )?;
-        Some(action)
-    } else {
-        None
-    };
+    let site_work = register_site_work(
+        reg,
+        &action_refs,
+        site_work_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
+    let relay_fabricate = register_relay(
+        reg,
+        &action_refs,
+        relay_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     // Doc 20 cut SM.12a: `tacsim_port_mill`, the mill's batch — registered only when the
     // inventory cell is filled (its prepare debits and credits through the delegated
     // families; the stock provider's rule); the definitions register regardless.
-    let mill_action = match (
-        action_refs.get(crate::port::mill::MILL_ACTION).cloned(),
-        inventory_families.clone(),
-    ) {
-        (Some(action), Some(inventory)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::mill::MillProvider {
-                    action: action.clone(),
-                    outcome: mill_outcome,
-                    mills: port_families.mills.clone(),
-                    inventory,
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
+    let mill_action = register_mill(
+        reg,
+        &action_refs,
+        mill_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     // Doc 20 cut SM.12b (§12.3): `tacsim_dispatch`, the house's survey and the yard's delivery —
     // registered only when the inventory cell is filled (the delivery's transfer rides the
     // delegated families; the stock provider's rule); the definitions register regardless.
-    let dispatch_action = match (
-        action_refs.get(crate::port::yard::DISPATCH_ACTION).cloned(),
-        inventory_families.clone(),
-    ) {
-        (Some(action), Some(inventory)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::yard::DispatchProvider {
-                    action: action.clone(),
-                    outcome: dispatch_outcome,
-                    dispatch: port_families.dispatch.clone(),
-                    charts: port_families.charts.clone(),
-                    claims: port_families.claims.clone(),
-                    inventory,
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
+    let dispatch_action = register_dispatch(
+        reg,
+        &action_refs,
+        dispatch_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     let quest =
         crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
     reg.state(PortHandles {
@@ -526,7 +492,7 @@ pub(crate) fn register_with_coverage(
     reg.state(PortTickState::new(
         probe_action,
         stock_action,
-        mill_action,
+        (mill_action, epoch_action),
         dispatch_action,
     ));
     reg.tick(
@@ -547,7 +513,7 @@ fn append_receipt_actions(
     recovery: &DefinitionRef,
     survey_accept: &DefinitionRef,
     survey_cancel: &DefinitionRef,
-    passenger: &DefinitionRef,
+    (passenger, epoch): (&DefinitionRef, &DefinitionRef),
 ) -> Result<(), ModError> {
     actions.push(
         descriptor(
@@ -573,6 +539,20 @@ fn append_receipt_actions(
     )?.with_references(vec![survey_cancel.clone()]));
     actions.push(descriptor("action", crate::port::passenger::store::ACTION,
         json!({"subject":"self_actor","targets":0,"family":crate::port::passenger::store::FAMILY}))?.with_references(vec![passenger.clone()]));
+    // Doc 23 cut S.2: the ship's epoch writes its `tacsim.ship_epoch` record; its black box line
+    // rides the black box's participant.
+    actions.push(
+        descriptor(
+            "action",
+            crate::port::epoch::EPOCH_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::port::epoch::EPOCH_FAMILY,
+            }),
+        )?
+        .with_references(vec![epoch.clone()]),
+    );
     Ok(())
 }
 
@@ -642,7 +622,7 @@ fn register_surface_acts(
     outcomes: (DefinitionRef, DefinitionRef),
     families: &PortFamilies,
     inventory: Option<&InventoryFamilies>,
-    tools: Option<&Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>>>,
+    (tools, black_box): (Option<&SurfaceTools>, Option<BlackBoxHandle>),
 ) -> Result<(Option<DefinitionRef>, Option<DefinitionRef>), ModError> {
     let (Some(act), Some(done), Some(inventory), Some(tools)) = (
         actions.get(crate::surface::act::SURFACE_ACT_ACTION),
@@ -676,9 +656,284 @@ fn register_surface_acts(
             pockets: families.pockets.clone(),
             inventory: inventory.clone(),
             tools: Arc::clone(tools),
+            black_box,
         },
     )?;
     Ok((Some(act.clone()), Some(done.clone())))
+}
+
+/// The players' surface tools table the finish reads.
+type SurfaceTools = Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>>;
+
+/// The black box participant's handle for one action (doc 23 cut S.1).
+type BlackBoxHandle =
+    mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>;
+
+/// The black box participant's handles, one an action that asks for it.
+struct BlackBoxHandles {
+    /// `tacsim_surface_done`'s.
+    done: Option<BlackBoxHandle>,
+    /// `tacsim_surface_recovery`'s.
+    recovery: Option<BlackBoxHandle>,
+    /// Doc 23 cut S.2: `tacsim_voyage_epoch`'s.
+    epoch: Option<BlackBoxHandle>,
+}
+
+/// **The black box's owner participant** (doc 23 cut S.1; §7; the lead's L2): its definition
+/// and its kind's one validator, registered unconditionally (a definition is a fact about the
+/// crate); the participant itself, on the store slot, for exactly the actions the calls after
+/// it register — the finish (`tacsim_surface_done`: the inventory cell and the tools table
+/// filled), the staff recovery (the inventory cell filled) and, doc 23 cut S.2, the ship's epoch
+/// (`tacsim_voyage_epoch`, every roster) — and one handle each.
+fn register_black_box(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    inventory: bool,
+    tools: bool,
+) -> Result<BlackBoxHandles, ModError> {
+    use crate::surface::black_box::{
+        BlackBoxParticipant, PARTICIPANT_KIND, participant_descriptor,
+    };
+    let descriptor = participant_descriptor()?;
+    reg.definition_validator(
+        kind(PARTICIPANT_KIND)?,
+        crate::definitions::exact_validator(vec![descriptor.clone()]),
+    )?;
+    let definition = reg.definition(descriptor)?;
+    let done = actions
+        .get(crate::surface::act::SURFACE_DONE_ACTION)
+        .filter(|_| {
+            inventory && tools && actions.contains_key(crate::surface::act::SURFACE_ACT_ACTION)
+        })
+        .cloned();
+    let recovery = actions
+        .get(crate::surface::recovery::RECOVERY_ACTION)
+        .filter(|_| inventory)
+        .cloned();
+    let epoch = actions.get(crate::port::epoch::EPOCH_ACTION).cloned();
+    let allowed: BTreeSet<DefinitionRef> = done
+        .iter()
+        .chain(recovery.iter())
+        .chain(epoch.iter())
+        .cloned()
+        .collect();
+    if allowed.is_empty() {
+        return Ok(BlackBoxHandles {
+            done: None,
+            recovery: None,
+            epoch: None,
+        });
+    }
+    reg.owner_participant(definition, allowed, BlackBoxParticipant)?;
+    let mut request = |action: Option<DefinitionRef>| {
+        action
+            .map(|action| reg.request_owner_participant::<BlackBoxParticipant>(action))
+            .transpose()
+    };
+    Ok(BlackBoxHandles {
+        done: request(done)?,
+        recovery: request(recovery)?,
+        epoch: request(epoch)?,
+    })
+}
+
+/// **The ship's epoch action** (doc 23 cut S.2, V1): `tacsim_voyage_epoch` over the epoch
+/// records' family, the black box's participant appending the line; registered only with the
+/// action in the roster and the participant's handle for it. Its own function so the provider's
+/// construction is not one more temporary on [`register_with_coverage`]'s frame (the M7
+/// memory-size limits).
+fn register_epoch(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    black_box: Option<BlackBoxHandle>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(handle)) = (actions.get(crate::port::epoch::EPOCH_ACTION), black_box)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::epoch::EpochProvider {
+            action: action.clone(),
+            outcome,
+            records: families.epochs.clone(),
+            black_box: handle,
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+// The six providers below each carry the delegated inventory families (a handful of typed
+// handles) beside their own: built in their own frames, as `register_surface_acts` is, so the
+// clones never accumulate on `register_with_coverage`'s stack (the M7 memory-size limits; doc 23
+// cut S.2's epoch arm was the last straw).
+
+/// Doc 18 cut IC8: `tacsim_port_stock`, tacsim's first production provider — registered only
+/// when the inventory cell is filled (its prepare mints through the delegated inventory
+/// families); the definition registers regardless.
+fn register_stock(
+    reg: &mut Registrar<'_>,
+    action: Option<&DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<(), ModError> {
+    let (Some(action), Some(inventory)) = (action, inventory) else {
+        return Ok(());
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::stock::StockProvider {
+            action: action.clone(),
+            outcome,
+            receipts: families.port_stock.clone(),
+            inventory: inventory.clone(),
+        },
+    )
+}
+
+/// Doc 18 cut IC9: `tacsim_port_burn` — registered only when the inventory cell is filled (its
+/// prepare debits through the delegated families) AND the drive table built (the stock
+/// precedent); the definition registers regardless. The action, when registered.
+fn register_burn(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    (inventory, table): (
+        Option<&InventoryFamilies>,
+        Option<crate::port::burn::BurnTable>,
+    ),
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory), Some(table)) = (
+        actions.get(crate::port::burn::BURN_ACTION),
+        inventory,
+        table,
+    ) else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::burn::BurnProvider {
+            action: action.clone(),
+            outcome,
+            tickets: families.tickets.clone(),
+            inventory: inventory.clone(),
+            table,
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+/// Doc 20 cut SM.6 (§3.4): `tacsim_site_work`, the site clerk's worked transfer — registered
+/// when the inventory cell is filled (the transfer rides the delegated families; the stock
+/// provider's rule); the definition registers regardless. The action, when registered.
+fn register_site_work(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) =
+        (actions.get(crate::port::site::SITE_WORK_ACTION), inventory)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::site::SiteWorkProvider {
+            action: action.clone(),
+            outcome,
+            pockets: families.pockets.clone(),
+            inventory: inventory.clone(),
+            warned: std::sync::Mutex::new(BTreeSet::new()),
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+/// The relay foundry's fabrication — registered when the inventory cell is filled; the action,
+/// when registered.
+fn register_relay(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) = (actions.get(crate::relay_foundry::ACTION), inventory)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::relay_foundry::Provider {
+            action: action.clone(),
+            outcome,
+            inventory: inventory.clone(),
+            book: families.relay_fabrications.clone(),
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+/// Doc 20 cut SM.12a: `tacsim_port_mill`, the mill's batch — registered only when the inventory
+/// cell is filled (its prepare debits and credits through the delegated families; the stock
+/// provider's rule); the definition registers regardless. The action, when registered.
+fn register_mill(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) = (actions.get(crate::port::mill::MILL_ACTION), inventory)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::mill::MillProvider {
+            action: action.clone(),
+            outcome,
+            mills: families.mills.clone(),
+            inventory: inventory.clone(),
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+/// Doc 20 cut SM.12b (§12.3): `tacsim_dispatch`, the house's survey and the yard's delivery —
+/// registered only when the inventory cell is filled (the delivery's transfer rides the
+/// delegated families; the stock provider's rule); the definition registers regardless. The
+/// action, when registered.
+fn register_dispatch(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) =
+        (actions.get(crate::port::yard::DISPATCH_ACTION), inventory)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::yard::DispatchProvider {
+            action: action.clone(),
+            outcome,
+            dispatch: families.dispatch.clone(),
+            charts: families.charts.clone(),
+            claims: families.claims.clone(),
+            inventory: inventory.clone(),
+        },
+    )?;
+    Ok(Some(action.clone()))
 }
 
 /// Recovery needs inventory but does not depend on the player's tools table.
@@ -687,7 +942,7 @@ fn register_surface_recovery(
     actions: &BTreeMap<String, DefinitionRef>,
     outcome: DefinitionRef,
     families: &PortFamilies,
-    inventory: Option<&InventoryFamilies>,
+    (inventory, black_box): (Option<&InventoryFamilies>, Option<BlackBoxHandle>),
 ) -> Result<Option<DefinitionRef>, ModError> {
     let (Some(action), Some(inventory)) = (
         actions.get(crate::surface::recovery::RECOVERY_ACTION),
@@ -703,6 +958,7 @@ fn register_surface_recovery(
             excursions: families.excursions.clone(),
             pockets: families.pockets.clone(),
             inventory: inventory.clone(),
+            black_box,
         },
     )?;
     Ok(Some(action.clone()))
@@ -808,6 +1064,12 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             "outcome",
             crate::port::yard::DISPATCH_OUTCOME,
             json!({ "fields": ["act", "actor", "receipt", "site", "t"] }),
+        )?,
+        // Doc 23 cut S.2: a ship's epoch opened or closed, and whether its line was written.
+        descriptor(
+            "outcome",
+            crate::port::epoch::EPOCH_OUTCOME,
+            json!({ "fields": ["actor", "hull", "op", "written"] }),
         )?,
     ];
     if test_world {
@@ -1118,13 +1380,23 @@ pub struct PortTickState {
     /// each is logged once. Bounded by `crate::port::stock::MAX_CLERK_ROWS`.
     pub(crate) dispatch_warned:
         BTreeSet<(ObjId, crate::port::yard::DispatchWarn, smol_str::SmolStr)>,
+    /// **Doc 23 cut S.2**: the registered `tacsim_voyage_epoch` action, set at `register`.
+    pub(crate) epoch_action: Option<DefinitionRef>,
+    /// **Doc 23 cut S.2**: each hull's due epoch open or close the arm submitted this boot, by
+    /// hull (`ObjId.0`); dropped once the target is no longer due. Bounded by the programme's
+    /// hulls.
+    pub(crate) epoch_tries: BTreeMap<u32, crate::port::epoch::EpochTry>,
+    /// **Doc 23 cut S.2**: the epoch arm's pages this boot, by `(hull, why)` — each once.
+    pub(crate) epoch_warned: BTreeSet<(u32, crate::port::epoch::EpochWarn)>,
+    /// **Doc 23 cut S.2**: the epoch arm's pages this boot (a count, for tests).
+    pub(crate) epoch_pages: u32,
 }
 
 impl PortTickState {
     fn new(
         probe_action: Option<DefinitionRef>,
         stock_action: Option<DefinitionRef>,
-        mill_action: Option<DefinitionRef>,
+        (mill_action, epoch_action): (Option<DefinitionRef>, Option<DefinitionRef>),
         dispatch_action: Option<DefinitionRef>,
     ) -> PortTickState {
         PortTickState {
@@ -1132,6 +1404,7 @@ impl PortTickState {
             stock_action,
             mill_action,
             dispatch_action,
+            epoch_action,
             ..PortTickState::default()
         }
     }
@@ -1167,11 +1440,14 @@ pub struct PortFireStats {
     /// **Doc 20 cut SM.12c**: the yard dispatchers' agents this fire (`Arm::Dispatch`). RAM only,
     /// never persisted, never shown to a player.
     pub dispatch: ArmFireStats,
+    /// **Doc 23 cut S.2**: the epoch arm's agents this fire (`Arm::Epoch`). RAM only, never
+    /// persisted, never shown to a player.
+    pub epoch: ArmFireStats,
 }
 
 /// **One arm's share of a port fire** (doc 20 cut SM.12c, the cost lane; doc 20a §5.6's "by
 /// arm"): counted in the walk beside [`PortFireStats`]' totals for the stock, site and dispatch
-/// arms (the other arms count only in the totals). `deferred` counts the `Fire::as_principal`
+/// arms and, doc 23 cut S.2, the epoch arm (the other arms count only in the totals). `deferred` counts the `Fire::as_principal`
 /// refusals that defer — the principal already acted this fire, owed its act to another agent,
 /// or has a submission still in flight (`Pending`). RAM only, never persisted, never shown to a
 /// player.
@@ -1468,6 +1744,9 @@ enum Arm {
     /// Doc 20 cut SM.12b: a yard's dispatcher — deliver the yard hold's ore, or file one rig's
     /// next plan ([`crate::port::yard::dispatch_step`]); agent and principal the dispatcher.
     Dispatch,
+    /// Doc 23 cut S.2: one hull's due epoch open or close, as its warrant principal
+    /// ([`crate::port::epoch::epoch_step`]).
+    Epoch,
     /// A persistent passenger agreement, acting as its captain.
     Passenger { booking: u64 },
     /// The test world's probe (lead ruling L3).
@@ -1556,9 +1835,19 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // their hulls are dropped from the order agents before either is offered, so a
     // dormant hull with a waiting plan is recalled rather than offered to the order
     // arm every fire, and the duplicate rule never logs.
-    let recalls = crate::port::recall::recall_agents(ctx, state);
+    let mut recalls = crate::port::recall::recall_agents(ctx, state);
     let mut orders = crate::port::executor::order_agents(ctx.w, state);
     orders.retain(|(hull, _)| !recalls.iter().any(|(recalled, _)| recalled == hull));
+    // Doc 23 cut S.2 (V1; the fix round's R4): the epoch agents — and every hull whose epoch
+    // open or close is due, offered this fire or spacing out its retry, is withheld from the
+    // launch, recall and order arms (one arm an agent), so a close lands before the hull can leave
+    // again and an open before it moves on; they wait. A held or unwritable epoch withholds
+    // nothing (R2: it never wedges its hull).
+    let (epochs, withheld) = crate::port::epoch::epoch_agents(ctx, state);
+    let mut launches = launches;
+    launches.retain(|(hull, _)| !withheld.contains(hull));
+    recalls.retain(|(hull, _)| !withheld.contains(hull));
+    orders.retain(|(hull, _)| !withheld.contains(hull));
     // The agents: the union over the arms, agent -> (principal, arm). An agent
     // id belongs to one arm (hull ids and clerk ids are disjoint objects); a
     // duplicate offered by a later arm is refused and logged.
@@ -1610,6 +1899,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     for (hull, author) in orders {
         offer(hull, author, Arm::Order { hull: hull.0 });
     }
+    // Doc 23 cut S.2: one epoch agent per hull whose epoch open or close is due (agent = the
+    // hull, principal = the epoch's warrant principal).
+    for (hull, principal) in epochs {
+        offer(hull, principal, Arm::Epoch);
+    }
     for (npc, captain, booking) in crate::port::passenger::agents(ctx) {
         offer(npc, captain, Arm::Passenger { booking });
     }
@@ -1649,6 +1943,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
             Arm::Stock => fire.stats.stock.count(step),
             Arm::Site => fire.stats.site.count(step),
             Arm::Dispatch => fire.stats.dispatch.count(step),
+            Arm::Epoch => fire.stats.epoch.count(step),
             Arm::Release { .. }
             | Arm::Launch { .. }
             | Arm::Recall { .. }
@@ -1724,6 +2019,7 @@ fn step(
         }
         Arm::Site => crate::port::site::site_step(ctx, fire, agent),
         Arm::Dispatch => crate::port::yard::dispatch_step(ctx, state, fire, agent),
+        Arm::Epoch => crate::port::epoch::epoch_step(ctx, state, fire, agent, principal),
         Arm::Passenger { booking } => crate::port::passenger::step(ctx, fire, booking),
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),

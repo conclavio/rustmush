@@ -481,6 +481,11 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // failed, sized on the four-seed measurement; mapped straight across.
             max_path_cells_per_pulse: cfg.harness.max_path_cells_per_pulse,
         },
+        // Doc 23 cut S.1 (§7, the lead's L2): the black box's line cap, mapped straight across
+        // and banded by `validate` below. `registry_interlock` stays the host's, refused above.
+        surface: tacsim::config::SurfaceConfig {
+            black_box_max_lines: cfg.surface.black_box_max_lines,
+        },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
     // Each answers one sentence naming the TOML key and the value it was given,
@@ -499,6 +504,8 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     typed.minds.validate()?;
     typed.sensors.validate()?;
     typed.harness.validate()?;
+    // Doc 23 cut S.1: `[tacsim.surface].black_box_max_lines`, in the same pattern.
+    typed.surface.validate()?;
     // Verify here, at the host, so the boot fails with the file's name in the message.
     // The check is pure and the module repeats it at wiring over the same operator
     // sources and the same game seed sources (the lane, when the layer is on — the
@@ -982,6 +989,7 @@ mod tests {
         let off = TacsimCfg {
             surface: mush_config::config::TacsimSurfaceCfg {
                 registry_interlock: false,
+                ..mush_config::config::TacsimSurfaceCfg::default()
             },
             ..TacsimCfg::default()
         };

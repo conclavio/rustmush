@@ -1012,6 +1012,20 @@ impl GameModule for TacsimRuleset {
         // Total: `load` skips what it cannot use and says so, so a corrupt document
         // never fails the boot (`store`'s table says what each loss costs).
         let mut loaded = store::load(&kv, self.cfg.clone());
+        // Doc 23 cut S.1 (§7, L2): every hull's black box, its open tail restored from the
+        // `log:hull.*` chunk documents (mush-canon's pattern). A refused restore pages and
+        // leaves the black boxes dark — never a fresh ledger over a history it could not read.
+        match surface::black_box::restore(&data.ledger, &data.omitted) {
+            Ok(ledger) => loaded.black_boxes = ledger,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "tacsim: the black boxes did not restore; every hull's black box is dark \
+                     (no line is written) until staff repair the log:hull.* documents and restart"
+                );
+                loaded.black_box_dark = true;
+            }
+        }
         loaded.install_packs(packs);
         loaded.reindex();
         // Doc 18 cut IC3: the test-world flag is RAM only, so the loaded slot

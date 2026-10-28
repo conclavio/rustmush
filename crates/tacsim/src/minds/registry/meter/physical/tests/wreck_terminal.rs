@@ -161,7 +161,17 @@ fn terminal_wreck_suffix_requires_exact_physical_trace_and_job_evidence() -> Tes
             1 => arena.unit_mut(OWN).ok_or("wreck")?.limits.wreck = false,
             2 => arena.unit_mut(OWN).ok_or("wreck")?.unit = original_unit,
             3 => arena.unit_mut(OWN).ok_or("wreck")?.seal.closed = false,
-            4 => arena.unit_mut(OWN).ok_or("wreck")?.seal.sortie.0 ^= 1,
+            4 => {
+                use crate::arena::mind::SortieId;
+                let seal = &mut arena.unit_mut(OWN).ok_or("wreck")?.seal;
+                seal.sortie = match seal.sortie {
+                    SortieId::Packed(n) => SortieId::Packed(n ^ 1),
+                    SortieId::Ic { hull, at_ic } => SortieId::Ic {
+                        hull,
+                        at_ic: at_ic ^ 1,
+                    },
+                };
+            }
             5 => {
                 arena.awaiting.insert(OWN);
             }
