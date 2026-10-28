@@ -787,29 +787,11 @@ fn production_roster(atlas: AtlasConfig) -> Vec<Box<dyn GameModule>> {
 fn production_roster_with(atlas: AtlasConfig, boot_packs: bool) -> Vec<Box<dyn GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = std::sync::Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
     let tacsim_cfg = tacsim::fixture::config();
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
-        mush_weather::WeatherConfig::default(),
-        mush_economy::EconomyConfig::default(),
-        atlas,
-        &onboarding,
-        &game,
-        comp::recovery_policy(&tacsim_cfg.recovery),
-    );
-    mods.push(comp::worldgen_module_with(
-        std::sync::Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    let mut mods = comp::domain_modules_with(mush_economy::EconomyConfig::default(), atlas, &game);
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.extend(comp::sheet_modules(&onboarding, &game));
     mods.push(comp::tacsim_module_with(tacsim_cfg, boot_packs));
     // `[game].starter_area` off: the harness's own region is the content under
@@ -1178,8 +1160,8 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
     let knobs = Knobs::from_env();
     assert_eq!(
         CELL_CM,
-        mush_config::config::TacsimCfg::default().ground_cell_cm,
-        "the harness's cell size is no longer `[tacsim].ground_cell_cm`"
+        mush_tactics::ground::DEFAULT_GROUND_CELL_CM,
+        "the harness's cell size is no longer `mush_tactics::ground::DEFAULT_GROUND_CELL_CM`"
     );
     let rss_start_kib = resident_kib();
     let vmrss_start_kib = vmrss_kib();
@@ -6717,28 +6699,13 @@ fn fan_out_roster() -> Vec<Box<dyn GameModule>> {
     // snapshot's cost is the 30-second lane's to measure (`harness_arena_snapshot`),
     // and this lane stays the lane it was, in fact and not only in words.
     cfg.arena.snapshot_ms = 0;
-    let llm = std::sync::Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
-        mush_weather::WeatherConfig::default(),
+    let mut mods = comp::domain_modules_with(
         mush_economy::EconomyConfig::default(),
         AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        std::sync::Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.push(comp::tacsim_module_with(cfg, true));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods

@@ -19,7 +19,7 @@
 //! which every later consumer (SM.4's instruments, SM.6's opener, SM.7's drill) refuses on
 //! through [`live`]. The status is computed here and never recomputed after boot.
 
-use mush_core::{Ctx, GeologyMac, GeologySecret, World};
+use mush_core::{Ctx, GeologyMac, World};
 use serde::{Deserialize, Serialize};
 
 use super::GeologyState;
@@ -32,15 +32,7 @@ use crate::store::TacsimStore;
 pub const GEOLOGY_PIN_KEY: &str = "tacsim:geology";
 
 /// What the host hands the layer (the SM.1 brief's lead ruling 3).
-#[derive(Clone, Debug)]
-pub enum GeologyBoot {
-    /// `[tacsim.geology].key_dir` is absent.
-    NotConfigured,
-    /// The loaded key (its `Debug` is redacted).
-    Key(GeologySecret),
-    /// The key directory did not load: the store's error text, never key bytes.
-    Unreadable(String),
-}
+pub use mush_core::GeologyBoot;
 
 /// Why the geology layer is disabled. RAM only.
 #[derive(Clone, Debug, PartialEq, Eq)]

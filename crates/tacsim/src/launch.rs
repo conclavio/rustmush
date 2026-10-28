@@ -192,10 +192,33 @@ impl LaunchComposition {
     pub fn commerce(&self) -> &crate::composition::mind_commerce::MindCommerce {
         &self.commerce
     }
-    pub(crate) fn configure_market(
+    #[must_use]
+    pub fn tactics(&self) -> mush_tactics::TacticsModule {
+        self.roster.tactics()
+    }
+    #[must_use]
+    pub fn configure_economy(
         &self,
-        module: mush_market::MarketModule,
-    ) -> mush_market::MarketModule {
+        module: mush_economy::EconomyModule,
+    ) -> mush_economy::EconomyModule {
+        self.roster.economy(module)
+    }
+    #[must_use]
+    pub fn configure_inventory(
+        &self,
+        module: mush_inventory::InventoryModule,
+    ) -> mush_inventory::InventoryModule {
+        self.roster.inventory(module)
+    }
+    #[must_use]
+    pub fn configure_industry(
+        &self,
+        module: mush_industry::IndustryModule,
+    ) -> mush_industry::IndustryModule {
+        self.roster.industry(module)
+    }
+    #[must_use]
+    pub fn configure_market(&self, module: mush_market::MarketModule) -> mush_market::MarketModule {
         module.with_venue_gate(Arc::new(venue::Gate(self.venue.clone())))
     }
     pub fn configure_tacsim(

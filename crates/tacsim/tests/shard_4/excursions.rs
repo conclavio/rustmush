@@ -79,8 +79,8 @@ type CommerceFactory =
 /// The composition: `commerce.rs`'s bare roster (no sheet, the test world's layer, the
 /// shipped game content). Doc 17h cut M8a: with an optional mind commerce (the Registry inspection's
 /// composition, `reboot_with_inspection`), composed through
-/// `server_modules_with_tacsim_and_mind_commerce` and `configure_tacsim` over the same
-/// test-world layer `tacsim_test_world_module_wired` builds.
+/// `domain_modules_with_mind_commerce` and `configure_tacsim` over the same test-world
+/// layer `tacsim_test_world_module_wired` builds.
 #[derive(Clone, Default)]
 struct Roster {
     commerce: Option<CommerceFactory>,
@@ -90,49 +90,37 @@ impl Roster {
     fn modules(&self) -> Vec<Box<dyn mush_core::GameModule>> {
         use tacsim::composition as comp;
 
-        let llm = Arc::new(
-            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-                .expect("a disabled LLM service composes"),
-        );
-        let onboarding = mush_core::OnboardingConfig::default();
         let game = tacsim::GameEconomyConfig::default();
         let cfg = TacsimConfig {
             enabled: true,
             ..TacsimConfig::default()
         };
+        // Doc 17h cut M8a: a mind commerce composes through main's commerce twin of the domain
+        // roster (`domain_modules_with_mind_commerce`, the economy configured by the commerce)
+        // and its `configure_tacsim` over the same test-world layer
+        // `tacsim_test_world_module_wired` builds, unit authority included; the bare roster
+        // is main's own.
         let commerce = self.commerce.as_ref().map(|prepare| prepare());
         let (mut mods, inventory) = match &commerce {
-            Some(commerce) => comp::server_modules_with_tacsim_and_mind_commerce(
-                mush_weather::WeatherConfig::default(),
+            Some(commerce) => comp::domain_modules_with_mind_commerce(
                 EconomyConfig::default(),
                 mush_atlas::AtlasConfig::default(),
-                &onboarding,
                 &game,
-                comp::recovery_policy(&cfg.recovery),
                 commerce,
             )
             .expect("the commerce roster composes"),
-            None => comp::server_modules_with_tacsim(
-                mush_weather::WeatherConfig::default(),
+            None => comp::domain_modules_with_economy(
                 EconomyConfig::default(),
                 mush_atlas::AtlasConfig::default(),
-                &onboarding,
                 &game,
-                comp::recovery_policy(&cfg.recovery),
             ),
         };
-        mods.push(comp::worldgen_module_with(
-            Arc::clone(&llm),
-            mush_worldgen::WorldgenConfig::default(),
-        ));
-        mods.push(comp::npc_module_with(
-            comp::npc_agent_adapter(),
-            &mush_config::config::NpcCfg::default(),
-        ));
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
         match &commerce {
             Some(commerce) => {
                 let layer = tacsim::TacsimRuleset::with_game_content(cfg, true)
                     .with_inventory(inventory)
+                    .with_unit_authority()
                     .with_test_world(true);
                 mods.push(Box::new(
                     commerce

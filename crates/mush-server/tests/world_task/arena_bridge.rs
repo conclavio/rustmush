@@ -435,7 +435,12 @@ async fn a_running_arenas_frames_reach_its_pilot_and_its_chunks_land_in_the_matc
     // gets one, and the loop's egress arm is armed from it.
     let arenas = handles
         .arenas
-        .clone()
+        .as_ref()
+        .and_then(|host| {
+            host.as_any()
+                .downcast_ref::<tacsim::arena_bridge::ArenaTasks>()
+        })
+        .cloned()
         .expect("the tacsim layer composed, so the host found its arena table");
     assert!(
         arenas.live_ids().is_empty(),
@@ -676,7 +681,15 @@ async fn an_observer_frame_reaches_its_watcher_and_no_pilot() {
         Arc::clone(&store) as Arc<dyn ObjectStore>,
         Arc::clone(&gateway),
     );
-    let arenas = handles.arenas.clone().expect("the arena table");
+    let arenas = handles
+        .arenas
+        .as_ref()
+        .and_then(|host| {
+            host.as_any()
+                .downcast_ref::<tacsim::arena_bridge::ArenaTasks>()
+        })
+        .cloned()
+        .expect("the arena table");
     for (conn, actor) in [(CONN, GOD), (WATCHER_CONN, watcher)] {
         assert!(
             handles

@@ -914,7 +914,8 @@ impl MindCommerce {
         self.state.registry.reference()
     }
 
-    pub(crate) fn filing_issuer(&self) -> &mush_org::SystemPrincipalId {
+    #[must_use]
+    pub fn filing_issuer(&self) -> &mush_org::SystemPrincipalId {
         self.state.filing.issuer()
     }
 

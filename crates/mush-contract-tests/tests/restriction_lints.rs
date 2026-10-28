@@ -104,12 +104,13 @@ const LINTS: [&str; 6] = [
 /// 2026-09-10, at S8's gate.
 const OUT_OF_ENGINE: [&str; 1] = ["mush-bot"];
 
-const MEASURED: [(&str, [u32; 6]); 47] = [
+const MEASURED: [(&str, [u32; 6]); 48] = [
     ("mush-ansi", [0, 0, 13, 0, 0, 0]),
     // S1: born with all six denied (14-spatial-implementation-plan §3.1).
     ("mush-atlas", [0, 0, 0, 0, 0, 0]),
     ("mush-campaign", [0, 0, 4, 0, 0, 0]),
     ("mush-canon", [0, 7, 0, 0, 0, 0]),
+    ("mush-composition", [0, 0, 0, 0, 0, 0]),
     ("mush-comsys", [0, 13, 0, 0, 1, 0]),
     ("mush-config", [0, 4, 17, 0, 0, 0]),
     // S1: born with all six denied.
@@ -453,13 +454,14 @@ fn the_measurement_covers_every_crate_in_the_workspace() {
     );
     assert_eq!(
         MEASURED.len(),
-        47,
+        48,
         "the measurement in this file's header covered 43 crates; S1 added mush-atlas and \
          mush-content, both born at zero on every lint; 16b cut R-b deleted ruleset-wod and \
          ruleset-shadowrun; 17b cut M2.1 added mush-mind, born at zero on every lint; the \
          17d M6.1 adds mush-roll under the same six zero gates; the 2026-10-21 pixel cockpit \
          spike adds mush-pixel, born at zero on every lint; doc 21 cut G.3b adds \
-         mush-pixel-wasm, born at zero on every lint; crates in OUT_OF_ENGINE are not measured"
+         mush-pixel-wasm, born at zero on every lint; doc 28 P1 adds mush-composition, born \
+         at zero on every lint; crates in OUT_OF_ENGINE are not measured"
     );
 }
 
@@ -490,14 +492,15 @@ fn the_enabled_set_is_the_one_the_measurement_produced() {
             // 17d M6.1: mush-roll adds one zero to each enabled count.
             // 2026-10-21 pixel cockpit spike: mush-pixel adds one more to each.
             // Doc 21 cut G.3b: mush-pixel-wasm one more again.
-            ("clippy::unwrap_used", 44),
+            // Doc 28 P1: mush-composition adds one more to each.
+            ("clippy::unwrap_used", 45),
             // 16b cut R-a: tacsim now carries the composition root's three expects, so
             // it no longer denies `expect_used`; nine crates did, ten with mush-mind.
-            ("clippy::expect_used", 13),
-            ("clippy::indexing_slicing", 20),
-            ("clippy::panic", 42),
-            ("clippy::unreachable", 38),
-            ("clippy::panic_in_result_fn", 45),
+            ("clippy::expect_used", 14),
+            ("clippy::indexing_slicing", 21),
+            ("clippy::panic", 43),
+            ("clippy::unreachable", 39),
+            ("clippy::panic_in_result_fn", 46),
         ]),
         "the per-lint crate counts moved; re-measure before changing them"
     );

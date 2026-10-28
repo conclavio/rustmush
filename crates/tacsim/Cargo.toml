@@ -6,14 +6,10 @@ license.workspace = true
 authors.workspace = true
 description = "tacsim (E7 cut 1): TacSim's rules-definition and campaign-seed packs, the digest that identifies them, the once-per-(pack, version) seed latch, and the Mars-Phobos-Ceres corridor fixture."
 
-# 10b §3.1 / the E7 cut 1 brief: `tacsim -> {mush-core, mush-sim}` plus the
-# serde/tracing vocabulary every E crate already uses, and **nothing else**. No
-# economy, org, party, faction, market or tactics edge in cut 1 — D-E7-30's five fact
-# namespaces are cuts 2-9's, and cut 1 registers no `FactProvider` at all.
-# `mush-sim` is the one substantive edge and it is `RouteDef`'s: the crate owns the
-# route state machine and this ruleset provides its data (10b §3.1 correction (a);
-# `mush-tactics/src/mobility.rs`'s stated pattern). `cargo tree -p tacsim` is
-# the test.
+# `tacsim` owns the game's simulation and pilot-sheet layers (`TacsimRuleset`,
+# `PilotRuleset`, and `tacsim::arena`). Full server module composition lives in
+# `mush-composition`; `tests/shard_3/composition_edges.rs` pins the recorded
+# `mush-*` dependency set of this crate.
 [dependencies]
 mush-core.workspace = true
 mush-sim.workspace = true
@@ -29,32 +25,18 @@ mush-proto.workspace = true
 # disagree about a glyph. A pure leaf crate (mush-proto, serde_json, smol_str).
 mush-ansi.workspace = true
 
-# 16b cut R-a (R2): the production composition root lives here, so the game crate
-# composes every module it boots. No engine crate depends back on this one; see
-# tests/composition_edges.rs.
-mush-config.workspace = true
-mush-store.workspace = true
 mush-comsys.workspace = true
 mush-faction.workspace = true
-mush-party.workspace = true
 mush-market.workspace = true
 mush-inventory.workspace = true
 mush-industry.workspace = true
-mush-scenes.workspace = true
 mush-propagation.workspace = true
-mush-campaign.workspace = true
 mush-tactics.workspace = true
 mush-canon.workspace = true
-mush-privileges.workspace = true
 mush-org.workspace = true
 mush-economy.workspace = true
-mush-housing.workspace = true
-mush-mail.workspace = true
 mush-jobs.workspace = true
-mush-script.workspace = true
-mush-weather.workspace = true
 mush-llm.workspace = true
-mush-worldgen.workspace = true
 mush-npc.workspace = true
 mush-ruleset.workspace = true
 # 17b cut M2.2 (doc 17 §7, §8; D-UM-30 as amended): the unit-mind sandbox. Its

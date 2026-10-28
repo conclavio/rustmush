@@ -7,7 +7,9 @@ economic facts needed to activate a mission.
 | Slice | Deliverable | Admission boundary |
 |---|---|---|
 | DT.2b1 | Private presets, independent drafts, invitations and revision-bound player declarations | No reservations, employment contracts, mission-role grants or launches |
-| DT.2b2 | Actual embarkation intervals and departure manifests | Recorded physical transitions, including nested occupied hulls; no inferred historical embarkation |
+| DT.2b2a | Prepared structural movement foundation | Core object images and the canonical Sim placement patch commit together; no personnel eligibility yet |
+| DT.2b2b.1 | Immutable personnel crossing capture | Same-commit physical evidence is explicitly uncertified while legacy paths remain; no intervals or eligibility |
+| DT.2b2b.2+ | Movement coverage, certified intervals and departure manifests | Every membership-changing path records or refuses the transition, including nested occupied hulls; no inferred historical embarkation |
 | DT.2b3 | Contracted NPC crew and wages | Existing characters, accepted terms, actual aboard time and atomic settlement |
 | DT.2b4 | Preparation and activation | Live authority, consent, personnel, licences, exclusive reservations and accepted mission-role grants |
 | DT.3 | Per-unit launch and operation history | Durable actual departures, partial failure/retry, hull epochs, custody and returns |
@@ -80,6 +82,10 @@ departure. There is no synthetic personnel record, automatic NPC creation,
 teleport, fabricated contract or launch operation in this slice.
 
 Player commands are documented in [detachment preparation help](../help/detachments.md).
+The physical transaction foundation and its remaining migration gates are specified
+in [26d](26d-prepared-physical-transitions.md).
+Uncertified crossing capture and its compatibility boundary are specified in
+[26e](26e-personnel-crossing-capture.md).
 
 ## DT.2b1 verification
 
@@ -101,3 +107,6 @@ Validated locally on 2026-10-28:
   on Windows, including the retained identity-only compatibility control.
 - Clippy passes with warnings denied for the changed libraries and integration
   targets. Source-policy scans cover panic budgets and state-slot ownership.
+- The complete Tacsim library suite passes: 1,917 tests passed, four ignored.
+  Thirty-two server composition tests, two market privacy regressions and 26
+  help/registration/typed-state/restriction contract tests also pass.

@@ -445,6 +445,37 @@ impl Ledger {
         self.chunk_target_bytes
     }
 
+    /// Bound the complete resident tail set before a caller clones its owning
+    /// state. This counts borrowed entries with a streaming encoder; it neither
+    /// clones log values nor reads sealed history from storage. The byte bound
+    /// covers serialized resident data, while `max_logs` bounds map overhead.
+    #[must_use]
+    pub fn resident_within_bounds(&self, max_logs: usize, max_bytes: usize) -> bool {
+        if self.logs.len() > max_logs {
+            return false;
+        }
+        let Ok(mut bytes) = encoded_len_bounded(&self.chunk_target_bytes, max_bytes) else {
+            return false;
+        };
+        for (id, tail) in &self.logs {
+            let Some(remaining) = max_bytes.checked_sub(bytes) else {
+                return false;
+            };
+            let resident = (
+                id,
+                tail.open_chunk,
+                &tail.open_entries,
+                tail.next_seq,
+                tail.open_bytes,
+            );
+            let Ok(size) = encoded_len_bounded(&resident, remaining) else {
+                return false;
+            };
+            bytes += size;
+        }
+        true
+    }
+
     /// Validate and fully construct an append without changing the ledger.
     ///
     /// Entry encoding, exact prospective chunk encoding, both hard byte
@@ -1692,6 +1723,56 @@ mod tests {
             .collect()
     }
     use super::*;
+
+    #[test]
+    fn resident_clone_budget_counts_every_log_and_exact_open_tail_bytes() {
+        let empty = Ledger::new();
+        assert!(empty.resident_within_bounds(0, 64));
+        assert!(!empty.resident_within_bounds(0, 0));
+        let mut ledger = Ledger::with_chunk_target(1024);
+        for id in ["first", "second"] {
+            let prepared = ledger
+                .prepare_append(id, serde_json::json!({"data":"payload"}))
+                .unwrap();
+            ledger.apply_prepared(prepared).unwrap();
+        }
+        let before = ledger.clone();
+        let exact = encoded_len_bounded(&ledger.chunk_target_bytes, usize::MAX).unwrap()
+            + ledger
+                .logs
+                .iter()
+                .map(|(id, tail)| {
+                    encoded_len_bounded(
+                        &(
+                            id,
+                            tail.open_chunk,
+                            &tail.open_entries,
+                            tail.next_seq,
+                            tail.open_bytes,
+                        ),
+                        usize::MAX,
+                    )
+                    .unwrap()
+                })
+                .sum::<usize>();
+        assert!(ledger.resident_within_bounds(2, exact));
+        assert!(!ledger.resident_within_bounds(1, exact));
+        assert!(!ledger.resident_within_bounds(2, exact - 1));
+        assert_eq!(
+            ledger, before,
+            "the clone admission check cannot mutate tails"
+        );
+        let mut sealed = Ledger::with_chunk_target(0);
+        let prepared = sealed
+            .prepare_append("sealed", serde_json::json!(1))
+            .unwrap();
+        sealed.apply_prepared(prepared).unwrap();
+        assert!(
+            !sealed.resident_within_bounds(0, 4096),
+            "sealed logs retain resident counters"
+        );
+        assert!(sealed.resident_within_bounds(1, 4096));
+    }
 
     /// Decode a chunk op's persisted doc for assertions.
     fn chunk_of(op: &ModuleWrite) -> (SmolStr, LedgerChunk) {

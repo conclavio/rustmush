@@ -1,10 +1,10 @@
 //! The server's view of the composition root, which lives in
-//! [`tacsim::composition`] since 16b cut R-a (R2). Everything the host and its
-//! tests reach as `mush_server::modules::*` is re-exported here unchanged; the
-//! composition tests below stay in this crate because they drive the host's own
-//! boot, persistence and staff seams.
+//! [`mush_composition`]. Everything the host and its tests reach as
+//! `mush_server::modules::*` is re-exported here unchanged; the composition
+//! tests below stay in this crate because they drive the host's own boot,
+//! persistence and staff seams.
 
-pub use tacsim::composition::*;
+pub use mush_composition::*;
 
 use std::collections::HashMap;
 
