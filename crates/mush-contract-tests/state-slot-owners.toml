@@ -47,6 +47,41 @@
 # ---------------------------------------------------------------------------
 
 [[site]]
+path = "crates/mush-server/tests/split_boundary/dt_preparation_plans.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = "DT.2b1 production-coordinator fixture supplies the host account mapping after boot, as the actual server does. The fixture then acquires focus and the real typed helm lease through Sim commands and scheduled coordinator commits; it does not seed control authority."
+
+[[site]]
+path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
+accessor = "World::module_state_insert"
+slot = "state"
+owner = ""
+reason = "Test-only physical-observation fixture seeds and varies a SpatialState on a bare World to exercise nested hulls, member rooms, cycles and stale projections. Actual Ready admission is separately tested on the production roster and coordinator."
+
+[[site]]
+path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
+accessor = "World::module_state_insert"
+slot = "focus"
+owner = ""
+reason = "Test-only observation fixture seeds a FocusState to compare direct console, remote and proxy reach. It supplies no typed Sim control lease; production Ready requires the independent lease witness."
+
+[[site]]
+path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
+accessor = "World::module_state_insert"
+slot = "units"
+owner = ""
+reason = "Test-only observation fixture seeds authored TacticalUnit data in a bare World's UnitStore, establishing the unit-kind prerequisite without constructing unrelated world content."
+
+[[site]]
+path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
+accessor = "World::module_state_insert"
+slot = "mush_tactics"
+owner = ""
+reason = "Test-only negative control replaces the bare World's UnitStore with an empty store, proving a Thing with a station alone cannot pass tactical-unit readiness."
+
+[[site]]
 path = "crates/tacsim/src/minds/workshop/commands.rs"
 accessor = "World::module_state_mut"
 slot = "RollStore"

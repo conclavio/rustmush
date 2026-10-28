@@ -440,7 +440,8 @@ fn game_modules_with_optional_commerce(
                     tacsim::TacsimRuleset::with_game_content(tacsim, tacsim_enabled)
                         .with_conduct_carrier()
                         .map_err(|e| e.to_string())?
-                        .with_inventory(inventory),
+                        .with_inventory(inventory)
+                        .with_unit_authority(),
                 )
                 .map_err(|e| e.to_string())?,
         ) as Box<dyn GameModule>,

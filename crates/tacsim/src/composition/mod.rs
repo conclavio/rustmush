@@ -1155,7 +1155,11 @@ pub fn tacsim_module_wired(
     game_content: bool,
     inventory: mush_inventory::InventoryHandleCell,
 ) -> Box<dyn GameModule> {
-    Box::new(crate::TacsimRuleset::with_game_content(cfg, game_content).with_inventory(inventory))
+    Box::new(
+        crate::TacsimRuleset::with_game_content(cfg, game_content)
+            .with_inventory(inventory)
+            .with_unit_authority(),
+    )
 }
 
 /// The real production layer with explicit prepared Registry configuration.
@@ -1167,8 +1171,9 @@ pub fn tacsim_module_wired_with_mind_commerce(
     inventory: mush_inventory::InventoryHandleCell,
     commerce: &mind_commerce::MindCommerce,
 ) -> Result<Box<dyn GameModule>, mush_core::ModError> {
-    let module =
-        crate::TacsimRuleset::with_game_content(cfg, game_content).with_inventory(inventory);
+    let module = crate::TacsimRuleset::with_game_content(cfg, game_content)
+        .with_inventory(inventory)
+        .with_unit_authority();
     Ok(Box::new(commerce.configure_tacsim(module)?))
 }
 
@@ -1184,6 +1189,7 @@ pub fn tacsim_test_world_module_wired(
     Box::new(
         crate::TacsimRuleset::with_game_content(cfg, game_content)
             .with_inventory(inventory)
+            .with_unit_authority()
             .with_test_world(true),
     )
 }

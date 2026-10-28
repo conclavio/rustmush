@@ -19,6 +19,8 @@ host and clients. IC preparation, NPC personnel and durable launches follow.
 DT.4 subset delegation and DT.5 dedicated communications remain later cuts.
 The DT.2a authority and retained-custody policy is specified in
 [26b](26b-unit-authority-and-grants.md).
+The preparation slices and their durable admission boundaries are specified in
+[26c](26c-detachment-preparation.md).
 H1/H2 and W-clock keep their existing owners and may proceed independently where
 doc 27's dependencies permit.
 
