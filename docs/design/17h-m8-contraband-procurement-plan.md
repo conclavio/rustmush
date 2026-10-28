@@ -1,6 +1,7 @@
 # 17h — M8, contraband and procurement: implementation plan
 
-**Draft 0.1, 2026-10-28.** Planned read-only from `main` at `2cbe9f7c` (the PR #58 merge), with 17g
+**Draft 0.2, 2026-10-28 — the owner's rulings (§5: Q-M8-1..7 at their defaults), M8a and M8c
+started.** Draft 0.1 was planned read-only from `main` at `2cbe9f7c` (the PR #58 merge), with 17g
 cuts C0–C3 and doc 23 cuts S.0–S.3 merged, C4 in flight in its own session, and no M8 code in the
 tree. This note is the implementation plan for doc 17 §22's M8 — "contraband and procurement, gated
 on IC sorties" — in the shape of 17g: what the owner has ruled, where the tree stands against each
@@ -490,6 +491,10 @@ Recorded in both ledgers (here and doc 23 §14). Pending the owner's Q-M8-1. Thi
 - **17g §4's other follow-ups** (Registry pacing, the shared instrument lifecycle) stand.
 
 ## 5. Owner decisions
+
+**Ruled by the owner, 2026-10-28:** Q-M8-1 and Q-M8-2 accepted at their defaults; Q-M8-3 to
+Q-M8-7 taken at their defaults. The M8a and M8c briefs were written and the cut loop started the
+same day (§7).
 
 1. **Q-M8-1, the tier-2 split.** S.4a (the sealed, dormant mind aboard a rig) built as M8e now;
    the thinking mind (the drone phase) after M8; doc 23 §9's "lands inside D-UM-47's cut, not
