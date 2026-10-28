@@ -7,7 +7,8 @@
 //! former file, unchanged but for its paths; its tests are `<module>::<fn>`.
 //!
 //! The world journeys over SSH and the web: admin, the clock, intel, legal
-//! actions, the market and the original minds, modules, NPCs, onboarding,
+//! actions, the market and the original minds, the mind market's web twin
+//! (17g cut C3c), modules, NPCs, onboarding,
 //! perception, power use, scripting, weather, worldgen and the web bridge.
 //! `npc_smoke` and `worldgen_smoke` are the owner-funded live-provider
 //! opt-ins (RUN_LLM_SMOKE; ci_gated_test_inventory's PAID_OPT_INS names
@@ -32,6 +33,8 @@ mod intel_e2e;
 mod legal_action_web;
 #[path = "world_journeys/market_original_minds_web.rs"]
 mod market_original_minds_web;
+#[path = "world_journeys/mind_market_web.rs"]
+mod mind_market_web;
 #[path = "world_journeys/modules_e2e.rs"]
 mod modules_e2e;
 #[path = "world_journeys/npc_e2e.rs"]

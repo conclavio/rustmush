@@ -40,6 +40,7 @@ use serde_json::Value;
 
 use super::cockpit_text;
 use super::keys::{Arrow, Key, KeyParser};
+use super::market::{HOLDINGS_FEED, MARKET_FEED, MarketDesk, MarketPane};
 use super::mind_workshop::MindWorkshop;
 use super::panels::{
     ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, OBSERVER_FEED, PanelOutcome,
@@ -56,8 +57,8 @@ use super::render::{
 use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
     BorderRole, CHART_SCREEN, COCKPIT_SCREEN, FLOOR_COLS, GLOBAL_KEYS, JUMP_KEYS, KeyAction,
-    KeyBinding, LocalAction, PaneContent, PaneId, PaneSlot, PaneSpec, QUARRY_SCREEN, Screen,
-    ScreenId, builtin_screens, validate_screens,
+    KeyBinding, LocalAction, MARKET_SCREEN, PaneContent, PaneId, PaneSlot, PaneSpec, QUARRY_SCREEN,
+    Screen, ScreenId, builtin_screens, validate_screens,
 };
 use crate::line::LineBuffer;
 
@@ -340,6 +341,11 @@ pub struct TuiApp {
     palette: Option<Palette>,
     help: bool,
     workshop: MindWorkshop,
+    /// **The market desk** (17g cut C3b): the market screen's forms and its
+    /// one pending typed request, and the legal-actions panel's typed submit
+    /// with its per-offer attempts. Its ids start at `1 << 40`, never in the
+    /// workshop's `1 << 62` range.
+    market: MarketDesk,
     /// Server-initiated asks still open, OLDEST FIRST (I10). A queue, not a
     /// slot: the engine's `respond` answers the lowest open id and the web
     /// store answers `pending[0]`, so an overlay showing the newest would
@@ -726,6 +732,7 @@ impl TuiApp {
             palette: None,
             help: false,
             workshop: MindWorkshop::default(),
+            market: MarketDesk::new(),
             requests: VecDeque::new(),
             answering: None,
             thinking: Vec::new(),
@@ -764,6 +771,7 @@ impl TuiApp {
     pub fn set_manifest(&mut self, manifest: TuiManifest) {
         if self.manifest.character != manifest.character {
             self.workshop.reset();
+            self.market.reset();
         }
         if self.room.is_none()
             && let Some(view) = manifest.room.as_ref()
@@ -879,6 +887,7 @@ impl TuiApp {
             && !self.help
             && self.palette.is_none()
             && !self.workshop.open
+            && !self.market.form_open()
             && self.answering.is_none()
             && self.requests.is_empty()
             && self.input_mode == InputMode::Normal
@@ -1937,7 +1946,21 @@ impl TuiApp {
         };
         match event {
             OutputEvent::InvokeResult { id, result } => {
-                self.workshop.accept(*id, result);
+                // 17g cut C3b (the C3 plan §2.4): a legal-action result is the
+                // desk's alone; a mind result goes to the workshop AND the
+                // desk, and each ignores an id it does not own (the two id
+                // ranges are disjoint). A staged market reply queues the two
+                // pages it was on, asked again once.
+                match result {
+                    mush_proto::InvokeResult::LegalAction(_) => {
+                        self.market.accept(*id, result);
+                    }
+                    mush_proto::InvokeResult::Mind(_) => {
+                        self.workshop.accept(*id, result);
+                        self.market.accept(*id, result);
+                    }
+                }
+                queries.extend(self.market.take_queries());
                 return queries; // private source never enters scrollback
             }
             OutputEvent::Who(entries) => {
@@ -2011,6 +2034,14 @@ impl TuiApp {
                     let asks = self.follow_the_observer(feed, data, now);
                     queries.extend(asks);
                     return queries;
+                }
+                // 17g cut C3b: the market's two keyframes are decoded by the
+                // desk too (its forms read them); the store keeps the raw frame
+                // the panes paint from the same decoder.
+                if matches!(feed.as_str(), MARKET_FEED | HOLDINGS_FEED)
+                    && *kind == PanelFrameKind::Keyframe
+                {
+                    self.market.apply_keyframe(feed, data);
                 }
                 if feed.as_str() == COCKPIT_FEED && *kind == PanelFrameKind::Keyframe {
                     self.workshop.flight_current =
@@ -2100,8 +2131,17 @@ impl TuiApp {
                 return queries;
             }
             OutputEvent::View(view) => {
-                if let PanelOutcome::NeedsResync(f) = self.panels.apply_view(view, now) {
-                    queries.push((f.to_string(), Value::Object(serde_json::Map::new())));
+                match self.panels.apply_view(view, now) {
+                    PanelOutcome::NeedsResync(f) => {
+                        queries.push((f.to_string(), Value::Object(serde_json::Map::new())));
+                    }
+                    // 17g cut C3b (the C3 plan §2.4): a replaced `legal.actions`
+                    // keyframe regenerates the offers, which unblocks every
+                    // offer whose last answer blocked it.
+                    PanelOutcome::Stored if view.view() == "legal.actions" => {
+                        self.market.actions_replaced();
+                    }
+                    PanelOutcome::Stored | PanelOutcome::Ignored => {}
                 }
                 if view.view() != "resolution.outcome" {
                     return queries;
@@ -2209,6 +2249,7 @@ impl TuiApp {
             }
             OutputEvent::Hello { panels, .. } => {
                 self.workshop.reset();
+                self.market.reset();
                 self.manifest.panels.clone_from(panels);
                 // 16b cut Q.4: a world restarted without its arena takes the
                 // cockpit tab with it, and the player must not be left standing
@@ -2252,6 +2293,7 @@ impl TuiApp {
                 // object-change rule takes care of the ring.
                 let screen = self.screen_queries();
                 self.note_map_ask(&screen, now);
+                self.market.note_asks(&screen);
                 queries.extend(screen);
                 // **16b cut B.2**: the cockpit is asked again from EVERY screen,
                 // not only from screen 0 (whose `on_enter` above already names
@@ -2296,10 +2338,12 @@ impl TuiApp {
             OutputEvent::SessionInfo { character, .. } => {
                 // SessionInfo is an attachment boundary even when labels match.
                 self.workshop.reset();
+                self.market.reset();
                 self.manifest.character = Some(sanitize(&character.name));
             }
             OutputEvent::Resumed { .. } => {
                 self.workshop.reset();
+                self.market.reset();
                 // The mode resets on a resume (D-I-17). A pending request is
                 // gone server-side after a full re-attach (I10 is RAM-only),
                 // and its id may be reminted, so drop the overlay too.
@@ -2705,6 +2749,20 @@ impl TuiApp {
             r.invokes.extend(self.workshop.take_invokes());
             return;
         }
+        // 17g cut C3b: an open market or action form owns the keys, as the
+        // workshop does (the detach still detaches): Esc closes it, and Enter
+        // inside it is the only key that sends — one typed request.
+        if key != Key::Ctrl(']')
+            && self.market.form_open()
+            && self.requests.is_empty()
+            && self.answering.is_none()
+            && self.input_mode == InputMode::Normal
+        {
+            self.market.key(key);
+            r.invokes.extend(self.market.take_invokes());
+            r.queries.extend(self.market.take_queries());
+            return;
+        }
         match key {
             Key::Ctrl(']') => {
                 r.detach = true;
@@ -2941,9 +2999,12 @@ impl TuiApp {
         }
     }
 
-    /// Invocations queued by a response (for example authoritative read after edit).
+    /// Invocations queued by a response (for example authoritative read after edit),
+    /// the workshop's and (17g cut C3b) the market desk's.
     pub fn take_invokes(&mut self) -> Vec<(u64, mush_proto::InvokeRequest)> {
-        self.workshop.take_invokes()
+        let mut invokes = self.workshop.take_invokes();
+        invokes.extend(self.market.take_invokes());
+        invokes
     }
 
     fn open_workshop(&mut self, r: &mut InputResult) {
@@ -3164,6 +3225,46 @@ impl TuiApp {
                     self.close_picture();
                     self.leave_a_screen_this_server_does_not_have();
                 }
+            }
+            // 17g cut C3b: the market's `r` asks again for the two pages the
+            // screen is ON — the listings page and the holdings section a
+            // page key or `h` moved to — not the first ones `on_enter` names.
+            LocalAction::Refresh if self.active == MARKET_SCREEN => {
+                r.queries.extend(self.market.page_queries());
+            }
+            // 17g cut C3b (the C3 plan §2.4): the market's keys. Each opens a
+            // form over the row its pane highlights, flips the section or asks
+            // a page; none sends — only Enter inside a form does.
+            LocalAction::MarketBuy
+            | LocalAction::MarketRenew
+            | LocalAction::MarketOffer
+            | LocalAction::MarketAccept
+            | LocalAction::MarketPublish
+            | LocalAction::MarketWithdraw
+            | LocalAction::MarketSection
+            | LocalAction::MarketPageNext
+            | LocalAction::MarketPageFirst => {
+                let focus = match self.screen().panes.get(self.focus) {
+                    Some(p) if p.id == PaneId("holdings") => MarketPane::Holdings,
+                    _ => MarketPane::Listings,
+                };
+                let listing = self
+                    .selected_in(PaneId("listings"))
+                    .and_then(|(_, row)| row.row_key);
+                let holding = self
+                    .selected_in(PaneId("holdings"))
+                    .and_then(|(_, row)| row.row_key);
+                self.market
+                    .local(action, focus, listing.as_deref(), holding.as_deref());
+                r.queries.extend(self.market.take_queries());
+            }
+            // 17g cut C3b: the legal-actions panel's `a` — the highlighted
+            // offer's parameter form, read from the stored view (the panel
+            // paints neither the offer token nor the parameters).
+            LocalAction::ActionForm => {
+                let ordinal = self.selected_in(PaneId("actions")).map(|(at, _)| at);
+                self.market
+                    .open_action(self.panels.get("legal.actions"), ordinal);
             }
             LocalAction::Refresh => {
                 // On the cockpit screen this is `p`, pull (16b cut B.2): its
@@ -3549,6 +3650,9 @@ impl TuiApp {
             let queries = self.screen_queries();
             let now = self.now();
             self.note_map_ask(&queries, now);
+            // 17g cut C3b: entering the market asks both first pages; the desk
+            // remembers which pages it is on.
+            self.market.note_asks(&queries);
             r.queries.extend(queries);
         }
     }
@@ -3671,6 +3775,29 @@ impl TuiApp {
 
     fn selected_row_key(&self) -> Option<String> {
         self.selected_row().and_then(|r| r.row_key)
+    }
+
+    /// **The highlighted row of the active screen's pane `pane`, focused or
+    /// not** (17g cut C3b), with its place among the pane's selectable rows:
+    /// the market's `b` reads the listings pane while the holdings pane has
+    /// the focus, and the scene screen's `a` reads its actions pane while the
+    /// scrollback does. `None` when the screen has no such row pane or the
+    /// pane lists no row.
+    fn selected_in(&self, pane: PaneId) -> Option<(usize, super::render::PaneRow)> {
+        let spec = self.screen().pane(pane).copied()?;
+        if !spec.selectable {
+            return None;
+        }
+        let rows = self.pane_rows(&spec, None);
+        let at = self.anchored(spec.id, &rows);
+        let at = if rows.rows.get(at).is_some_and(|r| r.selectable) {
+            at
+        } else {
+            rows.rows.iter().position(|r| r.selectable)?
+        };
+        let ordinal = rows.rows.iter().take(at).filter(|r| r.selectable).count();
+        let row = rows.rows.into_iter().nth(at)?;
+        Some((ordinal, row))
     }
 
     /// The indexes of the active screen's channel panes, the focused one
@@ -4177,6 +4304,8 @@ impl TuiApp {
             );
         }
         self.draw_body(frame, body_area);
+        // 17g cut C3b: an open market or action form, inside the screen.
+        self.market.draw(frame, body_area);
         self.draw_input(frame, input_area);
         if self.palette.is_some() {
             self.draw_palette(frame, body_area);
@@ -4499,6 +4628,7 @@ impl TuiApp {
             .map(Line::from)
             .collect();
         frame.render_widget(Paragraph::new(Text::from(lines)), top);
+        self.market.draw(frame, top);
         self.draw_input(frame, input_area);
         if self.palette.is_some() {
             self.draw_palette(frame, top);
@@ -4588,6 +4718,27 @@ impl TuiApp {
             line.spans.push(dim_span_owned(sep));
             line.spans.push(Span::styled(
                 format!("{bell} {} new", self.notice_unseen),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+        }
+        // 17g cut C3b: the market desk's status on the market screen (the
+        // server's `line`, `message` or first `Shown` line, or the desk's own
+        // sentence), and the legal actions' status on a screen with the
+        // actions panel (the web's ten sentences).
+        let desk =
+            if self.active == MARKET_SCREEN {
+                self.market.status()
+            } else if self.screen().panes.iter().any(
+                |p| matches!(p.content, PaneContent::View { view, .. } if view == "legal.actions"),
+            ) {
+                self.market.action_status()
+            } else {
+                ""
+            };
+        if !desk.is_empty() {
+            line.spans.push(dim_span_owned(sep));
+            line.spans.push(Span::styled(
+                sanitize(desk),
                 Style::default().add_modifier(Modifier::BOLD),
             ));
         }
@@ -4871,7 +5022,12 @@ impl TuiApp {
         let para =
             Paragraph::new(Line::from(Span::styled(prefix.clone(), text_style))).block(block);
         frame.render_widget(para, area);
-        if input && !self.workshop.open && inner.width > 0 && inner.height > 0 {
+        if input
+            && !self.workshop.open
+            && !self.market.form_open()
+            && inner.width > 0
+            && inner.height > 0
+        {
             let shown_cursor = match self.input_mode {
                 InputMode::NoEcho => 0,
                 _ => self.line.cursor(),
@@ -4992,7 +5148,7 @@ impl TuiApp {
             ),
             Line::from("In the box: Alt+key = the nav key   Esc keeps the draft   Enter stays"),
             Line::from(
-                "Alt+letter opens a lettered screen where the server publishes one (c: the sky chart, q: the quarry)",
+                "Alt+letter opens a lettered screen where the server publishes one (c: the sky chart, q: the quarry, m: the market)",
             ),
             Line::from("F10 or /minds: owned mind cards, ordered rules and read-only source"),
             Line::from(""),
@@ -5797,9 +5953,13 @@ mod tests {
                 { "name": "Staff", "alias": "st", "unread": 5 },
             ] }),
         });
-        // Doc 20 cut SM.9: with no manifest the chart and the quarry tabs both show, and a
-        // twelve-tab strip with badges is past 120 columns, where it elides its inactive names
-        // by design (`render::tab_strip`) — so the badges are read where the strip is whole.
+        // Doc 20 cut SM.9: with no manifest the chart and the quarry tabs both show — and since
+        // 17g cut C3b the market's too — while the cockpit tab stays hidden (it appears with a
+        // match's first frame), so the strip has TWELVE tabs: 1 to 9, c, q and m. With badges
+        // that is past 120 columns, where it elides its inactive names by design
+        // (`render::tab_strip`) — so the badges are read where the strip is whole: twelve named
+        // tabs and these two badges fit 140. Thirteen named tabs (the cockpit's too) would need
+        // 142 before any badge, so a change that shows the cockpit here moves these reads to 160.
         let text = super::super::frame_text(&mut app, 140, 34);
         let tabs = text.lines().next().unwrap();
         assert!(tabs.contains("3 mail 3"), "{tabs:?}");
@@ -5813,14 +5973,14 @@ mod tests {
         assert_eq!(
             tabs,
             format!(
-                "rustmush  1 scene   2   3 3   4 7   5   6   7   8   9   c   q {}● 0 on 14:30",
-                " ".repeat(46)
+                "rustmush  1 scene   2   3 3   4 7   5   6   7   8   9   c   q   m {}● 0 on 14:30",
+                " ".repeat(42)
             ),
             "{tabs:?}"
         );
         assert!(tabs.contains(" 1 scene "), "{tabs:?}");
         assert!(tabs.contains(" 3 3 ") && tabs.contains(" 4 7 "), "{tabs:?}");
-        for name in ["sheet", "mail", "chan", "chart", "quarry"] {
+        for name in ["sheet", "mail", "chan", "chart", "quarry", "market"] {
             assert!(!tabs.contains(name), "{name} in {tabs:?}");
         }
     }
@@ -9589,5 +9749,455 @@ mod tests {
         assert!(!plain.pixel_active());
         let r = plain.feed_input(b"p");
         assert!(!r.queries.is_empty(), "pull");
+    }
+
+    // ---- 17g cut C3b: the legal-actions panel's typed submit -------------
+
+    /// A 64-character projected offer (digits and the letters a to f).
+    const OFFER: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    /// A second offer, with targets.
+    const AIMED: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    /// A third offer, taking no inputs.
+    const PLAIN: &str = "1111111111111111222222222222222233333333333333334444444444444444";
+
+    /// A `legal.actions` keyframe at `sequence`: `brace` on oneself with a
+    /// boolean and an integer, `aim` with a target, `wait` with no inputs.
+    fn c3b_actions(sequence: u64) -> OutputEvent {
+        OutputEvent::View(
+            mush_proto::ViewEnvelope::keyframe(
+                "legal.actions",
+                1,
+                7,
+                sequence,
+                serde_json::json!([
+                    {
+                        "offer": OFFER,
+                        "subject": { "kind": "self_actor" },
+                        "targets": { "kind": "none" },
+                        "parameters": [
+                            { "id": "rounds", "required": true,
+                              "kind": { "kind": "integer", "minimum": 1, "maximum": 3 } },
+                            { "id": "steady", "required": true, "kind": { "kind": "boolean" } }
+                        ],
+                        "required_channels": [],
+                        "expires": null,
+                        "presentation": { "verb": "brace", "label": "Brace", "help": "Adopt a braced stance." }
+                    },
+                    {
+                        "offer": AIMED,
+                        "subject": { "kind": "self_actor" },
+                        "targets": { "kind": "one", "candidates": [] },
+                        "parameters": [],
+                        "presentation": { "verb": "aim", "label": "Aim", "help": "" }
+                    },
+                    {
+                        "offer": PLAIN,
+                        "subject": { "kind": "self_actor" },
+                        "targets": { "kind": "none" },
+                        "parameters": [],
+                        "presentation": { "verb": "wait", "label": "Wait", "help": "" }
+                    }
+                ]),
+            )
+            .expect("a valid keyframe"),
+        )
+    }
+
+    fn c3b_key(app: &mut TuiApp, key: Key) -> InputResult {
+        let mut r = InputResult::default();
+        app.handle_key(key, &mut r);
+        r
+    }
+
+    /// **17g cut C3b** (the C3 plan §5): on screen 7, `a` opens the highlighted
+    /// offer's parameter form — one control per declared parameter — whose rows
+    /// paint neither the offer token nor `+act`, while the actions pane beside
+    /// it still lists `+act <verb>` rows; Enter sends exactly one
+    /// `LegalActionRequest::SubmitSelf` with the row's offer and the typed
+    /// values, under an id in the desk's range. `A` prefills `+act <verb>` as
+    /// `a` used to. An offer with a target opens no form and says `+act`; on
+    /// the scene screen `a` reads the actions pane while the scrollback has the
+    /// focus.
+    #[test]
+    fn actions_panel_a_opens_a_form_and_enter_submits_self_without_act_text() {
+        use super::super::market::FIRST_ID;
+        use mush_proto::{
+            InvokeRequest, LegalActionParameters, LegalActionRequest, LegalActionScalar,
+            MAX_VIEW_WIRE_INTEGER,
+        };
+        let mut app = app();
+        app.apply_event(&c3b_actions(1));
+        let _ = app.feed_input(b"7");
+        let r = c3b_key(&mut app, Key::Char('a'));
+        assert!(
+            r.invokes.is_empty() && r.submit.is_empty(),
+            "a bare key sends nothing"
+        );
+        let (title, rows) = app.market.form_lines().expect("the parameter form");
+        assert_eq!(title, "Brace");
+        let form = rows.join("\n");
+        assert!(form.contains("rounds") && form.contains("steady"), "{form}");
+        assert!(!form.contains(OFFER) && !form.contains("+act"), "{form}");
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            frame.contains("+act brace"),
+            "the pane keeps its rows:\n{frame}"
+        );
+        mush_contract_tests::assert_projection_text_clean("TUI action form", &frame, &[OFFER]);
+        // Typing: `2` for the integer, then Yes for the boolean; Enter submits.
+        assert!(c3b_key(&mut app, Key::Char('2')).invokes.is_empty());
+        assert!(c3b_key(&mut app, Key::Tab).invokes.is_empty());
+        assert!(c3b_key(&mut app, Key::Right).invokes.is_empty());
+        let r = c3b_key(&mut app, Key::Enter);
+        assert!(r.submit.is_empty(), "no command text: {:?}", r.submit);
+        let [
+            (id, InvokeRequest::LegalAction(LegalActionRequest::SubmitSelf { offer, parameters })),
+        ] = r.invokes.as_slice()
+        else {
+            panic!("one typed submission: {:?}", r.invokes);
+        };
+        assert!((FIRST_ID..=MAX_VIEW_WIRE_INTEGER).contains(id), "{id}");
+        assert_eq!(offer.as_str(), OFFER);
+        let expected = LegalActionParameters::new(
+            [
+                (
+                    "rounds".to_owned(),
+                    LegalActionScalar::Integer {
+                        value: mush_proto::LegalActionInteger::new("2".into()).expect("canonical"),
+                    },
+                ),
+                (
+                    "steady".to_owned(),
+                    LegalActionScalar::Boolean { value: true },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        )
+        .expect("bounded");
+        assert_eq!(parameters, &expected);
+        assert!(!app.market.form_open(), "the form closes on send");
+        // `A` is the old prefill.
+        let r = app.feed_input(b"A");
+        assert!(r.submit.is_empty() && r.invokes.is_empty());
+        assert_eq!(app.line.text(), "+act brace");
+        let _ = app.feed_input(b"\x1b");
+        // The aimed offer: no form, the `+act` sentence.
+        let _ = c3b_key(&mut app, Key::Down);
+        let r = c3b_key(&mut app, Key::Char('a'));
+        assert!(r.invokes.is_empty());
+        assert!(!app.market.form_open());
+        assert_eq!(
+            app.market.action_status(),
+            "This action needs a target; use +act."
+        );
+        // The next form does not take that sentence as its own (the C3b
+        // review): `wait`'s form paints no `+act`, while the status line keeps
+        // the older sentence.
+        let _ = c3b_key(&mut app, Key::Down);
+        let _ = c3b_key(&mut app, Key::Char('a'));
+        let (title, rows) = app.market.form_lines().expect("the wait form");
+        assert_eq!(title, "Wait");
+        let form = rows.join("\n");
+        assert!(
+            !form.contains("+act") && !form.contains("needs a target"),
+            "{form}"
+        );
+        assert_eq!(
+            app.market.action_status(),
+            "This action needs a target; use +act."
+        );
+        let _ = c3b_key(&mut app, Key::Esc);
+        // A required input left empty refuses with the web's sentence and sends
+        // nothing.
+        let mut fresh = self::app();
+        fresh.apply_event(&c3b_actions(1));
+        let _ = fresh.feed_input(b"7");
+        let _ = c3b_key(&mut fresh, Key::Char('a'));
+        let r = c3b_key(&mut fresh, Key::Enter);
+        assert!(r.invokes.is_empty());
+        assert_eq!(fresh.market.action_status(), "Enter rounds.");
+        assert!(
+            fresh.market.form_open(),
+            "a refused form stays for correction"
+        );
+        // The scene screen: the scrollback has the focus, `a` reads the
+        // actions pane.
+        let mut scene = self::app();
+        scene.apply_event(&c3b_actions(1));
+        let r = c3b_key(&mut scene, Key::Char('a'));
+        assert!(r.invokes.is_empty());
+        assert_eq!(
+            scene.market.form_lines().map(|(title, _)| title).as_deref(),
+            Some("Brace")
+        );
+    }
+
+    /// **17g cut C3b** (the C3 plan §5): each `LegalActionResponse` state
+    /// shows the web's sentence verbatim; after `queued`, `owned`, `pending`,
+    /// `unavailable`, `unknown` or `expired` a second `a` on the offer opens no
+    /// form and repeats the sentence until a `legal.actions` keyframe replaces
+    /// the view; `committed`, `rejected`, `invalid` and `busy` unblock at once;
+    /// an answer on an id the desk never drew is ignored.
+    #[test]
+    fn legal_action_replies_use_the_web_sentences_and_block_until_resolved() {
+        use mush_proto::{ActionStatusId, InvokeResult, LegalActionResponse, ProjectedCommitToken};
+        let reference = || {
+            ActionStatusId::new("k5:toy:brace:0000000000000007:01010101010101010101010101010101")
+                .expect("a status id")
+        };
+        let commit =
+            || ProjectedCommitToken::new("cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd").expect("a token");
+        let cases: Vec<(LegalActionResponse, &str, bool)> = vec![
+            (
+                LegalActionResponse::Committed {
+                    reference: reference(),
+                    commit: commit(),
+                },
+                "Action committed.",
+                false,
+            ),
+            (
+                LegalActionResponse::Owned {
+                    reference: reference(),
+                },
+                "Transaction accepted. Check its status for completion.",
+                true,
+            ),
+            (
+                LegalActionResponse::Pending {
+                    reference: reference(),
+                },
+                "Transaction is still pending.",
+                true,
+            ),
+            (
+                LegalActionResponse::Queued {},
+                "Submission queued. Wait for a transaction result before submitting again.",
+                true,
+            ),
+            (
+                LegalActionResponse::Unavailable { reference: None },
+                "Completion is unavailable. This does not mean the action failed.",
+                true,
+            ),
+            (
+                LegalActionResponse::Unknown {},
+                "No accessible transaction was found. This does not prove the action failed.",
+                true,
+            ),
+            (
+                LegalActionResponse::Expired {},
+                "The transaction reference expired. Check your current state before taking another action.",
+                true,
+            ),
+            (
+                LegalActionResponse::Busy {},
+                "The server is busy. Try again later.",
+                false,
+            ),
+            (
+                LegalActionResponse::Rejected {},
+                "The offer was refused. Refresh available actions.",
+                false,
+            ),
+            (
+                LegalActionResponse::Invalid {},
+                "The inputs were refused. Check them and refresh available actions.",
+                false,
+            ),
+        ];
+        let mut app = app();
+        let _ = app.feed_input(b"7");
+        let mut sequence = 1;
+        app.apply_event(&c3b_actions(sequence));
+        // The third offer, `wait`, takes no inputs.
+        let _ = c3b_key(&mut app, Key::Down);
+        let _ = c3b_key(&mut app, Key::Down);
+        for (response, sentence, blocks) in cases {
+            let _ = c3b_key(&mut app, Key::Char('a'));
+            assert!(app.market.form_open(), "{sentence}: the offer is open");
+            let r = c3b_key(&mut app, Key::Enter);
+            let [(id, _)] = r.invokes.as_slice() else {
+                panic!("one submission: {:?}", r.invokes);
+            };
+            let id = *id;
+            // While it is in flight the offer is blocked.
+            let _ = c3b_key(&mut app, Key::Char('a'));
+            assert!(!app.market.form_open(), "{sentence}: in flight");
+            assert_eq!(app.market.action_status(), "Waiting for the server...");
+            // A foreign id changes nothing.
+            app.apply_event(&OutputEvent::InvokeResult {
+                id: id + 1_000,
+                result: InvokeResult::LegalAction(LegalActionResponse::Committed {
+                    reference: reference(),
+                    commit: commit(),
+                }),
+            });
+            assert_eq!(app.market.action_status(), "Waiting for the server...");
+            // A view replaced while the submission is in flight leaves it
+            // blocked: only an answer settles an attempt in flight.
+            sequence += 1;
+            app.apply_event(&c3b_actions(sequence));
+            let _ = c3b_key(&mut app, Key::Char('a'));
+            assert!(!app.market.form_open(), "{sentence}: still in flight");
+            assert_eq!(app.market.action_status(), "Waiting for the server...");
+            let queries = app.apply_event(&OutputEvent::InvokeResult {
+                id,
+                result: InvokeResult::LegalAction(response),
+            });
+            assert!(queries.is_empty());
+            assert_eq!(app.market.action_status(), sentence);
+            let frame = super::super::frame_text(&mut app, 160, 34);
+            assert!(frame.contains(sentence), "{sentence}:\n{frame}");
+            let r = c3b_key(&mut app, Key::Char('a'));
+            assert!(r.invokes.is_empty());
+            if blocks {
+                assert!(!app.market.form_open(), "{sentence} blocks the offer");
+                assert_eq!(app.market.action_status(), sentence);
+                // A replaced view unblocks it.
+                sequence += 1;
+                app.apply_event(&c3b_actions(sequence));
+                let _ = c3b_key(&mut app, Key::Char('a'));
+                assert!(app.market.form_open(), "{sentence}: the keyframe unblocks");
+            } else {
+                assert!(app.market.form_open(), "{sentence} unblocks at once");
+            }
+            let _ = c3b_key(&mut app, Key::Esc);
+        }
+    }
+
+    /// One listing, `0a1b2c3d`, with nothing of the actor's.
+    fn c3b_market() -> OutputEvent {
+        OutputEvent::Panel {
+            feed: SmolStr::new_static("mind.market"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": { "id": "mind.market", "version": 1 },
+                "open": true,
+                "notice": null,
+                "rows": [{
+                    "code": "0a1b2c3d", "name": "Drift Kestrel", "class": "II", "form": "open",
+                    "transferable": true, "term_seconds": 2_592_000, "grace_seconds": 604_800,
+                    "price_minor": "125000", "price_text": "1250cr", "levy_permille": 50,
+                    "venue_permille": 20, "parent_royalty_permille": 0, "derived": false,
+                    "terms_line": "One seat for 30 IC days plus 7 days of Grace.",
+                    "split_line": "Price 1250cr: Registry 5%, venue 2%, charter owner the rest."
+                }],
+                "after": null,
+                "own": { "quotes": [], "waiting": [] }
+            }),
+        }
+    }
+
+    /// **17g cut C3b** (the C3 plan §2.4: "an unresolved action never blocks
+    /// the market"): a submission in flight leaves the market free — a buy
+    /// form's Enter sends at once — and a market request in flight leaves the
+    /// actions free — another offer submits at once — while the market's own
+    /// form keys answer the one-pending sentence; a session boundary forgets
+    /// both, so the late answers are ignored and the offer is open again.
+    #[test]
+    fn an_unresolved_action_never_holds_the_market_and_a_boundary_forgets_both() {
+        use mush_proto::{InvokeRequest, InvokeResult, LegalActionResponse};
+        let mut app = app();
+        app.apply_event(&c3b_actions(1));
+        let _ = app.feed_input(b"7");
+        // `wait`, submitted and never answered.
+        let _ = c3b_key(&mut app, Key::Down);
+        let _ = c3b_key(&mut app, Key::Down);
+        let _ = c3b_key(&mut app, Key::Char('a'));
+        let r = c3b_key(&mut app, Key::Enter);
+        let [(action_id, InvokeRequest::LegalAction(_))] = r.invokes.as_slice() else {
+            panic!("one submission: {:?}", r.invokes);
+        };
+        let action_id = *action_id;
+        // The market: the buy form sends at once.
+        let _ = app.feed_input(b"\x1bm");
+        assert_eq!(app.active_screen(), MARKET_SCREEN);
+        app.apply_event(&c3b_market());
+        let _ = app.feed_input(b"b");
+        let r = app.feed_input(b"\r");
+        let [(market_id, InvokeRequest::Mind(_))] = r.invokes.as_slice() else {
+            panic!("one market request: {:?}", r.invokes);
+        };
+        let market_id = *market_id;
+        let _ = app.feed_input(b"\x1b");
+        let r = app.feed_input(b"b");
+        assert!(r.invokes.is_empty());
+        assert_eq!(
+            app.market.status(),
+            "An operation is pending; wait for its result."
+        );
+        assert!(!app.market.form_open());
+        // The actions: `brace` submits while the market request is out.
+        let _ = app.feed_input(b"7");
+        let _ = c3b_key(&mut app, Key::Up);
+        let _ = c3b_key(&mut app, Key::Up);
+        let _ = c3b_key(&mut app, Key::Char('a'));
+        assert_eq!(
+            app.market.form_lines().map(|(title, _)| title).as_deref(),
+            Some("Brace")
+        );
+        let _ = c3b_key(&mut app, Key::Char('2'));
+        let _ = c3b_key(&mut app, Key::Tab);
+        let _ = c3b_key(&mut app, Key::Right);
+        let r = c3b_key(&mut app, Key::Enter);
+        assert!(
+            matches!(r.invokes.as_slice(), [(_, InvokeRequest::LegalAction(_))]),
+            "{:?}",
+            r.invokes
+        );
+        // A boundary forgets both: the late answers are ignored and `wait`
+        // opens again.
+        app.apply_event(&OutputEvent::SessionInfo {
+            character: ObjRef::new("#9", "Zoe"),
+            account: "zoe".into(),
+            connections: 1,
+        });
+        let late = app.apply_event(&OutputEvent::InvokeResult {
+            id: action_id,
+            result: InvokeResult::LegalAction(LegalActionResponse::Queued {}),
+        });
+        assert!(late.is_empty());
+        assert_eq!(app.market.action_status(), "");
+        let _ = app.apply_event(&OutputEvent::InvokeResult {
+            id: market_id,
+            result: InvokeResult::Mind(mush_proto::MindResponse::Staged {
+                line: "LATE".into(),
+            }),
+        });
+        assert_ne!(app.market.status(), "LATE");
+        assert!(!app.market.pending());
+        let _ = c3b_key(&mut app, Key::Down);
+        let _ = c3b_key(&mut app, Key::Down);
+        let _ = c3b_key(&mut app, Key::Char('a'));
+        assert_eq!(
+            app.market.form_lines().map(|(title, _)| title).as_deref(),
+            Some("Wait"),
+            "the offer is open again"
+        );
+    }
+
+    /// **17g cut C3b** (the review): one input burst can carry a form's typed
+    /// submission AND a submitted line — the form's Enter, the screen's `Enter
+    /// type`, the line's own Enter, in one read. The burst's result carries
+    /// both, and the transport (`server.rs` `tui_data`) forwards both rather
+    /// than only the lines.
+    #[test]
+    fn one_burst_carries_the_typed_submission_and_the_line_together() {
+        use mush_proto::InvokeRequest;
+        let mut app = app();
+        app.apply_event(&c3b_actions(1));
+        let _ = app.feed_input(b"7");
+        let _ = c3b_key(&mut app, Key::Down);
+        let _ = c3b_key(&mut app, Key::Down);
+        let _ = app.feed_input(b"a");
+        let r = app.feed_input(b"\r\r\r");
+        assert!(
+            matches!(r.invokes.as_slice(), [(_, InvokeRequest::LegalAction(_))]),
+            "{:?}",
+            r.invokes
+        );
+        assert_eq!(r.submit, ["+act wait"]);
     }
 }

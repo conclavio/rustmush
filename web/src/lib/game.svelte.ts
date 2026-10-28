@@ -12,6 +12,9 @@ import { login as apiLogin, logout as apiLogout, register as apiRegister } from 
 import type { CharSummary, LoginOk } from "./auth";
 import type {
   ClientCaps,
+  MarketAction,
+  MindMarketRequest,
+  MindResponse,
   NarrativeKind,
   ObjRef,
   OutputEvent,
@@ -41,6 +44,8 @@ import { PictureStore } from "./stores/picture.svelte";
 import { pictureCommand, type PictureKind } from "./picture";
 import { BODY_GROUND_FEED, SITE_MAP_FEED, TV_STATUS_FEED, groundParams, rigPrefill, siteParams } from "./quarry";
 import { QuarryStore } from "./stores/quarry.svelte";
+import { HOLDINGS_FEED, MARKET_FEED, OFFLINE, PENDING, marketActionError } from "./market";
+import { MarketStore } from "./stores/market.svelte";
 import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
@@ -59,8 +64,10 @@ import { PresenceStore } from "./stores/presence.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
 import {
   CHART_SCREEN,
+  MARKET_SCREEN,
   QUARRY_SCREEN,
   ScreensStore,
+  type MarketLocal,
   UNIT_SCREEN,
   type GateInput,
 } from "./stores/screens.svelte";
@@ -81,7 +88,7 @@ import {
 } from "./theme";
 import { genAcceptLine, genDiscardLine, genRetryLine } from "./worldgen";
 import { MindsStore } from "./stores/minds.svelte";
-import { MindRpcClient } from "./mind-rpc";
+import { MindRpcClient, MindRpcUnsent } from "./mind-rpc";
 import { LegalActionRpcClient } from "./legal-action-rpc";
 import { ActionRequestsStore } from "./stores/action-requests.svelte";
 import type { LegalAction } from "./stores/actions.svelte";
@@ -127,7 +134,12 @@ type PendingReq =
   | { kind: "scenes" }
   | { kind: "chart" }
   | { kind: "site.map" }
-  | { kind: "body.ground" };
+  | { kind: "body.ground" }
+  // 17g cut C3c: the market screen's two closed page reads (`requestMarket`), each stamped
+  // with the market store's generation: an answer to an ask made before a reset (a
+  // character switch on this socket) belongs to the store that was reset, never this one.
+  | { kind: "mind.market"; gen: number }
+  | { kind: "mind.holdings"; gen: number };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
@@ -267,6 +279,9 @@ export class GameApp {
   /** The quarry (doc 20 cut SM.9): the `site.map` and `body.ground` keyframes and the
    * screen's view. */
   quarry = new QuarryStore();
+  /** The mind market (17g cut C3c): the `mind.market` and `mind.holdings` keyframes, the
+   * screen's selection and section, the one open form and the one pending typed request. */
+  market = new MarketStore();
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
   requests = new RequestStore();
@@ -481,6 +496,10 @@ export class GameApp {
       await apiLogout(this.#token);
     }
     this.#clearCreds();
+    // 17g cut C3c: a deliberate logout is an account boundary — the market's sticky `LOST`
+    // belonged to this account, and whoever signs in next may not be it. (An expired session
+    // keeps it: the same player signs in again.)
+    this.market.reset(true);
     this.screen = "login";
   }
 
@@ -755,6 +774,14 @@ export class GameApp {
     ) {
       this.#screenRefused(QUARRY_SCREEN.def.label, this.screens.registerFeedScreen(QUARRY_SCREEN));
     }
+    // The mind market (17g cut C3c), the same way, on its letter hotkey `m`: every launch
+    // format's manifest carries `mind.market` (17g C3a).
+    if (
+      this.session.panels.some((p) => p.endsWith(MARKET_SCREEN.suffix)) &&
+      !this.screens.feedScreens.some((f) => f.def.id === MARKET_SCREEN.def.id)
+    ) {
+      this.#screenRefused(MARKET_SCREEN.def.label, this.screens.registerFeedScreen(MARKET_SCREEN));
+    }
     let mapAsked = false;
     for (const { pending, q } of hydrationQueries(this.session)) {
       const sent = this.#req(pending, q);
@@ -769,6 +796,11 @@ export class GameApp {
     }
     if (this.session.hasPanel("legal.actions")) {
       this.#requestLegalActions();
+    }
+    // 17g cut C3c: the market's views were dropped with the old connection (`#clearMinds`);
+    // a viewer standing on the screen gets its two pages again from this world.
+    if (this.screens.active === MARKET_SCREEN.def.id && this.session.hasPanel(MARKET_FEED)) {
+      this.enterMarket();
     }
     // **16b cut I.2**: an open replay is re-hydrated here — the world behind
     // this hello may be a new one, so the held document and ground are dropped
@@ -829,6 +861,11 @@ export class GameApp {
   }
 
   #routeReply(event: OutputEvent, pending: PendingReq | null, ts: number): void {
+    if ((pending?.kind === "mind.market" || pending?.kind === "mind.holdings") && pending.gen !== this.market.generation) {
+      // 17g cut C3c: a market page asked before the store's last reset (a character switch
+      // on this socket): the previous character's quotes and holdings, never painted here.
+      return;
+    }
     if (pending?.kind === "sheet") {
       // ANY reply to a sheet Req releases the I13 resync storm guard before
       // classification — a keyframe re-seeds, and a refusal/odd reply must
@@ -922,6 +959,12 @@ export class GameApp {
           // picture, or `p`, is the recovery.
           return;
         }
+        if (pending?.kind === "mind.market" || pending?.kind === "mind.holdings") {
+          // 17g cut C3c: a page the server would not build (`No such market page.`) paints
+          // in its pane and the status, never in the scrollback.
+          this.market.refused(pending.kind, plainText(event.d));
+          return;
+        }
         if (pending?.kind === "arena.mind") { this.mindTrace = null; return; }
         if (pending?.kind === "mind.bulk") { this.minds.proving = null; this.minds.error = plainText(event.d); return; }
         if (pending?.kind === "cockpit" || pending?.kind === "arena.map") {
@@ -952,6 +995,12 @@ export class GameApp {
       this.minds.proving = decodeProvingView(d.data);
     } else if (d.feed === "mind.bench") {
       this.minds.bench = decodeBenchView(d.data);
+    } else if (d.feed === MARKET_FEED || d.feed === HOLDINGS_FEED) {
+      // The mind market's two pages (17g cut C3c): pulled, each a whole keyframe, decoded
+      // closed — a bad shape is held as none, so its pane paints `No such market page.`.
+      if (d.kind === "keyframe") {
+        this.market.apply(d.feed, d.data);
+      }
     } else if (d.feed === "narrative") {
       // A narrative backlog page (interface plan I12): older room lines this
       // viewer already saw, from the server's per-viewer resume ring. Render
@@ -1350,6 +1399,13 @@ export class GameApp {
       // and accepted into client state. A failed send leaves the gateway copy
       // live, so reconnect re-emits it and this same idempotent path retries.
       this.client.ackCommit(receipt.commit);
+      // 17g cut C3c: a committed action may have moved the market's pages (a purchase
+      // settling, a licence changing hands). While the market is the screen, ask its two
+      // pages ONCE more — never while an ask is already out, and never in a loop: only a
+      // fresh receipt reaches here (a replayed one returned above).
+      if (this.screens.active === MARKET_SCREEN.def.id && !this.#marketAsksOut()) {
+        this.enterMarket();
+      }
       return;
     }
     if (view.view !== "legal.actions") {
@@ -1490,10 +1546,14 @@ export class GameApp {
     return this.#entered(this.screens.switchTo(id, this.gate));
   }
 
-  /** A switch that landed on the quarry pulls its frames (doc 20 cut SM.9). */
+  /** A switch that landed on the quarry pulls its frames (doc 20 cut SM.9); one that landed
+   * on the market asks its two pages (17g cut C3c). */
   #entered(switched: boolean): boolean {
     if (switched && this.screens.active === QUARRY_SCREEN.def.id) {
       this.refreshQuarry();
+    }
+    if (switched && this.screens.active === MARKET_SCREEN.def.id) {
+      this.enterMarket();
     }
     return switched;
   }
@@ -1539,9 +1599,44 @@ export class GameApp {
       | "pictureClose"
       | "quarryRig"
       | "quarryZoom"
-      | "quarryLayer",
+      | "quarryLayer"
+      | MarketLocal,
   ): void {
     switch (action) {
+      // 17g cut C3c: the market's keys — a form opens over the selected row, a section or a
+      // page is asked for, or the status says why not. Nothing here sends a typed request or
+      // a line: only Submit inside a form does (`submitMarket`).
+      case "marketBuy":
+        this.market.openBuy();
+        return;
+      case "marketRenew":
+        this.market.openRenew();
+        return;
+      case "marketOffer":
+        this.market.openOffer();
+        return;
+      case "marketAccept":
+        this.market.openAccept();
+        return;
+      case "marketPublish":
+        this.market.openPublish();
+        return;
+      case "marketWithdraw":
+        this.market.openWithdraw();
+        return;
+      case "marketSection":
+        this.requestMarket(this.market.flipSection());
+        return;
+      case "marketPageNext": {
+        const ask = this.market.pageNext();
+        if (ask !== null) {
+          this.requestMarket(ask);
+        }
+        return;
+      }
+      case "marketPageFirst":
+        this.requestMarket(this.market.pageFirst());
+        return;
       // Doc 20 cut SM.9: the quarry's view keys — client steps over the held frames, then both
       // frames asked again with the new parameters. Nothing here submits a `+tv` line.
       case "quarryRig":
@@ -1652,10 +1747,92 @@ export class GameApp {
           case "quarry":
             this.refreshQuarry();
             return;
+          case "market":
+            // 17g cut C3c: `r` asks the two pages the screen is on again.
+            this.enterMarket();
+            return;
           default:
             this.refreshWho();
         }
       }
+    }
+  }
+
+  // -- the mind market (17g cut C3c; the C3 plan §2.5) ---------------------------
+
+  /** **Ask one market page**: `{t:"mind_market", d: req}`, correlated so its keyframe (or its
+   * `No such market page.` refusal) reaches the store, and the cursor it names remembered.
+   * Returns whether the frame went out. */
+  requestMarket(req: MindMarketRequest): boolean {
+    const gen = this.market.generation;
+    const pending: PendingReq =
+      req.kind === "listings" ? { kind: "mind.market", gen } : { kind: "mind.holdings", gen };
+    const sent = this.#req(pending, { t: "mind_market", d: req });
+    if (sent) {
+      this.market.noteAsk(req);
+    }
+    return sent;
+  }
+
+  /** **The market screen's two entry asks**: the listings page and the holdings section the
+   * screen is on (on entry, on `r`, once after a staged action, once on a fresh receipt). */
+  enterMarket(): void {
+    this.requestMarket(this.market.listingsAsk());
+    this.requestMarket(this.market.holdingsAsk());
+  }
+
+  /** Whether a market page ask of this store's generation is still unanswered (an ask from
+   * before a reset is dropped on arrival, so it never holds a refresh back). */
+  #marketAsksOut(): boolean {
+    for (const p of this.#pending.values()) {
+      if ((p.kind === "mind.market" || p.kind === "mind.holdings") && p.gen === this.market.generation) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * **Send one typed market action** (17g cut C3c): `MindRequest::Market { action }` over the
+   * mind invoke family (`MindRpcClient`), never a line. One at a time. `staged`: the status is
+   * the server's request line, the form closes and the two pages are asked ONCE; `shown`: the
+   * lines paint in the open form; `error`: the status is the server's message. A reply never
+   * seen (a timeout, a dropped connection) closes the form with C2's "not a refusal" sentence,
+   * and nothing is retried — a retry would be a new request (17g C3a). A request that never
+   * LEFT (no socket, or the mind requests' pending cap full: `MindRpcUnsent`) is no `LOST`:
+   * the status says it was not sent and the form stays open.
+   */
+  async submitMarket(action: MarketAction): Promise<void> {
+    const market = this.market;
+    if (market.pending) {
+      market.notice = PENDING;
+      return;
+    }
+    const error = marketActionError(action);
+    if (error !== null) {
+      market.notice = `Request refused: ${error}`;
+      return;
+    }
+    const generation = market.begin(action);
+    let response: MindResponse;
+    try {
+      response = await this.#mindRpc!.request({ op: "market", action });
+    } catch (e) {
+      if (market.generation !== generation) {
+        return;
+      }
+      if (e instanceof MindRpcUnsent) {
+        market.unsent(e.reason === "offline" ? OFFLINE : PENDING);
+      } else {
+        market.lost();
+      }
+      return;
+    }
+    if (market.generation !== generation) {
+      return;
+    }
+    if (market.reply(response) === "staged") {
+      this.enterMarket();
     }
   }
 
@@ -1849,6 +2026,9 @@ export class GameApp {
   }
 
   #clearMinds(): void {
+    // 17g cut C3c: BEFORE the RPC clear, so the market's pending request is forgotten (its
+    // `LOST` sentence left behind) and the rejection that clear delivers is ignored.
+    this.market.reset();
     this.#mindRpc?.clear();
     this.#legalActionRpc?.clear();
     this.actionRequests.clear();

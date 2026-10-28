@@ -17,6 +17,21 @@ import { COCKPIT_FEED } from "../cockpit";
 import { REPLAY_FEED } from "../replay";
 import { GLOBAL_KEYS, JUMP_KEYS, RESERVED_EXIT_KEYS } from "../keys";
 
+/** **The market screen's local keys** (17g cut C3c): `b k t a l x` open a form
+ * over the selected row, `h` flips the holdings section, `]` and `[` page the
+ * focused pane. None sends: only Submit inside a form does, and what it sends
+ * is one typed `MindRequest::Market` (`GameApp.submitMarket`), never a line. */
+export type MarketLocal =
+  | "marketBuy"
+  | "marketRenew"
+  | "marketOffer"
+  | "marketAccept"
+  | "marketPublish"
+  | "marketWithdraw"
+  | "marketSection"
+  | "marketPageNext"
+  | "marketPageFirst";
+
 /** What a bound key does (D-I-18). `toggle` flips the active screen's own
  * layout where it has two (interface cut I8, D-I8-4). The four `picture*`
  * actions (16b cut I.2) step, focus and close the replay on screen 0 — client
@@ -35,7 +50,8 @@ export type KeyAction =
         | "pictureClose"
         | "quarryRig"
         | "quarryZoom"
-        | "quarryLayer";
+        | "quarryLayer"
+        | MarketLocal;
     }
   | { kind: "prefill"; line: string }
   /** **Doc 20 cut SM.9**: open the box with `+tv/<n> <act>` for the quarry's rig (`+tv <act>`
@@ -353,6 +369,44 @@ export const QUARRY_SCREEN: FeedScreen = {
       { key: "z", label: "zoom", action: { kind: "local", action: "quarryZoom" } },
       { key: "l", label: "layer", action: { kind: "local", action: "quarryLayer" } },
       { key: "r", label: "refresh", action: { kind: "local", action: "refresh" } },
+    ],
+    exitsAreKeys: false,
+    // A FeedScreen's own gate is never consulted (`available` filters by
+    // suffix alone); the manifest feed IS the gate.
+    gate: () => true,
+  },
+};
+
+/**
+ * **The mind market** (17g cut C3c; the C3 plan §2.5), the third letter-hotkey screen, on `m` —
+ * the TUI's `MARKET_SCREEN` (`mush-net-ssh/src/tui/screen.rs`, 17g cut C3b) and its ten keys,
+ * same keys, labels and order: `b` buy, `k` renew, `t` offer, `a` accept, `l` publish, `x`
+ * withdraw and `h` section are the market's own local actions, `r` asks the two pages again,
+ * `]` and `[` page the focused pane. **No `run` and no `prefill`**: a bare key opens a form or
+ * moves a page and sends nothing; only Submit inside a form sends, one typed
+ * `MindRequest::Market` (`GameApp.submitMarket`). Registered by `GameApp` once, on a hello whose
+ * manifest carries `mind.market` (17g C3a puts it in every launch format's). `m` stays the
+ * chart's, the quarry's and the cockpit's own key on those screens; Alt+m reaches the market
+ * from any screen that does not bind `m`.
+ */
+export const MARKET_SCREEN: FeedScreen = {
+  suffix: "mind.market",
+  def: {
+    id: "market",
+    digit: null,
+    hotkey: "m",
+    label: "market",
+    keys: [
+      { key: "b", label: "buy", action: { kind: "local", action: "marketBuy" } },
+      { key: "k", label: "renew", action: { kind: "local", action: "marketRenew" } },
+      { key: "t", label: "offer", action: { kind: "local", action: "marketOffer" } },
+      { key: "a", label: "accept", action: { kind: "local", action: "marketAccept" } },
+      { key: "l", label: "publish", action: { kind: "local", action: "marketPublish" } },
+      { key: "x", label: "withdraw", action: { kind: "local", action: "marketWithdraw" } },
+      { key: "h", label: "section", action: { kind: "local", action: "marketSection" } },
+      { key: "r", label: "refresh", action: { kind: "local", action: "refresh" } },
+      { key: "]", label: "next page", action: { kind: "local", action: "marketPageNext" } },
+      { key: "[", label: "first page", action: { kind: "local", action: "marketPageFirst" } },
     ],
     exitsAreKeys: false,
     // A FeedScreen's own gate is never consulted (`available` filters by

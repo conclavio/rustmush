@@ -20,7 +20,7 @@ use mush_roll::commerce::holding_reader::{OriginalReadRequest, OriginalReadResul
 use mush_roll::commerce::{FiledRevisionId, LicenceId};
 use serde_json::json;
 
-use super::words::{self, fill};
+use super::words::{self, Outcome, Refusal, fill, word};
 use crate::minds::workshop::{MindRef, saved_revision};
 
 /// The `@mind` switches this module serves.
@@ -204,18 +204,18 @@ fn own_revision(
 }
 
 /// The composed Roll actions, or `NOT_OPEN`.
-fn actions(ctx: &Ctx<'_>) -> Result<RollCommandActions, CmdError> {
+fn actions(ctx: &Ctx<'_>) -> Result<RollCommandActions, Refusal> {
     ctx.reg
         .definitions()
         .map(RollCommandActions::capture)
-        .ok_or_else(not_open)
+        .ok_or_else(Refusal::not_open)
 }
 
 /// The actor's own filed mind selected by `filed`, or `NO_FILED`: a foreign
 /// and a missing number read alike (the Roll read refuses both alike).
 /// 17g C2c: `@mind/publish` reads its filed mind through this too.
-pub(super) fn own_filed(ctx: &Ctx<'_>, filed: u64) -> Result<OwnFiledView, CmdError> {
-    let refuse = || CmdError::msg(fill(words::NO_FILED, &[("filed", &filed.to_string())]));
+pub(super) fn own_filed(ctx: &Ctx<'_>, filed: u64) -> Result<OwnFiledView, Refusal> {
+    let refuse = || word!(NO_FILED, &[("filed", &filed.to_string())]);
     let id = FiledRevisionId::new(filed).map_err(|_| refuse())?;
     let service = super::service(ctx)?;
     let request = OriginalReadRequest::command(RollCommandReadRequest::own_filed(id));
@@ -329,15 +329,29 @@ fn update(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
 
 /// `@mind/withdraw <filed>`: stop new sales of a filed revision the actor
 /// authored and owns; the provider rechecks authorship.
+/// 17g C3a: `parse_withdraw` then `run_withdraw`; the typed `Withdraw {
+/// filed }` runs the same `run_withdraw`.
 fn withdraw(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    let filed = number(text.trim()).ok_or_else(|| usage(USAGE_FILED))?;
+    super::market::staged(ctx, |ctx| run_withdraw(ctx, parse_withdraw(text)?))
+}
+
+/// 17g C3a: `@mind/withdraw`'s argument, the filed number (`number`), else
+/// its usage line (`REFUSED`).
+pub(super) fn parse_withdraw(text: &str) -> Result<u64, Refusal> {
+    number(text.trim()).ok_or_else(|| Refusal::usage(USAGE_FILED))
+}
+
+/// 17g C3a: `@mind/withdraw` after its parse: the composed Roll action
+/// (`NOT_OPEN`), the actor's own filed mind (`NO_FILED`), then `WITHDRAWING`
+/// and the withdrawal.
+pub(super) fn run_withdraw(ctx: &mut Ctx<'_>, filed: u64) -> Result<Outcome, Refusal> {
     let actions = actions(ctx)?;
     let view = own_filed(ctx, filed)?;
-    let action = actions.withdraw().ok_or_else(not_open)?;
+    let action = actions.withdraw().ok_or_else(Refusal::not_open)?;
     let filed = view.filed().get().to_string();
     let line = fill(words::WITHDRAWING, &[("filed", &filed)]);
     let parameters = withdraw_parameters(view.filed().get());
-    super::submit(ctx, "withdraw", &filed, action, parameters, &line)
+    super::stage(ctx, "withdraw", &filed, action, parameters, line)
 }
 
 /// `@mind/attest <filed>`: renew the owner's licence of a filed mind the

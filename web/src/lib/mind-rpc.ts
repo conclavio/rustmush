@@ -8,6 +8,18 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * A request that never left this client: the pending cap was full, or there was no socket to
+ * send it on. Unlike a timeout or a `clear()`, no result of it can exist anywhere, so a caller
+ * may say "not sent" instead of "not seen" (17g cut C3c: the market's `LOST` sentence is only
+ * for a request that did leave). The message is the one these two refusals always carried.
+ */
+export class MindRpcUnsent extends Error {
+  constructor(message: string, readonly reason: "full" | "offline") {
+    super(message);
+  }
+}
+
 /** Connection-local source replies never enter scrollback, storage or resume state. */
 export class MindRpcClient {
   #pending = new Map<number, Pending>();
@@ -27,11 +39,11 @@ export class MindRpcClient {
   }
 
   request(request: MindRequest, progress?: (job: number) => void): Promise<MindResponse> {
-    if (this.#pending.size >= 8) return Promise.reject(new Error("Too many pending mind requests."));
+    if (this.#pending.size >= 8) return Promise.reject(new MindRpcUnsent("Too many pending mind requests.", "full"));
     return new Promise((resolve, reject) => {
       // WebSocket replies are delivered in a later task, after this registration.
       const id = this.client.invoke({ service: "mind", request });
-      if (id === null) { reject(new Error("Reconnect before opening the mind workshop.")); return; }
+      if (id === null) { reject(new MindRpcUnsent("Reconnect before opening the mind workshop.", "offline")); return; }
       const timer = setTimeout(() => {
         this.#pending.delete(id);
         reject(new Error("The mind request timed out. Refresh before retrying a save."));

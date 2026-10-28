@@ -17,6 +17,7 @@
   import ChannelTabs from "./ChannelTabs.svelte";
   import ChartScreen from "./ChartScreen.svelte";
   import QuarryScreen from "./QuarryScreen.svelte";
+  import MarketScreen from "./MarketScreen.svelte";
   import ChannelView from "./ChannelView.svelte";
   import CockpitScreen from "./CockpitScreen.svelte";
   import ReplayScreen from "./ReplayScreen.svelte";
@@ -105,6 +106,10 @@
         // What the pilot's own platform holds — a count the payload carries
         // and nothing else knows (16b cut Q.5).
         return app.cockpit.frame?.contacts.length ?? 0;
+      case "market":
+        // 17g cut C3c: 1 while the actor holds a live quote or a purchase waits in escrow —
+        // something on the market screen is theirs to finish.
+        return app.market.badge;
       default:
         return 0;
     }
@@ -121,6 +126,9 @@
     // Only explicit shell modifiers may leave a focused control. Bare
     // Enter, Space, Tab, arrows and typing belong to that control.
     if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && isInteractiveControl(ev.target)) return;
+    // 17g cut C3c: an open market form owns the bare keys (the TUI's rule): a second key
+    // must not open another form over it. `MarketForm` takes Esc itself.
+    if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && active.id === "market" && app.market.form !== null) return;
     const intent = navIntent(
       {
         key: ev.key,
@@ -230,6 +238,9 @@
         {:else if active.id === "quarry"}
           <!-- Doc 20 cut SM.9: the quarry, on the letter hotkey q. -->
           <QuarryScreen {app} />
+        {:else if active.id === "market"}
+          <!-- 17g cut C3c: the mind market, on the letter hotkey m. -->
+          <MarketScreen {app} />
         {:else if active.id === "cockpit" && app.pictureShown}
           <!-- 16b cut I.2: a finished match on screen 0 — a replay is open
                and no seat is held. A seat closes the replay. -->

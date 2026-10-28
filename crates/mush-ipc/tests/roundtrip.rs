@@ -457,7 +457,7 @@ fn version_is_present_and_travels_in_hello() {
     // world health (10) and mirrored reply settings with reply-completion
     // fences (11) extend the closed vocabulary. An older peer cannot decode or
     // honor them; deploy both halves together.
-    assert_eq!(IPC_VERSION, 11, "the boundary protocol version is pinned");
+    assert_eq!(IPC_VERSION, 12, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -782,7 +782,7 @@ fn licence_source_request_uses_v8_custody_and_closed_v7_request_cannot_decode_it
         serde_json::from_value::<OldMind>(value.get("request").expect("nested request").clone())
             .is_err()
     );
-    assert_eq!(IPC_VERSION, 11);
+    assert_eq!(IPC_VERSION, 12);
 }
 
 #[test]
@@ -820,6 +820,6 @@ fn attributed_remove_requires_new_closed_invoke_vocabulary()
         serde_json::from_slice::<mush_proto::InvokeResult>(&bytes)?,
         reply
     );
-    assert_eq!(IPC_VERSION, 11);
+    assert_eq!(IPC_VERSION, 12);
     Ok(())
 }

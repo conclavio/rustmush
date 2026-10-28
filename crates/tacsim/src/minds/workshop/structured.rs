@@ -71,6 +71,15 @@ impl InvokeHandler for WorkshopCommands {
                 .map(|data| MindResponse::Trace { data })
                 .map_err(|message| invalid("trace", message));
             }
+            // 17g C3a (the C3 plan §2.1, "the dispatch site"): a typed market
+            // action, before the workshop's principal gate, so it never spends
+            // an author session; 17g C2's own `submit` applies C2's principal
+            // rule and words (`market_commands::typed`, whose doc records the
+            // one difference: the line's `@mind/publish` and `@mind/withdraw`
+            // meet this gate first, the typed `Publish` and `Withdraw` do not).
+            if let MindRequest::Market { action } = request {
+                return Ok(crate::minds::market_commands::typed::submit(ctx, action));
+            }
             let principal = self.principal(ctx)?;
             self.structured(ctx, principal, conn, lease, id, request)
         })();
@@ -139,7 +148,8 @@ impl WorkshopCommands {
                     source_candidates_retained,
                 })
             }
-            MindRequest::Trace { .. } => Err(RollError::Missing),
+            // Dispatched in `invoke` before the principal gate (17g C3a for `Market`).
+            MindRequest::Trace { .. } | MindRequest::Market { .. } => Err(RollError::Missing),
             MindRequest::List {} => Ok(MindResponse::Library {
                 names: roll(ctx)?
                     .names(ctx.actor)

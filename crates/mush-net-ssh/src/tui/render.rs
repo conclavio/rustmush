@@ -75,6 +75,18 @@ impl PaneRow {
         }
     }
 
+    /// **A row the highlight may rest on that prefills nothing** (17g cut
+    /// C3b): the market screen's listings and holdings, whose keys open forms
+    /// and whose Enter must never put a `+minds` line in the box.
+    fn keyed(line: Line<'static>, row_key: String) -> PaneRow {
+        PaneRow {
+            line,
+            prefill: None,
+            row_key: Some(row_key),
+            selectable: true,
+        }
+    }
+
     /// The row's plain text, spans joined (16b cut Q.4). What a caller that
     /// wants to READ a pane — a golden, the map parity test — asks for, rather
     /// than walking `line.spans` itself.
@@ -892,6 +904,371 @@ pub fn render_actions_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
                 truncate_chars(help, 60)
             )))));
         }
+    }
+    PaneRows { rows }
+}
+
+// ---- the mind market (17g cut C3b) ----------------------------------------
+
+/// **The listings table's column starts** (17g cut C3b; the C3 plan §2.4):
+/// `CODE      NAME                      FORM         CLASS  PRICE         TERM+GRACE  FLAGS`
+/// — the code (8), the name (24, C2's cut), the form (11), the class (5), the
+/// price (12, right-aligned as C2's `ROW` prints it), the term and Grace in IC
+/// days (10), then the flags, each column two spaces after the last.
+pub const MARKET_COLUMN_STARTS: [usize; 7] = [0, 10, 36, 49, 56, 70, 82];
+/// The fixed columns' widths (the flags take the rest).
+const MARKET_COLUMN_WIDTHS: [usize; 6] = [8, 24, 11, 5, 12, 10];
+const MARKET_HEADER: [&str; 7] = [
+    "CODE",
+    "NAME",
+    "FORM",
+    "CLASS",
+    "PRICE",
+    "TERM+GRACE",
+    "FLAGS",
+];
+/// **The holdings table's column starts** (17g cut C3b; the C3 plan §2.4):
+/// `NUMBER    KIND       NAME                  FORM         PHASE               FLAGS`
+/// — the filed or licence number (8), the kind (9: `owner`, `dependent`,
+/// `paid`, `House Pin`), the name (20, C2's cut), a paid licence's form (11),
+/// the phase (19), then the flags.
+pub const HOLDINGS_COLUMN_STARTS: [usize; 6] = [0, 10, 21, 43, 56, 76];
+/// The fixed columns' widths (the flags take the rest).
+const HOLDINGS_COLUMN_WIDTHS: [usize; 5] = [8, 9, 20, 11, 19];
+const HOLDINGS_HEADER: [&str; 6] = ["NUMBER", "KIND", "NAME", "FORM", "PHASE", "FLAGS"];
+/// Seconds in the IC day the market counts terms in (C2's `market::DAY`).
+const IC_DAY_SECONDS: i64 = 86_400;
+
+/// How many of a table's columns fit a pane `width` wide (`None`: every
+/// one): the fixed columns while each ends inside it, then the last (rest)
+/// column only when it fits WHOLE — `rest` is its widest cell — so a column
+/// is dropped from the right and never cut or wrapped.
+fn columns_kept(starts: &[usize], widths: &[usize], rest: usize, width: Option<usize>) -> usize {
+    let Some(width) = width else {
+        return starts.len();
+    };
+    let mut kept = 0;
+    for (start, w) in starts.iter().zip(widths) {
+        if start + w > width {
+            return kept;
+        }
+        kept += 1;
+    }
+    if starts
+        .get(widths.len())
+        .is_some_and(|start| start + rest <= width)
+    {
+        kept += 1;
+    }
+    kept
+}
+
+/// One table row: the first `kept` cells, each at its fixed start and cut to
+/// its column (`right` is the right-aligned column), trailing spaces trimmed.
+fn lay(
+    cells: &[String],
+    starts: &[usize],
+    widths: &[usize],
+    kept: usize,
+    right: Option<usize>,
+) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for (i, (cell, start)) in cells.iter().zip(starts).enumerate().take(kept) {
+        while used < *start {
+            out.push(' ');
+            used += 1;
+        }
+        let cell = clean(cell);
+        let text = match widths.get(i) {
+            Some(w) if right == Some(i) => {
+                let cut = truncate_chars(&cell, *w);
+                format!("{cut:>w$}")
+            }
+            Some(w) => truncate_chars(&cell, *w),
+            None => cell,
+        };
+        used += text.chars().count();
+        out.push_str(&text);
+    }
+    out.trim_end().to_owned()
+}
+
+/// A plain line cut to the pane (a market pane never wraps).
+fn fitted(text: &str, width: Option<usize>) -> String {
+    let text = clean(text);
+    match width {
+        Some(w) => truncate_chars(&text, w),
+        None => text,
+    }
+}
+
+/// Whole IC days, rounded up (C2's `market::days`).
+fn ic_days(seconds: i64) -> i64 {
+    seconds.max(0).saturating_add(IC_DAY_SECONDS - 1) / IC_DAY_SECONDS
+}
+
+/// **The `mind.market` pane** (17g cut C3b; the C3 plan §2.4): a header and
+/// one row per listing at [`MARKET_COLUMN_STARTS`], keyed by the listing's
+/// code, then under the header the actor's own strip — `quote <code>
+/// <price> <n>s` (or `expired`) and `waiting <code>`. A closed market, a page
+/// with no rows (away from a counter, an empty counter) is the keyframe's
+/// `notice` — followed by the own strip when the actor has one, since a
+/// purchase in escrow must stay reachable; a keyframe of the wrong shape is
+/// `No such market page.`. A strip line whose code this page does not list
+/// is keyed by the code, so `b` reaches it. Columns that do not fit the pane
+/// are dropped from the right, never wrapped. Prices are the server's
+/// `price_text`: the client formats no credits. Nothing the keyframe does
+/// not carry is painted, and no row prefills a line.
+#[must_use]
+pub fn render_market_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let Some(view) = super::market::decode_market(data) else {
+        return PaneRows::one(super::market::NO_PAGE);
+    };
+    let width = ctx.pane.map(|(w, _)| usize::from(w));
+    // The own strip: a line per quote, then per waiting purchase. A code this
+    // page lists is reached by its listing row, so its strip line is plain;
+    // a code off the page — a purchase paid into escrow whose listing was
+    // withdrawn, one bought at a counter the actor has left — is the only
+    // way to reach `complete` or `refund` from the screen, so its line is
+    // keyed by the code and `b` opens the buy form on it (the C3b review).
+    let listed = |code: &str| view.rows.iter().any(|r| r.code == code);
+    let strip: Vec<PaneRow> = view
+        .quotes
+        .iter()
+        .map(|quote| {
+            let left = if quote.expired {
+                "expired".to_owned()
+            } else {
+                format!("{}s", quote.expires_in_seconds)
+            };
+            (
+                quote.code.clone(),
+                format!("quote {} {} {left}", quote.code, quote.price_text),
+            )
+        })
+        .chain(
+            view.waiting
+                .iter()
+                .map(|code| (code.clone(), format!("waiting {code}"))),
+        )
+        .map(|(code, text)| {
+            let line = Line::from(dim_span_owned(&fitted(&text, width)));
+            if listed(&code) {
+                PaneRow::plain(line)
+            } else {
+                PaneRow::keyed(line, code)
+            }
+        })
+        .collect();
+    if !view.open || view.rows.is_empty() {
+        // The plan's "notice alone", unless the actor has something of its
+        // own here: then the strip follows the notice.
+        let notice = view.notice.as_deref().unwrap_or(super::market::NO_PAGE);
+        let mut rows = PaneRows::one(&fitted(notice, width)).rows;
+        rows.extend(strip);
+        return PaneRows { rows };
+    }
+    let flags = |transferable: bool, derived: bool| -> String {
+        match (transferable, derived) {
+            (true, false) => String::new(),
+            (false, false) => "no resale".to_owned(),
+            (true, true) => "derived".to_owned(),
+            (false, true) => "no resale, derived".to_owned(),
+        }
+    };
+    let cells: Vec<(String, Vec<String>)> = view
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.code.clone(),
+                vec![
+                    row.code.clone(),
+                    row.name.clone(),
+                    row.form.clone(),
+                    row.class.clone(),
+                    row.price_text.clone(),
+                    format!(
+                        "{}+{}",
+                        ic_days(row.term_seconds),
+                        ic_days(row.grace_seconds)
+                    ),
+                    flags(row.transferable, row.derived),
+                ],
+            )
+        })
+        .collect();
+    let rest = cells
+        .iter()
+        .filter_map(|(_, c)| c.last())
+        .map(|f| f.chars().count())
+        .chain(std::iter::once(MARKET_HEADER[6].len()))
+        .max()
+        .unwrap_or(0);
+    let kept = columns_kept(&MARKET_COLUMN_STARTS, &MARKET_COLUMN_WIDTHS, rest, width);
+    let lay_row = |cells: &[String]| {
+        lay(
+            cells,
+            &MARKET_COLUMN_STARTS,
+            &MARKET_COLUMN_WIDTHS,
+            kept,
+            Some(4),
+        )
+    };
+    let mut rows = Vec::new();
+    if let Some(notice) = &view.notice {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned(&fitted(
+            notice, width,
+        )))));
+    }
+    let header: Vec<String> = MARKET_HEADER.iter().map(|h| (*h).to_owned()).collect();
+    rows.push(PaneRow::plain(Line::from(Span::styled(
+        lay(
+            &header,
+            &MARKET_COLUMN_STARTS,
+            &MARKET_COLUMN_WIDTHS,
+            kept,
+            None,
+        ),
+        Style::default().add_modifier(Modifier::BOLD),
+    ))));
+    rows.extend(strip);
+    for (code, cells) in cells {
+        rows.push(PaneRow::keyed(Line::from(lay_row(&cells)), code));
+    }
+    PaneRows { rows }
+}
+
+/// **The `mind.holdings` pane** (17g cut C3b; the C3 plan §2.4): the
+/// section's title row, a header and one row per holding at
+/// [`HOLDINGS_COLUMN_STARTS`], keyed by its filed or licence number. `KIND`
+/// is `owner`, `dependent`, `paid` or `House Pin` as C2's `+minds/holdings`
+/// prints it, `FLAGS` C2's words (`selling`; `no resale`, `revoked`,
+/// `selling`, `renew offer`, `renew paid`). A closed market is the notice
+/// alone; a bad shape is `No such market page.`. As the listings, columns
+/// drop from the right and nothing prefills a line.
+#[must_use]
+pub fn render_holdings_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    use super::market::{Holding, Phase, Renewal, Section};
+    let Some(view) = super::market::decode_holdings(data) else {
+        return PaneRows::one(super::market::NO_PAGE);
+    };
+    let width = ctx.pane.map(|(w, _)| usize::from(w));
+    if !view.open {
+        let notice = view.notice.as_deref().unwrap_or(super::market::NO_PAGE);
+        return PaneRows::one(&fitted(notice, width));
+    }
+    let (this, other) = match view.section {
+        Section::Owner => ("owner", "paid"),
+        Section::Paid => ("paid", "owner"),
+    };
+    let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
+        fitted(&format!("{this} section (h: {other})"), width),
+        Style::default().add_modifier(Modifier::BOLD),
+    )))];
+    if view.rows.is_empty() {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned(&fitted(
+            "(nothing in this section)",
+            width,
+        )))));
+        return PaneRows { rows };
+    }
+    let phase = |phase: &Phase| match phase {
+        Phase::Active(days) => format!("Active, {days}d left"),
+        Phase::Grace(days) => format!("Grace, {days}d left"),
+        Phase::Lapsed => "Lapsed".to_owned(),
+    };
+    let cells: Vec<(u64, Vec<String>)> = view
+        .rows
+        .iter()
+        .map(|row| {
+            let cells = match row {
+                Holding::Owner {
+                    filed,
+                    name,
+                    dependent,
+                    phase: p,
+                    selling,
+                    ..
+                } => vec![
+                    filed.to_string(),
+                    if *dependent { "dependent" } else { "owner" }.to_owned(),
+                    name.clone(),
+                    String::new(),
+                    phase(p),
+                    if *selling { "selling" } else { "" }.to_owned(),
+                ],
+                Holding::Paid {
+                    licence,
+                    house,
+                    name,
+                    form,
+                    transferable,
+                    phase: p,
+                    revoked,
+                    selling,
+                    renewal,
+                    ..
+                } => {
+                    let flags: Vec<&str> = [
+                        (!transferable, "no resale"),
+                        (*revoked, "revoked"),
+                        (*selling, "selling"),
+                        (*renewal == Some(Renewal::Offered), "renew offer"),
+                        (*renewal == Some(Renewal::Paid), "renew paid"),
+                    ]
+                    .into_iter()
+                    .filter_map(|(on, word)| on.then_some(word))
+                    .collect();
+                    vec![
+                        licence.to_string(),
+                        if *house { "House Pin" } else { "paid" }.to_owned(),
+                        name.clone(),
+                        form.clone(),
+                        phase(p),
+                        flags.join(", "),
+                    ]
+                }
+            };
+            (row.number(), cells)
+        })
+        .collect();
+    let rest = cells
+        .iter()
+        .filter_map(|(_, c)| c.last())
+        .map(|f| f.chars().count())
+        .chain(std::iter::once(HOLDINGS_HEADER[5].len()))
+        .max()
+        .unwrap_or(0);
+    let kept = columns_kept(
+        &HOLDINGS_COLUMN_STARTS,
+        &HOLDINGS_COLUMN_WIDTHS,
+        rest,
+        width,
+    );
+    let header: Vec<String> = HOLDINGS_HEADER.iter().map(|h| (*h).to_owned()).collect();
+    rows.push(PaneRow::plain(Line::from(Span::styled(
+        lay(
+            &header,
+            &HOLDINGS_COLUMN_STARTS,
+            &HOLDINGS_COLUMN_WIDTHS,
+            kept,
+            None,
+        ),
+        Style::default().add_modifier(Modifier::BOLD),
+    ))));
+    for (number, cells) in cells {
+        rows.push(PaneRow::keyed(
+            Line::from(lay(
+                &cells,
+                &HOLDINGS_COLUMN_STARTS,
+                &HOLDINGS_COLUMN_WIDTHS,
+                kept,
+                None,
+            )),
+            number.to_string(),
+        ));
     }
     PaneRows { rows }
 }
@@ -4049,10 +4426,11 @@ pub fn status_line(
 /// screen reversed and unread badges, then `right` flush right in `width`.
 ///
 /// Ten named tabs need 110 columns and nine 98, eleven (the chart beside the
-/// ten, doc 19 cut A.3b) 120, and twelve (doc 20 cut SM.9's quarry too) 131. So
-/// at the 120-column floor (16b cut AB.1) every tab is named up to eleven; with
-/// the chart, the quarry and the cockpit all present the strip elides its
-/// inactive names at the floor, as designed below. The right-hand block is
+/// ten, doc 19 cut A.3b) 120, twelve (doc 20 cut SM.9's quarry too) 131, and
+/// thirteen (17g cut C3b's market too) 142. So at the 120-column floor (16b cut
+/// AB.1) every tab is named up to eleven; with the lettered screens and the
+/// cockpit all present the strip elides its inactive names at the floor, as
+/// designed below. The right-hand block is
 /// dropped beside ten tabs until 128 columns. When unread badges push the tabs alone past the
 /// width the strip elides: every INACTIVE tab drops its name and
 /// keeps its digit (and its unread badge, which is the only place unread is

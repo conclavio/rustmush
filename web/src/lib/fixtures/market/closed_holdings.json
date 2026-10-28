@@ -1,0 +1,8 @@
+{
+  "schema": { "id": "mind.holdings", "version": 1 },
+  "open": false,
+  "notice": "The mind market is not open here.",
+  "section": "owner",
+  "rows": [],
+  "after": null
+}

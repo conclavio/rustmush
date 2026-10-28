@@ -85,6 +85,11 @@ pub enum Query {
     },
     /// Read bounded public listings or this character's own original-mind offers.
     MarketOriginalMinds(MarketOriginalMindsRequest),
+    /// 17g cut C3: one page of the player market's listings with the
+    /// character's own quotes and waiting purchases (feed `mind.market`), or
+    /// one section of the character's own mind holdings (feed
+    /// `mind.holdings`), each answered as a `Panel` keyframe on its feed.
+    MindMarket(MindMarketRequest),
     /// Subscribe to a panel feed; the server responds with a keyframe and
     /// then streams deltas.
     PanelSubscribe {
@@ -122,6 +127,43 @@ pub struct MarketOriginalMindsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub after: Option<ProjectedCommitToken>,
+}
+
+/// 17g cut C3: the two closed panel reads of the player market. Each kind is
+/// its feed's query one-for-one; nothing names an actor, an account or a
+/// token (the listing cursor is a code).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MindMarketRequest {
+    /// One page of current listings and the actor's own quotes and waiting
+    /// purchases (feed `mind.market`); `after` is the last code of the
+    /// previous page, as `+minds/next <code>` pages.
+    Listings {
+        /// The last code of the previous page; absent is the first page.
+        #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+        after: Option<crate::ListingCode>,
+    },
+    /// One section of the actor's holdings (feed `mind.holdings`); `after`
+    /// is 17g cut C2's `OwnHoldings` cursor (an asset id for `owner`, a
+    /// licence number for `paid`).
+    Holdings {
+        /// Which section.
+        section: MindHoldingsSection,
+        /// The previous page's cursor; absent is the first page.
+        after: Option<u64>,
+    },
+}
+
+/// 17g cut C3: the two sections of `+minds/holdings`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MindHoldingsSection {
+    /// The filed minds the actor owns (owner and dependent licences).
+    Owner,
+    /// The paid licences the actor holds.
+    Paid,
 }
 
 /// Everything a client can say to the server.

@@ -1454,3 +1454,818 @@ fn an_offer_to_oneself_is_no_player() -> TestResult {
     );
     Ok(())
 }
+
+/// 17g C3a (the C3 plan §4.3): each typed action selects exactly what the
+/// line parser selects for the equivalent line (`typed::select` against
+/// `parse_buy`, `parse_renew`, `parse_offer`, `parse_accept`,
+/// `parse_publish` and `parse_withdraw`), so `typed::run` hands the very
+/// same selection to the same `run_*` the line command runs: the four buy
+/// steps, the three renewal steps, both seller offers (a padded name trimmed
+/// as the line trims it), both accepts with and without a price, a listing
+/// in each form with and without a royalty and a transfer mark, and a
+/// withdrawal. A price outside the credit grammar and a royalty outside its
+/// bounds refuse alike, with the same word and text.
+#[test]
+fn typed_actions_build_the_line_selections() -> TestResult {
+    use super::author::parse_withdraw;
+    use super::market::{parse_buy, parse_publish};
+    use super::renew::{Renew, parse_renew};
+    use super::trade::{parse_accept, parse_offer};
+    use super::typed::{Selection, select};
+    use mush_proto::{ListingCode, MarketAction as A, MarketListingForm as F};
+    let code = || ListingCode::try_from("0a1b2c3d").map_err(|e| e.to_string());
+    let cases: Vec<(A, Selection)> = vec![
+        (
+            A::Quote { code: code()? },
+            Selection::Quote(parse_buy("0a1b2c3d")?),
+        ),
+        (
+            A::Pay { code: code()? },
+            Selection::Pay(parse_buy("0a1b2c3d")?),
+        ),
+        (
+            A::Complete { code: code()? },
+            Selection::Complete(parse_buy("0a1b2c3d")?),
+        ),
+        (
+            A::Refund { code: code()? },
+            Selection::Refund(parse_buy("0a1b2c3d")?),
+        ),
+        (
+            A::Renew { licence: 41 },
+            Selection::Renew(parse_renew("41", Renew::Status)?),
+        ),
+        (
+            A::RenewPay { licence: 41 },
+            Selection::Renew(parse_renew("41", Renew::Pay)?),
+        ),
+        (
+            A::RenewDecline { licence: 41 },
+            Selection::Renew(parse_renew("41", Renew::Decline)?),
+        ),
+        (
+            A::Resell {
+                licence: 12,
+                player: "Old Cy".into(),
+                price: "12.50cr".into(),
+            },
+            Selection::Resell(parse_offer("12=Old Cy price=12.50cr")?),
+        ),
+        (
+            A::Resell {
+                licence: 12,
+                player: " Cy ".into(),
+                price: "0.21".into(),
+            },
+            Selection::Resell(parse_offer("12= Cy  price=0.21")?),
+        ),
+        (
+            A::ResellAccept {
+                licence: 12,
+                price: None,
+            },
+            Selection::ResellAccept(parse_accept("12")?),
+        ),
+        (
+            A::ResellAccept {
+                licence: 12,
+                price: Some("0.21".into()),
+            },
+            Selection::ResellAccept(parse_accept("12 price=0.21")?),
+        ),
+        (
+            A::Charter {
+                filed: 3,
+                player: "#7".into(),
+                price: "1".into(),
+            },
+            Selection::Charter(parse_offer("3=#7 price=1")?),
+        ),
+        (
+            A::CharterAccept {
+                filed: 3,
+                price: Some("1000000".into()),
+            },
+            Selection::CharterAccept(parse_accept("3 price=1000000")?),
+        ),
+        (
+            A::CharterAccept {
+                filed: 3,
+                price: None,
+            },
+            Selection::CharterAccept(parse_accept("3")?),
+        ),
+        (
+            A::Publish {
+                filed: 3,
+                form: F::Sealed,
+                royalty: None,
+                transfer: None,
+            },
+            Selection::Publish(parse_publish("3 form=sealed")?),
+        ),
+        (
+            A::Publish {
+                filed: 3,
+                form: F::OpenResale,
+                royalty: Some(120),
+                transfer: Some(false),
+            },
+            Selection::Publish(parse_publish("3 form=open-resale royalty=120 transfer=no")?),
+        ),
+        (
+            A::Publish {
+                filed: 3,
+                form: F::Open,
+                royalty: Some(0),
+                transfer: Some(true),
+            },
+            Selection::Publish(parse_publish("3 form=open royalty=0 transfer=yes")?),
+        ),
+        (
+            A::Withdraw { filed: 3 },
+            Selection::Withdraw(parse_withdraw("3")?),
+        ),
+    ];
+    for (action, expected) in cases {
+        check_eq!(select(&action)?, expected, "{action:?}");
+    }
+    // The refusals a typed field can reach before any read, alike.
+    let refused = [
+        (
+            select(&A::Resell {
+                licence: 12,
+                player: "Cy".into(),
+                price: "0".into(),
+            }),
+            parse_offer("12=Cy price=0").map(Selection::Resell),
+        ),
+        (
+            select(&A::CharterAccept {
+                filed: 3,
+                price: Some("1.234".into()),
+            }),
+            parse_accept("3 price=1.234").map(Selection::CharterAccept),
+        ),
+        (
+            select(&A::Publish {
+                filed: 3,
+                form: F::Sealed,
+                royalty: Some(5),
+                transfer: None,
+            }),
+            parse_publish("3 form=sealed royalty=5").map(Selection::Publish),
+        ),
+        (
+            select(&A::Publish {
+                filed: 3,
+                form: F::Open,
+                royalty: Some(301),
+                transfer: None,
+            }),
+            parse_publish("3 form=open royalty=301").map(Selection::Publish),
+        ),
+    ];
+    for (typed, line) in refused {
+        check!(typed.is_err(), "{typed:?}");
+        check_eq!(typed, line);
+    }
+    Ok(())
+}
+
+/// 17g C3a (the C3 plan §2.1, §4.3): every refusal the thirteen commands
+/// give carries the word it came from, and the typed reply is `Error { code:
+/// the word in lower case, message: the word's own text }`:
+/// - each word the thirteen return (the `word!` macro takes the name from
+///   the constant itself) answers its constant's exact text and a non-empty
+///   lower-case code;
+/// - the parsers' refusals (`PublishRefusal::refusal`,
+///   `TradeRefusal::refusal`) name the constant whose text they carry, and a
+///   usage line, which is no word, is `REFUSED` (`refused`);
+/// - an accept plan's refusals are `NO_OFFER` (one line) and `NO_OFFER_AT`
+///   (the refusal, then the offer lines: the typed message is the first line
+///   alone, and the line command's split recovers every line in order), and
+///   their charter twins;
+/// - `Staged` and `Shown` carry their lines unchanged.
+#[test]
+fn typed_refusal_codes_are_the_words() -> TestResult {
+    use super::market::{HELP, PublishRefusal, USAGE_PUBLISH};
+    use super::trade::{AcceptPlan, Named, NamedOffer, TradeRefusal, accept_plan, plan_refusal};
+    use super::typed::response;
+    use super::words::{Outcome, Refusal, word};
+    use mush_proto::MindResponse;
+    let error = |refusal: Refusal| response(Err(refusal));
+    let expect = |code: &str, message: &str| MindResponse::Error {
+        code: code.to_owned(),
+        message: message.to_owned(),
+    };
+    let n = [("licence", "7"), ("filed", "7"), ("code", "feed0001")];
+    let words: [(Refusal, &str, &str); 21] = [
+        (word!(NOT_OPEN), "not_open", words::NOT_OPEN),
+        (word!(BUSY), "busy", words::BUSY),
+        (word!(ACCOUNT), "account", words::ACCOUNT),
+        (word!(COUNTER), "counter", words::COUNTER),
+        (
+            word!(NO_LISTING, &n),
+            "no_listing",
+            "No listing here has the code feed0001.",
+        ),
+        (
+            word!(AMBIGUOUS, &n),
+            "ambiguous",
+            "Two listings here share the code feed0001; use +actions and +act for these.",
+        ),
+        (
+            word!(NO_QUOTE, &n),
+            "no_quote",
+            "You have no quote on listing feed0001. Ask for one with +minds/buy feed0001.",
+        ),
+        (
+            word!(NO_PURCHASE, &n),
+            "no_purchase",
+            "You have no paid purchase waiting on listing feed0001.",
+        ),
+        (word!(NO_FILED, &n), "no_filed", "You own no filed mind 7."),
+        (
+            word!(TERMS, &[("price", "400cr"), ("term", "90")]),
+            "terms",
+            "Listings here sell at 400cr for one seat and 90 IC days; per-listing terms are not available yet.",
+        ),
+        (word!(BAD_FORM), "bad_form", words::BAD_FORM),
+        (word!(BAD_ROYALTY), "bad_royalty", words::BAD_ROYALTY),
+        (word!(BAD_TRANSFER), "bad_transfer", words::BAD_TRANSFER),
+        (
+            word!(NO_LICENCE, &n),
+            "no_licence",
+            "You hold no licence 7.",
+        ),
+        (
+            word!(NO_RENEWAL, &n),
+            "no_renewal",
+            "Licence 7 has no renewal offer waiting for you. Ask for one with +minds/renew 7.",
+        ),
+        (
+            word!(NO_PLAYER, &[("name", "Nobody")]),
+            "no_player",
+            "No player is named Nobody.",
+        ),
+        (word!(BAD_PRICE), "bad_price", words::BAD_PRICE),
+        (
+            word!(named::NO_OFFER, &n),
+            "no_offer",
+            "You have no offer for licence 7.",
+        ),
+        (
+            word!(named::NO_OFFER_AT, &[("licence", "7"), ("price", "0.01cr")]),
+            "no_offer_at",
+            "None of your offers for licence 7 is at 0.01cr.",
+        ),
+        (
+            word!(named::NO_CHARTER_OFFER, &n),
+            "no_charter_offer",
+            "You have no offer for filed mind 7.",
+        ),
+        (
+            word!(
+                named::NO_CHARTER_OFFER_AT,
+                &[("filed", "7"), ("price", "1cr")]
+            ),
+            "no_charter_offer_at",
+            "None of your offers for filed mind 7 is at 1cr.",
+        ),
+    ];
+    for (refusal, code, text) in words {
+        check_eq!(refusal.word.to_ascii_lowercase(), code);
+        check!(!code.is_empty() && code == code.to_ascii_lowercase());
+        check_eq!(error(refusal), expect(code, text), "{code}");
+    }
+    check_eq!(
+        error(Refusal::not_open()),
+        expect("not_open", words::NOT_OPEN)
+    );
+    // The parsers' refusals name the constants whose text they carry.
+    for (refusal, code, text) in [
+        (PublishRefusal::Usage.refusal(), "refused", USAGE_PUBLISH),
+        (PublishRefusal::Form.refusal(), "bad_form", words::BAD_FORM),
+        (
+            PublishRefusal::Royalty.refusal(),
+            "bad_royalty",
+            words::BAD_ROYALTY,
+        ),
+        (
+            PublishRefusal::Transfer.refusal(),
+            "bad_transfer",
+            words::BAD_TRANSFER,
+        ),
+        (TradeRefusal::Price.refusal(), "bad_price", words::BAD_PRICE),
+    ] {
+        check_eq!(error(refusal), expect(code, text), "{code}");
+    }
+    // The help is no word: `refused`, its first line on the typed surface,
+    // all of it on the line.
+    let first = HELP.split('\n').next().ok_or("the help's first line")?;
+    check_eq!(
+        error(TradeRefusal::Usage.refusal()),
+        expect("refused", first)
+    );
+    check_eq!(
+        mush_core::CmdError::from(TradeRefusal::Usage.refusal()),
+        mush_core::CmdError::msg(HELP),
+        "the line prints the whole help, as before"
+    );
+    // An accept plan's refusals.
+    let now = 1_000;
+    let live = NamedOffer {
+        offer: mush_core::CommitToken::from_bytes([5; 16]),
+        price_minor: 21,
+        expires_at_utc: now + 600,
+    };
+    for (named, code, at_code) in [
+        (Named::Resale, "no_offer", "no_offer_at"),
+        (Named::Charter, "no_charter_offer", "no_charter_offer_at"),
+    ] {
+        let AcceptPlan::Refuse(none) = accept_plan(named, 7, &[], Some(1), now) else {
+            return Err("no live offer refuses".into());
+        };
+        let refusal = plan_refusal(named, none.clone());
+        check_eq!(
+            refusal
+                .text
+                .split('\n')
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            none.clone()
+        );
+        check_eq!(
+            error(refusal),
+            expect(code, none.first().ok_or("one line")?)
+        );
+        let AcceptPlan::Refuse(lines) = accept_plan(named, 7, &[live], Some(1), now) else {
+            return Err("another price refuses".into());
+        };
+        check_eq!(lines.len(), 3, "the refusal and one offer's two lines");
+        let refusal = plan_refusal(named, lines.clone());
+        check_eq!(
+            refusal
+                .text
+                .split('\n')
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            lines.clone(),
+            "the line command prints every line, in order"
+        );
+        check_eq!(
+            error(refusal),
+            expect(at_code, lines.first().ok_or("the refusal line")?),
+            "the typed message is the refusal alone"
+        );
+    }
+    check_eq!(
+        response(Ok(Outcome::Staged("Paying.".into()))),
+        MindResponse::Staged {
+            line: "Paying.".into()
+        }
+    );
+    check_eq!(
+        response(Ok(Outcome::Shown(vec!["a".into(), "b".into()]))),
+        MindResponse::Shown {
+            lines: vec!["a".into(), "b".into()]
+        }
+    );
+    check_eq!(
+        fill(words::RENEW_HANDED, &[("licence", "7")]),
+        "Handing licence 7 to the renewal service."
+    );
+    Ok(())
+}
+
+/// 17g C3a (the C3 plan §0a item 3, §4.3): the wire's `ListingCode` accepts
+/// exactly the codes the market's `is_code` accepts (8 characters, each a
+/// digit or a letter a-f), over a table of texts either side of the rule.
+#[test]
+fn listing_code_agrees_with_the_markets_is_code() -> TestResult {
+    use mush_market::mind_commands::{CODE_CHARACTERS, is_code};
+    use mush_proto::{LISTING_CODE_CHARACTERS, ListingCode};
+    check_eq!(LISTING_CODE_CHARACTERS, CODE_CHARACTERS);
+    for text in [
+        "",
+        "0",
+        "0a1b2c3",
+        "0a1b2c3d",
+        "0a1b2c3d4",
+        "00000000",
+        "ffffffff",
+        "abcdef01",
+        "0A1B2C3D",
+        "0a1b2c3g",
+        "0a1b-c3d",
+        "0a1b 2c3",
+        "zzzzzzzz",
+        "0a1b2c3\u{e9}",
+        "feed0001",
+        "FEED0001",
+        "deadbeef",
+        " 0a1b2c3",
+    ] {
+        check_eq!(
+            ListingCode::try_from(text).is_ok(),
+            is_code(text),
+            "{text:?}"
+        );
+    }
+    Ok(())
+}
+
+/// 17g C3a (the C3 plan §2.3, §2.6, §4.3): the two panels' rows carry
+/// nothing the line does not print. A fixture listing, owner row and paid
+/// row with a known publication token, protocol, charter, owner licence and
+/// renewal operation (the views carry no account or digest field: the
+/// charters and the owner licence are given account-shaped numbers) and an
+/// own quote are projected to both keyframes, whose JSON text holds none of
+/// them (`mush_contract_tests::assert_projection_text_clean`): the token
+/// leaves only as its 8-character code. Every key is present, the schema is
+/// the feed's at version 1, `terms_line` and `split_line` are `+minds
+/// <code>`'s lines 2 and 3, and the server's actions follow the provisional
+/// predicates. A 21-listing page (20 rows, the reader's cursor on the 20th)
+/// answers `after` = the 20th row's code.
+///
+/// The owner section's cursor is the one record id a keyframe carries
+/// (`query`'s module doc): `holdings::owner_section` answers the last shown
+/// charter's asset id, the number `HOLD_MORE` prints to the same actor. The
+/// fixture feeds the planted charter as that cursor: the frame carries it as
+/// `after` alone, and the row itself carries no charter id.
+#[test]
+fn market_panels_project_no_private_field() -> TestResult {
+    use super::market::{Shown, detail_text};
+    use super::query::{
+        ListingFacts, OwnerFacts, PaidFacts, QuoteFacts, closed_market, holdings_keyframe,
+        market_keyframe, own_strip, owner_row, paid_row,
+    };
+    use mush_core::CommitToken;
+    use mush_market::mind_commands::{ListingForm, Protocol};
+    use mush_proto::MindHoldingsSection;
+    use mush_roll::commerce::CharterId;
+    use mush_roll::commerce::command_reader::{OwnerPhase, RenewalMark};
+    use mush_roll::commerce::paid::PaidForm;
+    use mush_roll::commerce::rating::RatingClass;
+    let publication = CommitToken::from_bytes([0xab; 16]);
+    let operation = CommitToken::from_bytes([0xcd; 16]);
+    let code: String = publication.to_string().chars().take(8).collect();
+    let shown = |code: String, name: &'static str| Shown {
+        code,
+        name,
+        form: ListingForm::OpenResale,
+        class: RatingClass::II,
+        price_minor: 1_250,
+        term_seconds: 90 * 86_400,
+        grace_seconds: 3 * 86_400,
+        transferable: true,
+        derived: false,
+        levy_permille: 50,
+        venue_permille: 0,
+        parent_royalty_permille: 0,
+    };
+    let listing = ListingFacts {
+        publication,
+        protocol: Protocol::Original,
+        charter: CharterId::new(7_000_001)?,
+        shown: shown(code.clone(), "Sentinel Line Of Exceptional Length"),
+    };
+    let quotes = [QuoteFacts {
+        code: code.clone(),
+        price_minor: 1_250,
+        expires_at_utc: 1_030,
+    }];
+    let market = market_keyframe(
+        true,
+        None,
+        std::slice::from_ref(&listing),
+        None,
+        own_strip(&quotes, std::slice::from_ref(&code), 1_000),
+    );
+    let owner = OwnerFacts {
+        filed: 41,
+        charter: 7_000_002,
+        owner_licence: 7_000_003,
+        dependent: false,
+        name: "Sentinel Line Of Exceptional Length".into(),
+        phase: OwnerPhase::Active { days_left: 88 },
+        selling: false,
+    };
+    let paid = PaidFacts {
+        licence: 42,
+        charter: 7_000_004,
+        house: false,
+        name: "Sentinel".into(),
+        form: PaidForm::OpenResale {},
+        transferable: true,
+        phase: OwnerPhase::Grace { days_left: 2 },
+        revoked: false,
+        selling: false,
+        renewal: Some(RenewalMark::Offered),
+        renewal_operation: Some(operation),
+    };
+    let owner_frame = holdings_keyframe(
+        true,
+        MindHoldingsSection::Owner,
+        vec![owner_row(&owner)],
+        Some(owner.charter),
+    );
+    let paid_frame =
+        holdings_keyframe(true, MindHoldingsSection::Paid, vec![paid_row(&paid)], None);
+    let publication_text = listing.publication.to_string();
+    let operation_text = paid
+        .renewal_operation
+        .map(|token| token.to_string())
+        .ok_or("the planted operation")?;
+    // The owner charter is left out here: it is the owner frame's cursor
+    // (checked below, with the row's own text).
+    let forbidden_numbers = [
+        listing.charter.get().to_string(),
+        owner.owner_licence.to_string(),
+        paid.charter.to_string(),
+    ];
+    let mut forbidden: Vec<&str> = vec![
+        &publication_text,
+        publication_text.get(8..).ok_or("the token's tail")?,
+        &operation_text,
+        operation_text.get(..8).ok_or("the operation's head")?,
+        "\"publication\"",
+        "\"protocol\"",
+        "\"charter\":",
+        "\"owner_licence\"",
+        "\"renewal_operation\"",
+        "\"account",
+        "\"digest\"",
+        "\"seller\"",
+        "\"token\"",
+        "original",
+        "Exceptional",
+    ];
+    forbidden.extend(forbidden_numbers.iter().map(String::as_str));
+    check_eq!(listing.protocol, Protocol::Original, "the planted protocol");
+    for (surface, frame) in [
+        ("mind.market", &market),
+        ("mind.holdings owner", &owner_frame),
+        ("mind.holdings paid", &paid_frame),
+    ] {
+        mush_contract_tests::assert_projection_text_clean(surface, &frame.to_string(), &forbidden);
+    }
+    // The owner charter's id is the owner frame's `after` and nothing else:
+    // never in the row, never in the other frames.
+    let owner_charter = owner.charter.to_string();
+    let mut charter_forbidden = forbidden.clone();
+    charter_forbidden.push(&owner_charter);
+    for (surface, text) in [
+        ("mind.holdings owner row", owner_row(&owner).to_string()),
+        ("mind.market", market.to_string()),
+        ("mind.holdings paid", paid_frame.to_string()),
+    ] {
+        mush_contract_tests::assert_projection_text_clean(surface, &text, &charter_forbidden);
+    }
+    check_eq!(
+        owner_frame.get("after").cloned(),
+        Some(serde_json::json!(owner.charter)),
+        "the owner cursor is the charter's asset id, as HOLD_MORE prints it"
+    );
+    // The rows, key for key.
+    let [_, terms_line, split_line] = detail_text(&listing.shown);
+    check_eq!(
+        market,
+        serde_json::json!({
+            "schema": {"id": "mind.market", "version": 1},
+            "open": true,
+            "notice": null,
+            "rows": [{
+                "code": code, "name": "Sentinel Line Of Excepti", "class": "II",
+                "form": "open-resale", "transferable": true,
+                "term_seconds": 7_776_000, "grace_seconds": 259_200,
+                "price_minor": "1250", "price_text": crate::launch::credits(1_250),
+                "levy_permille": 50, "venue_permille": 0, "parent_royalty_permille": 0,
+                "derived": false, "terms_line": terms_line, "split_line": split_line,
+            }],
+            "after": null,
+            "own": {
+                "quotes": [{
+                    "code": code, "price_minor": "1250",
+                    "price_text": crate::launch::credits(1_250),
+                    "expires_in_seconds": 30, "expired": false,
+                }],
+                "waiting": [{"code": code}],
+            },
+        })
+    );
+    check_eq!(
+        owner_frame,
+        serde_json::json!({
+            "schema": {"id": "mind.holdings", "version": 1},
+            "open": true, "notice": null, "section": "owner",
+            "rows": [{
+                "kind": "owner", "filed": 41, "name": "Sentinel Line Of Exc",
+                "dependent": false, "phase": {"state": "active", "days_left": 88},
+                "selling": false, "actions": ["publish", "withdraw", "charter"],
+            }],
+            "after": 7_000_002,
+        })
+    );
+    check_eq!(
+        paid_frame,
+        serde_json::json!({
+            "schema": {"id": "mind.holdings", "version": 1},
+            "open": true, "notice": null, "section": "paid",
+            "rows": [{
+                "kind": "paid", "licence": 42, "house": false, "name": "Sentinel",
+                "form": "open-resale", "transferable": true,
+                "phase": {"state": "grace", "days_left": 2}, "revoked": false,
+                "selling": false, "renewal": "offered",
+                "actions": ["renew_pay", "renew_decline", "resell"],
+            }],
+            "after": null,
+        })
+    );
+    // The provisional action predicates.
+    check_eq!(
+        owner_row(&OwnerFacts {
+            selling: true,
+            phase: OwnerPhase::Lapsed,
+            ..owner.clone()
+        })
+        .get("actions")
+        .cloned(),
+        Some(serde_json::json!(["publish", "withdraw"]))
+    );
+    for (renewal, transferable, revoked, selling, actions) in [
+        (
+            None,
+            true,
+            false,
+            false,
+            serde_json::json!(["renew", "resell"]),
+        ),
+        (
+            Some(RenewalMark::Paid),
+            true,
+            false,
+            false,
+            serde_json::json!(["resell"]),
+        ),
+        (None, false, false, false, serde_json::json!(["renew"])),
+        (None, true, true, false, serde_json::json!(["renew"])),
+        (None, true, false, true, serde_json::json!(["renew"])),
+        (
+            Some(RenewalMark::Offered),
+            false,
+            true,
+            false,
+            serde_json::json!(["renew_pay", "renew_decline"]),
+        ),
+    ] {
+        let row = paid_row(&PaidFacts {
+            renewal,
+            transferable,
+            revoked,
+            selling,
+            ..paid.clone()
+        });
+        check_eq!(row.get("actions").cloned(), Some(actions), "{row}");
+    }
+    // A 21-listing page: 20 rows and the reader's cursor on the 20th.
+    let tokens: Vec<CommitToken> = (1_u8..=20)
+        .map(|n| CommitToken::from_bytes([n.wrapping_mul(11); 16]))
+        .collect();
+    let rows: Vec<ListingFacts<'_>> = tokens
+        .iter()
+        .map(|token| ListingFacts {
+            publication: *token,
+            protocol: Protocol::Derived,
+            charter: listing.charter,
+            shown: shown(token.to_string().chars().take(8).collect(), "Sentinel"),
+        })
+        .collect();
+    let page = market_keyframe(
+        true,
+        None,
+        &rows,
+        tokens.last().copied(),
+        own_strip(&[], &[], 1_000),
+    );
+    let page_rows = page
+        .get("rows")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("the page's rows")?;
+    check_eq!(page_rows.len(), 20);
+    let last = page_rows
+        .last()
+        .and_then(|row| row.get("code"))
+        .cloned()
+        .ok_or("the 20th row's code")?;
+    check_eq!(
+        page.get("after").cloned(),
+        Some(last),
+        "after is the 20th row's code"
+    );
+    let page_text = page.to_string();
+    for token in &tokens {
+        let text = token.to_string();
+        mush_contract_tests::assert_projection_text_clean(
+            "mind.market page",
+            &page_text,
+            &[&text, text.get(8..).ok_or("the token's tail")?],
+        );
+    }
+    // The closed keyframes.
+    check_eq!(
+        closed_market(),
+        serde_json::json!({
+            "schema": {"id": "mind.market", "version": 1}, "open": false,
+            "notice": words::NOT_OPEN, "rows": [], "after": null,
+            "own": {"quotes": [], "waiting": []},
+        })
+    );
+    check_eq!(
+        holdings_keyframe(false, MindHoldingsSection::Paid, Vec::new(), None),
+        serde_json::json!({
+            "schema": {"id": "mind.holdings", "version": 1}, "open": false,
+            "notice": words::NOT_OPEN, "section": "paid", "rows": [], "after": null,
+        })
+    );
+    Ok(())
+}
+
+/// 17g C3a (the C3 plan §2.3; reviewer finding tests/T-6): both panels'
+/// params gate. A live, non-GOING player's closed params decode (a null
+/// params value reads as `{}`); an unknown key, a wrong section, a
+/// malformed code, a missing section and a params text past 256 bytes are
+/// refused, and so is every actor that is not a live player (a thing, a
+/// room, an object that does not exist) and a player flagged GOING, each
+/// with the one sentence `No such market page.`
+#[test]
+fn panel_params_refuse_malformed_requests_and_non_players() -> TestResult {
+    use super::query::{HoldingsParams, ListingsParams, NO_PAGE, params};
+    use mush_core::{Flags, GOD, LIMBO, ObjId, ObjKind};
+    use mush_proto::MindHoldingsSection;
+    use serde_json::{Value, json};
+    let mut tw = mush_testkit::TestWorld::new();
+    let player = tw.spawn_player("PanelReader");
+    let thing = tw
+        .world_mut()
+        .create(ObjKind::Thing, "PanelCrate", GOD, Some(LIMBO))?;
+    let refused = |result: Result<(), mush_proto::RichText>| -> TestResult {
+        match result {
+            Err(text) => {
+                check_eq!(text.to_plain_text(), NO_PAGE);
+                Ok(())
+            }
+            Ok(()) => Err("refused".into()),
+        }
+    };
+    let listings = |world: &mush_core::World, actor: ObjId, value: &Value| {
+        params::<ListingsParams>(world, actor, value).map(|p| p.after.map(|c| c.to_string()))
+    };
+    let holdings = |world: &mush_core::World, actor: ObjId, value: &Value| {
+        params::<HoldingsParams>(world, actor, value).map(|p| (p.section, p.after))
+    };
+    // A live player's closed params.
+    check_eq!(listings(tw.world(), player, &Value::Null).ok(), Some(None));
+    check_eq!(listings(tw.world(), player, &json!({})).ok(), Some(None));
+    check_eq!(
+        listings(tw.world(), player, &json!({"after": "feed0001"})).ok(),
+        Some(Some("feed0001".to_owned()))
+    );
+    check_eq!(
+        holdings(tw.world(), player, &json!({"section": "paid", "after": 7})).ok(),
+        Some((MindHoldingsSection::Paid, Some(7)))
+    );
+    // Malformed requests.
+    let long = "x".repeat(300);
+    for value in [
+        json!({"after": null, "extra": 1}),
+        json!({"after": "feed000"}),
+        json!({"after": "FEED0001"}),
+        json!({"after": null, "pad": long}),
+    ] {
+        refused(listings(tw.world(), player, &value).map(drop))?;
+    }
+    for value in [
+        json!({"section": "all", "after": null}),
+        json!({"section": "owner", "after": -1}),
+        json!({"after": null}),
+        Value::Null,
+    ] {
+        refused(holdings(tw.world(), player, &value).map(drop))?;
+    }
+    // Not a live player: a thing, a room, a missing object.
+    for actor in [thing, LIMBO, ObjId(999_999)] {
+        refused(listings(tw.world(), actor, &json!({})).map(drop))?;
+        refused(holdings(tw.world(), actor, &json!({"section": "owner"})).map(drop))?;
+    }
+    // A player flagged GOING.
+    tw.world_mut()
+        .get_mut(player)
+        .ok_or("the player")?
+        .flags
+        .insert(Flags::GOING);
+    refused(listings(tw.world(), player, &json!({})).map(drop))?;
+    refused(holdings(tw.world(), player, &json!({"section": "owner"})).map(drop))?;
+    Ok(())
+}

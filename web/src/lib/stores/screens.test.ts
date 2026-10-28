@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   BUILTIN_SCREENS,
   CHART_SCREEN,
+  MARKET_SCREEN,
   QUARRY_SCREEN,
   RUN_ALLOWLIST,
   ScreensStore,
@@ -452,5 +453,71 @@ describe("the quarry screen (doc 20 cut SM.9)", () => {
   it("puts +chart/ground on the allowlist and never +tv", () => {
     expect(RUN_ALLOWLIST).toContain("+chart/ground");
     expect(RUN_ALLOWLIST).not.toContain("+tv");
+  });
+});
+
+// 17g cut C3c: the mind market, the third letter-hotkey screen — the TUI's `MARKET_SCREEN`
+// (17g cut C3b) and its ten keys, byte for byte.
+describe("the market screen (17g cut C3c)", () => {
+  const marketServer: GateInput = {
+    ...full,
+    panels: [...full.panels, "sky.chart", "site.map", "mind.market", "mind.holdings"],
+  };
+
+  it("is lettered m on the mind.market feed, with the TUI's ten keys, none run or prefill", () => {
+    expect(MARKET_SCREEN.suffix).toBe("mind.market");
+    expect(MARKET_SCREEN.def.id).toBe("market");
+    expect(MARKET_SCREEN.def.digit).toBeNull();
+    expect(MARKET_SCREEN.def.hotkey).toBe("m");
+    expect(MARKET_SCREEN.def.label).toBe("market");
+    expect(MARKET_SCREEN.def.exitsAreKeys).toBe(false);
+    // `mush-net-ssh/src/tui/screen.rs` `thirteen_screens_validate_and_the_market_is_lettered_m`
+    // pins the same table on the TUI side.
+    expect(MARKET_SCREEN.def.keys).toEqual([
+      { key: "b", label: "buy", action: { kind: "local", action: "marketBuy" } },
+      { key: "k", label: "renew", action: { kind: "local", action: "marketRenew" } },
+      { key: "t", label: "offer", action: { kind: "local", action: "marketOffer" } },
+      { key: "a", label: "accept", action: { kind: "local", action: "marketAccept" } },
+      { key: "l", label: "publish", action: { kind: "local", action: "marketPublish" } },
+      { key: "x", label: "withdraw", action: { kind: "local", action: "marketWithdraw" } },
+      { key: "h", label: "section", action: { kind: "local", action: "marketSection" } },
+      { key: "r", label: "refresh", action: { kind: "local", action: "refresh" } },
+      { key: "]", label: "next page", action: { kind: "local", action: "marketPageNext" } },
+      { key: "[", label: "first page", action: { kind: "local", action: "marketPageFirst" } },
+    ]);
+    // Every key is `local` (the market's own, or the refresh); none sends a line.
+    for (const b of MARKET_SCREEN.def.keys) {
+      expect(b.action.kind).toBe("local");
+    }
+    expect(MARKET_SCREEN.def.keys.some((b) => b.action.kind === "run" || b.action.kind === "prefill")).toBe(false);
+    expect(validateScreens([...BUILTIN_SCREENS, CHART_SCREEN.def, QUARRY_SCREEN.def, MARKET_SCREEN.def])).toBeNull();
+  });
+
+  it("clashes with nothing lettered, and refuses a screen that takes its letter or its id", () => {
+    const onM: ScreenDef = { ...CHART_SCREEN.def, id: "other", hotkey: "m" };
+    expect(validateScreens([MARKET_SCREEN.def, onM])).toMatch(/hotkey m used twice/);
+    const onC: ScreenDef = { ...MARKET_SCREEN.def, id: "clash-c", hotkey: "c" };
+    expect(validateScreens([CHART_SCREEN.def, onC])).toMatch(/used twice/);
+    const onQ: ScreenDef = { ...MARKET_SCREEN.def, id: "clash-q", hotkey: "q" };
+    expect(validateScreens([QUARRY_SCREEN.def, onQ])).toMatch(/used twice/);
+    expect(validateScreens([MARKET_SCREEN.def, { ...MARKET_SCREEN.def }])).toMatch(/declared twice/);
+    // The three letters are three different screens.
+    expect(new Set([CHART_SCREEN, QUARRY_SCREEN, MARKET_SCREEN].map((s) => s.def.hotkey)).size).toBe(3);
+  });
+
+  it("registers on a mind.market feed, sits among the letters, and switches by Alt+m", () => {
+    const store = new ScreensStore();
+    expect(store.registerFeedScreen(CHART_SCREEN)).toBeNull();
+    expect(store.registerFeedScreen(QUARRY_SCREEN)).toBeNull();
+    expect(store.registerFeedScreen(MARKET_SCREEN)).toBeNull();
+    expect(store.available(full).map((s) => s.id)).not.toContain("market");
+    // After every digit, in letter order (`stripOrder`): c, m, q.
+    expect(store.available(marketServer).map((s) => s.id).slice(-3)).toEqual(["chart", "market", "quarry"]);
+    expect(store.switchHotkey("m", full)).toBe(false);
+    expect(store.switchHotkey("m", marketServer)).toBe(true);
+    expect(store.active).toBe("market");
+    expect(store.bindingKeys(marketServer)).toEqual(new Set(["b", "k", "t", "a", "l", "x", "h", "r", "]", "["]));
+    // `registerFeedScreen` is not idempotent — GameApp registers once.
+    expect(store.registerFeedScreen(MARKET_SCREEN)).toContain("declared twice");
   });
 });

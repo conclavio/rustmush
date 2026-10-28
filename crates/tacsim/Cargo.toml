@@ -115,6 +115,11 @@ fault-injection = []
 libm.workspace = true
 mush-testkit.workspace = true
 mush-proto.workspace = true
+# 17g cut C3a: `minds::market_commands::tests`' panel projection test asks the
+# workspace's own projection lens (`assert_projection_text_clean`), as the
+# gateway's and the SSH TUI's projection tests do. A dev-dependency is no edge
+# of the game crate, and its own dependencies are all tacsim's already.
+mush-contract-tests.workspace = true
 # 16b cut D.1: `tests/arena_task.rs` pins the clock on `ArenaOut::Frames` at all
 # three tempos, and the slowest of them is a 5,000 ms period. `start_paused`
 # (virtual clock) is what keeps that a test rather than half a minute of sleep.

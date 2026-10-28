@@ -32,19 +32,32 @@
 //! (`@registry/recall` and `@registry/revoke`). 17g C2g opens the buy steps,
 //! the paid holdings and the named offers over 17g C2f's owner indexes (each
 //! module's doc).
+//!
+//! 17g C3a (the C3 plan §2.1) splits each of the thirteen player commands
+//! into `parse_<verb>` (the line's arguments into a selection) and
+//! `run_<verb>` (the reads, the checks and the one submission, answering a
+//! `words::Outcome` or a `words::Refusal` that carries its word), and adds
+//! the typed entrance over the same `run_<verb>` (`typed`, a
+//! `MindRequest::Market` from the `mind` invoke handler) and the two panel
+//! queries over the same reads (`query`: `mind.market` and `mind.holdings`).
+//! The line prints exactly what it printed before the split.
 
 pub(crate) mod author;
 pub(crate) mod holdings;
 pub(crate) mod market;
+pub(crate) mod query;
 pub(crate) mod registry;
 pub(crate) mod renew;
 pub(crate) mod trade;
+pub(crate) mod typed;
 pub(crate) mod words;
 
 use std::sync::{Arc, Mutex};
 
+use words::{Outcome, Refusal};
+
 use mush_core::action::{IdempotencyKeyText, PerceivedRef};
-use mush_core::read_service::OwnerReadHandle;
+use mush_core::read_service::{OwnerReadError, OwnerReadHandle, OwnerReadService};
 use mush_core::{CmdError, Ctx, DefinitionRef, Flags, ModError, ObjId, ObjKind, Registrar};
 use mush_market::mind_commands::MarketCommandReader;
 use mush_roll::commerce::holding_reader::OriginalOwnerReader;
@@ -96,18 +109,26 @@ pub(crate) fn register(
 }
 
 /// The slot, when this crate owns it (Active with the player market).
-pub(crate) fn service<'a>(ctx: &'a Ctx<'_>) -> Result<&'a MindCommandService, CmdError> {
-    if ctx
-        .w
+/// 17g C3a: `NOT_OPEN` as a `Refusal` (`slot`), which `?` turns into the
+/// same `CmdError` in a line command.
+fn service<'a>(ctx: &'a Ctx<'_>) -> Result<&'a MindCommandService, Refusal> {
+    slot(ctx.w)
+}
+
+/// 17g C3a: the slot in `world`, owner-checked as `service` checks it, for
+/// a command context and for the panel queries' read context alike
+/// (`query`).
+fn slot(world: &mush_core::World) -> Result<&MindCommandService, Refusal> {
+    if world
         .module_state_owner(std::any::TypeId::of::<MindCommandService>())
         .map(|owner| owner.as_str())
         != Some(crate::NS)
     {
-        return Err(CmdError::msg(words::NOT_OPEN));
+        return Err(Refusal::not_open());
     }
-    ctx.w
+    world
         .module_state::<MindCommandService>()
-        .ok_or_else(|| CmdError::msg(words::NOT_OPEN))
+        .ok_or_else(Refusal::not_open)
 }
 
 /// The next idempotency key of `verb` on `subject` at IC second `at`:
@@ -166,6 +187,37 @@ pub(crate) fn next_key(
         .map_err(|_| not_open())
 }
 
+/// 17g C3a: an owner read through whichever context dispatches it: a
+/// command's `Ctx` (the line and the typed entrance) or a query's
+/// `HookReadContext` (the panels, `query`). Both call the registered service
+/// as the dispatching actor and TacSim, so the reads the line and the panels
+/// make are one code path (`market::names`, `holdings::owner_section`, ...).
+trait Reads {
+    fn owner_read<S: OwnerReadService>(
+        &self,
+        handle: &OwnerReadHandle<S>,
+        request: S::Request,
+    ) -> Result<S::Output, OwnerReadError>;
+}
+impl Reads for Ctx<'_> {
+    fn owner_read<S: OwnerReadService>(
+        &self,
+        handle: &OwnerReadHandle<S>,
+        request: S::Request,
+    ) -> Result<S::Output, OwnerReadError> {
+        self.read_owner(handle, request)
+    }
+}
+impl Reads for mush_core::module::HookReadContext<'_> {
+    fn owner_read<S: OwnerReadService>(
+        &self,
+        handle: &OwnerReadHandle<S>,
+        request: S::Request,
+    ) -> Result<S::Output, OwnerReadError> {
+        self.read_owner(handle, request)
+    }
+}
+
 /// The actor, when it is a live, connected, non-GOING player with an account.
 fn principal(ctx: &Ctx<'_>) -> Option<ObjId> {
     let actor = ctx.actor;
@@ -183,10 +235,12 @@ fn principal(ctx: &Ctx<'_>) -> Option<ObjId> {
 
 /// 17g C2a (C2 plan §2.1 steps 1, 2 and 5): submit one existing legal action
 /// for the actor with server-built `parameters`. `request` is the request
-/// line, printed to the actor alone once every check has passed and just
-/// before the one `Ctx::submit_authoritative`; the key's discriminator is
+/// line, printed to the actor alone once every check has passed, beside the
+/// one `Ctx::submit_authoritative`; the key's discriminator is
 /// `mind.<verb>.<subject>`. It writes nothing else: the mechanic is the
 /// provider's and the confirmation the driver's, after the durable receipt.
+/// 17g C3a: `stage`, then the request line printed (`print`), for the forms
+/// C3 leaves on the line alone (the author's and the Registry operators').
 pub(crate) fn submit(
     ctx: &mut Ctx<'_>,
     verb: &str,
@@ -195,15 +249,50 @@ pub(crate) fn submit(
     parameters: serde_json::Value,
     request: &str,
 ) -> Result<(), CmdError> {
-    let actor = principal(ctx).ok_or_else(|| CmdError::msg(words::NOT_OPEN))?;
+    let outcome = stage(ctx, verb, subject, action, parameters, request.to_owned())?;
+    print(ctx, outcome);
+    Ok(())
+}
+
+/// 17g C3a (the C3 plan §2.1): `submit` without the printing, shared by the
+/// line and the typed entrance: the principal rule (`NOT_OPEN`), `BUSY`, the
+/// key and the one `Ctx::submit_authoritative`; then `request` comes back as
+/// `Outcome::Staged`, for the line command to print (`print`) or the typed
+/// dispatch to answer (`typed`). A command's lines and its deferred
+/// submission are separate queues of its output, both applied after it
+/// returns, so the line printed after the submission reads exactly as C2's,
+/// printed before it.
+fn stage(
+    ctx: &mut Ctx<'_>,
+    verb: &str,
+    subject: &str,
+    action: DefinitionRef,
+    parameters: serde_json::Value,
+    request: String,
+) -> Result<Outcome, Refusal> {
+    let actor = principal(ctx).ok_or_else(Refusal::not_open)?;
     if ctx.authoritative_pending(actor) || ctx.authoritative_queue_full() {
-        return Err(CmdError::msg(words::BUSY));
+        return Err(words::word!(BUSY));
     }
     let at = ctx.w.world_ic_now().at;
-    let key = next_key(&service(ctx)?.attempts, verb, subject, at)?;
-    ctx.out.info(actor, request.to_owned());
+    let key =
+        next_key(&service(ctx)?.attempts, verb, subject, at).map_err(|_| Refusal::not_open())?;
     ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
-    Ok(())
+    Ok(Outcome::Staged(request))
+}
+
+/// 17g C3a: a line command's `Outcome`, printed to the actor as C2 printed
+/// it: the request line, or each answered line, as info lines.
+fn print(ctx: &mut Ctx<'_>, outcome: Outcome) {
+    let actor = ctx.actor;
+    match outcome {
+        Outcome::Staged(line) => ctx.out.info(actor, line),
+        Outcome::Shown(lines) => {
+            for line in lines {
+                ctx.out.info(actor, line);
+            }
+        }
+    }
 }
 
 /// 17g C2g: one line of a command's reply, to the actor alone.
@@ -247,8 +336,8 @@ pub(crate) fn say(ctx: &mut Ctx<'_>, lines: Vec<Said>) -> Result<(), CmdError> {
 /// of every command that pays: the unique Active, unscoped `tacsim.credit`
 /// account owned by the actor itself (`mind_entitlement::accounts::personal`'s
 /// rule). None or several refuse `ACCOUNT`; buyer choice stays on `+act`.
-pub(crate) fn personal_account(ctx: &Ctx<'_>) -> Result<mush_economy::AccountId, CmdError> {
-    let refuse = || CmdError::msg(words::ACCOUNT);
+fn personal_account(ctx: &Ctx<'_>) -> Result<mush_economy::AccountId, Refusal> {
+    let refuse = || words::word!(ACCOUNT);
     let economy = ctx
         .w
         .module_state::<mush_economy::EconomyStore>()

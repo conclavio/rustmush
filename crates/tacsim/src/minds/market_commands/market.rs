@@ -86,7 +86,7 @@ use mush_roll::commerce::rating::RatingClass;
 use serde_json::json;
 
 use super::author::number;
-use super::words::{self, cut, fill};
+use super::words::{self, Outcome, Refusal, cut, fill, word};
 
 /// `+minds`'s switches. The dispatch is by the exact switch set (`command`).
 /// 17g C2d adds `renew`, `decline`, `resell`, `charter` and `accept`
@@ -106,11 +106,11 @@ pub(crate) const LISTING_NAME: usize = 24;
 pub(crate) const HOLDING_NAME: usize = 20;
 const DAY: i64 = 86_400;
 
-fn not_open() -> CmdError {
-    CmdError::msg(words::NOT_OPEN)
+fn not_open() -> Refusal {
+    Refusal::not_open()
 }
-fn help() -> CmdError {
-    CmdError::msg(HELP)
+fn help() -> Refusal {
+    Refusal::usage(HELP)
 }
 
 /// Register `+minds` (C2 plan §2.2), under the caller's
@@ -140,15 +140,20 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let set: Vec<&str> = switches.iter().map(String::as_str).collect();
     let text = ctx.args.raw().trim().to_owned();
     match set.as_slice() {
-        [] if text.is_empty() => list(ctx, None),
+        [] if text.is_empty() => list(ctx),
         [] => detail(ctx, &text),
         ["next"] => next(ctx, &text),
         ["holdings"] => super::holdings::holdings(ctx, &text),
-        // 17g C2g: live beside the own-purchase line (module doc).
-        ["buy"] => buy(ctx, &text),
-        ["buy", "pay"] => pay(ctx, &text),
-        ["buy", "complete"] => settle(ctx, &text, Settle::Complete),
-        ["buy", "refund"] => settle(ctx, &text, Settle::Refund),
+        // 17g C2g: live beside the own-purchase line (module doc). 17g C3a:
+        // parsed, then run (`typed` runs the same `run_*`).
+        ["buy"] => staged(ctx, |ctx| run_quote(ctx, &parse_buy(&text)?)),
+        ["buy", "pay"] => staged(ctx, |ctx| run_pay(ctx, &parse_buy(&text)?)),
+        ["buy", "complete"] => staged(ctx, |ctx| {
+            run_settle(ctx, &parse_buy(&text)?, Settle::Complete)
+        }),
+        ["buy", "refund"] => staged(ctx, |ctx| {
+            run_settle(ctx, &parse_buy(&text)?, Settle::Refund)
+        }),
         // 17g C2h: live through the renewal services' front (`renew`'s doc).
         ["renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Status),
         ["pay", "renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Pay),
@@ -158,12 +163,24 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ["charter"] => super::trade::charter(ctx, &text),
         ["accept", "resell"] => super::trade::accept(ctx, &text, super::trade::Named::Resale),
         ["accept", "charter"] => super::trade::accept(ctx, &text, super::trade::Named::Charter),
-        _ => Err(help()),
+        _ => Err(help().into()),
     }
 }
 
+/// 17g C3a: a line command's parse and run, its `Outcome` printed as C2
+/// printed it (`market_commands::print`) and its refusal returned for the
+/// dispatcher to print, with C2's bytes (`From<Refusal> for CmdError`).
+pub(super) fn staged(
+    ctx: &mut Ctx<'_>,
+    run: impl FnOnce(&mut Ctx<'_>) -> Result<Outcome, Refusal>,
+) -> Result<(), CmdError> {
+    let outcome = run(ctx)?;
+    super::print(ctx, outcome);
+    Ok(())
+}
+
 /// A listing code as typed, or `HELP`.
-fn code(text: &str) -> Result<&str, CmdError> {
+fn code(text: &str) -> Result<&str, Refusal> {
     if is_code(text) { Ok(text) } else { Err(help()) }
 }
 
@@ -175,7 +192,7 @@ pub(super) fn handles(
         OwnerReadHandle<MarketCommandReader>,
         OwnerReadHandle<OriginalOwnerReader>,
     ),
-    CmdError,
+    Refusal,
 > {
     let service = super::service(ctx)?;
     let market = service.market.clone().ok_or_else(not_open)?;
@@ -183,27 +200,33 @@ pub(super) fn handles(
 }
 
 /// The composed entitlement actions, or `NOT_OPEN`.
-fn actions(ctx: &Ctx<'_>) -> Result<MarketCommandActions, CmdError> {
+fn actions(ctx: &Ctx<'_>) -> Result<MarketCommandActions, Refusal> {
     ctx.reg
         .definitions()
         .map(MarketCommandActions::capture)
         .ok_or_else(not_open)
 }
 
-/// `COUNTER` unless the actor stands at an admitting counter.
-fn at_counter(
-    ctx: &Ctx<'_>,
+/// Whether the actor stands at an admitting counter (the market read's
+/// `AtCounter`), or `NOT_OPEN` when the read cannot run. 17g C3a: the
+/// `mind.market` panel asks it too (`query`).
+pub(super) fn here(
+    reads: &impl super::Reads,
     market: &OwnerReadHandle<MarketCommandReader>,
-) -> Result<(), CmdError> {
-    let here = ctx
-        .read_owner(market, MarketCommandRequest::at_counter())
+) -> Result<bool, Refusal> {
+    reads
+        .owner_read(market, MarketCommandRequest::at_counter())
         .map_err(|_| not_open())?
         .at_counter()
-        .ok_or_else(not_open)?;
-    if here {
+        .ok_or_else(not_open)
+}
+
+/// `COUNTER` unless the actor stands at an admitting counter.
+fn at_counter(ctx: &Ctx<'_>, market: &OwnerReadHandle<MarketCommandReader>) -> Result<(), Refusal> {
+    if here(ctx, market)? {
         Ok(())
     } else {
-        Err(CmdError::msg(words::COUNTER))
+        Err(word!(COUNTER))
     }
 }
 
@@ -217,12 +240,12 @@ fn listing(
     ctx: &Ctx<'_>,
     market: &OwnerReadHandle<MarketCommandReader>,
     code: &str,
-) -> Result<PublicListingView, CmdError> {
+) -> Result<PublicListingView, Refusal> {
     let found = ctx
         .read_owner(market, MarketCommandRequest::listing_by_code(code))
         .map_err(|error| match error {
             mush_core::read_service::OwnerReadError::Refused => {
-                CmdError::msg(fill(words::NO_LISTING, &[("code", code)]))
+                word!(NO_LISTING, &[("code", code)])
             }
             _ => not_open(),
         })?
@@ -230,23 +253,25 @@ fn listing(
         .ok_or_else(not_open)?;
     match found {
         CodeLookup::One(view) => Ok(view),
-        CodeLookup::Ambiguous => Err(CmdError::msg(fill(words::AMBIGUOUS, &[("code", code)]))),
+        CodeLookup::Ambiguous => Err(word!(AMBIGUOUS, &[("code", code)])),
     }
 }
 
 /// The public Roll names of `charters` (at most 20), through the folded
 /// original-holdings read; a charter Roll does not name reads as empty.
-fn names(
-    ctx: &Ctx<'_>,
+/// 17g C3a: through either context (`Reads`), so the `mind.market` panel
+/// names its rows exactly as `+minds` does.
+pub(super) fn names(
+    reads: &impl super::Reads,
     roll: &OwnerReadHandle<OriginalOwnerReader>,
     charters: Vec<CharterId>,
-) -> Result<Vec<(CharterId, String)>, CmdError> {
+) -> Result<Vec<(CharterId, String)>, Refusal> {
     if charters.is_empty() {
         return Ok(Vec::new());
     }
     let request = OriginalReadRequest::command(RollCommandReadRequest::charter_names(charters));
-    let names = ctx
-        .read_owner(roll, request)
+    let names = reads
+        .owner_read(roll, request)
         .ok()
         .and_then(mush_roll::commerce::holding_reader::OriginalReadResult::into_command)
         .and_then(RollCommandReadResult::into_charter_names)
@@ -256,25 +281,47 @@ fn names(
         .map(|n| (n.charter(), n.name().to_owned()))
         .collect())
 }
-fn name_of(names: &[(CharterId, String)], charter: CharterId) -> &str {
+pub(super) fn name_of(names: &[(CharterId, String)], charter: CharterId) -> &str {
     names
         .iter()
         .find(|(id, _)| *id == charter)
         .map_or("", |(_, name)| name.as_str())
 }
 
-/// `+minds`: the first page of current listings.
-fn list(ctx: &mut Ctx<'_>, after: Option<mush_core::CommitToken>) -> Result<(), CmdError> {
-    let (market, roll) = handles(ctx)?;
-    at_counter(ctx, &market)?;
-    let page = ctx
-        .read_owner(&market, MarketCommandRequest::listings(after))
-        .map_err(|error| match error {
-            mush_core::read_service::OwnerReadError::Refused => CmdError::msg(words::COUNTER),
+/// 17g C3a: one listings page through the market read, after the counter
+/// check: the first page (`after` none: the read's `Refused` is `COUNTER`)
+/// or the page after the listing the code `after` names, current or not
+/// (`MarketCommandRequest::listings_after`; the counter is checked first, so
+/// the read's `Refused` means no listing has the code: `NO_LISTING`). Any
+/// other failure is `NOT_OPEN`. `+minds`, `+minds/next` and the `mind.market`
+/// panel (`query`) page through this one function.
+pub(super) fn listings_page(
+    reads: &impl super::Reads,
+    market: &OwnerReadHandle<MarketCommandReader>,
+    after: Option<&str>,
+) -> Result<mush_market::mind_commands::ListingsPage, Refusal> {
+    let request = after.map_or_else(
+        || MarketCommandRequest::listings(None),
+        MarketCommandRequest::listings_after,
+    );
+    reads
+        .owner_read(market, request)
+        .map_err(|error| match (error, after) {
+            (mush_core::read_service::OwnerReadError::Refused, None) => word!(COUNTER),
+            (mush_core::read_service::OwnerReadError::Refused, Some(code)) => {
+                word!(NO_LISTING, &[("code", code)])
+            }
             _ => not_open(),
         })?
         .into_listings()
-        .ok_or_else(not_open)?;
+        .ok_or_else(not_open)
+}
+
+/// `+minds`: the first page of current listings.
+fn list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (market, roll) = handles(ctx)?;
+    at_counter(ctx, &market)?;
+    let page = listings_page(ctx, &market, None)?;
     show(ctx, &roll, &page)
 }
 
@@ -285,16 +332,7 @@ fn next(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let code = code(text)?;
     let (market, roll) = handles(ctx)?;
     at_counter(ctx, &market)?;
-    let page = ctx
-        .read_owner(&market, MarketCommandRequest::listings_after(code))
-        .map_err(|error| match error {
-            mush_core::read_service::OwnerReadError::Refused => {
-                CmdError::msg(fill(words::NO_LISTING, &[("code", code)]))
-            }
-            _ => not_open(),
-        })?
-        .into_listings()
-        .ok_or_else(not_open)?;
+    let page = listings_page(ctx, &market, Some(code))?;
     show(ctx, &roll, &page)
 }
 
@@ -361,8 +399,9 @@ fn detail(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     if let Err(error) = &found
         && *error == not_open()
     {
-        return Err(not_open());
+        return Err(not_open().into());
     }
+    let found = found.map_err(CmdError::from);
     let own = own_purchase(ctx, &market, code)?;
     let now = ctx.w.now();
     let own = own.and_then(|view| {
@@ -450,7 +489,7 @@ fn own_purchase(
     ctx: &Ctx<'_>,
     market: &OwnerReadHandle<MarketCommandReader>,
     code: &str,
-) -> Result<Option<OwnPurchaseView>, CmdError> {
+) -> Result<Option<OwnPurchaseView>, Refusal> {
     match ctx.read_owner(market, MarketCommandRequest::own_purchase(code)) {
         Ok(result) => result.into_own_purchase().ok_or_else(not_open),
         // Two of the actor's own listings sharing the code (the read's doc):
@@ -466,25 +505,43 @@ fn own_purchase(
 /// live (module doc); the key's subject is the listing's own token and the
 /// token of the actor's most recently quoted own record there (`buy_key`),
 /// read through the own-purchase kind just before the submission.
-fn buy(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    let code = code(text)?.to_owned();
+///
+/// 17g C3a: `parse_buy` then `run_quote`; the typed `Quote { code }` runs
+/// the same `run_quote` over the same selection (`typed`).
+pub(super) fn run_quote(ctx: &mut Ctx<'_>, selection: &BuySelection) -> Result<Outcome, Refusal> {
+    let code = selection.code.as_str();
     let (market, _) = handles(ctx)?;
     at_counter(ctx, &market)?;
-    let view = listing(ctx, &market, &code)?;
+    let view = listing(ctx, &market, code)?;
     let action = actions(ctx)?
         .entitlement(view.protocol(), Step::Quote)
         .ok_or_else(not_open)?;
-    let latest = own_purchase(ctx, &market, &code)?.map(|own| own.latest());
-    let line = fill(words::QUOTING, &[("code", &code)]);
+    let latest = own_purchase(ctx, &market, code)?.map(|own| own.latest());
+    let line = fill(words::QUOTING, &[("code", code)]);
     let (verb, subject) = buy_key(view.publication(), latest);
-    super::submit(
+    super::stage(
         ctx,
         verb,
         &subject,
         action,
         quote_parameters(view.publication()),
-        &line,
+        line,
     )
+}
+
+/// 17g C3a: what the four buy steps select, a listing code as `+minds`
+/// prints it (`parse_buy`; the typed `ListingCode`, `typed`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BuySelection {
+    pub(super) code: String,
+}
+
+/// 17g C3a: `+minds/buy <code>`'s and its three steps' argument: one
+/// listing code (`is_code`), else the `+minds` help (`REFUSED`).
+pub(super) fn parse_buy(text: &str) -> Result<BuySelection, Refusal> {
+    Ok(BuySelection {
+        code: code(text)?.to_owned(),
+    })
 }
 
 /// 17g C2g: `+minds/buy`'s idempotency verb and subject (`next_key`): the
@@ -538,13 +595,13 @@ pub(crate) fn settle_key(
 /// outranks the C2c brief's stale-terms path through `/buy/pay`: the C2h
 /// story's stale step reads `NO_QUOTE` here and `QUOTE_EXPIRED` on
 /// `+minds <code>`).
-fn pay(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    let code = code(text)?.to_owned();
+pub(super) fn run_pay(ctx: &mut Ctx<'_>, selection: &BuySelection) -> Result<Outcome, Refusal> {
+    let code = selection.code.as_str();
     let (market, _) = handles(ctx)?;
     at_counter(ctx, &market)?;
     super::personal_account(ctx)?;
-    let no_quote = || CmdError::msg(fill(words::NO_QUOTE, &[("code", &code)]));
-    let own = own_purchase(ctx, &market, &code)?.ok_or_else(no_quote)?;
+    let no_quote = || word!(NO_QUOTE, &[("code", code)]);
+    let own = own_purchase(ctx, &market, code)?.ok_or_else(no_quote)?;
     let now = ctx.w.now();
     let quote = own
         .quote()
@@ -553,15 +610,15 @@ fn pay(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let action = actions(ctx)?
         .entitlement(own.protocol(), Step::Fund)
         .ok_or_else(not_open)?;
-    let line = fill(words::PAYING, &[("code", &code)]);
+    let line = fill(words::PAYING, &[("code", code)]);
     let (verb, subject) = pay_key(quote.quote());
-    super::submit(
+    super::stage(
         ctx,
         verb,
         &subject,
         action,
         fund_parameters(quote.quote()),
-        &line,
+        line,
     )
 }
 
@@ -578,14 +635,18 @@ pub(crate) enum Settle {
 /// `+minds/buy/refund <code>` (anywhere): the actor's funded purchase on the
 /// listing (`NO_PURCHASE` otherwise), then `COMPLETING` and the Grant or
 /// `REFUNDING` and the Refund, with its operation token.
-fn settle(ctx: &mut Ctx<'_>, text: &str, which: Settle) -> Result<(), CmdError> {
-    let code = code(text)?.to_owned();
+pub(super) fn run_settle(
+    ctx: &mut Ctx<'_>,
+    selection: &BuySelection,
+    which: Settle,
+) -> Result<Outcome, Refusal> {
+    let code = selection.code.as_str();
     let (market, _) = handles(ctx)?;
     if which == Settle::Complete {
         at_counter(ctx, &market)?;
     }
-    let none = || CmdError::msg(fill(words::NO_PURCHASE, &[("code", &code)]));
-    let own = own_purchase(ctx, &market, &code)?.ok_or_else(none)?;
+    let none = || word!(NO_PURCHASE, &[("code", code)]);
+    let own = own_purchase(ctx, &market, code)?.ok_or_else(none)?;
     let operation = own.funded().ok_or_else(none)?;
     let (step, request) = match which {
         Settle::Complete => (Step::Grant, words::COMPLETING),
@@ -594,15 +655,15 @@ fn settle(ctx: &mut Ctx<'_>, text: &str, which: Settle) -> Result<(), CmdError> 
     let action = actions(ctx)?
         .entitlement(own.protocol(), step)
         .ok_or_else(not_open)?;
-    let line = fill(request, &[("code", &code)]);
+    let line = fill(request, &[("code", code)]);
     let (verb, subject) = settle_key(which, operation);
-    super::submit(
+    super::stage(
         ctx,
         verb,
         &subject,
         action,
         terminal_parameters(operation),
-        &line,
+        line,
     )
 }
 
@@ -817,6 +878,17 @@ impl PublishRefusal {
             Self::Transfer => words::BAD_TRANSFER,
         }
     }
+    /// 17g C3a: the refusal with its word (`line`'s text; the usage line is
+    /// no word, `REFUSED`).
+    pub(super) fn refusal(self) -> Refusal {
+        let word = match self {
+            Self::Usage => words::REFUSED,
+            Self::Form => "BAD_FORM",
+            Self::Royalty => "BAD_ROYALTY",
+            Self::Transfer => "BAD_TRANSFER",
+        };
+        Refusal::of(word, self.line())
+    }
 }
 
 /// `<filed> form=… [royalty=…] [transfer=yes|no] [price=…] [seats=…]
@@ -1011,32 +1083,43 @@ pub(crate) fn publishing_line(
 /// form, royalty and transfer mark. The caller (`WorkshopCommands::dispatch`)
 /// has applied the workshop's principal rule.
 pub(crate) fn publish(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    let args = publish_arguments(text).map_err(|refusal| CmdError::msg(refusal.line()))?;
+    staged(ctx, |ctx| run_publish(ctx, &parse_publish(text)?))
+}
+
+/// 17g C3a: `@mind/publish`'s arguments (`publish_arguments`), refused with
+/// their words (`PublishRefusal::refusal`).
+pub(super) fn parse_publish(text: &str) -> Result<PublishArguments, Refusal> {
+    publish_arguments(text).map_err(PublishRefusal::refusal)
+}
+
+/// 17g C3a: `publish` after its parse, for the line and the typed `Publish`
+/// alike (`typed` builds the same `PublishArguments`).
+pub(super) fn run_publish(ctx: &mut Ctx<'_>, args: &PublishArguments) -> Result<Outcome, Refusal> {
     let (market, _) = handles(ctx)?;
     at_counter(ctx, &market)?;
     let (price, term) = market_terms(ctx).ok_or_else(not_open)?;
-    if !terms_match(&args, price, term) {
-        return Err(CmdError::msg(fill(
-            words::TERMS,
+    if !terms_match(args, price, term) {
+        return Err(word!(
+            TERMS,
             &[
                 ("price", &crate::launch::credits(price)),
                 ("term", &term.to_string()),
-            ],
-        )));
+            ]
+        ));
     }
     let view = super::author::own_filed(ctx, args.filed)?;
-    let request = list_request(&args, view.dependent(), view.owner_licence());
+    let request = list_request(args, view.dependent(), view.owner_licence());
     let action = actions(ctx)?
         .entitlement(request.protocol, Step::List)
         .ok_or_else(not_open)?;
     let filed = args.filed.to_string();
-    super::submit(
+    super::stage(
         ctx,
         "publish",
         &filed,
         action,
         request.parameters,
-        &request.line,
+        request.line,
     )
 }
 

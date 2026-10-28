@@ -1,0 +1,37 @@
+{
+  "schema": { "id": "mind.holdings", "version": 1 },
+  "open": true,
+  "notice": null,
+  "section": "paid",
+  "rows": [
+    {
+      "kind": "paid",
+      "licence": 41,
+      "house": false,
+      "name": "Kestrel Line",
+      "form": "open",
+      "transferable": true,
+      "phase": { "state": "grace", "days_left": 4 },
+      "revoked": false,
+      "selling": false,
+      "renewal": "offered",
+      "actions": ["renew_pay", "renew_decline", "resell"],
+      "renewal_operation": "f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe",
+      "seller": "acct-7f3a9e"
+    },
+    {
+      "kind": "paid",
+      "licence": 42,
+      "house": true,
+      "name": "House Pin",
+      "form": "sealed",
+      "transferable": false,
+      "phase": { "state": "active", "days_left": 9 },
+      "revoked": false,
+      "selling": false,
+      "renewal": null,
+      "actions": ["renew"]
+    }
+  ],
+  "after": 42
+}

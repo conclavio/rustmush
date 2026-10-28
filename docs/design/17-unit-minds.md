@@ -2020,6 +2020,51 @@ is [17g §7](17g-m7-completion-plan.md#7-ledger), "C2e — as built".
   nowhere (a lead ruling is owed). The populated paths are proven only by the unrun
   command story.
 
+**17g C3 (M7: the typed actions for the TUI and web) — built 2026-10-27/28 (`4f28314f`,
+`322648f9`, `07ea81f3`; PR #54, a draft, not merged; not deployed).** C2's thirteen player
+commands reach the ratatui TUI and the Svelte client as one typed `MindRequest::Market`
+dispatched into the same post-parse functions the line calls, two pulled panels read the
+market and the actor's holdings, and the TUI's legal-actions panel submits typed. Line
+mode stays the reference behaviour and no decision of §20 is departed from; where the
+typed surfaces touch one, the as-built reading is recorded here; the full record is
+[17g §7](17g-m7-completion-plan.md#7-ledger), "C3 — as built".
+
+- **D-UM-40 (the author's non-transferable mark)**: the mark is the author's on the typed
+  `Publish` only (`transfer: Option<bool>`, absent = transferable; the TUI sends it
+  explicitly as what the player saw, default yes); the typed `Resell` carries no reseller's
+  mark, as the line carries none. The `mind.holdings` paid row shows `transferable` and the
+  server offers `resell` only when the licence is transferable, not revoked and not
+  selling, so a marked licence is never offered a resale form; `mind.market` rows show the
+  mark as `no resale`. The same-account refusal stays the server's (`trade::player` and
+  the lobby's `AccountId` oracle); a client names a player, never an account.
+- **D-UM-39 (renewal as a fresh E4 contract per term) and §16's `+minds/renew`**: the
+  mechanism is C2h's unchanged. The typed `Renew`, `RenewPay` and `RenewDecline` answer
+  `Staged { line: RENEW_HANDED }` (`Handing licence {licence} to the renewal service.`), a
+  typed-only word the line never prints, once tacsim's synchronous refusals pass and the
+  delegated `front` continuation is scheduled; the service's `RENEW_OFFER`, `RENEW_HOW`,
+  `RENEW_NOT_DUE` and `RENEW_FUNDED` arrive on the actor's ordinary output on every
+  surface, and the renew form closes on `Staged`, so the holder reads the frozen price on
+  the scene pane before pressing `k` again with `pay`. The frozen price is not on the
+  holdings panel (the renewal read is the service's own; a Roll mirror would be new
+  state), and a `renewal` mark (`offered`/`paid`) is the panel's only trace of it.
+- **D-UM-56 (filing and listing are separate acts)**: the typed grammar lists (`Publish`)
+  and withdraws (`Withdraw`) and never files; `@mind/rate`, `@mind/file`, `@mind/update`,
+  `@mind/attest` and `@mind/fork` stay line-mode commands (they select a `name@rev` of the
+  workshop library and filing is a two-call flow over a paced Registry job), a recorded
+  scope cut against 17f M7.11's "same typed actions", each one more `MarketAction` arm if
+  wanted. Departure in reach, not in rule: the typed `Publish` and `Withdraw` are dispatched
+  before the workshop's principal gate the line's `@mind/publish` and `@mind/withdraw`
+  pass, so for an accountless actor, a stopped executor or a full session table the typed
+  path answers C2's words where the line prints the workshop's sentence (a lead ruling).
+- **D-UM-49 and D-UM-50 (nothing IC crossed by a client)**: a typed request names only the
+  actor's own state (a listing code, a filed or licence number, a player name, a price in
+  C2's credit text); the keyframes carry no publication token beyond its 8-character code,
+  no offer token, no `renewal_operation`, no account id, no digest and no record id in a
+  row, and every row field is one the line already prints to the same actor. The one
+  identifier that does cross is the owner section's paging cursor, the last shown
+  charter's asset id (the number `+minds/holdings` prints as `HOLD_MORE` to the same
+  actor); whether it becomes opaque is a lead ruling.
+
 Historical landed amendments follow unchanged.
 
 - **§4 "The motor" and D-UM-3 (the motor extracted, the reflex kept whole)**: as built (17b cut M1a.1, 2026-10-03, `10a5a0ec`): `arena/motor.rs` holds `MotorRow { goal, route, searched_ms, searched_from, avoid, refused, waypoint, from_waypoint, hold_retry_ms }` with `MotorRow::age_avoid` (the avoid TTL sweep lifted from the head of `decide` and called where it stood) and `MotorTable` (the rows, the path budget window and spent, the A\* scratch) as `Arena.motors` for every controller; `follow(&self, id, t_ms, motors, row, here, policy: Fallback::{Waypoint, Notice}, counters, plan) -> MotorOutcome { arrived, unreachable }` reads `arena_cfg.reflex`, and `decide` performs the B-41/Z.2/E.4 give-ups from the outcome in their old order; `step_is_drivable`, `first_step_is_open`, `line_is_open`, `walk_is_open`, `entry_cell`, `far_entry_cell`, `stand_off_cell`, `patrol_step`, `hold_arrived` and `fall_back_to_waypoint` are `pub` as the audited surface (the five audits: hold the plot and move the truth; the pickers read the ground and the own pose; the walks read terrain and the avoid list and never the index; a stop is learned at the `blocked` event; a pilot row ages its stops). Departures from D-UM-3 as written: `DueKind::ReflexTick` is **not** renamed and stripped of `decide` — it stays as T0's cadence until M4, and `DueKind::MotorTick` (M1a.4) is a new kind beside it for a hull no reflex tick drives; `ReflexCounters` is not renamed `MotorCounters` until M4, so the harness baseline keys do not move; `ReflexUnit` keeps the whole decision half (`state, target, no_line, stand_until_ms, quiet_since_ms, rallied, order, last_plot, unheld_since_ms, hunt`), and `reflex.rs` loses only the driving fields (7,042 → 3,981 lines; 4,138 after M1a.6). `set_controller(Pilot)` releases the machine row and the motor row through `Arena::release_reflex` (§2's table says `reflex.release`, which was `e30b9491`'s code), and the controller guard on the motor's readers (`hold_routeless`, `note_blocked`, `refresh_held_avoid`) is replaced by the row: every transition away from a controller releases its row (M1a.5 made that hold for `Mind` too). The hash fold reads the table in the same byte order, two constants read at HEAD before the move pin it (the 1,000 ms replay's first and last hash, the shipped duel's final hash, re-asserted by M1a.4, M1a.5 and M1a.6), and a per-row section folds motor rows with no reflex row; `SNAPSHOT_FORMAT` 2 → 3 with a `motors` section. §2's and §4's `reflex.rs:` anchors (`:845`, `:1247`, `:1464`, `:2862`, `:3118`, `:3616`, `:4567-4640`, `:5911`) point at moved code and are left as they were at `e30b9491`.

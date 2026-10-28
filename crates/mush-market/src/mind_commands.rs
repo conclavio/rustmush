@@ -57,6 +57,12 @@
 //! - `OwnOpen`: every funded purchase the actor has open (the `+minds/
 //!   holdings` waiting lines), with its listing's code, whatever the
 //!   listing's currency (a withdrawn listing's escrow is still the actor's).
+//! - `OwnQuotes` (17g C3a, the C3 plan §2.3): every quote on the actor's own
+//!   index row (at most `MAX_BUYER_QUOTES`), live or expired, newest first
+//!   (by `quoted_at_utc`, then token), each with its listing's code, frozen
+//!   price and expiry: the `mind.market` panel's own strip, which no other
+//!   kind answers (`OwnPurchase` is keyed by a code the panel does not
+//!   have). No token, seller, account or digest; it needs no counter.
 //! - `ResaleOffers { licence }`: the live seller offers naming the actor on
 //!   that licence (`market_mind_paid_resale_buyer_offers` keyed by the
 //!   actor and the licence, then each offer row, whose named buyer and
@@ -405,8 +411,16 @@ enum ReadKind {
     OwnPurchase { code: String },
     OwnOpen,
     ResaleOffers { licence: LicenceId },
+    OwnQuotes,
 }
 impl MarketCommandRequest {
+    /// 17g C3a: every quote on the actor's own index row, newest first.
+    #[must_use]
+    pub const fn own_quotes() -> Self {
+        Self {
+            kind: ReadKind::OwnQuotes,
+        }
+    }
     /// 17g C2g: the actor's own quote and funded purchase on the listing
     /// whose code is `code`, through the actor's own index only.
     #[must_use]
@@ -594,6 +608,32 @@ impl OwnOpenView {
     }
 }
 
+/// 17g C3a: one quote on the actor's own index row (`OwnQuotes`): its
+/// listing's code, its frozen price and when it stops being fundable (world
+/// UTC seconds; it may have expired). No quote token: a typed `Pay` names
+/// the code, and `/buy/pay` resolves the newest live quote there itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OwnQuoteRowView {
+    code: String,
+    price_minor: i64,
+    expires_at_utc: i64,
+}
+impl OwnQuoteRowView {
+    /// The listing's code, as `+minds` prints it.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+    #[must_use]
+    pub const fn price_minor(&self) -> i64 {
+        self.price_minor
+    }
+    #[must_use]
+    pub const fn expires_at_utc(&self) -> i64 {
+        self.expires_at_utc
+    }
+}
+
 /// 17g C2g: one live seller offer naming the actor on a licence
 /// (`ResaleOffers`): its token (the Accept's and Fund's `offer`), the frozen
 /// price, when it expires (world UTC seconds; the economy refuses an
@@ -647,6 +687,10 @@ pub enum MarketCommandResult {
     ResaleOffers {
         offers: Vec<ResaleOfferView>,
     },
+    /// 17g C3a: `OwnQuotes`, newest first.
+    OwnQuotes {
+        quotes: Vec<OwnQuoteRowView>,
+    },
 }
 impl MarketCommandResult {
     /// The counter answer, or `None` if this answered another kind.
@@ -693,6 +737,14 @@ impl MarketCommandResult {
     pub fn into_resale_offers(self) -> Option<Vec<ResaleOfferView>> {
         match self {
             Self::ResaleOffers { offers } => Some(offers),
+            _ => None,
+        }
+    }
+    /// 17g C3a: the actor's own quotes, or `None` for another kind.
+    #[must_use]
+    pub fn into_own_quotes(self) -> Option<Vec<OwnQuoteRowView>> {
+        match self {
+            Self::OwnQuotes { quotes } => Some(quotes),
             _ => None,
         }
     }
@@ -839,6 +891,9 @@ pub(crate) fn answer<'a>(
         }
         ReadKind::ResaleOffers { licence } => resale_offers(source, own, licence)
             .map(|offers| MarketCommandResult::ResaleOffers { offers }),
+        ReadKind::OwnQuotes => {
+            own_quotes(source, own.actor).map(|quotes| MarketCommandResult::OwnQuotes { quotes })
+        }
         ReadKind::AtCounter => Ok(MarketCommandResult::AtCounter { here: here() }),
         ReadKind::Listings { after } => {
             if !here() {
@@ -1105,6 +1160,25 @@ pub(crate) fn own_open<'a>(
             operation: p.operation(),
             code: code_of(p.quote_row().listing()),
             protocol: Protocol::of(p.quote_row().protocol()),
+        })
+        .collect())
+}
+
+/// 17g C3a: `OwnQuotes` (module doc): every quote on the actor's own index
+/// row, live or expired, newest first by `quoted_at_utc` then token, each
+/// with its listing's code. `own_rows` bounds them to `MAX_BUYER_QUOTES`.
+pub(crate) fn own_quotes<'a>(
+    source: &impl OwnSource<'a>,
+    actor: ObjId,
+) -> Result<Vec<OwnQuoteRowView>, OwnerReadError> {
+    let (mut quotes, _) = own_rows(source, actor)?;
+    quotes.sort_by_key(|q| std::cmp::Reverse((q.quoted_at_utc(), q.publication())));
+    Ok(quotes
+        .into_iter()
+        .map(|q| OwnQuoteRowView {
+            code: code_of(q.listing()),
+            price_minor: q.price_minor(),
+            expires_at_utc: q.expires_at_utc(),
         })
         .collect())
 }

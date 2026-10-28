@@ -4734,6 +4734,7 @@ dependencies = [
  "mush-comsys",
  "mush-config",
  "mush-content",
+ "mush-contract-tests",
  "mush-core",
  "mush-dice",
  "mush-economy",

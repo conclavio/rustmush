@@ -25,8 +25,9 @@ use super::render::{PaneRows, RenderCtx};
 /// doc 16 §5 asks for had nowhere to go. `0` is the digit a keyboard puts after
 /// `9`, and the tab strip reads `1 … 9 0` for that reason. Doc 19 cut A.3b took
 /// the eleventh, the first lettered screen (`c`), and **doc 20 cut SM.9 took the
-/// twelfth, the second lettered screen** (`q`, the quarry).
-pub const MAX_SCREENS: usize = 12;
+/// twelfth, the second lettered screen** (`q`, the quarry), and **17g cut C3b
+/// the thirteenth, the third** (`m`, the mind market).
+pub const MAX_SCREENS: usize = 13;
 /// The most panes one screen may declare.
 pub const MAX_PANES_PER_SCREEN: usize = 8;
 
@@ -155,6 +156,13 @@ pub const DAMAGE_SCREEN: ScreenId = ScreenId(8);
 /// (Alt+q) — the hull's rigs, the site map or the body's ground chart, the viewer's own
 /// readings and the log, drawn from the `site.map` and `body.ground` frames.
 pub const QUARRY_SCREEN: ScreenId = ScreenId(b'q');
+
+/// **The market screen** (17g cut C3b; the C3 plan §2.4): the third lettered
+/// screen, on `m` (Alt+m) — the counter's listings on the left, the actor's
+/// own holdings on the right, drawn from the `mind.market` and
+/// `mind.holdings` keyframes. Its keys open forms; only Enter inside a form
+/// sends, and what it sends is one typed `MindRequest::Market`, never a line.
+pub const MARKET_SCREEN: ScreenId = ScreenId(b'm');
 
 /// A pane's stable name within its screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -291,6 +299,36 @@ pub enum LocalAction {
     /// the text cockpit over the picture, and back — kept for the session.
     /// Bound in place of `Refresh` by the app, never in a table.
     CockpitPicture,
+    /// **The market's `b`** (17g cut C3b): the purchase form over the
+    /// highlighted listing — `quote`, `pay`, `complete` or `refund`, the step
+    /// defaulted from the actor's own quote and waiting purchase. Opens a
+    /// form; sends nothing.
+    MarketBuy,
+    /// **The market's `k`** (17g cut C3b): the renewal form over the
+    /// highlighted paid licence — `request`, `pay` or `decline`.
+    MarketRenew,
+    /// **The market's `t`** (17g cut C3b): a resale offer over a paid
+    /// licence, or a charter offer over a filed mind — a player and a price.
+    MarketOffer,
+    /// **The market's `a`** (17g cut C3b): accept an offer by its licence or
+    /// filed number and price, or list the offers with no price.
+    MarketAccept,
+    /// **The market's `l`** (17g cut C3b): list the highlighted filed mind —
+    /// form, royalty, transfer.
+    MarketPublish,
+    /// **The market's `x`** (17g cut C3b): the withdrawal's confirm.
+    MarketWithdraw,
+    /// **The market's `h`** (17g cut C3b): the holdings' other section, from
+    /// its first page.
+    MarketSection,
+    /// **The market's `]`** (17g cut C3b): the focused pane's next page.
+    MarketPageNext,
+    /// **The market's `[`** (17g cut C3b): the focused pane's first page.
+    MarketPageFirst,
+    /// **The legal-actions panel's `a`** (17g cut C3b): the highlighted
+    /// offer's parameter form, whose Enter submits it typed
+    /// (`LegalActionRequest::SubmitSelf`); `A` keeps the `+act` prefill.
+    ActionForm,
 }
 
 /// What a bound key does (D-I-18).
@@ -400,9 +438,9 @@ impl Screen {
     }
 }
 
-/// The twelve built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
+/// The thirteen built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
 /// 6 intel, 7 actions, 8 damage, 9 unit, 0 cockpit, and on letters (doc 19 cut
-/// A.3b) `c` chart and (doc 20 cut SM.9) `q` quarry.
+/// A.3b) `c` chart, (doc 20 cut SM.9) `q` quarry and (17g cut C3b) `m` market.
 ///
 /// Screens 8 and 9 read one feed, `tactics.unit`, and name nothing in it:
 /// every label, id and word on them comes out of the frame, so a ruleset that
@@ -419,11 +457,11 @@ pub fn builtin_screens() -> Vec<Screen> {
         BODY_GROUND_FEED, CHART_FEED, SITE_MAP_FEED, render_actions_rows, render_chart_rows,
         render_chart_table_rows, render_cockpit_contacts_rows, render_cockpit_damage_rows,
         render_cockpit_map_rows, render_cockpit_notices_rows, render_cockpit_status_rows,
-        render_cockpit_weapons_rows, render_intel_rows, render_mail_rows, render_map_rows,
-        render_quarry_map_rows, render_quarry_rigs_rows, render_quarry_side_rows,
-        render_scene_rows, render_unit_components_rows, render_unit_delta_rows,
-        render_unit_journal_rows, render_unit_plant_rows, render_unit_sections_compact_rows,
-        render_unit_sections_rows, render_view_rows,
+        render_cockpit_weapons_rows, render_holdings_rows, render_intel_rows, render_mail_rows,
+        render_map_rows, render_market_rows, render_quarry_map_rows, render_quarry_rigs_rows,
+        render_quarry_side_rows, render_scene_rows, render_unit_components_rows,
+        render_unit_delta_rows, render_unit_journal_rows, render_unit_plant_rows,
+        render_unit_sections_compact_rows, render_unit_sections_rows, render_view_rows,
     };
     let unit_query = || vec![(UNIT_FEED, Value::Object(serde_json::Map::new()))];
     vec![
@@ -501,9 +539,17 @@ pub fn builtin_screens() -> Vec<Screen> {
                     label: "roll",
                     action: KeyAction::Prefill("+roll "),
                 },
+                // 17g cut C3b: `a` opens the highlighted offer's parameter
+                // form (Enter submits it typed); `A` is the `+act` line it
+                // used to be, one key away.
                 KeyBinding {
                     key: 'a',
                     label: "act",
+                    action: KeyAction::Local(LocalAction::ActionForm),
+                },
+                KeyBinding {
+                    key: 'A',
+                    label: "act line",
                     action: KeyAction::PrefillRow("+act "),
                 },
             ],
@@ -729,9 +775,16 @@ pub fn builtin_screens() -> Vec<Screen> {
                     label: "refresh",
                     action: KeyAction::Local(LocalAction::Refresh),
                 },
+                // 17g cut C3b: as on the scene screen, `a` the typed form and
+                // `A` the `+act` line.
                 KeyBinding {
                     key: 'a',
                     label: "act",
+                    action: KeyAction::Local(LocalAction::ActionForm),
+                },
+                KeyBinding {
+                    key: 'A',
+                    label: "act line",
                     action: KeyAction::PrefillRow("+act "),
                 },
             ],
@@ -1116,6 +1169,115 @@ pub fn builtin_screens() -> Vec<Screen> {
             ],
             right_shares_surplus: false,
             gate: Some(SITE_MAP_FEED),
+            alt_keys: None,
+        },
+        // **The mind market** (17g cut C3b; the C3 plan §2.4), on the letter `m`, after the
+        // quarry and before the cockpit (the strip reads `… q quarry m market 0 cockpit`): Main
+        // the counter's listings (70), Right the actor's own holdings (50) — 120 at the floor,
+        // where the listings keep CODE to PRICE and the holdings NUMBER to NAME; a wider
+        // terminal widens the listings (the Right column is a fixed 50, `right_shares_surplus`
+        // false), and both renderers drop whole columns from the right rather than wrap. Gated
+        // on `mind.market`, which every launch format's manifest carries (17g C3a). `on_enter`
+        // asks each feed by its own name — the holdings query REQUIRES a section — so the I8
+        // auto-subscribe doubles nothing. Every key is `Local`: `b k t a l x` open a form, `h`
+        // flips the holdings section, `]` and `[` page the focused pane, `r` asks the two
+        // pages again; only Enter inside a form sends, and what it sends is one typed
+        // `MindRequest::Market` (`super::market::MarketDesk`), never a line. `m` stays the
+        // chart's, the quarry's and the cockpit's own key on those screens (`TuiApp::binds`).
+        Screen {
+            id: MARKET_SCREEN,
+            name: "market",
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("listings"),
+                    title: "mind market",
+                    role: BorderRole::Ooc,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Panel {
+                        feed: "mind.market",
+                        render: render_market_rows,
+                    },
+                    min_w: 70,
+                    min_h: 4,
+                    selectable: true,
+                },
+                PaneSpec {
+                    id: PaneId("holdings"),
+                    title: "holdings",
+                    role: BorderRole::Ooc,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: "mind.holdings",
+                        render: render_holdings_rows,
+                    },
+                    min_w: 50,
+                    min_h: 4,
+                    selectable: true,
+                },
+            ],
+            keys: vec![
+                KeyBinding {
+                    key: 'b',
+                    label: "buy",
+                    action: KeyAction::Local(LocalAction::MarketBuy),
+                },
+                KeyBinding {
+                    key: 'k',
+                    label: "renew",
+                    action: KeyAction::Local(LocalAction::MarketRenew),
+                },
+                KeyBinding {
+                    key: 't',
+                    label: "offer",
+                    action: KeyAction::Local(LocalAction::MarketOffer),
+                },
+                KeyBinding {
+                    key: 'a',
+                    label: "accept",
+                    action: KeyAction::Local(LocalAction::MarketAccept),
+                },
+                KeyBinding {
+                    key: 'l',
+                    label: "publish",
+                    action: KeyAction::Local(LocalAction::MarketPublish),
+                },
+                KeyBinding {
+                    key: 'x',
+                    label: "withdraw",
+                    action: KeyAction::Local(LocalAction::MarketWithdraw),
+                },
+                KeyBinding {
+                    key: 'h',
+                    label: "section",
+                    action: KeyAction::Local(LocalAction::MarketSection),
+                },
+                KeyBinding {
+                    key: 'r',
+                    label: "refresh",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+                KeyBinding {
+                    key: ']',
+                    label: "next page",
+                    action: KeyAction::Local(LocalAction::MarketPageNext),
+                },
+                KeyBinding {
+                    key: '[',
+                    label: "first page",
+                    action: KeyAction::Local(LocalAction::MarketPageFirst),
+                },
+            ],
+            degrade: vec![PaneId("holdings"), PaneId("listings")],
+            exits_are_keys: false,
+            on_enter: vec![
+                ("mind.market", serde_json::json!({ "after": null })),
+                (
+                    "mind.holdings",
+                    serde_json::json!({ "section": "owner", "after": null }),
+                ),
+            ],
+            right_shares_surplus: false,
+            gate: Some("mind.market"),
             alt_keys: None,
         },
         // 0 cockpit — doc 16 §5's full-screen surface (16b cut Q.4): the map
@@ -1560,20 +1722,105 @@ mod tests {
         assert!(mail.binding('s').is_some() && mail.binding('d').is_some());
     }
 
-    /// I8: ten screens is the cap (16b cut Q.4 took `0` for the cockpit), and
-    /// the two tactical ones sit inside every bound the probe enforces — pane
+    /// I8: the cap is the built-ins (16b cut Q.4 took `0` for the cockpit;
+    /// the letters `c`, `q` and, 17g cut C3b, `m` took three more), and the
+    /// two tactical ones sit inside every bound the probe enforces — pane
     /// count, unique pane ids, a `degrade` order that names only panes it has,
     /// and no `Run` off the read-only list (`@unit` is staff-gated and
-    /// mutating: it is only ever a prefill).
+    /// mutating: it is only ever a prefill). **17g cut C3b**: the market is the
+    /// thirteenth, on the letter `m`, gated on `mind.market`, its ten keys all
+    /// `Local` and none of them a global, jump or reserved exit key.
     #[test]
-    fn twelve_screens_validate_and_the_tactical_two_stay_inside_every_cap() {
+    fn thirteen_screens_validate_and_the_market_is_lettered_m() {
         let screens = builtin_screens();
         assert_eq!(
             screens.len(),
-            12,
-            "ten digits, the lettered chart (doc 19 cut A.3b) and quarry (doc 20 cut SM.9)"
+            13,
+            "ten digits, the lettered chart (doc 19 cut A.3b), quarry (doc 20 cut SM.9) and \
+             market (17g cut C3b)"
         );
-        validate_screens(&screens).expect("twelve built-ins are valid");
+        validate_screens(&screens).expect("thirteen built-ins are valid");
+        let market = screens
+            .iter()
+            .find(|s| s.id == MARKET_SCREEN)
+            .expect("the market screen");
+        assert_eq!(MARKET_SCREEN.0, b'm');
+        assert_eq!(market.name, "market");
+        assert_eq!(market.gate, Some("mind.market"));
+        let keys: Vec<(char, &str, KeyAction)> = market
+            .keys
+            .iter()
+            .map(|b| (b.key, b.label, b.action))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ('b', "buy", KeyAction::Local(LocalAction::MarketBuy)),
+                ('k', "renew", KeyAction::Local(LocalAction::MarketRenew)),
+                ('t', "offer", KeyAction::Local(LocalAction::MarketOffer)),
+                ('a', "accept", KeyAction::Local(LocalAction::MarketAccept)),
+                ('l', "publish", KeyAction::Local(LocalAction::MarketPublish)),
+                (
+                    'x',
+                    "withdraw",
+                    KeyAction::Local(LocalAction::MarketWithdraw)
+                ),
+                ('h', "section", KeyAction::Local(LocalAction::MarketSection)),
+                ('r', "refresh", KeyAction::Local(LocalAction::Refresh)),
+                (
+                    ']',
+                    "next page",
+                    KeyAction::Local(LocalAction::MarketPageNext)
+                ),
+                (
+                    '[',
+                    "first page",
+                    KeyAction::Local(LocalAction::MarketPageFirst)
+                ),
+            ]
+        );
+        for b in &market.keys {
+            assert!(
+                !GLOBAL_KEYS.contains(&b.key)
+                    && !JUMP_KEYS.contains(&b.key)
+                    && !RESERVED_EXIT_KEYS.contains(&b.key)
+                    && !['c', 'q', 'm'].contains(&b.key),
+                "{:?}",
+                b.key
+            );
+        }
+        assert_eq!(
+            market.on_enter,
+            vec![
+                ("mind.market", serde_json::json!({ "after": null })),
+                (
+                    "mind.holdings",
+                    serde_json::json!({ "section": "owner", "after": null })
+                ),
+            ],
+            "each feed asked by its own name; the holdings with the section it requires"
+        );
+        let pane = |id: &'static str| market.pane(PaneId(id)).expect("a market pane");
+        assert_eq!(
+            (pane("listings").slot, pane("listings").min_w),
+            (PaneSlot::Main, 70)
+        );
+        assert_eq!(
+            (pane("holdings").slot, pane("holdings").min_w),
+            (PaneSlot::Right, 50)
+        );
+        assert!(pane("listings").min_w + pane("holdings").min_w <= FLOOR_COLS);
+        assert!(!market.right_shares_surplus);
+        assert_eq!(market.degrade, vec![PaneId("holdings"), PaneId("listings")]);
+        // After the quarry, before the cockpit; the screens that bind `m`
+        // themselves keep it (`TuiApp::binds`).
+        let order: Vec<u8> = screens.iter().map(|s| s.id.0).collect();
+        let at = |id: u8| order.iter().position(|o| *o == id).expect("listed");
+        assert!(at(b'q') < at(b'm') && at(b'm') < at(0));
+        for id in [CHART_SCREEN, QUARRY_SCREEN, COCKPIT_SCREEN] {
+            let screen = screens.iter().find(|s| s.id == id).expect("a screen");
+            assert!(screen.binding('m').is_some(), "{} binds m", screen.name);
+        }
         assert_eq!(
             screens.len(),
             MAX_SCREENS,
@@ -1719,9 +1966,9 @@ mod tests {
         assert_eq!(cockpit.name, "cockpit");
         assert_eq!(cockpit.gate, Some(COCKPIT_FEED));
         assert!(
-            screens.iter().filter(|s| s.gate.is_some()).count() == 3,
-            "the cockpit, the chart (doc 19 cut A.3b) and the quarry (doc 20 cut SM.9) are the \
-             gated screens"
+            screens.iter().filter(|s| s.gate.is_some()).count() == 4,
+            "the cockpit, the chart (doc 19 cut A.3b), the quarry (doc 20 cut SM.9) and the \
+             market (17g cut C3b) are the gated screens"
         );
         assert_eq!(
             cockpit.on_enter,
