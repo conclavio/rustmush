@@ -26,7 +26,7 @@ pub struct PreparedComposedTxn {
     shell: Option<crate::core_output::image::BuiltinObjects>,
     reads: crate::read_service::ReadObservations,
     accounts: crate::account::observation::AccountObservations,
-    dispatch: Option<BoundDispatchObservation>,
+    dispatch: Option<Box<BoundDispatchObservation>>,
     writes: Vec<ReplayWrite>,
 }
 
@@ -93,7 +93,7 @@ impl PreparedComposedTxn {
     /// provenance. Replacing or crossing the typed owner's custody refuses.
     pub(crate) fn retain_dispatch(
         &mut self,
-        observation: BoundDispatchObservation,
+        observation: Box<BoundDispatchObservation>,
     ) -> Result<(), ParticipantError> {
         if self.dispatch.is_some() || observation.owner() != self.typed.owner() {
             return Err(ParticipantError::Authority);
@@ -223,7 +223,7 @@ pub struct ComposedInstallation {
     shell: Option<crate::core_output::image::BuiltinObjects>,
     reads: crate::read_service::ReadObservations,
     accounts: crate::account::observation::AccountObservations,
-    dispatch: Option<BoundDispatchObservation>,
+    dispatch: Option<Box<BoundDispatchObservation>>,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -31,7 +31,7 @@ impl BoundDispatchObservation {
         action: DefinitionRef,
         commit: CommitToken,
         admission: LocomotionAdmission,
-    ) -> Result<Self, ParticipantError> {
+    ) -> Result<Box<Self>, ParticipantError> {
         let actor = super::authenticated_actor(&invocation)?;
         let request = capture.request();
         let same_request = match (&request.kind, &admission.request.kind) {
@@ -50,13 +50,13 @@ impl BoundDispatchObservation {
         {
             return Err(ParticipantError::Authority);
         }
-        Ok(Self {
+        Ok(Box::new(Self {
             capture,
             invocation,
             action,
             commit,
             admission,
-        })
+        }))
     }
 
     pub(crate) fn owner(&self) -> &OwnerId {
