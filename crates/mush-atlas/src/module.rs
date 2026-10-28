@@ -440,9 +440,9 @@ impl GameModule for AtlasModule {
         reg.hook(HookPoint::MoveAttempt, Arc::clone(&hook));
         reg.hook(HookPoint::LookRendered, Arc::clone(&hook));
         reg.hook(HookPoint::Perceive, hook);
-        reg.subscribe(WorldEventKind::Moved, Arc::new(crate::travel::on_moved));
+        reg.subscribe_moved("travel_discovery", 1, Arc::new(crate::travel::on_moved))?;
         // S4: a character who walks onto, off or across a window's rooms.
-        reg.subscribe(WorldEventKind::Moved, Arc::new(crate::window::on_moved));
+        reg.subscribe_moved("window_arrival", 1, Arc::new(crate::window::on_moved))?;
         reg.subscribe(
             WorldEventKind::Disconnected,
             Arc::new(crate::travel::on_disconnected),

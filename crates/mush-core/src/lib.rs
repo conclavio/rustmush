@@ -86,6 +86,7 @@ pub mod locomotion;
 pub mod matchit;
 pub mod mechanics;
 pub mod module;
+pub mod moved_observer;
 pub mod obj;
 mod object_read;
 pub mod offer;
