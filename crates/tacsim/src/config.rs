@@ -713,6 +713,14 @@ impl Default for CommandConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindsConfig {
+    /// The `mind-bulk-maintenance` pulse, milliseconds
+    /// ([`BulkConfig::maintenance_ms`](crate::minds::bulk::model::BulkConfig)):
+    /// the pace of every Registry lease, so of a genuine rating. **Not a
+    /// file key** (`serde(skip)`): production runs at the second, and only
+    /// code sets it, the mush-server acceptance stories' harness, so a
+    /// certificate takes minutes there rather than three hours.
+    #[serde(skip, default = "default_bulk_maintenance_ms")]
+    pub bulk_maintenance_ms: u64,
     /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
     #[serde(default = "default_proving_workers")]
     pub proving_workers: usize,
@@ -871,10 +879,14 @@ fn default_bench_eval_ops() -> u64 {
 fn default_bench_eval_result_bytes() -> usize {
     crate::minds::bulk::model::BulkConfig::default().eval_result_bytes
 }
+fn default_bulk_maintenance_ms() -> u64 {
+    crate::minds::bulk::model::BulkConfig::default().maintenance_ms
+}
 
 impl Default for MindsConfig {
     fn default() -> Self {
         MindsConfig {
+            bulk_maintenance_ms: default_bulk_maintenance_ms(),
             proving_workers: default_proving_workers(),
             proving_queued: default_proving_queued(),
             proving_daily_unit_minutes: default_proving_daily_unit_minutes(),
@@ -918,6 +930,7 @@ impl MindsConfig {
             bench_state_bytes: self.bench_state_bytes,
             eval_ops: self.bench_eval_ops,
             eval_result_bytes: self.bench_eval_result_bytes,
+            maintenance_ms: self.bulk_maintenance_ms,
         }
     }
     /// Operator-bounded class ceiling for a side's AI fill. An absent side

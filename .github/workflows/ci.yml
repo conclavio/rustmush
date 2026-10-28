@@ -18,6 +18,17 @@ on:
       - "README.md"
   # H3: the `scale` job below runs only on these two triggers.
   workflow_dispatch:
+    inputs:
+      # The M7 acceptance stories' Registry pace (`mind-commerce-acceptance`):
+      # empty, the default, is the fast path (a 50 ms maintenance pulse, a
+      # genuine rating in minutes); `1000` is production's pulse, the
+      # three-hour wall-clock run the nightly schedule always takes.
+      # `gh workflow run CI --ref <branch> -f mind_pulse_ms=1000`.
+      mind_pulse_ms:
+        description: "M7 stories' maintenance pulse, ms (empty = fast, 1000 = production's pace)"
+        required: false
+        default: ""
+        type: string
   schedule:
     # Daily (the repo is public, so hosted-runner minutes are free).
     - cron: "17 4 * * *"
@@ -39,8 +50,16 @@ env:
 jobs:
   mind-commerce-acceptance:
     name: M7 ${{ matrix.name }}
-    # Daily with the scale job, or by hand: the server story alone paces about
-    # 3 s a Registry lease through real maintenance ticks (roughly three hours).
+    # Daily with the scale job, or by hand. The three mush-server stories each
+    # take one genuine Registry rating through the live server's maintenance
+    # ticks (about six a lease, ~1,070 leases a certificate): at production's
+    # 1,000 ms pulse that is about three hours a story. Since 2026-10-28 their
+    # harness reads `MIND_PULSE_MS` (`paid_purchase::mind_pulse`): unset or
+    # empty is a 50 ms pulse, a rating in minutes; `1000` is production's pace.
+    # The owner's rule: the nightly schedule, which nobody watches, always runs
+    # at production's pace; a hand dispatch is fast unless it says
+    # `-f mind_pulse_ms=1000` (the `MIND_PULSE_MS` env on the story step).
+    # Production pacing is untouched: the pulse is not a file key.
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -52,7 +71,10 @@ jobs:
       # 236, in run 40211204236, before 17g C2a added the fifth (the player
       # market commands, one genuine Registry rating, about the server
       # story's length) and 17g C3a the sixth (the typed market surfaces, one
-      # more genuine rating). In parallel it is the longest, the server story's 131.
+      # more genuine rating). In parallel it was the longest, the server story's
+      # 131, until the 50 ms pulse (above) took the three mush-server stories
+      # to minutes; the wall is now the tacsim stories' (the launch catalogue's
+      # 55, which pace their ratings in-process, not through the server tick).
       matrix:
         include:
           - name: author and buyer lifecycle
@@ -90,6 +112,10 @@ jobs:
       # receipt, cold recovery and failure assertions; no synthetic certificate
       # or timing waiver replaces those correctness checks.
       - name: Execute the exact M7 story
+        env:
+          # The nightly run at production's pace; a dispatch at the input's
+          # (empty = the fast path). The tacsim stories do not read it.
+          MIND_PULSE_MS: ${{ github.event_name == 'schedule' && '1000' || inputs.mind_pulse_ms }}
         run: cargo test --locked -p ${{ matrix.package }} --lib ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1
 
   mind-author-acceptance:
