@@ -475,32 +475,17 @@ pub(crate) mod tests {
     pub(crate) fn whole_centre() -> mush_testkit::TestWorld {
         use crate::composition as comp;
 
-        let llm = std::sync::Arc::new(
-            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-                .expect("a disabled LLM service composes"),
-        );
         let cfg = crate::TacsimConfig {
             enabled: true,
             ..crate::TacsimConfig::default()
         };
-        let onboarding = mush_core::OnboardingConfig::default();
         let game = crate::GameEconomyConfig::default();
-        let (mut mods, inventory) = comp::server_modules_with_tacsim(
-            mush_weather::WeatherConfig::default(),
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
             mush_economy::EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
-            &onboarding,
             &game,
-            comp::recovery_policy(&cfg.recovery),
         );
-        mods.push(comp::worldgen_module_with(
-            std::sync::Arc::clone(&llm),
-            mush_worldgen::WorldgenConfig::default(),
-        ));
-        mods.push(comp::npc_module_with(
-            comp::npc_agent_adapter(),
-            &mush_config::config::NpcCfg::default(),
-        ));
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
         // Keep the lane definitions and applied content together, as production
         // does: the full relay star needs the Fleet/Postmaster programme.
         let game_content = cfg.enabled;

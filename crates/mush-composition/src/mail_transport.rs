@@ -6,6 +6,25 @@ use mush_propagation::{EnvelopeState, dispatch, record::DispatchKind};
 #[derive(Debug)]
 pub struct MailTransport;
 
+pub fn mail_receipt_visible(
+    w: &World,
+    actor: ObjId,
+    id: u64,
+    issuer: ObjId,
+    is_return: bool,
+) -> bool {
+    let Some(mail) = w.module_state::<mush_mail::MailState>() else {
+        return false;
+    };
+    if is_return {
+        mail.message(id).is_some_and(|m| {
+            m.from == actor && m.delivery.as_ref().is_some_and(|d| d.contains_key(&issuer))
+        })
+    } else {
+        mail.entry(actor, id).is_some()
+    }
+}
+
 impl dispatch::Sources for MailTransport {
     fn requests(&self, world: &World) -> Option<Vec<dispatch::Request>> {
         let mut requests: Vec<_> = mush_mail::transit::intents(world)?
@@ -75,7 +94,7 @@ impl mush_comsys::transit::Transport for MailTransport {
         )
     }
     fn endpoint(&self, world: &World, actor: ObjId) -> Option<ObjId> {
-        crate::relay_metric::source_address(world, actor)
+        tacsim::relay_metric::source_address(world, actor)
     }
     fn receipt(&self, world: &World, key: &str) -> Option<bool> {
         let e = dispatch::find(world, key)?;

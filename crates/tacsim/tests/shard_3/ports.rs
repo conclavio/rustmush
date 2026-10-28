@@ -18,7 +18,6 @@
 use crate::support;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
 
 use mush_content::ContentState;
 use mush_core::{Audience, CanonicalId, GOD, ObjId};
@@ -115,21 +114,14 @@ impl Roster {
     ) -> Vec<Box<dyn mush_core::GameModule>> {
         use tacsim::composition as comp;
 
-        let llm = Arc::new(
-            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-                .expect("a disabled LLM service composes"),
-        );
         let onboarding = mush_core::OnboardingConfig::default();
         let game = tacsim::GameEconomyConfig::default();
         // Doc 18 cut IC5: the production roster's built-ins, with `tacsim` the third
         // quantity delegate and the inventory cell handed to the layer below.
-        let (mut mods, inventory) = comp::server_modules_with_tacsim(
-            mush_weather::WeatherConfig::default(),
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
             self.economy.clone(),
             mush_atlas::AtlasConfig::default(),
-            &onboarding,
             &game,
-            comp::recovery_policy(&cfg.recovery),
         );
         if let Some(shelf) = &self.shelf {
             let at = mods
@@ -141,14 +133,7 @@ impl Roster {
                     .with_shelf(with_stations(shelf)),
             );
         }
-        mods.push(comp::worldgen_module_with(
-            Arc::clone(&llm),
-            mush_worldgen::WorldgenConfig::default(),
-        ));
-        mods.push(comp::npc_module_with(
-            comp::npc_agent_adapter(),
-            &mush_config::config::NpcCfg::default(),
-        ));
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
         if self.sheet {
             mods.extend(comp::sheet_modules(&onboarding, &game));
         }

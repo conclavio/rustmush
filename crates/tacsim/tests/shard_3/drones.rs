@@ -74,32 +74,17 @@ impl Roster {
     fn modules(self) -> Vec<Box<dyn mush_core::GameModule>> {
         use tacsim::composition as comp;
 
-        let llm = Arc::new(
-            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-                .expect("a disabled LLM service composes"),
-        );
-        let onboarding = mush_core::OnboardingConfig::default();
         let game = tacsim::GameEconomyConfig::default();
         let cfg = TacsimConfig {
             enabled: true,
             ..TacsimConfig::default()
         };
-        let (mut mods, inventory) = comp::server_modules_with_tacsim(
-            mush_weather::WeatherConfig::default(),
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
             EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
-            &onboarding,
             &game,
-            comp::recovery_policy(&cfg.recovery),
         );
-        mods.push(comp::worldgen_module_with(
-            Arc::clone(&llm),
-            mush_worldgen::WorldgenConfig::default(),
-        ));
-        mods.push(comp::npc_module_with(
-            comp::npc_agent_adapter(),
-            &mush_config::config::NpcCfg::default(),
-        ));
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
         mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         mods
@@ -4268,11 +4253,6 @@ fn staff_home_recovers_a_house_rig_without_creating_a_lease() {
 
 fn upgrade_modules(seed: &str, next: &str) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
     let mut cfg = TacsimConfig {
         enabled: true,
@@ -4287,13 +4267,10 @@ fn upgrade_modules(seed: &str, next: &str) -> Vec<Box<dyn mush_core::GameModule>
         name: "ops/lane.json".to_owned(),
         bytes: seed.to_owned(),
     });
-    let (mut mods, inventory) = comp::server_modules_with_tacsim(
-        mush_weather::WeatherConfig::default(),
+    let (mut mods, inventory) = comp::domain_modules_with_economy(
         EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
     let at = mods
         .iter()
@@ -4304,14 +4281,7 @@ fn upgrade_modules(seed: &str, next: &str) -> Vec<Box<dyn mush_core::GameModule>
     mods[at] = Box::new(
         mush_atlas::AtlasModule::with_config(mush_atlas::AtlasConfig::default()).with_shelf(full),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.push(comp::tacsim_test_world_module_wired(cfg, false, inventory));
     let packs = support::boot_packs_with_lane(
         mush_content::load_pack(seed).expect("the seed lane verifies"),
