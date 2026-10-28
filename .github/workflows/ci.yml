@@ -465,10 +465,10 @@ jobs:
       - name: Pooled think seam over the twin's thirty (17b cut M4.1)
         if: matrix.shard == 'tacsim-minds'
         run: cargo test -p tacsim --test shard_2 minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -j 2 -- --ignored --exact --nocapture
-      # The bot crate is excluded from the workspace test run and tested on its own:
-      # its serde_json `arbitrary_precision` feature would otherwise unify into every
-      # engine test binary and break untagged number decoding (the worldgen proposal
-      # path). See crates/mush-bot/Cargo.toml.
+      # The bot crate is tested in its own shards (`bot` and `bot-stories`) for
+      # shard wall-clock balance; it no longer enables serde_json
+      # `arbitrary_precision`, so workspace builds unify cleanly. See
+      # crates/mush-bot/Cargo.toml.
       # The hosted runner is 4 cores and 16 GB. Links are capped at two at a
       # time (a test binary's link is the memory peak).
       # 2026-10-20: the limits and pressure gauges a death would show against,
