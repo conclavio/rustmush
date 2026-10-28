@@ -2337,6 +2337,19 @@ gone from the tree.
     Hiding (or closing) a withdrawn or recalled revision's listings needs the market read to
     see the Registry's status: a C4 ledger item; the C3 typed story's `mind.market` panel
     expectation after `Withdraw` moves with it.
+  - No clerk settlement could land through the server** (found by the command story's fourth and
+    fifth runs of part 3, dispatches 40667921671 and 40694980205, 2026-10-28; fixed on its own
+    branch after PR #58). The six clerk services (Roll's pending charters, paid resale, facts and
+    Registry recall; the market's renewal and House renewal closes) bound each terminal invocation
+    to the intent they submitted by `IdempotencyKey::Caller(intent.key)`, the form the tacsim
+    harnesses hand-build. The server's command ingress keys every observed submission
+    `IdempotencyKey::Request` (the deterministic UID whose digest folds the caller key in;
+    `ActionCoordinator::status_id` admits no other form), so the provider refused every settlement
+    and the clerk resubmitted it each second, the pending row `funded` for good and nothing logged
+    (the tick swallows its errors). `ActionInvocation::keyed_by` accepts either form and the six
+    services use it; the clerk now logs what it swallows at `debug`. The story's charter step was
+    the first clerk-driven submission through the real server: the earlier resale settled by Cy's
+    own Accept (no IC claim was open), and the four other stories never reach a clerk.
 
 ### C3 — plan (2026-10-28, branch `claude/m7-c3-typed-surfaces`)
 
