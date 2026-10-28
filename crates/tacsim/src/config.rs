@@ -713,9 +713,9 @@ impl Default for CommandConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindsConfig {
-    /// The `mind-bulk-maintenance` pulse, milliseconds
-    /// ([`BulkConfig::maintenance_ms`](crate::minds::bulk::model::BulkConfig)):
-    /// the pace of every Registry lease, so of a genuine rating. **Not a
+    /// The `mind-bulk-maintenance` pulse, milliseconds (the bulk model's
+    /// `BulkConfig::maintenance_ms`): the pace of every Registry lease, so of
+    /// a genuine rating. **Not a
     /// file key** (`serde(skip)`): production runs at the second, and only
     /// code sets it, the mush-server acceptance stories' harness, so a
     /// certificate takes minutes there rather than three hours.
