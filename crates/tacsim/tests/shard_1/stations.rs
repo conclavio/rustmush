@@ -504,6 +504,10 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             "tacsim.passengers.stickney",
             "tacsim.passengers.ceres",
             "tacsim.quests.first_steps",
+            "tacsim.quests.leila_followup",
+            "tacsim.quests.port_connections",
+            "tacsim.quests.safe_passage",
+            "tacsim.quests.survey_work",
         ]
         .into_iter()
         .map(str::to_string),
@@ -511,7 +515,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        38,
+        42,
         "three starter, two proving ground, ten stations, the twelve site packs (doc 20 cut \
          SM.2), the lane, seven R10 relay/geography packs, two passenger packs and the optional quests"
     );
@@ -581,6 +585,29 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     ("tacsim.passengers.ceres".into(), 1),
                 ]
             ),
+            "tacsim.quests.leila_followup" => assert_eq!(
+                requires,
+                vec![
+                    ("tacsim.passengers.stickney".into(), 2),
+                    (CERES_PACK.into(), 4),
+                    (STICKNEY_PACK.into(), 4),
+                ]
+            ),
+            "tacsim.quests.port_connections" => assert_eq!(requires, vec![(CERES_PACK.into(), 4)]),
+            "tacsim.quests.safe_passage" => assert_eq!(
+                requires,
+                vec![
+                    (CERES_PACK.into(), 4),
+                    ("tacsim.passengers.ceres".into(), 1)
+                ]
+            ),
+            "tacsim.quests.survey_work" => assert_eq!(
+                requires,
+                vec![
+                    (CERES_PACK.into(), 4),
+                    ("tacsim.quests.first_steps".into(), 1)
+                ]
+            ),
             // Doc 20 cut SM.2: the site regions require nothing; each site
             // neighborhood requires its region at 1.
             site if site_regions.contains(&site) => assert!(requires.is_empty()),
@@ -604,6 +631,10 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         "tacsim.passengers.stickney",
         "tacsim.passengers.ceres",
         "tacsim.quests.first_steps",
+        "tacsim.quests.leila_followup",
+        "tacsim.quests.port_connections",
+        "tacsim.quests.safe_passage",
+        "tacsim.quests.survey_work",
     ] {
         assert!(!starter_only.iter().any(|p| p == name), "{name}");
     }
@@ -624,6 +655,10 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert!(out.contains(" tacsim.passengers.stickney@2 ("), "{out}");
     assert!(out.contains(" tacsim.passengers.ceres@1 ("), "{out}");
     assert!(out.contains(" tacsim.quests.first_steps@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.leila_followup@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.port_connections@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.safe_passage@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.survey_work@1 ("), "{out}");
     // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
         out.contains(&format!(" {LANE_PACK}@{LANE_VERSION} (")),
@@ -1369,7 +1404,7 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     }
     assert_eq!(
         after.len(),
-        38,
+        42,
         "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography packs, two passenger packs and the optional quests"
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
@@ -1380,7 +1415,14 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         after.get("tacsim.passengers.stickney").map(|l| l.0),
         Some(2)
     );
-    for name in ["tacsim.passengers.ceres", "tacsim.quests.first_steps"] {
+    for name in [
+        "tacsim.passengers.ceres",
+        "tacsim.quests.first_steps",
+        "tacsim.quests.leila_followup",
+        "tacsim.quests.port_connections",
+        "tacsim.quests.safe_passage",
+        "tacsim.quests.survey_work",
+    ] {
         assert_eq!(after.get(name).map(|l| l.0), Some(1), "{name}");
     }
     assert_eq!(
@@ -2241,6 +2283,10 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
                 | "tacsim.passengers.stickney"
                 | "tacsim.passengers.ceres"
                 | "tacsim.quests.first_steps"
+                | "tacsim.quests.leila_followup"
+                | "tacsim.quests.port_connections"
+                | "tacsim.quests.safe_passage"
+                | "tacsim.quests.survey_work"
         )
     });
     for pack in &mut packs {
@@ -2308,6 +2354,10 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
         "tacsim.passengers.stickney",
         "tacsim.passengers.ceres",
         "tacsim.quests.first_steps",
+        "tacsim.quests.leila_followup",
+        "tacsim.quests.port_connections",
+        "tacsim.quests.safe_passage",
+        "tacsim.quests.survey_work",
     ] {
         assert!(
             content(&tw).latches.applied(&id(name)).is_none(),

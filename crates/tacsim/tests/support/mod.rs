@@ -48,6 +48,9 @@ mod api4_identity;
 /// **Doc 20 cut SM.10**: the claims cut's lane additions stripped away (the v11 shape), the
 /// fixed gateway-account oracle and the deposit-count rig's three geology tables.
 pub mod claims;
+/// **Doc 23 cut S.1**: a composed landing's writes split into the typed post-images and the
+/// ledger chunks (the black box's).
+pub mod composed;
 /// **Doc 20 cut SM.12b**: Occator's yard stripped away for the v14-shaped lane variants.
 pub mod drones;
 /// **16b cut AE.1**: the proving ground's generator, moved here from
@@ -2605,13 +2608,12 @@ pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack>
         tacsim::definitions::content::LANE_PACK
     );
     let mut packs = tacsim::composition::boot_pack_list(true, true).expect("the boot list");
-    // Passenger jobs were introduced after this published Ceres/relay seed and
-    // require current station profiles. They are absent on the historical world.
+    // Passenger and quest packs were introduced after this published Ceres/relay
+    // seed and require current station profiles. Keep all later follow-ups out
+    // of this historical fixture as well as their original prerequisite packs.
     packs.retain(|pack| {
-        !matches!(
-            pack.manifest().id().as_str(),
-            "tacsim.passengers.stickney" | "tacsim.passengers.ceres" | "tacsim.quests.first_steps"
-        )
+        let id = pack.manifest().id().as_str();
+        !id.starts_with("tacsim.passengers.") && !id.starts_with("tacsim.quests.")
     });
     let slot = packs
         .iter_mut()

@@ -1972,6 +1972,54 @@ the build departs from §20's decisions is recorded here; the full record is
   operator pre-check: the projection offers them to granted operators only, so a
   non-operator reads the driver's line like an unknown number.
 
+**17g C2e–C2h (M7: the C2 completion) — built 2026-10-27 (`c58b9740`, `dd086b8b`,
+`841f411b`, `a1c64592`, `368a1344`; PR #46, not merged; not deployed).** The three holds
+the C2 entry records are released: the market read is granted to TacSim, the four owner
+indexes exist inside the money transactions, and `+minds/renew` reaches the renewal
+services. Where the build departs from §20's decisions is recorded here; the full record
+is [17g §7](17g-m7-completion-plan.md#7-ledger), "C2e — as built".
+
+- **D-UM-39 (renewal as a fresh E4 contract per term) and §16's `+minds/renew`**: live
+  since C2h, superseding the C2 bullet above. The renewal is still the service's own
+  auto-drafted E4 contract per paid term (no renewal action, read or family changed);
+  what C2h built is the seam: `+minds/renew`, `/pay` and `/decline` make tacsim's
+  synchronous refusals (`NO_LICENCE`, `NO_RENEWAL`, `NOT_OPEN`) and then hand the holder's
+  own step to the market as a market-registered `front` continuation that the market
+  delegated to tacsim at composition (mush-core's owner-declared, one-grantee,
+  freeze-checked delegation, `MAX_CONTINUATION_DELEGATES` 8, accepted only for the player
+  whose own typed line is being dispatched), so the step runs under the market's identity
+  and the market prints the reply after the step. Departures: the reply comes on the world
+  loop's next timer wake, not in the dispatching pass, and a restart in between drops the
+  hand-off with nothing printed or submitted; a holder under a pending authoritative
+  submission reads the uniform refusal and may still see the service's `Queued.`/`Done.`
+  for the Draft a later tick submits; the typed `@mindrenewal/front` and
+  `@housemindrenewal/front` switches exist and are not documented to players. The
+  dispatched front is proven only by the unrun command story.
+- **D-UM-40 (the author's non-transferable mark)**: `@mind/publish`'s request line now
+  prints the row's frozen flags as the listing will show them (`Listing filed mind {filed}
+  here as {form}{flags}.`: `; no resale` for `transfer=no`, `; derived` for a dependent
+  listing) from the one pure function that also builds the submitted offer; `price=0`,
+  `seats=0` and `term=0` refuse `TERMS` like any other value off the market's. The mark's
+  semantics are unchanged; the marked licence refused at `+minds/resell` and the
+  `; no resale` paid row are asserted in story part 3 (unrun).
+- **§16 (buying, holdings, resale, charter transfer by command)**: live since C2e–C2g,
+  superseding the C2 bullet above. `+minds/holdings` prints the owner and paid sections
+  (the paid row's words `; no resale`, `; revoked`, `; selling`, `; renew offer`, `; renew
+  paid` under one legality rule, the widest legal row 118 columns under the 120 floor) and
+  a waiting line per funded purchase; `+minds/buy <code>` quotes, `/buy/pay` funds,
+  `/buy/complete` grants and `/buy/refund` refunds through the entitlement protocol's
+  existing actions, each keyed by the quote or operation token, and an expired quote is
+  `NO_QUOTE` on `/buy/pay` and never submitted; `+minds/resell <licence>=<buyer> price=…`,
+  `+minds/charter` and the two accepts read the offer's committed (buyer, licence) through
+  the four owner indexes (`market_mind_entitlement_actors`, `roll_mind_paid_holdings`,
+  `market_mind_paid_resale_buyer_offers`, `roll_mind_charter_pending_buyer_offers`), which
+  mush-core admits under a closed per-transition table that requires the exact derived row,
+  so a lost index row blocks that offer's Accept or Fund until it expires; an offer to
+  oneself is `No player is named <own name>.`. `; selling` (a funded resale head) is
+  unreachable while production IC claims are unwired, and the House Pin row is asserted
+  nowhere (a lead ruling is owed). The populated paths are proven only by the unrun
+  command story.
+
 Historical landed amendments follow unchanged.
 
 - **§4 "The motor" and D-UM-3 (the motor extracted, the reflex kept whole)**: as built (17b cut M1a.1, 2026-10-03, `10a5a0ec`): `arena/motor.rs` holds `MotorRow { goal, route, searched_ms, searched_from, avoid, refused, waypoint, from_waypoint, hold_retry_ms }` with `MotorRow::age_avoid` (the avoid TTL sweep lifted from the head of `decide` and called where it stood) and `MotorTable` (the rows, the path budget window and spent, the A\* scratch) as `Arena.motors` for every controller; `follow(&self, id, t_ms, motors, row, here, policy: Fallback::{Waypoint, Notice}, counters, plan) -> MotorOutcome { arrived, unreachable }` reads `arena_cfg.reflex`, and `decide` performs the B-41/Z.2/E.4 give-ups from the outcome in their old order; `step_is_drivable`, `first_step_is_open`, `line_is_open`, `walk_is_open`, `entry_cell`, `far_entry_cell`, `stand_off_cell`, `patrol_step`, `hold_arrived` and `fall_back_to_waypoint` are `pub` as the audited surface (the five audits: hold the plot and move the truth; the pickers read the ground and the own pose; the walks read terrain and the avoid list and never the index; a stop is learned at the `blocked` event; a pilot row ages its stops). Departures from D-UM-3 as written: `DueKind::ReflexTick` is **not** renamed and stripped of `decide` — it stays as T0's cadence until M4, and `DueKind::MotorTick` (M1a.4) is a new kind beside it for a hull no reflex tick drives; `ReflexCounters` is not renamed `MotorCounters` until M4, so the harness baseline keys do not move; `ReflexUnit` keeps the whole decision half (`state, target, no_line, stand_until_ms, quiet_since_ms, rallied, order, last_plot, unheld_since_ms, hunt`), and `reflex.rs` loses only the driving fields (7,042 → 3,981 lines; 4,138 after M1a.6). `set_controller(Pilot)` releases the machine row and the motor row through `Arena::release_reflex` (§2's table says `reflex.release`, which was `e30b9491`'s code), and the controller guard on the motor's readers (`hold_routeless`, `note_blocked`, `refresh_held_avoid`) is replaced by the row: every transition away from a controller releases its row (M1a.5 made that hold for `Mind` too). The hash fold reads the table in the same byte order, two constants read at HEAD before the move pin it (the 1,000 ms replay's first and last hash, the shipped duel's final hash, re-asserted by M1a.4, M1a.5 and M1a.6), and a per-row section folds motor rows with no reflex row; `SNAPSHOT_FORMAT` 2 → 3 with a `motors` section. §2's and §4's `reflex.rs:` anchors (`:845`, `:1247`, `:1464`, `:2862`, `:3118`, `:3616`, `:4567-4640`, `:5911`) point at moved code and are left as they were at `e30b9491`.

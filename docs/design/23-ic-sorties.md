@@ -1,6 +1,6 @@
 # 23. IC sorties — the seal epoch, the voyage, and the hosts that open and close one
 
-**Draft 0.4, 2026-10-27 — S.0 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+**Draft 0.7, 2026-10-27 — S.0 to S.3 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
 same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
@@ -334,17 +334,19 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
   `Held`, `Parked`; `Stranded` is a plan end with the rig `Parked`). Tests: one excursion opens and
   closes with a restart between; a `Parked` rig leaves it open through the idle return; a re-run tick
   mints nothing; the seal line names the Dray-P and its open sortie (D-23-2); the SM.12c cost
-  lane re-run with the two writes per excursion inside its budget.
+  lane re-run with the two writes per excursion inside its budget. *As built: §14.*
 - **S.2 — The ship's epoch on the port voyage (medium).** The same on `tacsim.port`: the seal and
   `MindSealed` when the launch arm's `depart` moves the hull, nothing for a lapsed burn, the close
   `ReturnedToBase` at `docked` at a hangar port — a settle on a site's pad writes nothing (D-23-3)
   — `Destroyed` reserved (no wreck path today), the Dray's own black box,
   the principal per D-23-5 for a filed, queued or `lift` departure. The IC-return stamp is untouched.
   Tests: Stickney to Ceres opens and closes; a passage across a server restart keeps the epoch; a
-  lapsed launch writes nothing.
+  lapsed launch writes nothing. *As built: §14 (the record is the typed `tacsim.ship_epoch`, not a
+  `Voyage` field).*
 - **S.3 — Abandonment and recovery (small).** The `abandoned` flag's lifetime and the owner's one
   notice; `RecoveredToBase` when a second carrier recovers another's rig and the black box names
   the recoverer; a carrier destroyed with rigs out (reserved until a destruction path exists).
+  *As built: §14 (the second carrier's close lands at the placement, not at the order).*
 - **S.4 — The first IC mind: the claim, the pool and the resume rule, with the drone phase
   (medium; lands inside D-UM-47's cut, not before).** The `StartPermit`/`CloseEvent` producer on
   the surface tick for a drone flying a held mind, replacing `participant.rs`'s fixture boundary and
@@ -462,6 +464,295 @@ diff is the review.
   fills the sortie) and prints no engine term.
 - **Not done.** No cargo ran (the C2e–C2h completion may own the workspace build); nothing under
   `crates/` or `docs/help/` changed.
+
+### S.1 — the first IC sortie, on the surface excursion, as built (2026-10-27, branch `claude/ic-sorties-s1`)
+
+Built from `main` at `a477e9c3` (PR #36) through the cut loop: the lead's brief with eight rulings
+(`plan-data/ic-sorties/cuts/S.1/brief.md`), one builder, one lens, one fix round; the gate is the
+cut's own tests on this box and CI's shards on the PR. Tier 1 of §10's gate for the vehicle is met:
+a rig's epoch opens when it leaves the bay and closes at `+tv/recover` with a `SortieId` and a
+`mind_sealed`/`sortie_closed` pair in a durable black box; a rig staff `close`d with it out stays
+open and flagged; a re-run finish, at the same instant or across a reboot, mints nothing.
+
+- **The id (L1, a recorded deviation from §7's first bullet).** `SortieId` is an enum of two kinds:
+  the arena's `Packed(u64)` (`in_match`, `none`), serialised as the bare number it always was — every
+  pinned tape, record and snapshot is byte-identical, `Display` unchanged — and the IC epoch
+  `Ic { hull, at_ic }`, the hull and the IC instant its leaving began (`ExcursionId.launch_ic`; S.2's
+  voyage will use the undock), serialised as `{"ic":{"hull":n,"at_ic":t}}`. Deterministic, no
+  counter, and not the claim book's ordinal: `IcSorties` is one bounded book of `MAX_HISTORY` claim
+  rows and an excursion-per-mint would exhaust it. The book keeps minting `Packed(ordinal)` for its
+  own transition order and refuses the IC kind at load, insert and validation until S.4 makes it
+  carry the host's id. The collision test runs `ic(#4, 0)` against `in_match(0, #4)`.
+- **The seal (L8).** `match_::seal::seal_rom_for(id, &TacticalUnit, weapons, sortie,
+  &IcSealConfig)` is `seal_with_policy` under the production policy with no `CustodyUnit`, match or
+  holding: a rig with no core seals Class 0, governed, `fallback = "no core: the ROM"`, channels
+  Helm and Sensors, and the test proves it equals `seal_for` of the same hull in a pod save the
+  sortie and the principal. The surface fixtures' rigs do have a `TacticalUnit` (unit class
+  `vehicle`).
+- **The black box (L2, L7).** One `mush_core::Ledger` on `TacsimStore` (`black_boxes`), one log per
+  hull, id `hull.<n>` so the documents are `log:hull.<n>` in tacsim's namespace, restored from
+  history at boot (a refused restore pages and marks the boxes dark: no appends, chunk 0 never
+  overwritten). The brief's assumption that the append could ride an `ActionTxn` did not hold (an
+  `ActionTxn` writes no `log:*` chunk and a provider has no commit hook), so the builder followed
+  mush-economy's `core_integration` pattern: a new `OwnerParticipant` (`black_box_owner`,
+  `tacsim_black_box`, registered in `port_tick.rs`) whose `prepare_append` runs in the participant's
+  prepare and whose `LedgerChunkSet` replay write rides the finish's or the receipt's bundle, bound
+  and applied at the composed install — one commit for the record move and the line, and no second
+  ledger mechanism. The two providers (`tacsim_surface_done`, the staff recovery) moved to
+  `prepare_authoritative_with_context` for it. On a path with no participants (the typed-only
+  harnesses) nothing is written and the record's `unrecorded` flag says so. Lines are a strict
+  tagged enum `surface::black_box::BlackBoxLine`: `mind_sealed { unit, sortie, at_ic, host
+  "surface", hangar { hull, slot, sortie: null }, site, principal, seal: sealed|absent, the seal
+  facts (mind, source, card_digest, class, governed, licence, seal_digest, fallback), admitted
+  { class, host, count } }` and `sortie_closed { unit, sortie, at_ic, close: <IcCloseKind's wire>,
+  abandoned, unrecorded }` (the kind field is `close`, since `kind` is the line's own tag — the one
+  deviation from L7's names). The read seam is `TacsimStore::{black_box, black_box_lines (with the count of
+  undecodable entries, never dropped silently), black_box_len, black_box_dark}` and
+  `black_box::history` over chunk documents; no verb.
+- **The record (L3–L6).** `RigRecord.sortie: Option<OpenSortie { id, hull, slot, site, operator,
+  opened_ic, abandoned, unrecorded, seal: Option<SealFacts> }>`, schema 1 kept. The epoch opens at
+  the finish of any act that leaves the bay — a launch, or a scan, sounding or drive from the bay,
+  by the hand, a plan's step or the idle return alike — when its excursion survives with the rig out
+  of every bay (D-23-1: a rig out of its hangar is on its sortie, whatever act took it out); a
+  `NeverLeft` opens nothing. The close: `+tv/recover`'s `Done` and staff `home` write
+  `ReturnedToBase { base: hull }`; staff `home` on a parked rig writes `RecoveredToBase`; staff
+  `close` keeps the epoch and sets `abandoned` (D-23-4). A start that would leave the bay with an
+  epoch still open is refused `Conflict` ("that rig's last trip is still open; staff must bring it
+  home first") and paged, with the finish's refusal as a backstop. The principal is the excursion's
+  operator, never an implied act's `by` (D-23-5). `admitted.count` is the open surface epochs on the
+  site including this one (the builder's reading of D-23-8; the cap's `counts.site` counts
+  excursions, which differ by the abandoned and the mid-launch — accepted). `PoweredDownInBase` is
+  unused on the surface and `Destroyed` reserved, as §9 said.
+- **The cap.** `[tacsim.surface].black_box_max_lines`, default 4096 (provisional under the owner's
+  economy-defaults rule, 1..=1,048,576). `mush_core::Ledger` has no retention primitive, so a full
+  box refuses the append with a page (on every refusal, not once) and the act still completes; an
+  open reserves room for its close (`len + 2 <= cap`) so a written open is never left without one.
+- **Parked (L6).** The idle park is a projection, not a record fact, so a staff `home`'s kind is
+  derived live at the offer (`act::parked_short`: the plan ended `Stranded` with no act since, or the
+  idle return's own `recover_plan` + `leg_home` test refuses `LegShort`/`Far` for the operator) and
+  covered by the revision hash; any other refusal reads `ReturnedToBase`.
+- **The close-window case.** A staff `close` between the tick's placement and the finish's landing
+  now opens the epoch abandoned (a launch) or closes it `ReturnedToBase` carrying the epoch's own
+  `abandoned` (a recover) at the receipt, with the line on the receipt's commit, so D-23-1's "open
+  exactly while out" holds through the window; both cases are driven by a test.
+- **Gates.** No module-namespace or state-slot row was needed (the chunks land in tacsim's own
+  namespace through the core's participant bind). The SM.12c write census had no exact pin for
+  `done.launch`/`done.recover` (ceilings of 8); it gains `assert_black_box_pair`. The production
+  roster's owner participants are thirteen under `MAX_OWNER_PARTICIPANTS = 16` (the lens counted
+  them; `participant.rs`' comment corrected; `mush-contract-tests`' `macro_names`,
+  `exit_command_words` and `help_commands` compose the full roster and pass). The `excursions.rs` and `cost_lane.rs` harnesses moved
+  to the production composed prepare path so they can see a line; the other surface harnesses stay
+  typed-only and write none.
+- **Tests.** `arena::mind` (the id), `match_::seal` (the ROM seal), `surface::black_box` (the log
+  id, the two strict shapes, the cap), `shard_4/ic_sortie_surface.rs` (one excursion across two
+  reboots with the history read; the parked rig through the idle return and `RecoveredToBase`; the
+  staff `close` flag then `home`; the re-run finish at the same instant and across a reboot; the
+  `NeverLeft`; the close-window `close`), and the cost lane's census.
+- **Not done / owed.** Retention for a full box (a `mush_core::Ledger` primitive, its own cut); a
+  store-read completion for the history (no verb until M8's inspection); a second carrier's
+  `RecoveredToBase` and the abandoned notice's lifetime (S.3); the parked derivation reads the
+  operator's aboard-ness live; the 4096 default is the owner's to tune.
+
+### S.2 — the ship's epoch on the port voyage, as built (2026-10-27, branch `claude/ic-sorties-s2`, on S.1)
+
+Built from S.1 (`2f712d4f`, PR #41) through the cut loop: the lead's brief with seven rulings
+(`plan-data/ic-sorties/cuts/S.2/brief.md`), one builder, one lens, one fix round in which the lead
+amended ruling V2 (below). Tier 1 of §10's gate for the ship is met: a Dray's epoch opens when the
+launch arm's `depart` moves it off a hangar port and closes `ReturnedToBase` when it is docked at a
+hangar port again, staying open across every site it settles on; a lapsed burn writes nothing; a
+re-run fire mints nothing; and a rig launched from a settled Dray-P names the ship's open `SortieId`
+as its hangar (D-23-2; §10 item 2).
+
+- **The hangar kind (V3).** One helper decides it: `port::ship::is_hangar_port(def)` is
+  `def.site.is_none()` — a port entry with no `site` block (the corridor's five stations today) is a
+  hangar, a site is the field (D-23-3). `Berth::hangar()` and `hangar_port_of(w, hull)` read it;
+  nothing else in the tree decides "hangar". This is the content declaration S.0 moved here.
+- **The mechanism (V1).** The ship's epoch is a pull reconciliation on the `tacsim.port` tick, not
+  a write in the launch's outbox: the depart is a direct placement write and the black box line
+  needs the owner participant's commit, so the two cannot share one commit. A new **epoch arm**
+  (`port/epoch.rs`; `Arm::Epoch`, its own `ArmFireStats`) compares each programme hull's placement
+  with its epoch record and submits at most one `tacsim_voyage_epoch` action as the principal
+  through `Fire::as_principal` (`open` when the journey book says the hull departed and it is under
+  way or docked at the journey's own site, `close` when it is docked at a hangar port with an epoch
+  open, idle otherwise); the action's prepare re-runs the decision, refuses `Conflict` on any
+  mismatch, appends the line through S.1's `black_box::append` and moves the record in one bundle.
+  The window between the depart and the open's commit (one fire plus deferrals) is accepted; the
+  id and the line's instant are the journey's `departed().at`, never the fire's. A hull whose epoch
+  is due is withheld from the launch, recall and order arms that fire, so a close lands before the
+  hull can depart again. Retries: at most three submissions per target per boot, 24 fires apart,
+  then held and paged — and an exhausted hold withholds nothing, so a stuck epoch never wedges the
+  hull. A principal who is gone (or GOD) falls back to the live helm; with none the hull is paged
+  once and is not due.
+- **The record (V2, amended at the fix round).** The brief put the epoch on the `Voyage` document;
+  the lens showed that made the document a two-writer record (the tick's `put_voyage` and the
+  participant) with a fail-stop race when a tick write landed while an epoch act was in custody. The
+  lead ruled the epoch onto the typed family the core forced anyway (an `ActionTxn` refuses an
+  empty typed transaction): **`tacsim.ship_epoch`**, one `ShipEpochRecord { hull, open:
+  Option<ShipEpoch { id, from, base, principal, opened_ic, unrecorded, seal }>, last: Option<(op,
+  id, at_ic, written)>, attempts }` per hull, replaced each time, strict, with the invariants in
+  `check()` (every id is this hull's IC id; an open epoch's `last` is its own open). The participant
+  writes only the line, exactly as S.1 left it. `Voyage` keeps `departed: Option<Departed { seq,
+  pilot, depart_ic, to_venue, from }>`, written by the tick at the launch in the depart's outbox and
+  cleared at a lapse — the durable principal (V5, D-23-5: the actor of the plan the hull leaves
+  under, for a live `+ship/undock`, a `+ship/lift` or a queued departure). `VOYAGE_SCHEMA` stays 1.
+  An open whose id the record's `last` already names is refused (the same id never opens twice,
+  e.g. a staff placement back onto the journey's pad). The idempotency key carries the record's
+  committed `attempts`, not a RAM counter.
+- **The lines (V4).** `EpochHost::Port`; `Hangar` is an untagged enum `{ Bay { hull, slot, sortie },
+  Port { entry, base } }` with S.1's bay JSON byte-identical; the ship's `mind_sealed` names the port
+  left as hangar and site, the pilot as principal, `seal: sealed` ("no core: the ROM", the Dray's
+  `TacticalUnit` through `seal_rom_for`, V6, re-checked against the unit's definition digest in the
+  prepare) and `admitted { class, "port", 1 }`; the close is `ReturnedToBase { base: <the port's
+  host room> }` at the journey's arrival instant. `Destroyed` stays reserved. An open whose `from`
+  is a site (a staff-placed or pre-cut hull lifting from a pad) pages once and opens with that site
+  as the port shape, recorded as it is.
+- **The vehicle names its carrier (V7).** S.1's `open_epoch` fills the bay shape's `sortie` from
+  the carrier's open `ShipEpochRecord` through a typed read at the surface offer; S.1's test 1 now
+  asserts the ship's id (its harness flies the Dray-P, Ceres to Ahuna, so the ship is on its sortie
+  — the brief's premise that it never flew was wrong) and a unit test covers the `null` case.
+- **Pages, once per hull per boot.** An unwritable box, no helm, no `TacticalUnit`, an exhausted
+  hold, an unreadable record, a from-the-field open, and a **missed epoch** (docked at a hangar
+  with no open, `departed.depart_ic` equal to the journey's, and `last` not that close — a crash
+  within a fire of the launch whose downtime outlasts the passage).
+- **Gates.** The cost lane measures the act (`other.tacsim_voyage_epoch`, a constructed maximum of
+  2: the record and the chunk) in the surface, plan and tenure censuses; `assert_black_box_pair`
+  admits its kind. No surface count moved. The legacy-handlers `+ship` note is reworded; the
+  baseline is unmoved. The typed-only harnesses now move the ship's epoch record themselves (marked
+  `unrecorded`) and no longer draw resubmissions.
+- **Tests.** `shard_2/ic_sortie_voyages.rs` (Ceres to Stickney opens and closes, with the hangar
+  kind in-world; a passage across a restart keeps the epoch; a lapsed launch writes nothing; a re-run
+  fire mints nothing and a replayed open after its close is refused), `shard_4/ic_sortie_surface.rs`
+  (a rig launched on Ahuna's pad names its carrier's open epoch; the ship's epoch survives the rig's
+  recover), unit tests for the hangar kind, the record's invariants, the two ship line shapes and
+  the carrier null case.
+- **Not done / owed.** Staff `close`/`home` for a ship, a second carrier and the abandoned flag's
+  lifetime (S.3); the `Missed`, from-the-field and helm-fallback pages have no integration test; a
+  retry of a target whose prepare was refused reuses its key (verified safe: the core remembers only a staged intent under a key — `ActionCoordinator::preflight`, `prepare_and_stage_resolved` — and a refused prepare is prepared again, as `mush-market`'s `trade.rs` already relies on); the typed-only shards 1, 3, 5 and 6 run on CI; retention.
+- **The CI fix round (2026-10-27, after the PR).** Three cells the cut loop's local gate does not
+  run went red. (1) The lint cell's M7 memory-size step (`-D clippy::large_stack_frames`, a
+  65,536-byte threshold, run only on CI): `port_tick.rs`' registration function reached 71 KB with
+  the epoch provider, and S.1's `RigRecord` had pushed a surface-tick unit test 452 bytes over.
+  The epoch provider and the six providers that each clone the inventory families now register in
+  their own frames (`register_epoch`, `register_stock`, `register_burn`, `register_site_work`,
+  `register_relay`, `register_mill`, `register_dispatch`; the `register_surface_acts` pattern),
+  and the test's last three lines are their own test (on S.1's branch). The M7 command joins the
+  builders' gate in `common-s.md`. (2) Shards 1, 3 and 6, the typed-only harnesses: the arm takes
+  a hull as its agent on the fire its close is due, so a harness that flies a hull to Stickney,
+  steps the clock one real second at a time (never meeting the port tick's cadence) and then fires
+  once and asserts on the queue found the close, not its order's leg, and the hull withheld.
+  `fly_to_stickney` in `shard_3/orders.rs` and `shard_1/sale.rs` now settles the open after the
+  launch fire and the close after the docking (one fire at rate 1 each, landed, the record asserted
+  open, then closed); the two-crew flight showed why the open needs it too — the shorter passage
+  docked before any fire the hour-long steps happened to meet, so it opened nothing and its arrival
+  paged a missed epoch. (3) The SM.11 offline story's
+  pinned IC span moved 46,297 → 46,897, one 600 IC s step of the queue's tail: the sell step after
+  the docking back at Ceres waits the fire the close takes — V1's accepted window, now visible in
+  a pin. Nothing in the arm or the record moved.
+
+### S.3 — abandonment and recovery, as built (2026-10-27, branch `claude/ic-sorties-s3`, on S.2)
+
+Built from S.2 (`8fb432ab`, PR #45 with its CI fix round) through the cut loop: the lead's brief
+with six rulings A1–A6 (`plan-data/ic-sorties/cuts/S.3/brief.md`), one builder, one lens, one fix
+round in which the lead ruled R1 (below). This is the last custody cut before the drone phase
+(S.4): the `abandoned` flag has a lifetime and an instant, a home of an abandoned rig is a
+recovery and the black box names the recoverer, a second carrier may bring another's rig in, and a
+ship docked at a hangar its own journey did not bring it to closes recovered.
+
+- **The flag's lifetime and the owner's one notice (A1, D-23-4).** `OpenSortie` gains
+  `abandoned_ic: Option<i64>` (serde default, skipped when `None`; `RigRecord::check` refuses an
+  instant without the flag): the IC instant of the staff `close` that abandoned the rig, set at
+  both abandoning sites (the plain close with the rig out and the close-window case F3 that opens
+  the epoch abandoned); a second close keeps the first instant. Nothing clears the flag but the
+  epoch's close — no act takes an abandoned rig out (the command layer refuses `LAUNCH_OUT` from
+  the ground; S.1's start refusal "that rig's last trip is still open; staff must bring it home
+  first" is reachable only after a staff write back into the bay, and both are pinned) and the
+  carrier cannot lift with it out (D-20-7, the departure guard, untouched). The close receipt's
+  line to the operator is the one notice, reworded: *Staff closed rig #n's excursion and cancelled
+  its work. It stands where it is, abandoned, until staff bring it home; its hopper is unchanged.*
+  — told once through `recovery_told`, not again after a reboot, and carried onto a replacing
+  receipt when the replaced one was an untold abandoning close (`RecoveryReceipt.abandoned` means
+  "this receipt owes the abandonment notice"); a close with no epoch open keeps S.1's sentence.
+- **A home of an abandoned rig is a recovery (A2, A3).** The own-hull home's kind rule is
+  `RecoveredToBase { base: hull }` when the epoch is abandoned or the rig is parked (S.1's L6),
+  `ReturnedToBase` otherwise (a home mid-excursion with the charge to come home); a recover act
+  keeps `ReturnedToBase` even on an abandoned epoch (the rig comes in under its own drive). The
+  `sortie_closed` line gains `abandoned_ic` and `recovered_by: Option<ObjId>` (both skipped when
+  `None`; S.1's and S.2's JSON byte-identical), the recoverer set through
+  `BlackBoxLine::recovered_by(staff)` exactly when the close is `RecoveredToBase` on a surface
+  epoch; `check` refuses a recoverer of 0, equal to the unit, or on any other kind. S.1's
+  close-then-home tests now assert `RecoveredToBase` (listed in the builder's report).
+- **A second carrier recovers another's rig (A4; R1 at the fix round).** `@tacsim/tv home #<rig>
+  #<hull>`, staff only: the rig's epoch must be open and abandoned (*That rig is not abandoned; home
+  it into its own hull.*), its lease must stand (*That rig's lease must stand to recover it into
+  another hull.* — the tick's lease fence would otherwise wait for good), the named hull must be a
+  carrier with a readable bay settled on the site the rig stands on (*That hull is not settled on
+  the rig's site with a readable bay.*) with room in the compartment (*That hull's bay has no room
+  for the rig.*); any such hull — another player's, a house's — bounded in practice to the
+  programme and yard rows. The recoverers are server facts read at the offer (one hull list per
+  offer, `Seek`), never a submitted choice; the revision facet is `staff_<actor>_into_<hull>` so a
+  hull landing on the site fences nothing but an order naming it; the idempotency key carries the
+  recoverer. The receipt gains `into: Option<ObjId>` (`hull` stays the assigned hull; the bay
+  fields are the recoverer's). **The lens found that closing the epoch at the receipt, as the
+  own-hull home does, left no way out when the recovering hull lifted or its bay filled before the
+  placement: the black box would name a bay the rig never reached and no verb could re-target it.
+  The lead ruled (R1): a second-carrier home closes the epoch at the completion** — the receipt
+  leaves the record's `sortie` open and abandoned and writes no line; the tick's completion, the
+  staff actor's typed finish (the same provider's prepare, which already appends through
+  `black_box::append`), takes the `sortie` and appends `RecoveredToBase { base: <the recoverer> }`
+  with `recovered_by: <the staff actor>`, `abandoned: true`, `abandoned_ic`, in the bundle that
+  confirms the placement. So, while it waits, `home #rig #B2` (or `#B` again) replaces the receipt
+  through the existing gate, and `close` cancels it in place with the rig still abandoned, as S.1
+  says. The wait notice for this home names its remedy, `@tacsim/tv home #n #hull`, and three new
+  wait reasons (the recovering hull no longer settled on the rig's site; its bay changed; the rig
+  cannot be placed in its bay). The own-hull home keeps its receipt-time close (its base is fixed);
+  a comment at both sites says why they differ. `project()` reads a rig in a foreign bay as `Out`
+  (its own bay `Bay`), agreeing with the tick's projection. **The lease is untouched**: the yard
+  still leases the rig to its lessee on the first hull; the recovering hull lifts with it aboard
+  (the departure guard walks leased rigs); the lessee's `+tv/n launch` is refused today with
+  `LAUNCH_NOT_SITE` because its own hull is off the pad, not because of the foreign bay. The
+  operator's notice names the recoverer (*Staff brought rig #n into hull #m's bay. …*).
+- **The ship's recovery (A5).** The epoch arm's close kind is `RecoveredToBase { base: <the port's
+  host room> }` when the journey book has no arrival at this port's host — exactly the binding
+  `epoch_due` already makes for `at_ic` (which stays `now` there), the endpoints being host rooms
+  wherever they are compared and an arrived journey kept and persisted — else `ReturnedToBase`;
+  `recovered_by: None` (a staff placement is a GOD write and no verb records an actor on a hull
+  yet). `EpochDue`/`EpochOffer` carry `recovered` (skipped when false; the S.2 offer JSON
+  byte-identical) and the composed prepare requires equality. A recovered close pages once a boot
+  per hull (`EpochWarn::Recovered`, counted in `epoch_pages`) so a misread own-drive docking
+  would be visible. **There is no staff `close` for a ship**: its hangar is a port, never destroyed
+  or closed, and D-23-4's abandonment is the rig's; `@tacsim/port clear` stands down a filed
+  clearance before any epoch and is untouched.
+- **Reserved (A6).** A carrier destroyed with rigs out: no destruction path exists; one comment
+  where the surface close kinds are chosen names `Destroyed` for it.
+- **Gates.** `hull_view_berth` is `pub(crate)`. The `@tacsim/tv` help line and the
+  legacy-handlers note carry the second form; the baseline is unmoved. No cost-lane count moved
+  (`cost_lane.rs` drives no staff recovery, so the second-carrier finish's chunk write is in no
+  census). The panic budget is unmoved. `docs/ops.md`'s staff rig recovery section carries the
+  abandonment and the second-carrier home.
+- **Tests.** `shard_4/ic_sortie_surface.rs`: an abandoned rig keeps its flag and instant across a
+  restart (the two refusals, a second close keeping the instant, the reworded notice once and the
+  plain one once); a staff home of an abandoned rig is a recovery (S.1's test 3 amended); a home
+  mid-excursion still returns; a second carrier recovers an abandoned rig across a reboot between
+  the order and the completion (the receipt's `into`, the rig `Interior` in the recoverer's bay,
+  exactly one close line naming the recoverer, the lessee's launch refused, the recoverer's lift
+  filed); the same home waits while its hull is gone (the exact wait sentence once, the epoch still
+  open and abandoned, the completion after the hull is placed back, the line's base the hull the
+  rig landed in); a home into a full bay, into another hull without a lease, on a rig that is not
+  abandoned, and into a hull off the site are refused with nothing written; a replaced abandoning
+  close still tells the owner; a ship placed into Stickney's berth closes recovered at the fire's
+  `now` with the journey book untouched and one page. The strict-shape unit test gains the
+  `abandoned_ic` and `recovered_by` cases in a frame of its own (the M7 limit); the S.1 and S.2
+  cases are byte-identical. The builder's test 4 flies the second carrier in before the first is
+  taken off the pad (the Co-op refuses enrolment with a programme hull unplaced); the recovery is
+  exercised as specified.
+- **Not done / owed (doc 23 §8 unless said).** What the lessee or the recoverer may do with a rig
+  in another's bay (the finish sets `charge.in_bay = true` there, so it recharges from a foreign
+  hull; `into_berth.ready` accepts the recoverer on any site once the rig is already in its bay);
+  salvage, seizure, who holds an abandoned hull; the lessee's own hull held by `TV_AWAY` while
+  another carries its rig (D-20-7); a carried-forward abandonment notice on a pending home that
+  never completes is never told; no test drives the idempotency key's recoverer segment, the
+  not-fenced-by-a-landing-hull revision, or a re-target to a third carrier end to end (the harness
+  cannot enrol a third pilot with a programme hull unplaced); a destruction path; retention.
 
 ## 15. The review of Draft 0.1, and what it changed
 

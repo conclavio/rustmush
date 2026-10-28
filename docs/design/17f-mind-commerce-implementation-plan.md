@@ -2826,9 +2826,13 @@ above: `@mind/rate <name>@<rev>`, `@mind/file <name>@<rev>[=<charter name>]`,
 `+minds`, `+minds <code>`, `/next`, `/holdings`, `/buy`, `/renew`, `/resell`,
 `/charter` and the accepts; `@registry/recall <filed>` and
 `@registry/revoke <licence>`. The `+minds` forms, `@mind/publish`, the renewal
-front and the title trades are held at `NOT_OPEN` until the owner-read cap raise,
-the index sub-cut and the renewal seam land; pin/follow is Pin only; the typed
-web and TUI actions are 17g C3.
+front and the title trades were held at `NOT_OPEN` until 17g C2e–C2h (2026-10-27,
+`c58b9740`–`368a1344`, PR #46; the record is 17g §7 "C2e — as built") raised the
+owner-read caps and granted the market read, put the four owner indexes inside the
+money transactions and delegated the renewal `front` to tacsim; all run live on a
+format-2 Active launch, the empty paths proven by the production-composition tests
+and the listing- and licence-dependent paths only by the unrun command story;
+pin/follow is Pin only; the typed web and TUI actions are 17g C3.
 
 Gate: end-user right revoked between quote/accept/settle; direct title/service
 bypass; scope/issuer failures; prices and lawful rounding; real hardware story;

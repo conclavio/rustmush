@@ -22,6 +22,7 @@
 //! | all of `[tacsim.recovery]` | **live** (E7r1 R4) | the recovery provider's pool, tiers, cap, thresholds, cooldown and insurance policy |
 //! | all of `[tacsim.arena]`, `[tacsim.match]`, `[tacsim.sensors]`, `[tacsim.resolution]`, `[tacsim.harness]` | parsed, **inert** (16b cut G) | the combat arena's blocks; cuts A/T/S/W/H read and validate them |
 //! | all of `[tacsim.command]` | **live** (16b cut Y.2) | doc 16 W8's span of control and order rate, held at the world where `ORDER` is admitted |
+//! | `[tacsim.surface].black_box_max_lines` | **live** (doc 23 cut S.1) | the most lines one hull's black box holds ([`SurfaceConfig`]) |
 //!
 //! `[tacsim.recovery]` was cut 11's and was **not added at all** — *a knob that parses
 //! and configures nothing is a promise, and cut 11 has not made it yet*. **E7 residue
@@ -1853,6 +1854,53 @@ pub struct TacsimConfig {
     /// each arena at check-out. **Live** since M1b.1 (default when absent);
     /// from 17b cut M4.3 the fill's class, `fill_class`.
     pub minds: MindsConfig,
+    /// **Doc 23 cut S.1** — the part of `[tacsim.surface]` the game reads: the black box's
+    /// line cap. **Live.**
+    pub surface: SurfaceConfig,
+}
+
+/// **The most lines one hull's black box holds, by default** (doc 23 cut S.1, the lead's L2):
+/// two per excursion, so 2,048 excursions a hull. Provisional (the owner's economy-defaults
+/// rule of 2026-10-24: a reasonable default, tuned as we go).
+pub const DEFAULT_BLACK_BOX_MAX_LINES: u32 = 4_096;
+
+/// **The largest cap a server may set** — a million lines, far past any hull's life, so a
+/// typo cannot ask the ledger for an unbounded log.
+pub const MAX_BLACK_BOX_MAX_LINES: u32 = 1_048_576;
+
+/// **`[tacsim.surface]`, as the game reads it** (doc 23 cut S.1). `registry_interlock` stays
+/// the host's alone (`mush_server::config_ext` refuses `false`; nothing here reads it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceConfig {
+    /// **The most lines one hull's black box holds** (doc 23 §7; `log:hull.<n>`): an append
+    /// past it is refused and paged, never truncated — `mush_core::Ledger` has no retention
+    /// primitive to drop a sealed chunk with.
+    pub black_box_max_lines: u32,
+}
+
+impl Default for SurfaceConfig {
+    fn default() -> Self {
+        Self {
+            black_box_max_lines: DEFAULT_BLACK_BOX_MAX_LINES,
+        }
+    }
+}
+
+impl SurfaceConfig {
+    /// **Check `[tacsim.surface]`**: the cap is 1 to [`MAX_BLACK_BOX_MAX_LINES`].
+    ///
+    /// # Errors
+    ///
+    /// The sentence naming the key.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.black_box_max_lines == 0 || self.black_box_max_lines > MAX_BLACK_BOX_MAX_LINES {
+            return Err(format!(
+                "[tacsim.surface].black_box_max_lines must be 1 to {MAX_BLACK_BOX_MAX_LINES} (it is {})",
+                self.black_box_max_lines
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl TacsimConfig {

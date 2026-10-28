@@ -213,7 +213,7 @@ player can write.
 | **U.2** | the look format in `mush-pixel` with its check; looks for the line tank family and the biped; the text and pixel dolls drawn from the grid; the contract test | a biped pilot gets a front-view doll; every shipped unit has a look or is listed as drawing `unknown` |
 | **U.3** | the sprite sheets: facings from `aspect`, the moving cycle, team slots, scale from `size_cm`, the shadow; placeholder art for the tank and the biped | a walker and a tank read differently at 300 m, turn their faces as they turn, and roll or walk while moving |
 | U.4 | the web client's doll and sprites from the same looks | — |
-| U.5 | real art, a PNG importer to the text form | — |
+| **U.5** | the art: the tank, the biped and `unknown` redrawn for what the picture makes of a sheet at 100 m, 300 m and 1 km; the shipped sheets held to standing on their anchor, muzzles on the weapon, a cycle that moves, a wreck that is not the still; `examples/sheets.rs` | a tank reads as a tank and a biped as a biped at 300 m; the PNG importer deferred |
 
 ## 9. Decisions
 

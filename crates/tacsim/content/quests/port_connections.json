@@ -1,0 +1,57 @@
+{
+  "manifest": {
+    "id": "tacsim.quests.port_connections",
+    "version": 1,
+    "kind": "campaign_seed",
+    "requires": [
+      {
+        "id": "neighborhood.ceres_freeport",
+        "version": 4
+      }
+    ],
+    "digest": "6d38a545d42a91333c9a3f2a85716d8c999f4e87686f257070106d495741f933"
+  },
+  "brief": {
+    "prose": "Ma offers an optional round of introductions to two ordinary Ceres NPCs. The player meets the real people at their desks and returns to Ma. No enrolment, trade, survey, passenger booking or claimed conversation is required; these services remain independent. Completion gives Ma's usual once-only personal relationship bonus."
+  },
+  "entries": {
+    "quest.ma_port_connections": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.petrossian",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": "open",
+        "title": "People who keep the port moving",
+        "introduction": "Knowing a couple of faces helps a port feel less like a row of counters. Dov Akintola runs the Co-op Chandlery; Rosalind Qureshi-Mbeki works at the Exchange. Meet them at their desks, then come back and see me. Ask them about their work if you like. You need not buy anything, enrol with anyone or take a survey job for this introduction.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "meet_dov",
+            "title": "Meet Dov at the Co-op Chandlery",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c08_chandlery",
+            "instructions": "Visit the Co-op Chandlery with Dov Akintola present. Use +quest/check Yusra=tacsim.quests.port_connections/quest.ma_port_connections to record the introduction. Ask him about the chandlery if you like. Purchases are optional; +market/list reads the ordinary market.",
+            "objective": {
+              "kind": "contact",
+              "npc_pack": "neighborhood.ceres_freeport",
+              "npc": "npc.akintola"
+            }
+          },
+          {
+            "id": "meet_qureshi",
+            "title": "Meet Rosalind at the Exchange Hall",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "instructions": "After recording Dov's introduction, visit the Exchange Hall with Rosalind Qureshi-Mbeki present. Use +quest/check Yusra=tacsim.quests.port_connections/quest.ma_port_connections to record the introduction. Ask her about her work if you like; surveying is optional. Return to Ma at the Slack Line and use +quest/finish Yusra=tacsim.quests.port_connections/quest.ma_port_connections.",
+            "objective": {
+              "kind": "contact",
+              "npc_pack": "neighborhood.ceres_freeport",
+              "npc": "npc.qureshi"
+            }
+          }
+        ],
+        "completion": "The captain met Dov at the chandlery and Rosalind at the Exchange, then returned to the Slack Line. I am pleased they now know a couple more faces around the port."
+      }
+    }
+  }
+}

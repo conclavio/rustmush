@@ -8,7 +8,18 @@ const DEFINITION: &str = "quest:definition";
 const DETAIL: &str = "atlas:detail:sample_tap";
 
 fn source(tw: &TestWorld, npc: ObjId) -> String {
-    tw.world().attr(npc, DEFINITION).unwrap().as_json().unwrap()["key"]
+    let catalog = tw.world().attr(npc, DEFINITION).unwrap().as_json().unwrap();
+    let definition = catalog.as_array().map_or(catalog, |definitions| {
+        definitions
+            .iter()
+            .find(|definition| {
+                definition["key"]
+                    .as_str()
+                    .is_some_and(|key| key.ends_with("/quest.leila_second_reading"))
+            })
+            .expect("the original favor remains in the catalog")
+    });
+    definition["key"]
         .as_str()
         .expect("authored quest source")
         .to_owned()
@@ -514,7 +525,14 @@ fn quest_resolved_actions_revalidate_giver_location_definition_and_observation()
     let original = rig.tw.world().attr(npc, DEFINITION).unwrap().clone();
     let mut changed = original.clone();
     let mut value = original.as_json().unwrap().clone();
-    value["schema"] = json!(999);
+    if let Some(definitions) = value.as_array_mut() {
+        definitions
+            .iter_mut()
+            .find(|definition| definition["key"].as_str() == Some(source.as_str()))
+            .unwrap()["schema"] = json!(999);
+    } else {
+        value["schema"] = json!(999);
+    }
     changed.value = mush_core::Attr::json(value, original.owner).value;
     rig.tw
         .world_mut()

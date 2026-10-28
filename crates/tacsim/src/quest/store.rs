@@ -1,14 +1,15 @@
 //! Authenticated quest commands commit exact ordered receipts through typed state.
 use super::evidence::SurveyEvidenceBook;
 use super::model::{
-    CheckEvidence, MAX_CHECKPOINTS, MAX_QUESTS, QuestIndex, QuestIndexKey, QuestKey, QuestRecord,
-    Stamp,
+    CheckEvidence, ClosedQuest, ClosureKind, MAX_CHECKPOINTS, MAX_QUESTS, Prerequisite, QuestIndex,
+    QuestIndexKey, QuestKey, QuestRecord, Stamp,
 };
 pub use super::model::{MAX_INDEX_BYTES, MAX_RECORD_BYTES};
 use crate::port::families::PortHandles;
-use crate::port::passenger::store::{Booking, BookingKey};
+use crate::port::passenger::store::{Booking, BookingIndex, BookingKey};
 use crate::port_tick::port_error;
 use crate::surface::act::{offer_draft_with_revisions, parameter, self_query};
+use crate::surface::survey::{SurveyKey, SurveyRecord};
 use mush_core::mechanics::OwnerId;
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionProvider, ActionTxn,
@@ -32,6 +33,7 @@ struct Projection {
     ready: bool,
     actors: BTreeSet<ObjId>,
     rows: Vec<QuestRecord>,
+    commissions: Option<Vec<SurveyRecord>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +42,14 @@ struct Order {
     next: QuestRecord,
     /// Exact index CAS, without duplicating a potentially 32KiB index in offers.
     index_hash: Option<String>,
+    /// Bind the exact completed prerequisite without recursively copying it.
+    prerequisite_hash: Option<String>,
+    /// Initial passage availability is tied to the current owner index rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    passage_availability_hash: Option<String>,
+    /// Bind finite commission opportunities at initial admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commission_availability_hash: Option<String>,
 }
 #[derive(Clone, Default)]
 struct Orders(BTreeMap<ObjId, Order>);
@@ -95,7 +105,16 @@ pub fn list_for(ctx: &Ctx<'_>, actor: ObjId) -> Result<Vec<QuestRecord>, String>
 }
 /// Display only. Failed typed reads invalidate their scope rather than imply no quest.
 pub fn refresh(ctx: &mut Ctx<'_>) -> Result<Vec<QuestRecord>, String> {
-    refresh_for(ctx, ctx.actor)
+    let commissions = crate::port::survey::records(ctx).ok();
+    let result = refresh_for(ctx, ctx.actor);
+    if let Some(projection) = ctx.w.module_state_mut::<Projection>() {
+        projection.commissions = commissions;
+    }
+    result
+}
+/// Advisory conversation reads must distinguish an unreadable board from free slots.
+pub(crate) fn commission_rows_world(w: &World) -> Option<&[SurveyRecord]> {
+    w.module_state::<Projection>()?.commissions.as_deref()
 }
 fn project_scope(
     projection: &mut Projection,
@@ -179,10 +198,16 @@ pub(crate) fn progress_valid(before: Option<&QuestRecord>, next: &QuestRecord) -
         return false;
     }
     let Some(before) = before else {
-        return next.revision == 1 && next.checks.is_empty() && next.completed.is_none();
+        return next.revision == 1
+            && next.checks.is_empty()
+            && next.completed.is_none()
+            && next
+                .closed
+                .as_ref()
+                .is_none_or(|closed| closed.kind == ClosureKind::Declined);
     };
     if before.check().is_err()
-        || before.completed.is_some()
+        || !before.is_active()
         || before.revision.checked_add(1) != Some(next.revision)
     {
         return false;
@@ -191,14 +216,174 @@ pub(crate) fn progress_valid(before: Option<&QuestRecord>, next: &QuestRecord) -
     fixed.revision = before.revision;
     fixed.checks.clone_from(&before.checks);
     fixed.completed.clone_from(&before.completed);
+    fixed.closed.clone_from(&before.closed);
     if fixed != *before {
         return false;
     }
-    if next.completed.is_some() {
+    if let Some(closed) = &next.closed {
+        closed.kind == ClosureKind::Abandoned && next.checks == before.checks
+    } else if next.completed.is_some() {
         next.checks == before.checks && before.checks.len() == before.definition.checkpoints.len()
     } else {
         next.checks.len() == before.checks.len() + 1 && next.checks.starts_with(&before.checks)
     }
+}
+fn abandoning(order: &Order) -> bool {
+    order.before.is_some()
+        && order
+            .next
+            .closed
+            .as_ref()
+            .is_some_and(|closed| closed.kind == ClosureKind::Abandoned)
+}
+fn passage_key(order: &Order) -> Option<u64> {
+    (!abandoning(order))
+        .then_some(order.next.key.booking)
+        .flatten()
+}
+fn passage_matches(order: &Order, passage: Option<&Booking>) -> bool {
+    abandoning(order) || passage == order.next.passage.as_ref()
+}
+fn needs_passage_index(order: &Order) -> bool {
+    order.before.is_none()
+        && order.next.definition.checkpoints.iter().any(|checkpoint| {
+            matches!(
+                checkpoint.objective,
+                super::model::Objective::PaidPassage { .. }
+            )
+        })
+}
+
+/// Offers are advisory. Initial acceptance must reread the current owner index
+/// and its exact row, so another captain or a just-completed arrival can close
+/// the invitation even when the conversation projection has not refreshed yet.
+fn initial_passages(
+    order: &Order,
+    index: Option<&BookingIndex>,
+    mut read: impl FnMut(u64) -> Result<Option<Booking>, String>,
+) -> Result<Vec<(usize, Option<Booking>)>, String> {
+    if !needs_passage_index(order) {
+        return Ok(Vec::new());
+    }
+    if let Some(index) = index {
+        index.check()?;
+    }
+    let mut passages = Vec::new();
+    for (ordinal, checkpoint) in order.next.definition.checkpoints.iter().enumerate() {
+        let super::model::Objective::PaidPassage { npc, .. } = &checkpoint.objective else {
+            continue;
+        };
+        let current = index
+            .and_then(|index| index.current.get(&npc.0))
+            .map(|id| -> Result<Booking, String> {
+                let row = read(*id)?.ok_or("passenger index names a missing receipt")?;
+                row.check()?;
+                if row.id != *id || row.npc != *npc {
+                    return Err("passenger index identity mismatch".into());
+                }
+                Ok(row)
+            })
+            .transpose()?;
+        passages.push((ordinal, current));
+    }
+    Ok(passages)
+}
+fn initial_passages_hash(passages: &[(usize, Option<Booking>)]) -> Result<Option<String>, String> {
+    if passages.is_empty() {
+        Ok(None)
+    } else {
+        hash("tacsim.quest_passage_availability.v1", &passages, 64 * 1024).map(Some)
+    }
+}
+fn initial_passages_ready(w: &World, order: &Order, passages: &[(usize, Option<Booking>)]) -> bool {
+    passages.iter().all(|(ordinal, current)| {
+        order
+            .next
+            .definition
+            .checkpoints
+            .get(*ordinal)
+            .is_some_and(|checkpoint| {
+                super::evidence::paid_passage_available(
+                    w,
+                    order.next.actor,
+                    &checkpoint.objective,
+                    current.as_ref(),
+                )
+            })
+    })
+}
+
+/// Frozen receipts retain the original exact booking, never a display copy.
+/// All previously acknowledged passage proofs are checked again at finishing;
+/// abandoning remains independent of missing or changed upstream records.
+fn objective_passages_current(
+    order: &Order,
+    mut read: impl FnMut(u64) -> Result<Option<Booking>, String>,
+) -> Result<(), String> {
+    if abandoning(order) {
+        return Ok(());
+    }
+    for check in &order.next.checks {
+        if let Some(super::evidence::ObjectiveProof::PaidPassage { booking, .. }) = &check.proof
+            && read(booking.id)?.as_ref() != Some(booking.as_ref())
+        {
+            return Err("quest passage evidence changed".into());
+        }
+    }
+    Ok(())
+}
+fn needs_commission_board(order: &Order) -> bool {
+    order.before.is_none()
+        && order
+            .next
+            .definition
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.objective == super::model::Objective::SurveyCommission)
+}
+
+/// Read exact permanent completion records at every action boundary. Abandoning
+/// a journal entry never needs its original upstream evidence to remain intact.
+fn commission_basis(
+    order: &Order,
+    mut read: impl FnMut(&SurveyKey) -> Result<Option<SurveyRecord>, String>,
+) -> Result<Vec<SurveyRecord>, String> {
+    if abandoning(order) {
+        return Ok(Vec::new());
+    }
+    for check in &order.next.checks {
+        if let Some(super::evidence::ObjectiveProof::SurveyCommission { commission, .. }) =
+            &check.proof
+            && read(&commission.offer)?.as_ref() != Some(commission.as_ref())
+        {
+            return Err("quest commission evidence changed".into());
+        }
+    }
+    let mut rows = Vec::new();
+    if needs_commission_board(order) {
+        for offer in crate::port::survey::offers() {
+            let key = SurveyKey::parse(offer.id).ok_or("survey offer unavailable")?;
+            if let Some(row) = read(&key)? {
+                row.check()?;
+                if row.offer != key {
+                    return Err("survey receipt identity mismatch".into());
+                }
+                rows.push(row);
+            }
+        }
+    }
+    Ok(rows)
+}
+fn commission_basis_hash(order: &Order, rows: &[SurveyRecord]) -> Result<Option<String>, String> {
+    if needs_commission_board(order) {
+        hash("tacsim.quest_commission_availability.v1", &rows, 32 * 1024).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+fn commissions_ready(w: &World, order: &Order, rows: &[SurveyRecord]) -> bool {
+    !needs_commission_board(order)
+        || crate::port::survey::quest_available(w, order.next.actor, rows)
 }
 fn order_valid(w: &World, order: &Order) -> bool {
     progress_valid(order.before.as_ref(), &order.next)
@@ -230,15 +415,128 @@ fn indexed(order: &Order, index: Option<&QuestIndex>) -> bool {
     contains == order.before.is_some()
         && (order.before.is_some() || index.is_none_or(|index| index.keys.len() < MAX_QUESTS))
 }
-fn submit(ctx: &mut Ctx<'_>, order: Order) -> Result<(), String> {
-    let passage = order
-        .next
-        .key
-        .booking
+#[derive(Default, Serialize)]
+struct Gates {
+    prerequisite_hash: Option<String>,
+    choices_hash: Option<String>,
+}
+fn prerequisite_valid(next: &QuestRecord, prerequisite: &QuestRecord) -> bool {
+    let Prerequisite::Completed { quest } = &next.definition.prerequisite else {
+        return false;
+    };
+    prerequisite.check().is_ok()
+        && next.prerequisite_receipt.as_ref() == Some(&prerequisite.key)
+        && prerequisite.key.source == *quest
+        && prerequisite.actor == next.actor
+        && prerequisite.closed.is_none()
+        && prerequisite.completed.as_ref().is_some_and(|completed| {
+            completed.at_ic <= next.accepted.at_ic && completed.at_utc <= next.accepted.at_utc
+        })
+}
+fn locks_choice(row: &QuestRecord) -> bool {
+    row.closed
+        .as_ref()
+        .is_none_or(|closed| closed.kind != ClosureKind::Declined)
+}
+/// Typed reads only: projections never decide prerequisite or branch admission.
+/// Closing one's existing record remains possible if upstream evidence is lost.
+fn gates(
+    order: &Order,
+    index: Option<&QuestIndex>,
+    mut read: impl FnMut(&QuestKey) -> Result<Option<QuestRecord>, String>,
+) -> Result<Gates, String> {
+    if abandoning(order) {
+        return Ok(Gates::default());
+    }
+    let prerequisite_hash = if let Some(key) = &order.next.prerequisite_receipt {
+        let row = read(key)?.ok_or("quest prerequisite receipt is missing")?;
+        if !prerequisite_valid(&order.next, &row) {
+            return Err("quest prerequisite is not this character's completed receipt".into());
+        }
+        Some(hash("tacsim.quest_record.v1", &row, MAX_RECORD_BYTES)?)
+    } else {
+        None
+    };
+    let choices_hash = if let Some(choice) = &order.next.definition.choice
+        && locks_choice(&order.next)
+    {
+        let scope = QuestIndexKey::Actor(order.next.actor);
+        if QuestIndexKey::for_quest(&order.next.key) != scope {
+            return Err("quest choices require a character index".into());
+        }
+        let mut locks = Vec::new();
+        if let Some(index) = index {
+            index.check_for(scope)?;
+            for key in &index.keys {
+                let row = read(key)?.ok_or("quest index names a missing receipt")?;
+                row.check()?;
+                if row.key != *key || row.actor != order.next.actor {
+                    return Err("quest choice receipt identity mismatch".into());
+                }
+                if let Some(other) = &row.definition.choice
+                    && other.group == choice.group
+                    && locks_choice(&row)
+                {
+                    if other.path != choice.path {
+                        return Err("another path in this quest choice was already accepted".into());
+                    }
+                    locks.push((key.clone(), other.path.clone()));
+                }
+            }
+        }
+        Some(hash("tacsim.quest_choices.v1", &locks, 64 * 1024)?)
+    } else {
+        None
+    };
+    Ok(Gates {
+        prerequisite_hash,
+        choices_hash,
+    })
+}
+fn submit(ctx: &mut Ctx<'_>, mut order: Order) -> Result<(), String> {
+    let passage = passage_key(&order)
         .map(|id| crate::port::passenger::store::get(ctx, id))
         .transpose()?
         .flatten();
-    if ctx.actor != order.next.actor || !order_valid(ctx.w, &order) || passage != order.next.passage
+    let index = index(ctx, QuestIndexKey::for_quest(&order.next.key))?;
+    let gates = gates(&order, index.as_ref(), |key| get(ctx, key))?;
+    objective_passages_current(&order, |id| crate::port::passenger::store::get(ctx, id))?;
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .ok_or("quest service unavailable")?;
+    let commissions = commission_basis(&order, |key| {
+        ctx.action_state(&handles.families.surveys, key)
+            .map(|row| row.cloned())
+            .map_err(|_| "quest commission evidence unreadable".into())
+    })?;
+    if !commissions_ready(ctx.w, &order, &commissions) {
+        return Err("No unfinished survey commission is available for this character.".into());
+    }
+    order.commission_availability_hash = commission_basis_hash(&order, &commissions)?;
+
+    if needs_passage_index(&order) {
+        let handles = ctx
+            .w
+            .module_state::<PortHandles>()
+            .ok_or("quest service unavailable")?;
+        let index = ctx
+            .action_state(&handles.families.passenger_index, &0_u8)
+            .map_err(|_| "passenger index unreadable")?;
+        let passages = initial_passages(&order, index, |id| {
+            crate::port::passenger::store::get(ctx, id)
+        })?;
+        if !initial_passages_ready(ctx.w, &order, &passages) {
+            return Err(
+                "the named traveller no longer has an available passage for this character".into(),
+            );
+        }
+        order.passage_availability_hash = initial_passages_hash(&passages)?;
+    }
+    if ctx.actor != order.next.actor
+        || !order_valid(ctx.w, &order)
+        || !passage_matches(&order, passage.as_ref())
+        || gates.prerequisite_hash != order.prerequisite_hash
     {
         return Err("quest change is no longer authorized".into());
     }
@@ -276,19 +574,38 @@ fn submit(ctx: &mut Ctx<'_>, order: Order) -> Result<(), String> {
     Ok(())
 }
 pub fn stage_accept(ctx: &mut Ctx<'_>, mut row: QuestRecord) -> Result<(), String> {
+    if !row.is_active() {
+        return Err("quest acceptance must be active".into());
+    }
+    row.accepted = Stamp::now(ctx.w);
+    stage_initial(ctx, row)
+}
+pub fn stage_decline(ctx: &mut Ctx<'_>, mut row: QuestRecord) -> Result<(), String> {
+    row.accepted = Stamp::now(ctx.w);
+    row.closed = Some(ClosedQuest {
+        kind: ClosureKind::Declined,
+        at: row.accepted.clone(),
+    });
+    stage_initial(ctx, row)
+}
+fn stage_initial(ctx: &mut Ctx<'_>, row: QuestRecord) -> Result<(), String> {
     if get(ctx, &row.key)?.is_some() {
         return Err("this quest already has a receipt".into());
     }
-    row.accepted = Stamp::now(ctx.w);
     let previous = index(ctx, QuestIndexKey::for_quest(&row.key))?;
-    let order = Order {
+    let mut order = Order {
         before: None,
         next: row,
         index_hash: index_hash(previous.as_ref())?,
+        prerequisite_hash: None,
+        passage_availability_hash: None,
+        commission_availability_hash: None,
     };
     if !indexed(&order, previous.as_ref()) {
         return Err("quest index is full or inconsistent".into());
     }
+    order.prerequisite_hash =
+        gates(&order, previous.as_ref(), |key| get(ctx, key))?.prerequisite_hash;
     submit(ctx, order)
 }
 fn stage(ctx: &mut Ctx<'_>, before: &QuestRecord, next: QuestRecord) -> Result<(), String> {
@@ -296,14 +613,19 @@ fn stage(ctx: &mut Ctx<'_>, before: &QuestRecord, next: QuestRecord) -> Result<(
         return Err("quest receipt changed".into());
     }
     let current = index(ctx, QuestIndexKey::for_quest(&before.key))?;
-    let order = Order {
+    let mut order = Order {
         before: Some(before.clone()),
         next,
         index_hash: index_hash(current.as_ref())?,
+        prerequisite_hash: None,
+        passage_availability_hash: None,
+        commission_availability_hash: None,
     };
     if !indexed(&order, current.as_ref()) {
         return Err("quest index is inconsistent".into());
     }
+    order.prerequisite_hash =
+        gates(&order, current.as_ref(), |key| get(ctx, key))?.prerequisite_hash;
     submit(ctx, order)
 }
 pub fn stage_check(
@@ -329,6 +651,18 @@ pub fn stage_finish(ctx: &mut Ctx<'_>, before: &QuestRecord) -> Result<(), Strin
         .ok_or("quest revision exhausted")?;
     stage(ctx, before, next)
 }
+pub fn stage_abandon(ctx: &mut Ctx<'_>, before: &QuestRecord) -> Result<(), String> {
+    let mut next = before.clone();
+    next.closed = Some(ClosedQuest {
+        kind: ClosureKind::Abandoned,
+        at: Stamp::now(ctx.w),
+    });
+    next.revision = next
+        .revision
+        .checked_add(1)
+        .ok_or("quest revision exhausted")?;
+    stage(ctx, before, next)
+}
 
 fn error(message: &'static str) -> ActionError {
     port_error(ActionErrorCode::Integrity, message)
@@ -340,6 +674,7 @@ fn generation(
     passage: Option<&Booking>,
     index: Option<&QuestIndex>,
     survey: Option<&SurveyEvidenceBook>,
+    gates: &Gates,
 ) -> Result<u64, ActionError> {
     let order = w
         .module_state::<Orders>()
@@ -349,7 +684,8 @@ fn generation(
         order.next.actor == actor
             && order_valid(w, order)
             && order.before.as_ref() == current
-            && passage == order.next.passage.as_ref()
+            && passage_matches(order, passage)
+            && gates.prerequisite_hash == order.prerequisite_hash
             && order.index_hash == index_digest
             && indexed(order, index)
             && proof_current(order, survey)
@@ -368,7 +704,7 @@ fn generation(
         })
         .transpose()
         .map_err(|_| error("quest passage invalid"))?;
-    let digest = hash("tacsim.quest_world.v1", &json!({"order":order,"valid":valid,"current":current_digest,"passage":passage_digest,"index":index_digest}), 64 * 1024)
+    let digest = hash("tacsim.quest_world.v1", &json!({"order":order,"valid":valid,"current":current_digest,"passage":passage_digest,"index":index_digest,"gates":gates}), 64 * 1024)
         .map_err(|_| error("quest revision invalid"))?;
     u64::from_str_radix(
         digest
@@ -420,7 +756,9 @@ struct Validator {
     records: StateFamilyHandle<QuestKey, QuestRecord>,
     index: StateFamilyHandle<QuestIndexKey, QuestIndex>,
     passengers: StateFamilyHandle<BookingKey, Booking>,
+    passenger_index: StateFamilyHandle<u8, BookingIndex>,
     survey: StateFamilyHandle<ObjId, SurveyEvidenceBook>,
+    commissions: StateFamilyHandle<SurveyKey, SurveyRecord>,
 }
 impl RevisionValidator for Validator {
     fn current_generation(
@@ -438,13 +776,47 @@ impl RevisionValidator for Validator {
         else {
             return Ok(None);
         };
+        let commissions = commission_basis(order, |key| {
+            ctx.action_state(&self.commissions, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest commission evidence unreadable".into())
+        })
+        .map_err(|_| error("quest commission evidence changed"))?;
+        if !commissions_ready(ctx.world(), order, &commissions)
+            || commission_basis_hash(order, &commissions)
+                .map_err(|_| error("quest commission availability invalid"))?
+                != order.commission_availability_hash
+        {
+            return Err(error("quest commission availability changed"));
+        }
         let current = ctx
             .action_state(&self.records, &order.next.key)
             .map_err(|_| error("quest receipt unreadable"))?;
-        let passage = order
-            .next
-            .key
-            .booking
+        objective_passages_current(order, |id| {
+            ctx.action_state(&self.passengers, &BookingKey(id))
+                .map(|row| row.cloned())
+                .map_err(|_| "quest passage evidence unreadable".into())
+        })
+        .map_err(|_| error("quest passage evidence changed"))?;
+        if needs_passage_index(order) {
+            let index = ctx
+                .action_state(&self.passenger_index, &0_u8)
+                .map_err(|_| error("passenger index unreadable"))?;
+            let passages = initial_passages(order, index, |id| {
+                ctx.action_state(&self.passengers, &BookingKey(id))
+                    .map(|row| row.cloned())
+                    .map_err(|_| "passenger receipt unreadable".into())
+            })
+            .map_err(|_| error("quest passenger availability changed"))?;
+            if !initial_passages_ready(ctx.world(), order, &passages)
+                || initial_passages_hash(&passages)
+                    .map_err(|_| error("quest passenger availability invalid"))?
+                    != order.passage_availability_hash
+            {
+                return Err(error("quest passenger availability changed"));
+            }
+        }
+        let passage = passage_key(order)
             .map(|id| {
                 ctx.action_state(&self.passengers, &BookingKey(id))
                     .map_err(|_| error("quest passage unreadable"))
@@ -460,7 +832,13 @@ impl RevisionValidator for Validator {
         } else {
             None
         };
-        generation(ctx.world(), actor, current, passage, index, survey).map(Some)
+        let gates = gates(order, index, |key| {
+            ctx.action_state(&self.records, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest prerequisite or choice receipt unreadable".into())
+        })
+        .map_err(|_| error("quest prerequisite or choice changed"))?;
+        generation(ctx.world(), actor, current, passage, index, survey, &gates).map(Some)
     }
 }
 pub(crate) fn register(
@@ -468,7 +846,9 @@ pub(crate) fn register(
     records: StateFamilyHandle<QuestKey, QuestRecord>,
     index: StateFamilyHandle<QuestIndexKey, QuestIndex>,
     passengers: StateFamilyHandle<BookingKey, Booking>,
+    passenger_index: StateFamilyHandle<u8, BookingIndex>,
     survey: StateFamilyHandle<ObjId, SurveyEvidenceBook>,
+    commissions: StateFamilyHandle<SurveyKey, SurveyRecord>,
 ) -> Result<(), ModError> {
     reg.state(Orders::default());
     reg.state(Projection::default());
@@ -480,7 +860,9 @@ pub(crate) fn register(
             records,
             index,
             passengers,
+            passenger_index,
             survey,
+            commissions,
         },
     )
 }
@@ -490,7 +872,9 @@ pub(crate) struct Provider {
     pub records: StateFamilyHandle<QuestKey, QuestRecord>,
     pub index: StateFamilyHandle<QuestIndexKey, QuestIndex>,
     pub passengers: StateFamilyHandle<BookingKey, Booking>,
+    pub passenger_index: StateFamilyHandle<u8, BookingIndex>,
     pub survey: StateFamilyHandle<ObjId, SurveyEvidenceBook>,
+    pub commissions: StateFamilyHandle<SurveyKey, SurveyRecord>,
 }
 fn invocation_key(parameters: &Value) -> Option<QuestKey> {
     let source = parameters.get("source")?.as_str()?.to_owned();
@@ -552,14 +936,60 @@ impl ActionProvider for Provider {
         if order.next.actor != query.actor() || !order_valid(&engine.world, &order) {
             return Ok(None);
         }
+        let Ok(commissions) = commission_basis(&order, |key| {
+            engine
+                .action_state()
+                .get(&self.commissions, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest commission evidence unreadable".into())
+        }) else {
+            return Ok(None);
+        };
+        if !commissions_ready(&engine.world, &order, &commissions)
+            || commission_basis_hash(&order, &commissions).ok().flatten()
+                != order.commission_availability_hash
+        {
+            return Ok(None);
+        }
         let current = engine
             .action_state()
             .get(&self.records, &order.next.key)
             .map_err(|_| error("quest receipt unreadable"))?;
-        let passage = order
-            .next
-            .key
-            .booking
+        if objective_passages_current(&order, |id| {
+            engine
+                .action_state()
+                .get(&self.passengers, &BookingKey(id))
+                .map(|row| row.cloned())
+                .map_err(|_| "quest passage evidence unreadable".into())
+        })
+        .is_err()
+        {
+            // A stale staged quest must disappear from legal actions rather
+            // than prevent unrelated providers from projecting their actions.
+            return Ok(None);
+        }
+        if needs_passage_index(&order) {
+            let Ok(index) = engine.action_state().get(&self.passenger_index, &0_u8) else {
+                return Ok(None);
+            };
+            let Ok(passages) = initial_passages(&order, index, |id| {
+                engine
+                    .action_state()
+                    .get(&self.passengers, &BookingKey(id))
+                    .map(|row| row.cloned())
+                    .map_err(|_| "passenger receipt unreadable".into())
+            }) else {
+                return Ok(None);
+            };
+            if !initial_passages_ready(&engine.world, &order, &passages)
+                || initial_passages_hash(&passages)
+                    .map_err(|_| error("quest passenger availability invalid"))?
+                    != order.passage_availability_hash
+            {
+                return Ok(None);
+            }
+        }
+        let passage = passage_key(&order)
             .map(|id| {
                 engine
                     .action_state()
@@ -580,8 +1010,17 @@ impl ActionProvider for Provider {
         } else {
             None
         };
+        let gates = gates(&order, index, |key| {
+            engine
+                .action_state()
+                .get(&self.records, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest prerequisite or choice receipt unreadable".into())
+        })
+        .map_err(|_| error("quest prerequisite or choice changed"))?;
         if current != order.before.as_ref()
-            || passage != order.next.passage.as_ref()
+            || !passage_matches(&order, passage)
+            || gates.prerequisite_hash != order.prerequisite_hash
             || index_hash(index).map_err(|_| error("quest index invalid"))? != order.index_hash
             || !indexed(&order, index)
             || !proof_current(&order, survey)
@@ -595,6 +1034,7 @@ impl ActionProvider for Provider {
             passage,
             index,
             survey,
+            &gates,
         )?;
         offer_draft_with_revisions(
             action,
@@ -665,10 +1105,43 @@ impl ActionProvider for Provider {
         {
             return Err(error("quest action names another transition"));
         }
-        let passage = order
-            .next
-            .key
-            .booking
+        let commissions = commission_basis(&order, |key| {
+            txn.get(&self.commissions, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest commission evidence unreadable".into())
+        })
+        .map_err(|_| error("quest commission evidence changed"))?;
+        if commission_basis_hash(&order, &commissions)
+            .map_err(|_| error("quest commission availability invalid"))?
+            != order.commission_availability_hash
+        {
+            return Err(error("quest commission availability changed"));
+        }
+        objective_passages_current(&order, |id| {
+            txn.get(&self.passengers, &BookingKey(id))
+                .map(|row| row.cloned())
+                .map_err(|_| "quest passage evidence unreadable".into())
+        })
+        .map_err(|_| error("quest passage evidence changed"))?;
+        if needs_passage_index(&order) {
+            let index = txn
+                .get(&self.passenger_index, &0_u8)
+                .map_err(|_| error("passenger index unreadable"))?
+                .cloned();
+            let passages = initial_passages(&order, index.as_ref(), |id| {
+                txn.get(&self.passengers, &BookingKey(id))
+                    .map(|row| row.cloned())
+                    .map_err(|_| "passenger receipt unreadable".into())
+            })
+            .map_err(|_| error("quest passenger availability changed"))?;
+            if initial_passages_hash(&passages)
+                .map_err(|_| error("quest passenger availability invalid"))?
+                != order.passage_availability_hash
+            {
+                return Err(error("quest passenger availability changed"));
+            }
+        }
+        let passage = passage_key(&order)
             .map(|id| {
                 txn.get(&self.passengers, &BookingKey(id))
                     .map(|passage| passage.cloned())
@@ -680,7 +1153,7 @@ impl ActionProvider for Provider {
             .get(&self.records, &order.next.key)
             .map_err(|_| error("quest receipt unreadable"))?
             != order.before.as_ref()
-            || passage.as_ref() != order.next.passage.as_ref()
+            || !passage_matches(&order, passage.as_ref())
         {
             return Err(port_error(
                 ActionErrorCode::Conflict,
@@ -709,6 +1182,23 @@ impl ActionProvider for Provider {
             || !indexed(&order, current_index.as_ref())
         {
             return Err(port_error(ActionErrorCode::Conflict, "quest index changed"));
+        }
+        let gates = gates(&order, current_index.as_ref(), |key| {
+            txn.get(&self.records, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest prerequisite or choice receipt unreadable".into())
+        })
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::Conflict,
+                "quest prerequisite or choice changed",
+            )
+        })?;
+        if gates.prerequisite_hash != order.prerequisite_hash {
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "quest prerequisite changed",
+            ));
         }
         let row = order.next;
         if order.before.is_none() {
@@ -795,6 +1285,9 @@ mod tests {
             before: None,
             next: row.clone(),
             index_hash: None,
+            prerequisite_hash: None,
+            passage_availability_hash: None,
+            commission_availability_hash: None,
         };
         check!(indexed(&order, None));
         let indexed_row = QuestIndex {
@@ -806,7 +1299,10 @@ mod tests {
             &Order {
                 before: Some(row.clone()),
                 next: row,
-                index_hash: index_hash(Some(&indexed_row))?
+                index_hash: index_hash(Some(&indexed_row))?,
+                prerequisite_hash: None,
+                passage_availability_hash: None,
+                commission_availability_hash: None,
             },
             Some(&indexed_row)
         ));
@@ -826,6 +1322,9 @@ mod tests {
             before: None,
             next: row.clone(),
             index_hash: None,
+            prerequisite_hash: None,
+            passage_availability_hash: None,
+            commission_availability_hash: None,
         };
         check!(indexed(&order, None));
         let other = QuestIndex {
@@ -850,7 +1349,10 @@ mod tests {
             &Order {
                 before: Some(row.clone()),
                 next: row,
-                index_hash: index_hash(Some(&index))?
+                index_hash: index_hash(Some(&index))?,
+                prerequisite_hash: None,
+                passage_availability_hash: None,
+                commission_availability_hash: None,
             },
             Some(&index)
         ));
@@ -925,6 +1427,310 @@ mod tests {
         check_eq!(projection.rows.len(), 3);
         check!(projection.actors.contains(&first.actor));
         check!(projection.actors.contains(&second.actor));
+        Ok(())
+    }
+
+    fn branch(source: &str, path: &str) -> QuestRecord {
+        let mut row = record();
+        row.key = QuestKey {
+            source: source.into(),
+            booking: None,
+            actor: Some(row.actor),
+        };
+        row.definition.key.clone_from(&row.key.source);
+        row.definition.prerequisite = Prerequisite::Open;
+        row.definition.choice = Some(super::super::model::QuestChoice {
+            group: "pack/quest.referral".into(),
+            path: path.into(),
+        });
+        row.passage = None;
+        row
+    }
+    fn initial(row: QuestRecord) -> Order {
+        Order {
+            before: None,
+            next: row,
+            index_hash: None,
+            prerequisite_hash: None,
+            passage_availability_hash: None,
+            commission_availability_hash: None,
+        }
+    }
+    #[test]
+    fn commission_board_binds_free_slots_and_exact_terminal_evidence() -> TestResult {
+        let commission = super::super::model::tests::commission();
+        let mut row = branch("pack/quest.commission", "commission");
+        row.definition.checkpoints[0].objective = super::super::model::Objective::SurveyCommission;
+        let mut order = initial(row);
+        let empty = commission_basis(&order, |_| Ok(None))?;
+        let free_hash = commission_basis_hash(&order, &empty)?;
+        check!(free_hash.is_some());
+        let rows = commission_basis(&order, |key| {
+            Ok((key == &commission.offer).then(|| commission.clone()))
+        })?;
+        check!(commission_basis_hash(&order, &rows)? != free_hash);
+        check!(commission_basis(&order, |_| Err("unreadable".into())).is_err());
+        check!(commission_basis(&order, |_| Ok(Some(commission.clone()))).is_err());
+        order.next.accepted = Stamp {
+            at_ic: 40,
+            at_utc: 40,
+        };
+        order.next.checks.push(CheckEvidence {
+            checkpoint: "bench".into(),
+            room: ObjId(20),
+            detail_text: "The commissioned work was paid.".into(),
+            detail_hash: detail_hash("The commissioned work was paid.")?,
+            at: Stamp {
+                at_ic: 60,
+                at_utc: 60,
+            },
+            proof: Some(super::super::evidence::ObjectiveProof::SurveyCommission {
+                commission: Box::new(commission.clone()),
+                transaction: 0,
+                settled_at: 55,
+            }),
+        });
+        order.next.revision = 2;
+        order.next.check()?;
+        order.before = Some(order.next.clone());
+        order.next.completed = Some(Stamp {
+            at_ic: 70,
+            at_utc: 70,
+        });
+        order.next.revision = 3;
+        order.next.check()?;
+        commission_basis(&order, |_| Ok(Some(commission.clone())))?;
+        check!(commission_basis(&order, |_| Ok(None)).is_err());
+        let mut changed = commission.clone();
+        changed.completed.as_mut().ok_or("completion")?.ordinal += 1;
+        changed.check()?;
+        check!(commission_basis(&order, |_| Ok(Some(changed.clone()))).is_err());
+        order.next.completed = None;
+        order.next.closed = Some(ClosedQuest {
+            kind: ClosureKind::Abandoned,
+            at: Stamp {
+                at_ic: 70,
+                at_utc: 70,
+            },
+        });
+        order.next.check()?;
+        check!(commission_basis(&order, |_| Err("lost upstream evidence".into()))?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn initial_passage_index_binds_exact_identity_and_row_changes() -> TestResult {
+        let booking = record().passage.ok_or("passage")?;
+        let mut row = branch("pack/quest.passage", "passage");
+        row.definition.checkpoints[0].objective = super::super::model::Objective::PaidPassage {
+            npc: booking.npc,
+            origin: booking.origin.clone(),
+            destination: booking.destination.clone(),
+        };
+        let order = initial(row);
+        let index = BookingIndex {
+            schema: 1,
+            current: BTreeMap::from([(booking.npc.0, booking.id)]),
+        };
+        let read = initial_passages(&order, Some(&index), |_| Ok(Some(booking.clone())))?;
+        let current_hash = initial_passages_hash(&read)?;
+        check!(current_hash.is_some());
+        let mut changed = booking.clone();
+        changed.revision += 1;
+        let later = initial_passages(&order, Some(&index), |_| Ok(Some(changed.clone())))?;
+        check!(initial_passages_hash(&later)? != current_hash);
+        check!(initial_passages(&order, Some(&index), |_| Ok(None)).is_err());
+        changed.npc = ObjId(999);
+        check!(initial_passages(&order, Some(&index), |_| Ok(Some(changed.clone()))).is_err());
+        changed = booking.clone();
+        changed.id += 1;
+        changed.contract = changed.id;
+        changed.check()?;
+        check!(initial_passages(&order, Some(&index), |_| Ok(Some(changed.clone()))).is_err());
+        let vacant = initial_passages(&order, None, |_| Err("must not read".into()))?;
+        check!(initial_passages_hash(&vacant)? != current_hash);
+        Ok(())
+    }
+
+    #[test]
+    fn paid_objective_rereads_original_booking_at_finish_but_abandon_is_independent() -> TestResult
+    {
+        let booking = record().passage.ok_or("passage")?;
+        let mut row = branch("pack/quest.passage", "passage");
+        row.accepted = Stamp {
+            at_ic: 40,
+            at_utc: 40,
+        };
+        row.definition.checkpoints[0].objective = super::super::model::Objective::PaidPassage {
+            npc: booking.npc,
+            origin: booking.origin.clone(),
+            destination: booking.destination.clone(),
+        };
+        row.checks.push(CheckEvidence {
+            checkpoint: "bench".into(),
+            room: ObjId(20),
+            detail_hash: detail_hash("The traveller arrived and the fare was paid.")?,
+            detail_text: "The traveller arrived and the fare was paid.".into(),
+            at: Stamp {
+                at_ic: 60,
+                at_utc: 60,
+            },
+            proof: Some(super::super::evidence::ObjectiveProof::PaidPassage {
+                booking: Box::new(booking.clone()),
+                transaction: 0,
+                settled_at: 55,
+            }),
+        });
+        row.revision = 2;
+        row.check()?;
+        let mut order = initial(row.clone());
+        order.before = Some(row.clone());
+        order.next.completed = Some(Stamp {
+            at_ic: 70,
+            at_utc: 70,
+        });
+        order.next.revision = 3;
+        check!(progress_valid(order.before.as_ref(), &order.next));
+        objective_passages_current(&order, |_| Ok(Some(booking.clone())))?;
+        let mut changed = booking.clone();
+        changed.revision += 1;
+        check!(objective_passages_current(&order, |_| Ok(Some(changed.clone()))).is_err());
+        check!(objective_passages_current(&order, |_| Ok(None)).is_err());
+        order.next.completed = None;
+        order.next.closed = Some(ClosedQuest {
+            kind: ClosureKind::Abandoned,
+            at: Stamp {
+                at_ic: 70,
+                at_utc: 70,
+            },
+        });
+        check!(progress_valid(order.before.as_ref(), &order.next));
+        objective_passages_current(&order, |_| Err("upstream unavailable".into()))?;
+        check!(initial_passages(&order, None, |_| Err("upstream unavailable".into()))?.is_empty());
+        Ok(())
+    }
+    fn completed(mut row: QuestRecord) -> Result<QuestRecord, String> {
+        row.checks.push(CheckEvidence {
+            checkpoint: "bench".into(),
+            room: ObjId(20),
+            detail_hash: detail_hash("Scale reads 42.")?,
+            detail_text: "Scale reads 42.".into(),
+            at: Stamp {
+                at_ic: 70,
+                at_utc: 70,
+            },
+            proof: None,
+        });
+        row.completed = Some(Stamp {
+            at_ic: 80,
+            at_utc: 80,
+        });
+        row.revision = 3;
+        row.check()?;
+        Ok(row)
+    }
+
+    #[test]
+    fn prerequisite_gate_rejects_forged_wrong_actor_unfinished_and_changed_receipts() -> TestResult
+    {
+        let prerequisite = completed(record())?;
+        let mut next = branch("pack/quest.followup", "trade");
+        next.definition.prerequisite = Prerequisite::Completed {
+            quest: prerequisite.key.source.clone(),
+        };
+        next.prerequisite_receipt = Some(prerequisite.key.clone());
+        next.accepted = Stamp {
+            at_ic: 90,
+            at_utc: 90,
+        };
+        next.check()?;
+        let order = initial(next.clone());
+        let authorized = gates(&order, None, |_| Ok(Some(prerequisite.clone())))?;
+        check!(authorized.prerequisite_hash.is_some());
+        check!(gates(&order, None, |_| Ok(None)).is_err());
+        check!(gates(&order, None, |_| Ok(Some(record()))).is_err());
+        let mut other = prerequisite.clone();
+        other.actor = ObjId(33);
+        other.passage.as_mut().ok_or("passage")?.captain = other.actor;
+        other.check()?;
+        check!(gates(&order, None, |_| Ok(Some(other.clone()))).is_err());
+        let mut changed = prerequisite.clone();
+        changed.definition.completion = "A changed historic receipt".into();
+        changed.check()?;
+        let later = gates(&order, None, |_| Ok(Some(changed.clone())))?;
+        check!(authorized.prerequisite_hash != later.prerequisite_hash);
+        next.accepted.at_ic = 79;
+        check!(!prerequisite_valid(&next, &prerequisite));
+        Ok(())
+    }
+
+    #[test]
+    fn choices_lock_on_accept_completion_or_abandonment_but_never_on_decline() -> TestResult {
+        let mut trade = branch("pack/quest.trade", "trade");
+        let survey = branch("pack/quest.survey", "survey");
+        let order = initial(survey);
+        let index = QuestIndex {
+            schema: 1,
+            keys: vec![trade.key.clone()],
+        };
+        trade.check()?;
+        check!(gates(&order, Some(&index), |_| Ok(Some(trade.clone()))).is_err());
+        trade.closed = Some(ClosedQuest {
+            kind: ClosureKind::Declined,
+            at: trade.accepted.clone(),
+        });
+        trade.check()?;
+        gates(&order, Some(&index), |_| Ok(Some(trade.clone())))?;
+        trade.closed.as_mut().ok_or("closure")?.kind = ClosureKind::Abandoned;
+        trade.revision = 2;
+        trade.check()?;
+        check!(gates(&order, Some(&index), |_| Ok(Some(trade.clone()))).is_err());
+        trade = completed(branch("pack/quest.trade", "trade"))?;
+        check!(gates(&order, Some(&index), |_| Ok(Some(trade.clone()))).is_err());
+        let same_path = initial(branch("pack/quest.trade_later", "trade"));
+        gates(&same_path, Some(&index), |_| Ok(Some(trade.clone())))?;
+        check!(gates(&same_path, Some(&index), |_| Ok(None)).is_err());
+        // A separately resolved acceptance cannot use its previous empty-index CAS.
+        check!(index_hash(Some(&index))? != order.index_hash);
+        Ok(())
+    }
+
+    #[test]
+    fn decline_and_abandon_cannot_reopen_replay_change_terms_or_gain_rewards() -> TestResult {
+        let before = record();
+        let mut declined = before.clone();
+        declined.closed = Some(ClosedQuest {
+            kind: ClosureKind::Declined,
+            at: declined.accepted.clone(),
+        });
+        check!(progress_valid(None, &declined));
+        check!(!progress_valid(Some(&before), &declined));
+        check!(!progress_valid(Some(&declined), &declined));
+        let mut abandoned = before.clone();
+        abandoned.closed = Some(ClosedQuest {
+            kind: ClosureKind::Abandoned,
+            at: abandoned.accepted.clone(),
+        });
+        abandoned.revision += 1;
+        check!(progress_valid(Some(&before), &abandoned));
+        check!(!progress_valid(None, &abandoned));
+        check!(!progress_valid(Some(&abandoned), &abandoned));
+        let order = Order {
+            before: Some(before.clone()),
+            next: abandoned.clone(),
+            index_hash: None,
+            prerequisite_hash: None,
+            passage_availability_hash: None,
+            commission_availability_hash: None,
+        };
+        check_eq!(passage_key(&order), None);
+        check!(passage_matches(&order, None));
+        // Missing upstream evidence cannot strand an otherwise valid abandonment.
+        gates(&order, None, |_| Err("upstream unreadable".into()))?;
+        abandoned.definition.title = "Changed terms".into();
+        check!(!progress_valid(Some(&before), &abandoned));
+        let finished = completed(before.clone())?;
+        check!(!progress_valid(Some(&finished), &abandoned));
         Ok(())
     }
 }

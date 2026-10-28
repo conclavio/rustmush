@@ -349,6 +349,13 @@ The accepted effects stay fixed; these four offers have no rival-faction penalty
 Older commissions accepted before reputation terms existed retain their original
 terms and do not gain retroactive effects. Chart contents remain private.
 
+After her optional **Wide first, then close** quest, Rosalind offers **Work worth
+signing**: complete any commission after accepting her invitation, receive its
+payment and return to the Exchange for a separate personal relationship bonus.
+An already accepted, unfinished commission can qualify. The quest reserves no
+board slot and is never required to take a commission. `help quests` has the
+commands; abandoning that quest does not cancel your commission.
+
 `+survey/cancel <id>` previews giving up unfinished work; add `go` to cancel.
 Recorded cancellation stops commission progress. Cancellation or expiry
 returns the reserved reward to Occator, and the unfinished offer reopens once

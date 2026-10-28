@@ -3,17 +3,43 @@ use super::*;
 use serde_json::{Value, json};
 
 pub(super) fn giver(tw: &TestWorld, role: &str) -> ObjId {
+    let source = format!("tacsim.quests.first_steps/{role}");
     tw.world()
         .iter()
         .find(|o| {
             o.attrs
                 .get("quest:definition")
                 .and_then(|a| a.as_json())
-                .and_then(|v| v["key"].as_str())
-                .is_some_and(|key| key == format!("tacsim.quests.first_steps/{role}"))
+                .is_some_and(|v| {
+                    v["key"].as_str() == Some(source.as_str())
+                        || v.as_array().is_some_and(|defs| {
+                            defs.iter()
+                                .any(|def| def["key"].as_str() == Some(source.as_str()))
+                        })
+                })
         })
         .expect("authored quest giver")
         .id
+}
+
+fn definition(tw: &TestWorld, npc: ObjId) -> &Value {
+    let value = tw
+        .world()
+        .attr(npc, "quest:definition")
+        .unwrap()
+        .as_json()
+        .unwrap();
+    match value.as_array() {
+        None => value,
+        Some(definitions) => definitions
+            .iter()
+            .find(|definition| {
+                definition["key"]
+                    .as_str()
+                    .is_some_and(|key| key.starts_with("tacsim.quests.first_steps/"))
+            })
+            .expect("the giver's starter quest"),
+    }
 }
 
 pub(super) fn visit(rig: &mut Rig, actor: ObjId, npc: ObjId) {
@@ -22,14 +48,7 @@ pub(super) fn visit(rig: &mut Rig, actor: ObjId, npc: ObjId) {
 }
 
 pub(super) fn progress(rig: &mut Rig, actor: ObjId, npc: ObjId) -> Option<Value> {
-    let source = rig
-        .tw
-        .world()
-        .attr(npc, "quest:definition")
-        .unwrap()
-        .as_json()
-        .unwrap()["key"]
-        .clone();
+    let source = definition(&rig.tw, npc)["key"].clone();
     let key = serde_json::from_value(json!({"source":source,"actor":actor})).unwrap();
     let family = handles(&rig.tw).families.quests;
     typed(&mut rig.tw, &family, &key).map(|row| serde_json::to_value(row).unwrap())
@@ -37,7 +56,8 @@ pub(super) fn progress(rig: &mut Rig, actor: ObjId, npc: ObjId) -> Option<Value>
 
 pub(super) fn accept(rig: &mut Rig, actor: ObjId, npc: ObjId) {
     visit(rig, actor, npc);
-    let (offer, queued) = command(rig, actor, &format!("+quest/offer #{}", npc.0));
+    let source = definition(&rig.tw, npc)["key"].as_str().unwrap().to_owned();
+    let (offer, queued) = command(rig, actor, &format!("+quest/offer #{}={source}", npc.0));
     assert!(queued.is_empty(), "offers change nothing: {offer}");
     assert!(offer.contains("optional quest"), "{offer}");
     let token = offer
@@ -100,13 +120,7 @@ fn four_opportunities_are_independent_and_acceptance_grants_no_gameplay_prerequi
         "quest.qureshi_first_readings",
     ] {
         let npc = giver(&rig.tw, role);
-        let definition = rig
-            .tw
-            .world()
-            .attr(npc, "quest:definition")
-            .unwrap()
-            .as_json()
-            .unwrap();
+        let definition = definition(&rig.tw, npc);
         assert!(
             journal.contains(definition["title"].as_str().unwrap()),
             "{journal}"
@@ -229,7 +243,14 @@ fn traveller_departure_invalidates_pending_discovery_and_hides_new_offers() {
     assert!(queued.is_empty(), "{out}");
     let newcomer = pilot(&mut rig, "NewListener", 807);
     visit(&mut rig, newcomer, ma);
-    let (offer, queued) = command(&mut rig, newcomer, &format!("+quest/offer #{}", ma.0));
+    let (offer, queued) = command(
+        &mut rig,
+        newcomer,
+        &format!(
+            "+quest/offer #{}=tacsim.quests.first_steps/quest.ma_connections",
+            ma.0
+        ),
+    );
     assert!(queued.is_empty());
     assert!(!offer.contains("+quest/accept"), "{offer}");
     assert!(

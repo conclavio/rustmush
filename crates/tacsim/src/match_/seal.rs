@@ -465,6 +465,66 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
     )
 }
 
+/// **What an IC epoch's ROM seal is taken under** (doc 23 §7 "The seal for a coreless hull",
+/// cut S.1's L8): the production policy's configured inputs — `[tacsim.minds]` (the class
+/// table, the fill class cap, the Compact floor) and `[tacsim.arena].reflex` (the ROM) — and
+/// the warrant principal (D-23-5: the actor of the plan the hull leaves under). No custody, no
+/// match id, no holding.
+pub(crate) struct IcSealConfig<'a> {
+    /// `[tacsim.minds]`.
+    pub(crate) minds: &'a crate::config::MindsConfig,
+    /// `[tacsim.arena].reflex`, the ROM's configuration.
+    pub(crate) reflex: &'a ReflexConfig,
+    /// The warrant principal.
+    pub(crate) principal: Option<CharacterRef>,
+}
+
+/// **The ROM seal over a hull with no custody** (doc 23 §7, cut S.1's L8): `unit`'s seal under
+/// the production fill's policy — Standard Doctrine's identity ([`SealIdentity::doctrine`]),
+/// rated [`STOCK_RATED_CLASS`], capped at `[tacsim.minds].fill_class`, on
+/// [`PRODUCTION_FILL_ENGINE`], the Line card over the configured reflex, the Compact floor, no
+/// authored definition and no fallback override — the bytes [`seal_for`] computes for the same
+/// hull, minus the pod: no [`CustodyUnit`], no match id, no holding. A terrain vehicle carries
+/// no core, so it seals Class 0, governed, `fallback` [`NO_CORE_FALLBACK`], and flies the ROM;
+/// its `weapons` are empty (channels Helm and Sensors). `sortie` is the epoch's id the host
+/// minted ([`SortieId::ic`]).
+///
+/// # Errors
+///
+/// As [`seal_for`]'s.
+pub(crate) fn seal_rom_for(
+    id: mush_core::ObjId,
+    unit: &mush_tactics::TacticalUnit,
+    weapons: &[crate::arena::rules::RuleWeapon],
+    sortie: SortieId,
+    cfg: &IcSealConfig<'_>,
+) -> Result<MindSeal, SealError> {
+    let card = crate::arena::card::line(cfg.reflex);
+    let identity = SealIdentity::doctrine();
+    let fallback = None;
+    seal_with_policy(
+        id,
+        unit,
+        weapons,
+        sortie,
+        &SealPolicy {
+            authored: None,
+            selected_profiles: &[],
+            classes: &cfg.minds.classes,
+            rom_cfg: cfg.reflex,
+            principal: &cfg.principal,
+            card: &card,
+            odds_floor_permille: cfg.minds.odds_floor_permille,
+            engine_for_minds: PRODUCTION_FILL_ENGINE,
+            rated: STOCK_RATED_CLASS,
+            class_cap: cfg.minds.fill_class,
+            identity: &identity,
+            profiles: &[],
+            fallback: &fallback,
+        },
+    )
+}
+
 /// Pure executable sealing over actual owner hardware. The caller supplies an
 /// already allocated sortie identity; this calculation grants no custody or
 /// host-transition authority. OOC retains its exact wrapper above.
@@ -983,7 +1043,7 @@ mod tests {
             let unit = checked_out(&catalog, LINE_TANK, ObjId(4), controller, &terms).unwrap();
             let seal = &unit.seal;
             assert_eq!(seal.unit, ObjId(4));
-            assert_eq!(seal.sortie, SortieId((7_u64 << 32) | 4));
+            assert_eq!(seal.sortie, SortieId::Packed((7_u64 << 32) | 4));
             assert_eq!(seal.core.as_deref(), Some("core"));
             assert_eq!(
                 (seal.core_class, seal.class, seal.engine),
@@ -1069,7 +1129,7 @@ mod tests {
         assert_eq!(unit.seal, seal_for(&unit, &terms()).unwrap());
         let edits: Vec<(&str, Edit)> = vec![
             ("unit", Box::new(|s| s.unit = ObjId(5))),
-            ("sortie", Box::new(|s| s.sortie = SortieId(1))),
+            ("sortie", Box::new(|s| s.sortie = SortieId::Packed(1))),
             ("core", Box::new(|s| s.core = None)),
             ("core_class", Box::new(|s| s.core_class = CoreClass::III)),
             ("class", Box::new(|s| s.class = CoreClass::II)),
@@ -1754,6 +1814,69 @@ mod m4_tests {
         let seal = seal_for(&bare, &SealTerms::fixture().rated(CoreClass::III)).expect("seals");
         assert_eq!(seal.class, CoreClass::Zero, "no core: the ROM");
         assert_eq!(seal.fallback.as_deref(), Some(NO_CORE_FALLBACK));
+    }
+
+    /// **Doc 23 cut S.1 (the lead's L8): the ROM seal over a hull with no custody** —
+    /// [`seal_rom_for`] over a coreless, unarmed `TacticalUnit` seals Class 0, governed, the ROM
+    /// on the native engine, Standard Doctrine's identity, `fallback` [`NO_CORE_FALLBACK`],
+    /// channels Helm and Sensors, the IC epoch's id and the principal it was given — exactly
+    /// the seal [`seal_for`] computes for the same hull in a pod under the production terms,
+    /// but for the sortie and the principal; and it verifies.
+    #[test]
+    fn s1_the_rom_seal_over_a_coreless_hull_is_the_arenas_minus_the_pod() {
+        let minds = crate::config::MindsConfig {
+            odds_floor_permille: 100,
+            ..crate::config::MindsConfig::default()
+        };
+        let reflex = ReflexConfig::default();
+        let principal = Some(CharacterRef::Character { id: ObjId(77) });
+        let sortie = SortieId::ic(ObjId(9), 1_000);
+        let rom = seal_rom_for(
+            ObjId(9),
+            &tactical_unit(ObjId(9)),
+            &[],
+            sortie,
+            &IcSealConfig {
+                minds: &minds,
+                reflex: &reflex,
+                principal: principal.clone(),
+            },
+        )
+        .expect("a coreless hull seals the ROM");
+        assert_eq!(rom.sortie, sortie);
+        assert_eq!(rom.principal, principal);
+        assert_eq!(
+            (rom.core.as_deref(), rom.core_class, rom.class, rom.governed),
+            (None, CoreClass::Zero, CoreClass::Zero, true)
+        );
+        assert_eq!(rom.engine, SealEngine::Native);
+        assert_eq!(rom.fallback.as_deref(), Some(NO_CORE_FALLBACK));
+        assert_eq!(rom.mind.as_str(), SEALED_MIND);
+        assert_eq!(rom.channels, vec![Channel::Helm, Channel::Sensors]);
+        assert!(rom.weapons.is_empty());
+        rom.verify(&minds.classes, &[])
+            .expect("the ROM seal verifies");
+        let pod = crate::arena::state::CustodyUnit {
+            unit: tactical_unit(ObjId(9)),
+            controller: Controller::Mind,
+            weapons: Vec::new(),
+            ..scout(ObjId(9), Team::Blue, pose(6_500, 4_500))
+        };
+        let terms = SealTerms {
+            classes: minds.classes,
+            odds_floor_permille: minds.odds_floor_permille,
+            ..SealTerms::production_fixture()
+        };
+        let arena = seal_for(&pod, &terms).expect("the pod seals");
+        assert_eq!(
+            MindSeal {
+                sortie,
+                principal: principal.clone(),
+                ..arena
+            },
+            rom,
+            "the arena's bytes for the same hull, minus the pod"
+        );
     }
 
     /// **17b cut M4.2**: the fill's engine is one a mind can be sealed on —

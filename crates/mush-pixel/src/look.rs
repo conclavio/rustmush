@@ -811,7 +811,7 @@ mod tests {
             .expect("the biped's sheet");
         assert_eq!(
             (sheet.width, sheet.height, sheet.anchor),
-            (20, 32, (10, 31))
+            (24, 50, (12, 49))
         );
         let (right, mirrored) = sheet.frame(Facing::Right, false, 0).expect("right");
         let (left, left_mirrored) = sheet.frame(Facing::Left, false, 0).expect("left");
@@ -853,7 +853,7 @@ mod tests {
         );
         refused(
             &|v| v["sprites"]["facings"]["front"]["still"][0] = "...".into(),
-            "not 20 wide",
+            "not 24 wide",
         );
         refused(
             &|v| {
@@ -863,11 +863,71 @@ mod tests {
             "two to four",
         );
         refused(
-            &|v| v["sprites"]["anchor"] = serde_json::json!([20, 31]),
+            &|v| v["sprites"]["anchor"] = serde_json::json!([24, 49]),
             "inside the frame",
         );
         refused(&|v| v["sprites"]["wreck"] = serde_json::json!([]), "wreck");
         assert!(edited(&|_| {}).is_ok());
+    }
+
+    /// Doc 22 cut U.5: every shipped sheet holds together as art, past what
+    /// the check refuses — every frame of a sheet is one size with the anchor
+    /// and every muzzle inside it (the check's rules, held here against the
+    /// parsed sheets), each facing's still frame stands on its anchor (a
+    /// drawn pixel on the anchor's row or the one above it, so the unit
+    /// meets its ground shadow), every muzzle sits on a drawn pixel (where
+    /// the weapon is, not in the air beside it), the moving cycle visibly
+    /// moves (no two frames of it the same) and the wreck is not the still.
+    #[test]
+    fn every_shipped_sheet_stands_moves_and_wrecks() {
+        for (name, text) in SHIPPED {
+            let look = Look::parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let Some(sheet) = look.sprites.as_ref() else {
+                continue;
+            };
+            let (w, h, (ax, ay)) = (sheet.width, sheet.height, sheet.anchor);
+            assert!(ax < w && ay < h, "{name}: the anchor is inside");
+            let drawn = |frame: &SpriteFrame, x: usize, y: usize| {
+                frame.get(y * w + x).is_some_and(Option::is_some)
+            };
+            for (facing, frames) in &sheet.facings {
+                for frame in std::iter::once(&frames.still).chain(&frames.moving) {
+                    assert_eq!(frame.len(), w * h, "{name}: {facing:?} frames are {w}x{h}");
+                }
+                assert!(
+                    drawn(&frames.still, ax, ay) || (ay > 0 && drawn(&frames.still, ax, ay - 1)),
+                    "{name}: the {facing:?} still stands on its anchor"
+                );
+                for (weapon, &(mx, my)) in &frames.muzzles {
+                    assert!(
+                        mx < w && my < h,
+                        "{name}: {facing:?} muzzle {weapon} is inside"
+                    );
+                    assert!(
+                        drawn(&frames.still, mx, my),
+                        "{name}: {facing:?} muzzle {weapon} is on the weapon"
+                    );
+                }
+                for (i, a) in frames.moving.iter().enumerate() {
+                    for (j, b) in frames.moving.iter().enumerate().skip(i + 1) {
+                        assert!(a != b, "{name}: the {facing:?} cycle moves ({i} is {j})");
+                    }
+                }
+            }
+            for (i, wreck) in sheet.wreck.iter().enumerate() {
+                assert_eq!(wreck.len(), w * h, "{name}: wreck {i} is {w}x{h}");
+                assert!(
+                    drawn(wreck, ax, ay) || (ay > 0 && drawn(wreck, ax, ay - 1)),
+                    "{name}: wreck {i} lies on the anchor"
+                );
+                for (facing, frames) in &sheet.facings {
+                    assert!(
+                        *wreck != frames.still,
+                        "{name}: wreck {i} is plainly a wreck, not the {facing:?} still"
+                    );
+                }
+            }
+        }
     }
 
     /// A part is coloured by its facet's armour where it names one the

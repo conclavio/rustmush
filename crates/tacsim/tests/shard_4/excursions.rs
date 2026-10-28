@@ -58,7 +58,7 @@ use tacsim::surface::{
 use tacsim::{TacsimConfig, TacsimStore};
 
 /// The Dray-P's stern ramp on a site's grid (the brief's decision 3).
-const RAMP: (i64, i64, u32) = (128_000, 124_500, 180_000);
+pub(crate) const RAMP: (i64, i64, u32) = (128_000, 124_500, 180_000);
 /// A full Mk1 battery, cu.
 const FULL: u32 = 100_000;
 
@@ -122,14 +122,14 @@ impl AccountIdentity for MapOracle {
 }
 
 /// A booted world, its oracle and the cumulative store.
-struct Rig {
-    tw: TestWorld,
+pub(crate) struct Rig {
+    pub(crate) tw: TestWorld,
     oracle: Arc<MapOracle>,
-    store: HashMap<SmolStr, mush_core::ModuleBootData>,
+    pub(crate) store: HashMap<SmolStr, mush_core::ModuleBootData>,
     typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
 }
 
-fn no_refused_writes(tw: &TestWorld) {
+pub(crate) fn no_refused_writes(tw: &TestWorld) {
     let refused = tw.world().refused_namespace_writes();
     assert!(refused.is_empty(), "refused namespace writes: {refused:?}");
 }
@@ -151,7 +151,7 @@ fn with_offer_keys(tw: &mut TestWorld) {
 }
 
 /// Boot, settle and stock every port, at world rate 1 (every IC instant exact).
-fn stocked() -> Rig {
+pub(crate) fn stocked() -> Rig {
     let mut tw = TestWorld::with_modules(Roster.modules());
     no_refused_writes(&tw);
     with_offer_keys(&mut tw);
@@ -203,7 +203,7 @@ fn reboot(rig: Rig) -> Rig {
 }
 
 /// [`reboot`], then `reconnect` come back (a real restart drops every session).
-fn reboot_with(rig: Rig, reconnect: &[ObjId]) -> Rig {
+pub(crate) fn reboot_with(rig: Rig, reconnect: &[ObjId]) -> Rig {
     let mut rig = reboot(rig);
     for who in reconnect {
         if !rig.tw.world().is_connected(*who) {
@@ -220,7 +220,7 @@ fn sweep(tw: &mut TestWorld, secs: i64) {
     let _ = tw.fire_due(t.saturating_mul(1000));
 }
 
-fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
+pub(crate) fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
     tw.seen_by(events, who).join("\n")
 }
 
@@ -229,7 +229,7 @@ fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
     said(tw, &events, who)
 }
 
-fn store(tw: &TestWorld) -> &TacsimStore {
+pub(crate) fn store(tw: &TestWorld) -> &TacsimStore {
     tw.world()
         .module_state::<TacsimStore>()
         .expect("tacsim state")
@@ -239,7 +239,7 @@ fn economy(tw: &TestWorld) -> &EconomyStore {
     tw.world().module_state::<EconomyStore>().expect("economy")
 }
 
-fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
+pub(crate) fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
     match store(tw).port_map(&cid(LANE_PACK), &cid(entry)) {
         PortMapState::Present(map) => map.clone(),
         other => panic!("{entry}'s map: {other:?}"),
@@ -293,7 +293,7 @@ fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
 
 /// Drive one queued submission the way the world task does, keeping its typed post-images
 /// for a reboot; the error carries the prepare's own message.
-fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
     let token = next_token();
     let tw = &mut rig.tw;
     let (action, resolved) = {
@@ -340,25 +340,30 @@ fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
         let (action, resolved, _guards) = resolved.into_authoritative_parts();
         (action, resolved)
     };
+    // Doc 23 cut S.1: the world task's composed path, so the finish's and the staff recovery's
+    // black box participant appends in the act's own bundle; its chunk is folded into the store
+    // the reboot boots from, the typed post-images kept as before.
     let (prepared, _) = tw
         .engine_mut()
-        .prepare_registered_resolved_authoritative_action(
+        .prepare_registered_composed_resolved_authoritative_action(
             &action,
             &resolved,
             CommitToken::from_bytes(token),
         )
         .map_err(|error| format!("{error:?}"))?;
-    let (ops, install) = prepared.into_parts();
+    let (writes, install) = prepared.into_parts();
     tw.engine_mut()
-        .install_prepared_action(install)
+        .install_composed_action(install)
         .map_err(|error| format!("{error:?}"))?;
+    let (ops, ledger) = support::composed::split(&writes);
     keep(rig, ops);
+    fold_module_ops_into(&mut rig.store, ledger);
     Ok(())
 }
 
 /// Every queued submission of the port's lanes, dropping other modules'; asserts none kept of
 /// tacsim's is GOD's.
-fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
+pub(crate) fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     let mut kept = Vec::new();
     while let Some(submit) = tw.engine_mut().take_authoritative_submit() {
         let owner = submit.action.key().owner.as_str();
@@ -372,7 +377,7 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     kept
 }
 
-fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
         land(rig, submit).unwrap_or_else(|error| {
             panic!(
@@ -391,7 +396,7 @@ fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
 }
 
 /// One fire (6 s on), its submissions drained (not landed).
-fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
+pub(crate) fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
     let events = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -400,7 +405,7 @@ fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit
 }
 
 /// The surface finishes a fire queued.
-fn finishes(queued: &[AuthoritativeSubmit]) -> Vec<&AuthoritativeSubmit> {
+pub(crate) fn finishes(queued: &[AuthoritativeSubmit]) -> Vec<&AuthoritativeSubmit> {
     queued
         .iter()
         .filter(|submit| submit.action.key().id.as_str() == SURFACE_DONE_ACTION)
@@ -437,7 +442,7 @@ fn stock(rig: &mut Rig) {
     panic!("the ports were not stocked within 40 fires");
 }
 
-fn typed<K, V>(
+pub(crate) fn typed<K, V>(
     tw: &mut TestWorld,
     handle: &mush_core::StateFamilyHandle<K, V>,
     key: &K,
@@ -468,7 +473,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 }
 
 /// A chartered pilot whose hull the yard has made a Dray-P.
-fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
+pub(crate) fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
     let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
@@ -576,7 +581,7 @@ fn ic_now(tw: &TestWorld) -> i64 {
 
 /// Sweep to the first real second whose IC instant is at or past `target`; the events and
 /// the submissions queued (not landed).
-fn advance_to(
+pub(crate) fn advance_to(
     rig: &mut Rig,
     target: i64,
 ) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
@@ -606,7 +611,7 @@ fn voyage(tw: &TestWorld, hull: ObjId) -> Option<Voyage> {
     }
 }
 
-fn handles(tw: &TestWorld) -> PortHandles {
+pub(crate) fn handles(tw: &TestWorld) -> PortHandles {
     tw.world()
         .module_state::<PortHandles>()
         .cloned()
@@ -619,7 +624,7 @@ fn ticket(tw: &mut TestWorld, hull: ObjId, seq: u32) -> Option<Ticket> {
 }
 
 /// A command and the submissions it queued.
-fn command(rig: &mut Rig, who: ObjId, line: &str) -> (String, Vec<AuthoritativeSubmit>) {
+pub(crate) fn command(rig: &mut Rig, who: ObjId, line: &str) -> (String, Vec<AuthoritativeSubmit>) {
     let out = run(&mut rig.tw, who, line);
     let queued = drain(&mut rig.tw);
     (out, queued)
@@ -671,7 +676,7 @@ fn rigs_of(tw: &TestWorld, pilot: ObjId) -> Vec<ObjId> {
 /// **A Dray-P on Ahuna Flank's pad**, its pilot aboard: chartered, refitted, `n_rigs` rigs
 /// leased, 20 t of reaction mass and 20 crew-days loaded, boarded and hopped there with
 /// `+ship/undock ahuna`; the pilot, the hull's row and the rigs by slot.
-fn on_pad_as(
+pub(crate) fn on_pad_as(
     rig: &mut Rig,
     who: &str,
     seed: i64,
@@ -722,11 +727,11 @@ fn open_ahuna(rig: &mut Rig) -> u32 {
 }
 
 /// [`on_pad_as`] for the usual pilot.
-fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
+pub(crate) fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
     on_pad_as(rig, "Pilot", 1, "Salt Moth", n_rigs)
 }
 
-fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
+pub(crate) fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
     tw.world()
         .module_state::<SpatialState>()
         .expect("the simulation")
@@ -734,7 +739,7 @@ fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
 }
 
 /// Whether `tv` stands in `row`'s bay's `rigs` compartment.
-fn in_bay(tw: &TestWorld, tv: ObjId, row: &HullRow) -> bool {
+pub(crate) fn in_bay(tw: &TestWorld, tv: ObjId, row: &HullRow) -> bool {
     let bay = ObjId(row.rooms[&cid("bay")]);
     matches!(parent(tw, tv), SpatialParent::Interior { space, slot: Some(slot) }
         if space == bay && slot.as_str() == "rigs")
@@ -806,13 +811,13 @@ fn pool(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
 }
 
 /// A rig's typed record.
-fn record_of(tw: &mut TestWorld, tv: ObjId) -> Option<RigRecord> {
+pub(crate) fn record_of(tw: &mut TestWorld, tv: ObjId) -> Option<RigRecord> {
     let h = handles(tw);
     typed(tw, &h.families.excursions, &RigKey(tv))
 }
 
 /// A rig's projection.
-fn projection(tw: &TestWorld, tv: ObjId) -> Option<TvRec> {
+pub(crate) fn projection(tw: &TestWorld, tv: ObjId) -> Option<TvRec> {
     match store(tw).tv_rec(tv) {
         Some(TvRecState::Present(rec)) => Some(rec.clone()),
         Some(TvRecState::Unreadable) => panic!("the projection is unreadable"),
@@ -821,7 +826,7 @@ fn projection(tw: &TestWorld, tv: ObjId) -> Option<TvRec> {
 }
 
 /// The act in flight's due instant.
-fn due_of(tw: &mut TestWorld, tv: ObjId) -> i64 {
+pub(crate) fn due_of(tw: &mut TestWorld, tv: ObjId) -> i64 {
     record_of(tw, tv)
         .and_then(|record| record.act)
         .map(|act| act.due_ic)
@@ -829,7 +834,7 @@ fn due_of(tw: &mut TestWorld, tv: ObjId) -> i64 {
 }
 
 /// **`line` as `who`, and exactly one start queued**, landed; the reply.
-fn act_go(rig: &mut Rig, who: ObjId, line: &str) -> String {
+pub(crate) fn act_go(rig: &mut Rig, who: ObjId, line: &str) -> String {
     let (out, queued) = command(rig, who, line);
     assert_eq!(queued.len(), 1, "{line}: one start: {out}");
     assert_eq!(queued[0].actor, who, "the start is the operator's");
@@ -840,7 +845,7 @@ fn act_go(rig: &mut Rig, who: ObjId, line: &str) -> String {
 
 /// **Finish `tv`'s act**: to its due instant (the fire there queues the finish, landed),
 /// then one more fire for the tell; what `who` heard over both.
-fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
+pub(crate) fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
     let due = due_of(&mut rig.tw, tv);
     let (events, queued) = advance_to(rig, due);
     let mut heard = said(&rig.tw, &events, who);
@@ -855,7 +860,7 @@ fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
 }
 
 /// How many times `line` appears in `text`.
-fn count(text: &str, line: &str) -> usize {
+pub(crate) fn count(text: &str, line: &str) -> usize {
     text.matches(line).count()
 }
 
@@ -1100,7 +1105,7 @@ fn sm3b_launch_is_refused_under_way_at_a_port_and_with_a_clearance_filed() {
 // ---------------------------------------------------------------------------
 
 /// Staff place `tv` `Direct` on Ahuna's domain at `(x, y)`, facing south.
-fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
+pub(crate) fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
     let domain = ahuna_domain(&rig.tw);
     staff_place_on(rig, tv, domain, x, y);
 }
@@ -1110,7 +1115,7 @@ fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
 /// append never reached the store — harmless until a placement sealed a ledger chunk, which the
 /// house yard's lay-up and its drones' placements made happen here (a reboot then refused the
 /// unsealed chunk 0 and the gap after it). The world's own writes fold first, then these.
-fn keeping<T>(rig: &mut Rig, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
+pub(crate) fn keeping<T>(rig: &mut Rig, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
     let mut out = mush_core::Outbox::new();
     let result = {
         let engine = rig.tw.engine_mut();
@@ -1140,7 +1145,7 @@ fn keeping<T>(rig: &mut Rig, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T 
 }
 
 /// Staff place `tv` `Direct` on `domain` at `(x, y)`, facing south.
-fn staff_place_on(rig: &mut Rig, tv: ObjId, domain: mush_sim::DomainId, x: i64, y: i64) {
+pub(crate) fn staff_place_on(rig: &mut Rig, tv: ObjId, domain: mush_sim::DomainId, x: i64, y: i64) {
     let placed = keeping(rig, |ctx| {
         let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
             .map_err(|e| e.to_string())?;
@@ -1161,7 +1166,7 @@ fn staff_place_on(rig: &mut Rig, tv: ObjId, domain: mush_sim::DomainId, x: i64, 
 }
 
 /// Staff place `tv` back `Interior` in `row`'s bay compartment.
-fn staff_bay(rig: &mut Rig, tv: ObjId, row: &HullRow) {
+pub(crate) fn staff_bay(rig: &mut Rig, tv: ObjId, row: &HullRow) {
     let bay = ObjId(row.rooms[&cid("bay")]);
     let slot = mush_sim::SlotId::new("rigs").expect("a slot");
     let placed = keeping(rig, |ctx| {
@@ -1765,7 +1770,7 @@ fn stocked_keyed() -> Rig {
 }
 
 /// Set a rig's charge out of the bay at the world's IC now (staff's hand, `put_record`).
-fn put_charge(rig: &mut Rig, tv: ObjId, value_cu: u32) {
+pub(crate) fn put_charge(rig: &mut Rig, tv: ObjId, value_cu: u32) {
     let mut record = record_of(&mut rig.tw, tv).expect("the record");
     record.charge = Charge {
         value_cu,
@@ -3716,7 +3721,7 @@ fn sm7_a_drilling_rig_holds_the_return_and_the_repossession() {
 }
 
 // The staff recovery command uses the same authoritative landing path as a pilot act.
-fn recovery_staff(tw: &mut TestWorld) -> ObjId {
+pub(crate) fn recovery_staff(tw: &mut TestWorld) -> ObjId {
     let staff = tw.spawn_player("Recovery staff");
     tw.world_mut()
         .get_mut(staff)
@@ -3726,7 +3731,7 @@ fn recovery_staff(tw: &mut TestWorld) -> ObjId {
     staff
 }
 
-fn recovery_order(rig: &mut Rig, staff: ObjId, operation: &str, tv: ObjId) {
+pub(crate) fn recovery_order(rig: &mut Rig, staff: ObjId, operation: &str, tv: ObjId) {
     let line = format!("@tacsim/tv {operation} #{}", tv.0);
     let (out, queued) = command(rig, staff, &line);
     assert_eq!(queued.len(), 1, "{line}: {out}");
@@ -3962,8 +3967,10 @@ fn staff_close_is_reported_once_after_a_new_action_starts() {
     let current = record_of(&mut rig.tw, tv).expect("the new recover");
     let recover = current.act.as_ref().expect("the new recover is active");
     assert!(recover.ordinal > receipt.ordinal);
+    // Doc 23 cut S.3 (A1): the close abandoned the rig's open epoch, so its notice is the
+    // owner's one notice of the abandonment.
     let notice = format!(
-        "Staff closed rig #{}'s excursion and cancelled its work. Its location and hopper are unchanged.",
+        "Staff closed rig #{}'s excursion and cancelled its work. It stands where it is, abandoned, until staff bring it home; its hopper is unchanged.",
         tv.0
     );
 

@@ -32,6 +32,11 @@
 //!   rooms' status line, departing and under way (the leg, the ETA in IC and real
 //!   time), and the carrier hooks' narration texts.
 //!
+//! - **Doc 23 cut S.2** — the launch records the passage it departs under
+//!   ([`Voyage::departed`]) in the outbox that departs the hull; the `tacsim.port` tick's epoch
+//!   arm reads it for the ship's seal epoch, which is its own typed record
+//!   ([`crate::port::epoch`]), never this document.
+//!
 //! Real time appears only on §4.4's OOC surfaces (lead ruling L25): `+ship`,
 //! `+ship/plan`, [`CLEARANCE_FILED`], the status line and the notices' UTC prefix.
 
@@ -126,6 +131,30 @@ pub struct Voyage {
     /// to a station, and cleared by the next filing. Skipped when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrival: Option<SiteArrival>,
+    /// **Doc 23 cut S.2 (the lead's V5)** — the passage the hull last left under: written by the
+    /// launch in the outbox that departs it (`clear_pending_with`), cleared by a lapse or a
+    /// stand-down, kept by a new filing. The `tacsim.port` tick's epoch arm reads it for the
+    /// ship's epoch's warrant principal (D-23-5). Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub departed: Option<Departed>,
+}
+
+/// **The passage a hull last left under** (doc 23 cut S.2, the lead's V5): the filing's actor
+/// (a live `+ship/undock`, a `+ship/lift`, or the queued departure's author), carried durable
+/// from the launch so the epoch arm can name the warrant principal (D-23-5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Departed {
+    /// The burn sequence the passage flew under.
+    pub seq: u32,
+    /// The pilot who filed it.
+    pub pilot: ObjId,
+    /// The plan's departure instant: the journey's `departed().at`.
+    pub depart_ic: i64,
+    /// The destination port's venue word.
+    pub to_venue: CanonicalId,
+    /// The port entry the hull left.
+    pub from: CanonicalId,
 }
 
 /// **What a hull bound for a site will arrive with** (doc 20 cut SM.2; Q-20-7): the
@@ -204,6 +233,12 @@ impl Voyage {
         }
         if self.told > self.last_seq {
             return Err("a sailing plan tells no launch it has not burned".to_owned());
+        }
+        // Doc 23 cut S.2 (V5): the departure is one this hull burned.
+        if let Some(departed) = &self.departed
+            && (departed.seq == 0 || departed.seq > self.last_seq)
+        {
+            return Err("a sailing plan's departure is one it burned".to_owned());
         }
         let Some(pending) = &self.pending else {
             return Ok(());
@@ -2994,7 +3029,8 @@ pub(crate) fn prepare_departure(
     };
     let name = name_of(w, hull);
     let dark = || refusal(K::PlanDark, PLAN_DARK.replace("{name}", &name));
-    let (last_seq, told) = match w
+    // Doc 23 cut S.2 (V5): a filing keeps the last departure.
+    let (last_seq, told, departed) = match w
         .module_state::<TacsimStore>()
         .map_or(VoyageState::Absent, |store| store.voyage_state(hull))
     {
@@ -3010,9 +3046,9 @@ pub(crate) fn prepare_departure(
                         .replace("{port}", &venue_name(w, &pending.to_venue)),
                 ));
             }
-            (voyage.last_seq, voyage.told)
+            (voyage.last_seq, voyage.told, voyage.departed.clone())
         }
-        VoyageState::Absent => (0, 0),
+        VoyageState::Absent => (0, 0, None),
     };
     let Some(view) = hull_view(w, hull) else {
         let line = no_charter(w, pilot).to_string();
@@ -3186,6 +3222,7 @@ pub(crate) fn prepare_departure(
         told,
         pending: Some(pending),
         arrival: None,
+        departed,
     };
     if voyage.check().is_err() {
         tracing::error!(
@@ -3305,14 +3342,24 @@ pub(crate) fn launched(w: &World, hull: ObjId, route: &CanonicalId, depart_ic: i
 }
 
 /// Clear a hull's pending passage, keeping its sequence (never reused) and what the
-/// pilot was told (doc 18 cut IC14 row 21).
+/// pilot was told (doc 18 cut IC14 row 21). A lapse or a stand-down: nothing departed, so
+/// the document's `departed` is cleared (doc 23 cut S.2, V5).
 fn clear_pending(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32) {
-    clear_pending_with(ctx, hull, seq, None);
+    clear_pending_with(ctx, hull, seq, None, None);
 }
 
 /// [`clear_pending`] keeping a launched passage's site arrival (doc 20 cut SM.2): the
 /// launch writes the pending's `arrival` into the voyage it leaves, for the arrival lines.
-fn clear_pending_with(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32, arrival: Option<SiteArrival>) {
+/// **Doc 23 cut S.2 (V5)**: the launch also writes `departed` — the filing's pilot, the
+/// departure instant, the destination and the port entry left — in this same outbox as the
+/// depart, so the epoch arm reads the principal durably.
+fn clear_pending_with(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    seq: u32,
+    arrival: Option<SiteArrival>,
+    departed: Option<Departed>,
+) {
     let told = told_of(ctx.w, hull).min(seq);
     put_voyage(
         ctx,
@@ -3323,8 +3370,43 @@ fn clear_pending_with(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32, arrival: Option<
             told,
             pending: None,
             arrival,
+            departed,
         },
     );
+}
+
+/// **The departure a launch records** (doc 23 cut S.2, V5): the pending's pilot, sequence and
+/// destination, the plan's departure instant, and the port entry the hull leaves (`from`, read
+/// before the depart moves it); `None`, logged, when that entry does not resolve.
+fn departed_of(
+    pending: &PendingVoyage,
+    depart_ic: i64,
+    from: Option<CanonicalId>,
+) -> Option<Departed> {
+    let Some(from) = from else {
+        tracing::warn!(
+            seq = pending.seq,
+            "tacsim: a launch's port of departure did not resolve; its departure is not recorded \
+             (the epoch arm names the hull's helm and the journey's origin instead)"
+        );
+        return None;
+    };
+    Some(Departed {
+        seq: pending.seq,
+        pilot: pending.pilot,
+        depart_ic,
+        to_venue: pending.to_venue.clone(),
+        from,
+    })
+}
+
+/// **The port entry whose map's domain host is `host`** (doc 23 cut S.2): a journey's origin or
+/// destination endpoint read back as the lane port it is.
+pub(crate) fn entry_of_host(w: &World, host: ObjId) -> Option<(&PortMap, &PortDef)> {
+    lane_ports(w).into_iter().find_map(|(def, map)| {
+        let map = map?;
+        (map.host == Some(host.0)).then_some((map, def))
+    })
 }
 
 /// The hull's `Voyage.told` (0 with no readable document).
@@ -3491,7 +3573,15 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
     }
     let plan = &ticket.plan;
     if launched(ctx.w, hull, &ticket.route, plan.depart_ic) {
-        clear_pending_with(ctx, hull, pending.seq, pending.arrival.clone());
+        // Already under way (the pull verification): the port left is the journey's origin.
+        let from = ctx
+            .w
+            .module_state::<mush_sim::JourneyBook>()
+            .and_then(|book| book.get(hull))
+            .and_then(|journey| entry_of_host(ctx.w, journey.route().endpoints().0))
+            .map(|(map, _)| map.entry.clone());
+        let departed = departed_of(&pending, plan.depart_ic, from);
+        clear_pending_with(ctx, hull, pending.seq, pending.arrival.clone(), departed);
         return Step::Worked;
     }
     // D-18-23 "at every executed step" (L31): a lease ended since the burn holds
@@ -3531,6 +3621,11 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
     let leg_s: Vec<u32> = plan.legs.iter().map(|leg| leg.secs).collect();
     // Doc 20 cut SM.2: a hull lifting from a pad hears the pad drop away.
     let from_pad = matches!(berth_of(ctx.w, hull), Berth::Docked { def, .. } if def.site.is_some());
+    // Doc 23 cut S.2 (V5): the port entry the hull leaves, read before the depart moves it.
+    let from = match berth_of(ctx.w, hull) {
+        Berth::Docked { map, .. } => Some(map.entry.clone()),
+        Berth::UnderWay | Berth::Elsewhere => None,
+    };
     match mush_sim::depart(ctx, hull, route, Some(leg_s), plan.depart_ic) {
         Ok(_) => {}
         Err(error) => {
@@ -3538,8 +3633,10 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
             return launch_hold(ctx, state, hull, &pending, &why);
         }
     }
-    // In the same outbox as the journey: a restart sees both or neither.
-    clear_pending_with(ctx, hull, pending.seq, pending.arrival.clone());
+    // In the same outbox as the journey: a restart sees both or neither — and, since doc 23
+    // cut S.2, the departure the epoch arm reads its principal from (V5).
+    let departed = departed_of(&pending, plan.depart_ic, from);
+    clear_pending_with(ctx, hull, pending.seq, pending.arrival.clone(), departed);
     state.filed_seen.remove(&hull.0);
     let name = name_of(ctx.w, hull);
     let seals = if from_pad { LIFT_SEALS } else { LOCK_SEALS };
@@ -3787,6 +3884,7 @@ mod tests {
             told: 3,
             pending: None,
             arrival: None,
+            departed: None,
         };
         assert!(empty.check().is_ok());
         assert!(
@@ -3875,6 +3973,7 @@ mod tests {
             told: 3,
             pending: Some(filed(4)),
             arrival: None,
+            departed: None,
         };
         good.check().unwrap();
         let wire = serde_json::to_value(&good).unwrap();
@@ -3973,6 +4072,7 @@ mod tests {
             told: 2,
             pending: None,
             arrival: None,
+            departed: None,
         };
         assert!(voyage.check().is_ok());
         assert!(
@@ -4091,5 +4191,54 @@ mod tests {
             None,
             "a coast drive lands nowhere: no hint"
         );
+    }
+
+    /// **The departure on the sailing plan** (doc 23 cut S.2, V5): skipped when absent (an
+    /// S.1-era document decodes as before) and checked — a departure the hull burned.
+    #[test]
+    fn s2_the_sailing_plan_records_its_departure() {
+        let flown = Voyage {
+            schema: VOYAGE_SCHEMA,
+            hull: ObjId(5011),
+            last_seq: 2,
+            told: 2,
+            pending: None,
+            arrival: None,
+            departed: Some(Departed {
+                seq: 2,
+                pilot: ObjId(10),
+                depart_ic: 900,
+                to_venue: CanonicalId::new("stickney").unwrap(),
+                from: CanonicalId::new("ceres_port").unwrap(),
+            }),
+        };
+        flown.check().unwrap();
+        let wire = serde_json::to_value(&flown).unwrap();
+        assert_eq!(serde_json::from_value::<Voyage>(wire).unwrap(), flown);
+        let quiet = Voyage {
+            departed: None,
+            ..flown.clone()
+        };
+        assert!(
+            serde_json::to_value(&quiet)
+                .unwrap()
+                .get("departed")
+                .is_none()
+        );
+        assert!(
+            Voyage {
+                last_seq: 1,
+                told: 1,
+                ..flown.clone()
+            }
+            .check()
+            .is_err(),
+            "a departure the hull never burned"
+        );
+        let mut zero = flown.clone();
+        if let Some(departed) = zero.departed.as_mut() {
+            departed.seq = 0;
+        }
+        assert!(zero.check().is_err());
     }
 }

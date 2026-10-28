@@ -60,7 +60,7 @@ fn verify(row: &Record, claim: &IcClaimHistory) -> Result<(), ModError> {
         || open.admission_digest != claim.admission_digest().map_err(bad)?
         || open.at_ic != *claim.opened_at_ic()
         || open.execution.seal.unit != claim.unit()
-        || open.execution.seal.sortie.0 != claim.sortie()
+        || open.execution.seal.sortie.as_match_packed() != Some(claim.sortie())
         || open.execution.digest() != claim.seal_digest()
     {
         return Err(bad("open"));

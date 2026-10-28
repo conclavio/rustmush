@@ -50,7 +50,7 @@ fn state(tw: &TestWorld, contract: ContractId) -> ContractState {
         .state
 }
 
-fn settle_trade(rig: &mut Rig, quote: QuoteId) {
+pub(super) fn settle_trade(rig: &mut Rig, quote: QuoteId) {
     let contract = market(&rig.tw).quote(quote).unwrap().contract.unwrap();
     for _ in 0..12 {
         if market(&rig.tw)
@@ -74,11 +74,22 @@ fn settle_trade(rig: &mut Rig, quote: QuoteId) {
     );
 }
 
-fn buy(rig: &mut Rig, actor: ObjId, port: &str, vendor: &str, good: &str) -> Quote {
+pub(super) fn buy(rig: &mut Rig, actor: ObjId, port: &str, vendor: &str, good: &str) -> Quote {
+    buy_quantity(rig, actor, port, vendor, good, 1)
+}
+
+pub(super) fn buy_quantity(
+    rig: &mut Rig,
+    actor: ObjId,
+    port: &str,
+    vendor: &str,
+    good: &str,
+    quantity: u64,
+) -> Quote {
     let room = vendor_room(&rig.tw, port, vendor);
     teleport(&mut rig.tw, actor, room);
     let listing = ask(&rig.tw, port, vendor, good);
-    let (out, queued) = command(rig, actor, &format!("+market/quote {listing}=1"));
+    let (out, queued) = command(rig, actor, &format!("+market/quote {listing}={quantity}"));
     assert!(queued.is_empty(), "a quote does not deliver goods: {out}");
     assert!(out.contains("Quote #"), "{out}");
     let quote = latest(&rig.tw, actor, false).id;
@@ -95,7 +106,7 @@ fn buy(rig: &mut Rig, actor: ObjId, port: &str, vendor: &str, good: &str) -> Quo
     row
 }
 
-fn offer_sale(
+pub(super) fn offer_sale(
     rig: &mut Rig,
     actor: ObjId,
     vendor: &str,
