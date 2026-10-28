@@ -317,7 +317,15 @@ impl BuiltinObjects {
             owners.require_exact_physical(&image.participant, &image.action, image.commit)?;
         }
         if let Self::Locomotion(image) = self {
-            owners.require_exact_physical(&image.participant, &image.action, image.commit)?;
+            if let Some(scenes) = &image.scenes_participant {
+                owners.require_exact_exchange(
+                    &[image.participant.clone(), scenes.clone()],
+                    &image.action,
+                    image.commit,
+                )?;
+            } else {
+                owners.require_exact_physical(&image.participant, &image.action, image.commit)?;
+            }
         }
         Ok(())
     }

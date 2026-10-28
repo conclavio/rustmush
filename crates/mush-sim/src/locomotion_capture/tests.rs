@@ -462,6 +462,42 @@ fn capture_digest_detects_material_tampering_and_is_not_a_structural_capture() -
 }
 
 #[test]
+fn scene_and_ordinary_capture_families_reject_each_others_exact_protocol() -> TestResult {
+    let ordinary = batch()?;
+    let ordinary_value = encoded(&ordinary)?;
+    check!(decode_with(&ordinary_value, Protocol::WithScenes).is_err());
+    let mut joint = ordinary.clone();
+    let mut definitions = DefinitionRegistryBuilder::new();
+    joint.action = definitions.register(
+        OwnerId::new("sim")?,
+        mush_core::locomotion::scene_transition::action_descriptor()?,
+    )?;
+    joint.participant = definitions.register(
+        OwnerId::new("sim")?,
+        crate::locomotion_scenes::participant_descriptor()?,
+    )?;
+    let joint_value = encoded(&joint)?;
+    check_eq!(decode_with(&joint_value, Protocol::WithScenes)?, joint);
+    check!(decode(&joint_value).is_err());
+    for field in [
+        "source",
+        "exit",
+        "coverage",
+        "prepared_at",
+        "plan_digest",
+        "capture_digest",
+    ] {
+        let mut missing = joint_value.clone();
+        missing.as_object_mut().ok_or("object")?.remove(field);
+        check!(decode_with(&missing, Protocol::WithScenes).is_err());
+    }
+    joint.participant = ordinary.participant;
+    check!(decode_with(&encoded(&joint)?, Protocol::WithScenes).is_err());
+    check_eq!(decode(&ordinary_value)?.action, ordinary.action);
+    Ok(())
+}
+
+#[test]
 fn records_refuse_unsorted_duplicate_self_pairs_and_wrong_clock_domains() -> TestResult {
     let original = batch()?;
     let mut wrong = original.crossings.clone();

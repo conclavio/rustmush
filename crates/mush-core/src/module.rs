@@ -2341,6 +2341,8 @@ pub struct ModuleTables {
     observers: Vec<ObserverReg>,
     /// Owners whose exact Moved descriptor validator was installed by Core.
     moved_observer_factories: BTreeSet<SmolStr>,
+    /// Closed protocols require a current callback, not merely retained metadata.
+    required_moved_observers: BTreeSet<crate::mechanics::DefinitionRef>,
     ticks: Vec<TickReg>,
     panel_feeds: Vec<(SmolStr, SmolStr)>,
     query_handlers: HashMap<SmolStr, (SmolStr, Arc<dyn QueryHandler>)>,
@@ -2428,6 +2430,24 @@ impl Registry {
         }
         // 17g C2h: an uncomposed continuation grantee refuses composition.
         self.check_continuation_delegates(module_owners)?;
+        for required in &self.mods.required_moved_observers {
+            if self
+                .mods
+                .observers
+                .iter()
+                .filter(|entry| {
+                    entry.kind == WorldEventKind::Moved
+                        && entry.module.as_str() == required.key().owner.as_str()
+                        && entry.moved_definition.as_ref() == Some(required)
+                })
+                .count()
+                != 1
+            {
+                return Err(ModError::msg(
+                    "joint locomotion requires the exact current Scenes Moved callback",
+                ));
+            }
+        }
         if self.definitions.is_some()
             || self.bridges.is_some()
             || self.definition_migrations.is_some()
@@ -4811,6 +4831,18 @@ impl<'a> Registrar<'a> {
             observer,
             moved_definition: None,
         });
+    }
+
+    pub(crate) fn require_current_moved_observer(
+        &mut self,
+        reference: &crate::mechanics::DefinitionRef,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        self.reg
+            .tables_mut()
+            .required_moved_observers
+            .insert(reference.clone());
+        Ok(())
     }
 
     /// Subscribe the actual legacy Moved callback with a stable owner-stamped

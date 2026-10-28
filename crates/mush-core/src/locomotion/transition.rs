@@ -99,6 +99,25 @@ impl LocomotionIntent {
         admission: &LocomotionAdmission,
     ) -> Result<Self, ParticipantError> {
         exact_action(action)?;
+        Self::new_bound(world, invocation, action, commit, admission)
+    }
+    pub(crate) fn new_with_scenes(
+        world: &World,
+        invocation: &ActionInvocation,
+        action: &DefinitionRef,
+        commit: CommitToken,
+        admission: &LocomotionAdmission,
+    ) -> Result<Self, ParticipantError> {
+        super::scene_transition::exact_action(action)?;
+        Self::new_bound(world, invocation, action, commit, admission)
+    }
+    fn new_bound(
+        world: &World,
+        invocation: &ActionInvocation,
+        action: &DefinitionRef,
+        commit: CommitToken,
+        admission: &LocomotionAdmission,
+    ) -> Result<Self, ParticipantError> {
         if admission.binding.invocation != *invocation
             || admission.binding.action != *action
             || admission.binding.commit != commit
@@ -156,11 +175,11 @@ impl LocomotionIntent {
 /// Core consumes the genuine preparation binding; no replacement move is accepted.
 pub struct LocomotionDraft {
     pub(crate) binding: OwnerPreparationBinding,
-    plan_digest: DefinitionDigest,
-    capture_digest: DefinitionDigest,
-    dependencies: BTreeSet<ObjId>,
-    prepared_at: ClockStamp,
-    at_utc: i64,
+    pub(crate) plan_digest: DefinitionDigest,
+    pub(crate) capture_digest: DefinitionDigest,
+    pub(crate) dependencies: BTreeSet<ObjId>,
+    pub(crate) prepared_at: ClockStamp,
+    pub(crate) at_utc: i64,
 }
 impl LocomotionDraft {
     pub fn new(
@@ -170,7 +189,8 @@ impl LocomotionDraft {
         capture_digest: DefinitionDigest,
         read_dependencies: BTreeSet<ObjId>,
     ) -> Result<Self, ParticipantError> {
-        exact_action(ctx.action())?;
+        // Only Core can mint an intent, for one of its closed protocols. The
+        // exact complete context comparison below preserves that authority.
         if !intent.matches_context(ctx)
             || read_dependencies.len() > MAX_LOCOMOTION_READ_DEPENDENCIES
             || intent.prepared_at != ctx.world().world_ic_now()

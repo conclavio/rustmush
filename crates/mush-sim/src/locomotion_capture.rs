@@ -5,6 +5,9 @@
 //! digest domains leave structural personnel history byte-for-byte unchanged.
 use std::collections::BTreeSet;
 
+use mush_core::locomotion::scene_transition::{
+    CoreLocomotionWithScenes, SceneLocomotionReceipt, ScenesMovementDraft, ScenesMovementIntent,
+};
 use mush_core::locomotion::transition::{
     ACTION, CoreLocomotion, LocomotionDraft, LocomotionIntent, LocomotionReceipt, PARTICIPANT,
     action_descriptor,
@@ -24,6 +27,7 @@ use crate::personnel::Crossing;
 use crate::personnel_capture::CaptureFacts;
 
 const FAMILY: &str = "locomotion_crossings";
+const SCENE_FAMILY: &str = "locomotion_scene_crossings";
 const MAX_BYTES: usize = 128 * 1024;
 const MAX_CROSSINGS: usize = 256;
 const MAX_ACTORS: usize = 256;
@@ -160,6 +164,70 @@ struct CrossingBatch {
     crossings: Vec<Crossing>,
 }
 
+#[derive(Clone, Copy)]
+enum Protocol {
+    Ordinary,
+    WithScenes,
+}
+
+/// A private adapter over the two genuine Core receipts. It cannot admit a
+/// caller-built route or substitute one receipt family's authority for another.
+pub(super) trait CrossingReceipt {
+    fn commit(&self) -> CommitToken;
+    fn action(&self) -> &DefinitionRef;
+    fn participant(&self) -> &DefinitionRef;
+    fn actor(&self) -> ObjId;
+    fn source(&self) -> Option<ObjId>;
+    fn exit(&self) -> Option<ObjId>;
+    fn destination(&self) -> ObjId;
+    fn prepared_at(&self) -> &ClockStamp;
+    fn at_utc(&self) -> i64;
+    fn plan_digest(&self) -> &DefinitionDigest;
+    fn capture_digest(&self) -> &DefinitionDigest;
+}
+
+macro_rules! receipt_adapter {
+    ($receipt:ty) => {
+        impl CrossingReceipt for $receipt {
+            fn commit(&self) -> CommitToken {
+                self.commit()
+            }
+            fn action(&self) -> &DefinitionRef {
+                self.action()
+            }
+            fn participant(&self) -> &DefinitionRef {
+                self.participant()
+            }
+            fn actor(&self) -> ObjId {
+                self.actor()
+            }
+            fn source(&self) -> Option<ObjId> {
+                self.source()
+            }
+            fn exit(&self) -> Option<ObjId> {
+                self.exit()
+            }
+            fn destination(&self) -> ObjId {
+                self.destination()
+            }
+            fn prepared_at(&self) -> &ClockStamp {
+                self.prepared_at()
+            }
+            fn at_utc(&self) -> i64 {
+                self.at_utc()
+            }
+            fn plan_digest(&self) -> &DefinitionDigest {
+                self.plan_digest()
+            }
+            fn capture_digest(&self) -> &DefinitionDigest {
+                self.capture_digest()
+            }
+        }
+    };
+}
+receipt_adapter!(LocomotionReceipt);
+receipt_adapter!(SceneLocomotionReceipt);
+
 fn exact_definitions(
     action: &DefinitionRef,
     participant: &DefinitionRef,
@@ -182,9 +250,40 @@ fn exact_definitions(
     Ok(())
 }
 
+fn exact_scene_definitions(
+    action: &DefinitionRef,
+    participant: &DefinitionRef,
+) -> Result<(), ParticipantError> {
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let owner = OwnerId::new("sim").map_err(|_| refused())?;
+    let expected_action = definitions
+        .register(
+            owner.clone(),
+            mush_core::locomotion::scene_transition::action_descriptor().map_err(|_| refused())?,
+        )
+        .map_err(|_| refused())?;
+    let expected_participant = definitions
+        .register(
+            owner,
+            crate::locomotion_scenes::participant_descriptor().map_err(|_| refused())?,
+        )
+        .map_err(|_| refused())?;
+    if action != &expected_action || participant != &expected_participant {
+        return Err(refused());
+    }
+    Ok(())
+}
+
 impl CrossingBatch {
     fn validate(&self) -> Result<(), ParticipantError> {
-        exact_definitions(&self.action, &self.participant)?;
+        self.validate_with(Protocol::Ordinary)
+    }
+
+    fn validate_with(&self, protocol: Protocol) -> Result<(), ParticipantError> {
+        match protocol {
+            Protocol::Ordinary => exact_definitions(&self.action, &self.participant)?,
+            Protocol::WithScenes => exact_scene_definitions(&self.action, &self.participant)?,
+        }
         if self.format != 1
             || self.actor == self.destination
             || (self.exit.is_none() && self.source == Some(self.destination))
@@ -202,8 +301,12 @@ impl CrossingBatch {
         Ok(())
     }
 
-    fn matches_receipt(&self, receipt: &LocomotionReceipt) -> Result<(), ParticipantError> {
-        self.validate()?;
+    fn matches_receipt(
+        &self,
+        receipt: &impl CrossingReceipt,
+        protocol: Protocol,
+    ) -> Result<(), ParticipantError> {
+        self.validate_with(protocol)?;
         if self.commit != receipt.commit()
             || &self.action != receipt.action()
             || &self.participant != receipt.participant()
@@ -231,9 +334,13 @@ fn encoded(batch: &CrossingBatch) -> Result<Value, ParticipantError> {
     Ok(value)
 }
 fn decode(value: &Value) -> Result<CrossingBatch, String> {
+    decode_with(value, Protocol::Ordinary)
+}
+
+fn decode_with(value: &Value, protocol: Protocol) -> Result<CrossingBatch, String> {
     canonical_json_bytes_with_limit(value, MAX_BYTES).map_err(|e| e.to_string())?;
     let batch: CrossingBatch = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-    batch.validate().map_err(|e| e.to_string())?;
+    batch.validate_with(protocol).map_err(|e| e.to_string())?;
     if encoded(&batch).map_err(|e| e.to_string())? != *value {
         return Err("noncanonical locomotion crossing capture".into());
     }
@@ -243,6 +350,7 @@ fn decode(value: &Value) -> Result<CrossingBatch, String> {
 #[derive(Clone)]
 pub(crate) struct LocomotionCrossings {
     records: StateFamilyHandle<CommitToken, CrossingBatch>,
+    protocol: Protocol,
 }
 impl LocomotionCrossings {
     pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
@@ -265,13 +373,46 @@ impl LocomotionCrossings {
             |batch: &CrossingBatch| batch.validate().map_err(|e| e.to_string()),
             |batch: &CrossingBatch| encoded(batch).map_err(|e| e.to_string()),
         )?;
-        Ok(Self { records })
+        Ok(Self {
+            records,
+            protocol: Protocol::Ordinary,
+        })
+    }
+
+    pub(super) fn register_scenes(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
+        let id = |suffix| CanonicalId::new(format!("sim.{SCENE_FAMILY}.{suffix}.v1")).map_err(bad);
+        let descriptor = StateFamilyDescriptor::new(
+            StateFamilyId::new(SCENE_FAMILY).map_err(bad)?,
+            id("key")?,
+            id("value")?,
+            1,
+            id("decode")?,
+            id("validate")?,
+            id("canonical")?,
+        )
+        .and_then(|descriptor| descriptor.with_limits(128, MAX_BYTES))
+        .map_err(bad)?;
+        let records = reg.state_family(
+            descriptor,
+            |key: &CommitToken| Ok(key.to_string()),
+            |value: &Value| decode_with(value, Protocol::WithScenes),
+            |batch: &CrossingBatch| {
+                batch
+                    .validate_with(Protocol::WithScenes)
+                    .map_err(|e| e.to_string())
+            },
+            |batch: &CrossingBatch| encoded(batch).map_err(|e| e.to_string()),
+        )?;
+        Ok(Self {
+            records,
+            protocol: Protocol::WithScenes,
+        })
     }
 
     pub(crate) fn append(
         &self,
         txn: &mut ActionTxn<'_>,
-        receipt: &LocomotionReceipt,
+        receipt: &impl CrossingReceipt,
         facts: &CaptureFacts,
     ) -> Result<(), ParticipantError> {
         if facts.capture_digest
@@ -306,7 +447,7 @@ impl LocomotionCrossings {
             coverage: Coverage::UncertifiedLegacyPaths,
             crossings: facts.crossings.clone(),
         };
-        batch.matches_receipt(receipt)?;
+        batch.matches_receipt(receipt, self.protocol)?;
         txn.insert(&self.records, &receipt.commit(), batch)
             .map_err(|_| refused())?;
         Ok(())
@@ -339,7 +480,7 @@ impl LocomotionCrossings {
                 let receipt = service
                     .read_receipt(ctx, &entry.value().commit)?
                     .ok_or_else(refused)?;
-                entry.value().matches_receipt(&receipt)?;
+                entry.value().matches_receipt(&receipt, self.protocol)?;
             }
             cursor = page.next_after().map(ToString::to_string);
             if cursor.is_none() {
@@ -358,7 +499,62 @@ impl LocomotionCrossings {
                 ctx.action_state(&self.records, &receipt.commit())
                     .map_err(|_| refused())?
                     .ok_or_else(refused)?
-                    .matches_receipt(receipt)?;
+                    .matches_receipt(receipt, self.protocol)?;
+            }
+            cursor = page.next_after().map(ToString::to_string);
+            if cursor.is_none() {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Joint receipts and their captures must be present in both directions.
+    /// The ordinary family is deliberately not a fallback for missing records.
+    pub(super) fn audit_scenes<P, S>(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        service: &CoreLocomotionWithScenes<P, S>,
+    ) -> Result<(), ParticipantError>
+    where
+        P: OwnerParticipant<Request = LocomotionIntent, Output = LocomotionDraft>,
+        S: OwnerParticipant<Request = ScenesMovementIntent, Output = ScenesMovementDraft>,
+    {
+        let mut cursor = None;
+        let mut count = 0usize;
+        loop {
+            let page = ctx
+                .scan_action_state(&self.records, cursor.as_deref(), 128)
+                .map_err(|_| refused())?;
+            for entry in page.entries() {
+                count = count.checked_add(1).ok_or_else(refused)?;
+                if count > mush_core::action_state::MAX_ACTION_STATE_BOOT_RECORDS
+                    || entry.encoded_key() != entry.value().commit.to_string()
+                {
+                    return Err(refused());
+                }
+                let receipt = service
+                    .read_receipt(ctx, &entry.value().commit)?
+                    .ok_or_else(refused)?;
+                entry.value().matches_receipt(&receipt, self.protocol)?;
+            }
+            cursor = page.next_after().map(ToString::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        cursor = None;
+        count = 0;
+        loop {
+            let page = service.scan_receipts(ctx, cursor.as_deref(), 128)?;
+            for receipt in page.entries() {
+                count = count.checked_add(1).ok_or_else(refused)?;
+                if count > mush_core::action_state::MAX_ACTION_STATE_BOOT_RECORDS {
+                    return Err(refused());
+                }
+                ctx.action_state(&self.records, &receipt.commit())
+                    .map_err(|_| refused())?
+                    .ok_or_else(refused)?
+                    .matches_receipt(receipt, self.protocol)?;
             }
             cursor = page.next_after().map(ToString::to_string);
             if cursor.is_none() {

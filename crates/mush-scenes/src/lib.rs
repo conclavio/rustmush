@@ -49,9 +49,12 @@
 mod commands;
 mod data;
 pub mod movement;
+mod movement_audit;
+pub mod movement_participant;
 mod panel;
 
-use std::sync::Arc;
+use mush_core::locomotion::scene_transition::SceneLocomotionReader;
+use std::sync::{Arc, OnceLock};
 
 use mush_core::module::{
     EventHook, GameModule, HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx,
@@ -111,13 +114,17 @@ pub type SealerGate = Arc<dyn Fn(&World, u64, ObjId) -> bool + Send + Sync>;
 /// The scenes game module. Hand one to `Engine::with_modules`.
 pub struct ScenesModule {
     sealer_gate: Option<SealerGate>,
+    atomic_movement: Option<Arc<OnceLock<SceneLocomotionReader>>>,
 }
 
 impl ScenesModule {
     /// A fresh module instance, with no sealer gate (conferral is unrestricted).
     #[must_use]
     pub fn new() -> ScenesModule {
-        ScenesModule { sealer_gate: None }
+        ScenesModule {
+            sealer_gate: None,
+            atomic_movement: None,
+        }
     }
 
     /// Freeze the **sealer gate** at wiring (E6b independent verify fold, M4).
@@ -129,6 +136,18 @@ impl ScenesModule {
     #[must_use]
     pub fn with_sealer_gate(mut self, gate: SealerGate) -> ScenesModule {
         self.sealer_gate = Some(gate);
+        self
+    }
+
+    /// Register the transcript participant for the exact joint Sim movement
+    /// protocol. The composition must also enable Sim's matching provider.
+    /// This adds no ordinary movement command route or observer replay.
+    #[must_use]
+    pub fn with_atomic_movement(
+        mut self,
+        reader: Arc<OnceLock<SceneLocomotionReader>>,
+    ) -> ScenesModule {
+        self.atomic_movement = Some(reader);
         self
     }
 }
@@ -197,6 +216,9 @@ impl GameModule for ScenesModule {
             reg.subscribe(WorldEventKind::Said { kind }, Arc::new(on_said));
         }
         reg.subscribe_moved("scene_movement_transcript", 1, Arc::new(on_moved))?;
+        if self.atomic_movement.is_some() {
+            movement_participant::register(reg)?;
+        }
         // Mechanical resolutions (dice rolls) recorded into the scene log.
         reg.subscribe(WorldEventKind::Rolled, Arc::new(on_rolled));
         // Turn-gating: a mechanical command runs only on the actor's turn.
@@ -230,7 +252,24 @@ impl GameModule for ScenesModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
-        load_boot(ctx, data)
+        if self.atomic_movement.is_some() && !data.omitted.is_empty() {
+            return Err(ModError::RetryFullFetch {
+                module: NS.into(),
+                reason: "Scenes movement audit requires the complete transcript history".into(),
+            });
+        }
+        // J1: share one structural inspection across the movement receipt
+        // audit and live-tail restoration; it retains indices and open tails.
+        let history = mush_core::inspect_ledger(&data.ledger, None);
+        if let Some(reader) = &self.atomic_movement {
+            let reader = reader.get().ok_or_else(|| {
+                ModError::msg(
+                    "Scenes atomic movement reader was not supplied by the Sim composition",
+                )
+            })?;
+            movement_audit::audit_boot(ctx, &data, &history, reader)?;
+        }
+        load_boot(ctx, data, &history)
     }
 }
 
@@ -912,7 +951,11 @@ fn strip_unreadable_outcome(mut value: serde_json::Value) -> (serde_json::Value,
     }
 }
 
-fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
+fn load_boot(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    history: &mush_core::LedgerHistory,
+) -> Result<(), ModError> {
     let mut scenes: std::collections::BTreeMap<SceneUid, SceneRecord> =
         std::collections::BTreeMap::new();
     let mut next_from_meta: Option<u64> = None;
@@ -983,8 +1026,7 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
     // memory optimization below), then rehydrate the event-log open tail only
     // for scenes that still hold members — restoring a Closed scene's tail would
     // be permanent dead RAM that grows with every finished scene. J1: one
-    // inspection serves both, and no chunk is decoded twice.
-    let history = mush_core::inspect_ledger(&data.ledger, None);
+    // inspection serves the movement audit, validation and restoration.
     if !history.is_clean() {
         return Err(ModError::msg(format!(
             "scene ledger history validation failed: {:?}",
@@ -998,7 +1040,7 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         .collect();
     let mut events = mush_core::Ledger::new();
     events
-        .restore_logs_from_history(&history, |log_id| live_uids.contains(log_id))
+        .restore_logs_from_history(history, |log_id| live_uids.contains(log_id))
         .map_err(|error| ModError::msg(format!("scene ledger restore failed: {error}")))?;
     // The gate is wiring, not boot data: it is installed at registration and must
     // survive `on_world_loaded` replacing the state slot wholesale.

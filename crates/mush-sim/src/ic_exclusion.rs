@@ -446,6 +446,7 @@ impl IcExclusionConfig {
             crate::physical::participant_descriptor_v1()?,
             crate::physical::participant_descriptor()?,
             crate::locomotion::participant_descriptor()?,
+            crate::locomotion_scenes::participant_descriptor()?,
         ];
         let refs: Vec<_> = std::iter::once(self.manifest.clone())
             .chain(self.participants.iter().cloned())

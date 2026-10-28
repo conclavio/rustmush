@@ -28,6 +28,41 @@ Self-loops produce no events. The strict plan codec accepts at most two events,
 publishes no state; later integration must bind it to Core's actual movement
 intent and retain the owner preimage through final validation.
 
+## Atomic Scenes completion
+
+The separately named `sim_locomotion_with_scenes` action prepares the actual Sim
+transition and Scenes transcript together. It accepts only Core's captured
+ordinary command admission. The original `sim_locomotion` action and its v1
+receipt and crossing formats retain their existing meaning.
+
+Core supplies the same actor, route, original UTC and world-IC stamp to both
+owners. Scenes derives the original Joined/Left events from its own state and
+prepares their real Ledger writes. All object and owner bindings must succeed
+before any image is installed. Both scene-log tails bind together; a stale
+second log cannot publish the first append. A missing acknowledgement installs
+nothing in memory, while restart restores the single committed movement and
+its transcript.
+
+An empty capture retains the actual Scenes slot and event-selection fence.
+Only this closed protocol permits an owner image without writes. New scene
+selection, membership or scene-local time can invalidate the capture through
+final validation and binding; no synthetic log entry stands in for a read.
+Self-loops and rooms without active scenes therefore produce no transcript
+writes. Ordinary callbacks retain their previous behavior.
+
+Before Scenes pauses live scenes on boot, it audits the joint receipts against
+the original ledger positions, including closed-scene history. Missing or
+changed events, duplicate position claims, and capture or event digest
+mismatches refuse boot. The audit retains original UTC, scene-local time and
+witness ordering; it does not reconstruct events from current scene state.
+One transient ledger inspection serves both this audit and normal restoration.
+
+Production composition registers the paired Sim and Scenes adapters. The joint
+action has no command route or legal-action offer yet. It completes only the
+Scenes observer; Atlas, NPC, weather, Tacsim and script effects remain blockers
+to switching ordinary walking to the prepared path. Personnel crossing evidence
+remains explicitly uncertified.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
@@ -36,12 +71,6 @@ cannot share that commit. Earlier v1 history receives no inferred completion.
 Deferred completion must atomically commit its real effects and handled marker,
 with exact parent identity and idempotency. Notifications are only wake hints;
 canonical pending rows retain custody across restart.
-
-Scenes is the first planned adapter: its existing event Ledger can prepare the
-captured events without publishing them and include those writes in the movement
-commit. An empty capture still needs a retained owner preimage, without a fake
-ledger append. Lost acknowledgements then recover the committed transcript with
-the movement, without replaying an observer after restart.
 
 Owners requiring deferred completion need a recovery barrier before migrations,
 mutating boot callbacks, ticks or session ingress. Scenes' current boot loader,
