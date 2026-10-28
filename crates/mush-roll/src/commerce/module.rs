@@ -46,6 +46,14 @@ pub struct CommerceConfig {
     minds_facts: Option<Box<super::facts::MindsFactProvider>>,
     registry_recall: Option<Box<super::registry_recall::RegistryRecallPolicy>>,
     registry_revocation: Option<Box<super::registry_revocation::RegistryRevocationPolicy>>,
+    /// Doc 17h cut M8a: the Registry inspection authority and the writer tacsim's provider
+    /// lands records through (`super::registry_inspection`); the action is tacsim's.
+    registry_inspection: Option<
+        Box<(
+            super::registry_inspection::RegistryInspectionPolicy,
+            super::registry_inspection::InspectionWriter,
+        )>,
+    >,
     owner_qualification: bool,
     owner_attestations: bool,
     compatible_updates: bool,
@@ -151,6 +159,7 @@ impl CommerceConfig {
             minds_facts: None,
             registry_recall: None,
             registry_revocation: None,
+            registry_inspection: None,
             owner_qualification: false,
             owner_attestations: false,
             compatible_updates: false,
@@ -379,6 +388,28 @@ impl CommerceConfig {
         }
         policy.validate().map_err(error)?;
         self.registry_revocation = Some(Box::new(policy));
+        Ok(self)
+    }
+
+    /// Doc 17h cut M8a: explicit Registry inspection authority, and the writer the Roll
+    /// installs for tacsim's provider. No organizations, grants or operators are created;
+    /// every inspection repeats the configured live Org policy.
+    ///
+    /// # Errors
+    /// A configuration that is not Active, a second inspection, or a policy that does not
+    /// validate.
+    pub fn with_registry_inspection(
+        mut self,
+        policy: super::registry_inspection::RegistryInspectionPolicy,
+        writer: super::registry_inspection::InspectionWriter,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.registry_inspection.is_some() {
+            return Err(ModError::msg(
+                "Registry inspection requires one Active configuration",
+            ));
+        }
+        policy.validate().map_err(error)?;
+        self.registry_inspection = Some(Box::new((policy, writer)));
         Ok(self)
     }
 
@@ -872,6 +903,10 @@ impl CommerceConfig {
         }
         if let Some(policy) = &self.registry_revocation {
             definitions.extend(policy.definitions()?);
+        }
+        // Doc 17h cut M8a: the authority alone; the action and outcome are tacsim's.
+        if let Some(inspection) = &self.registry_inspection {
+            definitions.push(inspection.0.authority_descriptor()?);
         }
         if self.charter_transfers {
             definitions.extend(super::charter_transfer::protocol::definitions()?);
@@ -1758,6 +1793,14 @@ fn register_transfer_declarations(
     } else {
         None
     };
+    // Doc 17h cut M8a: the inspection authority definition and the writer's install
+    // (the record family delegated to tacsim); the action, outcome and provider are
+    // tacsim's, and its boot hook captures the readiness.
+    if let Some(inspection) = config.registry_inspection.as_deref() {
+        let (policy, writer) = inspection;
+        reg.definition(policy.authority_descriptor()?)?;
+        writer.install(reg, families.clone(), policy.clone())?;
+    }
     let charter_transfer_registration = if config.charter_transfers {
         let [offer, accept, offered, transferred] =
             super::charter_transfer::protocol::definitions()?;

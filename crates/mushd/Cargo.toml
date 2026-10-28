@@ -56,7 +56,6 @@ mush-content.workspace = true
 mush-atlas.workspace = true
 mush-npc.workspace = true
 mush-ruleset.workspace = true
-mush-testkit.workspace = true
 mush-net-ssh.workspace = true
 # The M4 web ingress; mushd implements its WebHooks (web_bridge.rs).
 mush-net-web.workspace = true
@@ -94,8 +93,9 @@ mush-net-discord.workspace = true
 # no release build of `mushd` carries the seam.
 mush-server = { workspace = true, features = ["fault-injection"] }
 # 16b cut R-b: the e2e tests that used the deleted game rulesets as sheet /
-# perception / NPC fixtures drive the `toy` test ruleset instead. The normal
-# dependency above stays featureless, so no release build of `mushd` pulls it.
+# perception / NPC fixtures drive the `toy` test ruleset instead. A
+# dev-dependency only (`repl.rs` renders via `mush_proto::text_of`), so no
+# production build of `mushd` links `mush-testkit`.
 mush-testkit = { workspace = true, features = ["toy-ruleset"] }
 # E7: the TacSim simulation layer. WS04-S3 deleted the all-in-one's second
 # transcription of the world boot, and with it the only `src/` reference to

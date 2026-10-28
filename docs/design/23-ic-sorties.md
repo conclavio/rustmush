@@ -1,5 +1,12 @@
 # 23. IC sorties — the seal epoch, the voyage, and the hosts that open and close one
 
+> **2026-10-28 design update:** [doc 27](27-ic-field-operations-design-and-survey.md) aligns
+> detachments, IC combat and salvage under the owner's new rulings. `+sortie` and “sortie” for
+> the player's operation are approved, superseding Q-23-5's blanket wording ban; the technical
+> hull epoch remains distinct. Recoverable disablement must not be equated with permanent
+> destruction: accepted Q-H7/Q-H9 keep a recoverable unit's epoch open. The as-built epoch ledger
+> below is preserved; this note does not claim that code has changed.
+
 **Draft 0.7, 2026-10-27 — S.0 to S.3 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
@@ -287,14 +294,12 @@ leaves that split to "the corridor's design". Q-23-4 asks who rations it.
 
 ## 8. What this note does not decide
 
-- **The fight on real ground.** 16c §3.1 H1 refuses it before the owner settles whether a destroyed
-  unit is lost or a repair bill, who may start a fight, and whether owned units go to a proving
-  ground first; doc 20 §17 reserves the mechanism (a hostile arrival promotes the site's ground into
-  an arena by digest, behind an IC-crossing ruling that succeeds D-16-3 and D-UM-50; the excursion
-  `Holds` while the arena holds the TV). The only thing this note adds is the frame: the match lies
-  inside the hull's open epoch and cites it, as the arena's does (D-UM-46). The arena's wall-time
-  tempo against the world's rate 24 is that conversation's problem, and the faction system's scenes
-  with timestop are the one existing primitive shaped for it.
+- **The fight on real ground.** The owner has now settled the shared policy in [doc 27](27-ic-field-operations-design-and-survey.md)
+  Q-H1–Q-H12. Field combat preserves exact casualties, admits real arrivals/withdrawals and runs
+  human-paced alongside the rate-24 campaign. Outage recovery freezes the whole world through
+  a broadcast countdown. A local scene cannot delay journeys. An IC engagement is not an OOC
+  match, and a recoverable mission kill does not close the hull epoch. Doc 20 §17's promotion
+  remains a candidate mechanism; the persistent state/authority adapter is still to be built.
 - **Hull cover on an IC epoch.** Cover's close evidence (`CoverageCloseEvidence`) exists only for
   an Open enqueued through `IcHost::enqueue_withheld` with a `WithheldDeparture` and a zone
   (`host/coverage.rs`); `enqueue_start` sets `withheld: None` (`host.rs:294`). No cut here builds
@@ -303,8 +308,9 @@ leaves that split to "the corridor's design". Q-23-4 asks who rations it.
   player's screen all want it; the black box lines are enough to build it from, later.
 - **The region sim task as doc 17 drew it.** Not needed for the first IC sorties (§6). If a
   per-millisecond region ever is, it inherits this note's epochs unchanged.
-- **Lifting D-20-7**, who holds an abandoned hull, salvage, seizure, the Registry's reading of a
-  stale seal: M8 and doc 20 §17.
+- **Lifting D-20-7 and salvage:** doc 27 Q-H10 accepts explicit leave-behind departure for H1;
+  Q-S1–Q-S15 settle H2's recovery/title boundary. Existing code still needs those cuts. M8's
+  broader programme is not a blanket gate on human-operated fighting or towing.
 - **The Ceres Simulation Center** (D-UM-51): an IC venue on arena machinery, not an epoch host.
 
 ## 9. Cuts
@@ -319,11 +325,13 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
   sorties" gain "after a hangar port" (D-23-9). The port entries' hangar kind is declared in
   content (the five ports yes, every site no; *moved to S.1 and S.2, §14*). Doc 20 §4.3 and §17 gain the cross-reference. Doc 16 §11 "Before IC play"
   notes that per-pulse durability is the arena's and that an IC epoch's durability is its host's.
-  The player-facing words (Q-23-5) are audited here and renamed in S.0b. *As built: §14.*
-- **S.0b — The word on the surfaces (small; code).** The seven player sentences and six help lines
-  that print "sortie" today (the inventory in §14) are renamed — in the arena "sealed for this
-  match", elsewhere "out" or "running" — with their pinned tests moved; a tacsim gate, through the
-  cut loop.
+  The historical player-facing wording audit (Q-23-5) is in §14; S.0b's blanket rename is now
+  superseded below. *As built: §14.*
+- **S.0b — The word on the surfaces (historical proposal, superseded 2026-10-28).** The blanket
+  ban on printing "sortie" is withdrawn. `+sortie` names the player's operation; technical hull
+  epochs remain a distinct concept. Arena wording may still say "sealed for this match" where
+  accurate, but no rename is required merely to remove the approved word. The original audit
+  in §14 remains historical evidence, not a new implementation instruction.
 - **S.1 — The first IC sortie, on the surface excursion (medium).** One `SortieId` mint for IC
   epochs (§7) with the collision test; the ROM seal over a `TacticalUnit` (§7); the per-hull black
   box ledger; `MindSealed` at the launch's end (and for an implied launch), `SortieClosed` with
@@ -400,7 +408,7 @@ inspection verbs, seizure) then have a real epoch to read at each end.
 | Q-23-2 | Lift D-20-7 now, so a carrier may leave with a rig out and "a TV left out is a choice"? | No, not yet: D-20-7 stands until the fight phase that doc 20 §17 ties it to. Abandonment is reachable only through a destroyed hangar or staff action, which S.3 covers. **Accepted 2026-10-27.** |
 | Q-23-3 | First host order: surface excursion, then the ship, then drones? | Yes. The excursion is the closest to an epoch today and gives tier 1 soonest; tier 2 waits on the drone phase either way. **Accepted 2026-10-27.** |
 | Q-23-4 | Who rations an IC site's compute pool once minds fly IC? | The region's de facto holder (doc 11 §5), published as an allotment; recorded, never refused, until the drone phase. **Accepted 2026-10-27.** |
-| Q-23-5 | The player's words. | No word for the epoch: a hull is "out" or "docked". The black box is "the log". "Sortie" never prints. **Accepted 2026-10-27.** |
+| Q-23-5 | The player's words. | **Amended 2026-10-28:** `+sortie` and "sortie" for the player's operation are approved (doc 27 FO-7). Keep that operation distinct from the technical hull epoch. The 2026-10-27 blanket "Sortie never prints" ruling is superseded. |
 | Q-23-6 | Does a licence that lapses mid-epoch still hold to the close (doc 17 §23)? | **Ruled 2026-10-27**: it holds to the close of the top-level passage, not each excursion — the licence is in grace until the hull reaches the next hangar. D-23-9. |
 
 ## 13. Risks

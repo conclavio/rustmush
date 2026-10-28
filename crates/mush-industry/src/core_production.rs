@@ -18,7 +18,7 @@ pub use config::{
     CoreOriginConfig, CoreOriginMode, OriginAgent, OriginPolicy, origin_content_descriptor,
 };
 pub(crate) use provider::Runtime;
-pub use records::{CertifiedOrigin, DieClass};
+pub use records::{CertifiedOrigin, DieCertificate, DieCertificates, DieClass};
 #[cfg(test)]
 mod tests;
 

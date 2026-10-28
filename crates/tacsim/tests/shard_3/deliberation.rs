@@ -2306,7 +2306,7 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
             // Format 16 adds record-only accepted-order attribution (R4).
             // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-            assert_eq!(SNAPSHOT_FORMAT, 17);
+            assert_eq!(SNAPSHOT_FORMAT, 18);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -2621,28 +2621,13 @@ fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
 fn roster_of(cfg: tacsim::TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
-        mush_weather::WeatherConfig::default(),
+    let mut mods = comp::domain_modules_with(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.push(comp::tacsim_module_with(cfg, true));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -4865,7 +4850,7 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
         .notices
         .push(notice.clone());
     let snapshot = Snapshot::encode(&control).expect("new refusal encodes");
-    assert_eq!(snapshot.document["format"], 17);
+    assert_eq!(snapshot.document["format"], 18);
     let restored = Snapshot::decode(&snapshot.document, definition()).expect("new refusal decodes");
     assert_eq!(
         restored
@@ -4884,12 +4869,12 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
             Snapshot::head(&old).map(|head| head.format),
             Err(SnapshotError::Format {
                 found,
-                expected: 17
+                expected: 18
             })
         );
         assert!(matches!(
             Snapshot::decode(&old, definition()),
-            Err(SnapshotError::Format { found: actual, expected: 17 }) if actual == found
+            Err(SnapshotError::Format { found: actual, expected: 18 }) if actual == found
         ));
     }
     assert_eq!(Refusal::NoCommander.as_str(), "no_commander");

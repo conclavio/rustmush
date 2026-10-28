@@ -38,6 +38,11 @@ use crate::world::World;
 
 /// Maximum caller-supplied bytes in an idempotency key.
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
+/// **The driver's one sentence for a refused submission** (E7c2): what the actor reads when
+/// a command's authoritative submission is refused before any durable intent. One constant,
+/// so a surface that must read exactly like a refusal (doc 17h cut M8a's
+/// `@registry/inspect` for a non-operator) shares it rather than copying it.
+pub const SUBMISSION_REFUSED_LINE: &str = "That did not go through. Nothing changed.";
 /// Maximum bytes in canonical line-oriented ingress.
 pub const MAX_INGRESS_LINE_BYTES: usize = 16 * 1024;
 /// Maximum canonical bytes in one structured ingress payload.
@@ -4438,6 +4443,17 @@ impl ActionProviderRegistryBuilder {
     }
 }
 
+/// Engine-owned services retained while a composed action is prepared. Hook
+/// slices are the actual registered carry and actor movement chains, in order.
+pub(crate) type ComposedPreparationServices<'a> = (
+    &'a crate::participant::ParticipantRegistry,
+    &'a crate::World,
+    &'a crate::read_service::OwnerReadRegistry,
+    &'a crate::account::observation::AccountOracleBinding,
+    &'a [crate::module::HookReg],
+    &'a [crate::module::HookReg],
+);
+
 /// Immutable exact-action provider lookup.
 pub struct ActionProviderRegistry {
     entries: BTreeMap<crate::mechanics::DefinitionLocator, ActionProviderEntry>,
@@ -4995,13 +5011,7 @@ impl ActionProviderRegistry {
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
-        owners: (
-            &crate::participant::ParticipantRegistry,
-            &crate::World,
-            &crate::read_service::OwnerReadRegistry,
-            &crate::account::observation::AccountOracleBinding,
-            &[crate::module::HookReg],
-        ),
+        owners: ComposedPreparationServices<'_>,
     ) -> Result<
         (
             crate::composed::PreparedComposedTxn,
@@ -5053,13 +5063,7 @@ impl ActionProviderRegistry {
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
-        owners: Option<(
-            &crate::participant::ParticipantRegistry,
-            &crate::World,
-            &crate::read_service::OwnerReadRegistry,
-            &crate::account::observation::AccountOracleBinding,
-            &[crate::module::HookReg],
-        )>,
+        owners: Option<ComposedPreparationServices<'_>>,
         seed: F,
     ) -> Result<
         (
@@ -5092,13 +5096,7 @@ impl ActionProviderRegistry {
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
-        owners: Option<(
-            &crate::participant::ParticipantRegistry,
-            &crate::World,
-            &crate::read_service::OwnerReadRegistry,
-            &crate::account::observation::AccountOracleBinding,
-            &[crate::module::HookReg],
-        )>,
+        owners: Option<ComposedPreparationServices<'_>>,
         seed: F,
     ) -> Result<
         (
@@ -5129,8 +5127,10 @@ impl ActionProviderRegistry {
         );
         prepare_context =
             prepare_context.with_registered_transaction(&read_base, entry.registration_ordinal());
-        if let Some((registry, world, _, _, hooks)) = owners {
-            prepare_context = prepare_context.with_carry_hooks(hooks);
+        if let Some((registry, world, _, _, hooks, move_hooks)) = owners {
+            prepare_context = prepare_context
+                .with_carry_hooks(hooks)
+                .with_move_hooks(move_hooks);
             prepare_context =
                 prepare_context.with_participants(crate::participant::ParticipantPreparation::new(
                     registry,
@@ -5141,7 +5141,7 @@ impl ActionProviderRegistry {
                     invocation,
                 ));
         }
-        if let Some((_, world, reads, _, _)) = owners {
+        if let Some((_, world, reads, _, _, _)) = owners {
             prepare_context =
                 prepare_context.with_owner_reads(crate::read_service::PrepareReadContext::new(
                     reads,
@@ -5152,7 +5152,7 @@ impl ActionProviderRegistry {
                     &mut read_observations,
                 ));
         }
-        if let Some((_, world, _, accounts, _)) = owners {
+        if let Some((_, world, _, accounts, _, _)) = owners {
             prepare_context = prepare_context.with_account_observations(
                 crate::account::observation::AccountPrepareContext::new(
                     accounts,
@@ -5242,8 +5242,10 @@ impl ActionProviderRegistry {
             );
             trigger_context = trigger_context
                 .with_registered_transaction(&read_base, entry.registration_ordinal());
-            if let Some((registry, world, _, _, hooks)) = owners {
-                trigger_context = trigger_context.with_carry_hooks(hooks);
+            if let Some((registry, world, _, _, hooks, move_hooks)) = owners {
+                trigger_context = trigger_context
+                    .with_carry_hooks(hooks)
+                    .with_move_hooks(move_hooks);
                 trigger_context = trigger_context.with_participants(
                     crate::participant::ParticipantPreparation::new(
                         registry,
@@ -5255,7 +5257,7 @@ impl ActionProviderRegistry {
                     ),
                 );
             }
-            if let Some((_, world, reads, _, _)) = owners {
+            if let Some((_, world, reads, _, _, _)) = owners {
                 trigger_context =
                     trigger_context.with_owner_reads(crate::read_service::PrepareReadContext::new(
                         reads,
@@ -5266,7 +5268,7 @@ impl ActionProviderRegistry {
                         &mut read_observations,
                     ));
             }
-            if let Some((_, world, _, accounts, _)) = owners {
+            if let Some((_, world, _, accounts, _, _)) = owners {
                 trigger_context = trigger_context.with_account_observations(
                     crate::account::observation::AccountPrepareContext::new(
                         accounts,
@@ -5331,7 +5333,7 @@ impl ActionProviderRegistry {
             queue.complete_trigger(work)?;
         }
         queue.finish()?;
-        if let Some((_, world, _, _, _)) = owners {
+        if let Some((_, world, _, _, _, _)) = owners {
             read_observations.recheck(world)?;
             account_observations.recheck(world)?;
         }

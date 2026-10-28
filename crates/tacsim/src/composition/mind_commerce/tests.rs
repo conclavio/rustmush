@@ -569,7 +569,7 @@ fn registry_recall_configuration_is_explicit_stable_and_active_only() -> TestRes
     let definitions = actual.registry.definitions().ok_or("real definitions")?;
     check!(definitions.get_exact(&policy.action()?).is_ok());
     check!(
-        crate::composition::org_capability_vocabulary().contains(
+        crate::composition::domain_org_capability_vocabulary().contains(
             &mush_org::CapabilityId::new(REGISTRY_RECALL_CAPABILITY).ok_or("capability")?
         )
     );
@@ -603,9 +603,11 @@ fn registry_revocation_configuration_is_explicit_stable_and_active_only() -> Tes
     let actual = engine(&configured)?;
     let definitions = actual.registry.definitions().ok_or("real definitions")?;
     check!(definitions.get_exact(&policy.action()?).is_ok());
-    check!(crate::composition::org_capability_vocabulary().contains(
-        &mush_org::CapabilityId::new(REGISTRY_REVOCATION_CAPABILITY).ok_or("capability")?
-    ));
+    check!(
+        crate::composition::domain_org_capability_vocabulary().contains(
+            &mush_org::CapabilityId::new(REGISTRY_REVOCATION_CAPABILITY).ok_or("capability")?
+        )
+    );
     // Registration alone does not create an Org, scope, actor, grant or healthy
     // commerce world. The genuine child supplies those through real producers.
     check!(actual.world.module_state::<mush_org::OrgStore>().is_none());

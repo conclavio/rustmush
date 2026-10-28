@@ -204,6 +204,14 @@ const ALLOWED: &[Allowed] = &[
         dev_dep_activated: true,
     },
     Allowed {
+        package: "mush-testkit",
+        feature: "authoritative-store",
+        reason: "turned on by `mush-sim` and `mush-propagation` through \
+                 `[dev-dependencies]` edges, so workspace tests compile the explicit \
+                 Store-backed acknowledgement driver; production defaults omit it",
+        dev_dep_activated: true,
+    },
+    Allowed {
         package: "tacsim",
         feature: "fault-injection",
         reason: "16b cut T.3: the `@arena/fault` switch that arms cut T.2's panic hook \
@@ -231,6 +239,7 @@ const CENSUS: &[&str] = &[
     "mush-server/fault-injection",
     "mush-sim/debug-checks",
     "mush-sim/testkit",
+    "mush-testkit/authoritative-store",
     "mush-testkit/toy-ruleset",
     "mushd/tls",
     "tacsim/fault-injection",
@@ -299,8 +308,8 @@ fn the_scanner_still_finds_the_known_features() {
         .collect();
     assert_eq!(
         (declared.len(), crates.len()),
-        (14, 11),
-        "11 toggleable features across 8 crates at the WS24-S4 fold, plus mush-testkit/toy-ruleset \n         (16b cut R-b) and mush-pixel/encode (doc 21 cut G.3b): {declared:?}"
+        (15, 11),
+        "15 toggleable features across 11 crates, including the opt-in testkit Store driver: {declared:?}"
     );
 }
 

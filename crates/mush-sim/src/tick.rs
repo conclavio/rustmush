@@ -1345,7 +1345,7 @@ pub(crate) fn arm_action_descriptor(
 /// one domain's problem stopped the world. Now `Stale` is anything a later fire
 /// recovers from, `retryable` is a genuine transient, and `Integrity` is
 /// reserved for what should really stop the world.
-fn err(code: ActionErrorCode, message: &'static str) -> ActionError {
+pub(crate) fn err(code: ActionErrorCode, message: &'static str) -> ActionError {
     let retryable = matches!(
         code,
         ActionErrorCode::Busy | ActionErrorCode::Unavailable | ActionErrorCode::Conflict

@@ -324,6 +324,55 @@ pub enum TermPhase {
     Lapsed,
 }
 
+/// **The licence state a seal is read under** (doc 17h §2.1, cut M8a; doc 17 §10): the word a
+/// seal's line, the black box's open line and a Registry inspection carry beside the licence
+/// label. A seal holds no state of its own (M8a's A1: the state is passed to the line, never a
+/// `MindSeal` field, so every digest over a seal stands); the state is derived at the site that
+/// seals from the holding's [`TermPhase`] and its flags by
+/// `tacsim::minds::licence_state::licence_state_of`, with the precedence recalled > revoked >
+/// pending > phase.
+///
+/// Two words name a seal with no licence at all: `doctrine` (the ROM, the stock doctrine) and
+/// `draft` (a personal draft). Its wire is the snake_case word; it is defined here beside
+/// [`TermPhase`] because the Roll's inspection record names it and the Roll cannot name tacsim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SealLicenceState {
+    /// The stock doctrine: no licence to be in a state.
+    Doctrine,
+    /// A personal draft: the author's own, no licence.
+    Draft,
+    /// A filed licence inside its term.
+    Active,
+    /// A filed licence in its grace window.
+    Grace,
+    /// A filed licence whose term has not taken effect, or a pending transfer on it.
+    Pending,
+    /// A filed licence past its grace.
+    Lapsed,
+    /// A term the Registry revoked.
+    Revoked,
+    /// A revision the Registry recalled.
+    Recalled,
+}
+
+impl SealLicenceState {
+    /// The wire word, the one the lines print.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Doctrine => "doctrine",
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Grace => "grace",
+            Self::Pending => "pending",
+            Self::Lapsed => "lapsed",
+            Self::Revoked => "revoked",
+            Self::Recalled => "recalled",
+        }
+    }
+}
+
 /// A bounded eligibility interval and its actual issue instant. The independent
 /// eligibility origin prevents a late Grace issue from disguising an excessive
 /// original term. A parent-bound constructor must later prove where inherited
@@ -451,6 +500,7 @@ pub mod facts;
 pub(crate) mod owner_attestation;
 pub(crate) mod owner_qualification;
 pub mod paid_resale;
+pub mod registry_inspection;
 pub mod registry_recall;
 pub mod registry_revocation;
 pub(crate) mod withdrawal;

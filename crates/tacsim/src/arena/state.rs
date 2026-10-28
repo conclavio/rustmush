@@ -4140,6 +4140,8 @@ pub struct Arena {
     pub minds: BTreeMap<ObjId, crate::arena::mind::MindState>,
     /// Record-only latest accepted attribution, outside combat state_hash.
     pub(crate) order_watches: super::order_watch::OrderWatches,
+    /// Independent per-hull detachment authority and sequence fences.
+    pub(crate) detachment_commands: super::detachment::DetachmentStates,
     /// Immutable complete card definitions, admitted once and shared by key.
     pub cards: crate::arena::runtime_card::CardCatalog,
     /// Per-hull active program, profile generation and sampled rule authority.
@@ -4620,7 +4622,11 @@ impl Arena {
         let mut profiles = BTreeMap::new();
         let mut conditions = crate::arena::conditions::ConditionTable::default();
         for mut unit in units {
-            sealed.push((unit.id, unit.seal.sealed_line()));
+            // Doc 17h cut M8a (A1): the arena has no holding in hand, so the line's licence
+            // state is what the seal's origin alone can say (a filed seal reads `active`
+            // until cut M8e passes the holding's phase through the IC admission).
+            let licence_state = crate::minds::licence_state::origin_state(&unit.seal.origin);
+            sealed.push((unit.id, unit.seal.sealed_line(licence_state)));
             // **16b cut AF.1**: the heading and the window, in one function the
             // snapshot's decode calls too (`check_poses`), in the order they
             // always ran.
@@ -5063,6 +5069,7 @@ impl Arena {
             // the one `snapshot.rs`' decode sets too.
             minds: BTreeMap::new(),
             order_watches: super::order_watch::OrderWatches::default(),
+            detachment_commands: BTreeMap::new(),
             cards,
             profiles,
             // 17b cut M1b.1: no slot, nothing said, and the default floor —

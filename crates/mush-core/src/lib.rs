@@ -82,15 +82,18 @@ pub mod flags;
 pub mod geology_key;
 pub mod ledger;
 pub mod lock;
+pub mod locomotion;
 pub mod matchit;
 pub mod mechanics;
 pub mod module;
 pub mod obj;
+mod object_read;
 pub mod offer;
 pub mod onboarding;
 pub mod output;
 pub mod participant;
 pub mod perm;
+pub mod physical_transition;
 pub mod read_service;
 pub mod request;
 pub mod reserved_shell;
@@ -260,7 +263,9 @@ pub use engine::{
     register_engine_commands,
 };
 pub use flags::{Flags, Powers, Privileges, Role};
-pub use geology_key::{GeologyMac, GeologySecret, GeologySecretError, MAX_GEOLOGY_SECRET_VERSIONS};
+pub use geology_key::{
+    GeologyBoot, GeologyMac, GeologySecret, GeologySecretError, MAX_GEOLOGY_SECRET_VERSIONS,
+};
 pub use ledger::{
     BreachKind, ChunkFloors, ContiguityBreach, DEFAULT_ARCHIVE_PAGE_CHUNKS, Ledger,
     LedgerAppendError, LedgerApplyError, LedgerChunk, LedgerChunkOf, LedgerDoc, LedgerEntry,
@@ -295,16 +300,16 @@ pub use mechanics::{
 pub use module::{
     AMBIENT_IC_TIME_KEY, AbilityCall, AsyncCompletion, BOOT_MANIFEST_FORMAT, BOOT_MANIFEST_KEY,
     BootManifest, ConnTransition, ContextOutcome, DiscordInteraction, DiscordInteractionHandler,
-    EventHook, GameModule, HookPoint, HookReadContext, InputContext, InterfaceAbility,
-    InterfaceAbilityProvider, InterfaceError, InterfaceReply, JobQueueSpec, MAX_AMBIENT_BYTES,
-    MAX_AMBIENT_KEYS, MAX_INTERFACE_REPLY_BYTES, MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES,
-    MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS, Migration, ModError, ModuleBootData, ModuleCtx,
-    ModuleOp, ModuleWrite, PanelFeedHandle, Perceive, PersistDelegation, QueryHandler,
-    RecoveryReporter, Registrar, RelayRefusal, RelaySpeaker, ReplyAudience, STORE_READ_STALE_SECS,
-    STORE_READ_TIMEOUT_MS, Scene, SceneId, StackedContext, StateSlotDenied, StoreReadCompletion,
-    StoreReadError, StoreReadResult, TickCadence, TickHandler, WeatherQuery, WorldEvent,
-    WorldEventKind, WorldObserver, WxSnapshot, apply_store_read_completion, can_perceive,
-    is_concealed, perceives_via, room_ambient,
+    EventHook, GameModule, GeologyInstaller, HookPoint, HookReadContext, InputContext,
+    InterfaceAbility, InterfaceAbilityProvider, InterfaceError, InterfaceReply, JobQueueSpec,
+    MAX_AMBIENT_BYTES, MAX_AMBIENT_KEYS, MAX_INTERFACE_REPLY_BYTES, MAX_MODULE_KEY_BYTES,
+    MAX_MODULE_NAMESPACE_BYTES, MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS, Migration, ModError,
+    ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, OffLoopEgressReceiver, OffLoopSimulationHost,
+    PanelFeedHandle, Perceive, PersistDelegation, QueryHandler, RecoveryReporter, Registrar,
+    RelayRefusal, RelaySpeaker, ReplyAudience, STORE_READ_STALE_SECS, STORE_READ_TIMEOUT_MS, Scene,
+    SceneId, StackedContext, StateSlotDenied, StoreReadCompletion, StoreReadError, StoreReadResult,
+    TickCadence, TickHandler, WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot,
+    apply_store_read_completion, can_perceive, is_concealed, perceives_via, room_ambient,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{

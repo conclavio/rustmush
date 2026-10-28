@@ -103,17 +103,56 @@ pub fn draw_panel(
     if area.height < 2 {
         return;
     }
-    let [armour, weapons, contacts, talk] = Layout::horizontal([
-        Constraint::Length(ARMOUR_W),
-        Constraint::Fill(3),
-        Constraint::Fill(3),
-        Constraint::Fill(4),
-    ])
-    .spacing(1)
-    .areas(area);
     let seated = panel
         .cockpit
         .filter(|c| c.get("seated").and_then(Value::as_bool) != Some(false));
+    let detachment = seated
+        .and_then(|c| c.get("detachment"))
+        .and_then(super::detachment::decode);
+    let (armour, weapons, contacts, talk) = if let Some(detachment) = &detachment {
+        let [armour, weapons, contacts, roster, talk] = Layout::horizontal([
+            Constraint::Length(ARMOUR_W),
+            Constraint::Fill(3),
+            Constraint::Fill(3),
+            Constraint::Fill(4),
+            Constraint::Fill(4),
+        ])
+        .spacing(1)
+        .areas(area);
+        // Keep the recipient's current order above the roster at short terminal
+        // heights. The text cockpit has the complete, wrapped command strings.
+        let mut lines = vec![Line::from("p: roster + commands")];
+        if let Some(order) = &detachment.my_order {
+            lines.push(Line::from(format!("Order: {}", order.objective)));
+            lines.push(Line::from(format!("From: {}", order.from)));
+            lines.push(Line::from(format!(
+                "Reply: {}",
+                order
+                    .response
+                    .as_ref()
+                    .map_or_else(|| "none".into(), |r| r.to_uppercase())
+            )));
+        }
+        lines.extend(
+            detachment
+                .lines()
+                .into_iter()
+                .take(detachment.slots.len() + 1)
+                .map(Line::from),
+        );
+        column(frame, roster, "DETACHMENT", lines, false);
+        (armour, weapons, contacts, talk)
+    } else {
+        let [armour, weapons, contacts, talk] = Layout::horizontal([
+            Constraint::Length(ARMOUR_W),
+            Constraint::Fill(3),
+            Constraint::Fill(3),
+            Constraint::Fill(4),
+        ])
+        .spacing(1)
+        .areas(area);
+        (armour, weapons, contacts, talk)
+    };
     let (armour_lines, weapon_lines, contact_lines, title) = match seated {
         Some(c) => (
             armour_rows(c, panel.utf8, usize::from(armour.height.saturating_sub(1))),

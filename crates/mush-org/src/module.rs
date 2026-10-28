@@ -3,10 +3,12 @@
 //! world seam, and audited.
 //!
 //! ## Contracts (from the E1 design review)
-//! - **The in-RAM [`OrgStore`] slot is the single source of truth.** Every actor
-//!   mutation flows through [`crate::submit`], which validates on a clone (E1a's
+//! - **The in-RAM [`OrgStore`] owns the existing organization records.** Their actor
+//!   mutations flow through [`crate::submit`], which validates on a clone (E1a's
 //!   refuse-whole apply), installs the post-image, and persists exactly the
 //!   touched docs + an audit entry + the allocator `meta` on one write batch.
+//!   DT.2a operational grants use a separate typed family and the common
+//!   coordinator; the store contains no copy of those records.
 //! - **Authority is a pure projection of live records** (F3): a destroyed member
 //!   grants nothing because [`crate::OrgState::scrub_object`] deletes its records;
 //!   the `ObjDestroyed` observer persists those deletions.
@@ -187,6 +189,7 @@ pub struct OrgModule {
     providers: PredicateProviders,
     capabilities: CapabilityVocabulary,
     scope_use: ScopeUseProviders,
+    unit_authority: Option<crate::unit_authority::UnitAuthorityConfig>,
 }
 
 impl OrgModule {
@@ -220,6 +223,17 @@ impl OrgModule {
         self.scope_use = Arc::new(binders);
         self
     }
+
+    /// Enable typed operational grants using the actual owners' frozen facts.
+    /// This supplies no grants and does not change the existing org records.
+    #[must_use]
+    pub fn with_unit_authority(
+        mut self,
+        config: crate::unit_authority::UnitAuthorityConfig,
+    ) -> OrgModule {
+        self.unit_authority = Some(config);
+        self
+    }
 }
 
 impl GameModule for OrgModule {
@@ -232,6 +246,14 @@ impl GameModule for OrgModule {
         reg.state(OrgStore::default());
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
         crate::commands::register(reg)?;
+        if let Some(config) = &self.unit_authority {
+            crate::unit_authority::runtime::register(
+                reg,
+                config.facts.clone(),
+                config.requesters.clone(),
+                config.dependencies.clone(),
+            )?;
+        }
         Ok(())
     }
 

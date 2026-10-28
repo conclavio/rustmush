@@ -928,6 +928,24 @@ impl Engine {
         self.decision_keys = Some(keys);
     }
 
+    /// The registered off-loop simulation host, if any module installed one.
+    #[must_use]
+    pub fn off_loop_simulation_host(
+        &self,
+    ) -> Option<Arc<dyn crate::module::OffLoopSimulationHost>> {
+        self.registry.off_loop_simulation_host()
+    }
+
+    /// Install the operator's geology boot setting into the world via the
+    /// registered module geology installer, if any. Returns `true` when an
+    /// installer was registered and accepted the boot setting.
+    pub fn install_geology(&mut self, boot: crate::geology_key::GeologyBoot) -> bool {
+        let Some(installer) = self.registry.geology_installer() else {
+            return false;
+        };
+        installer(&mut self.world, boot)
+    }
+
     /// Root-secret versions still referenced by open or durably closed
     /// action windows. Feed this exact set into reference-aware key rotation.
     #[must_use]
@@ -2859,6 +2877,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |_| Ok(()),
         )
@@ -2901,6 +2920,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             ),
         )
     }
@@ -2951,6 +2971,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 schedules
@@ -3008,6 +3029,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 worker = Some(decisions.seed_lease(candidate, transition, txn).map_err(
@@ -3067,6 +3089,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 decisions
@@ -3122,6 +3145,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 decisions
@@ -3177,6 +3201,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 decisions
@@ -3234,6 +3259,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 fallback_fence = decisions
@@ -3291,6 +3317,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 fallback_fence = Some(
@@ -3355,6 +3382,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 decisions

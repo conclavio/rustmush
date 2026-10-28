@@ -594,6 +594,14 @@ pub enum EventKind {
         governed: bool,
         /// The licence the core holds, or `doctrine`.
         licence: SmolStr,
+        /// **The state that licence is read under** (doc 17h cut M8a; doc 17 §10): `doctrine`,
+        /// `draft`, or a filed licence's `active` / `grace` / `pending` / `lapsed` / `revoked` /
+        /// `recalled`, derived at the site that seals and passed to the line
+        /// (`MindSeal::sealed_line`'s parameter, never a seal field). M8a re-blessed every tape
+        /// that prints this line. Every seal M8a and later writes carries `Some`; a line written
+        /// before M8a (a kept store's tape) decodes with it absent and re-encodes byte for byte.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        licence_state: Option<crate::minds::licence_state::SealLicenceState>,
         /// The warrant principal, absent on the wire where nobody chose.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<CharacterRef>,
@@ -667,6 +675,12 @@ pub enum EventKind {
     Aborted,
     /// The match is void: nothing it derived may be committed.
     Void,
+    /// A delivered DT command, including its independent authority fence and
+    /// absolute optional deadline. Cancellation has no directive.
+    DetachmentCommanded {
+        unit: ObjId,
+        command: Box<super::detachment::DetachmentCommand>,
+    },
 }
 
 impl EventKind {
@@ -709,6 +723,7 @@ impl EventKind {
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",
             EventKind::Void => "void",
+            EventKind::DetachmentCommanded { .. } => "detachment_commanded",
         }
     }
 }
@@ -1443,6 +1458,7 @@ mod tests {
                 class: CoreClass::I,
                 governed: true,
                 licence: SmolStr::new_static("doctrine"),
+                licence_state: Some(crate::minds::licence_state::SealLicenceState::Doctrine),
                 principal: Some(CharacterRef::Character { id: ObjId(77) }),
             },
             EventKind::SortieClosed {
@@ -1510,6 +1526,31 @@ mod tests {
     /// words and their exact wire shapes — `principal`, `fault` and `ops`
     /// absent on the wire when `None` — and each round-trips, the `None`s
     /// included.
+    /// **Doc 17h cut M8a fix round 1 (F8): a `mind_sealed` line written before M8a decodes**
+    /// with its licence state absent and re-encodes byte for byte, so a kept store's tapes
+    /// read and every digest over them stands.
+    #[test]
+    fn m8a_a_pre_m8a_mind_sealed_line_decodes_without_a_state() {
+        let old = serde_json::json!({
+            "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
+            "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
+            "card_digest": "a".repeat(64), "class": "I", "governed": true,
+            "licence": "doctrine",
+        });
+        let decoded: EventKind = serde_json::from_value(old.clone()).expect("an old line decodes");
+        assert!(
+            matches!(
+                &decoded,
+                EventKind::MindSealed {
+                    licence_state: None,
+                    ..
+                }
+            ),
+            "{decoded:?}"
+        );
+        assert_eq!(serde_json::to_value(&decoded).expect("it encodes"), old);
+    }
+
     #[test]
     fn m3_the_four_mind_kinds_have_their_words_and_shapes() {
         let sortie = SortieId::in_match(7, ObjId(4));
@@ -1522,6 +1563,7 @@ mod tests {
             class: CoreClass::I,
             governed: true,
             licence: SmolStr::new_static("doctrine"),
+            licence_state: Some(crate::minds::licence_state::SealLicenceState::Doctrine),
             principal,
         };
         let cases = [
@@ -1531,7 +1573,7 @@ mod tests {
                     "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
                     "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
                     "card_digest": "a".repeat(64), "class": "I", "governed": true,
-                    "licence": "doctrine",
+                    "licence": "doctrine", "licence_state": "doctrine",
                     "principal": {"kind": "character", "id": 77},
                 }),
             ),
@@ -1541,7 +1583,7 @@ mod tests {
                     "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
                     "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
                     "card_digest": "a".repeat(64), "class": "I", "governed": true,
-                    "licence": "doctrine",
+                    "licence": "doctrine", "licence_state": "doctrine",
                 }),
             ),
             (

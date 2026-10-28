@@ -191,6 +191,151 @@ impl Receipt {
             cached_tokens: usage["prompt_tokens_details"]["cached_tokens"].as_u64(),
         }
     }
+
+    /// Extract receipt fields from a parsed JSON response while reading raw
+    /// unquoted decimal cost tokens directly from `bytes` before `serde_json`
+    /// `f64` rounding.
+    pub fn from_slice(bytes: &[u8], body: &Value, model: &Model) -> Self {
+        let mut receipt = Self::from_body(body, model);
+        if let Some(raw_cost) = raw_number_field(bytes, &["usage", "cost"]) {
+            receipt.cost = Amount::parse(raw_cost);
+            receipt.reported_cost = (raw_cost.len() <= 100).then(|| raw_cost.to_owned());
+        }
+        if let Some(raw_upstream) =
+            raw_number_field(bytes, &["usage", "cost_details", "upstream_inference_cost"])
+        {
+            receipt.upstream_inference_cost = Amount::parse(raw_upstream);
+        }
+        receipt
+    }
+}
+
+struct JsonCursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(&b) = self.bytes.get(self.pos) {
+            if matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn skip_string_raw(&mut self) -> Option<&'a [u8]> {
+        self.skip_ws();
+        let start = self.pos;
+        if self.bytes.get(self.pos) != Some(&b'"') {
+            return None;
+        }
+        self.pos += 1;
+        while let Some(&b) = self.bytes.get(self.pos) {
+            self.pos += 1;
+            match b {
+                b'\\' => {
+                    self.bytes.get(self.pos)?;
+                    self.pos += 1;
+                }
+                b'"' => return Some(&self.bytes[start..self.pos]),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn parse_key(&mut self) -> Option<String> {
+        let raw = self.skip_string_raw()?;
+        serde_json::from_slice(raw).ok()
+    }
+
+    fn skip_value_raw(&mut self) -> Option<&'a [u8]> {
+        self.skip_ws();
+        let start = self.pos;
+        match *self.bytes.get(self.pos)? {
+            b'"' => self.skip_string_raw(),
+            b'{' | b'[' => {
+                let mut depth = 0usize;
+                while let Some(&b) = self.bytes.get(self.pos) {
+                    match b {
+                        b'"' => {
+                            self.skip_string_raw()?;
+                        }
+                        b'{' | b'[' => {
+                            depth += 1;
+                            self.pos += 1;
+                        }
+                        b'}' | b']' => {
+                            depth = depth.checked_sub(1)?;
+                            self.pos += 1;
+                            if depth == 0 {
+                                return Some(&self.bytes[start..self.pos]);
+                            }
+                        }
+                        _ => self.pos += 1,
+                    }
+                }
+                None
+            }
+            _ => {
+                while let Some(&b) = self.bytes.get(self.pos) {
+                    if matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b',' | b'}' | b']') {
+                        break;
+                    }
+                    self.pos += 1;
+                }
+                (self.pos > start).then(|| &self.bytes[start..self.pos])
+            }
+        }
+    }
+
+    fn object_field(&mut self, name: &str) -> Option<&'a [u8]> {
+        self.skip_ws();
+        if self.bytes.get(self.pos) != Some(&b'{') {
+            return None;
+        }
+        self.pos += 1;
+        let mut matched = None;
+        loop {
+            self.skip_ws();
+            match *self.bytes.get(self.pos)? {
+                b'}' => {
+                    self.pos += 1;
+                    return matched;
+                }
+                b',' => {
+                    self.pos += 1;
+                }
+                _ => {}
+            }
+            let key = self.parse_key()?;
+            self.skip_ws();
+            if self.bytes.get(self.pos) != Some(&b':') {
+                return None;
+            }
+            self.pos += 1;
+            let val = self.skip_value_raw()?;
+            if key == name {
+                matched = Some(val);
+            }
+        }
+    }
+}
+
+fn raw_number_field<'a>(mut slice: &'a [u8], path: &[&str]) -> Option<&'a str> {
+    for &segment in path {
+        slice = JsonCursor::new(slice).object_field(segment)?;
+    }
+    let text = std::str::from_utf8(slice).ok()?.trim();
+    let first = text.as_bytes().first()?;
+    (first.is_ascii_digit() || *first == b'-').then_some(text)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -745,13 +890,26 @@ mod tests {
         for invalid in ["-1", "NaN", "1e-19", "1e999", "1e-2147483648"] {
             assert!(Amount::parse(invalid).is_none());
         }
-        let body: Value =
-            serde_json::from_str(r#"{"usage":{"cost":0.100000000000000001}}"#).unwrap();
+        let raw = br#"{"usage":{"cost":0.100000000000000001,"cost_details":{"upstream_inference_cost":0.000000000000000002}}}"#;
+        let body: Value = serde_json::from_slice(raw).unwrap();
+        let receipt = Receipt::from_slice(raw, &body, &model().settings);
+        assert_eq!(receipt.cost.unwrap().to_string(), "0.100000000000000001");
         assert_eq!(
-            Receipt::from_body(&body, &model().settings)
-                .cost
-                .unwrap()
-                .to_string(),
+            receipt.reported_cost.as_deref(),
+            Some("0.100000000000000001")
+        );
+        assert_eq!(
+            receipt.upstream_inference_cost.unwrap().to_string(),
+            "0.000000000000000002"
+        );
+        assert_eq!(
+            Receipt::from_body(
+                &json!({"usage":{"cost":"0.100000000000000001"}}),
+                &model().settings
+            )
+            .cost
+            .unwrap()
+            .to_string(),
             "0.100000000000000001"
         );
         assert_eq!(

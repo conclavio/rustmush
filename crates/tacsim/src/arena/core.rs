@@ -482,7 +482,7 @@ impl Arena {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use mush_tactics::{
         CapabilityInit, CapabilityKey, CellSpec, ComponentId, ComponentSpec, ConditionId,
         InstallPoint, RulesValue, SectionId, UnitMutationOp, UnitMutationPlan,
@@ -504,7 +504,7 @@ mod tests {
 
     /// A hull section with one core component whose `core_class` cell holds
     /// `init` under `max`, and the capability over it.
-    fn cored(init: i64, max: i64) -> TacticalUnit {
+    pub(crate) fn cored(init: i64, max: i64) -> TacticalUnit {
         let mut spec = mush_tactics::UnitSpec {
             definition: dref("unit", "tacsim.unit.line_tank"),
             sections: vec![mush_tactics::SectionSpec {

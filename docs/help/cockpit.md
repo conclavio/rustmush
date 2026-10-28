@@ -443,6 +443,9 @@ from the pilot's dormant mind. Authoring those think rules comes with mindcraft.
 
 ## Commanding the machines
 
+The commands in this section use the simulator's usual squads. For a numbered
+group containing both players and machines, use the practice detachment below.
+
 When the simulator fills the empty pods with machines (`SIM AI`), they fight on
 their own minds: Standard Doctrine, at the preset the side's lead (or staff)
 chose with `SIM AI MIND`, or on Line (`help minds`). `ORDER` tells them what to
@@ -548,6 +551,41 @@ you still have room for one is `ORDER ALL would put 5 squads under you; your spa
 is 4. Order them one at a time.`; and the thirteenth order in a minute is `You
 have given 12 orders in the last minute; wait.` A target or a spot your panel
 does not know is `No such contact.`, as it is everywhere else.
+
+## Practice detachments
+
+While seated in a running OOC match, type `+sortie/practice` to enable your
+practice group of up to six units. `+sortie/roster` shows its numbered slots,
+current leader and order commands. The first available player in slot order
+leads; command passes on when that player becomes unavailable and returns after
+an earlier player has been available briefly. A detachment leader need not be
+the simulator side's lead.
+
+Use the commands printed by the current roster:
+
+  ORDER DT:<id>:<revision>:<term> <slot|ALL> <objective>
+  WILCO DT:<id>:<revision> <sequence>
+  NEGATIVE DT:<id>:<revision> <sequence>
+
+The leader may order one slot or `ALL`. Objectives are `HOLD`, `ADVANCE <spot>`,
+`ENGAGE [contact]`, `WITHDRAW`, `SCREEN <bearing>`, `SUPPORT <callsign>` and
+`RELEASE`; `HOLD FIRE` may follow an objective other than `RELEASE`. A standing
+order continues until replaced or released, including through succession.
+If a command is stale, read `+sortie/roster` again and use its new prefill.
+
+The web cockpit shows the roster, your delivered order and response, with
+buttons that fill the input box. With the picture focused, **F1–F6 fill an order
+for slots 1–6**. The SSH picture uses the same keys; `p` returns to the text
+cockpit, whose status pane contains the full roster and commands. `ALL` and
+reply commands are also printed by `+sortie/roster`. Press Enter to submit;
+filling the box sends nothing. Outside practice detachments the picture keeps
+its usual F1 `ORDER ALL` and F2–F6 squad shortcuts.
+
+An order to a player is advisory. `WILCO` and `NEGATIVE` record that player's
+response; neither takes over their controls nor proves the order was attempted
+or completed. Delivery and action are separate. This is OOC practice only:
+after a server restart, enable the detachment again; its old order history and
+machine command ownership do not resume.
 
 ## Refusals
 
@@ -755,8 +793,9 @@ While the picture is showing (the bottom line names the keys):
   t, T           lock the next or previous contact: hostiles first, then
                  unidentified, then your own side, nearest first in each;
                  with nothing locked, the first
-  F1             the chat line opened with `ORDER ALL ` ready; F2 to F6 with
-                 `ORDER 2 ` to `ORDER 6 `. Enter sends it, Esc drops it
+  F1–F6          practice detachment: an order for the corresponding slot;
+                 otherwise F1 opens `ORDER ALL `, F2–F6 `ORDER 2 ` to `ORDER 6 `.
+                 Enter sends it, Esc drops it
   p              the text cockpit, and back
   Enter          open the chat line
 
@@ -844,8 +883,9 @@ it the keys, the same letters as the terminal's cockpit:
   g              a volley (`FIRE ALL`)
   t, T           lock the next or previous contact: hostiles first, then
                  unidentified, then your own side, nearest first in each
-  F1             the input box opened with `ORDER ALL ` ready; F2 to F6 with
-                 `ORDER 2 ` to `ORDER 6 `. Enter sends it
+  F1–F6          practice detachment: an order for the corresponding slot;
+                 otherwise F1 opens `ORDER ALL `, F2–F6 `ORDER 2 ` to `ORDER 6 `.
+                 Enter sends it
 
 Each of these sends its line exactly as if you had typed it, so the arena
 answers in the comms as it would; a key held with Ctrl, Alt or Cmd is left to

@@ -30,15 +30,18 @@
 //! authored source, a seed is deterministic, and no `WorldCommand::ModuleAsyncDone`
 //! arm is added.
 //!
-//! # The dependency claim
+//! # The dependency boundary
 //!
-//! `tacsim -> {mush-core, mush-sim}` and the serde/tracing vocabulary, and
-//! **nothing else** — no economy, org, party, faction, market or tactics edge.
-//! `mush-sim` is the one substantive edge and it is [`mush_sim::RouteDef`]'s: 10b §3.1
-//! put the type here and §3.6 made `mush-sim` its consumer, which is a cycle, so the
-//! **type** lives in `mush-sim` beside `Leg` and this crate provides its **data** —
-//! `mush-tactics/src/mobility.rs`'s stated pattern. `cargo tree -p tacsim` is
-//! the test.
+//! `tacsim` is the game's simulation and pilot-sheet crate. It depends on the
+//! core/simulation/economy/market/tactics/mind substrate crates it directly
+//! integrates with (`mush-core`, `mush-sim`, `mush-tactics`, `mush-propagation`,
+//! `mush-economy`, `mush-inventory`, `mush-industry`, `mush-market`, `mush-roll`,
+//! `mush-org`, `mush-faction`, `mush-canon`, `mush-atlas`, `mush-content`,
+//! `mush-ruleset`, `mush-npc`, `mush-llm`, `mush-mind`, `mush-comsys`,
+//! `mush-jobs`), while full server module composition (including host-level and
+//! unrelated player-facing modules such as `mush-campaign`, `mush-housing`,
+//! `mush-mail`, `mush-party`, `mush-privileges`, `mush-scenes`, `mush-script`,
+//! `mush-weather`, and `mush-worldgen`) lives in `mush-composition`.
 //!
 //! # Where the bytes come from
 //!
@@ -122,6 +125,7 @@ pub mod definitions;
 /// structured request that produces one, and the cost table the owner's cost run
 /// prints. The arena imports only [`deliberation::order`], which is data.
 pub mod deliberation;
+pub mod detachment;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
@@ -160,7 +164,7 @@ pub mod relay_foundry;
 pub mod relay_loss;
 pub mod relay_metric;
 pub mod relay_mobile;
-mod relay_service;
+pub mod relay_service;
 pub mod relay_world;
 pub mod seed;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
@@ -378,6 +382,9 @@ pub struct TacsimRuleset {
     coverage: Option<Box<underwriting::registration::Registration>>,
     coverage_families: Option<underwriting::families::Families>,
     registry_commerce: Option<Box<minds::registry::composition::Registration>>,
+    /// Doc 17h cut M8a: the Registry inspection (`@registry/inspect`), composed by
+    /// `MindCommerce::with_registry_inspection`.
+    registry_inspection: Option<Box<minds::registry_inspection::Composition>>,
     conduct_trials: Option<Box<minds::registry::conduct::composition::Registration>>,
     fork_material: Option<mush_core::DefinitionRef>,
     marked_registry: Option<mush_core::DefinitionRef>,
@@ -405,6 +412,9 @@ pub struct TacsimRuleset {
     /// readiness report's world rate and registers the port tick's probe (doc 18
     /// cut IC5).
     test_world: bool,
+    /// Composition pairs this layer with Org's live unit-authority reader.
+    /// Bare fixture layers leave it off and report authority as unavailable.
+    unit_authority: bool,
     /// **Doc 18 cut IC5 (D-18-33; lead ruling L2)** — `mush-inventory`'s handle
     /// cell, handed over by the composition root that also names `tacsim` a
     /// quantity delegate (`composition::server_modules_with_tacsim`). `None` on a
@@ -422,6 +432,15 @@ pub use minds::ic_sortie::{
     IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
 };
 impl TacsimRuleset {
+    /// Request the live unit-authority reader as Tacsim, when composition also
+    /// installs Org's configured provider and authorizes Tacsim as a requester.
+    /// An incomplete composition refuses registration; no World mirror is used.
+    #[must_use]
+    pub fn with_unit_authority(mut self) -> Self {
+        self.unit_authority = true;
+        self
+    }
+
     /// Add the real unarmed proving carrier before capturing Registry or
     /// hardware catalogue references. This loads content, not qualification.
     pub fn with_conduct_carrier(mut self) -> Result<Self, ModError> {
@@ -515,6 +534,7 @@ impl TacsimRuleset {
             coverage: None,
             coverage_families: None,
             registry_commerce: None,
+            registry_inspection: None,
             conduct_trials: None,
             fork_material: None,
             marked_registry: None,
@@ -528,6 +548,7 @@ impl TacsimRuleset {
             cfg,
             loaded,
             test_world: false,
+            unit_authority: false,
             inventory: None,
             goods,
         }
@@ -719,6 +740,7 @@ impl GameModule for TacsimRuleset {
         // in after composition (`surface::install_geology`), the status the boot pass decides
         // once, the bodies' tables and the site ground cache. Never persisted.
         reg.state(surface::GeologyState::default());
+        reg.geology_installer(std::sync::Arc::new(surface::install_geology))?;
         // Doc 20 cut SM.6 (§3.4, D2): the sites' opening states the Site readiness line reads,
         // RAM only, beside the geology slot (never `PortTickState`, which a fire takes whole).
         reg.state(surface::opening::SiteOpenings::default());
@@ -886,6 +908,7 @@ impl GameModule for TacsimRuleset {
         // exits and aliases still work). Beside the lobby and for the same
         // reason.
         match_::cockpit::register(reg)?;
+        detachment::live::register(reg)?;
         // 16b cut AH.1 (16c N18): the first-time hints — `@tutorial` and the
         // lobby's `Moved` observer, under the `LegacyPostImage` classification
         // the cockpit hands back. Unconditional like its neighbours: the verb
@@ -910,6 +933,8 @@ impl GameModule for TacsimRuleset {
             port::burn::burn_table(&catalog, self.goods.clone()),
             self.ic_minds.as_deref(),
             self.coverage.as_deref(),
+            self.registry_inspection.as_deref(),
+            self.unit_authority,
         )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
@@ -971,8 +996,8 @@ impl GameModule for TacsimRuleset {
                 // holdings' grants took (`manifest` is `self.original_holdings`,
                 // checked above). It adds a grant and no service: the market's
                 // registration is already among the launch's services, so the
-                // format-2 Active launch composes 33 services and 35 grants. A
-                // refusal fails TacSim's registration, as those grants' do.
+                // launch's complete read budget is pinned by the composition
+                // tests. A refusal fails registration, as those grants' do.
                 let market = Some(mush_market::mind_commands::MarketCommandReader::request(
                     reg, manifest,
                 )?);
@@ -984,6 +1009,7 @@ impl GameModule for TacsimRuleset {
             || self.ic_minds.is_some()
             || self.coverage.is_some()
             || self.conduct_trials.is_some()
+            || self.registry_inspection.is_some()
         {
             return Err(ModError::msg(
                 "fork material requires actual Registry registration",
@@ -1003,6 +1029,9 @@ impl GameModule for TacsimRuleset {
         };
         minds::ic_sortie::boot::load(ctx, &data, self.ic_minds.as_deref())?;
         underwriting::boot::load(ctx, &data, self.coverage.as_deref())?;
+        // Doc 17h cut M8a: the inspection's readiness, once the Roll, Org and Economy
+        // owners are up (a roster without the slot captures nothing).
+        minds::registry_inspection::capture(ctx)?;
         quest::evidence::boot(ctx, &data)?;
         let kv: Vec<(smol_str::SmolStr, serde_json::Value)> = data
             .kv

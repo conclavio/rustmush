@@ -27,7 +27,7 @@ impl RevisionAdapter for RevisionRules {
 }
 
 /// Historical source audit only. This adapter is never the authoring save
-/// boundary and grants no certificate or execution authority. Known API4 rows
+/// boundary and grants no certificate or execution authority. Known API4/API5 rows
 /// retain their original parser/metadata validity; current rows still receive
 /// full current validation. Re-conformance separately compiles for current use.
 #[derive(Clone, Copy, Debug, Default)]
@@ -187,6 +187,23 @@ mod tests {
         assert!(
             RetainedRevisionRules
                 .validate("fn think(v,c) { missing_name; }", &envelope())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retained_api5_keeps_its_metadata_without_granting_current_save_authority() {
+        let source = "const MIND = #{name: \"Retained\", api: 5, class: \"discretion\", role: \"combat\", core: \"I\"}; fn think(v,c) {}";
+        let mut old = envelope();
+        old.mind_abi = "rhai=1.26.0;api=5;stock=2".into();
+        let before = serde_json::to_vec(&old).unwrap();
+        assert!(RetainedRevisionRules.validate(source, &old).is_ok());
+        assert!(validate_retained_registry(source, &old).is_ok());
+        assert!(RevisionRules.validate(source, &old).is_err());
+        assert_eq!(serde_json::to_vec(&old).unwrap(), before);
+        assert!(
+            RetainedRevisionRules
+                .validate(&source.replace("api: 5", "api: 6"), &old)
                 .is_err()
         );
     }

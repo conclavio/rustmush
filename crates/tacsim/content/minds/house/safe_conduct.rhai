@@ -61,8 +61,9 @@ fn think(view, card) {
     if order == () || order.expires_ms <= t_ms() {
         cease(view); hold(); return;
     }
-    if !("order_until" in this) || this.order_until != order.expires_ms {
-        this.order_until = order.expires_ms;
+    let order_key = if order.identity == () { order.expires_ms } else { order.identity };
+    if !("order_until" in this) || this.order_until != order_key {
+        this.order_until = order_key;
         this.goal = ();
         this.blocked = false;
         this.retry_at = 0;

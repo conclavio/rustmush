@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mush_core::{
-    Audience, BehaviorBinding, BehaviorId, Effects, GOD, GameModule, LIMBO, ModuleBootData,
-    ModuleWrite, ObjId, ObjKind, Outbox, WorldEvent,
+    Audience, BehaviorBinding, BehaviorId, Effects, GOD, GameModule, LIMBO, ModuleBootData, ObjId,
+    ObjKind, Outbox, WorldEvent,
 };
 use mush_economy::{EconomySnapshot, EconomyStore, VaultId, VaultStatus};
 use mush_proto::OutputEvent;
@@ -30,8 +30,11 @@ use mush_sim::{
     InteriorCustodyProvider, PlacementRecord, SimulationModule, SpatialParent, SpatialState,
     StationId, UnplacedInfo,
 };
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::{authoritative::AcknowledgedWorld as TestWorld, text_of};
 use smol_str::SmolStr;
+
+#[path = "support/space_command.rs"]
+mod space_command;
 
 // ---- rig -------------------------------------------------------------------
 
@@ -74,13 +77,13 @@ fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
     })
 }
 fn ok(tw: &mut TestWorld, line: &str) -> String {
-    let events = tw.run(GOD, line);
+    let events = space_command::run(tw, GOD, line);
     let t = texts(&events);
     assert!(!has_error(&events), "{line:?} was refused: {t}");
     t
 }
 fn refused(tw: &mut TestWorld, line: &str) -> String {
-    let events = tw.run(GOD, line);
+    let events = space_command::run(tw, GOD, line);
     let t = texts(&events);
     assert!(has_error(&events), "{line:?} was accepted: {t}");
     t
@@ -179,30 +182,7 @@ fn hangar_vault(tw: &mut TestWorld, fx: &Fx) {
 /// Drain every queued module op once and fold it per namespace (a later
 /// `JsonSet` wins, a `Del` removes) — the kv each module would boot from.
 fn fold_all(tw: &mut TestWorld) -> HashMap<SmolStr, ModuleBootData> {
-    let mut kv: HashMap<SmolStr, Vec<(SmolStr, serde_json::Value)>> = HashMap::new();
-    for op in tw.take_module_ops() {
-        let ns = kv.entry(op.ns.clone()).or_default();
-        match op.op {
-            ModuleWrite::JsonSet { key, value } => {
-                ns.retain(|(k, _)| *k != key);
-                ns.push((key, value));
-            }
-            ModuleWrite::Del { key } => ns.retain(|(k, _)| *k != key),
-            ModuleWrite::StreamAppend { .. } => {}
-        }
-    }
-    kv.into_iter()
-        .map(|(ns, kv)| {
-            (
-                ns,
-                ModuleBootData {
-                    kv,
-                    streams: HashMap::new(),
-                    ..Default::default()
-                },
-            )
-        })
-        .collect()
+    tw.persisted_boot()
 }
 
 /// A **cold** reboot: a brand-new engine with `mods` registered, the same world
@@ -210,10 +190,12 @@ fn fold_all(tw: &mut TestWorld) -> HashMap<SmolStr, ModuleBootData> {
 /// is the shape that exposes module ORDER — an in-place `modules_loaded` leaves
 /// the previous `SpatialState` in its slot and hides it.
 fn cold_reboot(
+    source: &TestWorld,
     mods: Vec<Box<dyn GameModule>>,
     boot_data: HashMap<SmolStr, ModuleBootData>,
 ) -> (TestWorld, Fx) {
     let mut tw = TestWorld::with_modules(mods);
+    tw.adopt_store(source);
     let fx = fixture(&mut tw);
     tw.modules_loaded(boot_data);
     (tw, fx)
@@ -491,7 +473,7 @@ fn a_reboot_with_interior_deposits_freezes_nothing() {
     ok(&mut tw, &format!("@vault/deposit #{}=0", fx.atlas.0));
     let data = fold_all(&mut tw);
 
-    let (tw2, fx2) = cold_reboot(modules(), data);
+    let (tw2, fx2) = cold_reboot(&tw, modules(), data);
     assert_eq!(fx.atlas, fx2.atlas, "the fixture rebuilds the same ids");
     assert!(
         !store(&tw2).is_frozen(),
@@ -534,7 +516,7 @@ fn booting_the_economy_before_the_simulation_is_what_the_order_fix_prevents() {
     ok(&mut tw, &format!("@vault/deposit #{}=0", fx.atlas.0));
     let data = fold_all(&mut tw);
 
-    let (tw2, fx2) = cold_reboot(modules_economy_first(), data);
+    let (tw2, fx2) = cold_reboot(&tw, modules_economy_first(), data);
     let asset = snap(&tw2).asset(fx2.atlas).expect("titled");
     assert!(
         asset.frozen,

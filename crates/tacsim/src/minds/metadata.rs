@@ -35,6 +35,7 @@ pub(crate) fn validate_retained_registry(
     let api = match envelope.mind_abi.as_str() {
         abi if abi == super::MIND_ABI => super::API_VERSION,
         "rhai=1.26.0;api=4;stock=2" => 4,
+        "rhai=1.26.0;api=5;stock=2" => 5,
         _ => return Err(invalid("mind_abi", "unsupported retained Registry ABI")),
     };
     validate_for_api(source, envelope, api)

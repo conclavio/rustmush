@@ -118,6 +118,15 @@ pub(crate) const BAD_PRICE: &str =
 pub(crate) const RECALLING: &str = "Recalling filed revision {filed}.";
 pub(crate) const REVOKING: &str = "Revoking licence {licence}.";
 pub(crate) const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
+/// Doc 17h cut M8a: `@registry/inspect <hull>` staged, after the facts printed.
+pub(crate) const INSPECTING: &str = "Inspecting hull #{hull}.";
+/// M8a: the inspection is not composed here (no slot).
+pub(crate) const INSPECTION_OFF: &str = "Registry inspection is not configured here.";
+/// M8a: not a Registry operator: the driver's one sentence (the one a refused
+/// `@registry/revoke` gets), naming nothing — the driver's own constant.
+pub(crate) const INSPECT_REFUSED: &str = mush_core::action::SUBMISSION_REFUSED_LINE;
+/// M8a: a hull the programme does not know, or one with no unit.
+pub(crate) const NO_SUCH_HULL: &str = "No such hull.";
 
 /// 17g C2d: the brief's words for the named buyer's accepts, which list and
 /// select the live offers naming the actor (`trade::offer_lines`,

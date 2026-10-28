@@ -137,6 +137,7 @@ impl Harness {
 
 fn order(objective: MindObjective) -> FrameOrder {
     FrameOrder {
+        identity: None,
         squad: "red-1".into(),
         objective,
         hold_fire: false,
@@ -230,7 +231,7 @@ fn coprates_has_exact_independent_source_and_provisional_profiles() -> TestResul
     }
     check_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(3)
     );
     check_eq!(
         manifest.get("status").and_then(|v| v.as_str()),

@@ -305,6 +305,7 @@ pub mod condition;
 pub mod conditions;
 pub mod core;
 pub mod damage;
+pub mod detachment;
 pub mod doctrine;
 pub mod hash;
 pub mod heat;

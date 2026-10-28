@@ -7,7 +7,7 @@
 mod commands;
 pub mod content;
 pub(crate) mod economy;
-pub(crate) mod facts;
+pub mod facts;
 mod movement;
 pub(crate) mod store;
 

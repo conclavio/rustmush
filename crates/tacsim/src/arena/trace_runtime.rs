@@ -261,6 +261,7 @@ fn intent_words(intent: &IntentKind, view: &MindView) -> String {
         IntentKind::Profile { index } => format!("profile {}", u16::from(*index) + 1),
         // A mind cannot issue these. No command/private object payload is echoed.
         IntentKind::Order(_) => "standing order".into(),
+        IntentKind::DetachmentCommand(_) => "detachment order".into(),
         IntentKind::ReleaseOrder { .. } => "release standing order".into(),
     }
 }

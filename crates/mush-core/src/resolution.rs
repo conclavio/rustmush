@@ -179,6 +179,7 @@ pub struct PrepareCtx<'a> {
     participants: Option<crate::participant::ParticipantPreparation<'a>>,
     owner_error: Option<crate::participant::ParticipantError>,
     carry_hooks: Option<&'a [crate::module::HookReg]>,
+    move_hooks: Option<&'a [crate::module::HookReg]>,
     owner_reads: Option<crate::read_service::PrepareReadContext<'a>>,
     accounts: Option<crate::account::observation::AccountPrepareContext<'a>>,
     registered_transaction: Option<(
@@ -216,6 +217,7 @@ impl<'a> PrepareCtx<'a> {
             participants: None,
             owner_error: None,
             carry_hooks: None,
+            move_hooks: None,
             owner_reads: None,
             accounts: None,
             registered_transaction: None,
@@ -741,6 +743,10 @@ impl<'a> PrepareCtx<'a> {
         self.carry_hooks = Some(hooks);
         self
     }
+    pub(crate) fn with_move_hooks(mut self, hooks: &'a [crate::module::HookReg]) -> Self {
+        self.move_hooks = Some(hooks);
+        self
+    }
 
     pub(crate) fn with_participants(
         mut self,
@@ -866,6 +872,77 @@ impl<'a> PrepareCtx<'a> {
                 return Err(crate::participant::ParticipantError::Authority);
             }
             Ok(())
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
+    /// Observe the actual actor's ordinary exit or HOME route using the installed
+    /// locks and MoveAttempt hooks. The result is inert: it moves nothing and
+    /// grants no publication capability or command-dispatch admission.
+    ///
+    /// The registered transaction supplies the committed typed-state lens; a
+    /// caller cannot substitute a principal, actor, hook list or destination.
+    /// Any refusal poisons preparation and transaction even if caught.
+    pub fn admit_locomotion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        request: crate::locomotion::LocomotionRequest,
+    ) -> Result<crate::locomotion::LocomotionDecision, crate::participant::ParticipantError> {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let lens = txn
+                .read_preimage(base, provider)
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            let hooks = self
+                .move_hooks
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            self.participants
+                .as_ref()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?
+                .admit_locomotion(self.commit_token, hooks, lens, request)
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
+    /// Recheck one inert admission against this exact invocation/action/commit,
+    /// its object preimages and the current registered MoveAttempt hooks.
+    /// This does not retain an installation fence or publish a movement.
+    /// Refusal poisons both preparation and transaction even if caught.
+    pub fn require_locomotion_admission(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        admission: &crate::locomotion::LocomotionAdmission,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let lens = txn
+                .read_preimage(base, provider)
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            let hooks = self
+                .move_hooks
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            self.participants
+                .as_ref()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?
+                .require_locomotion_admission(self.commit_token, hooks, lens, admission)
         })();
         if let Err(error) = &result {
             txn.poison_owner_read();
@@ -1032,6 +1109,49 @@ impl<'a> PrepareCtx<'a> {
                 .map_err(|_| crate::participant::ParticipantError::Authority)?;
             self.with_shell(|p, c| {
                 p.exchange_core_component(service, txn, c, order, facts, hooks, base, provider)
+            })
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
+    /// Prepare the exact registered Sim participant and its Core-built object
+    /// projections together. Any refusal poisons the complete preparation.
+    pub fn prepare_physical_transition<
+        P: crate::participant::OwnerParticipant<
+                Output = crate::physical_transition::PhysicalTransitionDraft,
+            >,
+    >(
+        &mut self,
+        service: &crate::physical_transition::CorePhysicalTransitions<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        request: P::Request,
+    ) -> Result<
+        crate::physical_transition::PhysicalTransitionReceipt,
+        crate::participant::ParticipantError,
+    > {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let hooks = std::sync::Arc::from(
+                self.carry_hooks
+                    .ok_or(crate::participant::ParticipantError::Unavailable)?,
+            );
+            let move_hooks = std::sync::Arc::from(
+                self.move_hooks
+                    .ok_or(crate::participant::ParticipantError::Unavailable)?,
+            );
+            self.with_shell(|p, c| {
+                p.prepare_physical_transition(
+                    service, txn, c, request, hooks, move_hooks, base, provider,
+                )
             })
         })();
         if let Err(error) = &result {

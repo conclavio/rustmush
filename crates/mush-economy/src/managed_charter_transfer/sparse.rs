@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 /// Only affected fold entries are copied. A large retained journal is never
 /// cloned merely to preflight one bounded purchase.
 pub(super) struct PendingFold {
+    title_lineage: crate::fold::TitleLineageDelta,
     lineage: Option<crate::registry_filing::charter_transfer::lineage::Lineage>,
     before_lineage: Option<crate::registry_filing::charter_transfer::lineage::Lineage>,
     before_asset: Option<EconomicAsset>,
@@ -132,6 +133,8 @@ impl PendingFold {
                 (None, None, None)
             };
         Ok(Self {
+            title_lineage: crate::fold::TitleLineageDelta::prepare(state, tx)
+                .ok_or_else(refused)?,
             lineage,
             before_lineage,
             before_asset,
@@ -151,10 +154,12 @@ impl PendingFold {
         })
     }
     pub(super) fn matches(&self, state: &FoldState) -> bool {
-        self.before_lineage.as_ref().is_none_or(|row| {
-            state.charter_transfer_receipts.lineage(row.object()) == Some(row)
-                && state.journal_assets.get(&row.object()) == self.before_asset.as_ref()
-        }) && self.history.matches(&state.charter_pending_receipts)
+        self.title_lineage.matches(state)
+            && self.before_lineage.as_ref().is_none_or(|row| {
+                state.charter_transfer_receipts.lineage(row.object()) == Some(row)
+                    && state.journal_assets.get(&row.object()) == self.before_asset.as_ref()
+            })
+            && self.history.matches(&state.charter_pending_receipts)
             && self.before.max_hold_id == state.max_hold_id
             && self.before.max_txid == state.max_txid
             && self.before.covered == state.covered_seq
@@ -173,6 +178,7 @@ impl PendingFold {
                 })
     }
     pub(super) fn apply(self, state: &mut FoldState) {
+        self.title_lineage.apply(state);
         if let Some(lineage) = self.lineage {
             state
                 .journal_assets

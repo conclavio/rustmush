@@ -113,6 +113,7 @@ mod plan;
 mod record;
 pub mod registry_filing;
 mod snapshot;
+pub mod unit_authority;
 
 // E4a — clocks, holds, obligations, contracts (still pure).
 mod clock;

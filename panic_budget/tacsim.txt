@@ -4,4 +4,6 @@
 #   PANIC_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test panic_budget
 # A raise is a reviewed diff, not a rounding error.
 # tier: ceiling
-5
+# DT.2a: three composition-time parses of fixed owner IDs for the unit-authority
+# reader's requester/dependency roster. No runtime or user-provided IDs enter.
+8

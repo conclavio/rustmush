@@ -1,0 +1,507 @@
+#![cfg(test)]
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use mush_core::{GOD, LIMBO};
+use mush_sim::data::{
+    HostAssignments, HostStations, InteriorSpaceRecord, PlacementRecord, SpaceAnchor,
+    SpatialParent, StationSpec, passive_rules_value,
+};
+use mush_sim::focus::ActiveFocus;
+use mush_tactics::detachment::Slot;
+use mush_tactics::detachment::planning::{Consent, Plan, PlanId, SlotPlan};
+
+use super::*;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+struct Fixture {
+    world: Box<World>,
+    draft: Draft,
+    actor: ObjId,
+    unit: ObjId,
+    carrier: ObjId,
+    bay: ObjId,
+    console: ObjId,
+    side_room: ObjId,
+    station: StationId,
+}
+
+impl Fixture {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let mut world = Box::new(World::new_minimal());
+        let carrier = world.create(ObjKind::Thing, "Private carrier name", GOD, Some(LIMBO))?;
+        let bay = world.create(ObjKind::Room, "Private bay name", GOD, None)?;
+        let unit = world.create(ObjKind::Thing, "Private unit name", GOD, Some(bay))?;
+        let console = world.create(ObjKind::Room, "Private console name", GOD, None)?;
+        let side_room = world.create(ObjKind::Room, "Private cabin name", GOD, None)?;
+        let actor = world.create(ObjKind::Player, "Private pilot name", GOD, Some(console))?;
+        let mut state = SpatialState::default();
+        for (space, host, rooms) in [
+            (bay, carrier, BTreeSet::from([bay])),
+            (console, unit, BTreeSet::from([console, side_room])),
+        ] {
+            state.spaces.insert(
+                space,
+                InteriorSpaceRecord {
+                    object: space,
+                    anchor: SpaceAnchor::MovingObject { host },
+                    compartments: BTreeMap::new(),
+                    rooms,
+                    egresses: BTreeMap::new(),
+                },
+            );
+        }
+        state.placements.insert(
+            unit,
+            PlacementRecord {
+                object: unit,
+                parent: SpatialParent::Interior {
+                    space: bay,
+                    slot: None,
+                },
+                revision: 1,
+                unplaced: None,
+            },
+        );
+        let station = StationId::new("pilot").ok_or("station id")?;
+        let helm = ChannelId::new("helm").ok_or("helm channel")?;
+        state.stations.insert(
+            unit,
+            HostStations {
+                host: unit,
+                stations: BTreeMap::from([(
+                    station.clone(),
+                    StationSpec {
+                        role: "pilot".into(),
+                        channels: BTreeSet::from([helm]),
+                        priority: 10,
+                        space: Some(console),
+                        policy: passive_rules_value(serde_json::json!({}))?,
+                    },
+                )]),
+            },
+        );
+        state.assignments.insert(
+            unit,
+            HostAssignments {
+                host: unit,
+                seats: BTreeMap::from([(
+                    station.clone(),
+                    StationAssignment {
+                        actor,
+                        assigned_at: 0,
+                        granted: None,
+                    },
+                )]),
+            },
+        );
+        state.control_gen.insert(unit, 5);
+        state.derived = mush_sim::graph::rebuild(&state);
+        world.module_state_insert(state);
+        let mut focus = FocusState::default();
+        focus.claim_for_test(ActiveFocus {
+            account: AccountId::mint("pilot", 0)?,
+            actor,
+            driver: actor,
+            unit,
+            station: station.clone(),
+            acquired_at: world.world_ic_now(),
+            // Captured focus epoch is not compared to live generation.
+            epoch: 1,
+            reach: ReachProof::Console { room: console },
+            proxy: false,
+        });
+        world.module_state_insert(focus);
+        let mut units = mush_tactics::module::UnitStore::default();
+        units
+            .units
+            .insert(unit, crate::arena::test_support::tactical_unit(unit));
+        world.module_state_insert(units);
+        let plan = Plan {
+            carrier,
+            slots: vec![SlotPlan {
+                slot: Slot::new(1)?,
+                unit: Some(unit),
+                controller: PlannedController::Player { character: actor },
+                role: None,
+                mind: None,
+            }],
+            npc_commander: None,
+            financial_terms: None,
+        };
+        let draft = Draft {
+            id: PlanId(1),
+            organizer: GOD,
+            revision: 1,
+            plan_hash: plan.material_hash()?,
+            plan,
+            source_preset: None,
+            consents: BTreeMap::new(),
+        };
+        Ok(Self {
+            world,
+            draft,
+            actor,
+            unit,
+            carrier,
+            bay,
+            console,
+            side_room,
+            station,
+        })
+    }
+
+    fn spatial(&mut self, edit: impl FnOnce(&mut SpatialState)) -> TestResult {
+        let mut state = self
+            .world
+            .module_state::<SpatialState>()
+            .ok_or("spatial state")?
+            .clone();
+        edit(&mut state);
+        state.derived = mush_sim::graph::rebuild(&state);
+        self.world.module_state_insert(state);
+        Ok(())
+    }
+
+    fn focus(&mut self, edit: impl FnOnce(&mut ActiveFocus)) -> TestResult {
+        let mut focus = self
+            .world
+            .module_state::<FocusState>()
+            .ok_or("focus state")?
+            .focus_of_actor(self.actor)
+            .ok_or("focus")?
+            .clone();
+        edit(&mut focus);
+        let mut state = FocusState::default();
+        state.claim_for_test(focus);
+        self.world.module_state_insert(state);
+        Ok(())
+    }
+}
+
+#[test]
+fn dt_preparation_physical_presence_uses_nested_hulls_and_current_member_rooms() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    check!(physically_aboard(
+        &fixture.world,
+        fixture.unit,
+        fixture.carrier
+    ));
+    check!(physically_aboard(
+        &fixture.world,
+        fixture.actor,
+        fixture.carrier
+    ));
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_some());
+    fixture.world.move_to(fixture.actor, fixture.side_room)?;
+    check!(physically_aboard(
+        &fixture.world,
+        fixture.actor,
+        fixture.carrier
+    ));
+    check!(
+        ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none(),
+        "a member room is aboard but is not the helm console"
+    );
+    fixture.world.move_to(fixture.actor, LIMBO)?;
+    check!(!physically_aboard(
+        &fixture.world,
+        fixture.actor,
+        fixture.carrier
+    ));
+    let (unit, carrier) = (fixture.unit, fixture.carrier);
+    fixture.focus(|focus| {
+        focus.reach = ReachProof::RemoteLink {
+            terminal: unit,
+            path: carrier,
+        }
+    })?;
+    check!(
+        !physically_aboard(&fixture.world, fixture.actor, fixture.carrier),
+        "a live remote console is not physical personnel presence"
+    );
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none());
+    Ok(())
+}
+
+#[test]
+fn dt_preparation_ready_rechecks_billet_narrowing_focus_and_control_generation() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let before =
+        ready_station(&fixture.world, fixture.actor, &fixture.draft).ok_or("initial seat")?;
+    check_eq!(before.unit(), fixture.unit);
+    let unit = fixture.unit;
+    fixture.spatial(|state| {
+        state.control_gen.insert(unit, 6);
+    })?;
+    let after =
+        ready_station(&fixture.world, fixture.actor, &fixture.draft).ok_or("seat after bump")?;
+    check!(
+        before != after,
+        "the final preimage changes even while physical seat remains valid"
+    );
+    let station = fixture.station.clone();
+    fixture.spatial(|state| {
+        if let Some(assignment) = state
+            .assignments
+            .get_mut(&unit)
+            .and_then(|host| host.seats.get_mut(&station))
+        {
+            assignment.granted = Some(BTreeSet::new());
+        }
+    })?;
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none());
+    fixture.spatial(|state| {
+        if let Some(assignment) = state
+            .assignments
+            .get_mut(&unit)
+            .and_then(|host| host.seats.get_mut(&station))
+        {
+            assignment.granted = None;
+        }
+    })?;
+    fixture.focus(|focus| focus.proxy = true)?;
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none());
+    fixture.focus(|focus| {
+        focus.proxy = false;
+        focus.driver = GOD;
+    })?;
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none());
+    fixture.focus(|focus| {
+        focus.driver = focus.actor;
+        focus.reach = ReachProof::RemoteLink {
+            terminal: unit,
+            path: unit,
+        };
+    })?;
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none());
+    Ok(())
+}
+
+#[test]
+fn dt_preparation_stale_placement_cycles_and_missing_seats_fail_closed() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.world.move_to(fixture.unit, LIMBO)?;
+    check_eq!(
+        presence(&fixture.world, fixture.unit, fixture.carrier),
+        Presence::Unavailable
+    );
+    check_eq!(
+        presence(&fixture.world, fixture.actor, fixture.carrier),
+        Presence::Unavailable
+    );
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none());
+    fixture.world.move_to(fixture.unit, fixture.bay)?;
+    let unit = fixture.unit;
+    fixture.spatial(|state| {
+        state.assignments.remove(&unit);
+    })?;
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none());
+    let bay = fixture.bay;
+    fixture.spatial(|state| {
+        if let Some(space) = state.spaces.get_mut(&bay) {
+            space.anchor = SpaceAnchor::MovingObject { host: unit };
+        }
+    })?;
+    check_eq!(
+        presence(&fixture.world, fixture.actor, fixture.carrier),
+        Presence::Unavailable
+    );
+    Ok(())
+}
+
+#[test]
+fn dt_preparation_reports_only_the_viewers_permissions_and_keeps_activation_unresolved()
+-> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.draft.consents.insert(
+        fixture.actor,
+        Consent {
+            actor: fixture.actor,
+            revision: fixture.draft.revision,
+            plan_hash: fixture.draft.plan_hash.clone(),
+            state: ConsentState::Ready,
+        },
+    );
+    let mut queried = Vec::new();
+    let lines = report_lines(
+        &fixture.world,
+        GOD,
+        &fixture.draft,
+        |_| true,
+        |unit, capability| {
+            queried.push((unit, capability));
+            Permission::Allowed
+        },
+    )?;
+    check_eq!(queried, vec![(fixture.unit, UnitCapability::Deploy)]);
+    let rendered = lines.join("\n");
+    check!(
+        !rendered.contains("Private"),
+        "private object names are never looked up"
+    );
+    check!(rendered.contains("ready declared for this exact revision"));
+    check!(rendered.contains("last-port departure personnel proof"));
+    check!(rendered.contains("NPC contracts"));
+    check!(rendered.contains("mind licences"));
+    check!(rendered.contains("unit reservations"));
+    check!(rendered.contains("This is not launch admission"));
+    queried.clear();
+    let allowed = report_lines(
+        &fixture.world,
+        fixture.actor,
+        &fixture.draft,
+        |_| true,
+        |unit, capability| {
+            queried.push((unit, capability));
+            Permission::Allowed
+        },
+    )?
+    .join("\n");
+    check_eq!(queried, vec![(fixture.unit, UnitCapability::OperateCrew)]);
+    check!(allowed.contains("allowed now"));
+    let denied = report_lines(
+        &fixture.world,
+        fixture.actor,
+        &fixture.draft,
+        |_| true,
+        |_, _| Permission::Denied,
+    )?
+    .join("\n");
+    check!(
+        denied.contains("denied now"),
+        "permission observations are recomputed on every read"
+    );
+    let unavailable = report_lines(
+        &fixture.world,
+        fixture.actor,
+        &fixture.draft,
+        |_| true,
+        |_, _| Permission::Unavailable,
+    )?
+    .join("\n");
+    check!(unavailable.contains("authority service unavailable"));
+    let stranger = fixture
+        .world
+        .create(ObjKind::Player, "Stranger", GOD, Some(LIMBO))?;
+    check!(
+        report_lines(
+            &fixture.world,
+            stranger,
+            &fixture.draft,
+            |_| true,
+            |_, _| Permission::Allowed
+        )
+        .is_err()
+    );
+    // A declaration is retained as a declaration after leaving the station;
+    // neither this report nor the stored consent upgrades it to live admission.
+    fixture.world.move_to(fixture.actor, fixture.side_room)?;
+    let left = report_lines(
+        &fixture.world,
+        fixture.actor,
+        &fixture.draft,
+        |_| true,
+        |_, _| Permission::Allowed,
+    )?
+    .join("\n");
+    check!(left.contains("ready declared for this exact revision"));
+    check!(left.contains("Physical helm station aboard this carrier: not established"));
+    Ok(())
+}
+
+#[test]
+fn dt_preparation_readiness_requires_the_selected_carrier() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let other = fixture
+        .world
+        .create(ObjKind::Thing, "Other carrier", GOD, Some(LIMBO))?;
+    fixture.draft.plan.carrier = other;
+    fixture.draft.plan_hash = fixture.draft.plan.material_hash()?;
+    check!(physical_station(&fixture.world, fixture.actor, fixture.unit).is_some());
+    check!(ready_station(&fixture.world, fixture.actor, &fixture.draft).is_none());
+    check_eq!(
+        fixture
+            .world
+            .get(fixture.actor)
+            .and_then(|actor| actor.location),
+        Some(fixture.console)
+    );
+    Ok(())
+}
+
+#[test]
+fn dt_preparation_missing_and_inaccessible_references_have_the_same_observation() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let actor = fixture.actor;
+    check!(
+        !observation_allowed(&fixture.world, actor, fixture.carrier, true),
+        "a known carrier ID is not a global observation right"
+    );
+    check!(!observation_allowed(
+        &fixture.world,
+        actor,
+        fixture.unit,
+        true
+    ));
+    check!(!observation_allowed(
+        &fixture.world,
+        actor,
+        ObjId(u32::MAX),
+        true
+    ));
+    check!(
+        observation_allowed(&fixture.world, actor, actor, false),
+        "self is observable"
+    );
+    check!(
+        !observation_allowed(&fixture.world, GOD, fixture.unit, false),
+        "perception concealment is not bypassed by examine authority"
+    );
+    let distant = report_lines(
+        &fixture.world,
+        actor,
+        &fixture.draft,
+        |object| observation_allowed(&fixture.world, actor, object, true),
+        |_, _| Permission::Denied,
+    )?
+    .join("\n");
+    fixture
+        .world
+        .module_state_insert(mush_tactics::module::UnitStore::default());
+    check!(
+        ready_station(&fixture.world, actor, &fixture.draft).is_none(),
+        "a Thing with a station is not necessarily a tactical unit"
+    );
+    let absent_unit = report_lines(
+        &fixture.world,
+        actor,
+        &fixture.draft,
+        |object| observation_allowed(&fixture.world, actor, object, true),
+        |_, _| Permission::Denied,
+    )?
+    .join("\n");
+    check_eq!(
+        distant,
+        absent_unit,
+        "hidden unit presence and absent tactical record render identically"
+    );
+    fixture.world.destroy(fixture.unit)?;
+    let missing = report_lines(
+        &fixture.world,
+        actor,
+        &fixture.draft,
+        |object| observation_allowed(&fixture.world, actor, object, true),
+        |_, _| Permission::Denied,
+    )?
+    .join("\n");
+    check_eq!(
+        distant,
+        missing,
+        "a missing object is indistinguishable from an inaccessible one"
+    );
+    check!(distant.contains(UNOBSERVED));
+    check!(!distant.contains("physically aboard"));
+    Ok(())
+}

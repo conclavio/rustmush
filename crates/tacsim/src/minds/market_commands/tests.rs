@@ -883,6 +883,7 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
     let all = [
         ("licence", n),
         ("filed", n),
+        ("hull", n),
         ("price", "1000000.00cr"),
         ("amount", "1000000.00"),
         ("player", player.as_str()),
@@ -923,6 +924,10 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
         ("RECALLING", words::RECALLING),
         ("REVOKING", words::REVOKING),
         ("REGISTRY_OFF", words::REGISTRY_OFF),
+        ("INSPECTING", words::INSPECTING),
+        ("INSPECTION_OFF", words::INSPECTION_OFF),
+        ("INSPECT_REFUSED", words::INSPECT_REFUSED),
+        ("NO_SUCH_HULL", words::NO_SUCH_HULL),
     ] {
         let line = fill(template, &all);
         check!(!line.contains('{'), "{name} is filled: {line}");

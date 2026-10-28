@@ -3436,9 +3436,10 @@ fn m1a5_the_production_hash_does_not_move() {
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
     assert_eq!(duel.minds.len(), 4, "four minds");
     // M6 captures full card/catalog, profile/ROM and pending-think state and
-    // advances Standard's API/source identity. Keep the encoding pins together
-    // so a declared format
-    // change exposes every actual in one run; behavior assertions above remain.
+    // advances Standard's API/source identity. DT.1b advances the source/API
+    // again (API 6, stock 3, frame 8) for standing-order identity. These pins
+    // were observed in Linux CI run 40739168466; the behavior assertions above
+    // remain. Keep them together so a format change exposes every actual.
     let actual = [
         first_hash,
         last_hash,
@@ -3447,9 +3448,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0x2fde_0a11_f694_234e),
-            Some(0x8dcb_ccd8_aeed_9ed9),
-            Some(0xf93e_4819_dcdc_9eab)
+            Some(0x5bfa_d769_dcf7_b74a),
+            Some(0xc332_5aaa_c00a_2bc3),
+            Some(0x41dc_84b0_6ed4_05a6)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -5752,6 +5753,7 @@ fn charge_run(charge: Charge, stop_at_fire: bool) -> (Rig, Vec<Kept>) {
         )],
         Charge::Blind => {
             rig.arena.minds.entry(RED).or_default().order = Some(FrameOrder {
+                identity: None,
                 squad: SmolStr::new("red-1"),
                 objective: MindObjective::Support { of: None },
                 hold_fire: false,
@@ -6362,6 +6364,11 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
         assert_eq!(other_kept, kept, "a think diverged at {cadence}");
     }
 
+    assert_card_change_refusals_and_floor();
+    assert_card_changes_keep_arrival_order();
+}
+
+fn assert_card_change_refusals_and_floor() {
     // A hull that is not a mind: refused `not_mind`, nothing changed. (17b
     // cut M4.5a: a pilot's hull nobody sits in, where it was a reflex hull —
     // the refusal reads `controller == Mind` and a mind row, so any other
@@ -6477,7 +6484,9 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
         "Sniper is read against Line, the card the refusal kept — not Rearguard"
     );
     assert_eq!(row_card(&arena, RED), Some(preset_on_field("sniper")));
+}
 
+fn assert_card_changes_keep_arrival_order() {
     // Two changes in one pulse, in arrival order.
     let (run, _, arena) = card_run(
         the_j_field(Controller::Mind),
@@ -6680,6 +6689,7 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
     let mind = Arc::clone(&arena.mind_runner);
     let failed = (12_u16, 3_u16);
     let advance = |to: (u16, u16), expires_ms: i64| FrameOrder {
+        identity: None,
         squad: SmolStr::new("red-1"),
         objective: MindObjective::Advance { to },
         hold_fire: false,
@@ -6789,19 +6799,24 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
 /// M6 updates those three source prefixes to 9b330c0f5ccd8610 and their card
 /// identities to the full authored schema/value/rule digest. A field-by-field
 /// comparison of all 50 fresh event rows found no other payload/time changes.
+///
+/// **Doc 17h cut M8a — re-recorded, one key** (50 lines to 50): every `mind_sealed`
+/// line gains `licence_state` after `licence` (`doctrine`, what a doctrine seal's
+/// origin says); the state is the line's parameter, never the seal's (M8a's A1), so
+/// no seal digest moved, and every other byte is equal.
 const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         4,
@@ -9095,6 +9110,7 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
     });
     if let Some(state) = rig.arena.minds.get_mut(&RED) {
         state.order = Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Hold,
             hold_fire: false,

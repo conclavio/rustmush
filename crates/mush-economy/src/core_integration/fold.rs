@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 /// cloned merely to preflight one bounded purchase.
 pub(super) struct CoreMoneyFold {
     before: FoldBefore,
+    title_lineage: crate::fold::TitleLineageDelta,
     asset: Option<EconomicAsset>,
     created_count: Option<u64>,
     history: super::receipt::PreparedHistory,
@@ -92,6 +93,7 @@ impl CoreMoneyFold {
             {
                 if state.journal_assets.contains_key(&effect.object)
                     || state.created_count.contains_key(&effect.object)
+                    || state.title_lineage.contains_key(&effect.object)
                 {
                     return Err(refused());
                 }
@@ -131,6 +133,8 @@ impl CoreMoneyFold {
             .checked_add(signed)
             .ok_or_else(refused)?;
         Ok(Self {
+            title_lineage: crate::fold::TitleLineageDelta::prepare(state, tx)
+                .ok_or_else(refused)?,
             created_count: asset.as_ref().map(|_| 1),
             asset,
             history: state.core_receipts.prepare(tx).map_err(|_| refused())?,
@@ -149,10 +153,12 @@ impl CoreMoneyFold {
         })
     }
     pub(super) fn matches(&self, state: &FoldState) -> bool {
-        self.asset.as_ref().is_none_or(|a| {
-            state.journal_assets.get(&a.object) == self.before.asset.as_ref()
-                && state.created_count.get(&a.object).copied() == self.before.created_count
-        }) && self.history.matches(&state.core_receipts)
+        self.title_lineage.matches(state)
+            && self.asset.as_ref().is_none_or(|a| {
+                state.journal_assets.get(&a.object) == self.before.asset.as_ref()
+                    && state.created_count.get(&a.object).copied() == self.before.created_count
+            })
+            && self.history.matches(&state.core_receipts)
             && self.before.max_hold_id == state.max_hold_id
             && self.before.max_txid == state.max_txid
             && self.before.covered == state.covered_seq
@@ -171,6 +177,7 @@ impl CoreMoneyFold {
                 })
     }
     pub(super) fn apply(self, state: &mut FoldState) {
+        self.title_lineage.apply(state);
         self.history.apply(&mut state.core_receipts);
         if let Some(asset) = self.asset {
             if let Some(count) = self.created_count {

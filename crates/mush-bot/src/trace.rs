@@ -268,8 +268,8 @@ fn entry(raw: Value, line: usize) -> std::result::Result<(Format, Entry), String
 }
 
 /// A validation-only pass avoids choosing a last value for duplicate keys before
-/// extracting actor and request identifiers. Numbers remain untouched: serde's
-/// arbitrary-precision number representation is accepted as another unique map.
+/// extracting actor and request identifiers, while leaving `Value` construction
+/// to `serde_json` so 64-bit integer payloads are not rounded through `f64`.
 struct UniqueJson;
 
 impl<'de> Deserialize<'de> for UniqueJson {
@@ -660,15 +660,19 @@ mod tests {
             assert!(!error.contains("SECRET"), "{error}");
             assert!(!error.contains("request_id"), "{error}");
         }
-        let source = r#"{"kind":"future","data":{"integer":123456789012345678901234567890,"decimal":0.12345678901234567890123456789,"values":[null,true,false,0,-3,1.5,1e400,"text"]}}"#;
+        let source = r#"{"kind":"future","data":{"integer":18446744073709551615,"signed":-9223372036854775808,"decimal":"0.12345678901234567890123456789","values":[null,true,false,0,-3,1.5,1e300,"text"]}}"#;
         let parsed = trace(source);
         assert_eq!(
             parsed.events[0].raw["data"]["integer"].to_string(),
-            "123456789012345678901234567890"
+            "18446744073709551615"
         );
         assert_eq!(
-            parsed.events[0].raw["data"]["decimal"].to_string(),
-            "0.12345678901234567890123456789"
+            parsed.events[0].raw["data"]["signed"].to_string(),
+            "-9223372036854775808"
+        );
+        assert_eq!(
+            parsed.events[0].raw["data"]["decimal"].as_str(),
+            Some("0.12345678901234567890123456789")
         );
         assert_eq!(
             parsed.events[0].raw,

@@ -58,8 +58,10 @@ use crate::module::{EconomyStore, JOURNAL_LOG, TxRef, WindowTail};
 use crate::record::{IdempotencyKey, IdempotencyRecord};
 use crate::snapshot::EconomySnapshot;
 
-/// The document format this code writes and accepts.
-pub const CHECKPOINT_FORMAT: u32 = 3;
+/// The document format this code writes and accepts. Format 4 requires exact
+/// title lineage; format 3 checkpoints are rejected so the retained journal is
+/// replayed whole (a narrowed boot requests `RetryFullFetch` first).
+pub const CHECKPOINT_FORMAT: u32 = 4;
 /// Domain separation for `state_hash`.
 pub const CHECKPOINT_HASH_DOMAIN: &str = "rustmush.economy.checkpoint.v1";
 /// The most rows one immutable part carries (~3 MB of JSON).

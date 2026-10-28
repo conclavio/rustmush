@@ -46,6 +46,7 @@ use smol_str::SmolStr;
 use crate::attr::{Attr, AttrFlags, AttrValue, UncasedName};
 use crate::flags::Flags;
 use crate::obj::ObjId;
+use crate::object_read::{ObjectRead, PlainRead, ReadLimit, SnapshotPreflight};
 use crate::world::World;
 
 /// The kinds of lock an object can carry (`@lock/<type>`).
@@ -205,10 +206,25 @@ const MAX_LOCK_STRUCTURAL_DEPTH: u32 = 1024;
 /// bound instead of overflowing the world task's stack.
 #[must_use]
 pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool {
+    match eval_lock_with(&mut PlainRead::new(w), expr, who, depth) {
+        Ok(value) => value,
+        Err(never) => match never {},
+    }
+}
+
+/// Resource errors propagate through every evaluated operator, including
+/// negation. The existing indirect/structural cutoff remains ordinary false;
+/// it is distinct from a failure to obtain the complete tracked read.
+pub(crate) fn eval_lock_with<'w, R: ObjectRead<'w>>(
+    read: &mut R,
+    expr: &LockExpr,
+    who: ObjId,
+    depth: u8,
+) -> Result<bool, R::Error> {
     // `None` — the key read an attribute it is not allowed to read — is not a
     // third answer anyone outside can see: it lands as "does not pass", which
     // is the same thing an empty key would say.
-    eval_with(w, expr, who, depth, MAX_LOCK_STRUCTURAL_DEPTH).unwrap_or(false)
+    Ok(eval_with(read, expr, who, depth, MAX_LOCK_STRUCTURAL_DEPTH)?.unwrap_or(false))
 }
 
 /// Is this attribute one a lock key may not read?
@@ -251,78 +267,183 @@ fn unreadable(a: &Attr) -> bool {
 /// indistinguishable, or the refusal is itself the leaked bit. The one thing
 /// that does not poison is a branch never taken: `&`/`|` keep their
 /// short-circuit, so a term that is never evaluated is never read either.
-fn eval_with(
-    w: &World,
+fn eval_with<'w, R: ObjectRead<'w>>(
+    read: &mut R,
     expr: &LockExpr,
     who: ObjId,
     indirect: u8,
     structural: u32,
-) -> Option<bool> {
-    match expr {
+) -> Result<Option<bool>, R::Error> {
+    read.charge_work(1)?;
+    Ok(match expr {
         LockExpr::Const(b) => Some(*b),
         LockExpr::Is(id) => Some(who == *id),
-        LockExpr::Carry(id) => Some(w.contents_of(who).contains(id)),
-        LockExpr::OwnedBy(id) => Some(w.get(who).is_some_and(|o| o.owner == *id)),
-        LockExpr::HasFlag(name) => {
-            let Some(o) = w.get(who) else {
-                return Some(false);
-            };
-            Some(if let Some(fl) = Flags::from_name(&name.to_uppercase()) {
-                o.flags.contains(fl)
-            } else {
-                o.markers.iter().any(|m| m.eq_ignore_ascii_case(name))
-            })
+        LockExpr::Carry(id) => {
+            let contents = read
+                .object(who)?
+                .map_or(&[][..], |object| object.contents.as_slice());
+            read.charge_work(contents.len())?;
+            Some(contents.contains(id))
         }
-        LockExpr::AttrMatch { name, glob } => match w.attr(who, name.as_str()) {
-            // Checked before the value is so much as looked at.
-            Some(a) if unreadable(a) => None,
-            Some(a) => Some(match &a.value {
-                AttrValue::Text(s) => glob_match(glob, s),
-                AttrValue::Json(v) => glob_match(glob, &v.to_string()),
-            }),
-            None => Some(false),
-        },
+        LockExpr::OwnedBy(id) => Some(read.object(who)?.is_some_and(|o| o.owner == *id)),
+        LockExpr::HasFlag(name) => Some(eval_flag_with(read, who, name)?),
+        LockExpr::AttrMatch { name, glob } => eval_attr_with(read, who, name, glob)?,
         LockExpr::Indirect(obj, lt) => {
             if indirect == 0 {
-                return Some(false);
+                return Ok(Some(false));
             }
-            match w.get(*obj) {
+            match read.object(*obj)? {
                 None => Some(false),
                 Some(o) => match o.locks.get(lt) {
                     None => Some(true),
                     // A fresh tree: the structural budget starts over, the
                     // indirect one does not.
                     Some(inner) => {
-                        eval_with(w, inner, who, indirect - 1, MAX_LOCK_STRUCTURAL_DEPTH)
+                        eval_with(read, inner, who, indirect - 1, MAX_LOCK_STRUCTURAL_DEPTH)?
                     }
                 },
             }
         }
         LockExpr::Not(e) => {
             if structural == 0 {
-                return Some(false);
+                return Ok(Some(false));
             }
-            eval_with(w, e, who, indirect, structural - 1).map(|v| !v)
+            eval_with(read, e, who, indirect, structural - 1)?.map(|v| !v)
         }
         LockExpr::And(a, b) => {
             if structural == 0 {
-                return Some(false);
+                return Ok(Some(false));
             }
-            match eval_with(w, a, who, indirect, structural - 1) {
-                Some(true) => eval_with(w, b, who, indirect, structural - 1),
+            match eval_with(read, a, who, indirect, structural - 1)? {
+                Some(true) => eval_with(read, b, who, indirect, structural - 1)?,
                 short => short,
             }
         }
         LockExpr::Or(a, b) => {
             if structural == 0 {
-                return Some(false);
+                return Ok(Some(false));
             }
-            match eval_with(w, a, who, indirect, structural - 1) {
-                Some(false) => eval_with(w, b, who, indirect, structural - 1),
+            match eval_with(read, a, who, indirect, structural - 1)? {
+                Some(false) => eval_with(read, b, who, indirect, structural - 1)?,
                 short => short,
             }
         }
+    })
+}
+
+// Keep allocation-bearing leaf work outside the recursive evaluator's stack
+// frame; the legacy structural limit also protects directly constructed ASTs.
+fn eval_flag_with<'w, R: ObjectRead<'w>>(
+    read: &mut R,
+    who: ObjId,
+    name: &str,
+) -> Result<bool, R::Error> {
+    let Some(object) = read.object(who)? else {
+        return Ok(false);
+    };
+    read.charge_work(name.len())?;
+    if let Some(flag) = Flags::from_name(&name.to_uppercase()) {
+        return Ok(object.flags.contains(flag));
     }
+    for marker in &object.markers {
+        read.charge_work(marker.len().saturating_add(name.len()).saturating_add(1))?;
+        if marker.eq_ignore_ascii_case(name) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn eval_attr_with<'w, R: ObjectRead<'w>>(
+    read: &mut R,
+    who: ObjId,
+    name: &UncasedName,
+    glob: &str,
+) -> Result<Option<bool>, R::Error> {
+    Ok(match crate::world::attr_with(read, who, name.as_str())? {
+        // Checked before the value is so much as looked at.
+        Some(attr) if unreadable(attr) => None,
+        Some(attr) => Some(match &attr.value {
+            AttrValue::Text(text) => glob_with(glob, text, |units| read.charge_work(units))?,
+            AttrValue::Json(value) => {
+                charge_json_text(read, value)?;
+                glob_with(glob, &value.to_string(), |units| read.charge_work(units))?
+            }
+        }),
+        None => Some(false),
+    })
+}
+
+/// Charge a conservative serialized size before compact JSON allocation.
+/// Iterators keep the pending work proportional to depth, not array width.
+fn charge_json_text<'w, R: ObjectRead<'w>>(
+    read: &mut R,
+    root: &serde_json::Value,
+) -> Result<(), R::Error> {
+    use serde_json::Value;
+    enum Frame<'a> {
+        Value(&'a Value),
+        Array(std::slice::Iter<'a, Value>),
+        Object(serde_json::map::Iter<'a>),
+    }
+    let mut stack = vec![Frame::Value(root)];
+    while let Some(frame) = stack.pop() {
+        read.charge_work(1)?;
+        match frame {
+            Frame::Value(value) => match value {
+                Value::String(text) => {
+                    read.charge_work(text.len().saturating_mul(6).saturating_add(2))?
+                }
+                Value::Array(values) => stack.push(Frame::Array(values.iter())),
+                Value::Object(values) => stack.push(Frame::Object(values.iter())),
+                _ => read.charge_work(32)?,
+            },
+            Frame::Array(mut values) => {
+                if let Some(value) = values.next() {
+                    stack.push(Frame::Array(values));
+                    stack.push(Frame::Value(value));
+                }
+            }
+            Frame::Object(mut values) => {
+                if let Some((key, value)) = values.next() {
+                    read.charge_work(key.len().saturating_mul(6).saturating_add(3))?;
+                    stack.push(Frame::Object(values));
+                    stack.push(Frame::Value(value));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Inspect the AST before an object snapshot can use its recursive derives.
+/// This stays beside the sole evaluator and compound-node constructors.
+pub(crate) fn preflight_snapshot_lock(
+    expr: &LockExpr,
+    shape: &mut SnapshotPreflight<'_>,
+    outer_depth: usize,
+) -> Result<(), ReadLimit> {
+    let mut stack = vec![(expr, outer_depth)];
+    while let Some((expr, depth)) = stack.pop() {
+        shape.container(depth + 1)?; // Externally tagged enum object.
+        match expr {
+            LockExpr::Not(child) => stack.push((child, depth + 1)),
+            LockExpr::And(left, right) | LockExpr::Or(left, right) => {
+                shape.container(depth + 2)?; // Pair array.
+                stack.push((right, depth + 2));
+                stack.push((left, depth + 2));
+            }
+            LockExpr::AttrMatch { name, glob } => {
+                shape.container(depth + 2)?;
+                shape.text(name.as_str())?;
+                shape.text(glob)?;
+            }
+            LockExpr::HasFlag(name) => shape.text(name)?,
+            LockExpr::Indirect(..) => shape.container(depth + 2)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Case-insensitive glob match supporting `*` (any run, including empty) and
@@ -336,12 +457,32 @@ fn eval_with(
 /// ```
 #[must_use]
 pub fn glob_match(pattern: &str, text: &str) -> bool {
+    match glob_with(pattern, text, |_| Ok::<(), std::convert::Infallible>(())) {
+        Ok(value) => value,
+        Err(never) => match never {},
+    }
+}
+
+fn glob_with<E>(
+    pattern: &str,
+    text: &str,
+    mut charge: impl FnMut(usize) -> Result<(), E>,
+) -> Result<bool, E> {
+    // Lowercasing may expand Unicode text. Charge before either allocation.
+    charge(
+        pattern
+            .len()
+            .saturating_add(text.len())
+            .saturating_mul(3)
+            .saturating_add(1),
+    )?;
     let p: Vec<char> = pattern.to_lowercase().chars().collect();
     let t: Vec<char> = text.to_lowercase().chars().collect();
     let (mut pi, mut ti) = (0usize, 0usize);
     let mut star: Option<usize> = None;
     let mut mark = 0usize;
     while ti < t.len() {
+        charge(1)?;
         if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
             pi += 1;
             ti += 1;
@@ -355,13 +496,14 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
             mark += 1;
             ti = mark;
         } else {
-            return false;
+            return Ok(false);
         }
     }
     while pi < p.len() && p[pi] == '*' {
+        charge(1)?;
         pi += 1;
     }
-    pi == p.len()
+    Ok(pi == p.len())
 }
 
 /// Errors from [`parse_lock`].

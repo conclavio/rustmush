@@ -60,6 +60,11 @@ pub struct CommerceFamilies {
         StateFamilyHandle<String, super::registry_revocation::records::RevokedTerm>,
     pub(crate) registry_recalls:
         StateFamilyHandle<String, super::registry_recall::records::RecallOperation>,
+    /// Doc 17h cut M8a: the Registry's hull inspections (`roll_registry_inspections`), keyed
+    /// by the inspection's commit; written from tacsim's transaction through the delegation
+    /// the inspection writer installs.
+    pub(crate) registry_inspections:
+        StateFamilyHandle<String, super::registry_inspection::records::InspectionRecord>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) house_renewal_operations:
@@ -130,6 +135,7 @@ impl CommerceFamilies {
             line_updates: register(reg)?,
             update_positions: register(reg)?,
             registry_recalls: register(reg)?,
+            registry_inspections: register(reg)?,
             registry_revocations: register(reg)?,
             revoked_terms: register(reg)?,
             withdrawals: register(reg)?,
@@ -285,6 +291,17 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next() == Some("term")
                 && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_none()
+        }
+        // Doc 17h cut M8a fix round 1 (F9): a hull's 64-slot inspection ring,
+        // `hull/<hull, 8 hex>/slot/<seq mod 64, 2 hex>`.
+        "roll_registry_inspections" => {
+            head == "hull"
+                && parts.next().is_some_and(|v| hex(v, 8, true))
+                && parts.next() == Some("slot")
+                && parts.next().is_some_and(|v| {
+                    hex(v, 2, false) && u8::from_str_radix(v, 16).is_ok_and(|n| n < 64)
+                })
                 && parts.next().is_none()
         }
         "roll_mind_line_update_position" => {

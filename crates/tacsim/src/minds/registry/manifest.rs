@@ -286,7 +286,16 @@ fn implementation() -> BTreeMap<String, DefinitionDigest> {
         ("trials", include_str!("trials.rs")),
         ("probes", include_str!("probes.rs")),
         ("kernel_probes", include_str!("kernels.rs")),
-        ("public_picture", include_str!("../../arena/step.rs")),
+        (
+            "public_picture",
+            concat!(
+                include_str!("../../arena/step.rs"),
+                include_str!("../../arena/step/movement.rs"),
+                include_str!("../../arena/step/sensors.rs"),
+                include_str!("../../arena/step/weapons.rs"),
+                include_str!("../../arena/step/frames.rs"),
+            ),
+        ),
         ("profile_probe", include_str!("profiles.rs")),
         ("ford_probe", include_str!("ford.rs")),
         ("order_loss_probe", include_str!("order_loss.rs")),

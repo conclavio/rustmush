@@ -1333,6 +1333,26 @@ impl Fold {
             // **16b cut Y.1**: the pilot's own orders, once per order. Only the
             // issuer reads them — an order the machines' own commander gave, or
             // another pilot's, is not this pilot's to be told about.
+            EventKind::DetachmentCommanded { unit, command } if command.issuer_unit == me => {
+                let recipient = self.unit_word(*unit);
+                let text = if let Some(directive) = command.directive {
+                    let objective = match directive.objective {
+                        crate::deliberation::order::Objective::Engage {
+                            target_hint: Some(contact),
+                        } => format!("engage {}", self.contact_name(contact)),
+                        other => other.as_str().to_owned(),
+                    };
+                    let holding = if directive.constraints.hold_fire {
+                        ", holding fire"
+                    } else {
+                        ""
+                    };
+                    format!("ordered {recipient}{holding}: {objective}.")
+                } else {
+                    format!("cancelled {recipient}'s standing order.")
+                };
+                let _ = self.push_line(t_ms, seq, text);
+            }
             EventKind::Ordered {
                 squad,
                 issuer: Some(issuer),
@@ -1719,6 +1739,24 @@ impl Fold {
                 "{word} unit={} squad={squad} issuer={}",
                 unit(id),
                 issuer.as_ref().map_or_else(|| "-".to_owned(), unit)
+            ),
+            EventKind::DetachmentCommanded { unit: id, command } => format!(
+                "{word} unit={} detachment={} revision={} term={} authority_epoch={} sequence={} issuer={} issuer_unit={} squad={} objective={} expires_at_ms={}",
+                unit(id),
+                command.authority.detachment,
+                command.authority.revision,
+                command.authority.term,
+                command.authority_epoch,
+                command.sequence,
+                command.issuer,
+                unit(&command.issuer_unit),
+                command.squad,
+                command
+                    .directive
+                    .map_or("cancel", |directive| directive.objective.as_str()),
+                command
+                    .expires_at_ms
+                    .map_or_else(|| "standing".to_owned(), |deadline| deadline.to_string()),
             ),
             EventKind::Ordered {
                 unit: id,
@@ -3591,6 +3629,7 @@ mod tests {
             class: CoreClass::I,
             governed: true,
             licence: SmolStr::new_static("doctrine"),
+            licence_state: Some(crate::minds::licence_state::SealLicenceState::Doctrine),
             principal,
         };
         let mut tape = Tape::new();

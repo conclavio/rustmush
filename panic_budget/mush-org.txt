@@ -4,4 +4,6 @@
 #   PANIC_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test panic_budget
 # A raise is a reviewed diff, not a rounding error.
 # tier: ceiling
-27
+# DT.2a: one shared ActionError constructor checks static, bounded source-code
+# messages. No user input reaches this expect; an invalid literal is a code bug.
+28

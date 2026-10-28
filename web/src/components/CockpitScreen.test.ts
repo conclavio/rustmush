@@ -179,6 +179,32 @@ function zoomButton(label: "zoom in" | "zoom out"): HTMLElement {
 }
 
 describe("CockpitScreen mounted", () => {
+  it("shows numbered detachment orders and prefills acknowledgements without sending", async () => {
+    const { cockpit, focusComposer, app } = await seated();
+    cockpit.applyFrame({ ...json("cockpit_frame.json"), detachment: {
+      id: "7", revision: "8", term: "9", leader_slot: 2,
+      slots: [
+        { slot: 1, callsign: "RA", pilot: null, controller: "automated", order_prefill: "ORDER DT:7:8:9 1 " },
+        { slot: 2, callsign: "RB", pilot: "Aster", controller: "player", order_prefill: "ORDER DT:7:8:9 2 " },
+      ], all_order_prefill: "ORDER DT:7:8:9 ALL ",
+      my_order: { sequence: "10", from: "Aster", objective: "hold", response: null },
+      wilco_command: "WILCO DT:7:8 10", negative_command: "NEGATIVE DT:7:8 10",
+    } });
+    await tick();
+    expect(screen.getByText("Leader: slot 2")).toBeTruthy();
+    expect(screen.getByText("Order from Aster: hold")).toBeTruthy();
+    expect(screen.getByText("Response: not acknowledged")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Order 1" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("ORDER DT:7:8:9 1 ");
+    await fireEvent.click(screen.getByRole("button", { name: "Order ALL" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("ORDER DT:7:8:9 ALL ");
+    await fireEvent.click(screen.getByRole("button", { name: "WILCO" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("WILCO DT:7:8 10");
+    await fireEvent.click(screen.getByRole("button", { name: "NEGATIVE" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("NEGATIVE DT:7:8 10");
+    expect(app.helm).not.toHaveBeenCalled();
+  });
+
   it("reads `Not in a cockpit.` before any frame", () => {
     mount();
     expect(screen.getByText(NOT_IN_A_COCKPIT)).toBeTruthy();

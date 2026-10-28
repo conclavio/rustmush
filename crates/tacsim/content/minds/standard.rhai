@@ -1,4 +1,4 @@
-// Standard Doctrine — the combat role's stock mind (doc 17 §11, §17; 17b cut M2.5). name: Standard Doctrine; role: combat; api: 5; stock: 2; rated: class I (1,500 ops a think). Ported arm for arm from crates/tacsim/src/arena/stock_mind.rs: T1 is the oracle (Gate A).
+// Standard Doctrine — the combat role's stock mind (doc 17 §11, §17; 17b cut M2.5). name: Standard Doctrine; role: combat; api: 6; stock: 3; rated: class I (1,500 ops a think). Ported arm for arm from crates/tacsim/src/arena/stock_mind.rs: T1 is the oracle (Gate A).
 //
 // `decide_on_card`, re-expressed over the TacSim API (17b cuts M2.3 and
 // M2.4): the SAME order, edges, clocks and fifteen memory keys as the native
@@ -309,7 +309,10 @@ fn read_notices(view) {
 // `obeyed`, 17b cut M1b.5): the order whose `expires_ms` is not
 // `ignore_until_ms`.
 fn obeyed(order, ignore) {
-    if order == () || order.expires_ms == ignore {
+    if order == () { return (); }
+    let identity = order.identity;
+    let key = if identity == () { order.expires_ms } else { identity };
+    if key == ignore {
         ()
     } else {
         order
@@ -370,11 +373,13 @@ fn unreachable(view, card, p) {
     let live = obeyed(p.view_order, this.ignore_until_ms);
     // 16b cut E.2 (`B-41`): the order's own `Advance` cell.
     if live != () && live.objective == "advance" && live.to == failed {
-        this.ignore_until_ms = live.expires_ms;
+        let identity = live.identity;
+        this.ignore_until_ms = if identity == () { live.expires_ms } else { identity };
     }
     // 16b cut Z.2's review: a supporter's station, in `Patrol`.
     if live != () && live.objective == "support" && this.state == 1 {
-        this.ignore_until_ms = live.expires_ms;
+        let identity = live.identity;
+        this.ignore_until_ms = if identity == () { live.expires_ms } else { identity };
     }
     // 16b cut E.4: the search's plot and the hunt's cell.
     let plot = this.last_plot;
@@ -407,7 +412,10 @@ fn unreachable(view, card, p) {
 // the expiry's restoration and the obeyed order with its objective.
 fn standing_order(view, card, p) {
     let order = p.view_order;
-    let deadline = if order == () { () } else { order.expires_ms };
+    let deadline = if order == () { () } else {
+        let identity = order.identity;
+        if identity == () { order.expires_ms } else { identity }
+    };
     if deadline != this.ignore_until_ms {
         this.ignore_until_ms = ();
     }
@@ -447,7 +455,8 @@ fn standing_order(view, card, p) {
         }
     }
     if ends {
-        this.ignore_until_ms = p.order.expires_ms;
+        let identity = p.order.identity;
+        this.ignore_until_ms = if identity == () { p.order.expires_ms } else { identity };
         p.order = ();
     }
     p.objective = if p.order == () { () } else { p.order.objective };

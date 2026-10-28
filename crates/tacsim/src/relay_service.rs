@@ -15,8 +15,31 @@ struct Seed {
 fn seed() -> Result<Seed, String> {
     serde_json::from_str(JSON).map_err(|e| e.to_string())
 }
-#[derive(Debug)]
-pub struct RelayService;
+pub type MailVisibility = dyn Fn(&World, ObjId, u64, ObjId, bool) -> bool + Send + Sync;
+
+#[derive(Clone, Default)]
+pub struct RelayService {
+    mail_visible: Option<std::sync::Arc<MailVisibility>>,
+}
+
+impl std::fmt::Debug for RelayService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayService").finish_non_exhaustive()
+    }
+}
+
+impl RelayService {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { mail_visible: None }
+    }
+
+    #[must_use]
+    pub fn with_mail_visibility(mut self, check: std::sync::Arc<MailVisibility>) -> Self {
+        self.mail_visible = Some(check);
+        self
+    }
+}
 fn operator(world: &World, pair: &CanonicalId) -> Option<mush_org::OrgId> {
     let registry = mush_propagation::routing::registry(world)?;
     let link = registry.pairs.get(pair)?;
@@ -225,19 +248,10 @@ impl Integration for RelayService {
                 let Some(id) = parts.get(2).and_then(|s| s.parse::<u64>().ok()) else {
                     return false;
                 };
-                let Some(mail) = w.module_state::<mush_mail::MailState>() else {
-                    return false;
-                };
-                if parts.get(4) == Some(&"return") {
-                    mail.message(id).is_some_and(|m| {
-                        m.from == actor
-                            && m.delivery
-                                .as_ref()
-                                .is_some_and(|d| d.contains_key(&r.issuer))
-                    })
-                } else {
-                    mail.entry(actor, id).is_some()
-                }
+                let is_return = parts.get(4) == Some(&"return");
+                self.mail_visible
+                    .as_ref()
+                    .is_some_and(|check| check(w, actor, id, r.issuer, is_return))
             }
             DispatchKind::Channel => {
                 let Some(channel) = parts

@@ -270,6 +270,24 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::tv::tv_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 17h cut M8a (§2.5; doc 23 §7, §10): `+hull/box`, a ReadOnly group of its own ----
+    //
+    // The `@corridor` bracket's pattern: the class is declared before the `reg.command` and the
+    // module default restored right after. A pure read of the store's black box tail for a hull
+    // the actor holds the title of, is the lessee of, or may read as staff: no document, no
+    // post, no submission.
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+    reg.command(
+        CommandSpec {
+            name: crate::surface::hull::HULL_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["box"].iter().copied().map(SmolStr::new).collect(),
+            help: crate::surface::hull::HULL_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::surface::hull::hull_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 20 cut SM.10 (§9; D-20-12): `+claim`, the Registry's mining claims,
     // Authoritative ----
     //

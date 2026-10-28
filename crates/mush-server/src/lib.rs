@@ -81,9 +81,9 @@ pub mod gateway_link;
 pub mod gateway_sink;
 pub mod help;
 pub mod modules;
-// The composition adapters moved to the game crate (16b cut R-a, R2); the paths the
-// integration tests use keep resolving.
-pub use tacsim::composition::{
+// The composition adapters live in `mush-composition` and `tacsim::composition`;
+// the paths the integration tests use keep resolving.
+pub use mush_composition::{
     campaign_formations, econ_alerts, econ_canon, econ_inbox, industry_recipes, salvage_source,
     seat_audit, sim_routes,
 };

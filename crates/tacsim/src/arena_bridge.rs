@@ -542,6 +542,77 @@ impl ArenaTasks {
     }
 }
 
+struct ArenaEgressReceiver {
+    rx: mpsc::Receiver<ArenaOut>,
+    tasks: ArenaTasks,
+}
+
+impl mush_core::OffLoopEgressReceiver for ArenaEgressReceiver {
+    fn recv_and_stage(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<usize>> + Send + '_>> {
+        Box::pin(async move {
+            let first = self.rx.recv().await?;
+            let mut staged = 0_usize;
+            if self.tasks.stage(first) {
+                staged += 1;
+            }
+            while staged < MAX_EGRESS_PER_DRAIN {
+                match self.rx.try_recv() {
+                    Ok(message) => {
+                        if !self.tasks.stage(message) {
+                            break;
+                        }
+                        staged += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+            Some(staged)
+        })
+    }
+}
+
+impl mush_core::OffLoopSimulationHost for ArenaTasks {
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
+    }
+
+    fn module_name(&self) -> &'static str {
+        MODULE
+    }
+
+    fn egress_payload(&self) -> &'static str {
+        EGRESS_PAYLOAD
+    }
+
+    fn take_egress(&self) -> Option<Box<dyn mush_core::OffLoopEgressReceiver>> {
+        let rx = ArenaTasks::take_egress(self)?;
+        Some(Box::new(ArenaEgressReceiver {
+            rx,
+            tasks: self.clone(),
+        }))
+    }
+
+    fn stamp_ledger_writes(&self, serial: u64) {
+        ArenaTasks::stamp_ledger_writes(self, serial);
+    }
+
+    fn ack_ledger_upto(&self, high_water: u64) {
+        ArenaTasks::ack_ledger_upto(self, high_water);
+    }
+
+    fn signal_stop_all(&self) {
+        ArenaTasks::signal_stop_all(self);
+    }
+
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            ArenaTasks::shutdown(self, JOIN_TIMEOUT).await;
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The module state slot
 // ---------------------------------------------------------------------------
@@ -1889,6 +1960,9 @@ pub fn resume_match(
     let arena_cfg = crate::match_::lobby::configs(ctx.w)
         .map(|(arena_cfg, _, _)| arena_cfg)
         .ok_or(OpenMatchError::Unavailable)?;
+    // OOC detachment hosting is process-local. Resume ends its ownership and
+    // standing objectives; a new explicit opt-in mints fresh admission fences.
+    arena.reset_detachment_commands();
     // Everything the world keeps of the arena, read before the move.
     let recovered_orders = arena.recovered_order_watches();
     let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -2530,6 +2604,10 @@ pub fn send_control(
             *held = now;
         }
     }
+    // EXIT, reclaim and session hooks share this control boundary. Publish any
+    // changed command term before the arena applies queued old-term orders.
+    crate::detachment::live::sync(ctx);
+    flush_detachment_dispatches(ctx);
     Ok(())
 }
 
@@ -2950,6 +3028,9 @@ fn on_frames(
         for line in lines {
             ctx.out.sys_to_actor(pilot, NOTICE_SENTENCE_TAG, line);
         }
+        crate::detachment::live::sync(ctx);
+        flush_detachment_dispatches(ctx);
+        let payload = crate::detachment::commands::enrich(ctx.w, pilot, payload);
         feed.keyframe_to(ctx, Audience::Actor(pilot), payload);
         // **16b cut AP.3** (16c N19): the digest, AFTER the keyframe — a panel
         // client composes the frame before it rings anything, and the line
@@ -3864,6 +3945,8 @@ impl mush_core::EventHook for SeatFacts {
             );
             ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
         }
+        crate::detachment::live::sync(ctx);
+        flush_detachment_dispatches(ctx);
     }
 
     /// **16b cut K.2 (K4)**: the pilot's line dropped and the grace is running.
@@ -3872,6 +3955,8 @@ impl mush_core::EventHook for SeatFacts {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
             control_all_channels(ctx, unit, ControlState::Linkdead, actor);
         }
+        crate::detachment::live::sync(ctx);
+        flush_detachment_dispatches(ctx);
     }
 
     /// The grace ran out, or the pilot quit: the seat is released and the tank
@@ -3904,6 +3989,8 @@ impl mush_core::EventHook for SeatFacts {
             crate::match_::lobby::slot_dropped(ctx, actor, now_ms);
             control_all_channels(ctx, unit, ControlState::Released, actor);
         }
+        crate::detachment::live::sync(ctx);
+        flush_detachment_dispatches(ctx);
     }
 }
 
@@ -4237,7 +4324,15 @@ impl mush_core::QueryHandler for CockpitQuery {
             .and_then(|registry| registry.last_frame(actor))
             .map_or_else(crate::match_::cockpit::cockpit_cleared, |held| {
                 // 16b cut B.4 (`T-60`): the ranges the pilot was last sent.
-                crate::match_::cockpit::status_frame_held(held.match_id, &held.frame, &held.ranges)
+                crate::detachment::commands::enrich(
+                    w,
+                    actor,
+                    crate::match_::cockpit::status_frame_held(
+                        held.match_id,
+                        &held.frame,
+                        &held.ranges,
+                    ),
+                )
             });
         Ok(mush_proto::OutputEvent::Panel {
             feed: SmolStr::new_static(FRAME_FEED),
@@ -4387,6 +4482,15 @@ pub fn register(
         .egress_sender()
         .ok_or_else(|| ModError::msg("new arena task egress is unavailable"))?;
     let bulk_cfg = minds_cfg.bulk();
+    // The maintenance pulse: production's second (`Coarse`), or the
+    // sub-second pace the acceptance stories' harness sets (`Fast`, the
+    // kernel's name for a sub-second period; the loop arms both alike).
+    let maintenance = Duration::from_millis(bulk_cfg.maintenance_ms);
+    let maintenance_cadence = if maintenance >= Duration::from_secs(1) {
+        mush_core::TickCadence::Coarse(maintenance)
+    } else {
+        mush_core::TickCadence::Fast(maintenance)
+    };
     let bulk = crate::minds::bulk::world::BulkService::new(bulk_cfg.clone(), egress.clone())
         .map_err(|e| ModError::msg(e.to_string()))?;
     reg.state(
@@ -4407,13 +4511,14 @@ pub fn register(
     )?;
     reg.tick(
         "mind-bulk-maintenance",
-        mush_core::TickCadence::Coarse(Duration::from_secs(1)),
+        maintenance_cadence,
         Arc::new(
             |ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>| {
                 crate::minds::bulk::world::drain(ctx)
             },
         ),
     )?;
+    reg.off_loop_simulation_host(Arc::new(tasks.clone()))?;
     reg.state(ArenaRegistry::new(tasks, frames, observers));
     // 16b cut T.3: the match book beside the registry. A second slot rather than
     // three more fields on the first, because the two have different lifetimes —
@@ -4922,6 +5027,9 @@ pub(crate) fn admit_order(
     unit: ObjId,
     order: &crate::deliberation::Order,
 ) -> Result<(), IntentRefusal> {
+    if crate::detachment::live::owns_unit(w, match_id, unit) {
+        return Err(IntentRefusal::NoCharacter);
+    }
     if w.module_state::<ArenaRegistry>().is_none() {
         return Err(IntentRefusal::Unavailable);
     }
@@ -4999,6 +5107,11 @@ fn offer_helm(
     unit: ObjId,
     kind: IntentKind,
 ) -> Result<(), IntentRefusal> {
+    if matches!(kind, IntentKind::Order(_) | IntentKind::ReleaseOrder { .. })
+        && crate::detachment::live::owns_unit(ctx.w, match_id, unit)
+    {
+        return Err(IntentRefusal::NoCharacter);
+    }
     let channel = Channel::Helm;
     let (intent, tasks) = {
         let registry = ctx
@@ -5021,6 +5134,111 @@ fn offer_helm(
         Ok(()) => Ok(()),
         Err(_) if tasks.is_live(match_id) => Err(IntentRefusal::Busy),
         Err(_) => Err(IntentRefusal::Gone),
+    }
+}
+
+/// Offer the current host fences before controller commands. A full queue keeps
+/// the pending message for the next tick. Queue delivery never claims execution.
+pub(crate) fn flush_detachment_dispatches(ctx: &mut Ctx<'_>) {
+    use crate::arena::detachment::{
+        DetachmentAuthority, DetachmentCommand, DetachmentControl, DetachmentObjective,
+    };
+    use crate::detachment::live::{self, LiveDispatch};
+    use mush_tactics::detachment::Directive;
+
+    // Confirming an authority offer exposes its command on the second pass.
+    for _ in 0..2 {
+        for event in live::drain_dispatches(ctx.w) {
+            match event {
+                LiveDispatch::Authority {
+                    match_id,
+                    unit,
+                    epoch,
+                    detachment,
+                    revision,
+                    term,
+                } => {
+                    let Some(registry) = ctx.w.module_state::<ArenaRegistry>() else {
+                        return;
+                    };
+                    if registry.match_of_unit(unit) != Some(match_id) {
+                        continue;
+                    }
+                    let control = DetachmentControl {
+                        unit,
+                        epoch,
+                        authority: Some(DetachmentAuthority {
+                            detachment: detachment.0,
+                            revision,
+                            term,
+                        }),
+                    };
+                    if registry
+                        .tasks
+                        .offer(match_id, ArenaMsg::DetachmentControl(control))
+                        .is_ok()
+                    {
+                        live::confirm_authority(ctx.w, match_id, unit, epoch);
+                    }
+                }
+                LiveDispatch::ControllerOrder {
+                    match_id,
+                    authority_epoch,
+                    squad,
+                    order,
+                    expires_after_ms,
+                } => {
+                    let Some(now_ms) = ctx
+                        .w
+                        .module_state::<ArenaRegistry>()
+                        .and_then(|registry| registry.mirror(match_id))
+                        .map(|mirror| mirror.now_ms)
+                    else {
+                        continue;
+                    };
+                    let expires_at_ms = expires_after_ms.map(|remaining| {
+                        now_ms.saturating_add(i64::try_from(remaining).unwrap_or(i64::MAX))
+                    });
+                    let directive = match &order.directive {
+                        Directive::Cancel => None,
+                        Directive::Objective(payload) => Some(DetachmentObjective {
+                            objective: payload.objective(),
+                            constraints: payload.constraints(),
+                        }),
+                    };
+                    let command = DetachmentCommand {
+                        authority: DetachmentAuthority {
+                            detachment: order.detachment.0,
+                            revision: order.roster_revision,
+                            term: order.command_term,
+                        },
+                        authority_epoch,
+                        sequence: order.sequence,
+                        issuer: order.issuer,
+                        issuer_unit: order.issuer_unit,
+                        squad,
+                        directive,
+                        expires_at_ms,
+                    };
+                    if offer_helm(
+                        ctx,
+                        match_id,
+                        order.recipient.unit,
+                        IntentKind::DetachmentCommand(Box::new(command)),
+                    )
+                    .is_ok()
+                        && let Err(error) = live::confirm_delivery(
+                            ctx,
+                            order.detachment,
+                            order.recipient.slot,
+                            order.sequence,
+                        )
+                    {
+                        tracing::warn!(%error, "detachment delivery confirmation refused");
+                    }
+                }
+            }
+        }
     }
 }
 

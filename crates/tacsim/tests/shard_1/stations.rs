@@ -32,7 +32,6 @@ use crate::support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use mush_atlas::def::{ExitDef, FeatureDef, PortalAt, RoomDef, SurfaceDef};
 use mush_atlas::raster::{Grid, shared_threshold};
@@ -215,30 +214,15 @@ fn config() -> TacsimConfig {
 fn production_roster_with_starter(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
     // Doc 18 cut IC5: `tacsim` the third quantity delegate, the inventory cell
     // handed to the layer below.
-    let (mut mods, inventory) = comp::server_modules_with_tacsim(
-        mush_weather::WeatherConfig::default(),
+    let (mut mods, inventory) = comp::domain_modules_with_economy(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     // Doc 18 cut IC2 (lead ruling R2): the production composition loads the game's
     // seed packs (the lane) on the same switch the content latch's boot list rides.
     mods.push(comp::tacsim_module_wired(cfg, true, inventory));
