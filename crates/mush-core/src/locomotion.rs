@@ -9,6 +9,8 @@
 
 pub(crate) mod dispatch;
 pub(crate) mod dispatch_observation;
+pub(crate) mod image;
+pub mod transition;
 pub use dispatch::CapturedLocomotion;
 
 use crate::action::{ActionInvocation, CommitToken};

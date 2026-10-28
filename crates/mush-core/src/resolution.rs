@@ -1212,6 +1212,48 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Join the already-admitted captured route to its exact Sim participant
+    /// and Core-built object images. Call `admit_captured_locomotion` first;
+    /// neither a request nor replacement postimages can be supplied here.
+    /// Any refusal poisons the entire preparation.
+    pub fn prepare_captured_locomotion<
+        P: crate::participant::OwnerParticipant<
+                Request = crate::locomotion::transition::LocomotionIntent,
+                Output = crate::locomotion::transition::LocomotionDraft,
+            >,
+    >(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        service: &crate::locomotion::transition::CoreLocomotion<P>,
+    ) -> Result<
+        crate::locomotion::transition::LocomotionReceipt,
+        crate::participant::ParticipantError,
+    > {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            txn.read_preimage(base, provider)
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            let admission = self
+                .captured_admission
+                .as_ref()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            self.participants
+                .as_mut()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?
+                .prepare_locomotion(service, txn, self.commit_token, admission, base, provider)
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
     /// Reserve one inert charter object using this invocation's actual actor.
     /// The object and typed reservation share this action's single commit.
     pub fn reserve_initial_filing_shell(

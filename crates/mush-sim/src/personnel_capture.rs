@@ -641,6 +641,78 @@ pub(crate) fn derive(
         }
     }
     let roots = seeds(state, transition, plan, baseline_dependencies, &mut reads)?;
+    derive_views(
+        before,
+        after,
+        reads,
+        roots,
+        stamp,
+        CaptureDomain::Structural,
+    )
+}
+
+/// Ordinary locomotion changes only the actual actor's Core projection. The
+/// canonical placement/space maps remain byte-for-byte unchanged, including an
+/// absent placement row. The caller supplies already-admitted route dependencies.
+pub(crate) fn derive_actor_move(
+    state: &SpatialState,
+    world: &World,
+    actor: ObjId,
+    destination: ObjId,
+    stamp: &ClockStamp,
+    baseline_dependencies: &BTreeSet<ObjId>,
+) -> Result<CaptureFacts, ParticipantError> {
+    if !matches!(stamp.clock, ClockRef::WorldIc { generation } if generation > 0)
+        || baseline_dependencies.len() > MAX_DEPENDENCIES
+        || world
+            .get(actor)
+            .is_none_or(|object| !object.kind.is_actor())
+    {
+        return Err(refused("invalid locomotion capture boundary"));
+    }
+    let mut reads = Reads {
+        world,
+        dependencies: BTreeSet::new(),
+        contents: BTreeMap::new(),
+        steps: 0,
+    };
+    for &dependency in baseline_dependencies {
+        reads.touch(dependency)?;
+    }
+    reads.inverse(actor)?;
+    reads.touch(destination)?;
+    if world.get(actor).and_then(|object| object.location) != Some(destination)
+        && reads.contents(destination)?.contains(&actor)
+    {
+        return Err(refused("locomotion destination inverse disagrees"));
+    }
+    let before = View::before(state);
+    let mut after = View::before(state);
+    after.projections.insert(actor, destination);
+    derive_views(
+        before,
+        after,
+        reads,
+        BTreeSet::from([actor]),
+        stamp,
+        CaptureDomain::Locomotion,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum CaptureDomain {
+    Structural,
+    Locomotion,
+}
+
+fn derive_views(
+    before: View<'_>,
+    after: View<'_>,
+    mut reads: Reads<'_>,
+    roots: BTreeSet<ObjId>,
+    stamp: &ClockStamp,
+    domain: CaptureDomain,
+) -> Result<CaptureFacts, ParticipantError> {
     let people = actors(&mut reads, roots, &before, &after)?;
     let mut old = Vec::with_capacity(people.len());
     let mut new = Vec::with_capacity(people.len());
@@ -671,14 +743,26 @@ pub(crate) fn derive(
         new.push(post);
     }
     crossings.sort_by_key(|row| (row.character, row.carrier));
-    let before_ancestry_digest = digest("sim.personnel.ancestry.v1", &old)?;
-    let after_ancestry_digest = digest("sim.personnel.ancestry.v1", &new)?;
-    let capture_digest = crate::personnel::capture_digest(
-        stamp,
-        &before_ancestry_digest,
-        &after_ancestry_digest,
-        &crossings,
-    )?;
+    let ancestry_domain = match domain {
+        CaptureDomain::Structural => "sim.personnel.ancestry.v1",
+        CaptureDomain::Locomotion => "sim.locomotion.ancestry.v1",
+    };
+    let before_ancestry_digest = digest(ancestry_domain, &old)?;
+    let after_ancestry_digest = digest(ancestry_domain, &new)?;
+    let capture_digest = match domain {
+        CaptureDomain::Structural => crate::personnel::capture_digest(
+            stamp,
+            &before_ancestry_digest,
+            &after_ancestry_digest,
+            &crossings,
+        )?,
+        CaptureDomain::Locomotion => crate::locomotion_capture::capture_digest(
+            stamp,
+            &before_ancestry_digest,
+            &after_ancestry_digest,
+            &crossings,
+        )?,
+    };
     Ok(CaptureFacts {
         prepared_at: stamp.clone(),
         before_ancestry_digest,
