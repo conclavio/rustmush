@@ -1,44 +1,72 @@
-//! **Where a core came from** (doc 17h cut M8a, A6; §2.3 "Provenance"; doc 17 §13).
+//! **Where a core came from** (doc 17h cut M8a, A6; §2.3 "Provenance"; doc 17 §13; the fix
+//! round's F6).
 //!
 //! The read behind the inspection's `provenance` word, over two owners' records and nothing
 //! this crate writes: the economy's managed title birth of the core
-//! ([`mush_economy::EconomyStore::core_title_birth`]: the completed integration whose
-//! output the core is, with the die lot and certificate its funding named: the industry's
-//! acknowledged certificate, so the birth itself is the proof) and, while the inventory still
-//! holds the die lot ([`mush_inventory::record::Lot`], read through the quantity delegation
-//! tacsim holds; the integration consumes the lot, `mush_inventory`'s pool removes a spent lot,
-//! so after delivery it is normally gone), that lot's origin, which must be the industry's
-//! certificate for that very operation (`industry` / `certified_core_die.v1` / the
-//! certificate's commit, `mush_industry`'s own `source`) or the read is `unknown`. Then the
-//! core is `certified` by the supplier organization that stocked the die — the importer, in
-//! the one shipped composition (`crate::hardware::composition`) — at the class ordered.
-//! Anything short of that is `unknown`: M8a's read returns the two words and no other
-//! (`heirloom` and `grey` wait on the cuts that can tell them apart).
+//! ([`mush_economy::EconomyStore::core_title_birth`]: the completed integration whose output
+//! the core is, with the die lot and the die certificate its funding named) and the industry's
+//! retained die certificate under that name ([`mush_industry::core_production::DieCertificates`],
+//! the read-only grant the hardware composition gives this crate). The certificate is the
+//! proof: it must exist, be readable, and name the birth's die lot and class; then the core is
+//! `certified` by the certificate's importer at the certificate's class. A missing or
+//! unreadable certificate, or one that disagrees with the birth, is `unknown` — never
+//! agreement. M8a's read returns the two words and no other (`heirloom` and `grey` arrive in
+//! cut M8b).
 //!
 //! A read: it grants nothing, consumes nothing and vouches for nothing beyond the records.
 
 use mush_core::{ObjId, World};
 use mush_economy::EconomyStore;
-use mush_inventory::record::{Lineage, LotId};
+use mush_economy::core_integration::{CoreClass, CoreTitleBirth};
+use mush_industry::core_production::{DieCertificate, DieCertificates, DieClass};
 pub use mush_roll::commerce::registry_inspection::Provenance;
 
 use crate::minds::registry_inspection::facts::Reads;
-use crate::port::families::PortHandles;
 
-/// The industry's provider word on a certified die lot's origin.
-const INDUSTRY: &str = "industry";
-/// The industry's certificate kind on a certified die lot's origin (`mush_industry`'s
-/// `SOURCE_KIND`, named here because that constant is the industry's own).
-const CERTIFIED_DIE: &str = "certified_core_die.v1";
+/// The economy's class word for the industry's die class.
+const fn economy_class(class: DieClass) -> CoreClass {
+    match class {
+        DieClass::I => CoreClass::I,
+        DieClass::II => CoreClass::II,
+        DieClass::III => CoreClass::III,
+    }
+}
 
-/// **The provenance of `core`** (A6): `Certified { importer, grade }` when its title was born
-/// of a completed integration (the funding's die certificate) and the die lot, if the
-/// inventory still holds it, carries that certificate as its origin; `Unknown` otherwise — no
-/// title, an unmanaged or charter title, a frozen economy, a lot re-lineaged or under another
-/// certificate.
+/// **What a birth and its certificate say together**: `Certified` by the certificate's
+/// importer at its class when the certificate is the birth's (its operation, its lot, its
+/// class); `Unknown` when there is no certificate or it disagrees.
+#[must_use]
+pub fn from_certificate(
+    birth: &CoreTitleBirth,
+    certificate: Option<&DieCertificate>,
+) -> Provenance {
+    let Some(certificate) = certificate else {
+        return Provenance::Unknown;
+    };
+    let grade = economy_class(certificate.class());
+    if certificate.operation() != birth.die_certificate
+        || certificate.lot().0 != birth.die_lot
+        || grade != birth.class
+    {
+        return Provenance::Unknown;
+    }
+    Provenance::Certified {
+        importer: certificate.importer(),
+        grade,
+    }
+}
+
+/// **The provenance of `core`** (A6, F6): `Certified { importer, grade }` from the retained
+/// die certificate its title's birth names, when that certificate agrees with the birth;
+/// `Unknown` otherwise — no title, an unmanaged or charter title, a frozen economy, no
+/// certificate read granted, a missing or unreadable certificate, or one that disagrees.
 pub fn provenance_of<R: Reads>(w: &World, reader: &mut R, core: ObjId) -> Provenance {
-    if w.module_state_owner(std::any::TypeId::of::<EconomyStore>())
-        .is_none_or(|owner| owner.as_str() != "economy")
+    let owned_by = |type_id, owner: &str| {
+        w.module_state_owner(type_id)
+            .is_some_and(|o| o.as_str() == owner)
+    };
+    if !owned_by(std::any::TypeId::of::<EconomyStore>(), "economy")
+        || !owned_by(std::any::TypeId::of::<DieCertificates>(), mush_industry::NS)
     {
         return Provenance::Unknown;
     }
@@ -48,32 +76,19 @@ pub fn provenance_of<R: Reads>(w: &World, reader: &mut R, core: ObjId) -> Proven
     else {
         return Provenance::Unknown;
     };
-    let held = w
-        .module_state::<PortHandles>()
-        .and_then(|handles| handles.inventory.as_ref())
-        .and_then(|inventory| reader.typed(&inventory.lots, &LotId(birth.die_lot)));
-    let agrees = held.is_none_or(|lot| {
-        matches!(lot.lineage(), Lineage::Origin { source }
-            if source.provider.as_str() == INDUSTRY
-                && source.kind.as_str() == CERTIFIED_DIE
-                && source.id.as_str() == birth.die_certificate.to_hex())
-    });
-    if agrees {
-        Provenance::Certified {
-            importer: birth.supplier,
-            grade: birth.class,
-        }
-    } else {
-        Provenance::Unknown
-    }
+    let Some(certificates) = w.module_state::<DieCertificates>() else {
+        return Provenance::Unknown;
+    };
+    let certificate = reader.typed(certificates.handle(), &birth.die_certificate.to_hex());
+    from_certificate(&birth, certificate.as_ref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The two origin words the read matches are the industry's own, and the wire words of
-    /// every provenance kind (`kind`-tagged, snake_case).
+    /// The wire words of every provenance kind (`kind`-tagged, snake_case) and the die class
+    /// mapping.
     #[test]
     fn m8a_provenance_words() {
         assert_eq!(
@@ -88,7 +103,6 @@ mod tests {
             serde_json::to_value(Provenance::Grey).expect("serializes"),
             serde_json::json!({"kind": "grey"})
         );
-        assert_eq!(CERTIFIED_DIE, "certified_core_die.v1");
-        assert_eq!(INDUSTRY, mush_industry::NS);
+        assert_eq!(economy_class(DieClass::II), CoreClass::II);
     }
 }

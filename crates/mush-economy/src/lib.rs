@@ -108,7 +108,6 @@ pub mod managed_paid_resale;
 pub mod managed_purchase;
 pub mod managed_renewal;
 mod managed_title;
-pub use managed_title::ManagedTitleKind;
 mod plan;
 mod record;
 pub mod registry_filing;

@@ -29,10 +29,11 @@ use tacsim::surface::{ActKind, ActResult, RefusedCode, TvState};
 use mush_roll::commerce::ic_claims::IcCloseKind;
 
 use crate::excursions::{
-    RAMP, act_go, command, count, due_of, finish, finishes, fire, in_bay, inspections, keeping,
-    land, land_all, no_refused_writes, on_pad, on_pad_as, port_map, projection, prospector,
-    put_charge, reboot_with, reboot_with_inspection, record_of, recovery_order, recovery_staff,
-    said, staff_bay, staff_place, staff_place_on, stocked, store,
+    RAMP, act_go, command, count, due_of, finish, finishes, fire, god, in_bay, inspections,
+    keeping, land, land_all, land_receipt, no_refused_writes, on_pad, on_pad_as, port_map,
+    projection, prospector, put_charge, reboot_with, reboot_with_inspection, record_of,
+    recovery_order, recovery_staff, said, staff_bay, staff_place, staff_place_on, station_room,
+    stocked, store, teleport,
 };
 
 /// A hull's black box lines, decoded (the store's open tail); every entry decodes (the fix
@@ -1401,8 +1402,9 @@ fn m8a_the_owner_reads_the_box_and_nobody_else() {
         .and_then(|record| record.sortie)
         .expect("the epoch is open");
     let seal = open.seal.clone().expect("the rig has a seal");
+    // The fix round's F1: a trip's open is two rows, the second indented two spaces.
     let open_line = format!(
-        "{} out · surface from the bay of {} · Standard Doctrine · the ROM · governed · licence \
+        "{} out · surface from the bay of {}\n  Standard Doctrine · the ROM · governed · licence \
          doctrine · seal {}",
         tacsim::port::licence::ic_stamp(out_ic),
         hull_name(&rig, hull),
@@ -1416,9 +1418,16 @@ fn m8a_the_owner_reads_the_box_and_nobody_else() {
     // title-holding character nor a lessee (the readers of doc 17h §2.5); staff read it.
     let (out, _) = command(&mut rig, pilot, &format!("+hull/box #{}", hull.0));
     assert_eq!(out, no_box);
+    // The ship's open line: two rows when its epoch was sealed, one (`· no seal`) when not;
+    // this is the ship/port-epoch branch the inspection reads too.
+    let sealed_ship = ship_epoch(&mut rig, hull).is_some_and(|open| open.seal.is_some());
     let staff = recovery_staff(&mut rig.tw);
     let (out, _) = command(&mut rig, staff, &format!("+hull/box #{}", hull.0));
-    assert_eq!(out.lines().count(), 1, "{out}");
+    assert_eq!(
+        out.lines().count(),
+        if sealed_ship { 2 } else { 1 },
+        "{out}"
+    );
     assert!(out.contains(" out · port from "), "{out}");
 
     // The absences (A7): one sentence each, nothing else.
@@ -1467,18 +1476,108 @@ fn m8a_the_owner_reads_the_box_and_nobody_else() {
     no_refused_writes(&rig.tw);
 }
 
+/// **M8a fix round 1, F7 (D-UM-42): a lessee reads only the lines since their lease began.**
+/// The first lessee's trip (open and close, three rows) is theirs to read while the rig is
+/// theirs; once they hand it back they read nothing. A second lessee of the same rig reads
+/// nothing of the first's trip — the hull has no box they can read until their own trip opens,
+/// and then only its rows. Staff read every line; and once staff put the rig's title on a
+/// character (F10, the title-holder arm), that holder reads every line too, both lessees'.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn m8a_a_lessee_reads_only_the_lines_since_their_lease() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let hull = ObjId(row.hull);
+    let no_box = tacsim::surface::hull::NO_BOX;
+    let read = |rig: &mut crate::excursions::Rig, who: ObjId| {
+        command(rig, who, &format!("+hull/box #{}", tv.0)).0
+    };
+    // The first lessee's trip, out and in.
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    let _ = finish(&mut rig, tv, pilot);
+    let first = read(&mut rig, pilot);
+    assert_eq!(first.lines().count(), 3, "{first}");
+    let first_open = first.lines().next().expect("the open row").to_owned();
+
+    // Hand it back at Occator's counter (staff carry the hull home, as the S.3 recovery test
+    // does, so the counter's docked-hull rule holds).
+    let ceres = mush_sim::DomainId(
+        port_map(&rig.tw, "ceres_port")
+            .domain
+            .expect("Ceres domain"),
+    );
+    staff_place_on(&mut rig, hull, ceres, 0, 0);
+    keeping(&mut rig, |ctx| {
+        mush_sim::unplace(ctx, pilot, "the lessee walks to the lease counter")
+    })
+    .expect("the pilot leaves the hull");
+    let counter = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
+    teleport(&mut rig.tw, pilot, counter);
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 lease return go");
+    land_all(&mut rig, &queued);
+    assert!(store(&rig.tw).tv_lease_on(tv).is_none(), "returned: {out}");
+    assert_eq!(read(&mut rig, pilot), no_box, "a lessee no more");
+
+    // The second lessee leases the same rig: nothing of the first's trip.
+    let (second, _, tvs) = on_pad_as(&mut rig, "Second", 2, "Tally Moth", 1);
+    assert_eq!(tvs, vec![tv], "the pool leases the returned rig again");
+    assert_eq!(
+        read(&mut rig, second),
+        no_box,
+        "no line since the lease began"
+    );
+    let _ = act_go(&mut rig, second, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, second);
+    let theirs = read(&mut rig, second);
+    assert_eq!(theirs.lines().count(), 2, "their own open alone: {theirs}");
+    assert!(!theirs.contains(&first_open), "{theirs}");
+    assert!(!theirs.contains("sealed in the box"), "{theirs}");
+
+    // Staff read every line: the first trip's three rows and the second's open.
+    let staff = recovery_staff(&mut rig.tw);
+    let all = read(&mut rig, staff);
+    assert_eq!(all.lines().count(), 5, "{all}");
+    assert!(all.starts_with(&first_open), "{all}");
+
+    // The title-holder arm: staff release the rig's claims (a lease's lien rides on it, and a
+    // title with a claim on it does not move) and put its title on the first pilot, who then
+    // reads it all — both lessees' lines.
+    let claims = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| economy.snapshot().asset(tv).map(|a| a.encumbrances.len()))
+        .expect("the rig is titled");
+    for n in (1..=claims).rev() {
+        god(&mut rig, &format!("@asset/release #{}={n}", tv.0));
+    }
+    god(&mut rig, &format!("@asset/transfer #{}=#{}", tv.0, pilot.0));
+    assert_eq!(
+        read(&mut rig, pilot),
+        all,
+        "the title holder reads every line"
+    );
+    no_refused_writes(&rig.tw);
+}
+
 /// **M8a 4. The Registry inspects a rig on the pad and in the field** (doc 17h cut M8a, A4,
 /// A6, A7, A8; the brief's test 4), composed here (`reboot_with_inspection`: the Registry
 /// authority with an operator character, the Roll's setup acknowledged, the inspection over the
 /// authority; the mushd lens harness cannot stand a surface rig up): a non-operator is told the
 /// revocation's one sentence and nothing else, before any hull is looked at; a number no hull
-/// row holds is `No such hull.`; on the pad the operator's `@registry/inspect #tv` prints the
-/// record in words — the ROM, provenance unknown, no trip open — and stages one action whose
-/// landing writes one `roll_registry_inspections` record (`core: None`, `Zero`, `governed:
-/// None`, `Unknown`, `NoSeal`; no seal, so no licence state); in the field the same hull reads
-/// its open trip — the seal's mind, `licence doctrine`, the first eight of its digest, `seal
-/// matches the fitted core` — and the second record carries the digest, `Matches` and
-/// `Some(Doctrine)`; both records survive a restart, and a third inspection writes a third.
+/// row holds is `No such hull.`; on the pad the operator's `@registry/inspect #tv` prints only
+/// `Inspecting hull #n.` and stages one action whose landing writes one
+/// `roll_registry_inspections` record (`core: None`, `Zero`, `governed: None`, `Unknown`,
+/// `NoSeal`; no seal, so no licence state) and whose receipt — the line the driver prints in
+/// place of `Done.`, rendered from that record (the fix round's F3) — reads the ROM,
+/// provenance unknown, no trip open; in the field the receipt reads the open trip's seal
+/// matching, and the second record carries the digest, `Matches` and `Some(Doctrine)`; both
+/// records survive a restart, and a third inspection writes a third. The fix round's F2: the
+/// typed action refuses an object with a unit that is no programme hull, with the provider's
+/// one sentence and no record, as the command says `No such hull.` of it.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
@@ -1488,10 +1587,10 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
     let mut rig = stocked();
     let operator = rig.tw.spawn_player("Registry operator");
     let (mut rig, policy) = reboot_with_inspection(rig, operator, &[operator]);
-    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let ship = ObjId(row.hull);
     let tv = tvs[0];
     let n = tv.0;
-    let name = hull_name(&rig, tv);
     assert_eq!(policy.operators(), [operator]);
 
     // Not an operator: the driver's sentence, before any hull is looked at (A7).
@@ -1517,23 +1616,22 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
     assert!(out.starts_with("@registry/rate"), "{out}");
     assert!(out.contains("@registry/inspect <hull>"), "{out}");
 
-    // On the pad: no trip open; one record. The fifth line is the driver's receipt of the
-    // submission (`Queued.`, E7c2 R11), never the command's.
+    // On the pad: no trip open; one record. The command says only that it is inspecting
+    // (the second line is the engine's receipt of the submission, `Queued.`); the facts are
+    // the provider's receipt, rendered from the record it wrote (F3).
     let (out, queued) = command(&mut rig, operator, &format!("@registry/inspect #{n}"));
-    assert_eq!(
-        out,
-        format!(
-            "Hull #{n} {name} · the ROM\nprovenance unknown\nno trip open\nInspecting hull \
-             #{n}.\nQueued."
-        )
-    );
+    assert_eq!(out, format!("Inspecting hull #{n}.\nQueued."));
     assert_eq!(queued.len(), 1, "one submission: {out}");
     assert_eq!(queued[0].actor, operator);
     assert_eq!(
         queued[0].action.key().id.as_str(),
         tacsim::minds::registry_inspection::INSPECTION_ACTION
     );
-    land_all(&mut rig, &queued);
+    let receipt = land_receipt(&mut rig, &queued[0]).expect("the inspection lands");
+    assert_eq!(
+        receipt.as_deref(),
+        Some(format!("Hull #{n}: the ROM · provenance unknown · no trip open").as_str())
+    );
     let records = inspections(&rig.tw);
     assert_eq!(records.len(), 1, "{records:?}");
     let first = &records[0];
@@ -1562,20 +1660,31 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
         .and_then(|open| open.seal)
         .expect("the trip is sealed");
     let (out, queued) = command(&mut rig, operator, &format!("@registry/inspect #{n}"));
+    assert_eq!(out, format!("Inspecting hull #{n}.\nQueued."));
+    assert_eq!(queued.len(), 1);
+    let receipt = land_receipt(&mut rig, &queued[0])
+        .expect("the inspection lands")
+        .expect("a receipt");
     assert_eq!(
-        out,
+        receipt,
         format!(
-            "Hull #{n} {name} · the ROM\nprovenance unknown\nout since {} · Standard Doctrine · \
-             licence doctrine · seal {} · seal matches the fitted core\nInspecting hull #{n}.\
-             \nQueued.",
-            tacsim::port::licence::ic_stamp(out_ic),
+            "Hull #{n}: the ROM · provenance unknown · seal {} matches",
             &seal.seal_digest[..8]
         )
     );
-    assert!(!out.contains("sortie"), "{out}");
-    assert!(out.lines().count() <= 6);
-    assert_eq!(queued.len(), 1);
-    land_all(&mut rig, &queued);
+    assert!(
+        !receipt.contains("sortie") && receipt.chars().count() <= 120,
+        "{receipt}"
+    );
+    // The trip's own words stay in the box (the receipt is one line): its out-since stamp.
+    let (boxed, _) = command(&mut rig, pilot, &format!("+hull/box #{n}"));
+    assert!(
+        boxed.starts_with(&format!(
+            "{} out · ",
+            tacsim::port::licence::ic_stamp(out_ic)
+        )),
+        "{boxed}"
+    );
     let records = inspections(&rig.tw);
     assert_eq!(records.len(), 2, "{records:?}");
     let second = records
@@ -1596,18 +1705,138 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
         }
     );
 
+    // F10: the ship's branch of the open trip — the Dray-P's own open port epoch. The
+    // receipt and the record carry that epoch's seal, checked against the ship's hardware.
+    let ship_open = ship_epoch(&mut rig, ship).expect("the Dray-P's epoch is open on the pad");
+    let (out, queued) = command(
+        &mut rig,
+        operator,
+        &format!("@registry/inspect #{}", ship.0),
+    );
+    assert_eq!(
+        out,
+        format!(
+            "Inspecting hull #{}.
+Queued.",
+            ship.0
+        )
+    );
+    let receipt = land_receipt(&mut rig, &queued[0])
+        .expect("the ship's inspection lands")
+        .expect("a receipt");
+    assert!(
+        receipt.starts_with(&format!("Hull #{}: ", ship.0)),
+        "{receipt}"
+    );
+    let shipped = inspections(&rig.tw)
+        .into_iter()
+        .find(|record| record.hull == ship)
+        .expect("the ship's record");
+    match ship_open.seal.as_ref() {
+        Some(seal) => {
+            assert_eq!(
+                shipped.seal_digest.as_deref(),
+                Some(seal.seal_digest.as_str())
+            );
+            assert!(
+                receipt.contains(&format!("seal {}", &seal.seal_digest[..8])),
+                "{receipt}"
+            );
+        }
+        None => {
+            assert_eq!(shipped.seal_digest, None);
+            assert!(receipt.ends_with(" · no seal"), "{receipt}");
+        }
+    }
+    let records: Vec<_> = inspections(&rig.tw)
+        .into_iter()
+        .filter(|record| record.hull == tv)
+        .collect();
+
     // A restart keeps both; a third inspection writes a third.
     let mut rig = reboot_with(rig, &[operator, pilot]);
-    let mut kept = inspections(&rig.tw);
+    let mut kept: Vec<_> = inspections(&rig.tw)
+        .into_iter()
+        .filter(|record| record.hull == tv)
+        .collect();
     kept.sort_by_key(|r| r.inspection.to_hex());
     let mut before = records.clone();
     before.sort_by_key(|r| r.inspection.to_hex());
     assert_eq!(kept, before, "the records survive a restart");
     let (_, queued) = command(&mut rig, operator, &format!("@registry/inspect #{n}"));
     land_all(&mut rig, &queued);
-    assert_eq!(inspections(&rig.tw).len(), 3);
+    assert_eq!(
+        inspections(&rig.tw)
+            .iter()
+            .filter(|record| record.hull == tv)
+            .count(),
+        3
+    );
+    // F9: the rig's three records hold three slots of its ring, `seq` 1..=3.
+    let mut seqs: Vec<u64> = inspections(&rig.tw)
+        .iter()
+        .filter(|record| record.hull == tv)
+        .map(|record| record.seq)
+        .collect();
+    seqs.sort_unstable();
+    assert_eq!(seqs, vec![1, 2, 3]);
     let (out, queued) = command(&mut rig, pilot, &format!("@registry/inspect #{n}"));
     assert_eq!(out, "That did not go through. Nothing changed.");
     assert!(queued.is_empty());
+
+    // F2: an object with a tactical unit that is no programme hull (a copy of the rig's unit
+    // on a fresh Thing, in the unit store's RAM). The command says `No such hull.` and stages
+    // nothing; the typed action, the same request by another door, is refused by the
+    // provider's own read — its one sentence, no record, no receipt (F3: a refused prepare
+    // prints only the refusal).
+    let stray = rig
+        .tw
+        .world_mut()
+        .create(
+            mush_core::ObjKind::Thing,
+            "Stray chassis",
+            mush_core::GOD,
+            Some(mush_core::LIMBO),
+        )
+        .expect("a thing");
+    let unit = mush_tactics::module::unit_of(rig.tw.world(), tv)
+        .cloned()
+        .expect("the rig's unit");
+    rig.tw
+        .world_mut()
+        .module_state_mut::<mush_tactics::module::UnitStore>()
+        .expect("the tactics store")
+        .units
+        .insert(stray, unit);
+    let (out, queued) = command(
+        &mut rig,
+        operator,
+        &format!("@registry/inspect #{}", stray.0),
+    );
+    assert_eq!(out, "No such hull.");
+    assert!(queued.is_empty());
+    let action = tacsim::minds::registry_inspection::InspectionHost::of(rig.tw.world())
+        .expect("the inspection is composed")
+        .writer()
+        .action()
+        .clone();
+    let refused = land_receipt(
+        &mut rig,
+        &mush_core::AuthoritativeSubmit {
+            actor: operator,
+            action,
+            subject: mush_core::PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: serde_json::json!({"hull": stray.0}),
+            key: mush_core::IdempotencyKeyText::parse_canonical("m8a.inspect.stray")
+                .expect("a key"),
+        },
+    );
+    let refusal = refused.expect_err("the provider refuses a unit that is no hull");
+    assert!(
+        refusal.contains("The Registry inspection is unavailable or stale."),
+        "{refusal}"
+    );
+    assert_eq!(inspections(&rig.tw).len(), 4, "nothing was recorded");
     no_refused_writes(&rig.tw);
 }

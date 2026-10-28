@@ -170,6 +170,21 @@ impl RegisteredInspectionWriter {
         let inspection = ctx.commit_token();
         let world = ctx.world().map_err(bad)?;
         let (authorization, at_ic) = self.authorize(world, actor)?;
+        // The F9 ring: the newest `seq` among the hull's 64 slots, plus one; its slot holds
+        // the oldest record once the ring is full, and is replaced in this transaction.
+        let mut newest = 0_u64;
+        for key in super::records::inspection_slots(facts.hull) {
+            if let Some(held) = txn
+                .get(&r.families.registry_inspections, &key)
+                .map_err(bad)?
+            {
+                if held.hull != facts.hull {
+                    return Err(PublicationError::Mismatch);
+                }
+                newest = newest.max(held.seq);
+            }
+        }
+        let seq = newest.checked_add(1).ok_or(PublicationError::Invalid)?;
         let record = InspectionRecord {
             format: 1,
             inspection,
@@ -178,6 +193,7 @@ impl RegisteredInspectionWriter {
             operator: actor,
             authorization,
             hull: facts.hull,
+            seq,
             core: facts.core,
             class: facts.class,
             governed: facts.governed,
@@ -188,12 +204,18 @@ impl RegisteredInspectionWriter {
             at_ic,
         };
         record.validate()?;
-        txn.insert(
-            &r.families.registry_inspections,
-            &record.key(),
-            record.clone(),
-        )
-        .map_err(bad)?;
+        let key = record.key();
+        if txn
+            .get(&r.families.registry_inspections, &key)
+            .map_err(bad)?
+            .is_some()
+        {
+            txn.replace(&r.families.registry_inspections, &key, record.clone())
+                .map_err(bad)?;
+        } else {
+            txn.insert(&r.families.registry_inspections, &key, record.clone())
+                .map_err(bad)?;
+        }
         if txn
             .get(&r.families.registry_inspections, &record.key())
             .map_err(bad)?

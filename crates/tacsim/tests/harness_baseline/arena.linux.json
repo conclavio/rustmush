@@ -223,6 +223,22 @@
       ],
       "reason": "M7 ec886bb4 raised the mind API to 5 (MIND_ABI and the Standard Doctrine's sealed source identity), which every minds-lane seal and the sealed tape lines carry. Setting only the API back to 4 on the measured tree returns all five leaves to their previous values exactly; origin/main 9df93246 alone matches the previous values. The five new values agree on Windows and Linux.",
       "timing_policy": "Original VPS timings and host retained; no threshold or host comparison changed."
+    },
+    "m8a_deterministic_update": {
+      "cut": "M8a (doc 17h, fix round 1)",
+      "recorded_utc": "2026-10-28T19:42:23+00:00",
+      "measured_revision": "019e6713 + the M8a fix round 1 tree",
+      "fields": [
+        "counters.ledger_bytes_streamed"
+      ],
+      "previous": {
+        "counters.ledger_bytes_streamed": 1642999
+      },
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev"
+      ],
+      "reason": "Doc 17h cut M8a adds the seal's licence state to every arena mind_sealed ledger line (\"licence_state\":\"doctrine\" after \"licence\"), so the bytes the arena lane streams grew by 8100 (1642999 to 1651099); ledger_chunks stays 103, and every minds block (stock_ci, stock_authored, fill_authored, ceiling_authored) is equal, as is every other deterministic field. The licence state is the line's parameter, never a seal field, so no seal digest or state hash moved.",
+      "timing_policy": "Original VPS timings and host retained; no threshold or host comparison changed."
     }
   },
   "classes": {
@@ -268,7 +284,7 @@
     "frames_per_pulse_mean": 21.25,
     "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 1642999,
+    "ledger_bytes_streamed": 1651099,
     "ledger_chunks": 103,
     "moving_at_end": 123
   },

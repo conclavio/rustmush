@@ -33,7 +33,10 @@ use serde_json::json;
 
 pub use authority::Authorization;
 pub use policy::RegistryInspectionPolicy;
-pub use records::{HullClass, InspectionFacts, InspectionRecord, Provenance, SealCheck};
+pub use records::{
+    HullClass, INSPECTIONS_PER_HULL, InspectionFacts, InspectionRecord, Provenance, SealCheck,
+    inspection_key, inspection_slots,
+};
 pub use writer::{InspectionWriter, RegisteredInspectionWriter};
 
 /// The Org capability a Registry operator holds on the configured scope to inspect.

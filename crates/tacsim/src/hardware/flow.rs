@@ -656,13 +656,16 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
     check!(
         mush_economy::core_integration::require_core_delivery(r.world().world(), accept).is_ok()
     );
-    // Doc 17h cut M8a (A6; the brief's test 5): the delivered core's title was born of this
-    // integration and its die lot carries the industry's certificate as its origin, so the
-    // core's provenance is `Certified` by the importer at the class ordered (Class I: the flow's
-    // die); the inspection's facts over the refitted hull read that core, Class I, governed,
-    // certified, with no trip open. The hull is the title's object, not the core: unknown.
+    // Doc 17h cut M8a (A6; the brief's test 5; the fix round's F6): the delivered core's title
+    // was born of this integration, and the retained die certificate its funding named agrees
+    // (its operation, lot and class), so the core's provenance is `Certified` by the
+    // certificate's importer at its class (Class I: the flow's die) — read after delivery,
+    // when the die lot is spent. The inspection's facts over the refitted hull read that core,
+    // Class I, governed, certified, with no trip open, and the receipt says so in one line.
+    // The hull is the title's object, not the core: unknown. (The rig has no port maps, so
+    // the read is the gate-free `read_unit`.)
     {
-        use crate::minds::registry_inspection::facts::{StoreRead, read};
+        use crate::minds::registry_inspection::facts::{StoreRead, read_unit as read};
         use crate::minds::registry_inspection::{HullClass, Provenance, SealCheck};
         let engine = r.world().engine();
         let world = &engine.world;
@@ -679,6 +682,52 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
             crate::minds::provenance::provenance_of(world, &mut reader, hull),
             Provenance::Unknown
         );
+        // F6: the economy's birth of the output, read directly — this integration, the die
+        // the funding named, Class I — and none for the hull.
+        let economy = world
+            .module_state::<mush_economy::EconomyStore>()
+            .ok_or("the economy")?;
+        let birth = economy
+            .core_title_birth(output)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or("the output's birth")?;
+        check_eq!(birth.object, output);
+        check_eq!(birth.class, mush_economy::core_integration::CoreClass::I);
+        check_eq!(
+            economy
+                .core_title_birth(hull)
+                .map_err(|e| format!("{e:?}"))?,
+            None
+        );
+        // F6: the certificate is the proof. The retained one agrees; one that names another
+        // lot or class than the birth, or none at all, is `Unknown` — never agreement.
+        let certificates = world
+            .module_state::<mush_industry::core_production::DieCertificates>()
+            .ok_or("the certificate read is granted")?;
+        let certificate = engine
+            .action_state()
+            .get(certificates.handle(), &birth.die_certificate.to_hex())
+            .map_err(|e| format!("{e:?}"))?
+            .cloned()
+            .ok_or("the retained certificate")?;
+        check_eq!(
+            crate::minds::provenance::from_certificate(&birth, Some(&certificate)),
+            certified
+        );
+        let mut other_lot = birth.clone();
+        other_lot.die_lot = other_lot.die_lot.wrapping_add(1);
+        let mut other_class = birth.clone();
+        other_class.class = mush_economy::core_integration::CoreClass::II;
+        for disagreeing in [&other_lot, &other_class] {
+            check_eq!(
+                crate::minds::provenance::from_certificate(disagreeing, Some(&certificate)),
+                Provenance::Unknown
+            );
+        }
+        check_eq!(
+            crate::minds::provenance::from_certificate(&birth, None),
+            Provenance::Unknown
+        );
         let found = read(world, &mut reader, hull).ok_or("the refitted hull reads")?;
         check_eq!(found.facts.core, Some(output));
         check_eq!(found.facts.class, HullClass::I);
@@ -686,16 +735,13 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
         check_eq!(found.facts.provenance, certified);
         check_eq!(found.facts.seal_check, SealCheck::NoSeal);
         check_eq!(found.seal, None);
-        let lines = crate::minds::registry_inspection::facts::lines(world, &found);
         check_eq!(
-            lines[0],
+            crate::minds::registry_inspection::facts::receipt(world, &found.facts, false),
             format!(
-                "Hull #{} Actual governed line hull · Class I · governed",
+                "Hull #{}: Class I governed · provenance certified (Basin, I) · no trip open",
                 hull.0
             )
         );
-        check_eq!(lines[1], "provenance certified by Basin, grade I");
-        check_eq!(lines[2], "no trip open");
     }
     Ok(())
 }

@@ -3591,7 +3591,7 @@ mod tests {
             class: CoreClass::I,
             governed: true,
             licence: SmolStr::new_static("doctrine"),
-            licence_state: crate::minds::licence_state::SealLicenceState::Doctrine,
+            licence_state: Some(crate::minds::licence_state::SealLicenceState::Doctrine),
             principal,
         };
         let mut tape = Tape::new();

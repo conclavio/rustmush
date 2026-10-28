@@ -254,7 +254,6 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         | "roll_mind_authored_retirement"
         | "roll_mind_author_withdrawal"
         | "roll_registry_revision_recalls"
-        | "roll_registry_inspections"
         | "roll_registry_term_revocations"
         | "roll_registry_measured_recalls"
         | "roll_mind_owner_qualification_operation"
@@ -276,6 +275,17 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next() == Some("term")
                 && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_none()
+        }
+        // Doc 17h cut M8a fix round 1 (F9): a hull's 64-slot inspection ring,
+        // `hull/<hull, 8 hex>/slot/<seq mod 64, 2 hex>`.
+        "roll_registry_inspections" => {
+            head == "hull"
+                && parts.next().is_some_and(|v| hex(v, 8, true))
+                && parts.next() == Some("slot")
+                && parts.next().is_some_and(|v| {
+                    hex(v, 2, false) && u8::from_str_radix(v, 16).is_ok_and(|n| n < 64)
+                })
                 && parts.next().is_none()
         }
         "roll_mind_line_update_position" => {

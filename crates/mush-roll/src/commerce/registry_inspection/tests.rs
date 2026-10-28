@@ -40,6 +40,7 @@ fn record(policy: &RegistryInspectionPolicy) -> TestResult<InspectionRecord> {
             }],
         },
         hull: ObjId(77),
+        seq: 1,
         core: Some(ObjId(78)),
         class: HullClass::II,
         governed: Some(true),
@@ -135,7 +136,9 @@ fn m8a_the_record_validates_its_shape_and_words() -> TestResult {
     let p = policy()?;
     let good = record(&p)?;
     check!(good.validate().is_ok());
-    check_eq!(good.key(), "03".repeat(16));
+    // F9: keyed `hull/<hull>/slot/<seq mod 64>`, the ring slot (was the inspection commit's
+    // hex).
+    check_eq!(good.key(), "hull/0000004d/slot/01");
     let wire = serde_json::to_value(&good)?;
     check_eq!(wire["class"], "II");
     check_eq!(wire["seal_check"], "matches");
@@ -155,9 +158,22 @@ fn m8a_the_record_validates_its_shape_and_words() -> TestResult {
 
     let bad: Vec<(&str, Change)> = vec![
         ("format", Box::new(|r| r.format = 2)),
+        ("seq zero", Box::new(|r| r.seq = 0)),
         ("operator", Box::new(|r| r.operator = ObjId(43))),
-        ("rom with a core", Box::new(|r| r.class = HullClass::Zero)),
-        ("governor missing", Box::new(|r| r.governed = None)),
+        // The M8a fix round's F4: no governor read is no hardware, so a core or a class
+        // above 0 beside it is refused.
+        (
+            "governor missing beside a core",
+            Box::new(|r| r.governed = None),
+        ),
+        (
+            "no hardware at a class",
+            Box::new(|r| {
+                r.core = None;
+                r.governed = None;
+                r.provenance = Provenance::Unknown;
+            }),
+        ),
         (
             "digest without a seal",
             Box::new(|r| r.seal_check = SealCheck::NoSeal),
@@ -201,6 +217,11 @@ fn m8a_the_record_validates_its_shape_and_words() -> TestResult {
             "{why} is refused at decode"
         );
     }
+    // F4: a fitted core whose class cell reads 0 is still a core — a class-0 core with its
+    // governor and its asset validates (and keeps its provenance).
+    let mut zero = good.clone();
+    zero.class = HullClass::Zero;
+    check!(zero.validate().is_ok(), "a class-0 core is a core");
     // The ROM, properly: no core, no governor, unknown, no seal.
     let mut rom = good.clone();
     rom.class = HullClass::Zero;
@@ -216,5 +237,48 @@ fn m8a_the_record_validates_its_shape_and_words() -> TestResult {
     check_eq!(wire["provenance"], serde_json::json!({"kind": "unknown"}));
     check!(wire.get("seal_digest").is_none());
     check!(wire.get("licence_state").is_none());
+    Ok(())
+}
+
+/// **The fix round's F9: 64 records a hull.** The key is `hull/<hull>/slot/<seq mod 64>`, so
+/// the 65th inspection of a hull lands in its first's slot (the writer replaces it there,
+/// evicting the oldest) and two hulls never share a slot; the ring's slots are the 64 keys of
+/// one hull, each a key the family accepts.
+#[test]
+fn m8a_the_inspections_of_a_hull_ring_at_sixty_four() -> TestResult {
+    check_eq!(INSPECTIONS_PER_HULL, 64);
+    check_eq!(inspection_key(ObjId(77), 1), "hull/0000004d/slot/01");
+    check_eq!(inspection_key(ObjId(77), 64), "hull/0000004d/slot/00");
+    check_eq!(inspection_key(ObjId(77), 63), "hull/0000004d/slot/3f");
+    check_eq!(
+        inspection_key(ObjId(77), 65),
+        inspection_key(ObjId(77), 1),
+        "the 65th takes the first's slot"
+    );
+    check!(inspection_key(ObjId(7), 71) != inspection_key(ObjId(77), 1));
+    let slots: Vec<String> = inspection_slots(ObjId(77)).collect();
+    check_eq!(slots.len(), 64);
+    check!(slots.windows(2).all(|pair| pair[0] < pair[1]), "{slots:?}");
+    check!((1..=64).all(|seq| slots.contains(&inspection_key(ObjId(77), seq))));
+    let good = record(&policy()?)?;
+    check_eq!(good.key(), "hull/0000004d/slot/01");
+    // Every slot key is one the family accepts; a slot past the ring, another family's key
+    // shape, or hull 0 is not.
+    check!(
+        slots
+            .iter()
+            .all(|key| crate::commerce::families::valid_key(INSPECTION_FAMILY, key))
+    );
+    for bad in [
+        "hull/0000004d/slot/40",
+        "hull/00000000/slot/01",
+        "03030303030303030303030303030303",
+        "hull/4d/slot/01",
+    ] {
+        check!(
+            !crate::commerce::families::valid_key(INSPECTION_FAMILY, bad),
+            "{bad}"
+        );
+    }
     Ok(())
 }

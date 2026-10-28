@@ -38,6 +38,11 @@ use crate::world::World;
 
 /// Maximum caller-supplied bytes in an idempotency key.
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
+/// **The driver's one sentence for a refused submission** (E7c2): what the actor reads when
+/// a command's authoritative submission is refused before any durable intent. One constant,
+/// so a surface that must read exactly like a refusal (doc 17h cut M8a's
+/// `@registry/inspect` for a non-operator) shares it rather than copying it.
+pub const SUBMISSION_REFUSED_LINE: &str = "That did not go through. Nothing changed.";
 /// Maximum bytes in canonical line-oriented ingress.
 pub const MAX_INGRESS_LINE_BYTES: usize = 16 * 1024;
 /// Maximum canonical bytes in one structured ingress payload.

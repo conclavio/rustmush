@@ -386,8 +386,10 @@ impl GovernedHardware {
         ))
     }
     pub fn configure_industry(&self, module: IndustryModule) -> IndustryModule {
+        // Doc 17h cut M8a fix round 1 (F6): tacsim reads the retained die certificates for a
+        // core's provenance; every roster this composition builds carries tacsim.
         module
-            .with_core_origins(self.state.origin.clone())
+            .with_core_origins(self.state.origin.clone().with_certificate_reader(crate::NS))
             .with_core_factory(self.state.factory.clone())
     }
     /// Preserves the caller's already configured initial filing owner and all

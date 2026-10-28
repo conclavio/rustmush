@@ -1,15 +1,19 @@
-//! **The one read an inspection makes**, and the lines it prints (doc 17h cut M8a, A4).
+//! **The one read an inspection makes**, and the receipt line it prints (doc 17h cut M8a,
+//! A4; the fix round's F2, F3, F5).
 //!
 //! `read` is pure over `&World` and a typed reader ([`Reads`]: the command's `Ctx`, the
-//! provider's `ActionTxn`, a test's store), so the command's reply and the provider's record
-//! are one code path over the same facts; `hull_facts` is its pure core over a unit. The seal
-//! check is the IC audit's own (`crate::minds::ic_sortie::audit`: the seal's class and governor
-//! against what the hull reads now), as a read.
+//! provider's `ActionTxn`, a test's store), and it owns the known-hull gate ([`known`]), so the
+//! line command and the typed action inspect the same set of hulls; `hull_facts` is its pure
+//! core over a unit. The seal check is the IC audit's own (`crate::minds::ic_sortie::audit`:
+//! the sealed core component, its class and the governor against what the hull reads now),
+//! as a read. [`receipt`] renders the facts the provider records as the one line the driver
+//! prints in place of `Done.`.
 
-use mush_core::{ActionStateStore, ActionTxn, Ctx, ObjId, StateFamilyHandle, World};
+#[cfg(test)]
+use mush_core::ActionStateStore;
+use mush_core::{ActionTxn, Ctx, ObjId, StateFamilyHandle, World};
 use mush_org::OrgStore;
 use mush_tactics::TacticalUnit;
-use smol_str::SmolStr;
 
 use super::{HullClass, InspectionFacts, Provenance, SealCheck};
 use crate::arena::core::{CoreClass, CoreHardware, read_core};
@@ -50,8 +54,10 @@ impl Reads for CtxRead<'_, '_> {
 
 /// The engine's typed store as a reader (`Engine::action_state`), for a read beside its
 /// world outside any command or action: a test's.
-pub struct StoreRead<'s>(pub &'s ActionStateStore);
+#[cfg(test)]
+pub(crate) struct StoreRead<'s>(pub &'s ActionStateStore);
 
+#[cfg(test)]
 impl Reads for StoreRead<'_> {
     fn typed<K, V>(&mut self, handle: &StateFamilyHandle<K, V>, key: &K) -> Option<V>
     where
@@ -103,15 +109,23 @@ fn core_asset(unit: &TacticalUnit, hardware: Option<&CoreHardware>) -> Option<Ob
 }
 
 /// **The seal checked against the hardware now** (the IC audit's check,
-/// `ic_sortie::audit`): the seal's class and governor against the fitted core; a hull with no
-/// core is the ROM, governed. `NoSeal` with no open trip.
+/// `ic_sortie::audit`; the M8a fix round's F5): the sealed core component, that core's class
+/// and the governor against the fitted core read now; a hull with no core is the ROM — no
+/// component, class 0, governed. `NoSeal` with no open trip.
 #[must_use]
 pub fn seal_check(seal: Option<&SealFacts>, hardware: Option<&CoreHardware>) -> SealCheck {
     let Some(seal) = seal else {
         return SealCheck::NoSeal;
     };
-    let (class, governed) = hardware.map_or((CoreClass::Zero, true), |hw| (hw.class, hw.governed));
-    if seal.class == class && seal.governed == governed {
+    let sealed = (
+        seal.core.as_deref(),
+        seal.core_class.unwrap_or(CoreClass::Zero),
+        seal.governed,
+    );
+    let now = hardware.map_or((None, CoreClass::Zero, true), |hw| {
+        (Some(hw.component.as_str()), hw.class, hw.governed)
+    });
+    if sealed == now {
         SealCheck::Matches
     } else {
         SealCheck::Differs
@@ -140,9 +154,39 @@ pub fn hull_facts(
     }
 }
 
-/// **Read `hull`** (the brief's §2.3): `None` when the hull has no tactical unit (nothing to
-/// inspect; the command says `No such hull.`, the provider refuses).
+/// **A hull the programme knows** (the fix round's F2: the provider's gate, so the line
+/// command and the typed action inspect one set):
+/// `crate::surface::recovery::world_hulls` (the port maps' hull rows and the yards' hulls)
+/// plus every port map's rig rows — the lease pool's (`map.vehicles.rigs`) and the yard's —
+/// the terrain vehicles the hull-row set leaves out.
+#[must_use]
+pub fn known(w: &World, hull: ObjId) -> bool {
+    use crate::port::vehicle::{RigRows, rig_rows};
+    crate::surface::recovery::world_hulls(w).contains(&hull)
+        || w.module_state::<crate::store::TacsimStore>()
+            .is_some_and(|store| {
+                store.port_maps().any(|map| {
+                    [RigRows::Pool, RigRows::Yard]
+                        .into_iter()
+                        .flat_map(|which| rig_rows(map, which))
+                        .any(|rig| rig.tv == hull.0)
+                })
+            })
+}
+
+/// **Read `hull`** (the brief's §2.3): `None` when the programme does not know the hull
+/// ([`known`]) or it has no tactical unit (nothing to inspect; the command says
+/// `No such hull.`, the provider refuses with its one sentence).
 pub fn read<R: Reads>(w: &World, reader: &mut R, hull: ObjId) -> Option<HullFacts> {
+    if !known(w, hull) {
+        return None;
+    }
+    read_unit(w, reader, hull)
+}
+
+/// [`read`] without the known-hull gate: any object with a tactical unit (a rig without port
+/// maps reads its refitted hull here).
+pub(crate) fn read_unit<R: Reads>(w: &World, reader: &mut R, hull: ObjId) -> Option<HullFacts> {
     let unit = mush_tactics::module::unit_of(w, hull)?;
     let provenance = core_asset(unit, read_core(unit).as_ref())
         .map_or(Provenance::Unknown, |core| {
@@ -188,56 +232,60 @@ const fn governed_word(governed: bool) -> &'static str {
     if governed { "governed" } else { "ungoverned" }
 }
 
-/// **The reply, in words** (the brief's §2.3: A3's vocabulary, the provenance and the seal
-/// check): the hull and its core; its provenance; its open trip's seal, or none. Three
-/// lines; the command's staged line makes four.
+/// The most characters of an importer's name the receipt prints (an org's name has no cap;
+/// the receipt holds the 120-column floor at worst-case words).
+const RECEIPT_ORG_CHARS: usize = 24;
+
+/// **The receipt** (the fix round's F3, the lead's ruling): one line over the facts the
+/// provider records, which the driver prints in place of `Done.` — the driver's receipt is one
+/// line (`ProjectedActionResult` refuses a newline), so the mind, the out-since stamp and the
+/// licence state stay in the record and `+hull/box`. `Hull #<n>: <the ROM | Class X governed
+/// | ungoverned> · provenance <certified (<importer>, <grade>) | heirloom | grey | unknown> ·
+/// <no trip open | no seal | seal <8> matches | seal <8> differs>`; at most 120 columns.
 #[must_use]
-pub fn lines(w: &World, found: &HullFacts) -> Vec<String> {
-    let f = &found.facts;
-    let mut hull = format!(
-        "Hull #{} {} · {}",
-        f.hull.0,
-        found.name,
-        crate::surface::hull::class_word(core_class(f.class))
-    );
-    if let Some(governed) = f.governed {
-        hull.push_str(" · ");
-        hull.push_str(governed_word(governed));
+pub fn receipt(w: &World, facts: &InspectionFacts, trip_open: bool) -> String {
+    let importer = match &facts.provenance {
+        Provenance::Certified { importer, .. } => org_name(w, *importer),
+        _ => String::new(),
+    };
+    receipt_words(facts, trip_open, &importer)
+}
+
+/// [`receipt`]'s words over the importer's name it looked up. Pure, so the width test can feed
+/// worst-case names.
+fn receipt_words(facts: &InspectionFacts, trip_open: bool, importer: &str) -> String {
+    let mut hardware = crate::surface::hull::class_word(core_class(facts.class)).to_owned();
+    if let Some(governed) = facts.governed {
+        hardware.push(' ');
+        hardware.push_str(governed_word(governed));
     }
-    let provenance = match &f.provenance {
-        Provenance::Certified { importer, grade } => format!(
-            "provenance certified by {}, grade {}",
-            org_name(w, *importer),
-            grade_word(*grade)
-        ),
-        Provenance::Heirloom => "provenance heirloom".to_owned(),
-        Provenance::Grey => "provenance grey".to_owned(),
-        Provenance::Unknown => "provenance unknown".to_owned(),
-    };
-    let trip = match (&found.seal, found.opened_ic) {
-        (Some(seal), Some(opened_ic)) => {
-            // A seal recorded before M8a carries no state: the licence label stands in, as
-            // `+hull/box` prints it.
-            let state: SmolStr = seal
-                .licence_state
-                .map_or_else(|| seal.licence.clone(), |state| state.as_str().into());
-            let digest = seal.seal_digest.get(..8).unwrap_or(&seal.seal_digest);
-            format!(
-                "out since {} · {} · licence {} · seal {} · {}",
-                crate::port::licence::ic_stamp(opened_ic),
-                seal.mind,
-                state,
-                digest,
-                match f.seal_check {
-                    SealCheck::Matches => "seal matches the fitted core",
-                    SealCheck::Differs => "seal differs from the fitted core",
-                    SealCheck::NoSeal => "no seal",
-                }
-            )
+    let provenance = match &facts.provenance {
+        Provenance::Certified { grade, .. } => {
+            let mut short: String = importer.chars().take(RECEIPT_ORG_CHARS).collect();
+            if importer.chars().count() > RECEIPT_ORG_CHARS {
+                short.pop();
+                short.push('…');
+            }
+            format!("certified ({short}, {})", grade_word(*grade))
         }
-        _ => "no trip open".to_owned(),
+        Provenance::Heirloom => "heirloom".to_owned(),
+        Provenance::Grey => "grey".to_owned(),
+        Provenance::Unknown => "unknown".to_owned(),
     };
-    vec![hull, provenance, trip]
+    let digest = facts
+        .seal_digest
+        .as_deref()
+        .map(|d| d.get(..8).unwrap_or(d));
+    let trip = match (trip_open, facts.seal_check, digest) {
+        (false, _, _) => "no trip open".to_owned(),
+        (true, SealCheck::Matches, Some(d)) => format!("seal {d} matches"),
+        (true, SealCheck::Differs, Some(d)) => format!("seal {d} differs"),
+        (true, _, _) => "no seal".to_owned(),
+    };
+    format!(
+        "Hull #{}: {hardware} · provenance {provenance} · {trip}",
+        facts.hull.0
+    )
 }
 
 /// The organization's name, or a plain word when the Org store cannot name it.
@@ -265,7 +313,8 @@ mod tests {
     use crate::definitions::unit::CORE_CLASS_CELL;
     use crate::minds::licence_state::SealLicenceState;
 
-    /// A seal's facts as a trip would record them, at `class` and `governed`, a draft licence.
+    /// A seal's facts as a trip would record them, at `class` and `governed`, a draft licence;
+    /// a class above 0 sealed the fixture's `core` component at that class.
     fn sealed(class: CoreClass, governed: bool) -> SealFacts {
         SealFacts {
             mind: "Fixture Mind".into(),
@@ -277,6 +326,8 @@ mod tests {
             licence_state: Some(SealLicenceState::Draft),
             seal_digest: "d".repeat(64).into(),
             fallback: None,
+            core: (class != CoreClass::Zero).then(|| "core".into()),
+            core_class: (class != CoreClass::Zero).then_some(class),
         }
     }
 
@@ -355,5 +406,95 @@ mod tests {
             (HullClass::Zero, None, None)
         );
         assert_eq!(facts.seal_check, SealCheck::Matches);
+    }
+
+    /// **F4: a fitted core whose class cell reads 0 is still a core**: over `cored(0, 3)` the
+    /// facts read class 0 with the governor read (the record's no-core rule keys on the
+    /// governor, `mush_roll`'s `m8a_the_record_validates_its_shape_and_words`).
+    #[test]
+    fn m8a_a_class_zero_core_is_a_core() {
+        let facts = hull_facts(ObjId(4), &cored(0, 3), Provenance::Unknown, None);
+        assert_eq!(facts.class, HullClass::Zero);
+        assert_eq!(
+            facts.governed,
+            Some(false),
+            "the fixture's governor is read"
+        );
+    }
+
+    /// **F5: the seal check compares the component**: a seal at the fixture's class and
+    /// governor over another component differs; a seal that names no component (the ROM's)
+    /// against a cored hull differs too.
+    #[test]
+    fn m8a_the_seal_check_compares_the_component() {
+        let unit = cored(2, 3);
+        let mut other = sealed(CoreClass::II, false);
+        other.core = Some("spare".into());
+        assert_eq!(
+            hull_facts(ObjId(4), &unit, Provenance::Unknown, Some(&other)).seal_check,
+            SealCheck::Differs
+        );
+        let mut romless = sealed(CoreClass::II, false);
+        romless.core = None;
+        romless.core_class = None;
+        assert_eq!(
+            hull_facts(ObjId(4), &unit, Provenance::Unknown, Some(&romless)).seal_check,
+            SealCheck::Differs
+        );
+    }
+
+    /// **F1/F3: the receipt is one line of at most 120 columns** at the worst-case words — the
+    /// largest hull number, Class III ungoverned, a 40-character importer (clipped), a seal that
+    /// differs — and reads as the ruling's shape for the ROM with no trip and a trip with no
+    /// seal.
+    #[test]
+    fn m8a_the_receipt_fits_one_hundred_and_twenty_columns() {
+        let worst = InspectionFacts {
+            hull: ObjId(u32::MAX),
+            core: Some(ObjId(u32::MAX)),
+            class: HullClass::III,
+            governed: Some(false),
+            provenance: Provenance::Certified {
+                importer: mush_org::OrgId(u64::MAX),
+                grade: mush_economy::core_integration::CoreClass::III,
+            },
+            seal_digest: Some("d".repeat(64).into()),
+            seal_check: SealCheck::Differs,
+            licence_state: Some(SealLicenceState::Recalled),
+        };
+        let line = receipt_words(&worst, true, &"W".repeat(40));
+        assert!(
+            line.chars().count() <= 120,
+            "{} columns: {line}",
+            line.chars().count()
+        );
+        assert!(!line.contains('\n') && !line.contains("sortie"), "{line}");
+        assert_eq!(
+            line,
+            format!(
+                "Hull #{}: Class III ungoverned · provenance certified ({}…, III) · seal \
+                 dddddddd differs",
+                u32::MAX,
+                "W".repeat(23)
+            )
+        );
+        let rom = InspectionFacts {
+            hull: ObjId(546),
+            core: None,
+            class: HullClass::Zero,
+            governed: None,
+            provenance: Provenance::Unknown,
+            seal_digest: None,
+            seal_check: SealCheck::NoSeal,
+            licence_state: None,
+        };
+        assert_eq!(
+            receipt_words(&rom, false, ""),
+            "Hull #546: the ROM · provenance unknown · no trip open"
+        );
+        assert_eq!(
+            receipt_words(&rom, true, ""),
+            "Hull #546: the ROM · provenance unknown · no seal"
+        );
     }
 }

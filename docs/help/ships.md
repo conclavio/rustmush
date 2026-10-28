@@ -204,10 +204,10 @@ Every hull keeps a black box: one line when it leaves a hangar for a trip and on
 when it comes in, with the mind sealed for the trip, its class, whether it ran
 under the governor, the state of its licence and the first eight characters of
 its seal. `+hull/box #<hull>` reads the last eight lines, oldest first;
-`+hull/box #<hull> 20` reads the last twenty (thirty-two at most). When the box
-holds more than you asked for, the last line says how many earlier lines are
-sealed in it. You can read the box of a hull whose title you hold or whose lease
-you are under; staff read any. A hull you cannot read answers that it has no box
-you can read.
+`+hull/box #<hull> 20` reads the last twenty (thirty-two at most). When older
+lines are sealed away, the last line says how many. You can read the box of a
+hull whose title you hold, or the lines since your lease began on a hull you
+lease; staff read any. A hull you cannot read answers that it has no box you can
+read.
 
 See also: `help orders`, `help ports`, `help trade`, `help coop`, `help mining`.

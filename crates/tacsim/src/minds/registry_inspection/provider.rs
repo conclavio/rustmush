@@ -1,5 +1,9 @@
 //! `registry_mind_inspection`'s provider (doc 17h cut M8a, A4; the IC sortie provider's
-//! shape): read the hull in the prepare's transaction, land the Roll's record, answer.
+//! shape): read the hull in the prepare's transaction (the known-hull gate included, the fix
+//! round's F2), land the Roll's record, answer — and, the fix round's F3 under the lead's
+//! ruling, render the one receipt line from the exact facts recorded, keep it in the outcome
+//! and project it for the operator, so what the operator reads is what was recorded. A
+//! refused prepare records nothing and the driver prints only its refusal.
 use mush_core::action::{
     ActionError, ActionErrorCode, ActionProvider, AuthoritativeActionOutput, PrincipalId,
 };
@@ -80,18 +84,58 @@ impl ActionProvider for Provider {
             let world = ctx.world().map_err(|_| self.refusal.clone())?;
             super::facts::read(world, txn, hull).ok_or_else(|| self.refusal.clone())?
         };
+        let trip_open = found.opened_ic.is_some();
         let record = self
             .writer
             .record(ctx, txn, inv.actor(), found.facts)
             .map_err(|_| self.refusal.clone())?;
+        let summary = {
+            let world = ctx.world().map_err(|_| self.refusal.clone())?;
+            super::facts::receipt(world, &record.facts(), trip_open)
+        };
         let result = mush_core::mechanics::RulesValue::new(
             self.outcome.clone(),
-            serde_json::json!({"inspection": record.inspection, "hull": hull.0}),
+            serde_json::json!({
+                "inspection": record.inspection,
+                "hull": hull.0,
+                "operator": inv.actor().0,
+                "summary": summary,
+            }),
         )
         .map_err(|_| self.refusal.clone())?;
         Ok(AuthoritativeActionOutput::new(result)
             .with_definitions(self.definitions()?)
             .with_eligible_witnesses(vec![inv.principal().clone()]))
+    }
+
+    /// **The receipt** (the fix round's F3): the line the prepare rendered from the recorded
+    /// facts, for the operator who asked; pure over the durable outcome.
+    fn project_receipt(
+        &self,
+        action: &DefinitionRef,
+        outcome: &mush_core::mechanics::RulesValue,
+        viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        if action != &self.action || outcome.schema() != &self.outcome {
+            return Err(self.refusal.clone());
+        }
+        let data = outcome.data();
+        let operator = data
+            .get("operator")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ObjId)
+            .ok_or_else(|| self.refusal.clone())?;
+        if viewer != &(PrincipalId::Object { id: operator }) {
+            return Err(self.refusal.clone());
+        }
+        let summary = data
+            .get("summary")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| self.refusal.clone())?;
+        mush_proto::ProjectedActionResult::new(super::INSPECTION_ACTION, summary, data.clone())
+            .map(Some)
+            .map_err(|_| self.refusal.clone())
     }
 
     fn project_offer(

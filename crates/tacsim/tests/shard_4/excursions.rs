@@ -277,7 +277,7 @@ fn reboot(rig: Rig) -> Rig {
 }
 
 /// A staff command that must not be refused (the hardware flow rig's `command`).
-fn god(rig: &mut Rig, line: &str) {
+pub(crate) fn god(rig: &mut Rig, line: &str) {
     let events = rig.tw.run(GOD, line);
     let refused: Vec<String> = events
         .iter()
@@ -500,7 +500,7 @@ pub(crate) fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
     }
 }
 
-fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
+pub(crate) fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
     let def = match tacsim::pack::load_pack(tacsim::definitions::content::LANE_JSON)
         .expect("the lane verifies")
         .entry(&cid(entry))
@@ -512,7 +512,7 @@ fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
     tacsim::port::apply::room_by_key(tw.world(), &key).expect("the room is on this world")
 }
 
-fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
+pub(crate) fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
     let said = run(tw, GOD, &format!("@teleport #{}=#{}", who.0, room.0));
     assert_eq!(
         tw.world().get(who).and_then(|o| o.location),
@@ -556,6 +556,16 @@ fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
 /// Drive one queued submission the way the world task does, keeping its typed post-images
 /// for a reboot; the error carries the prepare's own message.
 pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+    land_receipt(rig, submit).map(|_| ())
+}
+
+/// [`land`], and the provider's receipt line for the acting principal — the line the server's
+/// driver prints in place of `Done.` (`ActionCoordinator`'s projection; doc 17h cut M8a fix
+/// round 1, F3): `None` when the provider projects none.
+pub(crate) fn land_receipt(
+    rig: &mut Rig,
+    submit: &AuthoritativeSubmit,
+) -> Result<Option<String>, String> {
     let token = next_token();
     let tw = &mut rig.tw;
     let (action, resolved) = {
@@ -605,7 +615,7 @@ pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), St
     // Doc 23 cut S.1: the world task's composed path, so the finish's and the staff recovery's
     // black box participant appends in the act's own bundle; its chunk is folded into the store
     // the reboot boots from, the typed post-images kept as before.
-    let (prepared, _) = tw
+    let (prepared, output) = tw
         .engine_mut()
         .prepare_registered_composed_resolved_authoritative_action(
             &action,
@@ -613,6 +623,21 @@ pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), St
             CommitToken::from_bytes(token),
         )
         .map_err(|error| format!("{error:?}"))?;
+    let receipt = tw
+        .engine()
+        .registry
+        .action_providers()
+        .map(mush_core::ActionProviderRegistry::receipt_projection_table)
+        .and_then(|projections| {
+            projections
+                .project(
+                    &action,
+                    output.outcome(),
+                    &mush_core::PrincipalId::Object { id: submit.actor },
+                )
+                .ok()
+        })
+        .and_then(|projected| projected.map(|result| result.summary().to_owned()));
     let (writes, install) = prepared.into_parts();
     tw.engine_mut()
         .install_composed_action(install)
@@ -620,7 +645,7 @@ pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), St
     let (ops, ledger) = support::composed::split(&writes);
     keep(rig, ops);
     fold_module_ops_into(&mut rig.store, ledger);
-    Ok(())
+    Ok(receipt)
 }
 
 /// Every queued submission of the port's lanes, dropping other modules'; asserts none kept of

@@ -145,7 +145,7 @@ impl MindSeal {
             class: self.class,
             governed: self.governed,
             licence: self.origin.licence_label().into(),
-            licence_state,
+            licence_state: Some(licence_state),
             principal: self.principal.clone(),
         }
     }

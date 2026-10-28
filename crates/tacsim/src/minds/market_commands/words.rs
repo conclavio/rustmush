@@ -120,8 +120,8 @@ pub(crate) const INSPECTING: &str = "Inspecting hull #{hull}.";
 /// M8a: the inspection is not composed here (no slot).
 pub(crate) const INSPECTION_OFF: &str = "Registry inspection is not configured here.";
 /// M8a: not a Registry operator: the driver's one sentence (the one a refused
-/// `@registry/revoke` gets), naming nothing.
-pub(crate) const INSPECT_REFUSED: &str = "That did not go through. Nothing changed.";
+/// `@registry/revoke` gets), naming nothing — the driver's own constant.
+pub(crate) const INSPECT_REFUSED: &str = mush_core::action::SUBMISSION_REFUSED_LINE;
 /// M8a: a hull the programme does not know, or one with no unit.
 pub(crate) const NO_SUCH_HULL: &str = "No such hull.";
 

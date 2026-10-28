@@ -21,26 +21,6 @@ enum TitleBirthKind {
     Charter,
     Core,
 }
-
-/// **What kind of managed birth a title has** (doc 17h cut M8a, A6): the one word of
-/// `TitleBirthKind` a reader outside this crate may learn. Data, never a right: naming a
-/// kind grants nothing, and the birth's operation and transaction stay private.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ManagedTitleKind {
-    /// A filed mind charter's shell (`registry_filing`).
-    Charter,
-    /// A manufactured core's output (`core_integration`).
-    Core,
-}
-
-impl From<&TitleBirthKind> for ManagedTitleKind {
-    fn from(kind: &TitleBirthKind) -> Self {
-        match kind {
-            TitleBirthKind::Charter => Self::Charter,
-            TitleBirthKind::Core => Self::Core,
-        }
-    }
-}
 impl TitleBirth {
     pub(crate) fn charter(operation: CommitToken, transaction: TransactionId) -> Self {
         Self {
@@ -91,14 +71,6 @@ impl ManagedTitleIndex {
         match self {
             Self::Ready(rows) => rows.contains_key(&object),
             Self::Unavailable => true,
-        }
-    }
-    /// The kind of `object`'s managed birth; `None` for an unmanaged title and for an
-    /// `Unavailable` index, which knows no kind (doc 17h cut M8a, A6).
-    pub(crate) fn kind(&self, object: ObjId) -> Option<ManagedTitleKind> {
-        match self {
-            Self::Ready(rows) => rows.get(&object).map(|birth| (&birth.kind).into()),
-            Self::Unavailable => None,
         }
     }
     /// The native owner has checked the exact absent title/index preimage at
@@ -167,44 +139,4 @@ pub(crate) fn require_unmanaged_mutations(
         }
     }
     Ok(())
-}
-
-impl crate::EconomyStore {
-    /// **The kind of `object`'s managed title birth** (doc 17h cut M8a, A6): `Charter` for a
-    /// filed charter's shell, `Core` for a manufactured core, `None` for an unmanaged title or
-    /// no title at all. A read of the in-memory projection; it touches no row and grants
-    /// nothing.
-    #[must_use]
-    pub fn managed_title_kind(&self, object: ObjId) -> Option<ManagedTitleKind> {
-        self.snapshot().managed_titles.kind(object)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn birth(kind: TitleBirthKind) -> TitleBirth {
-        TitleBirth {
-            kind,
-            operation: CommitToken::from_bytes([7; 16]),
-            transaction: TransactionId(9),
-        }
-    }
-
-    /// Doc 17h cut M8a (A6): the kind word of each birth, and none for an unmanaged object or
-    /// an unavailable index.
-    #[test]
-    fn m8a_managed_title_kind_names_each_birth_and_nothing_else() {
-        let mut index = ManagedTitleIndex::default();
-        index.install_prepared(ObjId(1), birth(TitleBirthKind::Charter));
-        index.install_prepared(ObjId(2), birth(TitleBirthKind::Core));
-        assert_eq!(index.kind(ObjId(1)), Some(ManagedTitleKind::Charter));
-        assert_eq!(index.kind(ObjId(2)), Some(ManagedTitleKind::Core));
-        assert_eq!(index.kind(ObjId(3)), None);
-        assert!(index.contains(ObjId(1)) && !index.contains(ObjId(3)));
-        let unavailable = ManagedTitleIndex::Unavailable;
-        assert_eq!(unavailable.kind(ObjId(1)), None);
-        assert!(unavailable.contains(ObjId(1)));
-    }
 }

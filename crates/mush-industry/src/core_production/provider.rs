@@ -325,6 +325,10 @@ impl Runtime {
             |r: &DieCertificate| r.validate().map_err(|e| e.to_string()),
             encode::<DieCertificate>,
         )?;
+        if let Some(reader) = config.certificate_reader.as_deref() {
+            reg.grant_state_family_read(&certificates, reader)?;
+            reg.state(super::records::DieCertificates(certificates.clone()));
+        }
         let quotas = reg.state_family(
             family("industry_core_die_quota")?,
             |s: &String| Ok(s.clone()),

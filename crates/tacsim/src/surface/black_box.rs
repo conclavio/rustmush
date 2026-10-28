@@ -184,6 +184,16 @@ pub struct SealFacts {
     /// ROM` for a terrain vehicle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<SmolStr>,
+    /// **The core component sealed** (the M8a fix round's F5; `MindSeal::core`): the
+    /// component the hull's core capability named at the seal, absent for a hull with no core
+    /// (every terrain vehicle, so no rig's record moved). Skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core: Option<SmolStr>,
+    /// **That core's class at the seal** (`MindSeal::core_class`), present exactly when
+    /// `core` is: what the inspection compares with the class the component reads now, as the
+    /// IC audit does (`crate::minds::ic_sortie::audit`). Skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_class: Option<CoreClass>,
 }
 
 impl SealFacts {
@@ -192,6 +202,8 @@ impl SealFacts {
     /// knows of the licence (doc 17h cut M8a: `Doctrine` for every ROM seal).
     #[must_use]
     pub fn of(seal: &MindSeal, licence_state: SealLicenceState) -> SealFacts {
+        // `sealed_line` writes `Some(licence_state)`; the parameter is the same state.
+        let fallback_state = licence_state;
         let (mind, source, card_digest, class, governed, licence, licence_state) =
             match seal.sealed_line(licence_state) {
                 crate::arena::ledger::EventKind::MindSealed {
@@ -210,7 +222,7 @@ impl SealFacts {
                     class,
                     governed,
                     licence,
-                    licence_state,
+                    licence_state.unwrap_or(fallback_state),
                 ),
                 // `sealed_line` builds `MindSealed` and nothing else; the seal's own fields are
                 // the same facts.
@@ -221,7 +233,7 @@ impl SealFacts {
                     seal.class,
                     seal.governed,
                     SmolStr::new(seal.origin.licence_label()),
-                    licence_state,
+                    fallback_state,
                 ),
             };
         SealFacts {
@@ -234,6 +246,8 @@ impl SealFacts {
             licence_state: Some(licence_state),
             seal_digest: SmolStr::new(crate::arena::snapshot::digest_text(&seal.digest())),
             fallback: seal.fallback.clone(),
+            core: seal.core.clone(),
+            core_class: seal.core.as_ref().map(|_| seal.core_class),
         }
     }
 }
@@ -1140,6 +1154,8 @@ mod tests {
             licence_state: Some(SealLicenceState::Doctrine),
             seal_digest: "d".repeat(64).into(),
             fallback: Some(crate::match_::NO_CORE_FALLBACK.into()),
+            core: None,
+            core_class: None,
         }
     }
 
