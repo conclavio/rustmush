@@ -759,6 +759,56 @@ impl<'a> ParticipantPreparation<'a> {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_physical_transition<
+        P: OwnerParticipant<Output = crate::physical_transition::PhysicalTransitionDraft>,
+    >(
+        &mut self,
+        service: &crate::physical_transition::CorePhysicalTransitions<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        request: P::Request,
+        hooks: std::sync::Arc<[crate::module::HookReg]>,
+        move_hooks: std::sync::Arc<[crate::module::HookReg]>,
+        base: &crate::action_state::ActionReadBase,
+        provider: &crate::action::ProviderRegistrationOrdinal,
+    ) -> Result<crate::physical_transition::PhysicalTransitionReceipt, ParticipantError> {
+        if self.shell.is_some()
+            || !self.images.is_empty()
+            || !self.registry.grants_exact(
+                &service.participant,
+                self.provider.owner(),
+                self.provider.action(),
+            )
+        {
+            return Err(ParticipantError::Authority);
+        }
+        // Core invokes the actual registered adapter and immediately consumes
+        // its bound output; the action provider cannot substitute a draft.
+        let draft = self.prepare(&service.handle, commit, request)?;
+        if !self.matches_preparation(&draft.binding, commit) {
+            return Err(ParticipantError::Authority);
+        }
+        self.images
+            .require_exact_physical(&service.participant, self.provider.action(), commit)?;
+        let (output, image) = service.prepare(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            draft,
+            hooks,
+            move_hooks,
+            base,
+            provider,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Physical(
+            Box::new(image),
+        ));
+        Ok(output)
+    }
+
     pub(crate) fn reserve_shell(
         &mut self,
         service: &crate::reserved_shell::ShellReservations,
@@ -1000,6 +1050,23 @@ impl fmt::Debug for OwnerImages {
 }
 
 impl OwnerImages {
+    pub(crate) fn require_exact_physical(
+        &self,
+        participant: &DefinitionRef,
+        action: &DefinitionRef,
+        commit: CommitToken,
+    ) -> Result<(), ParticipantError> {
+        if self.0.len() != 1
+            || self.0.iter().any(|image| {
+                image.definition != *participant
+                    || image.action != *action
+                    || image.commit_token != commit
+            })
+        {
+            return Err(ParticipantError::Authority);
+        }
+        Ok(())
+    }
     pub(crate) fn require_exact_exchange(
         &self,
         participants: &[DefinitionRef; 2],

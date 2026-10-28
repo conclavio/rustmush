@@ -442,6 +442,7 @@ impl IcExclusionConfig {
         }
         let expected = participant_descriptor()?;
         let expected_clone = expected.clone();
+        let physical = crate::physical::participant_descriptor()?;
         let refs: Vec<_> = std::iter::once(self.manifest.clone())
             .chain(self.participants.iter().cloned())
             .chain(self.actions.iter().cloned())
@@ -450,13 +451,19 @@ impl IcExclusionConfig {
         reg.definition_validator(
             DefinitionKind::new("owner_participant").map_err(bad)?,
             move |ctx: &DefinitionValidationContext<'_>| {
-                if ctx.definition().reference().key().id != *expected_clone.id()
-                    || ctx.definition().reference().version() != expected_clone.version()
-                    || ctx.definition().is_current() != expected_clone.is_current()
-                    || ctx.definition().payload() != expected_clone.payload()
-                    || ctx.definition().references() != expected_clone.references()
+                let expected = if ctx.definition().reference().key().id == *expected_clone.id() {
+                    &expected_clone
+                } else if ctx.definition().reference().key().id == *physical.id() {
+                    &physical
+                } else {
+                    return Err("unknown Sim participant descriptor".into());
+                };
+                if ctx.definition().reference().version() != expected.version()
+                    || ctx.definition().is_current() != expected.is_current()
+                    || ctx.definition().payload() != expected.payload()
+                    || ctx.definition().references() != expected.references()
                 {
-                    return Err("IC exclusion descriptor differs".into());
+                    return Err("Sim participant descriptor differs".into());
                 }
                 for reference in &refs {
                     ctx.get_exact(reference).map_err(|e| e.to_string())?;

@@ -2859,6 +2859,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |_| Ok(()),
         )
@@ -2901,6 +2902,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             ),
         )
     }
@@ -2951,6 +2953,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 schedules
@@ -3008,6 +3011,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 worker = Some(decisions.seed_lease(candidate, transition, txn).map_err(
@@ -3067,6 +3071,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 decisions
@@ -3122,6 +3127,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 decisions
@@ -3177,6 +3183,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 decisions
@@ -3234,6 +3241,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 fallback_fence = decisions
@@ -3291,6 +3299,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 fallback_fence = Some(
@@ -3355,6 +3364,7 @@ impl Engine {
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
             )),
             |txn| {
                 decisions

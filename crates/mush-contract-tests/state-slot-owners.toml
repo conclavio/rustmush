@@ -47,6 +47,20 @@
 # ---------------------------------------------------------------------------
 
 [[site]]
+path = "crates/mush-sim/src/physical_tests.rs"
+accessor = "World::module_state_insert"
+slot = "FocusState"
+owner = "sim"
+reason = "DT.2b2a pure admission tests seed the existing Sim focus owner on a bare World to verify that occupied or remotely focused affected hosts refuse preparation. The real coordinator path is separately exercised in server integration tests."
+
+[[site]]
+path = "crates/mush-sim/src/physical_tests.rs"
+accessor = "World::module_state_insert"
+slot = "JourneyBook"
+owner = "sim"
+reason = "DT.2b2a pure admission tests seed and vary Sim journey state on a bare World to prove that held and underway carriers refuse even zero-projection reanchors. The fixture creates no embarkation intervals or crew authority."
+
+[[site]]
 path = "crates/mush-server/tests/split_boundary/dt_preparation_plans.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
