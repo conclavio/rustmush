@@ -44,6 +44,41 @@ reason = "the word STATUS carries while the ground is stopping the tank, not a v
 word = "DESTROYED"
 reason = "the word STATUS carries beside the speed on a wrecked tank, not a verb"
 
+# ---- command arguments ------------------------------------------------------
+
+# DT.1b order arguments in cockpit.md, never standalone commands.
+[[token]]
+word = "ALL"
+reason = "ORDER target argument for every detachment slot, not a verb"
+
+[[token]]
+word = "HOLD"
+reason = "ORDER objective or HOLD FIRE modifier, not a verb"
+
+[[token]]
+word = "ADVANCE"
+reason = "ORDER objective taking a spot, not a verb"
+
+[[token]]
+word = "ENGAGE"
+reason = "ORDER objective taking an optional contact, not a verb"
+
+[[token]]
+word = "WITHDRAW"
+reason = "ORDER objective, not a verb"
+
+[[token]]
+word = "SCREEN"
+reason = "ORDER objective taking a bearing, not a verb"
+
+[[token]]
+word = "SUPPORT"
+reason = "ORDER objective taking a callsign, not a verb"
+
+[[token]]
+word = "RELEASE"
+reason = "ORDER objective releasing a standing order, not a verb"
+
 # ---- client-side verbs -------------------------------------------------------
 
 [[token]]

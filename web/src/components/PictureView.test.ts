@@ -341,6 +341,29 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     expect(helm).not.toHaveBeenCalled();
   });
 
+  it("uses the projected detachment slot and version for F1 without sending", async () => {
+    const cockpit = fixtureFrame({ detachment: {
+      id: "7", revision: "8", term: "9", leader_slot: 1,
+      slots: [{ slot: 1, callsign: "RA", pilot: "Aster", controller: "player", order_prefill: "ORDER DT:7:8:9 1 " }],
+      all_order_prefill: "ORDER DT:7:8:9 ALL ", my_order: null, wilco_command: null, negative_command: null,
+    } });
+    const { helm, prefill, frame } = mount(cockpit);
+    await tick();
+    expect(await press(frame, "F1")).toBe(false);
+    expect(prefill.mock.calls).toEqual([["ORDER DT:7:8:9 1 "]]);
+    expect(await press(frame, "F2")).toBe(false);
+    expect(prefill).toHaveBeenCalledTimes(1);
+    expect(helm).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to unversioned orders for malformed detachment data", async () => {
+    const { helm, prefill, frame } = mount(fixtureFrame({ detachment: { id: "bad" } }));
+    await tick();
+    expect(await press(frame, "F1")).toBe(false);
+    expect(prefill).not.toHaveBeenCalled();
+    expect(helm).not.toHaveBeenCalled();
+  });
+
   it("leaves a chord to the browser", async () => {
     const { helm, frame } = mount(fixtureFrame());
     await tick();

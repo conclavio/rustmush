@@ -196,6 +196,8 @@ pub enum ArenaMsg {
     /// This `(unit, channel)` is now at this epoch, and the seat is in this
     /// state.
     Control(Control),
+    /// Raise a recipient's independent detachment authority fence.
+    DetachmentControl(crate::arena::detachment::DetachmentControl),
     /// Stop the match. Honoured at the next pulse's phase 1, never mid-substep.
     Stop(StopReason),
     /// Every chunk up to and including `upto_chunk_seq` has landed in the
@@ -1066,6 +1068,7 @@ const fn continuous_code(kind: &IntentKind) -> u8 {
         IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } => 2,
         IntentKind::Goal(_) => GOAL_CODE,
         IntentKind::Profile { .. } => PROFILE_CODE,
+        IntentKind::DetachmentCommand(_) => 6,
         // Discrete (16b cut I.3: a staff `Place` among them; 16b cut O.2: the
         // pod's `Emcon` switch too); never buffered under a continuous key.
         IntentKind::Startup
@@ -1112,6 +1115,21 @@ fn buffer_continuous(map: &mut Continuous, intent: Intent) {
     let unit = intent.unit;
     let key = (unit, continuous_code(&intent.kind));
     match map.get(&key) {
+        Some(standing)
+            if matches!((&standing.kind, &intent.kind),
+            (IntentKind::DetachmentCommand(old), IntentKind::DetachmentCommand(new))
+                if (old.authority_epoch, old.sequence) >= (new.authority_epoch, new.sequence)) => {}
+        Some(standing)
+            if matches!(
+                (&standing.kind, &intent.kind),
+                (
+                    IntentKind::DetachmentCommand(_),
+                    IntentKind::DetachmentCommand(_)
+                )
+            ) =>
+        {
+            map.insert(key, intent);
+        }
         Some(standing) if standing.seq > intent.seq => {}
         _ => {
             map.insert(key, intent);
@@ -1222,6 +1240,15 @@ fn buffer_discrete(
 #[derive(Default)]
 struct PrePulse {
     controls: Controls,
+    // Highest epoch plus the latest earlier ownership transition. Keeping the
+    // barrier prevents leave/rejoin in one pulse preserving an old objective.
+    detachment_controls: BTreeMap<
+        ObjId,
+        (
+            crate::arena::detachment::DetachmentControl,
+            Option<crate::arena::detachment::DetachmentControl>,
+        ),
+    >,
     releases: Releases,
     continuous: Continuous,
     discrete: Discrete,
@@ -1230,6 +1257,39 @@ struct PrePulse {
 }
 
 impl PrePulse {
+    fn buffer_detachment_control(&mut self, control: crate::arena::detachment::DetachmentControl) {
+        use std::collections::btree_map::Entry;
+        match self.detachment_controls.entry(control.unit) {
+            Entry::Vacant(entry) => {
+                entry.insert((control, None));
+            }
+            Entry::Occupied(mut entry) => {
+                let (latest, barrier) = entry.get_mut();
+                let identity = |control: &crate::arena::detachment::DetachmentControl| {
+                    control.authority.map(|a| (a.detachment, a.revision))
+                };
+                if control.epoch > latest.epoch {
+                    if identity(&control) != identity(latest) {
+                        *barrier = Some(*latest);
+                    }
+                    *latest = control;
+                } else if control.epoch < latest.epoch
+                    && identity(&control) != identity(latest)
+                    && barrier.is_none_or(|old| control.epoch > old.epoch)
+                {
+                    *barrier = Some(control);
+                }
+            }
+        }
+    }
+
+    fn take_detachment_controls(&mut self) -> Vec<crate::arena::detachment::DetachmentControl> {
+        std::mem::take(&mut self.detachment_controls)
+            .into_values()
+            .flat_map(|(latest, barrier)| barrier.into_iter().chain(std::iter::once(latest)))
+            .collect()
+    }
+
     /// Take the pulse's two slices and leave the buffers empty.
     ///
     /// **Controls**: every kept release first, in key order, then every standing
@@ -1472,6 +1532,9 @@ async fn arena_loop(mut task: Task) {
                         }
                         buffer_control(&mut waiting.controls, &mut waiting.releases, control);
                     }
+                    Some(ArenaMsg::DetachmentControl(control)) => {
+                        waiting.buffer_detachment_control(control);
+                    }
                     Some(ArenaMsg::Intent(intent)) => {
                         if intent.kind.is_discrete() {
                             let _ = buffer_discrete(
@@ -1541,6 +1604,10 @@ async fn arena_loop(mut task: Task) {
             }
             () = tokio::time::sleep_until(due) => {
                 let wall = elapsed_ms(base);
+                for control in waiting.take_detachment_controls() {
+                    task.record(TapeEvent::DetachmentControl { control });
+                    task.arena.apply_detachment_control(control);
+                }
                 let (controls, intents) = waiting.take();
                 // 17b cut M1b.5: the card changes are staged on the arena
                 // before the step, whose phase 2 applies them first.
@@ -2210,6 +2277,81 @@ mod tests {
     use crate::arena::state::Team;
     use crate::arena::test_support::{arena_at_epoch, pose, tank};
     use smol_str::SmolStr;
+
+    #[test]
+    fn dt_buffer_retains_ownership_barriers_and_orders_by_authority_sequence() {
+        use crate::arena::detachment::{DetachmentAuthority, DetachmentCommand, DetachmentControl};
+        let authority = DetachmentAuthority {
+            detachment: 1,
+            revision: 1,
+            term: 1,
+        };
+        let controls = [
+            DetachmentControl {
+                unit: RED,
+                epoch: 1,
+                authority: Some(authority),
+            },
+            DetachmentControl {
+                unit: RED,
+                epoch: 2,
+                authority: None,
+            },
+            DetachmentControl {
+                unit: RED,
+                epoch: 3,
+                authority: Some(authority),
+            },
+        ];
+        for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0]] {
+            let mut buffer = PrePulse::default();
+            for index in order {
+                buffer.buffer_detachment_control(controls[index]);
+            }
+            assert_eq!(buffer.take_detachment_controls(), controls[1..]);
+        }
+        let mut revisions = controls;
+        revisions[1].authority = Some(DetachmentAuthority {
+            revision: 2,
+            ..authority
+        });
+        for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0]] {
+            let mut buffer = PrePulse::default();
+            for index in order {
+                buffer.buffer_detachment_control(revisions[index]);
+            }
+            assert_eq!(
+                buffer.take_detachment_controls(),
+                revisions[1..],
+                "a revision transition cannot disappear inside a coalesced pulse"
+            );
+        }
+        let message = |epoch, sequence, transport| Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 1,
+            seq: transport,
+            kind: IntentKind::DetachmentCommand(Box::new(DetachmentCommand {
+                authority,
+                authority_epoch: epoch,
+                sequence,
+                issuer: A,
+                issuer_unit: BLUE,
+                squad: crate::deliberation::SquadId {
+                    team: Team::Red,
+                    index: 1,
+                },
+                directive: None,
+                expires_at_ms: None,
+            })),
+        };
+        let newest = message(2, 8, 1);
+        let mut continuous = Continuous::new();
+        buffer_continuous(&mut continuous, newest.clone());
+        buffer_continuous(&mut continuous, message(1, 99, 999));
+        buffer_continuous(&mut continuous, message(2, 7, 999));
+        assert_eq!(continuous.into_values().collect::<Vec<_>>(), vec![newest]);
+    }
 
     #[test]
     fn bulk_wake_has_no_match_identity() {

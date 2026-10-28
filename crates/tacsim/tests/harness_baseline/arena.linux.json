@@ -223,6 +223,72 @@
       ],
       "reason": "M7 ec886bb4 raised the mind API to 5 (MIND_ABI and the Standard Doctrine's sealed source identity), which every minds-lane seal and the sealed tape lines carry. Setting only the API back to 4 on the measured tree returns all five leaves to their previous values exactly; origin/main 9df93246 alone matches the previous values. The five new values agree on Windows and Linux.",
       "timing_policy": "Original VPS timings and host retained; no threshold or host comparison changed."
+    },
+    "dt1b_deterministic_update": {
+      "cut": "DT.1b",
+      "recorded_utc": "2026-10-28T17:43:01Z",
+      "worktree_base_revision": "c8c3b6128f9c404aa9cac7137cdda270483e73c4",
+      "source_state": "Uncommitted DT.1b worktree changes on the recorded base revision; the base revision alone does not contain this measured implementation.",
+      "source_sha256": "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100",
+      "mind_abi": "rhai=1.26.0;api=6;stock=3",
+      "snapshot_format": 18,
+      "frame_version": 8,
+      "fields": [
+        "counters.ledger_bytes_streamed",
+        "minds.ceiling_authored.final_substep_hash",
+        "minds.fill_authored.final_substep_hash",
+        "minds.stock_authored.final_substep_hash",
+        "minds.stock_ci.final_substep_hash"
+      ],
+      "verified_hosts": [
+        "windows/ALIEN18"
+      ],
+      "linux_reproduction": "pending",
+      "reason": "API 6, Standard Doctrine 3 source identity and stock provenance 3 change sealed identities folded into state and tape hashes. Fresh reports differ on exactly these five deterministic leaves; all other compared fields agree. The ledger byte delta is consistent with changed decimal hash encoding; no isolated byte-width proof is claimed.",
+      "timing_policy": "Windows debug/test-profile captures with assertions disabled are deterministic evidence only. Wake and window timing lenses were missed in report-only mode. Original Linux timings, blessing host and prior provenance remain unchanged; no performance pass is claimed.",
+      "capture_attribution": "Host and source-state attribution are recorded by the operator. Report files do not embed binary provenance; all five report modification times were checked to be no earlier than the exact executable below, and their byte hashes are retained.",
+      "capture": {
+        "host": {
+          "cpus": 32,
+          "hostname": "ALIEN18",
+          "os": "windows"
+        },
+        "profile": "test (unoptimized + debuginfo)",
+        "assert": false,
+        "report_stem": "target/dt1b-harness.json",
+        "binary": {
+          "path": "target/debug/deps/harness-057acf94c78dc70b.exe",
+          "bytes": 188203008,
+          "sha256": "2838ac663b82aaf078d5f5ac8ef10edb6190ab2e51b16d002a3bd5ec4dfc28f9"
+        },
+        "reports": [
+          {
+            "path": "target/dt1b-harness-arena.json",
+            "bytes": 6163,
+            "sha256": "8ed35287abcd502b40946287342e735ce8595b7fd33433ae09b7ef2528052232"
+          },
+          {
+            "path": "target/dt1b-harness-minds-fill_authored.json",
+            "bytes": 8173,
+            "sha256": "b284e2e43cd45942a19b91f42bfa2f99b70bdc6eac690634bc3f595b39177b02"
+          },
+          {
+            "path": "target/dt1b-harness-minds-stock_ci.json",
+            "bytes": 6694,
+            "sha256": "d3b9377fec7f9167773474e3228b94c4c9d1f62d067945f21d02bd92bfec6383"
+          },
+          {
+            "path": "target/dt1b-harness-minds-stock_authored.json",
+            "bytes": 6731,
+            "sha256": "433b3cd13cc02dc8c79729baa7e56ee0b9bb43edc2c7ad7a9d15236dcae7d20d"
+          },
+          {
+            "path": "target/dt1b-harness-minds-ceiling_authored.json",
+            "bytes": 6880,
+            "sha256": "eb5a343c9f6ede29bcfa188b409aadb66443e60e957fb0453cb06299a9a53b1e"
+          }
+        ]
+      }
     }
   },
   "classes": {
@@ -268,7 +334,7 @@
     "frames_per_pulse_mean": 21.25,
     "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 1642999,
+    "ledger_bytes_streamed": 1642833,
     "ledger_chunks": 103,
     "moving_at_end": 123
   },
@@ -308,7 +374,7 @@
       "fees_total": 9600,
       "fielded_per_side": 2,
       "fighting": 24,
-      "final_substep_hash": "15535978820706913562",
+      "final_substep_hash": "453987818110788723",
       "inline_thinks": 1747,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -414,7 +480,7 @@
       "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "2597155710936598970",
+      "final_substep_hash": "6937661605052733824",
       "inline_thinks": 1672,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -456,7 +522,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "11861791163083043009",
+      "final_substep_hash": "7170095506294790981",
       "inline_thinks": 1687,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -489,7 +555,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "13514296095064921033",
+      "final_substep_hash": "7899994636326837575",
       "inline_thinks": 1691,
       "jitter_ms": 250,
       "jitter_per_mille": 250,

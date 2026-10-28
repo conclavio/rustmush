@@ -280,6 +280,13 @@ pub fn admit(arena: &Arena) -> Result<SnapshotBudget, SnapshotError> {
         super::order_watch::SNAPSHOT_RESERVE,
         limit,
     )?;
+    // One fixed authority/sequence row per hull, including removal tombstones;
+    // double JSON escaping and maximum decimal identifiers fit within 512 bytes.
+    budget.objective_events = sum(
+        budget.objective_events,
+        product(arena.units.len() as u64, 512, limit)?,
+        limit,
+    )?;
     for bytes in [
         budget.opening,
         budget.catalog_growth,

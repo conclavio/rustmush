@@ -233,7 +233,7 @@ preserves its remaining duration and publishes the adjusted deadline on unfreeze
 **All surveyed policy decisions are recorded.** Pin the records above with their existing owners,
 including NPC personnel/command identity and the accepted §9 rules, then write implementation briefs for all three streams.
 The original survey was documentation only. The subsequent
-[DT implementation brief](26a-detachment-implementation-plan.md) starts DT.1a;
+[DT implementation brief](26a-detachment-implementation-plan.md) tracks DT.1a and DT.1b;
 the remaining streams retain the dependency gates below.
 
 | Cut | Concrete result | Dependency / proof |

@@ -137,6 +137,7 @@ impl Harness {
 
 fn order(objective: MindObjective) -> FrameOrder {
     FrameOrder {
+        identity: None,
         squad: "red-1".into(),
         objective,
         hold_fire: false,
@@ -212,7 +213,7 @@ fn exact_safe_conduct_content_is_distinct_and_validated_without_certification() 
     );
     check_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(3)
     );
     check_eq!(
         manifest.get("envelope_sha256").and_then(|v| v.as_str()),

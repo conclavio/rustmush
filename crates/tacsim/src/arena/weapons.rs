@@ -2094,6 +2094,7 @@ mod tests {
                 crate::arena::mind::MindState::fresh(&crate::config::ReflexConfig::default())
             })
             .order = Some(crate::arena::perception::FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: crate::arena::perception::MindObjective::Hold,
             hold_fire: true,

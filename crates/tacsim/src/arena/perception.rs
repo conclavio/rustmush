@@ -2319,6 +2319,14 @@ impl MindObjective {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameOrder {
+    /// Opaque admitted-order identity, independent of its deadline. Legacy
+    /// orders retain deadline-based identity when this field is absent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_order_identity"
+    )]
+    pub identity: Option<SmolStr>,
     /// The squad it was written for, rendered (`red-1`).
     pub squad: SmolStr,
     /// What the squad is told to do, re-keyed to the hull's own rows.
@@ -2329,6 +2337,40 @@ pub struct FrameOrder {
     pub max_range_band: Option<crate::deliberation::order::RangeBand>,
     /// The arena millisecond the order stops standing at.
     pub expires_ms: i64,
+}
+
+pub(crate) fn valid_order_identity(identity: &str) -> bool {
+    if identity.len() > 53 {
+        return false;
+    }
+    let Some(body) = identity.strip_prefix("dt:") else {
+        return false;
+    };
+    let parts: Vec<_> = body.split(':').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.len() <= 16
+                && (part.len() == 1 || !part.starts_with('0'))
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
+fn deserialize_order_identity<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<SmolStr>, D::Error> {
+    let identity = Option::<SmolStr>::deserialize(deserializer)?;
+    if identity
+        .as_deref()
+        .is_some_and(|identity| !valid_order_identity(identity))
+    {
+        return Err(serde::de::Error::custom(
+            "invalid bounded detachment order identity",
+        ));
+    }
+    Ok(identity)
 }
 
 /// **One contact's reading, as a pilot's frame carries it** (16b cut Q.2; doc 16

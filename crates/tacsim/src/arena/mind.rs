@@ -2501,6 +2501,7 @@ impl Arena {
                 IntentKind::Heading { .. }
                 | IntentKind::Speed { .. }
                 | IntentKind::Order(_)
+                | IntentKind::DetachmentCommand(_)
                 | IntentKind::ReleaseOrder { .. }
                 // 16b cut I.3: a staff act; a machine never issues one, and a
                 // mind's is refused `Channel` at apply.
@@ -3336,6 +3337,7 @@ mod tests {
         let base = minded();
         let before = crate::arena::hash::state_hash(&base);
         let order = FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Engage {
                 target: Some(ContactId(7)),
@@ -3816,6 +3818,7 @@ mod tests {
             });
         }
         let order = FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Engage {
                 target: Some(engaged),
@@ -3911,6 +3914,7 @@ mod tests {
                 "hold_fire": true,
                 "max_range_band": "close",
                 "expires_in_ms": order.expires_ms - view.t_ms,
+                "identity": order.identity.as_deref(),
             })
         );
         assert_eq!(
@@ -4502,6 +4506,7 @@ mod tests {
             panic!("the mind's row");
         };
         state.order = Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective,
             hold_fire: false,

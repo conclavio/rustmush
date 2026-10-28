@@ -1424,6 +1424,7 @@ impl Arena {
                     IntentKind::Heading { .. }
                     | IntentKind::Speed { .. }
                     | IntentKind::Order(_)
+                    | IntentKind::DetachmentCommand(_)
                     | IntentKind::ReleaseOrder { .. }
                     | IntentKind::Goal(_)
                     // 17b cut M5.2: nor a profile switch, which phase 2 writes
@@ -3679,7 +3680,10 @@ impl Arena {
     const fn phase_two_tells(kind: &IntentKind, refusal: Refusal) -> bool {
         if matches!(
             kind,
-            IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } | IntentKind::Place { .. }
+            IntentKind::Order(_)
+                | IntentKind::ReleaseOrder { .. }
+                | IntentKind::Place { .. }
+                | IntentKind::DetachmentCommand(_)
         ) {
             return false;
         }
@@ -8617,6 +8621,7 @@ mod tests {
         assert!(!fewer.same_as(&base, 1_000));
         // An order, and a change of it.
         let order = |facing_mdeg: u32| FrameOrder {
+            identity: None,
             squad: SmolStr::new_static("red-1"),
             objective: MindObjective::Screen { facing_mdeg },
             hold_fire: false,

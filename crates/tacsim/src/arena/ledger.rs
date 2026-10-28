@@ -667,6 +667,12 @@ pub enum EventKind {
     Aborted,
     /// The match is void: nothing it derived may be committed.
     Void,
+    /// A delivered DT command, including its independent authority fence and
+    /// absolute optional deadline. Cancellation has no directive.
+    DetachmentCommanded {
+        unit: ObjId,
+        command: Box<super::detachment::DetachmentCommand>,
+    },
 }
 
 impl EventKind {
@@ -709,6 +715,7 @@ impl EventKind {
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",
             EventKind::Void => "void",
+            EventKind::DetachmentCommanded { .. } => "detachment_commanded",
         }
     }
 }

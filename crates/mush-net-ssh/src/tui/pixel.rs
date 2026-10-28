@@ -358,6 +358,8 @@ pub struct PixelView {
     /// The other orders the flight keys made (`FIRE …`, `LOCK …`), oldest
     /// first (G.12b).
     orders: Vec<String>,
+    /// Missing projection preserves legacy keys; invalid projection disables them.
+    detachment: Option<Option<super::detachment::Detachment>>,
     /// The frame's contacts in the lock cycle's order (G.12b).
     lock_order: Vec<String>,
     /// The frame's lock, by designator.
@@ -459,6 +461,7 @@ impl PixelView {
             camera: CockpitCamera::FirstPerson,
             overhead: OverheadPicture::new(),
             orders: Vec::new(),
+            detachment: None,
             lock_order: Vec::new(),
             frame_lock: None,
             lock_cursor: None,
@@ -780,6 +783,7 @@ impl PixelView {
     /// gate only off a new frame (by its arena time), so `f`'s flip stands
     /// until the sim has answered it.
     pub fn observe(&mut self, cockpit: &Value, now: Instant) {
+        self.detachment = cockpit.get("detachment").map(super::detachment::decode);
         self.helm.observe(cockpit, now);
         self.throttle.observe(cockpit);
         self.lock_order = lock_order(cockpit);
@@ -1101,8 +1105,21 @@ impl PixelView {
                     self.lock_cursor = Some(next);
                 }
             }
-            Key::F(1) => return KeyUse::Prefill("ORDER ALL ".to_string()),
-            Key::F(n @ 2..=6) => return KeyUse::Prefill(format!("ORDER {n} ")),
+            Key::F(n @ 1..=6) => {
+                let line = match &self.detachment {
+                    None => Some(format!(
+                        "ORDER {} ",
+                        if n == 1 {
+                            "ALL".to_owned()
+                        } else {
+                            n.to_string()
+                        }
+                    )),
+                    Some(Some(detachment)) => detachment.prefill(u16::from(n)),
+                    Some(None) => None,
+                };
+                return line.map_or(KeyUse::Used, KeyUse::Prefill);
+            }
             // The load experiment's two switches (2026-10-21), staff
             // diagnostics both since G.12b (`r` was everyone's): the frame
             // size and the clock cap. Either resets the last-sent key so the
@@ -2597,6 +2614,24 @@ mod tests {
         }
         assert_eq!(v.key(Key::Char('q'), t0), KeyUse::Used);
         assert!(v.is_active(), "q is the look now, not a close");
+    }
+
+    #[test]
+    fn dt_function_keys_use_projected_slot_versions_and_fail_closed() {
+        let projection = serde_json::json!({"id":"7","revision":"8","term":"9","leader_slot":1,
+            "slots":[{"slot":1,"callsign":"RA","pilot":"Aster","controller":"player","order_prefill":"ORDER DT:7:8:9 1 "}],
+            "all_order_prefill":"ORDER DT:7:8:9 ALL ","my_order":null,"wilco_command":null,"negative_command":null});
+        let (mut view, _, now) = flying(|c| c["detachment"] = projection.clone());
+        assert_eq!(
+            view.key(Key::F(1), now),
+            KeyUse::Prefill("ORDER DT:7:8:9 1 ".into())
+        );
+        assert_eq!(view.key(Key::F(2), now), KeyUse::Used);
+        assert!(view.take_orders().is_empty());
+        let (mut invalid, _, now) =
+            flying(|c| c["detachment"] = serde_json::json!({"malformed":true}));
+        assert_eq!(invalid.key(Key::F(1), now), KeyUse::Used);
+        assert!(invalid.take_orders().is_empty());
     }
 
     /// `v` swaps the first-person picture for the overhead and back; the

@@ -3035,6 +3035,15 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
         None => "No lock".to_string(),
     };
     rows.push(PaneRow::plain(Line::from(Span::raw(lock))));
+    if let Some(detachment) = data.get("detachment").and_then(super::detachment::decode) {
+        rows.push(PaneRow::plain(Line::from("Detachment")));
+        rows.extend(
+            detachment
+                .lines()
+                .into_iter()
+                .map(|line| PaneRow::plain(Line::from(line))),
+        );
+    }
     PaneRows { rows }
 }
 

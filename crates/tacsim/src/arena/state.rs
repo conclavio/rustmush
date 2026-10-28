@@ -4140,6 +4140,8 @@ pub struct Arena {
     pub minds: BTreeMap<ObjId, crate::arena::mind::MindState>,
     /// Record-only latest accepted attribution, outside combat state_hash.
     pub(crate) order_watches: super::order_watch::OrderWatches,
+    /// Independent per-hull detachment authority and sequence fences.
+    pub(crate) detachment_commands: super::detachment::DetachmentStates,
     /// Immutable complete card definitions, admitted once and shared by key.
     pub cards: crate::arena::runtime_card::CardCatalog,
     /// Per-hull active program, profile generation and sampled rule authority.
@@ -5063,6 +5065,7 @@ impl Arena {
             // the one `snapshot.rs`' decode sets too.
             minds: BTreeMap::new(),
             order_watches: super::order_watch::OrderWatches::default(),
+            detachment_commands: BTreeMap::new(),
             cards,
             profiles,
             // 17b cut M1b.1: no slot, nothing said, and the default floor —

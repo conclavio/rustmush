@@ -856,7 +856,7 @@
     "id": "arena.cockpit",
     "retain": "latest",
     "shape": "grid",
-    "version": 7
+    "version": 8
   },
   "scope": "hostile",
   "sections": [

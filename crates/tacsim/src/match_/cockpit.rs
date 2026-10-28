@@ -747,7 +747,7 @@ pub fn in_a_pod(w: &World, actor: ObjId) -> bool {
 }
 
 /// The last frame the arena sent that pilot.
-fn last_frame(w: &World, pilot: ObjId) -> Option<CockpitFrame> {
+pub(crate) fn last_frame(w: &World, pilot: ObjId) -> Option<CockpitFrame> {
     w.module_state::<ArenaRegistry>()
         .and_then(|registry| registry.last_frame(pilot))
         .cloned()
@@ -4499,7 +4499,7 @@ pub fn stale_clause(age_ms: i64, pass_ms: i64) -> String {
 /// A clone of at most [`crate::definitions::arena::MAX_KEY_SPOTS`] rows, made
 /// only when a verb is typed. A match the registry holds no ground for answers
 /// no spots, which every caller reads as "the ground names none".
-fn spots_of(w: &World, match_id: Option<MatchId>) -> (Vec<KeySpot>, u16) {
+pub(crate) fn spots_of(w: &World, match_id: Option<MatchId>) -> (Vec<KeySpot>, u16) {
     match_id
         .and_then(|match_id| {
             w.module_state::<ArenaRegistry>()
@@ -6470,7 +6470,11 @@ fn say_and_frame(ctx: &mut Ctx<'_>, held: Option<&CockpitFrame>, lines: Vec<Stri
         return;
     };
     // 16b cut B.4 (`T-60`): the frame with the ranges the pilot was told.
-    let payload = status_frame_held(held.match_id, &held.frame, &held.ranges);
+    let payload = crate::detachment::commands::enrich(
+        ctx.w,
+        actor,
+        status_frame_held(held.match_id, &held.frame, &held.ranges),
+    );
     ctx.out.push(
         mush_core::Audience::Actor(actor),
         OutputEvent::Panel {
@@ -6514,7 +6518,9 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// full sealed-rule readback. Source and private memory stay out of the frame.
 /// **M7 bumps it to 7** for the shared public odds projection at the actual
 /// effective class's already-advertised ceiling. Class I/native stay at two rows.
-pub const FRAME_VERSION: u32 = 7;
+/// **DT.1b bumps it to 8** for an explicit, opaque order identity shared with
+/// mind API 6. Legacy orders carry null; standing orders do not use expiry as id.
+pub const FRAME_VERSION: u32 = 8;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
 /// [`crate::arena_bridge::MAP_FEED`].
@@ -7221,6 +7227,7 @@ fn order_json(frame: &Frame, order: &crate::arena::perception::FrameOrder) -> se
     };
     serde_json::json!({
         "squad": order.squad.as_str(),
+        "identity": order.identity.as_deref(),
         "objective": order.objective.as_str(),
         "target": target,
         "to": to,
@@ -7467,7 +7474,11 @@ pub fn view_frame_held(
     frame: &Frame,
     ranges: &BTreeMap<ContactId, u64>,
 ) -> serde_json::Value {
-    let payload = status_frame_held(match_id, frame, ranges);
+    let payload = crate::detachment::commands::enrich(
+        ctx.w,
+        ctx.actor,
+        status_frame_held(match_id, frame, ranges),
+    );
     let Some(ground) = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -8561,6 +8572,13 @@ pub(crate) fn command_of(
 /// It writes no document; the arena journals one `ordered` line per unit the
 /// order lands on.
 fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    if rest
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| word.starts_with("DT:"))
+    {
+        return crate::detachment::commands::order(ctx, seat, rest).map_err(CockpitError::Usage);
+    }
     let actor = ctx.actor;
     let words = parse_order(rest)?;
     require_alive(ctx.w, seat.driver)?;
@@ -9433,6 +9451,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             Arc::new(move |ctx: &mut Ctx<'_>| cockpit_command(ctx, verb)),
         )?;
     }
+    crate::detachment::commands::register(reg)?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command_gate(Arc::new(CockpitGate));
     Ok(())
