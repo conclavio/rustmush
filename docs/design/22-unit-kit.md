@@ -1,5 +1,12 @@
 # 22. The unit kit — what a new unit defines
 
+**Draft 0.3 — 2026-10-28, the sheet decision (D-22-9).** A throwaway PoC baked a licensed 3D mech
+(the owner's Unity assets) into sheets and into voxel models and drew both in the raycaster
+([22-cut-notes.md](22-cut-notes.md) "Sprite vs voxel PoC"): voxels cost ten to twenty times the
+draw time for the same bytes on the wire. The owner confirmed units stay **sprites, not models**,
+and locked the sheet at **eight facings, six poses, 96 pixels** (D-22-9, superseding D-22-4's
+numbers). The format and code changes it needs are owed (§3.2).
+
 **Draft 0.2 — 2026-10-22, U.1–U.3 as built.** The frame names your team and every classified
 contact's type; bodies are drawn in team colour; four looks ship with dolls (tank, scout, biped,
 drone) and three with sprite sheets (tank, biped, and the `unknown` look a contact not yet
@@ -140,6 +147,16 @@ the form a player-designed unit is written in; a PNG importer can produce it lat
   unless the sheet gives it; for each facing one `still` frame and two to four `moving` frames
   (the tread or walk cycle, played while the contact is moving); one `wreck` frame (or one a
   facing); a muzzle point a weapon a facing, where a shot's flash is drawn.
+- **Superseded by D-22-9 (2026-10-28): eight facings, six poses, 96 pixels.** Every sheet gives
+  all eight facings — `front`, `front_right`, `right`, `rear_right`, `rear`, `rear_left`, `left`,
+  `front_left` — each its own art, never a mirror (a unit's weapons are not symmetric: a mirrored
+  left moves the cannon to the other arm); six poses a facing: `still`, a four-frame `moving` cycle,
+  and a `wreck`; frames 96 by 96 (`SPRITE_MAX` rises from 64), drawn for a larger picture than
+  today's 640-wide frame and for the web's canvas. Sheets are produced by the bake pipeline
+  (`scripts/unit-bake/`) from 3D models, hand-drawn sheets remain valid input. **Owed**: the format
+  and `Facing` grow the diagonals; the picture picks a diagonal only once the cockpit frame carries
+  an eight-way aspect — the sensor question this bullet's predecessor reserved, now implied by the
+  decision and to be confirmed when it is built. The text below is the rule as U.3 built it.
 - **Four facings now, room for eight** (D-22-4): the sim tells a viewer only which face a contact
   was showing — `aspect`, front/left/right/rear off the plot, by design — so four is what a sheet
   can be chosen by. The format names facings by word; `front_left` and the other diagonals are
@@ -233,3 +250,9 @@ player can write.
 - **D-22-7** Sprites are pixel art written as text; a palette names materials from a closed set
   of six (as built in U.3: Draft 0.1 had free colours, at most 16).
 - **D-22-8** The cuts U.0–U.5 above.
+- **D-22-9** (the owner, 2026-10-28, after the sprite-vs-voxel PoC) Units are drawn as sprite
+  sheets, not 3D or voxel models. A sheet has **eight facings, each its own art (no mirrored
+  left), six poses a facing (still, four moving, wreck), 96x96 frames** — chosen for where the
+  picture is going (a larger native frame once optimised; the web's wasm renderer at the client's
+  resolution), not today's 640-wide frame, where 96 beats 48 only inside about 25 m. Supersedes
+  D-22-4's facing and frame counts; muzzle points stay.
