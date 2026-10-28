@@ -91,7 +91,7 @@ pub use receipt::{
     ProjectedActionReceiptError, ProjectedActionResult, ProjectedActionResultError,
     ProjectedActionStatus, ProjectedCommitToken, ProjectedCommitTokenError,
 };
-pub use text::{Color, CommandLink, RichText, Span, Style};
+pub use text::{Color, CommandLink, RichText, Span, Style, text_of};
 
 // Re-exported so downstream crates can name span tags / feeds without taking
 // their own `smol_str` dependency.

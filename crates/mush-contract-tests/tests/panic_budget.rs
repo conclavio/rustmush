@@ -840,6 +840,93 @@ fn no_profile_turns_a_world_panic_into_an_abort() {
     );
 }
 
+/// Every non-dev dependency edge in `parsed` targeting one of [`EXCLUDED_CRATES`].
+fn production_excluded_dep_edges(parsed: &toml::Value) -> Vec<String> {
+    fn check_table(
+        table: &toml::map::Map<String, toml::Value>,
+        section: &str,
+        out: &mut Vec<String>,
+    ) {
+        for (key, spec) in table {
+            let pkg = spec
+                .as_table()
+                .and_then(|t| t.get("package"))
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key.as_str());
+            if EXCLUDED_CRATES.contains(&pkg) {
+                out.push(format!("[{section}] {key} (package {pkg})"));
+            }
+        }
+    }
+
+    let mut hits = Vec::new();
+    for section in ["dependencies", "build-dependencies"] {
+        if let Some(toml::Value::Table(table)) = parsed.get(section) {
+            check_table(table, section, &mut hits);
+        }
+    }
+    if let Some(toml::Value::Table(targets)) = parsed.get("target") {
+        for (cfg, target_val) in targets {
+            let Some(target_table) = target_val.as_table() else {
+                continue;
+            };
+            for section in ["dependencies", "build-dependencies"] {
+                if let Some(toml::Value::Table(table)) = target_table.get(section) {
+                    check_table(table, &format!("target.{cfg}.{section}"), &mut hits);
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// `EXCLUDED_CRATES` are exempt from the production panic budget only because no
+/// production crate links them (`mush-testkit` is test scaffolding; `mush-bot`
+/// is an out-of-engine SSH client; `mush-contract-tests` is this test harness).
+/// If any crate outside `mush-contract-tests` lists one of them in
+/// `[dependencies]` or `[build-dependencies]`, that exemption becomes an
+/// unbudgeted backdoor into production binaries.
+#[test]
+fn no_production_crate_links_an_excluded_crate() {
+    let root = repo_root();
+    let mut crate_dirs: Vec<PathBuf> = fs::read_dir(root.join("crates"))
+        .expect("the workspace has a crates/ directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.join("Cargo.toml").is_file())
+        .collect();
+    crate_dirs.sort();
+
+    let mut found = Vec::new();
+    for dir in &crate_dirs {
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("crate directory has a UTF-8 name");
+        // `mush-contract-tests` is the workspace test harness itself and has no
+        // production binary or downstream consumer.
+        if name == "mush-contract-tests" {
+            continue;
+        }
+        let manifest = dir.join("Cargo.toml");
+        let text = fs::read_to_string(&manifest)
+            .unwrap_or_else(|err| panic!("{} is unreadable: {err}", manifest.display()));
+        let parsed: toml::Value = toml::from_str(&text)
+            .unwrap_or_else(|err| panic!("{} does not parse: {err}", manifest.display()));
+        for hit in production_excluded_dep_edges(&parsed) {
+            found.push(format!("{}: {hit}", manifest.display()));
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "crates in `EXCLUDED_CRATES` ({EXCLUDED_CRATES:?}) are exempt from the production panic \
+         budget because they are only ever linked by test targets. Move these edges to \
+         `[dev-dependencies]`:\n  {}",
+        found.join("\n  ")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The scanner's own proofs
 // ---------------------------------------------------------------------------
@@ -1146,5 +1233,43 @@ fn the_walk_skips_tests_benches_and_build_scripts() {
         total, 2,
         "src/lib.rs and src/deep/inner.rs count; tests/, benches/, build.rs and the excluded file \
          do not: {files:?}"
+    );
+}
+
+#[test]
+fn excluded_crate_dependency_scanner_flags_non_dev_edges_only() {
+    let clean: toml::Value = toml::from_str(
+        r#"
+[dependencies]
+mush-proto.workspace = true
+
+[dev-dependencies]
+mush-testkit = { workspace = true, features = ["toy-ruleset"] }
+mush-contract-tests.workspace = true
+"#,
+    )
+    .expect("valid toml");
+    assert!(production_excluded_dep_edges(&clean).is_empty());
+
+    let offending: toml::Value = toml::from_str(
+        r#"
+[dependencies]
+mush-testkit.workspace = true
+
+[build-dependencies]
+harness = { package = "mush-contract-tests", path = "../mush-contract-tests" }
+
+[target.'cfg(unix)'.dependencies]
+mush-bot = { path = "../mush-bot" }
+"#,
+    )
+    .expect("valid toml");
+    assert_eq!(
+        production_excluded_dep_edges(&offending),
+        vec![
+            "[dependencies] mush-testkit (package mush-testkit)",
+            "[build-dependencies] harness (package mush-contract-tests)",
+            "[target.cfg(unix).dependencies] mush-bot (package mush-bot)",
+        ]
     );
 }
