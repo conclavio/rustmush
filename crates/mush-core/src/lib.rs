@@ -91,6 +91,7 @@ pub mod onboarding;
 pub mod output;
 pub mod participant;
 pub mod perm;
+pub mod physical_transition;
 pub mod read_service;
 pub mod request;
 pub mod reserved_shell;

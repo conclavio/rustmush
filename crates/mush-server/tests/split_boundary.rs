@@ -32,6 +32,8 @@ mod boot_parity;
 mod boot_store;
 #[path = "split_boundary/cli_args.rs"]
 mod cli_args;
+#[path = "split_boundary/dt_physical_transitions.rs"]
+mod dt_physical_transitions;
 #[path = "split_boundary/dt_preparation_plans.rs"]
 mod dt_preparation_plans;
 #[path = "split_boundary/dt_unit_authority.rs"]

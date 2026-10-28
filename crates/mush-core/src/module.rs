@@ -493,6 +493,7 @@ pub struct HookReadContext<'a> {
     registry: Option<&'a Registry>,
     read_caller: Option<crate::read_service::OwnerReadCaller>,
     exchange_attempt: Option<&'a crate::core_exchange::ExchangeCarryAttempt>,
+    physical_attempt: Option<&'a crate::physical_transition::PhysicalTransitionAttempt>,
 }
 
 impl<'a> HookReadContext<'a> {
@@ -524,6 +525,7 @@ impl<'a> HookReadContext<'a> {
             registry: None,
             read_caller: None,
             exchange_attempt: None,
+            physical_attempt: None,
         }
     }
 
@@ -541,6 +543,21 @@ impl<'a> HookReadContext<'a> {
         attempt: &'a crate::core_exchange::ExchangeCarryAttempt,
     ) -> Self {
         self.exchange_attempt = Some(attempt);
+        self
+    }
+
+    /// Exact registered structural transition currently evaluating this carry.
+    /// Detached contexts and ordinary movement have no such attribution.
+    pub const fn physical_transition_attempt(
+        &self,
+    ) -> Option<&'a crate::physical_transition::PhysicalTransitionAttempt> {
+        self.physical_attempt
+    }
+    pub(crate) fn with_physical_transition_attempt(
+        mut self,
+        attempt: &'a crate::physical_transition::PhysicalTransitionAttempt,
+    ) -> Self {
+        self.physical_attempt = Some(attempt);
         self
     }
 

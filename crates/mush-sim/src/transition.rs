@@ -157,7 +157,8 @@ pub enum SpatialError {
 }
 
 /// A structural transition (design §7).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Transition {
     /// Place (or re-place) `obj` under `parent`.
     Place {
@@ -594,6 +595,18 @@ fn plan_members(
 }
 
 pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, SpatialError> {
+    plan_at(st, w, t, w.now())
+}
+
+/// A retained preparation uses its original observation time while rechecking
+/// the same transition against current facts; elapsed wall time is not a new
+/// unplacement request.
+pub(crate) fn plan_at(
+    st: &SpatialState,
+    w: &World,
+    t: &Transition,
+    observed_at: i64,
+) -> Result<Plan, SpatialError> {
     let mut plan = Plan::default();
     match t {
         Transition::Place { obj, parent } => {
@@ -681,7 +694,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                 unplaced: Some(UnplacedInfo {
                     reason: reason.clone(),
                     by: *by,
-                    at: w.now(),
+                    at: observed_at,
                     previous: Some(prev.parent.clone()),
                     quarantined: false,
                 }),
@@ -731,7 +744,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                     unplaced: Some(UnplacedInfo {
                         reason: reason.clone(),
                         by: None,
-                        at: w.now(),
+                        at: observed_at,
                         previous: Some(prev.parent.clone()),
                         quarantined: true,
                     }),
@@ -925,7 +938,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                         unplaced: Some(UnplacedInfo {
                             reason: "under way on a carrier journey".into(),
                             by: None,
-                            at: w.now(),
+                            at: observed_at,
                             previous: prev
                                 .map(|p| p.parent.clone())
                                 .filter(SpatialParent::is_placed),

@@ -297,6 +297,7 @@ pub(crate) enum BuiltinObjects {
     CoreOutput(Box<CoreOutputObjects>),
     Delivery(Box<crate::core_delivery::DeliveryObjects>),
     Exchange(Box<crate::core_exchange::image::ExchangeObjects>),
+    Physical(Box<crate::physical_transition::image::PhysicalTransitionObjects>),
 }
 impl From<ShellObjects> for BuiltinObjects {
     fn from(value: ShellObjects) -> Self {
@@ -311,6 +312,9 @@ impl BuiltinObjects {
         if let Self::Exchange(image) = self {
             owners.require_exact_exchange(&image.participants, &image.action, image.commit)?;
         }
+        if let Self::Physical(image) = self {
+            owners.require_exact_physical(&image.participant, &image.action, image.commit)?;
+        }
         Ok(())
     }
     pub(crate) fn creates_object(&self) -> bool {
@@ -319,6 +323,7 @@ impl BuiltinObjects {
             Self::CoreOutput(x) => x.create,
             Self::Delivery(_) => false,
             Self::Exchange(_) => false,
+            Self::Physical(_) => false,
         }
     }
     pub(crate) fn writes(&self) -> &[ReplayWrite] {
@@ -327,6 +332,7 @@ impl BuiltinObjects {
             Self::CoreOutput(x) => &x.writes,
             Self::Delivery(x) => x.writes(),
             Self::Exchange(x) => x.writes(),
+            Self::Physical(x) => x.writes(),
         }
     }
     pub(crate) fn recheck(
@@ -339,6 +345,7 @@ impl BuiltinObjects {
             Self::CoreOutput(x) => x.recheck(world),
             Self::Delivery(x) => x.recheck(world, lens),
             Self::Exchange(x) => x.recheck(world, lens),
+            Self::Physical(x) => x.recheck(world, lens),
         }
     }
     pub(crate) fn local(&self, world: &World) -> Result<(), ParticipantError> {
@@ -347,6 +354,7 @@ impl BuiltinObjects {
             Self::CoreOutput(x) => x.fence.local(world),
             Self::Delivery(x) => x.local(world),
             Self::Exchange(x) => x.local(world),
+            Self::Physical(x) => x.local(world),
         }
     }
     pub(crate) fn bind(
@@ -358,6 +366,7 @@ impl BuiltinObjects {
             Self::CoreOutput(x) => x.bind(storage).map(BoundBuiltinObjects::CoreOutput),
             Self::Delivery(x) => x.bind(storage).map(BoundBuiltinObjects::Delivery),
             Self::Exchange(x) => x.bind(storage).map(BoundBuiltinObjects::Exchange),
+            Self::Physical(x) => x.bind(storage).map(BoundBuiltinObjects::Physical),
         }
     }
 }
@@ -366,6 +375,7 @@ pub(crate) enum BoundBuiltinObjects<'a> {
     CoreOutput(BoundCoreOutputObjects<'a>),
     Delivery(crate::core_delivery::BoundDeliveryObjects<'a>),
     Exchange(crate::core_exchange::image::BoundExchangeObjects<'a>),
+    Physical(crate::physical_transition::image::BoundPhysicalTransitionObjects<'a>),
 }
 impl BoundBuiltinObjects<'_> {
     pub(crate) fn apply(self) {
@@ -374,6 +384,7 @@ impl BoundBuiltinObjects<'_> {
             Self::CoreOutput(x) => x.apply(),
             Self::Delivery(x) => x.apply(),
             Self::Exchange(x) => x.apply(),
+            Self::Physical(x) => x.apply(),
         }
     }
 }

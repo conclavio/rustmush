@@ -45,6 +45,7 @@ mod handoff;
 pub mod ic_exclusion;
 pub mod journey;
 pub mod links;
+pub mod physical;
 pub mod relay;
 pub mod route;
 pub mod seat;
@@ -377,6 +378,12 @@ impl EventHook for PlacementGate {
         exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), RichText> {
+        if ctx
+            .physical_transition_attempt()
+            .is_some_and(|attempt| attempt.matches_actor_projection(actor, dest))
+        {
+            return Ok(());
+        }
         match move_reason(ctx.world(), actor, exit, dest) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
@@ -385,10 +392,19 @@ impl EventHook for PlacementGate {
     fn carry_attempt(
         &self,
         ctx: &HookReadContext<'_>,
-        _mover: ObjId,
+        mover: ObjId,
         obj: ObjId,
-        _dest: ObjId,
+        dest: ObjId,
     ) -> Result<(), RichText> {
+        // Only Core can supply this attribution, after preparing the exact Sim
+        // participant for this action/commit. Other modules' hooks still run.
+        if ctx.physical_transition_attempt().is_some_and(|attempt| {
+            attempt.matches_projection(mover, obj, dest)
+                && attempt.action().key().owner.as_str() == NS
+                && attempt.action().key().id.as_str() == mush_core::physical_transition::ACTION
+        }) {
+            return Ok(());
+        }
         match gate_reason(ctx.world(), obj) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
@@ -971,6 +987,7 @@ impl GameModule for SimulationModule {
             handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
         tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
+        physical::register(reg, self.ic_custody.is_some())?;
         // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
         // arena holds. Always composed, even with no game layer above — the
         // admission sites read it unconditionally, and a missing slot would be
@@ -1106,6 +1123,7 @@ impl GameModule for SimulationModule {
     }
 
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        physical::loaded(ctx)?;
         // The coordinator hydrated typed leases before the load callbacks.
         // Read them through Sim's real owner lens before the first command:
         // a restarted pilot may reclaim before any periodic tick has fired.

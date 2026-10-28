@@ -197,9 +197,25 @@ pub struct ActiveFocus {
 pub struct FocusState {
     by_account: BTreeMap<AccountId, ActiveFocus>,
     by_actor: BTreeMap<ObjId, AccountId>,
+    // Derived lookup only: the account record remains the sole focus record.
+    by_unit: BTreeMap<ObjId, std::collections::BTreeSet<AccountId>>,
 }
 
 impl FocusState {
+    pub(crate) fn has_focus_on(&self, unit: ObjId) -> bool {
+        self.by_unit
+            .get(&unit)
+            .is_some_and(|accounts| !accounts.is_empty())
+    }
+
+    fn forget_unit(&mut self, focus: &ActiveFocus) {
+        if let Some(accounts) = self.by_unit.get_mut(&focus.unit) {
+            accounts.remove(&focus.account);
+            if accounts.is_empty() {
+                self.by_unit.remove(&focus.unit);
+            }
+        }
+    }
     /// The account's current foreground focus, if any.
     #[must_use]
     pub fn focus_of_account(&self, account: AccountId) -> Option<&ActiveFocus> {
@@ -248,15 +264,21 @@ impl FocusState {
         let mut released = Vec::new();
         if let Some(prior) = self.by_account.remove(&focus.account) {
             self.by_actor.remove(&prior.actor);
+            self.forget_unit(&prior);
             released.push(prior);
         }
         if let Some(account) = self.by_actor.remove(&focus.actor)
             && let Some(prior) = self.by_account.remove(&account)
         {
             self.by_actor.remove(&prior.actor);
+            self.forget_unit(&prior);
             released.push(prior);
         }
         self.by_actor.insert(focus.actor, focus.account);
+        self.by_unit
+            .entry(focus.unit)
+            .or_default()
+            .insert(focus.account);
         self.by_account.insert(focus.account, focus);
         released
     }
@@ -275,6 +297,7 @@ impl FocusState {
     pub fn relinquish(&mut self, account: AccountId) -> Option<ActiveFocus> {
         let focus = self.by_account.remove(&account)?;
         self.by_actor.remove(&focus.actor);
+        self.forget_unit(&focus);
         Some(focus)
     }
 }
