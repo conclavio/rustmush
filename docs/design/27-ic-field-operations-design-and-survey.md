@@ -1,6 +1,9 @@
 # 27. IC field operations — detachments, combat, and salvage
 
-**Draft 0.4, 2026-10-28. All 45 survey decisions and the five review rulings recorded; implementation not yet built.**
+**Draft 0.4, 2026-10-28. All 45 survey decisions and the five review rulings recorded.**
+Implementation has started with [DT.1a's neutral command foundation](26a-detachment-implementation-plan.md).
+The complete DT.1–DT.3/H1/H2 lifecycle remains unbuilt; the acceptance stories below
+remain future integration requirements.
 Based on `origin/main` at `2cbe9f7c264c79ee6ce6790a3c5ad420a30bec3b` and the owner's
 2026-10-28 rulings. This is the shared brief for doc 26 DT.1–DT.3, backlog H1 and H2.
 Rechecked against `origin/main` at `bef15abd` before this update on the same date.
@@ -229,7 +232,9 @@ preserves its remaining duration and publishes the adjusted deadline on unfreeze
 
 **All surveyed policy decisions are recorded.** Pin the records above with their existing owners,
 including NPC personnel/command identity and the accepted §9 rules, then write implementation briefs for all three streams.
-This documentation task does not start their code implementation.
+The original survey was documentation only. The subsequent
+[DT implementation brief](26a-detachment-implementation-plan.md) starts DT.1a;
+the remaining streams retain the dependency gates below.
 
 | Cut | Concrete result | Dependency / proof |
 |---|---|---|
@@ -851,8 +856,9 @@ Verified implementation seams at the review revision:
 **Review status:** all 45 survey decisions approved, including the NPC-human/embarkation qualifications.
 Draft 0.4 adds the review pins of §10: five review questions, ruled by the owner at their
 defaults on 2026-10-28, and five pins for the briefs.
-Only documentation has changed. Test/story requirements above describe future acceptance, not
-gameplay tests run by this revision.
+The survey revision changed documentation only. Subsequent DT.1a foundation tests
+are tracked in the implementation brief; the test/story requirements above remain
+future gameplay acceptance and are not claimed by that initial slice.
 
 ## 9. Follow-up decisions
 

@@ -70,6 +70,7 @@ mod contact;
 /// write that clears it, and the boot pass's view of the markers a restart found
 /// with no live arena behind them.
 pub mod custody;
+pub mod detachment;
 pub mod ground;
 pub mod ic_custody;
 pub mod mobility;

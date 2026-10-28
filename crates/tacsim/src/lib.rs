@@ -122,6 +122,7 @@ pub mod definitions;
 /// structured request that produces one, and the cost table the owner's cost run
 /// prints. The arena imports only [`deliberation::order`], which is data.
 pub mod deliberation;
+pub mod detachment;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
