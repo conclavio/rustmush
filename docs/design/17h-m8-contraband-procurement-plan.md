@@ -496,6 +496,14 @@ Recorded in both ledgers (here and doc 23 §14). Pending the owner's Q-M8-1. Thi
 Q-M8-7 taken at their defaults. The M8a and M8c briefs were written and the cut loop started the
 same day (§7).
 
+**Two more owner rulings, 2026-10-28, raised by the M8a and M8c reviews (both at the lead's
+defaults, "for now"):** (a) a charter tenant (the Dray-P's pilot, who holds neither the hull's
+title nor its lease) does not read the hull's black box with `+hull/box`; the readers are the
+title holder, the current lessee (from their own lease's start only) and staff. (b) The licence
+seal-mark ring keeps 64 marks per licence, evicting the oldest **governed** mark first, so an
+ungoverned flight inside a term is never washed out by later governed ones; an ungoverned mark is
+evicted only when the whole ring is ungoverned.
+
 1. **Q-M8-1, the tier-2 split.** S.4a (the sealed, dormant mind aboard a rig) built as M8e now;
    the thinking mind (the drone phase) after M8; doc 23 §9's "lands inside D-UM-47's cut, not
    before" amended to say so; the claim half of 17g §4's "IC claims and hull cover in live play"
