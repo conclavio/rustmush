@@ -16,11 +16,12 @@
 //! `@mind`. Without the command slot or its market read every form refuses
 //! `NOT_OPEN`, as on a House-only launch, which has no slot. **The read is
 //! granted on the format-2 Active launch since 17g C2e**: the lead's ruling
-//! R1 raised the owner-read caps to 48, and `TacsimRuleset::register`
-//! requests `MarketCommandReader` over the same composed manifest the
-//! entitlement holdings' grants take, in the branch that registers the slot
-//! (33 services and 35 grants). So every `+minds` form below and
-//! `@mind/publish` run through the real reader there.
+//! R1 raised the owner-read caps (48 then, 64 since the scoped passenger
+//! facts), and `TacsimRuleset::register` requests `MarketCommandReader` over
+//! the same composed manifest the entitlement holdings' grants take, in the
+//! branch that registers the slot (33 services and 35 grants). So every
+//! `+minds` form below and `@mind/publish` run through the real reader
+//! there.
 //!
 //! **The actor's own purchase (17g C2g, the C2e plan §4.1 item 2),** over
 //! the per-buyer entitlement index 17g C2f writes inside the money
@@ -62,10 +63,12 @@
 //! residual).
 //!
 //! 17g C2d routes its forms from here: `+minds/renew` and its `/pay` and
-//! `/decline` (`renew`, held as its module says: the renewal steps read
-//! through the market's own handles, which a TacSim command context cannot
-//! use, the C2d fix round's reviewer C2D-R1), and `+minds/resell`,
-//! `+minds/charter` and their `/accept`s (`trade`, live since 17g C2g).
+//! `/decline` (`renew`, live since 17g C2h: the renewal steps read through
+//! the market's own handles, which a TacSim command context cannot use, so
+//! `renew` checks its own refusals and hands the step to the renewal
+//! service's `front` continuation, which the service delegated to TacSim at
+//! composition, the lead's ruling R3), and `+minds/resell`, `+minds/charter`
+//! and their `/accept`s (`trade`, live since 17g C2g).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -146,7 +149,7 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ["buy", "pay"] => pay(ctx, &text),
         ["buy", "complete"] => settle(ctx, &text, Settle::Complete),
         ["buy", "refund"] => settle(ctx, &text, Settle::Refund),
-        // 17g C2d: held at `renew::RENEWALS_OPEN` (its module doc).
+        // 17g C2h: live through the renewal services' front (`renew`'s doc).
         ["renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Status),
         ["pay", "renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Pay),
         ["decline", "renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Decline),

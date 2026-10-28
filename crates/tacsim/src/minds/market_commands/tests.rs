@@ -873,6 +873,9 @@ fn legal_paid_flags(
 #[test]
 fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
     use super::holdings::{paid_flags, paid_row};
+    // 17g C2h: the renewal service prints the renewal words after its step,
+    // so they are the market's now (verbatim; the pins below are unchanged).
+    use mush_market::mind_renewal::player as renewal;
     use mush_roll::commerce::command_reader::RenewalMark;
     let width = |line: &str| line.chars().count();
     let n = "99999999";
@@ -893,14 +896,14 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
     let mut widest = ("", 0);
     for (name, template) in [
         ("NO_LICENCE", words::NO_LICENCE),
-        ("RENEW_NOT_DUE", words::RENEW_NOT_DUE),
-        ("RENEWING", words::RENEWING),
-        ("RENEW_OFFER", words::RENEW_OFFER),
-        ("RENEW_HOW", words::RENEW_HOW),
-        ("RENEW_FUNDED", words::RENEW_FUNDED),
+        ("RENEW_NOT_DUE", renewal::RENEW_NOT_DUE),
+        ("RENEWING", renewal::RENEWING),
+        ("RENEW_OFFER", renewal::RENEW_OFFER),
+        ("RENEW_HOW", renewal::RENEW_HOW),
+        ("RENEW_FUNDED", renewal::RENEW_FUNDED),
         ("NO_RENEWAL", words::NO_RENEWAL),
-        ("RENEW_PAYING", words::RENEW_PAYING),
-        ("RENEW_DECLINING", words::RENEW_DECLINING),
+        ("RENEW_PAYING", renewal::RENEW_PAYING),
+        ("RENEW_DECLINING", renewal::RENEW_DECLINING),
         ("RESELLING", words::RESELLING),
         ("RESELL_TELL", words::RESELL_TELL),
         ("CHARTERING", words::CHARTERING),
@@ -998,16 +1001,26 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
 /// 17g C2d fix round (reviewer T1): `+minds/renew`'s drafted-offer lines
 /// from the view's raw fields. The frozen price prints as credits, the
 /// renewed term and Grace in whole IC days and the offer's remaining IC hours
-/// rounded up, never below 0 (an offer at or past its expiry reads 0). The
-/// form itself is held at `RENEWALS_OPEN` (`renew`'s module doc: the renewal
-/// services' reads refuse a TacSim command context), so its dispatched test,
-/// a held licence reaching `RENEW_NOT_DUE`, waits with it.
+/// rounded up, never below 0 (an offer at or past its expiry reads 0).
+///
+/// 17g C2h (the C2e plan §5.1): the renewal service's `front` prints these
+/// lines after its step, so the functions are the market's
+/// (`mush_market::mind_renewal::player`); the pins are unchanged, and the
+/// market's credit and day renderings are TacSim's own (`launch::credits`,
+/// `market::days`), compared here. The `RENEWALS_OPEN` pin is gone with the
+/// hold: the dispatched form (a held licence reaching `RENEW_NOT_DUE`, then
+/// the offer, the payment and the grant) is the player market story's part 3.
 #[test]
 fn renewal_offer_lines_round_hours_up() -> TestResult {
-    use super::renew::{RENEWALS_OPEN, hours_left, offer_text};
+    use mush_market::mind_renewal::player::{credits, days, hours_left, offer_text};
     const HOUR: i64 = 3_600;
     const DAY: i64 = 86_400;
-    check!(!RENEWALS_OPEN, "held until the market-identity seam lands");
+    for minor in [0, 1, 99, 100, 1_250, 40_000, 100_000_000, -1, -150] {
+        check_eq!(credits(minor), crate::launch::credits(minor), "{minor}");
+    }
+    for seconds in [-1, 0, 1, DAY - 1, DAY, DAY + 1, 90 * DAY, 90 * DAY - 1] {
+        check_eq!(days(seconds), super::market::days(seconds), "{seconds}");
+    }
     for (until, now, hours) in [
         (HOUR, 0, 1),
         (HOUR + 1, 0, 2),

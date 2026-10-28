@@ -1,8 +1,10 @@
 //! Retained, bounded continuations. The durable owner records are inventory;
 //! missing acknowledgement is never absence, and no path automatically funds.
 use super::player::{
-    RenewalOfferTerms, RenewalPlayerOutcome, RenewalPlayerStep, RenewalState, RenewalStatusView,
-    Switches, outcome_line, personal_status_line,
+    FrontAnswer, FrontStep, RenewalOfferTerms, RenewalPlayerOutcome, RenewalPlayerStep,
+    RenewalState, RenewalStatusView, Submission, Switches, front_bound, front_line,
+    front_player_step, front_request, front_submitted, outcome_line, parse_front,
+    personal_status_line, sent_outcome,
 };
 use super::{Families, MindRenewalOperationV1, RenewalConfig};
 use mush_core::action::{AuthorityGuard, AuthorityGuardContext, IdempotencyKeyText, PerceivedRef};
@@ -34,6 +36,14 @@ const PAGE: usize = 16;
 #[derive(Clone, Default)]
 pub(super) struct ServiceConfig {
     pub runtime: Arc<Mutex<Runtime>>,
+    /// 17g C2h (the lead's ruling R3): the module the `front` continuation
+    /// is delegated to, set by the composition that composes the player
+    /// market (TacSim's `MindCommerce::configure_market`, with TacSim's own
+    /// namespace; this crate never spells it). `None`: the `front` switch
+    /// exists and no other module can schedule it. It enters no definition
+    /// descriptor (`RenewalConfig::declarations` and the policy descriptor
+    /// read the manifest, the participants and the policy only).
+    pub player_front: Option<OwnerId>,
 }
 impl std::fmt::Debug for ServiceConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -95,6 +105,9 @@ struct Service {
     reader: OwnerReadHandle<RenewalReader>,
     continuation: ContinuationHandle,
     scan: ContinuationHandle,
+    /// 17g C2h: the `front` continuation (the player front `+minds/renew`
+    /// hands its step to; `player_front`).
+    front: ContinuationHandle,
 }
 fn unavailable() -> CmdError {
     CmdError::msg("Renewal is unavailable or has changed.")
@@ -168,16 +181,31 @@ pub(super) fn register(
         return Ok(());
     }
     reg.classify_commands(CommandCompatibility::Authoritative);
-    reg.command(CommandSpec { name:COMMAND.into(),switches:["status","request","accept","decline","retry","continue","scan"].into_iter().map(Into::into).collect(),shape:ArgShape::Raw,
+    reg.command(CommandSpec { name:COMMAND.into(),switches:["status","request","accept","decline","retry","continue","scan","front"].into_iter().map(Into::into).collect(),shape:ArgShape::Raw,
         help:"@mindrenewal/status <licence> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously.".into(),..CommandSpec::default() },Arc::new(command))?;
     let continuation = reg.command_continuation(COMMAND, &["continue"])?;
     let scan = reg.command_continuation(COMMAND, &["scan"])?;
+    // 17g C2h (the lead's ruling R3): the player front, delegated to the one
+    // module the configuration names. Undocumented to players (R5).
+    let front = reg.command_continuation(COMMAND, &["front"])?;
+    if let Some(grantee) = config
+        .service
+        .as_ref()
+        .and_then(|s| s.player_front.as_ref())
+    {
+        reg.delegate_continuation(
+            &front,
+            grantee.as_str(),
+            "17g C2h: +minds/renew hands the actor's own renewal step to the service",
+        )?;
+    }
     reg.state(Service {
         config: config.clone(),
         families,
         reader,
         continuation,
         scan,
+        front,
     });
     reg.tick(
         "personal_mind_renewal_service",
@@ -448,15 +476,20 @@ fn action(s: &Service, t: Transition) -> Result<DefinitionRef, CmdError> {
         .find(|a| a.key().id.as_str() == t.id())
         .ok_or_else(unavailable)
 }
+/// Submit `t` for the retained entry `e`. 17g C2h (the C2e plan §5.1,
+/// review AD-F5): `Submission::Nothing` when nothing was sent, because the
+/// entry still awaits an earlier attempt's terminal or the actor already has
+/// an authoritative submission awaiting its receipt
+/// (`Submission::may_send`); `Submission::Sent` after the one submission.
 fn submit(
     ctx: &mut Ctx<'_>,
     s: &Service,
     e: &mut Entry,
     t: Transition,
     parameters: serde_json::Value,
-) -> Result<(), CmdError> {
-    if e.attempt.is_some() || ctx.authoritative_pending(ctx.actor) {
-        return Ok(());
+) -> Result<Submission, CmdError> {
+    if !Submission::may_send(e.attempt.is_some(), ctx.authoritative_pending(ctx.actor)) {
+        return Ok(Submission::Nothing);
     }
     let action = action(s, t)?;
     let digest = DefinitionDigest::for_canonical_value(
@@ -475,7 +508,7 @@ fn submit(
     )?;
     e.attempt = Some((action, observation));
     e.after = ctx.w.now().saturating_add(1);
-    Ok(())
+    Ok(Submission::Sent)
 }
 fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     let id = ctx.args.raw().to_owned();
@@ -529,7 +562,8 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
             {
                 return Err(unavailable());
             }
-            submit(
+            // Nothing sent is retried on a later tick by this entry.
+            let _sent = submit(
                 ctx,
                 s,
                 e,
@@ -546,7 +580,7 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
             if !prior.state().retryable() {
                 return Err(unavailable());
             }
-            submit(
+            let _sent = submit(
                 ctx,
                 s,
                 e,
@@ -580,7 +614,7 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
                     return Ok(());
                 }
             }
-            submit(
+            let _sent = submit(
                 ctx,
                 s,
                 e,
@@ -599,6 +633,9 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let s = service(ctx)?;
     if ctx.switches.has("scan") {
         return scan(ctx, &s);
+    }
+    if ctx.switches.has("front") {
+        return front(ctx, &s);
     }
     if ctx.switches.has("continue") {
         let result = continuation(ctx, &s);
@@ -635,13 +672,18 @@ pub(super) fn command_line(outcome: RenewalPlayerOutcome) -> String {
 }
 
 /// 17g C2d (C2 plan §2.1's renewal exception): one player step on the
-/// actor's own personal renewal, the front `+minds/renew` uses. It is the
+/// actor's own personal renewal (C2d's front for `+minds/renew`). It is the
 /// `@mindrenewal` command's own player branch (`step`): the renewal reader's
 /// holder check, the service's admission, retained entry, idempotency key and
 /// submission, unchanged; a funded offer is still granted or refunded by the
 /// service's continuation. Every refusal is the service's one uniform line,
 /// `Renewal is unavailable or has changed.`, for a foreign licence and a
 /// missing one alike.
+///
+/// 17g C2h: it reads through the market's own renewal read and families, so
+/// it answers only in the market's own context; `+minds/renew` reaches the
+/// same `step` through the service's delegated `front` continuation
+/// (`player_front`), which runs under the market's identity.
 pub fn player_step(
     ctx: &mut Ctx<'_>,
     licence: LicenceId,
@@ -743,8 +785,86 @@ fn step(
     if e.attempt.is_some() {
         return Ok(RenewalPlayerOutcome::Unresolved);
     }
-    submit(ctx, s, e, t, parameters)?;
-    Ok(RenewalPlayerOutcome::Queued)
+    // 17g C2h: a step that sent nothing is `Unresolved`, never `Queued`.
+    Ok(sent_outcome(submit(ctx, s, e, t, parameters)?))
+}
+
+/// 17g C2h (the lead's ruling R3, the C2e plan §5.1): the player front's
+/// handle, when the service is composed and enabled. TacSim's `+minds/renew`
+/// schedules it for the actor whose typed line it is dispatching (the
+/// delegation this service declared at composition admits nothing else).
+#[must_use]
+pub fn player_front(ctx: &Ctx<'_>) -> Option<ContinuationHandle> {
+    player_front_in(ctx.w)
+}
+
+/// `player_front`, read from the world itself (the service's state slot and
+/// its runtime), so a composition test can prove the handle TacSim would be
+/// handed after activation without a dispatched context.
+#[must_use]
+pub fn player_front_in(world: &World) -> Option<ContinuationHandle> {
+    let s = world.module_state::<Service>()?;
+    let enabled = runtime(s).ok()?.runtime.lock().ok()?.enabled;
+    enabled.then(|| s.front.clone())
+}
+
+/// 17g C2h: the `front` arm, `<licence> request | accept <operation> |
+/// decline <operation>` (`player::parse_front`; anything else is the uniform
+/// refusal). It runs under this service's own identity, as a continuation
+/// TacSim's `+minds/renew` scheduled or as a typed `COMMAND/front` line,
+/// the same step for the same actor either way:
+/// - `request`: the actor's own licence (`own`) and its checked last
+///   operation, as `step(Status)` reads them; a drafted offer prints
+///   `RENEW_OFFER` and `RENEW_HOW`, a funded one `RENEW_FUNDED`, and neither
+///   submits; with none, or after a closure or grant, `RENEW_NOT_DUE` while
+///   the term runs, else the request-or-retry step and `RENEWING`.
+/// - `accept` and `decline`: the actor's own licence, whose last operation
+///   must be exactly the named one and drafted (the payment is bound to the
+///   offer the holder saw), then the step and `RENEW_PAYING` with the row's
+///   frozen price, or `RENEW_DECLINING`.
+///
+/// Every line prints AFTER the step, and only when it submitted; any other
+/// outcome is the uniform refusal.
+fn front(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
+    let (licence, kind) = parse_front(ctx.args.raw()).ok_or_else(unavailable)?;
+    let shown = licence.get().to_string();
+    let item = own(ctx, s, licence)?;
+    let price_minor = match kind {
+        FrontStep::Request => {
+            let row = item
+                .last_operation()
+                .map(|op| checked(ctx, s, op))
+                .transpose()?;
+            let view = status_view(item.term_end().get(), row.as_ref());
+            match front_request(&shown, &view, ctx.w.world_ic_now().at) {
+                FrontAnswer::Say(lines) => {
+                    let actor = ctx.actor;
+                    for line in lines {
+                        ctx.out.info(actor, line);
+                    }
+                    return Ok(());
+                }
+                FrontAnswer::Refuse(line) => return Err(CmdError::msg(line)),
+                FrontAnswer::Ask => 0,
+            }
+        }
+        FrontStep::Accept(operation) | FrontStep::Decline(operation) => {
+            if !front_bound(kind, item.last_operation()) {
+                return Err(unavailable());
+            }
+            let row = checked(ctx, s, operation)?;
+            if !matches!(row.state(), RenewalStateV1::Drafted {}) {
+                return Err(unavailable());
+            }
+            row.offer().terms.price.minor()
+        }
+    };
+    let outcome = step(ctx, s, licence, Switches::of(front_player_step(kind)))?;
+    let line =
+        front_submitted(&outcome, front_line(&shown, kind, price_minor)).ok_or_else(unavailable)?;
+    let actor = ctx.actor;
+    ctx.out.info(actor, line);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -275,6 +275,20 @@ const NOT_OPEN: &str = "The mind market is not open here.";
 /// (`Engine`, E7c2 fold R11): best-effort, between the request line and the
 /// driver's line, never the confirmation.
 const QUEUED: &str = "Queued.";
+/// The renewal services' one uniform refusal (`@mindrenewal` and
+/// `@housemindrenewal`, their `front` switch among them).
+const RENEWAL_UNAVAILABLE: &str = "Renewal is unavailable or has changed.";
+/// 17g C2h: the renewal services' typed `front` forms (`{n}` the licence),
+/// each step of both services and a malformed argument; the operation is a
+/// well-formed token no offer carries.
+const FRONT_FORMS: [&str; 6] = [
+    "@mindrenewal/front {n} request",
+    "@mindrenewal/front {n} accept 0123456789abcdef0123456789abcdef",
+    "@mindrenewal/front {n} decline 0123456789abcdef0123456789abcdef",
+    "@housemindrenewal/front {n} request",
+    "@housemindrenewal/front {n} accept 0123456789abcdef0123456789abcdef",
+    "@mindrenewal/front 0{n} request",
+];
 
 /// 17g C2a test 9 (plan §2.8): the missing-target half of the comparison
 /// rule and its masking. The fast suite has no filing and no licence (a
@@ -1154,7 +1168,7 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
 }
 
 /// The account ids the store holds (the `assert_private` lens).
-async fn known_accounts(w: &World) -> TestResult<Known> {
+pub(super) async fn known_accounts(w: &World) -> TestResult<Known> {
     let mut accounts = Vec::new();
     for (key, row) in w.launch.store.module_json_list("economy").await? {
         if key.starts_with("account:")
@@ -1263,6 +1277,21 @@ async fn registry_commands_refuse_alike_for_every_principal_on_unknown_targets()
 ///
 /// The fast suite has no filing or licence (a genuine rating), so "foreign"
 /// is the story's; here both numbers are missing, as in C2a's test 9.
+///
+/// 17g C2h: `+minds/renew` is live (the lead's ruling R3: it hands the step
+/// to the renewal service's delegated `front`), and `NO_LICENCE` is still its
+/// first refusal, before anything is handed over: `+minds/renew 999`,
+/// `/renew/pay 1` and `/renew/decline 1` (and the other number of each) read
+/// `NO_LICENCE` for EVERY principal (God, the author and the alt, the buyer,
+/// the clerk, the operator, the accountless character and the bystander),
+/// alike for the two numbers, and no later line arrives (nothing was
+/// scheduled). The services' own `front` switch, which any player can type
+/// (a spelling of the same step for the same actor, no connection guard, the
+/// C2h brief), refuses a licence the actor does not hold with the service's
+/// one uniform line, `Renewal is unavailable or has changed.`, for every
+/// principal and both services, alike for the two numbers, and so does a
+/// malformed argument (a leading zero); nothing later arrives either. The
+/// dispatched renewal flow is the story's part 3.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn trade_commands_refuse_without_own_records() -> TestResult {
     let mut w = world("mush-c2d-refusals", 2).await?;
@@ -1332,6 +1361,62 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
                 "{name}: a malformed accept"
             );
         }
+        // 17g C2h: every principal, alike.
+        let everyone = p
+            .all()
+            .into_iter()
+            .chain([("alt", w.alt), ("bystander", w.bystander)]);
+        for (name, actor) in everyone {
+            for template in [
+                "+minds/renew {n}",
+                "+minds/renew/pay {n}",
+                "+minds/renew/decline {n}",
+            ] {
+                let mut replies = Vec::new();
+                for typed in ["1", "999"] {
+                    let line = template.replace("{n}", typed);
+                    let lines = w.server.command(actor, line.clone()).await?;
+                    check_eq!(
+                        lines,
+                        vec![format!("You hold no licence {typed}.")],
+                        "{name}: {line}"
+                    );
+                    replies.push((lines, typed));
+                }
+                let [(a, typed_a), (b, typed_b)] =
+                    <[_; 2]>::try_from(replies).map_err(|_| "two replies")?;
+                check!(
+                    same_refusal(&a, typed_a, &b, typed_b),
+                    "{name}: {template} reads alike"
+                );
+            }
+            // 17g C2h: the typed front, refused before any step.
+            for template in FRONT_FORMS {
+                let mut replies = Vec::new();
+                for typed in ["1", "999"] {
+                    let line = template.replace("{n}", typed);
+                    let lines = w.server.command(actor, line.clone()).await?;
+                    check_eq!(
+                        lines,
+                        vec![RENEWAL_UNAVAILABLE.to_owned()],
+                        "{name}: {line}"
+                    );
+                    replies.push((lines, typed));
+                }
+                let [(a, typed_a), (b, typed_b)] =
+                    <[_; 2]>::try_from(replies).map_err(|_| "two replies")?;
+                check!(
+                    same_refusal(&a, typed_a, &b, typed_b),
+                    "{name}: {template} reads alike"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let late = w.server.take_seen(actor)?;
+            check!(
+                late.own.is_empty(),
+                "{name}: nothing was handed over: {late:?}"
+            );
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })
     .await;
@@ -1353,6 +1438,12 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
 /// read the per-buyer offer indexes (`NO_OFFER`, `NO_CHARTER_OFFER`), and a
 /// seller form naming a licence the actor does not hold (`+minds/resell
 /// 1=LaunchAlt price=1`) is `NO_LICENCE`, exactly, under the same lens.
+///
+/// 17g C2h: the three renewal forms, live through the renewal services'
+/// delegated front, read exactly `NO_LICENCE` for each actor here, and
+/// nothing reaches anyone else (the settle window before the next line
+/// would catch a late line from a handed-over step); the services' typed
+/// `front` forms read exactly the uniform refusal, to the actor alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn trade_replies_reach_only_the_actor() -> TestResult {
     let mut w = world("mush-c2d-observer", 2).await?;
@@ -1421,6 +1512,16 @@ async fn trade_replies_reach_only_the_actor() -> TestResult {
             ("+minds/resell 1=LaunchAlt price=1", false),
             ("@registry/recall 999", true),
             ("@registry/revoke 999", true),
+            ("@mindrenewal/front 999 request", false),
+            (
+                "@mindrenewal/front 999 accept 0123456789abcdef0123456789abcdef",
+                false,
+            ),
+            ("@housemindrenewal/front 999 request", false),
+            (
+                "@housemindrenewal/front 999 decline 0123456789abcdef0123456789abcdef",
+                false,
+            ),
         ];
         for actor in [p.author, p.buyer, w.bystander] {
             for (line, submits) in lines {
@@ -1440,6 +1541,11 @@ async fn trade_replies_reach_only_the_actor() -> TestResult {
                     }
                     "+minds/charter/accept 999 price=1" => Some(NO_CHARTER_OFFER_999),
                     "+minds/resell 1=LaunchAlt price=1" => Some("You hold no licence 1."),
+                    // 17g C2h: live, and refused before any hand-off.
+                    "+minds/renew 999" | "+minds/renew/pay 999" | "+minds/renew/decline 999" => {
+                        Some("You hold no licence 999.")
+                    }
+                    _ if line.contains("renewal/front ") => Some(RENEWAL_UNAVAILABLE),
                     _ => None,
                 };
                 if let Some(exact) = exact {
