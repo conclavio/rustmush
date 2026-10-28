@@ -583,7 +583,7 @@ impl PlayerWorld {
             Box::new(
                 if registry_recall.is_some() || registry_revocation.is_some() {
                     mush_org::OrgModule::new()
-                        .with_capabilities(crate::composition::org_capability_vocabulary())
+                        .with_capabilities(crate::composition::domain_org_capability_vocabulary())
                 } else {
                     mush_org::OrgModule::new()
                 },

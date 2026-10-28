@@ -23,7 +23,6 @@
 //! 6. reconnect notices survive a kept-world reboot and render exactly once.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use mush_core::{
     Audience, CommitToken, GOD, IdempotencyKey, IdempotencyScope, LIMBO, ModuleOp, ModuleWrite,
@@ -68,28 +67,14 @@ fn wired(
 ) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let (mut mods, cell) = comp::server_modules_with_tacsim(
-        mush_weather::WeatherConfig::default(),
+    let (mut mods, cell) = comp::domain_modules_with_economy(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.extend(comp::sheet_modules(&onboarding, &game));
     let enabled = cfg.enabled;
     if test_world {
@@ -101,33 +86,19 @@ fn wired(
     mods
 }
 
-/// The same roster through `server_modules_with` and the unwired test-world
+/// The same roster through `domain_modules_with` and the unwired test-world
 /// layer: no delegation to `tacsim` and no cell.
 fn unwired(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
-        mush_weather::WeatherConfig::default(),
+    let mut mods = comp::domain_modules_with(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.extend(comp::sheet_modules(&onboarding, &game));
     let enabled = cfg.enabled;
     mods.push(comp::tacsim_test_world_module(cfg, enabled));

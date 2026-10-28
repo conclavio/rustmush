@@ -542,6 +542,77 @@ impl ArenaTasks {
     }
 }
 
+struct ArenaEgressReceiver {
+    rx: mpsc::Receiver<ArenaOut>,
+    tasks: ArenaTasks,
+}
+
+impl mush_core::OffLoopEgressReceiver for ArenaEgressReceiver {
+    fn recv_and_stage(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<usize>> + Send + '_>> {
+        Box::pin(async move {
+            let first = self.rx.recv().await?;
+            let mut staged = 0_usize;
+            if self.tasks.stage(first) {
+                staged += 1;
+            }
+            while staged < MAX_EGRESS_PER_DRAIN {
+                match self.rx.try_recv() {
+                    Ok(message) => {
+                        if !self.tasks.stage(message) {
+                            break;
+                        }
+                        staged += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+            Some(staged)
+        })
+    }
+}
+
+impl mush_core::OffLoopSimulationHost for ArenaTasks {
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
+    }
+
+    fn module_name(&self) -> &'static str {
+        MODULE
+    }
+
+    fn egress_payload(&self) -> &'static str {
+        EGRESS_PAYLOAD
+    }
+
+    fn take_egress(&self) -> Option<Box<dyn mush_core::OffLoopEgressReceiver>> {
+        let rx = ArenaTasks::take_egress(self)?;
+        Some(Box::new(ArenaEgressReceiver {
+            rx,
+            tasks: self.clone(),
+        }))
+    }
+
+    fn stamp_ledger_writes(&self, serial: u64) {
+        ArenaTasks::stamp_ledger_writes(self, serial);
+    }
+
+    fn ack_ledger_upto(&self, high_water: u64) {
+        ArenaTasks::ack_ledger_upto(self, high_water);
+    }
+
+    fn signal_stop_all(&self) {
+        ArenaTasks::signal_stop_all(self);
+    }
+
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            ArenaTasks::shutdown(self, JOIN_TIMEOUT).await;
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The module state slot
 // ---------------------------------------------------------------------------
@@ -4447,6 +4518,7 @@ pub fn register(
             },
         ),
     )?;
+    reg.off_loop_simulation_host(Arc::new(tasks.clone()))?;
     reg.state(ArenaRegistry::new(tasks, frames, observers));
     // 16b cut T.3: the match book beside the registry. A second slot rather than
     // three more fields on the first, because the two have different lifetimes —

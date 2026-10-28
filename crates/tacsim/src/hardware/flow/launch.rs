@@ -289,17 +289,14 @@ fn modules(d: &LaunchDeployment) -> Result<Vec<Box<dyn GameModule>>> {
     cfg.minds.proving_daily_unit_minutes = 100_000;
     let layer = TacsimRuleset::with_config(cfg).with_conduct_carrier()?;
     let launch = LaunchComposition::prepare(&layer, d.clone())?;
-    let (mut modules, handles) = crate::composition::server_modules_with_launch(
+    let (mut modules, handles) = crate::composition::domain_modules_with_launch(
         Default::default(),
         Default::default(),
-        Default::default(),
-        &Default::default(),
         &crate::economy::GameEconomyConfig {
             housing: false,
             market: false,
             ..Default::default()
         },
-        Default::default(),
         &launch,
     )?;
     modules.push(Box::new(launch.configure_tacsim(
@@ -1174,7 +1171,7 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
 /// through `game_modules` (mush-server's `player_market.rs`) did.
 #[test]
 fn the_org_vocabulary_admits_every_named_launch_grant() -> Result {
-    let vocabulary = crate::composition::org_capability_vocabulary();
+    let vocabulary = crate::composition::domain_org_capability_vocabulary();
     for capability in [
         mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY,
         "asset.title.transfer",

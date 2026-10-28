@@ -16,8 +16,6 @@
 
 use crate::support;
 
-use std::sync::Arc;
-
 use mush_core::{CanonicalId, GOD, ObjId};
 use mush_market::{ListingId, MarketStore};
 use mush_testkit::{TestWorld, fold_module_ops};
@@ -64,11 +62,6 @@ enum Lane<'a> {
 fn roster(mut cfg: TacsimConfig, lane: &Lane<'_>) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
     let game_content = matches!(lane, Lane::Shipped);
     if let Lane::Seeded { json, .. } = lane {
@@ -82,13 +75,10 @@ fn roster(mut cfg: TacsimConfig, lane: &Lane<'_>) -> Vec<Box<dyn mush_core::Game
             bytes: (*json).to_owned(),
         });
     }
-    let (mut mods, inventory) = comp::server_modules_with_tacsim(
-        mush_weather::WeatherConfig::default(),
+    let (mut mods, inventory) = comp::domain_modules_with_economy(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
     if let Lane::Seeded { json, shelf: true } = lane {
         let pack = mush_content::load_pack(json).expect("the seeded lane verifies");
@@ -101,14 +91,7 @@ fn roster(mut cfg: TacsimConfig, lane: &Lane<'_>) -> Vec<Box<dyn mush_core::Game
                 .with_shelf(with_stations(&[pack])),
         );
     }
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.push(comp::tacsim_module_wired(cfg, game_content, inventory));
     match lane {
         Lane::Shipped => {

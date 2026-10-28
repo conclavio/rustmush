@@ -6,8 +6,6 @@
 //! window says every day is today; under real motion (rate 1000) it names the
 //! fastest, the cheapest and the worst day of the next IC year.
 
-use std::sync::Arc;
-
 use mush_testkit::TestWorld;
 use tacsim::config::PackSource;
 use tacsim::port::{
@@ -21,28 +19,13 @@ use tacsim::{EphemerisConfig, TacsimConfig, fixture};
 fn production_roster(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let (mut mods, inventory) = comp::server_modules_with_tacsim(
-        mush_weather::WeatherConfig::default(),
+    let (mut mods, inventory) = comp::domain_modules_with_economy(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -497,28 +480,13 @@ fn a3b_without_a_lane_the_chart_frame_says_so() {
     // The fixture corridor alone, the game content off: no lane, no chart.
     let tw = TestWorld::with_modules({
         use tacsim::composition as comp;
-        let llm = Arc::new(
-            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-                .expect("a disabled LLM service composes"),
-        );
-        let onboarding = mush_core::OnboardingConfig::default();
         let game = tacsim::GameEconomyConfig::default();
-        let (mut mods, inventory) = comp::server_modules_with_tacsim(
-            mush_weather::WeatherConfig::default(),
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
             mush_economy::EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
-            &onboarding,
             &game,
-            comp::recovery_policy(&cfg.recovery),
         );
-        mods.push(comp::worldgen_module_with(
-            Arc::clone(&llm),
-            mush_worldgen::WorldgenConfig::default(),
-        ));
-        mods.push(comp::npc_module_with(
-            comp::npc_agent_adapter(),
-            &mush_config::config::NpcCfg::default(),
-        ));
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
         mods.push(comp::tacsim_module_wired(cfg, false, inventory));
         mods.push(comp::content_module_with(true, false).expect("the content module composes"));
         mods

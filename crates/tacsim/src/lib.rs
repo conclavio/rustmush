@@ -30,15 +30,18 @@
 //! authored source, a seed is deterministic, and no `WorldCommand::ModuleAsyncDone`
 //! arm is added.
 //!
-//! # The dependency claim
+//! # The dependency boundary
 //!
-//! `tacsim -> {mush-core, mush-sim}` and the serde/tracing vocabulary, and
-//! **nothing else** — no economy, org, party, faction, market or tactics edge.
-//! `mush-sim` is the one substantive edge and it is [`mush_sim::RouteDef`]'s: 10b §3.1
-//! put the type here and §3.6 made `mush-sim` its consumer, which is a cycle, so the
-//! **type** lives in `mush-sim` beside `Leg` and this crate provides its **data** —
-//! `mush-tactics/src/mobility.rs`'s stated pattern. `cargo tree -p tacsim` is
-//! the test.
+//! `tacsim` is the game's simulation and pilot-sheet crate. It depends on the
+//! core/simulation/economy/market/tactics/mind substrate crates it directly
+//! integrates with (`mush-core`, `mush-sim`, `mush-tactics`, `mush-propagation`,
+//! `mush-economy`, `mush-inventory`, `mush-industry`, `mush-market`, `mush-roll`,
+//! `mush-org`, `mush-faction`, `mush-canon`, `mush-atlas`, `mush-content`,
+//! `mush-ruleset`, `mush-npc`, `mush-llm`, `mush-mind`, `mush-comsys`,
+//! `mush-jobs`), while full server module composition (including host-level and
+//! unrelated player-facing modules such as `mush-campaign`, `mush-housing`,
+//! `mush-mail`, `mush-party`, `mush-privileges`, `mush-scenes`, `mush-script`,
+//! `mush-weather`, and `mush-worldgen`) lives in `mush-composition`.
 //!
 //! # Where the bytes come from
 //!
@@ -161,7 +164,7 @@ pub mod relay_foundry;
 pub mod relay_loss;
 pub mod relay_metric;
 pub mod relay_mobile;
-mod relay_service;
+pub mod relay_service;
 pub mod relay_world;
 pub mod seed;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
@@ -733,6 +736,7 @@ impl GameModule for TacsimRuleset {
         // in after composition (`surface::install_geology`), the status the boot pass decides
         // once, the bodies' tables and the site ground cache. Never persisted.
         reg.state(surface::GeologyState::default());
+        reg.geology_installer(std::sync::Arc::new(surface::install_geology))?;
         // Doc 20 cut SM.6 (§3.4, D2): the sites' opening states the Site readiness line reads,
         // RAM only, beside the geology slot (never `PortTickState`, which a fire takes whole).
         reg.state(surface::opening::SiteOpenings::default());
