@@ -58,7 +58,8 @@ use mush_net_web::{
     SessionStart, TokenIdentity, TokenVerdict, WebHooks,
 };
 use mush_proto::{
-    ClientCaps, ClientKind, ColorDepth, OutputEvent, Query, RespondChoice, RichText, SmolStr,
+    ClientCaps, ClientKind, ColorDepth, MindMarketRequest, OutputEvent, Query, RespondChoice,
+    RichText, SmolStr,
 };
 use mush_session::{ConnId, ConnectionHandle, FloodVerdict, ReplayError, SessionManager};
 use mush_store::{ObjectStore, TokenRecord};
@@ -717,6 +718,18 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                 Query::MarketOriginalMinds(request) => (
                     SmolStr::new_static("market.original_minds"),
                     serde_json::json!(request),
+                ),
+                // 17g C3a (the C3 plan §2.3): the player market's two panel
+                // reads, each forwarded to its same-named feed query with
+                // the closed request's own fields (the code already decoded
+                // as a `ListingCode`, the cursor as a `u64`).
+                Query::MindMarket(MindMarketRequest::Listings { after }) => (
+                    SmolStr::new_static("mind.market"),
+                    serde_json::json!({ "after": after }),
+                ),
+                Query::MindMarket(MindMarketRequest::Holdings { section, after }) => (
+                    SmolStr::new_static("mind.holdings"),
+                    serde_json::json!({ "section": section, "after": after }),
                 ),
                 Query::PanelSubscribe { feed, params } => {
                     if !self.panels.iter().any(|p| p.as_str() == feed.as_str()) {

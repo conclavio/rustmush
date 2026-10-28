@@ -79,14 +79,14 @@ use mush_roll::commerce::{CharterId, FiledRevisionId, LicenceId};
 use serde_json::json;
 
 use super::market::{HELP, credits_minor};
-use super::words::{self, fill};
+use super::words::{self, Outcome, Refusal, fill, word};
 
 /// The pending charter offer's window, in seconds: the protocol's longest
 /// (`charter_transfer::records::MAX_OFFER_SECONDS`), as the resale's.
 pub(crate) const CHARTER_OFFER_SECONDS: i64 = 86_400;
 
-fn not_open() -> CmdError {
-    CmdError::msg(words::NOT_OPEN)
+fn not_open() -> Refusal {
+    Refusal::not_open()
 }
 
 /// A seller's parsed `<subject>=<player> price=<credits>`.
@@ -113,16 +113,18 @@ pub(crate) enum TradeRefusal {
     Price,
 }
 impl TradeRefusal {
-    pub(crate) fn error(self) -> CmdError {
-        CmdError::msg(match self {
-            Self::Usage => HELP,
-            Self::Price => words::BAD_PRICE,
-        })
+    /// 17g C3a: the refusal with its word (`BAD_PRICE`; the help is no word,
+    /// `REFUSED`), in place of C2's `error`, which printed the same text.
+    pub(super) fn refusal(self) -> Refusal {
+        match self {
+            Self::Usage => Refusal::usage(HELP),
+            Self::Price => word!(BAD_PRICE),
+        }
     }
 }
 
 /// `price=<credits>`'s value in minor units, or `Price`.
-fn price(text: &str) -> Result<i64, TradeRefusal> {
+pub(super) fn price(text: &str) -> Result<i64, TradeRefusal> {
     credits_minor(text).ok_or(TradeRefusal::Price)
 }
 
@@ -167,6 +169,18 @@ pub(crate) fn accept_arguments(text: &str) -> Result<AcceptArguments, TradeRefus
     })
 }
 
+/// 17g C3a: a seller form's selection (`trade_arguments`), refused with its
+/// word: `+minds/resell` and `+minds/charter` take the same shape.
+pub(super) fn parse_offer(text: &str) -> Result<TradeArguments, Refusal> {
+    trade_arguments(text).map_err(TradeRefusal::refusal)
+}
+
+/// 17g C3a: an accept's selection (`accept_arguments`), refused with its
+/// word.
+pub(super) fn parse_accept(text: &str) -> Result<AcceptArguments, Refusal> {
+    accept_arguments(text).map_err(TradeRefusal::refusal)
+}
+
 /// A price as `price=` spells it: `0.21`, `12.50`, `1000000`.
 pub(crate) fn amount(minor: i64) -> String {
     let (whole, cents) = (minor.div_euclid(100), minor.rem_euclid(100));
@@ -179,8 +193,8 @@ pub(crate) fn amount(minor: i64) -> String {
 
 /// The player `typed` names, as `page` resolves one, when it is a live
 /// player character: its id and name. Else `NO_PLAYER`.
-fn player(ctx: &Ctx<'_>, typed: &str) -> Result<(ObjId, String), CmdError> {
-    let refuse = || CmdError::msg(fill(words::NO_PLAYER, &[("name", typed)]));
+fn player(ctx: &Ctx<'_>, typed: &str) -> Result<(ObjId, String), Refusal> {
+    let refuse = || no_player(typed);
     let query = typed.trim();
     let id = if query.eq_ignore_ascii_case("me") {
         Some(ctx.actor)
@@ -208,18 +222,47 @@ pub(crate) fn other_player(
     typed: &str,
 ) -> Result<(ObjId, String), CmdError> {
     if buyer.0 == actor {
-        return Err(CmdError::msg(fill(words::NO_PLAYER, &[("name", typed)])));
+        return Err(no_player(typed).into());
     }
     Ok(buyer)
 }
+/// 17g C3a: `NO_PLAYER` for the name as typed, `player`'s and
+/// `other_player`'s one refusal, with its word.
+fn no_player(typed: &str) -> Refusal {
+    word!(NO_PLAYER, &[("name", typed)])
+}
 
-/// `+minds/resell <licence>=<player> price=<credits>`.
+/// `+minds/resell <licence>=<player> price=<credits>`. 17g C3a: parsed,
+/// run, then the request line and the seller's tell printed as before.
 pub(crate) fn resell(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    let args = trade_arguments(text).map_err(TradeRefusal::error)?;
+    let args = parse_offer(text)?;
+    let outcome = run_resell(ctx, &args)?;
+    super::print(ctx, outcome);
+    ctx.out.info(
+        ctx.actor,
+        fill(
+            words::RESELL_TELL,
+            &[
+                ("licence", &args.subject.to_string()),
+                ("amount", &amount(args.price_minor)),
+            ],
+        ),
+    );
+    Ok(())
+}
+
+/// 17g C3a: `+minds/resell` after its parse, for the line and the typed
+/// `Resell` alike: the slot (`NOT_OPEN`), the player (`NO_PLAYER`), the
+/// actor's own paid licence (`NO_LICENCE`), not the actor itself
+/// (`NO_PLAYER`), the action (`NOT_OPEN`), the personal account (`ACCOUNT`),
+/// then `RESELLING` and the Offer. The seller's tell is the line command's
+/// second line, never part of the `Outcome` (the C3 plan §2.7).
+pub(super) fn run_resell(ctx: &mut Ctx<'_>, args: &TradeArguments) -> Result<Outcome, Refusal> {
     super::service(ctx)?;
     let named = player(ctx, &args.player)?;
     let held = super::renew::own_paid(ctx, args.subject)?;
-    let (buyer, name) = other_player(ctx.actor, named, &args.player)?;
+    let (buyer, name) =
+        other_player(ctx.actor, named, &args.player).map_err(|_| no_player(&args.player))?;
     let action = ctx
         .reg
         .definitions()
@@ -234,24 +277,37 @@ pub(crate) fn resell(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
         &[("licence", &licence), ("player", &name), ("price", &shown)],
     );
     let parameters = resale_offer_parameters(held.licence(), buyer, args.price_minor, account);
-    super::submit(ctx, "resell", &licence, action, parameters, &request)?;
+    super::stage(ctx, "resell", &licence, action, parameters, request)
+}
+
+/// `+minds/charter <filed>=<player> price=<credits>`. 17g C3a: parsed,
+/// run, then the request line and the seller's tell printed as before.
+pub(crate) fn charter(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
+    let args = parse_offer(text)?;
+    let outcome = run_charter(ctx, &args)?;
+    super::print(ctx, outcome);
     ctx.out.info(
         ctx.actor,
         fill(
-            words::RESELL_TELL,
-            &[("licence", &licence), ("amount", &amount(args.price_minor))],
+            words::CHARTER_TELL,
+            &[
+                ("filed", &args.subject.to_string()),
+                ("amount", &amount(args.price_minor)),
+            ],
         ),
     );
     Ok(())
 }
 
-/// `+minds/charter <filed>=<player> price=<credits>`.
-pub(crate) fn charter(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    let args = trade_arguments(text).map_err(TradeRefusal::error)?;
+/// 17g C3a: `+minds/charter` after its parse, for the line and the typed
+/// `Charter` alike (`run_resell`'s order, with the actor's own filed mind,
+/// `NO_FILED`, and `CHARTERING`).
+pub(super) fn run_charter(ctx: &mut Ctx<'_>, args: &TradeArguments) -> Result<Outcome, Refusal> {
     super::service(ctx)?;
     let named = player(ctx, &args.player)?;
     let owned = super::author::own_filed(ctx, args.subject)?;
-    let (buyer, name) = other_player(ctx.actor, named, &args.player)?;
+    let (buyer, name) =
+        other_player(ctx.actor, named, &args.player).map_err(|_| no_player(&args.player))?;
     let action = ctx
         .reg
         .definitions()
@@ -266,15 +322,7 @@ pub(crate) fn charter(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
         &[("filed", &filed), ("player", &name), ("price", &shown)],
     );
     let parameters = charter_offer_parameters(owned.charter(), buyer, account, args.price_minor);
-    super::submit(ctx, "charter", &filed, action, parameters, &request)?;
-    ctx.out.info(
-        ctx.actor,
-        fill(
-            words::CHARTER_TELL,
-            &[("filed", &filed), ("amount", &amount(args.price_minor))],
-        ),
-    );
-    Ok(())
+    super::stage(ctx, "charter", &filed, action, parameters, request)
 }
 
 /// 17g C2g: `+minds/resell/accept <licence> [price=<credits>]` and
@@ -285,25 +333,72 @@ pub(crate) fn charter(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
 /// Accept or Fund (the step its view carries) or the pending charter's Fund,
 /// paid from the actor's one personal account (`ACCOUNT`). The key's subject
 /// is the offer's token.
+///
+/// 17g C3a: parsed, then `run_accept`. Its offer-listing refusals
+/// (`AcceptPlan::Refuse`: `NO_OFFER`, `NO_OFFER_AT` and their charter twins)
+/// carry every line in the refusal's text, one per `\n`, and print here as
+/// before: one line is the returned error; `NO_OFFER_AT` and the live
+/// offers are an error line then info lines (`market_commands::refusal`).
 pub(crate) fn accept(ctx: &mut Ctx<'_>, text: &str, named: Named) -> Result<(), CmdError> {
-    let args = accept_arguments(text).map_err(TradeRefusal::error)?;
+    let args = parse_accept(text)?;
+    match run_accept(ctx, &args, named) {
+        Ok(outcome) => {
+            super::print(ctx, outcome);
+            Ok(())
+        }
+        Err(refused) if offer_listing(refused.word) => {
+            let lines = refused.text.split('\n').map(str::to_owned).collect();
+            super::say(ctx, super::refusal(lines)?)
+        }
+        Err(refused) => Err(refused.into()),
+    }
+}
+
+/// 17g C3a: an accept plan's refusal (`AcceptPlan::Refuse(lines)`) with its
+/// word: one line is `NO_OFFER` / `NO_CHARTER_OFFER` (no live offer names
+/// the actor); more are `NO_OFFER_AT` / `NO_CHARTER_OFFER_AT` followed by
+/// the live offers' lines (`accept_plan`'s only two refusals). The text
+/// holds every line, joined with `\n`, for the line command to print whole
+/// (`accept`); the typed reply keeps the first (`typed::response`).
+pub(super) fn plan_refusal(named: Named, lines: Vec<String>) -> Refusal {
+    let word = match (named, lines.len()) {
+        (Named::Resale, 1) => "NO_OFFER",
+        (Named::Resale, _) => "NO_OFFER_AT",
+        (Named::Charter, 1) => "NO_CHARTER_OFFER",
+        (Named::Charter, _) => "NO_CHARTER_OFFER_AT",
+    };
+    Refusal::of(word, lines.join("\n"))
+}
+
+/// 17g C3a: whether a refusal's word is one of an accept plan's
+/// (`AcceptPlan::Refuse`), whose text holds its lines joined with `\n`.
+fn offer_listing(word: &str) -> bool {
+    matches!(
+        word,
+        "NO_OFFER" | "NO_OFFER_AT" | "NO_CHARTER_OFFER" | "NO_CHARTER_OFFER_AT"
+    )
+}
+
+/// 17g C3a: an accept after its parse, for the line and the typed
+/// `ResellAccept` and `CharterAccept` alike: the slot (`NOT_OPEN`), the live
+/// offers naming the actor, then the plan: `Outcome::Shown` with the offer
+/// lines (no price), the refusal (`NO_OFFER` alone, or `NO_OFFER_AT` with
+/// the offer lines after it in the text, one per `\n`), or the confirmed
+/// offer staged with `ACCEPTING` / `FUNDING_CHARTER`.
+pub(super) fn run_accept(
+    ctx: &mut Ctx<'_>,
+    args: &AcceptArguments,
+    named: Named,
+) -> Result<Outcome, Refusal> {
     super::service(ctx)?;
     let (offers, step) = match named {
         Named::Resale => resale_offers(ctx, args.subject)?,
         Named::Charter => (charter_offers(ctx, args.subject)?, None),
     };
     let now = ctx.w.now();
-    let actor = ctx.actor;
     match accept_plan(named, args.subject, &offers, args.price_minor, now) {
-        AcceptPlan::Show(lines) => {
-            for line in lines {
-                ctx.out.info(actor, line);
-            }
-            Ok(())
-        }
-        // One line is the returned error; `NO_OFFER_AT` and the live offers
-        // are an error line then info lines (`market_commands::refusal`).
-        AcceptPlan::Refuse(lines) => super::say(ctx, super::refusal(lines)?),
+        AcceptPlan::Show(lines) => Ok(Outcome::Shown(lines)),
+        AcceptPlan::Refuse(lines) => Err(plan_refusal(named, lines)),
         AcceptPlan::Submit(offer, request) => {
             let definitions = ctx.reg.definitions().ok_or_else(not_open)?;
             let action = match named {
@@ -320,7 +415,7 @@ pub(crate) fn accept(ctx: &mut Ctx<'_>, text: &str, named: Named) -> Result<(), 
                 Named::Charter => charter_fund_parameters(offer.offer, payer),
             };
             let (verb, subject) = accept_key(named, offer.offer);
-            super::submit(ctx, verb, &subject, action, parameters, &request)
+            super::stage(ctx, verb, &subject, action, parameters, request)
         }
     }
 }
@@ -343,7 +438,7 @@ pub(crate) fn accept_key(named: Named, offer: CommitToken) -> (&'static str, Str
 fn resale_offers(
     ctx: &Ctx<'_>,
     subject: u64,
-) -> Result<(Vec<NamedOffer>, Option<ResaleKind>), CmdError> {
+) -> Result<(Vec<NamedOffer>, Option<ResaleKind>), Refusal> {
     let Ok(licence) = LicenceId::new(subject) else {
         return Ok((Vec::new(), None));
     };
@@ -369,7 +464,7 @@ fn resale_offers(
 /// of filed mind `subject`, through Roll's own-only `CharterOffers`. A filed
 /// number that does not exist (Roll's `Refused`) and a charter nobody offered
 /// the actor are both the empty list; a read that cannot run is `NOT_OPEN`.
-fn charter_offers(ctx: &Ctx<'_>, subject: u64) -> Result<Vec<NamedOffer>, CmdError> {
+fn charter_offers(ctx: &Ctx<'_>, subject: u64) -> Result<Vec<NamedOffer>, Refusal> {
     let Ok(filed) = FiledRevisionId::new(subject) else {
         return Ok(Vec::new());
     };

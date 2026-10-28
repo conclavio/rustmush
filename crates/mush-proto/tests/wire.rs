@@ -915,3 +915,60 @@ fn original_mind_market_read_has_closed_bounded_public_selectors() {
         );
     }
 }
+
+/// 17g cut C3a: the player market's panel reads are closed and bounded:
+/// `{"t":"mind_market","d":{"kind":"listings","after":<code>|null}}` and
+/// `{"kind":"holdings","section":"owner"|"paid","after":<u64>|null}`; an
+/// unknown key, an unknown kind or section, a malformed code (7 or 9
+/// characters, an upper-case letter, a `g`) and a negative or fractional
+/// cursor are refused at decode.
+#[test]
+fn mind_market_reads_are_closed_and_bounded() {
+    use mush_proto::{ListingCode, MindHoldingsSection, MindMarketRequest};
+    let listings = ClientCommand::Req {
+        id: 9,
+        q: Query::MindMarket(MindMarketRequest::Listings {
+            after: Some(ListingCode::try_from("0a1b2c3d").expect("a code")),
+        }),
+    };
+    roundtrip(&listings);
+    assert_eq!(
+        serde_json::to_value(&listings).expect("wire"),
+        json!({"t":"req","d":{"id":9,"q":{"t":"mind_market","d":{"kind":"listings","after":"0a1b2c3d"}}}})
+    );
+    let holdings = Query::MindMarket(MindMarketRequest::Holdings {
+        section: MindHoldingsSection::Paid,
+        after: Some(12),
+    });
+    roundtrip(&holdings);
+    assert_eq!(
+        serde_json::to_value(&holdings).expect("wire"),
+        json!({"t":"mind_market","d":{"kind":"holdings","section":"paid","after":12}})
+    );
+    roundtrip(&Query::MindMarket(MindMarketRequest::Listings {
+        after: None,
+    }));
+    roundtrip(&Query::MindMarket(MindMarketRequest::Holdings {
+        section: MindHoldingsSection::Owner,
+        after: None,
+    }));
+    for refused in [
+        json!({"t":"mind_market","d":{"kind":"listings","after":null,"actor":7}}),
+        json!({"t":"mind_market","d":{"kind":"listings","extra":1}}),
+        json!({"t":"mind_market","d":{"kind":"own"}}),
+        json!({"t":"mind_market","d":{"kind":"listings","after":"0a1b2c3"}}),
+        json!({"t":"mind_market","d":{"kind":"listings","after":"0a1b2c3d4"}}),
+        json!({"t":"mind_market","d":{"kind":"listings","after":"0A1B2C3D"}}),
+        json!({"t":"mind_market","d":{"kind":"listings","after":"gggggggg"}}),
+        json!({"t":"mind_market","d":{"kind":"listings","after":7}}),
+        json!({"t":"mind_market","d":{"kind":"holdings","section":"all","after":null}}),
+        json!({"t":"mind_market","d":{"kind":"holdings","section":"owner","after":-1}}),
+        json!({"t":"mind_market","d":{"kind":"holdings","section":"owner","after":1.5}}),
+        json!({"t":"mind_market","d":{"kind":"holdings","section":"owner","account":1}}),
+    ] {
+        assert!(
+            serde_json::from_value::<Query>(refused.clone()).is_err(),
+            "{refused}"
+        );
+    }
+}

@@ -7,6 +7,8 @@
 //!
 //! The usage lines are the `@mind` `HELP` lines (`workshop::commands`).
 
+use mush_core::CmdError;
+
 pub(crate) const NOT_OPEN: &str = "The mind market is not open here.";
 pub(crate) const BUSY: &str =
     "Your last market request is still being recorded; try again in a moment.";
@@ -133,6 +135,110 @@ pub(crate) mod named {
     pub(crate) const ACCEPTING: &str = "Accepting the offer for licence {licence} at {price}.";
     pub(crate) const FUNDING_CHARTER: &str = "Paying {price} for filed mind {filed} into escrow; the transfer settles once no sortie under it is out.";
 }
+
+// 17g C3a (the C3 plan §2.1, departure 7; provisional, §7): the typed
+// renewal steps' one reply. The line command never prints it.
+
+/// The typed `Renew`, `RenewPay` and `RenewDecline` answer (`MindResponse::
+/// Staged`) once `+minds/renew`'s synchronous checks pass and the step is
+/// handed to the renewal service's `front` continuation (`renew::run_renew`).
+/// Typed-only: `+minds/renew` on the line stays silent, as 17g C2h built it,
+/// and the service's own words follow on the actor's ordinary output.
+pub(crate) const RENEW_HANDED: &str = "Handing licence {licence} to the renewal service.";
+
+/// 17g C3a (the C3 plan §2.1, "the `parse → run` split with typed
+/// refusals"): a refusal with the word it came from. The line prints `text`
+/// (`From<Refusal> for CmdError`, so its bytes are C2's); the typed surfaces
+/// answer `MindResponse::Error { code: the word in lower case, message: text
+/// }` (`typed::response`). `word` is the constant's own name (`NOT_OPEN`,
+/// `NO_OFFER_AT`, ...), which the `word!` macro takes from the constant
+/// itself; a refusal that is not a word (the `+minds` help, `@mind/publish`'s
+/// usage line) is `REFUSED`.
+///
+/// An accept's offer listing after `NO_OFFER_AT` / `NO_CHARTER_OFFER_AT`
+/// (`trade::AcceptPlan::Refuse`) is carried in `text` as its lines joined
+/// with `\n`: the line command prints them as the refusal then info lines
+/// (`trade::accept`), and the typed reply keeps the first line alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Refusal {
+    pub(super) word: &'static str,
+    pub(super) text: String,
+}
+impl Refusal {
+    pub(super) fn of(word: &'static str, text: impl Into<String>) -> Self {
+        Self {
+            word,
+            text: text.into(),
+        }
+    }
+    /// `NOT_OPEN`, the refusal of every form without its composed read.
+    pub(super) fn not_open() -> Self {
+        Self::of("NOT_OPEN", NOT_OPEN)
+    }
+    /// A refusal that is not one of the words (`REFUSED`).
+    pub(super) fn usage(text: impl Into<String>) -> Self {
+        Self::of(REFUSED, text)
+    }
+}
+/// The text, as the line prints it.
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.text)
+    }
+}
+impl std::error::Error for Refusal {}
+impl From<Refusal> for CmdError {
+    fn from(refusal: Refusal) -> Self {
+        CmdError::msg(refusal.text)
+    }
+}
+
+/// The word of a refusal that is not one of the constants here.
+pub(super) const REFUSED: &str = "REFUSED";
+
+/// 17g C3a: what a staged or answered command tells the actor. The line
+/// prints it (`market_commands::print`); the typed surfaces answer
+/// `MindResponse::Staged { line }` or `Shown { lines }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Outcome {
+    /// The request line of a staged submission (or of a hand-off, the typed
+    /// renewal's `RENEW_HANDED`); the outcome follows on the actor's output.
+    Staged(String),
+    /// Lines answered with nothing submitted (an accept without a price).
+    Shown(Vec<String>),
+}
+
+/// 17g C3a: `Refusal::of` named by the constant itself, so a refusal's word
+/// can never drift from its text: `word!(NO_LICENCE, &[("licence", ..)])`,
+/// `word!(BUSY)`, and `word!(named::NO_OFFER, ..)` for the named buyer's
+/// words.
+macro_rules! word {
+    (named::$word:ident, $values:expr) => {
+        $crate::minds::market_commands::words::Refusal::of(
+            stringify!($word),
+            $crate::minds::market_commands::words::fill(
+                $crate::minds::market_commands::words::named::$word,
+                $values,
+            ),
+        )
+    };
+    ($word:ident) => {
+        $crate::minds::market_commands::words::Refusal::of(
+            stringify!($word),
+            $crate::minds::market_commands::words::$word,
+        )
+    };
+    ($word:ident, $values:expr) => {
+        $crate::minds::market_commands::words::Refusal::of(
+            stringify!($word),
+            $crate::minds::market_commands::words::fill(
+                $crate::minds::market_commands::words::$word,
+                $values,
+            ),
+        )
+    };
+}
+pub(super) use word;
 
 /// `template` with each `{key}` replaced by its value, in one pass over the
 /// template, so text the player typed is never itself substituted. 17g C2c:

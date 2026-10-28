@@ -11,8 +11,9 @@ use std::path::Path;
 
 use mush_proto::{
     AtlasMapDelta, AtlasMapFrame, ClientCommand, Color, Envelope, InvokeRequest, InvokeResult,
-    LegalActionRequest, LegalActionResponse, LegalActionScalar, MindDiagnostic, MindRequest,
-    MindResponse, OutputEvent, RoomView, Span, VitalValue, VitalsFrame, WhoEntry,
+    LegalActionRequest, LegalActionResponse, LegalActionScalar, ListingCode, MarketAction,
+    MindDiagnostic, MindMarketRequest, MindRequest, MindResponse, OutputEvent, Query, RoomView,
+    Span, VitalValue, VitalsFrame, WhoEntry,
 };
 use ts_rs::{Config, TS};
 
@@ -214,10 +215,60 @@ fn generated_shapes_match_wire_format() {
             "MindRequest missing {needle}: {mind_request}"
         );
     }
+    // 17g cut C3a: the typed market action rides `MindRequest`, its listing
+    // code is a plain string, and the panel read rides `Query`.
+    for needle in [r#""op": "market""#, "action: MarketAction"] {
+        assert!(
+            mind_request.contains(needle),
+            "MindRequest missing {needle}: {mind_request}"
+        );
+    }
+    let market_action = MarketAction::export_to_string(&cfg).expect("MarketAction");
+    for needle in [
+        r#""act": "quote""#,
+        "code: ListingCode",
+        r#""act": "resell_accept""#,
+        "price: string | null",
+        "form: MarketListingForm",
+        "royalty: number | null",
+        "transfer: boolean | null",
+    ] {
+        assert!(
+            market_action.contains(needle),
+            "MarketAction missing {needle}: {market_action}"
+        );
+    }
+    let code = ListingCode::export_to_string(&cfg).expect("ListingCode");
+    assert!(
+        code.contains("export type ListingCode = string;"),
+        "ListingCode is a plain string: {code}"
+    );
+    let query = Query::export_to_string(&cfg).expect("Query");
+    assert!(
+        query.contains(r#""t": "mind_market", "d": MindMarketRequest"#),
+        "Query missing mind_market: {query}"
+    );
+    let market_request = MindMarketRequest::export_to_string(&cfg).expect("MindMarketRequest");
+    for needle in [
+        r#""kind": "listings""#,
+        "after: string | null",
+        r#""kind": "holdings""#,
+        "section: MindHoldingsSection",
+        "after: number | null",
+    ] {
+        assert!(
+            market_request.contains(needle),
+            "MindMarketRequest missing {needle}: {market_request}"
+        );
+    }
     let mind_response = MindResponse::export_to_string(&cfg).expect("MindResponse");
     for needle in [
         r#""status": "read""#,
         r#""status": "queued""#,
+        r#""status": "staged""#,
+        "line: string",
+        r#""status": "shown""#,
+        "lines: Array<string>",
         "rules_text",
         "rules_source",
         "diagnostics",

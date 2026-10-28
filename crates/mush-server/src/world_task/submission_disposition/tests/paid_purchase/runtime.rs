@@ -27,14 +27,30 @@ pub(super) fn now() -> TestResult<i64> {
 
 /// 17g C2a (C2 plan §4): each recorded line keeps the `SendTarget` it was
 /// sent to, so a test can tell the actor's own lines from a bystander's.
+///
+/// 17g C3a (the C3 plan §4.1): the structured events too, beside the lines,
+/// so a typed test reads its `OutputEvent::InvokeResult` and query `Reply`
+/// (`Running::invoke`, `query`) and what reached each connection
+/// (`event_seen`). They are drained on their own: a test that never asks
+/// for them keeps only the newest `MAX_EVENTS`, and they never set the
+/// lines' overflow.
 #[derive(Default)]
 struct Recorded {
     lines: Vec<(SendTarget, String)>,
+    events: std::collections::VecDeque<(SendTarget, Arc<OutputEvent>)>,
     overflow: bool,
 }
+/// The structured events the recorder keeps between drains (the oldest go
+/// first).
+const MAX_EVENTS: usize = 4096;
 #[derive(Default)]
 struct Recorder(Mutex<Recorded>);
 impl Recorder {
+    /// 17g C3a: every structured event since the last drain, with its target.
+    fn drain_events(&self) -> TestResult<Vec<(SendTarget, Arc<OutputEvent>)>> {
+        let mut state = self.0.lock().map_err(|_| "gateway recorder poisoned")?;
+        Ok(state.events.drain(..).collect())
+    }
     fn drain_targeted(&self) -> TestResult<Vec<(SendTarget, String)>> {
         let mut state = self.0.lock().map_err(|_| "gateway recorder poisoned")?;
         if state.overflow {
@@ -90,6 +106,10 @@ impl GatewaySink for Recorder {
         if let Ok(mut state) = self.0.lock() {
             for (target, event) in sends {
                 let text = mush_testkit::text_of(&event);
+                if state.events.len() >= MAX_EVENTS {
+                    state.events.pop_front();
+                }
+                state.events.push_back((target.clone(), event));
                 if text.len() > 16 * 1024 || state.lines.len() >= 4096 {
                     state.overflow = true;
                 } else {
@@ -122,6 +142,11 @@ pub(in crate::world_task::submission_disposition::tests) struct Running {
     recorder: Arc<Recorder>,
     routes: OfferRouteTable,
     owner_reads: Option<(usize, usize)>,
+    /// 17g C3a: the next typed request's correlation id (`invoke`, `query`).
+    next_id: std::sync::atomic::AtomicU64,
+    /// 17g C3a: the booted registry's panel feeds, in registration order (what
+    /// the gateway's manifest lists).
+    panels: Vec<String>,
     pub exchange: ObjId,
 }
 impl Running {
@@ -146,6 +171,12 @@ impl Running {
         &self,
     ) -> Option<(usize, usize)> {
         self.owner_reads
+    }
+
+    /// 17g C3a: the booted registry's panel feed names, in registration
+    /// order: the feeds the client manifest lists.
+    pub(in crate::world_task::submission_disposition::tests) fn panel_feeds(&self) -> &[String] {
+        &self.panels
     }
 
     pub fn drain_output(&self) -> TestResult {
@@ -250,6 +281,12 @@ impl Running {
             .ok_or("actual authoritative providers")?
             .offer_route_table();
         let owner_reads = engine.registry.owner_read_counts();
+        let panels = engine
+            .registry
+            .panel_feeds()
+            .iter()
+            .map(|(feed, _)| feed.to_string())
+            .collect();
         let recorder = Arc::new(Recorder::default());
         let sink = recorder.clone();
         let deps = ServerDeps {
@@ -274,6 +311,8 @@ impl Running {
             recorder,
             routes,
             owner_reads,
+            next_id: std::sync::atomic::AtomicU64::new(1 << 20),
+            panels,
             exchange,
         })
     }
@@ -374,6 +413,136 @@ impl Running {
             return Err("server command admission gone".into());
         }
         self.barrier_retried().await
+    }
+
+    /// 17g C3a (the C3 plan §4.1): one typed invoke from `actor`, as the
+    /// gateway forwards it: `Inbound::Invoke` on the actor's own connection
+    /// (numbered as its object, as `connect` attached it) with a fresh
+    /// correlation id, then the `OutputEvent::InvokeResult` carrying that id
+    /// on that connection, within `STEP`. Lines and events from before are
+    /// dropped first (as `command` drops lines); the lines and events the
+    /// invoke caused stay for `take_seen` and `event_seen`, the invoke result
+    /// among them.
+    pub async fn invoke(
+        &self,
+        actor: ObjId,
+        request: mush_proto::InvokeRequest,
+    ) -> TestResult<mush_proto::InvokeResult> {
+        self.recorder.drain()?;
+        self.recorder.drain_events()?;
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !self
+            .handle()?
+            .inbound(Inbound::Invoke {
+                conn: actor.0.into(),
+                actor,
+                id,
+                request,
+            })
+            .await
+        {
+            return Err("server invoke admission gone".into());
+        }
+        self.barrier_retried().await?;
+        let found = self
+            .await_event(actor, |event| match event {
+                OutputEvent::InvokeResult { id: got, result } if *got == id => Some(result.clone()),
+                _ => None,
+            })
+            .await?;
+        found.ok_or_else(|| format!("no invoke result {id} for #{}", actor.0).into())
+    }
+
+    /// 17g C3a: one panel query from `actor`, as the gateway forwards it:
+    /// `Inbound::Query` named `name` with `params` on the actor's own
+    /// connection and a fresh id, then the event inside the `Reply` carrying
+    /// that id on that connection (a keyframe, or the handler's `Sys`
+    /// refusal), within `STEP`. Like `invoke`, it drops what came before and
+    /// keeps what it caused.
+    pub async fn query(&self, actor: ObjId, name: &str, params: Value) -> TestResult<OutputEvent> {
+        self.recorder.drain()?;
+        self.recorder.drain_events()?;
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !self
+            .handle()?
+            .inbound(Inbound::Query {
+                conn: actor.0.into(),
+                actor,
+                id,
+                name: name.into(),
+                args: params,
+            })
+            .await
+        {
+            return Err("server query admission gone".into());
+        }
+        self.barrier_retried().await?;
+        let found = self
+            .await_event(actor, |event| match event {
+                OutputEvent::Reply { id: got, event } if *got == id => Some((**event).clone()),
+                _ => None,
+            })
+            .await?;
+        found.ok_or_else(|| format!("no reply {id} for #{}", actor.0).into())
+    }
+
+    /// The first recorded event on `actor`'s own connection that `pick`
+    /// answers, within `STEP`; every event read is kept for `event_seen`.
+    async fn await_event<T>(
+        &self,
+        actor: ObjId,
+        pick: impl Fn(&OutputEvent) -> Option<T>,
+    ) -> TestResult<Option<T>> {
+        let own = u64::from(actor.0);
+        let end = Instant::now() + STEP;
+        let mut kept = Vec::new();
+        let found = loop {
+            let events = self.recorder.drain_events()?;
+            let hit = events.iter().find_map(|(target, event)| {
+                matches!(target, SendTarget::Conn(n) if *n == own)
+                    .then(|| pick(event))
+                    .flatten()
+            });
+            kept.extend(events);
+            if hit.is_some() || Instant::now() >= end {
+                break hit;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let mut state = self
+            .recorder
+            .0
+            .lock()
+            .map_err(|_| "gateway recorder poisoned")?;
+        for event in kept.into_iter().rev() {
+            state.events.push_front(event);
+        }
+        Ok(found)
+    }
+
+    /// 17g C3a (the C3 plan §4.1): every structured event since the last
+    /// drain, split for `actor` as `take_seen` splits lines: `own` holds the
+    /// JSON of each event sent to the actor's connection or character,
+    /// `others` (with `to`) the JSON of every other event, so a test asks
+    /// what reached one observer (`Seen::reaching`) and runs
+    /// `assert_private` over the events' JSON.
+    pub fn event_seen(&self, actor: ObjId) -> TestResult<Seen> {
+        let own = |target: &SendTarget| matches!(target, SendTarget::Conn(id) | SendTarget::Char(id) if *id == u64::from(actor.0));
+        let mut seen = Seen::default();
+        for (target, event) in self.recorder.drain_events()? {
+            let json = serde_json::to_string(&*event)?;
+            if own(&target) {
+                seen.own.push(json);
+            } else {
+                seen.others.push(json);
+                seen.to.push(target);
+            }
+        }
+        Ok(seen)
     }
 
     /// The actor's projected legal actions. 17g C2a (C1a's residual, C2 plan

@@ -60,7 +60,8 @@ mod text;
 
 pub use caps::{ClientCaps, ClientKind, ColorDepth};
 pub use client::{
-    ClientCommand, MarketOriginalMindsKind, MarketOriginalMindsRequest, PictureKind, Query,
+    ClientCommand, MarketOriginalMindsKind, MarketOriginalMindsRequest, MindHoldingsSection,
+    MindMarketRequest, PictureKind, Query,
 };
 pub use envelope::Envelope;
 pub use event::{
@@ -73,8 +74,10 @@ pub use event::{
     Vital, VitalRole, VitalState, VitalValue, VitalsFrame, VitalsFrameError, WhoEntry,
 };
 pub use invoke::{
-    InvokeRequest, InvokeResult, MAX_INVOKE_BYTES, MAX_INVOKE_DEPTH, MAX_MIND_ENVELOPE_BYTES,
-    MAX_MIND_SOURCE_BYTES, MindDiagnostic, MindDraft, MindEdit, MindEditBase, MindLifecycle,
+    InvokeRequest, InvokeResult, LISTING_CODE_CHARACTERS, ListingCode, ListingCodeError,
+    MAX_INVOKE_BYTES, MAX_INVOKE_DEPTH, MAX_MARKET_PLAYER_CHARS, MAX_MARKET_PRICE_BYTES,
+    MAX_MARKET_ROYALTY_PERMILLE, MAX_MIND_ENVELOPE_BYTES, MAX_MIND_SOURCE_BYTES, MarketAction,
+    MarketListingForm, MindDiagnostic, MindDraft, MindEdit, MindEditBase, MindLifecycle,
     MindPictureReport, MindRequest, MindResponse, validate_invoke_json,
 };
 pub use legal_action::{

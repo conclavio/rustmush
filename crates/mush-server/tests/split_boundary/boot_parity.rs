@@ -332,6 +332,10 @@ fn expected_panels() -> Vec<&'static str> {
     panels.push("arena.mind");
     panels.push("mind.bench");
     panels.push("mind.bulk");
+    // 17g C3a: the player market's two pulled panels, registered with `+minds` at
+    // the end of `arena_bridge::register`, after the proving feed.
+    panels.push("mind.market");
+    panels.push("mind.holdings");
     panels.push("who");
     panels.push("legal.actions");
     panels

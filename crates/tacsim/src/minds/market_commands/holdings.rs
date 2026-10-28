@@ -47,15 +47,15 @@ use mush_roll::commerce::holding_reader::{
 use mush_roll::commerce::paid::PaidForm;
 
 use super::market::{HOLDING_NAME, handles};
-use super::words::{self, cut, fill};
+use super::words::{self, Refusal, cut, fill};
 
 /// Rows one section shows at most.
 const SECTION_ROWS: usize = 20;
 /// Reads one section makes at most (Roll answers up to three rows a read).
 const MAX_READS: usize = 12;
 
-fn not_open() -> CmdError {
-    CmdError::msg(words::NOT_OPEN)
+fn not_open() -> Refusal {
+    Refusal::not_open()
 }
 
 /// Which part `+minds/holdings`' argument asks for.
@@ -175,11 +175,12 @@ pub(crate) fn all_lines(
 /// One Roll command read of the folded original-holdings read, or
 /// `NOT_OPEN` when it cannot run or answers another kind.
 fn command(
-    ctx: &Ctx<'_>,
+    reads: &impl super::Reads,
     roll: &OwnerReadHandle<OriginalOwnerReader>,
     request: RollCommandReadRequest,
-) -> Result<RollCommandReadResult, CmdError> {
-    ctx.read_owner(roll, OriginalReadRequest::command(request))
+) -> Result<RollCommandReadResult, Refusal> {
+    reads
+        .owner_read(roll, OriginalReadRequest::command(request))
         .ok()
         .and_then(OriginalReadResult::into_command)
         .ok_or_else(not_open)
@@ -189,16 +190,16 @@ fn command(
 /// `HOLD_MORE` when the section goes on: the last shown charter's asset id
 /// (a charter is its own E4 asset), or Roll's own cursor when the reads ran
 /// out first (then the rows may be empty and the cursor still `Some`).
-fn owner_section(
-    ctx: &Ctx<'_>,
+pub(super) fn owner_section(
+    reads: &impl super::Reads,
     roll: &OwnerReadHandle<OriginalOwnerReader>,
     after: Option<u64>,
-) -> Result<(Vec<OwnerHoldingView>, Option<u64>), CmdError> {
+) -> Result<(Vec<OwnerHoldingView>, Option<u64>), Refusal> {
     let mut rows: Vec<OwnerHoldingView> = Vec::new();
     let mut cursor = after;
     for _ in 0..MAX_READS {
         let request = RollCommandReadRequest::own_holdings(HoldingSection::Owner, cursor);
-        let page = command(ctx, roll, request)?
+        let page = command(reads, roll, request)?
             .into_owner_holdings()
             .ok_or_else(not_open)?;
         for row in page.rows() {
@@ -219,16 +220,16 @@ fn owner_section(
 /// 17g C2g: up to `SECTION_ROWS` paid rows after the licence `after`, and
 /// the cursor to show in `HOLD_MORE paid` when the section goes on: the last
 /// shown licence, or Roll's own cursor when the reads ran out first.
-fn paid_section(
-    ctx: &Ctx<'_>,
+pub(super) fn paid_section(
+    reads: &impl super::Reads,
     roll: &OwnerReadHandle<OriginalOwnerReader>,
     after: Option<u64>,
-) -> Result<(Vec<PaidHoldingView>, Option<u64>), CmdError> {
+) -> Result<(Vec<PaidHoldingView>, Option<u64>), Refusal> {
     let mut rows: Vec<PaidHoldingView> = Vec::new();
     let mut cursor = after;
     for _ in 0..MAX_READS {
         let request = RollCommandReadRequest::own_holdings(HoldingSection::Paid, cursor);
-        let page = command(ctx, roll, request)?
+        let page = command(reads, roll, request)?
             .into_paid_holdings()
             .ok_or_else(not_open)?;
         for row in page.rows() {
@@ -248,12 +249,12 @@ fn paid_section(
 
 /// 17g C2g: the listing codes of the actor's open (funded) purchases, from
 /// the market read's own-only `OwnOpen`.
-fn waiting(
-    ctx: &Ctx<'_>,
+pub(super) fn waiting(
+    reads: &impl super::Reads,
     market: &OwnerReadHandle<MarketCommandReader>,
-) -> Result<Vec<String>, CmdError> {
-    let open = ctx
-        .read_owner(market, MarketCommandRequest::own_open())
+) -> Result<Vec<String>, Refusal> {
+    let open = reads
+        .owner_read(market, MarketCommandRequest::own_open())
         .ok()
         .and_then(mush_market::mind_commands::MarketCommandResult::into_own_open)
         .ok_or_else(not_open)?;

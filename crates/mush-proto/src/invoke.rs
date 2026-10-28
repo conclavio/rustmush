@@ -92,6 +92,11 @@ impl InvokeRequest {
         {
             return Err("invalid owned removal name");
         }
+        // 17g cut C3: a typed market action's bounds (`MarketAction::validate`);
+        // the code is already a `ListingCode`.
+        if let MindRequest::Market { action } = request {
+            action.validate()?;
+        }
         if let MindRequest::Replace { draft, .. } = request {
             if draft.source.len() > MAX_MIND_SOURCE_BYTES || draft.source.contains('\0') {
                 return Err("source exceeds 32 KiB or contains NUL");
@@ -345,6 +350,242 @@ pub enum MindRequest {
         /// Opaque queued job number.
         job: u64,
     },
+    /// 17g cut C3: a commerce action, typed. 17g cut C2's player market,
+    /// holdings and trade commands one-for-one; the server selects the
+    /// actor's own state from these references and builds every parameter.
+    /// Nothing here names an account, a recipient's account, a token or a
+    /// price the server derives.
+    Market {
+        /// The one action, as the line command's arguments name it.
+        action: MarketAction,
+    },
+}
+
+/// 17g cut C3: the thirteen player commands of 17g cut C2, typed. Each field
+/// is the argument noun the line command takes (17g §1 ruling 4): a listing
+/// code, a filed or licence number, a player name, a price in the line's
+/// `price=` spelling, a form, a royalty and the author's transfer mark.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "act", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MarketAction {
+    /// `+minds/buy <code>`: ask for a quote on the current listing with this code.
+    Quote {
+        /// The listing's code, as `+minds` prints it.
+        code: ListingCode,
+    },
+    /// `+minds/buy/pay <code>`: pay the actor's newest live quote on this listing into escrow.
+    Pay {
+        /// The listing's code.
+        code: ListingCode,
+    },
+    /// `+minds/buy/complete <code>`: take the licence from the actor's funded purchase.
+    Complete {
+        /// The listing's code.
+        code: ListingCode,
+    },
+    /// `+minds/buy/refund <code>`: ask for the actor's funded purchase back.
+    Refund {
+        /// The listing's code.
+        code: ListingCode,
+    },
+    /// `+minds/renew <licence>`: hand the renewal's status, or a request for an offer, to the service.
+    Renew {
+        /// The licence number, as `+minds/holdings` prints it.
+        licence: u64,
+    },
+    /// `+minds/renew/pay <licence>`: hand the payment of the drafted offer at its frozen price to the service.
+    RenewPay {
+        /// The licence number.
+        licence: u64,
+    },
+    /// `+minds/renew/decline <licence>`: hand the decline of the drafted offer to the service.
+    RenewDecline {
+        /// The licence number.
+        licence: u64,
+    },
+    /// `+minds/resell <licence>=<player> price=<credits>`: offer a held licence to a player.
+    Resell {
+        /// The licence number.
+        licence: u64,
+        /// The buyer as a player would type the name; the server resolves it.
+        player: String,
+        /// The price in credits, as `price=` spells it (`12.50`, `0.21cr`).
+        price: String,
+    },
+    /// `+minds/resell/accept <licence> [price=<credits>]`: list the offers naming the actor
+    /// (no price), or accept the one at exactly this price.
+    ResellAccept {
+        /// The licence number the seller named.
+        licence: u64,
+        /// The offer's price as `price=` spells it; absent lists the offers.
+        price: Option<String>,
+    },
+    /// `+minds/charter <filed>=<player> price=<credits>`: offer a filed mind's charter to a player.
+    Charter {
+        /// The filed number, as `+minds/holdings` prints it.
+        filed: u64,
+        /// The buyer as a player would type the name; the server resolves it.
+        player: String,
+        /// The price in credits, as `price=` spells it.
+        price: String,
+    },
+    /// `+minds/charter/accept <filed> [price=<credits>]`: as `ResellAccept`, for a charter.
+    CharterAccept {
+        /// The filed number the seller named.
+        filed: u64,
+        /// The offer's price as `price=` spells it; absent lists the offers.
+        price: Option<String>,
+    },
+    /// `@mind/publish <filed> form=<form> [royalty=<per mille>] [transfer=<yes|no>]`.
+    Publish {
+        /// The filed number.
+        filed: u64,
+        /// The listing's form.
+        form: MarketListingForm,
+        /// Parent royalty in per mille, 0 to 300; absent is 0 (and a sealed listing takes 0).
+        royalty: Option<u16>,
+        /// The author's transfer mark (D-UM-40); absent is transferable.
+        transfer: Option<bool>,
+    },
+    /// `@mind/withdraw <filed>`: stop new sales of a filed revision.
+    Withdraw {
+        /// The filed number.
+        filed: u64,
+    },
+}
+
+/// 17g cut C3: `@mind/publish`'s three `form=` words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MarketListingForm {
+    /// `form=sealed`.
+    Sealed,
+    /// `form=open`.
+    Open,
+    /// `form=open-resale`.
+    OpenResale,
+}
+
+/// 17g cut C3: exactly the 8 characters of a listing's publication token
+/// that `+minds` prints (each a digit 0-9 or a letter a-f,
+/// `mush_market::mind_commands::is_code`); anything else is refused at
+/// decode, before any read.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct ListingCode(String);
+
+/// The number of characters of a listing code (`mush_market::mind_commands::
+/// CODE_CHARACTERS`).
+pub const LISTING_CODE_CHARACTERS: usize = 8;
+
+impl ListingCode {
+    /// The code text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for ListingCode {
+    type Error = ListingCodeError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.len() == LISTING_CODE_CHARACTERS
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            Ok(Self(value))
+        } else {
+            Err(ListingCodeError)
+        }
+    }
+}
+impl TryFrom<&str> for ListingCode {
+    type Error = ListingCodeError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_from(value.to_owned())
+    }
+}
+impl From<ListingCode> for String {
+    fn from(code: ListingCode) -> Self {
+        code.0
+    }
+}
+impl std::fmt::Display for ListingCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// A listing code that is not 8 digits and letters a-f.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("a listing code is 8 characters, each a digit or a letter a to f")]
+pub struct ListingCodeError;
+
+/// The longest `player` a typed trade names (characters).
+pub const MAX_MARKET_PLAYER_CHARS: usize = 32;
+/// The longest `price` a typed trade or accept names (bytes).
+pub const MAX_MARKET_PRICE_BYTES: usize = 16;
+/// The largest parent royalty a typed listing names (per mille).
+pub const MAX_MARKET_ROYALTY_PERMILLE: u16 = 300;
+
+impl MarketAction {
+    /// The bounds `InvokeRequest::validate` checks: no state is consulted;
+    /// the grammar and the meaning are the server's (17g cut C2's words).
+    fn validate(&self) -> Result<(), &'static str> {
+        let player = |player: &str| {
+            if player.is_empty()
+                || player.chars().count() > MAX_MARKET_PLAYER_CHARS
+                || player.chars().any(char::is_control)
+            {
+                Err("invalid market player")
+            } else {
+                Ok(())
+            }
+        };
+        let price = |price: &str| {
+            if price.is_empty()
+                || price.len() > MAX_MARKET_PRICE_BYTES
+                || !price
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'c' | b'r'))
+            {
+                Err("invalid market price")
+            } else {
+                Ok(())
+            }
+        };
+        match self {
+            Self::Resell {
+                player: name,
+                price: amount,
+                ..
+            }
+            | Self::Charter {
+                player: name,
+                price: amount,
+                ..
+            } => {
+                player(name)?;
+                price(amount)
+            }
+            Self::ResellAccept {
+                price: Some(amount),
+                ..
+            }
+            | Self::CharterAccept {
+                price: Some(amount),
+                ..
+            } => price(amount),
+            Self::Publish {
+                royalty: Some(royalty),
+                ..
+            } if *royalty > MAX_MARKET_ROYALTY_PERMILLE => Err("invalid market royalty"),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// A bounded diagnostic that never includes source excerpts.
@@ -488,6 +729,19 @@ pub enum MindResponse {
     Cancelled {
         /// Opaque job number.
         job: u64,
+    },
+    /// 17g cut C3: a typed market action was staged (or handed to the
+    /// renewal service); the outcome arrives on the actor's ordinary output.
+    /// This is not a success: the provider may still refuse.
+    Staged {
+        /// The request line the line command prints, byte for byte.
+        line: String,
+    },
+    /// 17g cut C3: the server answered a typed market action with these
+    /// lines and submitted nothing (an accept without a price).
+    Shown {
+        /// The lines the line command prints, in order.
+        lines: Vec<String>,
     },
     /// Refusal; source ownership failures have the same bounded response.
     Error {
@@ -728,6 +982,158 @@ mod tests {
         }
         Ok(())
     }
+    /// 17g cut C3a (the C3 plan §4.3): the typed market grammar is closed and
+    /// bounded. `validate` refuses a `player` that is empty, over 32
+    /// characters or holds a control character, a `price` that is empty,
+    /// over 16 bytes or holds a byte outside the digits, `.`, `c` and `r`,
+    /// and a royalty over 300; a `ListingCode` of anything but 8 digits and
+    /// letters a-f, and an unknown field inside `action`, are refused at
+    /// decode. The wire shape is pinned.
+    #[test]
+    fn market_actions_are_closed_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let code = || ListingCode::try_from("0a1b2c3d").map_err(|e| e.to_string());
+        let market = |action: MarketAction| InvokeRequest::Mind(MindRequest::Market { action });
+        let resell = |player: &str, price: &str| {
+            market(MarketAction::Resell {
+                licence: 7,
+                player: player.into(),
+                price: price.into(),
+            })
+        };
+        let wire = serde_json::to_string(&market(MarketAction::Pay { code: code()? }))?;
+        check_eq!(
+            wire,
+            r#"{"service":"mind","request":{"op":"market","action":{"act":"pay","code":"0a1b2c3d"}}}"#
+        );
+        check_eq!(
+            serde_json::from_str::<InvokeRequest>(&wire)?,
+            market(MarketAction::Pay { code: code()? })
+        );
+        for (player, ok) in [
+            ("", false),
+            (&"p".repeat(32)[..], true),
+            (&"p".repeat(33)[..], false),
+            ("Old\nCy", false),
+            ("Old Cy", true),
+        ] {
+            check_eq!(resell(player, "1").validate().is_ok(), ok, "{player:?}");
+            check_eq!(
+                market(MarketAction::Charter {
+                    filed: 3,
+                    player: player.into(),
+                    price: "1".into(),
+                })
+                .validate()
+                .is_ok(),
+                ok,
+                "charter {player:?}"
+            );
+        }
+        for (price, ok) in [
+            ("", false),
+            ("1", true),
+            ("0.21", true),
+            ("1000000.00cr", true),
+            (&"1".repeat(16)[..], true),
+            (&"1".repeat(17)[..], false),
+            ("1 cr", false),
+            ("-1", false),
+        ] {
+            check_eq!(resell("Cy", price).validate().is_ok(), ok, "{price:?}");
+            check_eq!(
+                market(MarketAction::ResellAccept {
+                    licence: 7,
+                    price: Some(price.into()),
+                })
+                .validate()
+                .is_ok(),
+                ok,
+                "accept {price:?}"
+            );
+        }
+        check!(
+            market(MarketAction::CharterAccept {
+                filed: 3,
+                price: None
+            })
+            .validate()
+            .is_ok()
+        );
+        for (royalty, ok) in [
+            (None, true),
+            (Some(0), true),
+            (Some(300), true),
+            (Some(301), false),
+        ] {
+            check_eq!(
+                market(MarketAction::Publish {
+                    filed: 3,
+                    form: MarketListingForm::OpenResale,
+                    royalty,
+                    transfer: Some(false),
+                })
+                .validate()
+                .is_ok(),
+                ok,
+                "{royalty:?}"
+            );
+        }
+        for (text, ok) in [
+            ("0a1b2c3", false),
+            ("0a1b2c3d", true),
+            ("0a1b2c3d4", false),
+            ("0A1B2C3D", false),
+            ("0a1b2c3g", false),
+            ("0a1b-c3d", false),
+            ("", false),
+        ] {
+            check_eq!(ListingCode::try_from(text).is_ok(), ok, "{text:?}");
+            let raw = format!(
+                r#"{{"service":"mind","request":{{"op":"market","action":{{"act":"quote","code":"{text}"}}}}}}"#
+            );
+            check_eq!(
+                serde_json::from_str::<InvokeRequest>(&raw).is_ok(),
+                ok,
+                "decode {text:?}"
+            );
+        }
+        for extra in ["actor", "account", "token", "payer", "buyer", "digest"] {
+            let raw = format!(
+                r#"{{"service":"mind","request":{{"op":"market","action":{{"act":"pay","code":"0a1b2c3d","{extra}":1}}}}}}"#
+            );
+            check!(
+                serde_json::from_str::<InvokeRequest>(&raw).is_err(),
+                "{extra}"
+            );
+        }
+        check!(
+            serde_json::from_str::<InvokeRequest>(
+                r#"{"service":"mind","request":{"op":"market","action":{"act":"pay","code":"0a1b2c3d"},"actor":7}}"#
+            )
+            .is_err()
+        );
+        check_eq!(
+            serde_json::to_string(&MarketAction::Publish {
+                filed: 3,
+                form: MarketListingForm::OpenResale,
+                royalty: None,
+                transfer: None,
+            })?,
+            r#"{"act":"publish","filed":3,"form":"open_resale","royalty":null,"transfer":null}"#
+        );
+        check_eq!(
+            serde_json::to_string(&MindResponse::Staged { line: "x".into() })?,
+            r#"{"status":"staged","line":"x"}"#
+        );
+        check_eq!(
+            serde_json::to_string(&MindResponse::Shown {
+                lines: vec!["a".into()]
+            })?,
+            r#"{"status":"shown","lines":["a"]}"#
+        );
+        Ok(())
+    }
+
     #[test]
     fn attributed_remove_is_name_only_and_never_reports_committed_removal()
     -> Result<(), Box<dyn std::error::Error>> {
