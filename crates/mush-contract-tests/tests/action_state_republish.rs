@@ -189,23 +189,30 @@ fn production_commit_seams_install_prepared_actions_announcing() {
 
 #[test]
 fn the_world_task_commit_completion_announces() {
-    let world_task = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let server_src = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("mush-server")
-        .join("src")
-        .join("world_task.rs");
-    let source = std::fs::read_to_string(&world_task)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", world_task.display()));
-    let production = production_lines(&source);
+        .join("src");
+    let mut production = Vec::new();
+    for rel in ["world_task.rs", "world_task/commit_pipeline.rs"] {
+        let path = server_src.join(rel);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        production.extend(
+            production_lines(&source)
+                .into_iter()
+                .map(|(n, line)| (n, line.to_owned())),
+        );
+    }
     assert!(
         production
             .iter()
             .any(|(_, line)| line.contains(REQUIRED_SEAM)),
-        "world_task.rs's production code no longer calls the announcing install"
+        "world_task's production code no longer calls the announcing install"
     );
     assert!(
         !production.iter().any(|(_, line)| is_forbidden(line)),
-        "world_task.rs's production code installs prepared action state silently"
+        "world_task's production code installs prepared action state silently"
     );
 }
 

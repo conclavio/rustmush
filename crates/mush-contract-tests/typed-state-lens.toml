@@ -136,16 +136,23 @@ world-task loop, where there is no live authoritative store by construction:
 """
 
 [[detached]]
-file = "crates/mush-server/src/world_task.rs"
-count = 2
+file = "crates/mush-server/src/world_task/commit_pipeline.rs"
+count = 1
 reason = """
 The `Audience::Room` fan-out's per-observer projection is the ONE behavioural
 site of WS03-S7. `resolve_classified_sends` now takes a lens rather than an
 `Option<&ActionStateStore>` (WS03-S13, which widened the parameter scan to
 private fns), so every production step hands it `Live(engine.action_state())`
 and the only detachment left is the `#[cfg(test)]` `resolve_sends` mirror,
-which says `Test`. The second is the `#[cfg(test)]` module's `DETACHED`
-constant.
+which says `Test`.
+"""
+
+[[detached]]
+file = "crates/mush-server/src/world_task/tests.rs"
+count = 1
+reason = """
+The out-of-line `#[cfg(test)]` module's `DETACHED` constant, moved from
+`world_task.rs`.
 """
 
 [[detached]]
