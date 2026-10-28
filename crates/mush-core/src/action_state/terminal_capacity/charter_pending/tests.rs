@@ -12,7 +12,7 @@ impl ActionProvider for Provider {
         Ok(())
     }
 }
-struct Fixture {
+pub(in crate::action_state::terminal_capacity) struct Fixture {
     store: ActionStateStore,
     handles: BTreeMap<String, Handle>,
     providers: ActionProviderRegistry,
@@ -103,6 +103,12 @@ fn fixture(configured: bool) -> TestResult<Fixture> {
         )?;
         handles.insert(family.to_owned(), h);
     }
+    // 17g C2f: the named buyer's offer index, which the Offer and Fund write.
+    owner_index::tests::register_index_families(
+        &mut builder,
+        &mut handles,
+        &[owner_index::PENDING_OFFERS],
+    )?;
     if configured {
         builder.charter_pending_capacity(
             &roll,
@@ -193,6 +199,17 @@ fn offer_row(f: &Fixture, id: CommitToken, generation: u64) -> TestResult<Value>
     )
 }
 fn publish_offer(f: &mut Fixture, id: CommitToken, generation: u64) -> TestResult {
+    let p = offer_prepared(f, id, generation, None)?;
+    install(f, p)
+}
+/// The seller's (6) Offer naming buyer 7 for charter 100, with `index` in
+/// place of the default index write (17g C2f), prepared and not installed.
+fn offer_prepared(
+    f: &mut Fixture,
+    id: CommitToken,
+    generation: u64,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
     let o = offer_row(f, id, generation)?;
     let provider = f.providers.get_exact(&f.actions[0])?;
     let inv = invocation(6, 4)?;
@@ -201,8 +218,31 @@ fn publish_offer(f: &mut Fixture, id: CommitToken, generation: u64) -> TestResul
         .transaction_for_provider(provider.registration_ordinal())?;
     txn.bind_registered_invocation(provider, &inv, id);
     txn.insert(f.handles.get(OFFER).ok_or("offer handle")?, &id.to_hex(), o)?;
-    let p = txn.prepare()?;
-    install(f, p)
+    match index {
+        Some(write) => write(&mut txn, &f.handles)?,
+        None => index_offer(&mut txn, &f.handles, id)?,
+    }
+    Ok(txn.prepare()?)
+}
+/// 17g C2f: the fixture buyer's (7) offer-index key for charter 100.
+fn buyer_offers_key() -> String {
+    format!("{:020}/{}", 7, charter_key(100))
+}
+/// 17g C2f: the Offer's index write, in the Offer's transaction.
+fn index_offer(
+    txn: &mut ActionTxn<'_>,
+    handles: &BTreeMap<String, Handle>,
+    offer: CommitToken,
+) -> TestResult {
+    owner_index::tests::index_offer(
+        txn,
+        handles,
+        owner_index::PENDING_OFFERS,
+        &buyer_offers_key(),
+        json!({"format":1,"buyer":7,"charter":"100"}),
+        offer,
+    )?;
+    Ok(())
 }
 fn pending_row(
     f: &Fixture,
@@ -234,6 +274,15 @@ struct Fault {
     extra: bool,
 }
 fn fund(f: &mut Fixture, p: Value, fault: Fault) -> TestResult<PreparedTxn> {
+    fund_with(f, p, fault, None)
+}
+/// `fund` with `index` in place of the default index write (17g C2f).
+fn fund_with(
+    f: &mut Fixture,
+    p: Value,
+    fault: Fault,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
     let id = token(field(&p, "operation")?)?;
     let inv = invocation(if fault.wrong_actor { 6 } else { 7 }, 5)?;
     let provider = f
@@ -252,7 +301,33 @@ fn fund(f: &mut Fixture, p: Value, fault: Fault) -> TestResult<PreparedTxn> {
         txn.bind_registered_invocation(provider, &inv, id);
     }
     let base = txn.read_base();
+    // 17g C2f: the Fund takes its offer out of the buyer's index, when the
+    // index still holds it (a reused offer's has gone: the protocol refuses).
+    let offer = token(field(&p, "offer")?)?;
+    let indexed = txn
+        .get(
+            f.handles
+                .get(owner_index::PENDING_OFFERS)
+                .ok_or("index handle")?,
+            &buyer_offers_key(),
+        )?
+        .is_some_and(|row| {
+            row["offers"]
+                .as_array()
+                .is_some_and(|o| o.contains(&json!(offer)))
+        });
     txn.insert(f.handles.get(PENDING).ok_or("pending")?, &id.to_hex(), p)?;
+    match index {
+        Some(write) => write(&mut txn, &f.handles)?,
+        None if indexed => owner_index::tests::consume_offer(
+            &mut txn,
+            &f.handles,
+            owner_index::PENDING_OFFERS,
+            &buyer_offers_key(),
+            offer,
+        )?,
+        None => {}
+    }
     if !fault.missing_head {
         if exists {
             txn.replace(f.handles.get(HEAD).ok_or("head")?, &charter_key(100), head)?;
@@ -360,6 +435,18 @@ fn finish_limited(
     omit: Option<&str>,
     limit: Option<ActionTxnLimits>,
 ) -> TestResult<PreparedTxn> {
+    finish_full(f, id, p, omit, limit, None)
+}
+/// `finish_limited` with `index`'s extra writes (17g C2f: a terminal writes
+/// no index row, so the default is none).
+fn finish_full(
+    f: &mut Fixture,
+    id: CommitToken,
+    p: Value,
+    omit: Option<&str>,
+    limit: Option<ActionTxnLimits>,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
     let decision = field(field(field(&p, "economic")?, "terminal")?, "decision")?;
     let terminal = token(field(decision, "operation")?)?;
     let action = reference(field(decision, "action")?)?;
@@ -439,12 +526,79 @@ fn finish_limited(
             )?;
         }
     }
+    if let Some(write) = index {
+        write(&mut txn, &f.handles)?;
+    }
     let mut ctx = crate::resolution::PrepareCtx::new(inv.idempotency(), terminal, None)
         .with_registered_transaction(&base, provider.registration_ordinal());
     ctx.close_charter_pending_completion(&mut txn, id)?;
     drop(ctx);
     Ok(txn.prepare()?)
 }
+/// 17g C2f: the owner-index rig: a configured pending-charter composition.
+pub(in crate::action_state::terminal_capacity) fn pending_rig() -> TestResult<Fixture> {
+    fixture(true)
+}
+/// The seller's Offer `id` naming buyer 7 for charter 100.
+pub(in crate::action_state::terminal_capacity) fn pending_offer(
+    f: &mut Fixture,
+    id: CommitToken,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
+    offer_prepared(f, id, 1, index)
+}
+/// Buyer 7's Fund of offer `offer` as operation `id` (the charter's first
+/// pending attempt).
+pub(in crate::action_state::terminal_capacity) fn pending_fund(
+    f: &mut Fixture,
+    offer: CommitToken,
+    id: CommitToken,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
+    let p = pending_row(f, id, offer, 1, Value::Null)?;
+    fund_with(f, p, Fault::default(), index)
+}
+/// The service Settle (`settle`) or Refund of the funded pending operation
+/// `id` as `terminal`, with `index`'s extra writes.
+pub(in crate::action_state::terminal_capacity) fn pending_terminal(
+    f: &mut Fixture,
+    id: CommitToken,
+    terminal: CommitToken,
+    settle: bool,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
+    let funded = row(f, PENDING, &id.to_hex())?;
+    let closed = terminal_row(
+        f,
+        &funded,
+        terminal,
+        if settle {
+            "deadline_reached"
+        } else {
+            "clock_changed"
+        },
+    )?;
+    finish_full(f, id, closed, None, None, index)
+}
+/// Install a prepared step and prove the store reboots.
+pub(in crate::action_state::terminal_capacity) fn pending_commit(
+    f: &mut Fixture,
+    prepared: PreparedTxn,
+) -> TestResult {
+    install(f, prepared)?;
+    hydrate(f, &f.disk)?;
+    Ok(())
+}
+/// The rig as a seed: its store, handles and disk image.
+pub(in crate::action_state::terminal_capacity) fn pending_seed(f: Fixture) -> Seed {
+    (f.store, f.handles, f.disk)
+}
+/// The rig's store, family handles and disk image.
+type Seed = (
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+);
 fn funded() -> TestResult<Fixture> {
     let mut f = fixture(true)?;
     publish_offer(&mut f, commit(4), 1)?;
@@ -524,6 +678,7 @@ fn pending_completed_owner_head_can_advance_but_cannot_lose_or_cross_its_chain()
         &commit(7).to_hex(),
         next_offer,
     )?;
+    index_offer(&mut txn, &f.handles, commit(7))?;
     let prepared = txn.prepare()?;
     install(&mut f, prepared)?;
     let next = pending_row(
@@ -625,7 +780,37 @@ fn pending_refund_retry_preserves_history_and_offer_is_permanently_one_use() -> 
     hydrate(&f, &f.disk)?;
     let previous = field(&pending_head(&closed)?, "current")?.clone();
     let reused = pending_row(&f, commit(9), commit(4), 2, previous.clone())?;
-    assert!(fund(&mut f, reused, Fault::default()).is_err());
+    // 17g C2f: the first Fund took offer 4 out of the buyer's index, so the
+    // index alone would refuse a second Fund of it. Put a plausible row
+    // holding it back (an ordinary write outside the protocol) so that only
+    // the protocol's own one-use rule can refuse, then take it out again.
+    let index_handle = handle(&f, owner_index::PENDING_OFFERS)?.clone();
+    let mut txn = f.store.transaction(&index_handle)?;
+    txn.insert(
+        &index_handle,
+        &buyer_offers_key(),
+        json!({"format":1,"buyer":7,"charter":"100","offers":[commit(4)]}),
+    )?;
+    let prepared = txn.prepare()?;
+    install(&mut f, prepared)?;
+    let refused = fund(&mut f, reused, Fault::default());
+    assert!(
+        matches!(
+            refused
+                .as_ref()
+                .err()
+                .and_then(|e| e.downcast_ref::<ActionStateError>()),
+            Some(ActionStateError::TerminalCapacity(
+                "pending offer already accepted"
+            ))
+        ),
+        "a reused offer refuses by the one-use rule: {:?}",
+        refused.as_ref().err()
+    );
+    let mut txn = f.store.transaction(&index_handle)?;
+    txn.remove(&index_handle, &buyer_offers_key())?;
+    let prepared = txn.prepare()?;
+    install(&mut f, prepared)?;
     publish_offer(&mut f, commit(7), 1)?;
     let retry = pending_row(&f, commit(8), commit(7), 2, previous)?;
     let p = fund(&mut f, retry, Fault::default())?;

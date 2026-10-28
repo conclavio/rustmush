@@ -478,6 +478,8 @@ impl HousePurchaseWriter {
         reg.delegate_state_family(&families.deployment, "market")?;
         reg.delegate_state_family(&families.house_allocations, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
+        // 17g C2f: the grant puts the holder's holdings row beside the pointer.
+        reg.delegate_state_family(&families.paid_holdings, "market")?;
         reg.delegate_state_family(&families.paid_terms, "market")?;
         reg.delegate_state_family(&families.house_economics, "market")?;
         // Market's boot audit repeats each listing's historical identity join
@@ -994,6 +996,9 @@ impl RegisteredHouseWriter {
             {
                 return Err(PublicationError::Mismatch);
             }
+            // 17g C2f (the C2b brief §2): the holder's paid-holdings row,
+            // in the grant's own transaction (mush-core admits exactly it).
+            super::super::paid_holdings::grant(txn, f, before.holder, before.licence)?;
         }
         txn.replace(&f.house_allocations, &before.key(), after.clone())
             .map_err(invalid)?;

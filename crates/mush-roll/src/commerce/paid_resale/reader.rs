@@ -217,6 +217,55 @@ impl OwnerReadService for PaidResaleReader {
         .map_err(fail)
     }
 }
+/// 17g C2g (the C2e plan §4.1 item 4): which acceptance path a named
+/// buyer's acceptance of a resale offer takes, by the paid-resale provider's
+/// own test (`mind_paid_resale::provider`'s Accept arm: `immediate ==
+/// (claims().open_paid() == 0)`): the immediate `Accept` with no open paid
+/// claim under the licence, the escrowed `Fund` with one.
+///
+/// It is NOT an owner read and answers for no actor. Its one caller is the
+/// market's `+minds` command read (`mush_market::mind_commands`'
+/// `ResaleOffers`), which asks it only for a licence on which that read has
+/// first found a live seller offer naming the calling actor, from the
+/// offer's committed evidence (the actor's own `(buyer, licence)` index row
+/// and the offer row it points at, whose named buyer and licence it checks).
+/// So the step reaches only a named buyer, who could learn it from the
+/// legal actions anyway, and is never an existence or open-claim oracle for
+/// a third party (the C2d fix round's reviewers C2D-R2 and C2D-R3, which
+/// removed the Roll command kind that `observe`d any licence). The provider
+/// rechecks the claim census at preparation: a stale step refuses with the
+/// driver's line and moves nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResaleStep {
+    Accept,
+    Fund,
+}
+impl ResaleStep {
+    /// The step for a validated claim observation: `Accept` exactly when no
+    /// paid claim is open.
+    pub fn of(claims: &ResaleClaimObservation) -> Result<Self, PublicationError> {
+        claims.validate()?;
+        Ok(if claims.open_paid() == 0 {
+            Self::Accept
+        } else {
+            Self::Fund
+        })
+    }
+}
+/// 17g C2g: the step for `licence` now, from Roll's own live claim census
+/// (`RollStore::paid_resale_claims`, the observation `observe` reads). A
+/// world without a ready Roll store is `Unavailable`. See `ResaleStep` for
+/// the one caller this is meant for.
+pub fn resale_step(world: &World, licence: LicenceId) -> Result<ResaleStep, PublicationError> {
+    let roll = world
+        .module_state::<RollStore>()
+        .ok_or(PublicationError::Unavailable)?;
+    let claims = roll
+        .paid_resale_claims(licence)
+        .map_err(|_| PublicationError::Unavailable)?;
+    ResaleStep::of(&claims)
+}
 /// The current term's own transferability, as `observe` checks it once the
 /// current pointer and term are proved: a term marked non-transferable (the D-UM-40 listing
 /// mark, 17g C2b, or a non-transferable deployment policy) refuses resale. A

@@ -161,6 +161,39 @@ impl Record for PendingOffer {
         envelope(self)
     }
 }
+// 17g C2f (the C2b brief §4): the live pending-charter offers naming one
+// buyer for one charter, `roll_mind_charter_pending_buyer_offers`, keyed
+// `{buyer:020}/charter/{charter:016x}`. Like v2's `ActorOffers` it
+// **authorizes nothing**: it only lets a command find the offers naming the
+// actor with a bounded read. Written at the Offer (pruned of expired offers,
+// plus the new one; a ninth live offer refuses the Offer) and the Fund (the
+// consumed offer out; the row deleted when empty), inside their own
+// transactions (`super::index`); audited clock-free at boot.
+closed!(PendingBuyerOffers,BuyerOffersWire,{format:u16,buyer:ObjId,charter:CharterId,offers:std::collections::BTreeSet<CommitToken>});
+/// The C2b bound on one buyer's live offers for one charter.
+pub(crate) const MAX_BUYER_OFFERS: usize = 8;
+impl PendingBuyerOffers {
+    pub(crate) fn key_for(buyer: ObjId, charter: CharterId) -> String {
+        format!("{:020}/{}", buyer.0, charter.key())
+    }
+}
+impl Record for PendingBuyerOffers {
+    const FAMILY: &'static str = "roll_mind_charter_pending_buyer_offers";
+    const MAX_BYTES: usize = 2048;
+    fn key(&self) -> String {
+        Self::key_for(self.buyer, self.charter)
+    }
+    fn validate(&self) -> Result<(), PublicationError> {
+        if self.format != 1
+            || self.buyer.0 == 0
+            || self.offers.is_empty()
+            || self.offers.len() > MAX_BUYER_OFFERS
+        {
+            return Err(PublicationError::Invalid);
+        }
+        envelope(self)
+    }
+}
 closed!(ClaimObservation,ClaimWire,{generation:u64,next_transition:u64,open_owned:u32});
 impl ClaimObservation {
     pub(crate) fn validate(&self) -> Result<(), PublicationError> {

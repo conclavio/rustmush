@@ -9,7 +9,7 @@ mod config;
 mod families;
 mod offer;
 mod pair;
-pub(crate) mod player;
+pub mod player;
 mod provider;
 mod publication;
 mod records;
@@ -22,8 +22,8 @@ pub(crate) use families::Families;
 pub use player::{RenewalPlayerOutcome, RenewalPlayerStep, RenewalState, RenewalStatusView};
 pub use records::{MindRenewalOperationV1, MindRenewalReceiptV1};
 pub(crate) use registration::register;
-pub use service::player_step;
 pub(crate) use service::{enable as enable_service, guard_current as service_guard_current};
+pub use service::{player_front, player_front_in, player_step};
 
 #[cfg(test)]
 mod tests;

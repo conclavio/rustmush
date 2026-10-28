@@ -22,6 +22,8 @@ const ACTOR: ObjId = ObjId(2);
 #[derive(Default)]
 struct Shared {
     handle: Mutex<Option<ContinuationHandle>>,
+    /// 17g C2h: the grantee module's own continuation (`@relay/go`).
+    relay: Mutex<Option<ContinuationHandle>>,
     calls: Mutex<Vec<(ObjId, String, ObjId, String)>>,
     denied: AtomicBool,
     freeze_in_gate: AtomicBool,
@@ -66,6 +68,8 @@ struct Module {
     shared: Arc<Shared>,
     spec: CommandSpec,
     registration: Option<&'static str>,
+    /// 17g C2h: the module this owner delegates its continuation to.
+    delegate: Option<&'static str>,
 }
 impl GameModule for Module {
     fn name(&self) -> &'static str {
@@ -120,6 +124,9 @@ impl GameModule for Module {
             primary
         };
         let captured = reg.command_continuation(primary, switches)?;
+        if let Some(grantee) = self.delegate {
+            reg.delegate_continuation(&captured, grantee, "fixture: the grantee's front")?;
+        }
         *self
             .shared
             .handle
@@ -168,7 +175,83 @@ impl GameModule for Foreign {
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         assert!(reg.command_continuation("@resume", &["finish"]).is_err());
+        // 17g C2h: only the handle's owner may delegate it.
+        if let Ok(owned) = handle(&self.0) {
+            assert!(
+                reg.delegate_continuation(&owned, "foreign", "not the owner")
+                    .is_err()
+            );
+        }
         reg.classify_commands(CommandCompatibility::Authoritative);
+        // 17g C2h: the grantee's own commands. `@front self` schedules the
+        // owner's handle for the dispatching actor, `@front other` for
+        // another live player; `@queue_front` queues `@front self` as a
+        // `@wait` line does; `@relay` schedules this module's own
+        // continuation, whose handler then tries the owner's handle.
+        let shared = Arc::clone(&self.0);
+        reg.command(
+            CommandSpec {
+                name: "@front".into(),
+                shape: ArgShape::Raw,
+                ..CommandSpec::default()
+            },
+            Arc::new(move |ctx: &mut Ctx<'_>| {
+                let target = if ctx.args.raw() == "other" {
+                    if ctx.actor == ACTOR { GOD } else { ACTOR }
+                } else {
+                    ctx.actor
+                };
+                ctx.schedule_continuation(&handle(&shared)?, target, "delegated", 0)
+            }),
+        )?;
+        reg.command(
+            CommandSpec {
+                name: "@queue_front".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                ctx.out.defer(crate::Deferred::ScheduleIn {
+                    delay_ms: 10,
+                    kind: ScheduledKind::WaitCmd {
+                        actor: ctx.actor,
+                        line: "@front self".into(),
+                    },
+                });
+                Ok(())
+            }),
+        )?;
+        let shared = Arc::clone(&self.0);
+        reg.command(
+            CommandSpec {
+                name: "@relay".into(),
+                switches: vec!["go".into()],
+                shape: ArgShape::Raw,
+                ..CommandSpec::default()
+            },
+            Arc::new(move |ctx: &mut Ctx<'_>| {
+                if ctx.switches.has("go") {
+                    return ctx.schedule_continuation(
+                        &handle(&shared)?,
+                        ctx.actor,
+                        "from_a_continuation",
+                        0,
+                    );
+                }
+                let relay = shared
+                    .relay
+                    .lock()
+                    .map_err(|_| CmdError::msg("fixture mutex"))?
+                    .clone()
+                    .ok_or_else(|| CmdError::msg("relay handle"))?;
+                ctx.schedule_continuation(&relay, ctx.actor, "", 0)
+            }),
+        )?;
+        let relay = reg.command_continuation("@relay", &["go"])?;
+        *self
+            .0
+            .relay
+            .lock()
+            .map_err(|_| ModError::msg("fixture mutex"))? = Some(relay);
         let shared = Arc::clone(&self.0);
         reg.command(
             CommandSpec {
@@ -197,6 +280,16 @@ fn engine(
     spec: CommandSpec,
     registration: Option<&'static str>,
 ) -> TestResult<(Box<Engine>, Arc<Shared>)> {
+    engine_with(spec, registration, None)
+}
+/// `engine`, with the owner delegating its continuation to `delegate`
+/// (17g C2h).
+#[inline(never)]
+fn engine_with(
+    spec: CommandSpec,
+    registration: Option<&'static str>,
+    delegate: Option<&'static str>,
+) -> TestResult<(Box<Engine>, Arc<Shared>)> {
     let mut world = World::new_minimal();
     assert_eq!(
         world.create(crate::ObjKind::Player, "Subject", GOD, Some(ObjId(0)))?,
@@ -212,6 +305,7 @@ fn engine(
                 shared: Arc::clone(&shared),
                 spec,
                 registration,
+                delegate,
             }),
             Box::new(Foreign(Arc::clone(&shared))),
         ],
@@ -469,5 +563,229 @@ fn bounded_arguments_and_removed_going_or_nonplayer_actor_refuse() -> TestResult
         assert!(engine.sched.is_empty());
     }
     assert!(shared.calls.lock().map_err(|_| "calls")?.is_empty());
+    Ok(())
+}
+
+/// Every plain line an outbox holds (system and error lines).
+fn lines(out: &Outbox) -> Vec<String> {
+    out.events()
+        .iter()
+        .filter_map(|(_, event)| match event {
+            mush_proto::OutputEvent::Sys(text) => Some(text.to_plain_text()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 17g C2h (the lead's ruling R3): the owner ("owner") delegates its exact
+/// continuation to "foreign" at composition. "foreign"'s own typed command,
+/// dispatched on a connection for ACTOR, schedules the owner's handle for
+/// ACTOR; the handler then runs under the OWNER's identity (the dispatch
+/// stamp names "owner") for ACTOR, with exactly the argument "foreign"
+/// passed, after the command gates. The delegation is listed with its
+/// grantee and reason, and it moves no mechanics fingerprint: the same
+/// composition without it fingerprints identically (17g C2h item 4).
+#[test]
+fn a_delegated_continuation_schedules_from_the_grantee_for_its_own_dispatching_actor() -> TestResult
+{
+    let (mut delegated, shared) = engine_with(spec(), None, Some("foreign"))?;
+    let listed = delegated.registry.continuation_delegations();
+    assert_eq!(listed.len(), 1);
+    let (command_prefix, grantee, reason) = listed.first().ok_or("one delegation")?;
+    assert_eq!(command_prefix.as_str(), "@resume/finish");
+    assert_eq!(grantee.as_str(), "foreign");
+    assert_eq!(*reason, "fixture: the grantee's front");
+    assert_eq!(
+        delegated.registry.continuation_delegate(&handle(&shared)?),
+        Some(&OwnerId::new("foreign")?)
+    );
+    let out = command(&mut delegated, ACTOR, "@front self");
+    assert!(lines(&out).is_empty(), "{:?}", lines(&out));
+    assert_eq!(delegated.sched.len(), 1);
+    fire(&mut delegated);
+    assert_eq!(
+        *shared.calls.lock().map_err(|_| "calls")?,
+        vec![(ACTOR, "owner".into(), ACTOR, "delegated".into())],
+        "the owner's handler, for the dispatching actor"
+    );
+    let (plain, _) = engine(spec(), None)?;
+    assert!(delegated.registry.mechanics_fingerprint().is_some());
+    assert_eq!(
+        delegated.registry.mechanics_fingerprint(),
+        plain.registry.mechanics_fingerprint(),
+        "the delegation enters no digest"
+    );
+    assert!(plain.registry.continuation_delegations().is_empty());
+    Ok(())
+}
+
+/// 17g C2h: the delegate may schedule only for the actor whose line it is
+/// dispatching. Naming another live player refuses `Continuation
+/// unavailable.` and queues nothing, whichever actor dispatches.
+#[test]
+fn a_delegate_cannot_schedule_for_another_actor() -> TestResult {
+    let (mut engine, shared) = engine_with(spec(), None, Some("foreign"))?;
+    for actor in [ACTOR, GOD] {
+        let out = command(&mut engine, actor, "@front other");
+        assert_eq!(lines(&out), vec!["Continuation unavailable.".to_owned()]);
+        assert!(engine.sched.is_empty());
+    }
+    fire(&mut engine);
+    assert!(shared.calls.lock().map_err(|_| "calls")?.is_empty());
+    Ok(())
+}
+
+/// 17g C2h: a dispatch with no connection cannot use the delegation. A
+/// `@wait`-queued line (a `WaitCmd`) and the grantee's own continuation both
+/// dispatch with none, and both refuse `Continuation unavailable.` with
+/// nothing queued and the owner's handler never entered.
+#[test]
+fn a_delegate_cannot_schedule_without_a_dispatching_connection() -> TestResult {
+    let (mut engine, shared) = engine_with(spec(), None, Some("foreign"))?;
+    command(&mut engine, ACTOR, "@queue_front");
+    assert_eq!(engine.sched.len(), 1, "the queued line");
+    let out = fire(&mut engine);
+    assert_eq!(lines(&out), vec!["Continuation unavailable.".to_owned()]);
+    assert!(engine.sched.is_empty());
+    let out = command(&mut engine, ACTOR, "@relay");
+    assert!(lines(&out).is_empty(), "{:?}", lines(&out));
+    assert_eq!(engine.sched.len(), 1, "the grantee's own continuation");
+    let out = fire(&mut engine);
+    assert_eq!(lines(&out), vec!["Continuation unavailable.".to_owned()]);
+    assert!(engine.sched.is_empty());
+    assert!(shared.calls.lock().map_err(|_| "calls")?.is_empty());
+    Ok(())
+}
+
+/// 17g C2h: without a delegation the foreign module's typed command still
+/// cannot schedule the owner's handle, for its own dispatching actor too
+/// (the rule before C2h, unchanged), and a delegation in another composition
+/// grants nothing here.
+#[test]
+fn an_undelegated_caller_still_cannot_schedule() -> TestResult {
+    let (mut engine, shared) = engine(spec(), None)?;
+    let out = command(&mut engine, ACTOR, "@front self");
+    assert_eq!(lines(&out), vec!["Continuation unavailable.".to_owned()]);
+    assert!(engine.sched.is_empty());
+    assert_eq!(
+        engine.registry.continuation_delegate(&handle(&shared)?),
+        None
+    );
+    let (_, delegated) = engine_with(spec(), None, Some("foreign"))?;
+    assert_eq!(
+        engine.registry.continuation_delegate(&handle(&delegated)?),
+        None,
+        "another composition's handle has no delegate here"
+    );
+    *shared.handle.lock().map_err(|_| "handle")? = Some(handle(&delegated)?);
+    command(&mut engine, ACTOR, "@front self");
+    assert!(engine.sched.is_empty());
+    fire(&mut engine);
+    assert!(shared.calls.lock().map_err(|_| "calls")?.is_empty());
+    Ok(())
+}
+
+/// 17g C2h's bounds, composed for real: one owner with
+/// `MAX_CONTINUATION_DELEGATES + 1` continuations on one command, beside the
+/// grantee "foreign".
+struct Bounded(&'static str);
+impl GameModule for Bounded {
+    fn name(&self) -> &'static str {
+        "owner"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(CommandCompatibility::Authoritative);
+        let switches: Vec<String> = (0..=MAX_CONTINUATION_DELEGATES)
+            .map(|i| format!("s{i}"))
+            .collect();
+        reg.command(
+            CommandSpec {
+                name: "@bounded".into(),
+                switches: switches.iter().map(Into::into).collect(),
+                shape: ArgShape::Raw,
+                ..CommandSpec::default()
+            },
+            Arc::new(|_: &mut Ctx<'_>| Ok(())),
+        )?;
+        let mut handles = Vec::new();
+        for switch in &switches {
+            handles.push(reg.command_continuation("@bounded", &[switch.as_str()])?);
+        }
+        let first = handles.first().ok_or_else(|| ModError::msg("a handle"))?;
+        match self.0 {
+            "second" => {
+                reg.delegate_continuation(first, "foreign", "first")?;
+                reg.delegate_continuation(first, "foreign", "second")
+            }
+            "itself" => reg.delegate_continuation(first, "owner", "itself"),
+            "reason" => reg.delegate_continuation(first, "foreign", " "),
+            "ninth" | "eighth" => {
+                let take = if self.0 == "ninth" {
+                    handles.len()
+                } else {
+                    MAX_CONTINUATION_DELEGATES
+                };
+                for handle in handles.iter().take(take) {
+                    reg.delegate_continuation(handle, "foreign", "bounded")?;
+                }
+                Ok(())
+            }
+            "absent" => reg.delegate_continuation(first, "absent", "uncomposed"),
+            _ => Ok(()),
+        }
+    }
+}
+#[inline(never)]
+fn bounded(case: &'static str) -> Result<Box<Engine>, String> {
+    let shared = Arc::new(Shared::default());
+    Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Bounded(case)), Box::new(Foreign(shared))],
+    )
+    .map(Box::new)
+    .map_err(|e| e.to_string())
+}
+
+/// 17g C2h: one grantee per handle (a second delegation of one handle
+/// refuses), never the owner itself, a reason of 1 to 256 bytes, at most
+/// `MAX_CONTINUATION_DELEGATES` per composition (eight compose, the ninth
+/// refuses), and a grantee that is not composed refuses at freeze with an
+/// error naming the command and the grantee. The public registrar cannot
+/// delegate at all.
+#[test]
+fn delegation_is_one_grantee_bounded_and_checked_at_freeze() -> TestResult {
+    assert_eq!(MAX_CONTINUATION_DELEGATES, 8);
+    for (case, why) in [
+        ("second", "the handle already has its one grantee"),
+        ("itself", "the owner cannot delegate to itself"),
+        ("reason", "a delegation names its reason in 1 to 256 bytes"),
+        ("ninth", "the composition's delegation bound is reached"),
+    ] {
+        let error = bounded(case).err().ok_or(case)?;
+        assert!(error.contains(why), "{case}: {error}");
+    }
+    let eight = bounded("eighth")?;
+    assert_eq!(
+        eight.registry.continuation_delegations().len(),
+        MAX_CONTINUATION_DELEGATES
+    );
+    let error = bounded("absent").err().ok_or("absent")?;
+    assert!(
+        error.contains("@bounded/s0") && error.contains("absent"),
+        "{error}"
+    );
+    assert!(error.contains("not a composed module"), "{error}");
+    let (_, shared) = engine(spec(), None)?;
+    let mut registry = Registry::new();
+    let mut registrar = Registrar::new(&mut registry, "owner");
+    registrar.classify_commands(CommandCompatibility::Authoritative);
+    registrar.command(spec(), Arc::new(|_: &mut Ctx<'_>| Ok(())))?;
+    assert!(
+        registrar
+            .delegate_continuation(&handle(&shared)?, "foreign", "public")
+            .is_err(),
+        "the public registrar cannot delegate"
+    );
     Ok(())
 }

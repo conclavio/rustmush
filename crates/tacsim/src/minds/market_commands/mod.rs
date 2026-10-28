@@ -22,13 +22,16 @@
 //! its reason.
 //!
 //! C2a builds the mechanism and the author's commands (`author`); C2c adds
-//! `market` (`+minds`, `+minds/buy`, `@mind/publish`) and `holdings`
-//! (`+minds/holdings`); C2d adds `renew` (`+minds/renew`, a front over the
-//! renewal services' `player_step`, the one command that submits through a
-//! service rather than `submit`; held at `renew::RENEWALS_OPEN`), `trade`
-//! (`+minds/resell`, `+minds/charter` and their `/accept`s; held at
-//! `trade::NAMED_OFFERS_OPEN`) and `registry` (`@registry/recall` and
-//! `@registry/revoke`).
+//! `market` (`+minds`, `+minds/buy` and its steps, `@mind/publish`) and
+//! `holdings` (`+minds/holdings`); C2d adds `renew` (`+minds/renew`, a front
+//! over the renewal services' player steps, the one command that submits
+//! through a service rather than `submit`; live since 17g C2h, which hands
+//! the step to the service's own delegated `front` continuation, so the
+//! service submits and prints under its own identity), `trade`
+//! (`+minds/resell`, `+minds/charter` and their `/accept`s) and `registry`
+//! (`@registry/recall` and `@registry/revoke`). 17g C2g opens the buy steps,
+//! the paid holdings and the named offers over 17g C2f's owner indexes (each
+//! module's doc).
 
 pub(crate) mod author;
 pub(crate) mod holdings;
@@ -51,20 +54,22 @@ use mush_roll::commerce::holding_reader::OriginalOwnerReader;
 /// idempotency key. `roll` is TacSim's one original-holdings grant, shared
 /// with the holdings seam (`match_::original_access::register_entitlements`):
 /// the command kinds are folded into that read (C2 plan §2.4 fallback 1),
-/// because the format-2 Active launch has no owner-read grant to spare. It is registered only when Active commerce composes the
-/// player market (`MindCommerce::configure_tacsim` sets
+/// because the format-2 Active launch had no owner-read grant to spare at
+/// 17g C2a. It is registered only when Active commerce composes the player
+/// market (`MindCommerce::configure_tacsim` sets
 /// `TacsimRuleset.mind_commands`), so on a House-only launch every command
 /// that needs it refuses `NOT_OPEN`. A slot is `Clone` (`Registrar::state`);
 /// a clone shares the one counter.
 ///
 /// 17g C2c: `market` is the market's bounded command read
 /// (`mush_market::mind_commands`), which every `+minds` form and
-/// `@mind/publish` need. It is `None` in every composition for now: the
-/// format-2 Active launch already holds all 32 owner-read grants, so TacSim's
-/// `MarketCommandReader::request` would refuse its boot with
-/// `OwnerReadError::Limit`, and the C2c brief leaves the cap to the lead (C2
-/// plan §2.4 fallback 2). Once the cap allows it, `register` requests it with
-/// the same composed manifest and stores it here.
+/// `@mind/publish` need. 17g C2e (the lead's ruling R1 raised the owner-read
+/// caps to 48, 64 since the scoped passenger facts): `TacsimRuleset::register` requests it with
+/// `MarketCommandReader::request` over the same composed manifest the
+/// entitlement holdings' grants take, in the branch that registers this slot,
+/// so it is `Some` exactly where the slot exists (the format-2 Active launch:
+/// 33 services and 35 grants). The `Option` stays so that every form keeps
+/// its `NOT_OPEN` refusal for a composition without it.
 #[derive(Clone)]
 pub(crate) struct MindCommandService {
     pub(crate) roll: OwnerReadHandle<OriginalOwnerReader>,
@@ -75,14 +80,16 @@ pub(crate) struct MindCommandService {
 }
 
 /// Register the slot over the original-holdings grant the holdings seam
-/// already requested with the same composed manifest (no second grant).
+/// already requested with the same composed manifest (no second Roll grant),
+/// and the market's command read TacSim requested beside it (17g C2e).
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     roll: OwnerReadHandle<OriginalOwnerReader>,
+    market: Option<OwnerReadHandle<MarketCommandReader>>,
 ) -> Result<(), ModError> {
     reg.state(MindCommandService {
         roll,
-        market: None,
+        market,
         attempts: Arc::new(Mutex::new((i64::MIN, 0))),
     });
     Ok(())
@@ -109,6 +116,36 @@ pub(crate) fn service<'a>(ctx: &'a Ctx<'_>) -> Result<&'a MindCommandService, Cm
 /// IC second and counts up within one, so a deliberately retyped command is a
 /// new request while the driver retrying one submission is still one commit.
 /// A key outside the key grammar refuses `NOT_OPEN`.
+///
+/// 17g C2g: the subject is what the request acts on. A restart starts the
+/// ordinal again at 0, so under a stopped IC clock a request after the
+/// restart meets the key of one before it whenever verb, subject, IC second
+/// and ordinal all match, and the driver answers it as that earlier request.
+/// The buy steps and the accepts make such a meeting the SAME request: their
+/// subject is a token that names exactly what they act on
+/// (`market::pay_key`, `settle_key`; `trade::accept_key`): `/buy/pay` keys
+/// on the quote's token (`mind.buy.pay.<token>.<at>.<ordinal>`),
+/// `/buy/complete` and `/buy/refund` on the funded purchase's operation
+/// token, and the two accepts on the offer's token. `+minds/buy` keys on the
+/// listing's token followed by the token of the actor's most recently quoted
+/// own record there, quote or funded purchase (`market::buy_key`,
+/// `OwnPurchaseView::latest`), so a re-quote after a committed Quote or Fund
+/// is a new key.
+///
+/// The residual, owed to a 17g C4 ledger item and fixed in neither C2g nor
+/// C2h (the lead's ruling 3 after C2g, for the seller and author forms; the
+/// C2g fix round 2 adds `+minds/buy`'s):
+/// - the seller forms (`+minds/resell` on the licence number,
+///   `+minds/charter` on the filed number), `@registry` and C2a's author
+///   forms key on the number they act on;
+/// - `+minds/buy` after a Grant or a Refund (the C2g fix round 2): those take
+///   the funded purchase out of the actor's own index, so the subject can be
+///   an earlier record's again, or the bare listing once no record is left.
+///
+/// After a restart under a stopped IC clock, a DIFFERENT request of one of
+/// them (another buyer or price, or a second purchase of one listing) that
+/// meets an earlier key that way is answered as the earlier request; a retype
+/// takes the next ordinal.
 pub(crate) fn next_key(
     attempts: &Mutex<(i64, u64)>,
     verb: &str,
@@ -166,6 +203,43 @@ pub(crate) fn submit(
     let key = next_key(&service(ctx)?.attempts, verb, subject, at)?;
     ctx.out.info(actor, request.to_owned());
     ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
+    Ok(())
+}
+
+/// 17g C2g: one line of a command's reply, to the actor alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Said {
+    /// An error line (`Output::error`).
+    Error(String),
+    /// An info line (`Output::info`).
+    Info(String),
+}
+
+/// 17g C2g: a refusal of one or more lines, the first the refusal sentence.
+/// One line is the returned error, which the dispatcher prints; more lines
+/// are a reply to `say`: the refusal as an error line, then the rest as info
+/// lines, and the command returns `Ok`, having printed its whole reply and
+/// submitted nothing (`+minds <code>`'s refusal followed by the own-purchase
+/// line, an accept's `NO_OFFER_AT` followed by the live offers).
+pub(crate) fn refusal(lines: Vec<String>) -> Result<Vec<Said>, CmdError> {
+    let mut lines = lines.into_iter();
+    let first = lines.next().unwrap_or_default();
+    let rest: Vec<Said> = lines.map(Said::Info).collect();
+    if rest.is_empty() {
+        return Err(CmdError::msg(first));
+    }
+    Ok(std::iter::once(Said::Error(first)).chain(rest).collect())
+}
+
+/// 17g C2g: print `lines` to the actor in order.
+pub(crate) fn say(ctx: &mut Ctx<'_>, lines: Vec<Said>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    for line in lines {
+        match line {
+            Said::Error(line) => ctx.out.error(actor, line),
+            Said::Info(line) => ctx.out.info(actor, line),
+        }
+    }
     Ok(())
 }
 

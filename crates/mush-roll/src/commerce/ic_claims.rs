@@ -28,5 +28,7 @@ pub use writer::{IcClaimReceipt, IcWriter, RegisteredIcWriter};
 pub const MAX_OPEN_IC_CLAIMS: usize = 1024;
 pub const MAX_IC_CLAIM_HISTORY: usize = 8192;
 
+// 17g C2g (the C2g fix round): crate-visible so the paid-resale step's test
+// (`command_reader::tests`) builds an open paid claim with `row`.
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

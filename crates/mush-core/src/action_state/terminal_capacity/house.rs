@@ -30,7 +30,7 @@ const FAMILIES: [(&str, &str, usize); 6] = [
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Kind {
+pub(super) enum Kind {
     House,
     TwoSeatPin,
     TwoSeatFollow,
@@ -216,7 +216,7 @@ impl Protocol {
         self.admission_action(kind)?;
         Ok(())
     }
-    fn action_index(
+    pub(super) fn action_index(
         &self,
         identity: &RegisteredTxnIdentity,
     ) -> Result<(Kind, usize), ActionStateError> {
@@ -278,7 +278,8 @@ impl Protocol {
                 return Err(refused("house Roll family not delegated"));
             }
         }
-        Ok(())
+        // 17g C2f: the House grant writes the holder's holdings row.
+        owner_index::validate_families(registry, &[owner_index::HOLDINGS])
     }
     pub(in crate::action_state) fn validate_composition(
         &self,
@@ -1242,6 +1243,13 @@ pub(super) fn validate_changes(
                 .get(&reservation_id)
                 .ok_or_else(|| refused("purchase retained reservation missing"))?;
             verify(Phase::Terminal, &stored.record, &after)?;
+            // 17g C2f (R2): the House grant (action 1 of every House kind:
+            // each kind's actions are `TRANSITIONS`, fund, grant, refund)
+            // puts exactly the holder's holdings row at the key `owner_index`
+            // derives from the pointer post-image, and no other holdings row
+            // (the terminal branch admits exactly that row again); the
+            // Refund writes no index row.
+            owner_index::require(store, mutations, owner_index::Owner::House, action, id)?;
         }
     }
     Ok(())

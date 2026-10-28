@@ -73,10 +73,19 @@ fn checked(
         },
     )
 }
+/// 17g C2f: how the fixture registers the owner-index family the Offer and
+/// Fund write (exactly, not at all, or with a one-byte-smaller record bound).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Index {
+    Exact,
+    Missing,
+    Descriptor,
+}
 struct Module<const N: usize> {
     protocol: Box<Protocol>,
     missing: Option<usize>,
     bad_family: bool,
+    index: Index,
 }
 impl<const N: usize> GameModule for Module<N> {
     fn name(&self) -> &'static str {
@@ -128,6 +137,22 @@ impl<const N: usize> GameModule for Module<N> {
             .map_err(me)?;
             reg.state_family(
                 descriptor,
+                |k: &String| Ok(k.clone()),
+                |v: &Value| Ok(v.clone()),
+                |_: &Value| Ok(()),
+                |v: &Value| Ok(v.clone()),
+            )?;
+        }
+        // 17g C2f: the named buyer's offer index the Offer and Fund write.
+        if self.index != Index::Missing {
+            let (_, mut index, _) =
+                owner_index::descriptor(owner_index::PENDING_OFFERS).map_err(me)?;
+            if self.index == Index::Descriptor {
+                let (key, bytes) = (index.max_key_bytes(), index.max_record_bytes());
+                index = index.with_limits(key, bytes - 1).map_err(me)?;
+            }
+            reg.state_family(
+                index,
                 |k: &String| Ok(k.clone()),
                 |v: &Value| Ok(v.clone()),
                 |_: &Value| Ok(()),
@@ -196,6 +221,14 @@ impl<const N: usize> GameModule for Module<N> {
     }
 }
 fn engine(reverse: bool, missing: Option<usize>, bad_family: bool) -> TestResult<Engine> {
+    engine_with(reverse, missing, bad_family, Index::Exact)
+}
+fn engine_with(
+    reverse: bool,
+    missing: Option<usize>,
+    bad_family: bool,
+    index: Index,
+) -> TestResult<Engine> {
     let f = fixture(true)?;
     let protocol = f.store.registry.charter_pending.clone().ok_or("protocol")?;
     let mut modules: Vec<Box<dyn GameModule>> = vec![
@@ -203,11 +236,13 @@ fn engine(reverse: bool, missing: Option<usize>, bad_family: bool) -> TestResult
             protocol: protocol.clone(),
             missing,
             bad_family,
+            index,
         }),
         Box::new(Module::<1> {
             protocol,
             missing,
             bad_family,
+            index,
         }),
     ];
     if reverse {
@@ -233,6 +268,30 @@ fn pending_real_engine_requires_each_exact_owner_grant_and_family_bound() -> Tes
             engine(reverse, None, true).is_err(),
             "wrong complete family ceiling accepted"
         );
+    }
+    Ok(())
+}
+
+/// 17g C2f (decision 4, fail fast at composition): the pending-charter
+/// composition requires its owner-index family registered with exactly its
+/// owner's descriptor; a composition without it, or with another bound,
+/// refuses at boot with the owner-index reason, never at a later Offer.
+#[test]
+fn pending_composition_requires_the_exact_buyer_offer_index_family() -> TestResult {
+    for reverse in [false, true] {
+        engine_with(reverse, None, false, Index::Exact)?;
+        for (index, reason) in [
+            (Index::Missing, "owner index family unavailable"),
+            (Index::Descriptor, "owner index descriptor differs"),
+        ] {
+            let refused = engine_with(reverse, None, false, index).err();
+            assert!(
+                refused
+                    .as_ref()
+                    .is_some_and(|e| e.to_string().contains(reason)),
+                "{index:?}: {refused:?}"
+            );
+        }
     }
     Ok(())
 }

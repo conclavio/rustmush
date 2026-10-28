@@ -4,65 +4,62 @@
 //! (Roll's own-only `OwnPaid`, folded into the original-holdings read), and
 //! its House flag picks the service: `mush_market::mind_renewal` for a
 //! personal licence, `mush_market::mind_house_renewal` for a House Pin. Each
-//! step is that service's own `player_step`, the same code `@mindrenewal` and
+//! step is that service's own player step, the same code `@mindrenewal` and
 //! `@housemindrenewal` run: its admission, retained entry, idempotency key
 //! and submission. Nothing renews by itself (D-UM-39): the holder asks for an
 //! offer, sees its frozen price, and pays it explicitly; the service then
-//! grants or refunds the funded offer on its own, as it always has. A
-//! refusal from the service is its own uniform line (`Renewal is unavailable
-//! or has changed.`), for a foreign licence and a missing one alike.
+//! grants or refunds the funded offer on its own, as it always has.
 //!
-//! - `+minds/renew <licence>`: with no offer, or after the last one closed or
-//!   granted, `RENEW_NOT_DUE` while the term runs (the service's own due
-//!   rule, `world_ic_now().at < term_end`), else ask for one (`RENEWING`);
-//!   a drafted offer prints `RENEW_OFFER` and `RENEW_HOW` and submits
-//!   nothing; a funded one `RENEW_FUNDED`.
-//! - `/pay` and `/decline` need a drafted offer (`NO_RENEWAL`), then submit
-//!   the service's accept or decline (`RENEW_PAYING` repeats the frozen
-//!   price; `RENEW_DECLINING`).
+//! **The hand-off (17g C2h, the lead's ruling R3, the C2e plan §5.1).**
+//! `+minds` is TacSim's command, so its context reads as TacSim, while each
+//! renewal service reads through the market's own renewal read and typed
+//! families, which mush-core refuses to a TacSim context. So TacSim does not
+//! take the step: each service registers a `front` continuation and, where
+//! the player market composes, delegates it to TacSim at composition
+//! (`MindCommerce::configure_market`, `mush_core::Registrar::
+//! delegate_continuation`). This command checks TacSim's own refusals,
+//! synchronously and in this order, then schedules the service's front for
+//! the actor with `mush_market::mind_renewal::player::front_argument`:
+//! 1. the licence number's shape (the `+minds` help otherwise);
+//! 2. a paid licence the actor holds (`NO_LICENCE`, for a foreign licence and
+//!    a missing one alike);
+//! 3. `/pay` and `/decline` only: a drafted offer waiting on it
+//!    (`NO_RENEWAL`), whose pending operation (`PaidHoldingView::
+//!    renewal_operation`) the step names, so the payment answers the offer
+//!    the holder saw and a changed offer is the service's refusal;
+//! 4. the service's front, composed, enabled and delegated (`NOT_OPEN`);
+//! 5. a live, connected player with an account (`NOT_OPEN`), with no
+//!    submission awaiting its receipt and room in the queue (`BUSY`);
+//! 6. the continuation itself (`NOT_OPEN` if mush-core refuses it: a line
+//!    queued by `@wait` dispatches with no connection, which the delegation
+//!    does not admit).
 //!
-//! `RENEWING`, `RENEW_PAYING` and `RENEW_DECLINING` are printed once the
-//! service has queued the submission, so a step the service refuses prints
-//! only its refusal; the engine's `Queued.` and the driver's line follow.
-//!
-//! **Held (the C2d fix round, reviewers C2D-R1, F1 and T1).** `player_step`
-//! cannot answer from this command: `+minds` is TacSim's command, so its
-//! context reads as TacSim (`ModuleActionState::for_dispatch` names the
-//! registering module), while each renewal service reads through the
-//! market's own owner-read handle (`RenewalReader`, requested by and allowed
-//! only to `market`) and the market's own typed families. mush-core refuses
-//! both reads to a TacSim context (`OwnerReadError::Authority`; a foreign
-//! family's `require_owner`), and the service maps every refusal to its one
-//! uniform line, so every held licence would read `Renewal is unavailable or
-//! has changed.` The owner-read caps are full (32/32, 17g C2a), so TacSim
-//! cannot take a renewal read of its own either. A seam that runs the step
-//! under the market's identity is the lead's ruling. Until it lands, all
-//! three forms check their shape and the actor's own licence (`NO_LICENCE`),
-//! then refuse `NOT_OPEN` at `RENEWALS_OPEN`, by C2c's rule for a command
-//! that cannot complete (reviewer C2C-3); the rest of `renew` is built and
-//! waits for that one constant, and its first dispatched test (a held
-//! licence reaching `RENEW_NOT_DUE`, story part 3) waits with it.
+//! On success this command prints nothing. The service's own handler then
+//! runs, under the market's identity, for the same actor, on the world
+//! loop's next timer wake (a 0 ms delay, provisional): it reads the licence
+//! through its own holder check, takes the step, and only then prints the
+//! `+minds` words (`RENEW_NOT_DUE`, `RENEW_OFFER` and `RENEW_HOW`,
+//! `RENEW_FUNDED`, `RENEWING`, `RENEW_PAYING`, `RENEW_DECLINING`, now the
+//! market's `mind_renewal::player` words) or its one uniform refusal
+//! (`Renewal is unavailable or has changed.`), so no request line ever
+//! promises a submission that was not made. The engine's `Queued.` and the
+//! driver's line follow a submission as for every command. The scheduler is
+//! RAM-only: a restart before the continuation runs drops it, and nothing
+//! was printed or submitted.
 
 use mush_core::{CmdError, Ctx};
-use mush_market::mind_renewal::{
-    RenewalPlayerOutcome, RenewalPlayerStep, RenewalState, RenewalStatusView,
-};
+use mush_market::mind_renewal::player::{FrontStep, front_argument};
 use mush_roll::commerce::LicenceId;
 use mush_roll::commerce::command_reader::{
-    PaidHoldingView, RollCommandReadRequest, RollCommandReadResult,
+    PaidHoldingView, RenewalMark, RollCommandReadRequest, RollCommandReadResult,
 };
 use mush_roll::commerce::holding_reader::{OriginalReadRequest, OriginalReadResult};
 
-use super::market::days;
 use super::words::{self, fill};
 
-const HOUR: i64 = 3_600;
-
-/// Whether `+minds/renew` may call the renewal services' `player_step`:
-/// false until a seam runs the step under the market's identity (module
-/// doc). All three forms refuse `NOT_OPEN` after `own_paid` while it is
-/// false.
-pub(crate) const RENEWALS_OPEN: bool = false;
+/// The continuation's delay, in milliseconds (17g §1 ruling 6:
+/// provisional): the service's handler runs on the next timer wake.
+const FRONT_DELAY_MS: i64 = 0;
 
 /// Which `+minds/renew` form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,170 +93,45 @@ pub(super) fn own_paid(ctx: &Ctx<'_>, licence: u64) -> Result<PaidHoldingView, C
         .ok_or_else(refuse)
 }
 
-/// One step on the service the licence's House flag selects.
-fn step(
-    ctx: &mut Ctx<'_>,
-    house: bool,
-    licence: LicenceId,
-    step: RenewalPlayerStep,
-) -> Result<RenewalPlayerOutcome, CmdError> {
-    if house {
-        mush_market::mind_house_renewal::player_step(ctx, licence, step)
+/// The step a form hands to the service: `+minds/renew` asks (or shows the
+/// offer that exists); `/pay` and `/decline` act on the drafted offer the
+/// holder's own paid holding names, else `NO_RENEWAL`.
+fn front_step(held: &PaidHoldingView, which: Renew) -> Result<FrontStep, CmdError> {
+    let offered = match (held.renewal(), held.renewal_operation()) {
+        (Some(RenewalMark::Offered), Some(operation)) => Some(operation),
+        _ => None,
+    };
+    let no_renewal = || {
+        CmdError::msg(fill(
+            words::NO_RENEWAL,
+            &[("licence", &held.licence().get().to_string())],
+        ))
+    };
+    Ok(match which {
+        Renew::Status => FrontStep::Request,
+        Renew::Pay => FrontStep::Accept(offered.ok_or_else(no_renewal)?),
+        Renew::Decline => FrontStep::Decline(offered.ok_or_else(no_renewal)?),
+    })
+}
+
+/// `+minds/renew <licence>`, `/pay <licence>` or `/decline <licence>`: the
+/// synchronous refusals of the module doc, then the hand-off to the
+/// service's front. Prints nothing on success.
+pub(crate) fn renew(ctx: &mut Ctx<'_>, text: &str, which: Renew) -> Result<(), CmdError> {
+    let number = super::author::number(text).ok_or_else(|| CmdError::msg(super::market::HELP))?;
+    let held = own_paid(ctx, number)?;
+    let step = front_step(&held, which)?;
+    let front = if held.house() {
+        mush_market::mind_house_renewal::player_front(ctx)
     } else {
-        mush_market::mind_renewal::player_step(ctx, licence, step)
+        mush_market::mind_renewal::player_front(ctx)
     }
-}
-
-/// The licence's renewal status, through the service's own status branch.
-fn status(
-    ctx: &mut Ctx<'_>,
-    house: bool,
-    licence: LicenceId,
-) -> Result<RenewalStatusView, CmdError> {
-    match step(ctx, house, licence, RenewalPlayerStep::Status)? {
-        RenewalPlayerOutcome::Status(view) => Ok(view),
-        // The status branch submits nothing.
-        RenewalPlayerOutcome::Queued | RenewalPlayerOutcome::Unresolved => Err(not_open()),
-    }
-}
-
-/// A submitting step (C2 plan §2.1 steps 1 and 2: a live, connected player
-/// with an account; `BUSY` while a submission awaits its receipt), then the
-/// request line once the service queued it. The service's `Unresolved` (its
-/// retained entry still awaits an earlier terminal) is `BUSY`.
-fn submit_step(
-    ctx: &mut Ctx<'_>,
-    house: bool,
-    licence: LicenceId,
-    kind: RenewalPlayerStep,
-    request: &str,
-) -> Result<(), CmdError> {
+    .ok_or_else(not_open)?;
     let actor = super::principal(ctx).ok_or_else(not_open)?;
     if ctx.authoritative_pending(actor) || ctx.authoritative_queue_full() {
         return Err(CmdError::msg(words::BUSY));
     }
-    match step(ctx, house, licence, kind)? {
-        RenewalPlayerOutcome::Queued => {
-            ctx.out.info(actor, request.to_owned());
-            Ok(())
-        }
-        RenewalPlayerOutcome::Unresolved | RenewalPlayerOutcome::Status(_) => {
-            Err(CmdError::msg(words::BUSY))
-        }
-    }
-}
-
-/// `+minds/renew <licence>`, `/pay <licence>` or `/decline <licence>`.
-pub(crate) fn renew(ctx: &mut Ctx<'_>, text: &str, which: Renew) -> Result<(), CmdError> {
-    let number = super::author::number(text).ok_or_else(|| CmdError::msg(super::market::HELP))?;
-    let held = own_paid(ctx, number)?;
-    if !RENEWALS_OPEN {
-        return Err(not_open());
-    }
-    let licence = held.licence();
-    let house = held.house();
-    let view = status(ctx, house, licence)?;
-    let shown = number.to_string();
-    let actor = ctx.actor;
-    match which {
-        Renew::Status => match view.state() {
-            RenewalState::Drafted => {
-                let now = ctx.w.world_ic_now().at;
-                for line in offer_lines(&shown, &view, now) {
-                    ctx.out.info(actor, line);
-                }
-                Ok(())
-            }
-            RenewalState::Funded => {
-                ctx.out
-                    .info(actor, fill(words::RENEW_FUNDED, &[("licence", &shown)]));
-                Ok(())
-            }
-            RenewalState::None | RenewalState::Closed | RenewalState::Granted => {
-                let now = ctx.w.world_ic_now().at;
-                if now < view.term_end_ic() {
-                    let left = days(view.term_end_ic().saturating_sub(now)).to_string();
-                    return Err(CmdError::msg(fill(
-                        words::RENEW_NOT_DUE,
-                        &[("licence", &shown), ("days", &left)],
-                    )));
-                }
-                let line = fill(words::RENEWING, &[("licence", &shown)]);
-                submit_step(ctx, house, licence, RenewalPlayerStep::Request, &line)
-            }
-        },
-        Renew::Pay | Renew::Decline => {
-            if view.state() != RenewalState::Drafted {
-                return Err(CmdError::msg(fill(
-                    words::NO_RENEWAL,
-                    &[("licence", &shown)],
-                )));
-            }
-            let (kind, line) = if which == Renew::Pay {
-                let price = crate::launch::credits(view.price_minor().unwrap_or_default());
-                (
-                    RenewalPlayerStep::Accept,
-                    fill(
-                        words::RENEW_PAYING,
-                        &[("price", &price), ("licence", &shown)],
-                    ),
-                )
-            } else {
-                (
-                    RenewalPlayerStep::Decline,
-                    fill(words::RENEW_DECLINING, &[("licence", &shown)]),
-                )
-            };
-            submit_step(ctx, house, licence, kind, &line)
-        }
-    }
-}
-
-/// A drafted offer's two lines: `RENEW_OFFER` (the frozen price, the renewed
-/// term and Grace in whole IC days, the IC hours left, rounded up, never
-/// below 0) and `RENEW_HOW`.
-pub(crate) fn offer_lines(licence: &str, view: &RenewalStatusView, now_ic: i64) -> [String; 2] {
-    offer_text(
-        licence,
-        view.price_minor().unwrap_or_default(),
-        view.term_seconds().unwrap_or_default(),
-        view.grace_seconds().unwrap_or_default(),
-        view.offer_expires_ic().unwrap_or(now_ic),
-        now_ic,
-    )
-}
-
-/// `offer_lines` from the view's raw fields (the frozen price in minor
-/// units, the renewed term and Grace in IC seconds, the offer's IC expiry),
-/// so the sentences are tested without a renewal service.
-pub(crate) fn offer_text(
-    licence: &str,
-    price_minor: i64,
-    term_seconds: i64,
-    grace_seconds: i64,
-    expires_ic: i64,
-    now_ic: i64,
-) -> [String; 2] {
-    let price = crate::launch::credits(price_minor);
-    let term = days(term_seconds).to_string();
-    let grace = days(grace_seconds).to_string();
-    let hours = hours_left(expires_ic, now_ic).to_string();
-    [
-        fill(
-            words::RENEW_OFFER,
-            &[
-                ("licence", licence),
-                ("price", &price),
-                ("term", &term),
-                ("grace", &grace),
-                ("hours", &hours),
-            ],
-        ),
-        fill(words::RENEW_HOW, &[("licence", licence)]),
-    ]
-}
-
-/// Whole hours from `now` to `until`, rounded up, never below 0.
-pub(crate) fn hours_left(until: i64, now: i64) -> i64 {
-    until.saturating_sub(now).max(0).saturating_add(HOUR - 1) / HOUR
+    let argument = front_argument(held.licence(), step);
+    ctx.schedule_continuation(&front, actor, &argument, FRONT_DELAY_MS)
+        .map_err(|_| not_open())
 }

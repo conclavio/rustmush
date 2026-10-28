@@ -2882,3 +2882,19 @@ impl GameModule for RollModule {
         }
     }
 }
+
+// 17g C2g (the C2g fix round, reviewers conformance/F5 and tests/T2): a lib
+// test's live claim census, kept after this file's first test-only item.
+#[cfg(test)]
+impl RollStore {
+    /// Replace the live IC claim census as the final audit's
+    /// `install_ic_claim_audit` would, without the audit or its readiness
+    /// gate, so `paid_resale::reader::resale_step` can be asked over a world
+    /// holding an open paid claim (`command_reader::tests`).
+    pub(crate) fn replace_ic_claims_for_tests(
+        &mut self,
+        inventory: Option<crate::commerce::ic_claims::ClaimInventory>,
+    ) {
+        self.ic_claims = inventory;
+    }
+}

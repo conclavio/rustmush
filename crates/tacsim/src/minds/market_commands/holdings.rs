@@ -2,7 +2,8 @@
 //!
 //! - Bare: `HOLD_HEAD`, up to 20 owner rows (`HOLD_MORE owner <cursor>` when
 //!   cut), up to 20 paid rows (`HOLD_MORE paid <cursor>`), then the purchases
-//!   waiting; `HOLD_EMPTY` when there is nothing at all.
+//!   waiting; `HOLD_EMPTY` instead of the head and both sections when there
+//!   is nothing in either section (no row and no cursor).
 //! - `owner <cursor>` and `paid <cursor>` page one section: `HOLD_HEAD`, the
 //!   section's rows after the cursor (possibly none) and `HOLD_MORE` while
 //!   the section goes on. A paged section past its end, or a stretch of own
@@ -16,27 +17,33 @@
 //! folded read's declared row ceiling, so this command makes up to
 //! `MAX_READS` reads to fill a section's 20 rows.
 //!
-//! **Not built (the C2c builder's report):** the paid section reads the
-//! per-holder paid index and the waiting purchases the per-buyer entitlement
-//! index (C2 plan §2.5 items 1 and 2), which C2b did not land. Roll answers
-//! the paid section `Unavailable`, so bare `+minds/holdings` and
-//! `+minds/holdings paid <cursor>` refuse `NOT_OPEN` rather than print a
-//! list that leaves the paid licences out (`HOLD_EMPTY` would then be
-//! false; it waits in `words::pending`). `+minds/holdings owner <cursor>` is
-//! built, but like every `+minds` form it needs the market read
-//! (`market::handles`), which no composition grants yet (`market`'s module
-//! doc), so today it too refuses `NOT_OPEN` (reviewer T-F4).
+//! **The paid section and the waiting purchases (17g C2g, the C2e plan §4.1
+//! item 2),** over 17g C2f's owner indexes, written inside the money
+//! transactions:
+//! - paid rows come from Roll's own-only `OwnHoldings { section: Paid }`
+//!   read, one bounded scan of the actor's own key prefix of the per-holder
+//!   index (`roll_mind_paid_holdings`) a read, each row exactly Roll's
+//!   `OwnPaid` view (`paid_line`); the cursor is the last row's licence;
+//! - after the sections, when the market read's own-only `OwnOpen` finds a
+//!   funded purchase (the per-buyer entitlement index), `HOLD_WAIT_HEAD` and
+//!   one `HOLD_WAIT` per funded purchase, whatever its listing's currency (a
+//!   withdrawn listing's escrow is still the actor's, and `+minds/buy/
+//!   complete` and `/refund` resolve it through the same index).
 //!
-//! 17g C2d: the paid row (`paid_line`, over Roll's own-only `OwnPaid` view)
-//! is built with its renewal suffix (`; renewal offered`, `; renewal paid`)
-//! and waits with the paid section for the per-holder index.
+//! Every `+minds` form sits behind the market read (`market::handles`,
+//! reviewer T-F4), so all three forms are live on the format-2 Active launch
+//! and refuse `NOT_OPEN` elsewhere.
 
+use mush_core::read_service::OwnerReadHandle;
 use mush_core::{CmdError, Ctx};
+use mush_market::mind_commands::{MarketCommandReader, MarketCommandRequest};
 use mush_roll::commerce::command_reader::{
     HoldingSection, OwnerHoldingView, OwnerPhase, PaidHoldingView, RenewalMark,
     RollCommandReadRequest, RollCommandReadResult,
 };
-use mush_roll::commerce::holding_reader::{OriginalOwnerReader, OriginalReadRequest};
+use mush_roll::commerce::holding_reader::{
+    OriginalOwnerReader, OriginalReadRequest, OriginalReadResult,
+};
 use mush_roll::commerce::paid::PaidForm;
 
 use super::market::{HOLDING_NAME, handles};
@@ -74,37 +81,108 @@ pub(crate) fn holdings_arguments(text: &str) -> Option<Holdings> {
 /// `+minds/holdings [owner|paid <cursor>]`.
 pub(crate) fn holdings(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let which = holdings_arguments(text).ok_or_else(|| CmdError::msg(super::market::HELP))?;
-    let (_, roll) = handles(ctx)?;
-    let (rows, more) = match which {
-        // The paid section and the waiting purchases need the indexes C2b
-        // did not land (module doc): Roll answers the paid section
-        // `Unavailable`, so these refuse rather than list a partial set.
-        Holdings::All | Holdings::Paid(_) => return Err(not_open()),
-        Holdings::Owner(cursor) => owner_section(ctx, &roll, Some(cursor))?,
+    let (market, roll) = handles(ctx)?;
+    let lines = match which {
+        Holdings::Owner(cursor) => {
+            let (rows, more) = owner_section(ctx, &roll, Some(cursor))?;
+            owner_lines(&rows, more)
+        }
+        Holdings::Paid(cursor) => {
+            let (rows, more) = paid_section(ctx, &roll, Some(cursor))?;
+            section_lines(rows.iter().map(paid_line).collect(), "paid", more)
+        }
+        Holdings::All => {
+            let (owner, owner_more) = owner_section(ctx, &roll, None)?;
+            let (paid, paid_more) = paid_section(ctx, &roll, None)?;
+            let waiting = waiting(ctx, &market)?;
+            all_lines(
+                (owner.iter().map(owner_line).collect(), owner_more),
+                (paid.iter().map(paid_line).collect(), paid_more),
+                &waiting,
+            )
+        }
     };
     let actor = ctx.actor;
-    for line in owner_lines(&rows, more) {
+    for line in lines {
         ctx.out.info(actor, line);
     }
     Ok(())
 }
 
-/// One paged owner section's lines: `HOLD_HEAD`, a `HOLD_OWNER` row each and
-/// `HOLD_MORE owner <cursor>` while the section goes on. Never `HOLD_EMPTY`:
-/// a page can be empty because the cursor is past the last charter or the
-/// reads met only other titles, and neither means the actor holds nothing
-/// (the cursor is printed in the second case).
+/// One paged owner section's lines (`section_lines` over `HOLD_OWNER` rows):
+/// `HOLD_HEAD`, a row each and `HOLD_MORE owner <cursor>` while the section
+/// goes on. Never `HOLD_EMPTY`: a page can be empty because the cursor is
+/// past the last charter or the reads met only other titles, and neither
+/// means the actor holds nothing (the cursor is printed in the second case).
 pub(crate) fn owner_lines(rows: &[OwnerHoldingView], more: Option<u64>) -> Vec<String> {
+    section_lines(rows.iter().map(owner_line).collect(), "owner", more)
+}
+
+/// 17g C2g: one paged section's lines: `HOLD_HEAD`, its rendered `rows` and
+/// `HOLD_MORE <section> <cursor>` while it goes on; never `HOLD_EMPTY`.
+pub(crate) fn section_lines(rows: Vec<String>, section: &str, more: Option<u64>) -> Vec<String> {
     let mut lines = vec![words::HOLD_HEAD.to_owned()];
-    lines.extend(rows.iter().map(owner_line));
-    if let Some(cursor) = more {
-        let cursor = cursor.to_string();
-        lines.push(fill(
+    lines.extend(rows);
+    lines.extend(more_line(section, more));
+    lines
+}
+
+fn more_line(section: &str, more: Option<u64>) -> Option<String> {
+    more.map(|cursor| {
+        fill(
             words::HOLD_MORE,
-            &[("section", "owner"), ("cursor", &cursor)],
-        ));
+            &[("section", section), ("cursor", &cursor.to_string())],
+        )
+    })
+}
+
+/// 17g C2g: the bare form's lines from the two rendered sections (rows and
+/// cursor each) and the waiting purchases' listing codes: `HOLD_HEAD`, the
+/// owner rows and their `HOLD_MORE owner`, the paid rows and their
+/// `HOLD_MORE paid`; or `HOLD_EMPTY` alone in their place when neither
+/// section has a row or a cursor (the C2c fix round's rule: never after a
+/// section that goes on). Then `HOLD_WAIT_HEAD` and a `HOLD_WAIT` per code,
+/// when there are any.
+pub(crate) fn all_lines(
+    owner: (Vec<String>, Option<u64>),
+    paid: (Vec<String>, Option<u64>),
+    waiting: &[String],
+) -> Vec<String> {
+    let (owner_rows, owner_more) = owner;
+    let (paid_rows, paid_more) = paid;
+    let mut lines = Vec::new();
+    if owner_rows.is_empty() && owner_more.is_none() && paid_rows.is_empty() && paid_more.is_none()
+    {
+        lines.push(words::HOLD_EMPTY.to_owned());
+    } else {
+        lines.push(words::HOLD_HEAD.to_owned());
+        lines.extend(owner_rows);
+        lines.extend(more_line("owner", owner_more));
+        lines.extend(paid_rows);
+        lines.extend(more_line("paid", paid_more));
+    }
+    if !waiting.is_empty() {
+        lines.push(words::HOLD_WAIT_HEAD.to_owned());
+        lines.extend(
+            waiting
+                .iter()
+                .map(|code| fill(words::HOLD_WAIT, &[("code", code)])),
+        );
     }
     lines
+}
+
+/// One Roll command read of the folded original-holdings read, or
+/// `NOT_OPEN` when it cannot run or answers another kind.
+fn command(
+    ctx: &Ctx<'_>,
+    roll: &OwnerReadHandle<OriginalOwnerReader>,
+    request: RollCommandReadRequest,
+) -> Result<RollCommandReadResult, CmdError> {
+    ctx.read_owner(roll, OriginalReadRequest::command(request))
+        .ok()
+        .and_then(OriginalReadResult::into_command)
+        .ok_or_else(not_open)
 }
 
 /// Up to `SECTION_ROWS` owner rows after `after`, and the cursor to show in
@@ -113,21 +191,15 @@ pub(crate) fn owner_lines(rows: &[OwnerHoldingView], more: Option<u64>) -> Vec<S
 /// out first (then the rows may be empty and the cursor still `Some`).
 fn owner_section(
     ctx: &Ctx<'_>,
-    roll: &mush_core::read_service::OwnerReadHandle<OriginalOwnerReader>,
+    roll: &OwnerReadHandle<OriginalOwnerReader>,
     after: Option<u64>,
 ) -> Result<(Vec<OwnerHoldingView>, Option<u64>), CmdError> {
     let mut rows: Vec<OwnerHoldingView> = Vec::new();
     let mut cursor = after;
     for _ in 0..MAX_READS {
-        let request = OriginalReadRequest::command(RollCommandReadRequest::own_holdings(
-            HoldingSection::Owner,
-            cursor,
-        ));
-        let page = ctx
-            .read_owner(roll, request)
-            .ok()
-            .and_then(mush_roll::commerce::holding_reader::OriginalReadResult::into_command)
-            .and_then(RollCommandReadResult::into_owner_holdings)
+        let request = RollCommandReadRequest::own_holdings(HoldingSection::Owner, cursor);
+        let page = command(ctx, roll, request)?
+            .into_owner_holdings()
             .ok_or_else(not_open)?;
         for row in page.rows() {
             if rows.len() == SECTION_ROWS {
@@ -142,6 +214,50 @@ fn owner_section(
         }
     }
     Ok((rows, cursor))
+}
+
+/// 17g C2g: up to `SECTION_ROWS` paid rows after the licence `after`, and
+/// the cursor to show in `HOLD_MORE paid` when the section goes on: the last
+/// shown licence, or Roll's own cursor when the reads ran out first.
+fn paid_section(
+    ctx: &Ctx<'_>,
+    roll: &OwnerReadHandle<OriginalOwnerReader>,
+    after: Option<u64>,
+) -> Result<(Vec<PaidHoldingView>, Option<u64>), CmdError> {
+    let mut rows: Vec<PaidHoldingView> = Vec::new();
+    let mut cursor = after;
+    for _ in 0..MAX_READS {
+        let request = RollCommandReadRequest::own_holdings(HoldingSection::Paid, cursor);
+        let page = command(ctx, roll, request)?
+            .into_paid_holdings()
+            .ok_or_else(not_open)?;
+        for row in page.rows() {
+            if rows.len() == SECTION_ROWS {
+                let last = rows.last().map(|r| r.licence().get());
+                return Ok((rows, last));
+            }
+            rows.push(row.clone());
+        }
+        match page.next() {
+            None => return Ok((rows, None)),
+            Some(next) => cursor = Some(next.get()),
+        }
+    }
+    Ok((rows, cursor))
+}
+
+/// 17g C2g: the listing codes of the actor's open (funded) purchases, from
+/// the market read's own-only `OwnOpen`.
+fn waiting(
+    ctx: &Ctx<'_>,
+    market: &OwnerReadHandle<MarketCommandReader>,
+) -> Result<Vec<String>, CmdError> {
+    let open = ctx
+        .read_owner(market, MarketCommandRequest::own_open())
+        .ok()
+        .and_then(mush_market::mind_commands::MarketCommandResult::into_own_open)
+        .ok_or_else(not_open)?;
+    Ok(open.iter().map(|view| view.code().to_owned()).collect())
 }
 
 /// `Active, {n} days left`, `Grace, {n} days left` or `Lapsed`.
@@ -190,13 +306,32 @@ pub(crate) fn owner_row(
     .to_owned()
 }
 
-// ---- 17g C2d: the paid rows, held with the paid section (module doc) ----
+// ---- the paid rows (17g C2d; live since 17g C2g) ----
 
-/// 17g C2d: a paid row's flags, each prefixed `; `, in this order: `no
-/// resale` (the term is not transferable), `revoked`, `selling` (a funded
-/// resale), then `renewal offered` or `renewal paid` (the licence's renewal
-/// head). The paid section that prints them waits for the per-holder index.
-#[cfg_attr(not(test), allow(dead_code))]
+/// A paid row's flags, each prefixed `; `, in this order: `no resale` (the
+/// term is not transferable), `revoked` (the Registry revoked the current
+/// term), `selling` (a funded resale holds the buyer's payment), then `renew
+/// offer` or `renew paid` (the licence's renewal head: a drafted offer, or
+/// one the holder has paid). 17g C2g (the lead's ruling R4) shortened the
+/// two renewal words from C2d's `renewal offered` and `renewal paid` so the
+/// widest legal row fits the 120-column floor.
+///
+/// **The one legality rule** (the width test, C2d test 8, enumerates paid
+/// rows under it and `paid_flags_follow_the_one_rule` is its truth table;
+/// C2c test 4 no longer enumerates paid rows): a paid row carries
+/// at most one renewal mark; `selling` only on a transferable, unrevoked
+/// licence; `selling` never with a renewal mark (the resale provider refuses
+/// an Accept across an open renewal, "resale cannot cross open renewal", and
+/// the renewal reader refuses a Draft while a resale is pending,
+/// `require_not_pending`); a renewal mark never with an Active phase (the
+/// renewal reader refuses a Draft before `predecessor_term_end`); `revoked`
+/// with a renewal mark is legal (a revocation admits a matching pending
+/// renewal). The widest legal row is a Grace phase with `; no resale;
+/// revoked; renew offer`: 118 columns at the two-digit day maxima.
+///
+/// The rule is a claim about what Roll's providers let a row reach, not a
+/// check here: `paid_flags` prints whatever flags the read returns. Its
+/// reachability through real rows is the C2h story's (parts 2 and 3).
 pub(crate) fn paid_flags(
     transferable: bool,
     revoked: bool,
@@ -208,8 +343,8 @@ pub(crate) fn paid_flags(
         (!transferable, "; no resale"),
         (revoked, "; revoked"),
         (selling, "; selling"),
-        (renewal == Some(RenewalMark::Offered), "; renewal offered"),
-        (renewal == Some(RenewalMark::Paid), "; renewal paid"),
+        (renewal == Some(RenewalMark::Offered), "; renew offer"),
+        (renewal == Some(RenewalMark::Paid), "; renew paid"),
     ] {
         if on {
             flags.push_str(flag);
@@ -218,9 +353,8 @@ pub(crate) fn paid_flags(
     flags
 }
 
-/// 17g C2d: `HOLD_PAID` from its parts (trailing spaces trimmed): `{kind}` is
-/// `House Pin` or `paid`, `{form}` `sealed`, `open` or `open-resale`.
-#[cfg_attr(not(test), allow(dead_code))]
+/// `HOLD_PAID` from its parts (trailing spaces trimmed): `{kind}` is `House
+/// Pin` or `paid`, `{form}` `sealed`, `open` or `open-resale`.
 pub(crate) fn paid_row(
     licence: u64,
     house: bool,
@@ -233,7 +367,7 @@ pub(crate) fn paid_row(
     let name = cut(name, HOLDING_NAME);
     let kind = if house { "House Pin" } else { "paid" };
     fill(
-        words::pending::HOLD_PAID,
+        words::HOLD_PAID,
         &[
             ("licence", &licence),
             ("kind", kind),
@@ -247,9 +381,8 @@ pub(crate) fn paid_row(
     .to_owned()
 }
 
-/// 17g C2d: one paid row from Roll's own `OwnPaid` view. Waits for the paid
-/// section (module doc); no test builds a view outside Roll.
-#[allow(dead_code)]
+/// One paid row from Roll's own `OwnPaid` view (the paid section's rows are
+/// exactly that view).
 pub(crate) fn paid_line(view: &PaidHoldingView) -> String {
     let form = match view.form() {
         PaidForm::Sealed {} => "sealed",

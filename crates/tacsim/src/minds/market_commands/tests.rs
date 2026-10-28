@@ -185,10 +185,17 @@ fn rate_refuses_busy_only_for_the_characters_own_registry_job() -> TestResult {
 /// (`{price:>12}`; the longest price `credits` prints is `999999.99cr`),
 /// `open-resale`, class III, a two-digit Grace. The brief's figures are
 /// recomputed here and pinned: `ROW` 106, `DETAIL` 86, `TERMS_LINE` 76,
-/// `SPLIT` under 100 with both optional cuts, `HOLD_OWNER` 80, `HOLD_PAID`
-/// 114 (with C2d's `; no resale; renewal offered`, the longest legal pair)
-/// and `HOLD_WAIT` 96; any line over 120 fails rather than wraps. The words
-/// still pending the indexes (`words::pending`) are measured too.
+/// `SPLIT` under 100 with both optional cuts, `HOLD_OWNER` 80 and
+/// `HOLD_WAIT` 96; any line over 120 fails rather than wraps. The own
+/// purchase, buy-step and holdings words (live since 17g C2g) are measured
+/// too.
+///
+/// 17g C2g (the lead's ruling R4): the paid row `HOLD_PAID` is no longer
+/// enumerated here. Its one enumerator, under the one legality rule
+/// `holdings::paid_flags` states, is `trade_lines_fit_one_hundred_and_
+/// twenty_columns` (C2d test 8), which varies the phase and pins the widest
+/// legal row at 118; this test enumerated a different flag list, without
+/// the reachable `; no resale; revoked; renewal …` row in Grace.
 #[test]
 fn market_rows_fit_one_hundred_and_twenty_columns() -> TestResult {
     use super::holdings::owner_row;
@@ -238,42 +245,7 @@ fn market_rows_fit_one_hundred_and_twenty_columns() -> TestResult {
         }
     }
     check_eq!(widest, 80, "HOLD_OWNER at the maxima");
-    // The pending paid row: every legal flag combination (a non-transferable
-    // or revoked licence is never selling; a revoked one is not renewed; one
-    // renewal state at a time).
-    let name = long.chars().take(20).collect::<String>();
-    let mut widest = 0;
-    for kind in ["paid", "House Pin"] {
-        for flags in [
-            "",
-            "; no resale",
-            "; revoked",
-            "; selling",
-            "; no resale; revoked",
-            "; renewal offered",
-            "; renewal paid",
-            "; no resale; renewal offered",
-            "; no resale; renewal paid",
-            "; selling; renewal offered",
-            "; selling; renewal paid",
-        ] {
-            let row = fill(
-                words::pending::HOLD_PAID,
-                &[
-                    ("licence", "99999999"),
-                    ("kind", kind),
-                    ("name", &name),
-                    ("form", "open-resale"),
-                    ("phase", "Active, 90 days left"),
-                    ("flags", flags),
-                ],
-            );
-            check!(width(&row) <= 120, "{row}");
-            widest = widest.max(width(&row));
-        }
-    }
-    check_eq!(widest, 114, "HOLD_PAID at the maxima");
-    let wait = fill(words::pending::HOLD_WAIT, &[("code", "feed0001")]);
+    let wait = fill(words::HOLD_WAIT, &[("code", "feed0001")]);
     check_eq!(width(&wait), 96, "{wait}");
     // Every other sentence at its longest fill.
     let code = [("code", "feed0001")];
@@ -282,33 +254,34 @@ fn market_rows_fit_one_hundred_and_twenty_columns() -> TestResult {
         fill(words::NO_LISTING, &code),
         fill(words::AMBIGUOUS, &code),
         fill(words::QUOTING, &code),
-        fill(
-            words::PUBLISHING,
-            &[("filed", "99999999"), ("form", "open-resale")],
-        ),
+        super::market::publishing_line("99999999", "open-resale", false, true),
         fill(words::TERMS, &[("price", "999999.99cr"), ("term", "90")]),
         fill(
             words::HOLD_MORE,
             &[("section", "owner"), ("cursor", "4294967295")],
         ),
         fill(
-            words::pending::YOUR_QUOTE,
+            words::HOLD_MORE,
+            &[("section", "paid"), ("cursor", "18446744073709551615")],
+        ),
+        fill(
+            words::YOUR_QUOTE,
             &[
                 ("price", "999999.99cr"),
                 ("seconds", "600"),
                 ("code", "feed0001"),
             ],
         ),
-        fill(words::pending::QUOTE_EXPIRED, &code),
-        fill(words::pending::YOUR_ESCROW, &code),
-        fill(words::pending::ASK, &code),
-        fill(words::pending::NO_QUOTE, &code),
-        fill(words::pending::PAYING, &code),
-        fill(words::pending::NO_PURCHASE, &code),
-        fill(words::pending::COMPLETING, &code),
-        fill(words::pending::REFUNDING, &code),
-        words::pending::HOLD_WAIT_HEAD.to_owned(),
-        words::pending::HOLD_EMPTY.to_owned(),
+        fill(words::QUOTE_EXPIRED, &code),
+        fill(words::YOUR_ESCROW, &code),
+        fill(words::ASK, &code),
+        fill(words::NO_QUOTE, &code),
+        fill(words::PAYING, &code),
+        fill(words::NO_PURCHASE, &code),
+        fill(words::COMPLETING, &code),
+        fill(words::REFUNDING, &code),
+        words::HOLD_WAIT_HEAD.to_owned(),
+        words::HOLD_EMPTY.to_owned(),
         super::market::HELP.to_owned(),
         super::market::USAGE_PUBLISH.to_owned(),
     ] {
@@ -395,7 +368,9 @@ fn publish_arguments_parse_strictly() -> TestResult {
         ("12 form=open sealed", R::Usage),
         ("12 form=open price=", R::Usage),
         ("12 form=open price=4.001", R::Usage),
-        ("12 form=open seats=0", R::Usage),
+        ("12 form=open seats=00", R::Usage),
+        ("12 form=open term=00", R::Usage),
+        ("12 form=open price=00", R::Usage),
         ("12 form=open term=ninety", R::Usage),
     ] {
         check_eq!(publish_arguments(text), Err(refusal), "{text:?}");
@@ -455,6 +430,130 @@ fn publish_arguments_parse_strictly() -> TestResult {
     Ok(())
 }
 
+/// 17g C2e test 7 (C2e plan §2.1 items 4b and 4c, review FE-F13).
+///
+/// - `price=0`, `seats=0` and `term=0` (and `price=0cr`, `price=0.00`)
+///   parse, a zero being a value of `@mind/publish`'s own parse, and
+///   `terms_match` refuses each against the counter's values, so `publish`
+///   answers `TERMS` with the counter's price and term, not the usage line.
+///   The trade price grammar (`credits_minor`) still refuses a zero.
+/// - The `PUBLISHING` request line carries the listing row's flags as `ROW`
+///   prints them: `; no resale` for `transfer=no`, `; derived` for a
+///   dependent line, both together; and for a transferable listing of an
+///   original line it is byte-identical to the line before 17g C2e.
+#[test]
+fn publish_refuses_zero_terms() -> TestResult {
+    use super::market::{credits_minor, publish_arguments, publishing_line, terms_match};
+    for (text, price, seats, term) in [
+        ("12 form=open price=0", Some(0), None, None),
+        ("12 form=open price=0cr", Some(0), None, None),
+        ("12 form=open price=0.00", Some(0), None, None),
+        ("12 form=open seats=0", None, Some(0), None),
+        ("12 form=open term=0", None, None, Some(0)),
+    ] {
+        let args = publish_arguments(text).map_err(|e| format!("{text}: {e:?}"))?;
+        check_eq!(
+            (args.price, args.seats, args.term),
+            (price, seats, term),
+            "{text}"
+        );
+        check!(!terms_match(&args, 40_000, 90), "{text}");
+    }
+    check_eq!(credits_minor("0"), None, "the trade grammar is unchanged");
+    check_eq!(
+        fill(words::TERMS, &[("price", "400cr"), ("term", "90")]),
+        "Listings here sell at 400cr for one seat and 90 IC days; per-listing terms are not \
+         available yet."
+    );
+    check_eq!(
+        publishing_line("12", "open", true, false),
+        "Listing filed mind 12 here as open.",
+        "unchanged for a transferable original listing"
+    );
+    check_eq!(
+        publishing_line("12", "open-resale", false, false),
+        "Listing filed mind 12 here as open-resale; no resale."
+    );
+    check_eq!(
+        publishing_line("12", "open", true, true),
+        "Listing filed mind 12 here as open; derived."
+    );
+    check_eq!(
+        publishing_line("12", "sealed", false, true),
+        "Listing filed mind 12 here as sealed; no resale, derived."
+    );
+    Ok(())
+}
+
+/// 17g C2e (the C2e fix round, reviewer tests/T2): `publish`'s request is
+/// built by one pure function (`list_request`) from the parsed arguments and
+/// the filed line's own facts, so the `PUBLISHING` line it prints names the
+/// same transfer mark and derivation as the List offer it submits and the
+/// protocol it picks. Over the four combinations: a dependent line lists
+/// through the derived protocol and its line says `derived`; `transfer=no`
+/// is `"transferable": false` in the offer and `no resale` in the line; the
+/// offer carries the List wire's form and royalty and the owner licence.
+#[test]
+fn publish_request_line_matches_the_offer() -> TestResult {
+    use super::market::{list_request, publish_arguments};
+    use mush_market::mind_commands::Protocol;
+    let licence = mush_roll::commerce::LicenceId::new(7)?;
+    for (text, dependent, protocol, line, form, royalty, transferable) in [
+        (
+            "12 form=open",
+            false,
+            Protocol::Original,
+            "Listing filed mind 12 here as open.",
+            "open",
+            0,
+            true,
+        ),
+        (
+            "12 form=open transfer=no",
+            false,
+            Protocol::Original,
+            "Listing filed mind 12 here as open; no resale.",
+            "open",
+            0,
+            false,
+        ),
+        (
+            "12 form=open-resale royalty=300",
+            true,
+            Protocol::Derived,
+            "Listing filed mind 12 here as open-resale; derived.",
+            "open_resale",
+            300,
+            true,
+        ),
+        (
+            "12 form=sealed transfer=no",
+            true,
+            Protocol::Derived,
+            "Listing filed mind 12 here as sealed; no resale, derived.",
+            "sealed",
+            0,
+            false,
+        ),
+    ] {
+        let args = publish_arguments(text).map_err(|e| format!("{text}: {e:?}"))?;
+        let request = list_request(&args, dependent, licence);
+        check_eq!(request.protocol, protocol, "{text}");
+        check_eq!(request.line, line, "{text}");
+        check_eq!(
+            request.parameters,
+            serde_json::json!({
+                "owner_licence": licence,
+                "form": form,
+                "royalty_permille": royalty,
+                "transferable": transferable,
+            }),
+            "{text}"
+        );
+    }
+    Ok(())
+}
+
 /// 17g C2c (the C2c fix round, reviewers F3, C2C-4 and F4): a page that
 /// shows no rows but goes on prints its head and its cursor, never the
 /// "nothing at all" sentence. Listings: `HEAD` then `MORE` with the cursor's
@@ -489,7 +588,7 @@ fn an_empty_page_that_goes_on_prints_its_cursor() -> TestResult {
         check!(
             !lines
                 .iter()
-                .any(|l| l == words::EMPTY || l == words::pending::HOLD_EMPTY)
+                .any(|l| l == words::EMPTY || l == words::HOLD_EMPTY)
         );
     }
     Ok(())
@@ -733,29 +832,50 @@ fn accept_selects_the_offer_the_buyer_confirms() -> TestResult {
     Ok(())
 }
 
+/// The one legality rule of a paid row's flags, exactly as
+/// `holdings::paid_flags`' doc states it (C2d test 8, the one width test of
+/// paid rows, enumerates under it; the truth table checks it against a
+/// hand-written list): at most one renewal mark (the `Option`);
+/// `selling` only on a transferable, unrevoked licence; `selling` never with
+/// a renewal mark; a renewal mark never with an Active phase; `revoked` with
+/// a renewal mark legal.
+fn legal_paid_flags(
+    active: bool,
+    transferable: bool,
+    revoked: bool,
+    selling: bool,
+    renewal: Option<mush_roll::commerce::command_reader::RenewalMark>,
+) -> bool {
+    !(selling && (!transferable || revoked))
+        && !(selling && renewal.is_some())
+        && !(active && renewal.is_some())
+}
+
 /// 17g C2d test 8 (the 120-column floor): every C2d sentence at its maxima
 /// fits 120 columns: 8-digit licence and filed numbers, a 12-character price
 /// (`1000000.00cr`) and its 10-character `price=` spelling, the server's
 /// longest player name (20 characters, `mush_config::accounts`' character
 /// name rule), four-digit minutes and hours, 99 IC days; the longest is
-/// `CHARTER_OFFER` at 109. `HOLD_PAID` fits with each flag pair below (a
-/// pending renewal excludes a sold licence, a sold licence is transferable),
-/// the longest `; no resale; renewal offered` at 114. The `+minds` and
-/// `@registry` help lines fit too.
+/// `CHARTER_OFFER` at 109. The `+minds` and `@registry` help lines fit too.
 ///
-/// Owed (the C2d fix round, reviewer C2D-R4, deferred to the sub-cut that
-/// prints the paid rows): a revocation admits a pending renewal whose
-/// binding matches the birth (`registry_revocation::history`), and a revoked
-/// term may renew once its original Grace ends, so `revoked` with a renewal
-/// mark is reachable; on a `transfer=no` licence that is `; no resale;
-/// revoked; renewal offered` (37 characters), 121 or 122 columns in Grace
-/// (a renewal is drafted only once the term has ended, so never with an
-/// Active phase). The filter below still leaves it out: fitting it
-/// needs a ruling on the brief's flag words or C2c's `HOLD_PAID` layout, and
-/// no paid row prints until the per-holder index lands.
+/// 17g C2g (the lead's ruling R4): this is the ONE enumerator of the paid
+/// row `HOLD_PAID`, under the one legality rule `holdings::paid_flags`
+/// states (`legal_paid_flags`), over every flag combination, both kinds and
+/// the PHASE at its two-digit maxima: `Active, 99 days left` (20 columns),
+/// `Grace, 99 days left` (19) and `Lapsed` (6). The renewal words are
+/// `; renew offer` and `; renew paid`, so the reachable C2D-R4 row (`;
+/// no resale; revoked;` and a renewal mark, in Grace: a renewal is drafted
+/// only after the term ends and a revocation admits a matching pending
+/// renewal) is no longer filtered out: the widest legal row is that one, at
+/// 85 plus 33, so 118 columns, pinned (a 3-day Grace makes it 117; the pin is the
+/// two-digit maximum the other widths use). The old `set <= 2` and
+/// `renewal.is_some() && (revoked || selling)` exclusions are gone.
 #[test]
 fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
     use super::holdings::{paid_flags, paid_row};
+    // 17g C2h: the renewal service prints the renewal words after its step,
+    // so they are the market's now (verbatim; the pins below are unchanged).
+    use mush_market::mind_renewal::player as renewal;
     use mush_roll::commerce::command_reader::RenewalMark;
     let width = |line: &str| line.chars().count();
     let n = "99999999";
@@ -776,14 +896,14 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
     let mut widest = ("", 0);
     for (name, template) in [
         ("NO_LICENCE", words::NO_LICENCE),
-        ("RENEW_NOT_DUE", words::RENEW_NOT_DUE),
-        ("RENEWING", words::RENEWING),
-        ("RENEW_OFFER", words::RENEW_OFFER),
-        ("RENEW_HOW", words::RENEW_HOW),
-        ("RENEW_FUNDED", words::RENEW_FUNDED),
+        ("RENEW_NOT_DUE", renewal::RENEW_NOT_DUE),
+        ("RENEWING", renewal::RENEWING),
+        ("RENEW_OFFER", renewal::RENEW_OFFER),
+        ("RENEW_HOW", renewal::RENEW_HOW),
+        ("RENEW_FUNDED", renewal::RENEW_FUNDED),
         ("NO_RENEWAL", words::NO_RENEWAL),
-        ("RENEW_PAYING", words::RENEW_PAYING),
-        ("RENEW_DECLINING", words::RENEW_DECLINING),
+        ("RENEW_PAYING", renewal::RENEW_PAYING),
+        ("RENEW_DECLINING", renewal::RENEW_DECLINING),
         ("RESELLING", words::RESELLING),
         ("RESELL_TELL", words::RESELL_TELL),
         ("CHARTERING", words::CHARTERING),
@@ -812,40 +932,38 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
         }
     }
     check_eq!(widest, ("CHARTER_OFFER", 109), "the longest C2d sentence");
-    // The paid holdings row with each legal flag pair.
+    // The paid holdings row: every legal combination, every phase.
     let renewals = [None, Some(RenewalMark::Offered), Some(RenewalMark::Paid)];
-    let mut widest = 0;
-    let mut longest = String::new();
-    for transferable in [true, false] {
-        for revoked in [false, true] {
-            for selling in [false, true] {
-                for renewal in renewals {
-                    let set = usize::from(!transferable)
-                        + usize::from(revoked)
-                        + usize::from(selling)
-                        + usize::from(renewal.is_some());
-                    // Leaves out revoked with a renewal mark (reachable;
-                    // owed, the doc above).
-                    let legal = set <= 2
-                        && !(selling && !transferable)
-                        && !(renewal.is_some() && (revoked || selling));
-                    if !legal {
-                        continue;
-                    }
-                    let flags = paid_flags(transferable, revoked, selling, renewal);
-                    for house in [false, true] {
-                        let row = paid_row(
-                            99_999_999,
-                            house,
-                            "A charter name far longer than any column allows",
-                            "open-resale",
-                            "Active, 90 days left",
-                            &flags,
-                        );
-                        check!(width(&row) <= 120, "{row}");
-                        if width(&row) > widest {
-                            widest = width(&row);
-                            longest = flags.clone();
+    let mut widest = ("", 0, String::new(), String::new());
+    let mut legal_rows = 0;
+    for (phase, active) in [
+        ("Active, 99 days left", true),
+        ("Grace, 99 days left", false),
+        ("Lapsed", false),
+    ] {
+        for transferable in [true, false] {
+            for revoked in [false, true] {
+                for selling in [false, true] {
+                    for renewal in renewals {
+                        if !legal_paid_flags(active, transferable, revoked, selling, renewal) {
+                            continue;
+                        }
+                        let flags = paid_flags(transferable, revoked, selling, renewal);
+                        for house in [false, true] {
+                            let row = paid_row(
+                                99_999_999,
+                                house,
+                                "A charter name far longer than any column allows",
+                                "open-resale",
+                                phase,
+                                &flags,
+                            );
+                            legal_rows += 1;
+                            check!(width(&row) <= 120, "{row}");
+                            if width(&row) > widest.1 {
+                                widest =
+                                    ("HOLD_PAID", width(&row), phase.to_owned(), flags.clone());
+                            }
                         }
                     }
                 }
@@ -853,12 +971,23 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
         }
     }
     check_eq!(
-        (widest, longest.as_str()),
-        (114, "; no resale; renewal offered")
+        legal_rows,
+        2 * (5 + 13 + 13),
+        "both kinds of every legal row"
+    );
+    check_eq!(
+        widest,
+        (
+            "HOLD_PAID",
+            118,
+            "Grace, 99 days left".to_owned(),
+            "; no resale; revoked; renew offer".to_owned()
+        ),
+        "the widest legal paid row"
     );
     check_eq!(
         paid_flags(true, false, false, Some(RenewalMark::Paid)),
-        "; renewal paid"
+        "; renew paid"
     );
     for line in super::market::HELP
         .lines()
@@ -872,16 +1001,26 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
 /// 17g C2d fix round (reviewer T1): `+minds/renew`'s drafted-offer lines
 /// from the view's raw fields. The frozen price prints as credits, the
 /// renewed term and Grace in whole IC days and the offer's remaining IC hours
-/// rounded up, never below 0 (an offer at or past its expiry reads 0). The
-/// form itself is held at `RENEWALS_OPEN` (`renew`'s module doc: the renewal
-/// services' reads refuse a TacSim command context), so its dispatched test,
-/// a held licence reaching `RENEW_NOT_DUE`, waits with it.
+/// rounded up, never below 0 (an offer at or past its expiry reads 0).
+///
+/// 17g C2h (the C2e plan §5.1): the renewal service's `front` prints these
+/// lines after its step, so the functions are the market's
+/// (`mush_market::mind_renewal::player`); the pins are unchanged, and the
+/// market's credit and day renderings are TacSim's own (`launch::credits`,
+/// `market::days`), compared here. The `RENEWALS_OPEN` pin is gone with the
+/// hold: the dispatched form (a held licence reaching `RENEW_NOT_DUE`, then
+/// the offer, the payment and the grant) is the player market story's part 3.
 #[test]
 fn renewal_offer_lines_round_hours_up() -> TestResult {
-    use super::renew::{RENEWALS_OPEN, hours_left, offer_text};
+    use mush_market::mind_renewal::player::{credits, days, hours_left, offer_text};
     const HOUR: i64 = 3_600;
     const DAY: i64 = 86_400;
-    check!(!RENEWALS_OPEN, "held until the market-identity seam lands");
+    for minor in [0, 1, 99, 100, 1_250, 40_000, 100_000_000, -1, -150] {
+        check_eq!(credits(minor), crate::launch::credits(minor), "{minor}");
+    }
+    for seconds in [-1, 0, 1, DAY - 1, DAY, DAY + 1, 90 * DAY, 90 * DAY - 1] {
+        check_eq!(days(seconds), super::market::days(seconds), "{seconds}");
+    }
     for (until, now, hours) in [
         (HOUR, 0, 1),
         (HOUR + 1, 0, 2),
@@ -906,6 +1045,412 @@ fn renewal_offer_lines_round_hours_up() -> TestResult {
     check_eq!(
         offer_text("41", 1_250, 90 * DAY - 1, 0, now - 5, now)[0],
         "Licence 41 renews for 12.50cr (90+0 IC days); the offer is open 0 more IC hours."
+    );
+    Ok(())
+}
+
+/// 17g C2g (the lead's ruling R4): the truth table of the one legality rule
+/// `holdings::paid_flags` states. Over every phase (Active, Grace, Lapsed),
+/// transfer mark, revocation, sale and renewal mark, `legal_paid_flags`
+/// admits exactly these rows, whose flags `paid_flags` prints in its fixed
+/// order with the R4 renewal words:
+/// - Active (no renewal mark): none, `no resale`, `revoked`, `selling`,
+///   `no resale; revoked`;
+/// - Grace and Lapsed: the same five, and each of the four unsold
+///   (transfer, revocation) states with `renew offer` or `renew paid`.
+///
+/// So `selling` is never with `no resale`, `revoked` or a renewal mark, and
+/// `revoked` with a renewal mark is legal. The admitted sets are written out
+/// by hand, and of the 24 combinations per phase the rule refuses 19 in
+/// Active and 11 in Grace and Lapsed (counted, not re-derived from the rule).
+/// The rule is about what Roll lets a row reach (`paid_flags`' doc); this
+/// test pins the rule's statement and `paid_flags`' words and order.
+#[test]
+fn paid_flags_follow_the_one_rule() -> TestResult {
+    use super::holdings::paid_flags;
+    use mush_roll::commerce::command_reader::RenewalMark;
+    use std::collections::BTreeSet;
+    let unsold = ["", "; no resale", "; revoked", "; no resale; revoked"];
+    let mut quiet: BTreeSet<String> = unsold.iter().map(|f| (*f).to_owned()).collect();
+    quiet.insert("; selling".to_owned());
+    let mut renewing = quiet.clone();
+    for flags in unsold {
+        for mark in ["; renew offer", "; renew paid"] {
+            renewing.insert(format!("{flags}{mark}"));
+        }
+    }
+    check_eq!((quiet.len(), renewing.len()), (5, 13));
+    let renewals = [None, Some(RenewalMark::Offered), Some(RenewalMark::Paid)];
+    for (phase, active, expected, refused_rows) in [
+        ("Active", true, &quiet, 19),
+        ("Grace", false, &renewing, 11),
+        ("Lapsed", false, &renewing, 11),
+    ] {
+        let mut admitted = BTreeSet::new();
+        let mut refused = 0;
+        for transferable in [true, false] {
+            for revoked in [false, true] {
+                for selling in [false, true] {
+                    for renewal in renewals {
+                        let flags = paid_flags(transferable, revoked, selling, renewal);
+                        if legal_paid_flags(active, transferable, revoked, selling, renewal) {
+                            check!(admitted.insert(flags.clone()), "{phase}: one row {flags:?}");
+                        } else {
+                            refused += 1;
+                        }
+                    }
+                }
+            }
+        }
+        check_eq!(&admitted, expected, "{phase}");
+        check_eq!(refused, refused_rows, "{phase}: refused combinations");
+    }
+    check_eq!(
+        paid_flags(false, true, false, Some(RenewalMark::Offered)),
+        "; no resale; revoked; renew offer",
+        "the widest legal flags, in order"
+    );
+    check_eq!(paid_flags(true, false, true, None), "; selling");
+    check_eq!(paid_flags(true, false, false, None), "");
+    Ok(())
+}
+
+/// 17g C2g (the C2e plan §4.1 item 2): `+minds <code>`'s own-purchase line
+/// (`market::own_line`, the C2c words). A funded purchase is `YOUR_ESCROW`
+/// whatever quote sits beside it; else the newest quote is `YOUR_QUOTE` with
+/// its price and the whole seconds left while the world clock is before its
+/// expiry, and `QUOTE_EXPIRED` at or after it (the provider's own Fund test,
+/// `now >= expires_at_utc` refuses); no record is no line (then `ASK` when
+/// the listing is current).
+#[test]
+fn own_purchase_line_follows_the_actors_record() -> TestResult {
+    use super::market::own_line;
+    let now = 1_000;
+    check_eq!(
+        own_line("feed0001", true, Some((40_000, now + 30)), now),
+        Some(
+            "Your payment is held in escrow. Take the licence with +minds/buy/complete feed0001."
+                .to_owned()
+        )
+    );
+    check_eq!(
+        own_line("feed0001", false, Some((40_000, now + 30)), now),
+        Some(
+            "Your quote: 400cr, good for 30 more seconds. Pay it with +minds/buy/pay feed0001."
+                .to_owned()
+        )
+    );
+    check_eq!(
+        own_line("feed0001", false, Some((21, now + 1)), now),
+        Some(
+            "Your quote: 0.21cr, good for 1 more seconds. Pay it with +minds/buy/pay feed0001."
+                .to_owned()
+        )
+    );
+    for expires in [now, now - 1] {
+        check_eq!(
+            own_line("feed0001", false, Some((40_000, expires)), now),
+            Some("Your quote has expired. Ask for a new one with +minds/buy feed0001.".to_owned()),
+            "expired at {expires}"
+        );
+    }
+    check_eq!(own_line("feed0001", false, None, now), None);
+    check_eq!(
+        own_line("feed0001", true, None, now).as_deref(),
+        Some("Your payment is held in escrow. Take the licence with +minds/buy/complete feed0001.")
+    );
+    Ok(())
+}
+
+/// 17g C2g (the C2e plan §4.1 item 2): bare `+minds/holdings`' lines
+/// (`holdings::all_lines`). Nothing in either section is `HOLD_EMPTY`
+/// alone; a section that shows no row but goes on (a cursor) is not
+/// "nothing" (the C2c fix round's rule), so the head and its `HOLD_MORE`
+/// print instead; rows print owner first, then paid, each section with its
+/// own cursor line; the waiting purchases follow in every case, whatever the
+/// sections hold. A paged paid section (`section_lines`) never prints
+/// `HOLD_EMPTY`.
+#[test]
+fn bare_holdings_print_empty_only_with_nothing_in_either_section() -> TestResult {
+    use super::holdings::{all_lines, section_lines};
+    let none = || (Vec::<String>::new(), None);
+    check_eq!(
+        all_lines(none(), none(), &[]),
+        vec![words::HOLD_EMPTY.to_owned()]
+    );
+    check_eq!(
+        all_lines(none(), none(), &["feed0001".to_owned()]),
+        vec![
+            words::HOLD_EMPTY.to_owned(),
+            words::HOLD_WAIT_HEAD.to_owned(),
+            "  listing feed0001  paid into escrow: +minds/buy/complete feed0001 or \
+             +minds/buy/refund feed0001"
+                .to_owned(),
+        ]
+    );
+    check_eq!(
+        all_lines((Vec::new(), Some(16)), none(), &[]),
+        vec![
+            words::HOLD_HEAD.to_owned(),
+            "More: +minds/holdings owner 16".to_owned()
+        ],
+        "an owner section that goes on is not nothing"
+    );
+    check_eq!(
+        all_lines(
+            (vec!["owner row".to_owned()], None),
+            (vec!["paid row".to_owned()], Some(41)),
+            &["abcdef01".to_owned(), "feed0001".to_owned()]
+        ),
+        vec![
+            words::HOLD_HEAD.to_owned(),
+            "owner row".to_owned(),
+            "paid row".to_owned(),
+            "More: +minds/holdings paid 41".to_owned(),
+            words::HOLD_WAIT_HEAD.to_owned(),
+            "  listing abcdef01  paid into escrow: +minds/buy/complete abcdef01 or \
+             +minds/buy/refund abcdef01"
+                .to_owned(),
+            "  listing feed0001  paid into escrow: +minds/buy/complete feed0001 or \
+             +minds/buy/refund feed0001"
+                .to_owned(),
+        ]
+    );
+    check_eq!(
+        section_lines(Vec::new(), "paid", None),
+        vec![words::HOLD_HEAD.to_owned()]
+    );
+    check_eq!(
+        section_lines(Vec::new(), "paid", Some(7)),
+        vec![
+            words::HOLD_HEAD.to_owned(),
+            "More: +minds/holdings paid 7".to_owned()
+        ]
+    );
+    Ok(())
+}
+
+/// 17g C2g (the C2e plan §4.2, the C2g fix round's tests/T1 and
+/// correctness/C2G-1): each buy step's and accept's (verb, subject) comes
+/// from the one function its command submits with (`market::buy_key`,
+/// `pay_key`, `settle_key`, `trade::accept_key`):
+/// - `/buy/pay` is the quote's TOKEN, `/buy/complete` and `/buy/refund` the
+///   operation's, the accepts the offer's (32 characters each, never the
+///   typed code or number), and `+minds/buy` the listing's token, then the
+///   token of the actor's most recently quoted own record there when it has
+///   one (`OwnPurchaseView::latest`, a quote or a funded purchase; the C2g
+///   fix round 2);
+/// - every key stays inside the key grammar and its 128-byte bound at the
+///   extremes of the IC clock (`+minds/buy` with a record is the longest);
+/// - after a restart (a fresh ordinal, the IC clock stopped at one second):
+///   a re-quote after a committed quote, a re-quote after that quote's Fund
+///   (the quote has left the index; the purchase names the subject), a pay
+///   of another quote, and a settle of another purchase are all new keys,
+///   while the same step on the same token (the same request) meets its
+///   earlier key;
+/// - which record `latest` names in each state of the actor's index, and
+///   the stated residual (`next_key`'s doc: after a Grant or Refund the
+///   subject can be an earlier one's again), are pinned by mush-market's
+///   `own_purchase_latest_names_the_newest_own_record`.
+#[test]
+fn buy_step_keys_take_the_token_as_subject() -> TestResult {
+    use super::market::{Settle, buy_key, pay_key, settle_key};
+    use super::trade::{Named, accept_key};
+    use mush_core::CommitToken;
+    let listing = CommitToken::from_bytes([0xfe; 16]);
+    let quote = CommitToken::from_bytes([0x01; 16]);
+    let operation = CommitToken::from_bytes([0x02; 16]);
+    let offer = CommitToken::from_bytes([0x03; 16]);
+    let token = |t: CommitToken| t.to_string();
+    check_eq!(token(listing).len(), 32);
+    let steps = [
+        (buy_key(listing, None), ("buy", token(listing))),
+        (
+            buy_key(listing, Some(quote)),
+            ("buy", format!("{}.{}", token(listing), token(quote))),
+        ),
+        (pay_key(quote), ("buy.pay", token(quote))),
+        (
+            settle_key(Settle::Complete, operation),
+            ("buy.complete", token(operation)),
+        ),
+        (
+            settle_key(Settle::Refund, operation),
+            ("buy.refund", token(operation)),
+        ),
+        (
+            accept_key(Named::Resale, offer),
+            ("resell.accept", token(offer)),
+        ),
+        (
+            accept_key(Named::Charter, offer),
+            ("charter.accept", token(offer)),
+        ),
+    ];
+    let attempts = Mutex::new((i64::MIN, 0));
+    for ((verb, subject), expected) in &steps {
+        check_eq!(&(*verb, subject.clone()), expected);
+        for at in [i64::MIN, -1, 0, i64::MAX] {
+            let key = next_key(&attempts, verb, subject, at).map_err(|e| e.to_string())?;
+            check!(key.as_str().len() <= 128, "{key}");
+            check!(
+                IdempotencyKeyText::parse_canonical(key.as_str()).is_ok(),
+                "{key}"
+            );
+            check!(
+                key.as_str().starts_with(&format!("mind.{verb}.{subject}.")),
+                "{key}"
+            );
+        }
+    }
+    // A restart under a stopped IC clock: the ordinal is back at 0.
+    let key = |(verb, subject): (&str, String)| {
+        next_key(&Mutex::new((i64::MIN, 0)), verb, &subject, 7).map_err(|e| e.to_string())
+    };
+    let other = CommitToken::from_bytes([0x04; 16]);
+    check_ne!(
+        key(buy_key(listing, None))?,
+        key(buy_key(listing, Some(quote)))?,
+        "a re-quote after a committed quote is a new key"
+    );
+    let firsts = [
+        key(buy_key(listing, None))?,
+        key(buy_key(listing, Some(quote)))?,
+    ];
+    check!(
+        !firsts.contains(&key(buy_key(listing, Some(operation)))?),
+        "a re-quote after the quote's Fund is a new key"
+    );
+    check_ne!(key(pay_key(quote))?, key(pay_key(other))?);
+    check_ne!(
+        key(settle_key(Settle::Complete, operation))?,
+        key(settle_key(Settle::Complete, other))?
+    );
+    check_ne!(
+        key(settle_key(Settle::Complete, operation))?,
+        key(settle_key(Settle::Refund, operation))?
+    );
+    check_eq!(
+        key(pay_key(quote))?,
+        key(pay_key(quote))?,
+        "the same pay of the same quote is the same request"
+    );
+    Ok(())
+}
+
+/// 17g C2g (the C2g fix round's tests/T5): the multi-line replies of
+/// `+minds <code>` (`market::detail_reply`) and of an accept's refusal
+/// (`market_commands::refusal` over `trade::accept_plan`'s lines):
+/// - a current listing prints its three lines then the own-purchase line,
+///   or `ASK` when there is none, all info lines;
+/// - no current listing (`NO_LISTING`, or `AMBIGUOUS`) and no own line is
+///   the returned refusal alone;
+/// - no current listing and an own line (a purchase funded before its
+///   listing was withdrawn) is the refusal as an ERROR line, then the own
+///   line as info, and the command returns `Ok`;
+/// - an accept with no live offer is the returned `NO_OFFER`; with live
+///   offers at other prices, `NO_OFFER_AT` as an error line then each
+///   offer's two lines as info, returning `Ok`.
+#[test]
+fn multi_line_replies_print_the_refusal_then_the_rest() -> TestResult {
+    use super::market::detail_reply;
+    use super::trade::{AcceptPlan, Named, NamedOffer, accept_plan};
+    use super::{Said, refusal};
+    use mush_core::CmdError;
+    let code = "feed0001";
+    let lines = || ["DETAIL".to_owned(), "TERMS".to_owned(), "SPLIT".to_owned()];
+    let info = |text: &str| Said::Info(text.to_owned());
+    let escrow = fill(words::YOUR_ESCROW, &[("code", code)]);
+    let ask = fill(words::ASK, &[("code", code)]);
+    check_eq!(
+        detail_reply(Ok(lines()), None, code),
+        Ok(vec![
+            info("DETAIL"),
+            info("TERMS"),
+            info("SPLIT"),
+            info(&ask)
+        ])
+    );
+    check_eq!(
+        detail_reply(Ok(lines()), Some(escrow.clone()), code),
+        Ok(vec![
+            info("DETAIL"),
+            info("TERMS"),
+            info("SPLIT"),
+            info(&escrow)
+        ])
+    );
+    for refused in [
+        fill(words::NO_LISTING, &[("code", code)]),
+        fill(words::AMBIGUOUS, &[("code", code)]),
+    ] {
+        check_eq!(
+            detail_reply(Err(CmdError::msg(refused.clone())), None, code),
+            Err(CmdError::msg(refused.clone()))
+        );
+        check_eq!(
+            detail_reply(
+                Err(CmdError::msg(refused.clone())),
+                Some(escrow.clone()),
+                code
+            ),
+            Ok(vec![Said::Error(refused.clone()), info(&escrow)]),
+            "the own line after the refusal, never ASK"
+        );
+    }
+    let now = 1_000;
+    let live = NamedOffer {
+        offer: mush_core::CommitToken::from_bytes([5; 16]),
+        price_minor: 21,
+        expires_at_utc: now + 600,
+    };
+    let refused_lines =
+        |offers: &[NamedOffer]| match accept_plan(Named::Resale, 7, offers, Some(1), now) {
+            AcceptPlan::Refuse(lines) => Ok(lines),
+            other => Err(format!("a refusal, not {other:?}")),
+        };
+    check_eq!(
+        refusal(refused_lines(&[live])?),
+        Ok(vec![
+            Said::Error("None of your offers for licence 7 is at 0.01cr.".to_owned()),
+            info(&fill(
+                words::named::OFFER,
+                &[("licence", "7"), ("price", "0.21cr"), ("minutes", "10")]
+            )),
+            info("Accept it with +minds/resell/accept 7 price=0.21."),
+        ])
+    );
+    let none = refused_lines(&[])?;
+    check_eq!(
+        refusal(none),
+        Err(CmdError::msg("You have no offer for licence 7."))
+    );
+    Ok(())
+}
+
+/// 17g C2g (the C2e plan §4.1 item 4's edge): a seller naming itself as the
+/// buyer reads `NO_PLAYER` with the name as typed (`trade::other_player`,
+/// checked after the seller's own record, before any line prints); any
+/// other player passes, handed back as the buyer the form submits (the C2g
+/// fix round 2, reviewer tests/T-4: `resell` and `charter` take their buyer
+/// from it). The dispatched proof is owed to the C2h story's part 3
+/// (`trade`'s module doc).
+#[test]
+fn an_offer_to_oneself_is_no_player() -> TestResult {
+    use super::trade::other_player;
+    use mush_core::ObjId;
+    let me = || (ObjId(7), "Old Cy".to_owned());
+    check_eq!(
+        other_player(ObjId(7), me(), "me"),
+        Err(mush_core::CmdError::msg("No player is named me."))
+    );
+    check_eq!(
+        other_player(ObjId(7), me(), "Old Cy"),
+        Err(mush_core::CmdError::msg("No player is named Old Cy."))
+    );
+    check_eq!(
+        other_player(ObjId(7), (ObjId(8), "Cy".to_owned()), "cy"),
+        Ok((ObjId(8), "Cy".to_owned()))
     );
     Ok(())
 }

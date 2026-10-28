@@ -799,5 +799,235 @@ fn house_rows(
     ])
 }
 
+/// 17g C2h (the lead's ruling R3, the C2e plan §5.1): the market's `front`
+/// arm, over the C2d test 1 oracle's real operation rows of both services.
+/// - Each state's `+minds` words, through the arm's own pieces
+///   (`status_view`, then `front_request`, `front_line`): with no operation,
+///   or after a grant or a closure, `RENEW_NOT_DUE` with the whole IC days
+///   left while the term runs and the request-or-retry step after it; a
+///   drafted offer `RENEW_OFFER` (its frozen price, renewed term and Grace in
+///   whole IC days, the IC hours left) and `RENEW_HOW`, submitting nothing;
+///   a funded one `RENEW_FUNDED`; the submitting lines `RENEWING`,
+///   `RENEW_PAYING` with the drafted row's frozen price, and
+///   `RENEW_DECLINING`, verbatim the C2d words.
+/// - A wrong operation is refused (`front_bound`): pay and decline act only
+///   on the licence's exact last operation, the one the holder saw.
+/// - A typed `@mindrenewal/front` line and TacSim's continuation print the
+///   same words: the continuation's argument is `front_argument`, and
+///   `parse_front` reads it back to the same licence and step for every
+///   step, so the one handler takes the one path either way; any other
+///   spelling is refused (the uniform refusal).
+/// - `submit` reporting that it sent nothing is `Unresolved`
+///   (`sent_outcome`): `Submission::may_send`, the one rule both services'
+///   `submit` decide by, sends nothing while the retained entry's earlier
+///   attempt is open or while the actor already has an authoritative
+///   submission awaiting its receipt (`authoritative_pending`); the arm
+///   prints no request line for it (`front_submitted`), and `@mindrenewal`
+///   prints `UNRESOLVED_LINE`, where before C2h a pending authoritative
+///   submission read `QUEUED_LINE`. That `step` hands `submit`'s answer to
+///   `sent_outcome` is not a fast test (it needs a dispatched context over a
+///   granted licence, which the fast suites cannot build); it is structural:
+///   `Submission` is `#[must_use]`, so the pre-C2h spelling that dropped it
+///   (`submit(..)?;` then `Queued`) is a warning the workspace's
+///   `-D warnings` refuses.
+///
+/// The dispatched flow (the delegation, the continuation, the real reads and
+/// submissions) is the player market story's part 3; the delegation rule is
+/// mush-core's `continuation::tests`.
+#[test]
+fn the_front_prints_the_minds_words_for_every_state_and_binds_the_operation() -> TestResult {
+    use super::player::{
+        FrontAnswer, FrontStep, RenewalPlayerOutcome, Submission, front_argument, front_bound,
+        front_line, front_request, front_submitted, parse_front, sent_outcome,
+    };
+    use super::service::command_line as personal_line;
+    let term_end = 130;
+    let drafted = fixture()?;
+    let licence = drafted.binding().licence();
+    let shown = licence.get().to_string();
+    check_eq!(shown, "7");
+    let not_due = "Licence 7 is not due for renewal; its term has 1 IC days left.".to_owned();
+    for (row, state) in &personal_rows(&drafted)? {
+        let view = super::service::status_view(term_end, row.as_ref());
+        let before = front_request(&shown, &view, term_end - 30);
+        let after = front_request(&shown, &view, term_end);
+        match state {
+            super::player::RenewalState::Drafted => {
+                let lines = vec![
+                    "Licence 7 renews for 5cr (1+1 IC days); the offer is open 1 more IC hours."
+                        .to_owned(),
+                    "Pay it with +minds/renew/pay 7, or turn it down with +minds/renew/decline 7."
+                        .to_owned(),
+                ];
+                check_eq!(front_request(&shown, &view, 150), FrontAnswer::Say(lines));
+                check_eq!(before, after, "a drafted offer shows whatever the term");
+            }
+            super::player::RenewalState::Funded => {
+                let funded = FrontAnswer::Say(vec![
+                    "Your renewal payment for licence 7 is held; the renewal completes on its own."
+                        .to_owned(),
+                ]);
+                check_eq!(before, funded.clone());
+                check_eq!(after, funded);
+            }
+            _ => {
+                check_eq!(before, FrontAnswer::Refuse(not_due.clone()), "{state:?}");
+                check_eq!(after, FrontAnswer::Ask, "{state:?}");
+            }
+        }
+    }
+    let price = drafted.offer().terms.price.minor();
+    let operation = drafted.operation();
+    check_eq!(
+        front_line(&shown, FrontStep::Request, 0),
+        "Asking for a renewal offer on licence 7. +minds/renew 7 shows it once it is confirmed."
+    );
+    check_eq!(
+        front_line(&shown, FrontStep::Accept(operation), price),
+        "Paying 5cr for the renewal of licence 7 into escrow; it completes on its own."
+    );
+    check_eq!(
+        front_line(&shown, FrontStep::Decline(operation), price),
+        "Turning down the renewal offer on licence 7."
+    );
+    // The operation binds the step to the offer the holder saw.
+    let other = token(99);
+    for step in [FrontStep::Accept(operation), FrontStep::Decline(operation)] {
+        check!(front_bound(step, Some(operation)));
+        check!(!front_bound(step, None), "{step:?} with no operation");
+    }
+    for step in [FrontStep::Accept(other), FrontStep::Decline(other)] {
+        check!(
+            !front_bound(step, Some(operation)),
+            "{step:?}: another operation"
+        );
+    }
+    check!(front_bound(FrontStep::Request, None));
+    // A typed `/front` and the continuation take the one path.
+    for step in [
+        FrontStep::Request,
+        FrontStep::Accept(operation),
+        FrontStep::Decline(operation),
+    ] {
+        let argument = front_argument(licence, step);
+        check_eq!(parse_front(&argument), Some((licence, step)), "{argument}");
+    }
+    check_eq!(
+        front_argument(licence, FrontStep::Accept(operation)),
+        format!("7 accept {operation}")
+    );
+    let text = operation.to_string();
+    for bad in [
+        String::new(),
+        "7".to_owned(),
+        "07 request".to_owned(),
+        "0 request".to_owned(),
+        "+7 request".to_owned(),
+        "7  request".to_owned(),
+        " 7 request".to_owned(),
+        "7 request ".to_owned(),
+        "7 request now".to_owned(),
+        "7 REQUEST".to_owned(),
+        "7 pay".to_owned(),
+        "7 accept".to_owned(),
+        format!("7 accept {}", text.to_uppercase()),
+        format!("7 accept {}", text.get(1..).unwrap_or_default()),
+        format!("7 accept {text}0"),
+        format!("7 decline {text} more"),
+        format!("7 request {text}"),
+    ] {
+        check_eq!(parse_front(&bad), None, "{bad:?}");
+    }
+    // A step that sent nothing: the rule `submit` decides by, then its
+    // outcome.
+    check!(Submission::may_send(false, false), "nothing pending: sent");
+    for (attempt, authoritative) in [(true, false), (false, true), (true, true)] {
+        check!(
+            !Submission::may_send(attempt, authoritative),
+            "attempt open {attempt}, authoritative pending {authoritative}: nothing sent"
+        );
+    }
+    check_eq!(sent_outcome(Submission::Sent), RenewalPlayerOutcome::Queued);
+    check_eq!(
+        sent_outcome(Submission::Nothing),
+        RenewalPlayerOutcome::Unresolved
+    );
+    let line = front_line(&shown, FrontStep::Request, 0);
+    check_eq!(
+        front_submitted(&RenewalPlayerOutcome::Queued, line.clone()),
+        Some(line.clone())
+    );
+    check_eq!(
+        front_submitted(&RenewalPlayerOutcome::Unresolved, line),
+        None
+    );
+    check_eq!(
+        personal_line(sent_outcome(Submission::Nothing)),
+        "A renewal request is still unresolved; inspect status before retrying."
+    );
+    house_front_words(term_end)
+}
+
+/// The House half of
+/// `the_front_prints_the_minds_words_for_every_state_and_binds_the_operation`:
+/// the House service's real rows read the same `+minds` words (the arm is
+/// the same code over the House service's own row), its frozen price among
+/// them, and its `@housemindrenewal` prints `UNRESOLVED_LINE` for a step
+/// that sent nothing.
+fn house_front_words(term_end: i64) -> TestResult {
+    use super::player::{FrontAnswer, FrontStep, RenewalState, front_line, front_request};
+    use crate::mind_house_renewal::command_line as house_line;
+    use crate::mind_house_renewal::tests as house;
+    let drafted = house::fixture()?;
+    let shown = drafted.binding().licence().get().to_string();
+    for (row, state) in &house_rows(&drafted)? {
+        let view = crate::mind_house_renewal::status_view(term_end, row.as_ref());
+        let before = front_request(&shown, &view, term_end - 30);
+        match state {
+            RenewalState::Drafted => check_eq!(
+                before,
+                FrontAnswer::Say(vec![
+                    "Licence 7 renews for 5cr (1+1 IC days); the offer is open 1 more IC hours."
+                        .to_owned(),
+                    "Pay it with +minds/renew/pay 7, or turn it down with +minds/renew/decline 7."
+                        .to_owned(),
+                ])
+            ),
+            RenewalState::Funded => check_eq!(
+                before,
+                FrontAnswer::Say(vec![
+                    "Your renewal payment for licence 7 is held; the renewal completes on its own."
+                        .to_owned()
+                ])
+            ),
+            _ => {
+                check_eq!(
+                    before,
+                    FrontAnswer::Refuse(
+                        "Licence 7 is not due for renewal; its term has 1 IC days left.".to_owned()
+                    ),
+                    "House {state:?}"
+                );
+                check_eq!(front_request(&shown, &view, term_end), FrontAnswer::Ask);
+            }
+        }
+    }
+    check_eq!(
+        front_line(
+            &shown,
+            FrontStep::Accept(drafted.operation()),
+            drafted.offer().terms.price.minor()
+        ),
+        "Paying 5cr for the renewal of licence 7 into escrow; it completes on its own."
+    );
+    check_eq!(
+        house_line(super::player::sent_outcome(
+            super::player::Submission::Nothing
+        )),
+        "A renewal request is still unresolved; inspect status before retrying."
+    );
+    Ok(())
+}
+
 #[path = "provider_tests.rs"]
 mod provider_tests;

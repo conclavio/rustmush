@@ -223,9 +223,11 @@ impl LaunchComposition {
 /// - "a market-original-mind-list listing": the v2 List offer's own verb
 ///   since 17g C2a split the shared verbs one per kind (C2 plan §2.3), so
 ///   every market verb names one offer and the gateway's `+act` can select it.
-/// - "Until the +minds commands exist": 17g C2a's sentence. The author's
-///   `@mind` commands exist from C2a; the market's `+minds` commands arrive
-///   with C2c, which rewrites this last sentence.
+/// - "Read the listings here with +minds …": 17g C2c's last sentence, which
+///   replaced C2a's "Until the +minds commands exist, use +actions and
+///   `+act <verb>` with `<JSON object>`." once the market's `+minds` commands and
+///   `docs/help/personal-minds.md`'s table of them arrived (the C2c brief §3;
+///   the pin is `PROVISIONAL_MARKET_LINE`).
 pub(crate) fn market_help(market: &PlayerMarket) -> String {
     let terms = &market.terms;
     format!(

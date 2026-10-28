@@ -545,6 +545,9 @@ pub(crate) fn audit_and_open_derived_configured(
             paid_resales,
             ic_inventory.as_ref(),
         )?;
+        // 17g C2f: one holdings row per paid-licence pointer, under its
+        // current holder (the C2b brief §2; clock-free).
+        super::paid_holdings::audit(ctx, families)?;
         let follow = super::follow::rebuild(ctx, families, ratings)?;
         (stamp, ic_inventory, follow)
     };

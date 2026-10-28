@@ -51,7 +51,10 @@ pub(crate) const SPLIT: &str =
     "Price {price}: Registry {levy}%{venue}{parents}, charter owner the rest.";
 pub(crate) const QUOTING: &str =
     "Asking for a quote on listing {code}. +minds {code} shows it once it is confirmed.";
-pub(crate) const PUBLISHING: &str = "Listing filed mind {filed} here as {form}.";
+/// 17g C2e (C2e plan §2.1 item 4c): `{flags}` is empty for a transferable
+/// listing of an original line, else `; ` and `ROW`'s flag words
+/// (`market::publishing_line`).
+pub(crate) const PUBLISHING: &str = "Listing filed mind {filed} here as {form}{flags}.";
 pub(crate) const TERMS: &str = "Listings here sell at {price} for one seat and {term} IC days; per-listing terms are not available yet.";
 pub(crate) const BAD_FORM: &str = "form is sealed, open or open-resale.";
 pub(crate) const BAD_ROYALTY: &str =
@@ -61,24 +64,42 @@ pub(crate) const HOLD_HEAD: &str = "Your mind licences:";
 pub(crate) const HOLD_OWNER: &str = "  filed {filed:<8}  {kind:<9}  {name:<20}  {phase}{flags}";
 pub(crate) const HOLD_MORE: &str = "More: +minds/holdings {section} {cursor}";
 
+// 17g C2c's words for the steps that read the actor's own quote, funded
+// purchase and paid licences, live since 17g C2g over 17g C2f's owner
+// indexes (they waited in `words::pending` until then; the names are
+// unchanged). `HOLD_EMPTY` is the bare `+minds/holdings`' answer for an
+// actor with nothing in either section, never a paged section's.
+pub(crate) const HOLD_EMPTY: &str = "You hold no mind licences.";
+pub(crate) const YOUR_QUOTE: &str =
+    "Your quote: {price}, good for {seconds} more seconds. Pay it with +minds/buy/pay {code}.";
+pub(crate) const QUOTE_EXPIRED: &str =
+    "Your quote has expired. Ask for a new one with +minds/buy {code}.";
+pub(crate) const YOUR_ESCROW: &str =
+    "Your payment is held in escrow. Take the licence with +minds/buy/complete {code}.";
+pub(crate) const ASK: &str = "Ask for a quote with +minds/buy {code}.";
+pub(crate) const NO_QUOTE: &str =
+    "You have no quote on listing {code}. Ask for one with +minds/buy {code}.";
+pub(crate) const PAYING: &str = "Paying your quote on listing {code} into escrow.";
+pub(crate) const NO_PURCHASE: &str = "You have no paid purchase waiting on listing {code}.";
+pub(crate) const COMPLETING: &str = "Taking the licence from listing {code}.";
+pub(crate) const REFUNDING: &str = "Asking for your payment on listing {code} back.";
+pub(crate) const HOLD_PAID: &str =
+    "  licence {licence:<8}  {kind:<9}  {name:<20}  {form:<11}  {phase}{flags}";
+pub(crate) const HOLD_WAIT_HEAD: &str = "Purchases waiting:";
+pub(crate) const HOLD_WAIT: &str =
+    "  listing {code}  paid into escrow: +minds/buy/complete {code} or +minds/buy/refund {code}";
+
 // 17g C2d (the C2d brief's words, verbatim): renewals, title trades and the
 // Registry operators. `{player}` is the resolved player's name; `{price}`
 // the credit rendering (`launch::credits`); `{amount}` the same value as
-// `price=` spells it (`trade::amount`); `{days}`, `{hours}` and `{term}`/
-// `{grace}` whole IC days or hours, rounded up.
+// `price=` spells it (`trade::amount`); `{minutes}` whole minutes, rounded
+// up. 17g C2h: the renewal words the renewal service prints after its step
+// (`RENEW_NOT_DUE`, `RENEWING`, `RENEW_OFFER`, `RENEW_HOW`, `RENEW_FUNDED`,
+// `RENEW_PAYING`, `RENEW_DECLINING`) moved, verbatim, to
+// `mush_market::mind_renewal::player`; `NO_LICENCE` and `NO_RENEWAL` stay
+// here, the two refusals `+minds/renew` gives itself (`renew`'s doc).
 pub(crate) const NO_LICENCE: &str = "You hold no licence {licence}.";
-pub(crate) const RENEW_NOT_DUE: &str =
-    "Licence {licence} is not due for renewal; its term has {days} IC days left.";
-pub(crate) const RENEWING: &str = "Asking for a renewal offer on licence {licence}. +minds/renew {licence} shows it once it is confirmed.";
-pub(crate) const RENEW_OFFER: &str = "Licence {licence} renews for {price} ({term}+{grace} IC days); the offer is open {hours} more IC hours.";
-pub(crate) const RENEW_HOW: &str =
-    "Pay it with +minds/renew/pay {licence}, or turn it down with +minds/renew/decline {licence}.";
-pub(crate) const RENEW_FUNDED: &str =
-    "Your renewal payment for licence {licence} is held; the renewal completes on its own.";
 pub(crate) const NO_RENEWAL: &str = "Licence {licence} has no renewal offer waiting for you. Ask for one with +minds/renew {licence}.";
-pub(crate) const RENEW_PAYING: &str =
-    "Paying {price} for the renewal of licence {licence} into escrow; it completes on its own.";
-pub(crate) const RENEW_DECLINING: &str = "Turning down the renewal offer on licence {licence}.";
 pub(crate) const RESELLING: &str = "Offering licence {licence} to {player} for {price}.";
 pub(crate) const RESELL_TELL: &str =
     "Once that is confirmed, they accept with +minds/resell/accept {licence} price={amount}.";
@@ -93,14 +114,10 @@ pub(crate) const RECALLING: &str = "Recalling filed revision {filed}.";
 pub(crate) const REVOKING: &str = "Revoking licence {licence}.";
 pub(crate) const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
 
-/// 17g C2d: the brief's words for the named buyer's accepts. They list and
-/// select the live offers naming the actor, which the per-buyer offer
-/// indexes provide (C2 plan §2.5 items 3 and 4); C2b did not land them, so
-/// both accepts refuse `NOT_OPEN` before reading and nothing prints these
-/// yet. They stay here, verbatim, for the index sub-cut; the listing and the
-/// price rule are built (`trade::offer_lines`, `trade::select`) and the width
-/// test measures them now.
-#[cfg_attr(not(test), allow(dead_code))]
+/// 17g C2d: the brief's words for the named buyer's accepts, which list and
+/// select the live offers naming the actor (`trade::offer_lines`,
+/// `trade::accept_plan`). Live since 17g C2g over 17g C2f's per-buyer offer
+/// indexes (the market's `ResaleOffers` and Roll's `CharterOffers` reads).
 pub(crate) mod named {
     pub(crate) const OFFER: &str = "Licence {licence} is offered to you for {price}; the offer is open {minutes} more minutes.";
     pub(crate) const ACCEPT_HOW: &str =
@@ -115,36 +132,6 @@ pub(crate) mod named {
         "None of your offers for filed mind {filed} is at {price}.";
     pub(crate) const ACCEPTING: &str = "Accepting the offer for licence {licence} at {price}.";
     pub(crate) const FUNDING_CHARTER: &str = "Paying {price} for filed mind {filed} into escrow; the transfer settles once no sortie under it is out.";
-}
-
-/// 17g C2c: the brief's words for the steps that read the actor's own quote,
-/// funded purchase and paid licences. Those reads need the per-buyer
-/// entitlement index and the per-holder paid index (C2 plan §2.5 items 1 and
-/// 2), which C2b did not land, so nothing prints these yet; they stay here,
-/// verbatim, for the sub-cut that lands the indexes, and the width test
-/// measures them now. `HOLD_EMPTY` is the bare `+minds/holdings`' answer for
-/// an actor with nothing in either section, so it waits with the paid
-/// section (the C2c fix round: a paged owner section never prints it).
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) mod pending {
-    pub(crate) const HOLD_EMPTY: &str = "You hold no mind licences.";
-    pub(crate) const YOUR_QUOTE: &str =
-        "Your quote: {price}, good for {seconds} more seconds. Pay it with +minds/buy/pay {code}.";
-    pub(crate) const QUOTE_EXPIRED: &str =
-        "Your quote has expired. Ask for a new one with +minds/buy {code}.";
-    pub(crate) const YOUR_ESCROW: &str =
-        "Your payment is held in escrow. Take the licence with +minds/buy/complete {code}.";
-    pub(crate) const ASK: &str = "Ask for a quote with +minds/buy {code}.";
-    pub(crate) const NO_QUOTE: &str =
-        "You have no quote on listing {code}. Ask for one with +minds/buy {code}.";
-    pub(crate) const PAYING: &str = "Paying your quote on listing {code} into escrow.";
-    pub(crate) const NO_PURCHASE: &str = "You have no paid purchase waiting on listing {code}.";
-    pub(crate) const COMPLETING: &str = "Taking the licence from listing {code}.";
-    pub(crate) const REFUNDING: &str = "Asking for your payment on listing {code} back.";
-    pub(crate) const HOLD_PAID: &str =
-        "  licence {licence:<8}  {kind:<9}  {name:<20}  {form:<11}  {phase}{flags}";
-    pub(crate) const HOLD_WAIT_HEAD: &str = "Purchases waiting:";
-    pub(crate) const HOLD_WAIT: &str = "  listing {code}  paid into escrow: +minds/buy/complete {code} or +minds/buy/refund {code}";
 }
 
 /// `template` with each `{key}` replaced by its value, in one pass over the

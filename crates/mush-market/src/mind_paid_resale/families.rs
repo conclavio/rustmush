@@ -34,6 +34,12 @@ pub(crate) struct Families {
     pub(super) offers: StateFamilyHandle<CommitToken, MindPaidResaleOffer>,
     pub(super) operations: StateFamilyHandle<CommitToken, MindPaidResaleOperation>,
     pub(super) receipts: StateFamilyHandle<CommitToken, MindPaidResaleReceipt>,
+    /// 17g C2f: the per-(buyer, licence) offer index (`super::index`); the
+    /// market alone writes it, so it is not delegated to Roll.
+    pub(super) buyer_offers: StateFamilyHandle<
+        (mush_core::ObjId, mush_roll::commerce::LicenceId),
+        super::index::ResaleBuyerOffers,
+    >,
 }
 fn error(e: impl std::fmt::Display) -> ModError {
     ModError::msg(e.to_string())
@@ -74,7 +80,22 @@ impl Families {
             offers: family(reg)?,
             operations: family(reg)?,
             receipts: family(reg)?,
+            buyer_offers: super::index::register(reg)?,
         })
+    }
+    /// 17g C2g: the seller offers and the per-(buyer, licence) offer index,
+    /// which `mind_commands`' `ResaleOffers` point-reads for the calling
+    /// actor only (read only; every write stays in this module).
+    pub(crate) const fn offers(&self) -> &StateFamilyHandle<CommitToken, MindPaidResaleOffer> {
+        &self.offers
+    }
+    pub(crate) const fn buyer_offers(
+        &self,
+    ) -> &StateFamilyHandle<
+        (mush_core::ObjId, mush_roll::commerce::LicenceId),
+        super::index::ResaleBuyerOffers,
+    > {
+        &self.buyer_offers
     }
 }
 pub(super) fn envelope<R: Row>(

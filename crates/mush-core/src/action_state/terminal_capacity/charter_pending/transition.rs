@@ -79,24 +79,24 @@ fn relevant(view: &View<'_>, k: &StateKey) -> Result<bool, ActionStateError> {
     }
     Ok(false)
 }
-fn exact_puts(
+/// The exact typed set of one pending step: the fixed puts, plus exactly the
+/// owner-index mutations (`Put` or `Delete`) the closed table expects of this
+/// action (17g C2f, R2; `owner_index::exact_set`). `subject` is the offer at
+/// Offer and the pending operation at every later step.
+fn exact_set(
     store: &ActionStateStore,
     mutations: &BTreeMap<StateKey, TxnMutation>,
     keys: &[Key],
+    action: usize,
+    subject: CommitToken,
 ) -> Result<(), ActionStateError> {
-    let expected = keys
-        .iter()
-        .map(|k| k.resolve(&store.registry))
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    if expected.len() != keys.len()
-        || mutations.len() != expected.len()
-        || mutations
-            .iter()
-            .any(|(k, m)| !expected.contains(k) || !matches!(m, TxnMutation::Put { .. }))
-    {
-        return Err(refused("pending exact typed union differs"));
-    }
-    Ok(())
+    owner_index::exact_set(
+        store,
+        mutations,
+        keys,
+        (owner_index::Owner::CharterPending, action, subject),
+        "pending exact typed union differs",
+    )
 }
 fn previous(view: &View<'_>, p: &Pair) -> Result<Option<Pair>, ActionStateError> {
     if p.sequence == 1 {
@@ -152,7 +152,13 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
     }
     if action == 0 {
         let k = key(OFFER, identity.commit.to_hex())?;
-        exact_puts(store, mutations, std::slice::from_ref(&k))?;
+        exact_set(
+            store,
+            mutations,
+            std::slice::from_ref(&k),
+            action,
+            identity.commit,
+        )?;
         let o = offer(&after, identity.commit)?;
         if value(&before, &k)?.is_some()
             || num(&o, "seller")? != u64::from(identity.actor.0)
@@ -184,7 +190,13 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
     let pending_key = key(PENDING, id.to_hex())?;
     let head_key = key(HEAD, charter_key(p.charter))?;
     if action == 1 {
-        exact_puts(store, mutations, &[pending_key.clone(), head_key.clone()])?;
+        exact_set(
+            store,
+            mutations,
+            &[pending_key.clone(), head_key.clone()],
+            action,
+            id,
+        )?;
         if id != identity.commit
             || p.phase != "funded"
             || value(&before, &pending_key)?.is_some()
@@ -257,7 +269,7 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
                 keys.extend(extra);
             }
         }
-        exact_puts(store, mutations, &keys)?;
+        exact_set(store, mutations, &keys, action, id)?;
         let stored = store
             .capacity
             .records

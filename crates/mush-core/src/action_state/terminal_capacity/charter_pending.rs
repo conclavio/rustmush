@@ -125,4 +125,4 @@ pub(super) fn verify(
     Ok(())
 }
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

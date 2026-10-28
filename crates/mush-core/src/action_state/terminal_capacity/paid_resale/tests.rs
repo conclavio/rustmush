@@ -67,7 +67,7 @@ pub(super) fn register_registry(
     )?;
     Ok(definitions.register(owner,DefinitionDescriptor::new(DefinitionKind::new("action")?,DefinitionId::new("registry_term_revocation")?,1,json!({"format":1,"protocol":"registry_exact_term_revocation_v1","reason":"registry_review","scope":"one_accepted_term_generation","duration":"original_grace_end","later_terms":"fresh_admission","shared_rating":"unchanged"}))?.with_references(vec![authority,retention.clone()]))?)
 }
-pub(super) fn register_actions(
+pub(in crate::action_state::terminal_capacity) fn register_actions(
     definitions: &mut DefinitionRegistryBuilder,
     retention: &DefinitionRef,
 ) -> Result<[DefinitionRef; 5], Box<dyn std::error::Error>> {
@@ -88,7 +88,7 @@ pub(super) fn register_actions(
     }
     Ok(actions.try_into().map_err(|_| "five actions")?)
 }
-pub(super) fn register_families(
+pub(in crate::action_state::terminal_capacity) fn register_families(
     builder: &mut StateFamilyRegistryBuilder,
     handles: &mut BTreeMap<String, Handle>,
     compound: bool,
@@ -141,6 +141,9 @@ pub(super) fn register_families(
         }
         handles.insert(family.into(), h);
     }
+    // 17g C2f: the named buyer's offer index, which the Offer, Accept and
+    // Fund now write (the holdings index comes with every birth fixture).
+    owner_index::tests::register_index_families(builder, handles, &[owner_index::RESALE_OFFERS])?;
     Ok(())
 }
 fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
@@ -309,18 +312,51 @@ fn publish_offer_row(
     id: CommitToken,
     row: Value,
 ) -> Result<Value, Box<dyn std::error::Error>> {
-    let actor = row["terms"]["seller"].as_u64().ok_or("seller")? as u32;
+    let prepared = offer_prepared(f, id, row.clone(), None)?;
+    install(f, prepared)?;
+    Ok(row)
+}
+/// The seller's Offer of `row`, with `index` in place of the default index
+/// write (17g C2f), prepared and not installed.
+fn offer_prepared(
+    f: &mut Fixture,
+    id: CommitToken,
+    row: Value,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> Result<PreparedTxn, ActionStateError> {
+    let actor = row["terms"]["seller"].as_u64().expect("seller") as u32;
     let action = actions(f)[0].clone();
-    let provider = f.providers.get_exact(&action)?;
-    let inv = invocation(actor, id)?;
+    let provider = f.providers.get_exact(&action).expect("offer provider");
+    let inv = invocation(actor, id).expect("invocation");
     let mut txn = f
         .store
         .transaction_for_provider(provider.registration_ordinal())?;
     txn.bind_registered_invocation(provider, &inv, id);
     txn.insert(&f.handles[OFFER], &id.to_hex(), row.clone())?;
-    let prepared = txn.prepare()?;
-    install(f, prepared)?;
-    Ok(row)
+    // 17g C2f: the named buyer's offer index, in the Offer's transaction.
+    match index {
+        Some(write) => write(&mut txn, &f.handles)?,
+        None => {
+            let (key, head) = buyer_offers(&row);
+            owner_index::tests::index_offer(
+                &mut txn,
+                &f.handles,
+                owner_index::RESALE_OFFERS,
+                &key,
+                head,
+                id,
+            )?;
+        }
+    }
+    txn.prepare()
+}
+/// 17g C2f: the offer's named buyer's index key and row head (licence 1).
+fn buyer_offers(offer: &Value) -> (String, Value) {
+    let buyer = offer["terms"]["buyer"].as_u64().expect("buyer");
+    (
+        format!("{buyer:020}/{LK}"),
+        json!({"format":1,"buyer":buyer,"licence":"1"}),
+    )
 }
 fn acceptance(f: &Fixture, offer: &Value, id: CommitToken, pending: bool) -> Value {
     let action = actions(f)[if pending { 2 } else { 1 }].clone();
@@ -417,6 +453,34 @@ fn publish_extra(
     extra: Vec<(&str, String, Value)>,
     limits: Option<ActionTxnLimits>,
 ) -> Result<PreparedTxn, ActionStateError> {
+    publish_full(
+        f,
+        row,
+        action_index,
+        commit,
+        omit,
+        capacity,
+        actor_override,
+        extra,
+        limits,
+        None,
+    )
+}
+/// `publish_extra` with `index` in place of the owners' default index
+/// writes (17g C2f).
+#[allow(clippy::too_many_arguments)]
+fn publish_full(
+    f: &mut Fixture,
+    row: Value,
+    action_index: usize,
+    commit: CommitToken,
+    omit: Option<&str>,
+    capacity: bool,
+    actor_override: Option<u32>,
+    extra: Vec<(&str, String, Value)>,
+    limits: Option<ActionTxnLimits>,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> Result<PreparedTxn, ActionStateError> {
     let id: CommitToken = serde_json::from_value(row["operation"].clone()).expect("token");
     let offer_id: CommitToken = serde_json::from_value(row["offer"].clone()).expect("offer token");
     let offer = read(f, OFFER, &offer_id.to_hex());
@@ -488,6 +552,33 @@ fn publish_extra(
             txn.insert(&f.handles[family], &key, value)?;
         }
     }
+    // 17g C2f: the closed index rows (`owner_index`). The buyer's Accept and
+    // Fund take the offer out of the buyer's index; the immediate Accept and
+    // the Settle move the holder's holdings row from seller to buyer. An
+    // `omit` drops only the family it names: the index rows stay, so a test
+    // of a missing protocol row meets the protocol's check, never a missing
+    // index row.
+    if let Some(write) = index {
+        write(&mut txn, &f.handles)?;
+    } else {
+        if omit != Some(owner_index::RESALE_OFFERS) && matches!(action_index, 1 | 2) {
+            owner_index::tests::consume_offer(
+                &mut txn,
+                &f.handles,
+                owner_index::RESALE_OFFERS,
+                &buyer_offers(&offer).0,
+                offer_id,
+            )?;
+        }
+        if omit != Some(owner_index::HOLDINGS)
+            && matches!(action_index, 1 | 3)
+            && row["state"]["phase"] == "settled"
+        {
+            let seller = offer["terms"]["seller"].as_u64().expect("seller");
+            let buyer = offer["terms"]["buyer"].as_u64().expect("buyer");
+            owner_index::tests::move_holding(&mut txn, &f.handles, seller, buyer, 1)?;
+        }
+    }
     if capacity {
         let mut ctx = crate::resolution::PrepareCtx::new(inv.idempotency(), commit, None)
             .with_registered_transaction(&base, provider.registration_ordinal());
@@ -498,6 +589,114 @@ fn publish_extra(
         }
     }
     txn.prepare()
+}
+
+/// 17g C2f: the owner-index rigs. A licence 1 granted to holder 7 through
+/// the v2 route, with paid resale declared.
+pub(in crate::action_state::terminal_capacity) fn resale_rig()
+-> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture()
+}
+/// The seller's (7) Offer naming `buyer`, with `index` in place of the
+/// default index write: the offer row and the prepared Offer.
+pub(in crate::action_state::terminal_capacity) fn resale_offer(
+    f: &mut Fixture,
+    id: CommitToken,
+    buyer: u32,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> (Value, Result<PreparedTxn, ActionStateError>) {
+    let row = offer_row(f, id, buyer);
+    let prepared = offer_prepared(f, id, row.clone(), index);
+    (row, prepared)
+}
+/// The named buyer's immediate Accept (`pending` false) or escrowed Fund
+/// of `offer`, as operation `id`.
+pub(in crate::action_state::terminal_capacity) fn resale_accept(
+    f: &mut Fixture,
+    offer: &Value,
+    id: CommitToken,
+    pending: bool,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> Result<PreparedTxn, ActionStateError> {
+    let row = acceptance(f, offer, id, pending);
+    publish_full(
+        f,
+        row,
+        if pending { 2 } else { 1 },
+        id,
+        None,
+        true,
+        None,
+        vec![],
+        None,
+        index,
+    )
+}
+/// The service Settle of the funded acceptance `id`, as `terminal`.
+pub(in crate::action_state::terminal_capacity) fn resale_settle(
+    f: &mut Fixture,
+    offer: &Value,
+    id: CommitToken,
+    terminal: CommitToken,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> Result<PreparedTxn, ActionStateError> {
+    let prior = read(f, ROLL, &id.to_hex());
+    let row = terminal_row(f, &prior, offer, terminal, false);
+    publish_full(f, row, 3, terminal, None, true, None, vec![], None, index)
+}
+/// The service Refund of the funded acceptance `id`, as `terminal`.
+pub(in crate::action_state::terminal_capacity) fn resale_refund(
+    f: &mut Fixture,
+    offer: &Value,
+    id: CommitToken,
+    terminal: CommitToken,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> Result<PreparedTxn, ActionStateError> {
+    let prior = read(f, ROLL, &id.to_hex());
+    let row = terminal_row(f, &prior, offer, terminal, true);
+    publish_full(f, row, 4, terminal, None, true, None, vec![], None, index)
+}
+/// A Registry-configured rig whose offer (`token(10)`, buyer 8) was funded
+/// as `token(11)`, and its exact Registry revocation (the compound refund,
+/// action 5) as `token(12)`, with `index`'s extra writes, prepared.
+pub(in crate::action_state::terminal_capacity) fn resale_revocation(
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> Result<(Fixture, Result<PreparedTxn, ActionStateError>), Box<dyn std::error::Error>> {
+    let mut f = fixture_with_registry(true)?;
+    let mut offer = offer_row(&f, token(10), 8);
+    offer["terms"]["offered_at_ic"] = clock(150);
+    let offer = publish_offer_row(&mut f, token(10), offer)?;
+    let mut row = acceptance(&f, &offer, token(11), true);
+    row["economic"]["intent"]["consent"]["accepted_at_ic"] = clock(151);
+    let p = publish(&mut f, row.clone(), 2, token(11), None, true)?;
+    install(&mut f, p)?;
+    let (terminal, extra) = compound(&f, &row, &offer, token(12));
+    let prepared = publish_full(
+        &mut f,
+        terminal,
+        5,
+        token(12),
+        None,
+        true,
+        None,
+        extra,
+        None,
+        index,
+    );
+    Ok((f, prepared))
+}
+/// Install a prepared step and prove the store reboots.
+pub(in crate::action_state::terminal_capacity) fn resale_commit(
+    f: &mut Fixture,
+    prepared: PreparedTxn,
+) -> TestResult {
+    install(f, prepared)?;
+    reboot(f, None)?;
+    Ok(())
+}
+/// The rig as a seed: its store, handles and disk image.
+pub(in crate::action_state::terminal_capacity) fn resale_seed(f: Fixture) -> Seed {
+    (f.store, f.handles, f.disk)
 }
 
 #[test]
@@ -1020,8 +1219,10 @@ fn actual_house_entitlement_and_both_renewal_histories_keep_immutable_birth_afte
         assert_eq!(after["holder"], buyer);
         assert_eq!(after["term"], before["term"]);
         assert_eq!(after["operation"], before["operation"]);
+        // 17g C2f: the holdings row moves with the pointer (seller's out,
+        // buyer's in), like the pointer itself.
         for ((ns, key), value) in disk {
-            if value["family"]["id"] != LICENCE {
+            if value["family"]["id"] != LICENCE && value["family"]["id"] != owner_index::HOLDINGS {
                 assert!(
                     f.disk.get(&(ns, key)) == Some(&value),
                     "historical acknowledged row changed"

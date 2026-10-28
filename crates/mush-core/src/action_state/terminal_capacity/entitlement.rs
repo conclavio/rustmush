@@ -34,7 +34,7 @@ const FAMILIES: [(&str, &str, usize); 6] = [
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Kind {
+pub(super) enum Kind {
     Original,
     Derived,
     OriginalFollow,
@@ -215,7 +215,7 @@ impl Protocol {
         self.admission_action(kind)?;
         Ok(())
     }
-    fn action_index(
+    pub(super) fn action_index(
         &self,
         identity: &RegisteredTxnIdentity,
     ) -> Result<(Kind, usize), ActionStateError> {
@@ -277,7 +277,9 @@ impl Protocol {
                 return Err(refused("entitlement Roll family not delegated"));
             }
         }
-        Ok(())
+        // 17g C2f: the Grant and Refund write the buyer's actors row and the
+        // Grant the holder's holdings row (`owner_index`).
+        owner_index::validate_families(registry, &[owner_index::ACTORS, owner_index::HOLDINGS])
     }
     pub(in crate::action_state) fn validate_composition(
         &self,
@@ -1301,6 +1303,20 @@ pub(super) fn validate_changes(
                 .get(&reservation_id)
                 .ok_or_else(|| refused("purchase retained reservation missing"))?;
             verify(Phase::Terminal, &stored.record, &after)?;
+            // 17g C2f (R2): this validator filters its own `protected`
+            // families, so it checks the closed index rows itself, exactly:
+            // the operation's own buyer's actors row released at Grant and
+            // Refund (that key, the op its content implies, the operation
+            // gone), and the holder's holdings row put at Grant, each at the
+            // key `owner_index` derives, and no other row of either family.
+            // The terminal branch admits exactly the same mutations again.
+            owner_index::require(
+                store,
+                mutations,
+                owner_index::Owner::Entitlement,
+                action,
+                id,
+            )?;
         }
     }
     Ok(())

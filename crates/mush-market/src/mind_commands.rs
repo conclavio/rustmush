@@ -21,8 +21,12 @@
 //!   against Roll's facts). Away from a counter it is `Refused`.
 //! - `ListingByCode { code }`: exactly `CODE_CHARACTERS` (8) characters of a
 //!   publication token's text. One scan of `CODE_ROWS` (2) rows after the
-//!   code: no key starting with it, or one that is not current, is
-//!   `Refused`; one current is `One`; two are `Ambiguous`. No other length is
+//!   code, in which only current rows count (17g C2e): no current key
+//!   starting with it is `Refused`; one current is `One`, whatever stale row
+//!   sits beside it; two current are `Ambiguous`. When both scanned rows
+//!   share the code and the family goes on, one probe of the next row tells
+//!   whether a third shares it too (then `Ambiguous`), so a `One` is always
+//!   the only current listing with the code (`by_code`). No other length is
 //!   answered, so no more than the 32 bits `+minds` prints of a token is ever
 //!   answerable. It needs no counter (`+minds/buy/refund` works anywhere).
 //! - `ListingsAfter { code }` (the C2c fix round, reviewer F4): the page after
@@ -36,28 +40,51 @@
 //!   at a counter, and only its existence is answered, never its terms.
 //!   Away from a counter it is `Refused`.
 //!
-//! **Not built here (the C2c builder's report):** the brief's `OwnPurchase`
-//! and `OwnOpen` kinds read the per-buyer entitlement index
-//! (`market_mind_entitlement_actors`, C2 plan §2.5 item 1), which C2b did not
-//! land (it is held for the lead's mush-core ruling). Without it there is no
-//! bounded lookup of "this actor's quote or funded operation", so they are
-//! left for the sub-cut that lands the index. 17g C2d's `ResaleOffers
-//! { licence }` (the live resale offers naming the actor on one licence) is
-//! held for the same reason: it reads the per-(buyer, licence) offer index
-//! (`market_mind_paid_resale_buyer_offers`, plan §2.5 item 3), and the
-//! paid-resale offers are otherwise keyed only by their own commit token.
-//! C2d adds the resale steps to `MarketCommandActions` (`ResaleKind`).
+//! **The actor's own records (17g C2g, the C2e plan §4.1 items 1 and 4),**
+//! over 17g C2f's owner indexes, each written inside the money transaction
+//! it follows. Every one answers for `ctx.actor` alone, from the actor's own
+//! index row and one batched point read of the rows it names, so another
+//! actor's records are never read, and are absent exactly as none are:
+//! - `OwnPurchase { code }`: the actor's own quote and funded purchase on the
+//!   listing `code` names, matched against the listing token each of the
+//!   actor's OWN indexed quotes and operations names
+//!   (`market_mind_entitlement_actors`), current listing or not, so a
+//!   listing withdrawn after Fund can still be completed or refunded. It
+//!   never calls `by_code`: another actor's purchase is the same `None` as
+//!   none. At most `MAX_BUYER_QUOTES` + `MAX_BUYER_PURCHASES` rows, three
+//!   reads. Its view also names the actor's most recently quoted own record
+//!   there (`OwnPurchaseView::latest`), `+minds/buy`'s key subject.
+//! - `OwnOpen`: every funded purchase the actor has open (the `+minds/
+//!   holdings` waiting lines), with its listing's code, whatever the
+//!   listing's currency (a withdrawn listing's escrow is still the actor's).
+//! - `ResaleOffers { licence }`: the live seller offers naming the actor on
+//!   that licence (`market_mind_paid_resale_buyer_offers` keyed by the
+//!   actor and the licence, then each offer row, whose named buyer and
+//!   licence are checked), expired ones left out; a licence nobody offered
+//!   the actor (a foreign one included) answers the empty list, as a missing
+//!   one does. Each view carries the acceptance step (`ResaleKind::Accept`
+//!   or `Fund`) by the provider's own claim test, taken from Roll
+//!   (`mush_roll::commerce::paid_resale::reader::resale_step`) only for a
+//!   licence on which an offer naming the actor was found, so the step is
+//!   built on the offer's committed evidence and is no oracle for anyone
+//!   else (the C2d fix round's reviewers C2D-R2 and C2D-R3).
 //!
-//! **Capacity.** This is a second market-side owner-read service. The
-//! format-2 Active named launch already holds 31 services and all 32 grants
-//! before it (17g C2a's measurement), so registering it takes the 32nd
-//! service and TacSim cannot request it without `OwnerReadError::Limit`
-//! (C2 plan §2.4: the lead's fallback raises both caps; no builder does).
-//! `MarketCommandReader::request` is TacSim's call once that lands.
+//! No own view carries the seller, an account, a digest or another buyer.
+//!
+//! **Capacity and the grant.** This is a second market-side owner-read
+//! service: on the format-2 Active named launch it is one of its 33 services. 17g
+//! C2e raised both owner-read caps to 48 (the lead's ruling R1) and TacSim
+//! requests the read through `MarketCommandReader::request` in its
+//! `register`, beside the entitlement holdings' grants, whenever it composes
+//! the line-mode mind commands (the format-2 Active launch only); the launch
+//! then holds 33 services and 35 grants (with the scoped passenger facts). A House-only launch requests
+//! nothing.
 
 use crate::mind_entitlement::{
-    EntitlementConfig, EntitlementGuard, EntitlementListingV1, Families, current_policy,
+    EntitlementActorIndex, EntitlementConfig, EntitlementGuard, EntitlementListingV1,
+    EntitlementPurchaseV1, EntitlementQuoteV1, Families, current_policy,
 };
+use crate::mind_paid_resale::{MindPaidResaleOffer, ResaleBuyerOffers};
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistry,
     DefinitionRegistryBuilder, OwnerId,
@@ -65,11 +92,12 @@ use mush_core::mechanics::{
 use mush_core::read_service::{
     OwnerReadContext, OwnerReadError, OwnerReadHandle, OwnerReadService,
 };
-use mush_core::{CommitToken, DefinitionRef, ModError, Registrar};
+use mush_core::{CommitToken, DefinitionRef, ModError, ObjId, Registrar};
 use mush_economy::managed_entitlement::EntitlementProtocol;
-use mush_roll::commerce::CharterId;
 use mush_roll::commerce::paid::PaidForm;
+use mush_roll::commerce::purchase::PurchasePhase;
 use mush_roll::commerce::rating::RatingClass;
+use mush_roll::commerce::{CharterId, LicenceId};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -173,7 +201,13 @@ pub struct MarketCommandActions {
 /// paid claim and `Fund` otherwise (the provider's own test; Roll's
 /// `ResaleStep` read that answers which is held with the accept, the C2d
 /// fix round).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// 17g C2g: a `ResaleOffers` view carries the named buyer's step, `Accept`
+/// or `Fund`, by the provider's own claim test (Roll's
+/// `mush_roll::commerce::paid_resale::reader::resale_step`, asked only once
+/// an offer naming the actor was found).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResaleKind {
     Offer,
     Accept,
@@ -368,8 +402,35 @@ enum ReadKind {
     Listings { after: Option<CommitToken> },
     ListingByCode { code: String },
     ListingsAfter { code: String },
+    OwnPurchase { code: String },
+    OwnOpen,
+    ResaleOffers { licence: LicenceId },
 }
 impl MarketCommandRequest {
+    /// 17g C2g: the actor's own quote and funded purchase on the listing
+    /// whose code is `code`, through the actor's own index only.
+    #[must_use]
+    pub fn own_purchase(code: &str) -> Self {
+        Self {
+            kind: ReadKind::OwnPurchase {
+                code: code.to_owned(),
+            },
+        }
+    }
+    /// 17g C2g: every funded purchase the actor has open.
+    #[must_use]
+    pub const fn own_open() -> Self {
+        Self {
+            kind: ReadKind::OwnOpen,
+        }
+    }
+    /// 17g C2g: the live resale offers naming the actor on `licence`.
+    #[must_use]
+    pub const fn resale_offers(licence: LicenceId) -> Self {
+        Self {
+            kind: ReadKind::ResaleOffers { licence },
+        }
+    }
     /// Whether the actor stands at an admitting counter.
     #[must_use]
     pub const fn at_counter() -> Self {
@@ -435,13 +496,157 @@ pub enum CodeLookup {
     Ambiguous,
 }
 
+/// 17g C2g: the actor's own unfunded quote on a listing: its token (the
+/// Fund's `quote`), its frozen price and when it stops being fundable (world
+/// UTC seconds; the provider refuses a Fund at or after it). It may have
+/// expired: an abandoned quote stays indexed until the actor's next Quote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct OwnQuoteView {
+    quote: CommitToken,
+    price_minor: i64,
+    expires_at_utc: i64,
+}
+impl OwnQuoteView {
+    #[must_use]
+    pub const fn quote(&self) -> CommitToken {
+        self.quote
+    }
+    #[must_use]
+    pub const fn price_minor(&self) -> i64 {
+        self.price_minor
+    }
+    #[must_use]
+    pub const fn expires_at_utc(&self) -> i64 {
+        self.expires_at_utc
+    }
+}
+
+/// 17g C2g: the actor's own record on one listing (`OwnPurchase`): the
+/// listing's code and protocol, the NEWEST indexed quote on it (live or
+/// expired) and the earliest-quoted funded purchase on it (its operation
+/// token, the Grant's and Refund's `operation`). At least one of the two is
+/// present. No seller, account, digest or other buyer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OwnPurchaseView {
+    code: String,
+    protocol: Protocol,
+    quote: Option<OwnQuoteView>,
+    funded: Option<CommitToken>,
+    latest: CommitToken,
+}
+impl OwnPurchaseView {
+    /// The listing's code, as the actor typed it.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+    /// The entitlement protocol the steps submit through.
+    #[must_use]
+    pub const fn protocol(&self) -> Protocol {
+        self.protocol
+    }
+    #[must_use]
+    pub const fn quote(&self) -> Option<OwnQuoteView> {
+        self.quote
+    }
+    /// The funded purchase's operation token, when the actor has paid.
+    #[must_use]
+    pub const fn funded(&self) -> Option<CommitToken> {
+        self.funded
+    }
+    /// 17g C2g (the C2g fix round 2, reviewers correctness/C2G-R2-1,
+    /// conformance/F1 and tests/T-1): the token of the actor's most recently
+    /// quoted own record on the listing, among ALL its indexed quotes and
+    /// funded purchases there: a quote's own token or a funded purchase's
+    /// operation token, ordered by the quote's `quoted_at_utc`, a quote
+    /// before a purchase quoted in the same second (a purchase's quote was
+    /// quoted before the purchase's Fund), then by token. Every Quote and
+    /// every Fund the actor commits on the listing makes it a token never
+    /// seen there before; a Grant or a Refund, which take a funded purchase
+    /// out of the index, can make it an earlier record's token again.
+    /// `+minds/buy`'s idempotency subject (tacsim's `buy_key`).
+    #[must_use]
+    pub const fn latest(&self) -> CommitToken {
+        self.latest
+    }
+}
+
+/// 17g C2g: one funded purchase the actor has open (`OwnOpen`): its
+/// operation token, its listing's code and its protocol.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OwnOpenView {
+    operation: CommitToken,
+    code: String,
+    protocol: Protocol,
+}
+impl OwnOpenView {
+    #[must_use]
+    pub const fn operation(&self) -> CommitToken {
+        self.operation
+    }
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+    #[must_use]
+    pub const fn protocol(&self) -> Protocol {
+        self.protocol
+    }
+}
+
+/// 17g C2g: one live seller offer naming the actor on a licence
+/// (`ResaleOffers`): its token (the Accept's and Fund's `offer`), the frozen
+/// price, when it expires (world UTC seconds; the economy refuses an
+/// acceptance at or after it) and the acceptance step by the provider's own
+/// claim test. No seller, account, digest or other buyer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ResaleOfferView {
+    offer: CommitToken,
+    price_minor: i64,
+    expires_at_utc: i64,
+    step: ResaleKind,
+}
+impl ResaleOfferView {
+    #[must_use]
+    pub const fn offer(&self) -> CommitToken {
+        self.offer
+    }
+    #[must_use]
+    pub const fn price_minor(&self) -> i64 {
+        self.price_minor
+    }
+    #[must_use]
+    pub const fn expires_at_utc(&self) -> i64 {
+        self.expires_at_utc
+    }
+    /// `ResaleKind::Accept` or `ResaleKind::Fund`.
+    #[must_use]
+    pub const fn step(&self) -> ResaleKind {
+        self.step
+    }
+}
+
 /// One result per request kind.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MarketCommandResult {
-    AtCounter { here: bool },
+    AtCounter {
+        here: bool,
+    },
     Listings(ListingsPage),
     ListingByCode(CodeLookup),
+    /// 17g C2g: `OwnPurchase`, `None` when the actor has no record on it.
+    OwnPurchase {
+        found: Option<OwnPurchaseView>,
+    },
+    /// 17g C2g: `OwnOpen`, in operation token order.
+    OwnOpen {
+        open: Vec<OwnOpenView>,
+    },
+    /// 17g C2g: `ResaleOffers`, in offer token order.
+    ResaleOffers {
+        offers: Vec<ResaleOfferView>,
+    },
 }
 impl MarketCommandResult {
     /// The counter answer, or `None` if this answered another kind.
@@ -449,21 +654,46 @@ impl MarketCommandResult {
     pub const fn at_counter(&self) -> Option<bool> {
         match self {
             Self::AtCounter { here } => Some(*here),
-            Self::Listings(_) | Self::ListingByCode(_) => None,
+            _ => None,
         }
     }
     #[must_use]
     pub fn into_listings(self) -> Option<ListingsPage> {
         match self {
             Self::Listings(page) => Some(page),
-            Self::AtCounter { .. } | Self::ListingByCode(_) => None,
+            _ => None,
         }
     }
     #[must_use]
     pub fn into_listing(self) -> Option<CodeLookup> {
         match self {
             Self::ListingByCode(found) => Some(found),
-            Self::AtCounter { .. } | Self::Listings(_) => None,
+            _ => None,
+        }
+    }
+    /// 17g C2g: the own-purchase answer (`Some(None)`: no own record), or
+    /// `None` for another kind.
+    #[must_use]
+    pub fn into_own_purchase(self) -> Option<Option<OwnPurchaseView>> {
+        match self {
+            Self::OwnPurchase { found } => Some(found),
+            _ => None,
+        }
+    }
+    /// 17g C2g: the open purchases, or `None` for another kind.
+    #[must_use]
+    pub fn into_own_open(self) -> Option<Vec<OwnOpenView>> {
+        match self {
+            Self::OwnOpen { open } => Some(open),
+            _ => None,
+        }
+    }
+    /// 17g C2g: the live offers naming the actor, or `None` for another kind.
+    #[must_use]
+    pub fn into_resale_offers(self) -> Option<Vec<ResaleOfferView>> {
+        match self {
+            Self::ResaleOffers { offers } => Some(offers),
+            _ => None,
         }
     }
 }
@@ -472,6 +702,9 @@ impl MarketCommandResult {
 /// composes entitlements.
 pub struct MarketCommandReader {
     families: Families,
+    /// 17g C2g: the paid-resale families `ResaleOffers` reads, when the
+    /// market composes paid resale (`Unavailable` otherwise).
+    resale: Option<crate::mind_paid_resale::Families>,
     guard: EntitlementGuard,
     config: EntitlementConfig,
 }
@@ -518,9 +751,12 @@ fn definition(manifest: &DefinitionRef) -> Result<DefinitionRef, ModError> {
 
 /// Register the read beside the entitlement families (the market's own
 /// `register`, only when entitlements are composed). Granted to TacSim.
+/// 17g C2g: `resale` is the paid-resale families when the market composes
+/// paid resale, so the market registers the read after them.
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     families: Families,
+    resale: Option<crate::mind_paid_resale::Families>,
     config: &EntitlementConfig,
     gate: Arc<dyn crate::VenueGate>,
 ) -> Result<(), ModError> {
@@ -537,6 +773,7 @@ pub(crate) fn register(
         BTreeSet::from([tacsim]),
         MarketCommandReader {
             families,
+            resale,
             guard: EntitlementGuard::new(config.clone(), gate)?,
             config: config.clone(),
         },
@@ -556,9 +793,14 @@ impl OwnerReadService for MarketCommandReader {
         let lens = Lens {
             ctx,
             families: &self.families,
+            resale: self.resale.as_ref(),
         };
         answer(
             &lens,
+            Own {
+                actor: ctx.actor(),
+                now: ctx.world().now(),
+            },
             || self.guard.current(ctx.world(), ctx.actor()).is_ok(),
             &self.config,
             request,
@@ -566,19 +808,37 @@ impl OwnerReadService for MarketCommandReader {
     }
 }
 
+/// 17g C2g: whom the own kinds answer for (always the dispatching actor,
+/// from core) and the world clock (UTC seconds) a resale offer's expiry is
+/// read against.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Own {
+    pub(crate) actor: ObjId,
+    pub(crate) now: i64,
+}
+
 /// The read's answer over `source`: `here` is the venue gate for the actor
 /// (`EntitlementGuard::current`), and "current" is `current_policy` against
 /// the deployment's `config`. `read` calls this with the owner lens; the
 /// tests call it over an in-memory family, so the counter rule and the policy
-/// filter they check are the registered read's own.
+/// filter they check are the registered read's own. 17g C2g: the own kinds
+/// answer for `own.actor` only.
 pub(crate) fn answer<'a>(
-    source: &impl ListingSource<'a>,
+    source: &(impl ListingSource<'a> + OwnSource<'a>),
+    own: Own,
     here: impl Fn() -> bool,
     config: &EntitlementConfig,
     request: MarketCommandRequest,
 ) -> Result<MarketCommandResult, OwnerReadError> {
     let current = |row: &EntitlementListingV1| current_policy(config, row).is_ok();
     match request.kind {
+        ReadKind::OwnPurchase { code } => own_purchase(source, own.actor, &code)
+            .map(|found| MarketCommandResult::OwnPurchase { found }),
+        ReadKind::OwnOpen => {
+            own_open(source, own.actor).map(|open| MarketCommandResult::OwnOpen { open })
+        }
+        ReadKind::ResaleOffers { licence } => resale_offers(source, own, licence)
+            .map(|offers| MarketCommandResult::ResaleOffers { offers }),
         ReadKind::AtCounter => Ok(MarketCommandResult::AtCounter { here: here() }),
         ReadKind::Listings { after } => {
             if !here() {
@@ -612,6 +872,7 @@ pub(crate) trait ListingSource<'a> {
 struct Lens<'c, 'a> {
     ctx: &'c OwnerReadContext<'a>,
     families: &'c Families,
+    resale: Option<&'c crate::mind_paid_resale::Families>,
 }
 impl<'a> ListingSource<'a> for Lens<'_, 'a> {
     fn scan(
@@ -631,6 +892,269 @@ impl<'a> ListingSource<'a> for Lens<'_, 'a> {
         }
         Ok((rows, page.next_after().is_some()))
     }
+}
+
+/// 17g C2g: the point reads the own kinds make, each keyed by the actor or
+/// by a token the actor's own index row names. `read` answers them through
+/// the owner lens; the tests through in-memory rows.
+pub(crate) trait OwnSource<'a> {
+    /// The actor's own entitlement index row (`market_mind_entitlement_
+    /// actors`, keyed by the actor).
+    fn actor_row(&self, actor: ObjId) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError>;
+    /// The quote rows `tokens` name, in order (one batched read).
+    fn quotes(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a EntitlementQuoteV1>>, OwnerReadError>;
+    /// The purchase rows `tokens` name, in order (one batched read).
+    fn operations(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a EntitlementPurchaseV1>>, OwnerReadError>;
+    /// The actor's own `(buyer, licence)` resale offer index row.
+    fn buyer_offers(
+        &self,
+        buyer: ObjId,
+        licence: LicenceId,
+    ) -> Result<Option<&'a ResaleBuyerOffers>, OwnerReadError>;
+    /// The seller offer rows `tokens` name, in order (one batched read).
+    fn resale_offers(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a MindPaidResaleOffer>>, OwnerReadError>;
+    /// The acceptance step for `licence` by the provider's own claim test
+    /// (Roll's `resale_step`), asked only once an offer naming the actor on
+    /// it was found.
+    fn resale_step(&self, licence: LicenceId) -> Result<ResaleKind, OwnerReadError>;
+}
+impl<'a> OwnSource<'a> for Lens<'_, 'a> {
+    fn actor_row(&self, actor: ObjId) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError> {
+        self.ctx.action_state(self.families.actors(), &actor)
+    }
+    fn quotes(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a EntitlementQuoteV1>>, OwnerReadError> {
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.ctx.action_states(self.families.quotes(), tokens)
+    }
+    fn operations(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a EntitlementPurchaseV1>>, OwnerReadError> {
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.ctx.action_states(self.families.operations(), tokens)
+    }
+    fn buyer_offers(
+        &self,
+        buyer: ObjId,
+        licence: LicenceId,
+    ) -> Result<Option<&'a ResaleBuyerOffers>, OwnerReadError> {
+        let resale = self.resale.ok_or(OwnerReadError::Unavailable)?;
+        self.ctx
+            .action_state(resale.buyer_offers(), &(buyer, licence))
+    }
+    fn resale_offers(
+        &self,
+        tokens: &[CommitToken],
+    ) -> Result<Vec<Option<&'a MindPaidResaleOffer>>, OwnerReadError> {
+        let resale = self.resale.ok_or(OwnerReadError::Unavailable)?;
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.ctx.action_states(resale.offers(), tokens)
+    }
+    fn resale_step(&self, licence: LicenceId) -> Result<ResaleKind, OwnerReadError> {
+        use mush_roll::commerce::paid_resale::reader::{ResaleStep, resale_step};
+        match resale_step(self.ctx.world(), licence) {
+            Ok(ResaleStep::Accept) => Ok(ResaleKind::Accept),
+            Ok(ResaleStep::Fund) => Ok(ResaleKind::Fund),
+            Err(_) => Err(OwnerReadError::Unavailable),
+        }
+    }
+}
+
+/// The listing code of a listing token: its first `CODE_CHARACTERS`
+/// characters, as `PublicListingView::code` prints it.
+fn code_of(listing: CommitToken) -> String {
+    listing.to_string().chars().take(CODE_CHARACTERS).collect()
+}
+
+/// The actor's own quotes and funded purchases.
+type OwnRows<'a> = (Vec<&'a EntitlementQuoteV1>, Vec<&'a EntitlementPurchaseV1>);
+
+/// The actor's own quotes and funded purchases from its index row, each row
+/// checked against the index (its own token, this buyer, a funded phase).
+fn own_rows<'a>(source: &impl OwnSource<'a>, actor: ObjId) -> Result<OwnRows<'a>, OwnerReadError> {
+    let Some(row) = source.actor_row(actor)? else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    if row.actor() != actor
+        || row.quotes().len() > crate::mind_entitlement::MAX_BUYER_QUOTES
+        || row.operations().len() > crate::mind_entitlement::MAX_BUYER_PURCHASES
+    {
+        return Err(OwnerReadError::Integrity);
+    }
+    let quote_tokens: Vec<CommitToken> = row.quotes().iter().copied().collect();
+    let operation_tokens: Vec<CommitToken> = row.operations().iter().copied().collect();
+    let mut quotes = Vec::with_capacity(quote_tokens.len());
+    for (token, quote) in quote_tokens.iter().zip(source.quotes(&quote_tokens)?) {
+        let quote = quote.ok_or(OwnerReadError::Integrity)?;
+        if quote.publication() != *token || quote.buyer() != actor {
+            return Err(OwnerReadError::Integrity);
+        }
+        quotes.push(quote);
+    }
+    let mut operations = Vec::with_capacity(operation_tokens.len());
+    for (token, operation) in operation_tokens
+        .iter()
+        .zip(source.operations(&operation_tokens)?)
+    {
+        let operation = operation.ok_or(OwnerReadError::Integrity)?;
+        if operation.operation() != *token
+            || operation.quote_row().buyer() != actor
+            || operation.phase() != (PurchasePhase::Funded {})
+        {
+            return Err(OwnerReadError::Integrity);
+        }
+        operations.push(operation);
+    }
+    Ok((quotes, operations))
+}
+
+/// 17g C2g: `OwnPurchase { code }` (module doc). Only the actor's own index
+/// is read; `by_code` never is. The code's listing is the one whose token
+/// starts with it among the actor's own records; two of the actor's own
+/// listings sharing the 8 characters are `Refused` (the command then reads
+/// as having no record), as is a malformed code.
+pub(crate) fn own_purchase<'a>(
+    source: &impl OwnSource<'a>,
+    actor: ObjId,
+    code: &str,
+) -> Result<Option<OwnPurchaseView>, OwnerReadError> {
+    if !is_code(code) {
+        return Err(OwnerReadError::Refused);
+    }
+    let (quotes, operations) = own_rows(source, actor)?;
+    let matches = |listing: CommitToken| listing.to_string().starts_with(code);
+    let quotes: Vec<_> = quotes
+        .into_iter()
+        .filter(|q| matches(q.listing()))
+        .collect();
+    let operations: Vec<_> = operations
+        .into_iter()
+        .filter(|p| matches(p.quote_row().listing()))
+        .collect();
+    let listings: BTreeSet<CommitToken> = quotes
+        .iter()
+        .map(|q| q.listing())
+        .chain(operations.iter().map(|p| p.quote_row().listing()))
+        .collect();
+    if listings.len() > 1 {
+        return Err(OwnerReadError::Refused);
+    }
+    let newest = quotes
+        .iter()
+        .max_by_key(|q| (q.quoted_at_utc(), q.publication()));
+    let earliest = operations
+        .iter()
+        .min_by_key(|p| (p.quote_row().quoted_at_utc(), p.operation()));
+    // `OwnPurchaseView::latest`: a quote ranks after a purchase quoted in
+    // the same second (`1` over `0`).
+    let latest = quotes
+        .iter()
+        .map(|q| ((q.quoted_at_utc(), 1_u8), q.publication()))
+        .chain(
+            operations
+                .iter()
+                .map(|p| ((p.quote_row().quoted_at_utc(), 0_u8), p.operation())),
+        )
+        .max();
+    let (protocol, latest) = match (newest, earliest, latest) {
+        (Some(quote), _, Some((_, latest))) => (quote.protocol(), latest),
+        (None, Some(operation), Some((_, latest))) => (operation.quote_row().protocol(), latest),
+        _ => return Ok(None),
+    };
+    Ok(Some(OwnPurchaseView {
+        code: code.to_owned(),
+        protocol: Protocol::of(protocol),
+        quote: newest.map(|q| OwnQuoteView {
+            quote: q.publication(),
+            price_minor: q.price_minor(),
+            expires_at_utc: q.expires_at_utc(),
+        }),
+        funded: earliest.map(|p| p.operation()),
+        latest,
+    }))
+}
+
+/// 17g C2g: `OwnOpen` (module doc): every funded purchase on the actor's
+/// own index row, current listing or not.
+pub(crate) fn own_open<'a>(
+    source: &impl OwnSource<'a>,
+    actor: ObjId,
+) -> Result<Vec<OwnOpenView>, OwnerReadError> {
+    let (_, operations) = own_rows(source, actor)?;
+    Ok(operations
+        .into_iter()
+        .map(|p| OwnOpenView {
+            operation: p.operation(),
+            code: code_of(p.quote_row().listing()),
+            protocol: Protocol::of(p.quote_row().protocol()),
+        })
+        .collect())
+}
+
+/// 17g C2g: `ResaleOffers { licence }` (module doc): the actor's own
+/// `(buyer, licence)` index row and the offer rows it names, each checked to
+/// name this buyer and licence; an offer at or past its expiry at `own.now`
+/// is left out. The step is asked of Roll only when a live offer exists.
+pub(crate) fn resale_offers<'a>(
+    source: &impl OwnSource<'a>,
+    own: Own,
+    licence: LicenceId,
+) -> Result<Vec<ResaleOfferView>, OwnerReadError> {
+    let Some(row) = source.buyer_offers(own.actor, licence)? else {
+        return Ok(Vec::new());
+    };
+    if row.buyer() != own.actor || row.licence() != licence {
+        return Err(OwnerReadError::Integrity);
+    }
+    let tokens: Vec<CommitToken> = row.offers().iter().copied().collect();
+    let mut live = Vec::new();
+    for (token, offer) in tokens.iter().zip(source.resale_offers(&tokens)?) {
+        let offer = offer.ok_or(OwnerReadError::Integrity)?;
+        if offer.operation() != *token
+            || offer.terms().buyer != own.actor
+            || offer.binding().licence() != licence
+        {
+            return Err(OwnerReadError::Integrity);
+        }
+        if own.now < offer.terms().expires_at_utc {
+            live.push((
+                offer.operation(),
+                offer.terms().price.minor(),
+                offer.terms().expires_at_utc,
+            ));
+        }
+    }
+    if live.is_empty() {
+        return Ok(Vec::new());
+    }
+    let step = source.resale_step(licence)?;
+    Ok(live
+        .into_iter()
+        .map(|(offer, price_minor, expires_at_utc)| ResaleOfferView {
+            offer,
+            price_minor,
+            expires_at_utc,
+            step,
+        })
+        .collect())
 }
 
 fn view(row: &EntitlementListingV1) -> Result<PublicListingView, OwnerReadError> {
@@ -715,6 +1239,27 @@ pub fn is_code(code: &str) -> bool {
 
 /// The current listing whose token starts with `code`, from one scan of
 /// `CODE_ROWS` rows after the code.
+///
+/// 17g C2e (C2e plan §2.1 item 4a, review FE-F13): only CURRENT rows count
+/// toward ambiguity. Within the one scan, one current row beside any rows
+/// that are no longer current resolves to the current row; two current rows
+/// are `Ambiguous`; no current row (a stale exact match included) is
+/// `Refused`, the not-found answer. `CODE_ROWS` stays 2 because it is in the
+/// read's descriptor (widening it would version the definition), so a
+/// current listing that sits beyond two stale rows sharing its prefix is
+/// still not found: a stated residual, since stale rows exist only after a
+/// policy change.
+///
+/// A `One` is never a guess (the C2e fix round, reviewer correctness/F1):
+/// when both scanned rows share the code, one of them current, and the
+/// family goes on, a further current row with the code could sit just past
+/// the window (stale, current, current), and the current row in the window
+/// is then not the only one. Keys sharing a prefix are adjacent in key
+/// order, so one probe of the single row after the window decides it: a row
+/// that shares the code makes the answer `Ambiguous` (current or not, since
+/// past it the read cannot see), any other row or none leaves the `One`
+/// proven. The probe is one more scan of one row, only in that case; the
+/// window itself stays `CODE_ROWS`.
 pub(crate) fn by_code<'a>(
     source: &impl ListingSource<'a>,
     code: &str,
@@ -723,15 +1268,25 @@ pub(crate) fn by_code<'a>(
     if !is_code(code) {
         return Err(OwnerReadError::Refused);
     }
-    let (scanned, _) = source.scan(Some(code), CODE_ROWS)?;
+    let shares = |row: &EntitlementListingV1| row.publication().to_string().starts_with(code);
+    let (scanned, more) = source.scan(Some(code), CODE_ROWS)?;
+    let saturated = more && scanned.len() == CODE_ROWS && scanned.iter().all(|row| shares(row));
+    let last = scanned.last().map(|row| row.publication().to_string());
     let matching: Vec<_> = scanned
         .into_iter()
-        .filter(|row| row.publication().to_string().starts_with(code))
+        .filter(|row| shares(row) && current(row))
         .collect();
     match matching.as_slice() {
         [] => Err(OwnerReadError::Refused),
-        [row] if current(row) => view(row).map(CodeLookup::One),
-        [_] => Err(OwnerReadError::Refused),
+        [row] => {
+            if saturated {
+                let (next, _) = source.scan(last.as_deref(), 1)?;
+                if next.first().is_some_and(|row| shares(row)) {
+                    return Ok(CodeLookup::Ambiguous);
+                }
+            }
+            view(row).map(CodeLookup::One)
+        }
         _ => Ok(CodeLookup::Ambiguous),
     }
 }

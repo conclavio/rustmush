@@ -58,7 +58,7 @@ fn at(n: i64) -> TestResult<WorldIcSeconds> {
         at: n,
     })?)
 }
-fn fixture(
+pub(super) fn fixture(
     protocol: EntitlementProtocol,
     depth: u64,
     form: PaidForm,
@@ -309,6 +309,52 @@ pub(crate) fn current_listing_fixture(
     super::current_policy(config, &listing)?;
     Ok(listing)
 }
+/// 17g C2g: a quote by `buyer` on the listing `listing`, published as
+/// `publication`, quoted at `quoted` and fundable until `expires` (world UTC
+/// seconds), over `fixture`'s original sealed product; the command read's
+/// own-purchase tests index it.
+pub(crate) fn command_quote(
+    publication: CommitToken,
+    listing: CommitToken,
+    buyer: ObjId,
+    quoted: i64,
+    expires: i64,
+) -> TestResult<EntitlementQuoteV1> {
+    let mut q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
+    q.publication = publication;
+    q.listing = listing;
+    q.buyer = buyer;
+    q.quoted_at_utc = quoted;
+    q.expires_at_utc = expires;
+    q.validate()?;
+    Ok(q)
+}
+/// 17g C2g: `q` funded as the open purchase `operation`.
+pub(crate) fn command_purchase(
+    q: EntitlementQuoteV1,
+    operation: CommitToken,
+) -> TestResult<EntitlementPurchaseV1> {
+    let mut p = purchase(q)?;
+    p.operation = operation;
+    p.updated_by = operation;
+    p.validate()?;
+    Ok(p)
+}
+/// 17g C2g: `actor`'s per-buyer index row over `quotes` and `operations`.
+pub(crate) fn command_index(
+    actor: ObjId,
+    quotes: &[CommitToken],
+    operations: &[CommitToken],
+) -> TestResult<super::EntitlementActorIndex> {
+    let row = super::EntitlementActorIndex {
+        format: 1,
+        actor,
+        quotes: quotes.iter().copied().collect(),
+        operations: operations.iter().copied().collect(),
+    };
+    row.validate()?;
+    Ok(row)
+}
 fn reprice(q: &mut EntitlementQuoteV1) -> TestResult {
     q.product_digest = q.product.digest()?;
     q.payouts = Bounded(
@@ -325,7 +371,7 @@ fn reprice(q: &mut EntitlementQuoteV1) -> TestResult {
     q.validate()?;
     Ok(())
 }
-fn purchase(q: EntitlementQuoteV1) -> TestResult<EntitlementPurchaseV1> {
+pub(super) fn purchase(q: EntitlementQuoteV1) -> TestResult<EntitlementPurchaseV1> {
     let participants = PurchaseParticipants::new(
         definition("economy", "owner_participant", "initial_filing", 1)?,
         definition("roll", "owner_participant", "commercial_roots", 1)?,

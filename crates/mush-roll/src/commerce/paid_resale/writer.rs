@@ -126,6 +126,8 @@ impl PaidResaleWriter {
         reg.delegate_state_family(&families.paid_resale_heads, "market")?;
         reg.delegate_state_family(&families.paid_holders, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
+        // 17g C2f: the immediate Accept and the Settle move the holdings row.
+        reg.delegate_state_family(&families.paid_holdings, "market")?;
         // Market's paid-resale boot audit re-proves each offer's and
         // operation's binding (`binding_for_boot` / `operation_for_boot`) from
         // its own ModuleCtx, and the birth resolver reads every birth route
@@ -580,6 +582,15 @@ impl RegisteredPaidResaleWriter {
             {
                 return Err(PublicationError::Mismatch);
             }
+            // 17g C2f (the C2b brief §2): the immediate Accept moves the
+            // paid-holdings row from seller to buyer beside the pointer.
+            crate::commerce::paid_holdings::transfer(
+                txn,
+                f,
+                facts.pointer().holder(),
+                pointer.holder(),
+                pointer.id(),
+            )?;
         }
         if txn.get(&f.paid_resales, &row.key()).map_err(bad)? != Some(&row)
             || txn.get(&f.paid_resale_heads, &head.key()).map_err(bad)? != Some(&head)
@@ -866,6 +877,15 @@ impl RegisteredPaidResaleWriter {
             {
                 return Err(PublicationError::Mismatch);
             }
+            // 17g C2f (the C2b brief §2): the service Settle moves the
+            // paid-holdings row from seller to buyer beside the pointer.
+            crate::commerce::paid_holdings::transfer(
+                txn,
+                f,
+                observed.state.pointer.holder(),
+                pointer.holder(),
+                pointer.id(),
+            )?;
         }
         if txn.get(&f.paid_resales, &row.key()).map_err(bad)? != Some(&row)
             || txn.get(&f.paid_resale_heads, &head.key()).map_err(bad)? != Some(&head)

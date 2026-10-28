@@ -754,3 +754,6 @@ fn production_has_no_reserve_authority_and_zero_metadata_preserves_legacy_writes
     assert_eq!(restarted.capacity_usage, store.capacity_usage);
     Ok(())
 }
+
+/// 17g C2f: the closed owner-index admission, row by row.
+mod index_rows;

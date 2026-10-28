@@ -128,6 +128,7 @@ impl Provider {
                     .writer
                     .observe(ctx, txn, PaidResaleRequest::Seller { licence, buyer })
                     .map_err(invalid)?;
+                let now = ctx.world().map_err(invalid)?.now();
                 self.writer
                     .preflight(ctx, txn, &observed)
                     .map_err(invalid)?;
@@ -151,6 +152,8 @@ impl Provider {
                 if txn.get(&self.families.offers, &commit).map_err(invalid)? != Some(&row) {
                     return Err(invalid("offer readback"));
                 }
+                // 17g C2f: the named buyer's offer index, in this transaction.
+                super::index::offered(txn, &self.families, &row, now).map_err(invalid)?;
                 (commit, "offered")
             }
             Request::Accept { offer, payer } => {
@@ -259,6 +262,8 @@ impl Provider {
                 {
                     return Err(invalid("operation readback"));
                 }
+                // 17g C2f: the accepted offer leaves its buyer's offer index.
+                super::index::consumed(txn, &self.families, &row).map_err(invalid)?;
                 if !immediate {
                     ctx.reserve_paid_resale_completion(txn).map_err(invalid)?;
                 }

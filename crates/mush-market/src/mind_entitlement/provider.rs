@@ -131,6 +131,7 @@ impl Provider {
             return Err("quote key differs".into());
         }
         let observed = self.current(inv, txn, ctx, &q)?;
+        let buyer = q.buyer;
         let economics = q.economic_subject()?;
         self.writer
             .preflight_funding(ctx, txn, &economics, &publication::terms(&q), &observed)
@@ -163,6 +164,8 @@ impl Provider {
         txn.insert(&self.families.operations, &commit, row.clone())
             .map_err(|e| e.to_string())?;
         self.families.consume_quote(txn, quote)?;
+        // 17g C2f: the quote leaves and the operation joins the buyer's index.
+        super::index::funded(txn, &self.families.index(), buyer, quote, commit)?;
         if txn
             .get(&self.families.operations, &commit)
             .map_err(|e| e.to_string())?
@@ -252,6 +255,10 @@ impl Provider {
         {
             return Err("terminal entitlement post-image differs".into());
         }
+        // 17g C2f (R2): the operation leaves its own buyer's index row (GOD
+        // may refund: never the actor's), the one index mutation mush-core
+        // admits in this terminal besides Roll's holdings put at a Grant.
+        super::index::released(txn, &self.families.index(), before.quote.buyer, operation)?;
         ctx.finish_mind_entitlement_purchase_completion(txn, operation)
             .map_err(|e| e.to_string())?;
         Ok((operation, if grant { "granted" } else { "refunded" }))

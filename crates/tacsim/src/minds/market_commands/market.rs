@@ -2,43 +2,73 @@
 //! current listings at a counter (bare, `/next <code>`) and one listing's
 //! full terms (`<code>`) through the market's bounded command read
 //! (`mush_market::mind_commands::MarketCommandReader`); `+minds/buy <code>`
-//! asks for a quote; `+minds/holdings` lists the actor's own licences
-//! (`holdings`); `@mind/publish` lists a filed mind the actor owns. Every
-//! submitting form wraps exactly one existing entitlement legal action
-//! (`MarketCommandActions`), with parameters built from what the reads
-//! returned, through `market_commands::submit`. `+minds/next <code>` pages
-//! with the market's `ListingsAfter`, so a `MORE` cursor that names a
-//! listing no longer current still pages on (the C2c fix round, reviewer
-//! F4); a page can then be empty and still print `MORE`.
+//! asks for a quote, `/buy/pay` pays it into escrow, `/buy/complete` takes
+//! the licence and `/buy/refund` asks for the payment back; `+minds/holdings`
+//! lists the actor's own licences (`holdings`); `@mind/publish` lists a filed
+//! mind the actor owns. Every submitting form wraps exactly one existing
+//! entitlement legal action (`MarketCommandActions`), with parameters built
+//! from what the reads returned, through `market_commands::submit`.
+//! `+minds/next <code>` pages with the market's `ListingsAfter`, so a `MORE`
+//! cursor that names a listing no longer current still pages on (the C2c fix
+//! round, reviewer F4); a page can then be empty and still print `MORE`.
 //!
 //! `+minds` is registered by TacSim unconditionally (`arena_bridge`), beside
 //! `@mind`. Without the command slot or its market read every form refuses
-//! `NOT_OPEN`: a House-only launch has no slot, and **no composition grants
-//! the market read yet**: the format-2 Active launch already holds all 32
-//! owner-read grants (17g C2a's measurement), so TacSim's
-//! `MarketCommandReader::request` would refuse the boot with
-//! `OwnerReadError::Limit`. The C2c brief says to stop there and leave the cap
-//! to the lead (C2 plan §2.4 fallback 2), so `MindCommandService::market` is
-//! `None` in every composition until that lands.
+//! `NOT_OPEN`, as on a House-only launch, which has no slot. **The read is
+//! granted on the format-2 Active launch since 17g C2e**: the lead's ruling
+//! R1 raised the owner-read caps (48 then, 64 since the scoped passenger
+//! facts), and `TacsimRuleset::register` requests `MarketCommandReader` over
+//! the same composed manifest the entitlement holdings' grants take, in the
+//! branch that registers the slot (33 services and 35 grants). So every
+//! `+minds` form below and `@mind/publish` run through the real reader
+//! there.
 //!
-//! **Not built (the C2c builder's report):** `+minds/buy/pay`,
-//! `/buy/complete` and `/buy/refund`, and the actor's own quote or escrow
-//! line under `+minds <code>`, read the actor's own quote and funded
-//! operation, which needs the per-buyer entitlement index C2b did not land
-//! (C2 plan §2.5 item 1). Their switches are registered and refuse
-//! `NOT_OPEN` until that index lands; their words wait in
-//! `words::pending`. **`+minds/buy` is held with them** (the C2c fix round,
-//! reviewer C2C-3): its `QUOTING` reply promises that `+minds <code>` shows
-//! the quote, which only the own-purchase line can, and a quote no command
-//! can pay only expires. `buy` below is built and waits for that index.
+//! **The actor's own purchase (17g C2g, the C2e plan §4.1 item 2),** over
+//! the per-buyer entitlement index 17g C2f writes inside the money
+//! transactions (`market_mind_entitlement_actors`), read through the market
+//! read's own-only `OwnPurchase { code }`, which matches the code against
+//! the actor's OWN indexed quotes and purchases and never the listing family
+//! (`by_code`), so another actor's purchase reads exactly as none:
+//! - `+minds <code>`: `DETAIL`, `TERMS_LINE` and `SPLIT` when the listing is
+//!   current, else its refusal (`NO_LISTING`, `AMBIGUOUS`); then, in both
+//!   cases, the own-purchase line when the actor has a record there
+//!   (`YOUR_ESCROW` while funded, else `YOUR_QUOTE` with the price and the
+//!   seconds left while the newest quote is live, `QUOTE_EXPIRED` after),
+//!   and `ASK` only when the listing is current and the actor has none.
+//! - `+minds/buy <code>` (at a counter): `QUOTING`, the Quote action (C2c's
+//!   fix-round ruling C2C-3 held it until the own-purchase line existed).
+//! - `+minds/buy/pay <code>` (at a counter): the actor's one personal
+//!   account (`ACCOUNT`), then its newest LIVE quote there (`NO_QUOTE`
+//!   otherwise); `PAYING` and the Fund action with that quote's token. An
+//!   expired quote is `NO_QUOTE` here and never reaches the provider (17g
+//!   C2g's brief, which outranks the C2c brief's "expired or not" and its
+//!   stale-terms step through `/buy/pay`): `+minds <code>` shows it as
+//!   `QUOTE_EXPIRED`, and the provider's own stale-quote refusal stays
+//!   reachable through `+act`.
+//! - `+minds/buy/complete <code>` (at a counter) and `/buy/refund <code>`
+//!   (anywhere): the actor's funded purchase there (`NO_PURCHASE`
+//!   otherwise); `COMPLETING` and the Grant, or `REFUNDING` and the Refund,
+//!   with its operation token. Resolved through the actor's own index, so a
+//!   listing withdrawn after Fund can still be completed or refunded.
+//!
+//! Each step wraps exactly one existing entitlement action with parameters
+//! from the own-purchase read, never from the player (C2 plan §2.1), and its
+//! idempotency subject is the quote or operation TOKEN, not the code
+//! (`mind.buy.pay.<token>.<at>.<ordinal>`; `pay_key`, `settle_key`), and
+//! `+minds/buy`'s is the listing's token and the token of the actor's most
+//! recently quoted own record there, quote or funded purchase
+//! (`buy_key`, `OwnPurchaseView::latest`): after a restart with a stopped
+//! IC clock a step can meet an earlier key only as the same request, except
+//! a `+minds/buy` after a Grant or Refund (`next_key`'s doc states the
+//! residual).
 //!
 //! 17g C2d routes its forms from here: `+minds/renew` and its `/pay` and
-//! `/decline` (`renew`), and `+minds/resell`, `+minds/charter` and their
-//! `/accept`s (`trade`). Each is held as its module says: the renewal steps
-//! read through the market's own handles, which a TacSim command context
-//! cannot use (the C2d fix round, reviewer C2D-R1), and the trades wait for
-//! the per-buyer offer indexes. So on the format-2 launch every C2d `+minds`
-//! form runs its own checks and then refuses `NOT_OPEN`.
+//! `/decline` (`renew`, live since 17g C2h: the renewal steps read through
+//! the market's own handles, which a TacSim command context cannot use, so
+//! `renew` checks its own refusals and hands the step to the renewal
+//! service's `front` continuation, which the service delegated to TacSim at
+//! composition, the lead's ruling R3), and `+minds/resell`, `+minds/charter`
+//! and their `/accept`s (`trade`, live since 17g C2g).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -47,7 +77,7 @@ use mush_core::read_service::OwnerReadHandle;
 use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ModError, Registrar};
 use mush_market::mind_commands::{
     CodeLookup, ListingForm, MarketCommandActions, MarketCommandReader, MarketCommandRequest,
-    Protocol, PublicListingView, Step, is_code,
+    OwnPurchaseView, Protocol, PublicListingView, Step, is_code,
 };
 use mush_roll::commerce::CharterId;
 use mush_roll::commerce::command_reader::{RollCommandReadRequest, RollCommandReadResult};
@@ -114,21 +144,20 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         [] => detail(ctx, &text),
         ["next"] => next(ctx, &text),
         ["holdings"] => super::holdings::holdings(ctx, &text),
-        // The per-buyer index these need is not landed (module doc); `/buy`
-        // waits with them, so its reply never promises a quote line.
-        ["buy"] | ["buy", "pay"] | ["buy", "complete"] | ["buy", "refund"] => {
-            code(&text)?;
-            handles(ctx)?;
-            Err(not_open())
-        }
-        // 17g C2d: held at `renew::RENEWALS_OPEN` and
-        // `trade::NAMED_OFFERS_OPEN` (each module's doc).
+        // 17g C2g: live beside the own-purchase line (module doc).
+        ["buy"] => buy(ctx, &text),
+        ["buy", "pay"] => pay(ctx, &text),
+        ["buy", "complete"] => settle(ctx, &text, Settle::Complete),
+        ["buy", "refund"] => settle(ctx, &text, Settle::Refund),
+        // 17g C2h: live through the renewal services' front (`renew`'s doc).
         ["renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Status),
         ["pay", "renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Pay),
         ["decline", "renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Decline),
+        // 17g C2g: live over the per-buyer offer indexes (`trade`'s doc).
         ["resell"] => super::trade::resell(ctx, &text),
         ["charter"] => super::trade::charter(ctx, &text),
-        ["accept", "charter"] | ["accept", "resell"] => super::trade::accept(ctx, &text),
+        ["accept", "resell"] => super::trade::accept(ctx, &text, super::trade::Named::Resale),
+        ["accept", "charter"] => super::trade::accept(ctx, &text, super::trade::Named::Charter),
         _ => Err(help()),
     }
 }
@@ -178,8 +207,12 @@ fn at_counter(
     }
 }
 
-/// The current listing `code` names: `NO_LISTING` for none, `AMBIGUOUS` for
-/// two.
+/// The current listing `code` names: `NO_LISTING` for none (the read's
+/// `Refused`), `AMBIGUOUS` for two current ones (17g C2e: `by_code` counts
+/// only current listings). Any other failure of the read (or an
+/// answer of another kind) is `NOT_OPEN`, as in `next`, so a read that could
+/// not run never reads as "no listing has the code" (the C2e fix round,
+/// reviewer tests/T1).
 fn listing(
     ctx: &Ctx<'_>,
     market: &OwnerReadHandle<MarketCommandReader>,
@@ -187,14 +220,17 @@ fn listing(
 ) -> Result<PublicListingView, CmdError> {
     let found = ctx
         .read_owner(market, MarketCommandRequest::listing_by_code(code))
-        .ok()
-        .and_then(mush_market::mind_commands::MarketCommandResult::into_listing);
+        .map_err(|error| match error {
+            mush_core::read_service::OwnerReadError::Refused => {
+                CmdError::msg(fill(words::NO_LISTING, &[("code", code)]))
+            }
+            _ => not_open(),
+        })?
+        .into_listing()
+        .ok_or_else(not_open)?;
     match found {
-        Some(CodeLookup::One(view)) => Ok(view),
-        Some(CodeLookup::Ambiguous) => {
-            Err(CmdError::msg(fill(words::AMBIGUOUS, &[("code", code)])))
-        }
-        None => Err(CmdError::msg(fill(words::NO_LISTING, &[("code", code)]))),
+        CodeLookup::One(view) => Ok(view),
+        CodeLookup::Ambiguous => Err(CmdError::msg(fill(words::AMBIGUOUS, &[("code", code)]))),
     }
 }
 
@@ -313,27 +349,123 @@ pub(crate) fn page_lines(
     lines
 }
 
-/// `+minds <code>`: one listing's full terms. It needs no counter.
+/// `+minds <code>`: one listing's full terms, then the actor's own record
+/// on it (module doc). It needs no counter. With no current listing and no
+/// own record it refuses as before (`NO_LISTING` or `AMBIGUOUS`); with an
+/// own record the refusal is printed and the own line follows it, so a
+/// purchase funded before its listing was withdrawn still shows.
 fn detail(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let code = code(text)?;
     let (market, roll) = handles(ctx)?;
-    let view = listing(ctx, &market, code)?;
-    let names = names(ctx, &roll, vec![view.charter()])?;
-    let actor = ctx.actor;
-    for line in detail_lines(&view, name_of(&names, view.charter())) {
-        ctx.out.info(actor, line);
+    let found = listing(ctx, &market, code);
+    if let Err(error) = &found
+        && *error == not_open()
+    {
+        return Err(not_open());
     }
-    Ok(())
+    let own = own_purchase(ctx, &market, code)?;
+    let now = ctx.w.now();
+    let own = own.and_then(|view| {
+        own_line(
+            code,
+            view.funded().is_some(),
+            view.quote().map(|q| (q.price_minor(), q.expires_at_utc())),
+            now,
+        )
+    });
+    let found = match found {
+        Ok(view) => {
+            let names = names(ctx, &roll, vec![view.charter()])?;
+            Ok(detail_lines(&view, name_of(&names, view.charter())))
+        }
+        Err(refusal) => Err(refusal),
+    };
+    super::say(ctx, detail_reply(found, own, code)?)
+}
+
+/// 17g C2g: `+minds <code>`'s reply from the listing's lines (`DETAIL`,
+/// `TERMS_LINE`, `SPLIT`) or its refusal, and the actor's own-purchase line
+/// (`own_line`):
+/// - a current listing: its lines, then the own line, or `ASK` when there is
+///   none;
+/// - no current listing and no own line: the refusal, returned (one line);
+/// - no current listing and an own line (a purchase funded before its
+///   listing was withdrawn, say): the refusal as an error line, then the own
+///   line (`market_commands::refusal`).
+pub(crate) fn detail_reply(
+    found: Result<[String; 3], CmdError>,
+    own: Option<String>,
+    code: &str,
+) -> Result<Vec<super::Said>, CmdError> {
+    match found {
+        Ok(lines) => {
+            let last = own.unwrap_or_else(|| fill(words::ASK, &[("code", code)]));
+            Ok(lines
+                .into_iter()
+                .chain(std::iter::once(last))
+                .map(super::Said::Info)
+                .collect())
+        }
+        Err(refusal) => match own {
+            None => Err(refusal),
+            Some(line) => super::refusal(vec![refusal.to_string(), line]),
+        },
+    }
+}
+
+/// 17g C2g: the own-purchase line for the actor's record on listing `code`
+/// (C2c's words): `YOUR_ESCROW` while a purchase is funded; else, for the
+/// newest quote (`price_minor`, `expires_at_utc`), `YOUR_QUOTE` with the
+/// whole seconds left while `now` is before its expiry and `QUOTE_EXPIRED`
+/// at or after it (the provider's own Fund test); `None` with neither.
+pub(crate) fn own_line(
+    code: &str,
+    funded: bool,
+    quote: Option<(i64, i64)>,
+    now: i64,
+) -> Option<String> {
+    if funded {
+        return Some(fill(words::YOUR_ESCROW, &[("code", code)]));
+    }
+    let (price_minor, expires_at_utc) = quote?;
+    Some(if now < expires_at_utc {
+        let seconds = expires_at_utc.saturating_sub(now).to_string();
+        fill(
+            words::YOUR_QUOTE,
+            &[
+                ("price", &crate::launch::credits(price_minor)),
+                ("seconds", &seconds),
+                ("code", code),
+            ],
+        )
+    } else {
+        fill(words::QUOTE_EXPIRED, &[("code", code)])
+    })
+}
+
+/// 17g C2g: the actor's own record on the listing `code` names, through the
+/// market read's `OwnPurchase` (the actor's own index only); `None` for no
+/// record. A read that cannot run is `NOT_OPEN`.
+fn own_purchase(
+    ctx: &Ctx<'_>,
+    market: &OwnerReadHandle<MarketCommandReader>,
+    code: &str,
+) -> Result<Option<OwnPurchaseView>, CmdError> {
+    match ctx.read_owner(market, MarketCommandRequest::own_purchase(code)) {
+        Ok(result) => result.into_own_purchase().ok_or_else(not_open),
+        // Two of the actor's own listings sharing the code (the read's doc):
+        // as no record.
+        Err(mush_core::read_service::OwnerReadError::Refused) => Ok(None),
+        Err(_) => Err(not_open()),
+    }
 }
 
 /// `+minds/buy <code>` (at a counter): ask for a quote on that listing; no
 /// money moves. The Quote offer's own provider rechecks the listing against
-/// Roll's current facts and refuses one account's two characters.
-///
-/// Held (module doc, reviewer C2C-3): `command` does not route here until
-/// the per-buyer index lets `+minds <code>` show the quote `QUOTING`
-/// promises and `+minds/buy/pay` pay it.
-#[allow(dead_code)]
+/// Roll's current facts and refuses one account's two characters. 17g C2g:
+/// live (module doc); the key's subject is the listing's own token and the
+/// token of the actor's most recently quoted own record there (`buy_key`),
+/// read through the own-purchase kind just before the submission.
 fn buy(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let code = code(text)?.to_owned();
     let (market, _) = handles(ctx)?;
@@ -342,13 +474,134 @@ fn buy(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let action = actions(ctx)?
         .entitlement(view.protocol(), Step::Quote)
         .ok_or_else(not_open)?;
+    let latest = own_purchase(ctx, &market, &code)?.map(|own| own.latest());
     let line = fill(words::QUOTING, &[("code", &code)]);
+    let (verb, subject) = buy_key(view.publication(), latest);
     super::submit(
         ctx,
-        "quote",
-        &code,
+        verb,
+        &subject,
         action,
         quote_parameters(view.publication()),
+        &line,
+    )
+}
+
+/// 17g C2g: `+minds/buy`'s idempotency verb and subject (`next_key`): the
+/// listing's token, then, when the actor has an own record there, the token
+/// of its most recently quoted one, a quote or a funded purchase
+/// (`OwnPurchaseView::latest`; the C2g fix round 2, reviewers
+/// correctness/C2G-R2-1, conformance/F1 and tests/T-1). Every Quote and every
+/// Fund the actor commits there changes the subject to one the listing never
+/// had before, so after a restart under a stopped IC clock a re-quote never
+/// meets the key of a quote request before it while those records stand;
+/// with nothing committed between them, two requests are the same request.
+/// The residual (`next_key`'s doc): a Grant or Refund takes a funded
+/// purchase out of the actor's index, and the subject can be an earlier
+/// one's again (the bare listing once no record is left).
+pub(crate) fn buy_key(
+    listing: mush_core::CommitToken,
+    latest: Option<mush_core::CommitToken>,
+) -> (&'static str, String) {
+    let subject = match latest {
+        None => listing.to_string(),
+        Some(record) => format!("{listing}.{record}"),
+    };
+    ("buy", subject)
+}
+
+/// 17g C2g: `/buy/pay`'s idempotency verb and subject: the quote's token.
+pub(crate) fn pay_key(quote: mush_core::CommitToken) -> (&'static str, String) {
+    ("buy.pay", quote.to_string())
+}
+
+/// 17g C2g: `/buy/complete`'s and `/buy/refund`'s idempotency verb and
+/// subject: the funded purchase's operation token.
+pub(crate) fn settle_key(
+    which: Settle,
+    operation: mush_core::CommitToken,
+) -> (&'static str, String) {
+    let verb = match which {
+        Settle::Complete => "buy.complete",
+        Settle::Refund => "buy.refund",
+    };
+    (verb, operation.to_string())
+}
+
+/// 17g C2g: `+minds/buy/pay <code>` (at a counter): the actor's one
+/// personal account (`ACCOUNT`), its newest live quote on the listing
+/// (`NO_QUOTE` for none, or for an expired one), then `PAYING` and the Fund
+/// action with the quote's token. The Fund's wire is the quote alone: its
+/// payer is the personal account the Quote's provider froze into the quote,
+/// which the `ACCOUNT` check keeps unambiguous (C2 plan §7). An expired
+/// quote is `NO_QUOTE` and never submitted (17g C2g's brief item 6, which
+/// outranks the C2c brief's stale-terms path through `/buy/pay`: the C2h
+/// story's stale step reads `NO_QUOTE` here and `QUOTE_EXPIRED` on
+/// `+minds <code>`).
+fn pay(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
+    let code = code(text)?.to_owned();
+    let (market, _) = handles(ctx)?;
+    at_counter(ctx, &market)?;
+    super::personal_account(ctx)?;
+    let no_quote = || CmdError::msg(fill(words::NO_QUOTE, &[("code", &code)]));
+    let own = own_purchase(ctx, &market, &code)?.ok_or_else(no_quote)?;
+    let now = ctx.w.now();
+    let quote = own
+        .quote()
+        .filter(|quote| now < quote.expires_at_utc())
+        .ok_or_else(no_quote)?;
+    let action = actions(ctx)?
+        .entitlement(own.protocol(), Step::Fund)
+        .ok_or_else(not_open)?;
+    let line = fill(words::PAYING, &[("code", &code)]);
+    let (verb, subject) = pay_key(quote.quote());
+    super::submit(
+        ctx,
+        verb,
+        &subject,
+        action,
+        fund_parameters(quote.quote()),
+        &line,
+    )
+}
+
+/// 17g C2g: which terminal step `settle` submits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Settle {
+    /// `+minds/buy/complete`: the Grant, at a counter.
+    Complete,
+    /// `+minds/buy/refund`: the Refund, anywhere.
+    Refund,
+}
+
+/// 17g C2g: `+minds/buy/complete <code>` (at a counter) and
+/// `+minds/buy/refund <code>` (anywhere): the actor's funded purchase on the
+/// listing (`NO_PURCHASE` otherwise), then `COMPLETING` and the Grant or
+/// `REFUNDING` and the Refund, with its operation token.
+fn settle(ctx: &mut Ctx<'_>, text: &str, which: Settle) -> Result<(), CmdError> {
+    let code = code(text)?.to_owned();
+    let (market, _) = handles(ctx)?;
+    if which == Settle::Complete {
+        at_counter(ctx, &market)?;
+    }
+    let none = || CmdError::msg(fill(words::NO_PURCHASE, &[("code", &code)]));
+    let own = own_purchase(ctx, &market, &code)?.ok_or_else(none)?;
+    let operation = own.funded().ok_or_else(none)?;
+    let (step, request) = match which {
+        Settle::Complete => (Step::Grant, words::COMPLETING),
+        Settle::Refund => (Step::Refund, words::REFUNDING),
+    };
+    let action = actions(ctx)?
+        .entitlement(own.protocol(), step)
+        .ok_or_else(not_open)?;
+    let line = fill(request, &[("code", &code)]);
+    let (verb, subject) = settle_key(which, operation);
+    super::submit(
+        ctx,
+        verb,
+        &subject,
+        action,
+        terminal_parameters(operation),
         &line,
     )
 }
@@ -356,6 +609,18 @@ fn buy(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
 /// The Quote offer's wire: the listing's publication token.
 pub(crate) fn quote_parameters(listing: mush_core::CommitToken) -> serde_json::Value {
     json!({"listing": listing})
+}
+
+/// 17g C2g: the Fund's wire (`mind_entitlement::provider`'s `Fund`): the
+/// quote's token.
+pub(crate) fn fund_parameters(quote: mush_core::CommitToken) -> serde_json::Value {
+    json!({"quote": quote})
+}
+
+/// 17g C2g: the Grant's and Refund's wire (`mind_entitlement::provider`'s
+/// `Terminal`): the funded purchase's operation token.
+pub(crate) fn terminal_parameters(operation: mush_core::CommitToken) -> serde_json::Value {
+    json!({"operation": operation})
 }
 
 // ---- rendering (the C2c brief's fills) ----
@@ -592,17 +857,21 @@ pub(crate) fn publish_arguments(text: &str) -> Result<PublishArguments, PublishR
         Some("no") => false,
         Some(_) => return Err(PublishRefusal::Transfer),
     };
+    // 17g C2e (C2e plan §2.1 item 4b): a zero is a value here, so that
+    // `publish` refuses it with `TERMS` (which needs the counter's price and
+    // term) rather than the usage line; `credits_minor`'s `1..=` range is the
+    // trade price grammar and stays as it is.
     let price = pairs
         .get("price")
-        .map(|text| credits_minor(text).ok_or(PublishRefusal::Usage))
+        .map(|text| publish_price(text).ok_or(PublishRefusal::Usage))
         .transpose()?;
     let seats = pairs
         .get("seats")
-        .map(|text| number(text).ok_or(PublishRefusal::Usage))
+        .map(|text| count(text).ok_or(PublishRefusal::Usage))
         .transpose()?;
     let term = pairs
         .get("term")
-        .map(|text| number(text).ok_or(PublishRefusal::Usage))
+        .map(|text| count(text).ok_or(PublishRefusal::Usage))
         .transpose()?;
     Ok(PublishArguments {
         filed,
@@ -619,6 +888,26 @@ pub(crate) fn publish_arguments(text: &str) -> Result<PublishArguments, PublishR
 /// A credit amount as players type it (C2 plan §2.7): `<whole>[.<one or two
 /// digits>]` with an optional `cr`, from 0.01 to 1,000,000, in minor units.
 pub(crate) fn credits_minor(text: &str) -> Option<i64> {
+    credits_amount(text).filter(|minor| (1..=100_000_000).contains(minor))
+}
+
+/// `@mind/publish`'s `price=` (17g C2e): the credit grammar of
+/// `credits_minor`, zero included (`0`, `0cr`, `0.00`), so a zero parses and
+/// `terms_match` refuses it. A publish-only parse.
+fn publish_price(text: &str) -> Option<i64> {
+    credits_amount(text).filter(|minor| (0..=100_000_000).contains(minor))
+}
+
+/// `@mind/publish`'s `seats=` and `term=` (17g C2e): a whole number as
+/// `number` reads one, or exactly `0`, so a zero parses and `terms_match`
+/// refuses it. A publish-only parse.
+fn count(text: &str) -> Option<u64> {
+    if text == "0" { Some(0) } else { number(text) }
+}
+
+/// The credit grammar's value in minor units, any size `i64` holds; the
+/// callers bound it.
+fn credits_amount(text: &str) -> Option<i64> {
     let text = text.strip_suffix("cr").unwrap_or(text);
     let (whole, cents) = match text.split_once('.') {
         Some((whole, cents)) => (whole, Some(cents)),
@@ -636,12 +925,11 @@ pub(crate) fn credits_minor(text: &str) -> Option<i64> {
         }
         Some(_) => return None,
     };
-    let minor = whole
+    whole
         .parse::<i64>()
         .ok()?
         .checked_mul(100)?
-        .checked_add(cents)?;
-    (1..=100_000_000).contains(&minor).then_some(minor)
+        .checked_add(cents)
 }
 
 /// Whether the optional `price=`, `seats=` and `term=` are the market's own
@@ -693,6 +981,30 @@ fn market_terms(ctx: &Ctx<'_>) -> Option<(i64, u64)> {
     Some((market.terms.price_minor, term))
 }
 
+/// `PUBLISHING` (17g C2e, C2e plan §2.1 item 4c): the request line names the
+/// listing row's frozen transferability and derivation as the row will show
+/// them. `{flags}` is empty when `row_flags` is, else `; ` and its words, so
+/// a transferable listing of an original line reads exactly as before 17g
+/// C2e. The TacSim launch's personal policy is transferable policy-wide
+/// (D-UM-40, `launch::market`), so the row's frozen mark is the author's
+/// `transfer=`; `derived` is the filed line's dependence, which picks the
+/// derived protocol.
+pub(crate) fn publishing_line(
+    filed: &str,
+    form: &str,
+    transferable: bool,
+    derived: bool,
+) -> String {
+    let flags = match row_flags(transferable, derived) {
+        "" => String::new(),
+        shown => format!("; {shown}"),
+    };
+    fill(
+        words::PUBLISHING,
+        &[("filed", filed), ("form", form), ("flags", &flags)],
+    )
+}
+
 /// `@mind/publish <filed> form=…` (at a counter): list a filed mind the
 /// actor owns through the original v3 List, or the derived v1 List when its
 /// line is dependent, at the market's own price and terms with the author's
@@ -713,24 +1025,56 @@ pub(crate) fn publish(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
         )));
     }
     let view = super::author::own_filed(ctx, args.filed)?;
-    let protocol = if view.dependent() {
+    let request = list_request(&args, view.dependent(), view.owner_licence());
+    let action = actions(ctx)?
+        .entitlement(request.protocol, Step::List)
+        .ok_or_else(not_open)?;
+    let filed = args.filed.to_string();
+    super::submit(
+        ctx,
+        "publish",
+        &filed,
+        action,
+        request.parameters,
+        &request.line,
+    )
+}
+
+/// What `publish` submits for a filed mind it owns: the List protocol, the
+/// offer's parameters and the `PUBLISHING` request line.
+#[derive(Debug)]
+pub(crate) struct ListRequest {
+    pub(crate) protocol: Protocol,
+    pub(crate) parameters: serde_json::Value,
+    pub(crate) line: String,
+}
+
+/// `publish`'s request from the parsed arguments and the filed line's own
+/// facts (`OwnFiledView::dependent` and `owner_licence`): a dependent line
+/// lists through the derived v1 List, any other through the original v3
+/// List; the offer carries the author's form, royalty and transfer mark; and
+/// the request line names the same transfer mark and derivation as the
+/// listing row will show them (edge (c)). One pure function builds all three
+/// from the same two facts, so the C2e fix round's lib test (reviewer
+/// tests/T2) pins the line `publish` prints against the offer it submits.
+pub(crate) fn list_request(
+    args: &PublishArguments,
+    dependent: bool,
+    owner_licence: mush_roll::commerce::LicenceId,
+) -> ListRequest {
+    let protocol = if dependent {
         Protocol::Derived
     } else {
         Protocol::Original
     };
-    let action = actions(ctx)?
-        .entitlement(protocol, Step::List)
-        .ok_or_else(not_open)?;
-    let filed = args.filed.to_string();
-    let line = fill(
-        words::PUBLISHING,
-        &[("filed", &filed), ("form", args.shown)],
-    );
-    let parameters = list_parameters(
-        view.owner_licence(),
-        args.form,
-        args.royalty,
-        args.transferable,
-    );
-    super::submit(ctx, "publish", &filed, action, parameters, &line)
+    ListRequest {
+        protocol,
+        parameters: list_parameters(owner_licence, args.form, args.royalty, args.transferable),
+        line: publishing_line(
+            &args.filed.to_string(),
+            args.shown,
+            args.transferable,
+            dependent,
+        ),
+    }
 }

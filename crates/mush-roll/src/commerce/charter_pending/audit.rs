@@ -7,7 +7,7 @@ use crate::commerce::{
     charter_transfer::{history as ownership, records::CharterTransfer},
     families::CommerceFamilies,
     ic_claims::ClaimInventory,
-    records::PublicationError,
+    records::{PublicationError, Record},
     registry_revocation::records::{AcceptedTerm, RevokedTerm},
     roots::{RequiredRoot, RootAnchor},
 };
@@ -69,10 +69,12 @@ pub(crate) fn audit(
         }
     }
     let mut offers = BTreeSet::new();
+    let mut named = BTreeMap::new();
     scan(ctx, &f.charter_pending_offers, |offer| {
         if !enabled || offers.len() >= crate::MAX_RECORDS || !offers.insert(offer.operation) {
             return Err(PublicationError::Mismatch);
         }
+        named.insert(offer.operation, (offer.buyer, offer.charter));
         let birth = read(ctx, &f.operations, offer.birth.to_hex())?;
         offer.matches_birth(birth)?;
         let filed = read(ctx, &f.filed, offer.filed.key())?;
@@ -219,6 +221,16 @@ pub(crate) fn audit(
     if !native_keys.is_empty() {
         return Err(PublicationError::Mismatch);
     }
+    // 17g C2f: the per-(buyer, charter) offer index, clock-free.
+    let mut indexed = Vec::new();
+    scan(ctx, &f.charter_pending_buyer_offers, |row| {
+        if !enabled {
+            return Err(PublicationError::Mismatch);
+        }
+        indexed.push((row.key(), row.clone()));
+        Ok(())
+    })?;
+    super::index::check(indexed, |token| named.get(&token).copied(), &used_offers)?;
     let mut heads = BTreeSet::new();
     for (charter, chain) in &chains {
         let mut previous: Option<&PendingRecord> = None;

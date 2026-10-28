@@ -5,6 +5,7 @@ pub(crate) mod audit;
 pub(crate) mod compound;
 pub(crate) mod current;
 pub(crate) mod history;
+pub(crate) mod index;
 pub(crate) mod protocol;
 mod provider;
 pub(crate) mod publication;
@@ -67,6 +68,6 @@ impl PendingCharterTransferConfig {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) use provider::register;

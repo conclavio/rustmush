@@ -1,6 +1,7 @@
 //! Exact bounded Market state. Permanent listings preserve the publication
 //! cause of immutable royalty chains; this cut never deletes that evidence.
 use super::codec::Row;
+use super::index::EntitlementActorIndex;
 use super::{
     EntitlementConfig, EntitlementListingV1, EntitlementPurchaseV1, EntitlementQuoteV1,
     EntitlementReceiptV1,
@@ -8,7 +9,7 @@ use super::{
 use mush_core::mechanics::CanonicalId;
 use mush_core::read_service::OwnerReadHandle;
 use mush_core::{
-    ActionTxn, CommitToken, ModError, Registrar, StateFamilyDescriptor, StateFamilyHandle,
+    ActionTxn, CommitToken, ModError, ObjId, Registrar, StateFamilyDescriptor, StateFamilyHandle,
     StateFamilyId,
 };
 use mush_roll::commerce::entitlement::reader::EntitlementSaleReader;
@@ -57,6 +58,8 @@ pub(crate) struct Families {
     pub(super) operations: StateFamilyHandle<CommitToken, EntitlementPurchaseV1>,
     pub(super) receipts: StateFamilyHandle<CommitToken, EntitlementReceiptV1>,
     pub(super) counts: StateFamilyHandle<String, Counts>,
+    /// 17g C2f: the per-buyer quote and purchase index (`super::index`).
+    pub(super) actors: StateFamilyHandle<ObjId, EntitlementActorIndex>,
     pub(super) reader: OwnerReadHandle<EntitlementSaleReader>,
 }
 fn error(e: impl std::fmt::Display) -> ModError {
@@ -92,11 +95,54 @@ fn family<R: Row + Clone + Send + Sync + 'static>(
         |r: &R| serde_json::to_value(r).map_err(|e| e.to_string()),
     )
 }
+/// 17g C2f: the per-buyer index's family, registered by `Families::register`
+/// (and alone by the lifecycle rig).
+pub(super) fn actors_family(
+    reg: &mut Registrar<'_>,
+) -> Result<StateFamilyHandle<ObjId, EntitlementActorIndex>, ModError> {
+    reg.state_family(
+        descriptor::<EntitlementActorIndex>()?,
+        |actor: &ObjId| Ok(actor.0.to_string()),
+        decode::<EntitlementActorIndex>,
+        EntitlementActorIndex::validate,
+        |r: &EntitlementActorIndex| serde_json::to_value(r).map_err(|e| e.to_string()),
+    )
+}
+/// 17g C2f (the lifecycle rig): a token-keyed retained family exactly as
+/// `Families::register` registers it.
+#[cfg(test)]
+pub(super) fn token_family<R: Row + Clone + Send + Sync + 'static>(
+    reg: &mut Registrar<'_>,
+) -> Result<StateFamilyHandle<CommitToken, R>, ModError> {
+    family(reg)
+}
 impl Families {
+    /// 17g C2f: the three families the per-buyer index joins.
+    pub(super) fn index(&self) -> super::index::Index<'_> {
+        super::index::Index {
+            quotes: &self.quotes,
+            operations: &self.operations,
+            actors: &self.actors,
+        }
+    }
     /// 17g C2c: the listing family, which `mind_commands`' bounded command
     /// read scans (read only; every write stays in this module).
     pub(crate) const fn listings(&self) -> &StateFamilyHandle<CommitToken, EntitlementListingV1> {
         &self.listings
+    }
+    /// 17g C2g: the retained quotes, the purchase operations and the per-buyer
+    /// index, which `mind_commands`' own-purchase reads point-read for the
+    /// calling actor only (read only, as `listings`).
+    pub(crate) const fn quotes(&self) -> &StateFamilyHandle<CommitToken, EntitlementQuoteV1> {
+        &self.quotes
+    }
+    pub(crate) const fn operations(
+        &self,
+    ) -> &StateFamilyHandle<CommitToken, EntitlementPurchaseV1> {
+        &self.operations
+    }
+    pub(crate) const fn actors(&self) -> &StateFamilyHandle<ObjId, EntitlementActorIndex> {
+        &self.actors
     }
     pub(super) fn register(
         reg: &mut Registrar<'_>,
@@ -120,6 +166,7 @@ impl Families {
                 Counts::validate,
                 |r: &Counts| serde_json::to_value(r).map_err(|e| e.to_string()),
             )?,
+            actors: actors_family(reg)?,
             reader: EntitlementSaleReader::request(reg, &config.manifest)?,
         })
     }

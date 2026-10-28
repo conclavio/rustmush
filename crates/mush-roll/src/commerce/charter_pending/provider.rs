@@ -199,8 +199,8 @@ impl Provider {
         let world = ctx.world().map_err(bad)?;
         current::require_clear_in_txn(txn, world, &self.f, charter)?;
         let basis = current::basis(txn, world, &self.f, charter, inv.actor())?;
-        let deadline = world
-            .now()
+        let now = world.now();
+        let deadline = now
             .checked_add(duration)
             .ok_or(PublicationError::Capacity)?;
         let admission =
@@ -247,6 +247,8 @@ impl Provider {
         {
             return Err(PublicationError::Mismatch);
         }
+        // 17g C2f: the named buyer's offer index, in this same transaction.
+        super::index::offered(txn, &self.f, &offer, now)?;
         Ok(offer)
     }
     fn fund(
@@ -412,6 +414,8 @@ impl Provider {
         {
             return Err(PublicationError::Mismatch);
         }
+        // 17g C2f: the consumed offer leaves its buyer's offer index.
+        super::index::consumed(txn, &self.f, &offer)?;
         ctx.reserve_charter_pending_completion(txn).map_err(bad)?;
         Ok(offer)
     }
