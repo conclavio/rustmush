@@ -3436,9 +3436,10 @@ fn m1a5_the_production_hash_does_not_move() {
     let _ = support::run_until(&mut duel, 60_000, 1_000, |_, _| {});
     assert_eq!(duel.minds.len(), 4, "four minds");
     // M6 captures full card/catalog, profile/ROM and pending-think state and
-    // advances Standard's API/source identity. Keep the encoding pins together
-    // so a declared format
-    // change exposes every actual in one run; behavior assertions above remain.
+    // advances Standard's API/source identity. DT.1b advances the source/API
+    // again (API 6, stock 3, frame 8) for standing-order identity. These pins
+    // were observed in Linux CI run 40739168466; the behavior assertions above
+    // remain. Keep them together so a format change exposes every actual.
     let actual = [
         first_hash,
         last_hash,
@@ -3447,9 +3448,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0x2fde_0a11_f694_234e),
-            Some(0x8dcb_ccd8_aeed_9ed9),
-            Some(0xf93e_4819_dcdc_9eab)
+            Some(0x5bfa_d769_dcf7_b74a),
+            Some(0xc332_5aaa_c00a_2bc3),
+            Some(0x41dc_84b0_6ed4_05a6)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6363,6 +6364,11 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
         assert_eq!(other_kept, kept, "a think diverged at {cadence}");
     }
 
+    assert_card_change_refusals_and_floor();
+    assert_card_changes_keep_arrival_order();
+}
+
+fn assert_card_change_refusals_and_floor() {
     // A hull that is not a mind: refused `not_mind`, nothing changed. (17b
     // cut M4.5a: a pilot's hull nobody sits in, where it was a reflex hull —
     // the refusal reads `controller == Mind` and a mind row, so any other
@@ -6478,7 +6484,9 @@ fn m1b5_a_card_lands_at_the_pulses_start_and_the_next_think_reads_it() {
         "Sniper is read against Line, the card the refusal kept — not Rearguard"
     );
     assert_eq!(row_card(&arena, RED), Some(preset_on_field("sniper")));
+}
 
+fn assert_card_changes_keep_arrival_order() {
     // Two changes in one pulse, in arrival order.
     let (run, _, arena) = card_run(
         the_j_field(Controller::Mind),
