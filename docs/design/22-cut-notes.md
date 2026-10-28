@@ -79,3 +79,38 @@ The art. The three sheets U.3 shipped as placeholders — the tank, the biped an
 - **The renders** the pass was judged on are kept under [images/22-u5/](images/22-u5/): `<look>_before_after.png` (the raycaster's 100 m line-up before and after, then the new art at 300 m and 1 km) and `<look>_sheet.png` (each sheet magnified, then nearest-sampled to its 100 m and 300 m pixel sizes).
 
 **Verified.** `cargo test -p mush-pixel` (80 lib tests with the new sheet check and the biped's new size in the frame-picking test; the overhead, proving-ground and web goldens — the web golden re-blessed with `PIXEL_BLESS=1`: of its six hashes only flat/look-0 changed, the locked tank's fogged pixels at 440 m, looked at before accepting), the `unit_looks` contract test (every muzzle still names a weapon component), `mush-net-ssh`'s `tui_golden` (25, unchanged: the text cockpit draws the doll, not the sheets), the web's wasm module rebuilt and vitest (754, the parity cases hashing the same as the native render), fmt, clippy and rustdoc with `-D warnings`. Not smoked live; nothing deployed.
+
+
+## Sprite vs voxel PoC (2026-10-28) — D-22-9
+
+Throwaway. The code (`mush-pixel`'s `poc-units` feature: `src/poc_units.rs`,
+`examples/unit_poc.rs`, a `render_with` hook in `raycast.rs`) landed on main as eeffebcb and was
+taken back out the same day — it tripped four contract guards (the feature census, the panic
+budget, the restriction lints) — so it lives in history only; check out eeffebcb to re-run it.
+The bake tools are kept as `scripts/unit-bake/`. The owner's question: can the purchased Unity assets become sheets, and
+what do flat sprites cost against voxel models?
+
+- **The bake**: one light mech from a Unity mech-constructor kit (cannon right, machine gun left,
+  rockets on top — asymmetric on purpose), assembled and posed in Unity's batch mode, rendered at
+  eight facings x six poses as a colour-ID pass and a normal pass, reduced to the six materials at
+  48 and 96 pixels; the same model voxelised solid at 48 and 96 cells over the same box. About 15 s
+  for the bake, 4 s for the reduce. Nothing from the asset is in the tree.
+- **The scenes**, 640x480, 200 frames each, half the units walking and turning: `field` (20 in
+  view, 12–600 m, 80 behind the eye) and `brawl` (20 in view, 10–60 m). Voxels drawn by a per-pixel
+  3D DDA into each unit's solid box against the picture's depth, lit with the sheet's light; with
+  their heading snapped to the eight facings, or free.
+- **Draw time a frame** (owner's Windows box; terrain alone ~1.0 ms): sprites 48/96 1.5/1.5 ms
+  (field), 2.4/2.5 (brawl); voxels 48/96 snapped 9.4/15.7 (field), 25.9/45.2 (brawl), free about
+  the same. The server draws a picture per viewer, so voxels at 96 in a brawl are most of a core
+  a viewer at 20 Hz.
+- **Bytes a frame (brawl)**: sprites 48/96 13.2/16.0 KB kitty, 21.8/24.7 KB sixel; voxels within
+  ~10 % of them. The encoded frame does not care what drew it.
+- **Asset size, 8 facings x 6 poses**: sheet text 133 KB (48) / 485 KB (96), 15 / 36 KB deflated;
+  voxels 0.66 / 5.3 MB dense, 14 / 58 KB deflated.
+- **Resolution**: the sheet spans about 2,200 / range-in-metres pixels on the 640 frame, so 48
+  stops adding detail past ~46 m and 96 past ~23 m.
+- **Lessons**: Unity's `RaycastAll` returns one hit per collider — a voxeliser must march each
+  collider past its hits; a mirrored left puts the weapons on the wrong arms.
+
+**Ruled (D-22-9)**: sprites, eight facings, six poses, 96 pixels.
+
