@@ -5,6 +5,7 @@
 //! the same contract without making the simulator's lobby rules into IC policy.
 
 pub mod orders;
+pub mod planning;
 pub mod roster;
 
 pub use orders::*;

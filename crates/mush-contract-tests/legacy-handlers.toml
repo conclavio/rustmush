@@ -297,7 +297,7 @@ note = "doc 23 cut S.2 (section 6, D-23-1, D-23-3, D-23-5): for the ship's seal 
 [[handler]]
 name = "+sortie"
 category = "authoritative"
-note = "DT.1b (docs 26a/27): +sortie/practice explicitly enables the seated actor's OOC practice detachment; +sortie/roster reads its numbered roster and exact versioned command prefills. PracticeHost retains only bounded process-local command state, and the existing arena inbox carries fenced authority and machine-order messages. No IC launch, asset grant, money or new durable world record is created. This shares the cockpit subsystem's Authoritative classification; restart ends the practice host and its command ownership."
+note = "DT.1b/DT.2b1 (docs 26a/26c/27): practice/roster retain the bounded OOC command host. Private presets, mission drafts, invitations and exact-revision player declarations use typed Tacsim families through the common coordinator. Ready revalidates physical station/aboard facts and the actual Sim control lease through final commit. Read-only reports use current visible facts and authenticated Org reads; no launch, reservation, personnel history, employment or mission authority is inferred from planning."
 
 [[handler]]
 name = "+stakeout"

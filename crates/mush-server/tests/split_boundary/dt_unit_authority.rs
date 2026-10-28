@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use mush_core::{
     AuthoritativeSubmit, Engine, GOD, IngressEnvelope, ObjId, ObjKind, OfferExecutionContext,
-    OfferKeyRing, OfferSecret, OfferSubmission, PerceivedRef, PrincipalId, World,
+    OfferKeyRing, OfferSecret, OfferSubmission, PrincipalId, World,
 };
 use mush_org::unit_authority::runtime::UnitAuthorityHandles;
 use mush_org::unit_authority::{
@@ -119,7 +119,7 @@ async fn fixture(
     let _ = world.drain_write_batch();
     Ok((world, recipient, unit))
 }
-async fn persist_legacy(world: &mut TestWorld, store: &InMemoryStore) -> TestResult {
+pub(super) async fn persist_legacy(world: &mut TestWorld, store: &InMemoryStore) -> TestResult {
     let pending = world.drain_write_batch();
     let mut batch = batch_from_dirty(world.world(), pending.dirty, 1, true);
     batch.module_ops = pending.module_ops;
@@ -133,7 +133,11 @@ fn handles(world: &TestWorld) -> TestResult<UnitAuthorityHandles> {
         .cloned()
         .ok_or_else(|| "unit handles missing".into())
 }
-fn submit(world: &mut TestWorld, actor: ObjId, line: &str) -> TestResult<Box<AuthoritativeSubmit>> {
+pub(super) fn submit(
+    world: &mut TestWorld,
+    actor: ObjId,
+    line: &str,
+) -> TestResult<Box<AuthoritativeSubmit>> {
     let events = world.run(actor, line);
     world
         .engine_mut()
@@ -149,7 +153,7 @@ fn submit(world: &mut TestWorld, actor: ObjId, line: &str) -> TestResult<Box<Aut
             .into()
         })
 }
-async fn stage(
+pub(super) async fn stage(
     world: &mut TestWorld,
     store: &InMemoryStore,
     submission: &AuthoritativeSubmit,
@@ -166,12 +170,12 @@ async fn stage(
     let query = world.engine().legal_action_query(
         principal.clone(),
         submission.actor,
-        PerceivedRef::SelfActor,
+        submission.subject.clone(),
     )?;
     let offers = world.engine().project_legal_actions(&query)?;
     let projected = offers
         .projected_for_action(&submission.action)
-        .ok_or("no offered unit grant")?;
+        .ok_or("no offered action")?;
     let resolved = world.engine().resolve_legal_action(
         &offers,
         OfferExecutionContext {

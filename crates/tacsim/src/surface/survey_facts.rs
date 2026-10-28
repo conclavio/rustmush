@@ -143,6 +143,9 @@ fn validate_definition(ctx: &DefinitionValidationContext<'_>) -> Result<(), Stri
         crate::port::passenger::facts::READER_ID => {
             crate::port::passenger::facts::descriptor().map_err(|e| e.to_string())?
         }
+        "detachment_plans" => {
+            crate::detachment::planning::reader_descriptor().map_err(|e| e.to_string())?
+        }
         "authored_fork_material" => {
             let [manifest] = actual.references() else {
                 return Err("fork source material needs its exact Registry manifest".into());

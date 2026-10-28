@@ -302,9 +302,9 @@ fn modules(d: &LaunchDeployment) -> Result<Vec<Box<dyn GameModule>>> {
         Default::default(),
         &launch,
     )?;
-    modules.push(Box::new(
-        launch.configure_tacsim(layer.with_inventory(handles))?,
-    ));
+    modules.push(Box::new(launch.configure_tacsim(
+        layer.with_inventory(handles).with_unit_authority(),
+    )?));
     Ok(modules)
 }
 fn reboot(r: &mut Rig, d: &LaunchDeployment) -> Result {
@@ -1385,10 +1385,10 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     );
     check_eq!(
         counts,
-        (34, 36),
-        "34 services and 36 grants: C2c's market command read and the scoped passenger facts, \
-         17g C2e's market-read grant, and DT.2a's Org unit-authority reader with its own \
-         requester grant; the caps are 64/64"
+        (35, 38),
+        "35 services and 38 grants: the DT.2b1 planning reader and its own requester, plus \
+         Tacsim's unit-authority request, join DT.2a's 34 services and 36 grants; \
+         the caps are 64/64"
     );
     let definitions = e.registry.definitions().ok_or("definitions")?;
     check!(

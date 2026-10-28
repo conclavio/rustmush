@@ -8,6 +8,7 @@
 
 pub mod commands;
 pub mod live;
+pub mod planning;
 
 use mush_core::ObjId;
 use mush_tactics::detachment::orders::{DeliveredOrder, Directive, OrderBook, OrderEnvelope};
