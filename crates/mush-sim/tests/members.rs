@@ -31,8 +31,11 @@ use mush_sim::{
     InteriorCustodyProvider, SimulationModule, SlotId, SpaceAnchor, SpatialError, SpatialParent,
     SpatialState, Transition, verify_indexes, verify_projections,
 };
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::{authoritative::AcknowledgedWorld as TestWorld, text_of};
 use smol_str::SmolStr;
+
+#[path = "support/space_command.rs"]
+mod space_command;
 
 // ---- the rig -------------------------------------------------------------
 
@@ -59,7 +62,7 @@ fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
 
 /// A command `who` types that must be accepted.
 fn ok_as(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
-    let events = tw.run(who, line);
+    let events = space_command::run(tw, who, line);
     let t = texts(&events);
     assert!(!has_error(&events), "{line:?} was refused: {t}");
     t
@@ -67,7 +70,7 @@ fn ok_as(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
 
 /// A command `who` types that must be refused; the refusal's text.
 fn refused_as(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
-    let events = tw.run(who, line);
+    let events = space_command::run(tw, who, line);
     let t = texts(&events);
     assert!(has_error(&events), "{line:?} was accepted: {t}");
     t
@@ -207,12 +210,15 @@ fn drain(tw: &mut TestWorld, log: &mut Vec<ModuleOp>) {
 }
 
 /// Every `Deferred::Persist` op a throwaway outbox collected, into the log.
-fn drain_out(out: &mut Outbox, log: &mut Vec<ModuleOp>) {
+fn drain_out(tw: &mut TestWorld, out: &mut Outbox, log: &mut Vec<ModuleOp>) {
+    let mut ops = Vec::new();
     for deferred in out.take_deferred() {
         if let Deferred::Persist(op) = deferred {
-            log.push(op);
+            ops.push(op);
         }
     }
+    log.extend(ops.iter().cloned());
+    tw.persist_legacy_ops(ops);
 }
 
 /// Plan and apply `t` directly against the slot (taken out and put back on
@@ -234,7 +240,7 @@ fn transition(
     *tw.world_mut()
         .module_state_mut::<SpatialState>()
         .expect("sim state") = st;
-    drain_out(&mut out, log);
+    drain_out(tw, &mut out, log);
     result
 }
 
@@ -264,7 +270,7 @@ fn destroy(tw: &mut TestWorld, log: &mut Vec<ModuleOp>, obj: ObjId) {
     let mut effects = Effects::new();
     tw.engine_mut()
         .emit_world_event(&WorldEvent::ObjDestroyed { obj }, &mut out, &mut effects);
-    drain_out(&mut out, log);
+    drain_out(tw, &mut out, log);
 }
 
 /// Run `f` with a command context over the engine's world and registry, as
@@ -290,7 +296,7 @@ fn with_ctx<R>(
         };
         f(&mut ctx)
     };
-    drain_out(&mut out, log);
+    drain_out(tw, &mut out, log);
     result
 }
 
@@ -342,10 +348,12 @@ fn listed_rooms(value: &serde_json::Value) -> Vec<u64> {
 /// (recreate walkers, stand them somewhere, edit the documents), then booted
 /// from `kv`.
 fn reboot_with(
+    source: &TestWorld,
     mut kv: Vec<(SmolStr, serde_json::Value)>,
     setup: impl FnOnce(&mut TestWorld, &Fx, &mut Vec<(SmolStr, serde_json::Value)>),
 ) -> (TestWorld, Fx) {
     let mut tw = boot();
+    tw.adopt_store(source);
     let fx = objects(&mut tw);
     setup(&mut tw, &fx, &mut kv);
     tw.modules_loaded(HashMap::from([(
@@ -505,7 +513,7 @@ fn ic4_members_plan_refuses_what_the_boundary_rule_forbids() {
 fn ic4_members_persist_index_and_survive_a_reboot() {
     let (mut tw, fx, mut log) = scene();
     drain(&mut tw, &mut log);
-    let kv = fold_kv_ops(&log);
+    let kv = tw.persisted_kv("sim");
     let key = format!("space:{}", fx.lock.0);
     assert_eq!(
         listed_rooms(doc(&kv, &key)),
@@ -525,7 +533,7 @@ fn ic4_members_persist_index_and_survive_a_reboot() {
     let index = st.derived.member_of.clone();
     check_invariants(&tw);
 
-    let (tw2, fx2) = reboot_with(kv, |_, _, _| {});
+    let (tw2, fx2) = reboot_with(&tw, kv, |_, _, _| {});
     let st2 = state(&tw2);
     assert_eq!(st2.spaces[&fx2.lock], record);
     assert_eq!(st2.derived.member_of, index);
@@ -650,9 +658,9 @@ fn ic4_projection_keeps_a_walker_in_its_member_room_across_a_reboot() {
     assert_eq!(loc(&tw, ann), Some(fx.deck));
     let placement = state(&tw).placements[&ann].clone();
     drain(&mut tw, &mut log);
-    let kv = fold_kv_ops(&log);
+    let kv = tw.persisted_kv("sim");
 
-    let (mut tw2, _) = reboot_with(kv, |tw, fx, _| {
+    let (mut tw2, _) = reboot_with(&tw, kv, |tw, fx, _| {
         let ann = walker(tw, "Ann");
         let bea = walker(tw, "Bea");
         tw.world_mut().move_to(ann, fx.deck).unwrap();
@@ -687,10 +695,10 @@ fn ic4_boot_drops_invalid_members_and_fails_closed_into_the_space() {
         &format!("@spatial/place/interior #{}=#{}", ann.0, fx.lock.0),
     );
     drain(&mut tw, &mut log);
-    let kv = fold_kv_ops(&log);
+    let kv = tw.persisted_kv("sim");
     let key = format!("space:{}", fx.lock.0);
 
-    let (mut tw2, _) = reboot_with(kv, |tw, fx, kv| {
+    let (mut tw2, _) = reboot_with(&tw, kv, |tw, fx, kv| {
         let ann = walker(tw, "Ann");
         let gone = tw
             .world_mut()
@@ -739,9 +747,9 @@ fn ic4_a_thing_pod_boots_untouched() {
     );
     assert_eq!(loc(&tw, bea), Some(pod));
     drain(&mut tw, &mut log);
-    let kv = fold_kv_ops(&log);
+    let kv = tw.persisted_kv("sim");
 
-    let (mut tw2, _) = reboot_with(kv, |tw, _, _| {
+    let (mut tw2, _) = reboot_with(&tw, kv, |tw, _, _| {
         let pod2 = tw
             .world_mut()
             .create(ObjKind::Thing, "Pod", GOD, Some(LIMBO))
@@ -802,7 +810,7 @@ fn ic4_a_member_cannot_be_destroyed_or_made_a_space() {
     assert_eq!(state(&tw).spaces[&fx.lock].rooms, set(&[fx.lock, fx.spine]));
     assert_eq!(loc(&tw, ann), Some(fx.lock), "not at home, not in Limbo");
     drain(&mut tw, &mut log);
-    let kv = fold_kv_ops(&log);
+    let kv = tw.persisted_kv("sim");
     assert_eq!(
         listed_rooms(doc(&kv, &format!("space:{}", fx.lock.0))),
         vec![u64::from(fx.lock.0), u64::from(fx.spine.0)]

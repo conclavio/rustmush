@@ -28,7 +28,8 @@ use mush_propagation::{
 use mush_proto::OutputEvent;
 use mush_sim::{SimulationModule, SpatialState};
 use mush_tactics::TacticsModule;
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::authoritative::AcknowledgedWorld as TestWorld;
+use mush_testkit::text_of;
 use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -249,10 +250,25 @@ fn build(tw: &mut TestWorld) -> Fx {
     for platform in [alpha, bravo, target, ann, bob] {
         ok(tw, GOD, &format!("@spatial/place/domain #{}=0", platform.0));
     }
-    ok(
-        tw,
+    // This command now crosses the actual prepared/Store acknowledgement
+    // boundary. The explicit driver flushes the earlier legacy setup first.
+    let events = tw.run_and_commit_one(
         GOD,
         &format!("@spatial/space #{}=moving:#{}", hull.0, alpha.0),
+        "sim",
+        mush_core::physical_transition::ACTION,
+    );
+    assert!(
+        !has_error(&events),
+        "space setup refused: {}",
+        texts(&events)
+    );
+    assert!(
+        tw.world()
+            .module_state::<SpatialState>()
+            .unwrap()
+            .spaces
+            .contains_key(&hull)
     );
     for (platform, crew, station) in [(alpha, ann, "sensors"), (bravo, bob, "comms")] {
         ok(

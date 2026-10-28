@@ -379,7 +379,7 @@ async fn install_due_handoff(world: &mut TestWorld, store: &InMemoryStore) -> Te
     Ok(())
 }
 
-fn seated_fixture(rig: &mut Rig) -> TestResult<ObjId> {
+async fn seated_fixture(rig: &mut Rig, store: &InMemoryStore) -> TestResult<ObjId> {
     let field = rig
         .world
         .world_mut()
@@ -424,9 +424,20 @@ fn seated_fixture(rig: &mut Rig) -> TestResult<ObjId> {
         .find(|domain| domain.presentation_location == field)
         .ok_or("created domain")?
         .id;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/domain #{}={}", rig.carrier.0, domain.0),
+    )?;
+    persist_legacy(&mut rig.world, store).await?;
+    commit(
+        &mut rig.world,
+        store,
+        GOD,
+        &format!("@spatial/space #{}=moving:#{}", bay.0, rig.carrier.0),
+    )
+    .await?;
     for command in [
-        format!("@spatial/place/domain #{}={}", rig.carrier.0, domain.0),
-        format!("@spatial/space #{}=moving:#{}", bay.0, rig.carrier.0),
         format!("@spatial/place/interior #{}=#{}", rig.unit.0, bay.0),
         format!(
             "@spatial/station #{}=pilot,pilot,channels:helm,space:#{}",
@@ -456,7 +467,7 @@ fn seated_fixture(rig: &mut Rig) -> TestResult<ObjId> {
 async fn ready_requires_real_helm_lease_and_final_physical_revalidation() -> TestResult {
     let store = InMemoryStore::new();
     let mut rig = fixture(&store).await?;
-    let bay = seated_fixture(&mut rig)?;
+    let bay = seated_fixture(&mut rig, &store).await?;
     persist_legacy(&mut rig.world, &store).await?;
     let payload = plan(&rig);
     commit(

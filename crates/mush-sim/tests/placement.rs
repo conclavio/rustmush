@@ -13,9 +13,11 @@ use mush_sim::{
     DomainId, DomainStatus, SimConfig, SimulationModule, SpatialParent, SpatialState,
     verify_indexes, verify_projections,
 };
-use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::{authoritative::AcknowledgedWorld as TestWorld, text_of};
 use smol_str::SmolStr;
+
+#[path = "support/space_command.rs"]
+mod space_command;
 
 fn boot() -> TestWorld {
     TestWorld::with_modules(vec![Box::new(SimulationModule::new())])
@@ -137,7 +139,7 @@ fn sub(line: &str) -> String {
 }
 
 fn say(tw: &mut TestWorld, line: &str) -> String {
-    texts(&tw.run(GOD, &sub(line)))
+    texts(&space_command::run(tw, GOD, &sub(line)))
 }
 
 /// Any error-tagged span — every `CmdError`, `SpatialError`, and gate refusal
@@ -150,7 +152,7 @@ fn has_error(events: &[(mush_core::Audience, OutputEvent)]) -> bool {
 
 /// Run a command that must be accepted: fails loudly on any refusal.
 fn ok(tw: &mut TestWorld, line: &str) -> String {
-    let events = tw.run(GOD, &sub(line));
+    let events = space_command::run(tw, GOD, &sub(line));
     let t = texts(&events);
     assert!(!has_error(&events), "{line:?} was refused: {t}");
     t
@@ -164,23 +166,12 @@ fn check_invariants(tw: &TestWorld) {
 }
 
 fn fold_kv(tw: &mut TestWorld) -> Vec<(SmolStr, serde_json::Value)> {
-    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
-    for op in tw.take_module_ops() {
-        assert_eq!(op.ns, "sim");
-        match op.op {
-            ModuleWrite::JsonSet { key, value } => {
-                kv.retain(|(k, _)| *k != key);
-                kv.push((key, value));
-            }
-            ModuleWrite::Del { key } => kv.retain(|(k, _)| *k != key),
-            ModuleWrite::StreamAppend { .. } => {}
-        }
-    }
-    kv
+    tw.persisted_kv("sim")
 }
 
-fn reboot_with(kv: Vec<(SmolStr, serde_json::Value)>) -> (TestWorld, Fx) {
+fn reboot_with(source: &TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> (TestWorld, Fx) {
     let mut tw2 = boot();
+    tw2.adopt_store(source);
     let fx = fixture(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
@@ -388,7 +379,7 @@ fn cycles_are_refused_without_mutation() {
     // is attached to Leopard, not below the hangar.
     ok(&mut tw, "@spatial/space Hangar=moving:Leopard");
     let t = ok(&mut tw, "@spatial/space Hangar=moving:Atlas");
-    assert!(t.contains("re-anchored"), "{t}");
+    assert!(t.contains("Spatial update for #3 committed."), "{t}");
     assert!(
         matches!(state(&tw).spaces[&fx.hangar].anchor, mush_sim::SpaceAnchor::MovingObject { host } if host == fx.mech)
     );
@@ -690,7 +681,7 @@ fn reboot_round_trip_reproduces_state_and_projections() {
     ok(&mut tw, "@spatial/place/interior Locust=Hangar,bay");
     ok(&mut tw, "@spatial/unplace/keep Locust=parked");
     let kv = fold_kv(&mut tw);
-    let (mut tw2, fx2) = reboot_with(kv);
+    let (mut tw2, fx2) = reboot_with(&tw, kv);
     assert_eq!(
         state(&tw2),
         state(&tw),
@@ -827,7 +818,7 @@ fn legacy_nested_passive_values_load_exactly_without_an_eager_rewrite() {
         "to_pose": legacy_passive(serde_json::json!({ "x": 5 }))
     });
 
-    let (mut tw2, fx2) = reboot_with(kv);
+    let (mut tw2, fx2) = reboot_with(&tw, kv);
     let exact = mush_sim::passive_definition_ref();
     let st = state(&tw2);
     assert_eq!(
@@ -912,7 +903,7 @@ fn unavailable_exact_rules_references_are_held_without_rewriting_raw_documents()
 
     let original_atlas = module_doc_mut(&mut kv, &atlas_key).clone();
     let original_locust = module_doc_mut(&mut kv, &locust_key).clone();
-    let (mut tw2, fx2) = reboot_with(kv);
+    let (mut tw2, fx2) = reboot_with(&tw, kv);
     assert!(
         state(&tw2).is_quarantined(fx2.mech),
         "a missing exact schema cannot activate"
@@ -967,7 +958,7 @@ fn unavailable_exact_domain_driver_fails_container_boot() {
         .to_string();
     let replacement = if digest.starts_with('0') { '1' } else { '0' };
     domain["driver"]["digest"] = serde_json::json!(format!("{replacement}{}", &digest[1..]));
-    let _ = reboot_with(kv);
+    let _ = reboot_with(&tw, kv);
 }
 
 #[test]
@@ -983,7 +974,7 @@ fn legacy_dotted_schema_is_not_inferred_outside_the_owned_mapping() {
         "version": 1,
         "data": null
     });
-    let (tw2, fx2) = reboot_with(kv);
+    let (tw2, fx2) = reboot_with(&tw, kv);
     assert!(
         state(&tw2).is_quarantined(fx2.mech),
         "unknown legacy schema is not owner-inferred"
@@ -1330,25 +1321,19 @@ fn store_round_trip_through_in_memory_store() {
     ok(&mut tw, "@spatial/place/domain Leopard=0");
     ok(&mut tw, "@spatial/place/attached Atlas=Leopard,deck");
     ok(&mut tw, "@spatial/place/interior Locust=Hangar");
-    let ops = tw.take_module_ops();
-    let store = InMemoryStore::new();
-    futures::executor::block_on(async {
-        store
-            .write(WriteBatch {
-                serial: 1,
-                module_ops: ops,
-                ..WriteBatch::default()
-            })
-            .await
-            .unwrap();
-    });
-    let kv = futures::executor::block_on(async { store.module_json_list("sim").await.unwrap() });
+    let kv = tw.persisted_kv("sim");
+    assert!(
+        kv.iter()
+            .any(|(key, _)| mush_core::is_action_state_persistence_key(key)),
+        "the real Store also retains the physical receipt and capture"
+    );
     let boot_data = ModuleBootData {
-        kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
+        kv,
         streams: HashMap::new(),
         ..Default::default()
     };
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     let fx2 = fixture(&mut tw2);
     tw2.modules_loaded(HashMap::from([(SmolStr::new("sim"), boot_data)]));
     assert_eq!(
@@ -1438,7 +1423,7 @@ fn boot_holds_unparseable_placement_docs_without_clobbering_them() {
         .find(|(key, _)| key == "placement:9999")
         .map(|(_, value)| value.clone())
         .expect("phantom doc remains in boot input");
-    let (mut tw2, fx2) = reboot_with(kv);
+    let (mut tw2, fx2) = reboot_with(&tw, kv);
     // Atlas: held by canonical key, mechanically inactive, and projected into
     // the recovery room without manufacturing a replacement PlacementRecord.
     assert!(state(&tw2).is_quarantined(fx2.mech));

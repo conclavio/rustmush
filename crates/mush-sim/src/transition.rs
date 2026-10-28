@@ -246,6 +246,22 @@ pub struct Plan {
     pub audit: serde_json::Value,
 }
 
+/// A member room cannot itself become an interior space. Keep this cheap
+/// canonical guard available to command admission as well as the planner.
+pub(crate) fn check_space_membership(st: &SpatialState, space: ObjId) -> Result<(), SpatialError> {
+    // Cut IC4 (doc 18 §4.2 (c)): two records claiming one room would make its
+    // occupants' projection ambiguous. The space object's self-entry (lead
+    // ruling L4) is not a membership of another space.
+    if let Some(owner) = st.derived.member_of.get(&space)
+        && *owner != space
+    {
+        return Err(SpatialError::Members(format!(
+            "{space} is a room of interior space {owner}; it cannot be a space itself"
+        )));
+    }
+    Ok(())
+}
+
 fn live(w: &World, obj: ObjId) -> Result<(), SpatialError> {
     match w.get(obj) {
         Some(o) if !o.flags.contains(Flags::GOING) => Ok(()),
@@ -755,17 +771,7 @@ pub(crate) fn plan_at(
         }
         Transition::Space { space, anchor } => {
             let space = *space;
-            // Cut IC4 (doc 18 §4.2 (c)): a member room is walked, never itself
-            // a space — two records claiming one room would make its occupants'
-            // projection ambiguous. The space object's self-entry (lead ruling
-            // L4) is not a membership of another space.
-            if let Some(owner) = st.derived.member_of.get(&space)
-                && *owner != space
-            {
-                return Err(SpatialError::Members(format!(
-                    "{space} is a room of interior space {owner}; it cannot be a space itself"
-                )));
-            }
+            check_space_membership(st, space)?;
             live(w, space)?;
             // The base record: keep an existing one's compartments/rooms, or a
             // fresh Unanchored shell whose sole room is the space itself.
