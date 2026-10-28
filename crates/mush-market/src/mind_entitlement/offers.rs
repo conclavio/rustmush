@@ -278,9 +278,11 @@ impl Provider {
                 };
                 accounts::fill_payouts(&mut q)?;
                 let now = q.quoted_at_utc;
+                let key = super::index::BuyerKey::of(q.buyer);
                 self.families.add_quote(txn, q)?;
-                // 17g C2f: the buyer's index, in this same transaction.
-                super::index::quoted(txn, &self.families.index(), inv.actor(), commit, now)?;
+                // 17g C2f: the buyer's index, in this same transaction (M8c
+                // S1: an organisation's quote under the organisation).
+                super::index::quoted(txn, &self.families.index(), key, commit, now)?;
                 "quote"
             }
         };

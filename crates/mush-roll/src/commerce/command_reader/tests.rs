@@ -1018,8 +1018,9 @@ fn command(f: &mut Fixture, line: &str) -> TestResult {
 /// M8c F3/F11 (brief test 3): the holdings observer rule through the real
 /// read. Two licences held by the Guild (bought with `other` acting):
 /// - every character granted `roll.holder.org` on the Guild's root reads
-///   them with `org=`: `other`, and GOD, a second granted character who
-///   never bought (F3: the rows match by principal, not by `acting`);
+///   them with `org=`: `other`, and a second non-staff character who never
+///   bought (F3: the rows match by principal, not by `acting`; S3: no
+///   staff in the path);
 /// - neither appears in any character's own holdings (the GOD pages above
 ///   are unchanged: 41..44), and the bare own-paid read of one is refused
 ///   even to the character who bought it;
@@ -1043,7 +1044,13 @@ fn org_paid_rows_answer_every_granted_member(f: &mut Fixture, other: ObjId) -> T
         .find(|o| o.name.as_str() == "Guild")
         .ok_or("the Guild")?
         .id;
-    for who in [other, GOD] {
+    let second = f.engine.world.create(
+        mush_core::ObjKind::Player,
+        "Second member",
+        GOD,
+        Some(mush_core::LIMBO),
+    )?;
+    for who in [other, second] {
         command(
             f,
             &format!(
@@ -1126,7 +1133,7 @@ fn org_paid_rows_answer_every_granted_member(f: &mut Fixture, other: ObjId) -> T
                 ))
             }))
         };
-    for member in [other, GOD] {
+    for member in [other, second] {
         check_eq!(
             page(f, member, Some(guild.0))?,
             Ok((vec![46, 47], None)),
@@ -1160,7 +1167,7 @@ fn org_paid_rows_answer_every_granted_member(f: &mut Fixture, other: ObjId) -> T
         "an organisation that does not exist reads the same"
     );
     // The own-paid view: with `org=` for every member; never bare.
-    for member in [other, GOD] {
+    for member in [other, second] {
         let (answer, _) = read(f, member, json!({"paid": 46, "org": guild.0}))??;
         let row = answer.into_own_paid().ok_or("the Guild's licence")?;
         check_eq!(row.licence().get(), 46);

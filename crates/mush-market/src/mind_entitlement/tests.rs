@@ -348,7 +348,7 @@ pub(crate) fn command_index(
 ) -> TestResult<super::EntitlementActorIndex> {
     let row = super::EntitlementActorIndex {
         format: 1,
-        actor,
+        buyer: super::BuyerKey::Character(actor),
         quotes: quotes.iter().copied().collect(),
         operations: operations.iter().copied().collect(),
     };
@@ -797,8 +797,8 @@ fn the_transfer_mark_narrows_and_never_widens() -> TestResult {
         );
     }
     // M8c B3: the quote names the listing and, optionally, the organisation
-    // bought for (an integer at least 1: `Holder`'s organisation arm never
-    // names organisation 0).
+    // bought for (any integer from 0: organisation 0 is an organisation,
+    // M8c F8).
     let quote = parameters(Kind::Quote)?;
     let shape = quote
         .iter()

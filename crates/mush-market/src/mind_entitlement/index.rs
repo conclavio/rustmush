@@ -2,7 +2,10 @@
 //! index, `market_mind_entitlement_actors`.
 //!
 //! One row per buyer with an unfunded quote or an open (funded) purchase,
-//! keyed by the buyer's `ObjId`. Like v2's `ActorOffers` it **authorizes
+//! keyed by the buyer (`BuyerKey`): a character's row by its `ObjId`, an
+//! organisation's by `org/{org:020}` (M8c S1), so every character acting for
+//! the organisation finds its quotes and purchases, whoever quoted. Like
+//! v2's `ActorOffers` it **authorizes
 //! nothing**: it only lets C2g's `+minds/buy` find the actor's own quote and
 //! purchase with a bounded read; every provider still rereads the quote or
 //! purchase row and rechecks its buyer. Each write is in the same transaction
@@ -28,6 +31,7 @@
 use super::codec::Row;
 use super::{EntitlementPurchaseV1, EntitlementQuoteV1};
 use mush_core::{ActionTxn, CommitToken, ModuleCtx, ObjId, StateFamilyHandle};
+use mush_roll::commerce::Holder;
 use mush_roll::commerce::purchase::PurchasePhase;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,29 +41,99 @@ pub(crate) const MAX_BUYER_QUOTES: usize = 8;
 /// The C2b bound on one buyer's open (funded) purchases.
 pub(crate) const MAX_BUYER_PURCHASES: usize = 8;
 
+/// Whose row (M8c S1): a character buyer's own, or an organisation's, which
+/// every character acting for it reads (the read asks the grant live).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum BuyerKey {
+    Character(ObjId),
+    Organization(mush_org::OrgId),
+}
+impl BuyerKey {
+    /// The row a quote by `holder` is indexed under.
+    #[must_use]
+    pub(crate) const fn of(holder: Holder) -> Self {
+        match holder {
+            Holder::Character(c) => Self::Character(c),
+            Holder::Organization { org, .. } => Self::Organization(org),
+        }
+    }
+    /// The stored key: the character's decimal number, or `org/{org:020}`.
+    #[must_use]
+    pub(crate) fn key(self) -> String {
+        match self {
+            Self::Character(c) => c.0.to_string(),
+            Self::Organization(org) => format!("org/{:020}", org.0),
+        }
+    }
+}
+
 /// The three families the index joins: the retained quotes and operations
 /// (its heads) and the index itself. `Families::index` lends them; the
 /// lifecycle rig registers them alone.
 pub(super) struct Index<'f> {
     pub(super) quotes: &'f StateFamilyHandle<CommitToken, EntitlementQuoteV1>,
     pub(super) operations: &'f StateFamilyHandle<CommitToken, EntitlementPurchaseV1>,
-    pub(super) actors: &'f StateFamilyHandle<ObjId, EntitlementActorIndex>,
+    pub(super) actors: &'f StateFamilyHandle<BuyerKey, EntitlementActorIndex>,
 }
 
-/// One buyer's unfunded quotes and open purchases.
+/// One buyer's unfunded quotes and open purchases. A character's row is
+/// `{format, actor, quotes, operations}` as before M8c; an organisation's
+/// carries `org` in place of `actor`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "IndexWire", into = "IndexWire")]
 pub(crate) struct EntitlementActorIndex {
     pub(super) format: u16,
-    pub(super) actor: ObjId,
+    pub(super) buyer: BuyerKey,
     pub(super) quotes: BTreeSet<CommitToken>,
     pub(super) operations: BTreeSet<CommitToken>,
 }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IndexWire {
+    format: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    actor: Option<ObjId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    org: Option<u64>,
+    quotes: BTreeSet<CommitToken>,
+    operations: BTreeSet<CommitToken>,
+}
+impl TryFrom<IndexWire> for EntitlementActorIndex {
+    type Error = String;
+    fn try_from(w: IndexWire) -> Result<Self, String> {
+        let buyer = match (w.actor, w.org) {
+            (Some(actor), None) => BuyerKey::Character(actor),
+            (None, Some(org)) => BuyerKey::Organization(mush_org::OrgId(org)),
+            _ => return Err("entitlement buyer index names one buyer".into()),
+        };
+        Ok(Self {
+            format: w.format,
+            buyer,
+            quotes: w.quotes,
+            operations: w.operations,
+        })
+    }
+}
+impl From<EntitlementActorIndex> for IndexWire {
+    fn from(r: EntitlementActorIndex) -> Self {
+        let (actor, org) = match r.buyer {
+            BuyerKey::Character(c) => (Some(c), None),
+            BuyerKey::Organization(org) => (None, Some(org.0)),
+        };
+        Self {
+            format: r.format,
+            actor,
+            org,
+            quotes: r.quotes,
+            operations: r.operations,
+        }
+    }
+}
 impl EntitlementActorIndex {
-    fn empty(actor: ObjId) -> Self {
+    fn empty(buyer: BuyerKey) -> Self {
         Self {
             format: 1,
-            actor,
+            buyer,
             quotes: BTreeSet::new(),
             operations: BTreeSet::new(),
         }
@@ -67,9 +141,10 @@ impl EntitlementActorIndex {
     fn is_empty(&self) -> bool {
         self.quotes.is_empty() && self.operations.is_empty()
     }
-    /// 17g C2g: the buyer this row indexes.
-    pub(crate) const fn actor(&self) -> ObjId {
-        self.actor
+    /// 17g C2g: the buyer this row indexes (M8c S1: a character or an
+    /// organisation).
+    pub(crate) const fn buyer(&self) -> BuyerKey {
+        self.buyer
     }
     /// 17g C2g: the buyer's indexed (unfunded) quotes, live or expired.
     pub(crate) const fn quotes(&self) -> &BTreeSet<CommitToken> {
@@ -84,11 +159,11 @@ impl Row for EntitlementActorIndex {
     const FAMILY: &'static str = "market_mind_entitlement_actors";
     const MAX_BYTES: usize = 4096;
     fn key(&self) -> String {
-        self.actor.0.to_string()
+        self.buyer.key()
     }
     fn validate(&self) -> Result<(), String> {
         if self.format != 1
-            || self.actor.0 == 0
+            || self.buyer == BuyerKey::Character(ObjId(0))
             || self.quotes.len() > MAX_BUYER_QUOTES
             || self.operations.len() > MAX_BUYER_PURCHASES
             || self.is_empty()
@@ -103,7 +178,7 @@ impl Row for EntitlementActorIndex {
 fn row(
     txn: &mut ActionTxn<'_>,
     f: &Index<'_>,
-    buyer: ObjId,
+    buyer: BuyerKey,
 ) -> Result<(bool, EntitlementActorIndex), String> {
     let row = txn
         .get(f.actors, &buyer)
@@ -114,7 +189,7 @@ fn row(
     if existed {
         row.validate()?;
     }
-    if row.actor != buyer || row.format != 1 {
+    if row.buyer != buyer || row.format != 1 {
         return Err("crossed entitlement buyer index".into());
     }
     Ok((existed, row))
@@ -126,7 +201,7 @@ fn put(
     existed: bool,
     row: EntitlementActorIndex,
 ) -> Result<(), String> {
-    let buyer = row.actor;
+    let buyer = row.buyer;
     if row.is_empty() {
         if existed {
             txn.remove(f.actors, &buyer).map_err(|e| e.to_string())?;
@@ -160,7 +235,7 @@ fn put(
 pub(super) fn quoted(
     txn: &mut ActionTxn<'_>,
     f: &Index<'_>,
-    buyer: ObjId,
+    buyer: BuyerKey,
     quote: CommitToken,
     now: i64,
 ) -> Result<(), String> {
@@ -171,8 +246,8 @@ pub(super) fn quoted(
             .get(f.quotes, token)
             .map_err(|e| e.to_string())?
             .ok_or("indexed entitlement quote missing")?;
-        // M8c B3: the row is keyed by the acting character (module doc).
-        if indexed.publication != *token || indexed.buyer.acting_character() != buyer {
+        // M8c S1: the row is keyed by the buyer (module doc).
+        if indexed.publication != *token || BuyerKey::of(indexed.buyer) != buyer {
             return Err("indexed entitlement quote differs".into());
         }
         if now < indexed.expires_at_utc {
@@ -194,7 +269,7 @@ pub(super) fn quoted(
 pub(super) fn funded(
     txn: &mut ActionTxn<'_>,
     f: &Index<'_>,
-    buyer: ObjId,
+    buyer: BuyerKey,
     quote: CommitToken,
     operation: CommitToken,
 ) -> Result<(), String> {
@@ -216,7 +291,7 @@ pub(super) fn funded(
 pub(super) fn released(
     txn: &mut ActionTxn<'_>,
     f: &Index<'_>,
-    buyer: ObjId,
+    buyer: BuyerKey,
     operation: CommitToken,
 ) -> Result<(), String> {
     let (existed, mut index) = row(txn, f, buyer)?;
@@ -236,7 +311,7 @@ pub(super) fn audit(ctx: &ModuleCtx<'_>, f: &Index<'_>) -> Result<(), String> {
         if key != q.key() {
             return Err("entitlement quote key differs".into());
         }
-        quotes.insert(q.publication, q.buyer.acting_character());
+        quotes.insert(q.publication, BuyerKey::of(q.buyer));
         Ok(())
     })?;
     let mut funded_quotes = BTreeSet::new();
@@ -249,7 +324,7 @@ pub(super) fn audit(ctx: &ModuleCtx<'_>, f: &Index<'_>) -> Result<(), String> {
         operations.insert(
             p.operation,
             (
-                p.quote.buyer.acting_character(),
+                BuyerKey::of(p.quote.buyer),
                 p.phase == PurchasePhase::Funded {},
             ),
         );
@@ -298,9 +373,9 @@ fn scan<K: Send + Sync + 'static, R: Row + Clone + Send + Sync + 'static>(
 /// still funded (open).
 pub(super) fn check(
     rows: impl IntoIterator<Item = (String, EntitlementActorIndex)>,
-    quotes: &BTreeMap<CommitToken, ObjId>,
+    quotes: &BTreeMap<CommitToken, BuyerKey>,
     funded_quotes: &BTreeSet<CommitToken>,
-    operations: &BTreeMap<CommitToken, (ObjId, bool)>,
+    operations: &BTreeMap<CommitToken, (BuyerKey, bool)>,
 ) -> Result<(), String> {
     let mut indexed = BTreeSet::new();
     for (key, row) in rows {
@@ -309,12 +384,12 @@ pub(super) fn check(
             return Err("entitlement buyer index key differs".into());
         }
         for quote in &row.quotes {
-            if quotes.get(quote) != Some(&row.actor) || funded_quotes.contains(quote) {
+            if quotes.get(quote) != Some(&row.buyer) || funded_quotes.contains(quote) {
                 return Err("indexed entitlement quote is missing, foreign or funded".into());
             }
         }
         for operation in &row.operations {
-            if operations.get(operation) != Some(&(row.actor, true)) || !indexed.insert(*operation)
+            if operations.get(operation) != Some(&(row.buyer, true)) || !indexed.insert(*operation)
             {
                 return Err("indexed entitlement operation is missing, foreign or closed".into());
             }

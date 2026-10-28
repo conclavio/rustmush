@@ -179,7 +179,10 @@ pub(super) fn local(
                 // M8c F1: a character's licence was dispatched by that
                 // character; an organisation's by some character acting for
                 // it, whose grant was asked live at the dispatch
-                // (`reader_holder`) and whom the claim records.
+                // (`reader_holder`). M8c S2: the claim records only the
+                // dispatcher, not the grant it held, so this history check
+                // accepts any nonzero dispatcher for the organisation arm;
+                // the live grant check at dispatch is the only proof.
                 let dispatcher_fits = match captured_holder {
                     super::super::Holder::Character(c) => c == open.dispatcher,
                     super::super::Holder::Organization { .. } => open.dispatcher.0 != 0,

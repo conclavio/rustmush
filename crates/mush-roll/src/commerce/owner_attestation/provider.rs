@@ -295,8 +295,9 @@ impl Provider {
                     .as_ref()
                     .ok_or(PublicationError::Unavailable)?;
                 // `birth.parent.is_some()` is unreachable for a House filing:
-                // the House purchase writer refuses a filing with a parent
-                // (`house_purchase::writer`); kept as a closed-world fence.
+                // the filing provider refuses a House filing with a dependent
+                // parent (`filing.rs`, `self.house && self.dependent`); kept
+                // as a closed-world fence.
                 if house.organization() != org
                     || birth.economic.issued_owner != mush_org::PrincipalId::Organization(org)
                     || birth.parent.is_some()

@@ -9,7 +9,7 @@ use super::{
 use mush_core::mechanics::CanonicalId;
 use mush_core::read_service::OwnerReadHandle;
 use mush_core::{
-    ActionTxn, CommitToken, ModError, ObjId, Registrar, StateFamilyDescriptor, StateFamilyHandle,
+    ActionTxn, CommitToken, ModError, Registrar, StateFamilyDescriptor, StateFamilyHandle,
     StateFamilyId,
 };
 use mush_roll::commerce::entitlement::reader::EntitlementSaleReader;
@@ -59,7 +59,7 @@ pub(crate) struct Families {
     pub(super) receipts: StateFamilyHandle<CommitToken, EntitlementReceiptV1>,
     pub(super) counts: StateFamilyHandle<String, Counts>,
     /// 17g C2f: the per-buyer quote and purchase index (`super::index`).
-    pub(super) actors: StateFamilyHandle<ObjId, EntitlementActorIndex>,
+    pub(super) actors: StateFamilyHandle<super::index::BuyerKey, EntitlementActorIndex>,
     pub(super) reader: OwnerReadHandle<EntitlementSaleReader>,
 }
 fn error(e: impl std::fmt::Display) -> ModError {
@@ -99,10 +99,10 @@ fn family<R: Row + Clone + Send + Sync + 'static>(
 /// (and alone by the lifecycle rig).
 pub(super) fn actors_family(
     reg: &mut Registrar<'_>,
-) -> Result<StateFamilyHandle<ObjId, EntitlementActorIndex>, ModError> {
+) -> Result<StateFamilyHandle<super::index::BuyerKey, EntitlementActorIndex>, ModError> {
     reg.state_family(
         descriptor::<EntitlementActorIndex>()?,
-        |actor: &ObjId| Ok(actor.0.to_string()),
+        |buyer: &super::index::BuyerKey| Ok(buyer.key()),
         decode::<EntitlementActorIndex>,
         EntitlementActorIndex::validate,
         |r: &EntitlementActorIndex| serde_json::to_value(r).map_err(|e| e.to_string()),
@@ -141,7 +141,9 @@ impl Families {
     ) -> &StateFamilyHandle<CommitToken, EntitlementPurchaseV1> {
         &self.operations
     }
-    pub(crate) const fn actors(&self) -> &StateFamilyHandle<ObjId, EntitlementActorIndex> {
+    pub(crate) const fn actors(
+        &self,
+    ) -> &StateFamilyHandle<super::index::BuyerKey, EntitlementActorIndex> {
         &self.actors
     }
     pub(super) fn register(

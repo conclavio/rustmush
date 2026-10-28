@@ -150,8 +150,9 @@ impl Provider {
             return Err("quote key differs".into());
         }
         let observed = self.current(inv, txn, ctx, &q, Some(q.price.minor()))?;
-        // 17g C2f: the buyer's index is keyed by the acting character.
-        let buyer = q.buyer.acting_character();
+        // 17g C2f: the buyer's index row (M8c S1: the character, or the
+        // organisation).
+        let buyer = super::index::BuyerKey::of(q.buyer);
         let economics = q.economic_subject()?;
         self.writer
             .preflight_funding(ctx, txn, &economics, &publication::terms(&q), &observed)
@@ -291,7 +292,7 @@ impl Provider {
         super::index::released(
             txn,
             &self.families.index(),
-            before.quote.buyer.acting_character(),
+            super::index::BuyerKey::of(before.quote.buyer),
             operation,
         )?;
         ctx.finish_mind_entitlement_purchase_completion(txn, operation)

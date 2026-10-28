@@ -986,6 +986,16 @@ pub(crate) trait OwnSource<'a> {
     /// The actor's own entitlement index row (`market_mind_entitlement_
     /// actors`, keyed by the actor).
     fn actor_row(&self, actor: ObjId) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError>;
+    /// M8c S1: an organisation's index row (keyed `org/{org:020}`), read
+    /// only after `acts_for` passed.
+    fn org_row(
+        &self,
+        org: mush_org::OrgId,
+    ) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError>;
+    /// M8c S1: whether `actor` acts for `org` now (`org_holder::acts_for`,
+    /// the root scope): `Refused` when not, so a foreign organisation reads
+    /// like one with no rows.
+    fn acts_for(&self, org: mush_org::OrgId, actor: ObjId) -> Result<(), OwnerReadError>;
     /// The quote rows `tokens` name, in order (one batched read).
     fn quotes(
         &self,
@@ -1014,7 +1024,26 @@ pub(crate) trait OwnSource<'a> {
 }
 impl<'a> OwnSource<'a> for Lens<'_, 'a> {
     fn actor_row(&self, actor: ObjId) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError> {
-        self.ctx.action_state(self.families.actors(), &actor)
+        self.ctx.action_state(
+            self.families.actors(),
+            &crate::mind_entitlement::BuyerKey::Character(actor),
+        )
+    }
+    fn org_row(
+        &self,
+        org: mush_org::OrgId,
+    ) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError> {
+        self.ctx.action_state(
+            self.families.actors(),
+            &crate::mind_entitlement::BuyerKey::Organization(org),
+        )
+    }
+    fn acts_for(&self, org: mush_org::OrgId, actor: ObjId) -> Result<(), OwnerReadError> {
+        use mush_roll::commerce::org_holder::{OrgActorError, acts_for};
+        acts_for(self.ctx.world(), org, actor).map_err(|e| match e {
+            OrgActorError::Unavailable => OwnerReadError::Unavailable,
+            OrgActorError::NotForOrg => OwnerReadError::Refused,
+        })
     }
     fn quotes(
         &self,
@@ -1083,10 +1112,23 @@ fn own_rows<'a>(
     actor: ObjId,
     org: Option<mush_org::OrgId>,
 ) -> Result<OwnRows<'a>, OwnerReadError> {
-    let Some(row) = source.actor_row(actor)? else {
+    // M8c S1: a character's own row, or (for `org=`) the organisation's row,
+    // which any character acting for it now reads, whoever quoted.
+    let key = match org {
+        None => crate::mind_entitlement::BuyerKey::Character(actor),
+        Some(org) => {
+            source.acts_for(org, actor)?;
+            crate::mind_entitlement::BuyerKey::Organization(org)
+        }
+    };
+    let row = match org {
+        None => source.actor_row(actor)?,
+        Some(org) => source.org_row(org)?,
+    };
+    let Some(row) = row else {
         return Ok((Vec::new(), Vec::new()));
     };
-    if row.actor() != actor
+    if row.buyer() != key
         || row.quotes().len() > crate::mind_entitlement::MAX_BUYER_QUOTES
         || row.operations().len() > crate::mind_entitlement::MAX_BUYER_PURCHASES
     {
@@ -1097,12 +1139,12 @@ fn own_rows<'a>(
     let mut quotes = Vec::with_capacity(quote_tokens.len());
     for (token, quote) in quote_tokens.iter().zip(source.quotes(&quote_tokens)?) {
         let quote = quote.ok_or(OwnerReadError::Integrity)?;
-        if quote.publication() != *token || quote.buyer().acting_character() != actor {
+        if quote.publication() != *token
+            || crate::mind_entitlement::BuyerKey::of(quote.buyer()) != key
+        {
             return Err(OwnerReadError::Integrity);
         }
-        if quote.buyer().organization() == org {
-            quotes.push(quote);
-        }
+        quotes.push(quote);
     }
     let mut operations = Vec::with_capacity(operation_tokens.len());
     for (token, operation) in operation_tokens
@@ -1111,14 +1153,12 @@ fn own_rows<'a>(
     {
         let operation = operation.ok_or(OwnerReadError::Integrity)?;
         if operation.operation() != *token
-            || operation.quote_row().buyer().acting_character() != actor
+            || crate::mind_entitlement::BuyerKey::of(operation.quote_row().buyer()) != key
             || operation.phase() != (PurchasePhase::Funded {})
         {
             return Err(OwnerReadError::Integrity);
         }
-        if operation.quote_row().buyer().organization() == org {
-            operations.push(operation);
-        }
+        operations.push(operation);
     }
     Ok((quotes, operations))
 }

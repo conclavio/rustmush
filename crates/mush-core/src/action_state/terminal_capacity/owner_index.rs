@@ -308,6 +308,20 @@ fn offered(row: &Value, head: &Value, token: &str, retained: &BTreeSet<String>) 
             .all(|t| t == token || retained.contains(t.as_str()))
 }
 
+/// M8c S1: a quote buyer's index row: its stored key, the row's identity
+/// field and value: a character's `("{n}", "actor", n)`, an organisation's
+/// `("org/{org:020}", "org", org)`.
+fn buyer_row(buyer: &Value) -> Result<(String, &'static str, Value), ActionStateError> {
+    if buyer.is_u64() {
+        let n = person(buyer)?;
+        return Ok((n.to_string(), "actor", json!(n)));
+    }
+    holder(buyer)?;
+    let org = field(buyer, "org")?
+        .as_u64()
+        .ok_or_else(|| refused("owner index holder"))?;
+    Ok((format!("org/{org:020}"), "org", json!(org)))
+}
 fn field<'a>(v: &'a Value, name: &str) -> Result<&'a Value, ActionStateError> {
     v.get(name)
         .ok_or_else(|| refused("owner index field missing"))
@@ -562,10 +576,10 @@ fn release(
     operation: CommitToken,
 ) -> Result<Vec<(Key, Expect)>, ActionStateError> {
     let purchase = required(after, &key("market", PURCHASE, operation.to_hex())?)?;
-    // M8c: the market's actor index is keyed by the quote buyer's acting
-    // character (a character holder, or an organisation's acting one).
-    let buyer = acting(field(field(&purchase, "quote")?, "buyer")?)?;
-    let k = key("market", ACTORS, buyer.to_string())?;
+    // M8c S1: the market's buyer index row is the buyer's own: a
+    // character's, or the organisation's (`buyer_row`).
+    let (row_key, id_field, buyer) = buyer_row(field(field(&purchase, "quote")?, "buyer")?)?;
+    let k = key("market", ACTORS, row_key)?;
     let row = read(before, &k)?.ok_or_else(|| refused("owner index row absent"))?;
     let object = row
         .as_object()
@@ -577,7 +591,7 @@ fn release(
     operations.retain(|t| *t != id);
     if object.len() != 4
         || field(&row, "format")? != &json!(1)
-        || person(field(&row, "actor")?)? != buyer
+        || field(&row, id_field)? != &buyer
         || operations.len() + 1 != before_len
     {
         return Err(refused("owner index row differs"));
@@ -585,7 +599,9 @@ fn release(
     let expect = if quotes.is_empty() && operations.is_empty() {
         Expect::Delete
     } else {
-        Expect::Put(json!({"format":1,"actor":buyer,"quotes":quotes,"operations":operations}))
+        Expect::Put(
+            json!({"format": 1, (id_field): buyer, "quotes": quotes, "operations": operations}),
+        )
     };
     Ok(vec![(k, expect)])
 }
@@ -989,12 +1005,21 @@ fn audit_actors(view: &View<'_>) -> Result<(), ActionStateError> {
     let mut indexed = BTreeSet::new();
     for k in rows(view, "market", ACTORS) {
         let row = row_value(view, k)?;
-        let actor = person(field(&row, "actor")?)?;
+        // M8c S1: a character's row (`actor`) or an organisation's (`org`).
+        let row_key = match (row.get("actor"), row.get("org")) {
+            (Some(actor), None) => person(actor)?.to_string(),
+            (None, Some(org)) => format!(
+                "org/{:020}",
+                org.as_u64()
+                    .ok_or_else(|| refused("owner index actors row differs"))?
+            ),
+            _ => return Err(refused("owner index actors row differs")),
+        };
         let quotes = tokens(field(&row, "quotes")?)?;
         let operations = tokens(field(&row, "operations")?)?;
         if row.as_object().is_none_or(|o| o.len() != 4)
             || field(&row, "format")? != &json!(1)
-            || k.encoded.as_str() != actor.to_string()
+            || k.encoded.as_str() != row_key
             || (quotes.is_empty() && operations.is_empty())
             || quotes.iter().any(|q| operations.contains(q))
         {
@@ -1002,16 +1027,14 @@ fn audit_actors(view: &View<'_>) -> Result<(), ActionStateError> {
         }
         for q in &quotes {
             let quote = required(view, &key("market", QUOTE, q.clone())?)?;
-            // M8c: an organisation's quote is indexed under its acting
-            // character.
-            if acting(field(&quote, "buyer")?)? != actor {
+            if buyer_row(field(&quote, "buyer")?)?.0 != row_key {
                 return Err(refused("owner index quote names another buyer"));
             }
         }
         for o in operations {
             let purchase = required(view, &key("market", PURCHASE, o.clone())?)?;
             if field(field(&purchase, "phase")?, "kind")? != "funded"
-                || acting(field(field(&purchase, "quote")?, "buyer")?)? != actor
+                || buyer_row(field(field(&purchase, "quote")?, "buyer")?)?.0 != row_key
             {
                 return Err(refused(
                     "owner index operation is not the buyer's open purchase",

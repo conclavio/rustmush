@@ -918,13 +918,18 @@ fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestRes
 /// - the grant revoked between the Quote and the Fund refuses the Fund
 ///   (the grant is re-asked at every act); re-granted, the Fund places the
 ///   treasury's hold as the organisation itself;
+/// - M8c S1: the quoting member's grant revoked after the Fund, a second
+///   non-staff member refunds the organisation's escrow (the economy pins
+///   the act to a live member whose principal matches, the market re-asks
+///   the grant, and the second member finds the organisation's row);
 /// - a limited grant cannot complete (the Grant asks no amount, and mush-org
-///   fails closed); unlimited, the member completes and the organisation
-///   holds the licence with the member acting;
-/// - GOD, a second granted character who never bought, renews it end to
-///   end (Draft, Fund, Grant): the treasury pays, the renewed pointer names
-///   GOD as acting, the holdings row keeps the member and both boot audits
-///   accept them by principal on a cold boot.
+///   fails closed); unlimited, the member completes a second purchase and
+///   the organisation holds the licence with the member acting;
+/// - S3: the second member, a non-staff character who never bought,
+///   renews it end to end (Draft, Fund, Grant): the treasury pays, the
+///   renewed pointer names the second member as acting, the holdings row
+///   keeps the first and both boot audits accept them by principal on a
+///   cold boot.
 fn org_members(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestResult {
     const ORG: u128 = FIRST + 950;
     let mut world = PlayerWorld::boot_entitlements(f, granted)?;
@@ -971,28 +976,35 @@ fn org_members(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> Test
     world.say(GOD, &format!("@econ/mint {faucet}={treasury} 1000"))?;
     // A non-staff member: a real player with a login account of its own and
     // a personal wallet.
-    let member =
-        world
+    let mut members = Vec::new();
+    for (name, login) in [
+        ("Guild Member", "guild-member"),
+        ("Guild Second", "guild-second"),
+    ] {
+        let id = world
             .engine
             .world
-            .create(mush_core::ObjKind::Player, "Guild Member", GOD, Some(ROOM))?;
-    {
+            .create(mush_core::ObjKind::Player, name, GOD, Some(ROOM))?;
         let mut values = f.accounts.values.lock().map_err(module_error)?;
         f.accounts.epoch.invalidate();
-        values.insert(member, mush_core::AccountId::mint("guild-member", 0)?);
+        values.insert(id, mush_core::AccountId::mint(login, 0)?);
+        members.push(id);
     }
-    let result = org_members_with(f, &mut world, member, (org, treasury), owner, ORG);
+    let pair = (members[0], members[1]);
+    let result = org_members_with(f, &mut world, pair, (org, treasury), owner, ORG);
     {
         let mut values = f.accounts.values.lock().map_err(module_error)?;
         f.accounts.epoch.invalidate();
-        values.remove(&member);
+        for id in members {
+            values.remove(&id);
+        }
     }
     result
 }
 fn org_members_with(
     f: &PurchaseFixture,
     world: &mut PlayerWorld,
-    member: ObjId,
+    (member, second): (ObjId, ObjId),
     (org, treasury): (mush_org::OrgId, WalletId),
     owner: LicenceId,
     base: u128,
@@ -1003,10 +1015,12 @@ fn org_members_with(
         .ok_or("treasury")?
         .instrument
         .clone();
-    world.say(
-        GOD,
-        &format!("@account/open #{}={}", member.0, instrument.as_str()),
-    )?;
+    for who in [member, second] {
+        world.say(
+            GOD,
+            &format!("@account/open #{}={}", who.0, instrument.as_str()),
+        )?;
+    }
     list(world, owner, base + 1)?;
     let quote_params = json!({"listing": token(base + 1), "org": org.0});
     let limit = |world: &mut PlayerWorld, who: ObjId, max: &str| {
@@ -1083,7 +1097,54 @@ fn org_members_with(
         EconomicOwner::Organization(org),
         "the hold is placed by the organisation"
     );
-    let settle = json!({"operation": token(base + 5)});
+    // S1: the quoting member loses its grant; the second member refunds.
+    world.say(GOD, &format!("@holder-grant-fixture revoke #{}", member.0))?;
+    limit(world, second, "none")?;
+    commit(
+        world,
+        "market",
+        "refund_derived_mind",
+        1,
+        second,
+        base + 6,
+        json!({"operation": token(base + 5)}),
+    )?;
+    check_eq!(
+        store(world)?
+            .snapshot()
+            .account(treasury)
+            .ok_or("treasury")?
+            .held_amount,
+        Amount::ZERO,
+        "the organisation's escrow is released"
+    );
+    check_eq!(
+        allocation(world, base + 5)?.phase(),
+        PurchasePhase::Refunded {
+            commit: token(base + 6)
+        }
+    );
+    // A second purchase, completed by the quoting member.
+    limit(world, member, "100")?;
+    commit(
+        world,
+        "market",
+        "quote_derived_mind",
+        1,
+        member,
+        base + 7,
+        json!({"listing": token(base + 1), "org": org.0}),
+    )?;
+    commit(
+        world,
+        "market",
+        "purchase_derived_mind",
+        1,
+        member,
+        base + 8,
+        json!({"quote": token(base + 7)}),
+    )?;
+    let settle = json!({"operation": token(base + 8)});
     check!(
         crate::test_checks::refused(prepare_public(
             world,
@@ -1091,7 +1152,7 @@ fn org_members_with(
             "settle_derived_mind",
             1,
             member,
-            base + 6,
+            base + 9,
             settle.clone()
         ))?,
         "a limited grant fails closed at the Grant, which asks no amount"
@@ -1103,10 +1164,10 @@ fn org_members_with(
         "settle_derived_mind",
         1,
         member,
-        base + 7,
+        base + 10,
         settle,
     )?;
-    let a = allocation(world, base + 5)?;
+    let a = allocation(world, base + 8)?;
     check_eq!(
         a.holder(),
         mush_economy::Holder::Organization {
@@ -1114,11 +1175,10 @@ fn org_members_with(
             acting: member
         }
     );
-    // A second granted character, who never bought, renews it.
-    limit(world, GOD, "none")?;
+    // S3: the second member, non-staff and never the buyer, renews it.
     let renewing = capture(world, &disk(world));
     let mut w = PlayerWorld::boot_renewals(f, &renewing)?;
-    for actor in [GOD, BUYER, member] {
+    for actor in [GOD, BUYER, member, second] {
         w.engine.world.move_to(actor, ROOM)?;
     }
     let term = own_term(&w, a.licence())?;
@@ -1136,8 +1196,8 @@ fn org_members_with(
         "market",
         "draft_mind_renewal",
         1,
-        GOD,
-        base + 10,
+        second,
+        base + 20,
         json!({"licence": a.licence().get()}),
     )?;
     commit(
@@ -1145,9 +1205,9 @@ fn org_members_with(
         "market",
         "fund_mind_renewal",
         1,
-        GOD,
-        base + 11,
-        json!({"operation": token(base + 10)}),
+        second,
+        base + 21,
+        json!({"operation": token(base + 20)}),
     )?;
     let now = w.engine.world.now();
     w.engine.world.set_now(now.checked_add(31).ok_or("time")?);
@@ -1156,9 +1216,9 @@ fn org_members_with(
         "market",
         "settle_mind_renewal",
         1,
-        GOD,
-        base + 12,
-        json!({"operation": token(base + 10)}),
+        second,
+        base + 22,
+        json!({"operation": token(base + 20)}),
     )?;
     check!(held(&w)? < before, "the treasury paid the renewal");
     let pointer: mush_roll::commerce::paid::PersonalPaidLicence = serde_json::from_value(
@@ -1170,7 +1230,10 @@ fn org_members_with(
     check_eq!(pointer.term().get(), 2, "renewed");
     check_eq!(
         pointer.holder(),
-        mush_economy::Holder::Organization { org, acting: GOD },
+        mush_economy::Holder::Organization {
+            org,
+            acting: second
+        },
         "the renewed pointer names the renewing character"
     );
     let row = rows(&disk(&w), "roll", "roll_mind_paid_holdings")
