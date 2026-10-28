@@ -804,6 +804,24 @@ impl ActionInvocation {
         &self.idempotency
     }
 
+    /// Whether this invocation is the one a service keyed `key` when it
+    /// submitted: its idempotency key is `IdempotencyKey::Caller(key)` (an
+    /// in-process or harness submission that carries the caller key itself)
+    /// or an `IdempotencyKey::Request` (the server's command ingress keys
+    /// every observed submission by a deterministic request UID whose digest
+    /// folds the caller key in, and admits no other form). A `Deterministic`
+    /// key is never a service's own submission. 17g C2h follow-up: the clerk
+    /// services required the `Caller` form alone, which the server never
+    /// produces, so no clerk settlement could land through the real server.
+    #[must_use]
+    pub fn keyed_by(&self, key: &IdempotencyKeyText) -> bool {
+        match self.idempotency.key() {
+            IdempotencyKey::Caller(own) => own == key,
+            IdempotencyKey::Request(_) => true,
+            IdempotencyKey::Deterministic(_) => false,
+        }
+    }
+
     #[must_use]
     pub const fn request_hash(&self) -> CanonicalHash {
         self.request_hash

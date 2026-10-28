@@ -8,7 +8,7 @@ use crate::commerce::{
 };
 use mush_core::action::{
     ActionError, ActionInvocation, AuthorityGuard, AuthorityGuardContext, AuthorityGuardValidator,
-    IdempotencyKey, IdempotencyKeyText, PerceivedRef, PrincipalId,
+    IdempotencyKeyText, PerceivedRef, PrincipalId,
 };
 use mush_core::mechanics::{CanonicalId, OwnerId};
 use mush_core::submission_observation::SubmissionObservation;
@@ -239,7 +239,7 @@ impl Runtime {
             || !inv.targets().is_empty()
             || inv.parameters() != &intent.parameters()
             || inv.idempotency().scope().owner != action.key().owner
-            || inv.idempotency().key() != &IdempotencyKey::Caller(intent.key.clone())
+            || !inv.keyed_by(&intent.key)
         {
             return Err(PublicationError::Mismatch);
         }
