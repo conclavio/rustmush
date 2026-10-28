@@ -67,6 +67,10 @@ enum SourceObjective {
         npc_pack: CanonicalId,
         npc: CanonicalId,
     },
+    Contact {
+        npc_pack: CanonicalId,
+        npc: CanonicalId,
+    },
     Survey {
         mode: String,
     },
@@ -284,6 +288,9 @@ fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkp
             quantity,
         },
         SourceObjective::Passenger { npc_pack, npc } => Objective::Passenger {
+            npc: external_object(w, pack, &npc_pack, &npc, "npc")?,
+        },
+        SourceObjective::Contact { npc_pack, npc } => Objective::Contact {
             npc: external_object(w, pack, &npc_pack, &npc, "npc")?,
         },
         SourceObjective::Survey { mode } => Objective::Survey { mode },
@@ -554,6 +561,49 @@ mod tests {
         assert_eq!(def.checkpoints.len(), 1);
         assert_eq!(def.checkpoints[0].room, room);
         assert_eq!(def.checkpoints[0].detail, "sample tap");
+    }
+
+    #[test]
+    fn contact_objectives_resolve_exact_npc_dependencies_without_a_passenger_role() {
+        let mut w = World::new_minimal();
+        let (_, room, npc) = fixture(&mut w);
+        let mut latch = serde_json::to_value(
+            w.module_state::<ContentState>()
+                .unwrap()
+                .latches
+                .applied(&id(ROOM_PACK))
+                .unwrap(),
+        )
+        .unwrap();
+        latch["entries"]["npc.contact"] = serde_json::to_value(AppliedEntry::new(
+            id("npc"),
+            DefinitionDigest::from_bytes([5; 32]),
+            Some(npc),
+        ))
+        .unwrap();
+        w.module_state_mut::<ContentState>().unwrap().latches =
+            mush_content::Latches::load(&[(format!("applied:{ROOM_PACK}").into(), latch)]);
+        let mut value: serde_json::Value =
+            serde_json::from_str(crate::port::passenger::content::JSON).unwrap();
+        value["entries"][ROLE]["def"]["checkpoints"][0]["objective"] = serde_json::json!({
+            "kind": "contact", "npc_pack": ROOM_PACK, "npc": "npc.contact"
+        });
+        value["entries"][ROLE]["def"]["checkpoints"][0]["detail"] = "".into();
+        let pack = mush_content::parse_pack(&value.to_string()).unwrap();
+        let (_, definition) = read(&w, &pack).unwrap();
+        assert_eq!(
+            definition.checkpoints[0].objective,
+            Objective::Contact { npc }
+        );
+        assert_eq!(definition.checkpoints[0].room, room);
+        for target in ["room.c07_exchange", "npc.missing"] {
+            let mut invalid = value.clone();
+            invalid["entries"][ROLE]["def"]["checkpoints"][0]["objective"]["npc"] = target.into();
+            assert!(read(&w, &mush_content::parse_pack(&invalid.to_string()).unwrap()).is_err());
+        }
+        value["entries"][ROLE]["def"]["checkpoints"][0]["objective"]["npc_pack"] =
+            "undeclared.station".into();
+        assert!(read(&w, &mush_content::parse_pack(&value.to_string()).unwrap()).is_err());
     }
 
     #[test]

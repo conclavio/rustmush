@@ -78,6 +78,23 @@ practice needs no paid survey commission or finite commission-board slot.
 
 After any invitation's checks, return to its giver and use `+quest/finish`.
 
+## People who keep the port moving
+
+Ma also offers an independent introduction to two people at Ceres: Dov at the
+Co-op Chandlery, then Rosalind at the Exchange Hall. Ask for her exact offer:
+
+  +quest/offer Yusra=tacsim.quests.port_connections/quest.ma_port_connections
+
+Visit each person in order and use the `+quest/check` command in your journal,
+then return to Ma. Each check verifies that you and the named NPC are actually
+present and can see one another. It records a meeting, not a conversation you
+did not have. You can chat with them about their work and services, but buying,
+enrolling, surveying or accepting another quest is optional.
+
+This introduction works alongside Ma's invitation to meet Nadia. Use the full
+quest key if both are active. A person who has left, is hidden or is unavailable
+cannot be credited through a same-named substitute.
+
 ## A second reading
 
 After bringing Leila Mensah-Kovács home on a completed, paid passage, meet her
@@ -188,6 +205,7 @@ checkpoint objectives use these source shapes:
 {"kind": "coop_enrolment"}
 {"kind": "trade", "origin": "stickney", "destination": "ceres", "commodity": "industrial_parts", "quantity": 1}
 {"kind": "passenger", "npc_pack": "tacsim.passengers.ceres", "npc": "npc.nadia_okafor_sato"}
+{"kind": "contact", "npc_pack": "neighborhood.ceres_freeport", "npc": "npc.akintola"}
 {"kind": "survey", "mode": "scan"}
 {"kind": "survey", "mode": "sound"}
 ```
@@ -198,6 +216,13 @@ that is where the player acknowledges the verified work with `+quest/check`.
 local meeting with the real traveller, not a booking or completed passage.
 Trade and survey evidence must come from actual work after acceptance. Use
 honest current availability when a shared traveller has already left.
+
+A `contact` objective can name any authored NPC, including ordinary station
+staff. Bind the NPC's pack as an explicit dependency and choose the room where
+the meeting should happen. The live NPC must be enabled, mutually perceivable
+and present with the player when the check commits. Previously acknowledged
+meetings remain historical receipts if that NPC later moves. Contact checks do
+not assert that dialogue happened, transfer items or sign up for services.
 
 Up to eight quest definitions may bind to one NPC, within a 64 KiB catalog.
 Definitions merge by full pack/entry key and preserve other packs' definitions.
@@ -221,5 +246,7 @@ dependency upgrades. No existing station pack is automatically upgraded.
 `tacsim.quests.leila_followup@1` separately requires Leila's passenger pack v2
 and both stations at v4. It adds two definitions to the same Leila without
 replacing her earlier quest or resetting her journey.
+`tacsim.quests.port_connections@1` requires Ceres v4 and adds Ma's optional
+introductions without changing any station NPC's identity or ordinary services.
 
 See also: `help passengers`, `help npc`.
