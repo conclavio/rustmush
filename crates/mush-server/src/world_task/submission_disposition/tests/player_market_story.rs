@@ -1119,8 +1119,11 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     check_eq!(holds(w, cy, 1).await?, vec![sealed.parse::<u64>()?]);
 
     // The charter: the author offers it to Cy at 1.00; Cy reads the offer
-    // and accepts it; the clerk's service settles (no sortie is out); Cy's
-    // holdings show the owner row and the author's do not.
+    // and accepts it; the clerk's service settles (no sortie is out). The
+    // owner row shows in neither holdings view afterwards: the revision is
+    // withdrawn and unpinned, which `owner_holdings::check_status` reads as
+    // not held (for the author before the transfer, for Cy after it), so the
+    // settlement is read from the store's pending row.
     check_eq!(
         submitted(w, author, format!("+minds/charter {filed}={CY} price=1.00")).await?,
         vec![
@@ -1161,21 +1164,37 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
             "Done.".to_owned()
         ]
     );
+    // No sortie is out, so the clerk's last-claim-closed reason applies at
+    // once: the one pending row leaves `funded` for `settled`, its transfer a
+    // later ownership generation than the offer's.
     let end = Instant::now() + STEP;
-    loop {
+    let settled = loop {
         let _ = w.server.take_seen(cy)?;
-        let held = w.server.command(cy, "+minds/holdings".into()).await?;
-        if held.iter().any(|l| l.starts_with(&owner_prefix(filed))) {
-            break;
+        let pending = rows(&w.launch.store, "roll", "roll_mind_charter_pending").await?;
+        if let Some(row) = pending
+            .iter()
+            .find(|row| row.pointer("/state/phase").and_then(Value::as_str) == Some("settled"))
+        {
+            break row.clone();
         }
-        check!(Instant::now() < end, "the charter settles to Cy: {held:?}");
+        check!(
+            Instant::now() < end,
+            "the charter settles to Cy; the pending rows: {pending:?}"
+        );
         tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    let authors = w.server.command(author, "+minds/holdings".into()).await?;
+    };
+    let generation = |path: &str| settled.pointer(path).and_then(Value::as_u64);
     check!(
-        !authors.iter().any(|l| l.starts_with(&owner_prefix(filed))),
-        "{authors:?}"
+        generation("/state/transfer/generation") > generation("/ownership/generation"),
+        "{settled}"
     );
+    for (who, name) in [(author, "the author"), (cy, "Cy")] {
+        let held = w.server.command(who, "+minds/holdings".into()).await?;
+        check!(
+            !held.iter().any(|l| l.starts_with(&owner_prefix(filed))),
+            "{name}'s holdings after the transfer of a withdrawn revision: {held:?}"
+        );
+    }
 
     // The renewal after the term. The IC clock runs fast (staff's
     // `@tacsim/time`, one IC hour per real second) to four IC hours before
