@@ -445,6 +445,7 @@ pub const PARITY: &[(&str, &str, &str)] = &[
         "reach_percent x 10 (the keyframe's whole per cent, in per mille)",
     ),
     ("Order", "squad", "squad"),
+    ("Order", "identity", "identity"),
     ("Order", "objective", "objective"),
     ("Order", "to", "to"),
     (
@@ -1159,6 +1160,11 @@ fn register_order(api: &mut Registrar<'_>) {
     getter!(api, "Order", "squad", |o: &mut Order| {
         on(o, |order| word(&order.squad))
     });
+    getter!(api, "Order", "identity", |o: &mut Order| {
+        on(o, |order| {
+            opt(order.identity.as_ref(), |identity| word(identity.as_str()))
+        })
+    });
     getter!(api, "Order", "objective", |o: &mut Order| {
         on(o, |order| word(order.objective.as_str()))
     });
@@ -1566,6 +1572,7 @@ mod tests {
             ("v.contacts[0].condition.age_ms", "1000".into()),
             // The order: an Engage on the hostile.
             ("v.order.squad", "\"red-1\"".into()),
+            ("v.order.identity", "()".into()),
             ("v.order.objective", "\"engage\"".into()),
             ("v.order.to", "()".into()),
             ("v.order.target", hostile.clone()),
@@ -1668,7 +1675,7 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), PARITY.len(), "a parity row written twice");
         // The table's size, for 17b cut M2.4's parity test to count on.
-        assert_eq!(PARITY.len(), 149);
+        assert_eq!(PARITY.len(), 150);
         assert_eq!(
             registered, rows,
             "a view getter without a parity row, or a row without a getter"

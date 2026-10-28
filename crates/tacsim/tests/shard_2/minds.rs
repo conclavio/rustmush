@@ -5752,6 +5752,7 @@ fn charge_run(charge: Charge, stop_at_fire: bool) -> (Rig, Vec<Kept>) {
         )],
         Charge::Blind => {
             rig.arena.minds.entry(RED).or_default().order = Some(FrameOrder {
+                identity: None,
                 squad: SmolStr::new("red-1"),
                 objective: MindObjective::Support { of: None },
                 hold_fire: false,
@@ -6680,6 +6681,7 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
     let mind = Arc::clone(&arena.mind_runner);
     let failed = (12_u16, 3_u16);
     let advance = |to: (u16, u16), expires_ms: i64| FrameOrder {
+        identity: None,
         squad: SmolStr::new("red-1"),
         objective: MindObjective::Advance { to },
         hold_fire: false,
@@ -6793,15 +6795,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         4,
@@ -9095,6 +9097,7 @@ fn m3_a_possess_keeps_the_row_dormant_and_a_release_resumes_it() {
     });
     if let Some(state) = rig.arena.minds.get_mut(&RED) {
         state.order = Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Hold,
             hold_fire: false,

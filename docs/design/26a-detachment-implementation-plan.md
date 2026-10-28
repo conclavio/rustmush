@@ -3,7 +3,8 @@
 Started 2026-10-28 against `origin/main` at `62656f43`. Policy comes from
 [doc 26](26-detachments.md) and [doc 27 Draft 0.4](27-ic-field-operations-design-and-survey.md),
 including the accepted Q-R1–Q-R5 and P-1–P-5. This brief divides the DT stream
-into reviewable changes. DT.1a starts the implementation; DT.1 is not yet complete.
+into reviewable changes. DT.1a provides the foundation; DT.1b integrates the OOC
+host and clients. IC preparation, NPC personnel and durable launches follow.
 
 ## Delivery sequence
 
@@ -69,12 +70,82 @@ authorized roster reader, not a public sensor or instant IC broadcast. DT.1b mus
 deliver changes over the recipient's available communication path and must not
 turn private availability facts into casualty reports.
 
+## DT.1b live OOC integration
+
+`+sortie/practice` explicitly enables the seated player's practice group. The OOC
+adapter groups each side's stable callsign order into groups of at most six; it
+does not truncate larger sides or convert a departed player into an automated
+roster member. Practice has no real NPC personnel to nominate as commander.
+`+sortie/roster` prints the current slots and versioned command prefills. This
+opt-in is deliberately confined to OOC practice and grants no IC asset rights.
+
+All clients submit the same ordinary line commands:
+
+```
+ORDER DT:<id>:<revision>:<term> <slot|ALL> <objective>
+WILCO DT:<id>:<revision> <sequence>
+NEGATIVE DT:<id>:<revision> <sequence>
+```
+
+Objectives reuse the cockpit vocabulary: HOLD, ADVANCE, ENGAGE, WITHDRAW, SCREEN,
+SUPPORT and RELEASE (cancellation). No deadline means a standing objective.
+The world adds a member-only `detachment` object to the existing cockpit frame;
+query, push, STATUS and VIEW share this projection. Decimal-string counters avoid
+JavaScript precision loss. Client decoders reject malformed or inconsistent
+prefills. Web and SSH pixel F1–F6 address slots 1–6; ALL has its own visible
+control/text prefill. SSH text mode retains its screen navigation and displays
+the complete command text in the roster. Acknowledgements never emit helm/fire
+intents. Neither a successful offer nor WILCO claims execution or completion.
+
+Session hooks, station changes, own cockpit frames and a coarse tick feed live
+availability. The session owner keeps `is_connected` true through its configured
+linkdead grace; the host does not invent a second deadline. Commands re-evaluate
+availability before admission, and failed reconciliation closes admission and
+delivery until a successful refresh. The three-second return hysteresis uses a
+monotonic elapsed clock. Own wreck/disabled observations can end leadership;
+the roster does not disclose private incapacity/disconnect causes.
+
+Controller recipients first receive a monotonic authority fence, then an order
+carrying the detachment, roster revision, leadership term and sequence. The arena
+checks those fields along with the actual helm epoch and machine controller.
+Target hints are re-keyed from the issuer's admitted unit into the recipient's
+own classified contacts. Legacy side/wingman and persona commands cannot overwrite
+an opted-in automated recipient. An unconfirmed queue offer remains pending;
+queue acceptance records delivery separately from an execution outcome.
+
+The OOC host is ephemeral. A live restart from a compatible format-18 snapshot
+clears practice detachment objectives and authority; the player must explicitly
+re-enable practice, which mints a fresh roster revision. Exact snapshot round
+trips preserve arena fences for replay; the live restart boundary resets them.
+The added authority state/input events bump snapshot format to 18 and the replay
+engine stamp to `tacsim-engine-dt1b-v1`. Mind API 6 and cockpit frame 8 expose an
+opaque order identity, with stock doctrine version 3 comparing that identity
+instead of treating a standing deadline as an order id. This lets a new standing
+objective replace an old unreachable/ignored objective in both native and scripted
+minds. Legacy orders retain their existing deadline identity. Current content
+envelopes and source pins follow the new ABI; historical identity controls remain
+explicitly historical.
+
+Deploying this cut over format 17 is a separate boundary: the existing OOC resume
+policy refuses the older snapshot, restores units from their check-out snapshots
+and records `aborted(restart)`. It does not migrate an active match to format 18.
+The new replay engine stamp likewise refuses a recording from an older engine
+for re-simulation instead of treating it as a current recording.
+
+Saved API-5 source and envelopes remain immutable archival material and may enter
+the existing retained Registry re-conformance path; they gain no new execution
+authority. Fresh authoring saves require API 6. The shipped House content is
+version 3 on the current ABI; this does not rewrite already filed revisions.
+Existing IC execution still handles an ABI mismatch through its established
+ROM/drop path, retaining the old seal and memory and journalling `MindDropped`
+with cause `abi`. This slice adds no IC detachment persistence or restart policy.
+
 ## Following integration boundaries
 
-DT.1b must replace the OOC host's use of AI-only side/wingman authority for this
-new detachment path. `match_::cockpit::command_of` remains the existing practice
-command path until that integration is tested. Existing `deliberation::Order`
-has a mandatory arena TTL and cannot represent the common standing-order record.
+The opt-in detachment path replaces AI-only side/wingman authority for its
+automated recipients. `match_::cockpit::command_of` remains the legacy practice
+path for other units. Existing `deliberation::Order` has a mandatory arena TTL;
+the separate detachment lane carries optional expiry and never renews a fake TTL.
 NPC/controller execution must use its own observation and station admission;
 delivery of a target hint cannot grant a contact or bypass those checks.
 The admitted order records its issuer's assigned unit as the hint's scope.
@@ -111,3 +182,32 @@ Validated locally on 2026-10-28:
 These are library and OOC adapter checks. No production `+sortie` flow, physical
 launch, NPC hiring, persistent operation recovery or live client acceptance is
 claimed by DT.1a.
+
+## DT.1b verification
+
+Validated locally on Windows on 2026-10-28:
+
+- The full TacSim library suite passed: 1,905 tests, four ignored.
+- Integration shard 4 passed all 488 tests, including the format-18 snapshot
+  shape. Shard 6 passed 240 tests; its three stale frame-schema assertions were
+  corrected and each passed on rerun. Both production detachment tests passed:
+  advisory player acknowledgements, actual automated delivery, stale fences and
+  legacy-order refusal.
+- All 150 mind getters passed their keyframe parity check. The four-row
+  deterministic corpus, 30 native/Rhai whole-match plays and 45 actual worker-pool
+  matches passed. The corpus's stopping times and independent float-probe bitmask
+  stayed unchanged. Linux reproduction belongs to the PR's CI checks.
+- The arena and four mind harness cohorts completed without integrity failures.
+  Their deterministic comparison changed exactly five fields: four final hashes
+  and the encoded ledger byte count. The declared update and retained performance
+  provenance are recorded in [17b §7](17b-unit-minds-implementation-plan.md#7-dt1b-declared-encoding-re-bless--2026-10-28).
+  These debug runs do not establish performance acceptance.
+- The web type check passed with no warnings; 104 focused decoder and cockpit
+  component tests passed. SSH detachment decoder and slot-key tests passed.
+- All five production command-registration contract tests passed.
+- `cargo clippy -p tacsim -p mush-net-ssh --lib -- -D warnings` passed.
+- Formatting and `git diff --check` passed; the final independent review found
+  no blocking authority, delivery or replay issue.
+
+IC authority, personnel, preparation and durable operation history remain the
+following slices; these results cover the production OOC practice integration.

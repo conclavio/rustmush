@@ -8118,6 +8118,7 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
 /// `expires_ms`, no fire restriction.
 fn standing_order(squad: &str, expires_ms: i64) -> tacsim::arena::perception::FrameOrder {
     tacsim::arena::perception::FrameOrder {
+        identity: None,
         squad: smol_str::SmolStr::new(squad),
         objective: tacsim::arena::perception::MindObjective::Hold,
         hold_fire: false,

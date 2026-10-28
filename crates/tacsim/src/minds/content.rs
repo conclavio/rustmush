@@ -64,10 +64,10 @@ pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/stand
 /// reads it, so a released seat's seeded Withdraw drives home and rallies on
 /// Q.7's clock instead of going Patrol on its first think), mirrored in
 /// `NativeStockMind::decide` and pinned by Gate A; M2.6's was `8b3ec78c…d74996`.
-/// API 5 changes only this source's API header; its stock behavior and
-/// [`super::STOCK_VERSION`] remain unchanged.
+/// API 6/stock 3 adds an optional command identity so a replacement standing
+/// detachment order is distinct from an earlier completed goal with no expiry.
 pub const STANDARD_SHA256: &str =
-    "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af";
+    "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the
@@ -276,6 +276,7 @@ mod tests {
     /// A standing order of `objective` for `red-1`, a minute long.
     fn order_of(objective: MindObjective) -> FrameOrder {
         FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective,
             hold_fire: false,
@@ -339,6 +340,51 @@ mod tests {
         t_ms: i64,
     ) -> Vec<IntentKind> {
         think_on(arena, view, memory, t_ms, &line(&arena.arena_cfg.reflex))
+    }
+
+    #[test]
+    fn dt_distinct_order_identity_replaces_an_ignored_equal_deadline_in_both_runners() {
+        for deadline in [60_000, i64::MAX] {
+            let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
+            online(&mut arena, RED);
+            let failed = (6, 4);
+            let mut view = view_of(&arena, RED);
+            view.motor = Some(crate::arena::step::FrameMotor {
+                requested_goal: failed,
+                outcome: Some(crate::arena::perception::DriveOutcome::NoRoute),
+            });
+            let mut order = order_of(MindObjective::Advance { to: failed });
+            order.identity = Some("dt:1:2:1".into());
+            order.expires_ms = deadline;
+            view.order = Some(order);
+            let mut memory = StockMemory {
+                goal: Some(failed),
+                ..patrolling(0)
+            };
+            let _ = think(&arena, &view, &mut memory, 10_000);
+            assert_eq!(memory.ignore_identity.as_deref(), Some("dt:1:2:1"));
+            assert_eq!(memory.ignore_until_ms, None);
+            let stored = crate::arena::mind::Memory::from(memory.clone());
+            assert_eq!(
+                StockMemory::from(&stored),
+                memory,
+                "explicit identity survives the canonical memory codec"
+            );
+            view.motor = None;
+            let mut replacement = order_of(MindObjective::Hold);
+            replacement.identity = Some("dt:1:2:2".into());
+            replacement.expires_ms = deadline;
+            view.order = Some(replacement);
+            let intents = think(&arena, &view, &mut memory, 11_000);
+            assert!(intents.iter().any(|intent| matches!(
+                intent,
+                IntentKind::Goal(crate::arena::intents::MotorGoal::Hold)
+            )));
+            assert_eq!(
+                memory.ignore_identity, None,
+                "the next source sequence is obeyed"
+            );
+        }
     }
 
     /// [`think`] on `card` (T1 on `card.as_reflex`, T2 reading the card).
@@ -1006,6 +1052,7 @@ mod tests {
         hold(&mut arena, RED, MATE, ContactId(0x99));
         let base = view_of(&arena, RED);
         let capped = |objective: MindObjective| FrameOrder {
+            identity: None,
             max_range_band: Some(RangeBand::Close),
             ..order_of(objective)
         };
@@ -1198,6 +1245,7 @@ mod tests {
             ordered: false,
             no_line: true,
             ignore_until_ms: Some(60_000),
+            ignore_identity: None,
         };
         let mut immobile = view.clone();
         immobile.immobile = true;
@@ -1724,6 +1772,7 @@ mod tests {
         );
         let mut held_fire = view.clone();
         held_fire.order = Some(FrameOrder {
+            identity: None,
             hold_fire: true,
             ..order_of(MindObjective::Engage { target: None })
         });

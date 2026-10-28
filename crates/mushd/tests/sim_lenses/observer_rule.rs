@@ -766,9 +766,10 @@ fn unseated(feed: &str) -> Value {
             "seated": false,
         }),
         // 17b cut M1a.3 bumped the cockpit frame to version 2, 17b cut M1b.3
-        // to 3, M5rules to 4, M5r to 5, and M6 to 6 for authored cards/rules.
+        // to 3, M5rules to 4, M5r to 5, M6 to 6 for authored cards/rules,
+        // M7 to 7 for odds, and DT.1b to 8 for opaque order identities.
         _ => json!({
-            "schema": { "id": "arena.cockpit", "version": 7, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 8, "retain": "latest" },
             "seated": false,
         }),
     }

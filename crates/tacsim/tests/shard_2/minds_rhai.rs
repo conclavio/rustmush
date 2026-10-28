@@ -1533,7 +1533,7 @@ fn think(v, c) {
 /// `max_range_band` and a deadline — an `Engage` on the hostile live, the same
 /// with its deadline passed, and an `Advance`, a `Screen` and a `Support` of
 /// the wingman. M5rules adds authored Fire/Hold/Lock and all predicate shapes.
-/// Every one of `PARITY`'s 149 rows is exercised, and every row
+/// Every one of `PARITY`'s 150 rows is exercised, and every row
 /// is compared at least once on a value the keyframe printed (not `()`, not
 /// a null handle, not a null key read as its default).
 #[test]
@@ -1615,6 +1615,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
     let friend_designator = named(friend);
     let now = rig.arena.now_ms;
     let order = FrameOrder {
+        identity: Some("dt:1:1:1".into()),
         squad: SmolStr::new("red-1"),
         objective: MindObjective::Engage { target: Some(blue) },
         hold_fire: true,
@@ -1694,6 +1695,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
     stage(
         &mut passed,
         FrameOrder {
+            identity: None,
             expires_ms: past,
             ..order
         },
@@ -1821,7 +1823,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
         .iter()
         .map(|(ty, getter, _)| ((*ty).to_owned(), (*getter).to_owned()))
         .collect();
-    assert_eq!(PARITY.len(), 149);
+    assert_eq!(PARITY.len(), 150);
     assert_eq!(
         exercised.rows,
         rows,
@@ -2854,6 +2856,7 @@ fn m2_every_plot_kernel_holds_the_plot_while_the_truth_moves() {
     let blue = hostile(&rig.arena.clone().mind_view(RED).expect("a view"));
     if let Some(state) = rig.arena.minds.get_mut(&RED) {
         state.order = Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Engage { target: Some(blue) },
             hold_fire: false,
@@ -3517,34 +3520,40 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `7_649_434_552_267_006_567` / `5f0bdda7…` / `becdcb65…`,
 /// `9_329_786_118_378_962_729` / `004bd63f…` / `8de6e161…`,
 /// `5_200_400_847_644_332_931` / `6bf446e5…` / `3d5c4a8f…`.
+/// **DT.1b's declared encoding re-bless (API 6, stock 3)**: opaque order
+/// identity distinguishes replacement standing commands from their deadlines.
+/// The Standard source and ABI/stock provenance change every default seal.
+/// The observed Windows corpus retains all four stopping times and the float
+/// probe's 3,600 thinks / 369098751 bitmask; only the measured hash columns below
+/// are re-pinned. Linux reproduction remains required (17b §7).
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         170250,
-        5751437098979270255,
-        "0435ea8a5ea54c73685d7fd69ad3925d0691cf49f8256e18ea74e6715b907934",
-        "91c474d043c4813fdc28f16d173f6fa02961bde1cbd22eaf513f4874fcba2113",
+        4036052986693953416,
+        "daa4e8666cd9bc4c45ac5173a0ad30e65007e6bed38ec1483078b3a010ba8e5f",
+        "3202df8dceee661ad5c6eb3b89a865657d2a15d5a95424ae3794ba97753ca716",
     ),
     (
         2351,
         192500,
-        15239362189155377359,
-        "daad5d83c262db2451f0fcfce7f7d72c0e2b719a610c35c5e7cb168c52726b61",
-        "929f1c498f2307fe6604c59158e8ddef65005f5444f2b5cb31019c490b03a3d6",
+        14776315943276034554,
+        "4d137f25c8106433355566b13b22bf111b9c1c1d0b1bb1e9e617fb2fb424d585",
+        "bff38a1822a1b83e6b5b5ede3dbfd7426ff1774004f95f5eba7dc74b85c4e699",
     ),
     (
         2352,
         170000,
-        147138284034081668,
-        "ea5704215c831ced5ac793598c897adf37dd29177fc0d8ebd2a1fe481484c72c",
-        "22d343256c42614362e6ef15bff20fe29e148b05ad7398d77ec67456f0e6e418",
+        714931300200473704,
+        "f74b2d5b90f5838ca03216ef0383efa77eddaac021757f026ffd44a3a7241fb7",
+        "7b35b9eef23a66ead267f41e46e813c0b2494d81c3f68f9c31eb424c8b692bb8",
     ),
     (
         2350,
         900000,
-        901248092712753737,
-        "3935bb86c6d21b77f1ba8168be3d65750615a6c4405d784c72b513caaf252817",
-        "de7720f6e56db31c1e67fa82f19939dc556ca198af0f36dd1d3bcba90aa49411",
+        5234968803354853599,
+        "e2733d3bd2aa6a02eeededaf9256252c446a4b862e84227b33bc5194f28f6e2b",
+        "47b8afcf894fe6fc3eb9e1aaa17c61c5b861ca1b07e7629aba60080faaa64fea",
     ),
 ];
 

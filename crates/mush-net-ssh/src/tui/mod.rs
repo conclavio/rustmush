@@ -21,6 +21,7 @@
 pub mod app;
 mod backend;
 mod cockpit_text;
+mod detachment;
 pub mod helm;
 pub mod keys;
 // 17g cut C3b: the market screen's request state and the legal-actions

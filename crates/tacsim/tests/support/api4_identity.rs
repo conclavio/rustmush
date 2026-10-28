@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use mush_core::ObjId;
 use tacsim::arena::state::{Arena, CustodyUnit};
 
-/// The actual API5 custody and the reviewed four-field API4 seal projection.
+/// The actual API6 custody and the reviewed API4 seal projection. The projection
+/// restores only ABI, source identities and stock provenance revisions.
 pub struct Api4SealHashControl {
     seals: BTreeMap<ObjId, ([u8; 32], [u8; 32])>,
 }
@@ -17,17 +18,17 @@ pub struct Api4SealHashControl {
 impl Api4SealHashControl {
     pub fn capture(units: &[CustodyUnit]) -> Self {
         assert!(!units.is_empty(), "the control must capture actual custody");
-        assert_eq!(tacsim::minds::MIND_ABI, "rhai=1.26.0;api=5;stock=2");
+        assert_eq!(tacsim::minds::MIND_ABI, "rhai=1.26.0;api=6;stock=3");
         let api4_source = tacsim::arena::snapshot::digest_from_text(
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API4 Standard source digest");
-        let api5_source = tacsim::arena::snapshot::digest_from_text(
-            "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af",
+        let api6_source = tacsim::arena::snapshot::digest_from_text(
+            "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100",
         )
-        .expect("the observed API5 Standard source digest");
+        .expect("the observed API6 Standard source digest");
         assert!(
-            tacsim::minds::standard_digest().0 == api5_source,
+            tacsim::minds::standard_digest().0 == api6_source,
             "this control covers exactly the reviewed Standard source migration"
         );
         let mut seals = BTreeMap::new();
@@ -36,9 +37,9 @@ impl Api4SealHashControl {
             assert!(
                 current.unit == unit.id
                     && current.abi == tacsim::minds::MIND_ABI
-                    && current.source_sha256 == api5_source
-                    && current.requested.source_sha256 == api5_source
-                    && current.rom_identity.source_sha256 == api5_source,
+                    && current.source_sha256 == api6_source
+                    && current.requested.source_sha256 == api6_source
+                    && current.rom_identity.source_sha256 == api6_source,
                 "capture only actual custody with all reviewed current identities"
             );
             let mut prior = current.clone();
@@ -46,6 +47,19 @@ impl Api4SealHashControl {
             prior.source_sha256 = api4_source;
             prior.requested.source_sha256 = api4_source;
             prior.rom_identity.source_sha256 = api4_source;
+            for origin in [
+                &mut prior.origin,
+                &mut prior.requested.origin,
+                &mut prior.rom_identity.origin,
+            ] {
+                match origin {
+                    tacsim::arena::profile_seal::MindOrigin::Doctrine { revision } => {
+                        assert_eq!(*revision, tacsim::minds::STOCK_VERSION);
+                        *revision = 2;
+                    }
+                    other => panic!("the captured baseline has stock provenance: {other:?}"),
+                }
+            }
             // Use the actual MindSeal serializer/digest; every other byte,
             // including complete cards, classes, channels and custody, is kept.
             let pair = (current.digest(), prior.digest());

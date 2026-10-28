@@ -6,8 +6,8 @@ Rechecked against `origin/main` at `62d093c2` before this update.
 
 Read [27 — IC field operations: shared design and owner survey](27-ic-field-operations-design-and-survey.md)
 with this document. It aligns DT.1–DT.3, H1 field combat and H2 salvage around one lifecycle.
-The [implementation brief](26a-detachment-implementation-plan.md) starts DT.1a's
-neutral command foundation; full DT.1 host/client integration remains pending.
+The [implementation brief](26a-detachment-implementation-plan.md) tracks DT.1a's
+neutral command foundation and DT.1b's opt-in OOC host/client integration.
 FO-1–FO-16 and all 45 survey decisions are accepted, including the human-NPC commander and
 last-port NPC embarkation rulings in doc 27 §9. Doc 27 Draft 0.4 §10 adds five review rulings,
 accepted at their defaults on 2026-10-28 (Q-R1–Q-R5): for DT.2, anyone aboard with a recorded

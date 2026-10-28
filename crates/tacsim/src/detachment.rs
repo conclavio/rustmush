@@ -1,10 +1,13 @@
-//! DT.1a's OOC exercise adapter for the common roster/order contract.
+//! OOC adapter for the common detachment roster/order contract.
 //!
 //! This reuses the game's objective vocabulary without inheriting practice
-//! squads, side grants or a fixed arena TTL. It is not wired to the live cockpit
-//! yet (DT.1b). A dispatch is a message for a recipient adapter, not an arena
-//! intent: NPC/controller execution still needs its own station, observations
-//! and admission. In particular, a contact hint never becomes a known target.
+//! squads, side grants or a fixed arena TTL. DT.1b's opt-in live host and cockpit
+//! commands use the same contract. A dispatch is a message for a recipient
+//! adapter; controller execution retains its own station, observations and
+//! admission. In particular, a contact hint never becomes a known target.
+
+pub mod commands;
+pub mod live;
 
 use mush_core::ObjId;
 use mush_tactics::detachment::orders::{DeliveredOrder, Directive, OrderBook, OrderEnvelope};

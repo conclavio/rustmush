@@ -61,7 +61,7 @@ impl LaunchRecipe {
     pub fn draft(self) -> Result<WorkingCopy, ModError> {
         let (source, envelope, manifest) = self.bytes();
         let manifest: serde_json::Value = serde_json::from_str(manifest).map_err(bad)?;
-        if manifest.get("content_version").and_then(|v| v.as_u64()) != Some(2)
+        if manifest.get("content_version").and_then(|v| v.as_u64()) != Some(3)
             || manifest.get("source_sha256").and_then(|v| v.as_str())
                 != Some(source_digest(source).to_hex().as_str())
             || manifest.get("source_bytes").and_then(|v| v.as_u64()) != Some(source.len() as u64)
