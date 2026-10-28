@@ -109,6 +109,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @tacsim/port clear #<hull>          (staff) stand down a programme hull's filed clearance whose launch is held: the pending passage is cleared, its burn sequence kept, the ticket (if burned) kept as the record; nothing is refunded and the pilot is told.\n\
                    @tacsim/tv close #<rig>             (staff) stop a rig's work and clear its plan and queued unload in place.\n\
                    @tacsim/tv home #<rig>              (staff) stop work and bring a stranded rig into its assigned hull's bay, preserving its hopper.\n\
+                   @tacsim/tv home #<rig> #<hull>      (staff) bring a rig whose excursion staff closed with it out into another hull settled on its site, preserving its hopper and its lease.\n\
                    @tacsim/tv unload #<rig>            (staff) transfer the whole hopper into its docked hull's hold, if it fits."
                 .into(),
             ..CommandSpec::default()
@@ -452,23 +453,32 @@ fn tacsim_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn tv_recovery_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     require_enabled(ctx)?;
     require_staff(ctx)?;
-    const USAGE: &str = "Usage: @tacsim/tv close|home|unload #<rig>";
+    const USAGE: &str =
+        "Usage: @tacsim/tv close|home|unload #<rig>, or @tacsim/tv home #<rig> #<hull>";
+    let object = |word: Option<&str>| {
+        word.and_then(|word| word.strip_prefix('#'))
+            .and_then(crate::port::families::strict_decimal_u32)
+            .map(ObjId)
+    };
     let mut words = ctx.args.raw().split_whitespace();
     let operation = words.next().ok_or_else(|| CmdError::msg(USAGE))?;
     if !matches!(operation, "close" | "home" | "unload") {
         return Err(CmdError::msg(USAGE));
     }
-    let tv = words
-        .next()
-        .and_then(|word| word.strip_prefix('#'))
-        .and_then(crate::port::families::strict_decimal_u32)
-        .map(ObjId)
-        .ok_or_else(|| CmdError::msg(USAGE))?;
+    let tv = object(words.next()).ok_or_else(|| CmdError::msg(USAGE))?;
+    // Doc 23 cut S.3 (A4): a home's optional third word, the hull to bring the rig into.
+    let into = match words.next() {
+        None => None,
+        Some(word) if operation == "home" => {
+            Some(object(Some(word)).ok_or_else(|| CmdError::msg(USAGE))?)
+        }
+        Some(_) => return Err(CmdError::msg(USAGE)),
+    };
     if words.next().is_some() {
         return Err(CmdError::msg(USAGE));
     }
     let operation = operation.to_owned();
-    crate::surface::recovery::command(ctx, &operation, tv)
+    crate::surface::recovery::command(ctx, &operation, tv, into)
 }
 
 // ---- E7r1: R5(a) — `@tacsim/time`, the rate policy's caller ---------------
