@@ -731,7 +731,8 @@ fn no_listing(code: &str) -> String {
 
 /// 17g C2c test 7 under its binding name, real since 17g C2e (C2e plan §2.4
 /// item 3, reviews FE-F1, FE-F4 and AD-F10). On the format-2 Active launch
-/// the registry composes 33 owner-read services and 35 grants, so the
+/// the registry composes 35 owner-read services and 38 grants (including
+/// DT.2b1 planning and Tacsim's unit-authority requester), so the
 /// `+minds` read is the composed one, granted to TacSim, and not a fixture.
 /// At the counter, `+minds` reads the real listing family through the
 /// granted reader (`Lens::scan` over the live store, the venue gate through
@@ -751,7 +752,7 @@ async fn listings_are_identical_for_every_principal_at_the_counter() -> TestResu
         for restarted in [false, true] {
             check_eq!(
                 w.server.owner_read_counts(),
-                Some((33, 35)),
+                Some((35, 38)),
                 "the composed reads (restarted: {restarted})"
             );
             let mut at_counter = Vec::new();

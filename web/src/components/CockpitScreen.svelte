@@ -51,6 +51,7 @@
   import PictureView from "./PictureView.svelte";
   import DollView from "./DollView.svelte";
   import { lookFor } from "$lib/look";
+  import { detachmentLines } from "$lib/detachment";
 
   let { app }: { app: GameApp } = $props();
 
@@ -276,6 +277,26 @@
     </section>
 
     <div class="panes">
+      {#if frame?.detachment}
+        <section class="pane wide" aria-label="detachment">
+          <h4 class="pt">detachment</h4>
+          {#each detachmentLines(frame.detachment) as line, i (i)}
+            <p class="line">{line}</p>
+          {/each}
+          <div class="detachment-actions">
+            <button type="button" onclick={() => prefill(frame!.detachment!.all_order_prefill)}>Order ALL</button>
+            {#each frame.detachment.slots as slot (slot.slot)}
+              <button type="button" onclick={() => prefill(slot.order_prefill)}>Order {slot.slot}</button>
+            {/each}
+            {#if frame.detachment.wilco_command}
+              <button type="button" onclick={() => prefill(frame!.detachment!.wilco_command!)}>WILCO</button>
+            {/if}
+            {#if frame.detachment.negative_command}
+              <button type="button" onclick={() => prefill(frame!.detachment!.negative_command!)}>NEGATIVE</button>
+            {/if}
+          </div>
+        </section>
+      {/if}
       <section class="pane" aria-label="status">
         <h4 class="pt">status</h4>
         {#each view.status as line, i (i)}
@@ -492,6 +513,13 @@
   .rowid {
     display: inline-block;
     min-width: 7rem;
+  }
+
+  .detachment-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.3rem;
   }
 
   .cond {

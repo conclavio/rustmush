@@ -3,7 +3,7 @@
 // Class II: 500 ms, 3000 charged operations, four native gun slots.
 // Memory is flat (55 keys); all persisted arrays contain at most 16 INTs.
 // terrain_at returns [public_kind, tracked_passable], never occupancy/slope.
-const MIND = #{name:"Field Pilot", api:5, class:"discretion", role:"combat", core:"II"};
+const MIND = #{name:"Field Pilot", api:6, class:"discretion", role:"combat", core:"II"};
 
 fn turn(h) { (h % 360000 + 360000) % 360000 }
 fn point(v, h, metres) {

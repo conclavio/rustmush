@@ -338,7 +338,9 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// `WeaponsFree` (a seat's `FIRE HOLD` / `FIRE FREE`, discrete, so it can sit in
 /// `pending`). Format 16 is refused by name before state decode; in-flight
 /// matches restart rather than migrating.
-pub const SNAPSHOT_FORMAT: u32 = 17;
+/// **18 since DT.1b:** per-hull detachment ownership, authority epochs and last
+/// accepted sequence. These fences are authoritative and survive a snapshot.
+pub const SNAPSHOT_FORMAT: u32 = 18;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -638,6 +640,7 @@ impl Snapshot {
             });
         }
         arena.validate_order_watches()?;
+        arena.validate_detachment_commands()?;
         let state = String::from_utf8(super::snapshot_capacity::json_bytes(
             &ArenaStateRef::from(arena),
             limit,
@@ -943,6 +946,8 @@ struct ArenaStateRef<'a> {
     motors: &'a MotorTable,
     minds: &'a BTreeMap<ObjId, MindState>,
     order_watches: &'a super::order_watch::OrderWatches,
+    #[serde(serialize_with = "pairs::serialize_ref")]
+    detachment_commands: &'a super::detachment::DetachmentStates,
     cards: &'a crate::arena::runtime_card::CardCatalog,
     profiles: &'a BTreeMap<ObjId, crate::arena::profile_runtime::ProfileRuntime>,
     conditions: &'a ConditionTable,
@@ -1008,6 +1013,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             // Carried (17b cut M1a.5): every unit mind's row.
             minds,
             order_watches,
+            detachment_commands,
             cards,
             profiles,
             // Carried (17b cut M1b.1): every hull's condition slots, the
@@ -1089,6 +1095,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             motors,
             minds,
             order_watches,
+            detachment_commands,
             cards,
             profiles,
             conditions,
@@ -1139,6 +1146,8 @@ struct ArenaState {
     motors: MotorTable,
     minds: BTreeMap<ObjId, MindState>,
     order_watches: super::order_watch::OrderWatches,
+    #[serde(with = "pairs")]
+    detachment_commands: super::detachment::DetachmentStates,
     cards: crate::arena::runtime_card::CardCatalog,
     profiles: BTreeMap<ObjId, crate::arena::profile_runtime::ProfileRuntime>,
     conditions: ConditionTable,
@@ -1189,6 +1198,7 @@ impl ArenaState {
             motors,
             minds,
             order_watches,
+            detachment_commands,
             cards,
             profiles,
             conditions,
@@ -1270,6 +1280,7 @@ impl ArenaState {
             motors,
             minds,
             order_watches,
+            detachment_commands,
             cards,
             profiles,
             conditions,
@@ -1323,6 +1334,7 @@ impl ArenaState {
             .hydrate_profiles()
             .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
         arena.validate_order_watches()?;
+        arena.validate_detachment_commands()?;
         Ok(arena)
     }
 }

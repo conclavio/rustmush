@@ -1533,7 +1533,7 @@ fn think(v, c) {
 /// `max_range_band` and a deadline — an `Engage` on the hostile live, the same
 /// with its deadline passed, and an `Advance`, a `Screen` and a `Support` of
 /// the wingman. M5rules adds authored Fire/Hold/Lock and all predicate shapes.
-/// Every one of `PARITY`'s 149 rows is exercised, and every row
+/// Every one of `PARITY`'s 150 rows is exercised, and every row
 /// is compared at least once on a value the keyframe printed (not `()`, not
 /// a null handle, not a null key read as its default).
 #[test]
@@ -1615,6 +1615,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
     let friend_designator = named(friend);
     let now = rig.arena.now_ms;
     let order = FrameOrder {
+        identity: Some("dt:1:1:1".into()),
         squad: SmolStr::new("red-1"),
         objective: MindObjective::Engage { target: Some(blue) },
         hold_fire: true,
@@ -1694,6 +1695,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
     stage(
         &mut passed,
         FrameOrder {
+            identity: None,
             expires_ms: past,
             ..order
         },
@@ -1821,7 +1823,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
         .iter()
         .map(|(ty, getter, _)| ((*ty).to_owned(), (*getter).to_owned()))
         .collect();
-    assert_eq!(PARITY.len(), 149);
+    assert_eq!(PARITY.len(), 150);
     assert_eq!(
         exercised.rows,
         rows,
@@ -2854,6 +2856,7 @@ fn m2_every_plot_kernel_holds_the_plot_while_the_truth_moves() {
     let blue = hostile(&rig.arena.clone().mind_view(RED).expect("a view"));
     if let Some(state) = rig.arena.minds.get_mut(&RED) {
         state.order = Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Engage { target: Some(blue) },
             hold_fire: false,
@@ -3517,44 +3520,53 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `7_649_434_552_267_006_567` / `5f0bdda7…` / `becdcb65…`,
 /// `9_329_786_118_378_962_729` / `004bd63f…` / `8de6e161…`,
 /// `5_200_400_847_644_332_931` / `6bf446e5…` / `3d5c4a8f…`.
+/// **DT.1b's declared encoding re-bless (API 6, stock 3)**: opaque order
+/// identity distinguishes replacement standing commands from their deadlines.
+/// The Standard source and ABI/stock provenance change every default seal.
+/// The observed Windows corpus retains all four stopping times and the float
+/// probe's 3,600 thinks / 369098751 bitmask; only the measured hash columns below
+/// are re-pinned. Linux reproduction remains required (17b §7).
 ///
-/// **Doc 17h cut M8a's re-bless, the ledger digest only** (captured on
-/// conclav.dev's Linux at 9159cffa; CI's Linux run of PR #67 computed the same
-/// four rows): every `mind_sealed` ledger line gains `licence_state`
-/// after `licence` (the state is the sealed line's parameter, never a seal
-/// field), so the ledger digest of all four rows moved and nothing else did:
-/// the stopping times, the state hashes, the substep digests and the float
-/// probe's 369098751 bitmask are unmoved. The digest hashes the ledger's bytes,
-/// so it is host-independent. Were, by row: `91c474d0…`, `929f1c49…`,
-/// `22d34325…`, `de7720f6…`.
+/// **Doc 17h cut M8a's re-bless, the ledger digest only, over DT.1b** (the merge
+/// of main 0b1b7ab5 into the M8a branch, captured on conclav.dev's Linux): every
+/// `mind_sealed` ledger line gains `licence_state` after `licence` (the state is
+/// the sealed line's parameter, never a seal field), so on DT.1b's tree the
+/// ledger digest of all four rows moved and nothing else did. The stopping
+/// times, the state hashes, the substep digests and the float probe's 3,600
+/// thinks / 369098751 bitmask are DT.1b's values above exactly, which this Linux
+/// run reproduces. The digest hashes the ledger's bytes, so it is
+/// host-independent. DT.1b's were, by row: `3202df8d…`, `bff38a18…`,
+/// `7b35b9ee…`, `47b8afcf…`; M8a alone over the API 5 tree had re-pinned
+/// `91c474d0…`, `929f1c49…`, `22d34325…`, `de7720f6…` to `a8ef4a30…`,
+/// `e1e7a26b…`, `b2c1dada…`, `2e9d2e80…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         170250,
-        5751437098979270255,
-        "0435ea8a5ea54c73685d7fd69ad3925d0691cf49f8256e18ea74e6715b907934",
-        "a8ef4a30e87123442bf19d6540a764891b8bea3dae96b9342081cb9d28c4a907",
+        4036052986693953416,
+        "daa4e8666cd9bc4c45ac5173a0ad30e65007e6bed38ec1483078b3a010ba8e5f",
+        "442550cd793fa83e891dd464a7e3df7f5acf8b1ff093360f5685959adac86c64",
     ),
     (
         2351,
         192500,
-        15239362189155377359,
-        "daad5d83c262db2451f0fcfce7f7d72c0e2b719a610c35c5e7cb168c52726b61",
-        "e1e7a26b1043a73866178dc67064d234452b1fcbfd711249229b21ab8c6ee85b",
+        14776315943276034554,
+        "4d137f25c8106433355566b13b22bf111b9c1c1d0b1bb1e9e617fb2fb424d585",
+        "1db6e56d1d325ce14a473c418a1a28f9cd64d3f078b960febf3e9f46efed8dd9",
     ),
     (
         2352,
         170000,
-        147138284034081668,
-        "ea5704215c831ced5ac793598c897adf37dd29177fc0d8ebd2a1fe481484c72c",
-        "b2c1dada8306a2612a371ac089c545d8f175c7b9bbb10d274845a208d353465e",
+        714931300200473704,
+        "f74b2d5b90f5838ca03216ef0383efa77eddaac021757f026ffd44a3a7241fb7",
+        "3182ce00a314f9b409a1a448676f46127f719e154ffa7e5ab7c395b20c0fd840",
     ),
     (
         2350,
         900000,
-        901248092712753737,
-        "3935bb86c6d21b77f1ba8168be3d65750615a6c4405d784c72b513caaf252817",
-        "2e9d2e806688e0ca46627828117c216b28827597fd6b140aaca71a20c3587f7d",
+        5234968803354853599,
+        "e2733d3bd2aa6a02eeededaf9256252c446a4b862e84227b33bc5194f28f6e2b",
+        "c26a43090e34bf2532990fe238ff9df9f150dce8ee86f5d0360aac3d73c756ec",
     ),
 ];
 

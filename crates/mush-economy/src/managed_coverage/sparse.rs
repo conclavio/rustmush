@@ -9,6 +9,7 @@ use mush_core::participant::ParticipantError;
 use std::collections::BTreeSet;
 
 pub(super) struct CoverageFold {
+    title_lineage: crate::fold::TitleLineageDelta,
     history: PreparedHistory,
     before_asset: EconomicAsset,
     after_asset: EconomicAsset,
@@ -146,6 +147,8 @@ impl CoverageFold {
             )
         });
         Ok(Self {
+            title_lineage: crate::fold::TitleLineageDelta::prepare(state, tx)
+                .ok_or_else(refused)?,
             history,
             before_asset,
             after_asset,
@@ -160,7 +163,8 @@ impl CoverageFold {
         })
     }
     pub(super) fn matches(&self, state: &FoldState) -> bool {
-        self.history.matches(&state.coverage_receipts)
+        self.title_lineage.matches(state)
+            && self.history.matches(&state.coverage_receipts)
             && state.journal_assets.get(&self.before_asset.object) == Some(&self.before_asset)
             && state.max_hold_id == self.before_max_hold
             && state.max_txid == self.before_max_tx
@@ -178,6 +182,7 @@ impl CoverageFold {
             })
     }
     pub(super) fn apply(self, state: &mut FoldState) {
+        self.title_lineage.apply(state);
         self.history.apply(&mut state.coverage_receipts);
         state
             .journal_assets

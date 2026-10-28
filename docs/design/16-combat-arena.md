@@ -1,5 +1,13 @@
 # 16 — Combat: the arena, the story, and what stacks on it
 
+> **IC boundary clarified by the owner, 2026-10-28:** the OOC simulator is a proving ground
+> and consequence-free practice, not the source of IC lifecycle rules. See
+> [doc 27](27-ic-field-operations-design-and-survey.md) for the coordinated DT.1–DT.3/H1/H2
+> design and survey. IC casualties preserve exact surviving components; physical recovery
+> does not repair them. Fixed sides, resets, untargetable wrecks, public replay, snapshot-tail
+> rollback and lobby leadership below must not silently become IC requirements. The 10 km
+> arena is not a prerequisite merely because an older “Before IC play” note names it.
+
 Draft 0.2, 2026-09-16, written from the answered survey [16a](16a-combat-owner-questions.md) against
 `main` at `5da8d6a` and revised after the three-lens review recorded in [16b §10](16b-combat-implementation-plan.md).
 The decisions this document rests on are collected in §12 as D-16-1 to D-16-20 (owner, 2026-09-16,

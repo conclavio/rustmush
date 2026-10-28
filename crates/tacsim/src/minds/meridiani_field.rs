@@ -137,6 +137,7 @@ impl Harness {
 
 fn order(objective: MindObjective) -> FrameOrder {
     FrameOrder {
+        identity: None,
         squad: "red-1".into(),
         objective,
         hold_fire: false,
@@ -223,7 +224,7 @@ fn meridiani_source_and_profiles_have_exact_unfiled_content_identity() -> TestRe
     }
     check_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(3)
     );
     check_eq!(
         manifest.get("status").and_then(|v| v.as_str()),

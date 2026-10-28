@@ -383,6 +383,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         // mapped straight across (default when the table is absent) and banded
         // by `validate` below. The arena captures it at check-out.
         minds: tacsim::config::MindsConfig {
+            bulk_maintenance_ms: cfg.minds.bulk_maintenance_ms,
             proving_workers: cfg.minds.proving_workers,
             proving_queued: cfg.minds.proving_queued,
             proving_daily_unit_minutes: cfg.minds.proving_daily_unit_minutes,

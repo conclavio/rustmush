@@ -148,8 +148,12 @@ pub(crate) fn register_with_ic(
     burn: Option<crate::port::burn::BurnTable>,
     ic: Option<&crate::minds::ic_sortie::registration::Registration>,
 ) -> Result<(), ModError> {
-    register_with_coverage(reg, test_world, inventory, burn, ic, None, None)
+    register_with_coverage(reg, test_world, inventory, burn, ic, None, None, false)
 }
+// One optional composition each (the IC sortie, the coverage, the Registry inspection) and the
+// unit-authority switch: the merge of doc 17h cut M8a's inspection with main's detachments
+// brought the count to eight; bundling them would only move the list.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_coverage(
     reg: &mut Registrar<'_>,
     test_world: bool,
@@ -158,6 +162,7 @@ pub(crate) fn register_with_coverage(
     ic: Option<&crate::minds::ic_sortie::registration::Registration>,
     coverage: Option<&crate::underwriting::registration::Registration>,
     inspection: Option<&crate::minds::registry_inspection::Composition>,
+    unit_authority: bool,
 ) -> Result<(), ModError> {
     let port_families = families::register(reg)?;
     reg.revision_validator(
@@ -210,6 +215,7 @@ pub(crate) fn register_with_coverage(
     // One `outcome` validator for the whole crate, over the very descriptors
     // registered next (built once, so the two cannot drift).
     let mut outcomes = outcome_descriptors(test_world)?;
+    outcomes.push(crate::detachment::planning::outcome_descriptor()?);
     if let Some(ic) = ic {
         outcomes.push(ic.outcome()?);
     }
@@ -308,6 +314,9 @@ pub(crate) fn register_with_coverage(
         (&passenger_outcome, &epoch_outcome),
     )?;
     actions.push(crate::quest::registration::action(&outcome_refs)?);
+    actions.push(crate::detachment::planning::action_descriptor(
+        &outcome_refs,
+    )?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -497,6 +506,7 @@ pub(crate) fn register_with_coverage(
     )?;
     let quest =
         crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
+    crate::detachment::planning::register(reg, &action_refs, &outcome_refs, unit_authority)?;
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,

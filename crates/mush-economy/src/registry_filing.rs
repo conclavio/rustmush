@@ -757,6 +757,7 @@ impl MetaFence {
 }
 
 struct InitialFold {
+    title_lineage: crate::fold::TitleLineageDelta,
     covered: Option<u64>,
     max_txid: u64,
     accounts: Vec<(AccountId, i128, u64, u64)>,
@@ -776,6 +777,7 @@ impl InitialFold {
         };
         if state.journal_assets.contains_key(&effect.object)
             || state.created_count.contains_key(&effect.object)
+            || state.title_lineage.contains_key(&effect.object)
         {
             return Err(refused());
         }
@@ -799,6 +801,8 @@ impl InitialFold {
         }
         Ok(Self {
             covered: Some(tx.journal_seq),
+            title_lineage: crate::fold::TitleLineageDelta::prepare(state, tx)
+                .ok_or_else(refused)?,
             max_txid: state.max_txid.max(tx.id.0),
             accounts,
             title: effect.post.clone(),
@@ -807,6 +811,7 @@ impl InitialFold {
         })
     }
     fn apply(self, state: &mut FoldState) {
+        self.title_lineage.apply(state);
         for (id, running, seq, touches) in self.accounts {
             state.running.insert(id, running);
             state.last_touch.insert(id, seq);
@@ -1891,6 +1896,7 @@ impl InitialFilingPatch {
     fn check_local(&self, state: &EconomyStore) -> Result<(), ParticipantError> {
         if state.frozen
             || state.next_transaction != self.transaction.id.0
+            || !self.fold.title_lineage.matches(&state.fold)
             || !self.before_meta.matches(state)
             || state.posts_since_boot != self.before_posts
             || state.snapshot.asset(self.request.shell).is_some()

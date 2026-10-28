@@ -37,6 +37,7 @@
 
 /** The per-pulse cockpit keyframe's feed (`tacsim::arena_bridge::FRAME_FEED`). */
 import { decodeMindCard, type MindCard } from "./mind-card";
+import { decodeDetachment, type Detachment } from "./detachment";
 
 export const COCKPIT_FEED = "arena.cockpit";
 
@@ -399,6 +400,8 @@ export const MAX_CATCHUP_WEAPONS = 6;
  * a client must treat it as "clear the panel and drop the map".
  */
 export interface CockpitFrame {
+  /** Missing on legacy servers; null disables a malformed projection. */
+  detachment?: Detachment | null;
   seated: boolean;
   /** The match this frame belongs to, or `null` on a cleared frame. */
   match: number | null;
@@ -1030,6 +1033,7 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     // 17b cut M1a.3.
     t_ms: optInt(data.t_ms),
     order: decodeOrder(data.order),
+    detachment: Object.hasOwn(data, "detachment") ? decodeDetachment(data.detachment) : undefined,
     armed: Array.isArray(data.weapons),
     // 17b cut M1b.3.
     odds_floor_permille: optInt(data.odds_floor_permille),

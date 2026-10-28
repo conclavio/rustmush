@@ -57,7 +57,6 @@
     gateWord,
     helmLine,
     nextLock,
-    orderPrefill,
     pictureKey,
     speedLine,
     speedOutstanding,
@@ -74,6 +73,7 @@
     pixelModule,
   } from "$lib/pixel/local";
   import { storageGet, storageSet } from "$lib/storage";
+  import { detachmentKeyPrefill } from "$lib/detachment";
   import { untrack } from "svelte";
 
   let {
@@ -380,7 +380,10 @@
       // Always taken while the picture has focus, so the browser's F1 help,
       // F5 reload and F6 address bar never fire from the cockpit.
       ev.preventDefault();
-      if (!ev.repeat) prefill?.(orderPrefill(key.slot));
+      if (!ev.repeat) {
+        const line = detachmentKeyPrefill(frame?.detachment, key.slot === "ALL" ? 1 : key.slot);
+        if (line !== null) prefill?.(line);
+      }
       return;
     }
     if (!active) return;

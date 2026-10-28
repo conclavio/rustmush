@@ -298,6 +298,15 @@ impl ReplaySession {
         else {
             return Err(incomplete("restart checkpoint unavailable"));
         };
+        // The live OOC adapter explicitly ends its ephemeral detachment host
+        // before restarting the task. Reproduce that policy before comparing
+        // the post-reset checkpoint; ordinary snapshot decode still preserves
+        // every authority fence.
+        self.state
+            .arena
+            .as_mut()
+            .ok_or_else(|| incomplete("ready replay arena unavailable"))?
+            .reset_detachment_commands();
         let current = self
             .state
             .arena
@@ -429,6 +438,13 @@ impl ReplaySession {
                         }
                     }
                     TapeEvent::Restart { .. } => self.restart_from_tape(&recorded)?,
+                    TapeEvent::DetachmentControl { control } => {
+                        self.state
+                            .arena
+                            .as_mut()
+                            .ok_or_else(|| incomplete("ready replay arena unavailable"))?
+                            .apply_detachment_control(*control);
+                    }
                     TapeEvent::Pulse { .. } => return Err(incomplete("unexpected nested pulse")),
                 }
             }
@@ -706,6 +722,9 @@ pub(crate) mod tests {
         (arena, header)
     }
     fn completed(cadence: i64, restart: bool) -> (Arc<VerifiedTape>, u64, usize) {
+        use crate::arena::detachment::{
+            DetachmentAuthority, DetachmentCommand, DetachmentControl, DetachmentObjective,
+        };
         let (mut arena, header) = opening(2);
         let mut recorder = TapeRecorder::open(&header).unwrap();
         arena.tape_cursor = Some(recorder.cursor());
@@ -713,13 +732,31 @@ pub(crate) mod tests {
         let mut writes = Vec::new();
         let mut wall = 0;
         for half in 0..2 {
+            let term = half as u64 + 1;
+            let authority = DetachmentAuthority {
+                detachment: 1,
+                revision: 1,
+                term,
+            };
+            let control = DetachmentControl {
+                unit: ObjId(1),
+                epoch: term,
+                authority: Some(authority),
+            };
+            writes.extend(
+                recorder
+                    .push(TapeEvent::DetachmentControl { control })
+                    .unwrap(),
+            );
+            assert!(arena.apply_detachment_control(control));
+            let mut first_pulse = true;
             let end = (half + 1) * 5000;
             while arena.now_ms < end {
                 assert!(
                     arena.ended.is_none(),
                     "fixture must remain alive before the requested stop"
                 );
-                let intents = if half == 1 && arena.now_ms == 5000 {
+                let mut intents = if half == 1 && arena.now_ms == 5000 {
                     vec![Intent {
                         unit: ObjId(1),
                         channel: Channel::Helm,
@@ -730,6 +767,46 @@ pub(crate) mod tests {
                 } else {
                     vec![]
                 };
+                if first_pulse {
+                    let command = DetachmentCommand {
+                        authority,
+                        authority_epoch: term,
+                        sequence: term,
+                        issuer: ObjId(1000),
+                        issuer_unit: ObjId(1),
+                        squad: crate::deliberation::SquadId {
+                            team: Team::Red,
+                            index: 1,
+                        },
+                        directive: Some(DetachmentObjective {
+                            objective: crate::deliberation::order::Objective::Hold,
+                            constraints: crate::deliberation::order::Constraints::default(),
+                        }),
+                        expires_at_ms: None,
+                    };
+                    if half == 1 {
+                        let mut stale_cancel = command.clone();
+                        stale_cancel.authority.term = 1;
+                        stale_cancel.authority_epoch = 1;
+                        stale_cancel.sequence = 999;
+                        stale_cancel.directive = None;
+                        intents.push(Intent {
+                            unit: ObjId(1),
+                            channel: Channel::Helm,
+                            epoch: 0,
+                            seq: 78,
+                            kind: IntentKind::DetachmentCommand(Box::new(stale_cancel)),
+                        });
+                    }
+                    intents.push(Intent {
+                        unit: ObjId(1),
+                        channel: Channel::Helm,
+                        epoch: 0,
+                        seq: 79,
+                        kind: IntentKind::DetachmentCommand(Box::new(command)),
+                    });
+                    first_pulse = false;
+                }
                 let (_, new) =
                     recorded_step_settled(&mut arena, &mut recorder, wall, &[], &intents, vec![])
                         .unwrap();
@@ -744,6 +821,7 @@ pub(crate) mod tests {
                 let ground = header.ground.clone().restore().unwrap();
                 arena = Snapshot::decode(&frozen.document, ground).unwrap();
                 install_header_sources(&header, &mut arena).unwrap();
+                arena.reset_detachment_commands();
                 arena.resume_at(0);
                 arena.tape_witnesses.enable();
                 wall = cadence;
@@ -891,13 +969,13 @@ pub(crate) mod tests {
     fn m7_old_tape_engine_and_snapshot_refuse_before_replay_starts() {
         let (_, header) = opening(2);
         assert_eq!(TAPE_FORMAT, 2);
-        assert_eq!(EngineStamp::current().engine, "tacsim-engine-m7-v1");
-        assert_eq!(EngineStamp::current().snapshot, 17);
+        assert_eq!(EngineStamp::current().engine, "tacsim-engine-dt1b-v1");
+        assert_eq!(EngineStamp::current().snapshot, 18);
         for mutation in 0..4 {
             let mut old = (*header).clone();
             match mutation {
                 0 => old.format = 1,
-                1 => old.engine.engine = "tacsim-engine-m6.5-v1".into(),
+                1 => old.engine.engine = "tacsim-engine-m7-v1".into(),
                 2 => old.engine.snapshot = 13,
                 _ => {
                     old.opening["format"] = serde_json::json!(13);
@@ -906,7 +984,7 @@ pub(crate) mod tests {
                         Snapshot::head(&old.opening),
                         Err(crate::arena::snapshot::SnapshotError::Format {
                             found: 13,
-                            expected: 17
+                            expected: 18
                         })
                     ));
                 }

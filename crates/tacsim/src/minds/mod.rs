@@ -182,17 +182,18 @@ pub use sealed::{InstallError, install_sealed_runners};
 
 /// **The API's version** (doc 17 Â§13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
-pub const API_VERSION: u32 = 5;
+pub const API_VERSION: u32 = 6;
 
 /// **The stock content's version** (doc 17 Â§13): the `stock=` part of
-/// [`MIND_ABI`]; M5r's restored Hold/motor/origin behavior is version 2.
-pub const STOCK_VERSION: u32 = 2;
+/// [`MIND_ABI`]; version 3 distinguishes replacement detachment orders from
+/// their optional expiry deadlines.
+pub const STOCK_VERSION: u32 = 3;
 
 /// **The ABI a compiled mind is cached and sealed under** (doc 17 Â§7, Â§13;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] â€” `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=5;stock=2";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=6;stock=3";
 
 /// **The stock class's op ceiling per think** (doc 17 Â§9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -518,6 +519,7 @@ pub(crate) mod fixture {
             ],
             lock: Some(HOSTILE),
             order: Some(FrameOrder {
+                identity: None,
                 squad: SmolStr::new("red-1"),
                 objective: MindObjective::Engage {
                     target: Some(HOSTILE),
@@ -889,7 +891,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=5;stock=2");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=6;stock=3");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -1003,7 +1005,7 @@ mod tests {
     }
 
     /// The pinned list (see [`the_registered_names_are_pinned`]).
-    const PINNED: [&str; 280] = [
+    const PINNED: [&str; 281] = [
         "type View",
         "type Objective",
         "type Motor",
@@ -1131,6 +1133,7 @@ mod tests {
         "Condition.bands",
         "Condition.age_ms",
         "Order.squad",
+        "Order.identity",
         "Order.objective",
         "Order.to",
         "Order.target",
@@ -1287,7 +1290,7 @@ mod tests {
     ];
 
     /// One call of every API name on the full view (`v`, `c` in scope).
-    const CALLS: [(&str, &str); 244] = [
+    const CALLS: [(&str, &str); 245] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
         ("View.team", "v.team"),
@@ -1403,6 +1406,7 @@ mod tests {
         ("Condition.bands", "v.contacts[0].condition.bands"),
         ("Condition.age_ms", "v.contacts[0].condition.age_ms"),
         ("Order.squad", "v.order.squad"),
+        ("Order.identity", "v.order.identity"),
         ("Order.objective", "v.order.objective"),
         ("Order.to", "v.order.to"),
         ("Order.target", "v.order.target"),

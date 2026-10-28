@@ -3689,6 +3689,7 @@ fn the_hash_folds_a_screens_facing_and_a_supports_charge() {
             panic!("the mover is a mind with a row");
         };
         row.order = Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective,
             hold_fire: false,
@@ -5862,9 +5863,11 @@ fn af1_catalog_shape_ignores_identity_but_walks_every_definition_field() {
 /// digest byte for byte: no existing path/type changed. Total: 712 paths.
 /// Doc 21 cut G.12a, snapshot format 17: one path, `state.units.[].weapons_hold:
 /// bool` (the seat's master gate); nothing else moved. Total: 713 paths.
-const AF1_SHAPE_DIGEST: &str = "fcc6aa3119b51f30f3b8949c71aafad917987bd6e2b582b705055db659315999";
+/// DT.1b, snapshot format 18: the walk includes an admitted detachment command,
+/// its authority/sequence state and opaque order identity. Measured: 726 paths.
+const AF1_SHAPE_DIGEST: &str = "63e1d5eb15ca18e6444c88eeffd81895cef00ca556900d07b1950875325bcc79";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 713;
+const AF1_SHAPE_LINES: usize = 726;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -6130,8 +6133,54 @@ fn af1_the_snapshot_shape_is_pinned() {
             .collect::<Vec<_>>()),
         Some(vec!["Sniper".to_owned(), "Line".to_owned()])
     );
+    // DT.1b pins the nested authority fence as well as its empty table. An
+    // authority can cover a player hull without commanding that player's helm.
+    let mut detachment = squadded.clone();
+    let unit = MOVER;
+    detachment.apply_detachment_control(tacsim::arena::detachment::DetachmentControl {
+        unit,
+        epoch: 1,
+        authority: Some(tacsim::arena::detachment::DetachmentAuthority {
+            detachment: 1,
+            revision: 1,
+            term: 1,
+        }),
+    });
+    let authority = tacsim::arena::detachment::DetachmentAuthority {
+        detachment: 1,
+        revision: 1,
+        term: 1,
+    };
+    let command = Intent {
+        unit,
+        channel: Channel::Helm,
+        epoch: detachment.epochs.current(unit, Channel::Helm),
+        seq: 1,
+        kind: IntentKind::DetachmentCommand(Box::new(
+            tacsim::arena::detachment::DetachmentCommand {
+                authority,
+                authority_epoch: 1,
+                sequence: 1,
+                issuer: ObjId(1000),
+                issuer_unit: unit,
+                squad: tacsim::deliberation::SquadId {
+                    team: detachment.unit(unit).unwrap().team,
+                    index: 1,
+                },
+                directive: Some(tacsim::arena::detachment::DetachmentObjective {
+                    objective: Objective::Hold,
+                    constraints: Default::default(),
+                }),
+                expires_at_ms: None,
+            },
+        )),
+    };
+    assert_eq!(
+        apply_intent(&mut detachment, &command, IntentSource::Seat),
+        IntentOutcome::AppliedContinuous
+    );
     let mut lines = std::collections::BTreeSet::new();
-    for arena in [scripted_arena(), squadded] {
+    for arena in [scripted_arena(), squadded, detachment] {
         let snapshot = Snapshot::encode(&arena).expect("an unstepped arena encodes");
         shape(&state_of(&snapshot), "state", &mut lines);
     }
@@ -6140,7 +6189,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        17,
+        18,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -6305,7 +6354,7 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     // cut M5.2 to 10 (the sealed set, the active profile, STOP E's charge); a
     // format-2 document is still refused by name.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(SNAPSHOT_FORMAT, 17);
+    assert_eq!(SNAPSHOT_FORMAT, 18);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
@@ -6390,7 +6439,7 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     // to 7, 17b cut M3.2 to 8, 17b cut M4.6 to 9 and 17b cut M5.2 to 10; a
     // format-3 document is still refused by name.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(SNAPSHOT_FORMAT, 17);
+    assert_eq!(SNAPSHOT_FORMAT, 18);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
@@ -6497,6 +6546,7 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
         ],
         ranges: std::collections::BTreeMap::from([(ContactId(77), 450)]),
         order: Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Engage {
                 target: Some(ContactId(77)),
@@ -6531,6 +6581,7 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     );
     let supporter = MindState {
         order: Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Support {
                 of: Some(ContactId(78)),
@@ -6612,7 +6663,7 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     // M7 also refuses format 15 without accepted-order attribution, M6 format
     // 13 and certificate-bearing format 14 before reading carried state.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(SNAPSHOT_FORMAT, 17);
+    assert_eq!(SNAPSHOT_FORMAT, 18);
     for old in [15_u32, 14, 13, 12, 11, 10, 9, 8, 7, 4] {
         let mut stale = snapshot.document.clone();
         stale["format"] = serde_json::json!(old);
@@ -6671,6 +6722,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
         &quiet,
     );
     let standing = FrameOrder {
+        identity: None,
         squad: SmolStr::new("red-1"),
         objective: MindObjective::Advance { to: (6, 12) },
         hold_fire: false,
@@ -6722,7 +6774,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
     // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
     // to 10.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(SNAPSHOT_FORMAT, 17);
+    assert_eq!(SNAPSHOT_FORMAT, 18);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),

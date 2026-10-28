@@ -2306,7 +2306,7 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
             // Format 16 adds record-only accepted-order attribution (R4).
             // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-            assert_eq!(SNAPSHOT_FORMAT, 17);
+            assert_eq!(SNAPSHOT_FORMAT, 18);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -4865,7 +4865,7 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
         .notices
         .push(notice.clone());
     let snapshot = Snapshot::encode(&control).expect("new refusal encodes");
-    assert_eq!(snapshot.document["format"], 17);
+    assert_eq!(snapshot.document["format"], 18);
     let restored = Snapshot::decode(&snapshot.document, definition()).expect("new refusal decodes");
     assert_eq!(
         restored
@@ -4884,12 +4884,12 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
             Snapshot::head(&old).map(|head| head.format),
             Err(SnapshotError::Format {
                 found,
-                expected: 17
+                expected: 18
             })
         );
         assert!(matches!(
             Snapshot::decode(&old, definition()),
-            Err(SnapshotError::Format { found: actual, expected: 17 }) if actual == found
+            Err(SnapshotError::Format { found: actual, expected: 18 }) if actual == found
         ));
     }
     assert_eq!(Refusal::NoCommander.as_str(), "no_commander");

@@ -147,7 +147,7 @@ from doc 17 or the plan and the residuals still open.
 | M5rules | 2026-10-17, [17d §2](17d-unit-minds-through-m6-plan.md#2-m5rules-native-station-rules); coupled model/parser/readers cut with integrated gate, completing 17c §6.2 | Accepted at `e93a4a1c` on `codex/unit-minds-through-m6`; deployed to dev1 2026-10-18 at `8c648527` | Core, parser, pilot grammar, projections and focused tests complete; independent cross-file review and Windows/Linux gates passed; evidence in §4 | Snapshot 11, frame 4, API 2 (`rhai=1.26.0;api=2;stock=1`); ordered rule terms replace the singular hashed slot; source header/ABI changes intentionally move sealed identity pins. Reviewed compatibility and deterministic baseline changes recorded in §4. |
 | M5r | 2026-10-17, [17d §3](17d-unit-minds-through-m6-plan.md#3-m5r-doctrine-and-motor-behavior), three planned sub-cuts integrated at one behavior/compatibility gate; follows landed hash v2 and M5rules | Accepted on 2026-10-17; deployed to dev1 2026-10-18 at `8c648527` | Public Hold geometry, retained motor completion, shot-origin memory and restored regression coverage; evidence in §5 | Snapshot 12, frame 5, API 3, stock 2; accepted STOP D/J/Q17 divergences retained; optional M4.5a work excluded |
 | M6 | 2026-10-17, [17d §4](17d-unit-minds-through-m6-plan.md#4-m6-sub-cuts), ten work packages; authoring through the independent bot-port and replay gate | Accepted 2026-10-18 with the owner's documented `c58c3d98` parity exception; deployed to dev1 2026-10-18 at `8c648527` (main fast-forwarded onto the branch at `6fafaa11`; a fresh store at rate 24 for the first trade-run playtest) | Reconciled acceptance evidence and explicit exception in §6 and 17e; raw failed comparison retained | Minimal draft/revision ownership in mush-roll moves forward from M7; snapshot 13, frame 6, API 4, live record 2 and IPC 7; the separate IC14 economy checkpoint also passes, permitting M7 implementation |
-
+| DT.1b | 2026-10-28, [26a](26a-detachment-implementation-plan.md#dt1b-live-ooc-integration), OOC detachment integration and standing-order replacement identity | In progress; API 6, stock 3, frame 8, snapshot 18 and replay engine `tacsim-engine-dt1b-v1` | Declared encoding re-bless, observed source and Windows seal/corpus pins; all four measured stopping times and float-probe bitmask unchanged; post-pin rerun, Linux and harness evidence pending, see §7 | Historical API-4 custody controls and earlier baseline evidence remain intact; no Linux pass or performance claim |
 
 ## 4. M5rules continuation gate — 2026-10-17
 
@@ -638,3 +638,92 @@ a subsequent remote-ref read. Its executable bytes are identical to the
 five design/acceptance documents. The incomplete M7 implementation remains
 isolated from that merge. [17f](17f-mind-commerce-implementation-plan.md) records
 its separate continuation and evidence.
+
+## 7. DT.1b declared encoding re-bless — 2026-10-28
+
+**Status:** Windows deterministic and mind compatibility checks passed; Linux
+reproduction remains pending. This records the reason for the re-bless required
+by §0 and `m2_the_twin_corpus_hashes_the_same_on_every_host`; it does not claim
+cross-host acceptance or a performance pass.
+
+Standing detachment commands have optional expiry. Their opaque admitted-order
+identity must therefore be independent of the expiry value: otherwise every
+standing command has the same deadline, and a completed or unreachable command
+can cause its replacement to be ignored. `Order.identity` adds a getter in mind
+API 6 and a corresponding public order field in cockpit frame 8. Native and Rhai
+Standard Doctrine version 3 compare this identity, retaining the existing
+deadline identity for legacy orders. Safe Conduct uses the same distinction.
+Detachment authority fences and input events are carried by snapshot format 18
+and replay engine `tacsim-engine-dt1b-v1`.
+
+The final observed Standard source SHA-256 is
+`c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100`;
+Safe Conduct is
+`c27da39ae61fe2a6a81110a302a99f72a9c388465ab32cfed9222c6c950408a2`.
+The ABI is `rhai=1.26.0;api=6;stock=3`. Current manifests and envelopes record
+these identities and observed byte digests. All nine current default-seal pins
+use observed Windows values. The independent API-4 custody proof retains its
+historical pins, restoring only ABI, source identities and the three stock
+provenance revisions in a non-executed comparison copy.
+
+The ABI, Standard source and stock provenance changes move sealed identities
+folded into state hashes, including ordinary matches that have not enabled
+detachment command. New identity bytes are folded only when present; legacy
+order records omit the optional field. The four twin-corpus rows are measured
+on Windows below and still require Linux reproduction, including the independent
+float probe, before claiming their cross-host gate. No conclusion about unchanged
+stopping times, actions or timing follows from changing a digest pin alone.
+Whole-match native/Rhai equality and the real worker-pool seam retain their
+existing gates.
+
+The scheduled release harness also compares deterministic fields and all four
+mind reports with `tests/harness_baseline/arena.linux.json`. Any changed leaves
+require fresh reports from this build and a declared DT.1b update; the earlier
+M6/M7 provenance entries, original timing observations and blessing host must not
+be rewritten as current evidence. Timing results and deterministic differences
+must be reported separately.
+
+**Windows corpus observation:** `target/dt1b-twin-corpus.log` records the actual
+four-row run on the final source. It completed the simulation and failed against
+the earlier hash expectations; these observed values replace those expectations.
+The stopping times remain 170250, 192500 and 170000 ms for stock seeds 2350–2352,
+and 900000 ms for the float probe at seed 2350. The probe ran 3,600 thinks with
+bitmask 369098751. Final state hashes are respectively 4036052986693953416,
+14776315943276034554, 714931300200473704 and 5234968803354853599; the complete
+substep and ledger digests are pinned beside them in `M2_CROSS_PLATFORM_PINS`.
+The post-pin rerun in `target/dt1b-mind-gates-final.log` passes, reproducing every
+row and the float-probe bitmask. That same retained log records the getter parity
+test passing; whole-match native/Rhai equality over 15 matches / 30 plays,
+10,896 compared substeps and 9,092 compared lines with zero divergences; and the
+real worker-pool seam passing all 45 matches. The earlier failed expectation run
+remains recorded. Linux reproduction remains pending.
+
+**Windows harness observation:** the debug/test-profile runs of
+`tacsim_harness_arena_step` and `tacsim_harness_arena_minds` produced five fresh
+`target/dt1b-harness*.json` reports. The exact deterministic allowlists from
+`tests/harness.rs` were compared with the existing Linux baseline; each report
+was checked to be no older than `target/debug/deps/harness-057acf94c78dc70b.exe`.
+Exactly five of the 302 compared leaves changed:
+
+| Leaf | Previous value | Measured DT.1b value |
+|---|---:|---:|
+| `counters.ledger_bytes_streamed` | 1642999 | 1642833 |
+| `minds.fill_authored.final_substep_hash` | 2597155710936598970 | 6937661605052733824 |
+| `minds.stock_ci.final_substep_hash` | 13514296095064921033 | 7899994636326837575 |
+| `minds.stock_authored.final_substep_hash` | 11861791163083043009 | 7170095506294790981 |
+| `minds.ceiling_authored.final_substep_hash` | 15535978820706913562 | 453987818110788723 |
+
+Only those five baseline leaves were replaced. The new
+`blessed.dt1b_deterministic_update` records the Windows host, debug profile,
+ABI/source identities, worktree-base attribution, exact binary and report
+SHA-256 values, and Linux-pending status. A second comparison finds all 302
+fields equal. The existing Linux blessing host, timing observations and earlier
+M5r/M6/M7 provenance are preserved. The 166-byte ledger change is consistent
+with different decimal hash encodings; an isolated byte-width proof is not
+claimed.
+
+These captures are **not a performance pass**: assertions were disabled, the
+debug runs missed wake/window timing lenses in report-only mode, and each mind
+variant reported `held=no` while `sound=yes` and `faults=0`. The original Linux
+performance baseline and thresholds remain unchanged. Linux deterministic
+reproduction and an appropriately optimized timing run are separate evidence.

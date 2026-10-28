@@ -122,6 +122,7 @@ pub mod definitions;
 /// structured request that produces one, and the cost table the owner's cost run
 /// prints. The arena imports only [`deliberation::order`], which is data.
 pub mod deliberation;
+pub mod detachment;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
@@ -408,6 +409,9 @@ pub struct TacsimRuleset {
     /// readiness report's world rate and registers the port tick's probe (doc 18
     /// cut IC5).
     test_world: bool,
+    /// Composition pairs this layer with Org's live unit-authority reader.
+    /// Bare fixture layers leave it off and report authority as unavailable.
+    unit_authority: bool,
     /// **Doc 18 cut IC5 (D-18-33; lead ruling L2)** — `mush-inventory`'s handle
     /// cell, handed over by the composition root that also names `tacsim` a
     /// quantity delegate (`composition::server_modules_with_tacsim`). `None` on a
@@ -425,6 +429,15 @@ pub use minds::ic_sortie::{
     IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
 };
 impl TacsimRuleset {
+    /// Request the live unit-authority reader as Tacsim, when composition also
+    /// installs Org's configured provider and authorizes Tacsim as a requester.
+    /// An incomplete composition refuses registration; no World mirror is used.
+    #[must_use]
+    pub fn with_unit_authority(mut self) -> Self {
+        self.unit_authority = true;
+        self
+    }
+
     /// Add the real unarmed proving carrier before capturing Registry or
     /// hardware catalogue references. This loads content, not qualification.
     pub fn with_conduct_carrier(mut self) -> Result<Self, ModError> {
@@ -532,6 +545,7 @@ impl TacsimRuleset {
             cfg,
             loaded,
             test_world: false,
+            unit_authority: false,
             inventory: None,
             goods,
         }
@@ -890,6 +904,7 @@ impl GameModule for TacsimRuleset {
         // exits and aliases still work). Beside the lobby and for the same
         // reason.
         match_::cockpit::register(reg)?;
+        detachment::live::register(reg)?;
         // 16b cut AH.1 (16c N18): the first-time hints — `@tutorial` and the
         // lobby's `Moved` observer, under the `LegacyPostImage` classification
         // the cockpit hands back. Unconditional like its neighbours: the verb
@@ -915,6 +930,7 @@ impl GameModule for TacsimRuleset {
             self.ic_minds.as_deref(),
             self.coverage.as_deref(),
             self.registry_inspection.as_deref(),
+            self.unit_authority,
         )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
@@ -976,8 +992,8 @@ impl GameModule for TacsimRuleset {
                 // holdings' grants took (`manifest` is `self.original_holdings`,
                 // checked above). It adds a grant and no service: the market's
                 // registration is already among the launch's services, so the
-                // format-2 Active launch composes 33 services and 35 grants. A
-                // refusal fails TacSim's registration, as those grants' do.
+                // launch's complete read budget is pinned by the composition
+                // tests. A refusal fails registration, as those grants' do.
                 let market = Some(mush_market::mind_commands::MarketCommandReader::request(
                     reg, manifest,
                 )?);

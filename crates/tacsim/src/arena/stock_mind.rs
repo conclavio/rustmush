@@ -198,9 +198,12 @@ pub struct StockMemory {
     /// every order until the view carried none. Written by the three early
     /// ends (and the `unreachable` edge's two) as the ended order's
     /// `expires_ms`; cleared when the view carries no order or an order with
-    /// another `expires_ms`. An integer, so 17b cut M2's frozen memory shape
-    /// carries which order ended, not merely that one did.
+    /// another identity. DT orders use `ignore_identity`, encoded as STRING in
+    /// this same key, because a standing deadline cannot identify an order.
     pub ignore_until_ms: Option<i64>,
+    /// Explicit DT identity of an ended order. Encoded as a STRING in the same
+    /// `ignore_until_ms` memory key; legacy INT memory stays byte-identical.
+    pub ignore_identity: Option<smol_str::SmolStr>,
     /// `ordered`: **the `Withdraw` is an order's** (17b cut M4.3; the
     /// fifteenth key). The expiry's restoration (a healthy, not-dry `Withdraw`
     /// under no order goes back to `Patrol`) reads it, so only a `Withdraw` an
@@ -266,7 +269,8 @@ impl From<&Memory> for StockMemory {
     /// field's default (an empty memory is a fresh sortie). 17b cut M2.2:
     /// over `mush_mind`'s [`MemValue`] — an `Int` for every integer (the
     /// state's code, the two waypoints, the clocks, `ignore_until_ms` and
-    /// `target`'s bit-cast), `Ints` for `goal`, `hunt` and `last_plot`, `Bool`
+    /// `target`'s bit-cast), or a STRING for an explicit ignored order identity;
+    /// `Ints` for `goal`, `hunt` and `last_plot`, `Bool`
     /// for `rallied` and `no_line`.
     fn from(memory: &Memory) -> StockMemory {
         let flag = |key: &str| matches!(memory.get(key), Some(MemValue::Bool(true)));
@@ -293,6 +297,10 @@ impl From<&Memory> for StockMemory {
             hunt: cell_at(memory, "hunt"),
             no_line: flag("no_line"),
             ignore_until_ms: int_at(memory, "ignore_until_ms"),
+            ignore_identity: match memory.get("ignore_until_ms") {
+                Some(MemValue::Str(identity)) => Some(smol_str::SmolStr::new(identity)),
+                _ => None,
+            },
             ordered: flag("ordered"),
         }
     }
@@ -337,7 +345,13 @@ impl From<StockMemory> for Memory {
         put("rallied", MemValue::Bool(stock.rallied));
         put("hunt", cell_value(stock.hunt));
         put("no_line", MemValue::Bool(stock.no_line));
-        put("ignore_until_ms", int_value(stock.ignore_until_ms));
+        put(
+            "ignore_until_ms",
+            stock.ignore_identity.map_or_else(
+                || int_value(stock.ignore_until_ms),
+                |identity| MemValue::Str(identity.to_string()),
+            ),
+        );
         put("ordered", MemValue::Bool(stock.ordered));
         memory
     }
@@ -687,9 +701,25 @@ fn hint(order: Option<&FrameOrder>) -> Option<ContactId> {
 /// M1b.5; the lead's ruling on M1a.6's residual (10)): the order whose
 /// `expires_ms` is not the memory's `ignore_until_ms`.
 fn obeyed<'v>(view: &'v MindView, mem: &StockMemory) -> Option<&'v FrameOrder> {
-    view.order
-        .as_ref()
-        .filter(|order| Some(order.expires_ms) != mem.ignore_until_ms)
+    view.order.as_ref().filter(|order| !mem.ignores(order))
+}
+
+impl StockMemory {
+    fn ignores(&self, order: &FrameOrder) -> bool {
+        match &order.identity {
+            Some(identity) => self.ignore_identity.as_ref() == Some(identity),
+            None => {
+                self.ignore_identity.is_none() && Some(order.expires_ms) == self.ignore_until_ms
+            }
+        }
+    }
+
+    fn ignore(&mut self, order: Option<&FrameOrder>) {
+        self.ignore_identity = order.and_then(|order| order.identity.clone());
+        self.ignore_until_ms = order
+            .filter(|order| order.identity.is_none())
+            .map(|order| order.expires_ms);
+    }
 }
 
 /// **Whether an `Advance { to }` has reached the Hold square** (the reflex's
@@ -948,13 +978,13 @@ impl NativeStockMind {
             let live = obeyed(view, mem);
             // 16b cut E.2 (`B-41`): the order's own `Advance` cell.
             if live.is_some_and(|order| order.objective == MindObjective::Advance { to: failed }) {
-                mem.ignore_until_ms = live.map(|order| order.expires_ms);
+                mem.ignore(live);
             }
             // 16b cut Z.2's review: a supporter's station, in `Patrol`.
             if live.is_some_and(|order| matches!(order.objective, MindObjective::Support { .. }))
                 && mem.state == MachineState::Patrol
             {
-                mem.ignore_until_ms = live.map(|order| order.expires_ms);
+                mem.ignore(live);
             }
             // 16b cut E.4: the search's plot and the hunt's cell.
             if mem.last_plot.is_some_and(|(cell, _)| cell == failed) {
@@ -998,8 +1028,9 @@ impl NativeStockMind {
         // stops obeying THAT order (the divergence `order_end`); the key is
         // spent when the view carries no order or an order with another
         // deadline — a newer order, obeyed at once (17b cut M1b.5).
-        if view.order.as_ref().map(|order| order.expires_ms) != mem.ignore_until_ms {
+        if view.order.as_ref().is_none_or(|order| !mem.ignores(order)) {
             mem.ignore_until_ms = None;
+            mem.ignore_identity = None;
         }
         let health = health_permille(view);
         let dry = is_dry(view);
@@ -1045,7 +1076,7 @@ impl NativeStockMind {
             _ => false,
         };
         if ends {
-            mem.ignore_until_ms = order.map(|order| order.expires_ms);
+            mem.ignore(order);
             order = None;
         }
         let objective = order.map(|order| order.objective);
@@ -2123,6 +2154,7 @@ mod tests {
             hunt: Some((250, 128)),
             no_line: true,
             ignore_until_ms: Some(60_000),
+            ignore_identity: None,
             ordered: true,
         };
         let mut keys: Vec<&str> = STOCK_MEMORY_KEY_NAMES.to_vec();
@@ -2395,6 +2427,7 @@ mod tests {
         assert_eq!(memory.ignore_until_ms, None);
         // The same result under an `Advance` to the failed cell ends the order.
         view.order = Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Advance { to: failed },
             hold_fire: false,
@@ -2626,6 +2659,7 @@ mod tests {
     /// A standing order of `objective` for `red-1`, a minute long.
     fn order_of(objective: MindObjective) -> FrameOrder {
         FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective,
             hold_fire: false,

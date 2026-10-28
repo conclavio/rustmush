@@ -1404,6 +1404,12 @@ pub fn state_hash(arena: &Arena) -> u64 {
         }
         None => fold.bytes(&[0_u8]),
     }
+    // Empty DT ownership adds no bytes to legacy combat hashes. Tombstones
+    // remain authoritative: otherwise a removed command lane could resurrect.
+    if !arena.detachment_commands.is_empty() {
+        fold.bytes(b"detachment-authority-v1\0");
+        fold_value(fold, &arena.detachment_commands);
+    }
     fold.finish()
 }
 
@@ -1487,6 +1493,10 @@ fn fold_mind(fold: &mut Fold, unit: mush_core::ObjId, mind: &crate::arena::mind:
             fold.bytes(&[u8::from(order.hold_fire), band]);
             fold.bytes(&order.expires_ms.to_le_bytes());
             fold.bytes(order.squad.as_bytes());
+            if let Some(identity) = &order.identity {
+                fold.bytes(b"order-identity-v1\0");
+                fold_value(fold, identity);
+            }
         }
         None => fold.bytes(&[0_u8]),
     }
@@ -2639,6 +2649,7 @@ mod tests {
                 ObjId(4),
                 MindState {
                     order: objective.map(|objective| FrameOrder {
+                        identity: None,
                         squad: "red-1".into(),
                         objective,
                         hold_fire: false,
@@ -3053,6 +3064,7 @@ mod tests {
             let mut arena = base.clone();
             if let Some(state) = arena.minds.get_mut(&ObjId(4)) {
                 state.order = Some(crate::arena::perception::FrameOrder {
+                    identity: None,
                     squad: "red-1".into(),
                     objective: crate::arena::perception::MindObjective::Hold,
                     hold_fire: false,

@@ -38,14 +38,53 @@ const PRICE: i64 = 100;
 const QUOTE_SECONDS: i64 = 30;
 // A finite hang guard, not a pace requirement (timing is report-only under
 // the owner's waiver): the live server paces a Registry lease through its
-// maintenance ticks, about 7 s each, and this certificate takes ~1,070.
+// maintenance ticks (about six a lease; `mind_pulse`), and this certificate
+// takes ~1,070 of them: about three hours at production's 1,000 ms pulse,
+// minutes at the stories' `MIND_PULSE_MS` default.
 const REGISTRY_GUARD: Duration = Duration::from_secs(14_400);
+/// The stories' maintenance pulse when `MIND_PULSE_MS` is unset: a lease
+/// about a third of a second, a certificate about six minutes.
+const STORY_PULSE_MS: u64 = 50;
+/// Production's pulse, `MIND_PULSE_MS=1000`: the three-hour run.
+const PRODUCTION_PULSE_MS: u64 = 1_000;
+
+/// Sets the proving service's maintenance pulse
+/// (`[tacsim.minds]`'s code-only `bulk_maintenance_ms`, the
+/// `mind-bulk-maintenance` tick's period) for a story's server: the
+/// `MIND_PULSE_MS` environment variable when it is set and not empty, else
+/// [`STORY_PULSE_MS`]. Every Registry lease crosses about six pulses, so this
+/// is the pace of the genuine rating and nothing else: no ledger, quota,
+/// quote expiry or IC clock reads it. `MIND_PULSE_MS=1000` is production's
+/// pace, the nightly schedule's in `ci.yml` (the precedent is `MINE_RATE`,
+/// the bot mining rigs' world rate); an empty value is the workflow's unset
+/// dispatch input, the fast path.
+pub(super) fn mind_pulse(config: &mut Config) {
+    // `assert!`, not `panic!`: this file is under `src/`, so the production
+    // panic budget (`mush-contract-tests/tests/panic_budget.rs`) counts it.
+    let pulse = match std::env::var("MIND_PULSE_MS") {
+        Ok(raw) if !raw.trim().is_empty() => {
+            let parsed = raw
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|ms| (10..=PRODUCTION_PULSE_MS).contains(ms));
+            assert!(
+                parsed.is_some(),
+                "MIND_PULSE_MS is not a maintenance pulse in milliseconds, 10 to 1000: {raw:?}"
+            );
+            parsed.unwrap_or(STORY_PULSE_MS)
+        }
+        _ => STORY_PULSE_MS,
+    };
+    config.tacsim.minds.bulk_maintenance_ms = pulse;
+}
 
 fn config() -> Config {
     let mut config = Config::default();
     config.tacsim.enabled = true;
     config.store.store = "memory".into();
     config.game.ic_ratio = 24;
+    mind_pulse(&mut config);
     config
 }
 fn issuer() -> TestResult<SystemPrincipalId> {

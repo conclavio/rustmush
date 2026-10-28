@@ -20,7 +20,7 @@ use super::state::{Arena, MatchEnd, StopReason};
 pub const TAPE_FORMAT: u16 = 2;
 /// Bump whenever native execution or input application changes without an ABI
 /// change. Also captures the script body, physics and snapshot protocol below.
-pub const REPLAY_ENGINE: &str = "tacsim-engine-m7-v1";
+pub const REPLAY_ENGINE: &str = "tacsim-engine-dt1b-v1";
 pub const DEFAULT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const MIN_MAX_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_MAX_BYTES: u64 = 128 * 1024 * 1024;
@@ -317,7 +317,8 @@ pub enum TapeEvent {
     Watch {
         on: bool,
     },
-    /// Normal live restart resets wall/floor/pin and snapshot-only scratch.
+    /// Normal OOC live restart resets ephemeral detachment ownership/objectives,
+    /// wall/floor/pin and snapshot-only scratch.
     /// Re-encode/decode the state already reproduced at the exact checkpoint;
     /// this applies the normal snapshot scratch reset, then restores the actual
     /// new process clock. No unverified snapshot can skip recorded work.
@@ -325,6 +326,10 @@ pub enum TapeEvent {
         hash: u64,
         clock: ReplayClock,
         ledger_flushed: u64,
+    },
+    /// Independent DT authority, applied before the pulse's command intents.
+    DetachmentControl {
+        control: super::detachment::DetachmentControl,
     },
 }
 impl TapeEvent {
