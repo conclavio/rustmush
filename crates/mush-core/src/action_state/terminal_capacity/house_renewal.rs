@@ -557,8 +557,10 @@ fn require_house_birth(
             return Err(refused("house renewal birth subject differs"));
         }
     }
+    // M8c F4: by principal (the binding names the renewing actor as
+    // `acting` for an organisation-held licence).
     if matches!(number(binding, "format")?, 1 | 3)
-        && field(&allocation, "holder")? != field(binding, "holder")?
+        && !owner_index::same_holder(field(&allocation, "holder")?, field(binding, "holder")?)?
     {
         return Err(refused("house renewal original holder differs"));
     }
@@ -1076,7 +1078,8 @@ pub(super) fn validate_changes(
         if identity.actor != crate::GOD {
             return Err(refused("renewal actual service identity differs"));
         }
-    } else if number(next.binding()?, "holder")? != u64::from(identity.actor.0) {
+    } else if owner_index::acting(field(next.binding()?, "holder")?)? != u64::from(identity.actor.0)
+    {
         return Err(refused("renewal actual buyer identity differs"));
     }
     let mut keys = vec![
@@ -1169,10 +1172,17 @@ pub(super) fn validate_changes(
         let old_licence = current_licence(&before, &prior)?;
         let mut expected_licence = old_licence.clone();
         if action == 2 {
-            expected_licence
+            // M8c F4: the renewed pointer names the binding's holder, the
+            // same principal re-stamped with the renewing actor as acting.
+            let holder = field(next.binding()?, "holder")?.clone();
+            if !owner_index::same_holder(field(&old_licence, "holder")?, &holder)? {
+                return Err(refused("renewal changed the licence holder"));
+            }
+            let fields = expected_licence
                 .as_object_mut()
-                .ok_or_else(|| refused("renewal licence shape"))?
-                .insert("term".into(), json!(next.next.to_string()));
+                .ok_or_else(|| refused("renewal licence shape"))?;
+            fields.insert("term".into(), json!(next.next.to_string()));
+            fields.insert("holder".into(), holder);
             keys.extend([
                 licence_key(LICENCE, next.licence)?,
                 term_key(TERM, next.licence, next.next)?,

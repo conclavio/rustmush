@@ -256,7 +256,12 @@ impl RegisteredRenewalWriter {
         let pair = ctx
             .distinct_personal_accounts(facts.sale().seller())
             .map_err(invalid)?;
-        if pair.requester() != facts.binding().holder() || pair.other() != facts.sale().seller() {
+        // M8c F4: the renewing actor (the sale's requester, acting for the
+        // holder: `check_fresh`), not the character who bought.
+        if pair.requester() != facts.sale().requester()
+            || facts.binding().holder().acting_character() != pair.requester()
+            || pair.other() != facts.sale().seller()
+        {
             return Err(PublicationError::Mismatch);
         }
         Ok(PreparedRenewal {
@@ -635,7 +640,11 @@ impl RegisteredRenewalWriter {
         )?;
         if transition == Publication::Ordinary(Transition::Grant) {
             let (expected_licence, term, economics) = after.granted_rows()?;
-            let licence = current_licence.with_next_term(after.binding().next())?;
+            // M8c F4: the renewed pointer records the renewing actor as
+            // acting (`re_stamped`: the same principal, or `Mismatch`).
+            let licence = current_licence
+                .with_next_term(after.binding().next())?
+                .re_stamped(expected_licence.holder())?;
             if licence != expected_licence {
                 return Err(PublicationError::Mismatch);
             }
@@ -706,7 +715,8 @@ fn check_offer(
         || offer.basis.prior_quote != facts.prior_quote()
         || offer.basis.prior_quote_digest != facts.prior_quote_digest()
         || terms.lineage != lineage
-        || terms.buyer != sale.requester()
+        || !terms.buyer.same_principal(facts.binding().holder())
+        || terms.buyer.acting_character() != sale.requester()
         || terms.seller != sale.seller()
         || terms.title_revision != sale.title_revision()
         || terms.parents.len() != sale.royalty().edges().len()

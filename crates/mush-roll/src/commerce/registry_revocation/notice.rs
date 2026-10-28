@@ -147,7 +147,8 @@ fn holding(
         }
         (None, Some(paid)) => {
             paid.validate()?;
-            if paid.id() != licence || paid.holder() != actor {
+            // M8c B1: a notice reaches a character: the holder's acting one.
+            if paid.id() != licence || paid.holder().acting_character() != actor {
                 return Err(PublicationError::Missing);
             }
             let term = read(
@@ -276,7 +277,7 @@ fn page(
                 rows.push((
                     entry.encoded_key().to_string(),
                     row.id(),
-                    Some(row.holder()),
+                    Some(row.holder().acting_character()),
                 ));
             }
             Ok(Page {

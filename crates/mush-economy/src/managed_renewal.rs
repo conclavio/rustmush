@@ -14,7 +14,6 @@ use crate::contract::{
 use crate::module::EconomyStore;
 use crate::record::EconomicVisibility;
 use crate::{ContractId, EconomicClock, EconomicDeadline};
-use mush_org::PrincipalId;
 
 mod subject;
 pub use subject::{RenewalBasisV1, RenewalLineageV1, RenewalOffer, RenewalOfferTermsV1};
@@ -385,7 +384,7 @@ fn contract(record: &history::OfferRecord) -> Result<EconomicContract, Participa
     let offer = &record.offer;
     offer.validate()?;
     let marker = RenewalMarkerV1::new(record.operation, record.action.clone(), offer)?;
-    let buyer = PrincipalId::Object(offer.terms.buyer);
+    let buyer = offer.terms.buyer.principal();
     let consent = ConsentSurface {
         fact_consent: None,
         managed: Some(ManagedConsent::renewal_offer(marker)?),

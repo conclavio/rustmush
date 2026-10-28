@@ -703,7 +703,9 @@ impl RegisteredEntitlementWriter {
             quote: purchase.quote,
             quote_digest: purchase.quote_digest,
             product_digest: purchase.product_digest,
-            holder: facts.requester(),
+            // M8c B3: the holder is the quote's buyer, a character or an
+            // organisation acting through this invocation's actor.
+            holder: purchase.buyer,
             charter: facts.charter(),
             line: facts.line(),
             filed: facts.filed(),
@@ -877,7 +879,7 @@ fn check_purchase(
     facts: &EntitlementSaleFacts,
 ) -> Result<(), PublicationError> {
     if p.protocol != facts.protocol()
-        || p.buyer != facts.requester()
+        || p.buyer.acting_character() != facts.requester()
         || p.seller != facts.seller()
         || p.charter != mush_core::ObjId(facts.charter().get())
         || p.title_revision != facts.title_revision()

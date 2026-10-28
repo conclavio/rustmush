@@ -3,7 +3,7 @@
 
 use super::super::house_catalogue::HouseIssuer;
 use super::HouseProtocol;
-use mush_core::{CommitToken, DefinitionDigest, ObjId};
+use mush_core::{CommitToken, DefinitionDigest};
 use mush_economy::managed_purchase::FundingReceipt;
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,7 @@ use super::super::purchase::{PurchaseParticipants, PurchasePhase};
 use super::super::rating::RatingRef;
 use super::super::records::{PublicationError, Record, RevisionPolicy};
 use super::super::{
-    CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration,
+    CharterId, FiledRevisionId, Holder, LicenceId, LineId, RevisionIdentity, TermGeneration,
 };
 use super::HouseTermEconomicsV1;
 
@@ -28,7 +28,7 @@ pub struct HouseAllocationV1 {
     pub(crate) quote: CommitToken,
     pub(crate) quote_digest: DefinitionDigest,
     pub(crate) product_digest: DefinitionDigest,
-    pub(crate) holder: ObjId,
+    pub(crate) holder: Holder,
     pub(crate) issuer: HouseIssuer,
     pub(crate) charter: CharterId,
     pub(crate) line: LineId,
@@ -54,7 +54,7 @@ struct AllocationWire {
     quote: CommitToken,
     quote_digest: DefinitionDigest,
     product_digest: DefinitionDigest,
-    holder: ObjId,
+    holder: Holder,
     issuer: HouseIssuer,
     charter: CharterId,
     line: LineId,
@@ -128,7 +128,7 @@ impl HouseAllocationV1 {
     pub const fn product_digest(&self) -> DefinitionDigest {
         self.product_digest
     }
-    pub const fn holder(&self) -> ObjId {
+    pub const fn holder(&self) -> Holder {
         self.holder
     }
     pub const fn issuer(&self) -> HouseIssuer {
@@ -178,7 +178,7 @@ impl Record for HouseAllocationV1 {
         let economics = &self.economics;
         if self.format != self.protocol.format()
             || economics.format() != self.protocol.format()
-            || self.holder.0 == 0
+            || self.holder.is_nobody()
             || self.term.get() != 1
             || self.quote == self.operation
             || self.terms.seats().get() != self.protocol.seats()

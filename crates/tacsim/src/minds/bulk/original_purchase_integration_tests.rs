@@ -48,6 +48,8 @@ const BUYER: ObjId = ObjId(2);
 const ROOM: ObjId = ObjId(0);
 const TERM_SECONDS: i64 = 90 * 86_400;
 const GRACE_SECONDS: i64 = 3 * 86_400;
+/// M8c F10: the House owner term the House rig composes (the launch's 365 days).
+const HOUSE_OWNER_TERM_SECONDS: i64 = 365 * 86_400;
 const QUOTE_SECONDS: i64 = 600;
 
 fn token(number: u128) -> CommitToken {
@@ -1506,7 +1508,7 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
         serde_json::from_value(one(granted.rows("roll", "roll_mind_paid_term"))?)?;
     term.matches_current(&licence)?;
     check_eq!(licence.id().get(), 2);
-    check_eq!(licence.holder(), BUYER);
+    check_eq!(licence.holder(), mush_economy::Holder::Character(BUYER));
     check_eq!(licence.charter().object(), shell);
     check_eq!(licence.operation(), operation);
     check_eq!(term.operation(), operation);

@@ -142,7 +142,7 @@ fn prepared(
         &r.state,
         &OfferContext {
             world: &r.world,
-            actor: r.offer.terms.buyer,
+            actor: r.offer.terms.buyer.acting_character(),
             principal: &r.principal,
             action: &action,
             commit: token(n),

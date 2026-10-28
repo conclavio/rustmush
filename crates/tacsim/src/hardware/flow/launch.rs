@@ -936,7 +936,14 @@ async fn named_launch_format_one_stays_house_only() -> Result {
     activate(&mut r, &mut d, false)?;
     check!(r.action("market", "purchase_house_mind").is_ok());
     check!(r.action("roll", "conduct_trial_admit").is_ok());
+    // M8c F10 (the lead's ruling): the owner attestations are composed with
+    // the House family, market or not, so format 1 registers them too.
+    check!(r.action("roll", "attest_owner_mind").is_ok());
+    check!(r.action("roll", "attest_house_mind").is_ok());
     for (owner, id) in MARKET_ACTIONS {
+        if id == "attest_owner_mind" {
+            continue;
+        }
         check!(r.action(owner, id).is_err(), "{owner}/{id} on format 1");
     }
     let buyer = r.buyer;
@@ -945,8 +952,12 @@ async fn named_launch_format_one_stays_house_only() -> Result {
     // `named_launch_market_help_states_the_deployment_terms` is the positive
     // control on format 2.
     for actor in [GOD, buyer] {
+        // M8c F10: the owner attestation is composed with the House family,
+        // so its verb may be offered on format 1; no other market verb is.
+        let mut verbs = generic_market_verbs(&mut r, actor)?;
+        verbs.retain(|verb| verb != "roll-attest-owner-mind");
         check_eq!(
-            generic_market_verbs(&mut r, actor)?,
+            verbs,
             Vec::<String>::new(),
             "format 1 offers #{} no market verb",
             actor.0
@@ -1186,6 +1197,7 @@ fn the_org_vocabulary_admits_every_named_launch_grant() -> Result {
         "industry.core.refit",
         "roll.registry.recall",
         "roll.registry.revoke",
+        "roll.holder.org",
     ] {
         check!(
             vocabulary.contains(&mush_org::CapabilityId::new(capability).ok_or("an id")?),

@@ -180,7 +180,7 @@ pub(super) fn fixture(
         publication: token(3),
         listing: listing.publication,
         listing_digest: listing.digest()?,
-        buyer: ObjId(8),
+        buyer: ObjId(8).into(),
         subject: listing.subject,
         product_digest: listing.product.digest()?,
         product: listing.product,
@@ -323,7 +323,7 @@ pub(crate) fn command_quote(
     let mut q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
     q.publication = publication;
     q.listing = listing;
-    q.buyer = buyer;
+    q.buyer = buyer.into();
     q.quoted_at_utc = quoted;
     q.expires_at_utc = expires;
     q.validate()?;
@@ -503,7 +503,7 @@ fn payer_royalty_stays_a_credit_beside_full_gross_and_zero_cuts_keep_identity() 
         .ok_or("title")?;
     parent.recipient = Recipient {
         account: q.payer,
-        owner: mush_org::PrincipalId::Object(q.buyer),
+        owner: q.buyer.principal(),
     };
     reprice(&mut q)?;
     let e = q.economic_subject()?;
@@ -683,7 +683,7 @@ fn quote_bounds_and_measured_payouts_are_revalidated_after_repaired_hashes() -> 
     bad.expires_at_utc = bad.quoted_at_utc + 601;
     check!(bad.validate().is_err());
     let mut bad = q.clone();
-    bad.buyer = bad.subject.seller;
+    bad.buyer = bad.subject.seller.into();
     check!(bad.validate().is_err());
     let mut bad = q.clone();
     bad.payer = bad.remainder.account;
@@ -796,12 +796,26 @@ fn the_transfer_mark_narrows_and_never_widens() -> TestResult {
                 .all(|p| supplied.contains_key(p.id.as_str()))
         );
     }
+    // M8c B3: the quote names the listing and, optionally, the organisation
+    // bought for (an integer at least 1: `Holder`'s organisation arm never
+    // names organisation 0).
     let quote = parameters(Kind::Quote)?;
-    check_eq!(quote.len(), 1);
-    check!(
-        quote
-            .iter()
-            .all(|p| p.required && p.id.as_str() == "listing")
+    let shape = quote
+        .iter()
+        .map(|p| (p.id.as_str().to_owned(), p.required))
+        .collect::<Vec<_>>();
+    check_eq!(
+        shape,
+        vec![("listing".to_owned(), true), ("org".to_owned(), false)]
+    );
+    let org = quote.iter().find(|p| p.id.as_str() == "org").ok_or("org")?;
+    // M8c F8: organisation 0 is an organisation.
+    check_eq!(
+        org.kind,
+        K::Integer {
+            minimum: 0,
+            maximum: i64::MAX,
+        }
     );
     // The deployment policy and the mark through the product body.
     let config = |transferable: bool| -> TestResult<EntitlementConfig> {

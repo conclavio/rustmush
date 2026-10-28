@@ -405,12 +405,29 @@ pub struct MarketCommandRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ReadKind {
     AtCounter,
-    Listings { after: Option<CommitToken> },
-    ListingByCode { code: String },
-    ListingsAfter { code: String },
-    OwnPurchase { code: String },
-    OwnOpen,
-    ResaleOffers { licence: LicenceId },
+    Listings {
+        after: Option<CommitToken>,
+    },
+    ListingByCode {
+        code: String,
+    },
+    ListingsAfter {
+        code: String,
+    },
+    OwnPurchase {
+        code: String,
+        /// M8c B3: the organisation whose records (the actor acting for it)
+        /// the read answers; absent, the actor's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<mush_org::OrgId>,
+    },
+    OwnOpen {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<mush_org::OrgId>,
+    },
+    ResaleOffers {
+        licence: LicenceId,
+    },
     OwnQuotes,
 }
 impl MarketCommandRequest {
@@ -425,17 +442,30 @@ impl MarketCommandRequest {
     /// whose code is `code`, through the actor's own index only.
     #[must_use]
     pub fn own_purchase(code: &str) -> Self {
+        Self::own_purchase_for(code, None)
+    }
+    /// M8c B3: `own_purchase` over the actor's records for the organisation
+    /// `org` (`Holder::Organization { org, acting: actor }`), or, with
+    /// `None`, its own (`Holder::Character`); the two never mix.
+    #[must_use]
+    pub fn own_purchase_for(code: &str, org: Option<mush_org::OrgId>) -> Self {
         Self {
             kind: ReadKind::OwnPurchase {
                 code: code.to_owned(),
+                org,
             },
         }
     }
     /// 17g C2g: every funded purchase the actor has open.
     #[must_use]
     pub const fn own_open() -> Self {
+        Self::own_open_for(None)
+    }
+    /// M8c B3: `own_open` for the organisation `org`, as `own_purchase_for`.
+    #[must_use]
+    pub const fn own_open_for(org: Option<mush_org::OrgId>) -> Self {
         Self {
-            kind: ReadKind::OwnOpen,
+            kind: ReadKind::OwnOpen { org },
         }
     }
     /// 17g C2g: the live resale offers naming the actor on `licence`.
@@ -884,10 +914,10 @@ pub(crate) fn answer<'a>(
 ) -> Result<MarketCommandResult, OwnerReadError> {
     let current = |row: &EntitlementListingV1| current_policy(config, row).is_ok();
     match request.kind {
-        ReadKind::OwnPurchase { code } => own_purchase(source, own.actor, &code)
+        ReadKind::OwnPurchase { code, org } => own_purchase(source, own.actor, &code, org)
             .map(|found| MarketCommandResult::OwnPurchase { found }),
-        ReadKind::OwnOpen => {
-            own_open(source, own.actor).map(|open| MarketCommandResult::OwnOpen { open })
+        ReadKind::OwnOpen { org } => {
+            own_open(source, own.actor, org).map(|open| MarketCommandResult::OwnOpen { open })
         }
         ReadKind::ResaleOffers { licence } => resale_offers(source, own, licence)
             .map(|offers| MarketCommandResult::ResaleOffers { offers }),
@@ -1044,7 +1074,15 @@ type OwnRows<'a> = (Vec<&'a EntitlementQuoteV1>, Vec<&'a EntitlementPurchaseV1>)
 
 /// The actor's own quotes and funded purchases from its index row, each row
 /// checked against the index (its own token, this buyer, a funded phase).
-fn own_rows<'a>(source: &impl OwnSource<'a>, actor: ObjId) -> Result<OwnRows<'a>, OwnerReadError> {
+/// M8c B3: the row is keyed by the acting character and holds its records
+/// for itself and for every organisation it acted for; `org` picks one
+/// holder (`Holder::organization`), so a personal step never meets an
+/// organisation's record nor the reverse.
+fn own_rows<'a>(
+    source: &impl OwnSource<'a>,
+    actor: ObjId,
+    org: Option<mush_org::OrgId>,
+) -> Result<OwnRows<'a>, OwnerReadError> {
     let Some(row) = source.actor_row(actor)? else {
         return Ok((Vec::new(), Vec::new()));
     };
@@ -1059,10 +1097,12 @@ fn own_rows<'a>(source: &impl OwnSource<'a>, actor: ObjId) -> Result<OwnRows<'a>
     let mut quotes = Vec::with_capacity(quote_tokens.len());
     for (token, quote) in quote_tokens.iter().zip(source.quotes(&quote_tokens)?) {
         let quote = quote.ok_or(OwnerReadError::Integrity)?;
-        if quote.publication() != *token || quote.buyer() != actor {
+        if quote.publication() != *token || quote.buyer().acting_character() != actor {
             return Err(OwnerReadError::Integrity);
         }
-        quotes.push(quote);
+        if quote.buyer().organization() == org {
+            quotes.push(quote);
+        }
     }
     let mut operations = Vec::with_capacity(operation_tokens.len());
     for (token, operation) in operation_tokens
@@ -1071,12 +1111,14 @@ fn own_rows<'a>(source: &impl OwnSource<'a>, actor: ObjId) -> Result<OwnRows<'a>
     {
         let operation = operation.ok_or(OwnerReadError::Integrity)?;
         if operation.operation() != *token
-            || operation.quote_row().buyer() != actor
+            || operation.quote_row().buyer().acting_character() != actor
             || operation.phase() != (PurchasePhase::Funded {})
         {
             return Err(OwnerReadError::Integrity);
         }
-        operations.push(operation);
+        if operation.quote_row().buyer().organization() == org {
+            operations.push(operation);
+        }
     }
     Ok((quotes, operations))
 }
@@ -1090,11 +1132,12 @@ pub(crate) fn own_purchase<'a>(
     source: &impl OwnSource<'a>,
     actor: ObjId,
     code: &str,
+    org: Option<mush_org::OrgId>,
 ) -> Result<Option<OwnPurchaseView>, OwnerReadError> {
     if !is_code(code) {
         return Err(OwnerReadError::Refused);
     }
-    let (quotes, operations) = own_rows(source, actor)?;
+    let (quotes, operations) = own_rows(source, actor, org)?;
     let matches = |listing: CommitToken| listing.to_string().starts_with(code);
     let quotes: Vec<_> = quotes
         .into_iter()
@@ -1152,8 +1195,9 @@ pub(crate) fn own_purchase<'a>(
 pub(crate) fn own_open<'a>(
     source: &impl OwnSource<'a>,
     actor: ObjId,
+    org: Option<mush_org::OrgId>,
 ) -> Result<Vec<OwnOpenView>, OwnerReadError> {
-    let (_, operations) = own_rows(source, actor)?;
+    let (_, operations) = own_rows(source, actor, org)?;
     Ok(operations
         .into_iter()
         .map(|p| OwnOpenView {
@@ -1171,7 +1215,7 @@ pub(crate) fn own_quotes<'a>(
     source: &impl OwnSource<'a>,
     actor: ObjId,
 ) -> Result<Vec<OwnQuoteRowView>, OwnerReadError> {
-    let (mut quotes, _) = own_rows(source, actor)?;
+    let (mut quotes, _) = own_rows(source, actor, None)?;
     quotes.sort_by_key(|q| std::cmp::Reverse((q.quoted_at_utc(), q.publication())));
     Ok(quotes
         .into_iter()

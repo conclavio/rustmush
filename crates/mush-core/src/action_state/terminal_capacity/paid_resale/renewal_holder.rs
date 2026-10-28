@@ -54,7 +54,12 @@ pub(in crate::action_state::terminal_capacity) fn renewal_holder(
         return Err(refused("renewal holder birth licence differs"));
     }
     if generation == 1 {
-        if field(binding, "holder")? != field(&allocation, "holder")? {
+        // M8c F4: by principal: the binding of an organisation-held licence
+        // names the renewing actor as `acting`.
+        if !crate::action_state::terminal_capacity::owner_index::same_holder(
+            field(binding, "holder")?,
+            field(&allocation, "holder")?,
+        )? {
             return Err(refused("renewal original holder differs"));
         }
         return Ok(());
@@ -82,7 +87,10 @@ pub(in crate::action_state::terminal_capacity) fn renewal_holder(
     };
     if field(binding, "licence")? != field(&holder, "licence")?
         || num(&holder, "generation")? != generation
-        || field(binding, "holder")? != field(&holder, "holder")?
+        || !crate::action_state::terminal_capacity::owner_index::same_holder(
+            field(binding, "holder")?,
+            field(&holder, "holder")?,
+        )?
         || token(field(field(&holder, "birth")?, "operation")?)? != birth
         || field(field(&p.row, "state")?, "ownership")? != field(basis, "ownership")?
         || field(binding, "charter")? != field(captured, "charter")?
@@ -141,8 +149,10 @@ pub(in crate::action_state::terminal_capacity) fn renewal_current_holder(
         } else {
             Some(field(field(binding, "holder_basis")?, "ownership")?)
         };
-        if field(current, "holder")? != field(binding, "holder")?
-            || num(current, "format")? != if generation == 1 { 1 } else { 2 }
+        if !crate::action_state::terminal_capacity::owner_index::same_holder(
+            field(current, "holder")?,
+            field(binding, "holder")?,
+        )? || num(current, "format")? != if generation == 1 { 1 } else { 2 }
             || current.get("ownership") != expected
         {
             return Err(refused("renewal pending holder changed"));

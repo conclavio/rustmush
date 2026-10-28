@@ -107,7 +107,18 @@ pub(crate) fn resolve(
             operation.selected_parent.licence
         }
     };
-    let actual = project_personal_paid_for(ctx, holder, f, ratings, selected, expected)?;
+    // M8c F1 (the lead's ruling): a personal filing derives from the owner's
+    // OWN paid licence only; an organisation-held parent refuses the
+    // organisation arm here (`NotHeld`), as `parent_grant` does: organisation
+    // intellectual property does not move into personal hands in this cut.
+    let actual = project_personal_paid_for(
+        ctx,
+        super::super::Holder::Character(holder),
+        f,
+        ratings,
+        selected,
+        expected,
+    )?;
     if actual.actor() != holder
         || actual.charter() != binding.parent.charter
         || actual.line() != binding.parent.line

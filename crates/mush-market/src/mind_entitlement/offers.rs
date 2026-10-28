@@ -11,6 +11,7 @@ use mush_core::action::{
     ActionError, ActionErrorCode, ActionInvocation, ActionProvider, AuthoritativeActionOutput,
 };
 use mush_core::{ActionTxn, CommitToken, DefinitionRef, PrepareCtx, RulesValue};
+use mush_economy::Holder;
 use mush_economy::managed_entitlement::{EntitlementProtocol, Recipient};
 use mush_roll::commerce::LicenceId;
 use mush_roll::commerce::entitlement::reader::{EntitlementSaleFacts, EntitlementSaleRequest};
@@ -72,6 +73,11 @@ impl List {
 #[serde(deny_unknown_fields)]
 struct Quote {
     listing: CommitToken,
+    /// Doc 17h §3 M8c (B3): the organisation the quoting character buys for,
+    /// when it acts for one (`org_holder::acts_for`); absent, the character
+    /// buys for itself and nothing changes.
+    #[serde(default)]
+    org: Option<u64>,
 }
 enum Request {
     List(List),
@@ -204,7 +210,35 @@ impl Provider {
                 let world = ctx.world().map_err(|e| e.to_string())?;
                 self.guard.current(world, inv.actor())?;
                 let economy = accounts::live(world)?;
-                let payer = accounts::personal(economy, &listing.instrument, inv.actor())?;
+                // M8c B3: an organisation's buy pays from its treasury on its
+                // root scope, placed by the organisation itself; the holder
+                // records the quoting character as acting.
+                let (buyer, payer) = match request.org {
+                    None => (
+                        Holder::Character(inv.actor()),
+                        accounts::personal(economy, &listing.instrument, inv.actor())?,
+                    ),
+                    Some(org) => {
+                        let org = mush_org::OrgId(org);
+                        // M8c F2/F5: the root scope, asked with the price.
+                        mush_roll::commerce::org_holder::acts_for_amount(
+                            world,
+                            org,
+                            inv.actor(),
+                            Some(listing.price.minor()),
+                        )
+                        .map_err(|_| "not acting for that organisation")?;
+                        let scope = mush_roll::commerce::org_holder::root_scope(world, org)
+                            .ok_or("not acting for that organisation")?;
+                        (
+                            Holder::Organization {
+                                org,
+                                acting: inv.actor(),
+                            },
+                            accounts::treasury(economy, &listing.instrument, org, scope)?,
+                        )
+                    }
+                };
                 if payer.approval.is_some() {
                     return Err("direct personal spending account required".into());
                 }
@@ -219,7 +253,7 @@ impl Provider {
                     publication: commit,
                     listing: request.listing,
                     listing_digest: listing.digest()?,
-                    buyer: inv.actor(),
+                    buyer,
                     subject: listing.subject.clone(),
                     product_digest: listing.product.digest()?,
                     product: listing.product.clone(),
@@ -334,7 +368,18 @@ pub(super) fn parameters(kind: Kind) -> Result<Vec<mush_core::ProjectedParameter
             ),
             actions::optional("transferable", K::Boolean),
         ],
-        Kind::Quote => vec![actions::parameter("listing", K::Text { maximum_bytes: 32 })],
+        Kind::Quote => vec![
+            actions::parameter("listing", K::Text { maximum_bytes: 32 }),
+            // M8c B3: the organisation bought for, optional (F8:
+            // organisation 0 is an organisation).
+            actions::optional(
+                "org",
+                K::Integer {
+                    minimum: 0,
+                    maximum: i64::MAX,
+                },
+            ),
+        ],
     }
     .into_iter()
     .collect()

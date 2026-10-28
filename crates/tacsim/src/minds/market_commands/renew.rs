@@ -71,10 +71,13 @@ pub(crate) enum Renew {
 
 /// 17g C3a: what a renewal form selects: the licence number and the form
 /// (`parse_renew`; the typed `Renew`, `RenewPay` and `RenewDecline`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RenewSelection {
     pub(super) licence: u64,
     pub(super) which: Renew,
+    /// M8c B3: the organisation of a trailing `org=<org>`, as typed; the
+    /// typed steps act for the character alone.
+    pub(super) org: Option<String>,
 }
 
 fn not_open() -> Refusal {
@@ -84,11 +87,15 @@ fn not_open() -> Refusal {
 /// 17g C2d: a paid licence the actor holds now (`OwnPaid`), or
 /// `NO_LICENCE`: another character's licence reads exactly like a missing
 /// one. `NOT_OPEN` without the command slot.
-pub(super) fn own_paid(ctx: &Ctx<'_>, licence: u64) -> Result<PaidHoldingView, Refusal> {
+pub(super) fn own_paid(
+    ctx: &Ctx<'_>,
+    licence: u64,
+    org: Option<mush_org::OrgId>,
+) -> Result<PaidHoldingView, Refusal> {
     let refuse = || word!(NO_LICENCE, &[("licence", &licence.to_string())]);
     let id = LicenceId::new(licence).map_err(|_| refuse())?;
     let service = super::service(ctx)?;
-    let request = OriginalReadRequest::command(RollCommandReadRequest::own_paid(id));
+    let request = OriginalReadRequest::command(RollCommandReadRequest::own_paid_for(id, org));
     ctx.read_owner(&service.roll, request)
         .ok()
         .and_then(OriginalReadResult::into_command)
@@ -133,8 +140,14 @@ pub(crate) fn renew(ctx: &mut Ctx<'_>, text: &str, which: Renew) -> Result<(), C
 /// 17g C3a: a renewal form's argument, the licence number (`number`), else
 /// the `+minds` help (`REFUSED`).
 pub(super) fn parse_renew(text: &str, which: Renew) -> Result<RenewSelection, Refusal> {
-    let licence = super::author::number(text).ok_or_else(|| Refusal::usage(super::market::HELP))?;
-    Ok(RenewSelection { licence, which })
+    let usage = || Refusal::usage(super::market::HELP);
+    let (text, org) = super::org_argument(text).ok_or_else(usage)?;
+    let licence = super::author::number(text).ok_or_else(usage)?;
+    Ok(RenewSelection {
+        licence,
+        which,
+        org: org.map(str::to_owned),
+    })
 }
 
 /// 17g C3a: `renew` after its parse, for the line and the typed renewal
@@ -142,7 +155,10 @@ pub(super) fn parse_renew(text: &str, which: Renew) -> Result<RenewSelection, Re
 /// and then `Outcome::Staged` with `RENEW_HANDED` for the licence, which
 /// only the typed reply carries (`renew` discards it).
 pub(super) fn run_renew(ctx: &mut Ctx<'_>, selection: RenewSelection) -> Result<Outcome, Refusal> {
-    let held = own_paid(ctx, selection.licence)?;
+    // M8c B3: an organisation's licence, to a character acting for it; the
+    // service's front then re-asks the grant itself (`org_holder::acts_as`).
+    let org = super::org_for(ctx, selection.org.as_deref(), super::OrgScope::Root)?;
+    let held = own_paid(ctx, selection.licence, org)?;
     let step = front_step(&held, selection.which)?;
     let front = if held.house() {
         mush_market::mind_house_renewal::player_front(ctx)

@@ -1,6 +1,6 @@
 //! Explicit, separately versioned personal entitlement commerce.
 //! Default composition installs none of its families, providers or owner grants.
-mod accounts;
+pub(crate) mod accounts;
 mod actions;
 mod audit;
 mod capabilities;

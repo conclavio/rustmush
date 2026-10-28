@@ -18,7 +18,7 @@ use std::{any::TypeId, collections::BTreeSet};
 use super::super::families::CommerceFamilies;
 use super::super::owner_holdings::{OwnerProjectionError, project_owner_with_parent_for};
 use super::super::personal_filed_reader::PersonalFiledHolding;
-use super::super::personal_paid_holdings::project_entitlement_paid_for;
+use super::super::personal_paid_holdings::{project_entitlement_paid_for, reader_holder};
 use super::super::rating::{RatingCompatibility, RatingFamilies};
 use super::super::records::PublicationError;
 use super::super::{Capacity, LicenceId, TermPhase, TermWindow, WorldIcSeconds};
@@ -382,6 +382,9 @@ fn paid_projection(
     use super::super::entitlement::history::{Birth, read, resolve};
     use super::super::owner_holdings::OwnerProjectionError as E;
     let paid = read(ctx, &f.paid_licences, licence.key()).map_err(|_| E::Integrity)?;
+    // M8c F1: the dispatcher, typed by the pointer's arm (`reader_holder`):
+    // an organisation's licence dispatches for any character acting for it.
+    let holder = reader_holder(ctx, f, holder, licence)?;
     match resolve(ctx, f, paid.operation()).map_err(|_| E::Integrity)? {
         Birth::House(_) => super::super::personal_paid_holdings::project_house_paid_for(
             ctx, holder, f, ratings, licence, expected,

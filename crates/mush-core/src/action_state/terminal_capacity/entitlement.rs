@@ -1227,7 +1227,8 @@ pub(super) fn validate_changes(
             if action != 0
                 || id != identity.commit
                 || identity.principal != (PrincipalId::Object { id: identity.actor })
-                || number(field(&pair.purchase, "quote")?, "buyer")? != u64::from(identity.actor.0)
+                || owner_index::acting(field(field(&pair.purchase, "quote")?, "buyer")?)?
+                    != u64::from(identity.actor.0)
                 || value(&before, &operation_key(ALLOCATION, id)?)?.is_some()
                 || changes.funding.as_ref().map(|row| row.funding) != Some(id)
             {

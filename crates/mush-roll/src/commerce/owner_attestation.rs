@@ -6,7 +6,7 @@ mod provider;
 pub(crate) mod records;
 #[cfg(test)]
 mod tests;
-pub(crate) use provider::register;
+pub(crate) use provider::{register, register_house};
 
 use super::{
     CharterId, LicenceId, TermPhase, TermWindow, WorldIcSeconds,
@@ -59,6 +59,9 @@ pub(crate) struct AttestationFence {
     action: DefinitionRef,
     commit: CommitToken,
     actor: ObjId,
+    /// M8c B4: whom the title is held for: the actor, or the House the actor
+    /// acts for (`Holder::Organization`), re-asked at the fence.
+    holder: super::Holder,
     licence: LicenceId,
     charter: CharterId,
     title_revision: u64,
@@ -83,7 +86,9 @@ impl AttestationFence {
             || ctx.commit_token() != self.commit
             || ctx.invocation().actor() != self.actor
             || request.licence()? != self.licence
-            || super::owner_qualification::current_title(world, self.actor, self.charter)?
+            || request.org() != self.holder.organization()
+            || self.holder.acting_character() != self.actor
+            || super::owner_qualification::current_title_for(world, self.holder, self.charter)?
                 != self.title_revision
             || now.clock != self.observed.clock
             || now.at < self.observed.at

@@ -134,7 +134,16 @@ impl Provider {
             .cloned()
             .ok_or_else(super::records::invalid)?;
         row.validate()?;
-        if row.operation() != operation || row.binding().holder() != actor {
+        // M8c B3: a character acting for the holding organisation runs its
+        // steps (`org_holder::acts_as`).
+        if row.operation() != operation
+            || mush_roll::commerce::org_holder::acts_as(
+                ctx.world().map_err(invalid)?,
+                row.binding().holder(),
+                actor,
+            )
+            .is_err()
+        {
             return Err(super::records::invalid());
         }
         let roll = self
@@ -225,6 +234,7 @@ impl Provider {
             &self.config,
             ctx.world().map_err(invalid)?,
             observed.facts(),
+            inv.actor(),
         )?;
         let request = match attempt {
             RenewalAttemptV1::HolderAutomatic { basis } => EconomyRequest::RenewalHolderDraft {

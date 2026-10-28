@@ -67,7 +67,7 @@ impl Provider {
         q: &HouseQuoteV1,
     ) -> Result<PreparedHouseSale, String> {
         q.validate()?;
-        if q.buyer != inv.actor()
+        if q.buyer.acting_character() != inv.actor()
             || q.product.protocol != self.protocol
             || q.subject.compatibility != self.config.manifest.digest()
         {
@@ -190,7 +190,8 @@ impl Provider {
         if before.operation != operation
             || before.phase != (PurchasePhase::Funded {})
             || before.quote.product.protocol != self.protocol
-            || (inv.actor() != before.quote.buyer && (grant || inv.actor() != mush_core::GOD))
+            || (inv.actor() != before.quote.buyer.acting_character()
+                && (grant || inv.actor() != mush_core::GOD))
         {
             return Err("house terminal authority differs".into());
         }

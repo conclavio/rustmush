@@ -57,7 +57,7 @@ pub(super) fn resolve(
             if holder.ownership()? != *ownership
                 || holder.operation() != *terminal
                 || holder.acceptance() != operation
-                || holder.holder() != c.terms.buyer
+                || holder.holder() != super::super::Holder::Character(c.terms.buyer)
             {
                 return Err(PublicationError::Mismatch);
             }
@@ -70,7 +70,10 @@ pub(super) fn resolve(
                 }
                 _ => return Err(PublicationError::Mismatch),
             };
-            Some(Truth { at, actor })
+            Some(Truth {
+                at,
+                actor: Some(actor),
+            })
         }
     };
     Ok(TransferProof {

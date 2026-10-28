@@ -171,7 +171,8 @@ pub(super) fn quoted(
             .get(f.quotes, token)
             .map_err(|e| e.to_string())?
             .ok_or("indexed entitlement quote missing")?;
-        if indexed.publication != *token || indexed.buyer != buyer {
+        // M8c B3: the row is keyed by the acting character (module doc).
+        if indexed.publication != *token || indexed.buyer.acting_character() != buyer {
             return Err("indexed entitlement quote differs".into());
         }
         if now < indexed.expires_at_utc {
@@ -235,7 +236,7 @@ pub(super) fn audit(ctx: &ModuleCtx<'_>, f: &Index<'_>) -> Result<(), String> {
         if key != q.key() {
             return Err("entitlement quote key differs".into());
         }
-        quotes.insert(q.publication, q.buyer);
+        quotes.insert(q.publication, q.buyer.acting_character());
         Ok(())
     })?;
     let mut funded_quotes = BTreeSet::new();
@@ -247,7 +248,10 @@ pub(super) fn audit(ctx: &ModuleCtx<'_>, f: &Index<'_>) -> Result<(), String> {
         funded_quotes.insert(p.quote.publication);
         operations.insert(
             p.operation,
-            (p.quote.buyer, p.phase == PurchasePhase::Funded {}),
+            (
+                p.quote.buyer.acting_character(),
+                p.phase == PurchasePhase::Funded {},
+            ),
         );
         Ok(())
     })?;

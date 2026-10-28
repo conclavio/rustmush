@@ -100,7 +100,7 @@ pub(crate) fn birth_with(terms: PaidTerms) -> TestResult<Birth> {
             id,
             CharterId::new(9)?,
             LineId::new(2)?,
-            ObjId(5),
+            ObjId(5).into(),
             one,
             token(1),
         )?,
@@ -357,7 +357,7 @@ fn retry_chain_rejects_branch_orphan_wrong_holder_and_automatic_repeat() -> Test
         .is_err()
     );
     let mut wrong = retry.clone();
-    wrong.binding.holder = ObjId(6);
+    wrong.binding.holder = ObjId(6).into();
     check!(chain::check_draft(&b.licence, &wrong, Some(&head), Some(&refund)).is_err());
     let mut orphan = retry;
     orphan.attempt = RenewalAttemptV1::BuyerRetry {

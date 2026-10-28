@@ -260,7 +260,7 @@ pub(crate) fn resell(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
 pub(super) fn run_resell(ctx: &mut Ctx<'_>, args: &TradeArguments) -> Result<Outcome, Refusal> {
     super::service(ctx)?;
     let named = player(ctx, &args.player)?;
-    let held = super::renew::own_paid(ctx, args.subject)?;
+    let held = super::renew::own_paid(ctx, args.subject, None)?;
     let (buyer, name) =
         other_player(ctx.actor, named, &args.player).map_err(|_| no_player(&args.player))?;
     let action = ctx

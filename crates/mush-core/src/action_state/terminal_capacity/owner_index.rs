@@ -49,7 +49,10 @@
 //! 3. `roll_mind_paid_holdings` is delegated to the market as
 //!    `roll_mind_personal_paid_licence` is: the market's transactions run the
 //!    entitlement, House, v2 and resale grants. The renewal writers replace the
-//!    pointer with the same holder and write no holdings row.
+//!    pointer with the same holder principal and write no holdings row (M8c
+//!    F4: an organisation-held pointer is re-stamped with the renewing actor
+//!    as its `acting`; the row keeps the acting of the grant or transfer that
+//!    put it, so `audit_holdings` compares the two by principal, `same_holder`).
 //! 4. A Grant's or Settle's index put is unreserved capacity. The reservation
 //!    names only its own targets, so the put is charged by the ordinary typed
 //!    accounting like any unreserved write: at a store whose ordinary aggregate
@@ -381,18 +384,74 @@ fn registered(registry: &StateFamilyRegistry, owner: &str, family: &str) -> bool
     }
 }
 
-/// The holdings key (and the resale offer key: the same grammar):
-/// zero-padded decimal person, so one person's rows are contiguous.
-pub(super) fn holding_key(holder: u64, licence: u64) -> String {
-    format!("{holder:020}/licence/{licence:016x}")
+/// A holder as the rows carry it (doc 17h §3 M8c, B1): a character's bare
+/// number in `1..=u32::MAX`, or an organisation's object `{"org": n,
+/// "acting": m}` (the acting character nonzero, the organisation any number:
+/// mush-org mints from 0, F8; nothing else). The value is kept as read, so
+/// a derived row serialises exactly as Roll's `PaidHolding` does; the key
+/// prefix is Roll's `Holder::key_prefix`, byte for byte.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct HolderKey {
+    prefix: String,
+    value: Value,
+}
+impl HolderKey {
+    /// A character holder.
+    pub(super) fn person(n: u64) -> Self {
+        Self {
+            prefix: format!("{n:020}"),
+            value: json!(n),
+        }
+    }
+}
+fn holder(v: &Value) -> Result<HolderKey, ActionStateError> {
+    if v.is_u64() {
+        return Ok(HolderKey::person(person(v)?));
+    }
+    let object = v.as_object().ok_or_else(|| refused("owner index holder"))?;
+    if object.len() != 2 {
+        return Err(refused("owner index holder"));
+    }
+    let org = field(v, "org")?
+        .as_u64()
+        .ok_or_else(|| refused("owner index holder"))?;
+    person(field(v, "acting")?)?;
+    Ok(HolderKey {
+        prefix: format!("org/{org:020}"),
+        value: v.clone(),
+    })
+}
+/// The character acting as a holder: the character itself, or the
+/// organisation's `acting` character. The actor pins of the funding and
+/// renewal transitions compare the invocation's actor with this.
+pub(super) fn acting(v: &Value) -> Result<u64, ActionStateError> {
+    if v.is_u64() {
+        return person(v);
+    }
+    holder(v)?;
+    person(field(v, "acting")?)
+}
+/// Whether two holders are the same principal, whoever acted (M8c F4): the
+/// same character, or the same organisation under any acting character. The
+/// renewal writers re-stamp an organisation-held pointer with the renewing
+/// actor, so a pointer and the rows that follow it agree by principal, never
+/// by `acting`.
+pub(super) fn same_holder(a: &Value, b: &Value) -> Result<bool, ActionStateError> {
+    Ok(holder(a)?.prefix == holder(b)?.prefix)
+}
+/// The holdings key (and the resale offer key: the same grammar): the
+/// holder's prefix (a zero-padded decimal person, or `org/` and the
+/// organisation's), so one holder's rows are contiguous.
+pub(super) fn holding_key(holder: &HolderKey, licence: u64) -> String {
+    format!("{}/licence/{licence:016x}", holder.prefix)
 }
 /// The pending-charter offer key.
 pub(super) fn pending_key(buyer: u64, charter: u64) -> String {
     format!("{buyer:020}/charter/{charter:016x}")
 }
 /// A holdings row exactly as Roll's `PaidHolding` serializes it.
-pub(super) fn holding(holder: u64, licence: u64) -> Value {
-    json!({"format":1,"holder":holder,"licence":licence.to_string()})
+pub(super) fn holding(holder: &HolderKey, licence: u64) -> Value {
+    json!({"format":1,"holder":holder.value,"licence":licence.to_string()})
 }
 
 /// The protocol and action index of the actual invocation, if it is one of
@@ -503,7 +562,9 @@ fn release(
     operation: CommitToken,
 ) -> Result<Vec<(Key, Expect)>, ActionStateError> {
     let purchase = required(after, &key("market", PURCHASE, operation.to_hex())?)?;
-    let buyer = person(field(field(&purchase, "quote")?, "buyer")?)?;
+    // M8c: the market's actor index is keyed by the quote buyer's acting
+    // character (a character holder, or an organisation's acting one).
+    let buyer = acting(field(field(&purchase, "quote")?, "buyer")?)?;
     let k = key("market", ACTORS, buyer.to_string())?;
     let row = read(before, &k)?.ok_or_else(|| refused("owner index row absent"))?;
     let object = row
@@ -544,10 +605,10 @@ fn hold(
     if decimal(field(&pointer, "id")?, u64::MAX)? != licence {
         return Err(refused("owner index pointer differs"));
     }
-    let holder = person(field(&pointer, "holder")?)?;
+    let holder = holder(field(&pointer, "holder")?)?;
     Ok(vec![(
-        key("roll", HOLDINGS, holding_key(holder, licence))?,
-        Expect::Put(holding(holder, licence)),
+        key("roll", HOLDINGS, holding_key(&holder, licence))?,
+        Expect::Put(holding(&holder, licence)),
     )])
 }
 
@@ -561,16 +622,16 @@ fn transfer(
     let row = required(after, &key("roll", RESALE, operation.to_hex())?)?;
     let licence = decimal(field(field(&row, "binding")?, "licence")?, u64::MAX)?;
     let pointer = key("roll", LICENCE, format!("licence/{licence:016x}"))?;
-    let seller = person(field(&required(before, &pointer)?, "holder")?)?;
-    let buyer = person(field(&required(after, &pointer)?, "holder")?)?;
-    let old = key("roll", HOLDINGS, holding_key(seller, licence))?;
-    if seller == buyer || read(before, &old)? != Some(holding(seller, licence)) {
+    let seller = holder(field(&required(before, &pointer)?, "holder")?)?;
+    let buyer = holder(field(&required(after, &pointer)?, "holder")?)?;
+    let old = key("roll", HOLDINGS, holding_key(&seller, licence))?;
+    if seller == buyer || read(before, &old)? != Some(holding(&seller, licence)) {
         return Err(refused("owner index row differs"));
     }
     Ok(vec![
         (
-            key("roll", HOLDINGS, holding_key(buyer, licence))?,
-            Expect::Put(holding(buyer, licence)),
+            key("roll", HOLDINGS, holding_key(&buyer, licence))?,
+            Expect::Put(holding(&buyer, licence)),
         ),
         (old, Expect::Delete),
     ])
@@ -600,7 +661,11 @@ fn resale_head(offer: &Value) -> Result<(Key, Value), ActionStateError> {
     let buyer = person(field(field(offer, "terms")?, "buyer")?)?;
     let licence = decimal(field(field(offer, "binding")?, "licence")?, u64::MAX)?;
     Ok((
-        key("market", RESALE_OFFERS, holding_key(buyer, licence))?,
+        key(
+            "market",
+            RESALE_OFFERS,
+            holding_key(&HolderKey::person(buyer), licence),
+        )?,
         json!({"format":1,"buyer":buyer,"licence":licence.to_string()}),
     ))
 }
@@ -937,14 +1002,16 @@ fn audit_actors(view: &View<'_>) -> Result<(), ActionStateError> {
         }
         for q in &quotes {
             let quote = required(view, &key("market", QUOTE, q.clone())?)?;
-            if person(field(&quote, "buyer")?)? != actor {
+            // M8c: an organisation's quote is indexed under its acting
+            // character.
+            if acting(field(&quote, "buyer")?)? != actor {
                 return Err(refused("owner index quote names another buyer"));
             }
         }
         for o in operations {
             let purchase = required(view, &key("market", PURCHASE, o.clone())?)?;
             if field(field(&purchase, "phase")?, "kind")? != "funded"
-                || person(field(field(&purchase, "quote")?, "buyer")?)? != actor
+                || acting(field(field(&purchase, "quote")?, "buyer")?)? != actor
             {
                 return Err(refused(
                     "owner index operation is not the buyer's open purchase",
@@ -974,12 +1041,25 @@ fn audit_holdings(view: &View<'_>) -> Result<(), ActionStateError> {
     for k in rows(view, "roll", LICENCE) {
         let pointer = row_value(view, k)?;
         let licence = decimal(field(&pointer, "id")?, u64::MAX)?;
-        let holder = person(field(&pointer, "holder")?)?;
-        expected.insert(holding_key(holder, licence), holding(holder, licence));
+        let holder = holder(field(&pointer, "holder")?)?;
+        expected.insert(holding_key(&holder, licence), holding(&holder, licence));
     }
     for k in rows(view, "roll", HOLDINGS) {
         let row = row_value(view, k)?;
-        if expected.remove(k.encoded.as_str()) != Some(row) {
+        // M8c F4: the row agrees with its pointer by principal: a renewal
+        // re-stamps an organisation-held pointer's `acting` and writes no
+        // row, so the row keeps the acting of the grant or transfer that
+        // put it.
+        let fits = match expected.remove(k.encoded.as_str()) {
+            Some(derived) => {
+                derived.get("format") == row.get("format")
+                    && derived.get("licence") == row.get("licence")
+                    && row.as_object().is_some_and(|o| o.len() == 3)
+                    && same_holder(field(&derived, "holder")?, field(&row, "holder")?)?
+            }
+            None => false,
+        };
+        if !fits {
             return Err(refused("owner index holding has no current pointer"));
         }
     }
@@ -1056,3 +1136,64 @@ fn audit_offers(view: &View<'_>, protocol: Owner) -> Result<(), ActionStateError
 
 #[cfg(test)]
 pub(super) mod tests;
+
+#[cfg(test)]
+mod holder_tests {
+    use super::*;
+    /// M8c F11: the holder grammar of the index rows: a character's bare
+    /// number, an organisation's `{org, acting}` object (organisation 0
+    /// included, F8) and nothing else (a third field, a zero acting
+    /// character, a string, a zero person); the acting pin; the derived
+    /// key and row; sameness by principal.
+    #[test]
+    fn holder_rows_are_a_person_or_an_organisation_object() {
+        let person = holder(&json!(7)).unwrap();
+        assert_eq!(person, HolderKey::person(7));
+        assert_eq!(
+            holding_key(&person, 9),
+            format!("{:020}/licence/{:016x}", 7, 9)
+        );
+        assert_eq!(
+            holding(&person, 9),
+            json!({"format":1,"holder":7,"licence":"9"})
+        );
+        let org = holder(&json!({"org":3,"acting":7})).unwrap();
+        assert_eq!(org.prefix, format!("org/{:020}", 3));
+        assert_eq!(org.value, json!({"org":3,"acting":7}));
+        assert_eq!(
+            holding_key(&org, 9),
+            format!("org/{:020}/licence/{:016x}", 3, 9)
+        );
+        assert_eq!(
+            holding(&org, 9),
+            json!({"format":1,"holder":{"org":3,"acting":7},"licence":"9"})
+        );
+        assert_eq!(
+            holder(&json!({"org":0,"acting":7})).unwrap().prefix,
+            format!("org/{:020}", 0)
+        );
+        for bad in [
+            json!(0),
+            json!(u64::from(u32::MAX) + 1),
+            json!({"org":3,"acting":0}),
+            json!({"org":3,"acting":7,"x":1}),
+            json!({"org":3}),
+            json!({"acting":7}),
+            json!({"org":"3","acting":7}),
+            json!("7"),
+            json!(-1),
+            json!(null),
+        ] {
+            assert!(holder(&bad).is_err(), "{bad}");
+        }
+        assert_eq!(acting(&json!(7)).unwrap(), 7);
+        assert_eq!(acting(&json!({"org":3,"acting":7})).unwrap(), 7);
+        assert!(acting(&json!({"org":3,"acting":0})).is_err());
+        assert!(same_holder(&json!({"org":3,"acting":7}), &json!({"org":3,"acting":8})).unwrap());
+        assert!(!same_holder(&json!({"org":3,"acting":7}), &json!({"org":4,"acting":7})).unwrap());
+        assert!(!same_holder(&json!({"org":3,"acting":7}), &json!(7)).unwrap());
+        assert!(same_holder(&json!(7), &json!(7)).unwrap());
+        assert!(!same_holder(&json!(7), &json!(8)).unwrap());
+        assert!(same_holder(&json!(7), &json!({"org":3})).is_err());
+    }
+}

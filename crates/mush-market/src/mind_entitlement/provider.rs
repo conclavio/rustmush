@@ -14,6 +14,7 @@ use mush_roll::commerce::entitlement::writer::{
     PreparedEntitlementSale, RegisteredEntitlementWriter,
 };
 use mush_roll::commerce::purchase::PurchasePhase;
+use mush_roll::commerce::{Holder, org_holder};
 use serde::Deserialize;
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
@@ -60,15 +61,33 @@ impl Provider {
         }
         .map_err(|e| e.to_string())
     }
+    /// `amount`: the quoted price (minor units) at the Fund, `None` at the
+    /// Grant (M8c F2: `roll.holder.org` is amount-bearing; only the spending
+    /// act asks with the price).
     fn current(
         &self,
         inv: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
         ctx: &mut PrepareCtx<'_>,
         q: &EntitlementQuoteV1,
+        amount: Option<i64>,
     ) -> Result<PreparedEntitlementSale, String> {
         q.validate()?;
-        if q.buyer != inv.actor()
+        // M8c F2: a character's quote is acted on by that character; an
+        // organisation's by any character acting for it NOW, the grant
+        // re-asked on the organisation's root scope (F5), so a grant revoked
+        // after the Quote stops the Fund and the Grant.
+        let actor_fits = match q.buyer {
+            Holder::Character(c) => c == inv.actor(),
+            Holder::Organization { org, .. } => org_holder::acts_for_amount(
+                ctx.world().map_err(|e| e.to_string())?,
+                org,
+                inv.actor(),
+                amount,
+            )
+            .is_ok(),
+        };
+        if !actor_fits
             || q.product.protocol != self.protocol
             || q.subject.compatibility != self.config.manifest.digest()
         {
@@ -130,8 +149,9 @@ impl Provider {
         if q.publication != quote {
             return Err("quote key differs".into());
         }
-        let observed = self.current(inv, txn, ctx, &q)?;
-        let buyer = q.buyer;
+        let observed = self.current(inv, txn, ctx, &q, Some(q.price.minor()))?;
+        // 17g C2f: the buyer's index is keyed by the acting character.
+        let buyer = q.buyer.acting_character();
         let economics = q.economic_subject()?;
         self.writer
             .preflight_funding(ctx, txn, &economics, &publication::terms(&q), &observed)
@@ -192,10 +212,20 @@ impl Provider {
             .cloned()
             .ok_or("funded entitlement unavailable")?;
         before.validate()?;
+        // M8c F2: the terminal is the buyer's (a character itself, or any
+        // character acting for the buying organisation now, re-asked here),
+        // or GOD's refund.
+        let buyer_acts = match before.quote.buyer {
+            Holder::Character(c) => c == inv.actor(),
+            Holder::Organization { org, .. } => {
+                org_holder::acts_for(ctx.world().map_err(|e| e.to_string())?, org, inv.actor())
+                    .is_ok()
+            }
+        };
         if before.operation != operation
             || before.phase != (PurchasePhase::Funded {})
             || before.quote.product.protocol != self.protocol
-            || (inv.actor() != before.quote.buyer && (grant || inv.actor() != mush_core::GOD))
+            || (!buyer_acts && (grant || inv.actor() != mush_core::GOD))
         {
             return Err("entitlement terminal authority differs".into());
         }
@@ -208,7 +238,7 @@ impl Provider {
             if before.participants != self.config.participants {
                 return Err("entitlement participants are historical".into());
             }
-            Some(self.current(inv, txn, ctx, &before.quote)?)
+            Some(self.current(inv, txn, ctx, &before.quote, None)?)
         } else {
             None
         };
@@ -258,7 +288,12 @@ impl Provider {
         // 17g C2f (R2): the operation leaves its own buyer's index row (GOD
         // may refund: never the actor's), the one index mutation mush-core
         // admits in this terminal besides Roll's holdings put at a Grant.
-        super::index::released(txn, &self.families.index(), before.quote.buyer, operation)?;
+        super::index::released(
+            txn,
+            &self.families.index(),
+            before.quote.buyer.acting_character(),
+            operation,
+        )?;
         ctx.finish_mind_entitlement_purchase_completion(txn, operation)
             .map_err(|e| e.to_string())?;
         Ok((operation, if grant { "granted" } else { "refunded" }))

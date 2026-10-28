@@ -209,7 +209,7 @@ fn parent_purchase(
     )?;
     let actual = allocation(w, n + 2)?;
     check_eq!(actual.protocol(), EntitlementProtocol::OriginalV3);
-    check_eq!(actual.holder(), BUYER);
+    check_eq!(actual.holder(), mush_economy::Holder::Character(BUYER));
     Ok(actual)
 }
 fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
@@ -670,7 +670,7 @@ async fn chartered(
             json!({"operation":token(SALE + 4)}),
         )?;
         let parent = allocation(&w, SALE + 4)?;
-        assert_eq!(parent.holder(), GOD);
+        assert_eq!(parent.holder(), mush_economy::Holder::Character(GOD));
         let immutable = retained(&w);
         w.transfer_charter(child_charter.object(), GOD, SALE + 6)?;
         source_answer(&mut w, BUYER, owner, None)?;

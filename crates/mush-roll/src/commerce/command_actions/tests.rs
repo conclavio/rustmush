@@ -63,6 +63,7 @@ fn command_actions_capture_only_registered_actions() -> TestResult {
             UPDATE_DERIVED.0,
             WITHDRAW.0,
             ATTEST.0,
+            ATTEST_HOUSE.0,
             FORK.0
         ],
         [
@@ -73,6 +74,7 @@ fn command_actions_capture_only_registered_actions() -> TestResult {
             "update_derived_mind",
             "withdraw_authored_mind",
             "attest_owner_mind",
+            "attest_house_mind",
             "fork_paid_mind"
         ]
     );

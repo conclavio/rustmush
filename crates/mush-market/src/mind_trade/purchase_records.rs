@@ -142,7 +142,7 @@ impl Purchase {
             || row.quote() != q.publication
             || row.quote_digest() != self.quote_digest
             || row.product_digest() != q.product_digest
-            || row.holder() != q.buyer
+            || row.holder() != mush_economy::Holder::Character(q.buyer)
             || row.charter() != q.subject.charter
             || row.line() != q.subject.line
             || row.filed() != q.subject.filed

@@ -1,5 +1,6 @@
 //! Bounded economic terms, not a source/parent licence or posting capability.
 
+use crate::Holder;
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef, Flags, ObjId, ObjKind};
@@ -90,7 +91,9 @@ pub struct EntitlementPurchase {
     pub quote: CommitToken,
     pub quote_digest: DefinitionDigest,
     pub product_digest: DefinitionDigest,
-    pub buyer: ObjId,
+    /// Doc 17h §3 M8c (B1): who the licence is bought for; a character's
+    /// bytes are unchanged.
+    pub buyer: Holder,
     pub seller: ObjId,
     pub charter: ObjId,
     pub title_revision: u64,
@@ -114,7 +117,7 @@ pub(crate) struct EntitlementWire {
     quote: CommitToken,
     quote_digest: DefinitionDigest,
     product_digest: DefinitionDigest,
-    buyer: ObjId,
+    buyer: Holder,
     seller: ObjId,
     charter: ObjId,
     title_revision: u64,
@@ -225,14 +228,25 @@ impl EntitlementPurchase {
     ) -> Result<(), ParticipantError> {
         self.payouts()?;
         let world = context.world;
+        // M8c B1/B3: the payer is the holder's principal's account (a
+        // personal account, or the organisation's treasury on one of its
+        // scopes). F2: a character's purchase is funded by that character;
+        // an organisation's by any live character, the market's provider
+        // having re-asked the organisation's grant for this actor
+        // (`org_holder::acts_for`, with the price) before this participant
+        // runs; the quoting character need not be the funding one.
+        let actor_fits = match self.buyer {
+            crate::Holder::Character(c) => context.actor == c,
+            crate::Holder::Organization { .. } => true,
+        };
         if state.frozen
             || !self.protocol.matches_action(context.action, "fund")
-            || context.actor != self.buyer
-            || context.principal != &(mush_core::PrincipalId::Object { id: self.buyer })
+            || !actor_fits
+            || context.principal != &(mush_core::PrincipalId::Object { id: context.actor })
             || self.quote == context.commit
             || world.now() < self.quoted_at_utc
             || world.now() >= self.expires_at_utc
-            || [self.buyer, self.seller]
+            || [context.actor, self.seller]
                 .iter()
                 .any(|id| !player(world, *id))
         {
@@ -258,8 +272,8 @@ impl EntitlementPurchase {
         }
         let snapshot = &state.snapshot;
         let payer = snapshot.account(self.payer).ok_or_else(refused)?;
-        if payer.owner != PrincipalId::Object(self.buyer)
-            || payer.scope.is_some()
+        if payer.owner != self.buyer.principal()
+            || !crate::holder::payer_scope_fits(world, self.buyer, payer.scope)
             || payer.instrument != self.instrument
             || payer.status != AccountStatus::Active
             || payer.approval.is_some()
@@ -376,7 +390,7 @@ fn merge(
 /// It contains no action, quote, clock, credential or posting capability.
 pub(crate) struct EconomicRecipe<'a> {
     pub requires_parents: bool,
-    pub buyer: ObjId,
+    pub buyer: Holder,
     pub seller: ObjId,
     pub charter: ObjId,
     pub title_revision: u64,
@@ -398,7 +412,10 @@ impl EconomicRecipe<'_> {
             return Err(refused());
         }
         GrossMoneySplit {
-            buyer: self.buyer,
+            // The money split names the acting character: an organisation
+            // buying from its own acting character's charter is refused as
+            // a self-sale, as a character's is.
+            buyer: self.buyer.acting_character(),
             seller: self.seller,
             charter: self.charter,
             payer: self.payer,

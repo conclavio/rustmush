@@ -97,7 +97,7 @@ const BUYER: ObjId = ObjId(8);
 fn quote(id: u8, buyer: ObjId, expires: i64) -> TestResult<Box<EntitlementQuoteV1>> {
     let mut q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
     q.publication = token(id);
-    q.buyer = buyer;
+    q.buyer = buyer.into();
     q.expires_at_utc = expires;
     q.validate()?;
     Ok(Box::new(q))
@@ -167,7 +167,7 @@ fn quote_step(
     change(e, h, disk, |t, i| {
         t.insert(i.quotes, &q.publication, q.clone())
             .map_err(|e| e.to_string())?;
-        index::quoted(t, i, q.buyer, q.publication, now)
+        index::quoted(t, i, q.buyer.acting_character(), q.publication, now)
     })
 }
 /// The Fund step: the quote consumed into its operation, and the index.
@@ -182,7 +182,13 @@ fn fund_step(
             .map_err(|e| e.to_string())?;
         t.insert(i.operations, &p.operation, p.clone())
             .map_err(|e| e.to_string())?;
-        index::funded(t, i, p.quote.buyer, p.quote.publication, p.operation)
+        index::funded(
+            t,
+            i,
+            p.quote.buyer.acting_character(),
+            p.quote.publication,
+            p.operation,
+        )
     })
 }
 /// The Grant or Refund step: the closed operation, and the index release
@@ -196,7 +202,7 @@ fn terminal_step(
     change(e, h, disk, |t, i| {
         t.replace(i.operations, &after.operation, after.clone())
             .map_err(|e| e.to_string())?;
-        index::released(t, i, after.quote.buyer, after.operation)
+        index::released(t, i, after.quote.buyer.acting_character(), after.operation)
     })
 }
 fn row(e: &Engine, h: &Handles, buyer: ObjId) -> TestResult<Option<EntitlementActorIndex>> {

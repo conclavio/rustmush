@@ -71,7 +71,7 @@ impl EntitlementFixture {
             quote: original.quote,
             quote_digest: original.quote_digest,
             product_digest: original.product_digest,
-            buyer: original.buyer,
+            buyer: original.buyer.into(),
             seller: original.seller,
             charter: original.charter,
             title_revision: original.title_revision,
@@ -116,9 +116,9 @@ impl EntitlementFixture {
             &self.old.state,
             &FundingContext {
                 world: &self.old.world,
-                actor: self.purchase.buyer,
+                actor: self.purchase.buyer.acting_character(),
                 principal: &mush_core::PrincipalId::Object {
-                    id: self.purchase.buyer,
+                    id: self.purchase.buyer.acting_character(),
                 },
                 action: &action,
                 commit: CommitToken::from_bytes([3; 16]),
@@ -155,9 +155,9 @@ impl EntitlementFixture {
             &self.old.state,
             &FundingContext {
                 world: &self.old.world,
-                actor: self.purchase.buyer,
+                actor: self.purchase.buyer.acting_character(),
                 principal: &mush_core::PrincipalId::Object {
-                    id: self.purchase.buyer,
+                    id: self.purchase.buyer.acting_character(),
                 },
                 action: &action,
                 commit: CommitToken::from_bytes([4; 16]),
@@ -267,11 +267,11 @@ fn payer_royalty_is_a_real_credit_beside_full_gross_escrow_debit() -> TestResult
         .asset(parent.charter)
         .ok_or("parent title")?
         .clone();
-    title.title_owner = PrincipalId::Object(f.purchase.buyer);
+    title.title_owner = f.purchase.buyer.principal();
     f.old.state.snapshot.put_asset(title);
     parent.title.as_mut().ok_or("title")?.recipient = Recipient {
         account: f.purchase.payer,
-        owner: PrincipalId::Object(f.purchase.buyer),
+        owner: f.purchase.buyer.principal(),
     };
     let funding = f.fund()?;
     let prepared = f.terminal(&funding, PurchaseOutcome::Granted)?;

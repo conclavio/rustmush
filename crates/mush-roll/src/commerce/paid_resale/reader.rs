@@ -297,7 +297,9 @@ fn observe(
         return Err(PublicationError::Mismatch);
     }
     let pointer = read(ctx, &f.paid_licences, id.key())?;
-    if pointer.holder() != seller {
+    // A resale names characters only (M8c): an organisation-held licence
+    // is not on offer.
+    if pointer.holder() != super::super::Holder::Character(seller) {
         return Err(PublicationError::Missing);
     }
     let term = read(

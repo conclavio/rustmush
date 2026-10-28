@@ -19,6 +19,8 @@ const UPDATE_ORIGINAL: (&str, u32) = (super::line_update::ACTION, 1);
 const UPDATE_DERIVED: (&str, u32) = (super::line_update::DERIVED_ACTION, 1);
 const WITHDRAW: (&str, u32) = ("withdraw_authored_mind", 1);
 const ATTEST: (&str, u32) = (super::owner_attestation::protocol::ACTION, 1);
+/// M8c B4: the House owner attestation (`@mind/attest <filed> org=<org>`).
+const ATTEST_HOUSE: (&str, u32) = (super::owner_attestation::protocol::HOUSE_ACTION, 1);
 const FORK: (&str, u32) = ("fork_paid_mind", 1);
 /// 17g C2d: the pending charter transfer's seller Offer (version 2: the
 /// immediate protocol's Offer is version 1 of the same id) and buyer Fund.
@@ -41,6 +43,7 @@ pub struct RollCommandActions {
     update_derived: Option<DefinitionRef>,
     withdraw: Option<DefinitionRef>,
     attest: Option<DefinitionRef>,
+    attest_house: Option<DefinitionRef>,
     fork: Option<DefinitionRef>,
     pending_charter_offer: Option<DefinitionRef>,
     pending_charter_fund: Option<DefinitionRef>,
@@ -77,6 +80,7 @@ impl RollCommandActions {
             update_derived: find(UPDATE_DERIVED),
             withdraw: find(WITHDRAW),
             attest: find(ATTEST),
+            attest_house: find(ATTEST_HOUSE),
             fork: find(FORK),
             pending_charter_offer: find(PENDING_OFFER),
             pending_charter_fund: find(PENDING_FUND),
@@ -118,6 +122,14 @@ impl RollCommandActions {
     #[must_use]
     pub fn attest(&self) -> Option<DefinitionRef> {
         self.attest.clone()
+    }
+    /// M8c B4: `roll-attest-house-mind`, the House owner attestation a
+    /// character acting for the House submits (`@mind/attest <filed>
+    /// org=<org>`); `None` where House filings or attestations are not
+    /// composed.
+    #[must_use]
+    pub fn attest_house(&self) -> Option<DefinitionRef> {
+        self.attest_house.clone()
     }
     /// `roll-fork-paid-mind` (Roll's own action; Market's same-named
     /// definition is not this one).

@@ -143,7 +143,7 @@ pub(super) fn prepare_in(
     if state.frozen
         || !subject.matches_action(context.action, transition)
         || context.commit == request.operation
-        || (context.actor != purchase.buyer
+        || (context.actor != purchase.buyer.acting_character()
             && (outcome != PurchaseOutcome::Refunded || context.actor != mush_core::GOD))
         || context.principal != &(mush_core::PrincipalId::Object { id: context.actor })
         || context.world.get(context.actor).is_none_or(|object| {
@@ -187,7 +187,7 @@ pub(super) fn prepare_in(
             != (HoldPurpose::Escrow {
                 contract: actual.id,
             })
-        || hold.placed_by != PrincipalId::Object(purchase.buyer)
+        || hold.placed_by != purchase.buyer.principal()
         || hold.beneficiary != Some(crate::api::contract_principal())
         || hold.expires.is_some()
         || hold.holder
@@ -218,15 +218,17 @@ pub(super) fn prepare_in(
             state,
             &FundingContext {
                 world: context.world,
-                actor: purchase.buyer,
-                principal: &mush_core::PrincipalId::Object { id: purchase.buyer },
+                actor: purchase.buyer.acting_character(),
+                principal: &mush_core::PrincipalId::Object {
+                    id: purchase.buyer.acting_character(),
+                },
                 action: marker.effect(),
                 commit: request.operation,
             },
         )?;
     }
     let auth = TerminalAuth {
-        buyer: PrincipalId::Object(purchase.buyer),
+        buyer: purchase.buyer.principal(),
         hold: hold.clone(),
         payouts: purchase.payouts.clone(),
         outcome,

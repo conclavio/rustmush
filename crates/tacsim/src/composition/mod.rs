@@ -1033,6 +1033,12 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         .chain([mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY])
         .chain([mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY])
         .chain([mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY])
+        // Doc 17h §3 M8c (B2): a character acting for an organisation that holds
+        // a mind licence (`org_holder::org_actor`).
+        .chain([mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY])
+        // Doc 17h §3 M8c (F7): the Registry's seal-mark writer
+        // (`seal_marks::authorized`); M8e's black-box participant writes.
+        .chain([mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY])
         // 17g C1b (a stop-rule fix, older than C1): the named launch's governed
         // hardware asks org about these three (`mush-industry`'s die issue,
         // integration and refit authorities), and its operator grants them with

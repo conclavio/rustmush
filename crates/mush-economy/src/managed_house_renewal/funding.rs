@@ -150,9 +150,12 @@ pub(super) fn prepare_in(
             origin.offer.basis.prior_quote,
         ]
         .contains(&context.commit)
-        || context.actor != terms.buyer
-        || context.principal != &(mush_core::PrincipalId::Object { id: terms.buyer })
-        || !super::subject::player(context.world, terms.buyer)
+        || context.actor != terms.buyer.acting_character()
+        || context.principal
+            != &(mush_core::PrincipalId::Object {
+                id: terms.buyer.acting_character(),
+            })
+        || !super::subject::player(context.world, terms.buyer.acting_character())
         || !matches!(now.clock,mush_core::ClockRef::WorldIc{generation} if generation!=0)
         || context.world.now() < origin.created_at_utc
     {
@@ -303,7 +306,7 @@ fn prepare_terminal(
         return Err(refused());
     }
     let auth = TerminalAuth {
-        buyer: PrincipalId::Object(terms.buyer),
+        buyer: terms.buyer.principal(),
         hold: hold.clone(),
         payouts: if transition.sale() {
             terms.payouts()?

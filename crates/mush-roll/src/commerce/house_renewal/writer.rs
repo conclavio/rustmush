@@ -276,16 +276,20 @@ impl RegisteredRenewalWriter {
             .read_owner_preimage(txn, &self.reader, RenewalRequest::own(licence))
             .and_then(|v| v.into_facts())
             .map_err(invalid)?;
+        let account = ctx.personal_account().map_err(invalid)?;
+        // M8c F4: the renewing actor (the sale's requester, acting for the
+        // holder: `check_fresh`), not the character who bought.
+        if account.requester() != facts.sale().requester()
+            || facts.binding().holder().acting_character() != account.requester()
+        {
+            return Err(PublicationError::Mismatch);
+        }
         if let Some(policy) = &self.registration.1 {
             policy.check(
                 ctx.world().map_err(invalid)?,
                 facts.sale().issuer(),
-                facts.binding().holder(),
+                account.requester(),
             )?;
-        }
-        let account = ctx.personal_account().map_err(invalid)?;
-        if account.requester() != facts.binding().holder() {
-            return Err(PublicationError::Mismatch);
         }
         Ok(PreparedRenewal {
             action: self.action.clone(),
@@ -673,7 +677,11 @@ impl RegisteredRenewalWriter {
         )?;
         if transition == Publication::Ordinary(Transition::Grant) {
             let (expected_licence, term, economics) = after.granted_rows()?;
-            let licence = current_licence.with_next_term(after.binding().next())?;
+            // M8c F4: the renewed pointer records the renewing actor as
+            // acting (`re_stamped`: the same principal, or `Mismatch`).
+            let licence = current_licence
+                .with_next_term(after.binding().next())?
+                .re_stamped(expected_licence.holder())?;
             if licence != expected_licence {
                 return Err(PublicationError::Mismatch);
             }
@@ -744,7 +752,8 @@ fn check_offer(
     if row.binding() != facts.binding()
         || offer.basis.prior_quote != facts.prior_quote()
         || offer.basis.prior_quote_digest != facts.prior_quote_digest()
-        || terms.buyer != sale.requester()
+        || !terms.buyer.same_principal(facts.binding().holder())
+        || terms.buyer.acting_character() != sale.requester()
         || terms.organization != sale.issuer().organization()
         || terms.scope != sale.issuer().scope()
         || terms.title_revision != sale.title_revision()

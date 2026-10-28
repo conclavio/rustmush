@@ -112,7 +112,8 @@ pub(crate) fn verify_grant(
     if licence.id() != row.licence
         || licence.charter() != row.charter
         || licence.line() != row.line
-        || licence.holder() != row.holder
+        // M8c F4: by principal (a renewal re-stamps an organisation's acting).
+        || !licence.holder().same_principal(row.holder)
         || licence.operation() != row.operation
         || licence.term().get() < row.term.get()
         || economics != &row.economics

@@ -1,10 +1,9 @@
 //! Only the paired Roll writer constructs renewal retention images. The
 //! operation and next-term roots are real ordinary Roll records before money.
+use super::super::{Holder, org_holder};
 use super::super::{records::PublicationError, roots::RequiredRoot};
 use super::{RenewalOperationV1, protocol::Transition, reader::RenewalFacts};
-use mush_core::{
-    CommitToken, DefinitionRef, Flags, ObjId, ObjKind, participant::OwnerPrepareContext,
-};
+use mush_core::{CommitToken, DefinitionRef, Flags, ObjKind, participant::OwnerPrepareContext};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Publication {
@@ -31,7 +30,7 @@ impl Publication {
 pub(crate) struct RenewalFence {
     action: DefinitionRef,
     commit: CommitToken,
-    holder: ObjId,
+    holder: Holder,
     transition: Publication,
     fresh: Option<RenewalFacts>,
     buyer_admission: Option<std::sync::Arc<dyn super::super::house_purchase::HouseBuyerAdmission>>,
@@ -40,12 +39,16 @@ impl RenewalFence {
     pub(crate) fn check(&self, ctx: &OwnerPrepareContext<'_>) -> Result<(), PublicationError> {
         if ctx.action() != &self.action
             || ctx.commit_token() != self.commit
-            || ctx.invocation().actor() != self.holder
+            // M8c B3: the invocation's actor is the holder or acts for its
+            // organisation (`org_holder::acts_as`, re-asked at every step).
+            || org_holder::acts_as(ctx.world(), self.holder, ctx.invocation().actor()).is_err()
             || ctx.invocation().principal()
-                != &(mush_core::action::PrincipalId::Object { id: self.holder })
+                != &(mush_core::action::PrincipalId::Object {
+                    id: ctx.invocation().actor(),
+                })
             || ctx
                 .world()
-                .get(self.holder)
+                .get(ctx.invocation().actor())
                 .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::GOING))
             || self.fresh.is_some() != self.transition.fresh()
         {
@@ -54,7 +57,7 @@ impl RenewalFence {
         if let Some(facts) = &self.fresh {
             facts.check_fresh(ctx)?;
             if let Some(policy) = &self.buyer_admission {
-                policy.check(ctx.world(), facts.sale().issuer(), self.holder)?;
+                policy.check(ctx.world(), facts.sale().issuer(), ctx.invocation().actor())?;
             }
         }
         Ok(())
@@ -194,7 +197,7 @@ impl RenewalRoots {
                 action: action.clone(),
                 commit,
                 holder: if transition == Publication::ServiceClose {
-                    mush_core::GOD
+                    Holder::Character(mush_core::GOD)
                 } else {
                     after.binding.holder
                 },

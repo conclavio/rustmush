@@ -272,6 +272,82 @@ fn invocation(parameters: Value) -> TestResult<ActionInvocation> {
     })?)
 }
 
+/// M8c F11: the House arm of the operation record. A House row names the
+/// House action (`expected_action`), never the personal one, and the
+/// personal arm never names the House action; a House row's owner is the
+/// acting character, who need not be the filing's author; a House row never
+/// carries a charter ownership (a House charter is never transferred).
+#[test]
+fn the_house_arm_binds_its_own_action_and_no_charter_ownership() -> TestResult {
+    let personal = operation()?;
+    personal.validate()?;
+    let mut house = personal.clone();
+    house.house = Some(HouseAttestation {
+        organization: mush_org::OrgId(0),
+        scope: mush_org::OrgScopeId(0),
+    });
+    check!(
+        house.validate().is_err(),
+        "a House row naming the personal action"
+    );
+    house.action = protocol::house_action(&manifest(), 100, 20)?;
+    house.validate()?;
+    house.owner = mush_core::ObjId(7);
+    house.validate()?;
+    let mut crossed = personal.clone();
+    crossed.action = house.action.clone();
+    check!(
+        crossed.validate().is_err(),
+        "a personal row naming the House action"
+    );
+    let mut stranger = personal.clone();
+    stranger.owner = mush_core::ObjId(7);
+    check!(
+        stranger.validate().is_err(),
+        "a personal row's owner is the filing's author"
+    );
+    // The House arm with a charter ownership, through the wire.
+    let proof = json!({"generation":65537,"operation":CommitToken::from_bytes([249;16]),"digest":DefinitionDigest::from_bytes([255;32])});
+    let mut value = serde_json::to_value(&house)?;
+    let fields = value.as_object_mut().ok_or("operation")?;
+    fields.insert("charter_ownership".into(), proof);
+    fields.insert("format".into(), json!(2));
+    check!(
+        serde_json::from_value::<AttestationOperation>(value.clone()).is_err(),
+        "a House row with a charter ownership"
+    );
+    value.as_object_mut().ok_or("operation")?.remove("house");
+    value
+        .as_object_mut()
+        .ok_or("operation")?
+        .insert("action".into(), serde_json::to_value(&personal.action)?);
+    serde_json::from_value::<AttestationOperation>(value)?.validate()?;
+    // The round trip keeps the House arm.
+    let back: AttestationOperation = serde_json::from_value(serde_json::to_value(&house)?)?;
+    check_eq!(back, house);
+    // F10: the attested owner term takes the owner-term bound (365 days).
+    let year = AttestationEvidence {
+        term_seconds: crate::commerce::MAX_OWNER_TERM_SECONDS,
+        grace_seconds: 20,
+        parent: None,
+    };
+    let window = year.window(WorldIcSeconds(100))?;
+    check_eq!(
+        window.term_end().get() - window.issued_at().get(),
+        crate::commerce::MAX_OWNER_TERM_SECONDS
+    );
+    let over = AttestationEvidence {
+        term_seconds: crate::commerce::MAX_OWNER_TERM_SECONDS + 1,
+        ..year
+    };
+    check!(over.window(WorldIcSeconds(100)).is_err());
+    // F8: organisation 0 is an organisation.
+    check_eq!(
+        provider::Request::parse(&invocation(json!({"owner_licence":3,"org":0}))?)?.org(),
+        Some(mush_org::OrgId(0))
+    );
+    Ok(())
+}
 #[test]
 fn request_is_numeric_self_only_without_terms_or_parent_authority() -> TestResult {
     check_eq!(

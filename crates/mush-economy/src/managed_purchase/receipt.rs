@@ -364,7 +364,7 @@ impl PurchaseHistory {
         if h.id != self.funding.hold
             || h.account != p.payer
             || h.amount != p.price
-            || h.placed_by != PrincipalId::Object(p.buyer)
+            || h.placed_by != p.buyer.principal()
             || h.holder
                 != IdempotencyKey::new(namespace, format!("{}/fund", self.operation.to_hex()))
             || h.purpose
@@ -443,7 +443,7 @@ impl PurchaseHistory {
         .map_err(|_| PurchaseAuditError::Refused)?;
         let mut plan = EconomyPlan::new(
             IdempotencyKey::new(namespace, format!("{}/fund", self.operation.to_hex())),
-            PrincipalId::Object(p.buyer),
+            p.buyer.principal(),
             EconomicCause::Ruleset {
                 namespace: namespace.into(),
                 correlation: cause.into(),
@@ -505,7 +505,7 @@ impl PurchaseHistory {
                 namespace,
                 format!("{}/{transition}", self.operation.to_hex()),
             ),
-            PrincipalId::Object(p.buyer),
+            p.buyer.principal(),
             EconomicCause::Ruleset {
                 namespace: namespace.into(),
                 correlation: encode(&proof).map_err(|_| fail())?.into(),
@@ -724,7 +724,7 @@ impl PurchaseReceiptAudit {
                     return Err(fail());
                 };
                 let h = &effect.hold;
-                if tx.actor != PrincipalId::Object(p.buyer)
+                if tx.actor != p.buyer.principal()
                     || tx.posted_at < p.quoted_at_utc
                     || tx.posted_at >= p.expires_at_utc
                     || h.account != p.payer
@@ -802,7 +802,7 @@ impl PurchaseReceiptAudit {
         }
         let grant = issued.is_some();
         let transition = if grant { "grant" } else { "refund" };
-        if tx.actor != PrincipalId::Object(p.buyer)
+        if tx.actor != p.buyer.principal()
             || tx.idempotency.key.as_str() != format!("{}/{transition}", operation.to_hex())
         {
             return Err(fail());

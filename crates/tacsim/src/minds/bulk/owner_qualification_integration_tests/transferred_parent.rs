@@ -196,7 +196,7 @@ pub(super) async fn exercise(
             json!({"operation":token(N+4)}),
         )?;
         let parent = allocation(&w, N + 4)?;
-        assert_eq!(parent.holder(), GOD);
+        assert_eq!(parent.holder(), mush_economy::Holder::Character(GOD));
         let frozen = immutable(&w);
         resale(&mut w, parent.licence(), GOD, BUYER, N + 6)?;
         let acquired = capture(&w, &disk(&w));

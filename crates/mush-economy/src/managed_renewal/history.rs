@@ -394,7 +394,9 @@ impl OfferBook {
             basis.require_origin(
                 resale,
                 row.offer.basis.licence,
-                row.offer.terms.buyer,
+                // A resale-born licence is held by a character (M8c: resale
+                // names characters only), so the basis takes the acting one.
+                row.offer.terms.buyer.acting_character(),
                 row.offer.terms.charter,
                 row.offer.basis.predecessor_generation,
                 row.offer.basis.predecessor_operation,

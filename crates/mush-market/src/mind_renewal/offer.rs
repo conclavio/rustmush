@@ -51,10 +51,33 @@ fn cut(
     }
     Ok(())
 }
+/// M8c B3: the payer for `holder`: a character's one personal account
+/// (`personal`), or an organisation's treasury on its root scope
+/// (`mind_entitlement::accounts::treasury`).
+fn payer<'a>(
+    e: &'a EconomyStore,
+    world: &World,
+    instrument: &InstrumentId,
+    holder: mush_economy::Holder,
+) -> Result<&'a Account, String> {
+    match holder {
+        mush_economy::Holder::Character(c) => personal(e.snapshot(), instrument, c),
+        mush_economy::Holder::Organization { org, .. } => {
+            let scope = mush_roll::commerce::org_holder::root_scope(world, org)
+                .ok_or_else(super::records::invalid)?;
+            crate::mind_entitlement::accounts::treasury(e, instrument, org, scope).map_err(invalid)
+        }
+    }
+}
+/// `actor` is the invocation's actor: M8c B3 re-stamps an organisation
+/// holder with it as the acting character (`org_holder::acting_as`), so a
+/// character granted `roll.holder.org` runs the renewal steps for the
+/// organisation; a character holder must be the actor itself.
 pub(super) fn build(
     config: &RenewalConfig,
     world: &World,
     facts: &RenewalFacts,
+    actor: ObjId,
 ) -> Result<RenewalOffer, String> {
     config.policy.validate().map_err(invalid)?;
     let e = world
@@ -76,7 +99,9 @@ pub(super) fn build(
     {
         return Err(super::records::invalid());
     }
-    let payer = personal(e.snapshot(), instrument, binding.holder())?.id;
+    let buyer = mush_roll::commerce::org_holder::acting_as(world, binding.holder(), actor)
+        .map_err(|_| super::records::invalid())?;
+    let payer = payer(e, world, instrument, buyer)?.id;
     let seller = facts.sale().seller();
     let remainder = Recipient {
         account: personal(e.snapshot(), instrument, seller)?.id,
@@ -161,7 +186,7 @@ pub(super) fn build(
             } else {
                 RenewalLineageV1::Original
             },
-            buyer: binding.holder(),
+            buyer,
             seller,
             charter: ObjId(binding.charter().get()),
             title_revision: facts.sale().title_revision(),

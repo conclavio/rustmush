@@ -175,7 +175,7 @@ pub(super) fn exercise(
     birth: &EntitlementAllocationV1,
 ) -> TestResult {
     let mut world = branch(f, saved)?;
-    let holder = birth.holder();
+    let holder = birth.holder().acting_character();
     let old_money = balances(&world)?;
     let initial = licence(&world, birth.licence())?;
     let old_term = term(&world, initial.id(), initial.term())?;
@@ -429,7 +429,7 @@ pub(in super::super) fn unavailable_buyer(
     saved: &Durable,
     birth: &EntitlementAllocationV1,
 ) -> TestResult {
-    check_eq!(birth.holder(), BUYER);
+    check_eq!(birth.holder(), mush_economy::Holder::Character(BUYER));
     let mut world = branch(f, saved)?;
     due(&mut world, birth)?;
     let (draft, _) = next(&mut world, BUYER, DRAFT)?;

@@ -110,7 +110,7 @@ impl Provider {
             .with_eligible_witnesses(vec![
                 inv.principal().clone(),
                 PrincipalId::Object {
-                    id: before.binding().holder(),
+                    id: before.binding().holder().acting_character(),
                 },
             ]))
     }

@@ -1,6 +1,6 @@
 //! Immutable owner-generation evidence. These records contain no capability.
 use super::super::{
-    CharterId, FiledRevisionId, LicenceId, LineId, MAX_GRACE_SECONDS, MAX_TERM_SECONDS,
+    CharterId, FiledRevisionId, LicenceId, LineId, MAX_GRACE_SECONDS, MAX_OWNER_TERM_SECONDS,
     RevisionIdentity, TermGeneration, TermWindow, WorldIcSeconds,
     filed::ParentContent,
     owner_qualification::records::SelectedParent,
@@ -41,7 +41,10 @@ fn required_parent<'de, D: Deserializer<'de>>(
 }
 impl AttestationEvidence {
     pub(crate) fn window(&self, issued: WorldIcSeconds) -> Result<TermWindow, PublicationError> {
-        if !(1..=MAX_TERM_SECONDS).contains(&self.term_seconds)
+        // M8c F10: an attestation writes an OWNER term, so it takes the
+        // owner-term bound the filing terms take (`InitialFilingTerms`), not
+        // the paid-term one: the House attestation runs at 365 days.
+        if !(1..=MAX_OWNER_TERM_SECONDS).contains(&self.term_seconds)
             || !(0..=MAX_GRACE_SECONDS).contains(&self.grace_seconds)
         {
             return Err(PublicationError::Invalid);
@@ -69,6 +72,15 @@ impl AttestationEvidence {
     }
 }
 
+/// M8c B4: a House attestation's organisation and scope. `owner` is then the
+/// acting character (attribution), never the title holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HouseAttestation {
+    pub(crate) organization: mush_org::OrgId,
+    pub(crate) scope: mush_org::OrgScopeId,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "OperationWire")]
 pub(crate) struct AttestationOperation {
@@ -76,6 +88,10 @@ pub(crate) struct AttestationOperation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) charter_ownership:
         Option<super::super::charter_transfer::records::CharterOwnershipRef>,
+    /// M8c B4: present on a House attestation only, so a personal row's
+    /// bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) house: Option<HouseAttestation>,
     pub(crate) operation: CommitToken,
     pub(crate) action: DefinitionRef,
     pub(crate) manifest: DefinitionRef,
@@ -104,6 +120,8 @@ struct OperationWire {
         deserialize_with = "super::super::charter_transfer::records::present_ownership"
     )]
     charter_ownership: Option<super::super::charter_transfer::records::CharterOwnershipRef>,
+    #[serde(default)]
+    house: Option<HouseAttestation>,
     operation: CommitToken,
     action: DefinitionRef,
     manifest: DefinitionRef,
@@ -129,6 +147,7 @@ impl TryFrom<OperationWire> for AttestationOperation {
         let v = Self {
             format: w.format,
             charter_ownership: w.charter_ownership,
+            house: w.house,
             operation: w.operation,
             action: w.action,
             manifest: w.manifest,
@@ -169,12 +188,30 @@ impl Record for AttestationOperation {
             .attestation
             .as_ref()
             .ok_or(PublicationError::Missing)?;
+        // M8c B4: a House attestation is format 1 (a House charter is never
+        // transferred), its action is the House one, and its owner is the
+        // acting character, who need not be the filing's author.
+        let expected_action = if self.house.is_some() {
+            super::protocol::house_action(
+                &self.manifest,
+                evidence.term_seconds,
+                evidence.grace_seconds,
+            )?
+        } else {
+            super::protocol::action(
+                &self.manifest,
+                evidence.term_seconds,
+                evidence.grace_seconds,
+            )?
+        };
         if !matches!(
             (self.format, self.charter_ownership.is_some()),
             (1, false) | (2, true)
         ) || self.owner.0 == 0
             || self.title_revision == 0
+            || (self.house.is_some() && self.charter_ownership.is_some())
             || (self.charter_ownership.is_none()
+                && self.house.is_none()
                 && self.owner != self.revision.revision().key.character)
             || self.operation == self.birth_operation
             || self.operation == self.predecessor_operation
@@ -184,12 +221,7 @@ impl Record for AttestationOperation {
             || self.next.revision != (RevisionPolicy::Follow { line: self.line })
             || self.next.window.issued_at() != at
             || !matches!(self.observed_ic.clock,ClockRef::WorldIc {generation} if generation!=0)
-            || self.action
-                != super::protocol::action(
-                    &self.manifest,
-                    evidence.term_seconds,
-                    evidence.grace_seconds,
-                )?
+            || self.action != expected_action
         {
             return Err(PublicationError::Invalid);
         }
@@ -227,17 +259,32 @@ impl AttestationOperation {
         self.validate()?;
         old.validate()?;
         birth.validate()?;
+        // M8c B4: a House attestation follows the organisation's House
+        // filing (the birth names the House, the title was issued to the
+        // organisation); a personal one follows a personal filing exactly as
+        // before.
+        let birth_matches = match &self.house {
+            None => {
+                birth.economic.house.is_none()
+                    && birth.economic.issued_owner == mush_org::PrincipalId::Object(birth.requester)
+                    && (self.charter_ownership.is_some() || self.owner == birth.requester)
+            }
+            Some(house) => birth.economic.house.as_ref().is_some_and(|h| {
+                h.organization() == house.organization
+                    && h.scope() == house.scope
+                    && birth.economic.issued_owner
+                        == mush_org::PrincipalId::Organization(house.organization)
+            }),
+        };
         if self.licence != old.licence
             || self.predecessor != old.generation
             || self.predecessor_operation != old.operation
             || self.predecessor_digest != term_digest(old)?
             || self.birth_operation != birth.commit
-            || (self.charter_ownership.is_none() && self.owner != birth.requester)
+            || !birth_matches
             || self.licence != birth.licence
             || self.charter != birth.charter
             || self.line != birth.line
-            || birth.economic.house.is_some()
-            || birth.economic.issued_owner != mush_org::PrincipalId::Object(birth.requester)
             || old.revision != (RevisionPolicy::Follow { line: self.line })
             || self.next.window.issued_at() < old.window.term_end()
             || self.next.window.grace_end() <= old.window.grace_end()

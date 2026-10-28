@@ -626,7 +626,7 @@ fn transactions(
             commit: token(FIRST + 5)
         }
     );
-    check_eq!(a.holder(), GOD);
+    check_eq!(a.holder(), mush_economy::Holder::Character(GOD));
     let term = own_term(&world, a.licence())?;
     let parent: PaidTermRecord = serde_json::from_value(
         rows(&disk(&world), "roll", "roll_mind_paid_term")
@@ -687,6 +687,503 @@ fn transactions(
         );
     }
     Ok((snapshot, a))
+}
+/// M8c B2/B3 (the brief's test 3, the composition half): GOD, granted
+/// `roll.holder.org` on the Guild's root scope, quotes BUYER's derived
+/// listing for the Guild, pays from the Guild's treasury (its one account on
+/// its root scope, the hold the organisation's) and completes it; the
+/// allocation's holder is `Organization { org, acting: GOD }` and the split
+/// is the usual one (the Registry's 10, the seller's 90) off the treasury,
+/// GOD's own wallet untouched. Before the grant, for an unknown
+/// organisation, and for a character of the seller's login acting for the
+/// Guild (D-UM-40 through the lobby oracle), the quote is refused.
+fn store(world: &PlayerWorld) -> TestResult<&EconomyStore> {
+    Ok(world
+        .engine
+        .world
+        .module_state::<EconomyStore>()
+        .ok_or("economy")?)
+}
+fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestResult {
+    const ORG: u128 = FIRST + 900;
+    let mut world = PlayerWorld::boot_entitlements(f, granted)?;
+    cash(&mut world)?;
+    world.say(GOD, "@org/create Guild")?;
+    let (org, root) = {
+        let store = world
+            .engine
+            .world
+            .module_state::<mush_org::OrgStore>()
+            .ok_or("Org")?
+            .state();
+        let guild = store
+            .orgs()
+            .find(|o| o.name.as_str() == "Guild")
+            .ok_or("the Guild")?;
+        (guild.id, guild.root_scope)
+    };
+    let instrument = store(&world)?
+        .snapshot()
+        .account(WalletId(0))
+        .ok_or("buyer wallet")?
+        .instrument
+        .clone();
+    world.say(
+        GOD,
+        &format!("@account/open org:Guild/{}={}", root.0, instrument.as_str()),
+    )?;
+    let treasury = store(&world)?
+        .snapshot()
+        .accounts()
+        .find(|a| a.owner == EconomicOwner::Organization(org) && a.scope == Some(root))
+        .ok_or("the Guild's treasury")?
+        .id;
+    let fixture =
+        EconomicOwner::System(SystemPrincipalId::new("purchase.fixture").ok_or("funding system")?);
+    let faucet = store(&world)?
+        .snapshot()
+        .accounts()
+        .find(|a| a.owner == fixture)
+        .ok_or("actual existing faucet")?
+        .id;
+    world.say(GOD, &format!("@econ/mint {faucet}={treasury} 1000"))?;
+    let balance = |world: &PlayerWorld, id: WalletId| -> TestResult<(Amount, Amount)> {
+        let a = world
+            .engine
+            .world
+            .module_state::<EconomyStore>()
+            .ok_or("economy")?
+            .snapshot()
+            .account(id)
+            .ok_or("account")?;
+        Ok((a.posted_balance, a.held_amount))
+    };
+    check_eq!(
+        balance(&world, treasury)?,
+        (Amount::from_minor(1000), Amount::ZERO)
+    );
+    list(&mut world, owner, ORG + 1)?;
+    let quote_params = json!({"listing": token(ORG + 1), "org": org.0});
+    check!(
+        crate::test_checks::refused(prepare_public(
+            &mut world,
+            "market",
+            "quote_derived_mind",
+            1,
+            GOD,
+            ORG + 2,
+            quote_params.clone()
+        ))?,
+        "ungranted: refused"
+    );
+    check!(
+        crate::test_checks::refused(prepare_public(
+            &mut world,
+            "market",
+            "quote_derived_mind",
+            1,
+            GOD,
+            ORG + 3,
+            json!({"listing": token(ORG + 1), "org": org.0 + 1000})
+        ))?,
+        "an unknown organisation: refused"
+    );
+    world.say(
+        GOD,
+        &format!(
+            "@org/grant #{}=Guild {}",
+            GOD.0,
+            mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY
+        ),
+    )?;
+    let seller = merge_login_accounts(f)?;
+    let alt_refused = crate::test_checks::refused(prepare_public(
+        &mut world,
+        "market",
+        "quote_derived_mind",
+        1,
+        GOD,
+        ORG + 4,
+        quote_params.clone(),
+    ))?;
+    restore_login_account(f, seller)?;
+    check!(
+        alt_refused,
+        "the seller's login acting for the Guild: refused"
+    );
+    let before = balances(&world)?;
+    commit(
+        &mut world,
+        "market",
+        "quote_derived_mind",
+        1,
+        GOD,
+        ORG + 5,
+        quote_params,
+    )?;
+    let quote = rows(&disk(&world), "market", "market_mind_entitlement_quote")
+        .into_iter()
+        .find(|v| v.get("publication") == Some(&json!(token(ORG + 5))))
+        .ok_or("the Guild's quote")?;
+    check_eq!(
+        quote.get("buyer"),
+        Some(&json!({"org": org, "acting": GOD})),
+        "the holder is the organisation, GOD acting"
+    );
+    check_eq!(quote.get("payer"), Some(&json!(treasury)));
+    commit(
+        &mut world,
+        "market",
+        "purchase_derived_mind",
+        1,
+        GOD,
+        ORG + 6,
+        json!({"quote": token(ORG + 5)}),
+    )?;
+    check_eq!(
+        balance(&world, treasury)?,
+        (Amount::from_minor(1000), Amount::from_minor(100)),
+        "the hold is the treasury's"
+    );
+    check_eq!(
+        allocation(&world, ORG + 6)?.phase(),
+        PurchasePhase::Funded {}
+    );
+    commit(
+        &mut world,
+        "market",
+        "settle_derived_mind",
+        1,
+        GOD,
+        ORG + 7,
+        json!({"operation": token(ORG + 6)}),
+    )?;
+    check_eq!(
+        balance(&world, treasury)?,
+        (Amount::from_minor(900), Amount::ZERO)
+    );
+    let after = balances(&world)?;
+    for (id, posted, held) in &before {
+        let delta = match id.0 {
+            1 => 10,
+            2 => 90,
+            _ if *id == treasury => -100,
+            _ => 0,
+        };
+        let actual = after
+            .iter()
+            .find(|(key, _, _)| key == id)
+            .ok_or("retained account")?;
+        check_eq!(
+            actual.1,
+            posted
+                .checked_add(Amount::from_minor(delta))
+                .ok_or("exact payout")?,
+            "account {}",
+            id.0
+        );
+        check_eq!(actual.2, *held);
+    }
+    let a = allocation(&world, ORG + 6)?;
+    check_eq!(
+        a.holder(),
+        mush_economy::Holder::Organization { org, acting: GOD }
+    );
+    check_eq!(
+        a.phase(),
+        PurchasePhase::Granted {
+            commit: token(ORG + 7)
+        }
+    );
+    check!(
+        disk(&world)
+            .keys()
+            .any(|(ns, key)| ns == "roll" && key.contains(&format!("org/{:020}/licence/", org.0))),
+        "the organisation's holding is indexed under the organisation"
+    );
+    let snapshot = capture(&world, &disk(&world));
+    let cold = PlayerWorld::boot_entitlements(f, &snapshot)?;
+    check_eq!(balances(&cold)?, balances(&world)?);
+    check_eq!(
+        allocation(&cold, ORG + 6)?.holder(),
+        mush_economy::Holder::Organization { org, acting: GOD }
+    );
+    Ok(())
+}
+/// M8c F2/F4/F8/F11: organisation 0 buys through a non-staff member, and a
+/// second member renews what it holds.
+/// - The member (a real player with its own login account and wallet) is
+///   granted `roll.holder.org`; a grant limited below the price refuses the
+///   Quote, one at the price quotes;
+/// - the grant revoked between the Quote and the Fund refuses the Fund
+///   (the grant is re-asked at every act); re-granted, the Fund places the
+///   treasury's hold as the organisation itself;
+/// - a limited grant cannot complete (the Grant asks no amount, and mush-org
+///   fails closed); unlimited, the member completes and the organisation
+///   holds the licence with the member acting;
+/// - GOD, a second granted character who never bought, renews it end to
+///   end (Draft, Fund, Grant): the treasury pays, the renewed pointer names
+///   GOD as acting, the holdings row keeps the member and both boot audits
+///   accept them by principal on a cold boot.
+fn org_members(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestResult {
+    const ORG: u128 = FIRST + 950;
+    let mut world = PlayerWorld::boot_entitlements(f, granted)?;
+    cash(&mut world)?;
+    world.say(GOD, "@org/create Guild")?;
+    let (org, root) = {
+        let store = world
+            .engine
+            .world
+            .module_state::<mush_org::OrgStore>()
+            .ok_or("Org")?
+            .state();
+        let guild = store
+            .orgs()
+            .find(|o| o.name.as_str() == "Guild")
+            .ok_or("the Guild")?;
+        (guild.id, guild.root_scope)
+    };
+    check_eq!(org, mush_org::OrgId(0), "F8: the Guild is organisation 0");
+    let instrument = store(&world)?
+        .snapshot()
+        .account(WalletId(0))
+        .ok_or("buyer wallet")?
+        .instrument
+        .clone();
+    world.say(
+        GOD,
+        &format!("@account/open org:Guild/{}={}", root.0, instrument.as_str()),
+    )?;
+    let treasury = store(&world)?
+        .snapshot()
+        .accounts()
+        .find(|a| a.owner == EconomicOwner::Organization(org) && a.scope == Some(root))
+        .ok_or("the Guild's treasury")?
+        .id;
+    let fixture =
+        EconomicOwner::System(SystemPrincipalId::new("purchase.fixture").ok_or("funding system")?);
+    let faucet = store(&world)?
+        .snapshot()
+        .accounts()
+        .find(|a| a.owner == fixture)
+        .ok_or("actual existing faucet")?
+        .id;
+    world.say(GOD, &format!("@econ/mint {faucet}={treasury} 1000"))?;
+    // A non-staff member: a real player with a login account of its own and
+    // a personal wallet.
+    let member =
+        world
+            .engine
+            .world
+            .create(mush_core::ObjKind::Player, "Guild Member", GOD, Some(ROOM))?;
+    {
+        let mut values = f.accounts.values.lock().map_err(module_error)?;
+        f.accounts.epoch.invalidate();
+        values.insert(member, mush_core::AccountId::mint("guild-member", 0)?);
+    }
+    let result = org_members_with(f, &mut world, member, (org, treasury), owner, ORG);
+    {
+        let mut values = f.accounts.values.lock().map_err(module_error)?;
+        f.accounts.epoch.invalidate();
+        values.remove(&member);
+    }
+    result
+}
+fn org_members_with(
+    f: &PurchaseFixture,
+    world: &mut PlayerWorld,
+    member: ObjId,
+    (org, treasury): (mush_org::OrgId, WalletId),
+    owner: LicenceId,
+    base: u128,
+) -> TestResult {
+    let instrument = store(world)?
+        .snapshot()
+        .account(treasury)
+        .ok_or("treasury")?
+        .instrument
+        .clone();
+    world.say(
+        GOD,
+        &format!("@account/open #{}={}", member.0, instrument.as_str()),
+    )?;
+    list(world, owner, base + 1)?;
+    let quote_params = json!({"listing": token(base + 1), "org": org.0});
+    let limit = |world: &mut PlayerWorld, who: ObjId, max: &str| {
+        world.say(
+            GOD,
+            &format!("@holder-grant-fixture limit #{} {} {max}", who.0, org.0),
+        )
+    };
+    // The listing's price is 100.
+    limit(world, member, "99")?;
+    check!(
+        crate::test_checks::refused(prepare_public(
+            world,
+            "market",
+            "quote_derived_mind",
+            1,
+            member,
+            base + 2,
+            quote_params.clone()
+        ))?,
+        "a grant limited below the price refuses the Quote"
+    );
+    limit(world, member, "100")?;
+    commit(
+        world,
+        "market",
+        "quote_derived_mind",
+        1,
+        member,
+        base + 3,
+        quote_params,
+    )?;
+    let quote = rows(&disk(world), "market", "market_mind_entitlement_quote")
+        .into_iter()
+        .find(|v| v.get("publication") == Some(&json!(token(base + 3))))
+        .ok_or("the member's quote")?;
+    check_eq!(
+        quote.get("buyer"),
+        Some(&json!({"org": org, "acting": member})),
+        "the holder is the organisation, the member acting"
+    );
+    world.say(GOD, &format!("@holder-grant-fixture revoke #{}", member.0))?;
+    let fund = json!({"quote": token(base + 3)});
+    check!(
+        crate::test_checks::refused(prepare_public(
+            world,
+            "market",
+            "purchase_derived_mind",
+            1,
+            member,
+            base + 4,
+            fund.clone()
+        ))?,
+        "a grant revoked after the Quote refuses the Fund"
+    );
+    limit(world, member, "100")?;
+    commit(
+        world,
+        "market",
+        "purchase_derived_mind",
+        1,
+        member,
+        base + 5,
+        fund,
+    )?;
+    let hold = store(world)?
+        .snapshot()
+        .holds_of(treasury)
+        .next()
+        .ok_or("the treasury's hold")?
+        .clone();
+    check_eq!(
+        hold.placed_by,
+        EconomicOwner::Organization(org),
+        "the hold is placed by the organisation"
+    );
+    let settle = json!({"operation": token(base + 5)});
+    check!(
+        crate::test_checks::refused(prepare_public(
+            world,
+            "market",
+            "settle_derived_mind",
+            1,
+            member,
+            base + 6,
+            settle.clone()
+        ))?,
+        "a limited grant fails closed at the Grant, which asks no amount"
+    );
+    limit(world, member, "none")?;
+    commit(
+        world,
+        "market",
+        "settle_derived_mind",
+        1,
+        member,
+        base + 7,
+        settle,
+    )?;
+    let a = allocation(world, base + 5)?;
+    check_eq!(
+        a.holder(),
+        mush_economy::Holder::Organization {
+            org,
+            acting: member
+        }
+    );
+    // A second granted character, who never bought, renews it.
+    limit(world, GOD, "none")?;
+    let renewing = capture(world, &disk(world));
+    let mut w = PlayerWorld::boot_renewals(f, &renewing)?;
+    for actor in [GOD, BUYER, member] {
+        w.engine.world.move_to(actor, ROOM)?;
+    }
+    let term = own_term(&w, a.licence())?;
+    w.engine.world.set_now(term.window().term_end().get());
+    let held = |w: &PlayerWorld| -> TestResult<Amount> {
+        Ok(store(w)?
+            .snapshot()
+            .account(treasury)
+            .ok_or("treasury")?
+            .posted_balance)
+    };
+    let before = held(&w)?;
+    commit(
+        &mut w,
+        "market",
+        "draft_mind_renewal",
+        1,
+        GOD,
+        base + 10,
+        json!({"licence": a.licence().get()}),
+    )?;
+    commit(
+        &mut w,
+        "market",
+        "fund_mind_renewal",
+        1,
+        GOD,
+        base + 11,
+        json!({"operation": token(base + 10)}),
+    )?;
+    let now = w.engine.world.now();
+    w.engine.world.set_now(now.checked_add(31).ok_or("time")?);
+    commit(
+        &mut w,
+        "market",
+        "settle_mind_renewal",
+        1,
+        GOD,
+        base + 12,
+        json!({"operation": token(base + 10)}),
+    )?;
+    check!(held(&w)? < before, "the treasury paid the renewal");
+    let pointer: mush_roll::commerce::paid::PersonalPaidLicence = serde_json::from_value(
+        rows(&disk(&w), "roll", "roll_mind_personal_paid_licence")
+            .into_iter()
+            .find(|v| v.get("id") == Some(&json!(a.licence())))
+            .ok_or("the renewed pointer")?,
+    )?;
+    check_eq!(pointer.term().get(), 2, "renewed");
+    check_eq!(
+        pointer.holder(),
+        mush_economy::Holder::Organization { org, acting: GOD },
+        "the renewed pointer names the renewing character"
+    );
+    let row = rows(&disk(&w), "roll", "roll_mind_paid_holdings")
+        .into_iter()
+        .find(|v| v.get("licence") == Some(&json!(a.licence())))
+        .ok_or("the holdings row")?;
+    check_eq!(
+        row.get("holder"),
+        Some(&json!({"org": org, "acting": member})),
+        "the row keeps the grant's acting"
+    );
+    PlayerWorld::boot_renewals(f, &capture(&w, &disk(&w)))?;
+    Ok(())
 }
 fn original_v3(f: &PurchaseFixture, filed: &Durable) -> TestResult {
     let mut world = PlayerWorld::boot_entitlements(f, filed)?;
@@ -896,7 +1393,7 @@ async fn customer(
         source_answer(&mut world,BUYER,a.licence(),None)?;
         source_answer(&mut world,BUYER,owner,None)?;
         assert!(rows(&disk(&world),"roll","roll_mind_personal_paid_licence").iter().filter_map(|r|serde_json::from_value::<PersonalPaidLicence>(r.clone()).ok())
-            .all(|licence|licence.holder()!=GOD || licence.id()==a.licence()),"customer bought no ancestor licence");
+            .all(|licence|licence.holder()!=mush_economy::Holder::Character(GOD) || licence.id()==a.licence()),"customer bought no ancestor licence");
         // New sortie under the customer's own Grace still works after the
         // issuer's selected parent has ended; no ancestor is re-resolved.
         world.say(GOD,"SIM TEAM red")?;world.say(GOD,"SIM AI 1")?;world.say(GOD,"SIM UNIT heavy_mk1")?;
@@ -947,6 +1444,14 @@ pub(super) async fn exercise(
     original_v3(f, &filed)?;
     lapse_refund(f, &filed, owner)?;
     let (granted, allocation) = transactions(f, &filed, owner)?;
+    story_phase("entitlement.org_buys", || async {
+        org_buys(f, &granted, owner)
+    })?
+    .await?;
+    story_phase("entitlement.org_members", || async {
+        org_members(f, &granted, owner)
+    })?
+    .await?;
     resale_routes::exercise(
         &f.accounts,
         &granted,

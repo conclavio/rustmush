@@ -172,11 +172,15 @@ pub(crate) fn audit(
                     basis.ownership.generation,
                 ),
             )?;
-            if holder != row.binding().holder() || captured.acceptance() != basis.acceptance {
+            // M8c F4: by principal (the binding's acting is the renewer's).
+            if !holder.same_principal(row.binding().holder())
+                || captured.acceptance() != basis.acceptance
+            {
                 return Err(PublicationError::Mismatch);
             }
-        } else if birth_history::resolve(ctx, f, licence.operation())?.holder()
-            != row.binding().holder()
+        } else if !birth_history::resolve(ctx, f, licence.operation())?
+            .holder()
+            .same_principal(row.binding().holder())
         {
             return Err(PublicationError::Mismatch);
         }

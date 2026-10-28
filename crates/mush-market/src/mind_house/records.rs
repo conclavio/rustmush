@@ -1,6 +1,7 @@
 //! Exact immutable consent data, separate from the legacy original products.
 use super::codec::{self, Bounded, Row};
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_economy::Holder;
 use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
 use mush_economy::managed_house_purchase::HousePurchase;
 use mush_economy::{AccountId, Amount, InstrumentId};
@@ -228,7 +229,7 @@ impl Row for HouseListingV1 {
 }
 data!(HouseQuoteV1,QuoteWire,{
     format:u16,publication:CommitToken,listing:CommitToken,listing_digest:DefinitionDigest,
-    buyer:ObjId,subject:HouseSubjectV1,product:HouseProductV1,product_digest:DefinitionDigest,
+    buyer:Holder,subject:HouseSubjectV1,product:HouseProductV1,product_digest:DefinitionDigest,
     price:Amount,instrument:InstrumentId,registry:Cut,venue:Venue,
     remainder:Recipient,payer:AccountId,payouts:Bounded<Payout,3>,
     policy:DefinitionRef,quoted_at_utc:i64,expires_at_utc:i64,

@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use mush_core::ObjId;
 use serde_json::{Value, json};
 
 use super::*;

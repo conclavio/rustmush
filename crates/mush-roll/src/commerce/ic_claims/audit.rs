@@ -176,7 +176,15 @@ pub(super) fn local(
                         ctx, f, ratings, licence, ownership,
                     )?,
                 };
-                if captured_holder != open.dispatcher
+                // M8c F1: a character's licence was dispatched by that
+                // character; an organisation's by some character acting for
+                // it, whose grant was asked live at the dispatch
+                // (`reader_holder`) and whom the claim records.
+                let dispatcher_fits = match captured_holder {
+                    super::super::Holder::Character(c) => c == open.dispatcher,
+                    super::super::Holder::Organization { .. } => open.dispatcher.0 != 0,
+                };
+                if !dispatcher_fits
                     || grant.filed() != open.filed
                     || grant.revision() != open.revision
                     || term.terms().class() < rating.minimum()

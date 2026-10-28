@@ -38,20 +38,22 @@ impl mush_core::module::QueryHandler for Query {
     ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
         // 17g C2c: `{"holdings": <cursor|null>, "paid": <bool>}` and
         // `{"names": [<charter>...]}` select the C2c kinds.
+        // M8c F11: `"org": <n>` reads for that organisation.
+        let org = args.get("org").and_then(Value::as_u64).map(mush_org::OrgId);
         let request = if let Some(after) = args.get("holdings") {
             let section = if args.get("paid").and_then(Value::as_bool) == Some(true) {
                 HoldingSection::Paid
             } else {
                 HoldingSection::Owner
             };
-            RollCommandReadRequest::own_holdings(section, after.as_u64())
+            RollCommandReadRequest::own_holdings_for(section, after.as_u64(), org)
         } else if let Some(licence) = args
             .get("paid")
             .and_then(Value::as_u64)
             .and_then(|n| LicenceId::new(n).ok())
         {
             // 17g C2d: `{"paid": <licence>}`.
-            RollCommandReadRequest::own_paid(licence)
+            RollCommandReadRequest::own_paid_for(licence, org)
         } else if let Some(filed) = args
             .get("charter_offers")
             .and_then(Value::as_u64)
@@ -381,6 +383,7 @@ fn command_reader_pages_own_holdings_of_every_kind() -> TestResult {
     check!(theirs.rows().is_empty(), "another player's page is empty");
     // 17g C2g: the paid section, through the per-holder index.
     paid_section_pages_own_rows(&mut f, other)?;
+    org_paid_rows_answer_every_granted_member(&mut f, other)?;
 
     // Names only, for anyone; an unknown charter is left out.
     for actor in [GOD, other] {
@@ -706,7 +709,7 @@ fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
         licence,
         charter,
         content.position().line,
-        GOD,
+        GOD.into(),
         one,
         token(30),
     )?;
@@ -889,7 +892,7 @@ fn paid_section_pages_own_rows(f: &mut Fixture, other: ObjId) -> TestResult {
             licence,
             content.position().charter,
             content.position().line,
-            holder,
+            holder.into(),
             one,
             birth,
         )?;
@@ -910,7 +913,7 @@ fn paid_section_pages_own_rows(f: &mut Fixture, other: ObjId) -> TestResult {
             &format!("{}/{}", licence.key(), one.key()),
             term,
         )?;
-        let row = PaidHolding::new(holder, licence)?;
+        let row = PaidHolding::new(holder.into(), licence)?;
         txn.insert(&families.paid_holdings, &row.key(), row.clone())?;
     }
     let (_, install) = txn.prepare()?.into_parts();
@@ -987,6 +990,193 @@ fn paid_section_pages_own_rows(f: &mut Fixture, other: ObjId) -> TestResult {
         check!(row.transferable() && row.name() == "Original");
         check_eq!(row.phase(), OwnerPhase::Active { days_left: 90 });
     }
+    Ok(())
+}
+
+/// GOD's console line through the fixture's real command table; an error
+/// line is a refusal.
+fn command(f: &mut Fixture, line: &str) -> TestResult {
+    let mut out = Outbox::new();
+    f.engine.step(
+        mush_core::Inbound::Cmd {
+            conn: 1,
+            actor: GOD,
+            line: line.into(),
+        },
+        &mut out,
+        &mut mush_core::engine::Effects::new(),
+    );
+    if out.events().iter().any(|(_, e)| {
+        matches!(e, mush_proto::OutputEvent::Sys(text)
+            if text.spans().iter().any(|s| s.tag.as_deref() == Some("error")))
+    }) {
+        return Err(format!("refused: {line}").into());
+    }
+    Ok(())
+}
+
+/// M8c F3/F11 (brief test 3): the holdings observer rule through the real
+/// read. Two licences held by the Guild (bought with `other` acting):
+/// - every character granted `roll.holder.org` on the Guild's root reads
+///   them with `org=`: `other`, and GOD, a second granted character who
+///   never bought (F3: the rows match by principal, not by `acting`);
+/// - neither appears in any character's own holdings (the GOD pages above
+///   are unchanged: 41..44), and the bare own-paid read of one is refused
+///   even to the character who bought it;
+/// - an ungranted character reads `Refused` for the Guild (the command's
+///   `NOT_FOR_ORG`), the same answer as an organisation it may not see.
+fn org_paid_rows_answer_every_granted_member(f: &mut Fixture, other: ObjId) -> TestResult {
+    use crate::commerce::Holder;
+    use crate::commerce::paid::{PaidForm, PaidTermRecord, PaidTerms, PersonalPaidLicence};
+    use crate::commerce::paid_holdings::PaidHolding;
+    use crate::commerce::rating::RatingClass;
+    use crate::commerce::records::RevisionPolicy;
+    use crate::commerce::{TermGeneration, TermWindow};
+    command(f, "@org/create Guild")?;
+    let guild = f
+        .engine
+        .world
+        .module_state::<mush_org::OrgStore>()
+        .ok_or("org")?
+        .state()
+        .orgs()
+        .find(|o| o.name.as_str() == "Guild")
+        .ok_or("the Guild")?
+        .id;
+    for who in [other, GOD] {
+        command(
+            f,
+            &format!(
+                "@org/grant #{}=Guild {}",
+                who.0,
+                crate::commerce::org_holder::HOLDER_ORG_CAPABILITY
+            ),
+        )?;
+    }
+    let filed = FiledRevisionId::new(1)?;
+    let content = f
+        .engine
+        .action_state()
+        .get(&f.families.filed, &filed.key())?
+        .ok_or("the filed row")?
+        .content()
+        .clone();
+    let one = TermGeneration::new(1)?;
+    let now = f.engine.world.game_now_unix();
+    let window = TermWindow::new(
+        WorldIcSeconds(now),
+        WorldIcSeconds(now),
+        WorldIcSeconds(now + 90 * DAY),
+        WorldIcSeconds(now + 93 * DAY),
+    )?;
+    let terms = PaidTerms::original_personal_form(RatingClass::I, PaidForm::OpenResale {}, true)?;
+    let held = Holder::Organization {
+        org: guild,
+        acting: other,
+    };
+    let families = f.families.clone();
+    let mut txn = f.engine.action_transaction(&families.paid_licences)?;
+    for n in [46, 47] {
+        let licence = LicenceId::new(n)?;
+        let birth = token(u8::try_from(n)?);
+        let pointer = PersonalPaidLicence::original(
+            licence,
+            content.position().charter,
+            content.position().line,
+            held,
+            one,
+            birth,
+        )?;
+        let term = PaidTermRecord::original(
+            licence,
+            one,
+            window,
+            terms,
+            RevisionPolicy::Pin {
+                filed,
+                revision: content.revision(),
+            },
+            birth,
+        )?;
+        txn.insert(&families.paid_licences, &licence.key(), pointer)?;
+        txn.insert(
+            &families.paid_terms,
+            &format!("{}/{}", licence.key(), one.key()),
+            term,
+        )?;
+        let row = PaidHolding::new(held, licence)?;
+        txn.insert(&families.paid_holdings, &row.key(), row.clone())?;
+    }
+    let (_, install) = txn.prepare()?.into_parts();
+    f.engine.install_prepared_action(install)?;
+    type OrgPage = Result<(Vec<u64>, Option<u64>), OwnerReadError>;
+    let page =
+        |f: &mut Fixture, actor, org: Option<u64>| -> Result<OrgPage, Box<dyn std::error::Error>> {
+            let mut args = json!({"holdings": null, "paid": true});
+            if let Some(org) = org {
+                args["org"] = json!(org);
+            }
+            Ok(read(f, actor, args)?.and_then(|(answer, _)| {
+                let page = answer
+                    .into_paid_holdings()
+                    .ok_or(OwnerReadError::Integrity)?;
+                Ok((
+                    page.rows().iter().map(|r| r.licence().get()).collect(),
+                    page.next().map(LicenceId::get),
+                ))
+            }))
+        };
+    for member in [other, GOD] {
+        check_eq!(
+            page(f, member, Some(guild.0))?,
+            Ok((vec![46, 47], None)),
+            "a granted member {member:?} reads the Guild's rows"
+        );
+    }
+    check_eq!(
+        page(f, GOD, None)?,
+        Ok((vec![41, 42, 43], Some(43))),
+        "the Guild's rows are not GOD's own"
+    );
+    check_eq!(
+        page(f, other, None)?,
+        Ok((vec![45], None)),
+        "nor the buyer's own"
+    );
+    let third = f.engine.world.create(
+        mush_core::ObjKind::Player,
+        "Ungranted",
+        GOD,
+        Some(mush_core::LIMBO),
+    )?;
+    check_eq!(
+        page(f, third, Some(guild.0))?,
+        Err(OwnerReadError::Refused),
+        "an ungranted character"
+    );
+    check_eq!(
+        page(f, third, Some(guild.0 + 1000))?,
+        Err(OwnerReadError::Refused),
+        "an organisation that does not exist reads the same"
+    );
+    // The own-paid view: with `org=` for every member; never bare.
+    for member in [other, GOD] {
+        let (answer, _) = read(f, member, json!({"paid": 46, "org": guild.0}))??;
+        let row = answer.into_own_paid().ok_or("the Guild's licence")?;
+        check_eq!(row.licence().get(), 46);
+    }
+    check_eq!(
+        read(f, other, json!({"paid": 46}))?.map(|_| ()),
+        Err(OwnerReadError::Refused),
+        "the bare read never answers the organisation's licence"
+    );
+    // An inactive organisation stops the next read.
+    command(f, "@org/status Guild=suspended")?;
+    check_eq!(
+        page(f, other, Some(guild.0))?,
+        Err(OwnerReadError::Refused),
+        "an inactive organisation"
+    );
     Ok(())
 }
 
