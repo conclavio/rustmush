@@ -2630,3 +2630,284 @@ it("refetches an open IC tab after a membership epoch changes", () => {
   ws.deliver(reply(4,freshRequest.id,panelEvent("comsys","delta",{backlog:{channel:"Radio",epoch:"new",messages:[{seq:1,actor:{id:"#1",name:"A"},text:"arrived"}]}})));
   expect(app.channels.messagesOf("Radio")[0]?.text).toEqual([{text:"arrived"}]);
 });
+
+// 17g cut C3c (the C3 plan §5): the mind market on the web — `MARKET_SCREEN` registered on
+// the manifest's `mind.market`, the two closed page reads, the `#routePanel` arms, the typed
+// submit and its one refresh, and the `resolution.outcome` arm's one more.
+describe("the mind market (17g cut C3c)", () => {
+  const MARKET_PANELS = ["mind.market", "mind.holdings"];
+  const marketFixture = (name: string): unknown =>
+    JSON.parse(readFileSync(resolve(__dirname, "fixtures/market", name), "utf8")) as unknown;
+  /** The `mind_market` page asks, in order. */
+  const marketAsks = (ws: FakeSocket): ReqFrame[] => ws.reqs().filter((r) => r.q.t === "mind_market");
+  const askOf = (r: ReqFrame): unknown => (r.q.t === "mind_market" ? r.q.d : null);
+  /** The feed a page ask is answered on. */
+  const feedOfAsk = (r: ReqFrame): string =>
+    r.q.t === "mind_market" && r.q.d.kind === "listings" ? "mind.market" : "mind.holdings";
+  /** The invokes the client sent, in order. */
+  const invokes = (ws: FakeSocket): { id: number; request: unknown }[] =>
+    ws.sentJson().flatMap((f) => (f.t === "invoke" ? [f.d as { id: number; request: unknown }] : []));
+  const mindResult = (seq: number, id: number, result: unknown): Envelope =>
+    env(seq, { t: "invoke_result", d: { id, result: { service: "mind", result } } } as OutputEvent);
+  const LOST_SENTENCE =
+    "A request whose result you have not seen is not a refusal; check your holdings before trying again.";
+  /** A fresh `resolution.outcome` receipt numbered `n` (distinct commits; the generation is
+   * the commit's first 13 digits, at least 1, or `parseResolutionOutcome` drops the frame). */
+  const receiptView = (n: number): ViewEnvelope => {
+    const commit = n.toString(16).padStart(32, "0");
+    return {
+      view: "resolution.outcome",
+      schema_version: 1,
+      generation: 1,
+      sequence: 1,
+      commit,
+      data: {
+        schema_version: 1,
+        status: `k5:toy:brace:000000000000000${n}:${"01".repeat(16)}`,
+        commit,
+        result: { kind: "brace", summary: "Brace committed.", data: { braced: true } },
+      },
+    };
+  };
+  /** On the market screen with both pages answered. */
+  function onTheMarket(): { app: GameApp; ws: FakeSocket } {
+    const { app, ws } = boot(MARKET_PANELS);
+    expect(app.act({ kind: "screenKey", key: "m" })).toBe(true);
+    const [listings, holdings] = marketAsks(ws).slice(-2);
+    ws.deliver(reply(3, listings!.id, panelEvent("mind.market", "keyframe", marketFixture("market_page.json"))));
+    ws.deliver(reply(4, holdings!.id, panelEvent("mind.holdings", "keyframe", marketFixture("owner_page.json"))));
+    return { app, ws };
+  }
+
+  it("registers on mind.market and asks the two pages on entry; the keyframes reach the store", () => {
+    const { app, ws } = boot(MARKET_PANELS);
+    expect(app.screens.feedScreens.some((f) => f.def.id === "market")).toBe(true);
+    // The hello pass asks nothing of the market: the screen pulls on entry.
+    expect(marketAsks(ws)).toEqual([]);
+    expect(app.act({ kind: "screenKey", key: "m" })).toBe(true);
+    expect(app.screens.active).toBe("market");
+    expect(marketAsks(ws).map(askOf)).toEqual([
+      { kind: "listings", after: null },
+      { kind: "holdings", section: "owner", after: null },
+    ]);
+    const [listings, holdings] = marketAsks(ws);
+    ws.deliver(reply(3, listings!.id, panelEvent("mind.market", "keyframe", marketFixture("market_page.json"))));
+    ws.deliver(reply(4, holdings!.id, panelEvent("mind.holdings", "keyframe", marketFixture("owner_page.json"))));
+    expect(app.market.market?.rows.map((r) => r.code)).toEqual(["0a1b2c3d", "99aa77bb"]);
+    expect(app.market.shownHoldings?.rows).toHaveLength(1);
+    expect(app.market.badge).toBe(1);
+    // A bare keyframe (no request) lands the same way.
+    ws.deliver(panel(5, "mind.market", "keyframe", marketFixture("closed_market.json")));
+    expect(app.market.open).toBe(false);
+    expect(app.market.badge).toBe(0);
+  });
+
+  it("is absent from a server whose manifest carries no mind.market", () => {
+    const { app } = boot(["mail"]);
+    expect(app.screens.feedScreens.some((f) => f.def.id === "market")).toBe(false);
+    expect(app.act({ kind: "screenKey", key: "m" })).toBe(false);
+  });
+
+  it("no bare key sends a line or a typed request; the page keys ask pages", () => {
+    const { app, ws } = onTheMarket();
+    const before = marketAsks(ws).length;
+    for (const key of ["b", "k", "t", "a", "l", "x", "h", "r", "]", "["]) {
+      app.market.closeForm();
+      expect(app.runBinding(key)).toBe(true);
+    }
+    expect(ws.sentJson().filter((f) => f.t === "line" || f.t === "invoke")).toEqual([]);
+    // `h` the paid section; `r` the two pages; `]` the listings' next page (the listings pane
+    // has the focus); `[` its first page.
+    expect(marketAsks(ws).slice(before).map(askOf)).toEqual([
+      { kind: "holdings", section: "paid", after: null },
+      { kind: "listings", after: null },
+      { kind: "holdings", section: "paid", after: null },
+      { kind: "listings", after: "99aa77bb" },
+      { kind: "listings", after: null },
+    ]);
+  });
+
+  it("submitMarket sends one typed request, and a staged reply asks the two pages once", async () => {
+    const { app, ws } = onTheMarket();
+    app.runBinding("b");
+    expect(app.market.form).toMatchObject({ kind: "buy", code: "0a1b2c3d", step: "pay" });
+    const action = app.market.build();
+    expect(action).toEqual({ act: "pay", code: "0a1b2c3d" });
+    const submitted = app.submitMarket(action as Exclude<typeof action, string | null>);
+    const sent = invokes(ws);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.request).toEqual({
+      service: "mind",
+      request: { op: "market", action: { act: "pay", code: "0a1b2c3d" } },
+    });
+    // A second submit while the first is out is refused locally and sends nothing.
+    await app.submitMarket({ act: "quote", code: "0a1b2c3d" });
+    expect(app.market.notice).toBe("An operation is pending; wait for its result.");
+    expect(invokes(ws)).toHaveLength(1);
+    const before = marketAsks(ws).length;
+    ws.deliver(mindResult(9, sent[0]!.id, { status: "staged", line: "Paying for listing 0a1b2c3d." }));
+    await submitted;
+    expect(app.market.notice).toBe("Paying for listing 0a1b2c3d.");
+    expect(app.market.form).toBeNull();
+    expect(app.market.pending).toBe(false);
+    // Once: the listings page and the holdings section the screen is on, and no more.
+    expect(marketAsks(ws).slice(before).map(askOf)).toEqual([
+      { kind: "listings", after: null },
+      { kind: "holdings", section: "owner", after: null },
+    ]);
+    expect(ws.sentJson().filter((f) => f.t === "line")).toEqual([]);
+  });
+
+  it("an error reply asks nothing; a bad action never leaves the client", async () => {
+    const { app, ws } = onTheMarket();
+    const submitted = app.submitMarket({ act: "quote", code: "0a1b2c3d" });
+    const before = marketAsks(ws).length;
+    ws.deliver(
+      mindResult(9, invokes(ws)[0]!.id, {
+        status: "error",
+        code: "not_open",
+        message: "The mind market is not open here.",
+      }),
+    );
+    await submitted;
+    expect(app.market.notice).toBe("The mind market is not open here.");
+    expect(marketAsks(ws).length).toBe(before);
+    await app.submitMarket({ act: "publish", filed: 7, form: "open", royalty: 301, transfer: true });
+    expect(app.market.notice).toBe("Request refused: invalid market royalty");
+    expect(invokes(ws)).toHaveLength(1);
+  });
+
+  it("a receipt on the market asks the pages once, never while an ask is out, never elsewhere", () => {
+    // Every receipt here parses (a receipt the parser dropped would ask nothing for the wrong
+    // reason): its toast is the proof.
+    const outcome = (n: number): ViewEnvelope => receiptView(n);
+    const { app, ws } = onTheMarket();
+    let before = marketAsks(ws).length;
+    ws.deliver(env(20, { t: "view", d: outcome(1) }));
+    expect(marketAsks(ws).length).toBe(before + 2);
+    // Those two are still out: a second receipt asks nothing more.
+    ws.deliver(env(21, { t: "view", d: outcome(2) }));
+    expect(marketAsks(ws).length).toBe(before + 2);
+    // Answered, and off the screen: a receipt asks nothing.
+    for (const r of marketAsks(ws).slice(-2)) {
+      const feed = feedOfAsk(r);
+      ws.deliver(
+        reply(22, r.id, panelEvent(feed, "keyframe", marketFixture(feed === "mind.market" ? "market_page.json" : "owner_page.json"))),
+      );
+    }
+    expect(app.switchScreen("scene")).toBe(true);
+    before = marketAsks(ws).length;
+    ws.deliver(env(23, { t: "view", d: outcome(3) }));
+    expect(marketAsks(ws).length).toBe(before);
+    expect(app.scrollback.entries.filter((e) => JSON.stringify(e).includes("Brace committed."))).toHaveLength(3);
+  });
+
+  it("a refused page paints in the store, never the scrollback; a lost reply is never a refusal", async () => {
+    const { app, ws } = onTheMarket();
+    const lines = app.scrollback.entries.length;
+    app.runBinding("r");
+    const ask = marketAsks(ws).at(-2)!;
+    ws.deliver(reply(30, ask.id, { t: "sys", d: [{ text: "No such market page." }] } as OutputEvent));
+    expect(app.market.notice).toBe("No such market page.");
+    expect(app.market.marketBad).toBe(true);
+    expect(app.scrollback.entries.length).toBe(lines);
+    // A character switch while a request is out: its result will never be seen here.
+    const submitted = app.submitMarket({ act: "quote", code: "0a1b2c3d" });
+    ws.deliver(
+      env(31, {
+        t: "session_info",
+        d: { character: { id: "8", name: "Other" }, account: "test", connections: 1 },
+      } as OutputEvent),
+    );
+    await submitted;
+    expect(app.market.pending).toBe(false);
+    expect(app.market.notice).toBe(LOST_SENTENCE);
+    // The previous character's pages went with the reset.
+    expect(app.market.market).toBeNull();
+    expect(app.market.shownHoldings).toBeNull();
+  });
+
+  it("a page asked before a character switch is never painted for the next character", () => {
+    const { app, ws } = onTheMarket();
+    app.runBinding("r");
+    const [listings, holdings] = marketAsks(ws).slice(-2);
+    ws.deliver(
+      env(40, {
+        t: "session_info",
+        d: { character: { id: "8", name: "Other" }, account: "test", connections: 1 },
+      } as OutputEvent),
+    );
+    expect(app.market.market).toBeNull();
+    expect(app.market.shownHoldings).toBeNull();
+    // The old asks are unanswered yet, but they never hold the new character's refresh back.
+    const before = marketAsks(ws).length;
+    ws.deliver(env(41, { t: "view", d: receiptView(7) }));
+    const fresh = marketAsks(ws).slice(before);
+    expect(fresh.map(askOf)).toEqual([
+      { kind: "listings", after: null },
+      { kind: "holdings", section: "owner", after: null },
+    ]);
+    // The old answers arrive — the previous character's quotes and holdings — and are dropped,
+    // a refusal among them too.
+    ws.deliver(reply(42, listings!.id, panelEvent("mind.market", "keyframe", marketFixture("market_page.json"))));
+    ws.deliver(reply(43, holdings!.id, { t: "sys", d: [{ text: "No such market page." }] } as OutputEvent));
+    expect(app.market.market).toBeNull();
+    expect(app.market.shownHoldings).toBeNull();
+    expect(app.market.holdingsBad).toBe(false);
+    expect(app.market.notice).toBe("");
+    // The new character's own answers land.
+    ws.deliver(reply(44, fresh[0]!.id, panelEvent("mind.market", "keyframe", marketFixture("closed_market.json"))));
+    ws.deliver(reply(45, fresh[1]!.id, panelEvent("mind.holdings", "keyframe", marketFixture("closed_holdings.json"))));
+    expect(app.market.open).toBe(false);
+    expect(app.market.shownHoldings?.notice).toBe("The mind market is not open here.");
+  });
+
+  it("a hello while on the market asks its two pages again, exactly once", () => {
+    const { app, ws } = onTheMarket();
+    app.runBinding("h"); // the paid section: the reset after the drop returns to owner
+    ws.drop();
+    vi.advanceTimersByTime(500); // the first backoff window, `random: () => 1`
+    const next = openHello(MARKET_PANELS);
+    expect(next).not.toBe(ws);
+    expect(app.screens.active).toBe("market");
+    expect(marketAsks(next).map(askOf)).toEqual([
+      { kind: "listings", after: null },
+      { kind: "holdings", section: "owner", after: null },
+    ]);
+    // A bare re-hello on the same socket: the same two, once more.
+    next.deliver(hello(MARKET_PANELS));
+    expect(marketAsks(next).map(askOf)).toEqual([
+      { kind: "listings", after: null },
+      { kind: "holdings", section: "owner", after: null },
+      { kind: "listings", after: null },
+      { kind: "holdings", section: "owner", after: null },
+    ]);
+  });
+
+  it("a request out across a drop and the hello after it leaves LOST, and nothing retries", async () => {
+    const { app, ws } = onTheMarket();
+    const submitted = app.submitMarket({ act: "pay", code: "0a1b2c3d" });
+    expect(invokes(ws)).toHaveLength(1);
+    ws.drop();
+    expect(app.market.notice).toBe(LOST_SENTENCE);
+    vi.advanceTimersByTime(500);
+    const next = openHello(MARKET_PANELS);
+    await submitted;
+    // The reconnect's resets and the hello's did not wipe the only warning.
+    expect(app.market.pending).toBe(false);
+    expect(app.market.notice).toBe(LOST_SENTENCE);
+    expect(invokes(next)).toEqual([]);
+  });
+
+  it("a submit with no socket says it was not sent: never LOST, and the form stays open", async () => {
+    const { app, ws } = onTheMarket();
+    ws.drop();
+    app.runBinding("a");
+    expect(app.market.form?.kind).toBe("accept");
+    await app.submitMarket({ act: "resell_accept", licence: 41, price: null });
+    expect(app.market.notice).toBe("Not connected — request dropped.");
+    expect(app.market.pending).toBe(false);
+    expect(app.market.form?.kind).toBe("accept");
+    expect(invokes(ws)).toEqual([]);
+  });
+});

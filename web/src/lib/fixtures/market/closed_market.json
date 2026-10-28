@@ -1,0 +1,8 @@
+{
+  "schema": { "id": "mind.market", "version": 1 },
+  "open": false,
+  "notice": "The mind market is not open here.",
+  "rows": [],
+  "after": null,
+  "own": { "quotes": [], "waiting": [] }
+}
