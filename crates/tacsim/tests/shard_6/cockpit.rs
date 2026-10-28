@@ -18679,6 +18679,65 @@ fn m6_frame(names: &[&str]) -> tacsim::arena::step::FrameMind {
 }
 
 // ---------------------------------------------------------------------------
+// 16c Q-PT1 (2026-10-27) — the seat says it is a range
+// ---------------------------------------------------------------------------
+
+/// **A range reads as a range from the seat** (16c `Q-PT1`; the 2026-10-27
+/// dev2 playtest in doc 16c §4, where four range targets took a fight's
+/// shape): on `SIM RANGE 1` the pilot's keyframe carries `"mode": "range"`,
+/// `STATUS` opens `Callsign RA. On the range: targets on the blue side.` and
+/// `WATCH`'s header ends `, RANGE` — and a skirmish's frame says none of it.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn q_pt1_a_range_says_so_from_the_seat() {
+    let mut rig = Rig::boot(1);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim range 1");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.say(0, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = rig.frame(0).expect("a held frame");
+    assert!(cockpit::on_range(&frame), "the frame's match is a range");
+    assert_eq!(
+        cockpit::status_frame(match_id, &frame)["mode"],
+        serde_json::json!("range"),
+        "the keyframe carries the mode"
+    );
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains("Callsign RA. On the range: targets on the blue side."),
+        "{said}"
+    );
+    let watch = cockpit::watch_lines(
+        &frame,
+        &BTreeMap::new(),
+        &cockpit::frame_weapons(&frame),
+        1_000,
+    );
+    assert!(
+        watch.first().is_some_and(|line| line.ends_with(", RANGE")),
+        "{watch:?}"
+    );
+
+    // The skirmish fixture: the same two readers print nothing of it.
+    let skirmish = fixture::frame();
+    assert!(!cockpit::on_range(&skirmish));
+    assert_eq!(cockpit::range_sentence(&skirmish), "");
+    let watch = cockpit::watch_lines(
+        &skirmish,
+        &BTreeMap::new(),
+        &cockpit::frame_weapons(&skirmish),
+        1_000,
+    );
+    assert!(
+        watch.first().is_some_and(|line| !line.contains("RANGE")),
+        "{watch:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Doc 21 cut G.14 — one health word a contact
 // ---------------------------------------------------------------------------
 

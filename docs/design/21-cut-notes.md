@@ -594,7 +594,8 @@ What was built (`web/src/lib/picture.ts`, `web/src/components/PictureView.svelte
   `helm`, `picture`, `setPicture`), handles every key, coalesces the speed, walks the lock, bypasses
   the local wasm render while the overhead is chosen (the source toggle reads "overhead: drawn by
   the server"), and shows `spd a→b` and `weapons free` / `weapons hold` in the header with the
-  legend. Letters work in either case except `t`/`T`; Ctrl/Alt/Meta chords are the browser's;
+  legend (and, since 16c Q-PT1 on 2026-10-27, `RANGE` beside the gate while the match is a range,
+  as the TUI's top line does). Letters work in either case except `t`/`T`; Ctrl/Alt/Meta chords are the browser's;
   `F1`–`F6` always `preventDefault` while the picture has focus (F1 help, F5 reload, F6 the address
   bar never fire); only the turn's release and `w`/`s` act on `ev.repeat` (the look toggle used to
   flicker on key repeat).

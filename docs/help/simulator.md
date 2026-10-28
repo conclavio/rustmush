@@ -306,6 +306,12 @@ and `SIM HISTORY`, `SIM REPORT` and `SIM REPLAY` tag the match `[range]`.
 losses: `You flew RA: intact; 14 shots, 6 hits (42%).` When the centre goes idle
 the targets' pods get their own tanks back.
 
+The seat says so too, so a range is never mistaken for a fight: `STATUS` opens
+`Callsign RA. On the range: targets on the blue side.`, `WATCH`'s header ends
+`RANGE`, the TUI's and the web's status pane read `Callsign RA  RANGE`, and the
+picture's header says `RANGE` beside the weapons gate. The targets still read
+as blue contacts — the range is where `LOCK` and `CONTACTS` are learned.
+
 ## Fighting the machines
 
 On a server with the AI fill switched on, the tanks of the pods nobody claimed

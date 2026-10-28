@@ -1164,6 +1164,7 @@ pub fn builtin_screens() -> Vec<Screen> {
                 // the frame can send is seven rows, and at the pane's 32 inner
                 // columns not one of them wraps:
                 //   `Callsign` and an eight-letter callsign            17
+                //     (`  RANGE` on a range, 16c Q-PT1: 24)
                 //   `power starting  HELD`                              20
                 //   the speed row at a three-digit kph, `  DESTROYED`   32
                 //     (`43 kph  heading 045°  DESTROYED` is 31;

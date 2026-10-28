@@ -287,6 +287,16 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     expect(helm.mock.calls).toEqual([["FIRE HOLD"]]);
   });
 
+  it("says RANGE in the header on a range and nothing on a skirmish (16c Q-PT1)", async () => {
+    const skirmish = mount(fixtureFrame());
+    await tick();
+    expect(screen.queryByLabelText("match mode")).toBeNull();
+    skirmish.unmount();
+    mount(fixtureFrame({ mode: "range" }));
+    await tick();
+    expect(screen.getByLabelText("match mode").textContent).toBe("RANGE");
+  });
+
   it("g orders the volley", async () => {
     const { helm, frame } = mount(fixtureFrame());
     await tick();

@@ -820,9 +820,12 @@ describe("16b cut B.1", () => {
       "43 kph  heading 045°  DESTROYED",
     );
     expect(statusLines({ ...frame, immobile: true })[2]).toBe("43 kph  heading 045°  IMMOBILE");
-    // The committed frame prints neither.
+    // 16c Q-PT1: a range says so on the callsign row, as the TUI's pane does.
+    expect(statusLines({ ...frame, mode: "range" })[0]).toBe("Callsign RA  RANGE");
+    expect(frame.mode).toBe("skirmish");
+    // The committed frame prints none of them.
     for (const line of statusLines(frame)) {
-      expect(line).not.toMatch(/receiver|DESTROYED|IMMOBILE/);
+      expect(line).not.toMatch(/receiver|DESTROYED|IMMOBILE|RANGE/);
     }
   });
 
