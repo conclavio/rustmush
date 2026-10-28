@@ -1385,10 +1385,10 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     );
     check_eq!(
         counts,
-        (33, 35),
-        "33 services and 35 grants: C2c's market command read and the scoped passenger facts \
-         registered, 17g C2e's grant of the market read on top of the passenger grants; the \
-         caps are 64/64"
+        (34, 36),
+        "34 services and 36 grants: C2c's market command read and the scoped passenger facts, \
+         17g C2e's market-read grant, and DT.2a's Org unit-authority reader with its own \
+         requester grant; the caps are 64/64"
     );
     let definitions = e.registry.definitions().ok_or("definitions")?;
     check!(

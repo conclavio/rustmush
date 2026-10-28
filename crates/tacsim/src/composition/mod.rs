@@ -381,6 +381,24 @@ fn compose_server_modules<E>(
         Some(c) => c.configure_ic_physical(tactics, simulation),
         None => (tactics, simulation),
     };
+    // DT.2a: the shared grant owner reads actual Economy title/control facts.
+    // OOC practice membership supplies no IC mission-role authority.
+    let mut unit_requesters: std::collections::BTreeSet<_> = ["org", "economy", "tactics"]
+        .into_iter()
+        .map(|name| mush_core::mechanics::OwnerId::new(name).expect("static owner id"))
+        .collect();
+    if tacsim_delegate {
+        unit_requesters
+            .insert(mush_core::mechanics::OwnerId::new(crate::NS).expect("static Tacsim owner id"));
+    }
+    let unit_authority = mush_org::unit_authority::UnitAuthorityConfig {
+        facts: Arc::new(mush_economy::unit_authority::EconomyUnitAuthorityWorldFacts),
+        requesters: unit_requesters,
+        dependencies: std::collections::BTreeSet::from([mush_core::mechanics::OwnerId::new(
+            "economy",
+        )
+        .expect("static Economy owner id")]),
+    };
     let modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(
             mush_comsys::ComsysModule::new()
@@ -408,7 +426,8 @@ fn compose_server_modules<E>(
                 mush_faction::FactionStandingProvider,
             )])
             .with_capabilities(org_capability_vocabulary())
-            .with_scope_use(vec![std::sync::Arc::new(mush_economy::EconomyScopeUse)]),
+            .with_scope_use(vec![std::sync::Arc::new(mush_economy::EconomyScopeUse)])
+            .with_unit_authority(unit_authority),
         ),
         // After org (see above): `Faction.org` links are checked at faction boot.
         Box::new(mush_faction::FactionModule::new()),
@@ -1019,6 +1038,14 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         // fails LOUDLY at the command instead of storing a grant that authorizes
         // nothing — which is exactly what this non-empty set is for.
         .chain(mush_campaign::CAPABILITIES.iter().copied())
+        .chain([
+            "unit.operate_crew",
+            "unit.deploy",
+            "unit.command_assigned_ai",
+            "unit.recover_load",
+            "unit.maintain_refit",
+            "unit.transfer_abandon_title",
+        ])
         .chain([
             "org.role.manage",
             "org.grant.delegate",

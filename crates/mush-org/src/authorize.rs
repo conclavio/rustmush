@@ -373,7 +373,7 @@ fn delegation_authorizes(
 }
 
 /// Whether `now` lies within `[from, until)` (either bound optional).
-fn time_valid(from: Option<i64>, until: Option<i64>, now: i64) -> bool {
+pub(crate) fn time_valid(from: Option<i64>, until: Option<i64>, now: i64) -> bool {
     from.is_none_or(|f| now >= f) && until.is_none_or(|u| now < u)
 }
 
@@ -385,7 +385,11 @@ fn conditions_pass(conds: &[PolicyCondition], now: i64) -> bool {
 
 /// Does `selector` cover the concrete `target` scope? Depth-capped so the walk
 /// always terminates.
-fn scope_contains(state: &OrgState, selector: &ScopeSelector, target: OrgScopeId) -> bool {
+pub(crate) fn scope_contains(
+    state: &OrgState,
+    selector: &ScopeSelector,
+    target: OrgScopeId,
+) -> bool {
     match selector {
         ScopeSelector::Exact(s) => *s == target,
         ScopeSelector::SubtreeLive(root) => is_descendant_or_self(state, *root, target),
@@ -399,6 +403,74 @@ fn scope_contains(state: &OrgState, selector: &ScopeSelector, target: OrgScopeId
                     .is_some_and(|t| t.created_rev <= *snapshot_revision)
         }
     }
+}
+
+/// The unit-authority lineage already proves its grants. Apply organization
+/// vetoes to each person in that lineage without requiring that person to hold
+/// an unrelated E1 grant. Missing predicate providers satisfy a Deny, as in
+/// `authorize`; this helper cannot turn a policy Allow into delegation authority.
+pub(crate) fn explicitly_denied<E>(
+    state: &OrgState,
+    req: &AuthRequest,
+    predicates: &dyn PredicateEval,
+    mut charge: impl FnMut() -> Result<(), E>,
+) -> Result<bool, E> {
+    let Some(target) = state.scope(req.scope) else {
+        return Ok(true);
+    };
+    let org = target.org;
+    for policy in state.policies_of(org) {
+        charge()?;
+        for rule in &policy.rules {
+            charge()?;
+            if rule.effect != PolicyEffect::Deny
+                || rule.capability != req.capability
+                || !scope_contains(state, &rule.scope, req.scope)
+            {
+                continue;
+            }
+            let mut conditions = true;
+            for condition in &rule.conditions {
+                charge()?;
+                match condition {
+                    PolicyCondition::TimeWindow { from, until } => {
+                        if !time_valid(*from, *until, req.now) {
+                            conditions = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !conditions {
+                continue;
+            }
+            let matches = match &rule.subject {
+                PolicySubject::Principal(crate::PrincipalId::Object(actor)) => *actor == req.actor,
+                PolicySubject::Principal(_) | PolicySubject::Organization(_) => false,
+                PolicySubject::OrganizationMember(organization) => {
+                    *organization == org
+                        && state
+                            .membership(org, req.actor)
+                            .is_some_and(|member| member.status == crate::MembershipStatus::Active)
+                }
+                PolicySubject::OrganizationRole {
+                    org: organization,
+                    role,
+                } => *organization == org && state.active_roles(org, req.actor).contains(role),
+                PolicySubject::RegisteredPredicate {
+                    provider,
+                    predicate,
+                    arguments,
+                } => predicates
+                    .eval(provider, predicate, arguments, req.actor)
+                    .unwrap_or(true),
+            };
+            if matches {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Whether `target` is `root` or a descendant of it — walking `target`'s parent

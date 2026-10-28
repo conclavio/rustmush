@@ -389,6 +389,61 @@ fn divisions(tw: &mut TestWorld) -> Div {
     }
 }
 
+#[test]
+fn dt_unit_facts_read_the_actual_title_scope_and_current_org_lifecycle() {
+    use mush_economy::unit_authority::EconomyUnitAuthorityFacts;
+    use mush_org::unit_authority::{UnitAuthorityFacts, UnitCapability};
+
+    let (mut tw, probe) = boot();
+    let d = divisions(&mut tw);
+    let unit = thing(&mut tw, "Scoped unit");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=org:Ironhold scope=#{}", unit.0, d.ops.0),
+    );
+    let first = EconomyUnitAuthorityFacts::new(tw.world())
+        .asset(unit)
+        .expect("org title");
+    assert_eq!(first.owner, PrincipalId::Organization(d.org));
+    assert_eq!(first.scope, Some(d.ops));
+    assert!(first.active);
+    // The exact title is supplied to the resolver; no generic contractual
+    // control proof is invented for this or another organization.
+    assert!(
+        EconomyUnitAuthorityFacts::new(tw.world())
+            .organization_control(d.org, unit, UnitCapability::Deploy, 0,)
+            .is_none()
+    );
+    submit_org(
+        &mut tw,
+        &probe,
+        vec![OrgMutationOp::SetOrgStatus {
+            org: d.org,
+            status: Some(OrgStatus::Suspended),
+            hidden: None,
+        }],
+    );
+    let suspended = EconomyUnitAuthorityFacts::new(tw.world())
+        .asset(unit)
+        .expect("title remains");
+    assert!(!suspended.active);
+    assert_eq!(suspended.lineage, first.lineage);
+    submit_org(
+        &mut tw,
+        &probe,
+        vec![OrgMutationOp::SetOrgStatus {
+            org: d.org,
+            status: Some(OrgStatus::Active),
+            hidden: None,
+        }],
+    );
+    assert_eq!(
+        EconomyUnitAuthorityFacts::new(tw.world()).asset(unit),
+        Some(first)
+    );
+}
+
 /// `@org/grant <who>=Ironhold <cap> scope=<scope>`.
 fn grant(tw: &mut TestWorld, who: ObjId, capability: &str, scope: OrgScopeId) {
     ok(

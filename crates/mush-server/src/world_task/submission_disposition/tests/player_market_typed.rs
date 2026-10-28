@@ -525,8 +525,8 @@ async fn typed_market_panels_are_closed_private_and_own_only() -> TestResult {
         let p = w.launch.principals;
         check_eq!(
             w.server.owner_read_counts(),
-            Some((33, 35)),
-            "the composed reads, unchanged by C3"
+            Some((34, 36)),
+            "the composed reads, including DT.2a unit authority"
         );
         let known = known_accounts(&w).await?;
         let room = [p.author, p.buyer, w.alt, w.bystander];
@@ -607,7 +607,7 @@ async fn typed_market_panels_are_closed_private_and_own_only() -> TestResult {
                 other => return Err(format!("the room: {feed} {params}: {other:?}").into()),
             }
         }
-        check_eq!(w.server.owner_read_counts(), Some((33, 35)));
+        check_eq!(w.server.owner_read_counts(), Some((34, 36)));
         Ok::<_, Box<dyn std::error::Error>>(())
     })
     .await;
