@@ -1,0 +1,48 @@
+{
+  "schema": { "id": "mind.market", "version": 1 },
+  "open": true,
+  "notice": null,
+  "rows": [
+    {
+      "code": "c0ffee00",
+      "name": "Quiet Hour",
+      "class": "I",
+      "form": "sealed",
+      "transferable": true,
+      "term_seconds": 2592000,
+      "grace_seconds": 604800,
+      "price_minor": "5000",
+      "price_text": "50cr",
+      "levy_permille": 50,
+      "venue_permille": 0,
+      "parent_royalty_permille": 0,
+      "derived": false,
+      "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+      "split_line": "Price 50cr: Registry 5%, charter owner the rest."
+    },
+    {
+      "code": "deadbeef",
+      "name": "Old Lamp",
+      "class": "II",
+      "form": "open",
+      "transferable": true,
+      "term_seconds": 2592000,
+      "grace_seconds": 604800,
+      "price_minor": "7000",
+      "price_text": "70cr",
+      "levy_permille": 50,
+      "venue_permille": 0,
+      "parent_royalty_permille": 0,
+      "derived": false,
+      "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+      "split_line": "Price 70cr: Registry 5%, charter owner the rest."
+    }
+  ],
+  "after": null,
+  "own": {
+    "quotes": [
+      { "code": "deadbeef", "price_minor": "7000", "price_text": "70cr", "expires_in_seconds": 0, "expired": true }
+    ],
+    "waiting": [{ "code": "12345678" }]
+  }
+}
