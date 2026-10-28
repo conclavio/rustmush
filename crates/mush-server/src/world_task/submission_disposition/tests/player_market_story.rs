@@ -1072,8 +1072,24 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         "no renewal operation"
     );
 
-    // The author withdraws: no listing is left, the code reads NO_LISTING,
-    // and Cy still holds the licence.
+    // The author withdraws: the Registry stops new sales of the revision
+    // (`withdraw_authored_mind`; the entitlement reader refuses a quote on a
+    // withdrawn revision), but the counter is policy-current only (17g C2e:
+    // `current_policy` reads the listing row, never the revision's status),
+    // so both listings still read byte-for-byte, a fresh quote on the sealed
+    // one is refused by the provider (the driver's line) with no quote row
+    // added, and Cy still holds the licence. Hiding a withdrawn revision's
+    // listings is a C4 ledger item (17g section 7, C2e as built).
+    let counter = w.server.command(cy, "+minds".into()).await?;
+    check!(
+        counter.len() == 4
+            && counter.first().map(String::as_str)
+                == Some("Minds for sale here (term and Grace in IC days):"),
+        "{counter:?}"
+    );
+    let quotes = rows(&w.launch.store, "market", "market_mind_entitlement_quote")
+        .await?
+        .len();
     check_eq!(
         submitted(w, author, format!("@mind/withdraw {filed}")).await?,
         vec![
@@ -1082,13 +1098,23 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
             "Done.".to_owned()
         ]
     );
+    check_eq!(w.server.command(cy, "+minds".into()).await?, counter);
     check_eq!(
-        w.server.command(cy, "+minds".into()).await?,
-        vec!["No minds are for sale at this counter.".to_owned()]
+        submitted(w, cy, format!("+minds/buy {code}")).await?,
+        vec![
+            format!(
+                "Asking for a quote on listing {code}. +minds {code} shows it once it is confirmed."
+            ),
+            QUEUED.to_owned(),
+            DRIVER.to_owned()
+        ]
     );
     check_eq!(
-        w.server.command(cy, format!("+minds/buy {code}")).await?,
-        vec![format!("No listing here has the code {code}.")]
+        rows(&w.launch.store, "market", "market_mind_entitlement_quote")
+            .await?
+            .len(),
+        quotes,
+        "no quote row for a withdrawn revision"
     );
     check_eq!(holds(w, cy, 1).await?, vec![sealed.parse::<u64>()?]);
 
