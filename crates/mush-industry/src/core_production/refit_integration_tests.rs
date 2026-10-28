@@ -495,17 +495,29 @@ fn actual_refit_install_repeats_title_and_unit_preimages_at_all_custody_boundari
     Ok(())
 }
 
-#[test]
-fn actual_second_refit_returns_displaced_core_with_retained_condition_and_current_heads() -> Result
-{
-    let mut s = Fitting::new(false)?;
-    let first = s.accepted(40)?;
-    s.ready(first, 42)?;
-    s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(first))?;
-    let old = s.incoming;
-    // The actual native damage command changes only the installed component's
-    // scalar state. Its exact displaced image is retained by the next fitting.
-    let core = ComponentId::new("core")?;
+/// The second fitting's own certified core, manufactured and delivered (kept out of the test's
+/// frame: the M7 memory-size gate).
+#[inline(never)]
+fn second_core(s: &mut Fitting) -> Result {
+    let operator = s.f.r.policy.agents[1].actor;
+    let certificate = s.f.r.issue(operator, 60, DieClass::I)?;
+    s.f.commit(
+        1,
+        operator,
+        61,
+        json!({"requester":s.f.buyer,"class":"i","supplier_lot":certificate.lot.to_string()}),
+    )?;
+    s.f.commit(2, s.f.buyer, 62, s.f.accept_parameters(61))?;
+    let manufacture = crate::workorder::derive_work_order_id(RequestUid::from_bytes([62; 16]), 0)?;
+    s.incoming = s.complete_manufacture(manufacture, 63)?;
+    s.manufacture = token(62);
+    s.f.commit(7, s.f.buyer, 67, FactoryRig::order_parameters(manufacture))?;
+    Ok(())
+}
+
+/// The installed core damaged by the native command (kept out of the test's frame).
+#[inline(never)]
+fn damage_installed_core(s: &mut Fitting, core: &ComponentId) -> Result {
     let unit = s.unit()?;
     let damage = UnitMutationPlan::new(
         vec![UnitMutationOp::SetComponentCondition {
@@ -524,20 +536,23 @@ fn actual_second_refit_returns_displaced_core_with_retained_condition_and_curren
         ),
     )?;
     s.f.r.flush();
+    Ok(())
+}
+
+#[test]
+fn actual_second_refit_returns_displaced_core_with_retained_condition_and_current_heads() -> Result
+{
+    let mut s = Fitting::new(false)?;
+    let first = s.accepted(40)?;
+    s.ready(first, 42)?;
+    s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(first))?;
+    let old = s.incoming;
+    // The actual native damage command changes only the installed component's
+    // scalar state. Its exact displaced image is retained by the next fitting.
+    let core = ComponentId::new("core")?;
+    damage_installed_core(&mut s, &core)?;
     let displaced = SavedComponent::from_unit(&s.unit()?, &core)?;
-    let operator = s.f.r.policy.agents[1].actor;
-    let certificate = s.f.r.issue(operator, 60, DieClass::I)?;
-    s.f.commit(
-        1,
-        operator,
-        61,
-        json!({"requester":s.f.buyer,"class":"i","supplier_lot":certificate.lot.to_string()}),
-    )?;
-    s.f.commit(2, s.f.buyer, 62, s.f.accept_parameters(61))?;
-    let manufacture = crate::workorder::derive_work_order_id(RequestUid::from_bytes([62; 16]), 0)?;
-    s.incoming = s.complete_manufacture(manufacture, 63)?;
-    s.manufacture = token(62);
-    s.f.commit(7, s.f.buyer, 67, FactoryRig::order_parameters(manufacture))?;
+    second_core(&mut s)?;
     let second = s.accepted(70)?;
     s.reservation_targets(second, true)?;
     s.ready(second, 72)?;

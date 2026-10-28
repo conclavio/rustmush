@@ -11172,8 +11172,8 @@ fn m3_an_operator_pack_carrying_a_core_binds_a_unit_naming_it() {
     let catalog = Catalog::build_game(&packs, tacsim::NS).expect("an operator's core binds");
     assert_eq!(
         catalog.cores.len(),
-        4,
-        "the shipped three and the operator's"
+        7,
+        "the shipped three, their three ungoverned twins (doc 17h cut M8b) and the operator's"
     );
     let relay = CanonicalId::new("house.core.relay").expect("a canonical id");
     assert_eq!(
