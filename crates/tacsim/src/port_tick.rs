@@ -172,6 +172,23 @@ pub(crate) fn register_with_coverage(
         port_families.surveys.clone(),
         inventory.is_some(),
     )?;
+    crate::port::passenger::store::register(
+        reg,
+        port_families.passengers.clone(),
+        port_families.passenger_index.clone(),
+    )?;
+    crate::port::passenger::facts::register(
+        reg,
+        port_families.passengers.clone(),
+        inventory.is_some(),
+    )?;
+    crate::quest::store::register(
+        reg,
+        port_families.quests.clone(),
+        port_families.quest_index.clone(),
+        port_families.passengers.clone(),
+        port_families.quest_survey_evidence.clone(),
+    )?;
     let probe = if test_world {
         Some(reg.state_family::<ProbeKey, ProbeMark, _, _, _, _>(
             families::family_descriptor(
@@ -262,6 +279,10 @@ pub(crate) fn register_with_coverage(
         .get(crate::port::epoch::EPOCH_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the ship's epoch outcome did not register"))?;
+    let passenger_outcome = outcome_refs
+        .get(crate::port::passenger::store::OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("passenger outcome missing"))?;
     let mut actions = action_descriptors(
         (&stock_outcome, &mill_outcome),
         &relay_outcome,
@@ -307,6 +328,14 @@ pub(crate) fn register_with_coverage(
         )?
         .with_references(vec![epoch_outcome.clone()]),
     );
+    append_receipt_actions(
+        &mut actions,
+        &recovery_outcome,
+        &survey_outcome,
+        &survey_cancel_outcome,
+        &passenger_outcome,
+    )?;
+    actions.push(crate::quest::registration::action(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -339,32 +368,16 @@ pub(crate) fn register_with_coverage(
     // so the cell is filled here; an unfilled cell gives `None` and every read
     // then refuses (`PoolReadError::Unwired`).
     let inventory_families = inventory.and_then(|cell| cell.get().cloned());
-    let survey_accept = action_refs
-        .get(crate::surface::survey::SURVEY_ACTION)
-        .cloned();
-    if let Some(action) = &survey_accept {
-        reg.action_provider(
-            action.clone(),
-            crate::surface::survey::SurveyProvider {
-                action: action.clone(),
-                outcome: survey_outcome,
-                surveys: port_families.surveys.clone(),
-            },
-        )?;
-    }
-    let survey_cancel = action_refs
-        .get(crate::surface::survey::SURVEY_CANCEL_ACTION)
-        .cloned();
-    if let Some(action) = &survey_cancel {
-        reg.action_provider(
-            action.clone(),
-            crate::surface::survey::CancelProvider {
-                action: action.clone(),
-                outcome: survey_cancel_outcome,
-                surveys: port_families.surveys.clone(),
-            },
-        )?;
-    }
+    let AgreementActions {
+        passenger,
+        survey_accept,
+        survey_cancel,
+    } = register_agreement_providers(
+        reg,
+        &action_refs,
+        (passenger_outcome, survey_outcome, survey_cancel_outcome),
+        &port_families,
+    )?;
     // Doc 18 cut IC8: `tacsim_port_stock`, tacsim's first production provider —
     // registered only when the inventory cell is filled (its prepare mints through
     // the delegated inventory families); the definitions register regardless.
@@ -485,13 +498,28 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.12b (§12.3): `tacsim_dispatch`, the house's survey and the yard's delivery —
     // registered only when the inventory cell is filled (the delivery's transfer rides the
     // delegated families; the stock provider's rule); the definitions register regardless.
-    let dispatch_action = register_dispatch(
-        reg,
-        &action_refs,
-        dispatch_outcome,
-        &port_families,
-        inventory_families.as_ref(),
-    )?;
+    let dispatch_action = match (
+        action_refs.get(crate::port::yard::DISPATCH_ACTION).cloned(),
+        inventory_families.clone(),
+    ) {
+        (Some(action), Some(inventory)) => {
+            reg.action_provider(
+                action.clone(),
+                crate::port::yard::DispatchProvider {
+                    action: action.clone(),
+                    outcome: dispatch_outcome,
+                    dispatch: port_families.dispatch.clone(),
+                    charts: port_families.charts.clone(),
+                    claims: port_families.claims.clone(),
+                    inventory,
+                },
+            )?;
+            Some(action)
+        }
+        _ => None,
+    };
+    let quest =
+        crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,
@@ -505,6 +533,8 @@ pub(crate) fn register_with_coverage(
         chart_forget,
         survey_accept,
         survey_cancel,
+        passenger,
+        quest,
         site_work,
         dispatch: dispatch_action.clone(),
     });
@@ -523,6 +553,100 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots.
     crate::surface::tick::register(reg)?;
     Ok(())
+}
+
+/// Keep descriptor construction temporaries out of the main registration frame.
+/// These receipts follow the base actions and precede IC/coverage extensions.
+fn append_receipt_actions(
+    actions: &mut Vec<DefinitionDescriptor>,
+    recovery: &DefinitionRef,
+    survey_accept: &DefinitionRef,
+    survey_cancel: &DefinitionRef,
+    passenger: &DefinitionRef,
+) -> Result<(), ModError> {
+    actions.push(
+        descriptor(
+            "action",
+            crate::surface::recovery::RECOVERY_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::excursion::EXCURSION_FAMILY,
+            }),
+        )?
+        .with_references(vec![recovery.clone()]),
+    );
+    actions.push(descriptor(
+        "action",
+        crate::surface::survey::SURVEY_ACTION,
+        json!({"subject":"self_actor","targets":0,"family":crate::surface::survey::SURVEY_FAMILY}),
+    )?.with_references(vec![survey_accept.clone()]));
+    actions.push(descriptor(
+        "action",
+        crate::surface::survey::SURVEY_CANCEL_ACTION,
+        json!({"subject":"self_actor","targets":0,"family":crate::surface::survey::SURVEY_FAMILY}),
+    )?.with_references(vec![survey_cancel.clone()]));
+    actions.push(descriptor("action", crate::port::passenger::store::ACTION,
+        json!({"subject":"self_actor","targets":0,"family":crate::port::passenger::store::FAMILY}))?.with_references(vec![passenger.clone()]));
+    Ok(())
+}
+
+struct AgreementActions {
+    passenger: Option<DefinitionRef>,
+    survey_accept: Option<DefinitionRef>,
+    survey_cancel: Option<DefinitionRef>,
+}
+
+/// Register agreement providers in their original passenger/accept/cancel order,
+/// constructing each provider in this frame rather than retaining its temporaries
+/// beside every other port provider.
+fn register_agreement_providers(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcomes: (DefinitionRef, DefinitionRef, DefinitionRef),
+    families: &PortFamilies,
+) -> Result<AgreementActions, ModError> {
+    let passenger = actions.get(crate::port::passenger::store::ACTION).cloned();
+    if let Some(action) = &passenger {
+        reg.action_provider(
+            action.clone(),
+            crate::port::passenger::store::Provider {
+                action: action.clone(),
+                outcome: outcomes.0,
+                bookings: families.passengers.clone(),
+                index: families.passenger_index.clone(),
+            },
+        )?;
+    }
+    let survey_accept = actions.get(crate::surface::survey::SURVEY_ACTION).cloned();
+    if let Some(action) = &survey_accept {
+        reg.action_provider(
+            action.clone(),
+            crate::surface::survey::SurveyProvider {
+                action: action.clone(),
+                outcome: outcomes.1,
+                surveys: families.surveys.clone(),
+            },
+        )?;
+    }
+    let survey_cancel = actions
+        .get(crate::surface::survey::SURVEY_CANCEL_ACTION)
+        .cloned();
+    if let Some(action) = &survey_cancel {
+        reg.action_provider(
+            action.clone(),
+            crate::surface::survey::CancelProvider {
+                action: action.clone(),
+                outcome: outcomes.2,
+                surveys: families.surveys.clone(),
+            },
+        )?;
+    }
+    Ok(AgreementActions {
+        passenger,
+        survey_accept,
+        survey_cancel,
+    })
 }
 
 /// Build the paired providers in their own frame: each carries several typed
@@ -563,6 +687,7 @@ fn register_surface_acts(
             excursions: families.excursions.clone(),
             charts: families.charts.clone(),
             surveys: families.surveys.clone(),
+            quest_survey_evidence: families.quest_survey_evidence.clone(),
             pockets: families.pockets.clone(),
             inventory: inventory.clone(),
             tools: Arc::clone(tools),
@@ -899,6 +1024,16 @@ fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDes
 /// kind for the crate.
 fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
+        descriptor(
+            "outcome",
+            crate::quest::store::OUTCOME,
+            json!({"fields":["actor","npc","source","booking","revision","checked","completed"]}),
+        )?,
+        descriptor(
+            "outcome",
+            crate::port::passenger::store::OUTCOME,
+            json!({"fields":["actor","booking","phase"]}),
+        )?,
         descriptor(
             "outcome",
             crate::surface::survey::SURVEY_OUTCOME,
@@ -1647,6 +1782,8 @@ enum Arm {
     /// Doc 23 cut S.2: one hull's due epoch open or close, as its warrant principal
     /// ([`crate::port::epoch::epoch_step`]).
     Epoch,
+    /// A persistent passenger agreement, acting as its captain.
+    Passenger { booking: u64 },
     /// The test world's probe (lead ruling L3).
     Probe,
 }
@@ -1668,6 +1805,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         tracing::warn!(%error, "public desk affiliation reconciliation failed");
     }
     crate::port::survey::tick(ctx);
+    crate::port::passenger::tick(ctx);
+    crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
     };
@@ -1800,6 +1939,9 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     for (hull, principal) in epochs {
         offer(hull, principal, Arm::Epoch);
     }
+    for (npc, captain, booking) in crate::port::passenger::agents(ctx) {
+        offer(npc, captain, Arm::Passenger { booking });
+    }
     if state.probe_action.is_some() {
         for (agent, probe) in &state.probes {
             offer(*agent, probe.principal, Arm::Probe);
@@ -1841,6 +1983,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
             | Arm::Launch { .. }
             | Arm::Recall { .. }
             | Arm::Order { .. }
+            | Arm::Passenger { .. }
             | Arm::Probe => {}
         }
         match step {
@@ -1912,6 +2055,7 @@ fn step(
         Arm::Site => crate::port::site::site_step(ctx, fire, agent),
         Arm::Dispatch => crate::port::yard::dispatch_step(ctx, state, fire, agent),
         Arm::Epoch => crate::port::epoch::epoch_step(ctx, state, fire, agent, principal),
+        Arm::Passenger { booking } => crate::port::passenger::step(ctx, fire, booking),
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),
             None => Step::Idle,

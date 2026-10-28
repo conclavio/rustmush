@@ -151,6 +151,7 @@ pub mod minds;
 pub mod pack;
 pub mod port;
 pub mod port_tick;
+pub mod quest;
 pub mod record;
 pub mod relay_billing;
 pub mod relay_commerce;
@@ -992,6 +993,7 @@ impl GameModule for TacsimRuleset {
         };
         minds::ic_sortie::boot::load(ctx, &data, self.ic_minds.as_deref())?;
         underwriting::boot::load(ctx, &data, self.coverage.as_deref())?;
+        quest::evidence::boot(ctx, &data)?;
         let kv: Vec<(smol_str::SmolStr, serde_json::Value)> = data
             .kv
             .iter()

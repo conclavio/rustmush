@@ -953,9 +953,9 @@ fn e7r2_p4_the_salvage_fact_is_answered_from_the_marker_and_never_from_a_status(
     );
 }
 
-/// **`with_facts` has six base namespaces and TacSim's optional survey namespace.**
+/// **`with_facts` has six base namespaces and TacSim's two optional namespaces.**
 /// Item 26 added a kind to `inventory.*`, never a separate salvage provider. Survey
-/// receipts add their own provider only when the TacSim owner is composed.
+/// and passenger receipts add providers only when the TacSim owner is composed.
 #[test]
 fn e7r2_p4_the_fact_provider_registers_no_separate_salvage_namespace() {
     // The composition root lives in the game crate since 16b cut R-a (R2).
@@ -978,6 +978,7 @@ fn e7r2_p4_the_fact_provider_registers_no_separate_salvage_namespace() {
         "mush_sim::SimFactProvider",
         "mush_market::MarketFactProvider",
         "crate::surface::survey_facts::SurveyFactProvider",
+        "crate::port::passenger::facts::PassengerFactProvider",
     ] {
         assert_eq!(
             body.matches(provider).count(),
@@ -987,16 +988,20 @@ fn e7r2_p4_the_fact_provider_registers_no_separate_salvage_namespace() {
     }
     assert_eq!(
         body.matches("Arc::new(").count(),
-        7,
-        "six base providers and the owner-gated survey provider: {body}"
+        8,
+        "six base providers and the owner-gated survey and passenger providers: {body}"
     );
     let (_, owner_gated) = body
         .split_once("if tacsim_delegate {")
-        .expect("survey facts require the TacSim owner");
+        .expect("survey and passenger facts require the TacSim owner");
     let (owner_gated, _) = owner_gated.split_once('}').expect("the owner gate closes");
     assert!(
         owner_gated.contains("crate::surface::survey_facts::SurveyFactProvider"),
         "the survey provider is registered inside the owner gate"
+    );
+    assert!(
+        owner_gated.contains("crate::port::passenger::facts::PassengerFactProvider"),
+        "the passenger provider is registered inside the owner gate"
     );
     assert!(
         !body.contains("Salvage"),

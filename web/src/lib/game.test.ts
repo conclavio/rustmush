@@ -1836,7 +1836,9 @@ describe("the cockpit feeds", () => {
     // Doc 21 cut G.3c: the first-person picture the cockpit screen mounts. It
     // reads its own store, asks for the picture or stops it, and sends the
     // arrow keys' `HEADING` orders through `helm` — the one send the cockpit
-    // tab makes, as the SSH TUI's view does (G.4). Nothing else.
+    // tab makes, as the SSH TUI's view does (G.4). Nothing else. Doc 21 cut
+    // G.12c's `SPEED`, `FIRE` and `LOCK` keys go through the same `helm`, and
+    // its `ORDER` prefills through the screen's `prefill` prop, not the app.
     const src = readFileSync(
       resolve(process.cwd(), "src/components/PictureView.svelte"),
       "utf8",
@@ -1846,6 +1848,40 @@ describe("the cockpit feeds", () => {
     for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
       expect(src, `PictureView calls ${send}`).not.toContain(send);
     }
+  });
+});
+
+// Doc 21 cut G.12c: the picture's camera rides the `picture` command — the
+// overhead is the gateway's frame — and a reconnect asks for the same camera.
+describe("the picture's camera on the wire (doc 21 cut G.12c)", () => {
+  const pictures = (ws: FakeSocket): unknown[] =>
+    ws.sentJson().flatMap((f) => (f.t === "picture" ? [f.d] : []));
+
+  it("sends the camera with every ask, a change of camera alone included", () => {
+    const { app, ws } = boot();
+    app.setPicture(true, 0);
+    expect(pictures(ws)).toEqual([{ on: true, look_mdeg: 0, kind: "cockpit" }]);
+    // `v` sets the store's camera before the view asks again.
+    app.picture.kind = "overhead";
+    app.setPicture(true, 0);
+    expect(pictures(ws).at(-1)).toEqual({ on: true, look_mdeg: 0, kind: "overhead" });
+    // The camera stands for a look asked for without one.
+    app.setPicture(true, 5_000);
+    expect(pictures(ws).at(-1)).toEqual({ on: true, look_mdeg: 5_000, kind: "overhead" });
+    // Nothing changed, nothing sent.
+    const n = pictures(ws).length;
+    app.setPicture(true, 5_000);
+    expect(pictures(ws)).toHaveLength(n);
+  });
+
+  it("asks for the same camera again after a reconnect", () => {
+    const { app, ws } = boot();
+    app.setPicture(true, 0, "overhead");
+    ws.drop();
+    vi.advanceTimersByTime(500);
+    const next = openHello();
+    expect(next).not.toBe(ws);
+    expect(pictures(next)).toEqual([{ on: true, look_mdeg: 0, kind: "overhead" }]);
   });
 });
 

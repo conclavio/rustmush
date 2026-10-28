@@ -1,32 +1,32 @@
 {
   "cases": [
     {
-      "hash": "246dcc87adbd08d4",
+      "hash": "bbe8acd116526e4d",
       "look_mdeg": 0,
       "map": "flat"
     },
     {
-      "hash": "cd0c55cc5f2699c0",
+      "hash": "e1bd46255d8c97c2",
       "look_mdeg": 45000,
       "map": "flat"
     },
     {
-      "hash": "0de8b40f6f5f4034",
+      "hash": "449cd07a4d4db3ba",
       "look_mdeg": -90000,
       "map": "flat"
     },
     {
-      "hash": "2e99200f3cab3387",
+      "hash": "79aef211a5c85b16",
       "look_mdeg": 0,
       "map": "relief"
     },
     {
-      "hash": "b8a35c932b72153d",
+      "hash": "499e8a38512af011",
       "look_mdeg": 45000,
       "map": "relief"
     },
     {
-      "hash": "e6f55e813cc9bdfb",
+      "hash": "cadc2271e764d878",
       "look_mdeg": -90000,
       "map": "relief"
     }

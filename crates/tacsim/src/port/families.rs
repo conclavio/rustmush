@@ -513,6 +513,17 @@ pub struct PortFamilies {
     /// Current attempts on the finite survey commission board.
     pub surveys:
         StateFamilyHandle<crate::surface::survey::SurveyKey, crate::surface::survey::SurveyRecord>,
+    /// Permanent passenger receipts and the bounded current-booking index.
+    pub passengers: StateFamilyHandle<
+        crate::port::passenger::store::BookingKey,
+        crate::port::passenger::store::Booking,
+    >,
+    pub passenger_index: StateFamilyHandle<u8, crate::port::passenger::store::BookingIndex>,
+    /// Permanent, private quest progress, keyed by source and paid passage.
+    pub quests: StateFamilyHandle<crate::quest::model::QuestKey, crate::quest::model::QuestRecord>,
+    pub quest_index:
+        StateFamilyHandle<crate::quest::model::QuestIndexKey, crate::quest::model::QuestIndex>,
+    pub quest_survey_evidence: StateFamilyHandle<ObjId, crate::quest::evidence::SurveyEvidenceBook>,
     /// **`tacsim.pockets`** (doc 20 cut SM.6; §3.4, D-20-5): one pocket cursor per surface
     /// deposit, keyed by the deposit's id — what the surface provider drew, and the lock's
     /// one home. Derived truth, never projected.
@@ -579,6 +590,9 @@ pub struct PortHandles {
     pub survey_accept: Option<mush_core::DefinitionRef>,
     /// Cancel an unfinished funded survey through its retained cancellation fact.
     pub survey_cancel: Option<mush_core::DefinitionRef>,
+    /// Authenticated passenger booking and journey receipts.
+    pub passenger: Option<mush_core::DefinitionRef>,
+    pub quest: Option<mush_core::DefinitionRef>,
     /// **Doc 20 cut SM.6** (§3.4): the registered `tacsim_site_work` action (the site clerk's
     /// worked transfer, `crate::port::site::SiteWorkProvider`); `Some` exactly when its
     /// provider registered (the inventory cell filled).
@@ -709,6 +723,45 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         |value: &crate::surface::survey::SurveyRecord| value.check(),
         |value: &crate::surface::survey::SurveyRecord| serde_json::to_value(value).map_err(|e| e.to_string()),
     )?;
+    let passenger_descriptor = family_descriptor(
+        crate::port::passenger::store::FAMILY,
+        "tacsim.passenger_key.v1",
+        "tacsim.passenger",
+    )?;
+    let passenger_key_limit = passenger_descriptor.max_key_bytes();
+    let passenger_descriptor = passenger_descriptor
+        .with_limits(
+            passenger_key_limit,
+            crate::port::passenger::store::MAX_RECORD_BYTES,
+        )
+        .map_err(|e| ModError::msg(e.to_string()))?;
+    let passengers = reg.state_family::<crate::port::passenger::store::BookingKey, crate::port::passenger::store::Booking, _, _, _, _>(
+        passenger_descriptor,
+        |key: &crate::port::passenger::store::BookingKey| Ok(key.0.to_string()),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::port::passenger::store::Booking| value.check(),
+        |value: &crate::port::passenger::store::Booking| serde_json::to_value(value).map_err(|e| e.to_string()),
+    )?;
+    let passenger_index = reg
+        .state_family::<u8, crate::port::passenger::store::BookingIndex, _, _, _, _>(
+            family_descriptor(
+                crate::port::passenger::store::INDEX_FAMILY,
+                "tacsim.passenger_index_key.v1",
+                "tacsim.passenger_index",
+            )?,
+            |key: &u8| {
+                if *key == 0 {
+                    Ok("0".into())
+                } else {
+                    Err("passenger index key must be zero".into())
+                }
+            },
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::port::passenger::store::BookingIndex| value.check(),
+            |value: &crate::port::passenger::store::BookingIndex| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
     // Doc 20 cut SM.6 (§3.4, D-20-5): the pocket cursor sidecar, keyed by the deposit id in
     // industry's own `{:016x}` text, strict on parse.
     let pockets = reg.state_family::<
@@ -817,6 +870,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
                 serde_json::to_value(value).map_err(|e| e.to_string())
             },
         )?;
+    let (quests, quest_index) = crate::quest::registration::families(reg)?;
+    let quest_survey_evidence = crate::quest::evidence::register_survey_family(reg)?;
     Ok(PortFamilies {
         relay_fabrications,
         port_stock,
@@ -824,6 +879,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         excursions,
         charts,
         surveys,
+        passengers,
+        passenger_index,
+        quests,
+        quest_index,
+        quest_survey_evidence,
         pockets,
         claims,
         mills,

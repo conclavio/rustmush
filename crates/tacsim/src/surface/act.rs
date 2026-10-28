@@ -9006,6 +9006,7 @@ pub(crate) struct SurfaceDoneProvider {
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
     pub charts: StateFamilyHandle<ChartKey, ChartRecord>,
     pub surveys: StateFamilyHandle<super::survey::SurveyKey, super::survey::SurveyRecord>,
+    pub quest_survey_evidence: StateFamilyHandle<ObjId, crate::quest::evidence::SurveyEvidenceBook>,
     /// Doc 20 cut SM.7: the pocket cursors (`tacsim.pockets`) a run locks and draws.
     pub pockets: StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     pub inventory: InventoryFamilies,
@@ -9796,6 +9797,22 @@ impl ActionProvider for SurfaceDoneProvider {
                         .and_then(Value::as_i64)
                         .ok_or_else(|| invalid("a reading's offer fixes its wall instant"))?;
                     super::survey::log_reading(txn, &self.surveys, &survey_offer, &act, tv, wall)?;
+                    if let Err(error) = crate::quest::evidence::log_survey(
+                        txn,
+                        &self.quest_survey_evidence,
+                        &act,
+                        tv,
+                        wall,
+                    ) {
+                        // Optional lesson evidence must not strand an otherwise
+                        // successful scan or sounding. Unreadable proof grants no
+                        // lesson progress; ordinary chart and charge effects stand.
+                        tracing::warn!(
+                            operator = act.operator.0,
+                            ?error,
+                            "quest survey evidence unavailable"
+                        );
+                    }
                     ActResult::Done
                 } else if from_bay && matches!(&rig.facts, Facts::Bay { hull } if *hull == act.hull)
                 {

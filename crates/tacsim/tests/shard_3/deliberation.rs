@@ -2305,7 +2305,8 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
             // Format 16 adds record-only accepted-order attribution (R4).
-            assert_eq!(SNAPSHOT_FORMAT, 16);
+            // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
+            assert_eq!(SNAPSHOT_FORMAT, 17);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -4864,7 +4865,7 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
         .notices
         .push(notice.clone());
     let snapshot = Snapshot::encode(&control).expect("new refusal encodes");
-    assert_eq!(snapshot.document["format"], 16);
+    assert_eq!(snapshot.document["format"], 17);
     let restored = Snapshot::decode(&snapshot.document, definition()).expect("new refusal decodes");
     assert_eq!(
         restored
@@ -4875,20 +4876,20 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
             .last(),
         Some(&notice)
     );
-    // Both the previous commander format and its predecessor remain refused.
-    for found in [15, 14] {
+    // The formats before doc 21 cut G.12a's 17 remain refused.
+    for found in [16, 15, 14] {
         let mut old = snapshot.document.clone();
         old["format"] = serde_json::json!(found);
         assert_eq!(
             Snapshot::head(&old).map(|head| head.format),
             Err(SnapshotError::Format {
                 found,
-                expected: 16
+                expected: 17
             })
         );
         assert!(matches!(
             Snapshot::decode(&old, definition()),
-            Err(SnapshotError::Format { found: actual, expected: 16 }) if actual == found
+            Err(SnapshotError::Format { found: actual, expected: 17 }) if actual == found
         ));
     }
     assert_eq!(Refusal::NoCommander.as_str(), "no_commander");

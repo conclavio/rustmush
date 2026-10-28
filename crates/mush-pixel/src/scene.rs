@@ -221,6 +221,25 @@ pub enum Item {
         /// The colour.
         colour: Rgb,
     },
+    /// A row of pips at a world point, offset in pixels: `lit` of `of`
+    /// squares `size` a side, half a size apart, in `colour`, the rest in
+    /// `dim` — a coarse gauge beside a mark (doc 21 cut G.14's health).
+    Pips {
+        /// The point.
+        at: (f64, f64),
+        /// The offset from it to the first pip's top-left, pixels.
+        offset: (i64, i64),
+        /// How many are lit, from the left.
+        lit: i64,
+        /// How many there are.
+        of: i64,
+        /// A pip's side, pixels.
+        size: i64,
+        /// The lit pips' colour.
+        colour: Rgb,
+        /// The unlit pips' colour.
+        dim: Rgb,
+    },
     /// Text at a world point, offset in pixels, in the 5x7 font at `scale`.
     Text {
         /// The point.
@@ -422,6 +441,29 @@ impl Scene {
                     y - (dy * len_px) as i64,
                     *colour,
                 );
+            }
+            Item::Pips {
+                at,
+                offset,
+                lit,
+                of,
+                size,
+                colour,
+                dim,
+            } => {
+                let (x, y) = vp.to_px(*at);
+                let step = *size + (*size / 2).max(1);
+                for pip in 0..*of {
+                    let px = if pip < *lit { *colour } else { *dim };
+                    fill_rect(
+                        frame,
+                        x + offset.0 + pip * step,
+                        y + offset.1,
+                        *size,
+                        *size,
+                        px,
+                    );
+                }
             }
             Item::Text {
                 at,

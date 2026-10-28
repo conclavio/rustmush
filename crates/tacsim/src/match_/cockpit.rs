@@ -141,6 +141,7 @@ use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::arena::catchup::{Catchup, MAX_CATCHUP_CONTACTS, SectionWords};
+use crate::arena::condition::{ConditionTier, MAX_SCANNED_SECTIONS};
 use crate::arena::conditions::{
     ASPECTS_ANY, Arming, FireCondition, HeldWhy, SlotTarget, aspect_in,
 };
@@ -3636,6 +3637,11 @@ fn station_rules(ctx: &mut Ctx<'_>, seat: &Seat, command: &str) -> Result<(), Co
                 }
             }
             lines.push("Current station rules (manual changes are not saved):".to_owned());
+            // Doc 21 cut G.12a: the master gate, said only while it holds —
+            // after the head, so `None armed.` still reads as before.
+            if !held.frame.weapons_free {
+                lines.push(WEAPONS_HOLD_LINE.to_owned());
+            }
             let current_head = lines.len();
             for entry in held
                 .frame
@@ -3944,9 +3950,26 @@ fn more_tail(left: usize) -> String {
     format!("; +{left} more")
 }
 
-/// `HEADING <deg>` — 0 to 359, clockwise from north (doc 16 §3.7).
+/// A trailing `QUIET` on `HEADING` and `SPEED` (doc 21 §7.3, 2026-10-27): the
+/// cockpit picture's keys send the verb with this word, and the order's
+/// acknowledgement — `Steering to …°.`, `Making … kph.` — is not spoken. A
+/// held `w` or a held turn sends an order every quarter second, and the owner's
+/// first playtest read each one in the comms; the HUD already shows the
+/// ordered speed and heading. A **refusal is still spoken** whichever way the
+/// order came: the pilot must learn why the tank did not move. Answers the
+/// rest of the line without the word, and whether it was there.
+fn quiet_flag(rest: &str) -> (&str, bool) {
+    match rest.trim_end().rsplit_once(char::is_whitespace) {
+        Some((head, word)) if word.eq_ignore_ascii_case("quiet") => (head, true),
+        _ => (rest, false),
+    }
+}
+
+/// `HEADING <deg> [QUIET]` — 0 to 359, clockwise from north (doc 16 §3.7);
+/// `QUIET` is [`quiet_flag`].
 fn heading(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    let (rest, quiet) = quiet_flag(rest);
     let deg: u32 = rest
         .trim()
         .parse()
@@ -3966,14 +3989,16 @@ fn heading(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitErro
             mdeg: deg.saturating_mul(1_000),
         },
     )?;
-    let line = format!("Steering to {deg}°.");
-    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    if !quiet {
+        let line = format!("Steering to {deg}°.");
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    }
     Ok(())
 }
 
-/// `SPEED <kph>` — the unit's reverse ceiling to its own maximum (doc 16 §3.7).
-/// The wire is centimetres a second (doc 16 §3.2's integers), so the conversion
-/// is here and the pilot never types one.
+/// `SPEED <kph> [QUIET]` — the unit's reverse ceiling to its own maximum (doc 16
+/// §3.7); `QUIET` is [`quiet_flag`]. The wire is centimetres a second (doc 16
+/// §3.2's integers), so the conversion is here and the pilot never types one.
 ///
 /// **16b cut D.3 (`T-60`) made the refusal true.** It read `That unit makes 54
 /// kph; SPEED 0 to 54.` — a range the verb did not enforce at either end: it
@@ -3985,6 +4010,7 @@ fn heading(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitErro
 /// [`crate::arena::state::TrackedRules::reverse_ceiling_cms`].
 fn speed(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    let (rest, quiet) = quiet_flag(rest);
     let kph: i32 =
         rest.trim().parse().ok().ok_or_else(|| {
             CockpitError::Usage("SPEED <kph>; a negative speed reverses.".to_owned())
@@ -4010,8 +4036,10 @@ fn speed(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
             cms: kph_to_cms(kph),
         },
     )?;
-    let line = format!("Making {kph} kph.");
-    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    if !quiet {
+        let line = format!("Making {kph} kph.");
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    }
     Ok(())
 }
 
@@ -5717,7 +5745,23 @@ pub fn arming_reply(weapon: &str, echo: &ArmingEcho) -> String {
 /// second word, or `OFF` alone, so every existing `FIRE` line goes on to the
 /// pre-checks below byte for byte as it always did. A typed `FIRE` is never
 /// gated by a slot (the owner's pin P1, 16c Q45).
+///
+/// **Doc 21 cut G.12a** (§7.3): three bare lines are read whole before any
+/// other form — `FIRE HOLD` / `FIRE FREE` set the seat's master gate
+/// ([`fire_gate`]) and `FIRE ALL` is one volley ([`fire_all`]). Bare means
+/// nothing after the word, so `FIRE <weapon|ALL> HOLD WHEN <cond>` (a hold
+/// rule) and `FIRE ALL OFF` keep their own arms below.
 fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
+    let bare = rest.trim();
+    if bare.eq_ignore_ascii_case("hold") {
+        return fire_gate(ctx, seat, false);
+    }
+    if bare.eq_ignore_ascii_case("free") {
+        return fire_gate(ctx, seat, true);
+    }
+    if bare.eq_ignore_ascii_case("all") {
+        return fire_all(ctx, seat);
+    }
     let (_, tail) = first_word(rest);
     if first_word(tail).0.eq_ignore_ascii_case("hold") {
         return station_rules(ctx, seat, &format!("FIRE {rest}"));
@@ -5792,6 +5836,201 @@ fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> 
     Ok(())
 }
 
+/// **`FIRE HOLD`'s reply** (doc 21 cut G.12a, §7.3), said whether or not the
+/// gate was already held.
+pub const WEAPONS_HOLD: &str = "Weapons hold: your rules stand but fire only when you say.";
+
+/// **`FIRE FREE`'s reply** (doc 21 cut G.12a, §7.3), said whether or not the
+/// gate was already free.
+pub const WEAPONS_FREE: &str = "Weapons free.";
+
+/// **The line `WEAPONSTATUS` and `MIND RULES` add while the gate is held**
+/// (doc 21 cut G.12a): the rules are listed as before, and this says why none
+/// of them fires. Nothing is added at weapons free, the default, so every
+/// listing of a seat that never holds reads as it did.
+pub const WEAPONS_HOLD_LINE: &str = "Weapons hold: no rule fires until FIRE FREE.";
+
+/// **`FIRE HOLD` / `FIRE FREE`** (doc 21 cut G.12a, §7.3; Q-21-9's default
+/// free): the seat's master gate over its hull's `FIRE <weapon> WHEN` rules,
+/// as one discrete `IntentKind::Condition(Arming::WeaponsFree { free })` on
+/// the fire channel — `FIRE ALL OFF`'s delivery, so it lands at a pulse,
+/// replays identically and is folded by the arena hash. Under hold every rule
+/// stays armed and listed and none fires; hold rules, a typed `FIRE` or `FIRE
+/// ALL` and a mind's own warranted shot are untouched (the arena's
+/// `evaluate_conditions`). A `FIRE FREE` re-evaluates the slots as it lands,
+/// so a rule whose conditions hold fires at that pulse.
+///
+/// The wreck first, as every order. **The reply is unconditional and reads no
+/// mirror**, for [`fire_off`]'s reason: a repeat is a no-op in the arena and
+/// says the same line. Power is not asked: a switch is not a shot.
+fn fire_gate(ctx: &mut Ctx<'_>, seat: &Seat, free: bool) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    require_alive(ctx.w, seat.driver)?;
+    forward_intent(
+        ctx,
+        seat.driver,
+        seat.unit,
+        IntentKind::Condition(Arming::WeaponsFree { free }),
+    )?;
+    let line = if free { WEAPONS_FREE } else { WEAPONS_HOLD };
+    ctx.out
+        .sys_to_actor(actor, NOTICE_CATEGORY, line.to_owned());
+    Ok(())
+}
+
+/// **The opener of a weapon's out-of-reach refusal** (doc 21 cut G.12a): the
+/// lock is past the weapon's last band. No `FIRE <weapon>` says it — a typed
+/// shot past the bands is the arena's to resolve — but a volley picks only
+/// the guns that reach, so it has to say which do not.
+pub const OUT_OF_REACH: &str = "Out of reach";
+
+/// **The lock's range, metres, as `RANGE` and the frame's `lock_range_m`
+/// print it** (16b cut D.4's step, `T-20`), or `None` with no lock. One
+/// function, so the keyframe and [`fire_all`]'s out-of-reach line read one
+/// figure.
+fn frame_lock_range_m(frame: &Frame) -> Option<u64> {
+    frame_lock(frame).and_then(|contact| {
+        frame
+            .contacts
+            .iter()
+            .find(|held| held.id == contact)
+            .map(|held| range_m_rounded(held.range_cm, lock_range_step_m(held.age_ms)))
+    })
+}
+
+/// **Why `weapon` does not reach the lock** (doc 21 cut G.12a), as the
+/// `said` half of `FIRE <weapon> refused. …`: the lock's printed range and
+/// the weapon's last band edge, metres.
+fn out_of_reach(frame: &Frame, weapon: &str) -> String {
+    let reach_m = frame
+        .weapons
+        .iter()
+        .find(|carried| carried.id == weapon)
+        .and_then(|carried| carried.bands_cm.last())
+        .map(|cm| cm / 100);
+    match (frame_lock_range_m(frame), reach_m) {
+        (Some(range_m), Some(reach_m)) => {
+            format!("{OUT_OF_REACH}: the lock is {range_m} m off and it reaches {reach_m} m.")
+        }
+        _ => format!("{OUT_OF_REACH} of the lock."),
+    }
+}
+
+/// **Bare `FIRE ALL`: one volley** (doc 21 cut G.12a, §7.3; the `g` key).
+///
+/// Each weapon that is ready, has rounds and whose band reaches the lock
+/// (its frame row carries a band: the arena's own reach test, against the
+/// exact range) fires exactly as `FIRE <weapon>` does — one
+/// `IntentKind::Fire` each, a seat's shot, never gated — in the roster's
+/// order, one line a weapon: `Firing <weapon>.` for a shot, and the weapon's
+/// own refusal (`FIRE <weapon> refused. …`) for one it skips — cycling,
+/// empty, out of reach, or overheated where it makes heat — before going on.
+///
+/// Refused whole, in the existing words, when nothing would fire: a wreck
+/// ([`require_alive`]); no weapon ([`CockpitError::NoWeapon`]); no lock
+/// (`FIRE ALL refused. No lock: …`); no weapon in reach (the FIRST weapon's
+/// out-of-reach line, the most specific thing to say); power not online
+/// (`FIRE ALL refused. …`, the platform's refusal, asked once); otherwise
+/// the first in-reach weapon's own refusal. Each forwarded shot counts on
+/// the seat's order window as a typed `FIRE` does.
+fn fire_all(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    // 16b cut AP.1: the one wall-clock read this verb ages the mirror by.
+    let now = std::time::Instant::now();
+    require_alive(ctx.w, seat.driver)?;
+    let held = last_frame(ctx.w, seat.driver);
+    let rows = carried(ctx.w, seat.unit, held.as_ref(), now);
+    if rows.is_empty() {
+        return Err(CockpitError::NoWeapon);
+    }
+    let all = |said: &str| {
+        CockpitError::Refused(order_refused(
+            IntentKind::fire("").as_str(),
+            Some("ALL"),
+            said,
+        ))
+    };
+    let Some(frame) = held
+        .as_ref()
+        .map(|held| &held.frame)
+        .filter(|frame| frame_lock(frame).is_some())
+    else {
+        return Err(all(&CockpitError::NoLock.to_string()));
+    };
+    if let Some(first) = rows.first()
+        && rows.iter().all(|row| row.range_band.is_none())
+    {
+        return Err(CockpitError::Refused(order_refused(
+            IntentKind::fire(&first.id).as_str(),
+            Some(&first.id),
+            &out_of_reach(frame, &first.id),
+        )));
+    }
+    require_power(ctx.w, seat.driver).map_err(|said| all(&said.to_string()))?;
+    // Each row's skip, in `FIRE`'s own order: the weapon's two refusals, the
+    // reach, then the platform's heat for a weapon that makes some.
+    let overheated = frame.heat.filter(|heat| heat.overheated());
+    let skips: Vec<Option<String>> = rows
+        .iter()
+        .map(|row| {
+            let said = if !row.ready {
+                CockpitError::Cycling {
+                    secs: row.ready_in_ms.saturating_add(999) / 1_000,
+                }
+                .to_string()
+            } else if row.rounds <= 0 {
+                CockpitError::Empty.to_string()
+            } else if row.range_band.is_none() {
+                out_of_reach(frame, &row.id)
+            } else if let Some(heat) = overheated
+                && row.heat_per_shot > 0
+            {
+                CockpitError::Overheated {
+                    heat: heat.heat,
+                    max: heat.max,
+                }
+                .to_string()
+            } else {
+                return None;
+            };
+            Some(order_refused(
+                IntentKind::fire(&row.id).as_str(),
+                Some(&row.id),
+                &said,
+            ))
+        })
+        .collect();
+    if skips.iter().all(Option::is_some) {
+        let first = rows
+            .iter()
+            .zip(&skips)
+            .find(|(row, _)| row.range_band.is_some())
+            .or_else(|| rows.iter().zip(&skips).next())
+            .and_then(|(_, skip)| skip.clone())
+            .unwrap_or_default();
+        return Err(CockpitError::Refused(first));
+    }
+    for (row, skip) in rows.iter().zip(skips) {
+        let line = match skip {
+            Some(line) => line,
+            None => {
+                forward_intent(
+                    ctx,
+                    seat.driver,
+                    seat.unit,
+                    IntentKind::Fire {
+                        weapon: row.id.clone(),
+                        slot: None,
+                    },
+                )?;
+                format!("Firing {}.", row.id)
+            }
+        };
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    }
+    Ok(())
+}
+
 /// What `CONTACTS` says of an empty scope.
 const NO_CONTACTS_LINE: &str = "No contacts.";
 
@@ -5847,6 +6086,10 @@ fn weapon_status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     }
     if let Some(line) = held.as_ref().and_then(|held| lock_line(&held.frame)) {
         lines.push(line);
+    }
+    // Doc 21 cut G.12a: the master gate, said only while it holds.
+    if held.as_ref().is_some_and(|held| !held.frame.weapons_free) {
+        lines.push(WEAPONS_HOLD_LINE.to_owned());
     }
     for weapon in &weapons {
         lines.push(weapon.render(&weapons));
@@ -6404,9 +6647,59 @@ pub const RETAIN_LATEST: &str = "latest";
 /// person in the seat is not a version. It rides only this, the seated
 /// pilot's own frame (the replay builds its window from the tape, and a
 /// mind's view never copies it).
+///
+/// **Doc 21 cut G.14** (2026-10-27) added one key per contact, `health`: the
+/// one word the picture gauges the hull by — `intact`, `damaged`, `crippled`
+/// or `wreck` ([`contact_health`]) — and `null` on every row the platform
+/// holds no reading of, which is every unidentified return and every
+/// classified one it has not been close enough to for a look. A summary of
+/// the row's own `condition` bands and `reads_dead`, never a number, and on
+/// every hull armed or not; [`FRAME_VERSION`] stays `7`: a field added is not
+/// a version.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     status_frame_held(match_id, frame, &BTreeMap::new())
+}
+
+/// **The one word the picture gauges a contact by** (doc 21 cut G.14;
+/// [`ConditionTier`]), or `None`.
+///
+/// The frame's own `reads_dead` says `wreck` outright — the platform's own
+/// kill, or a held reading that shows a fatal section destroyed
+/// ([`crate::arena::perception::FrameContact::reads_dead`]). Otherwise it is
+/// the held reading's [`crate::arena::condition::Condition::tier`], the fatal mask resolved from the
+/// row's `fatal` words through its scan table's order — so an unarmed hull,
+/// whose rows carry no `reads_dead`, reads a wreck off the same reading an
+/// armed one would. A row with no reading has no word: every unidentified
+/// return (a reading is taken only while classified) and every classified
+/// contact the platform has not had close enough for a look. The picture
+/// then draws no gauge, which is the observer rule on this surface: a return
+/// the scope has not read is not shown whole.
+///
+/// Never a number. The tier is the worst band the platform already holds and
+/// nothing finer, so no exact figure reaches a surface that was not given
+/// one by `SCAN`.
+#[must_use]
+pub fn contact_health(
+    frame: &Frame,
+    held: &crate::arena::perception::FrameContact,
+) -> Option<ConditionTier> {
+    if held.reads_dead == Some(true) {
+        return Some(ConditionTier::Wreck);
+    }
+    let reading = held.condition?;
+    let names: &[SmolStr] = frame
+        .scan_tables
+        .get(usize::from(reading.table))
+        .map_or(&[], Vec::as_slice);
+    let fatal: &[SmolStr] = held.fatal.as_deref().unwrap_or(&[]);
+    let mut mask = 0_u32;
+    for (index, name) in names.iter().enumerate().take(MAX_SCANNED_SECTIONS) {
+        if fatal.contains(name) {
+            mask |= 1_u32 << index;
+        }
+    }
+    Some(reading.bands.tier(mask))
 }
 
 /// **The cockpit keyframe with each contact's `range_m` held** (16b cut B.4,
@@ -6460,6 +6753,14 @@ pub fn status_frame_held(
                         "bands": reading.bands.letters(),
                         "age_ms": reading.age_ms,
                     })),
+                // **Doc 21 cut G.14**: the one word the picture gauges this
+                // hull by, summed from the bands above and `reads_dead`
+                // ([`contact_health`]), or `null` with no reading — so a
+                // return the scope has not read gets no gauge rather than a
+                // full one.
+                "health": held
+                    .and_then(|held| contact_health(frame, held))
+                    .map(|tier| tier.as_str()),
                 // **17b cut M1a.3** (doc 17 §3, D-UM-5): the FACET word the
                 // contact's plot was showing — `front`, `left`, `right` or
                 // `rear`; the row prints its side word — and, beside a held
@@ -6666,13 +6967,7 @@ pub fn status_frame_held(
     // **16b cut D.4** (`T-20`): the same step `RANGE` uses, off the same row's own
     // age — one function, so the verb, the frame and the two panels' lock lines
     // cannot give two distances.
-    let lock_range_m = frame_lock(frame).and_then(|contact| {
-        frame
-            .contacts
-            .iter()
-            .find(|held| held.id == contact)
-            .map(|held| range_m_rounded(held.range_cm, lock_range_step_m(held.age_ms)))
-    });
+    let lock_range_m = frame_lock_range_m(frame);
     let mut payload = serde_json::json!({
         // 16b cut Q.3: `retain` tells the session layer that this keyframe
         // supersedes the ones before it on this feed — it replaces the feed's
@@ -6777,6 +7072,19 @@ pub fn status_frame_held(
         object.insert("unit_type".into(), frame.unit_type.as_str().into());
         // Doc 21 cut G.7b: the eye the pilot's own sight is traced from.
         object.insert("sensor_height_cm".into(), frame.sensor_height_cm.into());
+        // **Doc 21 cut G.12a** (§7.3): the seat's master gate, and the two
+        // `SPEED` ceilings in whole kph as the verb's refusal states them
+        // (`reverse_kph` a magnitude) — so a client says which gate is up and
+        // steps and clamps its speed keys without a round trip.
+        object.insert("weapons_free".into(), frame.weapons_free.into());
+        object.insert(
+            "max_speed_kph".into(),
+            cms_to_kph(i32::try_from(frame.max_speed_cms).unwrap_or(i32::MAX)).into(),
+        );
+        object.insert(
+            "reverse_kph".into(),
+            cms_to_kph(i32::try_from(frame.reverse_cms).unwrap_or(i32::MAX)).into(),
+        );
         object.insert("mode".into(), frame.mode.as_str().into());
         object.insert(
             "objective".into(),
@@ -8954,6 +9262,9 @@ fn cockpit_help(verb: &str) -> String {
                    WHEN <cond> [AND <cond>]... arms the weapon: it fires your lock whenever every \
                    condition holds, and tells you each time. FIRE <weapon|ALL> HOLD WHEN <cond> \
                    vetoes automatic fire; FIRE <weapon|ALL> OFF clears fire and hold rules. \
+                   FIRE ALL fires every ready weapon that reaches your lock, once each. \
+                   FIRE HOLD|FREE is the master switch: under HOLD your armed rules stand but \
+                   none fires until FIRE FREE (free at the start). \
                    See help cockpit, \"Arming a weapon\"."
             .to_owned(),
         // 16b cut Y.1: who may order what, in the help, because the refusal for

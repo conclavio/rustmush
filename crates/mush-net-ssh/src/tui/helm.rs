@@ -4,7 +4,11 @@
 //!
 //! A turn is a **helm order** — a `HEADING <deg>` line, the verb and the
 //! authority a pilot types — so a seat without the helm, or a tank without
-//! power, simply does not turn. The sim resolves orders at its pulses (500,
+//! power, simply does not turn. The keys' orders carry the verbs' `QUIET`
+//! word (doc 21 §7.3, 2026-10-27): the arena takes them without the
+//! `Steering to …` / `Making … kph.` acknowledgement a typed order gets,
+//! since the HUD shows the ordered heading and speed and a held key would
+//! otherwise fill the comms; refusals are still spoken. The sim resolves orders at its pulses (500,
 //! 1000 or 5000 ms by tempo), so between frames the view **predicts** the
 //! heading: from the last frame's, toward the order it sent, at the tank's
 //! turn rate, starting no earlier than the order went out and never past it.
@@ -21,6 +25,11 @@
 //! starts at that and is re-measured from consecutive frames — only across
 //! a pulse in which the tank was still short of the order, since a turn that
 //! finished mid-pulse would read slow.
+//!
+//! **The throttle and the lock cycle** (doc 21 cut G.12b) sit beside the
+//! helm: [`Throttle`] steps `SPEED` orders the same way, from a prediction the
+//! frame corrects, and [`lock_order`] / [`lock_next`] are the `t` / `T` walk
+//! over the frame's contacts.
 
 use std::time::{Duration, Instant};
 
@@ -30,8 +39,9 @@ use serde_json::Value;
 pub const DEFAULT_TURN_RATE: i64 = 30_000;
 /// The measured rate is kept inside this band (millidegrees a second).
 const RATE_BAND: (i64, i64) = (5_000, 180_000);
-/// The least time between two orders while a turn is held.
-const ORDER_GAP: Duration = Duration::from_millis(250);
+/// The least time between two orders while a turn is held, and between two
+/// `SPEED` orders while the speed keys are pressed (G.12b).
+pub const ORDER_GAP: Duration = Duration::from_millis(250);
 /// A held turn's lead is a pulse of turning, kept inside this band.
 const LEAD_BAND: (i64, i64) = (20_000, 120_000);
 /// A frame within this of the order has reached it (millidegrees).
@@ -202,7 +212,7 @@ impl Helm {
 
     fn order(&mut self, heading: i64, now: Instant) {
         let deg = (heading.rem_euclid(FULL) + 500) / 1_000 % 360;
-        self.orders.push(format!("HEADING {deg}"));
+        self.orders.push(format!("HEADING {deg} QUIET"));
         self.ordered = Some((deg * 1_000, now));
     }
 
@@ -246,6 +256,219 @@ impl Helm {
     }
 }
 
+// ---- the throttle (doc 21 cut G.12b) ----------------------------------------
+
+/// The top speed assumed when the frame names none (`max_speed_kph`): the
+/// stock tank's 60 kph.
+pub const DEFAULT_MAX_KPH: i64 = 60;
+/// The reverse ceiling assumed when the frame names none (`reverse_kph`).
+pub const DEFAULT_REVERSE_KPH: i64 = 20;
+/// The least speed step, kph.
+pub const MIN_STEP_KPH: i64 = 5;
+/// A frame within this of the ordered speed has reached it (kph: the frame's
+/// `speed_kph` is rounded).
+const SPEED_REACHED_KPH: i64 = 1;
+
+/// **The throttle** (doc 21 §7.3, cut G.12b): `w` and `s` step the ordered
+/// speed by a tenth of the hull's top speed (at least [`MIN_STEP_KPH`]),
+/// through zero into reverse and clamped at either ceiling, each step a
+/// `SPEED <kph>` line — the verb and the authority a pilot types, so a hull
+/// that cannot make way simply does not.
+///
+/// A step is taken from the **predicted** speed: the last order while the
+/// frame has not reached it, else the frame's `speed_kph`, which is the truth
+/// and replaces the prediction once it comes within a kph of the order. Steps
+/// faster than [`ORDER_GAP`] coalesce — the last value wins when the gap
+/// opens — so a key held down sends a few orders, not one a repeat.
+#[derive(Clone, Debug)]
+pub struct Throttle {
+    /// The speed last ordered and not yet reached, kph.
+    ordered: Option<i64>,
+    /// A step taken inside the gap, waiting to go out.
+    pending: Option<i64>,
+    /// When the last order went out.
+    sent_at: Option<Instant>,
+    /// The frame's speed, kph.
+    seen: Option<i64>,
+    /// The ceiling ahead, kph.
+    max: i64,
+    /// The ceiling astern, kph (positive).
+    reverse: i64,
+    /// `SPEED` lines waiting to be sent.
+    orders: Vec<String>,
+}
+
+impl Default for Throttle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Throttle {
+    /// A throttle that has seen no frame, at the default ceilings.
+    #[must_use]
+    pub fn new() -> Throttle {
+        Throttle {
+            ordered: None,
+            pending: None,
+            sent_at: None,
+            seen: None,
+            max: DEFAULT_MAX_KPH,
+            reverse: DEFAULT_REVERSE_KPH,
+            orders: Vec::new(),
+        }
+    }
+
+    /// Read the held cockpit frame: its speed, and its ceilings where it
+    /// names them (G.12a's `max_speed_kph` and `reverse_kph`). An order the
+    /// frame has reached is closed; so is any order on a hull that is a wreck
+    /// or immobile, which will never reach it.
+    pub fn observe(&mut self, cockpit: &Value) {
+        if let Some(max) = cockpit.get("max_speed_kph").and_then(Value::as_i64) {
+            self.max = max.max(0);
+        }
+        if let Some(rev) = cockpit.get("reverse_kph").and_then(Value::as_i64) {
+            self.reverse = rev.abs();
+        }
+        let Some(kph) = cockpit.get("speed_kph").and_then(Value::as_i64) else {
+            return;
+        };
+        self.seen = Some(kph);
+        let stuck = ["wreck", "immobile"]
+            .iter()
+            .any(|k| cockpit.get(*k).and_then(Value::as_bool) == Some(true));
+        if stuck
+            || self
+                .ordered
+                .is_some_and(|o| (o - kph).abs() <= SPEED_REACHED_KPH)
+        {
+            self.ordered = None;
+        }
+    }
+
+    /// One step, kph: a tenth of the top speed, at least [`MIN_STEP_KPH`].
+    #[must_use]
+    pub fn step(&self) -> i64 {
+        ((self.max + 5) / 10).max(MIN_STEP_KPH)
+    }
+
+    /// The speed the hull is making as far as the view can tell: the newest
+    /// order not yet reached, else the frame's.
+    #[must_use]
+    pub fn predicted(&self) -> i64 {
+        self.pending
+            .or(self.ordered)
+            .unwrap_or_else(|| self.seen.unwrap_or(0))
+    }
+
+    /// The frame's speed, kph.
+    #[must_use]
+    pub fn seen(&self) -> Option<i64> {
+        self.seen
+    }
+
+    /// The speed ordered (or about to be) and not yet reached, kph.
+    #[must_use]
+    pub fn ordered(&self) -> Option<i64> {
+        self.pending.or(self.ordered)
+    }
+
+    /// `w` (`dir` 1) or `s` (`-1`): one step from the predicted speed,
+    /// clamped at the ceilings.
+    pub fn bump(&mut self, dir: i8, now: Instant) {
+        let want = (self.predicted() + i64::from(dir.signum()) * self.step())
+            .clamp(-self.reverse, self.max);
+        self.pending = Some(want);
+        self.tick(now);
+    }
+
+    /// `x`: all stop, ordered at once whatever the gap.
+    pub fn stop(&mut self, now: Instant) {
+        self.pending = Some(0);
+        self.flush(now);
+    }
+
+    /// Send a step still waiting on the gap now: the view is hiding, and its
+    /// clock, which would have sent it, stops with it.
+    pub fn flush(&mut self, now: Instant) {
+        self.sent_at = None;
+        self.tick(now);
+    }
+
+    /// Send a coalesced step once the gap since the last order has opened.
+    pub fn tick(&mut self, now: Instant) {
+        let Some(want) = self.pending else {
+            return;
+        };
+        if self
+            .sent_at
+            .is_some_and(|at| now.saturating_duration_since(at) < ORDER_GAP)
+        {
+            return;
+        }
+        self.pending = None;
+        self.sent_at = Some(now);
+        self.ordered = Some(want);
+        self.orders.push(format!("SPEED {want} QUIET"));
+    }
+
+    /// The `SPEED` lines to send, oldest first.
+    pub fn take_orders(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.orders)
+    }
+}
+
+// ---- the lock cycle (doc 21 cut G.12b) ---------------------------------------
+
+/// **The lock cycle's order** (doc 21 §7.3): the frame's contacts by
+/// designator, hostiles first (classified to a team and not a friend), then
+/// the unidentified (`class` `unknown`), then the rest (classified friends),
+/// nearest first within each, the designator breaking a tie.
+#[must_use]
+pub fn lock_order(cockpit: &Value) -> Vec<String> {
+    let mut rows: Vec<(u8, i64, String)> = cockpit
+        .get("contacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let name = c.get("designator").and_then(Value::as_str)?.to_string();
+            let unknown = c
+                .get("class")
+                .and_then(Value::as_str)
+                .is_none_or(|k| k == "unknown");
+            let friendly = c.get("friendly").and_then(Value::as_bool) == Some(true);
+            let rank = match (unknown, friendly) {
+                (false, false) => 0,
+                (true, _) => 1,
+                (false, true) => 2,
+            };
+            let range = c.get("range_m").and_then(Value::as_i64).unwrap_or(i64::MAX);
+            Some((rank, range, name))
+        })
+        .collect();
+    rows.sort();
+    rows.into_iter().map(|(_, _, name)| name).collect()
+}
+
+/// The contact `t` (`dir` 1) or `T` (`-1`) locks: the one after (before)
+/// `current` in `order`, wrapping; the first when nothing is locked or the
+/// lock is not in the order; nothing with no contacts.
+#[must_use]
+pub fn lock_next(order: &[String], current: Option<&str>, dir: i8) -> Option<String> {
+    let n = order.len();
+    if n == 0 {
+        return None;
+    }
+    let at = current.and_then(|c| order.iter().position(|d| d == c));
+    let i = match at {
+        None => 0,
+        Some(i) if dir >= 0 => (i + 1) % n,
+        Some(i) => (i + n - 1) % n,
+    };
+    order.get(i).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,7 +510,7 @@ mod tests {
         assert_eq!(h.predicted(t0), Some(90_000));
         h.start(1, t0 + ms(200));
         // 30°/s for 1.5 s of 1000 ms pulses: 45° ahead.
-        assert_eq!(h.take_orders(), ["HEADING 135"]);
+        assert_eq!(h.take_orders(), ["HEADING 135 QUIET"]);
         assert_eq!(
             h.predicted(t0 + ms(200)),
             Some(90_000),
@@ -298,7 +521,7 @@ mod tests {
         // the order).
         assert_eq!(h.predicted(t0 + ms(1_700)), Some(135_000));
         h.stop(t0 + ms(700));
-        assert_eq!(h.take_orders(), ["HEADING 105"]);
+        assert_eq!(h.take_orders(), ["HEADING 105 QUIET"]);
         assert_eq!(h.turning(), 0);
         // A frame at the ordered heading closes the order.
         h.observe(&frame(11_000, 105, "alert"), t0 + ms(1_000));
@@ -315,13 +538,13 @@ mod tests {
         h.observe(&frame(1_000, 0, "engaged"), t0);
         h.start(-1, t0);
         // A pulse and a half at 500 ms pulses: 22.5° ahead.
-        assert_eq!(h.take_orders(), ["HEADING 338"]);
+        assert_eq!(h.take_orders(), ["HEADING 338 QUIET"]);
         h.observe(&frame(1_500, 338, "engaged"), t0 + ms(500));
         assert_eq!(h.rate(), DEFAULT_TURN_RATE, "reached it: no measure");
         // Ordered on to 316; 18° in the next 500 ms pulse, still short of
         // it: a faster chassis than assumed.
         h.start(-1, t0 + ms(600));
-        assert_eq!(h.take_orders(), ["HEADING 316"]);
+        assert_eq!(h.take_orders(), ["HEADING 316 QUIET"]);
         h.observe(&frame(2_000, 320, "engaged"), t0 + ms(1_000));
         assert_eq!(h.rate(), 36_000);
     }
@@ -347,14 +570,103 @@ mod tests {
         let mut h = Helm::new();
         h.observe(&frame(1_000, 0, "alert"), t0);
         h.start(1, t0);
-        assert_eq!(h.take_orders(), ["HEADING 45"]);
+        assert_eq!(h.take_orders(), ["HEADING 45 QUIET"]);
         h.tick(t0 + ms(100));
         assert!(h.take_orders().is_empty(), "far from the order");
         // A frame at 30°: 15° short, under half the 45° lead.
         h.observe(&frame(2_000, 30, "alert"), t0 + ms(1_000));
         h.tick(t0 + ms(1_000));
-        assert_eq!(h.take_orders(), ["HEADING 75"]);
+        assert_eq!(h.take_orders(), ["HEADING 75 QUIET"]);
         h.tick(t0 + ms(1_100));
         assert!(h.take_orders().is_empty(), "the gap holds");
+    }
+
+    // ---- G.12b ---------------------------------------------------------------
+
+    fn speed(kph: i64) -> Value {
+        serde_json::json!({ "speed_kph": kph })
+    }
+
+    /// `w` from rest orders a tenth of the top speed; steps coalesce inside
+    /// the gap and the last wins; the frame replaces the prediction once it
+    /// reaches the order.
+    #[test]
+    fn the_throttle_steps_a_tenth_and_coalesces() {
+        let t0 = Instant::now();
+        let mut t = Throttle::new();
+        t.observe(&speed(0));
+        assert_eq!(t.step(), 6, "a tenth of the default 60");
+        t.bump(1, t0);
+        assert_eq!(t.take_orders(), ["SPEED 6 QUIET"]);
+        assert_eq!((t.predicted(), t.ordered()), (6, Some(6)));
+        // Two more inside the gap: one order, the last value, when it opens.
+        t.bump(1, t0 + ms(50));
+        t.bump(1, t0 + ms(100));
+        assert!(t.take_orders().is_empty(), "the gap holds");
+        assert_eq!(t.predicted(), 18, "but the prediction moves");
+        t.tick(t0 + ORDER_GAP);
+        assert_eq!(t.take_orders(), ["SPEED 18 QUIET"]);
+        // The frame on its way: still the order; reached: the frame's.
+        t.observe(&speed(10));
+        assert_eq!(t.predicted(), 18);
+        t.observe(&speed(17));
+        assert_eq!((t.predicted(), t.ordered()), (17, None));
+        // All stop goes at once.
+        t.stop(t0 + ORDER_GAP + ms(10));
+        assert_eq!(t.take_orders(), ["SPEED 0 QUIET"]);
+        // A step inside the gap goes out on a flush (the view hiding).
+        t.bump(1, t0 + ORDER_GAP + ms(20));
+        assert!(t.take_orders().is_empty());
+        t.flush(t0 + ORDER_GAP + ms(30));
+        assert_eq!(t.take_orders(), ["SPEED 6 QUIET"]);
+    }
+
+    /// The frame's ceilings set the step and the clamps; through zero into
+    /// reverse, held at the reverse ceiling.
+    #[test]
+    fn the_throttle_clamps_at_the_frames_ceilings() {
+        let t0 = Instant::now();
+        let mut t = Throttle::new();
+        t.observe(&serde_json::json!({ "speed_kph": 40, "max_speed_kph": 43, "reverse_kph": 12 }));
+        assert_eq!(t.step(), 5, "a tenth of 43 is under the floor");
+        t.bump(1, t0);
+        assert_eq!(t.take_orders(), ["SPEED 43 QUIET"], "clamped at the top");
+        let mut later = t0;
+        for want in ["SPEED 38 QUIET", "SPEED 33 QUIET"] {
+            later += ORDER_GAP;
+            t.bump(-1, later);
+            assert_eq!(t.take_orders(), [want]);
+        }
+        let mut r = Throttle::new();
+        r.observe(&serde_json::json!({ "speed_kph": 0, "max_speed_kph": 43, "reverse_kph": 12 }));
+        r.bump(-1, t0);
+        r.bump(-1, t0 + ORDER_GAP);
+        r.bump(-1, t0 + ORDER_GAP * 2);
+        assert_eq!(
+            r.take_orders(),
+            ["SPEED -5 QUIET", "SPEED -10 QUIET", "SPEED -12 QUIET"]
+        );
+        // A wreck never reaches its order: the frame's speed stands.
+        r.observe(&serde_json::json!({ "speed_kph": 0, "wreck": true }));
+        assert_eq!((r.predicted(), r.ordered()), (0, None));
+    }
+
+    /// Hostiles first, then the unidentified, then friends, nearest first;
+    /// the cycle wraps both ways and starts at the first.
+    #[test]
+    fn the_lock_cycle_walks_hostiles_then_unknowns_then_friends() {
+        let frame: Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("fixture");
+        // BA blue hostile 450 m; X3 unknown 200 m; X4 unknown 600 m; RB friend.
+        let order = lock_order(&frame);
+        assert_eq!(order, ["BA", "X3", "X4", "RB"]);
+        assert_eq!(lock_next(&order, Some("BA"), 1).as_deref(), Some("X3"));
+        assert_eq!(lock_next(&order, Some("RB"), 1).as_deref(), Some("BA"));
+        assert_eq!(lock_next(&order, Some("BA"), -1).as_deref(), Some("RB"));
+        assert_eq!(lock_next(&order, None, -1).as_deref(), Some("BA"));
+        assert_eq!(lock_next(&order, Some("ZZ"), 1).as_deref(), Some("BA"));
+        assert_eq!(lock_next(&[], None, 1), None);
     }
 }

@@ -2,12 +2,22 @@
 // the gateway for it, at what look, and the last frame it sent — one PNG,
 // kept as the Blob it arrived as and drawn by `PictureView.svelte`.
 
+import type { PictureKind } from "../picture";
+
 /** The picture's state for this connection. */
 export class PictureStore {
   /** Whether the picture is asked for. */
   on = $state(false);
   /** The look sent with it, millidegrees. */
   lookMdeg = $state(0);
+  /** Which camera is wanted (doc 21 cut G.12c): the first-person view, or the
+   * overhead — which only the gateway draws, so while it is chosen the
+   * picture is the server's whatever this browser could draw. Kept here, not
+   * in the view, so the screen switched away and back keeps it (doc 21 §7.3). */
+  kind = $state<PictureKind>("cockpit");
+  /** The camera last sent to the gateway, so a change of camera alone is
+   * sent even when `kind` was set before the ask. */
+  sentKind: PictureKind = "cockpit";
   /** The last frame, or `null` before one arrived or after the picture went
    * off. */
   frame = $state<Blob | null>(null);

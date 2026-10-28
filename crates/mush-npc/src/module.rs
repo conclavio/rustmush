@@ -771,6 +771,10 @@ fn on_scene_turn(ctx: &mut Ctx<'_>, scene: u64, actor: ObjId, round: u32) {
             })
         }).collect::<Vec<_>>(),
     });
+    context["role_context"] = serde_json::json!({
+        "guidance": crate::interface::ROLE_CONTEXT_GUIDANCE,
+        "text": crate::interface::role_context_for(ctx.reg, ctx.w, &profile, actor),
+    });
     let (summary, transcript, recalled) = memory_context(ctx, actor, &present, "");
     let recollections = recalled
         .iter()
@@ -2008,6 +2012,131 @@ pub fn record_completed_work_relationship(
     } else {
         Ok(false)
     }
+}
+
+/// Record a verified, publicly speakable completed-work outcome and its usual
+/// +10 trust/+5 disposition receipt together. The game owner must establish
+/// that the NPC actually experienced this result; model prose is never proof.
+/// `text` is also the immutable receipt reason (at most 512 UTF-8 bytes).
+/// Call this instead of separately awarding the same relationship cause.
+/// Exact retries, including after memory eviction or reload, return false.
+pub fn record_completed_work_experience(
+    ctx: &mut Ctx<'_>,
+    npc: ObjId,
+    character: ObjId,
+    cause: &str,
+    text: &str,
+) -> Result<bool, String> {
+    validate_relationship_parties(ctx.w, npc, character)?;
+    if text.trim().is_empty() || text.len() > 512 {
+        return Err("Completed-work text must contain 1 to 512 UTF-8 bytes".into());
+    }
+    // Stage only this NPC's bounded memory document before changing the
+    // permanent receipt. Invalid evidence must not award trust without memory.
+    let mut candidate = PersonalMemoryStore::default();
+    let host = ctx
+        .w
+        .module_state::<NpcHostState>()
+        .ok_or("NPC memory unavailable")?;
+    if host
+        .relationships
+        .record_for(npc, character)
+        .is_some_and(|record| record.effects.iter().any(|effect| effect.cause == cause))
+    {
+        // A permanent receipt remains authoritative even after its bounded
+        // memory entry has aged out. Replays must not resurrect that entry.
+        return record_completed_work_relationship(ctx, npc, character, cause, text);
+    }
+    if let Some(record) = host.personal_memory.record_for(npc) {
+        candidate
+            .insert(record.clone())
+            .map_err(|error| format!("{error:?}"))?;
+    }
+    let name = bounded_text(
+        display_name(ctx.w, character),
+        crate::experience::MAX_PERSONAL_SUBJECT_BYTES,
+    );
+    let memory = candidate
+        .observe(
+            npc,
+            &name,
+            text,
+            Some(character),
+            &name,
+            ctx.w.get(npc).and_then(|object| object.location),
+            ExperienceKind::Outcome,
+            ctx.w.now(),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    if !record_completed_work_relationship(ctx, npc, character, cause, text)? {
+        return Ok(false);
+    }
+    // The staged document was validated against this exact current record;
+    // no world-loop work can interleave between staging and installation.
+    ctx.w
+        .module_state_mut::<NpcHostState>()
+        .ok_or("NPC memory unavailable")?
+        .personal_memory
+        .insert(memory.clone())
+        .map_err(|error| format!("{error:?}"))?;
+    persist_personal_memory(ctx, &memory);
+    ctx.out.pin_deferred();
+    Ok(true)
+}
+
+/// Wake a role-holder for one owner-verified, publicly speakable event. This
+/// grants no asker's authority and adds no personal evidence or trust. Owners
+/// deduplicate their event receipts; ordinary coalescing, cooldown and token
+/// budgets still govern delivery. No connected perceived company means no wake.
+pub fn notify_role_event(ctx: &mut Ctx<'_>, npc: ObjId, text: &str) -> bool {
+    if !enabled_npc(ctx.w, npc)
+        || ctx.w.get(npc).is_none_or(|object| {
+            object.kind != ObjKind::Npc || object.flags.contains(mush_core::Flags::GOING)
+        })
+    {
+        return false;
+    }
+    let Some(room) = ctx.w.get(npc).and_then(|object| object.location) else {
+        return false;
+    };
+    if !players_present(ctx.w, room)
+        .into_iter()
+        .any(|player| ctx.can_perceive(npc, player))
+    {
+        return false;
+    }
+    let text = bounded_text(crate::action::sanitize_line(text, 1024), 1024);
+    if text.trim().is_empty() {
+        return false;
+    }
+    let now = ctx.w.now();
+    let at_ms = now_ms(ctx.w);
+    let Some(host) = ctx.w.module_state_mut::<NpcHostState>() else {
+        return false;
+    };
+    if !host.enqueue(
+        npc,
+        Stimulus::GameEvent {
+            digest: text.clone(),
+        },
+        at_ms,
+    ) {
+        return false;
+    }
+    let runtime = host.runtime_mut(npc);
+    runtime.memory.push_event(
+        now,
+        text,
+        MemoryContext {
+            room: Some(room),
+            kind: MemoryKind::Outcome,
+            ..MemoryContext::default()
+        },
+    );
+    if runtime.memory.is_overflowing() {
+        runtime.summarize_pending = true;
+    }
+    true
 }
 
 fn validate_relationship_parties(w: &World, npc: ObjId, character: ObjId) -> Result<(), String> {
@@ -3266,6 +3395,7 @@ fn build_dialogue_snapshot(
         seed: correlation,
         interfaces,
         command_guidance,
+        role_context: crate::interface::role_context_for(ctx.reg, ctx.w, profile, npc),
     }
 }
 
@@ -3343,6 +3473,7 @@ fn build_summarize_snapshot(
         seed: correlation,
         interfaces: Vec::new(),
         command_guidance: Vec::new(),
+        role_context: String::new(),
     }
 }
 

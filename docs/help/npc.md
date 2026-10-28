@@ -66,6 +66,13 @@ arguments. At most eight references are accepted. Missing commands are omitted;
 staff-only help never enters conversational guidance, even when staff are asking.
 Advice does not execute a command or bypass its normal eligibility checks.
 
+Travellers can also use the `passenger` service to discuss a real passage and
+quote a fare. The captain accepts the exact quote and arranges boarding;
+conversation alone does neither. See [Passengers](passengers.md) for Leila at
+Stickney's Shift Board, Nadia at Ceres's Slack Line and the reusable traveller
+content template. Their service reports current availability after booking or
+arrival; a quest never resets a traveller.
+
 The `help` service can look up command names and aliases as well as prose topics.
 Command help is sent privately to the asker and uses that player's permissions.
 
@@ -177,6 +184,18 @@ Reading the relationship does not create an encounter or improve a score.
 Staff can offer the same conversational service by including `npc.relationship`
 in the NPC's interfaces; its `npc.relationship.read` ability takes no parameters
 and always answers the current asker privately.
+
+Authored follow-up work can continue a relationship after a verified event.
+For example, Leila remains at Ceres after her paid passage and can offer a
+small observational errand to the captain who brought her home. Use
+`+quest Leila` and `help quests`; dialogue alone never accepts or completes the work.
+
+At Ceres, Ilse, Dov, Yusra and Rosalind also offer independent introductions to
+Co-op enrolment, a small fittings trade, meeting Nadia and ordinary surface
+readings. Ask `+quest/offer <giver>` at their desk or bar. Each verified completion
+grants +10 personal trust and +5 disposition with that giver once, without extra
+credits or faction standing. These are optional invitations: every underlying
+activity remains available without a quest, and none requires another first.
 
 NPC dialogue and scene turns use the same qualitative guidance: familiarity
 shapes recognition, trust shapes willingness to rely on you, and disposition
@@ -325,7 +344,7 @@ commands. The principals behind the houses are on record and never wake. See
 ## See also
 
   @agent, @lore, @llm, @sheet, +npc, +standing, +roll, +intel, help intel, help perception,
-  help worldgen, help ports
+  help worldgen, help ports, help passengers, help quests
 
 ## Interface NPCs
 
@@ -341,6 +360,12 @@ your own journey), `market` (what is for sale, a quote), `build` (a brief
 into a proposal, its status, its questions), `rules` (character generation,
 a rules topic), `request` (file a request, your own tickets), `help` (a
 help topic). Talk to the NPC and it answers through them.
+
+An authored traveller may also have `passenger` (passage status and fare offers)
+and `quest` (the current asker's follow-up invitation and progress). The player
+accepts and performs these actions through `+passage` and `+quest`. A quest
+service's private answer is not shared with bystanders or retained as public
+conversation history.
 
 Four rules keep an interface NPC exactly as powerful as the person talking
 to it. It answers with **your** authority: a place you may not see, a

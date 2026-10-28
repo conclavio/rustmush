@@ -38,7 +38,7 @@ import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "
 import { SKY_CHART_FEED } from "./chart";
 import { ChartStore } from "./stores/chart.svelte";
 import { PictureStore } from "./stores/picture.svelte";
-import { pictureCommand } from "./picture";
+import { pictureCommand, type PictureKind } from "./picture";
 import { BODY_GROUND_FEED, SITE_MAP_FEED, TV_STATUS_FEED, groundParams, rigPrefill, siteParams } from "./quarry";
 import { QuarryStore } from "./stores/quarry.svelte";
 import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
@@ -331,7 +331,8 @@ export class GameApp {
         // Doc 21 cut G.3c: the gateway's picture is per connection, so a
         // reconnect asks for it again; while away, nothing is shown.
         if (s === "connected" && this.picture.on) {
-          this.client.send(pictureCommand(true, this.picture.lookMdeg));
+          this.picture.sentKind = this.picture.kind;
+          this.client.send(pictureCommand(true, this.picture.lookMdeg, this.picture.kind));
         } else if (s !== "connected") {
           this.picture.clear();
         }
@@ -1786,17 +1787,31 @@ export class GameApp {
   // -- input --------------------------------------------------------------
 
   /** Ask for the cockpit's picture, at a look, or stop it (doc 21 cut
-   * G.3c). The look changes by asking again. */
-  setPicture(on: boolean, lookMdeg: number): void {
-    const changed = on !== this.picture.on || lookMdeg !== this.picture.lookMdeg;
+   * G.3c). The look changes by asking again; so (doc 21 cut G.12c) does the
+   * camera, `kind` — the store's own when not given, so a look asked for
+   * while the overhead is up stays the overhead.
+   *
+   * A camera not given is read, never written back: the picture's view stops
+   * the picture from an effect's teardown, where Svelte hands back the
+   * store's value from BEFORE the change that woke it, and writing that back
+   * undid the `v` that had just chosen the overhead. */
+  setPicture(on: boolean, lookMdeg: number, kind?: PictureKind): void {
+    if (kind !== undefined) this.picture.kind = kind;
+    const camera = this.picture.kind;
+    const changed =
+      on !== this.picture.on || lookMdeg !== this.picture.lookMdeg || camera !== this.picture.sentKind;
     this.picture.on = on;
     this.picture.lookMdeg = lookMdeg;
     if (!on) this.picture.clear();
-    if (changed) this.client.send(pictureCommand(on, lookMdeg));
+    if (changed) {
+      this.picture.sentKind = camera;
+      this.client.send(pictureCommand(on, lookMdeg, camera));
+    }
   }
 
-  /** A helm order from the picture's arrow keys (doc 21 cut G.3c): a
-   * `HEADING` line sent as a typed one, without the echo. */
+  /** An order from the picture's keys (doc 21 cuts G.3c, G.12c): the
+   * `HEADING` of a turn, and the `SPEED`, `FIRE` and `LOCK` lines of §7.3's
+   * keys, each sent as a typed one, without the echo. */
   helm(line: string): void {
     if (!this.client.sendLine(line)) {
       this.#localNotice("Not connected — command dropped.");

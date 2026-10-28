@@ -162,6 +162,7 @@ pub mod market;
 pub mod mill;
 pub mod orders;
 pub mod passage;
+pub mod passenger;
 /// Doc 19 cut A.4: the reach premium on a port's demand-side bids (doc 19 §6).
 pub mod price;
 pub mod proceeds;

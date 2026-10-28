@@ -22,8 +22,9 @@ use serde::Serialize;
 
 // Declaration capacity for the full composed roster, independent of each
 // invocation's unchanged read, row and encoding budgets below.
-pub const MAX_OWNER_READ_SERVICES: usize = 32;
-pub const MAX_OWNER_READ_GRANTS: usize = 32;
+// The launch roster with scoped passenger facts uses 33 services and 34 grants.
+pub const MAX_OWNER_READ_SERVICES: usize = 64;
+pub const MAX_OWNER_READ_GRANTS: usize = 64;
 pub const MAX_OWNER_READ_REQUEST_BYTES: usize = 16 * 1024;
 pub const MAX_OWNER_READ_RESULT_BYTES: usize = 1024 * 1024;
 pub const MAX_OWNER_READS: u16 = 256;

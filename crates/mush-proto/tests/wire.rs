@@ -5,8 +5,9 @@
 
 use mush_proto::{
     ClientCaps, ClientCommand, ClientKind, Color, ColorDepth, Envelope, ExitRef, InputMode,
-    NarrativeKind, ObjRef, OutputEvent, PROTO_VERSION, PanelFrameKind, ProjectedCommitToken,
-    PromptSpec, Query, RichText, RoomView, Span, Style, ViewEnvelope, WhoEntry,
+    NarrativeKind, ObjRef, OutputEvent, PROTO_VERSION, PanelFrameKind, PictureKind,
+    ProjectedCommitToken, PromptSpec, Query, RichText, RoomView, Span, Style, ViewEnvelope,
+    WhoEntry,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -242,10 +243,12 @@ fn roundtrip_every_client_command_variant() {
         ClientCommand::Picture {
             on: true,
             look_mdeg: -30_000,
+            kind: PictureKind::Cockpit,
         },
         ClientCommand::Picture {
             on: false,
             look_mdeg: 0,
+            kind: PictureKind::Overhead,
         },
         ClientCommand::Resume { last_seq: 4180 },
         ClientCommand::Ack {

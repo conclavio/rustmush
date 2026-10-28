@@ -1341,6 +1341,60 @@ Depends on D.5 (`kernel_command_named`). Gateway: no. Packs: none. Hash: no. Hel
 
 Decided 2026-10-02: docs/design/17-unit-minds.md (from the proposal docs/design/proposals/unit-minds.md, 1125c834, with the owner's rulings of the same day: the seal is per sortie, the OOC sim crosses no IC boundary and carries exactly the character's IC minds at no cost, only a character principal (human- or AI-played) may ORDER and a mind never, player minds fly NPC hulls under licence). Its build order M1a, M1b, M2 to M8 is doc 17 section 22; the cuts are ledgered in a 17b when the first launches; cut AP precedes M1a, which needs no Rhai.
 
+### Playtest 2026-10-27: the blue side that never shot back — a range, not a bug
+
+Investigated 2026-10-27 on dev2 (conclav.io, main `128197e7`, read-only: the journal since the
+18:37 UTC restart, the match tape under `mod:tacsim:log:match.4:*`, the match records
+`mod:tacsim:tacsim:match:*`, the unit records `mod:tactics:unit:*` and the rendered `mushd.toml`),
+then in the tree at `5ff1ac2c`. **Verdict: no code or default bug.** The owner's match was a
+**range**, and a range's targets neither move, sense nor shoot by design (16b cut O.3, N13;
+`help simulator`, "The range"). Nothing is fixed and nothing is deployed.
+
+**What the records say.**
+
+- The one match of the session is `match_id=4` (`SIM START` 18:47:50, `Running` 18:48:00, ended
+  18:56:19 `Elimination { winner: Red }` at 499,250 arena ms). Its record carries
+  `mode = "range"`: red `[89]` with the owner seated, blue `[93, 94, 95, 96]` with no pilot — the
+  shape `SIM RANGE 4` then `SIM START` leaves. Matches 1 and 2 (2026-10-22/23) were ranges too;
+  match 3 was the session's one skirmish, and its single blue fill hull sealed at Class I and drove
+  under orders.
+- Blue's four pods field `tacsim.unit.target_mk1` for a range (`lobby::fit_fielded_units`, the O.3
+  arm): the unit records of 93 to 96 are `target_mk1` version 1 with one component, `power`, and
+  `max_speed_cms: 0`; the other eight roster tanks are `line_tank` version 4 with cannon, core,
+  machine gun, power and visual sensor. No sensor, so `perception::runs_a_sweep` is false and the
+  targets never detect; no weapon, so no fire channel and no rule; no mobility, so no motion; no
+  core, so the seal reads Class 0 (the ROM) — the tape's five `mind_sealed` lines are the owner at
+  Class I and four targets at Class 0 with no principal.
+- The tape bears it out: every `detected` (4), `classified` (4), `locked` (10) and `fired` (126)
+  line is unit 89's; the four blue rows of every `position_summary` from 5 s to 485 s are the
+  authored muster cells at heading 270,000; blue journals only `startup` and `power_online` (the
+  ROM answers its startup, so a target powers up like a tank) and then the hits it takes. The owner
+  killed all four, which is the range's own end.
+- Nothing of G.12 is in it. The master gate is read only under `Controller::Pilot`
+  (`arena/conditions.rs`, the `gated` test), so a fill hull is never held; the owner's own 126
+  rounds went out `by: "cond"` on slot 2 — a standing `FIRE … WHEN` rule under the default weapons
+  free (Q-21-9) — so the gate was at free and worked. `[tacsim.match].ai_fill = true` on dev2 plays
+  no part on a range ("the machines fill no pod on a range").
+- Two other things the journal shows are unrelated: the boot's `mind revision quarantined;
+  collection disabled (retained-tape-unreadable)` disables the Roll owner's collection of mind
+  revisions, not the running of minds (the owner's Standard Doctrine sealed and fired); and the
+  range mode cannot have leaked into the lobby across the 18:37 restart — the centre is not in the
+  durable store, every return to `Idle` clears `mode` and `range_targets` (`lobby::release_rows`),
+  and boot leaves the centre `Idle` (16b cut F.1).
+
+**Why it read as a fight.** From the seat a range looks like a match: the targets classify as blue
+contacts `BA` to `BD`, power up in the first ten seconds, take hits and die; the only places that say
+*range* are the `SIM RANGE` reply (`Range set: 4 targets stand on the blue side; …`), `SIM STATUS`'s
+`mode: range` line and the ring's ` [range]` tag after the fact. For a fight against the machines on
+dev2, `SIM START` alone fields the larger side's count (one against one) and `SIM AI 4` four;
+`SIM MODE skirmish` leaves a range that was set by mistake. Whether the seat itself should say so is
+`Q-PT1` below.
+
+**State left on dev2.** Tanks 93 to 96 stand as wrecked `target_mk1` records (hull `wreck`, two
+turrets `destroyed`) — the finished match's evidence, which the next claim on the terminal centre,
+`@arena/reset`, the last leave or a boot puts back to `line_tank` at spec (`reset_stock_tanks`, 16b
+cut Q.8). Expected; nothing to repair.
+
 ## 5. Open questions for the owner
 
 Each has a default, and the build proceeds on the default unless the owner says otherwise before the cut
@@ -1465,6 +1519,7 @@ debts, plus the four feature choices that change the most.
 | Q-AO1 | How is a knob's default chosen when runs disagree? (raised by cut AO's entry) | A behaviour stays on by default only when its own reading line shows it doing what it is for (the re-approach reaching its wait, the lattice refusing fewer lines) and its pooled figure on is not below its figure off; otherwise it ships off and stays a knob. Built on this default (AO.3): the re-approach reached its wait in 11 of 31 back-offs against the 16 its line required and ships off (`[arena] reapproach = false`, still a key); the lattice refused 6.9 per cent of `FIRE` lines against 15.9 off at an equal 1,500 ms shot gap and stays on; no figure was below its figure off. | AO, open |
 | Q-AO2 | How many matches make a figure? | Thirty, three runs of ten pooled, for the default; ten for an ablation; each printed with a 95 per cent Wilson interval, and no difference called inside overlapping intervals. Built on this default (AO.3): three default runs read 2, 4 and 6 of 10, pooled 12 of 30 (25 to 58 per cent); the re-approach off and the lattice off 3 of 10 each (11 to 60); nothing called; every figure of the two win-rate lanes prints its `WIN RATE INTERVAL`, and the pool lane refuses runs flown with different knobs. | AO, open |
 | Q-AO3 | Where may the opening hold? | Where at least the longest back-off the bot can order (to 650 m of a plot from about 420 m) fits behind it on passable ground (on the side away from the other entry, along the line between the two entries), read from `VIEW BRIEF`; when the muster has no such ground the bot steps inward toward the other entry until it does. Built on this default (AO.1), with a back-off knob on: 290 m wanted (a 30 m shortfall taken as enough), up to three legs in along the line between the entries, each ended by a stop and a further `VIEW BRIEF`; from the shipped muster one leg, the first contact then a median 137 s after power against AN's 158 s. | AO, open |
+| Q-PT1 | Should a range read as a range from the seat, not only from `SIM STATUS`? (raised by the 2026-10-27 playtest note in §4: four range targets took a fight's shape — blue contacts that power up, take hits and die — and the owner reported the blue side never shooting back) | Default: yes, cheaply — the frame carries the match mode and the cockpit (text, TUI and picture) shows `RANGE` beside the tempo while it is one; a target's contact row stays a blue contact (the range is also where the lock and scope keys are learned). Not built; held for the owner. | open |
 
 ---
 

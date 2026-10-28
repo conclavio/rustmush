@@ -2862,6 +2862,11 @@ mod fixture {
                 off: false,
                 ..m6_frame(&["Sniper", "Line"])
             }),
+            // **Doc 21 cut G.12a** (§7.3): weapons free, and the line tank's
+            // ceilings — 54 kph ahead, 27 astern (`SPEED`'s refusal's figures).
+            weapons_free: true,
+            max_speed_cms: 1_500,
+            reverse_cms: 750,
         }
     }
 
@@ -4815,6 +4820,42 @@ async fn d2_fire_takes_the_short_name_and_weaponstatus_advertises_it() {
         said.contains("no weapon called `railgun`") && !said.contains("refused."),
         "a weapon that is not there has none to name: {said}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 21 §7.3 (2026-10-27) — the picture's keys order QUIET
+// ---------------------------------------------------------------------------
+
+/// **`HEADING … QUIET` and `SPEED … QUIET` order without an acknowledgement**
+/// (doc 21 §7.3, the owner's first playtest of G.12: a held `w` read `Making 54
+/// kph.` in the comms every quarter second). The word is case-insensitive and
+/// trailing; a refusal — the usage, the ceilings — is still spoken, and the
+/// plain verb still acknowledges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quiet_orders_are_taken_without_an_acknowledgement() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the tank never came online");
+
+    let said = rig.say(0, "speed 20 QUIET");
+    assert!(!said.contains("Making"), "{said}");
+    assert!(!said.contains("SPEED <kph>"), "{said}");
+    let said = rig.say(0, "heading 90 quiet");
+    assert!(!said.contains("Steering"), "{said}");
+    assert!(!said.contains("HEADING <0-359>"), "{said}");
+    // Refusals speak whichever way the order came.
+    let said = rig.say(0, "speed 999 quiet");
+    assert!(said.contains("That unit makes 54 kph ahead"), "{said}");
+    let said = rig.say(0, "heading 400 quiet");
+    assert!(said.contains("HEADING <0-359>"), "{said}");
+    let said = rig.say(0, "heading quiet");
+    assert!(said.contains("HEADING <0-359>"), "{said}");
+    // The plain verb is as it was.
+    let said = rig.say(0, "speed 54");
+    assert!(said.contains("Making 54 kph."), "{said}");
+    let said = rig.say(0, "heading 180");
+    assert!(said.contains("Steering to 180°."), "{said}");
 }
 
 // ---------------------------------------------------------------------------
@@ -15772,6 +15813,184 @@ async fn m1b4_fire_off_clears_and_says_so() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Doc 21 cut G.12a: the master gate and the volley (§7.3)
+// ---------------------------------------------------------------------------
+
+/// **A frame the arena could have sent for a volley** (doc 21 cut G.12a):
+/// pilot 0's held frame with power online and the golden scene's contacts,
+/// lock and weapons — the cannon ready with a band on the lock, the machine
+/// gun (reach 400 m) with none — and the gun made ready, so the reach alone
+/// decides it.
+fn g12a_volley_frame(rig: &Rig) -> tacsim::arena::step::Frame {
+    let scene = fixture::frame();
+    let mut frame = rig.held_frame(0);
+    frame.notices.clear();
+    frame.catchup = None;
+    frame.power = tacsim::arena::state::Power::Online;
+    frame.contacts = scene.contacts.clone();
+    frame.lock = scene.lock;
+    frame.weapons = scene.weapons.clone();
+    for weapon in &mut frame.weapons {
+        weapon.ready = true;
+        weapon.ready_in_ms = 0;
+    }
+    assert_eq!(
+        frame
+            .weapons
+            .iter()
+            .map(|weapon| (weapon.id.as_str(), weapon.range_band.is_some()))
+            .collect::<Vec<_>>(),
+        vec![("cannon", true), ("machine_gun", false)],
+        "the roster: the cannon reaches the lock, the machine gun does not"
+    );
+    frame
+}
+
+/// **Bare `FIRE ALL` is one volley** (doc 21 cut G.12a, §7.3; the `g` key):
+/// each weapon in reach fires as `FIRE <weapon>` does and each other one says
+/// why it did not, in the roster's order, one line a weapon; nothing in
+/// reach is the first weapon's out-of-reach refusal; no lock is `FIRE ALL`'s
+/// no-lock refusal; and `FIRE ALL OFF` / `FIRE ALL WHEN …` keep their arms.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn g12a_fire_all_fires_each_weapon_in_reach_once_and_says_the_rest() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+
+    // No lock on the arena's own first frame.
+    assert_eq!(
+        rig.say(0, "fire all"),
+        format!("FIRE ALL refused. {}", cockpit::NO_LOCK)
+    );
+
+    let frame = g12a_volley_frame(&rig);
+    rig.push_frame(0, frame.clone());
+    let said = rig.say(0, "FIRE ALL");
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|line| !line.starts_with("[panel "))
+        .collect();
+    assert_eq!(lines.len(), 2, "one line a weapon: {said}");
+    assert_eq!(lines[0], "Firing cannon.", "{said}");
+    assert!(
+        lines[1].starts_with("FIRE machine_gun refused. Out of reach: the lock is ")
+            && lines[1].ends_with(" m off and it reaches 400 m."),
+        "the out-of-reach gun is skipped with its line: {said}"
+    );
+    assert!(lines[1].starts_with("FIRE machine_gun refused. "));
+    assert!(lines[1].contains(cockpit::OUT_OF_REACH));
+
+    // A cycling cannon is skipped with FIRE's own words; with nothing left that
+    // fires, the volley is refused in the first in-reach weapon's words.
+    let mut cycling = frame.clone();
+    for weapon in &mut cycling.weapons {
+        if weapon.id == "cannon" {
+            weapon.ready = false;
+            weapon.ready_in_ms = 2_000;
+        }
+    }
+    rig.push_frame(0, cycling);
+    assert_eq!(
+        rig.say(0, "fire all"),
+        "FIRE cannon refused. Still cycling: 2 s to go."
+    );
+
+    // Nothing in reach: the first weapon's out-of-reach line.
+    let mut far = frame.clone();
+    for weapon in &mut far.weapons {
+        weapon.range_band = None;
+    }
+    rig.push_frame(0, far);
+    let said = rig.say(0, "fire all");
+    assert!(
+        said.starts_with("FIRE cannon refused. Out of reach: the lock is ")
+            && said.ends_with(" m off and it reaches 3000 m."),
+        "{said}"
+    );
+
+    // The other ALL forms keep their own arms.
+    assert_eq!(rig.say(0, "fire all off"), cockpit::CLEARED_ALL);
+}
+
+/// **Bare `FIRE HOLD` / `FIRE FREE` and the hold rule parse apart** (doc 21
+/// cut G.12a): the bare words are the gate's two unconditional replies, the
+/// same on a repeat; `FIRE cannon HOLD WHEN …` is still a hold rule (its
+/// `Queued:` readback, never the gate's line); and `WEAPONSTATUS` and `MIND
+/// RULES` say the gate only while the held frame says weapons hold.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn g12a_bare_fire_hold_and_a_hold_rule_parse_apart() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    assert_eq!(
+        cockpit::WEAPONS_HOLD,
+        "Weapons hold: your rules stand but fire only when you say."
+    );
+    assert_eq!(cockpit::WEAPONS_FREE, "Weapons free.");
+    assert_eq!(rig.say(0, "fire hold"), cockpit::WEAPONS_HOLD);
+    assert_eq!(rig.say(0, "FIRE HOLD"), cockpit::WEAPONS_HOLD, "idempotent");
+    assert_eq!(rig.say(0, "FIRE FREE"), cockpit::WEAPONS_FREE);
+    assert_eq!(
+        rig.say(0, "fire  free "),
+        cockpit::WEAPONS_FREE,
+        "idempotent"
+    );
+    let said = rig.say(0, "FIRE cannon HOLD WHEN rounds>0");
+    assert!(said.starts_with("Queued:"), "a hold rule: {said}");
+    assert!(
+        !said.contains(cockpit::WEAPONS_HOLD) && !said.contains(cockpit::WEAPONS_FREE),
+        "{said}"
+    );
+
+    // The listings: nothing at weapons free, one line at weapons hold.
+    let mut frame = rig.held_frame(0);
+    frame.notices.clear();
+    assert!(frame.weapons_free, "every seat starts weapons free");
+    rig.push_frame(0, frame.clone());
+    assert!(
+        !rig.say(0, "weaponstatus")
+            .contains(cockpit::WEAPONS_HOLD_LINE)
+    );
+    assert!(
+        !rig.say(0, "mind rules")
+            .contains(cockpit::WEAPONS_HOLD_LINE)
+    );
+    frame.weapons_free = false;
+    rig.push_frame(0, frame);
+    let said = rig.say(0, "weaponstatus");
+    assert!(said.contains(cockpit::WEAPONS_HOLD_LINE), "{said}");
+    let said = rig.say(0, "mind rules");
+    assert!(said.contains(cockpit::WEAPONS_HOLD_LINE), "{said}");
+}
+
+/// **`FIRE HOLD` lands at a pulse and the frame says so** (doc 21 cut G.12a;
+/// G.12's acceptance, "`f` flips `weapons_free` in the frame"): the arena's
+/// own next frame carries `weapons_free: false`, and `FIRE FREE` puts it
+/// back; the keyframe publishes the three new fields.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g12a_fire_hold_flips_weapons_free_on_the_arenas_frame() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    assert!(rig.held_frame(0).weapons_free, "free at the start (Q-21-9)");
+    assert_eq!(rig.say(0, "fire hold"), cockpit::WEAPONS_HOLD);
+    m1b4_until(&mut rig, "the arena holds the gate", |rig| {
+        rig.frame(0).is_some_and(|frame| !frame.weapons_free)
+    })
+    .await;
+    let payload = cockpit::status_frame(fixture::MATCH, &rig.held_frame(0));
+    assert_eq!(payload["weapons_free"], false, "{payload}");
+    assert_eq!(payload["max_speed_kph"], 54, "{payload}");
+    assert_eq!(payload["reverse_kph"], 27, "{payload}");
+    m1b4_next_second(&mut rig).await;
+    assert_eq!(rig.say(0, "fire free"), cockpit::WEAPONS_FREE);
+    m1b4_until(&mut rig, "the arena frees the gate", |rig| {
+        rig.frame(0).is_some_and(|frame| frame.weapons_free)
+    })
+    .await;
+}
+
 /// **The two sentences render from their fields** (17b cut M1b.4; D-UM-14):
 /// `notice_line` over a slot shot with and without a contact (the first
 /// letter upper-cased on `cannon` and `machine_gun`), every `HeldWhy` with
@@ -16150,9 +16369,11 @@ async fn m1b4_fire_when_arms_slots_in_the_arenas_numbers_and_the_count_is_one_se
         rig.say(0, "fire mg"),
         format!("FIRE machine_gun refused. {}", cockpit::NO_LOCK)
     );
+    // Doc 21 cut G.12a: bare `FIRE ALL` is the volley now, refused for want
+    // of a lock in `FIRE`'s own words (it was an unknown weapon `all`).
     assert_eq!(
         rig.say(0, "fire all"),
-        "That unit carries no weapon called `all`."
+        format!("FIRE ALL refused. {}", cockpit::NO_LOCK)
     );
     assert_eq!(
         rig.say(0, "fire m"),
@@ -18454,5 +18675,188 @@ fn m6_frame(names: &[&str]) -> tacsim::arena::step::FrameMind {
         core_class: CoreClass::II,
         switch_at_ms: None,
         off: false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Doc 21 cut G.14 — one health word a contact
+// ---------------------------------------------------------------------------
+
+/// **Doc 21 cut G.14**: each keyframe contact carries `health` — the one word
+/// the picture gauges the hull by — summed from the bands the platform already
+/// holds, and `null` wherever it holds no reading. On the fixture scene BA's
+/// `ggyrd` (a red track, a destroyed turret, the fatal hull green) reads
+/// `crippled`; RB (classified, never read), X3 and X4 (unidentified) read
+/// `null`. The word follows the reading: all green `intact`, a yellow
+/// `damaged`, a destroyed engine `crippled` (the chassis survives it), the
+/// hull destroyed `wreck`; an own kill is `wreck` with no reading at all; and
+/// an unarmed hull, whose rows carry no `reads_dead`, reads the wreck off the
+/// same destroyed hull. Never a number: the key is a string or null on every
+/// row, and nothing else about the contact moves.
+#[test]
+fn g14_each_contact_carries_one_health_word_or_null() {
+    use tacsim::arena::condition::{Condition, ConditionBand, ConditionTier};
+    use tacsim::arena::perception::FrameCondition;
+
+    let contact = |frame: &tacsim::arena::step::Frame, designator: &str| -> serde_json::Value {
+        cockpit::status_frame(fixture::MATCH, frame)
+            .get("contacts")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.get("designator") == Some(&serde_json::json!(designator)))
+                    .cloned()
+            })
+            .unwrap_or_else(|| panic!("{designator} is on the frame"))
+    };
+    let health = |frame: &tacsim::arena::step::Frame, designator: &str| {
+        contact(frame, designator)
+            .get("health")
+            .cloned()
+            .unwrap_or_else(|| panic!("{designator} carries the key"))
+    };
+    let frame = fixture::frame();
+    assert_eq!(health(&frame, "BA"), serde_json::json!("crippled"));
+    assert_eq!(
+        health(&frame, "RB"),
+        serde_json::Value::Null,
+        "classified, never read"
+    );
+    assert_eq!(
+        health(&frame, "X3"),
+        serde_json::Value::Null,
+        "unidentified"
+    );
+    assert_eq!(
+        health(&frame, "X4"),
+        serde_json::Value::Null,
+        "unidentified"
+    );
+
+    // The word follows BA's reading.
+    let all = |band: ConditionBand| {
+        (0..5).fold(Condition::default(), |bands, index| {
+            bands.with_band(index, band)
+        })
+    };
+    let read = |bands: Condition| {
+        let mut frame = fixture::frame();
+        let ba = frame
+            .contacts
+            .iter_mut()
+            .find(|held| held.designator.to_string() == "BA")
+            .expect("BA");
+        ba.condition = Some(FrameCondition {
+            table: 0,
+            bands,
+            age_ms: 2_000,
+        });
+        frame
+    };
+    assert_eq!(
+        health(&read(all(ConditionBand::Green)), "BA"),
+        serde_json::json!("intact")
+    );
+    assert_eq!(
+        health(
+            &read(all(ConditionBand::Green).with_band(2, ConditionBand::Yellow)),
+            "BA"
+        ),
+        serde_json::json!("damaged")
+    );
+    assert_eq!(
+        health(
+            &read(all(ConditionBand::Green).with_band(0, ConditionBand::Destroyed)),
+            "BA"
+        ),
+        serde_json::json!("crippled"),
+        "the engine gone: the chassis survives it"
+    );
+    assert_eq!(
+        health(
+            &read(all(ConditionBand::Green).with_band(3, ConditionBand::Red)),
+            "BA"
+        ),
+        serde_json::json!("crippled"),
+        "a red track"
+    );
+    let hull_gone = read(all(ConditionBand::Green).with_band(1, ConditionBand::Destroyed));
+    assert_eq!(
+        health(&hull_gone, "BA"),
+        serde_json::json!("wreck"),
+        "the hull is the chassis's fatal section"
+    );
+
+    // The own kill: `wreck` with no reading at all.
+    let mut killed = fixture::frame();
+    for held in &mut killed.contacts {
+        if held.designator.to_string() == "BA" {
+            held.condition = None;
+            held.fatal = None;
+            held.reads_dead = Some(true);
+        }
+    }
+    killed.scan_tables.clear();
+    let ba = contact(&killed, "BA");
+    assert_eq!(ba.get("health"), Some(&serde_json::json!("wreck")));
+    assert_eq!(ba.get("condition"), Some(&serde_json::Value::Null));
+
+    // An unarmed hull: no `reads_dead` on any row, and the same reading reads
+    // the same wreck through the fatal words.
+    let mut unarmed = hull_gone;
+    unarmed.weapons.clear();
+    unarmed.odds.clear();
+    for held in &mut unarmed.contacts {
+        held.reads_dead = None;
+    }
+    let ba = contact(&unarmed, "BA");
+    assert!(
+        !ba.as_object()
+            .expect("a contact")
+            .contains_key("reads_dead")
+    );
+    assert_eq!(ba.get("health"), Some(&serde_json::json!("wreck")));
+
+    // The pure summary, and its words.
+    assert_eq!(Condition::default().tier(0), ConditionTier::Intact);
+    assert_eq!(
+        all(ConditionBand::Yellow).tier(0b10),
+        ConditionTier::Damaged,
+        "a fatal mask over sections that are not destroyed is nothing"
+    );
+    assert_eq!(
+        all(ConditionBand::Destroyed).tier(0),
+        ConditionTier::Crippled
+    );
+    assert_eq!(
+        all(ConditionBand::Destroyed).tier(0b1_0000),
+        ConditionTier::Wreck
+    );
+    assert_eq!(
+        [
+            ConditionTier::Intact,
+            ConditionTier::Damaged,
+            ConditionTier::Crippled,
+            ConditionTier::Wreck
+        ]
+        .map(|tier| tier.as_str()),
+        ["intact", "damaged", "crippled", "wreck"]
+    );
+
+    // Never a number, on any row of any hull.
+    for frame in [&frame, &killed, &unarmed] {
+        for row in cockpit::status_frame(fixture::MATCH, frame)
+            .get("contacts")
+            .and_then(serde_json::Value::as_array)
+            .expect("contacts")
+        {
+            assert!(
+                matches!(
+                    row.get("health"),
+                    Some(serde_json::Value::Null | serde_json::Value::String(_))
+                ),
+                "{row}"
+            );
+        }
     }
 }

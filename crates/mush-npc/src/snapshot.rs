@@ -75,6 +75,7 @@ pub enum SnapshotValidationError {
     CapabilityProfileTooLarge,
     SnapshotTooLarge,
     InvalidCommandGuidance,
+    InvalidRoleContext,
     InvalidMemoryReferences,
 }
 
@@ -97,6 +98,7 @@ impl fmt::Display for SnapshotValidationError {
             Self::InvalidCommandGuidance => {
                 "NPC command guidance exceeds its bounds or contains an invalid command name"
             }
+            Self::InvalidRoleContext => "NPC public role context exceeds its byte limit",
             Self::InvalidMemoryReferences => {
                 "NPC recalled memory contains invalid reference metadata"
             }
@@ -277,6 +279,10 @@ pub struct TurnSnapshot {
     /// asker. The player executes these commands; these are not NPC tools.
     #[serde(default)]
     pub command_guidance: Vec<CommandGuidance>,
+    /// Public facts about this NPC's current role, supplied by its named
+    /// interface providers. Never includes an asker's private service reply.
+    #[serde(default)]
+    pub role_context: String,
 }
 
 /// One current, asker-visible command reference, resolved on the world loop.
@@ -303,6 +309,9 @@ impl TurnSnapshot {
     pub fn validate(&self) -> Result<(), SnapshotValidationError> {
         validate_scene(&self.scene)?;
         validate_command_guidance(&self.command_guidance)?;
+        if self.role_context.len() > crate::interface::MAX_ROLE_CONTEXT_BYTES {
+            return Err(SnapshotValidationError::InvalidRoleContext);
+        }
         MemoryReferences::from_recalled(&self.recalled)
             .ok_or(SnapshotValidationError::InvalidMemoryReferences)?;
         if let Some(profile) = &self.agent_profile {
@@ -613,6 +622,7 @@ mod tests {
             seed: 1,
             interfaces: Vec::new(),
             command_guidance: Vec::new(),
+            role_context: String::new(),
         }
     }
 
@@ -669,6 +679,13 @@ mod tests {
             snap.validate(),
             Err(SnapshotValidationError::SnapshotTooLarge)
         );
+
+        let mut snap = snapshot();
+        snap.role_context = "x".repeat(crate::interface::MAX_ROLE_CONTEXT_BYTES + 1);
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::InvalidRoleContext)
+        );
     }
 
     #[test]
@@ -677,7 +694,9 @@ mod tests {
         wire.as_object_mut()
             .expect("object")
             .remove("command_guidance");
+        wire.as_object_mut().expect("object").remove("role_context");
         let decoded: TurnSnapshot = serde_json::from_value(wire).expect("older snapshot");
+        assert!(decoded.role_context.is_empty());
         assert!(decoded.command_guidance.is_empty());
         assert!(decoded.validate().is_ok());
     }

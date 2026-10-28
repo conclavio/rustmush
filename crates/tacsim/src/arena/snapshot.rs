@@ -333,7 +333,12 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// **16:** bounded latest accepted order attribution and cleared-group tombstones.
 /// Record-only metadata, outside state_hash and public mind views. Older formats
 /// are refused; missing authors are never inferred from current seats/leaders.
-pub const SNAPSHOT_FORMAT: u32 = 16;
+/// **17 since doc 21 cut G.12a:** `UnitState` gains `weapons_hold` (the seat's
+/// master gate, folded only when held) and the carried `Arming` enum gains
+/// `WeaponsFree` (a seat's `FIRE HOLD` / `FIRE FREE`, discrete, so it can sit in
+/// `pending`). Format 16 is refused by name before state decode; in-flight
+/// matches restart rather than migrating.
+pub const SNAPSHOT_FORMAT: u32 = 17;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -1430,7 +1435,7 @@ mod tests {
     ///
     /// [`UnitState`] destructured with every field named and no `..`, answering
     /// the names, so the test below can hold the encoded unit's keys to them.
-    fn every_unit_field(unit: &UnitState) -> [&'static str; 45] {
+    fn every_unit_field(unit: &UnitState) -> [&'static str; 46] {
         let UnitState {
             id: _,
             team: _,
@@ -1463,6 +1468,7 @@ mod tests {
             controller: _,
             seal: _,
             card_profile: _,
+            weapons_hold: _,
             unit: _,
             condition: _,
             ready_at_ms: _,
@@ -1512,6 +1518,9 @@ mod tests {
             // 17b cut M5.2: carried on purpose — the active profile and its
             // stamp decide a later card and a refusal.
             "card_profile",
+            // Doc 21 cut G.12a: carried on purpose — the master gate decides a
+            // later shot.
+            "weapons_hold",
             "unit",
             "condition",
             "ready_at_ms",
