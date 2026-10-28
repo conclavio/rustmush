@@ -73,6 +73,7 @@ pub enum Objective {
     #[default]
     Observation,
     CoopEnrolment,
+    SurveyCommission,
     Trade {
         origin: String,
         destination: String,
@@ -100,7 +101,7 @@ impl Objective {
     }
     pub fn check(&self) -> Result<(), String> {
         let valid = match self {
-            Self::Observation | Self::CoopEnrolment => true,
+            Self::Observation | Self::CoopEnrolment | Self::SurveyCommission => true,
             Self::Trade {
                 origin,
                 destination,
@@ -544,6 +545,34 @@ impl QuestIndex {
 pub(super) mod tests {
     use super::*;
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+    pub(crate) fn commission() -> crate::surface::survey::SurveyRecord {
+        crate::surface::survey::SurveyRecord {
+            schema: 1,
+            offer: crate::surface::survey::SurveyKey::parse("ahuna-a").unwrap(),
+            revision: 1,
+            account: mush_core::AccountId::mint("quest-surveyor", 1).unwrap(),
+            pilot: ObjId(11),
+            sponsor: mush_org::PrincipalId::Organization(mush_org::OrgId(2)),
+            sponsor_account: 0,
+            payee: 1,
+            contract: 0,
+            site: CanonicalId::new("ahuna_port").unwrap(),
+            block: 0,
+            reward_minor: 50_000,
+            accepted_ic: 10,
+            deadline_ic: 604_810,
+            coverage: [u8::MAX; 32],
+            completed: Some(crate::surface::survey::SurveyCompletion {
+                tv: ObjId(12),
+                ordinal: 1,
+                at_ic: 50,
+                at_utc: 50,
+            }),
+            cancelled: None,
+            // Legacy commissions can qualify without gaining retroactive public standing.
+            standing: None,
+        }
+    }
     pub(crate) fn record() -> QuestRecord {
         let npc = ObjId(10);
         let actor = ObjId(11);

@@ -1490,3 +1490,17 @@ writes nothing else; the mint itself posts through the real `@econ/mint`
 surface and the slow key lookup, so the case pins the seeder's answer path on
 every `cargo test` run instead of only the ignored 100 000-entry run.
 """
+
+[[site]]
+path = "crates/tacsim/tests/shard_1/quest_commissions.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+The paid survey quest integration fixture uses economy's test-only
+forget_key_for_tests and set_key_mode_for_tests hooks to evict an already paid
+commission's settlement key from RAM. It preserves the actual persisted key
+document, serves that document through the tick's StoreReadDone completion,
+and verifies that quest recognition waits for the cold receipt. It changes no
+contract, balance, transaction, payment or production ownership permission.
+"""

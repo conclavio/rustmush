@@ -57,6 +57,7 @@ enum SourceObjective {
     #[default]
     Observation,
     CoopEnrolment,
+    SurveyCommission {},
     Trade {
         origin: String,
         destination: String,
@@ -282,6 +283,7 @@ fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkp
     let objective = match source.objective {
         SourceObjective::Observation => Objective::Observation,
         SourceObjective::CoopEnrolment => Objective::CoopEnrolment,
+        SourceObjective::SurveyCommission {} => Objective::SurveyCommission,
         SourceObjective::Trade {
             origin,
             destination,
@@ -629,6 +631,26 @@ mod tests {
         }
         value["entries"][ROLE]["def"]["checkpoints"][0]["objective"]["npc_pack"] =
             "undeclared.station".into();
+        assert!(read(&w, &mush_content::parse_pack(&value.to_string()).unwrap()).is_err());
+    }
+
+    #[test]
+    fn survey_commission_source_keeps_board_selection_open() {
+        let mut w = World::new_minimal();
+        let (_, room, _) = fixture(&mut w);
+        let mut value: serde_json::Value =
+            serde_json::from_str(crate::port::passenger::content::JSON).unwrap();
+        value["entries"][ROLE]["def"]["checkpoints"][0]["objective"] =
+            serde_json::json!({"kind": "survey_commission"});
+        value["entries"][ROLE]["def"]["checkpoints"][0]["detail"] = "".into();
+        let (_, definition) =
+            read(&w, &mush_content::parse_pack(&value.to_string()).unwrap()).unwrap();
+        assert_eq!(
+            definition.checkpoints[0].objective,
+            Objective::SurveyCommission
+        );
+        assert_eq!(definition.checkpoints[0].room, room);
+        value["entries"][ROLE]["def"]["checkpoints"][0]["objective"]["offer"] = "ahuna-a".into();
         assert!(read(&w, &mush_content::parse_pack(&value.to_string()).unwrap()).is_err());
     }
 

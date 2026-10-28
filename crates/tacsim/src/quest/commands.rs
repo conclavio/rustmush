@@ -145,6 +145,21 @@ fn basis_for(
             }
         }
     }
+    if def
+        .checkpoints
+        .iter()
+        .any(|checkpoint| checkpoint.objective == Objective::SurveyCommission)
+    {
+        let rows = match read {
+            Read::Current => crate::port::survey::records(ctx)?,
+            Read::Conversation => store::commission_rows_world(ctx.w)
+                .ok_or("The survey board is still loading. Please ask again shortly.")?
+                .to_vec(),
+        };
+        if !crate::port::survey::quest_available(ctx.w, ctx.actor, &rows) {
+            return Err(UNAVAILABLE.into());
+        }
+    }
     let passage = if def.prerequisite == Prerequisite::PaidPassage {
         let bookings = passage_rows(ctx, read)?;
         Some(
@@ -471,7 +486,7 @@ fn finish(ctx: &mut Ctx<'_>, npc: ObjId, selector: Option<&str>) -> Result<Strin
         );
     }
     if !super::evidence::completion_ready(ctx.w, &row) {
-        return Err("The original trade payments are unavailable or were reversed. Ask again after the receipts finish loading.".into());
+        return Err("The original payments are unavailable or were reversed. Ask again after the receipts finish loading.".into());
     }
     store::stage_finish(ctx, &row)?;
     Ok(format!(

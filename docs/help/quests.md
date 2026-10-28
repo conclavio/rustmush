@@ -78,6 +78,34 @@ practice needs no paid survey commission or finite commission-board slot.
 
 After any invitation's checks, return to its giver and use `+quest/finish`.
 
+## Work worth signing
+
+After finishing **Wide first, then close**, Rosalind can offer a follow-up about
+completing paid survey work. At the Exchange, ask:
+
+  +quest/offer Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work
+
+Choose any available job on `+survey`. Read its terms with `+survey <id>`;
+`+survey/accept <id>` previews and `+survey/accept <id> go` files it. Wait for
+funding, then complete fresh soundings of all 256 pockets in its block within
+seven IC days. `help mining` explains equipment, coverage and quiet soundings.
+An unfinished commission may already exist when you accept the quest. The
+commission must finish after quest acceptance; old completed work cannot count
+even if its payment arrives later.
+
+Once the ordinary commission payment settles, return to the Exchange and use:
+
+  +quest/check Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work
+  +quest/finish Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work
+
+The board has four shared, finite jobs. This invitation reserves none of them,
+and is unavailable when there is no eligible unfinished or available commission.
+Partial work, cancelled jobs and refunds cannot satisfy it. Your chart stays
+private. The quest adds Rosalind's once-only personal relationship bonus;
+Occator's ordinary payment and reputation effects are separate. Commissions
+remain available without either of her quests. Abandoning the quest leaves any
+commission in place; cancelling one uses the ordinary `+survey/cancel` command.
+
 ## People who keep the port moving
 
 Ma also offers an independent introduction to two people at Ceres: Dov at the
@@ -235,6 +263,7 @@ checkpoint objectives use these source shapes:
 {"kind": "paid_passage", "npc_pack": "tacsim.passengers.ceres", "npc": "npc.nadia_okafor_sato", "origin": "ceres", "destination": "stickney"}
 {"kind": "survey", "mode": "scan"}
 {"kind": "survey", "mode": "sound"}
+{"kind": "survey_commission"}
 ```
 
 Each still needs its title, instructions and bound `room_pack`/`room_entry`:
@@ -259,6 +288,16 @@ booking may already exist. Acceptance rechecks availability, and recording or
 finishing rechecks the authoritative booking and payment. A changed booking,
 unsettled or reversed fare, another captain's trip or old arrival cannot grant
 completion. Declining or abandoning the quest never mutates the passage.
+
+A `survey_commission` objective accepts any real commission from the finite
+survey board. Its room is where the player reports the work. It requires all
+256 pockets completed by this character after quest acceptance and the exact
+settled reward receipt. An unfinished commission may predate the quest. The
+service rechecks the authoritative commission and unreversed payment when
+recording or finishing; a changed row, partial work, refund, another pilot's
+work or old completion cannot grant credit. The invitation checks current board
+availability without reserving a job. It neither reveals private chart data nor
+changes ordinary commission payments or standing.
 
 Up to eight quest definitions may bind to one NPC, within a 64 KiB catalog.
 Definitions merge by full pack/entry key and preserve other packs' definitions.
@@ -286,5 +325,7 @@ replacing her earlier quest or resetting her journey.
 introductions without changing any station NPC's identity or ordinary services.
 `tacsim.quests.safe_passage@1` requires Ceres v4 and Nadia's passenger pack v1;
 it adds Ma's passage favor to her existing catalog.
+`tacsim.quests.survey_work@1` requires Ceres v4 and the first-steps pack v1;
+it adds Rosalind's paid-work follow-up without changing the commission board.
 
 See also: `help passengers`, `help npc`.

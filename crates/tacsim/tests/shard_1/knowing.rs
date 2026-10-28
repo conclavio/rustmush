@@ -49,6 +49,9 @@ mod quest_contacts;
 #[path = "quest_passages.rs"]
 mod quest_passages;
 
+#[path = "quest_commissions.rs"]
+mod quest_commissions;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 

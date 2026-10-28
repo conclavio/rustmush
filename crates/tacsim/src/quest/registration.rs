@@ -84,6 +84,7 @@ pub(crate) fn provider(
                 passengers: families.passengers.clone(),
                 passenger_index: families.passenger_index.clone(),
                 survey: families.quest_survey_evidence.clone(),
+                commissions: families.surveys.clone(),
             },
         )?;
     }
