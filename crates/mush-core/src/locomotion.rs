@@ -2,9 +2,14 @@
 //!
 //! An admission records the current route, Basic lock and real MoveAttempt
 //! decision for one actual preparation. It grants no publication capability:
-//! there is no object image, movement, command dispatch, receipt or observer
-//! completion here. Future movement composition must also preserve command
-//! gates and the existing post-movement narrative and observer contract.
+//! there is no object image, movement, receipt or observer completion here.
+//! Explicit command capture records the actual dispatch gates and route
+//! without installing a production movement path. Future movement composition
+//! must preserve the existing post-movement narrative and observer contract.
+
+pub(crate) mod dispatch;
+pub(crate) mod dispatch_observation;
+pub use dispatch::CapturedLocomotion;
 
 use crate::action::{ActionInvocation, CommitToken};
 use crate::action_state::TypedStateLens;
@@ -271,3 +276,6 @@ pub(crate) fn recheck(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod dispatch_tests;

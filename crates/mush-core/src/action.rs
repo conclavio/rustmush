@@ -4990,6 +4990,7 @@ impl ActionProviderRegistry {
             action,
             resolved.invocation(),
             Some(resolved),
+            None,
             commit_token,
             state,
             resolution_keys,
@@ -5018,6 +5019,7 @@ impl ActionProviderRegistry {
             action,
             resolved.invocation(),
             Some(resolved),
+            None,
             commit_token,
             state,
             resolution_keys,
@@ -5074,6 +5076,7 @@ impl ActionProviderRegistry {
             action,
             invocation,
             None,
+            None,
             commit_token,
             state,
             resolution_keys,
@@ -5083,11 +5086,42 @@ impl ActionProviderRegistry {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_captured_locomotion(
+        &self,
+        capture: crate::locomotion::CapturedLocomotion,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        owners: ComposedPreparationServices<'_>,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            PreparedAuthoritativeAction,
+        ),
+        ActionProviderPrepareError,
+    > {
+        self.prepare_authoritative_invocation_seeded_inner(
+            action,
+            invocation,
+            None,
+            Some(capture),
+            commit_token,
+            state,
+            resolution_keys,
+            Some(owners),
+            |_| Ok(()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn prepare_authoritative_invocation_seeded_inner<F>(
         &self,
         action: &DefinitionRef,
         invocation: &ActionInvocation,
         resolved: Option<&ResolvedActionInvocation>,
+        capture: Option<crate::locomotion::CapturedLocomotion>,
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
@@ -5122,6 +5156,9 @@ impl ActionProviderRegistry {
         );
         prepare_context =
             prepare_context.with_registered_transaction(&read_base, entry.registration_ordinal());
+        if let Some(capture) = &capture {
+            prepare_context = prepare_context.with_captured_locomotion(capture);
+        }
         if let Some((registry, world, _, _, hooks, move_hooks)) = owners {
             prepare_context = prepare_context
                 .with_carry_hooks(hooks)
@@ -5182,7 +5219,20 @@ impl ActionProviderRegistry {
         if let Some(error) = prepare_context.owner_error() {
             return Err(ActionProviderPrepareError::Participant(error.clone()));
         }
+        let captured_admission = prepare_context.take_captured_admission();
         drop(prepare_context);
+        let dispatch_observation = match capture {
+            Some(capture) => Some(
+                crate::locomotion::dispatch_observation::BoundDispatchObservation::new(
+                    capture,
+                    invocation.clone(),
+                    action.clone(),
+                    commit_token,
+                    captured_admission.ok_or(crate::participant::ParticipantError::Authority)?,
+                )?,
+            ),
+            None => None,
+        };
         charge_new_operations(&mut queue, root_before_operations, &txn)?;
         self.owner_readiness
             .require_ready(&entry.owner)
@@ -5341,13 +5391,16 @@ impl ActionProviderRegistry {
         eligible_witnesses.dedup();
         let durable_outbox = renumber_durable_outbox(durable_outbox)?;
         let prepared = txn.prepare().map_err(ActionProviderPrepareError::State)?;
-        let prepared = crate::composed::PreparedComposedTxn::new(
+        let mut prepared = crate::composed::PreparedComposedTxn::new(
             prepared,
             owner_images,
             shell_objects,
             read_observations,
             account_observations,
         )?;
+        if let Some(observation) = dispatch_observation {
+            prepared.retain_dispatch(observation)?;
+        }
         Ok((
             prepared,
             PreparedAuthoritativeAction {

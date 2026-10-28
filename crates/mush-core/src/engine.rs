@@ -2843,6 +2843,101 @@ impl Engine {
         )
     }
 
+    /// Dispatch a real line while intercepting its selected ordinary movement.
+    /// Input contexts, aliases, gates and nonmovement handlers still run normally;
+    /// this is not a read-only preview. A captured movement does not relocate or
+    /// announce success. The returned opaque value can only seed the explicit
+    /// captured preparation path. Normal Engine input does not use this seam yet.
+    /// Prelude mutations or deferred work refuse capture; their existing effects
+    /// still drain normally, without pretending to roll them back.
+    pub fn capture_locomotion_command(
+        &mut self,
+        actor: ObjId,
+        line: &str,
+        out: &mut Outbox,
+        fx: &mut Effects,
+    ) -> Option<crate::locomotion::CapturedLocomotion> {
+        let capture = crate::cmd::dispatch_capturing(
+            &self.registry,
+            &mut self.world,
+            actor,
+            line,
+            out,
+            crate::action_state::TypedStateLens::Live(&self.action_state),
+        );
+        let clean = out.deferred().is_empty()
+            && fx.queue.is_empty()
+            && !self.has_legacy_persistence_work()
+            && !self.has_staged_action()
+            && !self.authoritative_submits.contains_key(&actor)
+            && !self.decision_captures.contains_key(&actor);
+        self.drain_deferred(out, fx);
+        if capture.is_some() && !clean {
+            out.error(
+                actor,
+                "Movement preparation cannot share pending command work.",
+            );
+            return None;
+        }
+        capture
+    }
+
+    /// Prepare an inert action from this Engine's actual command capture. The
+    /// registered provider must admit that captured route through PrepareCtx.
+    /// Its gate and movement observations remain attached to the prepared
+    /// transaction through final writer admission; there is no public setter.
+    pub fn prepare_captured_locomotion_action(
+        &mut self,
+        capture: crate::locomotion::CapturedLocomotion,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        if capture.actor() != invocation.actor()
+            || invocation.principal()
+                != &(crate::PrincipalId::Object {
+                    id: capture.actor(),
+                })
+            || invocation.subject() != &crate::PerceivedRef::SelfActor
+            || !invocation.targets().is_empty()
+        {
+            return Err(crate::participant::ParticipantError::Authority.into());
+        }
+        capture.recheck(&self.registry, &self.world)?;
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_captured_locomotion(
+            capture,
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            (
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+                self.registry.hooks(crate::HookPoint::MoveAttempt),
+            ),
+        )
+    }
+
     pub fn prepare_registered_composed_authoritative_action(
         &mut self,
         action: &crate::mechanics::DefinitionRef,
@@ -3446,12 +3541,21 @@ impl Engine {
         let prepared = prepared.into();
         let refusal = if self.staged_action.is_some() {
             Some(StagePreparedActionError::AlreadyStaged)
-        } else if prepared
-            .recheck_with_lens(
-                &self.world,
-                crate::action_state::TypedStateLens::Live(&self.action_state),
-            )
-            .is_err()
+        } else if prepared.require_dispatch_bundle(&bundle).is_err()
+            || prepared
+                .recheck_dispatch(
+                    &self.registry,
+                    &self.world,
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
+                )
+                .is_err()
+            || prepared
+                .recheck_with_lens(
+                    &self.world,
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
+                )
+                .is_err()
+            || prepared.require_dispatch_ready(&self.registry).is_err()
         {
             Some(StagePreparedActionError::ParticipantInputsChanged)
         } else if prepared.owner() != bundle.provider() {
@@ -3505,6 +3609,20 @@ impl Engine {
         let Some(staged) = self.staged_action.as_ref() else {
             return Ok(None);
         };
+        if let Err(error) = staged
+            .installation
+            .require_dispatch_bundle(&staged.bundle)
+            .and_then(|()| {
+                staged.installation.recheck_dispatch(
+                    &self.registry,
+                    &self.world,
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
+                )
+            })
+        {
+            self.abort_staged_action();
+            return Err(StagedActionAdmissionError::Participant(error));
+        }
         if let Err(error) = staged.installation.recheck_with_lens(
             &self.world,
             crate::action_state::TypedStateLens::Live(&self.action_state),
@@ -3514,7 +3632,13 @@ impl Engine {
         }
         let revalidation = self.revalidate_guards(&staged.guards);
         match revalidation {
-            Ok(result) if result.is_current() => Ok(self.staged_action.take()),
+            Ok(result) if result.is_current() => {
+                if let Err(error) = staged.installation.require_dispatch_ready(&self.registry) {
+                    self.abort_staged_action();
+                    return Err(StagedActionAdmissionError::Participant(error));
+                }
+                Ok(self.staged_action.take())
+            }
             Ok(result) => {
                 self.abort_staged_action();
                 Err(StagedActionAdmissionError::Stale(result))
