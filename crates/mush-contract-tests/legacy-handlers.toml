@@ -796,6 +796,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "@unitgrant"
+category = "authoritative"
+note = "DT.2a: bounded issue/revoke inputs submit Org providers through the common coordinator into org.unit_grants. Preparation and final revision validation recheck current title lineage, parent grants, organization authority and expiry. List/check use the registered owner reader; no grant is copied into OrgStore and no command moves, seats, launches or orders a unit."
+
+[[handler]]
 name = "@unlock"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"

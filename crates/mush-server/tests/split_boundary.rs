@@ -32,6 +32,8 @@ mod boot_parity;
 mod boot_store;
 #[path = "split_boundary/cli_args.rs"]
 mod cli_args;
+#[path = "split_boundary/dt_unit_authority.rs"]
+mod dt_unit_authority;
 #[path = "split_boundary/gateway_link_parity.rs"]
 mod gateway_link_parity;
 #[path = "split_boundary/ipc_authoritative_action.rs"]

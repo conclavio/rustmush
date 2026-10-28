@@ -1590,6 +1590,14 @@ mod tests {
             );
             assert!(
                 registrations.iter().any(|(spec, owner, class)| {
+                    spec.name == "@unitgrant"
+                        && *owner == Some("org")
+                        && *class == mush_core::CommandCompatibility::Authoritative
+                }),
+                "DT.2a unit grants must use the authoritative coordinator lane"
+            );
+            assert!(
+                registrations.iter().any(|(spec, owner, class)| {
                     spec.name == "@tacsim"
                         && *owner == Some("tacsim")
                         // /tv submits staff recovery, so the primary verb takes
