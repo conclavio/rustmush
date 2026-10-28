@@ -2917,6 +2917,17 @@ pilot-only verbs. No deploy without the owner.
 
 ## 17. The drone phase and the fight (reserved, not built)
 
+**Continuation, 2026-10-28:** [doc 27](27-ic-field-operations-design-and-survey.md) is the
+shared DT/H1/H2 design and accepted owner decisions. Units disabled in IC combat retain exact damage and
+surviving equipment; a separate physical recovery operation may tow/load them without repair.
+The promotion sketch below is a candidate mechanism, not authority to inherit OOC match rules
+or make one site's grid/cap universal. An IC engagement intersects the participating units' open
+epochs; it is not an OOC match. D-20-7 still describes shipped behavior; accepted Q-H10 authorizes
+explicit leave-behind departure in the H1 delivery, without recalling units or closing their epochs.
+The global outage freeze/countdown in Q-H11 is a separate world-clock prerequisite; local combat
+still cannot hold journeys. H2 towing preserves condition; the explicit post-H2 H3 milestone
+combines stripping, scrapping and repair/restoration.
+
 **Asteroid fields.** A `field` ground kind on the site block: an orbital site whose 256 × 256 grid is
 an occupancy layer of rocks from the same geology (a rock cell is a pocket; empty cells are void) at
 a lane body or a belt station such as Kirkwood. Locomotion `thrust` with a new `microgravity` tag

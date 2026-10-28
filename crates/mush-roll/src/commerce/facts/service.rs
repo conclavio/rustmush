@@ -4,7 +4,7 @@ use super::super::{LicenceId, TermGeneration, families::CommerceFamilies, rating
 use super::*;
 use mush_core::action::{
     ActionError, ActionInvocation, AuthorityGuard, AuthorityGuardContext, AuthorityGuardValidator,
-    IdempotencyKey, IdempotencyKeyText, PerceivedRef,
+    IdempotencyKeyText, PerceivedRef,
 };
 use mush_core::mechanics::CanonicalId;
 use mush_core::submission_observation::SubmissionObservation;
@@ -104,7 +104,7 @@ impl Runtime {
         if intent.action != *action
             || intent.request != request
             || inv.parameters() != &intent.parameters()
-            || inv.idempotency().key() != &IdempotencyKey::Caller(intent.key.clone())
+            || !inv.keyed_by(&intent.key)
         {
             return Err(PublicationError::Mismatch);
         }

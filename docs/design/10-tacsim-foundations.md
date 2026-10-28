@@ -1,5 +1,12 @@
 # 10 — TacSim Foundations
 
+> **2026-10-28 continuation:** [doc 27](27-ic-field-operations-design-and-survey.md) records
+> the owner's persistent damaged-unit, physical salvage, detachment and permission rulings,
+> together with the accepted DT/H1/H2 survey. They refine 3A and T3: unit owner and landholder
+> each have lawful recovery entitlement, and non-owner title uses the public claim/contest
+> process. There is no player permadeath, superseding the former campaign-lethality exception
+> in §18.6. Simulator convenience rules are not IC world policy.
+
 **Draft 0.5 — 2026-09-09** (Draft 0.4 plus the addendum **T17**, §22, owner's ruling). The definitional record for the TacSim programme (build units E7+):
 the owner's scope note, the foundational survey with the **locked decisions 1A–7A**, the
 character-first survey with the **locked decisions C1A–C30A**, the accepted addenda **T1–T17**,
@@ -241,7 +248,7 @@ abandoned before unrecoverable; recovery needs physical access, capacity and tra
 units keep title and provenance until legally transferred, abandoned or written off (T3); docked
 assets get facility, vault and 5A protection; insurance pays a configurable fraction after delay
 with exclusions; blueprints, skills and membership survive loss; characters face injury, ejection,
-rescue, imprisonment or ransom rather than automatic permadeath; the recovery floor is employment,
+rescue, imprisonment or ransom, with **no player permadeath** (doc 27 Q-H12); the recovery floor is employment,
 crew positions, leased equipment or loaners (T7). Rejected: repair-only loss (weakens capture,
 salvage, insurance, replacement production), unrestricted full loot (rewards timezone coverage).
 
@@ -633,8 +640,15 @@ problem absent intrusive real-person verification.
 ### 18.6 Character stakes, progression and access to play
 
 Vehicle defeat resolves compartment danger, injury, evacuation or ejection, suit/pod endurance,
-beacon detection, rescue, capture, ransom and death as separate facts. Campaign lethality decides
-when death is available; it is neither automatic nor erased by universal escape insurance.
+beacon detection, rescue, capture and ransom as separate facts. **Owner amendment 2026-10-28
+(doc 27 Q-H12): there is no player permadeath.** In the worst case a third-party NPC organization
+retrieves the player to a known port such as Phobos to recover. The disabled unit and its
+equipment remain in the field for a later recovery expedition; crew rescue does not repair or
+retrieve the hull. Accepted doc 27 Q-F4 specifies a published bounded campaign-time delay to
+the nearest eligible safe port known to the character, with a fallback such as Phobos. Injury,
+capture or lack of funds cannot remove that guaranteed route; world freeze pauses the delay.
+Exact timing is content tuning. This supersedes the previous campaign-lethality permission
+for player death.
 
 Progression expands options and trust rather than creating an inexorable stat treadmill. Bounded
 competence improves reliability and information; certifications express an issuer's trust; contacts
