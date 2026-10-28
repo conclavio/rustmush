@@ -27,8 +27,27 @@ pub const MAX_PHYSICAL_READ_DEPENDENCIES: usize = 512;
 const MAX_OBJECTS: usize = MAX_PHYSICAL_MOVES * 3;
 const IMAGE_BYTES: usize = 1_048_576;
 const RECORD_BYTES: usize = 262_144;
+pub const MAX_PHYSICAL_RECEIPT_SCAN: usize = 128;
 
 pub fn action_descriptor() -> Result<DefinitionDescriptor, ModError> {
+    DefinitionDescriptor::new(
+        DefinitionKind::new("action").map_err(bad)?,
+        DefinitionId::new(ACTION).map_err(bad)?,
+        2,
+        json!({"format":1,"protocol":"sim_structural_personnel_capture_v2",
+            "moves":MAX_PHYSICAL_MOVES,"objects":MAX_OBJECTS,
+            "read_dependencies":MAX_PHYSICAL_READ_DEPENDENCIES,
+            "image_bytes":IMAGE_BYTES,"receipt_bytes":RECORD_BYTES,
+            "capture":{"family":"sim.personnel_crossings","required":"same_commit",
+                "evidence":"uncertified"}}),
+    )
+    .map(DefinitionDescriptor::as_current)
+    .map_err(bad)
+}
+
+/// Exact retained definition for structural receipts created before capture.
+/// It is historical metadata, never the current execution contract.
+pub fn action_descriptor_v1() -> Result<DefinitionDescriptor, ModError> {
     DefinitionDescriptor::new(
         DefinitionKind::new("action").map_err(bad)?,
         DefinitionId::new(ACTION).map_err(bad)?,
@@ -41,11 +60,14 @@ pub fn action_descriptor() -> Result<DefinitionDescriptor, ModError> {
     .map_err(bad)
 }
 fn exact_action(action: &DefinitionRef) -> Result<(), ParticipantError> {
+    let descriptor = match action.version() {
+        1 => action_descriptor_v1(),
+        2 => action_descriptor(),
+        _ => return Err(refused()),
+    }
+    .map_err(|_| refused())?;
     let expected = crate::DefinitionRegistryBuilder::new()
-        .register(
-            OwnerId::new("sim").map_err(|_| refused())?,
-            action_descriptor().map_err(|_| refused())?,
-        )
+        .register(OwnerId::new("sim").map_err(|_| refused())?, descriptor)
         .map_err(|_| refused())?;
     if action != &expected {
         return Err(refused());
@@ -56,7 +78,7 @@ fn exact_participant(participant: &DefinitionRef) -> Result<(), ParticipantError
     if participant.key().owner.as_str() != "sim"
         || participant.key().kind.as_str() != "owner_participant"
         || participant.key().id.as_str() != PARTICIPANT
-        || participant.version() != 1
+        || !matches!(participant.version(), 1 | 2)
     {
         return Err(refused());
     }
@@ -182,6 +204,7 @@ impl PhysicalRecord {
         exact_action(&self.action)?;
         exact_participant(&self.participant)?;
         if self.format != 1
+            || self.action.version() != self.participant.version()
             || self.objects.len() > MAX_OBJECTS
             || self.objects.windows(2).any(|w| w[0].object >= w[1].object)
         {
@@ -193,7 +216,7 @@ impl PhysicalRecord {
 }
 /// An exact prepared or hydrated structural receipt. No personnel evidence is
 /// inferred from these object digests, including transitions with no projections.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PhysicalTransitionReceipt {
     row: PhysicalRecord,
 }
@@ -207,6 +230,15 @@ impl PhysicalTransitionReceipt {
     pub const fn actor(&self) -> ObjId {
         self.row.actor
     }
+    pub const fn action(&self) -> &DefinitionRef {
+        &self.row.action
+    }
+    pub const fn participant(&self) -> &DefinitionRef {
+        &self.row.participant
+    }
+    pub const fn at_utc(&self) -> i64 {
+        self.row.at_utc
+    }
     pub const fn structural_digest(&self) -> &DefinitionDigest {
         &self.row.structural_digest
     }
@@ -215,10 +247,27 @@ impl PhysicalTransitionReceipt {
     }
 }
 
+/// A bounded page of receipts checked against their canonical keys and exact
+/// registered historical definitions. It exposes no mutation capability.
+#[derive(Debug)]
+pub struct PhysicalTransitionReceiptPage {
+    entries: Vec<PhysicalTransitionReceipt>,
+    next_after: Option<String>,
+}
+impl PhysicalTransitionReceiptPage {
+    pub fn entries(&self) -> &[PhysicalTransitionReceipt] {
+        &self.entries
+    }
+    pub fn next_after(&self) -> Option<&str> {
+        self.next_after.as_deref()
+    }
+}
+
 pub struct CorePhysicalTransitions<P: OwnerParticipant<Output = PhysicalTransitionDraft>> {
     pub(crate) participant: DefinitionRef,
     pub(crate) handle: ParticipantHandle<P>,
     action: DefinitionRef,
+    retained: Vec<(DefinitionRef, DefinitionRef)>,
     records: StateFamilyHandle<CommitToken, PhysicalRecord>,
 }
 impl<P: OwnerParticipant<Output = PhysicalTransitionDraft>> Clone for CorePhysicalTransitions<P> {
@@ -227,6 +276,7 @@ impl<P: OwnerParticipant<Output = PhysicalTransitionDraft>> Clone for CorePhysic
             participant: self.participant.clone(),
             handle: self.handle.clone(),
             action: self.action.clone(),
+            retained: self.retained.clone(),
             records: self.records.clone(),
         }
     }
@@ -237,10 +287,36 @@ impl<P: OwnerParticipant<Output = PhysicalTransitionDraft>> CorePhysicalTransiti
         action: DefinitionRef,
         participant: DefinitionRef,
     ) -> Result<Self, ModError> {
+        Self::register_with_history(reg, action, participant, Vec::new())
+    }
+
+    /// Register the current closed service and, when needed, the one exact
+    /// retained v1 action/participant pair. Historical definitions must also be
+    /// registered by the owner; they do not gain an executable participant.
+    pub fn register_with_history(
+        reg: &mut Registrar<'_>,
+        action: DefinitionRef,
+        participant: DefinitionRef,
+        retained: Vec<(DefinitionRef, DefinitionRef)>,
+    ) -> Result<Self, ModError> {
         exact_action(&action).map_err(bad)?;
         exact_participant(&participant).map_err(bad)?;
-        if reg.module() != "sim" {
-            return Err(bad("physical transition owner differs"));
+        if reg.module() != "sim" || action.version() != 2 || participant.version() != 2 {
+            return Err(bad("physical transition requires the current Sim contract"));
+        }
+        if retained.len() > 1 {
+            return Err(bad(
+                "physical transition history exceeds supported versions",
+            ));
+        }
+        for (old_action, old_participant) in &retained {
+            exact_action(old_action).map_err(bad)?;
+            exact_participant(old_participant).map_err(bad)?;
+            if old_action.version() != 1 || old_participant.version() != 1 {
+                return Err(bad(
+                    "physical transition history requires the exact v1 pair",
+                ));
+            }
         }
         let handle = reg.request_owner_participant::<P>(action.clone())?;
         let id = |suffix| CanonicalId::new(format!("sim.{FAMILY}.{suffix}.v1")).map_err(bad);
@@ -266,6 +342,7 @@ impl<P: OwnerParticipant<Output = PhysicalTransitionDraft>> CorePhysicalTransiti
             participant,
             handle,
             action,
+            retained,
             records,
         })
     }
@@ -325,22 +402,88 @@ impl<P: OwnerParticipant<Output = PhysicalTransitionDraft>> CorePhysicalTransiti
             .map_err(|_| refused())?;
         Ok((PhysicalTransitionReceipt { row }, image))
     }
-    /// Strict key/value audit used by the owning Sim module at boot.
+    fn validate_registry(&self, ctx: &ModuleCtx<'_>) -> Result<(), ParticipantError> {
+        let definitions = ctx.reg.definitions().ok_or_else(refused)?;
+        for (action, participant) in std::iter::once((&self.action, &self.participant)).chain(
+            self.retained
+                .iter()
+                .map(|(action, participant)| (action, participant)),
+        ) {
+            definitions.inspect_exact(action).map_err(|_| refused())?;
+            definitions
+                .inspect_exact(participant)
+                .map_err(|_| refused())?;
+        }
+        Ok(())
+    }
+
+    fn validate_record(&self, key: &str, row: &PhysicalRecord) -> Result<(), ParticipantError> {
+        row.validate()?;
+        let known = (row.action == self.action && row.participant == self.participant)
+            || self.retained.iter().any(|(action, participant)| {
+                &row.action == action && &row.participant == participant
+            });
+        if key != row.commit.to_string() || !known {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    /// Read one canonical receipt through the owning module's typed-state lens.
+    /// Absence returns None; a crossed key or unknown definition fails closed.
+    pub fn read_receipt(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        commit: &CommitToken,
+    ) -> Result<Option<PhysicalTransitionReceipt>, ParticipantError> {
+        self.validate_registry(ctx)?;
+        let Some(row) = ctx
+            .action_state(&self.records, commit)
+            .map_err(|_| refused())?
+        else {
+            return Ok(None);
+        };
+        self.validate_record(&commit.to_string(), row)?;
+        Ok(Some(PhysicalTransitionReceipt { row: row.clone() }))
+    }
+
+    /// Scan a bounded canonical page for cross-family boot audits. This validates
+    /// historical metadata, not readiness or personnel-presence authority.
+    pub fn scan_receipts(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<PhysicalTransitionReceiptPage, ParticipantError> {
+        if limit == 0 || limit > MAX_PHYSICAL_RECEIPT_SCAN {
+            return Err(refused());
+        }
+        self.validate_registry(ctx)?;
+        let page = ctx
+            .scan_action_state(&self.records, after, limit)
+            .map_err(|_| refused())?;
+        let mut entries = Vec::with_capacity(page.entries().len());
+        for entry in page.entries() {
+            self.validate_record(entry.encoded_key(), entry.value())?;
+            entries.push(PhysicalTransitionReceipt {
+                row: entry.value().clone(),
+            });
+        }
+        Ok(PhysicalTransitionReceiptPage {
+            entries,
+            next_after: page.next_after().map(ToString::to_string),
+        })
+    }
+
+    /// Strict key/value and exact registered-definition audit at owner boot.
     pub fn audit(&self, ctx: &ModuleCtx<'_>) -> Result<(), ParticipantError> {
         let mut cursor = None;
         let mut count = 0usize;
         loop {
-            let page = ctx
-                .scan_action_state(&self.records, cursor.as_deref(), 128)
-                .map_err(|_| refused())?;
-            for entry in page.entries() {
-                entry.value().validate()?;
+            let page = self.scan_receipts(ctx, cursor.as_deref(), MAX_PHYSICAL_RECEIPT_SCAN)?;
+            for _ in page.entries() {
                 count = count.checked_add(1).ok_or_else(refused)?;
-                if count > crate::action_state::MAX_ACTION_STATE_BOOT_RECORDS
-                    || entry.encoded_key() != entry.value().commit.to_string()
-                    || entry.value().action != self.action
-                    || entry.value().participant != self.participant
-                {
+                if count > crate::action_state::MAX_ACTION_STATE_BOOT_RECORDS {
                     return Err(refused());
                 }
             }

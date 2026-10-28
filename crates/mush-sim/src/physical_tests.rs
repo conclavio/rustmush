@@ -115,7 +115,19 @@ impl Fixture {
 }
 
 fn patch(f: &Fixture, intent: Intent) -> Result<Patch, ParticipantError> {
-    let (_, plan, digest) = evaluate(&f.state, &f.world, GOD, &intent)?;
+    let CapturedPlan {
+        plan,
+        digest,
+        capture,
+        nodes,
+        domains,
+        ..
+    } = capture_plan(&f.state, &f.world, GOD, &intent, &f.world.world_ic_now())?;
+    let intent = PreparedCrossingIntent {
+        intent,
+        prepared_at: capture.prepared_at,
+        capture_digest: capture.capture_digest,
+    };
     let audit = f
         .state
         .recovery
@@ -124,7 +136,6 @@ fn patch(f: &Fixture, intent: Intent) -> Result<Patch, ParticipantError> {
     let audit_write = audit
         .authoritative_replay_write(owner()?)
         .map_err(|_| ParticipantError::Encoding)?;
-    let (_, nodes, domains) = dependencies(&f.state, &f.world, &intent.transition)?;
     let fence = StateFence {
         digest: state_digest(&f.state, &nodes, &domains)?,
         nodes,
@@ -599,5 +610,100 @@ fn dt_physical_retire_requires_its_lifecycle_owner_even_for_an_empty_passive_dom
     )?));
     check_eq!(f.state, before);
     check_eq!(f.state.recovery.next_seq(RECOVERY_LOG), 0);
+    Ok(())
+}
+
+#[test]
+fn dt_physical_capture_uses_exact_preparation_time_and_rechecks_frozen_facts() -> TestResult {
+    let mut f = Fixture::new()?;
+    let input = f.intent(f.reanchor())?;
+    let captured = capture_plan(&f.state, &f.world, GOD, &input, &f.world.world_ic_now())?;
+    let mut request = PreparedCrossingIntent {
+        intent: input,
+        prepared_at: captured.capture.prepared_at.clone(),
+        capture_digest: captured.capture.capture_digest,
+    };
+    let initial = evaluate_capture(&f.state, &f.world, GOD, &request, true)?;
+    check_eq!(initial.digest, captured.digest);
+
+    f.world.set_now(11);
+    let later = evaluate_capture(&f.state, &f.world, GOD, &request, false)?;
+    check_eq!(later.capture.prepared_at, captured.capture.prepared_at);
+    check_eq!(later.digest, captured.digest);
+    check!(evaluate_capture(&f.state, &f.world, GOD, &request, true).is_err());
+
+    request.capture_digest =
+        DefinitionDigest::for_canonical_value("sim.test.wrong_capture", &json!({"wrong":true}))?;
+    check!(evaluate_capture(&f.state, &f.world, GOD, &request, false).is_err());
+    request.capture_digest = captured.capture.capture_digest;
+    f.world.set_now(9);
+    check!(check_capture_clock(&f.world, &request.prepared_at, false).is_err());
+    f.world.set_now(11);
+    let next = f.world.next_world_timeline_epoch(2)?;
+    f.world.append_world_timeline_epoch(next)?;
+    check!(check_capture_clock(&f.world, &request.prepared_at, false).is_err());
+    check!(evaluate_capture(&f.state, &f.world, GOD, &request, false).is_err());
+    check_eq!(f.state.recovery.next_seq(RECOVERY_LOG), 0);
+    Ok(())
+}
+
+#[test]
+fn dt_physical_capture_only_nested_occupants_and_hosts_pass_the_same_control_gates() -> TestResult {
+    let mut f = Fixture::new()?;
+    // This hull is physically in the bay without a structural placement. Its
+    // separate anchored cabin and NPC are discovered only by the capture pass.
+    f.state.placements.remove(&f.unit);
+    f.state.derived = graph::rebuild(&f.state);
+    let remote = f
+        .world
+        .create(ObjKind::Thing, "Remote focus", GOD, Some(LIMBO))?;
+    let transition = f.reanchor();
+    let (_, baseline, _) = dependencies(&f.state, &f.world, &transition)?;
+    for node in [f.unit, f.cabin, f.walker, remote] {
+        check!(!baseline.contains(&node));
+    }
+    let input = f.intent(transition)?;
+    let captured = capture_plan(&f.state, &f.world, GOD, &input, &f.world.world_ic_now())?;
+    for node in [f.unit, f.cabin, f.walker] {
+        check!(captured.nodes.contains(&node));
+    }
+    let request = PreparedCrossingIntent {
+        intent: input.clone(),
+        prepared_at: captured.capture.prepared_at,
+        capture_digest: captured.capture.capture_digest,
+    };
+    let account = AccountId::mint("physical cabin walker", 1)?;
+    let focus = f.focus(account, f.walker, remote);
+    f.world
+        .module_state_mut::<FocusState>()
+        .ok_or("focus")?
+        .claim(focus);
+    let before = f.state.clone();
+    check!(evaluate(&f.state, &f.world, GOD, &input).is_ok());
+    check!(capture_plan(&f.state, &f.world, GOD, &input, &f.world.world_ic_now()).is_err());
+    check!(evaluate_capture(&f.state, &f.world, GOD, &request, false).is_err());
+    check_eq!(f.state, before);
+    f.world
+        .module_state_mut::<FocusState>()
+        .ok_or("focus")?
+        .relinquish(account);
+
+    f.state.stations.insert(
+        f.unit,
+        HostStations {
+            host: f.unit,
+            stations: BTreeMap::new(),
+        },
+    );
+    let before = f.state.clone();
+    check!(evaluate(&f.state, &f.world, GOD, &input).is_ok());
+    check!(capture_plan(&f.state, &f.world, GOD, &input, &f.world.world_ic_now()).is_err());
+    check!(evaluate_capture(&f.state, &f.world, GOD, &request, false).is_err());
+    check_eq!(f.state, before);
+    check_eq!(f.state.recovery.next_seq(RECOVERY_LOG), 0);
+    check_eq!(
+        f.world.get(f.walker).and_then(|o| o.location),
+        Some(f.cabin)
+    );
     Ok(())
 }

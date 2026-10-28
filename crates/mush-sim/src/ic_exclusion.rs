@@ -442,7 +442,10 @@ impl IcExclusionConfig {
         }
         let expected = participant_descriptor()?;
         let expected_clone = expected.clone();
-        let physical = crate::physical::participant_descriptor()?;
+        let physical = [
+            crate::physical::participant_descriptor_v1()?,
+            crate::physical::participant_descriptor()?,
+        ];
         let refs: Vec<_> = std::iter::once(self.manifest.clone())
             .chain(self.participants.iter().cloned())
             .chain(self.actions.iter().cloned())
@@ -453,8 +456,11 @@ impl IcExclusionConfig {
             move |ctx: &DefinitionValidationContext<'_>| {
                 let expected = if ctx.definition().reference().key().id == *expected_clone.id() {
                     &expected_clone
-                } else if ctx.definition().reference().key().id == *physical.id() {
-                    &physical
+                } else if let Some(physical) = physical.iter().find(|descriptor| {
+                    ctx.definition().reference().key().id == *descriptor.id()
+                        && ctx.definition().reference().version() == descriptor.version()
+                }) {
+                    physical
                 } else {
                     return Err("unknown Sim participant descriptor".into());
                 };
