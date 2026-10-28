@@ -521,7 +521,9 @@ pub struct PortFamilies {
     pub passenger_index: StateFamilyHandle<u8, crate::port::passenger::store::BookingIndex>,
     /// Permanent, private quest progress, keyed by source and paid passage.
     pub quests: StateFamilyHandle<crate::quest::model::QuestKey, crate::quest::model::QuestRecord>,
-    pub quest_index: StateFamilyHandle<u8, crate::quest::model::QuestIndex>,
+    pub quest_index:
+        StateFamilyHandle<crate::quest::model::QuestIndexKey, crate::quest::model::QuestIndex>,
+    pub quest_survey_evidence: StateFamilyHandle<ObjId, crate::quest::evidence::SurveyEvidenceBook>,
     /// **`tacsim.pockets`** (doc 20 cut SM.6; §3.4, D-20-5): one pocket cursor per surface
     /// deposit, keyed by the deposit's id — what the surface provider drew, and the lock's
     /// one home. Derived truth, never projected.
@@ -849,6 +851,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         },
     )?;
     let (quests, quest_index) = crate::quest::registration::families(reg)?;
+    let quest_survey_evidence = crate::quest::evidence::register_survey_family(reg)?;
     Ok(PortFamilies {
         relay_fabrications,
         port_stock,
@@ -860,6 +863,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         passenger_index,
         quests,
         quest_index,
+        quest_survey_evidence,
         pockets,
         claims,
         mills,

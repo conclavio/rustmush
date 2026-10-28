@@ -69,7 +69,9 @@ Advice does not execute a command or bypass its normal eligibility checks.
 Travellers can also use the `passenger` service to discuss a real passage and
 quote a fare. The captain accepts the exact quote and arranges boarding;
 conversation alone does neither. See [Passengers](passengers.md) for Leila at
-Stickney's Shift Board and the reusable traveller content template.
+Stickney's Shift Board, Nadia at Ceres's Slack Line and the reusable traveller
+content template. Their service reports current availability after booking or
+arrival; a quest never resets a traveller.
 
 The `help` service can look up command names and aliases as well as prose topics.
 Command help is sent privately to the asker and uses that player's permissions.
@@ -187,6 +189,13 @@ Authored follow-up work can continue a relationship after a verified event.
 For example, Leila remains at Ceres after her paid passage and can offer a
 small observational errand to the captain who brought her home. Use
 `+quest Leila` and `help quests`; dialogue alone never accepts or completes the work.
+
+At Ceres, Ilse, Dov, Yusra and Rosalind also offer independent introductions to
+Co-op enrolment, a small fittings trade, meeting Nadia and ordinary surface
+readings. Ask `+quest/offer <giver>` at their desk or bar. Each verified completion
+grants +10 personal trust and +5 disposition with that giver once, without extra
+credits or faction standing. These are optional invitations: every underlying
+activity remains available without a quest, and none requires another first.
 
 NPC dialogue and scene turns use the same qualitative guidance: familiarity
 shapes recognition, trust shapes willingness to rely on you, and disposition

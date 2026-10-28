@@ -1,6 +1,6 @@
 //! Keep definition construction outside the large port registration frame.
 use super::{
-    model::{QuestIndex, QuestKey, QuestRecord},
+    model::{QuestIndex, QuestIndexKey, QuestKey, QuestRecord},
     store,
 };
 use crate::port::families::{PortFamilies, family_descriptor};
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 type Families = (
     StateFamilyHandle<QuestKey, QuestRecord>,
-    StateFamilyHandle<u8, QuestIndex>,
+    StateFamilyHandle<QuestIndexKey, QuestIndex>,
 );
 pub(crate) fn families(reg: &mut Registrar<'_>) -> Result<Families, ModError> {
     let descriptor = family_descriptor(store::FAMILY, "tacsim.quest_key.v1", "tacsim.quest")?
@@ -20,7 +20,10 @@ pub(crate) fn families(reg: &mut Registrar<'_>) -> Result<Families, ModError> {
         .map_err(|e| ModError::msg(e.to_string()))?;
     let records = reg.state_family::<QuestKey, QuestRecord, _, _, _, _>(
         descriptor,
-        |key: &QuestKey| Ok(key.key_text()),
+        |key: &QuestKey| {
+            key.check()?;
+            Ok(key.key_text())
+        },
         |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
         |value: &QuestRecord| value.check(),
         |value: &QuestRecord| serde_json::to_value(value).map_err(|e| e.to_string()),
@@ -32,15 +35,9 @@ pub(crate) fn families(reg: &mut Registrar<'_>) -> Result<Families, ModError> {
     )?
     .with_limits(256, store::MAX_INDEX_BYTES)
     .map_err(|e| ModError::msg(e.to_string()))?;
-    let index = reg.state_family::<u8, QuestIndex, _, _, _, _>(
+    let index = reg.state_family::<QuestIndexKey, QuestIndex, _, _, _, _>(
         descriptor,
-        |key: &u8| {
-            if *key == 0 {
-                Ok("0".into())
-            } else {
-                Err("quest index key must be zero".into())
-            }
-        },
+        QuestIndexKey::key_text,
         |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
         |value: &QuestIndex| value.check(),
         |value: &QuestIndex| serde_json::to_value(value).map_err(|e| e.to_string()),
@@ -85,6 +82,7 @@ pub(crate) fn provider(
                 records: families.quests.clone(),
                 index: families.quest_index.clone(),
                 passengers: families.passengers.clone(),
+                survey: families.quest_survey_evidence.clone(),
             },
         )?;
     }

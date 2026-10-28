@@ -34,6 +34,12 @@ mod passengers;
 #[path = "quests.rs"]
 mod quests;
 
+#[path = "onboarding_quests.rs"]
+mod onboarding_quests;
+
+#[path = "onboarding_trade.rs"]
+mod onboarding_trade;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 

@@ -7,6 +7,7 @@ use mush_content::{Appliers, EntryApplier, Pack, PackError, RawEntry};
 use mush_core::{Attr, AttrFlags, CanonicalId, Ctx, Flags, GOD, ObjId, ObjKind, World};
 use serde::Deserialize;
 
+use super::model::{Objective, Prerequisite};
 use super::{Checkpoint, QuestDef};
 
 const ATTR: &str = super::DEFINITION_ATTR;
@@ -23,6 +24,10 @@ pub fn register_appliers(appliers: &mut Appliers) -> Result<(), PackError> {
 #[serde(deny_unknown_fields)]
 struct SourceQuest {
     npc: CanonicalId,
+    #[serde(default)]
+    npc_pack: Option<CanonicalId>,
+    #[serde(default)]
+    prerequisite: Prerequisite,
     title: String,
     introduction: String,
     destination: String,
@@ -37,8 +42,124 @@ struct SourceCheckpoint {
     title: String,
     room_pack: CanonicalId,
     room_entry: CanonicalId,
+    #[serde(default)]
     detail: String,
     instructions: String,
+    #[serde(default)]
+    objective: SourceObjective,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum SourceObjective {
+    #[default]
+    Observation,
+    CoopEnrolment,
+    Trade {
+        origin: String,
+        destination: String,
+        commodity: String,
+        quantity: u64,
+    },
+    Passenger {
+        npc_pack: CanonicalId,
+        npc: CanonicalId,
+    },
+    Survey {
+        mode: String,
+    },
+}
+
+fn external_object(
+    w: &World,
+    pack: &Pack,
+    dependency: &CanonicalId,
+    entry: &CanonicalId,
+    kind: &str,
+) -> Result<ObjId, String> {
+    let requirement = pack
+        .manifest()
+        .requires()
+        .iter()
+        .find(|r| &r.id == dependency)
+        .ok_or("quest binding must be an explicit pack dependency")?;
+    let content = w
+        .module_state::<mush_content::ContentState>()
+        .ok_or("content state is unavailable")?;
+    let latch = content
+        .latches
+        .applied(dependency)
+        .filter(|latch| {
+            !content.latches.is_held(dependency)
+                && !latch.is_retired()
+                && latch.anomaly().is_none()
+                && latch.version() == requirement.version
+                && requirement
+                    .digest
+                    .is_none_or(|digest| digest == latch.digest())
+        })
+        .ok_or("quest binding has no matching active dependency latch")?;
+    latch
+        .entries()
+        .get(entry)
+        .filter(|entry| entry.kind().as_str() == kind)
+        .and_then(mush_content::AppliedEntry::object)
+        .filter(|id| {
+            w.get(*id).is_some_and(|o| {
+                !o.flags.contains(Flags::GOING)
+                    && ((kind == "room" && o.kind == ObjKind::Room)
+                        || (kind == "npc" && o.kind == ObjKind::Npc))
+            })
+        })
+        .ok_or_else(|| format!("quest binding {dependency}/{entry} is not a live {kind}"))
+}
+
+fn quest_profile(w: &World, npc: ObjId) -> Result<Attr, String> {
+    let previous = w
+        .get(npc)
+        .and_then(|o| o.attrs.get(mush_npc::PROFILE_ATTR))
+        .ok_or("quest giver has no profile")?;
+    let mut profile: mush_npc::AgentProfile = serde_json::from_value(
+        previous
+            .as_json()
+            .cloned()
+            .ok_or("quest giver profile is not JSON")?,
+    )
+    .map_err(|_| "quest giver profile is invalid")?;
+    profile.validate().map_err(|e| e.to_string())?;
+    if !profile.interfaces.iter().any(|id| id == "quest") {
+        profile.interfaces.push("quest".into());
+    }
+    if !profile.command_refs.iter().any(|id| id == "+quest") {
+        profile.command_refs.push("+quest".into());
+    }
+    profile.validate().map_err(|e| e.to_string())?;
+    let mut attr = Attr::json(
+        serde_json::to_value(profile).map_err(|e| e.to_string())?,
+        previous.owner,
+    );
+    attr.flags = previous.flags;
+    Ok(attr)
+}
+
+fn check_role_binding(w: &World, npc: ObjId, id: &CanonicalId, key: &str) -> Result<(), String> {
+    let Some(old) = w.get(npc).and_then(|o| o.attrs.get(ATTR)) else {
+        return Ok(());
+    };
+    if old.owner != GOD {
+        return Err(format!("{id}: existing quest role is not source-owned"));
+    }
+    let old: QuestDef = serde_json::from_value(
+        old.as_json()
+            .cloned()
+            .ok_or("existing quest role is not JSON")?,
+    )
+    .map_err(|_| "existing quest role is invalid")?;
+    old.check()?;
+    if old.key != key {
+        return Err(format!("{id}: NPC already belongs to another quest role"));
+    }
+    Ok(())
 }
 
 fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkpoint, String> {
@@ -93,7 +214,26 @@ fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkp
                 && text.len() <= super::model::MAX_DETAIL_BYTES
                 && !text.contains('\0')
         });
-    if detail.is_none() {
+    let objective = match source.objective {
+        SourceObjective::Observation => Objective::Observation,
+        SourceObjective::CoopEnrolment => Objective::CoopEnrolment,
+        SourceObjective::Trade {
+            origin,
+            destination,
+            commodity,
+            quantity,
+        } => Objective::Trade {
+            origin,
+            destination,
+            commodity,
+            quantity,
+        },
+        SourceObjective::Passenger { npc_pack, npc } => Objective::Passenger {
+            npc: external_object(w, pack, &npc_pack, &npc, "npc")?,
+        },
+        SourceObjective::Survey { mode } => Objective::Survey { mode },
+    };
+    if matches!(objective, Objective::Observation) && detail.is_none() {
         return Err("quest checkpoint must name an existing public room detail".into());
     }
     Ok(Checkpoint {
@@ -104,6 +244,7 @@ fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkp
         room,
         detail: source.detail,
         instructions: source.instructions,
+        objective,
     })
 }
 
@@ -114,7 +255,14 @@ fn definition(
     entry: &RawEntry,
 ) -> Result<(CanonicalId, QuestDef), String> {
     let source: SourceQuest = entry.decode().map_err(|error| format!("{id}: {error}"))?;
-    if !pack
+    let key = format!("{}/{id}", pack.manifest().id());
+    if let Some(dependency) = &source.npc_pack {
+        let npc = external_object(w, pack, dependency, &source.npc, "npc")?;
+        // An external giver already exists during whole-pack preflight. Refuse
+        // its conflicting role before any earlier entry can mutate a profile.
+        check_role_binding(w, npc, id, &key)?;
+        quest_profile(w, npc)?;
+    } else if !pack
         .entry(&source.npc)
         .is_some_and(|entry| entry.kind().as_str() == "npc")
     {
@@ -128,7 +276,7 @@ fn definition(
         let other: SourceQuest = other
             .decode()
             .map_err(|error| format!("{other_id}: {error}"))?;
-        if other_id != id && other.npc == source.npc {
+        if other_id != id && other.npc == source.npc && other.npc_pack == source.npc_pack {
             return Err(format!("{id}: NPC already has quest role {other_id}"));
         }
     }
@@ -139,12 +287,13 @@ fn definition(
         .collect::<Result<Vec<_>, _>>()?;
     let def = QuestDef {
         schema: 1,
-        key: format!("{}/{id}", pack.manifest().id()),
+        key,
         title: source.title,
         introduction: source.introduction,
         destination: source.destination,
         checkpoints,
         completion: source.completion,
+        prerequisite: source.prerequisite,
     };
     def.check()?;
     Ok((source.npc, def))
@@ -165,9 +314,13 @@ impl QuestApplier {
         existing: Option<ObjId>,
     ) -> Result<Option<ObjId>, String> {
         let (npc_entry, def) = definition(ctx.w, pack, id, entry)?;
-        let npc = placed
-            .get(&npc_entry)
-            .copied()
+        let source: SourceQuest = entry.decode().map_err(|error| format!("{id}: {error}"))?;
+        let npc = source
+            .npc_pack
+            .as_ref()
+            .map(|dependency| external_object(ctx.w, pack, dependency, &npc_entry, "npc"))
+            .transpose()?
+            .or_else(|| placed.get(&npc_entry).copied())
             .filter(|npc| {
                 ctx.w
                     .get(*npc)
@@ -177,20 +330,14 @@ impl QuestApplier {
         if existing.is_some_and(|old| old != npc) {
             return Err(format!("{id}: a quest role cannot move to another NPC"));
         }
-        if let Some(old) = ctx.w.get(npc).and_then(|o| o.attrs.get(ATTR)) {
-            if old.owner != GOD {
-                return Err(format!("{id}: existing quest role is not source-owned"));
-            }
-            let old: QuestDef = serde_json::from_value(
-                old.as_json()
-                    .cloned()
-                    .ok_or("existing quest role is not JSON")?,
-            )
-            .map_err(|_| "existing quest role is invalid")?;
-            old.check()?;
-            if old.key != def.key {
-                return Err(format!("{id}: NPC already belongs to another quest role"));
-            }
+        check_role_binding(ctx.w, npc, id, &def.key)?;
+        // Extend only the source-owned capability list. Preserve this person's
+        // personality, affiliation, location, live memories and other services.
+        if source.npc_pack.is_some() {
+            let profile_attr = quest_profile(ctx.w, npc)?;
+            ctx.w
+                .set_attr(npc, mush_npc::PROFILE_ATTR, profile_attr)
+                .map_err(|e| e.to_string())?;
         }
         let mut attr = Attr::json(serde_json::to_value(def).map_err(|e| e.to_string())?, GOD);
         attr.flags = AttrFlags::WIZARD_ONLY | AttrFlags::HIDDEN | AttrFlags::NO_INHERIT;
@@ -559,5 +706,181 @@ mod tests {
                 .create(&mut ctx, &pack, &role, entry, &placed)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn external_giver_keeps_staff_profile_and_only_adds_quest_capabilities() {
+        let mut w = World::new_minimal();
+        let staff = w.create(ObjKind::Player, "Staff", GOD, None).unwrap();
+        let npc = w.create(ObjKind::Npc, "Existing giver", GOD, None).unwrap();
+        let profile = mush_npc::AgentProfile {
+            persona: "A patient clerk with a dry sense of humor.".into(),
+            background: "A history written by staff.".into(),
+            goals: vec!["Keep the queue moving.".into()],
+            public_faction: Some(mush_faction::FactionId(42)),
+            interfaces: vec!["help".into(), "coop".into()],
+            command_refs: vec!["+coop".into()],
+            fallback_lines: vec!["Please take a number.".into()],
+            ..Default::default()
+        };
+        let mut original = Attr::json(serde_json::to_value(&profile).unwrap(), staff);
+        original.flags = AttrFlags::WIZARD_ONLY | AttrFlags::NO_INHERIT;
+        w.set_attr(npc, mush_npc::PROFILE_ATTR, original.clone())
+            .unwrap();
+
+        let merged = quest_profile(&w, npc).unwrap();
+        assert_eq!(merged.owner, staff);
+        assert_eq!(merged.flags, original.flags);
+        let actual: mush_npc::AgentProfile =
+            serde_json::from_value(merged.as_json().unwrap().clone()).unwrap();
+        let mut expected = profile;
+        expected.interfaces.push("quest".into());
+        expected.command_refs.push("+quest".into());
+        assert_eq!(actual, expected);
+        assert_eq!(w.attr(npc, mush_npc::PROFILE_ATTR).unwrap(), &original);
+
+        w.set_attr(npc, mush_npc::PROFILE_ATTR, merged.clone())
+            .unwrap();
+        assert_eq!(quest_profile(&w, npc).unwrap(), merged);
+    }
+
+    #[test]
+    fn external_giver_capability_capacity_fails_without_mutating_profile() {
+        for interfaces_full in [true, false] {
+            let mut w = World::new_minimal();
+            let npc = w.create(ObjKind::Npc, "Existing giver", GOD, None).unwrap();
+            let mut profile = mush_npc::AgentProfile::default();
+            if interfaces_full {
+                profile.interfaces = (0..mush_npc::MAX_PROFILE_INTERFACES)
+                    .map(|n| format!("service{n}").into())
+                    .collect();
+            } else {
+                profile.command_refs = (0..mush_npc::MAX_PROFILE_COMMAND_REFS)
+                    .map(|n| format!("+command{n}").into())
+                    .collect();
+            }
+            profile.validate().unwrap();
+            let original = Attr::json(serde_json::to_value(profile).unwrap(), GOD);
+            w.set_attr(npc, mush_npc::PROFILE_ATTR, original.clone())
+                .unwrap();
+            let error = quest_profile(&w, npc).unwrap_err();
+            assert!(error.contains(if interfaces_full {
+                "too many interfaces"
+            } else {
+                "too many command references"
+            }));
+            assert_eq!(w.attr(npc, mush_npc::PROFILE_ATTR).unwrap(), &original);
+        }
+    }
+
+    #[test]
+    fn external_role_conflict_refuses_the_whole_pack_before_any_profile_write() {
+        #[derive(Debug)]
+        enum Conflict {
+            AnotherSource,
+            WrongOwner,
+            NotJson,
+            InvalidDefinition,
+        }
+        for conflict in [
+            Conflict::AnotherSource,
+            Conflict::WrongOwner,
+            Conflict::NotJson,
+            Conflict::InvalidDefinition,
+        ] {
+            let (mut w, reg) = mush_testkit::boot_world();
+            let (original_pack, room, first) = fixture(&mut w);
+            let (_, mut previous_def) = read(&w, &original_pack).unwrap();
+            let second = w
+                .create(ObjKind::Npc, "Another giver", GOD, Some(room))
+                .unwrap();
+            let profile = Attr::json(
+                serde_json::to_value(mush_npc::AgentProfile::default()).unwrap(),
+                GOD,
+            );
+            for npc in [first, second] {
+                w.set_attr(npc, mush_npc::PROFILE_ATTR, profile.clone())
+                    .unwrap();
+            }
+            let mut latch = serde_json::to_value(
+                w.module_state::<ContentState>()
+                    .unwrap()
+                    .latches
+                    .applied(&id(ROOM_PACK))
+                    .unwrap(),
+            )
+            .unwrap();
+            for (entry, npc) in [("npc.first", first), ("npc.second", second)] {
+                latch["entries"][entry] = serde_json::to_value(AppliedEntry::new(
+                    id("npc"),
+                    DefinitionDigest::from_bytes([5; 32]),
+                    Some(npc),
+                ))
+                .unwrap();
+            }
+            w.module_state_mut::<ContentState>().unwrap().latches =
+                mush_content::Latches::load(&[(format!("applied:{ROOM_PACK}").into(), latch)]);
+
+            let mut source: serde_json::Value =
+                serde_json::from_str(crate::port::passenger::content::JSON).unwrap();
+            source["manifest"]["id"] = "test.external_quests".into();
+            source["manifest"]["requires"] = serde_json::json!([{ "id": ROOM_PACK, "version": 4 }]);
+            let mut first_entry = source["entries"][ROLE].clone();
+            first_entry["def"]["npc_pack"] = ROOM_PACK.into();
+            first_entry["def"]["npc"] = "npc.first".into();
+            let mut second_entry = first_entry.clone();
+            second_entry["def"]["npc"] = "npc.second".into();
+            source["entries"] = serde_json::json!({
+                "quest.a_first": first_entry,
+                "quest.z_conflict": second_entry,
+            });
+            let pack = mush_content::parse_pack(&source.to_string()).unwrap();
+            previous_def.key = "test.external_quests/quest.z_conflict".into();
+            let previous = match conflict {
+                Conflict::AnotherSource => {
+                    previous_def.key = "another_pack/quest.existing".into();
+                    Attr::json(serde_json::to_value(previous_def).unwrap(), GOD)
+                }
+                Conflict::WrongOwner => {
+                    Attr::json(serde_json::to_value(previous_def).unwrap(), second)
+                }
+                Conflict::NotJson => Attr::text("not a quest definition", GOD),
+                Conflict::InvalidDefinition => {
+                    previous_def.checkpoints.clear();
+                    Attr::json(serde_json::to_value(previous_def).unwrap(), GOD)
+                }
+            };
+            w.set_attr(second, ATTR, previous.clone()).unwrap();
+            let mut latches = w.module_state::<ContentState>().unwrap().latches.clone();
+            let mut appliers = Appliers::new();
+            register_appliers(&mut appliers).unwrap();
+            let mut out = mush_core::Outbox::new();
+            let mut ctx = Ctx {
+                w: &mut w,
+                actor: GOD,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &reg,
+                module: Some(mush_content::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let first_id = id("quest.a_first");
+            QuestApplier { kind: id("quest") }
+                .check(&ctx, &pack, &first_id, pack.entry(&first_id).unwrap())
+                .unwrap();
+            let result = mush_content::apply(&mut ctx, &mut latches, &appliers, &pack);
+            assert!(
+                matches!(&result, Err(mush_content::ApplyError::EntryRefused { entry, .. })
+                if entry == "quest.z_conflict"),
+                "{conflict:?}: {result:?}"
+            );
+            assert!(latches.applied(pack.manifest().id()).is_none());
+            assert!(ctx.w.attr(first, ATTR).is_none());
+            assert_eq!(ctx.w.attr(second, ATTR).unwrap(), &previous);
+            for npc in [first, second] {
+                assert_eq!(ctx.w.attr(npc, mush_npc::PROFILE_ATTR).unwrap(), &profile);
+            }
+        }
     }
 }

@@ -106,10 +106,9 @@ const WEST_MDEG: u32 = 270_000;
 /// spec" means for a `line_tank`'s magazine.
 const LOAD: i64 = 40;
 
-/// A line the parser refuses, used to bracket a multi-line answer.
-const SENTINEL: &str = "zzz-sentinel";
-/// The parser's refusal, which is the sentinel's answer.
-const HUH: &str = "Huh?";
+/// Session-owned brackets also frame a line refused before parser dispatch.
+const REPLY_PREFIX: &str = "<<< sim-units reply";
+const REPLY_SUFFIX: &str = "sim-units reply >>>";
 
 // ---------------------------------------------------------------------------
 // The rig
@@ -303,24 +302,81 @@ async fn login(
     term.send_line(&format!("connect {account} {password}"))
         .await;
     term.expect(&format!("Connected as {character}")).await;
+    // A successful OUTPUTSUFFIX emits its own suffix. Establish that first:
+    // OUTPUTPREFIX is initially silent and could itself meet a busy world.
+    let mut framed = false;
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(&format!("OUTPUTSUFFIX {REPLY_SUFFIX}"))
+            .await;
+        let reply = read_reply(&mut term, mark, true).await;
+        if reply.lines().any(|line| line.trim() == REPLY_SUFFIX) {
+            framed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(framed, "OUTPUTSUFFIX was repeatedly refused: {}", term.seen);
+    ask_whole(&mut term, &format!("OUTPUTPREFIX {REPLY_PREFIX}")).await;
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the two transients.
+/// Read one complete reply, ignoring the marker inside a setting's own echo.
+/// Only the first suffix setting may receive a refusal without a bracket.
+async fn read_reply(term: &mut Term, from: usize, unframed_setting: bool) -> String {
+    tokio::time::timeout(STEP_TIMEOUT, async {
+        loop {
+            let reply = strip_ansi(&term.seen[from..]);
+            if reply.lines().any(|line| line.trim() == REPLY_SUFFIX)
+                || (unframed_setting
+                    && reply.split_inclusive('\n').any(|line| {
+                        line.ends_with('\n')
+                            && (line.contains(COMMIT_PENDING) || line.contains(CONTROL_UNKNOWN))
+                    }))
+            {
+                return reply;
+            }
+            // Wait for another line, not another occurrence of the marker:
+            // its echo may already be present, and the real suffix may span
+            // SSH packets. The outer deadline bounds the entire frame.
+            let mark = term.mark();
+            term.expect_after(mark, "\n").await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timeout waiting for reply suffix; seen: {:?}", term.seen))
+}
+
+/// Send once and drain its bracket even when the world refuses the line.
+async fn framed_line(term: &mut Term, line: &str) -> String {
+    let mark = term.mark();
+    term.send_line(line).await;
+    read_reply(term, mark, false).await
+}
+
+/// Run one line and drain its reply before waiting for `needle`, retrying the
+/// two transients. A later asynchronous notice can still supply the needle.
 async fn say(term: &mut Term, line: &str, needle: &str) {
     assert!(
         !line.contains(needle),
         "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
     );
     for _ in 0..RETRY_BUDGET {
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
         let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
+        let reply = framed_line(term, line).await;
+        if reply.contains(needle) {
+            return;
+        }
+        if reply.contains(COMMIT_PENDING) || reply.contains(CONTROL_UNKNOWN) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        } else {
+            tokio::time::timeout_at(deadline, term.expect_after(mark, needle))
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("timeout waiting for {needle:?}; seen: {:?}", term.seen)
+                });
+            return;
         }
     }
     panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
@@ -333,18 +389,11 @@ async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
     strip_ansi(&term.seen[mark..])
 }
 
-/// **A whole answer, never half of one** — `arena_story.rs`' device: the line,
-/// then a sentinel the parser refuses, so the whole of a multi-line answer has
-/// certainly arrived by the time the refusal does.
+/// A whole answer, including refusals before dispatch. A separate sentinel
+/// could expire in the command queue without reaching the parser at all.
 async fn ask_whole(term: &mut Term, line: &str) -> String {
     for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        term.send_line(SENTINEL).await;
-        // Drain this attempt's sentinel even when the command was refused.
-        // Otherwise its late Huh can terminate the next command's read early.
-        term.expect_after(mark, HUH).await;
-        let reply = strip_ansi(&term.seen[mark..]);
+        let reply = framed_line(term, line).await;
         if !reply.contains(COMMIT_PENDING) && !reply.contains(CONTROL_UNKNOWN) {
             return reply;
         }
@@ -721,14 +770,11 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
     let ada_start = ada.mark();
     let bo_start = bo.mark();
     for _ in 0..MAX_SHOTS {
-        // Each line is followed by a wait on its own **echo**, which always comes
-        // back whatever the answer is: the client's SSH session only advances
-        // while somebody is awaiting the channel, so a loop that sent without
-        // reading would stall the window and hang the test rather than fail it.
+        // Drain each shot's complete reply, including a refusal, before sending
+        // another line. This advances the SSH receive window and leaves no old
+        // suffix to complete the next command's read.
         for (term, line) in [(&mut ada, "FIRE"), (&mut bo, "FIRE")] {
-            let mark = term.mark();
-            term.send_line(line).await;
-            term.expect_after(mark, line).await;
+            framed_line(term, line).await;
         }
         tokio::time::sleep(Duration::from_millis(800)).await;
         let fight = format!(
@@ -746,7 +792,7 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
     // `SCAN` names the biped's sections and nothing else does. Whether Bo has a
     // reading yet is a fact about his own sensors, so the two answers the rule
     // admits are the reading and the refusal that names no section at all.
-    // The listing is read with the sentinel, so the answer is certainly whole
+    // The listing is read through its suffix, so the answer is certainly whole
     // and "no designator" means Bo's board is really empty rather than slow —
     // and the empty case asserts that instead of asserting nothing.
     let listing = ask_whole(&mut bo, "CONTACTS").await;
@@ -782,7 +828,7 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
     // publishes and not on a guess at how long it takes. A fixed sleep here is a
     // flake that reads as a product failure: `say` retries only the two
     // transients, and "you are still seated" is not one of them.
-    ada.send_line("SIM ABORT").await;
+    ask_whole(&mut ada, "SIM ABORT").await;
     poll_whole(&mut ada, "SIM STATUS", "aborted").await;
     say(&mut ada, "lobby", "Simulator Lobby").await;
     say(&mut bo, "lobby", "Simulator Lobby").await;
@@ -962,7 +1008,7 @@ async fn o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so() 
     assert!(seen.contains("EMCON is already off."), "{seen}");
 
     // The tape.
-    ada.send_line("SIM ABORT").await;
+    ask_whole(&mut ada, "SIM ABORT").await;
     poll_whole(&mut ada, "SIM STATUS", "aborted").await;
     let mut events = Vec::new();
     wait_until(STEP_TIMEOUT, "the emcon line to persist", async || {
@@ -1190,7 +1236,7 @@ async fn ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack() {
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
     ada.expect_after(locking, "Locked on").await;
     let fired = ada.mark();
-    ada.send_line("FIRE").await;
+    framed_line(&mut ada, "FIRE").await;
     ada.expect_after(fired, "Firing autocannon.").await;
     let seen = poll_whole(&mut ada, "WEAPONSTATUS", "237 of 240 round(s)").await;
     assert!(
@@ -1204,7 +1250,7 @@ async fn ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack() {
     );
 
     // The tape: one burst of three, from the autocannon.
-    ada.send_line("SIM ABORT").await;
+    ask_whole(&mut ada, "SIM ABORT").await;
     poll_whole(&mut ada, "SIM STATUS", "aborted").await;
     let mut events = Vec::new();
     wait_until(STEP_TIMEOUT, "the burst to persist", async || {
@@ -1310,7 +1356,7 @@ async fn ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds
     say(&mut ada, "LOCK BA", "Locking").await;
     ada.expect_after(locking, "Locked on BA").await;
     let fired = ada.mark();
-    ada.send_line("FIRE missiles").await;
+    framed_line(&mut ada, "FIRE missiles").await;
     ada.expect_after(fired, "Firing missiles.").await;
     let outcome = ada
         .expect_one_of_after(fired, &["Hit on BA", "Miss on BA", "refused"])
@@ -1332,7 +1378,7 @@ async fn ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds
     );
 
     // The tape: the impact 2,000 arena ms after the shot.
-    ada.send_line("SIM ABORT").await;
+    ask_whole(&mut ada, "SIM ABORT").await;
     poll_whole(&mut ada, "SIM STATUS", "aborted").await;
     let mut events = Vec::new();
     wait_until(

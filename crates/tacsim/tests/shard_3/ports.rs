@@ -445,8 +445,8 @@ fn passenger_seeded_capital(tw: &TestWorld) -> i64 {
         })
         .sum();
     assert_eq!(
-        total, 50_000,
-        "the authored traveller receives one 500cr purse"
+        total, 100_000,
+        "each of the two authored travellers receives one 500cr purse"
     );
     total
 }
@@ -646,11 +646,11 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
     assert_eq!(
-        treasury_balance, -1_495_050_000,
-        "14,950,500.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_495_100_000,
+        "14,951,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
          SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000 \
-         and the passenger's one-time 500cr purse"
+         and the two passengers' one-time 500cr purses"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
