@@ -1,15 +1,16 @@
 # 27. IC field operations — detachments, combat, and salvage
 
-**Draft 0.4, 2026-10-28. All 45 survey decisions recorded; five review questions open; implementation not yet built.**
+**Draft 0.4, 2026-10-28. All 45 survey decisions and the five review rulings recorded; implementation not yet built.**
 Based on `origin/main` at `2cbe9f7c264c79ee6ce6790a3c5ad420a30bec3b` and the owner's
 2026-10-28 rulings. This is the shared brief for doc 26 DT.1–DT.3, backlog H1 and H2.
 Rechecked against `origin/main` at `bef15abd` before this update on the same date.
 The owner accepted all 39 original questions with eight amendments, then all six follow-ups
 with the human-NPC commander and actual NPC embarkation qualifications below. §§7 and 9 are
 decision records; none of those 45 questions remains unanswered. Draft 0.4 is a review pass
-of those decisions against the tree: §10 records five questions the owner still has to rule on
-(Q-R1–Q-R5) and the pins the implementation briefs inherit; the affected decisions carry an
-inline **Review pin** pointing at §10. No accepted decision is reversed by this draft.
+of those decisions against the tree: §10 records five review questions (Q-R1–Q-R5), **ruled by
+the owner on 2026-10-28 at their defaults**, and the pins the implementation briefs inherit; the
+affected decisions carry an inline **Review pin** pointing at §10. No accepted decision is
+reversed by this draft; the rulings resolve what Draft 0.3 left unstated.
 
 ## 1. Shared goal and authority of this draft
 
@@ -63,7 +64,7 @@ briefs still need engineering review. Acceptance of the design does not claim an
 | FO-13 | Any mobile unit may tow one disabled unit of up to twice its own tonnage. Speed is reduced by the tonnage differential; a twenty-ton tug dragging forty tons moves very slowly. Recovery-optimized vehicles remain useful. Towing is physical, and does not bypass terrain or loading capacity. |
 | FO-14 | H3 is an explicit post-H2 milestone for component stripping, scrapping and repair/restoration together. H2 still delivers whole-hull recovery in its damaged state. |
 | FO-15 | An authorized embarked organizer can launch a no-player detachment without becoming its continuing leader. Its assigned NPC commander is a human in-world, satisfying the requirement for a human making command decisions. The software driving that NPC does not make the character an in-world automated mind. Existing active-player priority remains; no new NPC is created by a disconnect. |
-| FO-16 | Every NPC assigned a unit or eligible to become squad leader is a real in-world character who was embarked on the carrier when it left its last port. Preparation resolves that actual personnel manifest; it cannot conjure crew at the field. Unit assignment and grouping over those embarked people and units remain dynamic. **Review pin (§10 Q-R2):** "when it left its last port" is the proxy the ruling uses for "actually aboard with a recorded embarkation"; the open question is whether people who boarded in the field (a rescued survivor, a ship-to-ship transfer, the crew of a recovered hull) count. |
+| FO-16 | Every NPC assigned a unit or eligible to become squad leader is a real in-world character who was embarked on the carrier when it left its last port. Preparation resolves that actual personnel manifest; it cannot conjure crew at the field. Unit assignment and grouping over those embarked people and units remain dynamic. **Review pin (§10 Q-R2):** "when it left its last port" is the proxy the ruling uses for "actually aboard with a recorded embarkation"; by the accepted Q-R2, people who boarded in the field (a rescued survivor, a ship-to-ship transfer, the crew of a recovered hull) count once their embarkation is recorded. |
 
 The owner accepted the remaining defaults in §7 as written. The examples of six battle-armor
 troopers and eighteen rifle infantry illustrate group representation, not universal authored
@@ -493,7 +494,7 @@ with real, embarked human-NPC leadership.
   engaged motion at 48 m/s real (unplayable by hand). The sentence is withdrawn; the recorded
   default is the discontinuity: engaged motion runs on wall time, unengaged field motion and
   towing stay on the IC tick, and the H1-B brief defines the handoff for a unit mid-drive or
-  mid-tow at promotion and demotion. Q-R3 asks the owner to confirm that default.
+  mid-tow at promotion and demotion. The owner confirmed that default as Q-R3.
 - **Alternative:** slow the entire shared campaign to 1:1 while any human combat is active.
 - **Why:** preserves trade schedules and human control without a battle holding other players'
   journeys. Different tactical and campaign time scales are explicitly accepted. Local timestop
@@ -616,9 +617,9 @@ with real, embarked human-NPC leadership.
   as its own cut (§5, "W-clock") with its own owner, ahead of H1-B, not an H1 side task. The
   ruling also names no threshold: the gateway's hot restart of `mush-server` (doc 16 §5, routine) loses seconds
   and was built to be invisible, and a five-minute world freeze on every deploy would undo
-  that. Q-R4 asks the owner for the threshold; the recorded default is that lost wall time
-  under a short bound re-anchors silently with no countdown, anything longer runs the full
-  countdown, and the countdown length is a config knob so dev and CI worlds can shorten it.
+  that. The accepted Q-R4 supplies the threshold: lost wall time under a short bound re-anchors
+  silently with no countdown, anything longer runs the full countdown, and the countdown length
+  is a config knob so dev and CI worlds can shorten it.
 - **Alternative:** simulate the elapsed outage under recorded standing orders before reconnects,
   allowing additional casualties and completed recovery work during the downtime.
 - **Why:** an infrastructure outage should not manufacture an unattended defeat or finish a
@@ -656,7 +657,8 @@ with real, embarked human-NPC leadership.
   is not a blanket veto over another otherwise lawful title claim.
   **Review pin (§10 Q-R1):** read with Q-S13, this leaves the central case open: the landholder
   lawfully recovers the unit from their own land, files a salvage claim, and the title holder
-  contests. Whether existing title is a "superior specific right" under Q-S13 is not stated.
+  contests. The accepted Q-R1 rules that existing title is not by itself a "superior specific
+  right" under Q-S13.
 
 **Q-S2 — When does lawful salvage become legal title?**
 - **Decision (accepted default):** physical recovery establishes custody and grounds a salvage claim, not instant
@@ -778,7 +780,8 @@ with real, embarked human-NPC leadership.
   must say whether it covers a claim by the landholder on their own ground. If it does, losing
   the tow race on owned ground forfeits the unit after the window with nothing to contest on;
   if it does not, the landholder's FO-4 entitlement is custody-only there and the claim is
-  pointless. Both are defensible; the owner picks.
+  pointless. The owner picked the first as Q-R1: bare title does not defeat a lawful claim, on
+  owned ground included.
 - **Alternative:** the original owner may reclaim during the contest window by paying verified
   recovery costs, even when the salvager acted lawfully.
 - **Why:** lawful open-ground salvage should be capable of producing usable title. The alternative
@@ -846,7 +849,8 @@ Verified implementation seams at the review revision:
   Q-H11's world freeze is new clock machinery (§5 W-clock), not a pause of the H1 loop.
 
 **Review status:** all 45 survey decisions approved, including the NPC-human/embarkation qualifications.
-Draft 0.4 adds the review pins of §10: five questions for the owner and five pins for the briefs.
+Draft 0.4 adds the review pins of §10: five review questions, ruled by the owner at their
+defaults on 2026-10-28, and five pins for the briefs.
 Only documentation has changed. Test/story requirements above describe future acceptance, not
 gameplay tests run by this revision.
 
@@ -937,11 +941,12 @@ H3 milestone. The implementation briefs still choose schemas, exact timing and c
 A review of Draft 0.3 against `origin/main` at `bef15abd` (docs 10, 16, 17, 17h, 20, 23 and the
 code seams named in §8). Every decision in §§2, 7 and 9 stands. Two decisions contradicted each
 other or the tree as worded (Q-H1's second paragraph, withdrawn above; Q-H11's missing clock
-machinery, now the W-clock cut); the rest are questions the briefs cannot settle alone. **Q-R1 to
-Q-R5 are open for the owner**, each with a recorded default the briefs use until ruled. **P-1 to
+machinery, now the W-clock cut); the rest were questions the briefs could not settle alone.
+**Q-R1 to Q-R5 were ruled by the owner on 2026-10-28, each accepted at its default as written
+below.** The alternatives remain for rationale and history, not as active choices. **P-1 to
 P-5 are pins the briefs inherit** and need no ruling.
 
-### Open for the owner
+### Ruled by the owner, 2026-10-28 (each at its default)
 
 **Q-R1 — Does existing title defeat a landholder's salvage claim on their own ground?**
 - **Default:** no. Q-S13 as accepted: on any ground a lawful non-owner recovery grounds a claim,
@@ -999,6 +1004,13 @@ P-5 are pins the briefs inherit** and need no ruling.
   (FO-7, §4.2), so without any scarcity NPC crew dominate licensed unit minds for crewing hulls
   and the M7/C-series mind market becomes a niche. Doc 08 lists salary only as an income-contract
   type; doc 17 prices no human crew. Expensive to reverse once players have hired crews.
+
+The rulings change the briefs as follows: the H2-B legal brief encodes Q-R1's contest rule
+(bare title is not a ground of contest, on any ground); DT.2 resolves personnel by recorded
+embarkation events, not the last-port manifest alone (Q-R2), and prices crew by Q-R5's
+provisional pool/wage/injury/scope model with the numbers as content; H1-B owns the
+promotion/demotion motion handoff on the discontinuity (Q-R3); W-clock carries the restart
+threshold and the countdown knob (Q-R4).
 
 ### Pins the briefs inherit
 
