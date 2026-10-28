@@ -12,23 +12,27 @@ pub(crate) mod store;
 use mush_core::{AttrFlags, Ctx, Flags, GOD, ObjId, ObjKind, World};
 
 use crate::port::passenger::{economy, store as passengers};
-use model::{Checkpoint, Objective, Prerequisite, QuestDef, QuestRecord};
+use model::{Checkpoint, ClosureKind, Objective, Prerequisite, QuestDef, QuestRecord};
 
 pub const DEFINITION_ATTR: &str = "quest:definition";
 pub(crate) use commands::register;
 
-pub(crate) fn definition(w: &World, npc: ObjId) -> Option<QuestDef> {
-    let object = w.get(npc)?;
+pub(crate) fn definitions(w: &World, npc: ObjId) -> Vec<QuestDef> {
+    let Some(object) = w.get(npc) else {
+        return Vec::new();
+    };
     if object.kind != ObjKind::Npc || object.flags.contains(Flags::GOING) {
-        return None;
+        return Vec::new();
     }
-    let attr = object.attrs.get(DEFINITION_ATTR)?;
+    let Some(attr) = object.attrs.get(DEFINITION_ATTR) else {
+        return Vec::new();
+    };
     if attr.owner != GOD {
-        return None;
+        return Vec::new();
     }
-    let def: QuestDef = serde_json::from_value(attr.as_json()?.clone()).ok()?;
-    def.check().ok()?;
-    Some(def)
+    attr.as_json()
+        .and_then(|value| model::decode_definitions(value).ok())
+        .unwrap_or_default()
 }
 
 fn close_world(w: &World, npc: ObjId, actor: ObjId) -> bool {
@@ -124,16 +128,30 @@ pub(crate) fn transition_allowed(
     before: Option<&QuestRecord>,
     next: &QuestRecord,
 ) -> bool {
-    if next.check().is_err()
-        || !w.is_connected(next.actor)
-        || match next.definition.prerequisite {
-            Prerequisite::PaidPassage => !next
-                .passage
-                .as_ref()
-                .is_some_and(|passage| paid(w, passage, next.actor, next.npc, &next.definition)),
-            Prerequisite::Open => next.passage.is_some() || next.key.actor != Some(next.actor),
-        }
+    if next.check().is_err() || !w.is_connected(next.actor) {
+        return false;
+    }
+    // Closing a journal entry never depends on a departed giver, an unavailable
+    // objective or payments that may have changed since acceptance. The owner
+    // still checks the exact current receipt, immutable terms and index CAS.
+    if next
+        .closed
+        .as_ref()
+        .is_some_and(|closed| closed.kind == ClosureKind::Abandoned)
     {
+        return before.is_some_and(|old| {
+            old.is_active() && store::progress_valid(Some(old), next) && next.checks == old.checks
+        });
+    }
+    if match &next.definition.prerequisite {
+        Prerequisite::PaidPassage => !next
+            .passage
+            .as_ref()
+            .is_some_and(|passage| paid(w, passage, next.actor, next.npc, &next.definition)),
+        Prerequisite::Open | Prerequisite::Completed { .. } => {
+            next.passage.is_some() || next.key.actor != Some(next.actor)
+        }
+    } {
         return false;
     }
     match before {
@@ -141,18 +159,19 @@ pub(crate) fn transition_allowed(
             next.revision == 1
                 && next.checks.is_empty()
                 && next.completed.is_none()
-                && definition(w, next.npc).as_ref() == Some(&next.definition)
+                && definitions(w, next.npc).contains(&next.definition)
                 && close_world(w, next.npc, next.actor)
                 && crate::port::passenger::at_station(w, next.npc, &next.definition.destination)
                 && available(w, &next.definition)
         }
         Some(old) => {
-            if old.completed.is_some()
+            if !old.is_active()
                 || old.revision.checked_add(1) != Some(next.revision)
                 || old.key != next.key
                 || old.actor != next.actor
                 || old.npc != next.npc
                 || old.passage != next.passage
+                || old.prerequisite_receipt != next.prerequisite_receipt
                 || old.definition != next.definition
                 || old.accepted != next.accepted
             {
@@ -220,7 +239,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     }
     rows.sort_by(|a, b| a.key.cmp(&b.key));
     rows.dedup_by(|a, b| a.key == b.key);
-    for row in rows.iter().filter(|row| row.completed.is_none()) {
+    for row in rows.iter().filter(|row| row.is_active()) {
         let _ = evidence::watch(ctx, row);
     }
     evidence::reconcile(ctx);

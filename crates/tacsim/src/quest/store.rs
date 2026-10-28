@@ -1,8 +1,8 @@
 //! Authenticated quest commands commit exact ordered receipts through typed state.
 use super::evidence::SurveyEvidenceBook;
 use super::model::{
-    CheckEvidence, MAX_CHECKPOINTS, MAX_QUESTS, QuestIndex, QuestIndexKey, QuestKey, QuestRecord,
-    Stamp,
+    CheckEvidence, ClosedQuest, ClosureKind, MAX_CHECKPOINTS, MAX_QUESTS, Prerequisite, QuestIndex,
+    QuestIndexKey, QuestKey, QuestRecord, Stamp,
 };
 pub use super::model::{MAX_INDEX_BYTES, MAX_RECORD_BYTES};
 use crate::port::families::PortHandles;
@@ -40,6 +40,8 @@ struct Order {
     next: QuestRecord,
     /// Exact index CAS, without duplicating a potentially 32KiB index in offers.
     index_hash: Option<String>,
+    /// Bind the exact completed prerequisite without recursively copying it.
+    prerequisite_hash: Option<String>,
 }
 #[derive(Clone, Default)]
 struct Orders(BTreeMap<ObjId, Order>);
@@ -179,10 +181,16 @@ pub(crate) fn progress_valid(before: Option<&QuestRecord>, next: &QuestRecord) -
         return false;
     }
     let Some(before) = before else {
-        return next.revision == 1 && next.checks.is_empty() && next.completed.is_none();
+        return next.revision == 1
+            && next.checks.is_empty()
+            && next.completed.is_none()
+            && next
+                .closed
+                .as_ref()
+                .is_none_or(|closed| closed.kind == ClosureKind::Declined);
     };
     if before.check().is_err()
-        || before.completed.is_some()
+        || !before.is_active()
         || before.revision.checked_add(1) != Some(next.revision)
     {
         return false;
@@ -191,14 +199,33 @@ pub(crate) fn progress_valid(before: Option<&QuestRecord>, next: &QuestRecord) -
     fixed.revision = before.revision;
     fixed.checks.clone_from(&before.checks);
     fixed.completed.clone_from(&before.completed);
+    fixed.closed.clone_from(&before.closed);
     if fixed != *before {
         return false;
     }
-    if next.completed.is_some() {
+    if let Some(closed) = &next.closed {
+        closed.kind == ClosureKind::Abandoned && next.checks == before.checks
+    } else if next.completed.is_some() {
         next.checks == before.checks && before.checks.len() == before.definition.checkpoints.len()
     } else {
         next.checks.len() == before.checks.len() + 1 && next.checks.starts_with(&before.checks)
     }
+}
+fn abandoning(order: &Order) -> bool {
+    order.before.is_some()
+        && order
+            .next
+            .closed
+            .as_ref()
+            .is_some_and(|closed| closed.kind == ClosureKind::Abandoned)
+}
+fn passage_key(order: &Order) -> Option<u64> {
+    (!abandoning(order))
+        .then_some(order.next.key.booking)
+        .flatten()
+}
+fn passage_matches(order: &Order, passage: Option<&Booking>) -> bool {
+    abandoning(order) || passage == order.next.passage.as_ref()
 }
 fn order_valid(w: &World, order: &Order) -> bool {
     progress_valid(order.before.as_ref(), &order.next)
@@ -230,15 +257,95 @@ fn indexed(order: &Order, index: Option<&QuestIndex>) -> bool {
     contains == order.before.is_some()
         && (order.before.is_some() || index.is_none_or(|index| index.keys.len() < MAX_QUESTS))
 }
+#[derive(Default, Serialize)]
+struct Gates {
+    prerequisite_hash: Option<String>,
+    choices_hash: Option<String>,
+}
+fn prerequisite_valid(next: &QuestRecord, prerequisite: &QuestRecord) -> bool {
+    let Prerequisite::Completed { quest } = &next.definition.prerequisite else {
+        return false;
+    };
+    prerequisite.check().is_ok()
+        && next.prerequisite_receipt.as_ref() == Some(&prerequisite.key)
+        && prerequisite.key.source == *quest
+        && prerequisite.actor == next.actor
+        && prerequisite.closed.is_none()
+        && prerequisite.completed.as_ref().is_some_and(|completed| {
+            completed.at_ic <= next.accepted.at_ic && completed.at_utc <= next.accepted.at_utc
+        })
+}
+fn locks_choice(row: &QuestRecord) -> bool {
+    row.closed
+        .as_ref()
+        .is_none_or(|closed| closed.kind != ClosureKind::Declined)
+}
+/// Typed reads only: projections never decide prerequisite or branch admission.
+/// Closing one's existing record remains possible if upstream evidence is lost.
+fn gates(
+    order: &Order,
+    index: Option<&QuestIndex>,
+    mut read: impl FnMut(&QuestKey) -> Result<Option<QuestRecord>, String>,
+) -> Result<Gates, String> {
+    if abandoning(order) {
+        return Ok(Gates::default());
+    }
+    let prerequisite_hash = if let Some(key) = &order.next.prerequisite_receipt {
+        let row = read(key)?.ok_or("quest prerequisite receipt is missing")?;
+        if !prerequisite_valid(&order.next, &row) {
+            return Err("quest prerequisite is not this character's completed receipt".into());
+        }
+        Some(hash("tacsim.quest_record.v1", &row, MAX_RECORD_BYTES)?)
+    } else {
+        None
+    };
+    let choices_hash = if let Some(choice) = &order.next.definition.choice
+        && locks_choice(&order.next)
+    {
+        let scope = QuestIndexKey::Actor(order.next.actor);
+        if QuestIndexKey::for_quest(&order.next.key) != scope {
+            return Err("quest choices require a character index".into());
+        }
+        let mut locks = Vec::new();
+        if let Some(index) = index {
+            index.check_for(scope)?;
+            for key in &index.keys {
+                let row = read(key)?.ok_or("quest index names a missing receipt")?;
+                row.check()?;
+                if row.key != *key || row.actor != order.next.actor {
+                    return Err("quest choice receipt identity mismatch".into());
+                }
+                if let Some(other) = &row.definition.choice
+                    && other.group == choice.group
+                    && locks_choice(&row)
+                {
+                    if other.path != choice.path {
+                        return Err("another path in this quest choice was already accepted".into());
+                    }
+                    locks.push((key.clone(), other.path.clone()));
+                }
+            }
+        }
+        Some(hash("tacsim.quest_choices.v1", &locks, 64 * 1024)?)
+    } else {
+        None
+    };
+    Ok(Gates {
+        prerequisite_hash,
+        choices_hash,
+    })
+}
 fn submit(ctx: &mut Ctx<'_>, order: Order) -> Result<(), String> {
-    let passage = order
-        .next
-        .key
-        .booking
+    let passage = passage_key(&order)
         .map(|id| crate::port::passenger::store::get(ctx, id))
         .transpose()?
         .flatten();
-    if ctx.actor != order.next.actor || !order_valid(ctx.w, &order) || passage != order.next.passage
+    let index = index(ctx, QuestIndexKey::for_quest(&order.next.key))?;
+    let gates = gates(&order, index.as_ref(), |key| get(ctx, key))?;
+    if ctx.actor != order.next.actor
+        || !order_valid(ctx.w, &order)
+        || !passage_matches(&order, passage.as_ref())
+        || gates.prerequisite_hash != order.prerequisite_hash
     {
         return Err("quest change is no longer authorized".into());
     }
@@ -276,19 +383,36 @@ fn submit(ctx: &mut Ctx<'_>, order: Order) -> Result<(), String> {
     Ok(())
 }
 pub fn stage_accept(ctx: &mut Ctx<'_>, mut row: QuestRecord) -> Result<(), String> {
+    if !row.is_active() {
+        return Err("quest acceptance must be active".into());
+    }
+    row.accepted = Stamp::now(ctx.w);
+    stage_initial(ctx, row)
+}
+pub fn stage_decline(ctx: &mut Ctx<'_>, mut row: QuestRecord) -> Result<(), String> {
+    row.accepted = Stamp::now(ctx.w);
+    row.closed = Some(ClosedQuest {
+        kind: ClosureKind::Declined,
+        at: row.accepted.clone(),
+    });
+    stage_initial(ctx, row)
+}
+fn stage_initial(ctx: &mut Ctx<'_>, row: QuestRecord) -> Result<(), String> {
     if get(ctx, &row.key)?.is_some() {
         return Err("this quest already has a receipt".into());
     }
-    row.accepted = Stamp::now(ctx.w);
     let previous = index(ctx, QuestIndexKey::for_quest(&row.key))?;
-    let order = Order {
+    let mut order = Order {
         before: None,
         next: row,
         index_hash: index_hash(previous.as_ref())?,
+        prerequisite_hash: None,
     };
     if !indexed(&order, previous.as_ref()) {
         return Err("quest index is full or inconsistent".into());
     }
+    order.prerequisite_hash =
+        gates(&order, previous.as_ref(), |key| get(ctx, key))?.prerequisite_hash;
     submit(ctx, order)
 }
 fn stage(ctx: &mut Ctx<'_>, before: &QuestRecord, next: QuestRecord) -> Result<(), String> {
@@ -296,14 +420,17 @@ fn stage(ctx: &mut Ctx<'_>, before: &QuestRecord, next: QuestRecord) -> Result<(
         return Err("quest receipt changed".into());
     }
     let current = index(ctx, QuestIndexKey::for_quest(&before.key))?;
-    let order = Order {
+    let mut order = Order {
         before: Some(before.clone()),
         next,
         index_hash: index_hash(current.as_ref())?,
+        prerequisite_hash: None,
     };
     if !indexed(&order, current.as_ref()) {
         return Err("quest index is inconsistent".into());
     }
+    order.prerequisite_hash =
+        gates(&order, current.as_ref(), |key| get(ctx, key))?.prerequisite_hash;
     submit(ctx, order)
 }
 pub fn stage_check(
@@ -329,6 +456,18 @@ pub fn stage_finish(ctx: &mut Ctx<'_>, before: &QuestRecord) -> Result<(), Strin
         .ok_or("quest revision exhausted")?;
     stage(ctx, before, next)
 }
+pub fn stage_abandon(ctx: &mut Ctx<'_>, before: &QuestRecord) -> Result<(), String> {
+    let mut next = before.clone();
+    next.closed = Some(ClosedQuest {
+        kind: ClosureKind::Abandoned,
+        at: Stamp::now(ctx.w),
+    });
+    next.revision = next
+        .revision
+        .checked_add(1)
+        .ok_or("quest revision exhausted")?;
+    stage(ctx, before, next)
+}
 
 fn error(message: &'static str) -> ActionError {
     port_error(ActionErrorCode::Integrity, message)
@@ -340,6 +479,7 @@ fn generation(
     passage: Option<&Booking>,
     index: Option<&QuestIndex>,
     survey: Option<&SurveyEvidenceBook>,
+    gates: &Gates,
 ) -> Result<u64, ActionError> {
     let order = w
         .module_state::<Orders>()
@@ -349,7 +489,8 @@ fn generation(
         order.next.actor == actor
             && order_valid(w, order)
             && order.before.as_ref() == current
-            && passage == order.next.passage.as_ref()
+            && passage_matches(order, passage)
+            && gates.prerequisite_hash == order.prerequisite_hash
             && order.index_hash == index_digest
             && indexed(order, index)
             && proof_current(order, survey)
@@ -368,7 +509,7 @@ fn generation(
         })
         .transpose()
         .map_err(|_| error("quest passage invalid"))?;
-    let digest = hash("tacsim.quest_world.v1", &json!({"order":order,"valid":valid,"current":current_digest,"passage":passage_digest,"index":index_digest}), 64 * 1024)
+    let digest = hash("tacsim.quest_world.v1", &json!({"order":order,"valid":valid,"current":current_digest,"passage":passage_digest,"index":index_digest,"gates":gates}), 64 * 1024)
         .map_err(|_| error("quest revision invalid"))?;
     u64::from_str_radix(
         digest
@@ -441,10 +582,7 @@ impl RevisionValidator for Validator {
         let current = ctx
             .action_state(&self.records, &order.next.key)
             .map_err(|_| error("quest receipt unreadable"))?;
-        let passage = order
-            .next
-            .key
-            .booking
+        let passage = passage_key(order)
             .map(|id| {
                 ctx.action_state(&self.passengers, &BookingKey(id))
                     .map_err(|_| error("quest passage unreadable"))
@@ -460,7 +598,13 @@ impl RevisionValidator for Validator {
         } else {
             None
         };
-        generation(ctx.world(), actor, current, passage, index, survey).map(Some)
+        let gates = gates(order, index, |key| {
+            ctx.action_state(&self.records, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest prerequisite or choice receipt unreadable".into())
+        })
+        .map_err(|_| error("quest prerequisite or choice changed"))?;
+        generation(ctx.world(), actor, current, passage, index, survey, &gates).map(Some)
     }
 }
 pub(crate) fn register(
@@ -556,10 +700,7 @@ impl ActionProvider for Provider {
             .action_state()
             .get(&self.records, &order.next.key)
             .map_err(|_| error("quest receipt unreadable"))?;
-        let passage = order
-            .next
-            .key
-            .booking
+        let passage = passage_key(&order)
             .map(|id| {
                 engine
                     .action_state()
@@ -580,8 +721,17 @@ impl ActionProvider for Provider {
         } else {
             None
         };
+        let gates = gates(&order, index, |key| {
+            engine
+                .action_state()
+                .get(&self.records, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest prerequisite or choice receipt unreadable".into())
+        })
+        .map_err(|_| error("quest prerequisite or choice changed"))?;
         if current != order.before.as_ref()
-            || passage != order.next.passage.as_ref()
+            || !passage_matches(&order, passage)
+            || gates.prerequisite_hash != order.prerequisite_hash
             || index_hash(index).map_err(|_| error("quest index invalid"))? != order.index_hash
             || !indexed(&order, index)
             || !proof_current(&order, survey)
@@ -595,6 +745,7 @@ impl ActionProvider for Provider {
             passage,
             index,
             survey,
+            &gates,
         )?;
         offer_draft_with_revisions(
             action,
@@ -665,10 +816,7 @@ impl ActionProvider for Provider {
         {
             return Err(error("quest action names another transition"));
         }
-        let passage = order
-            .next
-            .key
-            .booking
+        let passage = passage_key(&order)
             .map(|id| {
                 txn.get(&self.passengers, &BookingKey(id))
                     .map(|passage| passage.cloned())
@@ -680,7 +828,7 @@ impl ActionProvider for Provider {
             .get(&self.records, &order.next.key)
             .map_err(|_| error("quest receipt unreadable"))?
             != order.before.as_ref()
-            || passage.as_ref() != order.next.passage.as_ref()
+            || !passage_matches(&order, passage.as_ref())
         {
             return Err(port_error(
                 ActionErrorCode::Conflict,
@@ -709,6 +857,23 @@ impl ActionProvider for Provider {
             || !indexed(&order, current_index.as_ref())
         {
             return Err(port_error(ActionErrorCode::Conflict, "quest index changed"));
+        }
+        let gates = gates(&order, current_index.as_ref(), |key| {
+            txn.get(&self.records, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest prerequisite or choice receipt unreadable".into())
+        })
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::Conflict,
+                "quest prerequisite or choice changed",
+            )
+        })?;
+        if gates.prerequisite_hash != order.prerequisite_hash {
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "quest prerequisite changed",
+            ));
         }
         let row = order.next;
         if order.before.is_none() {
@@ -795,6 +960,7 @@ mod tests {
             before: None,
             next: row.clone(),
             index_hash: None,
+            prerequisite_hash: None,
         };
         check!(indexed(&order, None));
         let indexed_row = QuestIndex {
@@ -806,7 +972,8 @@ mod tests {
             &Order {
                 before: Some(row.clone()),
                 next: row,
-                index_hash: index_hash(Some(&indexed_row))?
+                index_hash: index_hash(Some(&indexed_row))?,
+                prerequisite_hash: None,
             },
             Some(&indexed_row)
         ));
@@ -826,6 +993,7 @@ mod tests {
             before: None,
             next: row.clone(),
             index_hash: None,
+            prerequisite_hash: None,
         };
         check!(indexed(&order, None));
         let other = QuestIndex {
@@ -850,7 +1018,8 @@ mod tests {
             &Order {
                 before: Some(row.clone()),
                 next: row,
-                index_hash: index_hash(Some(&index))?
+                index_hash: index_hash(Some(&index))?,
+                prerequisite_hash: None,
             },
             Some(&index)
         ));
@@ -925,6 +1094,153 @@ mod tests {
         check_eq!(projection.rows.len(), 3);
         check!(projection.actors.contains(&first.actor));
         check!(projection.actors.contains(&second.actor));
+        Ok(())
+    }
+
+    fn branch(source: &str, path: &str) -> QuestRecord {
+        let mut row = record();
+        row.key = QuestKey {
+            source: source.into(),
+            booking: None,
+            actor: Some(row.actor),
+        };
+        row.definition.key.clone_from(&row.key.source);
+        row.definition.prerequisite = Prerequisite::Open;
+        row.definition.choice = Some(super::super::model::QuestChoice {
+            group: "pack/quest.referral".into(),
+            path: path.into(),
+        });
+        row.passage = None;
+        row
+    }
+    fn initial(row: QuestRecord) -> Order {
+        Order {
+            before: None,
+            next: row,
+            index_hash: None,
+            prerequisite_hash: None,
+        }
+    }
+    fn completed(mut row: QuestRecord) -> Result<QuestRecord, String> {
+        row.checks.push(CheckEvidence {
+            checkpoint: "bench".into(),
+            room: ObjId(20),
+            detail_hash: detail_hash("Scale reads 42.")?,
+            detail_text: "Scale reads 42.".into(),
+            at: Stamp {
+                at_ic: 70,
+                at_utc: 70,
+            },
+            proof: None,
+        });
+        row.completed = Some(Stamp {
+            at_ic: 80,
+            at_utc: 80,
+        });
+        row.revision = 3;
+        row.check()?;
+        Ok(row)
+    }
+
+    #[test]
+    fn prerequisite_gate_rejects_forged_wrong_actor_unfinished_and_changed_receipts() -> TestResult
+    {
+        let prerequisite = completed(record())?;
+        let mut next = branch("pack/quest.followup", "trade");
+        next.definition.prerequisite = Prerequisite::Completed {
+            quest: prerequisite.key.source.clone(),
+        };
+        next.prerequisite_receipt = Some(prerequisite.key.clone());
+        next.accepted = Stamp {
+            at_ic: 90,
+            at_utc: 90,
+        };
+        next.check()?;
+        let order = initial(next.clone());
+        let authorized = gates(&order, None, |_| Ok(Some(prerequisite.clone())))?;
+        check!(authorized.prerequisite_hash.is_some());
+        check!(gates(&order, None, |_| Ok(None)).is_err());
+        check!(gates(&order, None, |_| Ok(Some(record()))).is_err());
+        let mut other = prerequisite.clone();
+        other.actor = ObjId(33);
+        other.passage.as_mut().ok_or("passage")?.captain = other.actor;
+        other.check()?;
+        check!(gates(&order, None, |_| Ok(Some(other.clone()))).is_err());
+        let mut changed = prerequisite.clone();
+        changed.definition.completion = "A changed historic receipt".into();
+        changed.check()?;
+        let later = gates(&order, None, |_| Ok(Some(changed.clone())))?;
+        check!(authorized.prerequisite_hash != later.prerequisite_hash);
+        next.accepted.at_ic = 79;
+        check!(!prerequisite_valid(&next, &prerequisite));
+        Ok(())
+    }
+
+    #[test]
+    fn choices_lock_on_accept_completion_or_abandonment_but_never_on_decline() -> TestResult {
+        let mut trade = branch("pack/quest.trade", "trade");
+        let survey = branch("pack/quest.survey", "survey");
+        let order = initial(survey);
+        let index = QuestIndex {
+            schema: 1,
+            keys: vec![trade.key.clone()],
+        };
+        trade.check()?;
+        check!(gates(&order, Some(&index), |_| Ok(Some(trade.clone()))).is_err());
+        trade.closed = Some(ClosedQuest {
+            kind: ClosureKind::Declined,
+            at: trade.accepted.clone(),
+        });
+        trade.check()?;
+        gates(&order, Some(&index), |_| Ok(Some(trade.clone())))?;
+        trade.closed.as_mut().ok_or("closure")?.kind = ClosureKind::Abandoned;
+        trade.revision = 2;
+        trade.check()?;
+        check!(gates(&order, Some(&index), |_| Ok(Some(trade.clone()))).is_err());
+        trade = completed(branch("pack/quest.trade", "trade"))?;
+        check!(gates(&order, Some(&index), |_| Ok(Some(trade.clone()))).is_err());
+        let same_path = initial(branch("pack/quest.trade_later", "trade"));
+        gates(&same_path, Some(&index), |_| Ok(Some(trade.clone())))?;
+        check!(gates(&same_path, Some(&index), |_| Ok(None)).is_err());
+        // A separately resolved acceptance cannot use its previous empty-index CAS.
+        check!(index_hash(Some(&index))? != order.index_hash);
+        Ok(())
+    }
+
+    #[test]
+    fn decline_and_abandon_cannot_reopen_replay_change_terms_or_gain_rewards() -> TestResult {
+        let before = record();
+        let mut declined = before.clone();
+        declined.closed = Some(ClosedQuest {
+            kind: ClosureKind::Declined,
+            at: declined.accepted.clone(),
+        });
+        check!(progress_valid(None, &declined));
+        check!(!progress_valid(Some(&before), &declined));
+        check!(!progress_valid(Some(&declined), &declined));
+        let mut abandoned = before.clone();
+        abandoned.closed = Some(ClosedQuest {
+            kind: ClosureKind::Abandoned,
+            at: abandoned.accepted.clone(),
+        });
+        abandoned.revision += 1;
+        check!(progress_valid(Some(&before), &abandoned));
+        check!(!progress_valid(None, &abandoned));
+        check!(!progress_valid(Some(&abandoned), &abandoned));
+        let order = Order {
+            before: Some(before.clone()),
+            next: abandoned.clone(),
+            index_hash: None,
+            prerequisite_hash: None,
+        };
+        check_eq!(passage_key(&order), None);
+        check!(passage_matches(&order, None));
+        // Missing upstream evidence cannot strand an otherwise valid abandonment.
+        gates(&order, None, |_| Err("upstream unreadable".into()))?;
+        abandoned.definition.title = "Changed terms".into();
+        check!(!progress_valid(Some(&before), &abandoned));
+        let finished = completed(before.clone())?;
+        check!(!progress_valid(Some(&finished), &abandoned));
         Ok(())
     }
 }

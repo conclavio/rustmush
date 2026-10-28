@@ -1,4 +1,4 @@
-//! Independent starter invitations and a reusable Ceres traveller.
+//! Independent starter invitations, a Ceres traveller and Leila's later choice.
 
 use mush_content::Pack;
 
@@ -6,10 +6,12 @@ pub const PASSENGER_PACK: &str = "tacsim.passengers.ceres";
 pub const PACK: &str = "tacsim.quests.first_steps";
 pub const PASSENGER_JSON: &str = include_str!("../../content/passengers/ceres.json");
 pub const JSON: &str = include_str!("../../content/quests/first_steps.json");
+pub const LEILA_PACK: &str = "tacsim.quests.leila_followup";
+pub const LEILA_JSON: &str = include_str!("../../content/quests/leila_followup.json");
 
 /// Dependency order: the real traveller exists before a quest refers to her.
 pub fn packs() -> Result<Vec<Pack>, String> {
-    [PASSENGER_JSON, JSON]
+    [PASSENGER_JSON, JSON, LEILA_JSON]
         .into_iter()
         .map(|json| {
             mush_content::load_pack(json).map_err(|error| format!("starter quest pack: {error}"))
@@ -25,9 +27,10 @@ mod tests {
     #[test]
     fn signed_starter_packs_keep_the_passenger_independent_and_order_dependencies() {
         let packs = packs().unwrap();
-        assert_eq!(packs.len(), 2);
+        assert_eq!(packs.len(), 3);
         assert_eq!(packs[0].manifest().id().as_str(), PASSENGER_PACK);
         assert_eq!(packs[1].manifest().id().as_str(), PACK);
+        assert_eq!(packs[2].manifest().id().as_str(), LEILA_PACK);
         for pack in &packs {
             assert_eq!(pack.manifest().version(), 1);
         }
@@ -38,6 +41,10 @@ mod tests {
         assert_eq!(
             packs[1].manifest().digest().to_hex(),
             "c982d6ce6378044f8a8f3e682c89ee7ebc324d192615e54439746d80f0611ee2"
+        );
+        assert_eq!(
+            packs[2].manifest().digest().to_hex(),
+            "8d9cdd3fe91f97ca6871bbbe9556e1c2b47a707ae7ae7f6c1396d502355f97e7"
         );
         assert!(
             packs[1]
@@ -140,5 +147,49 @@ mod tests {
         );
         assert!(!profile.fallback.is_empty());
         assert!(!profile.does_not_know.is_empty());
+    }
+
+    #[test]
+    fn leilas_choice_extends_the_existing_person_after_the_exact_first_quest() {
+        let pack = mush_content::load_pack(LEILA_JSON).unwrap();
+        assert_eq!(pack.entries().len(), 2);
+        assert!(
+            pack.entries()
+                .values()
+                .all(|entry| entry.kind().as_str() == "quest")
+        );
+        assert!(
+            pack.manifest()
+                .requires()
+                .iter()
+                .any(
+                    |dependency| dependency.id.as_str() == "tacsim.passengers.stickney"
+                        && dependency.version == 2
+                )
+        );
+        for (entry, path, room) in [
+            ("quest.leila_trade", "trade", "room.c08_chandlery"),
+            ("quest.leila_survey", "survey", "room.c07_exchange"),
+        ] {
+            let value = pack
+                .entry(&CanonicalId::new(entry).unwrap())
+                .unwrap()
+                .def_value();
+            assert_eq!(value["npc_pack"], "tacsim.passengers.stickney");
+            assert_eq!(value["npc"], "npc.leila_mensah_kovacs");
+            assert_eq!(
+                value["prerequisite"]["completed"]["quest"],
+                "tacsim.passengers.stickney/quest.leila_second_reading"
+            );
+            assert_eq!(value["choice"]["group"], "tacsim.leila_next_work");
+            assert_eq!(value["choice"]["path"], path);
+            assert!(
+                value["checkpoints"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|checkpoint| checkpoint["room_entry"] == room)
+            );
+        }
     }
 }

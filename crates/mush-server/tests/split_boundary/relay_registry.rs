@@ -4110,6 +4110,7 @@ impl Rig {
                 "tacsim.passengers.stickney"
                     | "tacsim.passengers.ceres"
                     | "tacsim.quests.first_steps"
+                    | "tacsim.quests.leila_followup"
             )
         });
         let new_ids: Vec<_> = tacsim::relay_content::packs()
@@ -4314,6 +4315,7 @@ impl Rig {
                 "tacsim.passengers.stickney"
                     | "tacsim.passengers.ceres"
                     | "tacsim.quests.first_steps"
+                    | "tacsim.quests.leila_followup"
             )
         });
         for pack in &mut packs {
@@ -4561,7 +4563,10 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     packs.retain(|p| {
         !matches!(
             p.manifest().id().as_str(),
-            "tacsim.passengers.stickney" | "tacsim.passengers.ceres" | "tacsim.quests.first_steps"
+            "tacsim.passengers.stickney"
+                | "tacsim.passengers.ceres"
+                | "tacsim.quests.first_steps"
+                | "tacsim.quests.leila_followup"
         )
     });
     for pack in &mut packs {
