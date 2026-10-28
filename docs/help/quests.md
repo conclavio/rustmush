@@ -2,21 +2,31 @@
 
 Some NPCs offer optional work and introductions. Conversation can introduce
 them, but the quest service checks eligibility, records the work and confirms
-completion. You can use the commands with the model disabled. These invitations
-are independent: accepting one never requires another, and the services they
-explain remain available without accepting a quest.
+completion. You can use the commands with the model disabled. Starter invitations
+are independent; some later favors require an earlier completed quest or offer
+a choice of paths. The invitation states those terms. Ordinary services remain
+available without accepting a quest.
 
-  +quest [<giver>]                 Read your own progress or available work.
-  +quest/offer <giver>             Read the invitation and its acceptance token.
+  +quest [<giver>[=<quest-key>]]    Read your own progress or available work.
+  +quest/offer <giver>[=<quest-key>] Read eligible invitations or one exact offer.
   +quest/accept <giver>=<token>    Accept the exact invitation printed by the service.
-  +quest/check <giver>             Record an objective at its required location.
-  +quest/finish <giver>            Return to the giver and share completed observations.
+  +quest/decline <giver>=<token>   Permanently decline that exact invitation.
+  +quest/check <giver>[=<quest-key>] Record an objective at its required location.
+  +quest/finish <giver>[=<quest-key>] Return to the giver and finish that work.
+  +quest/abandon <giver>[=<quest-key>] Permanently abandon accepted work, even remotely.
 
 Acceptance and finishing require the giver to be present and mutually
 perceivable. A check requires you to be in the objective's named room. The
 service verifies the actual work: saying you did it does not record a check.
 Your progress and service answers are private to you. Use the acceptance command
 printed by the offer, then read `+quest` to confirm your committed journal.
+An NPC can offer several quests. Use the full quest key printed by the service
+when a command needs to distinguish them; it never guesses between active jobs.
+
+Declining or abandoning is terminal for that quest and gives no reward or
+relationship penalty. Decline an unaccepted offer with its exact token; abandon
+work you already accepted. Neither command undoes ordinary trades, bookings or
+other gameplay you performed along the way.
 
 Finishing grants **+10 personal trust and +5 disposition with the giver**, once
 per quest. There is no quest credit or faction-standing reward. Normal market
@@ -87,6 +97,31 @@ Finishing gives Leila one verified work experience and the same once-only
 personal relationship bonus. Another character cannot claim your passage or
 your progress, even if they have the same name.
 
+## Leila's next piece of work
+
+After you complete **A second reading**, meet Leila again at Ceres's Visiting
+Berth Gallery and use `+quest/offer Leila`. She offers two alternatives:
+
+- **A useful consignment**: after accepting, buy at least one tonne of fittings
+  at Stickney and complete its delivered sale to the Ceres Co-op. Acknowledge the
+  trade at Dov's Chandlery with
+  `+quest/check Leila=tacsim.quests.leila_followup/quest.leila_trade`.
+- **Two scales of looking**: after accepting, complete an ordinary surface scan
+  and sounding, then acknowledge each in order at Rosalind's Exchange desk with
+  `+quest/check Leila=tacsim.quests.leila_followup/quest.leila_survey`.
+
+These are Leila's invitations even though you record the work at another desk.
+Return to her to finish, using the same full quest key with `+quest/finish`.
+The trade has ordinary live prices and payment; the readings need no paid
+commission and disclose no private chart. Each path gives Leila its own account
+of the work you completed together.
+
+**Accepting either path permanently chooses it.** The other path closes, even
+if you later abandon the accepted work. Declining one offer before accepting
+does not choose a path, so the other can remain available. You may decline both
+or do neither. This choice affects only Leila's follow-up: Dov's and Rosalind's
+starter invitations, ordinary trade and ordinary surveying remain independent.
+
 ## Authoring a quest
 
 A `quest` entry binds to an ordinary `npc` entry. Omit `npc_pack` for a giver in
@@ -100,6 +135,20 @@ passage with the asker to `destination`. Use `"prerequisite": "open"` for an
 independent invitation at that port. Let the service supply the asker's actual
 invitation and progress; do not put completion claims into public lore, persona
 or fallback text.
+
+For a follow-up, use an exact completed source key and, optionally, a choice:
+
+```json
+"prerequisite": {"completed": {"quest": "tacsim.passengers.stickney/quest.leila_second_reading"}},
+"choice": {"group": "tacsim.leila_next_work", "path": "trade"}
+```
+
+The prerequisite belongs to the current character's durable completed journal.
+Use a stable, namespaced group and distinct path identifiers for alternatives.
+Acceptance reserves that group permanently; declining an offer does not.
+Choice groups are supported on open and completed-quest prerequisites. Multiple
+later quests may share the chosen path; a different path in that group stays
+unavailable. Keep groups specific to an authored choice, not ordinary services.
 
 ```json
 {
@@ -150,10 +199,17 @@ local meeting with the real traveller, not a booking or completed passage.
 Trade and survey evidence must come from actual work after acceptance. Use
 honest current availability when a shared traveller has already left.
 
-Only one quest source may bind to an NPC. Revisions preserve the NPC's identity,
-location, memories and existing progress. Accepted work keeps its frozen
-definition; a source edit does not silently change the invitation already
-accepted. Rebinding a role to another NPC or retiring a live role is refused.
+Up to eight quest definitions may bind to one NPC, within a 64 KiB catalog.
+Definitions merge by full pack/entry key and preserve other packs' definitions.
+Existing single-definition attributes still load; catalogs of multiple
+definitions use a sorted array. The whole incoming pack is checked against the
+limit before any capabilities are added. Invalid or non-source-owned catalogs
+are refused rather than replaced.
+
+Revisions preserve the NPC's identity, location, memories and existing progress.
+Accepted work keeps its frozen definition; a source edit does not silently
+change the invitation already accepted. Rebinding a source to another NPC or
+retiring a live source is refused.
 Write `completion` as the giver's account of what actually happened; it becomes
 their verified work experience and is labelled as their account in the journal.
 
@@ -162,5 +218,8 @@ The independent packs `tacsim.passengers.ceres@1` and
 them in dependency order. Existing worlds with those versions install them at
 boot; worlds with older station content wait for staff to plan and apply the
 dependency upgrades. No existing station pack is automatically upgraded.
+`tacsim.quests.leila_followup@1` separately requires Leila's passenger pack v2
+and both stations at v4. It adds two definitions to the same Leila without
+replacing her earlier quest or resetting her journey.
 
 See also: `help passengers`, `help npc`.

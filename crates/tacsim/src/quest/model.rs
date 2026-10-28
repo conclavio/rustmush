@@ -11,6 +11,8 @@ pub const MAX_DEFINITION_BYTES: usize = 12 * 1024;
 pub const MAX_RECORD_BYTES: usize = 24 * 1024;
 pub const MAX_INDEX_BYTES: usize = 32 * 1024;
 pub const MAX_QUESTS: usize = 128;
+pub const MAX_QUESTS_PER_NPC: usize = 8;
+pub const MAX_QUEST_CATALOG_BYTES: usize = 64 * 1024;
 
 fn text(value: &str, maximum: usize) -> bool {
     !value.trim().is_empty() && value.len() <= maximum && !value.contains('\0')
@@ -39,15 +41,26 @@ pub struct QuestDef {
     pub destination: String,
     #[serde(default, skip_serializing_if = "Prerequisite::is_paid_passage")]
     pub prerequisite: Prerequisite,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<QuestChoice>,
     pub checkpoints: Vec<Checkpoint>,
     pub completion: String,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Prerequisite {
     #[default]
     PaidPassage,
     Open,
+    Completed {
+        quest: String,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestChoice {
+    pub group: String,
+    pub path: String,
 }
 impl Prerequisite {
     fn is_paid_passage(&self) -> bool {
@@ -146,6 +159,18 @@ impl QuestDef {
         {
             return Err("invalid quest definition".into());
         }
+        if let Prerequisite::Completed { quest } = &self.prerequisite
+            && (!source(quest) || quest == &self.key)
+        {
+            return Err("invalid completed quest prerequisite".into());
+        }
+        if let Some(choice) = &self.choice
+            && (self.prerequisite == Prerequisite::PaidPassage
+                || !source(&choice.group)
+                || !canonical(&choice.path, 64))
+        {
+            return Err("invalid quest choice".into());
+        }
         let mut ids = BTreeSet::new();
         for checkpoint in &self.checkpoints {
             checkpoint.check()?;
@@ -158,6 +183,31 @@ impl QuestDef {
         }
         Ok(())
     }
+}
+
+/// A direct legacy definition remains byte-compatible. Catalogs have a canonical
+/// order so a staff edit cannot silently change which authored option is first.
+pub(crate) fn decode_definitions(value: &serde_json::Value) -> Result<Vec<QuestDef>, String> {
+    if !within(value, MAX_QUEST_CATALOG_BYTES) {
+        return Err("quest catalog exceeds its byte bound".into());
+    }
+    let definitions: Vec<QuestDef> = if value.is_array() {
+        serde_json::from_value(value.clone()).map_err(|_| "invalid quest catalog")?
+    } else {
+        vec![serde_json::from_value(value.clone()).map_err(|_| "invalid quest definition")?]
+    };
+    if definitions.is_empty()
+        || definitions.len() > MAX_QUESTS_PER_NPC
+        || definitions
+            .windows(2)
+            .any(|pair| pair.first().map(|def| &def.key) >= pair.get(1).map(|def| &def.key))
+    {
+        return Err("quest catalog must have bounded, unique, sorted keys".into());
+    }
+    for definition in &definitions {
+        definition.check()?;
+    }
+    Ok(definitions)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -240,6 +290,18 @@ pub struct Stamp {
     pub at_utc: i64,
     pub at_ic: i64,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClosureKind {
+    Declined,
+    Abandoned,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClosedQuest {
+    pub kind: ClosureKind,
+    pub at: Stamp,
+}
 impl Stamp {
     pub fn now(w: &World) -> Self {
         Self {
@@ -299,12 +361,20 @@ pub struct QuestRecord {
     pub npc: ObjId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passage: Option<Booking>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prerequisite_receipt: Option<QuestKey>,
     pub definition: QuestDef,
     pub accepted: Stamp,
     pub checks: Vec<CheckEvidence>,
     pub completed: Option<Stamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed: Option<ClosedQuest>,
 }
 impl QuestRecord {
+    pub fn is_active(&self) -> bool {
+        self.completed.is_none() && self.closed.is_none()
+    }
+
     pub fn check(&self) -> Result<(), String> {
         self.key.check()?;
         self.definition.check()?;
@@ -327,18 +397,41 @@ impl QuestRecord {
                     return Err("quest passage does not match its receipt".into());
                 }
             }
-            (Prerequisite::Open, None)
+            (Prerequisite::Open | Prerequisite::Completed { .. }, None)
                 if self.key.actor == Some(self.actor) && self.key.booking.is_none() => {}
             _ => return Err("quest prerequisite does not match its identity".into()),
         }
+        match (&self.definition.prerequisite, &self.prerequisite_receipt) {
+            (Prerequisite::Completed { quest }, Some(key)) => {
+                key.check()?;
+                if &key.source != quest
+                    || key == &self.key
+                    || key.actor.is_some_and(|actor| actor != self.actor)
+                {
+                    return Err(
+                        "quest prerequisite receipt names another quest or character".into(),
+                    );
+                }
+            }
+            (Prerequisite::Completed { .. }, None) | (_, Some(_)) => {
+                return Err("quest prerequisite receipt is missing or unexpected".into());
+            }
+            (_, None) => {}
+        }
+        let abandoned = self
+            .closed
+            .as_ref()
+            .is_some_and(|closed| closed.kind == ClosureKind::Abandoned);
         if self.schema != SCHEMA
             || self.actor.0 == 0
             || self.npc.0 == 0
             || self.actor == self.npc
             || self.key.source != self.definition.key
             || self.checks.len() > self.definition.checkpoints.len()
-            || self.revision != 1 + self.checks.len() as u64 + u64::from(self.completed.is_some())
+            || self.revision
+                != 1 + self.checks.len() as u64 + u64::from(self.completed.is_some() || abandoned)
             || (self.completed.is_some() && self.checks.len() != self.definition.checkpoints.len())
+            || (self.completed.is_some() && self.closed.is_some())
         {
             return Err("invalid quest progress receipt".into());
         }
@@ -368,6 +461,15 @@ impl QuestRecord {
             .is_some_and(|done| !done.follows(previous))
         {
             return Err("quest completion predates its checks".into());
+        }
+        if let Some(closed) = &self.closed
+            && (!closed.at.follows(previous)
+                || (closed.kind == ClosureKind::Declined
+                    && (self.revision != 1
+                        || !self.checks.is_empty()
+                        || closed.at != self.accepted)))
+        {
+            return Err("invalid quest closure receipt".into());
         }
         if !within(self, MAX_RECORD_BYTES) {
             return Err("quest receipt exceeds its byte bound".into());
@@ -465,6 +567,7 @@ pub(super) mod tests {
                 }),
                 cancelled: None,
             }),
+            prerequisite_receipt: None,
             definition: QuestDef {
                 schema: 1,
                 key: "pack/quest.leila".into(),
@@ -472,6 +575,7 @@ pub(super) mod tests {
                 introduction: "Check the bench.".into(),
                 destination: "ceres".into(),
                 prerequisite: Prerequisite::PaidPassage,
+                choice: None,
                 checkpoints: vec![Checkpoint {
                     id: "bench".into(),
                     title: "Check bench".into(),
@@ -490,6 +594,7 @@ pub(super) mod tests {
             },
             checks: Vec::new(),
             completed: None,
+            closed: None,
         }
     }
     #[test]
@@ -567,6 +672,9 @@ pub(super) mod tests {
         check_eq!(original["key"]["booking"], serde_json::json!(0));
         check!(original["key"].get("actor").is_none());
         check!(original["definition"].get("prerequisite").is_none());
+        check!(original["definition"].get("choice").is_none());
+        check!(original.get("prerequisite_receipt").is_none());
+        check!(original.get("closed").is_none());
         check!(
             original["definition"]["checkpoints"][0]
                 .get("objective")
@@ -661,6 +769,98 @@ pub(super) mod tests {
             .check()
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn catalogs_accept_legacy_and_bounded_sorted_unique_definitions() -> TestResult {
+        let mut first = record().definition;
+        let legacy = serde_json::to_value(&first)?;
+        check_eq!(decode_definitions(&legacy)?, vec![first.clone()]);
+        let mut second = first.clone();
+        second.key = "pack/quest.next".into();
+        second.prerequisite = Prerequisite::Completed {
+            quest: first.key.clone(),
+        };
+        second.choice = Some(QuestChoice {
+            group: "pack/leila_referral".into(),
+            path: "trade".into(),
+        });
+        second.check()?;
+        check_eq!(
+            serde_json::to_value(&second.prerequisite)?,
+            serde_json::json!({"completed":{"quest":first.key}})
+        );
+        let array = serde_json::to_value(vec![first.clone(), second.clone()])?;
+        check_eq!(decode_definitions(&array)?.len(), 2);
+        check!(
+            decode_definitions(&serde_json::to_value(vec![second.clone(), first.clone()])?)
+                .is_err()
+        );
+        check!(
+            decode_definitions(&serde_json::to_value(vec![first.clone(), first.clone()])?).is_err()
+        );
+        check!(decode_definitions(&serde_json::json!([])).is_err());
+        check!(
+            decode_definitions(&serde_json::json!("x".repeat(MAX_QUEST_CATALOG_BYTES))).is_err()
+        );
+        first.choice = second.choice.clone();
+        check!(first.check().is_err());
+        second.prerequisite = Prerequisite::Completed {
+            quest: second.key.clone(),
+        };
+        check!(second.check().is_err());
+        check!(
+            serde_json::from_value::<Prerequisite>(
+                serde_json::json!({"completed":{"quest":"pack/quest.old","invented":true}})
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn closed_receipts_are_terminal_and_prerequisites_bind_exact_keys() -> TestResult {
+        let before = record();
+        let mut declined = before.clone();
+        declined.closed = Some(ClosedQuest {
+            kind: ClosureKind::Declined,
+            at: declined.accepted.clone(),
+        });
+        declined.check()?;
+        check!(!declined.is_active());
+        let mut bad = declined.clone();
+        bad.closed.as_mut().ok_or("closure")?.at.at_ic += 1;
+        check!(bad.check().is_err());
+        let mut abandoned = before.clone();
+        abandoned.closed = Some(ClosedQuest {
+            kind: ClosureKind::Abandoned,
+            at: abandoned.accepted.clone(),
+        });
+        abandoned.revision = 2;
+        abandoned.check()?;
+        abandoned.completed = Some(abandoned.accepted.clone());
+        check!(abandoned.check().is_err());
+
+        let mut next = before.clone();
+        next.key = QuestKey {
+            source: "pack/quest.next".into(),
+            booking: None,
+            actor: Some(next.actor),
+        };
+        next.definition.key.clone_from(&next.key.source);
+        next.definition.prerequisite = Prerequisite::Completed {
+            quest: before.key.source.clone(),
+        };
+        next.passage = None;
+        check!(next.check().is_err());
+        next.prerequisite_receipt = Some(before.key.clone());
+        next.check()?;
+        next.prerequisite_receipt
+            .as_mut()
+            .ok_or("prerequisite")?
+            .source = "pack/quest.other".into();
+        check!(next.check().is_err());
         Ok(())
     }
 }

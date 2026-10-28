@@ -40,6 +40,9 @@ mod onboarding_quests;
 #[path = "onboarding_trade.rs"]
 mod onboarding_trade;
 
+#[path = "quest_followups.rs"]
+mod quest_followups;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -141,6 +144,9 @@ impl Roster {
         mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
         if passenger_v1 {
             let mut packs = comp::boot_pack_list(true, true).expect("the boot packs verify");
+            // This old-binary fixture predates both passenger v2 and its later
+            // follow-ups; unlike production it has no dependency-upgrade wait.
+            packs.retain(|pack| pack.manifest().id().as_str() != tacsim::quest::packs::LEILA_PACK);
             let old =
                 mush_content::load_pack(include_str!("../../content/passengers/stickney_v1.json"))
                     .expect("the immutable passenger v1 pack verifies");

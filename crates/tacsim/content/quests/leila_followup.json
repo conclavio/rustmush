@@ -1,0 +1,72 @@
+{
+  "manifest": {
+    "id": "tacsim.quests.leila_followup",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "8d9cdd3fe91f97ca6871bbbe9556e1c2b47a707ae7ae7f6c1396d502355f97e7",
+    "requires": [
+      { "id": "tacsim.passengers.stickney", "version": 2 },
+      { "id": "neighborhood.ceres_freeport", "version": 4 },
+      { "id": "neighborhood.stickney_yards", "version": 4 }
+    ]
+  },
+  "brief": {
+    "prose": "After the same captain completes A second reading with Leila, she offers a choice of two further pieces of real work: a modest fittings trade or practical surface readings. Accepting either path reserves this personal follow-up permanently, even if abandoned; declining an offered path leaves the other available. Ordinary trade, surveying and independent starter invitations remain available. The existing Leila, her passage, her earlier quest, her memories and every other giver remain unchanged."
+  },
+  "entries": {
+    "quest.leila_trade": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.leila_mensah_kovacs",
+        "npc_pack": "tacsim.passengers.stickney",
+        "prerequisite": { "completed": { "quest": "tacsim.passengers.stickney/quest.leila_second_reading" } },
+        "choice": { "group": "tacsim.leila_next_work", "path": "trade" },
+        "title": "A useful consignment",
+        "introduction": "We did well comparing that second reading. There are two ways we could follow it up. One is practical: buy a tonne of the Yard's crated fittings at Stickney and deliver it into the Co-op's bid here. Dov's chandlery is the place to account for the trade; then come back and tell me how it went. The other invitation is instrument work. Choose only the one that suits you, or neither. Accepting this one closes the other even if you later abandon it. This is ordinary trade at the live prices, with no promised profit or extra payment from me.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "fittings_trade",
+            "title": "Account for the fittings trade at Dov's chandlery",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c08_chandlery",
+            "objective": { "kind": "trade", "origin": "stickney", "destination": "ceres", "commodity": "industrial_parts", "quantity": 1 },
+            "instructions": "After accepting, buy at least one tonne of crated fittings (industrial_parts) at Stickney: +market/list, +market/quote <listing>=1, then +market/accept <quote>. Plan the voyage and provisions with +ship/plan ceres. At Dov's Co-op Chandlery on Ceres, sell to the live Co-op bid with +market/sell <listing>=1 and let delivery and payment finish. There, use +quest/check Leila=tacsim.quests.leila_followup/quest.leila_trade to acknowledge the actual trade. This remains Leila's invitation. Return to her at the Visiting Berth Gallery and use +quest/finish Leila=tacsim.quests.leila_followup/quest.leila_trade."
+          }
+        ],
+        "completion": "After our second reading, my former captain chose the practical trade. They bought fittings at Stickney, completed a delivered sale at Ceres and accounted for it at the chandlery before returning to me. We followed an observation with useful, ordinary work."
+      }
+    },
+    "quest.leila_survey": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.leila_mensah_kovacs",
+        "npc_pack": "tacsim.passengers.stickney",
+        "prerequisite": { "completed": { "quest": "tacsim.passengers.stickney/quest.leila_second_reading" } },
+        "choice": { "group": "tacsim.leila_next_work", "path": "survey" },
+        "title": "Two scales of looking",
+        "introduction": "The tap gave us something close and definite to compare. If you would rather stay with instruments, take a broad scan and a sounding on a real surface site, then account for those readings at Rosalind's Exchange desk before coming back to me. I want to hear that you followed the work through; your chart stays yours. This is the alternative to the fittings run, not another step after it. Accepting this one closes the trade invitation even if you later abandon it. Neither path is required for your other work.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "scan",
+            "title": "Account for a surface scan at the Exchange",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "objective": { "kind": "survey", "mode": "scan" },
+            "instructions": "After accepting, use help mining for any licence, refit or rig lease you need. Choose a real site with +chart/ground and plan the outward and home legs. +tv/1 scan previews the operation; +tv/1 scan go submits it. Complete a sounding on the same trip if you wish. Back at the Exchange Hall, where Rosalind Qureshi-Mbeki works, use +quest/check Leila=tacsim.quests.leila_followup/quest.leila_survey to acknowledge the scan. No paid commission or chart disclosure is required."
+          },
+          {
+            "id": "sound",
+            "title": "Account for a surface sounding at the Exchange",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "objective": { "kind": "survey", "mode": "sound" },
+            "instructions": "After accepting, complete an ordinary sounding with +tv/1 sound and +tv/1 sound go; a successful quiet sounding also counts. The scan and sounding may be from the same trip. After recording the scan at the Exchange, use +quest/check Leila=tacsim.quests.leila_followup/quest.leila_survey again for the sounding. Return to Leila at the Visiting Berth Gallery and use +quest/finish Leila=tacsim.quests.leila_followup/quest.leila_survey."
+          }
+        ],
+        "completion": "After our second reading, my former captain chose the instrument work. They completed a fresh surface scan and sounding, accounted for both at the Exchange and returned to compare the experience with me. We learned how they approached the broad reading and the closer one without taking their private chart."
+      }
+    }
+  }
+}
