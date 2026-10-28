@@ -292,48 +292,12 @@ pub(crate) fn register_with_coverage(
         (&site_work_outcome, &dispatch_outcome),
         probe_outcome.as_ref(),
     )?;
-    actions.push(
-        descriptor(
-            "action",
-            crate::surface::recovery::RECOVERY_ACTION,
-            json!({
-                "subject": "self_actor",
-                "targets": 0,
-                "family": crate::surface::excursion::EXCURSION_FAMILY,
-            }),
-        )?
-        .with_references(vec![recovery_outcome.clone()]),
-    );
-    actions.push(descriptor(
-        "action",
-        crate::surface::survey::SURVEY_ACTION,
-        json!({"subject":"self_actor","targets":0,"family":crate::surface::survey::SURVEY_FAMILY}),
-    )?.with_references(vec![survey_outcome.clone()]));
-    actions.push(descriptor(
-        "action",
-        crate::surface::survey::SURVEY_CANCEL_ACTION,
-        json!({"subject":"self_actor","targets":0,"family":crate::surface::survey::SURVEY_FAMILY}),
-    )?.with_references(vec![survey_cancel_outcome.clone()]));
-    // Doc 23 cut S.2: the ship's epoch writes its `tacsim.ship_epoch` record; its black box line
-    // rides the black box's participant.
-    actions.push(
-        descriptor(
-            "action",
-            crate::port::epoch::EPOCH_ACTION,
-            json!({
-                "subject": "self_actor",
-                "targets": 0,
-                "family": crate::port::epoch::EPOCH_FAMILY,
-            }),
-        )?
-        .with_references(vec![epoch_outcome.clone()]),
-    );
     append_receipt_actions(
         &mut actions,
         &recovery_outcome,
         &survey_outcome,
         &survey_cancel_outcome,
-        &passenger_outcome,
+        (&passenger_outcome, &epoch_outcome),
     )?;
     actions.push(crate::quest::registration::action(&outcome_refs)?);
     if let Some(ic) = ic {
@@ -498,26 +462,13 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.12b (§12.3): `tacsim_dispatch`, the house's survey and the yard's delivery —
     // registered only when the inventory cell is filled (the delivery's transfer rides the
     // delegated families; the stock provider's rule); the definitions register regardless.
-    let dispatch_action = match (
-        action_refs.get(crate::port::yard::DISPATCH_ACTION).cloned(),
-        inventory_families.clone(),
-    ) {
-        (Some(action), Some(inventory)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::yard::DispatchProvider {
-                    action: action.clone(),
-                    outcome: dispatch_outcome,
-                    dispatch: port_families.dispatch.clone(),
-                    charts: port_families.charts.clone(),
-                    claims: port_families.claims.clone(),
-                    inventory,
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
+    let dispatch_action = register_dispatch(
+        reg,
+        &action_refs,
+        dispatch_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     let quest =
         crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
     reg.state(PortHandles {
@@ -562,7 +513,7 @@ fn append_receipt_actions(
     recovery: &DefinitionRef,
     survey_accept: &DefinitionRef,
     survey_cancel: &DefinitionRef,
-    passenger: &DefinitionRef,
+    (passenger, epoch): (&DefinitionRef, &DefinitionRef),
 ) -> Result<(), ModError> {
     actions.push(
         descriptor(
@@ -588,6 +539,20 @@ fn append_receipt_actions(
     )?.with_references(vec![survey_cancel.clone()]));
     actions.push(descriptor("action", crate::port::passenger::store::ACTION,
         json!({"subject":"self_actor","targets":0,"family":crate::port::passenger::store::FAMILY}))?.with_references(vec![passenger.clone()]));
+    // Doc 23 cut S.2: the ship's epoch writes its `tacsim.ship_epoch` record; its black box line
+    // rides the black box's participant.
+    actions.push(
+        descriptor(
+            "action",
+            crate::port::epoch::EPOCH_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::port::epoch::EPOCH_FAMILY,
+            }),
+        )?
+        .with_references(vec![epoch.clone()]),
+    );
     Ok(())
 }
 
