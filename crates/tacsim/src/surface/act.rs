@@ -9346,8 +9346,11 @@ impl ActionProvider for SurfaceDoneProvider {
                     .flatten()
                     .cloned()
             };
-            let epoch = read_rig(record.tv)
-                .and_then(|found| crate::surface::black_box::epoch_facts(w, &read_rig, &found));
+            // Doc 23 cut S.2 (V7): the carrier's open epoch, its typed record.
+            let read_carrier = |hull: ObjId| crate::port::epoch::open_id_in(engine, hull);
+            let epoch = read_rig(record.tv).and_then(|found| {
+                crate::surface::black_box::epoch_facts(w, (&read_rig, &read_carrier), &found)
+            });
             rigs.insert(
                 record.tv.0.to_string(),
                 DoneRig {

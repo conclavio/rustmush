@@ -143,6 +143,9 @@ pub mod claims;
 pub mod coop;
 pub mod credit;
 pub mod def;
+/// Doc 23 cut S.2: the ship's seal epoch on the port voyage — the `tacsim.port` tick's epoch
+/// arm and the `tacsim_voyage_epoch` action (doc 23 §6, §7).
+pub mod epoch;
 pub mod executor;
 pub mod families;
 pub mod gauges;
@@ -206,6 +209,10 @@ pub use def::{
     SITE_BLOCK_COUNT, SiteDef, SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, YardDef,
     Zone, capital_schedule, check_ports, room_key, tranches,
 };
+pub use epoch::{
+    EPOCH_ACTION, EPOCH_FAMILY, EPOCH_OUTCOME, EpochKey, EpochLast, EpochOp, ShipEpoch,
+    ShipEpochRecord, epoch_pages,
+};
 pub use executor::{
     Ask, Bid, Bound, FILL_ITERATIONS, FillError, FillTargets, MAX_ORDER_ATTEMPTS,
     MAX_ORDER_REFUSALS, MAX_ORDER_VERIFY_PER_FIRE, ORDER_RESTAGE_SECS, ORDER_RETRY_SECS,
@@ -263,7 +270,7 @@ pub use stock::{
     STOCK_SOURCE_KIND,
 };
 pub use voyage::{
-    LAUNCH_GRACE_FIRES, LAUNCH_WATCH_FIRES, POLICY_USAGE, PassageOptions, PendingVoyage,
+    Departed, LAUNCH_GRACE_FIRES, LAUNCH_WATCH_FIRES, POLICY_USAGE, PassageOptions, PendingVoyage,
     THROTTLE_USAGE, VIA_UNKNOWN, VOYAGE_PREFIX, VOYAGE_SCHEMA, Voyage, VoyageState, voyage_key,
     voyage_key_owner,
 };

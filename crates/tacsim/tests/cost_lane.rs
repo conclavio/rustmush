@@ -2723,12 +2723,15 @@ fn assert_black_box_pair(rig: &Rig, test: &str) {
             rig.tally.black_box
         );
     }
+    // Doc 23 cut S.2: the ship's epoch (the port tick's `tacsim_voyage_epoch`, a kind the gates
+    // leave `other.*`) writes the Dray-P's own pair.
     let allowed = [
         "done.launch",
         "done.scan",
         "done.sound",
         "done.drive",
         "done.recover",
+        "other.tacsim_voyage_epoch",
     ];
     assert!(
         rig.tally

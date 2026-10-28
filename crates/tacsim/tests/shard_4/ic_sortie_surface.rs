@@ -16,7 +16,7 @@ use mush_core::ObjId;
 use tacsim::arena::mind::SortieId;
 use tacsim::definitions::UnitClass;
 use tacsim::deliberation::order::CharacterRef;
-use tacsim::surface::black_box::{BlackBoxLine, EpochHost, SealWord};
+use tacsim::surface::black_box::{BlackBoxLine, EpochHost, Hangar, SealWord};
 use tacsim::surface::{ActKind, ActResult, RefusedCode, TvState};
 
 use mush_roll::commerce::ic_claims::IcCloseKind;
@@ -33,6 +33,19 @@ fn lines(rig: &crate::excursions::Rig, hull: ObjId) -> Vec<BlackBoxLine> {
     let (lines, skipped) = store(&rig.tw).black_box_lines(hull);
     assert_eq!(skipped, 0, "every black box entry decodes");
     lines.into_iter().map(|(_, line)| line).collect()
+}
+
+/// **The Dray-P's open epoch** (doc 23 cut S.2): its typed `tacsim.ship_epoch` record's — the
+/// harness flies the Dray-P to Ahuna Flank (`on_pad`), so the ship's epoch opened on the way and
+/// stays open on the site's pad (D-23-3).
+fn ship_epoch(rig: &mut crate::excursions::Rig, hull: ObjId) -> Option<tacsim::port::ShipEpoch> {
+    let h = crate::excursions::handles(&rig.tw);
+    crate::excursions::typed(
+        &mut rig.tw,
+        &h.families.epochs,
+        &tacsim::port::EpochKey(hull),
+    )
+    .and_then(|record: tacsim::port::ShipEpochRecord| record.open)
 }
 
 /// **The whole black box read back from the store's documents** — the history read an
@@ -60,13 +73,14 @@ fn history(rig: &crate::excursions::Rig, hull: ObjId) -> Vec<BlackBoxLine> {
 /// **1. One excursion opens and closes, with a restart between** (§10 tier 1 item 1; L3, L5,
 /// L7, L8; D-23-2, D-23-5, D-23-8): launched and finished, the record holds the open epoch —
 /// `SortieId::ic(tv, launch_ic)`, the Dray-P its hangar, opened at the launch's due instant, not
-/// abandoned — and the black box one `mind_sealed` line: the Dray-P and no open epoch of its own
-/// as the hangar, the operator's character the principal, the ROM seal (`no core: the ROM`,
-/// Class 0, governed, `doctrine`), the vehicle class admitted as the site's one open epoch. A
-/// reboot from the store keeps the record and the line. Recovered and finished, the epoch is
-/// closed and the black box holds the `sortie_closed` line, `returned_to_base` into the Dray-P,
-/// not abandoned — two lines in all, which a second reboot and the documents' own history read
-/// both give back.
+/// abandoned — and the black box one `mind_sealed` line: the Dray-P and (doc 23 cut S.2, V7) the
+/// Dray-P's own open epoch as the hangar, the operator's character the principal, the ROM seal
+/// (`no core: the ROM`, Class 0, governed, `doctrine`), the vehicle class admitted as the site's
+/// one open epoch. A reboot from the store keeps the record and the line. Recovered and
+/// finished, the epoch is closed and the black box holds the `sortie_closed` line,
+/// `returned_to_base` into the Dray-P, not abandoned — two lines in all, which a second reboot
+/// and the documents' own history read both give back. The Dray-P's own black box holds its one
+/// open line throughout (cut S.2: it flew to Ahuna under an epoch the site's pad keeps open).
 #[test]
 #[allow(clippy::too_many_lines)]
 fn s1_one_excursion_opens_and_closes_across_a_restart() {
@@ -120,9 +134,16 @@ fn s1_one_excursion_opens_and_closes_across_a_restart() {
     };
     assert_eq!((*unit, *sortie, *at_ic), (tv, open.id, due));
     assert_eq!(*host, EpochHost::Surface);
-    assert_eq!(hangar.hull, hull, "the hangar is the Dray-P (D-23-2)");
-    assert_eq!(hangar.slot, 1);
-    assert_eq!(hangar.sortie, None, "the ship has no epoch until S.2");
+    let ship = ship_epoch(&mut rig, hull).expect("the Dray-P's epoch is open on the pad (S.2)");
+    assert_eq!(
+        *hangar,
+        Hangar::Bay {
+            hull,
+            slot: 1,
+            sortie: Some(ship.id),
+        },
+        "the hangar is the Dray-P (D-23-2) and names its open epoch (S.2's V7)"
+    );
     assert_eq!(site.as_str(), "ahuna_port");
     assert_eq!(
         principal,
@@ -189,9 +210,11 @@ fn s1_one_excursion_opens_and_closes_across_a_restart() {
     );
     assert_eq!(store(&rig.tw).black_box_len(tv), 2);
     assert!(!store(&rig.tw).black_box_dark());
-    assert!(
-        lines(&rig, hull).is_empty(),
-        "the Dray-P's own black box is empty in S.1"
+    assert_eq!(
+        lines(&rig, hull).len(),
+        1,
+        "the Dray-P's own black box holds its open line alone (S.2: its epoch stays open on the \
+         pad)"
     );
     let _ = fire(&mut rig);
     no_refused_writes(&rig.tw);
@@ -468,7 +491,8 @@ fn s1_a_staff_close_before_the_launch_finish_opens_the_epoch_abandoned() {
     else {
         panic!("the open line: {opened:?}");
     };
-    assert_eq!((*sortie, hangar.hull), (open.id, hull));
+    assert_eq!(*sortie, open.id);
+    assert!(matches!(hangar, Hangar::Bay { hull: of, .. } if *of == hull));
     assert_eq!(*seal, SealWord::Sealed);
     assert_eq!(principal, &Some(CharacterRef::Character { id: pilot }));
     let refused = land(&mut rig, &done).expect_err("the held finish is stale");
@@ -572,5 +596,73 @@ fn s1_a_launch_that_never_left_writes_nothing() {
     assert_eq!(record.sortie, None, "no epoch opens");
     assert!(lines(&rig, tv).is_empty(), "no line");
     assert_eq!(store(&rig.tw).black_box_len(tv), 0);
+    no_refused_writes(&rig.tw);
+}
+
+/// **4. A settle on a site's pad keeps the ship's epoch open, and a rig launched there names it**
+/// (doc 23 cut S.2; V7, D-23-2, D-23-3): the Dray-P flew from Ceres to Ahuna Flank (`on_pad`), so
+/// its epoch opened — `host: port`, Ceres left — and the pad, a site, is no hangar: further fires
+/// close nothing. A rig launched from the bay writes its `mind_sealed` line naming the Dray-P and
+/// the Dray-P's open epoch as its hangar; after the rig's recover the ship's epoch is still open,
+/// with its one line.
+#[test]
+fn s2_a_rig_launched_on_a_pad_names_its_carriers_open_epoch() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let hull = ObjId(row.hull);
+    let ship = ship_epoch(&mut rig, hull).expect("the Dray-P's epoch opened on the way");
+    assert!(
+        tacsim::port::ship::hangar_port_of(rig.tw.world(), hull).is_none(),
+        "a site's pad is no hangar (V3)"
+    );
+    assert_eq!(ship.from.as_str(), "ceres_port");
+    let shipped = lines(&rig, hull);
+    assert_eq!(shipped.len(), 1, "{shipped:?}");
+    assert!(matches!(
+        &shipped[0],
+        BlackBoxLine::MindSealed { host: EpochHost::Port, sortie, .. } if *sortie == ship.id
+    ));
+    for _ in 0..3 {
+        let (_, queued) = fire(&mut rig);
+        assert!(
+            queued
+                .iter()
+                .all(|submit| submit.action.key().id.as_str() != tacsim::port::EPOCH_ACTION),
+            "the pad closes nothing (D-23-3)"
+        );
+        land_all(&mut rig, &queued);
+    }
+
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let opened = lines(&rig, tv);
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    let BlackBoxLine::MindSealed { hangar, .. } = &opened[0] else {
+        panic!("the rig's open line: {opened:?}");
+    };
+    assert_eq!(
+        *hangar,
+        Hangar::Bay {
+            hull,
+            slot: 1,
+            sortie: Some(ship.id),
+        },
+        "the rig names its carrier's open epoch (V7)"
+    );
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(
+        record_of(&mut rig.tw, tv).and_then(|record| record.sortie),
+        None,
+        "the rig's epoch closed"
+    );
+    assert_eq!(lines(&rig, tv).len(), 2);
+    assert_eq!(
+        ship_epoch(&mut rig, hull),
+        Some(ship),
+        "the ship's epoch is still open after the rig's recover"
+    );
+    assert_eq!(lines(&rig, hull), shipped, "the ship's box is unmoved");
     no_refused_writes(&rig.tw);
 }
