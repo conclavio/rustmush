@@ -117,7 +117,10 @@ jobs:
           # The nightly run at production's pace; a dispatch at the input's
           # (empty = the fast path). The tacsim stories do not read it.
           MIND_PULSE_MS: ${{ github.event_name == 'schedule' && '1000' || inputs.mind_pulse_ms }}
-        run: cargo test --locked -p ${{ matrix.package }} --lib ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1
+        # `--nocapture`: a passing story's `M7_*` lines (its rating's wall,
+        # `M7_STORY_RATED`) are otherwise swallowed by the harness and only a
+        # failure shows them (run 40707221516's typed story).
+        run: cargo test --locked -p ${{ matrix.package }} --lib ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
 
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
