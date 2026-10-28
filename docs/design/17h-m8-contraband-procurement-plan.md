@@ -556,5 +556,61 @@ evicted only when the whole ring is ungoverned.
 
 ## 7. Ledger
 
-Nothing landed. The first entries are M8a and M8c, each on its own branch (`claude/m8-<cut>`) off
-`main`, each a PR; M8b follows M8a.
+Each cut runs on its own branch as a PR. M8b is stacked on M8a, and M8f will stack on M8c. The
+briefs, fix rounds and lens notes are in the plan-data folder `m8-contraband/cuts/<cut>/`.
+
+### M8a — the deterministic reads (PR #67, built 2026-10-28; merge pending)
+
+Branch `claude/m8-a-reads-8ef2e8`, with these commits on top of `main`:
+- `9159cffa`, the cut;
+- `019e6713`, re-blessing the twin corpus's four ledger digests;
+- `75de08a7`, fix round 1;
+- `23006c94`, fix round 2;
+- merges of `main`, `67d4e796` and a second one for PRs #70–#72.
+
+Review found no blocker in three Opus lenses, a verifier on round 1, and CI on every commit
+up to `75de08a7`.
+
+**What landed:**
+- `SealLicenceState` is a parameter of `MindSeal::sealed_line`, never a seal field, and it
+  appears on `SealFacts` and on the box line.
+- On the arena `EventKind` the field is optional and skipped when empty, so lines written
+  before M8a still decode.
+- `+hull/box #<hull> [n]` reads the RAM tail. A trip shows as two lines so it fits the 120-column
+  floor. The readers are the title holder, the current lessee from their own lease's start, and
+  staff. Every non-reader gets the one sentence.
+- `@registry/inspect <hull>` needs `roll.registry.inspect`. The known-hull gate lives in the
+  provider. The record lives in family `roll_registry_inspections`, 64 per hull, oldest evicted.
+- The inspection reply is "Inspecting hull #n." plus a one-line receipt rendered at prepare from
+  the recorded facts. The driver's receipt is one line, so the record's facts cannot be printed
+  as several.
+- The seal check compares component, class and governor, as the IC audit does. No core means no
+  hardware (`governed` absent), not Class 0.
+- `provenance_of` reads the retained die certificate. A read error is `Unknown`.
+- The runbook gains the third Registry grant.
+
+**Rulings the lead took:**
+- The receipt's wording, kept as built.
+- A per-hull ring of 64 inspections.
+- The lessee reads only their own lease.
+
+**Owner rulings:** §5 (a), charter tenants do not read the box.
+
+**Re-blessed, each with its reason:**
+- the recorded `mind_sealed` tapes, one key each with no hash moved;
+- the twin corpus's ledger digests, on the merged tree;
+- the harness baseline, `ledger_bytes_streamed` +8,100 and `ledger_chunks` 103 → 104 after
+  DT.1b.
+
+**Owed:** the delegation pin for `roll_registry_inspections` (no composed-launch pin covers it).
+
+### M8c — organisations as holders (built; fix round 1 in progress, not committed)
+
+### M8b — the crime (built, stacked on PR #67; fix round 1 in progress, not committed)
+
+C3, the heirloom and grey dies, is split out to a cut **M8b-2**. Those dies need a second die
+input through industry and a second integration site through the economy. M8d and M8g do not
+need them, because the ungoverning refit already makes ungoverned cores. Lead ruling: the
+governed `core_refit` fits a core into a coreless rig, so a stock surface rig can be cored.
+M8b moves the production refit policy's digest and its four action descriptors' references.
+That is flagged for the next dev2 redeploy decision.
