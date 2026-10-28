@@ -427,6 +427,11 @@ export interface CockpitFrame {
    * (16b cut D.2), and no shipped client reads it today; it stays decoded
    * because `T-59` is closed for the printed word alone. */
   tempo: string;
+  /** The match's public mode word — `skirmish`, `hold` or `range` — the
+   * keyframe's `"mode"`. 16c Q-PT1: the status block's callsign row and the
+   * picture's header say `RANGE` while it is `range`, so a range of inert
+   * targets is never read as a side that will not shoot back. */
+  mode: string;
   /** THIS platform's own alert state — `clear`, `unidentified` or `hostile`
    * (16b cut D.1) — which is what the status block prints. */
   scope: string;
@@ -997,6 +1002,8 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     // 16b cut O.2: the pod's switch, or `null` (absent, null or unknown alike).
     ecm: data.ecm === "on" || data.ecm === "off" ? data.ecm : null,
     tempo: clean(data.tempo, "?"),
+    // 16c Q-PT1: the match's mode word, read for the one word `range`.
+    mode: clean(data.mode, "?"),
     scope: clean(data.scope, "?"),
     lock_designator: optStr(data.lock_designator, 8),
     lock_range_m: optInt(data.lock_range_m),
@@ -1703,8 +1710,11 @@ export function statusLines(frame: CockpitFrame): string[] {
   // 16b cut B.1 (`T-86`): the pilot's own two limits (16b cut D.2) on the speed
   // line — a wreck says only DESTROYED, because it is immobile as well.
   const limit = frame.wreck ? "  DESTROYED" : frame.immobile ? "  IMMOBILE" : "";
+  // 16c Q-PT1: a range says so on the callsign row, the TUI's words in the
+  // TUI's place (`render_cockpit_status_rows`).
+  const range = frame.mode === "range" ? "  RANGE" : "";
   const lines = [
-    `Callsign ${frame.callsign}`,
+    `Callsign ${frame.callsign}${range}`,
     `power ${frame.power}${frame.blocked ? "  HELD" : ""}`,
     `${frame.speed_kph} kph  heading ${deg3(frame.heading_deg)}°${limit}`,
   ];

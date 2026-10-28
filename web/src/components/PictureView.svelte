@@ -441,6 +441,10 @@
       {/if}
       {#if frame !== null}
         <span class="readout">{gateWord(frame.weapons_free)}</span>
+        {#if frame.mode === "range"}
+          <!-- 16c Q-PT1: a range says so beside the gate, as the TUI's top line does. -->
+          <span class="readout" aria-label="match mode">RANGE</span>
+        {/if}
       {/if}
       <span class="dim legend"
         >a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·

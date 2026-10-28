@@ -2545,9 +2545,18 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
         return replay::status_rows(ctx).unwrap_or_default();
     }
     let system = ctx.tag("system");
+    // **16c `Q-PT1`**: a range says so on the callsign row — the keyframe's
+    // `"mode"` — so four targets are never read as a side that will not shoot
+    // back. `Callsign` with an eight-letter callsign and `  RANGE` is 24, inside
+    // the pane's 32 inner columns.
+    let range = if data.get("mode").and_then(Value::as_str) == Some("range") {
+        "  RANGE"
+    } else {
+        ""
+    };
     let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
         format!(
-            "Callsign {}",
+            "Callsign {}{range}",
             truncate_chars(
                 &clean(data.get("callsign").and_then(Value::as_str).unwrap_or("?")),
                 8
@@ -6817,6 +6826,20 @@ mod tests {
             status(&stuck).get(2).map(String::as_str),
             Some("20 kph  heading 090\u{b0}  IMMOBILE")
         );
+        // 16c Q-PT1: a range says so on the callsign row; a skirmish's row
+        // and a frame without the key are unchanged.
+        let mut range = frame.clone();
+        range["mode"] = serde_json::json!("range");
+        assert_eq!(
+            status(&range).first().map(String::as_str),
+            Some("Callsign RA  RANGE")
+        );
+        let mut skirmish = frame.clone();
+        skirmish["mode"] = serde_json::json!("skirmish");
+        assert_eq!(
+            status(&skirmish).first().map(String::as_str),
+            Some("Callsign RA")
+        );
 
         // The committed fixture frame: neither row.
         let fixture: Value = serde_json::from_str(include_str!(
@@ -6826,7 +6849,7 @@ mod tests {
         let rows = status(&fixture);
         assert!(!rows.is_empty(), "the fixture frame is seated");
         for row in &rows {
-            for word in ["receiver", "DESTROYED", "IMMOBILE"] {
+            for word in ["receiver", "DESTROYED", "IMMOBILE", "RANGE"] {
                 assert!(!row.contains(word), "the fixture printed {word}: {rows:?}");
             }
         }

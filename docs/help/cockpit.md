@@ -44,7 +44,8 @@ Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
                       sight inside its bubble, yours among them; off clears
                       your own sight and hides you from nothing. On at
                       check-out.
-  STATUS              your callsign, power, speed, heading, position, the named
+  STATUS              your callsign — and that you are on the range, when you
+                      are — power, speed, heading, position, the named
                       spot nearest you, what your own scope holds, your pod's
                       switch if you carry one, and your armour and internals
                       section by section. If you chose

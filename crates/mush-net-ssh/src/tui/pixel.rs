@@ -368,6 +368,9 @@ pub struct PixelView {
     /// The frame's master gate (G.12a's `weapons_free`, missing reads free),
     /// flipped by `f` until the next frame says.
     weapons_free: bool,
+    /// The frame's match is a range (16c `Q-PT1`: the keyframe's `"mode"`),
+    /// so the HUD's top line says `RANGE` beside the gate.
+    range: bool,
     /// The arena time of the last frame observed.
     seen_t_ms: Option<i64>,
     /// The terminal answered the kitty keyboard protocol's `CSI ? u`.
@@ -460,6 +463,7 @@ impl PixelView {
             frame_lock: None,
             lock_cursor: None,
             weapons_free: true,
+            range: false,
             seen_t_ms: None,
             keyboard: false,
             keyboard_pushed: false,
@@ -786,6 +790,8 @@ impl PixelView {
         if self.lock_cursor.is_some() && self.lock_cursor == self.frame_lock {
             self.lock_cursor = None;
         }
+        // 16c Q-PT1: the match's public mode, every frame.
+        self.range = cockpit.get("mode").and_then(Value::as_str) == Some("range");
         let t_ms = cockpit.get("t_ms").and_then(Value::as_i64);
         if t_ms.is_none() || t_ms != self.seen_t_ms {
             self.seen_t_ms = t_ms;
@@ -1371,8 +1377,10 @@ impl PixelView {
         } else {
             "weapons HOLD"
         };
+        // 16c Q-PT1: a range says so beside the gate.
+        let range = if self.range { "  RANGE" } else { "" };
         let mut top = format!(
-            "{}  camera {camera:03}° (tank {:03}°{ordered}, look {:+}°)  {turning}  {speed}  {weapons}  |  {probe}, drawing {drawing}  {size} {clock}{slow}",
+            "{}  camera {camera:03}° (tank {:03}°{ordered}, look {:+}°)  {turning}  {speed}  {weapons}{range}  |  {probe}, drawing {drawing}  {size} {clock}{slow}",
             match self.camera {
                 CockpitCamera::FirstPerson => "PIXEL VIEW",
                 CockpitCamera::Overhead => "PIXEL OVERHEAD",
@@ -2502,6 +2510,25 @@ mod tests {
         let (mut held, _, t0) = flying(|c| c["weapons_free"] = false.into());
         held.key(Key::Char('f'), t0);
         assert_eq!(held.take_orders(), ["FIRE FREE"]);
+    }
+
+    /// **16c Q-PT1**: a range frame puts `RANGE` on the HUD's top line beside
+    /// the gate; a skirmish's frame, or one without the key, does not.
+    #[test]
+    fn q_pt1_the_hud_says_range_on_a_range() {
+        let (mut v, cockpit, t0) = flying(|c| c["mode"] = "range".into());
+        let (top, _) = v.hud(Some(&cockpit), t0);
+        assert!(top.contains("weapons free  RANGE  |"), "{top}");
+        let (mut v, cockpit, t0) = flying(|c| c["mode"] = "skirmish".into());
+        let (top, _) = v.hud(Some(&cockpit), t0);
+        assert!(!top.contains("RANGE"), "{top}");
+        let (mut v, cockpit, t0) = flying(|c| {
+            if let Some(frame) = c.as_object_mut() {
+                frame.remove("mode");
+            }
+        });
+        let (top, _) = v.hud(Some(&cockpit), t0);
+        assert!(!top.contains("RANGE"), "{top}");
     }
 
     /// `g` is the volley: bare `FIRE ALL`.

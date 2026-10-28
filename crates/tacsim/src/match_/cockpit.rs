@@ -3817,6 +3817,8 @@ pub const WATCH_COLUMNS: usize = 120;
 /// `CONTACTS` — designators only, never an object number, a name or a pilot,
 /// and no position. **No tempo word** (16c `T-59`): `STATUS` prints the
 /// pilot's own scope and never the arena's tempo, and neither does this.
+/// **A range says so** (16c `Q-PT1`): the header ends `, RANGE` while the
+/// match is one ([`on_range`]), after the `HELD` and `DESTROYED` marks.
 #[must_use]
 pub fn watch_lines(
     frame: &Frame,
@@ -3825,13 +3827,15 @@ pub fn watch_lines(
     pass_ms: i64,
 ) -> Vec<String> {
     let mut lines = vec![format!(
-        "Watch {}: {}, {} kph, heading {:03}°{}{}",
+        "Watch {}: {}, {} kph, heading {:03}°{}{}{}",
         frame.callsign,
         frame.power.as_str(),
         cms_to_kph(frame.speed_cms),
         frame.pose.heading_mdeg / 1_000,
         if frame.held { ", HELD" } else { "" },
-        if frame.wreck { ", DESTROYED" } else { "" }
+        if frame.wreck { ", DESTROYED" } else { "" },
+        // 16c `Q-PT1`: the match's public mode, beside the pilot's own marks.
+        if on_range(frame) { ", RANGE" } else { "" }
     )];
     let rows = frame_contacts_held(frame, ranges);
     if !weapons.is_empty() {
@@ -6112,6 +6116,38 @@ fn weapon_status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     Ok(())
 }
 
+/// **The seat says it is a range** (16c `Q-PT1`, 2026-10-27): `true` while
+/// the frame's match is [`crate::arena::state::MatchMode::Range`] — one
+/// side's pilots against targets that neither move, sense nor shoot. Read off
+/// [`Frame::mode`], which the keyframe already carries as `"mode"`: `STATUS`
+/// opens with it ([`range_sentence`]), `WATCH`'s header marks it, and the
+/// TUI's and the web's status pane and picture header print `RANGE` off the
+/// same key — so a range is never read as a fight from the seat (the
+/// 2026-10-27 dev2 playtest, doc 16c §4: four targets that classified as
+/// blue contacts, powered up, took hits and died read as a side that never
+/// shot back).
+#[must_use]
+pub fn on_range(frame: &Frame) -> bool {
+    frame.mode == crate::arena::state::MatchMode::Range
+}
+
+/// **The sentence `STATUS` opens with on a range** (16c `Q-PT1`): ` On the
+/// range: targets on the blue side.` for a red pilot — the targets stand on
+/// the other side's pods, which is the lobby's invariant for the mode — and
+/// the empty string on any other match. The pilot's own side and the match's
+/// public mode: nothing the observer rule keeps.
+#[must_use]
+pub fn range_sentence(frame: &Frame) -> String {
+    if on_range(frame) {
+        format!(
+            " On the range: targets on the {} side.",
+            frame.team.other().as_str()
+        )
+    } else {
+        String::new()
+    }
+}
+
 /// `STATUS` — the status block of doc 16 §5, as the last frame carries it.
 fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
     let held = last_frame(ctx.w, seat.driver);
@@ -6122,7 +6158,8 @@ fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError> {
                 // **16b cut Q.1**, first: the name everybody who has told this
                 // tank apart is calling it by. A pilot asked "who is RA?" over
                 // the radio needs one place to look.
-                format!("Callsign {}.", frame.callsign),
+                // 16c `Q-PT1`: and that it is a range, when it is one.
+                format!("Callsign {}.{}", frame.callsign, range_sentence(frame)),
                 format!(
                     "{}{}: power {}, {} kph, heading {}°{}{}",
                     display_name(ctx.w, seat.unit),

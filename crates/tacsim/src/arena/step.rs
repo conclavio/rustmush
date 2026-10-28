@@ -101,7 +101,9 @@ pub struct Frame {
     /// is: it is what a panel's map draws the pilot's own marker at without
     /// having to divide a pose by a cell size it would have to be told.
     pub cell: Option<(u16, u16)>,
-    /// The public match mode.
+    /// The public match mode. On the wire as `"mode"`; 16c `Q-PT1` has the
+    /// seat print `RANGE` off it (`crate::match_::cockpit::on_range`), so a
+    /// range is never read as a fight.
     pub mode: crate::arena::state::MatchMode,
     /// Last accepted hit on this own hull, in arena time.
     pub own_last_hit_ms: Option<i64>,
