@@ -1,0 +1,47 @@
+[package]
+name = "mush-composition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Production module composition root: wires built-in modules, cross-module adapters, and TacSim domain modules into the server boot order."
+
+[dependencies]
+mush-atlas.workspace = true
+mush-campaign.workspace = true
+mush-canon.workspace = true
+mush-comsys.workspace = true
+mush-config.workspace = true
+mush-content.workspace = true
+mush-core.workspace = true
+mush-economy.workspace = true
+mush-faction.workspace = true
+mush-housing.workspace = true
+mush-industry.workspace = true
+mush-inventory.workspace = true
+mush-jobs.workspace = true
+mush-llm.workspace = true
+mush-mail.workspace = true
+mush-market.workspace = true
+mush-npc.workspace = true
+mush-org.workspace = true
+mush-party.workspace = true
+mush-privileges.workspace = true
+mush-propagation.workspace = true
+mush-roll.workspace = true
+mush-ruleset.workspace = true
+mush-scenes.workspace = true
+mush-script.workspace = true
+mush-sim.workspace = true
+mush-store.workspace = true
+mush-tactics.workspace = true
+mush-weather.workspace = true
+mush-worldgen.workspace = true
+tacsim.workspace = true
+
+serde_json.workspace = true
+smol_str.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

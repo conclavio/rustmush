@@ -551,13 +551,13 @@ async fn build_engine_inner(
     // one"): the geology key family — loaded only when the layer is on, and NEVER with `?`: a key
     // that will not load disables the mining layer, it does not refuse the boot. The three
     // protocol rings above keep refusing it. The key reaches the game crate after composition,
-    // through `tacsim::surface::install_geology`, before the module boot pass pins or compares
-    // its fingerprint.
+    // through `Engine::install_geology` (delegating to the registered `GeologyInstaller`), before
+    // the module boot pass pins or compares its fingerprint.
     let geology = config
         .tacsim
         .enabled
         .then(|| match config.geology_key_dir() {
-            None => tacsim::surface::GeologyBoot::NotConfigured,
+            None => mush_core::GeologyBoot::NotConfigured,
             Some(dir) => match DurableGeologyKeyStore::new(&dir).load_or_create() {
                 Ok(secret) => {
                     tracing::info!(
@@ -565,7 +565,7 @@ async fn build_engine_inner(
                         key_dir = %dir.display(),
                         "durable geology key loaded"
                     );
-                    tacsim::surface::GeologyBoot::Key(secret)
+                    mush_core::GeologyBoot::Key(secret)
                 }
                 Err(error) => {
                     tracing::error!(
@@ -573,7 +573,7 @@ async fn build_engine_inner(
                         key_dir = %dir.display(),
                         "geology key did not load; the mining layer is disabled"
                     );
-                    tacsim::surface::GeologyBoot::Unreadable(error.to_string())
+                    mush_core::GeologyBoot::Unreadable(error.to_string())
                 }
             },
         });
@@ -691,14 +691,14 @@ async fn build_engine_inner(
     {
         tracing::warn!(%error, "boot: the ground driver's cell size did not apply");
     }
-    // Doc 20 cut SM.1 (Q-20-12): the geology key, on the same post-composition device — a
-    // tacsim function writing tacsim's own slot, before the boot pass that pins or compares the
+    // Doc 20 cut SM.1 (Q-20-12): the geology key, on the same post-composition device —
+    // installed via `Engine::install_geology` before the boot pass that pins or compares the
     // key's fingerprint. With `[tacsim].enabled = false` nothing was loaded and the boot pass
     // reports the layer off from the store's own flag.
     if let Some(boot) = geology
-        && !tacsim::surface::install_geology(&mut engine.world, boot)
+        && !engine.install_geology(boot)
     {
-        tracing::warn!("boot: no tacsim slot took the geology key");
+        tracing::warn!("boot: no geology installer took the geology key");
     }
     modules::boot_modules(&mut engine, &**store).await?;
     // **16b cut F.4**: the simulator's readiness, once — and here, because this

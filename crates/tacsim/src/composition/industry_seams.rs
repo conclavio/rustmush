@@ -26,13 +26,14 @@ use crate::surface::opening::{
 };
 
 /// **The site clerk's system opener** (doc 20 §3.4; the SM.6 brief's 3.11).
-pub(crate) struct SiteOpener {
+pub struct SiteOpener {
     industry: IndustryHandleCell,
 }
 
 impl SiteOpener {
     /// The opener over the composition root's industry cell.
-    pub(crate) fn new(industry: IndustryHandleCell) -> SiteOpener {
+    #[must_use]
+    pub fn new(industry: IndustryHandleCell) -> SiteOpener {
         SiteOpener { industry }
     }
 }
@@ -87,7 +88,7 @@ impl SystemOpener for SiteOpener {
 /// **The surface provider's draws** (doc 20 §3.4, D11): a `tacsim.surface` deposit's
 /// `tacsim.pockets` cursor total — absent is 0 (nothing drawn yet), a cursor of another
 /// deposit or an unreadable one is `None` (industry then quarantines the block, fail closed).
-pub(crate) struct SurfaceDraws;
+pub struct SurfaceDraws;
 
 impl ExternalDraws for SurfaceDraws {
     fn drawn(&self, ctx: &ModuleCtx<'_>, deposit: &OreDeposit) -> Option<u64> {
@@ -133,16 +134,16 @@ impl ExternalDraws for SurfaceDraws {
 /// handles at the first offer (an offer is always projected before its prepare, in the same
 /// process), so the composition root threads no second cell; a stage with them unfilled refuses
 /// (fail closed).
-pub(crate) struct SurfaceTenure {
+#[derive(Default)]
+pub struct SurfaceTenure {
     handles: std::sync::OnceLock<crate::port::claims::ClaimHandles>,
 }
 
 impl SurfaceTenure {
     /// The authority, unfilled.
-    pub(crate) fn new() -> SurfaceTenure {
-        SurfaceTenure {
-            handles: std::sync::OnceLock::new(),
-        }
+    #[must_use]
+    pub fn new() -> SurfaceTenure {
+        SurfaceTenure::default()
     }
 }
 

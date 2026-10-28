@@ -63,6 +63,7 @@ mush-script.workspace = true
 mush-weather.workspace = true
 # Shared character-sheet and rules interface primitives.
 # The game sheet and simulator, composed by modules.rs.
+mush-composition.workspace = true
 tacsim.workspace = true
 # The M7 LLM layer + worldgen module.
 mush-llm.workspace = true

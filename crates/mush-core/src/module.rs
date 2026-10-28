@@ -2209,6 +2209,68 @@ mod paired_state_tests {
 // Registration storage (embedded in Registry)
 // ----------------------------------------------------------------------
 
+/// Egress receiver half of an [`OffLoopSimulationHost`].
+///
+/// The world task awaits [`OffLoopEgressReceiver::recv_and_stage`] inside its
+/// `tokio::select!` loop; when at least one message arrives, the receiver stages
+/// the initial message and drains a bounded batch of immediately ready messages
+/// into the host's staging queue, returning the count staged (`Some(n)` with
+/// `n >= 1`) or `None` once the channel closes.
+pub trait OffLoopEgressReceiver: Send {
+    /// Wait for the next egress message, stage it along with a bounded batch of
+    /// immediately queued messages into the host, and return the staged count
+    /// (`None` when the sender side has closed).
+    fn recv_and_stage(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<usize>> + Send + '_>>;
+}
+
+/// Host-facing seam for a module that runs off-loop simulation tasks (such as
+/// `tacsim`'s deterministic arena tasks) alongside the single-threaded world
+/// loop.
+///
+/// Registering an `OffLoopSimulationHost` on [`Registrar`] lets `mush-server`'s
+/// world task drive egress wakeups, stamp and acknowledge ledger writes, and
+/// coordinate graceful shutdown without naming concrete module types.
+pub trait OffLoopSimulationHost: Send + Sync + fmt::Debug {
+    /// Type-erased reference for downcasting in module-specific integration tests.
+    fn as_any(&self) -> &(dyn Any + Send + Sync);
+
+    /// The module name to address when stepping `WorldCommand::ModuleAsyncDone`
+    /// after [`OffLoopEgressReceiver::recv_and_stage`] stages a batch.
+    fn module_name(&self) -> &'static str;
+
+    /// The constant payload tag passed to `WorldCommand::ModuleAsyncDone` for an
+    /// egress drain step.
+    fn egress_payload(&self) -> &'static str;
+
+    /// Claim the single egress receiver for the world loop's `select!`. Returns
+    /// `None` if already claimed.
+    fn take_egress(&self) -> Option<Box<dyn OffLoopEgressReceiver>>;
+
+    /// Bind any unstamped ledger writes queued during the current world step to
+    /// the persistence batch's commit `serial`.
+    fn stamp_ledger_writes(&self, serial: u64);
+
+    /// Release any off-loop tasks waiting on persistence batches up to and
+    /// including `high_water`.
+    fn ack_ledger_upto(&self, high_water: u64);
+
+    /// Synchronously signal all live off-loop tasks to stop without awaiting their
+    /// join handles.
+    fn signal_stop_all(&self);
+
+    /// Close all off-loop task channels and await their termination (bounded by
+    /// the host's join timeout).
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+/// Callback registered by a surface/geology module to install the operator's
+/// [`GeologyBoot`](crate::geology_key::GeologyBoot) into the world's module
+/// state at boot.
+pub type GeologyInstaller =
+    dyn Fn(&mut World, crate::geology_key::GeologyBoot) -> bool + Send + Sync;
+
 /// One registered module tick.
 #[derive(Clone)]
 pub struct TickReg {
@@ -2323,6 +2385,12 @@ pub struct ModuleTables {
             crate::decision::DecisionCaptureSink,
         ),
     >,
+    /// The one module that hosts off-loop simulation tasks alongside the world
+    /// loop: `(module, host)`.
+    off_loop_simulation_host: Option<(SmolStr, Arc<dyn OffLoopSimulationHost>)>,
+    /// The one module that installs the geology key at boot:
+    /// `(module, installer)`.
+    geology_installer: Option<(SmolStr, Arc<GeologyInstaller>)>,
     state_inits: Vec<StateInit>,
 }
 
@@ -2984,6 +3052,24 @@ impl Registry {
         crate::decision::DecisionCaptureSink,
     )> {
         self.mods.decision_capture_sinks.get(module).cloned()
+    }
+
+    /// The registered off-loop simulation host, if any module installed one.
+    #[must_use]
+    pub fn off_loop_simulation_host(&self) -> Option<Arc<dyn OffLoopSimulationHost>> {
+        self.mods
+            .off_loop_simulation_host
+            .as_ref()
+            .map(|(_, host)| Arc::clone(host))
+    }
+
+    /// The registered geology boot installer, if any module installed one.
+    #[must_use]
+    pub fn geology_installer(&self) -> Option<Arc<GeologyInstaller>> {
+        self.mods
+            .geology_installer
+            .as_ref()
+            .map(|(_, installer)| Arc::clone(installer))
     }
 
     /// Drain the collected state-slot inits (the engine installs them on
@@ -5074,6 +5160,41 @@ impl<'a> Registrar<'a> {
             });
         }
         tables.relay_speaker = Some((self.module.clone(), handler));
+        Ok(())
+    }
+
+    /// Register this module as the off-loop simulation host for the world loop.
+    /// At most one module may register a host.
+    pub fn off_loop_simulation_host(
+        &mut self,
+        host: Arc<dyn OffLoopSimulationHost>,
+    ) -> Result<(), ModError> {
+        let tables = self.reg.tables_mut();
+        if let Some((owner, _)) = &tables.off_loop_simulation_host {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "off-loop simulation host",
+                name: SmolStr::new_static("off_loop_simulation_host"),
+                owner: owner.clone(),
+            });
+        }
+        tables.off_loop_simulation_host = Some((self.module.clone(), host));
+        Ok(())
+    }
+
+    /// Register this module's geology key boot installer. At most one module
+    /// may register an installer.
+    pub fn geology_installer(&mut self, installer: Arc<GeologyInstaller>) -> Result<(), ModError> {
+        let tables = self.reg.tables_mut();
+        if let Some((owner, _)) = &tables.geology_installer {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "geology installer",
+                name: SmolStr::new_static("geology_installer"),
+                owner: owner.clone(),
+            });
+        }
+        tables.geology_installer = Some((self.module.clone(), installer));
         Ok(())
     }
 

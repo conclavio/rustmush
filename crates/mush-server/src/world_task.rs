@@ -1998,7 +1998,7 @@ pub struct PersistHandles {
     /// loop (where the authority checks live), and joined by the process's
     /// shutdown tail, which is outside it. `arena_shutdown` is what both tails
     /// call.
-    pub arenas: Option<tacsim::arena_bridge::ArenaTasks>,
+    pub arenas: Option<Arc<dyn mush_core::OffLoopSimulationHost>>,
     /// Process-local fail-closed snapshot barrier shared by the world,
     /// store writer, and shutdown coordinator.
     pub persistence_integrity: PersistenceIntegrityLatch,
@@ -2319,17 +2319,11 @@ fn spawn_persist_with_gateway_mode(
     engine.use_gateway_reply_framing();
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    // 16b cut T.2 (T1, T4): the game layer's shared arena-task table, created by
-    // the tacsim module in `register` and read back out of its own state slot
-    // here. An immutable read and a clone of an `Arc` — the host composes the
-    // game, it does not write the game's state — so this is not a cross-module
-    // `module_state_mut` reach and needs no `state-slot-owners.toml` row. A
+    // 16b cut T.2 (T1, T4): the game layer's shared off-loop simulation host,
+    // registered in `register` and read back out of the engine's registry here. A
     // composition with no game layer leaves it `None` and the arena egress arm
     // disarmed.
-    let arenas = engine
-        .world
-        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
-        .map(|registry| registry.tasks().clone());
+    let arenas = engine.off_loop_simulation_host();
     let routes = engine
         .registry
         .action_providers()
@@ -2459,9 +2453,9 @@ fn spawn_persist_with_gateway_mode(
 /// changes: it runs after the world task has stopped and before the store
 /// writer's drain, because an arena task holds no store handle and therefore
 /// nothing the writer is waiting for.
-pub async fn arena_shutdown(arenas: Option<tacsim::arena_bridge::ArenaTasks>) {
+pub async fn arena_shutdown(arenas: Option<Arc<dyn mush_core::OffLoopSimulationHost>>) {
     if let Some(arenas) = arenas {
-        arenas.shutdown(tacsim::arena_bridge::JOIN_TIMEOUT).await;
+        arenas.shutdown().await;
     }
 }
 
@@ -2485,7 +2479,7 @@ enum Wake {
     /// which is the tree's one "run module code with a `Ctx` from the loop"
     /// mechanism (the same `WorldCommand::ModuleAsyncDone` worldgen and the NPC
     /// layer come back on) rather than a second one.
-    ArenaEgress(Box<tacsim::arena_task::ArenaOut>),
+    ArenaEgress(usize),
     /// 16b cut B.5 (`B-13`): no commit is pending and the defer queue is not
     /// empty; the next entry is taken off its front. A queued message becomes a
     /// [`Wake::Msg`] before the dispatch; this variant survives only when the
@@ -4205,15 +4199,13 @@ async fn run(
     decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
-    arenas: Option<tacsim::arena_bridge::ArenaTasks>,
+    arenas: Option<Arc<dyn mush_core::OffLoopSimulationHost>>,
 ) -> WorldOutcome {
     tracing::info!("world task running");
     // 16b cut T.2 (T4): the one receiver of every running match's egress. Taken
     // once, here, because the loop is its only legitimate owner — a second taker
     // would silently split the stream.
-    let mut arena_egress = arenas
-        .as_ref()
-        .and_then(tacsim::arena_bridge::ArenaTasks::take_egress);
+    let mut arena_egress = arenas.as_ref().and_then(|a| a.take_egress());
     let boot_unix = unix_now_s();
     // The LLM service handle (built from [llm] config) that drives a module's
     // deferred async work off-loop; cloned out of `deps` so the loop keeps
@@ -4534,11 +4526,11 @@ async fn run(
             // and then acknowledge it to the arena.
             egress = async {
                 match arena_egress.as_mut() {
-                    Some(rx) => rx.recv().await,
+                    Some(rx) => rx.recv_and_stage().await,
                     None => std::future::pending().await,
                 }
             }, if arena_egress_armed => match egress {
-                Some(out) => Wake::ArenaEgress(Box::new(out)),
+                Some(staged) => Wake::ArenaEgress(staged),
                 // Every sender is gone, which can only happen once every match's
                 // task has ended. Disarm rather than spin.
                 None => { arena_egress = None; Wake::Timer }
@@ -5291,44 +5283,22 @@ async fn run(
             // own shared table and re-entered through its registered
             // `AsyncCompletion` with a token payload, which is the one mechanism
             // in the tree for running module code with a `Ctx` from the loop.
-            Wake::ArenaEgress(first) => {
-                let mut staged = 0_usize;
-                if let Some(arenas) = arenas.as_ref() {
-                    if arenas.stage(*first) {
-                        staged += 1;
-                    }
-                    if let Some(rx) = arena_egress.as_mut() {
-                        while staged < tacsim::arena_bridge::MAX_EGRESS_PER_DRAIN {
-                            match rx.try_recv() {
-                                Ok(message) => {
-                                    if !arenas.stage(message) {
-                                        break;
-                                    }
-                                    staged += 1;
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                    }
-                }
-                if staged == 0 {
-                    StepOutcome::Continue
-                } else {
-                    guarded!(
-                        "engine.step/arena-egress",
-                        engine.step(
-                            Inbound::Apply(WorldCommand::ModuleAsyncDone {
-                                module: SmolStr::new_static(tacsim::arena_bridge::MODULE),
-                                actor: mush_core::GOD,
-                                correlation: 0,
-                                payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
-                            }),
-                            &mut out,
-                            &mut fx,
-                        )
+            Wake::ArenaEgress(staged) => match arenas.as_ref().filter(|_| staged > 0) {
+                None => StepOutcome::Continue,
+                Some(arenas) => guarded!(
+                    "engine.step/arena-egress",
+                    engine.step(
+                        Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                            module: SmolStr::new_static(arenas.module_name()),
+                            actor: mush_core::GOD,
+                            correlation: 0,
+                            payload: arenas.egress_payload().to_owned(),
+                        }),
+                        &mut out,
+                        &mut fx,
                     )
-                }
-            }
+                ),
+            },
             // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
             Wake::CommandSubmits => {
                 let Some(store) = deps.store.authoritative_store() else {
@@ -7476,11 +7446,8 @@ async fn flush_dirty(
     // wake produced it. Private proving/bench precharges can originate from a
     // command or maintenance tick with no live arena traffic at all. A rejected
     // or uncommitted batch cannot advance the durable high-water.
-    if let Some(registry) = engine
-        .world
-        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
-    {
-        registry.tasks().stamp_ledger_writes(*serial);
+    if let Some(arenas) = engine.off_loop_simulation_host() {
+        arenas.stamp_ledger_writes(*serial);
     }
     let (notify, receipt) = if durable {
         let (tx, rx) = oneshot::channel();
@@ -16501,6 +16468,7 @@ mod tests {
                     frames,
                     observers,
                 ));
+                reg.off_loop_simulation_host(Arc::new(self.0.clone()))?;
                 Ok(())
             }
         }
