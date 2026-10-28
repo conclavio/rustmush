@@ -7035,7 +7035,13 @@ fn m3_tape(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<Line> {
 fn m3_the_tape_opens_with_one_mind_sealed_per_unit_after_match_started() {
     let parked = tank(PARKED, Team::Blue, centre(5, 12));
     let mover = tank(MOVER, Team::Red, centre(5, 5));
-    let want = [mover.seal.sealed_line(), parked.seal.sealed_line()];
+    // Doc 17h cut M8a: the line's licence state is a parameter; a fixture's doctrine seal
+    // reads `doctrine`, the word `Arena::new` derives from the origin.
+    let doctrine = tacsim::minds::licence_state::SealLicenceState::Doctrine;
+    let want = [
+        mover.seal.sealed_line(doctrine),
+        parked.seal.sealed_line(doctrine),
+    ];
     let mut arena = arena_of(vec![parked, mover], &MatchConfig::default());
     assert_eq!(
         arena.ledger.seq(),

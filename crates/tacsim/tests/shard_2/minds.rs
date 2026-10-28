@@ -6799,19 +6799,24 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
 /// M6 updates those three source prefixes to 9b330c0f5ccd8610 and their card
 /// identities to the full authored schema/value/rule digest. A field-by-field
 /// comparison of all 50 fresh event rows found no other payload/time changes.
+///
+/// **Doc 17h cut M8a — re-recorded, one key** (50 lines to 50): every `mind_sealed`
+/// line gains `licence_state` after `licence` (`doctrine`, what a doctrine seal's
+/// origin says); the state is the line's parameter, never the seal's (M8a's A1), so
+/// no seal digest moved, and every other byte is equal.
 const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"c0737fdc45994c22\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         4,

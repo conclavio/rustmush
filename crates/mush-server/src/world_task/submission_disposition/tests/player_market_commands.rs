@@ -1611,8 +1611,8 @@ async fn trade_commands_are_not_open_on_a_house_only_launch() -> TestResult {
 const NO_OFFER_999: &str = "You have no offer for licence 999.";
 const NO_CHARTER_OFFER_999: &str = "You have no offer for filed mind 999.";
 
-/// `@registry`'s help (17g C2d).
-const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)";
+/// `@registry`'s help (17g C2d; doc 17h cut M8a adds the inspection line).
+const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)\n@registry/inspect <hull> (Registry operators)";
 /// The Registry commands' refusal without the player market.
 const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
 

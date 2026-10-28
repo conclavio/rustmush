@@ -146,6 +146,8 @@ mod doctrine_library;
 pub mod fees;
 pub(crate) mod ic_sortie;
 pub mod kernels;
+/// Doc 17h cut M8a: the licence state a seal is read under, a parameter of the line.
+pub mod licence_state;
 /// 17g C2: the line-mode commands over the composed mind commerce.
 pub(crate) mod market_commands;
 #[cfg(test)]
@@ -153,7 +155,11 @@ mod meridiani_field;
 pub(crate) mod metadata;
 pub(crate) mod normalize;
 pub mod pool;
+/// Doc 17h cut M8a: where a core came from, the inspection's provenance read.
+pub mod provenance;
 pub(crate) mod registry;
+/// Doc 17h cut M8a: `@registry/inspect <hull>`, the Registry's one read of a hull.
+pub mod registry_inspection;
 pub mod resimulation;
 pub(crate) mod rule_samples;
 pub mod runner;

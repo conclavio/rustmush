@@ -72,6 +72,7 @@ pub(in crate::minds) fn register_profiles(
                     "reconform".into(),
                     "recall".into(),
                     "revoke".into(),
+                    "inspect".into(),
                 ]
             } else {
                 vec![
@@ -80,6 +81,7 @@ pub(in crate::minds) fn register_profiles(
                     "continue".into(),
                     "recall".into(),
                     "revoke".into(),
+                    "inspect".into(),
                 ]
             },
             shape: ArgShape::Raw,
@@ -359,12 +361,20 @@ pub(in crate::minds) fn rating_held(w: &mush_core::World, actor: ObjId) -> bool 
 /// lines inside the 120-column floor; the line break stands in for the `; `
 /// that joined `@registry/cancel` to the second clause (17g C2e hygiene; the
 /// help prose itself stays as written, the lead's ruling R5).
-pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)";
+pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)\n@registry/inspect <hull> (Registry operators)";
 
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // 17g C2d: the operators' commands answer for themselves (the driver's
     // line, `REGISTRY_OFF` or the help), never through this service's own
     // "unavailable" mapping below.
+    // Doc 17h cut M8a: `inspect`, the Registry's one read of a hull, beside them.
+    if ctx.switches.has("inspect") {
+        return crate::minds::market_commands::registry::registry(
+            ctx,
+            crate::minds::market_commands::registry::RegistryCommand::Inspect,
+            HELP,
+        );
+    }
     if ctx.switches.has("recall") {
         return crate::minds::market_commands::registry::registry(
             ctx,

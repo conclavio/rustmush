@@ -52,6 +52,7 @@ struct MindCommerceState {
     derived_update_action: Option<DefinitionRef>,
     charter_transfer_action: Option<DefinitionRef>,
     registry_revocation_action: Option<DefinitionRef>,
+    registry_inspection: Option<crate::minds::registry_inspection::Composition>,
     paid_resales: Option<mush_market::mind_paid_resale::PaidResaleConfig>,
     pending_charters: Option<(
         mush_roll::commerce::PendingCharterTransferConfig,
@@ -144,6 +145,7 @@ impl MindCommerce {
                 derived_update_action: None,
                 charter_transfer_action: None,
                 registry_revocation_action: None,
+                registry_inspection: None,
                 pending_charters: None,
                 paid_resales: None,
                 house_filing_action: None,
@@ -838,6 +840,27 @@ impl MindCommerce {
         Ok(self)
     }
 
+    /// Doc 17h cut M8a: the Registry inspection (`@registry/inspect <hull>`) under the
+    /// configured live Org authorization: one read of a hull, one record; nothing is
+    /// rewritten, granted or reclaimed. The Roll takes the policy and the record family's
+    /// writer; the layer takes the action, outcome, provider and command slot.
+    pub fn with_registry_inspection(
+        mut self,
+        policy: mush_roll::commerce::registry_inspection::RegistryInspectionPolicy,
+    ) -> Result<Self, ModError> {
+        if self.state.registry_inspection.is_some() {
+            return Err(ModError::msg("Registry inspection already configured"));
+        }
+        let writer = mush_roll::commerce::registry_inspection::InspectionWriter::new();
+        self.state.roll = self
+            .state
+            .roll
+            .with_registry_inspection(policy.clone(), writer.clone())?;
+        self.state.registry_inspection =
+            Some(crate::minds::registry_inspection::Composition { policy, writer });
+        Ok(self)
+    }
+
     fn with_purchase_protocol(
         mut self,
         policy: OriginalQuotePolicy,
@@ -952,6 +975,7 @@ impl MindCommerce {
             .map(|ic| ic.layer(&layer.cfg).map(Box::new))
             .transpose()?;
         layer.registry_commerce = Some(Box::new(self.state.registry.clone()));
+        layer.registry_inspection = self.state.registry_inspection.clone().map(Box::new);
         if let Some(conduct) = &self.state.conduct {
             conduct.check(layer.config(), &layer.definition_catalog()?)?;
             layer.conduct_trials = Some(Box::new(conduct.clone()));

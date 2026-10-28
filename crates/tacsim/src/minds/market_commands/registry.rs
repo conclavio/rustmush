@@ -28,6 +28,10 @@ use super::words::{self, fill};
 pub(crate) enum RegistryCommand {
     Recall,
     Revoke,
+    /// Doc 17h cut M8a: `@registry/inspect <hull>`, its own body
+    /// (`minds::registry_inspection::command`): a read that prints before it
+    /// submits, with its own slot, not a wrapped Roll action.
+    Inspect,
 }
 
 fn off() -> CmdError {
@@ -41,6 +45,9 @@ pub(crate) fn registry(
     which: RegistryCommand,
     usage: &str,
 ) -> Result<(), CmdError> {
+    if which == RegistryCommand::Inspect {
+        return crate::minds::registry_inspection::command::inspect(ctx, usage);
+    }
     let number =
         super::author::number(ctx.args.raw().trim()).ok_or_else(|| CmdError::msg(usage))?;
     super::service(ctx).map_err(|_| off())?;
@@ -63,6 +70,8 @@ pub(crate) fn registry(
             fill(words::REVOKING, &[("licence", &shown)]),
             revocation_parameters(number),
         ),
+        // Dispatched above; never reached.
+        RegistryCommand::Inspect => return Err(off()),
     };
     let action = action.ok_or_else(off)?;
     super::submit(ctx, verb, &shown, action, parameters, &request)

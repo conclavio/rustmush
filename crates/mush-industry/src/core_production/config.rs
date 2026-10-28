@@ -73,14 +73,30 @@ impl OriginPolicy {
 pub struct CoreOriginConfig {
     pub(crate) policy: OriginPolicy,
     pub(crate) mode: CoreOriginMode,
+    /// Doc 17h cut M8a fix round 1 (F6): the one other owner granted a read of the retained
+    /// die certificates (tacsim's provenance read), when the composition names one.
+    pub(crate) certificate_reader: Option<String>,
 }
 impl CoreOriginConfig {
     pub fn new(policy: OriginPolicy, mode: CoreOriginMode) -> Result<Self, ModError> {
         policy.validate().map_err(mod_error)?;
-        Ok(Self { policy, mode })
+        Ok(Self {
+            policy,
+            mode,
+            certificate_reader: None,
+        })
     }
     pub fn policy(&self) -> &OriginPolicy {
         &self.policy
+    }
+    /// **Grant `reader` a read of the retained die certificates** (doc 17h cut M8a fix
+    /// round 1, F6): a read-only grant on `industry_core_die_certificates`, published as the
+    /// [`super::DieCertificates`] slot. The reader must be composed beside this owner, or the
+    /// registries refuse the grant when they freeze. A read grants nothing.
+    #[must_use]
+    pub fn with_certificate_reader(mut self, reader: &str) -> Self {
+        self.certificate_reader = Some(reader.to_owned());
+        self
     }
 }
 pub fn origin_content_descriptor(grades: [Grade; 3]) -> Result<DefinitionDescriptor, ModError> {

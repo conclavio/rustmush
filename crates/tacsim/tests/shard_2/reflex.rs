@@ -1403,11 +1403,16 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
 /// DT.1b completes the API 6 / stock 3 / frame 8 encoding re-bless for
 /// standing-order identity. These 50 hashes were observed in Linux CI run
 /// 40739168466, job 122995755867; every non-hash byte matches the prior pins.
+///
+/// **Doc 17h cut M8a — re-recorded, one key** (50 lines to 50): every `mind_sealed`
+/// line gains `licence_state` after `licence` (`doctrine`, what a doctrine seal's
+/// origin says); the state is the line's parameter, never the seal's (M8a's A1), so
+/// no seal digest and no `hash` moved, and every other byte is equal.
 const M1B0_J_LINES: &[&str] = &[
     r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":16335211967559030010}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","hash":16335211967559030010}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","hash":16335211967559030010}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","hash":16335211967559030010}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":16335211967559030010}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":16335211967559030010}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":16335211967559030010}"#,
     r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":6627846651307865930}"#,
     r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":6627846651307865930}"#,
     r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":6627846651307865930}"#,

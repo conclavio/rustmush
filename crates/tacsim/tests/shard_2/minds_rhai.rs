@@ -3526,34 +3526,47 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// The observed Windows corpus retains all four stopping times and the float
 /// probe's 3,600 thinks / 369098751 bitmask; only the measured hash columns below
 /// are re-pinned. Linux reproduction remains required (17b §7).
+///
+/// **Doc 17h cut M8a's re-bless, the ledger digest only, over DT.1b** (the merge
+/// of main 0b1b7ab5 into the M8a branch, captured on conclav.dev's Linux): every
+/// `mind_sealed` ledger line gains `licence_state` after `licence` (the state is
+/// the sealed line's parameter, never a seal field), so on DT.1b's tree the
+/// ledger digest of all four rows moved and nothing else did. The stopping
+/// times, the state hashes, the substep digests and the float probe's 3,600
+/// thinks / 369098751 bitmask are DT.1b's values above exactly, which this Linux
+/// run reproduces. The digest hashes the ledger's bytes, so it is
+/// host-independent. DT.1b's were, by row: `3202df8d…`, `bff38a18…`,
+/// `7b35b9ee…`, `47b8afcf…`; M8a alone over the API 5 tree had re-pinned
+/// `91c474d0…`, `929f1c49…`, `22d34325…`, `de7720f6…` to `a8ef4a30…`,
+/// `e1e7a26b…`, `b2c1dada…`, `2e9d2e80…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         170250,
         4036052986693953416,
         "daa4e8666cd9bc4c45ac5173a0ad30e65007e6bed38ec1483078b3a010ba8e5f",
-        "3202df8dceee661ad5c6eb3b89a865657d2a15d5a95424ae3794ba97753ca716",
+        "442550cd793fa83e891dd464a7e3df7f5acf8b1ff093360f5685959adac86c64",
     ),
     (
         2351,
         192500,
         14776315943276034554,
         "4d137f25c8106433355566b13b22bf111b9c1c1d0b1bb1e9e617fb2fb424d585",
-        "bff38a1822a1b83e6b5b5ede3dbfd7426ff1774004f95f5eba7dc74b85c4e699",
+        "1db6e56d1d325ce14a473c418a1a28f9cd64d3f078b960febf3e9f46efed8dd9",
     ),
     (
         2352,
         170000,
         714931300200473704,
         "f74b2d5b90f5838ca03216ef0383efa77eddaac021757f026ffd44a3a7241fb7",
-        "7b35b9eef23a66ead267f41e46e813c0b2494d81c3f68f9c31eb424c8b692bb8",
+        "3182ce00a314f9b409a1a448676f46127f719e154ffa7e5ab7c395b20c0fd840",
     ),
     (
         2350,
         900000,
         5234968803354853599,
         "e2733d3bd2aa6a02eeededaf9256252c446a4b862e84227b33bc5194f28f6e2b",
-        "47b8afcf894fe6fc3eb9e1aaa17c61c5b861ca1b07e7629aba60080faaa64fea",
+        "c26a43090e34bf2532990fe238ff9df9f150dce8ee86f5d0360aac3d73c756ec",
     ),
 ];
 

@@ -267,7 +267,11 @@ fn grant_registry(r: &mut Rig, d: &LaunchDeployment) -> Result {
     let market = d.market.as_ref().ok_or("a format-2 deployment")?;
     let authority = &market.registry_authority;
     for operator in &authority.operators {
-        for capability in ["roll.registry.recall", "roll.registry.revoke"] {
+        for capability in [
+            "roll.registry.recall",
+            "roll.registry.revoke",
+            "roll.registry.inspect",
+        ] {
             command(
                 r.world_mut(),
                 GOD,
@@ -453,8 +457,8 @@ fn projected(r: &mut Rig, actor: ObjId) -> Result<Vec<mush_core::ProjectedLegalA
     )?;
     Ok(e.project_legal_actions(&query)?.projected())
 }
-/// The Registry verbs (`roll-registry-recall`, `roll-registry-revocation`)
-/// projected to `actor`.
+/// The Registry verbs (`roll-registry-recall`, `roll-registry-revocation` and,
+/// doc 17h cut M8a, `roll-registry-inspection`) projected to `actor`.
 fn registry_verbs(r: &mut Rig, actor: ObjId) -> Result<Vec<String>> {
     Ok(projected(r, actor)?
         .iter()
@@ -462,7 +466,7 @@ fn registry_verbs(r: &mut Rig, actor: ObjId) -> Result<Vec<String>> {
         .filter(|verb| {
             matches!(
                 verb.as_str(),
-                "roll-registry-recall" | "roll-registry-revocation"
+                "roll-registry-recall" | "roll-registry-revocation" | "roll-registry-inspection"
             )
         })
         .collect())
@@ -962,11 +966,12 @@ async fn named_launch_format_one_stays_house_only() -> Result {
     Ok(())
 }
 
-/// 17g C1c (C1 plan §1 item 4, §7 class A): Registry recall and revocation are
-/// offered only to a configured operator whose `@org/grant`s are effective
-/// now, read through the projection `+actions` lists. God's readiness line
-/// follows the same authorizer. Retiring the Registry scope is the kill
-/// switch: both offers vanish and the world still reboots.
+/// 17g C1c (C1 plan §1 item 4, §7 class A): Registry recall and revocation —
+/// and, doc 17h cut M8a, inspection — are offered only to a configured
+/// operator whose `@org/grant`s are effective now, read through the projection
+/// `+actions` lists. God's readiness line follows the same authorizer.
+/// Retiring the Registry scope is the kill switch: all three offers vanish and
+/// the world still reboots, and none returns after it.
 #[tokio::test(flavor = "current_thread")]
 async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Result {
     let (mut r, mut d) = setup()?;
@@ -974,11 +979,13 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
     let market = d.market.clone().ok_or("a format-2 market")?;
     let operator = operator(&d)?;
     let principals = [GOD, operator, market.clerk, r.buyer];
+    // Sorted: the three verbs `grant_registry`'s three grants open.
     let both = vec![
+        "roll-registry-inspection".to_owned(),
         "roll-registry-recall".to_owned(),
         "roll-registry-revocation".to_owned(),
     ];
-    let lacks = readiness(operator, "lacks recall and revocation");
+    let lacks = readiness(operator, "lacks recall, revocation and inspection");
     // Before the grants: no one, and God reads what the operator lacks.
     for actor in principals {
         check!(
@@ -1003,6 +1010,19 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&readiness(operator, "ready"))
+    );
+    // Doc 17h cut M8a (F10): granted but not listed — the buyer holds the inspection's grant
+    // on the Registry's scope, yet is no configured operator, so it is offered nothing.
+    let buyer = r.buyer;
+    let unlisted = format!(
+        "@org/grant #{}=Registry roll.registry.inspect scope=#{}",
+        buyer.0, market.registry_authority.scope.0
+    );
+    command(r.world_mut(), GOD, &unlisted)?;
+    r.flush();
+    check!(
+        registry_verbs(&mut r, buyer)?.is_empty(),
+        "a granted principal the deployment does not list"
     );
     // The kill switch: retire the Registry's scope (named by id).
     command(
@@ -1046,10 +1066,12 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
 }
 
 /// 17g C1c (C1 plan §1 item 4): God's readiness line names, for each operator
-/// in ascending order and in one line joined by ", ", exactly the capability
+/// in ascending order and in one line joined by ", ", exactly the capabilities
 /// it lacks, so the runbook's reader re-runs the right `@org/grant`. Two
-/// operators each hold one of the two grants, and each is projected only the
-/// verb its grant opens; once both hold both, both read ready.
+/// operators each hold one of the three grants, and each is projected only the
+/// verb its grant opens; once both hold all three (doc 17h cut M8a's
+/// inspection the third), both read ready and both are offered all three
+/// verbs.
 #[tokio::test(flavor = "current_thread")]
 async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     let (mut r, mut d) = setup()?;
@@ -1084,8 +1106,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks recall and revocation"),
-            (second, "lacks recall and revocation"),
+            (first, "lacks recall, revocation and inspection"),
+            (second, "lacks recall, revocation and inspection"),
         ]))
     );
     // One grant each, a different one: each reads what it still lacks.
@@ -1094,8 +1116,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks revocation"),
-            (second, "lacks recall")
+            (first, "lacks revocation and inspection"),
+            (second, "lacks recall and inspection")
         ]))
     );
     check_eq!(
@@ -1106,13 +1128,36 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
         registry_verbs(&mut r, second)?,
         vec!["roll-registry-revocation".to_owned()]
     );
-    // The missing grants: both ready.
+    // The missing grants: both ready (M8a: the inspection is the third).
     grant(&mut r, first, "roll.registry.revoke")?;
     grant(&mut r, second, "roll.registry.recall")?;
     check_eq!(
         launch_lines(&mut r, GOD).last(),
+        Some(&line([
+            (first, "lacks inspection"),
+            (second, "lacks inspection")
+        ]))
+    );
+    grant(&mut r, first, "roll.registry.inspect")?;
+    grant(&mut r, second, "roll.registry.inspect")?;
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
         Some(&line([(first, "ready"), (second, "ready")]))
     );
+    for op in [first, second] {
+        let mut verbs = registry_verbs(&mut r, op)?;
+        verbs.sort();
+        check_eq!(
+            verbs,
+            vec![
+                "roll-registry-inspection".to_owned(),
+                "roll-registry-recall".to_owned(),
+                "roll-registry-revocation".to_owned(),
+            ],
+            "#{} holds all three",
+            op.0
+        );
+    }
     Ok(())
 }
 
@@ -1140,7 +1185,7 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
         vec![
             help,
             line,
-            readiness(operator(&d)?, "lacks recall and revocation")
+            readiness(operator(&d)?, "lacks recall, revocation and inspection")
         ]
     );
     // Terms that do not divide into whole credits or days: the price renders
@@ -1183,6 +1228,7 @@ fn the_org_vocabulary_admits_every_named_launch_grant() -> Result {
         "industry.core.refit",
         "roll.registry.recall",
         "roll.registry.revoke",
+        "roll.registry.inspect",
     ] {
         check!(
             vocabulary.contains(&mush_org::CapabilityId::new(capability).ok_or("an id")?),

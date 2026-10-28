@@ -30,8 +30,8 @@ use mush_market::{
 };
 use mush_org::PrincipalId;
 use mush_roll::commerce::{
-    PendingCharterTransferConfig, registry_recall::RegistryRecallPolicy,
-    registry_revocation::RegistryRevocationPolicy,
+    PendingCharterTransferConfig, registry_inspection::RegistryInspectionPolicy,
+    registry_recall::RegistryRecallPolicy, registry_revocation::RegistryRevocationPolicy,
 };
 
 /// 17g C1b: every player-market policy a format-2 deployment names, built and
@@ -58,6 +58,9 @@ pub(crate) struct MarketPolicies {
     pub(crate) recall: RegistryRecallPolicy,
     /// The Registry revocation scope and operators (`with_registry_revocation`).
     pub(crate) revocation: RegistryRevocationPolicy,
+    /// Doc 17h cut M8a: the Registry inspection scope and operators
+    /// (`with_registry_inspection`), the same authority.
+    pub(crate) inspection: RegistryInspectionPolicy,
 }
 
 /// 17g C1b: `None` for a format-1 deployment (no market), the eight policies
@@ -139,6 +142,12 @@ pub(crate) fn policies(d: &LaunchDeployment) -> Result<Option<MarketPolicies>, M
         authority.scope,
         authority.operators.clone(),
     )?;
+    let inspection = RegistryInspectionPolicy::new(
+        d.registry_issuer.clone(),
+        authority.organization,
+        authority.scope,
+        authority.operators.clone(),
+    )?;
     Ok(Some(MarketPolicies {
         quote,
         entitlement,
@@ -148,6 +157,7 @@ pub(crate) fn policies(d: &LaunchDeployment) -> Result<Option<MarketPolicies>, M
         resale_offer_seconds: terms.resale_offer_seconds,
         recall,
         revocation,
+        inspection,
     }))
 }
 
@@ -337,6 +347,16 @@ mod tests {
         check_eq!(
             p.revocation,
             RegistryRevocationPolicy::new(
+                system("launch.issuer")?,
+                OrgId(6),
+                OrgScopeId(6),
+                vec![ObjId(41)]
+            )?
+        );
+        // Doc 17h cut M8a: the inspection, the third twin on the same authority.
+        check_eq!(
+            p.inspection,
+            RegistryInspectionPolicy::new(
                 system("launch.issuer")?,
                 OrgId(6),
                 OrgScopeId(6),

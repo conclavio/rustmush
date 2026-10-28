@@ -1553,3 +1553,17 @@ document, serves that document through the tick's StoreReadDone completion,
 and verifies that quest recognition waits for the cold receipt. It changes no
 contract, balance, transaction, payment or production ownership permission.
 """
+
+[[site]]
+path = "crates/tacsim/src/surface/hull.rs"
+accessor = "World::module_state_insert"
+slot = "store"
+owner = ""
+reason = "Doc 17h cut M8a fix round 1 (F10/F11): test-only. The `+hull/box` read's unit tests seed a TacsimStore whose black box holds crafted lines (an undecodable entry, a line short of its facts, a ledger that seals every entry) and whose dark flag is set, the shapes a booted world cannot be driven into without corrupting chunk documents. Production never seeds the slot; the boot loads it."
+
+[[site]]
+path = "crates/tacsim/tests/shard_4/ic_sortie_surface.rs"
+accessor = "World::module_state_mut"
+slot = "UnitStore"
+owner = "tactics"
+reason = "Doc 17h cut M8a fix round 1 (F2): test-only. The inspection test copies a rig's TacticalUnit onto a fresh Thing in the tactics store's RAM, an object with a unit that is no programme hull, so the typed inspection action can be shown refusing it through the provider's own known-hull read. Nothing persists; production writes units only through the tactics owner."

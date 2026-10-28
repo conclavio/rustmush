@@ -5365,7 +5365,7 @@ async fn run(
                         // Nothing was staged, so this is transient runtime
                         // truth: it is delivered whatever the step's unrelated
                         // writes do, and it never claims a mutation happened.
-                        out.best_effort_error(actor, "That did not go through. Nothing changed.");
+                        out.best_effort_error(actor, mush_core::action::SUBMISSION_REFUSED_LINE);
                     }
                     Ok(CommandSubmitDrive::AlreadyOwned { actor }) => {
                         out.best_effort_error(

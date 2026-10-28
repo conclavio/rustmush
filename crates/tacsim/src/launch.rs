@@ -171,6 +171,7 @@ impl LaunchComposition {
                     .with_pending_charter_transfers(p.pending)?
                     .with_paid_mind_resales(p.clerk, p.resale_offer_seconds)?
                     .with_registry_recall(p.recall)?
+                    .with_registry_inspection(p.inspection)?
                     .with_mind_renewals(p.renewal)?
                     .with_mind_renewal_service()?
                     .with_author_withdrawal()?
@@ -297,20 +298,30 @@ pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket
     let items = operators
         .into_iter()
         .map(|operator| {
-            let state = match (
-                allows(
-                    operator,
+            // Doc 17h cut M8a: three capabilities; what is lacking is named in this
+            // order, joined as prose (`lacks recall, revocation and inspection`).
+            let lacking: Vec<&str> = [
+                (
                     mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
+                    "recall",
                 ),
-                allows(
-                    operator,
+                (
                     mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY,
+                    "revocation",
                 ),
-            ) {
-                (true, true) => "ready",
-                (false, true) => "lacks recall",
-                (true, false) => "lacks revocation",
-                (false, false) => "lacks recall and revocation",
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY,
+                    "inspection",
+                ),
+            ]
+            .into_iter()
+            .filter(|(capability, _)| !allows(operator, capability))
+            .map(|(_, word)| word)
+            .collect();
+            let state = match lacking.as_slice() {
+                [] => "ready".to_owned(),
+                [one] => format!("lacks {one}"),
+                [head @ .., last] => format!("lacks {} and {last}", head.join(", ")),
             };
             format!("#{} {state}", operator.0)
         })

@@ -149,10 +149,12 @@ impl QuotaKey {
         ))
     }
 }
-/// Immutable issuance proof, not an ownership or current-stock token.
+/// Immutable issuance proof, not an ownership or current-stock token. Public as an opaque
+/// type so a granted reader ([`DieCertificates`]) can read the retained proof's words through
+/// its accessors (doc 17h cut M8a fix round 1, F6); its fields stay this crate's.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DieCertificate {
+pub struct DieCertificate {
     pub(crate) format: u16,
     pub(crate) sequence: u64,
     pub(crate) operation: CommitToken,
@@ -172,6 +174,26 @@ pub(crate) struct DieCertificate {
     pub(crate) quota_maximum: u16,
 }
 impl DieCertificate {
+    /// The issuing operation: the certificate's key and the die lot's origin id.
+    #[must_use]
+    pub fn operation(&self) -> CommitToken {
+        self.operation
+    }
+    /// The importer the origin policy names: whose stock the die came from.
+    #[must_use]
+    pub fn importer(&self) -> mush_org::OrgId {
+        self.policy.importer
+    }
+    /// The die's class.
+    #[must_use]
+    pub fn class(&self) -> DieClass {
+        self.class
+    }
+    /// The die lot the certificate issued.
+    #[must_use]
+    pub fn lot(&self) -> LotId {
+        self.lot
+    }
     pub(crate) fn key(&self) -> String {
         self.operation.to_hex()
     }
@@ -229,6 +251,19 @@ pub(crate) fn source(operation: CommitToken) -> ExternalRef {
         kind: super::SOURCE_KIND.into(),
         id: operation.to_hex().into(),
         revision: Some(1),
+    }
+}
+/// **The retained die certificates, for a granted reader** (doc 17h cut M8a fix round 1,
+/// F6): the family handle, published as module state when the composition names a reader
+/// ([`super::CoreOriginConfig::with_certificate_reader`]). A typed read through it is refused
+/// to any owner the grant does not name. Data, not custody or consumption authority.
+#[derive(Clone)]
+pub struct DieCertificates(pub(crate) mush_core::StateFamilyHandle<String, DieCertificate>);
+impl DieCertificates {
+    /// The family handle, keyed by the issuing operation's hex.
+    #[must_use]
+    pub fn handle(&self) -> &mush_core::StateFamilyHandle<String, DieCertificate> {
+        &self.0
     }
 }
 /// A live owner read returns this only after joining the retained receipt with

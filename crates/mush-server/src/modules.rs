@@ -2367,6 +2367,7 @@ mod tests {
             mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY,
             mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
             mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY,
+            mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY,
         ];
         // DT.2a declares all six distinct unit rights without granting them.
         let unit_capabilities = [

@@ -457,6 +457,8 @@ pub fn domain_org_capability_vocabulary() -> std::collections::BTreeSet<mush_org
         .chain([mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY])
         .chain([mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY])
         .chain([mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY])
+        // Doc 17h cut M8a: the Registry inspection, the third twin.
+        .chain([mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY])
         .chain(NAMED_LAUNCH_HARDWARE_CAPABILITIES)
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()
