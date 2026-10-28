@@ -8,15 +8,25 @@ pub const PASSENGER_JSON: &str = include_str!("../../content/passengers/ceres.js
 pub const JSON: &str = include_str!("../../content/quests/first_steps.json");
 pub const LEILA_PACK: &str = "tacsim.quests.leila_followup";
 pub const LEILA_JSON: &str = include_str!("../../content/quests/leila_followup.json");
+pub const CONTACT_PACK: &str = "tacsim.quests.port_connections";
+pub const CONTACT_JSON: &str = include_str!("../../content/quests/port_connections.json");
+pub const SAFE_PASSAGE_PACK: &str = "tacsim.quests.safe_passage";
+pub const SAFE_PASSAGE_JSON: &str = include_str!("../../content/quests/safe_passage.json");
 
 /// Dependency order: the real traveller exists before a quest refers to her.
 pub fn packs() -> Result<Vec<Pack>, String> {
-    [PASSENGER_JSON, JSON, LEILA_JSON]
-        .into_iter()
-        .map(|json| {
-            mush_content::load_pack(json).map_err(|error| format!("starter quest pack: {error}"))
-        })
-        .collect()
+    [
+        PASSENGER_JSON,
+        JSON,
+        LEILA_JSON,
+        CONTACT_JSON,
+        SAFE_PASSAGE_JSON,
+    ]
+    .into_iter()
+    .map(|json| {
+        mush_content::load_pack(json).map_err(|error| format!("starter quest pack: {error}"))
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -27,10 +37,12 @@ mod tests {
     #[test]
     fn signed_starter_packs_keep_the_passenger_independent_and_order_dependencies() {
         let packs = packs().unwrap();
-        assert_eq!(packs.len(), 3);
+        assert_eq!(packs.len(), 5);
         assert_eq!(packs[0].manifest().id().as_str(), PASSENGER_PACK);
         assert_eq!(packs[1].manifest().id().as_str(), PACK);
         assert_eq!(packs[2].manifest().id().as_str(), LEILA_PACK);
+        assert_eq!(packs[3].manifest().id().as_str(), CONTACT_PACK);
+        assert_eq!(packs[4].manifest().id().as_str(), SAFE_PASSAGE_PACK);
         for pack in &packs {
             assert_eq!(pack.manifest().version(), 1);
         }
@@ -45,6 +57,14 @@ mod tests {
         assert_eq!(
             packs[2].manifest().digest().to_hex(),
             "8d9cdd3fe91f97ca6871bbbe9556e1c2b47a707ae7ae7f6c1396d502355f97e7"
+        );
+        assert_eq!(
+            packs[3].manifest().digest().to_hex(),
+            "6d38a545d42a91333c9a3f2a85716d8c999f4e87686f257070106d495741f933"
+        );
+        assert_eq!(
+            packs[4].manifest().digest().to_hex(),
+            "03c64ad7904943334144cacf4facaa7e48dea7715beab650b920c95510d2db8f"
         );
         assert!(
             packs[1]
@@ -191,5 +211,62 @@ mod tests {
                     .all(|checkpoint| checkpoint["room_entry"] == room)
             );
         }
+    }
+
+    #[test]
+    fn port_introductions_bind_existing_people_without_other_gameplay_requirements() {
+        let pack = mush_content::load_pack(CONTACT_JSON).unwrap();
+        assert_eq!(pack.entries().len(), 1);
+        let dependencies = pack.manifest().requires();
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].id.as_str(), "neighborhood.ceres_freeport");
+        assert_eq!(dependencies[0].version, 4);
+        let def = pack
+            .entry(&CanonicalId::new("quest.ma_port_connections").unwrap())
+            .unwrap()
+            .def_value();
+        assert_eq!(def["npc"], "npc.petrossian");
+        assert_eq!(def["prerequisite"], "open");
+        assert!(def.get("choice").is_none());
+        let checkpoints = def["checkpoints"].as_array().unwrap();
+        assert_eq!(checkpoints.len(), 2);
+        for (checkpoint, target) in checkpoints.iter().zip(["npc.akintola", "npc.qureshi"]) {
+            assert_eq!(checkpoint["objective"]["kind"], "contact");
+            assert_eq!(checkpoint["objective"]["npc"], target);
+            assert_eq!(
+                checkpoint["objective"]["npc_pack"],
+                "neighborhood.ceres_freeport"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_passage_is_independent_and_uses_the_existing_finite_traveller() {
+        let pack = mush_content::load_pack(SAFE_PASSAGE_JSON).unwrap();
+        assert_eq!(pack.entries().len(), 1);
+        assert_eq!(
+            pack.manifest()
+                .requires()
+                .iter()
+                .map(|dependency| { (dependency.id.as_str(), dependency.version) })
+                .collect::<Vec<_>>(),
+            vec![("neighborhood.ceres_freeport", 4), (PASSENGER_PACK, 1)]
+        );
+        let def = pack
+            .entry(&CanonicalId::new("quest.ma_safe_passage").unwrap())
+            .unwrap()
+            .def_value();
+        assert_eq!(def["npc"], "npc.petrossian");
+        assert_eq!(def["prerequisite"], "open");
+        assert!(def.get("choice").is_none());
+        let checkpoints = def["checkpoints"].as_array().unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0]["room_entry"], "room.c10_slack_line");
+        let objective = &checkpoints[0]["objective"];
+        assert_eq!(objective["kind"], "paid_passage");
+        assert_eq!(objective["npc_pack"], PASSENGER_PACK);
+        assert_eq!(objective["npc"], "npc.nadia_okafor_sato");
+        assert_eq!(objective["origin"], "ceres");
+        assert_eq!(objective["destination"], "stickney");
     }
 }

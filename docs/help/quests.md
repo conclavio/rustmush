@@ -78,6 +78,49 @@ practice needs no paid survey commission or finite commission-board slot.
 
 After any invitation's checks, return to its giver and use `+quest/finish`.
 
+## People who keep the port moving
+
+Ma also offers an independent introduction to two people at Ceres: Dov at the
+Co-op Chandlery, then Rosalind at the Exchange Hall. Ask for her exact offer:
+
+  +quest/offer Yusra=tacsim.quests.port_connections/quest.ma_port_connections
+
+Visit each person in order and use the `+quest/check` command in your journal,
+then return to Ma. Each check verifies that you and the named NPC are actually
+present and can see one another. It records a meeting, not a conversation you
+did not have. You can chat with them about their work and services, but buying,
+enrolling, surveying or accepting another quest is optional.
+
+This introduction works alongside Ma's invitation to meet Nadia. Use the full
+quest key if both are active. A person who has left, is hidden or is unavailable
+cannot be credited through a same-named substitute.
+
+## See her safely there
+
+If a trip to Stickney fits your plans, Ma can offer a separate favor involving
+Nadia's passage. Read Nadia's actual situation with `+passage Nadia`, then ask:
+
+  +quest/offer Yusra=tacsim.quests.safe_passage/quest.ma_safe_passage
+
+Accept before Nadia arrives at Stickney. A passage you have already booked, or
+one with Nadia already aboard your ship, can count if arrival is still ahead.
+The favor is unavailable once she has arrived or while she is booked with
+another captain. She remains the same shared traveller; this quest never
+reserves her for you or creates another passenger.
+
+Negotiate, book and board her through the ordinary `+passage` commands. Use
+`+ship/plan stickney` to check your route, fuel and provisions. After delivering
+her and receiving the settled fare, return to Ma at the Slack Line and use:
+
+  +quest/check Yusra=tacsim.quests.safe_passage/quest.ma_safe_passage
+  +quest/finish Yusra=tacsim.quests.safe_passage/quest.ma_safe_passage
+
+Arrival alone does not prove payment, and a journey completed before accepting
+does not count even if its fare settles later. The quest adds Ma's usual
+once-only personal relationship bonus. Nadia's fare, agreement and destination
+keep their ordinary rules. You can carry her without this favor, and abandoning
+the favor does not cancel a booking or change your passenger obligations.
+
 ## A second reading
 
 After bringing Leila Mensah-Kovács home on a completed, paid passage, meet her
@@ -188,6 +231,8 @@ checkpoint objectives use these source shapes:
 {"kind": "coop_enrolment"}
 {"kind": "trade", "origin": "stickney", "destination": "ceres", "commodity": "industrial_parts", "quantity": 1}
 {"kind": "passenger", "npc_pack": "tacsim.passengers.ceres", "npc": "npc.nadia_okafor_sato"}
+{"kind": "contact", "npc_pack": "neighborhood.ceres_freeport", "npc": "npc.akintola"}
+{"kind": "paid_passage", "npc_pack": "tacsim.passengers.ceres", "npc": "npc.nadia_okafor_sato", "origin": "ceres", "destination": "stickney"}
 {"kind": "survey", "mode": "scan"}
 {"kind": "survey", "mode": "sound"}
 ```
@@ -198,6 +243,22 @@ that is where the player acknowledges the verified work with `+quest/check`.
 local meeting with the real traveller, not a booking or completed passage.
 Trade and survey evidence must come from actual work after acceptance. Use
 honest current availability when a shared traveller has already left.
+
+A `contact` objective can name any authored NPC, including ordinary station
+staff. Bind the NPC's pack as an explicit dependency and choose the room where
+the meeting should happen. The live NPC must be enabled, mutually perceivable
+and present with the player when the check commits. Previously acknowledged
+meetings remain historical receipts if that NPC later moves. Contact checks do
+not assert that dialogue happened, transfer items or sign up for services.
+
+A `paid_passage` objective names an existing traveller and exact route. Its room
+is where the player reports the completed journey; the traveller does not have
+to return there. It requires the player's actual delivered booking and exact
+settled fare receipt. Delivery must occur after quest acceptance; an unfinished
+booking may already exist. Acceptance rechecks availability, and recording or
+finishing rechecks the authoritative booking and payment. A changed booking,
+unsettled or reversed fare, another captain's trip or old arrival cannot grant
+completion. Declining or abandoning the quest never mutates the passage.
 
 Up to eight quest definitions may bind to one NPC, within a 64 KiB catalog.
 Definitions merge by full pack/entry key and preserve other packs' definitions.
@@ -221,5 +282,9 @@ dependency upgrades. No existing station pack is automatically upgraded.
 `tacsim.quests.leila_followup@1` separately requires Leila's passenger pack v2
 and both stations at v4. It adds two definitions to the same Leila without
 replacing her earlier quest or resetting her journey.
+`tacsim.quests.port_connections@1` requires Ceres v4 and adds Ma's optional
+introductions without changing any station NPC's identity or ordinary services.
+`tacsim.quests.safe_passage@1` requires Ceres v4 and Nadia's passenger pack v1;
+it adds Ma's passage favor to her existing catalog.
 
 See also: `help passengers`, `help npc`.

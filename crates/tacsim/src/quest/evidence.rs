@@ -135,6 +135,16 @@ pub enum ObjectiveProof {
         origin: String,
         destination: String,
     },
+    Contact {
+        actor: ObjId,
+        npc: ObjId,
+        name: String,
+    },
+    PaidPassage {
+        booking: Box<crate::port::passenger::store::Booking>,
+        transaction: u64,
+        settled_at: i64,
+    },
     Survey {
         receipt: SurveyReceipt,
     },
@@ -195,6 +205,37 @@ impl ObjectiveProof {
                 receipt.check()?;
                 &receipt.mode == mode
             }
+            (Self::Contact { actor, npc, name }, Objective::Contact { npc: expected }) => {
+                actor.0 != 0
+                    && npc.0 != 0
+                    && actor != npc
+                    && npc == expected
+                    && !name.trim().is_empty()
+                    && name.len() <= 128
+                    && !name.contains('\0')
+            }
+            (
+                Self::PaidPassage {
+                    booking,
+                    settled_at,
+                    ..
+                },
+                Objective::PaidPassage {
+                    npc,
+                    origin,
+                    destination,
+                },
+            ) => {
+                booking.check()?;
+                booking.npc == *npc
+                    && booking.origin == *origin
+                    && booking.destination == *destination
+                    && booking.phase == crate::port::passenger::store::Phase::Delivered
+                    && booking
+                        .delivered
+                        .as_ref()
+                        .is_some_and(|delivered| *settled_at >= delivered.at_utc)
+            }
             _ => false,
         };
         valid
@@ -212,9 +253,9 @@ impl ObjectiveProof {
         let valid = checked.at_utc >= accepted.at_utc
             && checked.at_ic >= accepted.at_ic
             && match self {
-                Self::CoopEnrolment { actor: who, .. } | Self::Passenger { actor: who, .. } => {
-                    *who == actor
-                }
+                Self::CoopEnrolment { actor: who, .. }
+                | Self::Passenger { actor: who, .. }
+                | Self::Contact { actor: who, .. } => *who == actor,
                 Self::Trade { purchase, sale } => {
                     purchase.actor == actor
                         && purchase.accepted_at >= accepted.at_utc
@@ -226,6 +267,20 @@ impl ObjectiveProof {
                         && receipt.due_ic <= checked.at_ic
                         && receipt.at_utc >= accepted.at_utc
                         && receipt.at_utc <= checked.at_utc
+                }
+                Self::PaidPassage {
+                    booking,
+                    settled_at,
+                    ..
+                } => {
+                    booking.captain == actor
+                        && booking.delivered.as_ref().is_some_and(|delivered| {
+                            delivered.at_ic > accepted.at_ic
+                                && delivered.at_ic <= checked.at_ic
+                                && delivered.at_utc >= accepted.at_utc
+                                && delivered.at_utc <= checked.at_utc
+                        })
+                        && *settled_at <= checked.at_utc
                 }
             };
         valid
@@ -866,6 +921,157 @@ fn passenger_proof(
         destination: role.destination,
     })
 }
+/// Public presence only: private persona, memories and conversation are not
+/// proof of an introduction, and the quest never summons or moves its contact.
+pub(crate) fn contact_available(w: &World, npc: ObjId, room: ObjId) -> bool {
+    w.get(room).is_some_and(|place| {
+        place.kind == mush_core::ObjKind::Room && !place.flags.contains(mush_core::Flags::GOING)
+    }) && w.get(npc).is_some_and(|object| {
+        object.kind == mush_core::ObjKind::Npc
+            && object.location == Some(room)
+            && !object
+                .flags
+                .intersects(mush_core::Flags::GOING | mush_core::Flags::DARK)
+            && !mush_sim::deployed::is_custodied(w, npc)
+            && object
+                .attrs
+                .get(mush_npc::PROFILE_ATTR)
+                .and_then(|attr| attr.as_json())
+                .and_then(|value| {
+                    serde_json::from_value::<mush_npc::AgentProfile>(value.clone()).ok()
+                })
+                .is_some_and(|profile| profile.enabled && profile.validate().is_ok())
+    })
+}
+fn contact_proof(
+    w: &World,
+    actor: ObjId,
+    npc: ObjId,
+    checkpoint: &Checkpoint,
+) -> Option<ObjectiveProof> {
+    if !contact_available(w, npc, checkpoint.room) || !super::close_world(w, npc, actor) {
+        return None;
+    }
+    let proof = ObjectiveProof::Contact {
+        actor,
+        npc,
+        name: w.get(npc)?.name.to_string(),
+    };
+    proof.check(&checkpoint.objective).ok()?;
+    Some(proof)
+}
+/// An invitation can guide an unfinished passage, including an agreement made
+/// before the quest. Another captain's agreement and an already arrived NPC
+/// cannot be turned into fresh work by accepting this optional invitation.
+pub(crate) fn paid_passage_available(
+    w: &World,
+    actor: ObjId,
+    objective: &Objective,
+    current: Option<&crate::port::passenger::store::Booking>,
+) -> bool {
+    use crate::port::passenger::{self, economy, store::Phase};
+    let Objective::PaidPassage {
+        npc,
+        origin,
+        destination,
+    } = objective
+    else {
+        return false;
+    };
+    let Some(traveller) = passenger::traveller(w, *npc) else {
+        return false;
+    };
+    if traveller.origin != *origin || traveller.destination != *destination {
+        return false;
+    }
+    match current {
+        None => passenger::at_station(w, *npc, origin),
+        Some(booking) if booking.check().is_ok() && booking.npc == *npc => match booking.phase {
+            Phase::Booked | Phase::Aboard => {
+                booking.captain == actor
+                    && booking.origin == *origin
+                    && booking.destination == *destination
+                    && booking.traveller_key == traveller.key
+            }
+            Phase::Cancelled => {
+                economy::replaceable(w, booking) && passenger::at_station(w, *npc, origin)
+            }
+            Phase::Delivered => false,
+        },
+        Some(_) => false,
+    }
+}
+
+fn passage_settlement(
+    w: &World,
+    booking: &crate::port::passenger::store::Booking,
+) -> Option<(u64, i64)> {
+    if !crate::port::passenger::economy::settled(w, booking) {
+        return None;
+    }
+    let economy = w.module_state::<EconomyStore>()?;
+    if economy.is_frozen() {
+        return None;
+    }
+    let contract = economy.snapshot().contract(ContractId(booking.contract))?;
+    let ContractState::Settled { transaction } = contract.state else {
+        return None;
+    };
+    let key = mush_economy::settle_key(contract.id);
+    let receipt = economy
+        .snapshot()
+        .idempotency(&key)
+        .or_else(|| economy.cold_key(&key)?.record.as_ref())?;
+    (receipt.idempotency == key && receipt.transaction == transaction)
+        .then_some((transaction.0, receipt.posted_at))
+}
+
+/// The exact booking is separately reread through the typed family at all
+/// action boundaries. This verifies its original economic consent and payment.
+fn paid_passage_current(w: &World, proof: &ObjectiveProof) -> bool {
+    let ObjectiveProof::PaidPassage {
+        booking,
+        transaction,
+        settled_at,
+    } = proof
+    else {
+        return false;
+    };
+    passage_settlement(w, booking) == Some((*transaction, *settled_at))
+}
+
+fn paid_passage_proof(
+    ctx: &Ctx<'_>,
+    row: &QuestRecord,
+    checkpoint: &Checkpoint,
+) -> Result<ObjectiveProof, String> {
+    let Objective::PaidPassage { npc, .. } = &checkpoint.objective else {
+        return Err("this checkpoint does not request a passage".into());
+    };
+    let booking = crate::port::passenger::store::list(ctx)?
+        .into_iter()
+        .find(|booking| booking.npc == *npc)
+        .ok_or("Complete the named traveller's passage and wait for the fare to settle.")?;
+    let (transaction, settled_at) = passage_settlement(ctx.w, &booking)
+        .ok_or("Complete the named traveller's passage and wait for the fare to settle.")?;
+    let proof = ObjectiveProof::PaidPassage {
+        booking: Box::new(booking),
+        transaction,
+        settled_at,
+    };
+    proof
+        .check_for(
+            &checkpoint.objective,
+            row.actor,
+            &row.accepted,
+            &Stamp::now(ctx.w),
+        )
+        .map_err(|_| {
+            "The named traveller must arrive on your passage after this quest was accepted."
+                .to_owned()
+        })?;
+    Ok(proof)
+}
 fn trade_proof(w: &World, row: &QuestRecord, checkpoint: &Checkpoint) -> Option<ObjectiveProof> {
     let store = w.module_state::<TradeEvidenceStore>()?;
     if store.unreadable.contains(&row.actor) {
@@ -915,6 +1121,16 @@ pub(crate) fn capture(
                     .ok_or("Meet the traveller at the named bar first.")?,
             )
         }
+        Objective::Contact { npc } => {
+            if !ctx.can_perceive(row.actor, *npc) || !ctx.can_perceive(*npc, row.actor) {
+                return Err("Meet the named contact in person first.".into());
+            }
+            Some(
+                contact_proof(ctx.w, row.actor, *npc, checkpoint)
+                    .ok_or("Meet the named contact at the specified place first.")?,
+            )
+        }
+        Objective::PaidPassage { .. } => Some(paid_passage_proof(ctx, row, checkpoint)?),
         Objective::Trade { .. } => Some(trade_proof(ctx.w, row, checkpoint).ok_or(
             "Complete the paid purchase and later delivery sale after accepting this lesson.",
         )?),
@@ -968,6 +1184,13 @@ pub(crate) fn capture(
             "Your rig completed a {} at {} after this lesson was accepted.",
             receipt.mode, receipt.site
         ),
+        Some(ObjectiveProof::Contact { name, .. }) => {
+            format!("You acknowledged meeting {name} in person at the named place.")
+        }
+        Some(ObjectiveProof::PaidPassage { booking, .. }) => format!(
+            "Your agreed passage carried the named traveller from {} to {} after this quest was accepted, and its fare was paid.",
+            booking.origin, booking.destination
+        ),
     };
     Ok(CheckEvidence {
         checkpoint: checkpoint.id.clone(),
@@ -1012,6 +1235,10 @@ pub(crate) fn guard(w: &World, row: &QuestRecord, evidence: &CheckEvidence) -> b
         ObjectiveProof::Passenger { npc, .. } => {
             passenger_proof(w, row.actor, *npc, checkpoint).as_ref() == Some(proof)
         }
+        ObjectiveProof::Contact { npc, .. } => {
+            contact_proof(w, row.actor, *npc, checkpoint).as_ref() == Some(proof)
+        }
+        ObjectiveProof::PaidPassage { .. } => paid_passage_current(w, proof),
         ObjectiveProof::Trade { .. } => trade_proof(w, row, checkpoint).as_ref() == Some(proof),
         // The provider additionally rereads the exact typed survey slot at all
         // three action boundaries; World alone cannot manufacture that read.
@@ -1024,6 +1251,7 @@ pub(crate) fn guard(w: &World, row: &QuestRecord, evidence: &CheckEvidence) -> b
 /// operator performs another survey and advances the latest-receipt slots.
 pub(crate) fn completion_ready(w: &World, row: &QuestRecord) -> bool {
     row.checks.iter().all(|evidence| match &evidence.proof {
+        Some(proof @ ObjectiveProof::PaidPassage { .. }) => paid_passage_current(w, proof),
         Some(ObjectiveProof::Trade { purchase, sale }) => {
             paid_transaction(
                 w,
@@ -1039,6 +1267,287 @@ pub(crate) fn completion_ready(w: &World, row: &QuestRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paid_passage_proof_requires_a_later_arrival_by_this_captain_and_settled_fare() {
+        let booking = super::super::model::tests::record().passage.unwrap();
+        let objective = Objective::PaidPassage {
+            npc: booking.npc,
+            origin: booking.origin.clone(),
+            destination: booking.destination.clone(),
+        };
+        let accepted = Stamp {
+            at_ic: 40,
+            at_utc: 40,
+        };
+        let checked = Stamp {
+            at_ic: 60,
+            at_utc: 60,
+        };
+        let proof = ObjectiveProof::PaidPassage {
+            booking: Box::new(booking.clone()),
+            transaction: 0,
+            settled_at: 55,
+        };
+        // A booking and departure may predate this optional invitation.
+        assert!(
+            proof
+                .check_for(&objective, booking.captain, &accepted, &checked)
+                .is_ok()
+        );
+        for at in [50, 51] {
+            assert!(
+                proof
+                    .check_for(
+                        &objective,
+                        booking.captain,
+                        &Stamp {
+                            at_ic: at,
+                            at_utc: 40
+                        },
+                        &checked
+                    )
+                    .is_err()
+            );
+        }
+        assert!(
+            proof
+                .check_for(&objective, ObjId(999), &accepted, &checked)
+                .is_err()
+        );
+        assert!(
+            proof
+                .check_for(
+                    &objective,
+                    booking.captain,
+                    &accepted,
+                    &Stamp {
+                        at_ic: 49,
+                        at_utc: 60
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            proof
+                .check_for(
+                    &objective,
+                    booking.captain,
+                    &accepted,
+                    &Stamp {
+                        at_ic: 60,
+                        at_utc: 54
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            proof
+                .check(&Objective::PaidPassage {
+                    npc: booking.npc,
+                    origin: "ceres".into(),
+                    destination: "stickney".into()
+                })
+                .is_err()
+        );
+        assert!(
+            Objective::PaidPassage {
+                npc: booking.npc,
+                origin: "ceres".into(),
+                destination: "ceres".into()
+            }
+            .check()
+            .is_err()
+        );
+        assert!(
+            ObjectiveProof::PaidPassage {
+                booking: Box::new(booking.clone()),
+                transaction: 0,
+                settled_at: 49
+            }
+            .check(&objective)
+            .is_err()
+        );
+        let mut aboard = booking.clone();
+        aboard.phase = crate::port::passenger::store::Phase::Aboard;
+        aboard.delivered = None;
+        aboard.check().unwrap();
+        assert!(
+            ObjectiveProof::PaidPassage {
+                booking: Box::new(aboard),
+                transaction: 0,
+                settled_at: 55
+            }
+            .check(&objective)
+            .is_err()
+        );
+    }
+
+    fn contact_fixture() -> (World, QuestRecord, CheckEvidence, ObjId) {
+        use super::super::model::{Prerequisite, QuestDef};
+        use mush_core::{Attr, GOD, ObjKind};
+        let mut w = World::new_minimal();
+        let room = w.create(ObjKind::Room, "Desk", GOD, None).unwrap();
+        let elsewhere = w.create(ObjKind::Room, "Elsewhere", GOD, None).unwrap();
+        let actor = w
+            .create(ObjKind::Player, "Captain", GOD, Some(room))
+            .unwrap();
+        let npc = w.create(ObjKind::Npc, "Contact", GOD, Some(room)).unwrap();
+        w.set_connected(actor, true);
+        w.set_attr(
+            npc,
+            mush_npc::PROFILE_ATTR,
+            Attr::json(serde_json::json!(mush_npc::AgentProfile::default()), GOD),
+        )
+        .unwrap();
+        let checkpoint = Checkpoint {
+            id: "contact".into(),
+            title: "Meet the contact".into(),
+            room_pack: "test.station".into(),
+            room_entry: "room.desk".into(),
+            room,
+            detail: String::new(),
+            objective: Objective::Contact { npc },
+            instructions: "Meet the contact at their desk.".into(),
+        };
+        let proof = contact_proof(&w, actor, npc, &checkpoint).unwrap();
+        let row = QuestRecord {
+            schema: 1,
+            key: QuestKey {
+                source: "test/quest.contact".into(),
+                booking: None,
+                actor: Some(actor),
+            },
+            revision: 1,
+            actor,
+            npc,
+            passage: None,
+            prerequisite_receipt: None,
+            definition: QuestDef {
+                schema: 1,
+                key: "test/quest.contact".into(),
+                title: "A local introduction".into(),
+                introduction: "Meet the contact at their desk.".into(),
+                destination: "ceres".into(),
+                prerequisite: Prerequisite::Open,
+                choice: None,
+                checkpoints: vec![checkpoint],
+                completion: "The captain met the contact in person.".into(),
+            },
+            accepted: Stamp {
+                at_utc: 10,
+                at_ic: 10,
+            },
+            checks: Vec::new(),
+            completed: None,
+            closed: None,
+        };
+        let detail_text =
+            "You acknowledged meeting Contact in person at the named place.".to_owned();
+        let evidence = CheckEvidence {
+            checkpoint: "contact".into(),
+            room,
+            detail_hash: super::super::model::detail_hash(&detail_text).unwrap(),
+            detail_text,
+            at: Stamp {
+                at_utc: 11,
+                at_ic: 11,
+            },
+            proof: Some(proof),
+        };
+        row.check().unwrap();
+        (w, row, evidence, elsewhere)
+    }
+
+    #[test]
+    fn contact_proof_requires_exact_actor_target_and_fresh_acknowledgement() {
+        let (w, row, evidence, _) = contact_fixture();
+        let proof = evidence.proof.as_ref().unwrap();
+        let objective = &row.definition.checkpoints[0].objective;
+        assert!(
+            proof
+                .check_for(objective, row.actor, &row.accepted, &evidence.at)
+                .is_ok()
+        );
+        assert!(guard(&w, &row, &evidence));
+        assert!(proof.check(&Objective::Contact { npc: row.actor }).is_err());
+        assert!(proof.check(&Objective::Passenger { npc: row.npc }).is_err());
+        assert!(Objective::Contact { npc: ObjId(0) }.check().is_err());
+        assert!(
+            proof
+                .check_for(objective, row.npc, &row.accepted, &evidence.at)
+                .is_err()
+        );
+        assert!(
+            proof
+                .check_for(
+                    objective,
+                    row.actor,
+                    &row.accepted,
+                    &Stamp {
+                        at_utc: 9,
+                        at_ic: 11
+                    }
+                )
+                .is_err()
+        );
+        for name in [
+            "".to_owned(),
+            " ".to_owned(),
+            "x".repeat(129),
+            "bad\0name".to_owned(),
+        ] {
+            assert!(
+                ObjectiveProof::Contact {
+                    actor: row.actor,
+                    npc: row.npc,
+                    name
+                }
+                .check(objective)
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn contact_guard_rejects_departed_hidden_disabled_and_changed_contacts() {
+        use mush_core::{Attr, Flags, GOD, ObjKind};
+        for change in 0..9 {
+            let (mut w, row, evidence, elsewhere) = contact_fixture();
+            match change {
+                0 => w.move_to(row.npc, elsewhere).unwrap(),
+                1 => w.get_mut(row.npc).unwrap().flags.insert(Flags::DARK),
+                2 => w.get_mut(row.npc).unwrap().flags.insert(Flags::GOING),
+                3 => w.get_mut(row.npc).unwrap().kind = ObjKind::Thing,
+                4 => {
+                    w.remove_attr(row.npc, mush_npc::PROFILE_ATTR).unwrap();
+                }
+                5 => {
+                    w.set_attr(
+                        row.npc,
+                        mush_npc::PROFILE_ATTR,
+                        Attr::json(serde_json::json!({"enabled": false}), GOD),
+                    )
+                    .unwrap();
+                }
+                6 => w.set_name(row.npc, "Changed identity").unwrap(),
+                7 => w.set_connected(row.actor, false),
+                8 => w.move_to(row.actor, elsewhere).unwrap(),
+                _ => {}
+            }
+            assert!(!guard(&w, &row, &evidence), "change {change}");
+        }
+        let (w, row, _, _) = contact_fixture();
+        assert!(
+            contact_proof(
+                &w,
+                row.actor,
+                ObjId(u32::MAX),
+                &row.definition.checkpoints[0]
+            )
+            .is_none()
+        );
+    }
 
     fn survey(mode: &str) -> SurveyReceipt {
         SurveyReceipt {

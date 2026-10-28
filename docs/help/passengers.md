@@ -12,6 +12,11 @@ not require it. Neither an introduction nor a quest commits you to a booking.
 Both travellers are shared, persistent people; check the live service rather
 than assuming they are still looking for a captain.
 
+Ma also offers "See her safely there", an optional favor for completing Nadia's
+passage to Stickney and returning after the fare settles. Accept it before
+arrival; an unfinished booking can already exist. It gives Ma's personal
+relationship bonus and does not change Nadia's fare. See `help quests`.
+
 Conversation can produce a real fare quote. A promise in dialogue is not a
 booking: the captain must accept the exact quote the service prints.
 

@@ -118,6 +118,7 @@ fn available(w: &World, def: &QuestDef) -> bool {
                         && crate::port::passenger::at_station(w, npc, &traveller.origin)
                 })
             }
+            Objective::Contact { npc } => evidence::contact_available(w, npc, checkpoint.room),
             _ => true,
         })
 }

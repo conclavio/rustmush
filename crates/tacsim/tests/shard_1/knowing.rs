@@ -43,6 +43,12 @@ mod onboarding_trade;
 #[path = "quest_followups.rs"]
 mod quest_followups;
 
+#[path = "quest_contacts.rs"]
+mod quest_contacts;
+
+#[path = "quest_passages.rs"]
+mod quest_passages;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 

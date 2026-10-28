@@ -187,6 +187,7 @@ pub(crate) fn register_with_coverage(
         port_families.quests.clone(),
         port_families.quest_index.clone(),
         port_families.passengers.clone(),
+        port_families.passenger_index.clone(),
         port_families.quest_survey_evidence.clone(),
     )?;
     let probe = if test_world {

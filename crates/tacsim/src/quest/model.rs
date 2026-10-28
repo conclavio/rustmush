@@ -82,6 +82,14 @@ pub enum Objective {
     Passenger {
         npc: ObjId,
     },
+    Contact {
+        npc: ObjId,
+    },
+    PaidPassage {
+        npc: ObjId,
+        origin: String,
+        destination: String,
+    },
     Survey {
         mode: String,
     },
@@ -106,7 +114,17 @@ impl Objective {
                     && *quantity > 0
                     && *quantity <= i64::MAX as u64
             }
-            Self::Passenger { npc } => npc.0 != 0,
+            Self::Passenger { npc } | Self::Contact { npc } => npc.0 != 0,
+            Self::PaidPassage {
+                npc,
+                origin,
+                destination,
+            } => {
+                npc.0 != 0
+                    && canonical(origin, 64)
+                    && canonical(destination, 64)
+                    && origin != destination
+            }
             Self::Survey { mode } => matches!(mode.as_str(), "scan" | "sound"),
         };
         valid

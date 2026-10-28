@@ -82,6 +82,7 @@ pub(crate) fn provider(
                 records: families.quests.clone(),
                 index: families.quest_index.clone(),
                 passengers: families.passengers.clone(),
+                passenger_index: families.passenger_index.clone(),
                 survey: families.quest_survey_evidence.clone(),
             },
         )?;
