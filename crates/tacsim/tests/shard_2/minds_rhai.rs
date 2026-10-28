@@ -3517,34 +3517,44 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `7_649_434_552_267_006_567` / `5f0bdda7…` / `becdcb65…`,
 /// `9_329_786_118_378_962_729` / `004bd63f…` / `8de6e161…`,
 /// `5_200_400_847_644_332_931` / `6bf446e5…` / `3d5c4a8f…`.
+///
+/// **Doc 17h cut M8a's re-bless, the ledger digest only** (captured on
+/// conclav.dev's Linux at 9159cffa; CI's Linux run of PR #67 computed the same
+/// four rows): every `mind_sealed` ledger line gains `licence_state`
+/// after `licence` (the state is the sealed line's parameter, never a seal
+/// field), so the ledger digest of all four rows moved and nothing else did:
+/// the stopping times, the state hashes, the substep digests and the float
+/// probe's 369098751 bitmask are unmoved. The digest hashes the ledger's bytes,
+/// so it is host-independent. Were, by row: `91c474d0…`, `929f1c49…`,
+/// `22d34325…`, `de7720f6…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         170250,
         5751437098979270255,
         "0435ea8a5ea54c73685d7fd69ad3925d0691cf49f8256e18ea74e6715b907934",
-        "91c474d043c4813fdc28f16d173f6fa02961bde1cbd22eaf513f4874fcba2113",
+        "a8ef4a30e87123442bf19d6540a764891b8bea3dae96b9342081cb9d28c4a907",
     ),
     (
         2351,
         192500,
         15239362189155377359,
         "daad5d83c262db2451f0fcfce7f7d72c0e2b719a610c35c5e7cb168c52726b61",
-        "929f1c498f2307fe6604c59158e8ddef65005f5444f2b5cb31019c490b03a3d6",
+        "e1e7a26b1043a73866178dc67064d234452b1fcbfd711249229b21ab8c6ee85b",
     ),
     (
         2352,
         170000,
         147138284034081668,
         "ea5704215c831ced5ac793598c897adf37dd29177fc0d8ebd2a1fe481484c72c",
-        "22d343256c42614362e6ef15bff20fe29e148b05ad7398d77ec67456f0e6e418",
+        "b2c1dada8306a2612a371ac089c545d8f175c7b9bbb10d274845a208d353465e",
     ),
     (
         2350,
         900000,
         901248092712753737,
         "3935bb86c6d21b77f1ba8168be3d65750615a6c4405d784c72b513caaf252817",
-        "de7720f6e56db31c1e67fa82f19939dc556ca198af0f36dd1d3bcba90aa49411",
+        "2e9d2e806688e0ca46627828117c216b28827597fd6b140aaca71a20c3587f7d",
     ),
 ];
 
