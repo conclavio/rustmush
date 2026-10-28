@@ -880,6 +880,77 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Observe the actual actor's ordinary exit or HOME route using the installed
+    /// locks and MoveAttempt hooks. The result is inert: it moves nothing and
+    /// grants no publication capability or command-dispatch admission.
+    ///
+    /// The registered transaction supplies the committed typed-state lens; a
+    /// caller cannot substitute a principal, actor, hook list or destination.
+    /// Any refusal poisons preparation and transaction even if caught.
+    pub fn admit_locomotion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        request: crate::locomotion::LocomotionRequest,
+    ) -> Result<crate::locomotion::LocomotionDecision, crate::participant::ParticipantError> {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let lens = txn
+                .read_preimage(base, provider)
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            let hooks = self
+                .move_hooks
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            self.participants
+                .as_ref()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?
+                .admit_locomotion(self.commit_token, hooks, lens, request)
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
+    /// Recheck one inert admission against this exact invocation/action/commit,
+    /// its object preimages and the current registered MoveAttempt hooks.
+    /// This does not retain an installation fence or publish a movement.
+    /// Refusal poisons both preparation and transaction even if caught.
+    pub fn require_locomotion_admission(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        admission: &crate::locomotion::LocomotionAdmission,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let lens = txn
+                .read_preimage(base, provider)
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            let hooks = self
+                .move_hooks
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            self.participants
+                .as_ref()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?
+                .require_locomotion_admission(self.commit_token, hooks, lens, admission)
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
     /// Prepare one registered owner's closed effect in this exact action.
     /// A refused request poisons this preparation even if provider code catches it.
     pub fn prepare_owner<P: crate::participant::OwnerParticipant>(

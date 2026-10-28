@@ -564,6 +564,43 @@ impl<'a> ParticipantPreparation<'a> {
     pub(crate) fn world(&self) -> &World {
         self.world
     }
+
+    pub(crate) fn admit_locomotion(
+        &self,
+        commit: CommitToken,
+        hooks: &[crate::module::HookReg],
+        lens: crate::action_state::TypedStateLens<'_>,
+        request: crate::locomotion::LocomotionRequest,
+    ) -> Result<crate::locomotion::LocomotionDecision, ParticipantError> {
+        crate::locomotion::derive(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            hooks,
+            lens,
+            request,
+        )
+    }
+
+    pub(crate) fn require_locomotion_admission(
+        &self,
+        commit: CommitToken,
+        hooks: &[crate::module::HookReg],
+        lens: crate::action_state::TypedStateLens<'_>,
+        admission: &crate::locomotion::LocomotionAdmission,
+    ) -> Result<(), ParticipantError> {
+        crate::locomotion::recheck(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            hooks,
+            lens,
+            admission,
+        )
+    }
+
     pub(crate) fn new(
         registry: &'a ParticipantRegistry,
         provider: &'a ActionProviderEntry,

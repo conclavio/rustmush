@@ -43,6 +43,10 @@
 
 pub mod proc;
 
+/// Explicit Store-acknowledged command driver for integration fixtures.
+#[cfg(feature = "authoritative-store")]
+pub mod authoritative;
+
 /// The `toy` test ruleset (16b cut R-b): a miniature [`Ruleset`] carrying the
 /// platform seams the deleted game rulesets used to carry — a sheet + vitals,
 /// a one-stage chargen filing an approval job, the onboarding gate/hook/spawn

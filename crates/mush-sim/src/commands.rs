@@ -973,23 +973,11 @@ fn spatial_space(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "The room must carry `sim.interior` first (@behavior/add).",
         ));
     }
-    // Define-or-re-anchor is one planned/applied transition: a refusal (bad
-    // domain, cycle, anchor conflict) leaves no record behind.
-    let existed = st(ctx).spaces.contains_key(&space);
-    run(ctx, &Transition::Space { space, anchor }).map_err(sim_err)?;
-    info(
-        ctx,
-        format!(
-            "{} {}.",
-            display_name(ctx.w, space),
-            if existed {
-                "re-anchored"
-            } else {
-                "is now an interior space"
-            }
-        ),
-    );
-    Ok(())
+    crate::transition::check_space_membership(st(ctx), space).map_err(sim_err)?;
+    // The physical owner rechecks the complete transition and prepares its
+    // topology, object projections and personnel capture in one commit. Only
+    // the acknowledged provider receipt reports success.
+    crate::physical::submit(ctx, Transition::Space { space, anchor }).map_err(CmdError::msg)
 }
 
 fn spatial_unspace(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -3488,8 +3476,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `LegacyPostImage` with the note "the durable cursor is armed by the
     // `sim.domain_pulse` Coarse tick, **never by the command**". That is the
     // identical misdeclaration the tripwire caught for `@station` at cut 5 and
-    // `@prop` at cut 7. `LegacyPostImage` is restored immediately after, so
-    // every later registration keeps the module default.
+    // `@prop` at cut 7. The following `@spatial` registration shares this ceiling;
+    // `LegacyPostImage` is restored before the later registrations.
     reg.classify_commands(CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
@@ -3523,7 +3511,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_domain),
     )?;
-    reg.classify_commands(CommandCompatibility::LegacyPostImage);
+    // `@spatial/space` is an authoritative ingress even though other switches
+    // retain their existing read-only or legacy post-image implementations.
+    // One CommandSpec publishes the highest authority any switch may use.
     reg.command(
         CommandSpec {
             name: "@spatial".into(),
@@ -3554,6 +3544,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_spatial),
     )?;
+    reg.classify_commands(CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: "egress".into(),

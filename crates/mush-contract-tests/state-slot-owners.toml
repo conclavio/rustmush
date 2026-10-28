@@ -265,28 +265,28 @@ not refused — a cadence knob must not be able to stop a world booting.
 """
 
 [[site]]
-path = "crates/mush-server/src/world_task.rs"
+path = "crates/mush-server/src/world_task/tests.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
 reason = "World-task `#[cfg(test)]` rig: seeds the sim's account oracle on a test world."
 
 [[site]]
-path = "crates/mush-server/src/world_task.rs"
+path = "crates/mush-server/src/world_task/tests.rs"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"
 owner = "economy"
 reason = "World-task `#[cfg(test)]` rig: seeds economy state a durability case then drives."
 
 [[site]]
-path = "crates/mush-server/src/world_task.rs"
+path = "crates/mush-server/src/world_task/tests.rs"
 accessor = "World::module_state_mut"
 slot = "NpcHostState"
 owner = "npc"
 reason = "World-task `#[cfg(test)]` rig: seeds NPC host state for an async-completion case."
 
 [[site]]
-path = "crates/mush-server/src/world_task.rs"
+path = "crates/mush-server/src/world_task/tests.rs"
 accessor = "World::module_state_mut"
 slot = "SpatialState"
 owner = "sim"

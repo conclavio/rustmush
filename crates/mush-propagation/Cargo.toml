@@ -40,7 +40,7 @@ tracing.workspace = true
 # `FocusState::claim` out of the production surface, exactly as cut 10's B12
 # fenced `ControlLeaseView::note_holder`).
 mush-sim = { workspace = true, features = ["testkit"] }
-mush-testkit.workspace = true
+mush-testkit = { workspace = true, features = ["authoritative-store"] }
 mush-tactics.workspace = true
 mush-scenes.workspace = true
 
