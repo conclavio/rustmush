@@ -9,6 +9,7 @@ use crate::port::families::PortHandles;
 use crate::port::passenger::store::{Booking, BookingIndex, BookingKey};
 use crate::port_tick::port_error;
 use crate::surface::act::{offer_draft_with_revisions, parameter, self_query};
+use crate::surface::survey::{SurveyKey, SurveyRecord};
 use mush_core::mechanics::OwnerId;
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionProvider, ActionTxn,
@@ -32,6 +33,7 @@ struct Projection {
     ready: bool,
     actors: BTreeSet<ObjId>,
     rows: Vec<QuestRecord>,
+    commissions: Option<Vec<SurveyRecord>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +47,9 @@ struct Order {
     /// Initial passage availability is tied to the current owner index rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     passage_availability_hash: Option<String>,
+    /// Bind finite commission opportunities at initial admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commission_availability_hash: Option<String>,
 }
 #[derive(Clone, Default)]
 struct Orders(BTreeMap<ObjId, Order>);
@@ -100,7 +105,16 @@ pub fn list_for(ctx: &Ctx<'_>, actor: ObjId) -> Result<Vec<QuestRecord>, String>
 }
 /// Display only. Failed typed reads invalidate their scope rather than imply no quest.
 pub fn refresh(ctx: &mut Ctx<'_>) -> Result<Vec<QuestRecord>, String> {
-    refresh_for(ctx, ctx.actor)
+    let commissions = crate::port::survey::records(ctx).ok();
+    let result = refresh_for(ctx, ctx.actor);
+    if let Some(projection) = ctx.w.module_state_mut::<Projection>() {
+        projection.commissions = commissions;
+    }
+    result
+}
+/// Advisory conversation reads must distinguish an unreadable board from free slots.
+pub(crate) fn commission_rows_world(w: &World) -> Option<&[SurveyRecord]> {
+    w.module_state::<Projection>()?.commissions.as_deref()
 }
 fn project_scope(
     projection: &mut Projection,
@@ -318,6 +332,59 @@ fn objective_passages_current(
     }
     Ok(())
 }
+fn needs_commission_board(order: &Order) -> bool {
+    order.before.is_none()
+        && order
+            .next
+            .definition
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.objective == super::model::Objective::SurveyCommission)
+}
+
+/// Read exact permanent completion records at every action boundary. Abandoning
+/// a journal entry never needs its original upstream evidence to remain intact.
+fn commission_basis(
+    order: &Order,
+    mut read: impl FnMut(&SurveyKey) -> Result<Option<SurveyRecord>, String>,
+) -> Result<Vec<SurveyRecord>, String> {
+    if abandoning(order) {
+        return Ok(Vec::new());
+    }
+    for check in &order.next.checks {
+        if let Some(super::evidence::ObjectiveProof::SurveyCommission { commission, .. }) =
+            &check.proof
+            && read(&commission.offer)?.as_ref() != Some(commission.as_ref())
+        {
+            return Err("quest commission evidence changed".into());
+        }
+    }
+    let mut rows = Vec::new();
+    if needs_commission_board(order) {
+        for offer in crate::port::survey::offers() {
+            let key = SurveyKey::parse(offer.id).ok_or("survey offer unavailable")?;
+            if let Some(row) = read(&key)? {
+                row.check()?;
+                if row.offer != key {
+                    return Err("survey receipt identity mismatch".into());
+                }
+                rows.push(row);
+            }
+        }
+    }
+    Ok(rows)
+}
+fn commission_basis_hash(order: &Order, rows: &[SurveyRecord]) -> Result<Option<String>, String> {
+    if needs_commission_board(order) {
+        hash("tacsim.quest_commission_availability.v1", &rows, 32 * 1024).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+fn commissions_ready(w: &World, order: &Order, rows: &[SurveyRecord]) -> bool {
+    !needs_commission_board(order)
+        || crate::port::survey::quest_available(w, order.next.actor, rows)
+}
 fn order_valid(w: &World, order: &Order) -> bool {
     progress_valid(order.before.as_ref(), &order.next)
         && super::transition_allowed(w, order.before.as_ref(), &order.next)
@@ -434,6 +501,20 @@ fn submit(ctx: &mut Ctx<'_>, mut order: Order) -> Result<(), String> {
     let index = index(ctx, QuestIndexKey::for_quest(&order.next.key))?;
     let gates = gates(&order, index.as_ref(), |key| get(ctx, key))?;
     objective_passages_current(&order, |id| crate::port::passenger::store::get(ctx, id))?;
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .ok_or("quest service unavailable")?;
+    let commissions = commission_basis(&order, |key| {
+        ctx.action_state(&handles.families.surveys, key)
+            .map(|row| row.cloned())
+            .map_err(|_| "quest commission evidence unreadable".into())
+    })?;
+    if !commissions_ready(ctx.w, &order, &commissions) {
+        return Err("No unfinished survey commission is available for this character.".into());
+    }
+    order.commission_availability_hash = commission_basis_hash(&order, &commissions)?;
+
     if needs_passage_index(&order) {
         let handles = ctx
             .w
@@ -518,6 +599,7 @@ fn stage_initial(ctx: &mut Ctx<'_>, row: QuestRecord) -> Result<(), String> {
         index_hash: index_hash(previous.as_ref())?,
         prerequisite_hash: None,
         passage_availability_hash: None,
+        commission_availability_hash: None,
     };
     if !indexed(&order, previous.as_ref()) {
         return Err("quest index is full or inconsistent".into());
@@ -537,6 +619,7 @@ fn stage(ctx: &mut Ctx<'_>, before: &QuestRecord, next: QuestRecord) -> Result<(
         index_hash: index_hash(current.as_ref())?,
         prerequisite_hash: None,
         passage_availability_hash: None,
+        commission_availability_hash: None,
     };
     if !indexed(&order, current.as_ref()) {
         return Err("quest index is inconsistent".into());
@@ -675,6 +758,7 @@ struct Validator {
     passengers: StateFamilyHandle<BookingKey, Booking>,
     passenger_index: StateFamilyHandle<u8, BookingIndex>,
     survey: StateFamilyHandle<ObjId, SurveyEvidenceBook>,
+    commissions: StateFamilyHandle<SurveyKey, SurveyRecord>,
 }
 impl RevisionValidator for Validator {
     fn current_generation(
@@ -692,6 +776,19 @@ impl RevisionValidator for Validator {
         else {
             return Ok(None);
         };
+        let commissions = commission_basis(order, |key| {
+            ctx.action_state(&self.commissions, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest commission evidence unreadable".into())
+        })
+        .map_err(|_| error("quest commission evidence changed"))?;
+        if !commissions_ready(ctx.world(), order, &commissions)
+            || commission_basis_hash(order, &commissions)
+                .map_err(|_| error("quest commission availability invalid"))?
+                != order.commission_availability_hash
+        {
+            return Err(error("quest commission availability changed"));
+        }
         let current = ctx
             .action_state(&self.records, &order.next.key)
             .map_err(|_| error("quest receipt unreadable"))?;
@@ -751,6 +848,7 @@ pub(crate) fn register(
     passengers: StateFamilyHandle<BookingKey, Booking>,
     passenger_index: StateFamilyHandle<u8, BookingIndex>,
     survey: StateFamilyHandle<ObjId, SurveyEvidenceBook>,
+    commissions: StateFamilyHandle<SurveyKey, SurveyRecord>,
 ) -> Result<(), ModError> {
     reg.state(Orders::default());
     reg.state(Projection::default());
@@ -764,6 +862,7 @@ pub(crate) fn register(
             passengers,
             passenger_index,
             survey,
+            commissions,
         },
     )
 }
@@ -775,6 +874,7 @@ pub(crate) struct Provider {
     pub passengers: StateFamilyHandle<BookingKey, Booking>,
     pub passenger_index: StateFamilyHandle<u8, BookingIndex>,
     pub survey: StateFamilyHandle<ObjId, SurveyEvidenceBook>,
+    pub commissions: StateFamilyHandle<SurveyKey, SurveyRecord>,
 }
 fn invocation_key(parameters: &Value) -> Option<QuestKey> {
     let source = parameters.get("source")?.as_str()?.to_owned();
@@ -834,6 +934,21 @@ impl ActionProvider for Provider {
             return Ok(None);
         };
         if order.next.actor != query.actor() || !order_valid(&engine.world, &order) {
+            return Ok(None);
+        }
+        let Ok(commissions) = commission_basis(&order, |key| {
+            engine
+                .action_state()
+                .get(&self.commissions, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest commission evidence unreadable".into())
+        }) else {
+            return Ok(None);
+        };
+        if !commissions_ready(&engine.world, &order, &commissions)
+            || commission_basis_hash(&order, &commissions).ok().flatten()
+                != order.commission_availability_hash
+        {
             return Ok(None);
         }
         let current = engine
@@ -989,6 +1104,18 @@ impl ActionProvider for Provider {
                 != Some(order.next.revision)
         {
             return Err(error("quest action names another transition"));
+        }
+        let commissions = commission_basis(&order, |key| {
+            txn.get(&self.commissions, key)
+                .map(|row| row.cloned())
+                .map_err(|_| "quest commission evidence unreadable".into())
+        })
+        .map_err(|_| error("quest commission evidence changed"))?;
+        if commission_basis_hash(&order, &commissions)
+            .map_err(|_| error("quest commission availability invalid"))?
+            != order.commission_availability_hash
+        {
+            return Err(error("quest commission availability changed"));
         }
         objective_passages_current(&order, |id| {
             txn.get(&self.passengers, &BookingKey(id))
@@ -1160,6 +1287,7 @@ mod tests {
             index_hash: None,
             prerequisite_hash: None,
             passage_availability_hash: None,
+            commission_availability_hash: None,
         };
         check!(indexed(&order, None));
         let indexed_row = QuestIndex {
@@ -1174,6 +1302,7 @@ mod tests {
                 index_hash: index_hash(Some(&indexed_row))?,
                 prerequisite_hash: None,
                 passage_availability_hash: None,
+                commission_availability_hash: None,
             },
             Some(&indexed_row)
         ));
@@ -1195,6 +1324,7 @@ mod tests {
             index_hash: None,
             prerequisite_hash: None,
             passage_availability_hash: None,
+            commission_availability_hash: None,
         };
         check!(indexed(&order, None));
         let other = QuestIndex {
@@ -1222,6 +1352,7 @@ mod tests {
                 index_hash: index_hash(Some(&index))?,
                 prerequisite_hash: None,
                 passage_availability_hash: None,
+                commission_availability_hash: None,
             },
             Some(&index)
         ));
@@ -1322,8 +1453,71 @@ mod tests {
             index_hash: None,
             prerequisite_hash: None,
             passage_availability_hash: None,
+            commission_availability_hash: None,
         }
     }
+    #[test]
+    fn commission_board_binds_free_slots_and_exact_terminal_evidence() -> TestResult {
+        let commission = super::super::model::tests::commission();
+        let mut row = branch("pack/quest.commission", "commission");
+        row.definition.checkpoints[0].objective = super::super::model::Objective::SurveyCommission;
+        let mut order = initial(row);
+        let empty = commission_basis(&order, |_| Ok(None))?;
+        let free_hash = commission_basis_hash(&order, &empty)?;
+        check!(free_hash.is_some());
+        let rows = commission_basis(&order, |key| {
+            Ok((key == &commission.offer).then(|| commission.clone()))
+        })?;
+        check!(commission_basis_hash(&order, &rows)? != free_hash);
+        check!(commission_basis(&order, |_| Err("unreadable".into())).is_err());
+        check!(commission_basis(&order, |_| Ok(Some(commission.clone()))).is_err());
+        order.next.accepted = Stamp {
+            at_ic: 40,
+            at_utc: 40,
+        };
+        order.next.checks.push(CheckEvidence {
+            checkpoint: "bench".into(),
+            room: ObjId(20),
+            detail_text: "The commissioned work was paid.".into(),
+            detail_hash: detail_hash("The commissioned work was paid.")?,
+            at: Stamp {
+                at_ic: 60,
+                at_utc: 60,
+            },
+            proof: Some(super::super::evidence::ObjectiveProof::SurveyCommission {
+                commission: Box::new(commission.clone()),
+                transaction: 0,
+                settled_at: 55,
+            }),
+        });
+        order.next.revision = 2;
+        order.next.check()?;
+        order.before = Some(order.next.clone());
+        order.next.completed = Some(Stamp {
+            at_ic: 70,
+            at_utc: 70,
+        });
+        order.next.revision = 3;
+        order.next.check()?;
+        commission_basis(&order, |_| Ok(Some(commission.clone())))?;
+        check!(commission_basis(&order, |_| Ok(None)).is_err());
+        let mut changed = commission.clone();
+        changed.completed.as_mut().ok_or("completion")?.ordinal += 1;
+        changed.check()?;
+        check!(commission_basis(&order, |_| Ok(Some(changed.clone()))).is_err());
+        order.next.completed = None;
+        order.next.closed = Some(ClosedQuest {
+            kind: ClosureKind::Abandoned,
+            at: Stamp {
+                at_ic: 70,
+                at_utc: 70,
+            },
+        });
+        order.next.check()?;
+        check!(commission_basis(&order, |_| Err("lost upstream evidence".into()))?.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn initial_passage_index_binds_exact_identity_and_row_changes() -> TestResult {
         let booking = record().passage.ok_or("passage")?;
@@ -1527,6 +1721,7 @@ mod tests {
             index_hash: None,
             prerequisite_hash: None,
             passage_availability_hash: None,
+            commission_availability_hash: None,
         };
         check_eq!(passage_key(&order), None);
         check!(passage_matches(&order, None));

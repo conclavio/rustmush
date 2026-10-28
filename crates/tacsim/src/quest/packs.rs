@@ -12,6 +12,8 @@ pub const CONTACT_PACK: &str = "tacsim.quests.port_connections";
 pub const CONTACT_JSON: &str = include_str!("../../content/quests/port_connections.json");
 pub const SAFE_PASSAGE_PACK: &str = "tacsim.quests.safe_passage";
 pub const SAFE_PASSAGE_JSON: &str = include_str!("../../content/quests/safe_passage.json");
+pub const SURVEY_WORK_PACK: &str = "tacsim.quests.survey_work";
+pub const SURVEY_WORK_JSON: &str = include_str!("../../content/quests/survey_work.json");
 
 /// Dependency order: the real traveller exists before a quest refers to her.
 pub fn packs() -> Result<Vec<Pack>, String> {
@@ -21,6 +23,7 @@ pub fn packs() -> Result<Vec<Pack>, String> {
         LEILA_JSON,
         CONTACT_JSON,
         SAFE_PASSAGE_JSON,
+        SURVEY_WORK_JSON,
     ]
     .into_iter()
     .map(|json| {
@@ -37,12 +40,13 @@ mod tests {
     #[test]
     fn signed_starter_packs_keep_the_passenger_independent_and_order_dependencies() {
         let packs = packs().unwrap();
-        assert_eq!(packs.len(), 5);
+        assert_eq!(packs.len(), 6);
         assert_eq!(packs[0].manifest().id().as_str(), PASSENGER_PACK);
         assert_eq!(packs[1].manifest().id().as_str(), PACK);
         assert_eq!(packs[2].manifest().id().as_str(), LEILA_PACK);
         assert_eq!(packs[3].manifest().id().as_str(), CONTACT_PACK);
         assert_eq!(packs[4].manifest().id().as_str(), SAFE_PASSAGE_PACK);
+        assert_eq!(packs[5].manifest().id().as_str(), SURVEY_WORK_PACK);
         for pack in &packs {
             assert_eq!(pack.manifest().version(), 1);
         }
@@ -65,6 +69,10 @@ mod tests {
         assert_eq!(
             packs[4].manifest().digest().to_hex(),
             "03c64ad7904943334144cacf4facaa7e48dea7715beab650b920c95510d2db8f"
+        );
+        assert_eq!(
+            packs[5].manifest().digest().to_hex(),
+            "b5ee132b6769270205b19e1e9d3e93fe9ff2b93cbf5b063129a86ee6537d0c89"
         );
         assert!(
             packs[1]
@@ -268,5 +276,36 @@ mod tests {
         assert_eq!(objective["npc"], "npc.nadia_okafor_sato");
         assert_eq!(objective["origin"], "ceres");
         assert_eq!(objective["destination"], "stickney");
+    }
+
+    #[test]
+    fn signed_survey_work_follows_the_readings_and_leaves_the_commission_choice_open() {
+        let pack = mush_content::load_pack(SURVEY_WORK_JSON).unwrap();
+        assert_eq!(pack.entries().len(), 1);
+        assert_eq!(
+            pack.manifest()
+                .requires()
+                .iter()
+                .map(|dependency| (dependency.id.as_str(), dependency.version))
+                .collect::<Vec<_>>(),
+            vec![("neighborhood.ceres_freeport", 4), (PACK, 1)]
+        );
+        let def = pack
+            .entry(&CanonicalId::new("quest.qureshi_signed_work").unwrap())
+            .unwrap()
+            .def_value();
+        assert_eq!(def["npc"], "npc.qureshi");
+        assert_eq!(
+            def["prerequisite"]["completed"]["quest"],
+            "tacsim.quests.first_steps/quest.qureshi_first_readings"
+        );
+        assert!(def.get("choice").is_none());
+        let checkpoints = def["checkpoints"].as_array().unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0]["room_entry"], "room.c07_exchange");
+        assert_eq!(
+            checkpoints[0]["objective"],
+            serde_json::json!({"kind": "survey_commission"})
+        );
     }
 }

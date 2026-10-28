@@ -265,6 +265,126 @@ pub(crate) fn contract_valid(w: &World, row: &SurveyRecord) -> bool {
             .any(|a| a.party == c.issuer && a.consent_hash == c.consent_hash)
 }
 
+/// Exact payment authority survives journal-body collection. Completion alone,
+/// or settlement of the cancellation outcome, is not paid commissioned work.
+pub(crate) fn settlement(w: &World, row: &SurveyRecord) -> Option<(u64, i64)> {
+    if row.check().is_err()
+        || row.completed.is_none()
+        || row.cancelled.is_some()
+        || !contract_valid(w, row)
+    {
+        return None;
+    }
+    let economy = w.module_state::<EconomyStore>()?;
+    let contract = economy.snapshot().contract(ContractId(row.contract))?;
+    let ContractState::Settled { transaction } = contract.state else {
+        return None;
+    };
+    if contract.pending.is_some()
+        || !contract.acceptances.iter().any(|acceptance| {
+            acceptance.party == row.sponsor && acceptance.consent_hash == contract.consent_hash
+        })
+    {
+        return None;
+    }
+    let key = mush_economy::settle_key(contract.id);
+    payment_receipt(
+        economy.snapshot(),
+        contract.id,
+        transaction,
+        economy.cold_key(&key).and_then(|cold| cold.record.as_ref()),
+        economy.is_frozen(),
+        economy.id_allocated(transaction),
+    )
+}
+
+/// Both receipt locations carry the same engine-owned idempotency document.
+/// A present invalid hot receipt never falls back to a more convenient cold one.
+fn payment_receipt(
+    snapshot: &mush_economy::EconomySnapshot,
+    contract: ContractId,
+    transaction: mush_economy::TransactionId,
+    cold: Option<&mush_economy::IdempotencyRecord>,
+    frozen: bool,
+    allocated: bool,
+) -> Option<(u64, i64)> {
+    if frozen || !allocated || snapshot.is_reversed(transaction) {
+        return None;
+    }
+    let key = mush_economy::settle_key(contract);
+    let receipt = snapshot.idempotency(&key).or(cold)?;
+    (receipt.idempotency == key && receipt.transaction == transaction)
+        .then_some((transaction.0, receipt.posted_at))
+}
+
+/// An optional invitation can guide work already underway. A free board slot
+/// is an opportunity, never a reservation or a promise to fund it later.
+pub(crate) fn quest_available(w: &World, actor: ObjId, rows: &[SurveyRecord]) -> bool {
+    let Some(account) = crate::port::licence::gateway_account(w, actor) else {
+        return false;
+    };
+    if rows.iter().any(|row| row.check().is_err())
+        || w.module_state::<EconomyStore>()
+            .is_none_or(|economy| economy.is_frozen())
+    {
+        return false;
+    }
+    let now = w.world_ic_now().at;
+    let unfinished = rows.iter().find(|row| {
+        row.account == account && row.completed.is_none() && !contract_replaceable(w, row)
+    });
+    if let Some(row) = unfinished {
+        return row.pilot == actor
+            && row.cancelled.is_none()
+            && row.deadline_ic > now
+            && contract_active(w, row);
+    }
+    if !mush_economy::has_fact_provider(w, FACT_PROVIDER)
+        || w.module_state::<PortHandles>()
+            .is_none_or(|handles| handles.survey_accept.is_none())
+        || crate::port::credit::own_account(w, actor).is_none()
+    {
+        return false;
+    }
+    let Some((_, sponsor_account)) = sponsor(w) else {
+        return false;
+    };
+    let available = w
+        .module_state::<EconomyStore>()
+        .and_then(|economy| economy.snapshot().account(sponsor_account))
+        .and_then(|account| account.available())
+        .map(|amount| amount.minor());
+    offers().iter().any(|offer| {
+        available.is_some_and(|funds| funds >= offer.reward_minor)
+            && site_available(w, offer)
+            && rows
+                .iter()
+                .find(|row| row.offer.as_str() == offer.id)
+                .is_none_or(|row| contract_replaceable(w, row))
+    })
+}
+
+/// Prefetch the forever-retained engine receipt. Unknown cold keys fail closed
+/// until the keyed read lands; this never posts or replays a payment.
+fn refresh_receipt(ctx: &mut Ctx<'_>, row: &SurveyRecord) {
+    if row.completed.is_none() || !contract_valid(ctx.w, row) {
+        return;
+    }
+    let settled = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|economy| economy.snapshot().contract(ContractId(row.contract)))
+        .is_some_and(|contract| {
+            contract.pending.is_none() && matches!(contract.state, ContractState::Settled { .. })
+        });
+    if settled {
+        let _ = mush_economy::resolve_idempotency(
+            ctx,
+            &mush_economy::settle_key(ContractId(row.contract)),
+        );
+    }
+}
+
 pub(crate) fn contract_active(w: &World, row: &SurveyRecord) -> bool {
     if !contract_valid(w, row) {
         return false;
@@ -696,6 +816,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         return;
     };
     for row in rows {
+        refresh_receipt(ctx, &row);
         crate::surface::survey::forget_order(ctx.w, row.pilot, row.contract);
         if let Err(error) = standing::reconcile(ctx, &row) {
             tracing::warn!(contract = row.contract, %error, "survey standing awaits reconciliation");
@@ -727,5 +848,91 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                 ),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod payment_tests {
+    use super::*;
+    use mush_economy::{EconomySnapshot, IdempotencyRecord, TransactionId};
+
+    #[test]
+    fn survey_payment_accepts_hot_or_cold_exact_receipts_and_rejects_invalid_money() {
+        let contract = ContractId(7);
+        let transaction = TransactionId(13);
+        let receipt = IdempotencyRecord {
+            idempotency: mush_economy::settle_key(contract),
+            plan_hash: [1; 32],
+            transaction,
+            posted_at: 100,
+        };
+        let mut hot = EconomySnapshot::new();
+        hot.put_idempotency(receipt.clone());
+        let cold = EconomySnapshot::new();
+        assert_eq!(
+            payment_receipt(&hot, contract, transaction, None, false, true),
+            Some((13, 100))
+        );
+        assert_eq!(
+            payment_receipt(&cold, contract, transaction, Some(&receipt), false, true),
+            Some((13, 100))
+        );
+        assert!(payment_receipt(&cold, contract, transaction, None, false, true).is_none());
+        for snapshot in [&hot, &cold] {
+            assert!(
+                payment_receipt(snapshot, contract, transaction, Some(&receipt), true, true)
+                    .is_none()
+            );
+            assert!(
+                payment_receipt(
+                    snapshot,
+                    contract,
+                    transaction,
+                    Some(&receipt),
+                    false,
+                    false
+                )
+                .is_none()
+            );
+            assert!(
+                payment_receipt(
+                    snapshot,
+                    contract,
+                    TransactionId(14),
+                    Some(&receipt),
+                    false,
+                    true
+                )
+                .is_none()
+            );
+        }
+        let mut wrong = receipt.clone();
+        wrong.idempotency = mush_economy::refund_key(contract);
+        assert!(payment_receipt(&cold, contract, transaction, Some(&wrong), false, true).is_none());
+        wrong = receipt.clone();
+        wrong.transaction = TransactionId(14);
+        assert!(payment_receipt(&cold, contract, transaction, Some(&wrong), false, true).is_none());
+        hot.put_idempotency(wrong);
+        assert!(
+            payment_receipt(&hot, contract, transaction, Some(&receipt), false, true).is_none()
+        );
+        hot.put_idempotency(receipt.clone());
+        hot.mark_reversed(transaction);
+        assert!(
+            payment_receipt(&hot, contract, transaction, Some(&receipt), false, true).is_none()
+        );
+        let mut cold_reversed = cold;
+        cold_reversed.mark_reversed(transaction);
+        assert!(
+            payment_receipt(
+                &cold_reversed,
+                contract,
+                transaction,
+                Some(&receipt),
+                false,
+                true
+            )
+            .is_none()
+        );
     }
 }

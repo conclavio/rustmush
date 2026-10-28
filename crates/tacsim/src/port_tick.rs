@@ -189,6 +189,7 @@ pub(crate) fn register_with_coverage(
         port_families.passengers.clone(),
         port_families.passenger_index.clone(),
         port_families.quest_survey_evidence.clone(),
+        port_families.surveys.clone(),
     )?;
     let probe = if test_world {
         Some(reg.state_family::<ProbeKey, ProbeMark, _, _, _, _>(

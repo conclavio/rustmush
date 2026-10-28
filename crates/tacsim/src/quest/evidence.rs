@@ -4,6 +4,7 @@
 use super::model::{CheckEvidence, Checkpoint, Objective, QuestKey, QuestRecord, Stamp};
 use crate::port::{coop, families::PortHandles};
 use crate::surface::excursion::{Act, ActKind};
+use crate::surface::survey::SurveyRecord;
 use mush_core::{
     ActionError, ActionErrorCode, ActionTxn, CanonicalId, Ctx, ModError, ModuleBootData, ModuleCtx,
     ModuleWrite, ObjId, Registrar, StateFamilyHandle, World,
@@ -148,6 +149,11 @@ pub enum ObjectiveProof {
     Survey {
         receipt: SurveyReceipt,
     },
+    SurveyCommission {
+        commission: Box<SurveyRecord>,
+        transaction: u64,
+        settled_at: i64,
+    },
 }
 impl ObjectiveProof {
     pub fn check(&self, objective: &Objective) -> Result<(), String> {
@@ -200,6 +206,21 @@ impl ObjectiveProof {
                     && destination.len() <= 128
                     && CanonicalId::new(origin).is_ok()
                     && CanonicalId::new(destination).is_ok()
+            }
+            (
+                Self::SurveyCommission {
+                    commission,
+                    settled_at,
+                    ..
+                },
+                Objective::SurveyCommission,
+            ) => {
+                commission.check()?;
+                commission.cancelled.is_none()
+                    && commission
+                        .completed
+                        .as_ref()
+                        .is_some_and(|completed| *settled_at >= completed.at_utc)
             }
             (Self::Survey { receipt }, Objective::Survey { mode }) => {
                 receipt.check()?;
@@ -260,6 +281,20 @@ impl ObjectiveProof {
                     purchase.actor == actor
                         && purchase.accepted_at >= accepted.at_utc
                         && sale.settled_at <= checked.at_utc
+                }
+                Self::SurveyCommission {
+                    commission,
+                    settled_at,
+                    ..
+                } => {
+                    commission.pilot == actor
+                        && commission.completed.as_ref().is_some_and(|completed| {
+                            completed.at_ic > accepted.at_ic
+                                && completed.at_ic <= checked.at_ic
+                                && completed.at_utc >= accepted.at_utc
+                                && completed.at_utc <= checked.at_utc
+                        })
+                        && *settled_at <= checked.at_utc
                 }
                 Self::Survey { receipt } => {
                     receipt.actor == actor
@@ -1072,6 +1107,41 @@ fn paid_passage_proof(
         })?;
     Ok(proof)
 }
+fn commission_current(w: &World, proof: &ObjectiveProof) -> bool {
+    let ObjectiveProof::SurveyCommission {
+        commission,
+        transaction,
+        settled_at,
+    } = proof
+    else {
+        return false;
+    };
+    crate::port::licence::gateway_account(w, commission.pilot) == Some(commission.account)
+        && crate::port::survey::settlement(w, commission) == Some((*transaction, *settled_at))
+}
+
+fn commission_proof(ctx: &Ctx<'_>, row: &QuestRecord) -> Result<ObjectiveProof, String> {
+    let now = Stamp::now(ctx.w);
+    for commission in crate::port::survey::records(ctx)? {
+        if let Some((transaction, settled_at)) = crate::port::survey::settlement(ctx.w, &commission)
+        {
+            let proof = ObjectiveProof::SurveyCommission {
+                commission: Box::new(commission),
+                transaction,
+                settled_at,
+            };
+            if proof
+                .check_for(&Objective::SurveyCommission, row.actor, &row.accepted, &now)
+                .is_ok()
+                && commission_current(ctx.w, &proof)
+            {
+                return Ok(proof);
+            }
+        }
+    }
+    Err("Complete a survey commission after accepting this quest and wait for its payment to settle. Older receipts may still be loading; ask again shortly.".into())
+}
+
 fn trade_proof(w: &World, row: &QuestRecord, checkpoint: &Checkpoint) -> Option<ObjectiveProof> {
     let store = w.module_state::<TradeEvidenceStore>()?;
     if store.unreadable.contains(&row.actor) {
@@ -1131,6 +1201,7 @@ pub(crate) fn capture(
             )
         }
         Objective::PaidPassage { .. } => Some(paid_passage_proof(ctx, row, checkpoint)?),
+        Objective::SurveyCommission => Some(commission_proof(ctx, row)?),
         Objective::Trade { .. } => Some(trade_proof(ctx.w, row, checkpoint).ok_or(
             "Complete the paid purchase and later delivery sale after accepting this lesson.",
         )?),
@@ -1187,6 +1258,10 @@ pub(crate) fn capture(
         Some(ObjectiveProof::Contact { name, .. }) => {
             format!("You acknowledged meeting {name} in person at the named place.")
         }
+        Some(ObjectiveProof::SurveyCommission { commission, .. }) => format!(
+            "You completed survey commission {} after accepting this quest, and its original reward was paid.",
+            commission.offer.as_str()
+        ),
         Some(ObjectiveProof::PaidPassage { booking, .. }) => format!(
             "Your agreed passage carried the named traveller from {} to {} after this quest was accepted, and its fare was paid.",
             booking.origin, booking.destination
@@ -1239,6 +1314,7 @@ pub(crate) fn guard(w: &World, row: &QuestRecord, evidence: &CheckEvidence) -> b
             contact_proof(w, row.actor, *npc, checkpoint).as_ref() == Some(proof)
         }
         ObjectiveProof::PaidPassage { .. } => paid_passage_current(w, proof),
+        ObjectiveProof::SurveyCommission { .. } => commission_current(w, proof),
         ObjectiveProof::Trade { .. } => trade_proof(w, row, checkpoint).as_ref() == Some(proof),
         // The provider additionally rereads the exact typed survey slot at all
         // three action boundaries; World alone cannot manufacture that read.
@@ -1252,6 +1328,7 @@ pub(crate) fn guard(w: &World, row: &QuestRecord, evidence: &CheckEvidence) -> b
 pub(crate) fn completion_ready(w: &World, row: &QuestRecord) -> bool {
     row.checks.iter().all(|evidence| match &evidence.proof {
         Some(proof @ ObjectiveProof::PaidPassage { .. }) => paid_passage_current(w, proof),
+        Some(proof @ ObjectiveProof::SurveyCommission { .. }) => commission_current(w, proof),
         Some(ObjectiveProof::Trade { purchase, sale }) => {
             paid_transaction(
                 w,
@@ -1267,6 +1344,93 @@ pub(crate) fn completion_ready(w: &World, row: &QuestRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commissioned_work_requires_this_pilots_later_completion_and_bounded_payment() {
+        let commission = super::super::model::tests::commission();
+        let accepted = Stamp {
+            at_ic: 40,
+            at_utc: 40,
+        };
+        let checked = Stamp {
+            at_ic: 60,
+            at_utc: 60,
+        };
+        let proof = ObjectiveProof::SurveyCommission {
+            commission: Box::new(commission.clone()),
+            transaction: 0,
+            settled_at: 55,
+        };
+        let valid = |proof: &ObjectiveProof, actor, accepted: &Stamp, checked: &Stamp| {
+            proof
+                .check_for(&Objective::SurveyCommission, actor, accepted, checked)
+                .is_ok()
+        };
+        assert!(valid(&proof, commission.pilot, &accepted, &checked));
+        assert!(!valid(&proof, ObjId(999), &accepted, &checked));
+        for at_ic in [50, 51] {
+            assert!(!valid(
+                &proof,
+                commission.pilot,
+                &Stamp { at_ic, at_utc: 40 },
+                &checked
+            ));
+        }
+        assert!(!valid(
+            &proof,
+            commission.pilot,
+            &Stamp {
+                at_ic: 40,
+                at_utc: 51
+            },
+            &checked
+        ));
+        assert!(!valid(
+            &proof,
+            commission.pilot,
+            &accepted,
+            &Stamp {
+                at_ic: 49,
+                at_utc: 60
+            }
+        ));
+        assert!(!valid(
+            &proof,
+            commission.pilot,
+            &accepted,
+            &Stamp {
+                at_ic: 60,
+                at_utc: 54
+            }
+        ));
+        let mut unpaid = proof.clone();
+        if let ObjectiveProof::SurveyCommission { settled_at, .. } = &mut unpaid {
+            *settled_at = 49;
+        }
+        assert!(!valid(&unpaid, commission.pilot, &accepted, &checked));
+        let mut partial = proof.clone();
+        if let ObjectiveProof::SurveyCommission { commission, .. } = &mut partial {
+            commission.coverage[0] = 0;
+            commission.completed = None;
+        }
+        assert!(!valid(&partial, commission.pilot, &accepted, &checked));
+        let mut cancelled = partial;
+        if let ObjectiveProof::SurveyCommission { commission, .. } = &mut cancelled {
+            commission.cancelled = Some(crate::surface::survey::SurveyCancellation {
+                at_ic: 50,
+                at_utc: 50,
+            });
+        }
+        assert!(!valid(&cancelled, commission.pilot, &accepted, &checked));
+        assert!(!commission_current(&World::new_minimal(), &proof));
+        let encoded = serde_json::to_value(&proof).unwrap();
+        assert_eq!(encoded["kind"], "survey_commission");
+        assert!(encoded["commission"].get("standing").is_none());
+        assert_eq!(
+            serde_json::from_value::<ObjectiveProof>(encoded).unwrap(),
+            proof
+        );
+    }
 
     #[test]
     fn paid_passage_proof_requires_a_later_arrival_by_this_captain_and_settled_fare() {

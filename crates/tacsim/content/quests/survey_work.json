@@ -1,0 +1,39 @@
+{
+  "manifest": {
+    "id": "tacsim.quests.survey_work",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "b5ee132b6769270205b19e1e9d3e93fe9ff2b93cbf5b063129a86ee6537d0c89",
+    "requires": [
+      { "id": "neighborhood.ceres_freeport", "version": 4 },
+      { "id": "tacsim.quests.first_steps", "version": 1 }
+    ]
+  },
+  "brief": {
+    "prose": "After the captain completes Wide first, then close, Qureshi offers an optional follow-up about real paid survey work. Any available commission can count; the finite shared board, funding, sounding coverage, payment and standing keep their ordinary rules. The quest verifies fresh completion and payment before recording its separate once-only personal relationship bonus. It never allocates a commission or discloses the captain's chart."
+  },
+  "entries": {
+    "quest.qureshi_signed_work": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.qureshi",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": { "completed": { "quest": "tacsim.quests.first_steps/quest.qureshi_first_readings" } },
+        "title": "Work worth signing",
+        "introduction": "You have tried the broad reading and the closer one. A commission asks a different question: can someone depend on you to finish the whole block? If that work suits your plans, look at Occator's board and choose any available commission. I will be here to hear how it went. Take this invitation before you finish the block; work already underway can count. The board is shared, and this conversation reserves nothing. You can take commissions without my invitation, too.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "paid_commission",
+            "title": "Complete a survey commission and receive its payment",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "instructions": "Read +survey and +survey <id>. Choose any available commission; +survey/accept <id> previews and +survey/accept <id> go files it. Wait for funding, then complete fresh soundings across all 256 pockets of its block within seven IC days. help mining explains coverage, quiet soundings and equipment; plan your route and provisions. An unfinished commission can already exist when you accept this invitation. After completion and payment, return to the Exchange: +quest/check Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work, then +quest/finish Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work. Your chart stays private. Occator pays the ordinary reward; this invitation adds only my personal relationship bonus. Abandoning it does not cancel a commission.",
+            "objective": { "kind": "survey_commission" }
+          }
+        ],
+        "completion": "After our first readings, the captain completed a real survey commission, received its payment and returned to the Exchange. They followed the block through to the end. I can credit that work without taking their private chart."
+      }
+    }
+  }
+}
