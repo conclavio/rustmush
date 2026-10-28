@@ -154,9 +154,9 @@ the form a player-designed unit is written in; a PNG importer can produce it lat
   and a `wreck`; frames 96 by 96 (`SPRITE_MAX` rises from 64), drawn for a larger picture than
   today's 640-wide frame and for the web's canvas. Sheets are produced by the bake pipeline
   (`scripts/unit-bake/`) from 3D models, hand-drawn sheets remain valid input. **Owed**: the format
-  and `Facing` grow the diagonals; the picture picks a diagonal only once the cockpit frame carries
-  an eight-way aspect — the sensor question this bullet's predecessor reserved, now implied by the
-  decision and to be confirmed when it is built. The text below is the rule as U.3 built it.
+  and `Facing` grow the diagonals; the cockpit frame carries an eight-way aspect so the picture can
+  pick a diagonal — the sensor question this bullet's predecessor reserved, ruled by the owner on
+  2026-10-28: a viewer is told which of eight faces a contact shows. The text below is the rule as U.3 built it.
 - **Four facings now, room for eight** (D-22-4): the sim tells a viewer only which face a contact
   was showing — `aspect`, front/left/right/rear off the plot, by design — so four is what a sheet
   can be chosen by. The format names facings by word; `front_left` and the other diagonals are
@@ -255,4 +255,6 @@ player can write.
   left), six poses a facing (still, four moving, wreck), 96x96 frames** — chosen for where the
   picture is going (a larger native frame once optimised; the web's wasm renderer at the client's
   resolution), not today's 640-wide frame, where 96 beats 48 only inside about 25 m. Supersedes
-  D-22-4's facing and frame counts; muzzle points stay.
+  D-22-4's facing and frame counts; muzzle points stay. The owner confirmed the same day that it
+  carries the sensor ruling D-22-4 reserved: a contact's aspect reaches the viewer in eight
+  directions, not four (the armour facets the sim hits stay four).
