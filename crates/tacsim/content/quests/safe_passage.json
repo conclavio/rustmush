@@ -1,0 +1,45 @@
+{
+  "manifest": {
+    "id": "tacsim.quests.safe_passage",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "03c64ad7904943334144cacf4facaa7e48dea7715beab650b920c95510d2db8f",
+    "requires": [
+      { "id": "neighborhood.ceres_freeport", "version": 4 },
+      { "id": "tacsim.passengers.ceres", "version": 1 }
+    ]
+  },
+  "brief": {
+    "prose": "Ma offers an independent optional passenger journey to Stickney with the existing Nadia. It verifies the captain's real delivered passage after quest acceptance and settled fare, then records Ma's once-only personal relationship bonus. Ordinary passage negotiation and payment remain separate, existing bookings may qualify, and the shared traveller is never reset or summoned."
+  },
+  "entries": {
+    "quest.ma_safe_passage": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.petrossian",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": "open",
+        "title": "See her safely there",
+        "introduction": "Nadia has been arranging a trip to Stickney. If your plans fit and she still needs a captain, see her safely there and tell me when you are back. Check her arrangements first; I am not promising her berth to anyone. Agree the fare with her as usual. If you have already booked her, you can still take this favor before you deliver her.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "paid_arrival",
+            "title": "Bring Nadia to Stickney and settle the fare",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c10_slack_line",
+            "instructions": "Read +passage Nadia for her live arrangements. If you both want the trip, +passage/offer Nadia quotes a fare and prints the exact acceptance command; +passage/board Nadia invites her aboard. Read +ship/plan stickney and prepare your ship before sailing. Accept this favor before her arrival at Stickney; an existing booking can count. Complete her delivery and let the fare settle, then return to Ma in the Slack Line. Use +quest/check Yusra=tacsim.quests.safe_passage/quest.ma_safe_passage and +quest/finish Yusra=tacsim.quests.safe_passage/quest.ma_safe_passage. Your fare is paid through the ordinary passage agreement.",
+            "objective": {
+              "kind": "paid_passage",
+              "npc_pack": "tacsim.passengers.ceres",
+              "npc": "npc.nadia_okafor_sato",
+              "origin": "ceres",
+              "destination": "stickney"
+            }
+          }
+        ],
+        "completion": "The captain brought Nadia safely from Ceres to Stickney, settled their passage agreement, then returned to the Slack Line. I am glad to know she reached the Yard and that the captain followed through."
+      }
+    }
+  }
+}

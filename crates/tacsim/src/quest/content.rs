@@ -71,6 +71,12 @@ enum SourceObjective {
         npc_pack: CanonicalId,
         npc: CanonicalId,
     },
+    PaidPassage {
+        npc_pack: CanonicalId,
+        npc: CanonicalId,
+        origin: String,
+        destination: String,
+    },
     Survey {
         mode: String,
     },
@@ -293,6 +299,26 @@ fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkp
         SourceObjective::Contact { npc_pack, npc } => Objective::Contact {
             npc: external_object(w, pack, &npc_pack, &npc, "npc")?,
         },
+        SourceObjective::PaidPassage {
+            npc_pack,
+            npc,
+            origin,
+            destination,
+        } => {
+            let npc = external_object(w, pack, &npc_pack, &npc, "npc")?;
+            let traveller = crate::port::passenger::traveller(w, npc)
+                .ok_or("paid passage objective must name an authored traveller")?;
+            if traveller.origin != origin || traveller.destination != destination {
+                return Err(
+                    "paid passage objective must match the traveller's authored route".into(),
+                );
+            }
+            Objective::PaidPassage {
+                npc,
+                origin,
+                destination,
+            }
+        }
         SourceObjective::Survey { mode } => Objective::Survey { mode },
     };
     if matches!(objective, Objective::Observation) && detail.is_none() {
@@ -604,6 +630,51 @@ mod tests {
         value["entries"][ROLE]["def"]["checkpoints"][0]["objective"]["npc_pack"] =
             "undeclared.station".into();
         assert!(read(&w, &mush_content::parse_pack(&value.to_string()).unwrap()).is_err());
+    }
+
+    #[test]
+    fn paid_passage_source_requires_an_authored_traveller_with_the_exact_route() {
+        let mut w = World::new_minimal();
+        let (_, npc, _) = multiple_external_fixture(&mut w);
+        let mut value: serde_json::Value =
+            serde_json::from_str(crate::port::passenger::content::JSON).unwrap();
+        value["entries"][ROLE]["def"]["checkpoints"][0]["objective"] = serde_json::json!({
+            "kind": "paid_passage", "npc_pack": ROOM_PACK, "npc": NPC,
+            "origin": "stickney", "destination": "ceres"
+        });
+        let parse =
+            |value: &serde_json::Value| mush_content::parse_pack(&value.to_string()).unwrap();
+        assert!(
+            read(&w, &parse(&value)).is_err(),
+            "a generic contact is not a passenger"
+        );
+        let traveller = crate::port::passenger::TravellerDef {
+            schema: 1,
+            key: "test/passenger.contact".into(),
+            origin: "stickney".into(),
+            destination: "ceres".into(),
+            opening_fare_minor: 100,
+            max_fare_minor: 200,
+            funding_minor: 1000,
+        };
+        w.set_attr(
+            npc,
+            crate::port::passenger::TRAVELLER_ATTR,
+            Attr::json(serde_json::json!(traveller), GOD),
+        )
+        .unwrap();
+        let (_, definition) = read(&w, &parse(&value)).unwrap();
+        assert_eq!(
+            definition.checkpoints[0].objective,
+            Objective::PaidPassage {
+                npc,
+                origin: "stickney".into(),
+                destination: "ceres".into()
+            }
+        );
+        value["entries"][ROLE]["def"]["checkpoints"][0]["objective"]["destination"] =
+            "vesta".into();
+        assert!(read(&w, &parse(&value)).is_err());
     }
 
     #[test]

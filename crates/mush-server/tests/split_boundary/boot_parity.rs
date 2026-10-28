@@ -916,7 +916,7 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),
-        40,
+        41,
         "five, ten station packs, twelve site packs, the lane, seven R10 relay/geography packs, two passenger packs and starter quests"
     );
     lane_resolves(&on.engine);

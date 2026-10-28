@@ -103,6 +103,18 @@ struct Basis {
     prerequisite_receipt: Option<QuestKey>,
 }
 
+fn passage_rows(ctx: &Ctx<'_>, read: Read) -> Result<Vec<passengers::Booking>, String> {
+    match read {
+        Read::Current => passengers::list(ctx),
+        Read::Conversation if passengers::projection_ready(ctx.w) => {
+            Ok(passengers::list_world(ctx.w))
+        }
+        Read::Conversation => {
+            Err("My passage record is still loading. Please ask again shortly.".into())
+        }
+    }
+}
+
 fn basis_for(
     ctx: &Ctx<'_>,
     npc: ObjId,
@@ -114,16 +126,27 @@ fn basis_for(
     {
         return Err(UNAVAILABLE.into());
     }
+    if def
+        .checkpoints
+        .iter()
+        .any(|checkpoint| matches!(checkpoint.objective, Objective::PaidPassage { .. }))
+    {
+        let bookings = passage_rows(ctx, read)?;
+        for checkpoint in &def.checkpoints {
+            if let Objective::PaidPassage { npc, .. } = &checkpoint.objective
+                && !super::evidence::paid_passage_available(
+                    ctx.w,
+                    ctx.actor,
+                    &checkpoint.objective,
+                    bookings.iter().find(|booking| booking.npc == *npc),
+                )
+            {
+                return Err(UNAVAILABLE.into());
+            }
+        }
+    }
     let passage = if def.prerequisite == Prerequisite::PaidPassage {
-        let bookings = match read {
-            Read::Current => passengers::list(ctx)?,
-            Read::Conversation if passengers::projection_ready(ctx.w) => {
-                passengers::list_world(ctx.w)
-            }
-            Read::Conversation => {
-                return Err("My passage record is still loading. Please ask again shortly.".into());
-            }
-        };
+        let bookings = passage_rows(ctx, read)?;
         Some(
             bookings
                 .into_iter()
