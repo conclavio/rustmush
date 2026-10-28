@@ -2327,6 +2327,16 @@ gone from the tree.
     `3fda074f…`), reported from temporary instrumentation, unpinned and not checked at boot;
     no pin was found under `crates/` or `deploy/`, and any out-of-tree pin (runbooks, dev1 and
     dev2 notes) will disagree. The next deploy of a launch world takes a fresh store (§6).
+  - **Withdrawn listings linger on the counter** (found by the command story's first run of
+    part 3, dispatch 40627224557, 2026-10-28). `@mind/withdraw` is Roll's
+    `withdraw_authored_mind`: it stops new sales (the entitlement reader refuses a quote on a
+    withdrawn or recalled revision, the driver's line to the buyer) but never touches the
+    market's listing rows, and `+minds` is policy-current only (`current_policy` reads the
+    listing row, never the revision's status), so the withdrawn revision's listings still read
+    on the counter and `+minds <code>` still resolves. Story part 3 asserts this as built.
+    Hiding (or closing) a withdrawn or recalled revision's listings needs the market read to
+    see the Registry's status: a C4 ledger item; the C3 typed story's `mind.market` panel
+    expectation after `Withdraw` moves with it.
 
 ### C3 — plan (2026-10-28, branch `claude/m7-c3-typed-surfaces`)
 
