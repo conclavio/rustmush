@@ -132,6 +132,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "+hull"
+category = "read-only"
+note = "doc 17h cut M8a (section 2.5; doc 23 section 7, section 10; doc 17 section 13, D-UM-42): +hull/box #<hull> [n] prints the last n lines of a hull's black box in words, oldest first, from TacsimStore::black_box_lines (the open tail; sealed chunks stay on disk and are counted in one closing line) -- a pure read, no document, no post, no submission. Readable by the hull's title holder (the economy's title_owner as the actor), the operator whose lease the rig is under (the yard's lessee) and staff; everyone else, a hull with no box and a bad number get the one sentence. A new primary verb, so PINNED_BASELINE does not move: the baseline count is of baseline-category stanzas and this one is read-only."
+
+[[handler]]
 name = "+ic"
 category = "legacy-post-image"
 family = "tacsim.ic_return"

@@ -267,7 +267,11 @@ fn grant_registry(r: &mut Rig, d: &LaunchDeployment) -> Result {
     let market = d.market.as_ref().ok_or("a format-2 deployment")?;
     let authority = &market.registry_authority;
     for operator in &authority.operators {
-        for capability in ["roll.registry.recall", "roll.registry.revoke"] {
+        for capability in [
+            "roll.registry.recall",
+            "roll.registry.revoke",
+            "roll.registry.inspect",
+        ] {
             command(
                 r.world_mut(),
                 GOD,
@@ -981,7 +985,7 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
         "roll-registry-recall".to_owned(),
         "roll-registry-revocation".to_owned(),
     ];
-    let lacks = readiness(operator, "lacks recall and revocation");
+    let lacks = readiness(operator, "lacks recall, revocation and inspection");
     // Before the grants: no one, and God reads what the operator lacks.
     for actor in principals {
         check!(
@@ -1087,8 +1091,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks recall and revocation"),
-            (second, "lacks recall and revocation"),
+            (first, "lacks recall, revocation and inspection"),
+            (second, "lacks recall, revocation and inspection"),
         ]))
     );
     // One grant each, a different one: each reads what it still lacks.
@@ -1097,8 +1101,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks revocation"),
-            (second, "lacks recall")
+            (first, "lacks revocation and inspection"),
+            (second, "lacks recall and inspection")
         ]))
     );
     check_eq!(
@@ -1109,9 +1113,18 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
         registry_verbs(&mut r, second)?,
         vec!["roll-registry-revocation".to_owned()]
     );
-    // The missing grants: both ready.
+    // The missing grants: both ready (M8a: the inspection is the third).
     grant(&mut r, first, "roll.registry.revoke")?;
     grant(&mut r, second, "roll.registry.recall")?;
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([
+            (first, "lacks inspection"),
+            (second, "lacks inspection")
+        ]))
+    );
+    grant(&mut r, first, "roll.registry.inspect")?;
+    grant(&mut r, second, "roll.registry.inspect")?;
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([(first, "ready"), (second, "ready")]))
@@ -1143,7 +1156,7 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
         vec![
             help,
             line,
-            readiness(operator(&d)?, "lacks recall and revocation")
+            readiness(operator(&d)?, "lacks recall, revocation and inspection")
         ]
     );
     // Terms that do not divide into whole credits or days: the price renders
@@ -1186,6 +1199,7 @@ fn the_org_vocabulary_admits_every_named_launch_grant() -> Result {
         "industry.core.refit",
         "roll.registry.recall",
         "roll.registry.revoke",
+        "roll.registry.inspect",
     ] {
         check!(
             vocabulary.contains(&mush_org::CapabilityId::new(capability).ok_or("an id")?),

@@ -148,7 +148,7 @@ pub(crate) fn register_with_ic(
     burn: Option<crate::port::burn::BurnTable>,
     ic: Option<&crate::minds::ic_sortie::registration::Registration>,
 ) -> Result<(), ModError> {
-    register_with_coverage(reg, test_world, inventory, burn, ic, None)
+    register_with_coverage(reg, test_world, inventory, burn, ic, None, None)
 }
 pub(crate) fn register_with_coverage(
     reg: &mut Registrar<'_>,
@@ -157,6 +157,7 @@ pub(crate) fn register_with_coverage(
     burn: Option<crate::port::burn::BurnTable>,
     ic: Option<&crate::minds::ic_sortie::registration::Registration>,
     coverage: Option<&crate::underwriting::registration::Registration>,
+    inspection: Option<&crate::minds::registry_inspection::Composition>,
 ) -> Result<(), ModError> {
     let port_families = families::register(reg)?;
     reg.revision_validator(
@@ -214,6 +215,11 @@ pub(crate) fn register_with_coverage(
     }
     if let Some(coverage) = coverage {
         outcomes.push(coverage.outcome()?);
+    }
+    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner.
+    if let Some(inspection) = inspection {
+        let [_, outcome] = inspection.descriptors()?;
+        outcomes.push(outcome);
     }
     reg.definition_validator(
         kind("outcome")?,
@@ -308,6 +314,11 @@ pub(crate) fn register_with_coverage(
     if let Some(coverage) = coverage {
         actions.extend(coverage.descriptors()?);
     }
+    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner.
+    if let Some(inspection) = inspection {
+        let [action, _] = inspection.descriptors()?;
+        actions.push(action);
+    }
     reg.definition_validator(
         kind("action")?,
         crate::definitions::exact_validator(actions.clone()),
@@ -316,6 +327,19 @@ pub(crate) fn register_with_coverage(
     for descriptor in actions {
         let id = descriptor.id().as_str().to_owned();
         action_refs.insert(id, reg.definition(descriptor)?);
+    }
+    // Doc 17h cut M8a: the Registry inspection's provider and slot over the registered
+    // action and outcome (`minds::registry_inspection`).
+    if let Some(inspection) = inspection {
+        let action = action_refs
+            .get(crate::minds::registry_inspection::INSPECTION_ACTION)
+            .cloned()
+            .ok_or_else(|| ModError::msg("Registry inspection action unregistered"))?;
+        let outcome = outcome_refs
+            .get(crate::minds::registry_inspection::INSPECTION_OUTCOME)
+            .cloned()
+            .ok_or_else(|| ModError::msg("Registry inspection outcome unregistered"))?;
+        inspection.register(reg, action, outcome)?;
     }
     let probe_action = action_refs.get(PROBE_ACTION).cloned();
     if let (Some(action), Some(outcome), Some(marks)) =

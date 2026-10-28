@@ -656,6 +656,47 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
     check!(
         mush_economy::core_integration::require_core_delivery(r.world().world(), accept).is_ok()
     );
+    // Doc 17h cut M8a (A6; the brief's test 5): the delivered core's title was born of this
+    // integration and its die lot carries the industry's certificate as its origin, so the
+    // core's provenance is `Certified` by the importer at the class ordered (Class I: the flow's
+    // die); the inspection's facts over the refitted hull read that core, Class I, governed,
+    // certified, with no trip open. The hull is the title's object, not the core: unknown.
+    {
+        use crate::minds::registry_inspection::facts::{StoreRead, read};
+        use crate::minds::registry_inspection::{HullClass, Provenance, SealCheck};
+        let engine = r.world().engine();
+        let world = &engine.world;
+        let mut reader = StoreRead(engine.action_state());
+        let certified = Provenance::Certified {
+            importer: r.deployment.importer,
+            grade: mush_economy::core_integration::CoreClass::I,
+        };
+        check_eq!(
+            crate::minds::provenance::provenance_of(world, &mut reader, output),
+            certified
+        );
+        check_eq!(
+            crate::minds::provenance::provenance_of(world, &mut reader, hull),
+            Provenance::Unknown
+        );
+        let found = read(world, &mut reader, hull).ok_or("the refitted hull reads")?;
+        check_eq!(found.facts.core, Some(output));
+        check_eq!(found.facts.class, HullClass::I);
+        check_eq!(found.facts.governed, Some(true));
+        check_eq!(found.facts.provenance, certified);
+        check_eq!(found.facts.seal_check, SealCheck::NoSeal);
+        check_eq!(found.seal, None);
+        let lines = crate::minds::registry_inspection::facts::lines(world, &found);
+        check_eq!(
+            lines[0],
+            format!(
+                "Hull #{} Actual governed line hull · Class I · governed",
+                hull.0
+            )
+        );
+        check_eq!(lines[1], "provenance certified by Basin, grade I");
+        check_eq!(lines[2], "no trip open");
+    }
     Ok(())
 }
 

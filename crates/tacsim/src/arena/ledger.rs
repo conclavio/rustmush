@@ -594,6 +594,12 @@ pub enum EventKind {
         governed: bool,
         /// The licence the core holds, or `doctrine`.
         licence: SmolStr,
+        /// **The state that licence is read under** (doc 17h cut M8a; doc 17 §10): `doctrine`,
+        /// `draft`, or a filed licence's `active` / `grace` / `pending` / `lapsed` / `revoked` /
+        /// `recalled`, derived at the site that seals and passed to the line
+        /// (`MindSeal::sealed_line`'s parameter, never a seal field). M8a re-blessed every tape
+        /// that prints this line.
+        licence_state: crate::minds::licence_state::SealLicenceState,
         /// The warrant principal, absent on the wire where nobody chose.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<CharacterRef>,
@@ -1443,6 +1449,7 @@ mod tests {
                 class: CoreClass::I,
                 governed: true,
                 licence: SmolStr::new_static("doctrine"),
+                licence_state: crate::minds::licence_state::SealLicenceState::Doctrine,
                 principal: Some(CharacterRef::Character { id: ObjId(77) }),
             },
             EventKind::SortieClosed {
@@ -1522,6 +1529,7 @@ mod tests {
             class: CoreClass::I,
             governed: true,
             licence: SmolStr::new_static("doctrine"),
+            licence_state: crate::minds::licence_state::SealLicenceState::Doctrine,
             principal,
         };
         let cases = [
@@ -1531,7 +1539,7 @@ mod tests {
                     "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
                     "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
                     "card_digest": "a".repeat(64), "class": "I", "governed": true,
-                    "licence": "doctrine",
+                    "licence": "doctrine", "licence_state": "doctrine",
                     "principal": {"kind": "character", "id": 77},
                 }),
             ),
@@ -1541,7 +1549,7 @@ mod tests {
                     "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
                     "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
                     "card_digest": "a".repeat(64), "class": "I", "governed": true,
-                    "licence": "doctrine",
+                    "licence": "doctrine", "licence_state": "doctrine",
                 }),
             ),
             (

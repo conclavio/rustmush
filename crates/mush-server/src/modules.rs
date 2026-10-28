@@ -2357,6 +2357,7 @@ mod tests {
             mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY,
             mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
             mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY,
+            mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY,
         ];
         // E7 cut 9 (OPEN 5): `mush_campaign::CAPABILITIES` joins them. A `force.*`
         // id missing here fails at REGISTRATION — `@org/grant` refuses it — rather

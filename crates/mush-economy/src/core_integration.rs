@@ -6,6 +6,7 @@ mod authority;
 pub(crate) mod bridge;
 mod consent;
 mod delivery;
+pub use bridge::CoreTitleBirth;
 pub use delivery::require_core_delivery;
 mod fold;
 pub(crate) mod install;

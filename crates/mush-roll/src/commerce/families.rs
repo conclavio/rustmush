@@ -60,6 +60,11 @@ pub struct CommerceFamilies {
         StateFamilyHandle<String, super::registry_revocation::records::RevokedTerm>,
     pub(crate) registry_recalls:
         StateFamilyHandle<String, super::registry_recall::records::RecallOperation>,
+    /// Doc 17h cut M8a: the Registry's hull inspections (`roll_registry_inspections`), keyed
+    /// by the inspection's commit; written from tacsim's transaction through the delegation
+    /// the inspection writer installs.
+    pub(crate) registry_inspections:
+        StateFamilyHandle<String, super::registry_inspection::records::InspectionRecord>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) house_renewal_operations:
@@ -128,6 +133,7 @@ impl CommerceFamilies {
             line_updates: register(reg)?,
             update_positions: register(reg)?,
             registry_recalls: register(reg)?,
+            registry_inspections: register(reg)?,
             registry_revocations: register(reg)?,
             revoked_terms: register(reg)?,
             withdrawals: register(reg)?,
@@ -248,6 +254,7 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         | "roll_mind_authored_retirement"
         | "roll_mind_author_withdrawal"
         | "roll_registry_revision_recalls"
+        | "roll_registry_inspections"
         | "roll_registry_term_revocations"
         | "roll_registry_measured_recalls"
         | "roll_mind_owner_qualification_operation"

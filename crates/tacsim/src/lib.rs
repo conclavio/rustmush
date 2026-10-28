@@ -378,6 +378,9 @@ pub struct TacsimRuleset {
     coverage: Option<Box<underwriting::registration::Registration>>,
     coverage_families: Option<underwriting::families::Families>,
     registry_commerce: Option<Box<minds::registry::composition::Registration>>,
+    /// Doc 17h cut M8a: the Registry inspection (`@registry/inspect`), composed by
+    /// `MindCommerce::with_registry_inspection`.
+    registry_inspection: Option<Box<minds::registry_inspection::Composition>>,
     conduct_trials: Option<Box<minds::registry::conduct::composition::Registration>>,
     fork_material: Option<mush_core::DefinitionRef>,
     marked_registry: Option<mush_core::DefinitionRef>,
@@ -515,6 +518,7 @@ impl TacsimRuleset {
             coverage: None,
             coverage_families: None,
             registry_commerce: None,
+            registry_inspection: None,
             conduct_trials: None,
             fork_material: None,
             marked_registry: None,
@@ -910,6 +914,7 @@ impl GameModule for TacsimRuleset {
             port::burn::burn_table(&catalog, self.goods.clone()),
             self.ic_minds.as_deref(),
             self.coverage.as_deref(),
+            self.registry_inspection.as_deref(),
         )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
@@ -984,6 +989,7 @@ impl GameModule for TacsimRuleset {
             || self.ic_minds.is_some()
             || self.coverage.is_some()
             || self.conduct_trials.is_some()
+            || self.registry_inspection.is_some()
         {
             return Err(ModError::msg(
                 "fork material requires actual Registry registration",
@@ -1003,6 +1009,9 @@ impl GameModule for TacsimRuleset {
         };
         minds::ic_sortie::boot::load(ctx, &data, self.ic_minds.as_deref())?;
         underwriting::boot::load(ctx, &data, self.coverage.as_deref())?;
+        // Doc 17h cut M8a: the inspection's readiness, once the Roll, Org and Economy
+        // owners are up (a roster without the slot captures nothing).
+        minds::registry_inspection::capture(ctx)?;
         quest::evidence::boot(ctx, &data)?;
         let kv: Vec<(smol_str::SmolStr, serde_json::Value)> = data
             .kv

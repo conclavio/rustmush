@@ -142,4 +142,61 @@ impl EconomyStore {
         }
         self.fold.core_receipts.require_absent()
     }
+    /// **The managed birth of a core's title** (doc 17h cut M8a, A6): the acknowledged
+    /// complete history whose output `object` titles, joined with the managed title index,
+    /// so a core whose title the index does not know as its birth reads `None`. The lot
+    /// and certificate references are the funding subject's own words — data for a
+    /// provenance read, never custody, consumption or delivery authority
+    /// ([`require_core_delivery`](super::require_core_delivery) is that).
+    ///
+    /// # Errors
+    /// `Unavailable` while the store is frozen or the histories cannot be walked.
+    pub fn core_title_birth(&self, object: ObjId) -> Result<Option<CoreTitleBirth>, Error> {
+        let snapshot = self.snapshot();
+        for history in self.core_payment_histories()? {
+            let Some((born, birth)) = history.managed_title_birth() else {
+                continue;
+            };
+            if born != object || snapshot.managed_titles.core(object) != Some(&birth) {
+                continue;
+            }
+            let terminal = history.terminal().ok_or(Error::Integrity)?;
+            let subject = history.subject();
+            return Ok(Some(CoreTitleBirth {
+                object,
+                acceptance: history.funding().commit(),
+                completion: terminal.commit(),
+                requester: subject.requester,
+                die_lot: subject.die_lot,
+                die_certificate: subject.die_certificate,
+                class: subject.class,
+                supplier: history.policy().supplier.organization,
+            }));
+        }
+        Ok(None)
+    }
+}
+
+/// **A core's title birth, in the words a provenance read needs** (doc 17h cut M8a, A6):
+/// the acceptance and completion commits, the die lot and certificate the funding named,
+/// the class ordered and the supplier organization that stocked the die (the importer in
+/// the one shipped composition, `tacsim::hardware::composition`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoreTitleBirth {
+    /// The titled output.
+    pub object: ObjId,
+    /// The acceptance's commit (`accept_core_integration`), the history's key.
+    pub acceptance: mush_core::CommitToken,
+    /// The completion's commit (`complete_core_integration`), the title's birth operation.
+    pub completion: mush_core::CommitToken,
+    /// Who ordered the core.
+    pub requester: ObjId,
+    /// The die lot the funding consumed (`mush_inventory::record::LotId`'s inner word).
+    pub die_lot: u64,
+    /// The die certificate's operation (`industry_core_die_certificates`' key).
+    pub die_certificate: mush_core::CommitToken,
+    /// The class ordered.
+    pub class: super::CoreClass,
+    /// The supplier organization of the payment policy.
+    pub supplier: mush_org::OrgId,
 }

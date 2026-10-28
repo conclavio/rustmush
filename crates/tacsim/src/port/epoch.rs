@@ -787,7 +787,13 @@ fn offer_of(w: &World, store: &TacsimStore, hull: ObjId, due: &EpochDue) -> Epoc
             },
         );
         match sealed {
-            Ok(seal) => offer.seal = Some(SealFacts::of(&seal)),
+            // Doc 17h cut M8a: a ROM seal is read under `doctrine`.
+            Ok(seal) => {
+                offer.seal = Some(SealFacts::of(
+                    &seal,
+                    crate::minds::licence_state::SealLicenceState::Doctrine,
+                ));
+            }
             Err(error) => tracing::error!(
                 hull = hull.0,
                 %error,

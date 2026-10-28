@@ -70,13 +70,24 @@ fn cid(word: &str) -> CanonicalId {
 // The rig (vehicles.rs's: commerce.rs's Roster, voyage.rs's helpers)
 // ---------------------------------------------------------------------------
 
+/// **A mind commerce prepared afresh for each boot** (doc 17h cut M8a): the Roll's writers are
+/// once-only cells installed at registration, as in the server, where a restart is a new
+/// process with a new composition, so the roster holds how to prepare one, not one.
+type CommerceFactory =
+    Arc<dyn Fn() -> tacsim::composition::mind_commerce::MindCommerce + Send + Sync>;
+
 /// The composition: `commerce.rs`'s bare roster (no sheet, the test world's layer, the
-/// shipped game content).
-#[derive(Clone, Copy, Default)]
-struct Roster;
+/// shipped game content). Doc 17h cut M8a: with an optional mind commerce (the Registry inspection's
+/// composition, `reboot_with_inspection`), composed through
+/// `server_modules_with_tacsim_and_mind_commerce` and `configure_tacsim` over the same
+/// test-world layer `tacsim_test_world_module_wired` builds.
+#[derive(Clone, Default)]
+struct Roster {
+    commerce: Option<CommerceFactory>,
+}
 
 impl Roster {
-    fn modules(self) -> Vec<Box<dyn mush_core::GameModule>> {
+    fn modules(&self) -> Vec<Box<dyn mush_core::GameModule>> {
         use tacsim::composition as comp;
 
         let llm = Arc::new(
@@ -89,14 +100,27 @@ impl Roster {
             enabled: true,
             ..TacsimConfig::default()
         };
-        let (mut mods, inventory) = comp::server_modules_with_tacsim(
-            mush_weather::WeatherConfig::default(),
-            EconomyConfig::default(),
-            mush_atlas::AtlasConfig::default(),
-            &onboarding,
-            &game,
-            comp::recovery_policy(&cfg.recovery),
-        );
+        let commerce = self.commerce.as_ref().map(|prepare| prepare());
+        let (mut mods, inventory) = match &commerce {
+            Some(commerce) => comp::server_modules_with_tacsim_and_mind_commerce(
+                mush_weather::WeatherConfig::default(),
+                EconomyConfig::default(),
+                mush_atlas::AtlasConfig::default(),
+                &onboarding,
+                &game,
+                comp::recovery_policy(&cfg.recovery),
+                commerce,
+            )
+            .expect("the commerce roster composes"),
+            None => comp::server_modules_with_tacsim(
+                mush_weather::WeatherConfig::default(),
+                EconomyConfig::default(),
+                mush_atlas::AtlasConfig::default(),
+                &onboarding,
+                &game,
+                comp::recovery_policy(&cfg.recovery),
+            ),
+        };
         mods.push(comp::worldgen_module_with(
             Arc::clone(&llm),
             mush_worldgen::WorldgenConfig::default(),
@@ -105,7 +129,19 @@ impl Roster {
             comp::npc_agent_adapter(),
             &mush_config::config::NpcCfg::default(),
         ));
-        mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
+        match &commerce {
+            Some(commerce) => {
+                let layer = tacsim::TacsimRuleset::with_game_content(cfg, true)
+                    .with_inventory(inventory)
+                    .with_test_world(true);
+                mods.push(Box::new(
+                    commerce
+                        .configure_tacsim(layer)
+                        .expect("the commerce configures the test-world layer"),
+                ));
+            }
+            None => mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory)),
+        }
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         mods
     }
@@ -127,6 +163,8 @@ pub(crate) struct Rig {
     oracle: Arc<MapOracle>,
     pub(crate) store: HashMap<SmolStr, mush_core::ModuleBootData>,
     typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
+    /// Doc 17h cut M8a: how the next reboot prepares its mind commerce, if any.
+    commerce: Option<CommerceFactory>,
 }
 
 pub(crate) fn no_refused_writes(tw: &TestWorld) {
@@ -152,7 +190,7 @@ fn with_offer_keys(tw: &mut TestWorld) {
 
 /// Boot, settle and stock every port, at world rate 1 (every IC instant exact).
 pub(crate) fn stocked() -> Rig {
-    let mut tw = TestWorld::with_modules(Roster.modules());
+    let mut tw = TestWorld::with_modules(Roster::default().modules());
     no_refused_writes(&tw);
     with_offer_keys(&mut tw);
     let oracle = Arc::new(MapOracle::default());
@@ -162,6 +200,7 @@ pub(crate) fn stocked() -> Rig {
         oracle,
         store: HashMap::new(),
         typed: BTreeMap::new(),
+        commerce: None,
     };
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
@@ -176,22 +215,56 @@ fn reboot(rig: Rig) -> Rig {
         oracle,
         mut store,
         typed,
+        commerce,
     } = rig;
     fold_module_ops_into(&mut store, tw.take_module_ops());
-    let mut tw = tw
-        .reboot_into(Roster.modules(), store.clone())
-        .expect("the reboot boots");
-    no_refused_writes(&tw);
-    tw.engine_mut()
-        .hydrate_action_state(
-            typed
-                .iter()
-                .map(|((ns, key), value)| {
-                    ActionStateBootRecord::new(ns.clone(), key.clone(), value.clone())
-                })
-                .collect::<Vec<_>>(),
-        )
-        .expect("the typed state hydrates");
+    let roster = Roster {
+        commerce: commerce.clone(),
+    };
+    let records = || {
+        typed
+            .iter()
+            .map(|((ns, key), value)| {
+                ActionStateBootRecord::new(ns.clone(), key.clone(), value.clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut tw = if commerce.is_some() {
+        // Doc 17h cut M8a: the Roll's boot audit under an Active commerce reads the typed
+        // records (the setup receipt), so the commerce roster boots in the production
+        // loader's order — typed state hydrated before the owner hooks run, as
+        // `hardware/flow.rs`'s `restart` does; the bare roster keeps the order the S.1–S.3
+        // tests were written against (hooks first, then the typed post-images).
+        let mut world = tw.into_engine().world;
+        let connected: Vec<ObjId> = world
+            .iter()
+            .map(|o| o.id)
+            .filter(|id| world.is_connected(*id))
+            .collect();
+        for id in connected {
+            world.set_connected(id, false);
+        }
+        let (_, registry) = mush_testkit::boot_world();
+        let mut engine = mush_core::Engine::with_modules(world, registry, roster.modules())
+            .expect("the commerce roster composes");
+        engine
+            .hydrate_action_state(records())
+            .expect("the typed state hydrates");
+        let mut tw = TestWorld::from_engine(engine);
+        tw.try_modules_loaded(store.clone())
+            .expect("the reboot boots");
+        no_refused_writes(&tw);
+        tw
+    } else {
+        let mut tw = tw
+            .reboot_into(roster.modules(), store.clone())
+            .expect("the reboot boots");
+        no_refused_writes(&tw);
+        tw.engine_mut()
+            .hydrate_action_state(records())
+            .expect("the typed state hydrates");
+        tw
+    };
     with_offer_keys(&mut tw);
     install_oracle(&mut tw, &oracle);
     Rig {
@@ -199,7 +272,188 @@ fn reboot(rig: Rig) -> Rig {
         oracle,
         store,
         typed,
+        commerce,
     }
+}
+
+/// A staff command that must not be refused (the hardware flow rig's `command`).
+fn god(rig: &mut Rig, line: &str) {
+    let events = rig.tw.run(GOD, line);
+    let refused: Vec<String> = events
+        .iter()
+        .filter_map(|(_, event)| match event {
+            OutputEvent::Sys(text)
+                if text
+                    .spans()
+                    .iter()
+                    .any(|span| span.tag.as_deref() == Some("error")) =>
+            {
+                Some(text.to_plain_text())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(refused.is_empty(), "{line}: {refused:?}");
+}
+
+/// **Doc 17h cut M8a: the Registry inspection composed** (`@registry/inspect`, the brief's
+/// test 4): a `Registry` org with a `review` scope, `operator` granted `roll.registry.inspect`
+/// on it and a system account for the Registry's filings, all by GOD's commands in the running
+/// world; then the Roll's acknowledged setup (a reboot under `Initialize`, GOD's one
+/// `initialize_commerce`) and the reboot under `Active` with the inspection policy over that
+/// authority — the mind commerce prepared as the hardware flow's rig prepares it, with nothing
+/// else composed (no market, no IC claims). The Registry's `@registry` registers with any
+/// Active commerce, so the switch is reachable here. The policy, for the record's `authority`.
+pub(crate) fn reboot_with_inspection(
+    rig: Rig,
+    operator: ObjId,
+    reconnect: &[ObjId],
+) -> (
+    Rig,
+    mush_roll::commerce::registry_inspection::RegistryInspectionPolicy,
+) {
+    use mush_core::mechanics::{
+        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
+    };
+    use mush_roll::commerce::{
+        filing::InitialFilingTerms, module::CommerceMode,
+        registry_inspection::RegistryInspectionPolicy,
+    };
+    use tacsim::composition::mind_commerce::MindCommerce;
+
+    let mut rig = rig;
+    for line in [
+        "@org/create Registry",
+        "@org/scope create Registry=review",
+        "@account/system registry.fixture=tacsim.credit",
+    ] {
+        god(&mut rig, line);
+    }
+    let (org, scope) = {
+        let state = rig
+            .tw
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .expect("the Org owner")
+            .state();
+        let org = state
+            .orgs()
+            .find(|o| o.name.as_str() == "Registry")
+            .expect("the Registry org")
+            .id;
+        let scope = state
+            .scopes_in(org)
+            .find(|s| s.name.as_str() == "review")
+            .expect("the review scope")
+            .id;
+        (org, scope)
+    };
+    god(
+        &mut rig,
+        &format!(
+            "@org/grant #{}=Registry roll.registry.inspect scope=#{}",
+            operator.0, scope.0
+        ),
+    );
+    let issuer = SystemPrincipalId::new("registry.fixture").expect("a system principal");
+    let account = economy(&rig.tw)
+        .snapshot()
+        .accounts()
+        .find(|a| a.owner == PrincipalId::System(issuer.clone()))
+        .expect("the Registry's account")
+        .id;
+    let policy = RegistryInspectionPolicy::new(issuer.clone(), org, scope, vec![operator])
+        .expect("the inspection policy");
+    let commerce = {
+        let issuer = issuer.clone();
+        let policy = policy.clone();
+        move |mode: CommerceMode| -> MindCommerce {
+            let layer = tacsim::TacsimRuleset::with_game_content(
+                TacsimConfig {
+                    enabled: true,
+                    ..TacsimConfig::default()
+                },
+                true,
+            )
+            .with_test_world(true);
+            let commerce = MindCommerce::prepare(
+                &layer,
+                mode,
+                InitialFilingTerms::new(90 * 86_400, 3 * 86_400).expect("the filing terms"),
+                mush_economy::registry_filing::InitialFilingPolicy::new(
+                    issuer.clone(),
+                    account,
+                    mush_economy::Amount::from_minor(0),
+                    mush_economy::CatalogRef {
+                        ruleset: "roll".into(),
+                        code: "mind_charter".into(),
+                    },
+                )
+                .expect("the filing policy"),
+            )
+            .expect("the commerce prepares");
+            if mode == CommerceMode::Active {
+                commerce
+                    .with_registry_inspection(policy.clone())
+                    .expect("the inspection composes")
+            } else {
+                commerce
+            }
+        }
+    };
+    // The Roll's acknowledged setup: a boot under Initialize, GOD's one action, then Active.
+    rig.commerce = Some(Arc::new({
+        let commerce = commerce.clone();
+        move || commerce(CommerceMode::Initialize)
+    }));
+    let mut rig = reboot_with(rig, reconnect);
+    let setup = DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new("roll").expect("an owner"),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("action").expect("a kind"),
+                DefinitionId::new("initialize_commerce").expect("an id"),
+                1,
+                serde_json::json!({"format":1,"explicit_setup":true}),
+            )
+            .expect("the setup descriptor"),
+        )
+        .expect("the setup reference");
+    land(
+        &mut rig,
+        &AuthoritativeSubmit {
+            actor: GOD,
+            action: setup,
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: serde_json::json!({}),
+            key: mush_core::IdempotencyKeyText::parse_canonical("roll.initialize.0")
+                .expect("a key"),
+        },
+    )
+    .expect("the commerce initializes");
+    rig.commerce = Some(Arc::new(move || commerce(CommerceMode::Active)));
+    (reboot_with(rig, reconnect), policy)
+}
+
+/// **Every Registry inspection record** (doc 17h cut M8a), by key, through the composed slot's
+/// writer and the engine's typed store.
+pub(crate) fn inspections(
+    tw: &TestWorld,
+) -> Vec<mush_roll::commerce::registry_inspection::InspectionRecord> {
+    let family = tacsim::minds::registry_inspection::InspectionHost::of(tw.world())
+        .expect("the inspection is composed")
+        .writer()
+        .family()
+        .expect("the record family");
+    tw.engine()
+        .action_state()
+        .scan_family(&family, None, 256)
+        .expect("the family scans")
+        .entries()
+        .iter()
+        .map(|entry| entry.value().clone())
+        .collect()
 }
 
 /// [`reboot`], then `reconnect` come back (a real restart drops every session).
@@ -278,17 +532,25 @@ fn next_token() -> [u8; 16] {
 
 /// Keep a prepared bundle's typed post-images for a reboot.
 fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
-    for op in ops {
-        match op.op {
-            ModuleWrite::JsonSet { key, value } => {
-                rig.typed.insert((op.ns, key), value);
+    // Doc 17h cut M8a: the typed post-images are kept for the reboot's hydration as before;
+    // a plain module record (the Roll's setup receipt, `initialize_commerce`'s) goes to the
+    // boot data the reboot loads, the split the production store loader makes.
+    let mut plain = Vec::new();
+    for mush_core::ModuleOp { ns, op } in ops {
+        match op {
+            ModuleWrite::JsonSet { key, value }
+                if mush_core::is_action_state_persistence_key(&key) =>
+            {
+                rig.typed.insert((ns, key), value);
             }
-            ModuleWrite::Del { key } => {
-                rig.typed.remove(&(op.ns, key));
+            ModuleWrite::Del { key } if mush_core::is_action_state_persistence_key(&key) => {
+                rig.typed.remove(&(ns, key));
             }
             ModuleWrite::StreamAppend { .. } => {}
+            write => plain.push(mush_core::ModuleOp { ns, op: write }),
         }
     }
+    fold_module_ops_into(&mut rig.store, plain);
 }
 
 /// Drive one queued submission the way the world task does, keeping its typed post-images
@@ -1742,7 +2004,7 @@ fn sm3b_a_bare_act_commits_nothing() {
 /// order), so a scan and a sounding plan.
 fn stocked_keyed() -> Rig {
     let (world, registry) = mush_testkit::boot_world();
-    let mut engine = mush_core::Engine::with_modules(world, registry, Roster.modules())
+    let mut engine = mush_core::Engine::with_modules(world, registry, Roster::default().modules())
         .expect("the roster composes");
     assert!(tacsim::surface::install_geology(
         &mut engine.world,
@@ -1762,6 +2024,7 @@ fn stocked_keyed() -> Rig {
         oracle,
         store: HashMap::new(),
         typed: BTreeMap::new(),
+        commerce: None,
     };
     sweep(&mut rig.tw, 120);
     stock(&mut rig);

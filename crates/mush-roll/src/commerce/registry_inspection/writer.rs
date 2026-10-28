@@ -1,0 +1,206 @@
+//! The writer the Roll installs and tacsim's provider lands a record through (the IC claims
+//! writer's pattern, `super::super::ic_claims::writer`): the Roll delegates the record family
+//! to tacsim at its registration, tacsim's registrar takes the writer for its one action, and
+//! the record is inserted from tacsim's own transaction after the live Org authorization is
+//! observed here.
+use super::super::families::CommerceFamilies;
+use super::{
+    authority::{self, Readiness},
+    *,
+};
+use mush_core::{ActionTxn, ClockStamp, PrepareCtx, Registrar, StateFamilyHandle, World};
+use std::sync::{Arc, OnceLock};
+
+#[derive(Clone)]
+struct Registration {
+    families: CommerceFamilies,
+    policy: RegistryInspectionPolicy,
+    readiness: Readiness,
+}
+
+/// The shared cell: empty until the Roll's registration installs it.
+#[derive(Clone, Default)]
+pub struct InspectionWriter(Arc<OnceLock<Registration>>);
+impl std::fmt::Debug for InspectionWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InspectionWriter")
+            .field("registered", &self.0.get().is_some())
+            .finish()
+    }
+}
+impl InspectionWriter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// The Roll's half: delegate the record family to tacsim and keep the policy.
+    pub(crate) fn install(
+        &self,
+        reg: &mut Registrar<'_>,
+        families: CommerceFamilies,
+        policy: RegistryInspectionPolicy,
+    ) -> Result<(), ModError> {
+        if reg.module() != crate::NS {
+            return Err(error("inspection writer requires actual Roll registration"));
+        }
+        policy.validate().map_err(error)?;
+        reg.delegate_state_family(&families.registry_inspections, ACTION_OWNER)?;
+        self.0
+            .set(Registration {
+                families,
+                policy,
+                readiness: Readiness::default(),
+            })
+            .map_err(|_| error("inspection writer already registered"))
+    }
+    /// tacsim's half: the writer bound to its registered action.
+    ///
+    /// # Errors
+    /// A registrar that is not tacsim's.
+    pub fn for_action(
+        &self,
+        reg: &mut Registrar<'_>,
+        action: &DefinitionRef,
+    ) -> Result<RegisteredInspectionWriter, ModError> {
+        if reg.module() != ACTION_OWNER {
+            return Err(error(
+                "inspection writer requires actual Tacsim registration",
+            ));
+        }
+        Ok(RegisteredInspectionWriter {
+            writer: self.clone(),
+            action: action.clone(),
+        })
+    }
+}
+
+/// The writer bound to tacsim's registered action.
+#[derive(Clone)]
+pub struct RegisteredInspectionWriter {
+    writer: InspectionWriter,
+    action: DefinitionRef,
+}
+impl RegisteredInspectionWriter {
+    fn registration(&self) -> Result<&Registration, PublicationError> {
+        let r = self.writer.0.get().ok_or(PublicationError::Unavailable)?;
+        if self.action != r.policy.action().map_err(bad)? {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(r)
+    }
+    /// The action this writer lands records for.
+    #[must_use]
+    pub const fn action(&self) -> &DefinitionRef {
+        &self.action
+    }
+    /// The authority definition the action references.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn authority(&self) -> Result<DefinitionRef, ModError> {
+        self.registration().map_err(error)?.policy.authority()
+    }
+    /// The configured policy.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn policy(&self) -> Result<RegistryInspectionPolicy, ModError> {
+        Ok(self.registration().map_err(error)?.policy.clone())
+    }
+    /// The record family, for a read of what an inspection wrote.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn family(&self) -> Result<StateFamilyHandle<String, InspectionRecord>, ModError> {
+        Ok(self
+            .registration()
+            .map_err(error)?
+            .families
+            .registry_inspections
+            .clone())
+    }
+    /// Capture the definition registry once the Roll, Org and Economy owners are ready:
+    /// tacsim's boot hook, which runs after the Roll's.
+    ///
+    /// # Errors
+    /// A hook that is not tacsim's, an owner not ready, or a second capture.
+    pub fn capture(&self, ctx: &mush_core::ModuleCtx<'_>) -> Result<(), ModError> {
+        if ctx.module.as_deref() != Some(ACTION_OWNER) {
+            return Err(error("inspection readiness is captured by actual Tacsim"));
+        }
+        self.registration().map_err(error)?.readiness.capture(ctx)
+    }
+    /// Whether `actor` may inspect now: a configured operator the live Org authorizes on the
+    /// scope, with every owner ready (the offer's and the command's one test).
+    #[must_use]
+    pub fn offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize(world, actor).is_ok()
+    }
+    /// The live authorization, observed.
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not authorized, or an owner is not ready.
+    pub fn authorize(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe(world, &r.readiness, &r.policy, actor)
+    }
+    /// **Land one inspection** (M8a's A8: the one write): observe the authorization again
+    /// in the prepare, build the record over `facts`, validate it and insert it under the
+    /// commit's key.
+    ///
+    /// # Errors
+    /// The authorization, a record that does not validate, or the insert.
+    pub fn record(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        actor: ObjId,
+        facts: InspectionFacts,
+    ) -> Result<InspectionRecord, PublicationError> {
+        let r = self.registration()?;
+        let inspection = ctx.commit_token();
+        let world = ctx.world().map_err(bad)?;
+        let (authorization, at_ic) = self.authorize(world, actor)?;
+        let record = InspectionRecord {
+            format: 1,
+            inspection,
+            action: self.action.clone(),
+            authority: r.policy.clone(),
+            operator: actor,
+            authorization,
+            hull: facts.hull,
+            core: facts.core,
+            class: facts.class,
+            governed: facts.governed,
+            provenance: facts.provenance,
+            seal_digest: facts.seal_digest,
+            seal_check: facts.seal_check,
+            licence_state: facts.licence_state,
+            at_ic,
+        };
+        record.validate()?;
+        txn.insert(
+            &r.families.registry_inspections,
+            &record.key(),
+            record.clone(),
+        )
+        .map_err(bad)?;
+        if txn
+            .get(&r.families.registry_inspections, &record.key())
+            .map_err(bad)?
+            != Some(&record)
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(record)
+    }
+}

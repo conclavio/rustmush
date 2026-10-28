@@ -259,7 +259,7 @@ impl RigFacts {
 
 /// **Every hull the programme ports and the yards record** (doc 23 cut S.3, A4): the candidates
 /// for a second carrier, bounded by the port maps' hull rows.
-fn world_hulls(w: &World) -> BTreeSet<ObjId> {
+pub(crate) fn world_hulls(w: &World) -> BTreeSet<ObjId> {
     let mut hulls: BTreeSet<ObjId> = crate::port::coop::programme_ports(w)
         .iter()
         .flat_map(|port| port.map.hulls.iter().map(|row| ObjId(row.hull)))

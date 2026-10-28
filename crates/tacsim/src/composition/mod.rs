@@ -1033,6 +1033,8 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         .chain([mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY])
         .chain([mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY])
         .chain([mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY])
+        // Doc 17h cut M8a: the Registry inspection, the third twin.
+        .chain([mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY])
         // 17g C1b (a stop-rule fix, older than C1): the named launch's governed
         // hardware asks org about these three (`mush-industry`'s die issue,
         // integration and refit authorities), and its operator grants them with

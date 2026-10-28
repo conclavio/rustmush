@@ -126,8 +126,15 @@ impl MindSeal {
     pub fn profile_set(&self) -> RuntimeProfiles {
         self.cards.selected.clone()
     }
+    /// **The seal's `mind_sealed` line** (17b cut M3.3; doc 17 §13). `licence_state` is the
+    /// state the licence is read under at the site that seals (doc 17h cut M8a, A1): a
+    /// parameter, never a field of the seal, so [`MindSeal::digest`] and every record keyed on
+    /// it stand whatever the holding does later.
     #[must_use]
-    pub fn sealed_line(&self) -> super::ledger::EventKind {
+    pub fn sealed_line(
+        &self,
+        licence_state: crate::minds::licence_state::SealLicenceState,
+    ) -> super::ledger::EventKind {
         let source = super::snapshot::digest_text(&self.source_sha256);
         super::ledger::EventKind::MindSealed {
             unit: self.unit,
@@ -138,6 +145,7 @@ impl MindSeal {
             class: self.class,
             governed: self.governed,
             licence: self.origin.licence_label().into(),
+            licence_state,
             principal: self.principal.clone(),
         }
     }
