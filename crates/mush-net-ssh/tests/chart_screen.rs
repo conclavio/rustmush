@@ -48,8 +48,9 @@ fn chart_frame() -> OutputEvent {
 fn a3b_the_chart_screen_is_the_eleventh_on_the_letter_c() {
     let screens = builtin_screens();
     validate_screens(&screens).expect("the built-ins validate");
-    // Doc 20 cut SM.9 took the twelfth, the quarry on `q`.
-    assert_eq!(screens.len(), 12);
+    // Doc 20 cut SM.9 took the twelfth, the quarry on `q`, and 17g cut C3b the thirteenth,
+    // the market on `m`.
+    assert_eq!(screens.len(), 13);
     let chart = screens
         .iter()
         .find(|s| s.id == CHART_SCREEN)

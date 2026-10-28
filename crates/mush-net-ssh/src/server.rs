@@ -877,17 +877,13 @@ impl ConnHandler {
         if result.detach {
             return self.queue_line("@notui".to_owned());
         }
-        if !result.submit.is_empty() {
-            // Show the cleared input line immediately; the world's echo
-            // repaints again via the pump.
-            self.fire_repaint();
-            // A burst can carry more than one line (a multi-line paste); each
-            // is forwarded in order so none is dropped.
-            for line in result.submit {
-                self.queue_line(line)?;
-            }
-            return Ok(());
-        }
+        // One burst can carry typed requests AND submitted lines (17g cut
+        // C3b's review): a form's Enter, then the screen's `Enter type` and
+        // the line's own Enter in the same read — key repeat, a slow link.
+        // Everything the burst produced is forwarded; returning after the
+        // lines once dropped the typed request, whose owner then waited on a
+        // reply that could never come. The typed requests and queries go
+        // first: their keys came before the line's own Enter in that case.
         // Author edits use the typed owner path; hydration stays read-only.
         // Replies land on the pump and repaint the current view.
         for (id, request) in result.invokes {
@@ -906,6 +902,17 @@ impl ConnHandler {
         }
         for (id, epoch, choice) in result.responds {
             self.hooks.respond(self.conn_id, id, epoch, choice).await;
+        }
+        if !result.submit.is_empty() {
+            // Show the cleared input line immediately; the world's echo
+            // repaints again via the pump.
+            self.fire_repaint();
+            // A burst can carry more than one line (a multi-line paste); each
+            // is forwarded in order so none is dropped.
+            for line in result.submit {
+                self.queue_line(line)?;
+            }
+            return Ok(());
         }
         if result.redraw {
             self.fire_repaint();

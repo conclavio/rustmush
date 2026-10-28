@@ -23,6 +23,9 @@ mod backend;
 mod cockpit_text;
 pub mod helm;
 pub mod keys;
+// 17g cut C3b: the market screen's request state and the legal-actions
+// panel's typed submit (`TuiApp`'s `market` desk).
+mod market;
 mod mind_workshop;
 pub mod panels;
 pub mod pixel;

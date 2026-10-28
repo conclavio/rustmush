@@ -85,7 +85,11 @@ fn asks<'a>(queries: &'a [(String, Value)], name: &str) -> Vec<&'a Value> {
 fn sm9_the_quarry_is_the_twelfth_screen_on_the_letter_q() {
     let screens = builtin_screens();
     validate_screens(&screens).expect("the built-ins validate");
-    assert_eq!(screens.len(), 12);
+    assert_eq!(
+        screens.len(),
+        13,
+        "17g cut C3b took the thirteenth, the market on `m`"
+    );
     assert_eq!(QUARRY_SCREEN.0, b'q');
     let quarry = screens
         .iter()

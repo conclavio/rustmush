@@ -31,4 +31,4 @@ The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
 ┌input ‹nav› Enter to type─────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-r refresh · a act · Enter type · ? help
+r refresh · a act · A act line · Enter type · ? help
