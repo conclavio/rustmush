@@ -1,0 +1,21 @@
+{
+  "schema": { "id": "mind.holdings", "version": 1 },
+  "open": true,
+  "notice": null,
+  "section": "owner",
+  "rows": [
+    {
+      "kind": "owner",
+      "filed": 7,
+      "name": "Drift Kestrel",
+      "dependent": false,
+      "phase": { "state": "active", "days_left": 30 },
+      "selling": false,
+      "actions": ["publish", "withdraw", "charter", "someday", "resell"],
+      "charter": 4242,
+      "owner_licence": 17,
+      "digest": "sha256:9b2d4e6f8a0c1e3f5a7b9c1d3e5f7a9b"
+    }
+  ],
+  "after": null
+}

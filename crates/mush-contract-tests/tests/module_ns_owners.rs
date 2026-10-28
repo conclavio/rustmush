@@ -202,6 +202,36 @@ fn m6_author_services_are_registered_under_the_game_owner() {
     }
 }
 
+/// 17g C3a: the player market's two pulled panels are game services: each
+/// feed is TacSim's and is answered by TacSim's same-named query (the TUI's
+/// auto-subscribe and `feed_query` identity mapping depend on that), on the
+/// production roster whatever the launch format (no player market composes
+/// here, and both feeds are registered anyway).
+#[test]
+fn c3_market_panels_are_registered_under_the_game_owner() {
+    let engine = production_engine("tacsim");
+    for feed in ["mind.market", "mind.holdings"] {
+        let row = engine
+            .registry
+            .panel_feeds()
+            .iter()
+            .find(|(name, _)| name.as_str() == feed);
+        assert_eq!(
+            row.map(|(_, owner)| owner.as_str()),
+            Some("tacsim"),
+            "feed {feed}"
+        );
+        assert_eq!(
+            engine
+                .registry
+                .query_handler(feed)
+                .map(|(owner, _)| owner.as_str()),
+            Some("tacsim"),
+            "query {feed}"
+        );
+    }
+}
+
 /// **Ownership resolves.** Composition records `namespace -> owning module`
 /// for the whole roster: a module's name is its namespace, so every module
 /// claims one, and nothing claims a namespace no module composed.

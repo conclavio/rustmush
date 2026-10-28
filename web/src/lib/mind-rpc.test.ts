@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MindRpcClient } from "./mind-rpc";
+import { MindRpcClient, MindRpcUnsent } from "./mind-rpc";
 import type { WsClient } from "./ws";
 import type { MindResponse } from "./proto";
 
@@ -49,5 +49,20 @@ describe("connection-local mind requests", () => {
     vi.advanceTimersByTime(300_000);
     expect((await Promise.all(requests)).every(message => message.includes("timed out"))).toBe(true);
     expect(transport.invoke).toHaveBeenCalledTimes(8);
+  });
+  it("tells a request that never left from one whose answer was not seen (17g cut C3c)", async () => {
+    vi.useFakeTimers();
+    const { rpc, transport } = rig();
+    transport.invoke.mockReturnValueOnce(null as unknown as number);
+    const offline = await rpc.request({ op: "list" }).catch(error => error);
+    expect(offline).toBeInstanceOf(MindRpcUnsent);
+    expect(offline.reason).toBe("offline");
+    const sent = Array.from({ length: 8 }, () => rpc.request({ op: "list" }).catch(error => error));
+    const full = await rpc.request({ op: "list" }).catch(error => error);
+    expect(full).toBeInstanceOf(MindRpcUnsent);
+    expect(full.reason).toBe("full");
+    // A request that did leave is never `MindRpcUnsent`, whether it timed out or was cleared.
+    rpc.clear();
+    expect((await Promise.all(sent)).some(error => error instanceof MindRpcUnsent)).toBe(false);
   });
 });

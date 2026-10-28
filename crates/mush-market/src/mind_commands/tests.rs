@@ -656,6 +656,118 @@ fn own_kinds_are_own_only_and_bounded() -> TestResult {
     Ok(())
 }
 
+/// 17g C3a (the C3 plan §2.3, §4.3): `OwnQuotes`, the `mind.market` panel's
+/// own strip, beside `OwnPurchase` and `OwnOpen`, through `answer` over the
+/// actor's real index row and real quote rows:
+/// - every quote on the actor's own row is listed, live or expired, newest
+///   first by `quoted_at_utc` and then by token (two quotes of one second:
+///   the larger token first), each with its listing's code, frozen price and
+///   expiry; a funded purchase is not a quote and is not listed;
+/// - it is own-only: another buyer's quote on the same listing is absent
+///   from the actor's answer and is the only row of theirs; an actor with no
+///   index row answers the empty list after one read;
+/// - it is bounded and scans nothing: one read of the index row, then one
+///   batched read each of the quotes and operations it names, and it answers
+///   the same away from a counter;
+/// - its serialized answer carries no token, seller, account, buyer or
+///   digest.
+#[test]
+fn own_quotes_list_the_actors_quotes_newest_first() -> TestResult {
+    use crate::mind_entitlement::tests::command_index;
+    let config = crate::mind_entitlement::tests::command_config(400)?;
+    let (me, other) = (ObjId(8), ObjId(9));
+    let listed = token([0x50, 0, 0, 1], 1);
+    let elsewhere = token([0x51, 0, 0, 1], 1);
+    let mut memory = Memory::default();
+    memory.add(listing(listed)?);
+    memory.add(listing(elsewhere)?);
+    let older = quote_into(&mut memory, 0xc0, listed, me, 100, 160)?;
+    let newer = quote_into(&mut memory, 0xc1, listed, me, 120, 680)?;
+    let aside = quote_into(&mut memory, 0xc2, elsewhere, me, 130, 190)?;
+    let twin = quote_into(&mut memory, 0xc7, elsewhere, me, 130, 690)?;
+    let paid = purchase_into(&mut memory, 0xc3, listed, me, 90)?;
+    let theirs = quote_into(&mut memory, 0xc5, listed, other, 140, 700)?;
+    memory.actors.insert(
+        me,
+        command_index(me, &[older, newer, aside, twin], &[paid])?,
+    );
+    memory
+        .actors
+        .insert(other, command_index(other, &[theirs], &[])?);
+    let source = &memory;
+    let ask = |actor: u32, here: bool| {
+        answer(
+            &source,
+            own(actor),
+            || here,
+            &config,
+            MarketCommandRequest::own_quotes(),
+        )
+    };
+    let rows = |quotes: &[OwnQuoteRowView]| -> Vec<(String, i64, i64)> {
+        quotes
+            .iter()
+            .map(|q| (q.code().to_owned(), q.price_minor(), q.expires_at_utc()))
+            .collect()
+    };
+    let mine = ask(8, true)?
+        .into_own_quotes()
+        .ok_or("an own-quotes answer")?;
+    check_eq!(
+        rows(&mine),
+        vec![
+            (code(elsewhere), 400, 690),
+            (code(elsewhere), 400, 190),
+            (code(listed), 400, 680),
+            (code(listed), 400, 160),
+        ],
+        "newest first, the larger token first within one second, expired included"
+    );
+    check_eq!(
+        memory.take_reads(),
+        vec![("actors", 1), ("quotes", 4), ("operations", 1)],
+        "one index read, then one batched read each"
+    );
+    check_eq!(
+        ask(8, false)?,
+        ask(8, true)?,
+        "no counter is needed: the same answer away from one"
+    );
+    let their_rows = ask(9, true)?
+        .into_own_quotes()
+        .ok_or("their own-quotes answer")?;
+    check_eq!(rows(&their_rows), vec![(code(listed), 400, 700)]);
+    memory.take_reads();
+    check_eq!(ask(10, true)?.into_own_quotes(), Some(Vec::new()));
+    check_eq!(memory.take_reads(), vec![("actors", 1)], "no row, one read");
+    check!(
+        memory.take_scans().is_empty(),
+        "OwnQuotes never scans the listings"
+    );
+    let text = serde_json::to_value(ask(8, true)?)?.to_string();
+    for private in [
+        "seller",
+        "account",
+        "payer",
+        "digest",
+        "buyer",
+        "\"quote\":",
+    ] {
+        check!(!text.contains(private), "{private} in {text}");
+    }
+    for token in [older, newer, aside, twin, paid, listed] {
+        check!(
+            !text.contains(&token.to_string()),
+            "a whole token in {text}"
+        );
+    }
+    check!(
+        text.contains("\"kind\":\"own_quotes\""),
+        "the kind tag: {text}"
+    );
+    Ok(())
+}
+
 /// 17g C2g, the C2g fix round 2 (reviewers correctness/C2G-R2-1,
 /// conformance/F1 and tests/T-1): `OwnPurchaseView::latest`, `+minds/buy`'s
 /// key subject, names the actor's most recently quoted own record on the

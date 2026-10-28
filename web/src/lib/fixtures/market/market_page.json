@@ -1,0 +1,62 @@
+{
+  "schema": { "id": "mind.market", "version": 1 },
+  "open": true,
+  "notice": null,
+  "rows": [
+    {
+      "code": "0a1b2c3d",
+      "name": "Drift Kestrel",
+      "class": "II",
+      "form": "open",
+      "transferable": true,
+      "term_seconds": 2592000,
+      "grace_seconds": 604800,
+      "price_minor": "125000",
+      "price_text": "1250cr",
+      "levy_permille": 50,
+      "venue_permille": 20,
+      "parent_royalty_permille": 0,
+      "derived": false,
+      "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+      "split_line": "Price 1250cr: Registry 5%, venue 2%, charter owner the rest.",
+      "publication": "f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe",
+      "seller_account": "acct-7f3a9e",
+      "digest": "sha256:9b2d4e6f8a0c1e3f5a7b9c1d3e5f7a9b"
+    },
+    {
+      "code": "99aa77bb",
+      "name": "Long Watch",
+      "class": "III",
+      "form": "open-resale",
+      "transferable": false,
+      "term_seconds": 2592000,
+      "grace_seconds": 604800,
+      "price_minor": "9950",
+      "price_text": "99.50cr",
+      "levy_permille": 50,
+      "venue_permille": 0,
+      "parent_royalty_permille": 100,
+      "derived": true,
+      "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence cannot be resold.",
+      "split_line": "Price 99.50cr: Registry 5%, parents 10%, charter owner the rest.",
+      "protocol": "f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe"
+    }
+  ],
+  "after": "99aa77bb",
+  "own": {
+    "quotes": [
+      {
+        "code": "0a1b2c3d",
+        "price_minor": "125000",
+        "price_text": "1250cr",
+        "expires_in_seconds": 240,
+        "expired": false,
+        "operation": "f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe"
+      }
+    ],
+    "waiting": [
+      { "code": "99aa77bb", "purchase": "f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe" }
+    ]
+  },
+  "account": "acct-7f3a9e"
+}

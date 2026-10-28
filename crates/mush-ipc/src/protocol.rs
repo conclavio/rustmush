@@ -64,7 +64,10 @@ pub use mush_core::ControlMsg;
 // neither an 8 nor a 9 peer decodes it. Deploy both halves together.
 // Version 11 adds mirrored reply settings and reply-completion fences, main's
 // line's 9; again no earlier peer of either line honors them.
-pub const IPC_VERSION: u32 = 11;
+// Version 12 (17g C3a): `MindRequest::Market` and the `Staged`/`Shown`
+// responses cross the boundary (`WireInbound::Invoke` and the invoke reply); an
+// 11 peer cannot decode them. Deploy both halves together.
+pub const IPC_VERSION: u32 = 12;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the

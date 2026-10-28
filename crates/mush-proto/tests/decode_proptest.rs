@@ -56,6 +56,25 @@ fn client_command_strategy() -> impl Strategy<Value = ClientCommand> {
         }),
         (any::<Option<u64>>(), any::<Option<u16>>())
             .prop_map(|(run, page)| Query::MindBulk { run, page }),
+        // 17g cut C3a: the player market's two panel reads.
+        any::<Option<u32>>().prop_map(|after| {
+            Query::MindMarket(mush_proto::MindMarketRequest::Listings {
+                after: after.map(|n| {
+                    mush_proto::ListingCode::try_from(format!("{n:08x}"))
+                        .expect("canonical generated code")
+                }),
+            })
+        }),
+        (any::<bool>(), any::<Option<u64>>()).prop_map(|(paid, after)| {
+            Query::MindMarket(mush_proto::MindMarketRequest::Holdings {
+                section: if paid {
+                    mush_proto::MindHoldingsSection::Paid
+                } else {
+                    mush_proto::MindHoldingsSection::Owner
+                },
+                after,
+            })
+        }),
         any::<Option<String>>().prop_map(|folder| Query::MailList { folder }),
         (any::<String>(), any::<Option<u64>>(), any::<u32>()).prop_map(
             |(channel, before_seq, limit)| Query::ChannelBacklog {

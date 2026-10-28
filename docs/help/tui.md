@@ -12,10 +12,10 @@ tactical screens — a damage report and a unit view, whose **grid** pane is
 the map of the window your scene stands on when one is open (`help map`) —
 that show your unit whenever you hold a station on one (they are always in
 the strip); on digit **0**, a **cockpit** for a pilot in a simulator
-match, which appears the first time a match sends you a frame; and two
+match, which appears the first time a match sends you a frame; and three
 **lettered screens**, reached with Alt and the letter where the server
-publishes them: **c**, the sky chart, and **q**, the quarry, for a pilot
-working rigs on a mining site.
+publishes them: **c**, the sky chart, **q**, the quarry, for a pilot
+working rigs on a mining site, and **m**, the mind market.
 Everything you type still runs the same commands and reaches the same world;
 the TUI is only a different way to *see* it.
 
@@ -193,7 +193,14 @@ reads the scene back, and is not taken as the line you were composing.
              your sheet (`+roll gun` → `+roll gunnery`, `+roll pil` →
              `+roll piloting`).
   6 intel    Your own informant intel, newest first.
-  7 actions  The actions currently offered to you; Enter prefills `+act`.
+  7 actions  The actions currently offered to you. `a` opens a small form for
+             the highlighted action, one field for each input it takes, and
+             Enter in the form submits it; `A` (or Enter on the row) opens the
+             box with `+act <verb>` ready instead. An action aimed at someone
+             else is done with `+act`. After you submit, the status line says
+             what the server answered; an action whose result is not settled
+             yet stays locked until the list is refreshed. The same `a` and
+             `A` work on the scene screen's actions pane.
   8 damage   The after-action report for the unit you hold a station on:
              its sections with a condition mark and a gauge for every part
              the ruleset tracks, the newest damage report's before/after
@@ -284,6 +291,31 @@ reads the scene back, and is not taken as the line you were composing.
              goes until you add `go` (and, for a drive, the target first)
              and press Enter. `l` shows another kind of ore, `r` asks
              again; the map follows your rigs while they move.
+  m market   (Alt+m) The mind market: the listings at the counter you stand
+             at on the left — code, name, form, class and price, and on a
+             wide terminal the term and Grace in IC days and the flags — with
+             your own open quotes and waiting purchases under the heading (a
+             purchase whose listing is not on the page stays there, and `b`
+             on it still completes or refunds it); your licences on the
+             right, one section at a time (`h` swaps
+             your filed minds and the licences you paid for). `b` buys the
+             highlighted listing (quote, pay, complete or refund, the step
+             set from where your purchase stands), `k` renews the highlighted
+             licence (request, pay or decline), `t` offers it to a player for
+             a price (a filed mind's charter, or a licence you paid for), `a`
+             accepts an offer someone made you (leave the price empty to see
+             their offers first), `l` lists a filed mind for sale and `x`
+             withdraws one. `]` shows the next page of the focused pane and
+             `[` the first, and `r` asks for both again. Each of those keys
+             only opens a form or moves a page; nothing is sent until you
+             press Enter inside the form, and Esc closes it. Once a request
+             is sent, Esc only closes the window: the request still stands,
+             and the other forms wait until its answer arrives. The status
+             line shows the server's answer. A renewal is handed to the
+             renewal service, whose answer — the price, or that it is not due
+             yet —
+             arrives on the scene screen's scrollback, as it does in line
+             mode; read it there before you renew again with pay.
 
 The two tactical screens are always in the tab strip, and they are honest
 when there is nothing to show: with no station and no unit of your own they

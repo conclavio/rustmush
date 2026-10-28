@@ -125,7 +125,15 @@ base: MindEditBase, } | { "status": "cancelled",
 /**
  * Opaque job number.
  */
-job: number, } | { "status": "error",
+job: number, } | { "status": "staged",
+/**
+ * The request line the line command prints, byte for byte.
+ */
+line: string, } | { "status": "shown",
+/**
+ * The lines the line command prints, in order.
+ */
+lines: Array<string>, } | { "status": "error",
 /**
  * Stable error category.
  */

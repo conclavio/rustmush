@@ -4542,6 +4542,19 @@ pub fn register(
     // wherever `@mind` is and refusing `NOT_OPEN` without a composed market
     // read (`minds::market_commands::market`).
     crate::minds::market_commands::market::register(reg)?;
+    // 17g C3a (the C3 plan §2.3): the market's two panel feeds, each answered
+    // by its same-named query, registered on every launch format so the
+    // manifest is stable; without the command slot or its market read both
+    // answer the closed keyframe (`minds::market_commands::query`).
+    {
+        use crate::minds::market_commands::query::{
+            HOLDINGS_FEED, HoldingsPanel, MARKET_FEED, MarketPanel,
+        };
+        drop(reg.panel_feed(MARKET_FEED)?);
+        drop(reg.panel_feed(HOLDINGS_FEED)?);
+        reg.query_handler(MARKET_FEED, Arc::new(MarketPanel))?;
+        reg.query_handler(HOLDINGS_FEED, Arc::new(HoldingsPanel))?;
+    }
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }

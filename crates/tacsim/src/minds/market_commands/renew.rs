@@ -55,7 +55,7 @@ use mush_roll::commerce::command_reader::{
 };
 use mush_roll::commerce::holding_reader::{OriginalReadRequest, OriginalReadResult};
 
-use super::words::{self, fill};
+use super::words::{self, Outcome, Refusal, fill, word};
 
 /// The continuation's delay, in milliseconds (17g §1 ruling 6:
 /// provisional): the service's handler runs on the next timer wake.
@@ -69,20 +69,23 @@ pub(crate) enum Renew {
     Decline,
 }
 
-fn not_open() -> CmdError {
-    CmdError::msg(words::NOT_OPEN)
+/// 17g C3a: what a renewal form selects: the licence number and the form
+/// (`parse_renew`; the typed `Renew`, `RenewPay` and `RenewDecline`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RenewSelection {
+    pub(super) licence: u64,
+    pub(super) which: Renew,
+}
+
+fn not_open() -> Refusal {
+    Refusal::not_open()
 }
 
 /// 17g C2d: a paid licence the actor holds now (`OwnPaid`), or
 /// `NO_LICENCE`: another character's licence reads exactly like a missing
 /// one. `NOT_OPEN` without the command slot.
-pub(super) fn own_paid(ctx: &Ctx<'_>, licence: u64) -> Result<PaidHoldingView, CmdError> {
-    let refuse = || {
-        CmdError::msg(fill(
-            words::NO_LICENCE,
-            &[("licence", &licence.to_string())],
-        ))
-    };
+pub(super) fn own_paid(ctx: &Ctx<'_>, licence: u64) -> Result<PaidHoldingView, Refusal> {
+    let refuse = || word!(NO_LICENCE, &[("licence", &licence.to_string())]);
     let id = LicenceId::new(licence).map_err(|_| refuse())?;
     let service = super::service(ctx)?;
     let request = OriginalReadRequest::command(RollCommandReadRequest::own_paid(id));
@@ -96,16 +99,16 @@ pub(super) fn own_paid(ctx: &Ctx<'_>, licence: u64) -> Result<PaidHoldingView, C
 /// The step a form hands to the service: `+minds/renew` asks (or shows the
 /// offer that exists); `/pay` and `/decline` act on the drafted offer the
 /// holder's own paid holding names, else `NO_RENEWAL`.
-fn front_step(held: &PaidHoldingView, which: Renew) -> Result<FrontStep, CmdError> {
+fn front_step(held: &PaidHoldingView, which: Renew) -> Result<FrontStep, Refusal> {
     let offered = match (held.renewal(), held.renewal_operation()) {
         (Some(RenewalMark::Offered), Some(operation)) => Some(operation),
         _ => None,
     };
     let no_renewal = || {
-        CmdError::msg(fill(
-            words::NO_RENEWAL,
-            &[("licence", &held.licence().get().to_string())],
-        ))
+        word!(
+            NO_RENEWAL,
+            &[("licence", &held.licence().get().to_string())]
+        )
     };
     Ok(match which {
         Renew::Status => FrontStep::Request,
@@ -116,11 +119,31 @@ fn front_step(held: &PaidHoldingView, which: Renew) -> Result<FrontStep, CmdErro
 
 /// `+minds/renew <licence>`, `/pay <licence>` or `/decline <licence>`: the
 /// synchronous refusals of the module doc, then the hand-off to the
-/// service's front. Prints nothing on success.
+/// service's front. Prints nothing on success: 17g C3a's `run_renew`
+/// answers `Outcome::Staged(RENEW_HANDED)` for the typed reply, and this
+/// line command DISCARDS it, so the line stays as silent as 17g C2h built it
+/// (the one place the line and the typed reply differ, the C3 plan's
+/// departure 7).
 pub(crate) fn renew(ctx: &mut Ctx<'_>, text: &str, which: Renew) -> Result<(), CmdError> {
-    let number = super::author::number(text).ok_or_else(|| CmdError::msg(super::market::HELP))?;
-    let held = own_paid(ctx, number)?;
-    let step = front_step(&held, which)?;
+    let selection = parse_renew(text, which)?;
+    run_renew(ctx, selection)?;
+    Ok(())
+}
+
+/// 17g C3a: a renewal form's argument, the licence number (`number`), else
+/// the `+minds` help (`REFUSED`).
+pub(super) fn parse_renew(text: &str, which: Renew) -> Result<RenewSelection, Refusal> {
+    let licence = super::author::number(text).ok_or_else(|| Refusal::usage(super::market::HELP))?;
+    Ok(RenewSelection { licence, which })
+}
+
+/// 17g C3a: `renew` after its parse, for the line and the typed renewal
+/// steps alike: the synchronous refusals of the module doc, the hand-off,
+/// and then `Outcome::Staged` with `RENEW_HANDED` for the licence, which
+/// only the typed reply carries (`renew` discards it).
+pub(super) fn run_renew(ctx: &mut Ctx<'_>, selection: RenewSelection) -> Result<Outcome, Refusal> {
+    let held = own_paid(ctx, selection.licence)?;
+    let step = front_step(&held, selection.which)?;
     let front = if held.house() {
         mush_market::mind_house_renewal::player_front(ctx)
     } else {
@@ -129,9 +152,13 @@ pub(crate) fn renew(ctx: &mut Ctx<'_>, text: &str, which: Renew) -> Result<(), C
     .ok_or_else(not_open)?;
     let actor = super::principal(ctx).ok_or_else(not_open)?;
     if ctx.authoritative_pending(actor) || ctx.authoritative_queue_full() {
-        return Err(CmdError::msg(words::BUSY));
+        return Err(word!(BUSY));
     }
     let argument = front_argument(held.licence(), step);
     ctx.schedule_continuation(&front, actor, &argument, FRONT_DELAY_MS)
-        .map_err(|_| not_open())
+        .map_err(|_| not_open())?;
+    Ok(Outcome::Staged(fill(
+        words::RENEW_HANDED,
+        &[("licence", &held.licence().get().to_string())],
+    )))
 }
