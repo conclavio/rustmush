@@ -18677,3 +18677,186 @@ fn m6_frame(names: &[&str]) -> tacsim::arena::step::FrameMind {
         off: false,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Doc 21 cut G.14 — one health word a contact
+// ---------------------------------------------------------------------------
+
+/// **Doc 21 cut G.14**: each keyframe contact carries `health` — the one word
+/// the picture gauges the hull by — summed from the bands the platform already
+/// holds, and `null` wherever it holds no reading. On the fixture scene BA's
+/// `ggyrd` (a red track, a destroyed turret, the fatal hull green) reads
+/// `crippled`; RB (classified, never read), X3 and X4 (unidentified) read
+/// `null`. The word follows the reading: all green `intact`, a yellow
+/// `damaged`, a destroyed engine `crippled` (the chassis survives it), the
+/// hull destroyed `wreck`; an own kill is `wreck` with no reading at all; and
+/// an unarmed hull, whose rows carry no `reads_dead`, reads the wreck off the
+/// same destroyed hull. Never a number: the key is a string or null on every
+/// row, and nothing else about the contact moves.
+#[test]
+fn g14_each_contact_carries_one_health_word_or_null() {
+    use tacsim::arena::condition::{Condition, ConditionBand, ConditionTier};
+    use tacsim::arena::perception::FrameCondition;
+
+    let contact = |frame: &tacsim::arena::step::Frame, designator: &str| -> serde_json::Value {
+        cockpit::status_frame(fixture::MATCH, frame)
+            .get("contacts")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.get("designator") == Some(&serde_json::json!(designator)))
+                    .cloned()
+            })
+            .unwrap_or_else(|| panic!("{designator} is on the frame"))
+    };
+    let health = |frame: &tacsim::arena::step::Frame, designator: &str| {
+        contact(frame, designator)
+            .get("health")
+            .cloned()
+            .unwrap_or_else(|| panic!("{designator} carries the key"))
+    };
+    let frame = fixture::frame();
+    assert_eq!(health(&frame, "BA"), serde_json::json!("crippled"));
+    assert_eq!(
+        health(&frame, "RB"),
+        serde_json::Value::Null,
+        "classified, never read"
+    );
+    assert_eq!(
+        health(&frame, "X3"),
+        serde_json::Value::Null,
+        "unidentified"
+    );
+    assert_eq!(
+        health(&frame, "X4"),
+        serde_json::Value::Null,
+        "unidentified"
+    );
+
+    // The word follows BA's reading.
+    let all = |band: ConditionBand| {
+        (0..5).fold(Condition::default(), |bands, index| {
+            bands.with_band(index, band)
+        })
+    };
+    let read = |bands: Condition| {
+        let mut frame = fixture::frame();
+        let ba = frame
+            .contacts
+            .iter_mut()
+            .find(|held| held.designator.to_string() == "BA")
+            .expect("BA");
+        ba.condition = Some(FrameCondition {
+            table: 0,
+            bands,
+            age_ms: 2_000,
+        });
+        frame
+    };
+    assert_eq!(
+        health(&read(all(ConditionBand::Green)), "BA"),
+        serde_json::json!("intact")
+    );
+    assert_eq!(
+        health(
+            &read(all(ConditionBand::Green).with_band(2, ConditionBand::Yellow)),
+            "BA"
+        ),
+        serde_json::json!("damaged")
+    );
+    assert_eq!(
+        health(
+            &read(all(ConditionBand::Green).with_band(0, ConditionBand::Destroyed)),
+            "BA"
+        ),
+        serde_json::json!("crippled"),
+        "the engine gone: the chassis survives it"
+    );
+    assert_eq!(
+        health(
+            &read(all(ConditionBand::Green).with_band(3, ConditionBand::Red)),
+            "BA"
+        ),
+        serde_json::json!("crippled"),
+        "a red track"
+    );
+    let hull_gone = read(all(ConditionBand::Green).with_band(1, ConditionBand::Destroyed));
+    assert_eq!(
+        health(&hull_gone, "BA"),
+        serde_json::json!("wreck"),
+        "the hull is the chassis's fatal section"
+    );
+
+    // The own kill: `wreck` with no reading at all.
+    let mut killed = fixture::frame();
+    for held in &mut killed.contacts {
+        if held.designator.to_string() == "BA" {
+            held.condition = None;
+            held.fatal = None;
+            held.reads_dead = Some(true);
+        }
+    }
+    killed.scan_tables.clear();
+    let ba = contact(&killed, "BA");
+    assert_eq!(ba.get("health"), Some(&serde_json::json!("wreck")));
+    assert_eq!(ba.get("condition"), Some(&serde_json::Value::Null));
+
+    // An unarmed hull: no `reads_dead` on any row, and the same reading reads
+    // the same wreck through the fatal words.
+    let mut unarmed = hull_gone;
+    unarmed.weapons.clear();
+    unarmed.odds.clear();
+    for held in &mut unarmed.contacts {
+        held.reads_dead = None;
+    }
+    let ba = contact(&unarmed, "BA");
+    assert!(
+        !ba.as_object()
+            .expect("a contact")
+            .contains_key("reads_dead")
+    );
+    assert_eq!(ba.get("health"), Some(&serde_json::json!("wreck")));
+
+    // The pure summary, and its words.
+    assert_eq!(Condition::default().tier(0), ConditionTier::Intact);
+    assert_eq!(
+        all(ConditionBand::Yellow).tier(0b10),
+        ConditionTier::Damaged,
+        "a fatal mask over sections that are not destroyed is nothing"
+    );
+    assert_eq!(
+        all(ConditionBand::Destroyed).tier(0),
+        ConditionTier::Crippled
+    );
+    assert_eq!(
+        all(ConditionBand::Destroyed).tier(0b1_0000),
+        ConditionTier::Wreck
+    );
+    assert_eq!(
+        [
+            ConditionTier::Intact,
+            ConditionTier::Damaged,
+            ConditionTier::Crippled,
+            ConditionTier::Wreck
+        ]
+        .map(|tier| tier.as_str()),
+        ["intact", "damaged", "crippled", "wreck"]
+    );
+
+    // Never a number, on any row of any hull.
+    for frame in [&frame, &killed, &unarmed] {
+        for row in cockpit::status_frame(fixture::MATCH, frame)
+            .get("contacts")
+            .and_then(serde_json::Value::as_array)
+            .expect("contacts")
+        {
+            assert!(
+                matches!(
+                    row.get("health"),
+                    Some(serde_json::Value::Null | serde_json::Value::String(_))
+                ),
+                "{row}"
+            );
+        }
+    }
+}

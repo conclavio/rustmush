@@ -357,7 +357,7 @@ pub use command::{
     BriefObjective, MAX_SIGNAL_CONTACTS, SignalContact, SignalReason, SquadDigest, SquadSignal,
     SquadWatch,
 };
-pub use condition::{Condition, ConditionBand, MAX_SCANNED_SECTIONS, Reading};
+pub use condition::{Condition, ConditionBand, ConditionTier, MAX_SCANNED_SECTIONS, Reading};
 // 17b cut M1b.1: the slots. `conditions::Held` stays at its module path: the
 // root name `Held` is `motion::Held`'s (re-exported below since 16b cut A.2).
 pub use conditions::{

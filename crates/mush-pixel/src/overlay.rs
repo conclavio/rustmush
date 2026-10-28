@@ -658,6 +658,70 @@ pub struct HudLock {
     pub at: LockAt,
 }
 
+/// **A contact's health, as the frame's one word says it** (doc 21 cut
+/// G.14): the keyframe's `health` — the worst band the pilot's own scope
+/// read off the hull, never a number — drawn as pips over the sprite and
+/// beside the overhead's mark. A `wreck` is drawn as one already and gets
+/// no gauge; a row with no word (unidentified, or never close enough for a
+/// look) gets none either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Health {
+    /// Every section green: three pips.
+    Intact,
+    /// Yellow at worst: two.
+    Damaged,
+    /// Red at worst, or a section gone: one.
+    Crippled,
+}
+
+/// How many pips a gauge has.
+pub const HEALTH_PIPS: i64 = 3;
+
+impl Health {
+    /// The frame's word as a gauge, or `None` for a word that draws none
+    /// (`wreck`, an unknown word) and for no word.
+    #[must_use]
+    pub fn from_word(word: Option<&str>) -> Option<Health> {
+        match word? {
+            "intact" => Some(Health::Intact),
+            "damaged" => Some(Health::Damaged),
+            "crippled" => Some(Health::Crippled),
+            _ => None,
+        }
+    }
+
+    /// The pips lit, of [`HEALTH_PIPS`].
+    #[must_use]
+    pub const fn lit(self) -> i64 {
+        match self {
+            Health::Intact => 3,
+            Health::Damaged => 2,
+            Health::Crippled => 1,
+        }
+    }
+
+    /// The lit pips' colour: the doll's own green, amber and red.
+    #[must_use]
+    pub(crate) const fn rgb(self) -> Rgb {
+        match self {
+            Health::Intact => GOOD,
+            Health::Damaged => WARN,
+            Health::Crippled => BAD,
+        }
+    }
+}
+
+/// A health gauge placed in the picture: over a contact's sprite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HealthMark {
+    /// The sprite's centre column, pixels.
+    pub x: i64,
+    /// The sprite's top row, pixels (may be off the frame).
+    pub top: i64,
+    /// What it reads.
+    pub health: Health,
+}
+
 /// What the flight HUD draws.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hud {
@@ -674,6 +738,9 @@ pub struct Hud {
     pub marks: Vec<TapeMark>,
     /// The lock, boxed by the reticle.
     pub lock: Option<HudLock>,
+    /// The health gauges (G.14), one over each identified contact in view
+    /// the frame gives a word for, the lock's among them.
+    pub health: Vec<HealthMark>,
 }
 
 /// The signed arc from `from` to `to`, millidegrees in `-180_000..180_000`.
@@ -709,7 +776,8 @@ pub fn draw_hud(frame: &mut Frame, hud: &Hud) {
     let s = scale_for(frame) as i64;
     let (w, h) = (frame.width() as i64, frame.height() as i64);
     draw_tape(frame, hud, s, w);
-    draw_reticle(frame, hud.lock.as_ref(), s, w, h);
+    let label = draw_reticle(frame, hud.lock.as_ref(), s, w, h);
+    draw_health(frame, &hud.health, label, s, w, h);
     draw_speed(frame, hud.speed_kph, s, w, h);
 }
 
@@ -809,22 +877,28 @@ fn draw_tape(frame: &mut Frame, hud: &Hud, s: i64, w: i64) {
 /// runs off the bottom of the view), or an arrow at the side of the view it
 /// lies off — or at the top or bottom edge it lies clear over, in its column
 /// — with them beside it: the readout is in the view wherever the lock is.
-fn draw_reticle(frame: &mut Frame, lock: Option<&HudLock>, s: i64, w: i64, h: i64) {
+/// Answers the readout's rectangle, `(x, y, w, h)`, so what is drawn after
+/// it (the health gauges, G.14) keeps clear of it.
+fn draw_reticle(
+    frame: &mut Frame,
+    lock: Option<&HudLock>,
+    s: i64,
+    w: i64,
+    h: i64,
+) -> Option<(i64, i64, i64, i64)> {
     let (cx, cy) = (w / 2, h / 2);
     let (gap, arm) = (3 * s, 5 * s);
     fill_rect(frame, cx - gap - arm, cy, arm, s, TEXT);
     fill_rect(frame, cx + gap + 1, cy, arm, s, TEXT);
     fill_rect(frame, cx, cy - gap - arm, s, arm, TEXT);
     fill_rect(frame, cx, cy + gap + 1, s, arm, TEXT);
-    let Some(lock) = lock else {
-        return;
-    };
+    let lock = lock?;
     let mut label = format!("{} {}M", lock.designator.to_ascii_uppercase(), lock.range_m);
     if let Some(p) = lock.percent {
         label.push_str(&format!(" {p}%"));
     }
     let lw = label.len() as i64 * 6 * s;
-    match lock.at {
+    let (lx, ly) = match lock.at {
         LockAt::Box(x, y, bw, bh) => {
             let m = 2 * s;
             let (bx, by) = (x - m, y - m);
@@ -838,24 +912,17 @@ fn draw_reticle(frame: &mut Frame, lock: Option<&HudLock>, s: i64, w: i64, h: i6
             } else {
                 by - 9 * s
             };
-            text(
-                frame,
-                lx,
-                ly.clamp(0, (h - 7 * s).max(0)),
-                &label,
-                LOCK,
-                s as usize,
-            );
+            (lx, ly.clamp(0, (h - 7 * s).max(0)))
         }
         LockAt::Beyond(x, side) => {
             let x = x.clamp(0, w - 1);
             let lx = (x - lw / 2).clamp(0, (w - lw).max(0));
             if side < 0 {
                 caret(frame, (x, 2 * s), 5 * s, -1, LOCK);
-                text(frame, lx, 9 * s, &label, LOCK, s as usize);
+                (lx, 9 * s)
             } else {
                 caret(frame, (x, h - 1 - 2 * s), 5 * s, 1, LOCK);
-                text(frame, lx, h - 16 * s, &label, LOCK, s as usize);
+                (lx, h - 16 * s)
             }
         }
         LockAt::Off(side) => {
@@ -865,7 +932,64 @@ fn draw_reticle(frame: &mut Frame, lock: Option<&HudLock>, s: i64, w: i64, h: i6
                 (w - 2 * s, 2, w - 8 * s - lw)
             };
             caret(frame, (ax, cy), 5 * s, dir, LOCK);
-            text(frame, lx, cy - 3 * s, &label, LOCK, s as usize);
+            (lx, cy - 3 * s)
+        }
+    };
+    text(frame, lx, ly, &label, LOCK, s as usize);
+    Some((lx, ly, lw, 7 * s))
+}
+
+/// **Where a health gauge sits over a sprite** (doc 21 cut G.14): its
+/// `(x, y, w, h)` in pixels. [`HEALTH_PIPS`] pips `2s` square a gap `s`
+/// apart — `8s` wide, `2s` tall — centred on the sprite's column (kept
+/// inside the frame), its bottom `4s` over the sprite's top row: `2s` clear
+/// of the lock's box, which starts `2s` over the sprite. Where the lock's
+/// readout is drawn over its box instead of under it (the box running off
+/// the bottom of the view) and the gauge would land on the readout, the
+/// gauge moves up over the readout; and it never leaves the frame.
+#[must_use]
+pub fn health_rect(
+    mark: &HealthMark,
+    label: Option<(i64, i64, i64, i64)>,
+    s: i64,
+    w: i64,
+    h: i64,
+) -> (i64, i64, i64, i64) {
+    let gw = (HEALTH_PIPS * 3 - 1) * s;
+    let gh = 2 * s;
+    let x = (mark.x - gw / 2).clamp(0, (w - gw).max(0));
+    let mut y = mark.top - 6 * s;
+    if let Some((lx, ly, lw, lh)) = label
+        && x < lx + lw
+        && lx < x + gw
+        && y < ly + lh
+        && ly < y + gh
+    {
+        y = ly - 4 * s;
+    }
+    (x, y.clamp(0, (h - gh).max(0)), gw, gh)
+}
+
+/// The health gauges (G.14): over each marked sprite, its lit pips in the
+/// tier's colour and the rest in the doll's `gone` grey, where
+/// [`health_rect`] puts them.
+fn draw_health(
+    frame: &mut Frame,
+    marks: &[HealthMark],
+    label: Option<(i64, i64, i64, i64)>,
+    s: i64,
+    w: i64,
+    h: i64,
+) {
+    for mark in marks {
+        let (x, y, _, gh) = health_rect(mark, label, s, w, h);
+        for pip in 0..HEALTH_PIPS {
+            let px = if pip < mark.health.lit() {
+                mark.health.rgb()
+            } else {
+                GONE
+            };
+            fill_rect(frame, x + pip * 3 * s, y, 2 * s, gh, px);
         }
     }
 }
