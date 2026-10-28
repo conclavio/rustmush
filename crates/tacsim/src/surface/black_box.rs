@@ -1180,6 +1180,26 @@ mod tests {
         }
     }
 
+    /// **Doc 17h cut M8b G12**: only an ungoverned seal records admissions — a governed open
+    /// line carrying one is refused by `check`; the same line ungoverned stands.
+    #[test]
+    fn m8b_a_governed_line_carries_no_admissions() {
+        let admitted = Admitted {
+            class: Some(UnitClass::Vehicle),
+            host: EpochHost::Surface,
+            count: 1,
+        };
+        let mut governed = facts();
+        governed.admissions = vec![Admission::UnderFloor];
+        let line =
+            BlackBoxLine::mind_sealed(&opened(Some(governed.clone())), ObjId(30), None, admitted);
+        assert!(line.check(ObjId(30)).is_err());
+        let mut ungoverned = governed;
+        ungoverned.governed = false;
+        let line = BlackBoxLine::mind_sealed(&opened(Some(ungoverned)), ObjId(30), None, admitted);
+        assert_eq!(line.check(ObjId(30)), Ok(()));
+    }
+
     /// **The two line shapes** (L7): the open line is `kind: mind_sealed`, flat, with the hangar,
     /// the admission and the seal facts (or `seal: absent` and none of them); the close line is
     /// `kind: sortie_closed` with `IcCloseKind`'s own wire under `close`; both round-trip, an

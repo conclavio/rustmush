@@ -1,5 +1,8 @@
 //! Actual facility, immutable published recipe, scoped supplier and current
-//! refit site. Accepted completion never reauthorizes a departed operator.
+//! refit site. Doc 17h cut M8b G10 (the lead's ruling): installation re-checks
+//! the offering operator's live grant for the recipe (`allow`), so a departed
+//! operator or a grant that lapsed after acceptance refuses the install; an
+//! expiry bumps no Org revision, so the accept fence alone could not see it.
 use super::{CoreRefitFactoryConfig, Error, PublishedRefitRecipe, bad, records::*};
 use crate::core_production::{DieClass, participant::CoreProductionState};
 use mush_core::{ClockStamp, Flags, ObjId, World};
@@ -158,6 +161,10 @@ pub(crate) fn current(
     }
     let unit = mush_tactics::component_replacement::current_refit_unit(world, requester, hull)
         .map_err(bad)?;
+    // Doc 17h cut M8b (the lead's G1 note): the policy fits only line, rig and coreless-TV
+    // roots. A co-op hull is a dray-family unit, never one of them, so no co-op hull is ever
+    // cored and `live_unit_id`'s fitted-root-to-base-chassis read never reaches a co-op
+    // refit (`+coop/refit` rebinding to `plan.spec`) or a port HullView.
     if !c.payment.fits(unit.schema()) {
         return Err(Error::Unavailable);
     }
@@ -293,6 +300,8 @@ pub(crate) fn install(
     intent: &AcceptedIntent,
 ) -> Result<Live, Error> {
     intent.validate()?;
+    // G10: the live grant, for both recipes, at the install boundary.
+    allow(world, c, intent.offer.operator, intent.offer.kind)?;
     let o = &intent.offer;
     let l = current(
         world,

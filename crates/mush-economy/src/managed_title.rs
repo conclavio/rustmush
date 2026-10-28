@@ -163,6 +163,12 @@ impl crate::EconomyStore {
     ///
     /// The history's own error when it cannot be read (a frozen economy, an incomplete
     /// replay): the note fails closed (G9), so a reader refuses rather than record "none".
+    ///
+    /// Retention: the refit histories are never pruned. They live in the fold
+    /// (`FoldState::refit_receipts`, `fold.rs`, observed per journal transaction), the
+    /// checkpoint carries that fold, and boot discards a checkpoint lacking exact refit-receipt
+    /// coverage and replays the journal instead (`boot.rs`, `RefitReceiptAudit::
+    /// checkpoint_complete`); the audit keeps every history up to `MAX_ORDERS`.
     pub fn core_provenance_note(
         &self,
         core: ObjId,
@@ -188,5 +194,35 @@ impl crate::EconomyStore {
             .max_by_key(|note| match note {
                 CoreProvenanceNote::Ungoverned { at_ic, .. } => *at_ic,
             }))
+    }
+}
+
+#[cfg(test)]
+mod m8b_tests {
+    use super::*;
+
+    /// **Doc 17h cut M8b G9**: the note fails closed. A store whose refit history was never
+    /// replayed, and a frozen one, answer `Err` (a reader refuses); a booted ordinary store
+    /// answers `Ok(None)` for a core never ungoverned.
+    #[test]
+    fn m8b_the_provenance_note_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+        check!(
+            crate::EconomyStore::default()
+                .core_provenance_note(ObjId(5))
+                .is_err()
+        );
+        let world = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_org::OrgModule::new()),
+            Box::new(crate::EconomyModule::new()),
+        ]);
+        let store = world
+            .world()
+            .module_state::<crate::EconomyStore>()
+            .ok_or("the store")?;
+        check_eq!(store.core_provenance_note(ObjId(5))?, None);
+        let mut frozen = store.clone();
+        frozen.frozen = true;
+        check!(frozen.core_provenance_note(ObjId(5)).is_err());
+        Ok(())
     }
 }

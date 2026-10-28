@@ -1038,7 +1038,10 @@ fn actual_class_three_refit_requires_current_personal_entitlement_at_each_instal
 }
 
 #[test]
-fn actual_accepted_refit_finishes_after_operator_departure_without_new_consent() -> Result {
+/// Doc 17h cut M8b G10 (the lead's ruling; was "finishes after operator departure without
+/// new consent"): the install re-checks the offering operator's live grant, so a departed
+/// operator refuses it and the accepted order stays uninstalled (the requester may cancel).
+fn actual_accepted_refit_refuses_install_after_operator_departure() -> Result {
     let mut s = Fitting::new(false)?;
     let id = s.accepted(40)?;
     let accepted = s.order(id)?;
@@ -1052,12 +1055,47 @@ fn actual_accepted_refit_finishes_after_operator_departure_without_new_consent()
         .insert(mush_core::Flags::GOING);
     s.f.r.w.world_mut().take_dirty();
     s.ready(id, 42)?;
-    s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(id))?;
-    let completed = s.order(id)?;
-    check_eq!(completed.intent, accepted.intent);
-    check_eq!(completed.funding, accepted.funding);
-    check!(completed.installation.is_some());
+    check!(
+        s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(id))
+            .is_err()
+    );
+    let held = s.order(id)?;
+    check_eq!(held.intent, accepted.intent);
+    check!(held.installation.is_none());
     s.f.restart(CoreOriginMode::Active)?;
+    Ok(())
+}
+
+/// **Doc 17h cut M8b G10**: the operator's `industry.core.refit` grant lapses between the
+/// acceptance and the install (its `valid_until` passes, which bumps no Org revision); the
+/// install refuses on the live grant and nothing is installed.
+#[test]
+fn m8b_install_refuses_once_the_operators_grant_has_lapsed() -> Result {
+    let mut s = Fitting::new(false)?;
+    let id = s.accepted(40)?;
+    let operator = s.order(id)?.intent.offer.operator;
+    s.ready(id, 42)?;
+    s.f.r.flush();
+    let now = s.f.r.w.world().now();
+    let org = s.f.r.boot.get_mut("org").ok_or("the org boot data")?;
+    let mut lapsed = 0;
+    for (key, value) in &mut org.kv {
+        if key.starts_with("grant:")
+            && value.get("grantee") == Some(&serde_json::json!(operator.0))
+            && value.get("capability") == Some(&serde_json::json!("industry.core.refit"))
+            && let Some(grant) = value.as_object_mut()
+        {
+            grant.insert("valid_until".into(), serde_json::json!(now));
+            lapsed += 1;
+        }
+    }
+    check_eq!(lapsed, 1);
+    s.f.restart(CoreOriginMode::Active)?;
+    check!(
+        s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(id))
+            .is_err()
+    );
+    check!(s.order(id)?.installation.is_none());
     Ok(())
 }
 

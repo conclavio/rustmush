@@ -969,12 +969,27 @@ async fn m8b_a_rig_is_fitted_at_stickney_then_ungoverned_in_the_back_room() -> R
         let store = w.module_state::<crate::TacsimStore>().ok_or("the store")?;
         let (_, logistics) =
             crate::port::hull::spec_for(store, &unit).ok_or("the rig's interior and hopper")?;
+        // The act layer's own entry points (doc 17h cut M8b G1, option (b)): the drive's
+        // rates, the hopper's compartments the dump and the mine fill, and the payload read
+        // a carrier's bay counts the rig by (`carried_rigs`' per-rig read).
+        let carried = crate::port::vehicle::carried_rig(
+            w,
+            store,
+            hull,
+            None,
+            None,
+            &crate::definitions::goods::goods_table()?,
+        )?;
         Ok((
             crate::surface::act::rig_rates(w, hull, None).ok_or("the rig's drive rates")?,
             logistics.clone(),
+            crate::port::tv::hopper_compartments(w, hull, None).ok_or("the rig's hopper")?,
+            (carried.dry_kg, carried.goods),
         ))
     };
     let stock = surface(&r)?;
+    check_eq!(stock.3.0, 6_000, "the stock rig's dry mass");
+    check!(!stock.3.1.is_empty(), "the stock rig's hopper takes ore");
     // The chartered fitting into the coreless base (doc 17h cut M8b G2, the lead's ruling):
     // the rig's Class I root, governed, certified, nothing displaced.
     refit_class_one(&mut r, hull, first, first_accept, None)
