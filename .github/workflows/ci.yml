@@ -72,9 +72,10 @@ jobs:
       # market commands, one genuine Registry rating, about the server
       # story's length) and 17g C3a the sixth (the typed market surfaces, one
       # more genuine rating). In parallel it was the longest, the server story's
-      # 131, until the 50 ms pulse (above) took the three mush-server stories
-      # to minutes; the wall is now the tacsim stories' (the launch catalogue's
-      # 55, which pace their ratings in-process, not through the server tick).
+      # 131, until the 50 ms pulse (above): run 40707221516 took it to 29 min.
+      # What is left of a rating is the worker's own CPU (eight sim steps a
+      # lease in the unoptimized test build, ~2 s locally), not pacing; each
+      # mush-server story logs its rating's wall as `M7_STORY_RATED`.
       matrix:
         include:
           - name: author and buyer lifecycle
