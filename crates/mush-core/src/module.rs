@@ -2338,6 +2338,8 @@ impl Registry {
                 crate::mechanics::MAX_MECHANICS_OWNERS
             )));
         }
+        // 17g C2h: an uncomposed continuation grantee refuses composition.
+        self.check_continuation_delegates(module_owners)?;
         if self.definitions.is_some()
             || self.bridges.is_some()
             || self.definition_migrations.is_some()
@@ -4435,6 +4437,28 @@ impl<'a> Registrar<'a> {
         self.require_mechanics_registration_authority()?;
         self.reg
             .register_continuation(&self.module, primary, switches)
+    }
+
+    /// 17g C2h (the lead's ruling R3): let `grantee`, another composed
+    /// module, schedule this module's own continuation `handle`, and only for
+    /// the player whose own typed line it is dispatching
+    /// (`Ctx::schedule_continuation`'s delegated rule). Composition-time and
+    /// owner-declared: only the handle's owner, for a handle this registry
+    /// minted; one grantee per handle; never the owner itself;
+    /// [`MAX_CONTINUATION_DELEGATES`](crate::continuation::MAX_CONTINUATION_DELEGATES)
+    /// per composition; a non-empty `reason`. A grantee that is not composed
+    /// refuses at freeze, naming the command and the grantee. The delegation
+    /// adds no authority: the handler still runs under the owner's identity
+    /// after the command gates, and it enters no digest.
+    pub fn delegate_continuation(
+        &mut self,
+        handle: &crate::ContinuationHandle,
+        grantee: &str,
+        reason: &str,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        self.reg
+            .delegate_continuation(&self.module, handle, grantee, reason)
     }
 
     /// Bind an exact LegacyPostImage completion handler. Capturing a player
