@@ -7,7 +7,9 @@ Rechecked against `origin/main` at `62d093c2` before this update.
 Read [27 — IC field operations: shared design and owner survey](27-ic-field-operations-design-and-survey.md)
 with this document. It aligns DT.1–DT.3, H1 field combat and H2 salvage around one lifecycle.
 FO-1–FO-16 and all 45 survey decisions are accepted, including the human-NPC commander and
-last-port NPC embarkation rulings in doc 27 §9.
+last-port NPC embarkation rulings in doc 27 §9. Doc 27 Draft 0.4 §10 holds five review
+questions still open for the owner (Q-R1–Q-R5; Q-R2 on who counts as embarked and Q-R5 on NPC
+crew cost touch DT.2 directly) and the pins DT.1/DT.2 inherit (P-1 on disconnect and succession).
 
 ## 1. Goal and IC authority
 
@@ -222,3 +224,5 @@ See the [complete owner survey](27-ic-field-operations-design-and-survey.md#7-ow
 - **2026-10-28:** Draft 0.4 closes Q-F1–Q-F6. No-player sorties have a real human NPC commander;
   every unit-assigned/leadership-eligible NPC embarked at the carrier's last-port departure.
   Active-player priority, bounded mission grants and dynamic assignment over real personnel remain.
+- **2026-10-28:** doc 27 Draft 0.4 (review pass): Q-R1–Q-R5 open for the owner, P-1–P-5 for the
+  briefs; the tree has no embarked-personnel concept, so DT.2 builds it. No DT decision reversed.
