@@ -88,25 +88,6 @@ impl GameModule for MovementIngress {
                 .map_err(CmdError::msg)
             }),
         )?;
-        reg.command(
-            CommandSpec {
-                name: "@dt-reanchor".into(),
-                shape: ArgShape::EqPair,
-                ..CommandSpec::default()
-            },
-            Arc::new(|ctx: &mut Ctx<'_>| {
-                let space = object(ctx.args.lhs())?;
-                let host = object(ctx.args.rhs().unwrap_or_default())?;
-                mush_sim::physical::submit(
-                    ctx,
-                    Transition::Space {
-                        space,
-                        anchor: SpaceAnchor::MovingObject { host },
-                    },
-                )
-                .map_err(CmdError::msg)
-            }),
-        )?;
         let hook = Arc::new(ForeignVeto(self.0.clone(), self.1.clone()));
         reg.hook(HookPoint::CarryAttempt, hook.clone());
         reg.hook(HookPoint::MoveAttempt, hook);
@@ -200,6 +181,10 @@ async fn fixture(store: &InMemoryStore) -> TestResult<Rig> {
         for command in [
             format!("@spatial/space #{}=fixed:{}", left.0, domain.0),
             format!("@spatial/space #{}=fixed:{}", right.0, domain.0),
+        ] {
+            commit_physical(&mut world, store, &command).await?;
+        }
+        for command in [
             format!("@spatial/place/domain #{}={}", carrier.0, domain.0),
             format!("@spatial/place/interior #{}=#{}", unit.0, left.0),
         ] {
@@ -344,7 +329,7 @@ async fn zero_projection_reanchor_is_durable_and_non_admin_cannot_use_the_helper
     assert!(rig.world.engine_mut().take_authoritative_submit().is_none());
     assert_location(&rig, rig.left)?;
     let before_objects = serde_json::to_value(rig.world.world().iter().collect::<Vec<_>>())?;
-    let line = format!("@dt-reanchor {}={}", rig.left.0, rig.carrier.0);
+    let line = format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0);
     let submission = submit(&mut rig.world, GOD, &line)?;
     stage(&mut rig.world, &store, &submission).await?;
     let (bundle, installation) = rig
@@ -450,7 +435,7 @@ async fn late_sim_drift_refuses_installation_without_publishing_the_prepared_rec
 {
     let store = InMemoryStore::new();
     let mut rig = fixture(&store).await?;
-    let line = format!("@dt-reanchor {}={}", rig.left.0, rig.carrier.0);
+    let line = format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0);
     let submission = submit(&mut rig.world, GOD, &line)?;
     stage(&mut rig.world, &store, &submission).await?;
     let before_revision = rig.world.engine().action_state().revision();
@@ -467,19 +452,21 @@ async fn late_sim_drift_refuses_installation_without_publishing_the_prepared_rec
     store
         .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
         .await?;
-    // Deliberately bypass the server's writer-custody command fence to emulate
-    // late owner drift. The real legacy Sim command changes no object location.
+    // Deliberately bypass the server's writer-custody fence with an existing
+    // legacy owner command. Compartment authoring changes the canonical space
+    // record without changing any object location.
     ordinary(
         &mut rig.world,
-        &format!("@spatial/space #{}=unanchored", rig.left.0),
+        &format!("@spatial/slot #{}=late-drift", rig.left.0),
     )?;
-    assert_eq!(
+    let slot = mush_sim::SlotId::new("late-drift").ok_or("slot")?;
+    assert!(
         state(&rig.world)?
             .spaces
             .get(&rig.left)
             .ok_or("space")?
-            .anchor,
-        SpaceAnchor::Unanchored
+            .compartments
+            .contains_key(&slot)
     );
     assert!(
         rig.world
@@ -487,13 +474,13 @@ async fn late_sim_drift_refuses_installation_without_publishing_the_prepared_rec
             .install_composed_action(installation)
             .is_err()
     );
-    assert_eq!(
+    assert!(
         state(&rig.world)?
             .spaces
             .get(&rig.left)
             .ok_or("space")?
-            .anchor,
-        SpaceAnchor::Unanchored
+            .compartments
+            .contains_key(&slot)
     );
     assert_eq!(
         rig.world.engine().action_state().revision(),
@@ -502,6 +489,14 @@ async fn late_sim_drift_refuses_installation_without_publishing_the_prepared_rec
     assert_eq!(rig.world.engine().action_state().len(), before_records);
     drop(rig);
     let restarted = fixture(&store).await?;
+    assert!(
+        !state(&restarted.world)?
+            .spaces
+            .get(&restarted.left)
+            .ok_or("space")?
+            .compartments
+            .contains_key(&slot)
+    );
     assert_eq!(
         state(&restarted.world)?
             .spaces
@@ -525,7 +520,7 @@ async fn zero_projection_retains_proposed_host_world_preimage_through_installati
         .ok_or("space")?
         .anchor
         .clone();
-    let line = format!("@dt-reanchor {}={}", rig.left.0, rig.carrier.0);
+    let line = format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0);
     let submission = submit(&mut rig.world, GOD, &line)?;
     stage(&mut rig.world, &store, &submission).await?;
     let before_revision = rig.world.engine().action_state().revision();
@@ -603,11 +598,15 @@ fn capture_write(bundle: &mush_core::AuthoritativeBundle) -> TestResult<(String,
     rows.into_iter().next().ok_or_else(|| "capture".into())
 }
 
-async fn commit_movement(rig: &mut Rig, store: &InMemoryStore, line: &str) -> TestResult<Value> {
-    let submission = submit(&mut rig.world, GOD, line)?;
-    stage(&mut rig.world, store, &submission).await?;
-    let (bundle, installation) = rig
-        .world
+async fn commit_physical(
+    world: &mut TestWorld,
+    store: &InMemoryStore,
+    line: &str,
+) -> TestResult<Value> {
+    persist_legacy(world, store).await?;
+    let submission = submit(world, GOD, line)?;
+    stage(world, store, &submission).await?;
+    let (bundle, installation) = world
         .engine_mut()
         .take_staged_action()?
         .ok_or("movement")?
@@ -619,10 +618,176 @@ async fn commit_movement(rig: &mut Rig, store: &InMemoryStore, line: &str) -> Te
     store
         .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
         .await?;
-    rig.world
-        .engine_mut()
-        .install_composed_action(installation)?;
+    world.engine_mut().install_composed_action(installation)?;
     Ok(capture)
+}
+
+async fn commit_movement(rig: &mut Rig, store: &InMemoryStore, line: &str) -> TestResult<Value> {
+    commit_physical(&mut rig.world, store, line).await
+}
+
+#[tokio::test]
+async fn space_command_creates_only_after_ack_and_projects_the_same_receipt_after_restart()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let cabin = rig
+        .world
+        .world_mut()
+        .create(ObjKind::Room, "New crew cabin", GOD, None)?;
+    let crew = rig
+        .world
+        .world_mut()
+        .create(ObjKind::Npc, "Actual cabin crew", GOD, Some(cabin))?;
+    rig.world.world_mut().attach_behavior(
+        cabin,
+        BehaviorId::new("sim.interior")?,
+        BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let line = format!("@spatial/space #{}=moving:#{}", cabin.0, rig.carrier.0);
+    let refused = rig.world.run(rig.outsider, &line);
+    assert!(!refused.is_empty());
+    assert!(!rig.world.engine().has_authoritative_submit());
+    assert!(!state(&rig.world)?.spaces.contains_key(&cabin));
+
+    let events = rig.world.run(GOD, &line);
+    assert!(
+        !events
+            .iter()
+            .any(|(_, event)| text_of(event).contains("committed"))
+    );
+    assert!(!state(&rig.world)?.spaces.contains_key(&cabin));
+    // A second command cannot replace the pending transition.
+    let duplicate = rig
+        .world
+        .run(GOD, &format!("@spatial/space #{}=unanchored", cabin.0));
+    assert!(
+        duplicate
+            .iter()
+            .any(|(_, event)| text_of(event).contains("pending"))
+    );
+    let submission = rig
+        .world
+        .engine_mut()
+        .take_authoritative_submit()
+        .ok_or("space request")?;
+    assert_eq!(
+        submission.action.key().id.as_str(),
+        "sim_physical_transition"
+    );
+    let ingress = stage(&mut rig.world, &store, &submission).await?;
+    assert!(!state(&rig.world)?.spaces.contains_key(&cabin));
+    let (bundle, installation) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("space commit")?
+        .into_parts();
+    let (capture_key, capture) = capture_write(&bundle)?;
+    assert_eq!(
+        capture["value"]["crossings"],
+        json!([
+            {"character":crew,"carrier":rig.carrier,"direction":"enter"}
+        ])
+    );
+    assert!(
+        !bundle
+            .writes()
+            .iter()
+            .any(|write| matches!(write, ReplayWrite::ObjectSet { .. }))
+    );
+    assert!(store.module_json_get("sim", &capture_key).await?.is_none());
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    let principal = mush_core::PrincipalId::Object { id: GOD };
+    let status = ActionCoordinator::status_id(ingress.idempotency())?;
+    let projections = rig
+        .world
+        .engine()
+        .registry
+        .action_providers()
+        .ok_or("providers")?
+        .receipt_projection_table();
+    assert!(matches!(
+        ActionCoordinator::projected_status(&store, &projections, &principal, &status).await?,
+        mush_proto::ProjectedActionStatus::Pending { .. }
+    ));
+    let receipt = store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    assert!(!state(&rig.world)?.spaces.contains_key(&cabin));
+    let projected = ActionCoordinator::project_finalized_receipt(
+        &projections,
+        &principal,
+        status.clone(),
+        &receipt,
+    )?;
+    assert_eq!(
+        projected.result().ok_or("space summary")?.summary(),
+        format!("Spatial update for {cabin} committed.")
+    );
+    assert_eq!(
+        store.module_json_get("sim", &capture_key).await?,
+        Some(capture)
+    );
+
+    // Lose the acknowledgement. Fresh production boot restores only the
+    // committed owner records and projects the identical immutable receipt.
+    drop(installation);
+    drop(rig);
+    let restarted = fixture(&store).await?;
+    assert_eq!(
+        state(&restarted.world)?
+            .spaces
+            .get(&cabin)
+            .ok_or("committed cabin")?
+            .anchor,
+        SpaceAnchor::MovingObject {
+            host: restarted.carrier
+        }
+    );
+    assert_eq!(
+        restarted.world.world().get(crew).ok_or("crew")?.location,
+        Some(cabin)
+    );
+    let ActionPreflight::Finalized(retry) = ActionCoordinator::preflight(&store, ingress).await?
+    else {
+        return Err("space retry must return committed receipt".into());
+    };
+    let projections = restarted
+        .world
+        .engine()
+        .registry
+        .action_providers()
+        .ok_or("providers")?
+        .receipt_projection_table();
+    assert_eq!(
+        ActionCoordinator::project_finalized_receipt(
+            &projections,
+            &principal,
+            status.clone(),
+            &retry
+        )?,
+        projected
+    );
+    assert!(
+        ActionCoordinator::project_finalized_receipt(
+            &projections,
+            &mush_core::PrincipalId::Object {
+                id: restarted.outsider
+            },
+            status,
+            &retry,
+        )
+        .is_err()
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -637,7 +802,7 @@ async fn personnel_capture_zero_projection_lost_ack_retains_exact_preparation_cl
         Some(rig.left),
     )?;
     persist_legacy(&mut rig.world, &store).await?;
-    let line = format!("@dt-reanchor {}={}", rig.left.0, rig.carrier.0);
+    let line = format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0);
     let submission = submit(&mut rig.world, GOD, &line)?;
     rig.world.world_mut().set_now(101);
     let prepared_at = rig.world.world().world_ic_now();
@@ -719,10 +884,13 @@ async fn personnel_capture_same_carrier_walk_is_empty_and_reentry_is_a_distinct_
     for command in [
         format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0),
         format!("@spatial/space #{}=moving:#{}", rig.right.0, rig.carrier.0),
-        format!("@spatial/place/interior #{}=#{}", npc.0, rig.left.0),
     ] {
-        ordinary(&mut rig.world, &command)?;
+        commit_physical(&mut rig.world, &store, &command).await?;
     }
+    ordinary(
+        &mut rig.world,
+        &format!("@spatial/place/interior #{}=#{}", npc.0, rig.left.0),
+    )?;
     persist_legacy(&mut rig.world, &store).await?;
     let target = rig.right;
     let walk = commit_movement(
@@ -732,15 +900,12 @@ async fn personnel_capture_same_carrier_walk_is_empty_and_reentry_is_a_distinct_
     )
     .await?;
     assert_eq!(walk["value"]["crossings"], json!([]));
-    // An uncovered legacy departure and return cannot certify continuity.
-    ordinary(
-        &mut rig.world,
-        &format!("@spatial/space #{}=unanchored", rig.right.0),
-    )?;
-    ordinary(
-        &mut rig.world,
-        &format!("@spatial/space #{}=moving:#{}", rig.right.0, rig.carrier.0),
-    )?;
+    // Raw legacy movement still bypasses capture. Leaving and returning cannot
+    // certify continuity or upgrade this slice's explicitly uncertified data.
+    let prior_records = rig.world.engine().action_state().len();
+    rig.world.world_mut().move_to(npc, mush_core::LIMBO)?;
+    rig.world.world_mut().move_to(npc, rig.right)?;
+    assert_eq!(rig.world.engine().action_state().len(), prior_records);
     persist_legacy(&mut rig.world, &store).await?;
     let second_carrier = rig.world.world_mut().create(
         ObjKind::Thing,
@@ -767,13 +932,15 @@ async fn personnel_capture_same_carrier_walk_is_empty_and_reentry_is_a_distinct_
         &mut rig.world,
         &format!("@spatial/place/domain #{}={}", second_carrier.0, domain.0),
     )?;
-    ordinary(
+    commit_physical(
         &mut rig.world,
+        &store,
         &format!(
             "@spatial/space #{}=moving:#{}",
             rig.left.0, second_carrier.0
         ),
-    )?;
+    )
+    .await?;
     persist_legacy(&mut rig.world, &store).await?;
     let target = rig.left;
     let transfer = commit_movement(
@@ -821,7 +988,7 @@ async fn personnel_capture_final_take_refuses_clock_generation_change_or_backwar
     for generation_change in [false, true] {
         let store = InMemoryStore::new();
         let mut rig = fixture(&store).await?;
-        let line = format!("@dt-reanchor {}={}", rig.left.0, rig.carrier.0);
+        let line = format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0);
         let submission = submit(&mut rig.world, GOD, &line)?;
         rig.world.world_mut().set_now(101);
         stage(&mut rig.world, &store, &submission).await?;
@@ -860,15 +1027,16 @@ async fn personnel_capture_boot_audit_requires_exact_pair_and_retains_v1_without
 -> TestResult {
     let store = InMemoryStore::new();
     let mut rig = fixture(&store).await?;
-    let line = format!("@dt-reanchor {}={}", rig.left.0, rig.carrier.0);
-    commit_movement(&mut rig, &store, &line).await?;
+    let line = format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0);
+    let capture = commit_movement(&mut rig, &store, &line).await?;
     let rows: Vec<_> = store
         .module_json_list("sim")
         .await?
         .into_iter()
-        .filter(|(key, _)| {
-            key.starts_with("action-state/v1/personnel_crossings/")
-                || key.starts_with("action-state/v1/physical_transitions/")
+        .filter(|(key, value)| {
+            (key.starts_with("action-state/v1/personnel_crossings/")
+                || key.starts_with("action-state/v1/physical_transitions/"))
+                && value["value"]["commit"] == capture["value"]["commit"]
         })
         .map(|(key, value)| mush_core::ActionStateBootRecord::new("sim", key, value))
         .collect();

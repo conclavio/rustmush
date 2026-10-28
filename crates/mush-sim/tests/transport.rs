@@ -13,8 +13,11 @@ use mush_core::{
 };
 use mush_proto::OutputEvent;
 use mush_sim::{Presence, SimulationModule, SpatialParent, SpatialState};
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::{authoritative::AcknowledgedWorld as TestWorld, text_of};
 use smol_str::SmolStr;
+
+#[path = "support/space_command.rs"]
+mod space_command;
 
 // ---- a toy unit behavior: one Operated-only command, the assignment link is
 // the only path to it (the tacsim contract) ----------------------
@@ -204,38 +207,30 @@ fn sub(line: &str) -> String {
 }
 
 fn say_as(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
-    texts(&tw.run(who, &sub(line)))
+    texts(&space_command::run(tw, who, &sub(line)))
 }
 fn say(tw: &mut TestWorld, line: &str) -> String {
     say_as(tw, GOD, line)
 }
 fn ok(tw: &mut TestWorld, line: &str) -> String {
-    let events = tw.run(GOD, &sub(line));
+    let events = space_command::run(tw, GOD, &sub(line));
     let t = texts(&events);
     assert!(!has_error(&events), "{line:?} refused: {t}");
     t
 }
 
 fn fold_kv(tw: &mut TestWorld) -> Vec<(SmolStr, serde_json::Value)> {
-    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
-    for op in tw.take_module_ops() {
-        if op.ns != "sim" {
-            continue;
-        }
-        match op.op {
-            ModuleWrite::JsonSet { key, value } => {
-                kv.retain(|(k, _)| *k != key);
-                kv.push((key, value));
-            }
-            ModuleWrite::Del { key } => kv.retain(|(k, _)| *k != key),
-            ModuleWrite::StreamAppend { .. } => {}
-        }
-    }
-    kv
+    tw.persisted_kv("sim")
 }
 
-fn reboot_with(kv: Vec<(SmolStr, serde_json::Value)>) -> (TestWorld, Fx) {
+fn reboot_with(source: &TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> (TestWorld, Fx) {
     let mut tw2 = boot();
+    if kv
+        .iter()
+        .any(|(key, _)| mush_core::is_action_state_persistence_key(key))
+    {
+        tw2.adopt_store(source);
+    }
     let fx = fixture(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
@@ -553,7 +548,7 @@ fn reboot_preserves_stations_assignments_and_republishes_links() {
     ok(&mut tw, "@spatial/station Atlas=pilot,pilot");
     ok(&mut tw, &format!("@spatial/assign Atlas=pilot,#{}", ann.0));
     let kv = fold_kv(&mut tw);
-    let (mut tw2, fx2) = reboot_with(kv);
+    let (mut tw2, fx2) = reboot_with(&tw, kv);
     // The pilot is part of the fixture, so she exists BEFORE modules_loaded and
     // the boot republish reattaches her link with no re-assignment.
     assert_eq!(state(&tw2), state(&tw), "records + indexes survive reboot");
@@ -592,7 +587,7 @@ fn boot_drops_assignments_whose_actor_or_host_is_gone() {
             }
         }
     }
-    let (tw2, fx2) = reboot_with(kv);
+    let (tw2, fx2) = reboot_with(&tw, kv);
     // The dangling seat is dropped; no assignment survives.
     assert!(
         !state(&tw2).assignments.contains_key(&fx2.mech),
@@ -750,7 +745,7 @@ fn boot_drops_assignment_whose_station_is_gone() {
     let mut kv = fold_kv(&mut tw);
     // The station definition vanishes but the assignment doc remains.
     kv.retain(|(k, _)| k.as_str() != format!("stations:{}", fx.mech.0));
-    let (tw2, fx2) = reboot_with(kv);
+    let (tw2, fx2) = reboot_with(&tw, kv);
     assert!(
         !state(&tw2).assignments.contains_key(&fx2.mech),
         "a seat for a gone station is dropped at boot"
@@ -882,7 +877,7 @@ fn control_epoch_bumps_on_assign_unassign_and_survives_reboot() {
     assert!(g2 > g1, "unassign bumps the control epoch ({g1} -> {g2})");
     // Monotonic across reboot.
     let kv = fold_kv(&mut tw);
-    let (tw2, fx2) = reboot_with(kv);
+    let (tw2, fx2) = reboot_with(&tw, kv);
     assert_eq!(
         state(&tw2).control_generation(fx2.mech),
         g2,
@@ -925,7 +920,7 @@ fn a_legacy_m29_station_doc_without_channels_or_priority_loads() {
             "cockpit": { "role": "pilot", "space": null, "policy": { "schema": "sim.passive", "version": 1, "data": null } }
         }
     });
-    let (mut tw2, fx2) = reboot_with(vec![(key, doc)]);
+    let (mut tw2, fx2) = reboot_with(&tw, vec![(key, doc)]);
     let st = state(&tw2);
     let hs = st
         .stations

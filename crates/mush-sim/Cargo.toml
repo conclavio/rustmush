@@ -47,7 +47,7 @@ debug-checks = []
 futures.workspace = true
 mush-org.workspace = true
 mush-store.workspace = true
-mush-testkit.workspace = true
+mush-testkit = { workspace = true, features = ["authoritative-store"] }
 
 [lints]
 workspace = true

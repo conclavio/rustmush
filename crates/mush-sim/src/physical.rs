@@ -1,8 +1,8 @@
 //! Closed structural transitions with same-commit personnel crossings (DT.2b2b.1).
 //!
-//! This is an internal preparation seam, not a new movement command. It accepts
-//! actual transition requests, never caller-built `Plan`s or object postimages.
-//! Existing synchronous movement callers are deliberately not redirected here.
+//! `@spatial/space` uses this preparation seam. It accepts actual transition
+//! requests, never caller-built `Plan`s or object postimages. Other synchronous
+//! movement callers retain their existing paths.
 //! Version two pairs structural receipts with bounded crossing captures at the
 //! actual preparation's world-IC stamp. These are not personnel embarkation
 //! intervals, last-port proofs, mission admission, or unit authority.
@@ -1000,6 +1000,46 @@ fn require_pending(world: &World, actor: ObjId, intent: &Intent) -> Result<(), P
     Ok(())
 }
 
+/// The v2 durable outcome identifies the changed root, but does not record
+/// whether a space was new or re-anchored. Project only what it proves, without
+/// consulting current names or adding fields to that retained schema.
+fn project_structural_receipt(
+    expected_action: &DefinitionRef,
+    expected_outcome: &DefinitionRef,
+    action: &DefinitionRef,
+    outcome: &RulesValue,
+) -> Result<mush_proto::ProjectedActionResult, ActionError> {
+    let invalid = || crate::tick::err(ActionErrorCode::Integrity, "structural receipt is invalid");
+    if action != expected_action || outcome.schema() != expected_outcome {
+        return Err(invalid());
+    }
+    let fields = outcome
+        .data()
+        .as_object()
+        .filter(|fields| fields.len() == 2)
+        .ok_or_else(invalid)?;
+    let root = fields
+        .get("root")
+        .and_then(Value::as_u64)
+        .and_then(|id| u32::try_from(id).ok())
+        .map(ObjId)
+        .ok_or_else(invalid)?;
+    let _: DefinitionDigest =
+        serde_json::from_value(fields.get("structural_digest").ok_or_else(invalid)?.clone())
+            .map_err(|_| invalid())?;
+    mush_proto::ProjectedActionResult::new(
+        "sim.physical_transition",
+        format!("Spatial update for {root} committed."),
+        json!({"root":root}),
+    )
+    .map_err(|_| {
+        crate::tick::err(
+            ActionErrorCode::BoundsExceeded,
+            "structural receipt exceeds public bounds",
+        )
+    })
+}
+
 struct Provider {
     action: DefinitionRef,
     outcome: DefinitionRef,
@@ -1043,6 +1083,16 @@ impl Provider {
 impl ActionProvider for Provider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         self.input(invocation).map(|_| ())
+    }
+    fn project_receipt(
+        &self,
+        action: &DefinitionRef,
+        outcome: &RulesValue,
+        _viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        // Core admits only the event-time eligible viewer. The durable v2
+        // outcome contains no actor identity to infer or replace that check.
+        project_structural_receipt(&self.action, &self.outcome, action, outcome).map(Some)
     }
     fn project_offer(
         &self,
@@ -1177,6 +1227,11 @@ pub fn submit(ctx: &mut Ctx<'_>, transition: Transition) -> Result<(), String> {
         transition,
         before,
     };
+    // Only run this after current_facts has bounded the resident state and
+    // request. Preserve the canonical staff-facing planner refusal here;
+    // provider preparation and final take independently derive the plan again.
+    crate::transition::plan_at(state, ctx.w, &input.transition, input.at)
+        .map_err(|error| error.to_string())?;
     evaluate(state, ctx.w, ctx.actor, &input).map_err(|e| e.to_string())?;
     let digest = fingerprint(ctx.actor, &input).map_err(|e| e.to_string())?;
     let now = ctx.w.now();

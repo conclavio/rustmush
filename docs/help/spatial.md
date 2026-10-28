@@ -91,6 +91,11 @@ A room host presents into itself by default. Retired domains keep their record
 @spatial/unmount <host>=<mount>
 ```
 
+`@spatial/space` submits the change and confirms it after commit with
+`Spatial update for #<room> committed.` Wait for that confirmation before
+issuing dependent commands. An affected control station, active focus, custody
+or journey can refuse the change until its owner can participate in the update.
+
 Mounts default to capacity 1 and not exposed. An exposed mount keeps the
 attached unit visible in the host's room (a mech on a carrier's deck); a
 suppressed one puts it inside the host (a cargo bay).

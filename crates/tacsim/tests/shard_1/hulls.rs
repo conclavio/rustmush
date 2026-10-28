@@ -750,6 +750,10 @@ fn ic4_a_member_cannot_be_destroyed_and_cannot_become_a_space() {
         )),
         "{out}"
     );
+    assert!(
+        !tw.engine().has_authoritative_submit(),
+        "a refused member-room request must not queue a physical transition"
+    );
     let out = run(
         &mut tw,
         GOD,

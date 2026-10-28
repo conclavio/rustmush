@@ -24,8 +24,11 @@ use mush_sim::{
     MAX_CARRIER_SUBTREE, PlacementRecord, SimulationModule, SpatialParent, SpatialState,
     Transition, carrier_journey_key, effective_domain,
 };
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::{authoritative::AcknowledgedWorld as TestWorld, text_of};
 use smol_str::SmolStr;
+
+#[path = "support/space_command.rs"]
+mod space_command;
 
 // ---- harness -----------------------------------------------------------
 
@@ -51,14 +54,14 @@ fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
 }
 
 fn ok(tw: &mut TestWorld, line: &str) -> String {
-    let events = tw.run(GOD, line);
+    let events = space_command::run(tw, GOD, line);
     let t = texts(&events);
     assert!(!has_error(&events), "{line:?} refused: {t}");
     t
 }
 
 fn err(tw: &mut TestWorld, line: &str) -> String {
-    let events = tw.run(GOD, line);
+    let events = space_command::run(tw, GOD, line);
     assert!(
         has_error(&events),
         "{line:?} should have been refused: {}",
@@ -133,21 +136,7 @@ fn advance(tw: &mut TestWorld, secs: i64) -> String {
 }
 
 fn fold_kv(tw: &mut TestWorld, ns: &str) -> Vec<(SmolStr, serde_json::Value)> {
-    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
-    for op in tw.take_module_ops() {
-        if op.ns != ns {
-            continue;
-        }
-        match op.op {
-            ModuleWrite::JsonSet { key, value } => {
-                kv.retain(|(k, _)| *k != key);
-                kv.push((key, value));
-            }
-            ModuleWrite::Del { key } => kv.retain(|(k, _)| *k != key),
-            ModuleWrite::StreamAppend { .. } => {}
-        }
-    }
-    kv
+    tw.persisted_kv(ns)
 }
 
 /// Every `sim` document key the last command touched, sets and deletes alike
@@ -189,6 +178,16 @@ struct Fx {
 }
 
 fn build(tw: &mut TestWorld) -> Fx {
+    build_inner(tw, true)
+}
+
+/// Reboots recreate only physical objects; persisted records are loaded from
+/// the actual Store, without executing a second set of Space commands.
+fn build_objects(tw: &mut TestWorld) -> Fx {
+    build_inner(tw, false)
+}
+
+fn build_inner(tw: &mut TestWorld, records: bool) -> Fx {
     let mk_room = |tw: &mut TestWorld, name: &str| {
         tw.world_mut()
             .create(ObjKind::Room, name, GOD, None)
@@ -225,42 +224,44 @@ fn build(tw: &mut TestWorld) -> Fx {
         bind(tw, *a, "sim.participant");
     }
 
-    ok(tw, &format!("@domain/create #{}=sim.passive", field.0));
-    ok(tw, &format!("@domain/create #{}=sim.passive", phobos.0));
-    ok(tw, &format!("@spatial/place/domain #{}=0", carrier.0));
-    for room in [bay, hold, cargo] {
+    if records {
+        ok(tw, &format!("@domain/create #{}=sim.passive", field.0));
+        ok(tw, &format!("@domain/create #{}=sim.passive", phobos.0));
+        ok(tw, &format!("@spatial/place/domain #{}=0", carrier.0));
+        for room in [bay, hold, cargo] {
+            ok(
+                tw,
+                &format!("@spatial/space #{}=moving:#{}", room.0, carrier.0),
+            );
+        }
+        // Two troopers per interior: everything hosted, nothing left over.
+        for (i, a) in aboard.iter().enumerate() {
+            let room = [bay, hold, cargo][i / 2];
+            ok(tw, &format!("@spatial/place/interior #{}=#{}", a.0, room.0));
+        }
         ok(
             tw,
-            &format!("@spatial/space #{}=moving:#{}", room.0, carrier.0),
+            &format!("@spatial/mount #{}=hardpoint,2,exposed", carrier.0),
+        );
+        ok(
+            tw,
+            &format!(
+                "@spatial/place/attached #{}=#{},hardpoint",
+                craft.0, carrier.0
+            ),
+        );
+        ok(
+            tw,
+            &format!(
+                "@spatial/station #{}=pilot,pilot,channels:movement",
+                carrier.0
+            ),
+        );
+        ok(
+            tw,
+            &format!("@spatial/assign #{}=pilot,#{}", carrier.0, pilot.0),
         );
     }
-    // Two troopers per interior: everything hosted, nothing left over.
-    for (i, a) in aboard.iter().enumerate() {
-        let room = [bay, hold, cargo][i / 2];
-        ok(tw, &format!("@spatial/place/interior #{}=#{}", a.0, room.0));
-    }
-    ok(
-        tw,
-        &format!("@spatial/mount #{}=hardpoint,2,exposed", carrier.0),
-    );
-    ok(
-        tw,
-        &format!(
-            "@spatial/place/attached #{}=#{},hardpoint",
-            craft.0, carrier.0
-        ),
-    );
-    ok(
-        tw,
-        &format!(
-            "@spatial/station #{}=pilot,pilot,channels:movement",
-            carrier.0
-        ),
-    );
-    ok(
-        tw,
-        &format!("@spatial/assign #{}=pilot,#{}", carrier.0, pilot.0),
-    );
     Fx {
         field,
         phobos,
@@ -612,8 +613,9 @@ fn e7c6_s1_a_reboot_re_runs_the_tick_and_the_arrival_applied_exactly_once() {
     let kv = fold_kv(&mut tw, "sim");
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(2_000);
-    let fx2 = build(&mut tw2);
+    let fx2 = build_objects(&mut tw2);
     assert_eq!(fx2.carrier, fx.carrier, "the fixture is deterministic");
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
@@ -649,8 +651,9 @@ fn e7c6_s2_a_carrier_mid_leg_hydrates_and_finishes_the_passage() {
     let kv = fold_kv(&mut tw, "sim");
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(1_150);
-    let _ = build(&mut tw2);
+    let _ = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         // `..ModuleBootData::default()` rather than naming every field: the
@@ -706,8 +709,9 @@ fn e7c6_s3_an_arrived_journey_whose_carrier_never_moved_heals_at_boot() {
     assert_eq!(*arrived.state(), JourneyState::Arrived);
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(2_000);
-    let _ = build(&mut tw2);
+    let _ = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         // `..ModuleBootData::default()` rather than naming every field: the
@@ -817,8 +821,9 @@ fn e7c6_s6_a_due_overflow_pages_instead_of_stalling() {
     doc["advanced_at"]["at"] = serde_json::json!(i64::MAX - 10);
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(2_000);
-    let _ = build(&mut tw2);
+    let _ = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         // `..ModuleBootData::default()` rather than naming every field: the
@@ -852,8 +857,9 @@ fn e7c6_s7_a_corrupt_journey_document_is_skipped_not_defaulted() {
     doc["cursor"] = serde_json::json!(99); // past the route's two legs
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(1_000);
-    let _ = build(&mut tw2);
+    let _ = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         // `..ModuleBootData::default()` rather than naming every field: the
@@ -1246,7 +1252,7 @@ fn e7c6_p2_plan_is_a_dry_run_that_writes_nothing() {
     );
     assert!(text.contains("Planned journey"), "{text}");
     assert!(text.contains("Nothing was written"), "{text}");
-    assert_eq!(fold_kv(&mut tw, "sim"), Vec::new(), "the dry run wrote");
+    assert!(tw.take_module_ops().is_empty(), "the dry run wrote");
     assert!(book(&tw).get(fx.carrier).is_none());
     assert!(state(&tw).is_placed(fx.carrier), "it never left");
 }
@@ -1300,7 +1306,7 @@ fn e7c6_p4_each_verb_publishes_its_recorded_class() {
         // CEILING class of its switches; `/tick` reaches
         // `Ctx::submit_authoritative(domain_pulse_arm, ..)` from the handler.
         ("@domain", CommandCompatibility::Authoritative),
-        ("@spatial", CommandCompatibility::LegacyPostImage),
+        ("@spatial", CommandCompatibility::Authoritative),
         ("+stations", CommandCompatibility::ReadOnly),
         ("@station", CommandCompatibility::Authoritative),
     ] {
@@ -1407,7 +1413,7 @@ fn op_pairs(tw: &mut TestWorld) -> Vec<(&'static str, String)> {
 }
 
 fn run_as(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    texts(&tw.run(actor, line))
+    texts(&space_command::run(tw, actor, line))
 }
 
 fn thing(tw: &mut TestWorld, name: &str) -> ObjId {
@@ -1751,8 +1757,9 @@ fn vf_c4c_the_anomalys_command_actually_recovers() {
     doc["advanced_at"]["at"] = serde_json::json!(i64::MAX - 10);
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(2_000);
-    let fx2 = build(&mut tw2);
+    let fx2 = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         ModuleBootData {
@@ -1923,8 +1930,9 @@ fn vf_r3_an_unreadable_carrier_journey_is_held_not_deleted() {
     doc_mut(&mut kv, &key)["cursor"] = serde_json::json!(99); // past the route's two legs
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(1_150);
-    let fx2 = build(&mut tw2);
+    let fx2 = build_objects(&mut tw2);
     let _ = tw2.take_module_ops();
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
@@ -2173,8 +2181,9 @@ fn vf_c10_a_placed_cruising_root_is_repaired_at_boot() {
     });
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(1_050);
-    let fx2 = build(&mut tw2);
+    let fx2 = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         ModuleBootData {
@@ -2226,8 +2235,9 @@ fn vf_r5_boot_re_evaluates_the_activation_queue() {
     kv.retain(|(k, _)| k.as_str() != "activation:0");
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(1_000);
-    let _fx2 = build(&mut tw2);
+    let _fx2 = build_objects(&mut tw2);
     extra_domains(&mut tw2, MAX_ACTIVE_DOMAINS + 1);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
@@ -2284,8 +2294,9 @@ fn vf_b3_retire_and_pause_release_the_tactical_slot() {
         }
     }
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(1_000);
-    let _ = build(&mut tw2);
+    let _ = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         ModuleBootData {
@@ -2312,26 +2323,8 @@ fn vf_r6_a_re_derived_arrival_still_raises_the_onboard_floors() {
     advance(&mut tw, 1_301);
     assert_eq!(scene_of(&tw, aboard).ic_floor, 1_300);
 
-    let ops = tw.take_module_ops();
-    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
-    let mut scenes_kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
-    for op in ops {
-        let target = if op.ns == "sim" {
-            &mut kv
-        } else if op.ns == "scenes" {
-            &mut scenes_kv
-        } else {
-            continue;
-        };
-        match op.op {
-            ModuleWrite::JsonSet { key, value } => {
-                target.retain(|(k, _)| *k != key);
-                target.push((key, value));
-            }
-            ModuleWrite::Del { key } => target.retain(|(k, _)| *k != key),
-            ModuleWrite::StreamAppend { .. } => {}
-        }
-    }
+    let mut kv = tw.persisted_kv("sim");
+    let mut scenes_kv = tw.persisted_kv("scenes");
     // The crash: the placement landed; the journey doc and the scene doc did not.
     let doc = doc_mut(&mut kv, carrier_journey_key(fx.carrier).as_str());
     doc["cursor"] = serde_json::json!(1);
@@ -2345,8 +2338,9 @@ fn vf_r6_a_re_derived_arrival_still_raises_the_onboard_floors() {
     }
 
     let mut tw2 = scenes_first();
+    tw2.adopt_store(&tw);
     tw2.set_now(1_400);
-    let fx2 = build(&mut tw2);
+    let fx2 = build_objects(&mut tw2);
     let aboard2 = open_scene(&mut tw2, fx2.bay, 0, 1);
     tw2.modules_loaded(HashMap::from([
         (
@@ -2487,8 +2481,9 @@ fn vf_r11_the_rotation_cursor_survives_a_reboot() {
     );
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(2_000);
-    let _ = build(&mut tw2);
+    let _ = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         ModuleBootData {
@@ -2651,7 +2646,7 @@ fn vf_dc_plan_bumps_no_allocator() {
             fx.carrier.0, fx.field.0, fx.phobos.0
         ),
     );
-    assert_eq!(fold_kv(&mut tw, "sim"), Vec::new(), "the dry run wrote");
+    assert!(tw.take_module_ops().is_empty(), "the dry run wrote");
     assert_eq!(
         book(&tw).next_id,
         before,
@@ -2671,8 +2666,9 @@ fn vf_dd_boundaries_are_a_function_of_the_stored_document_only() {
     let kv = fold_kv(&mut tw, "sim");
 
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(1_050);
-    let fx2 = build(&mut tw2);
+    let fx2 = build_objects(&mut tw2);
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         ModuleBootData {
@@ -2715,8 +2711,9 @@ fn vf_de_the_summary_is_written_before_the_activation_delete() {
         }
     }
     let mut tw2 = boot();
+    tw2.adopt_store(&tw);
     tw2.set_now(2_000);
-    let _ = build(&mut tw2);
+    let _ = build_objects(&mut tw2);
     let _ = tw2.take_module_ops();
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
@@ -2951,8 +2948,9 @@ fn vf_r9a_the_boot_arrival_emits_no_world_event() {
 
     let probe2 = std::sync::Arc::new(LateProbeState::default());
     let mut tw2 = with_late_probe(&probe2);
+    tw2.adopt_store(&tw);
     tw2.set_now(2_000);
-    let fx2 = build(&mut tw2);
+    let fx2 = build_objects(&mut tw2);
     probe2
         .hydrated
         .store(false, std::sync::atomic::Ordering::SeqCst);

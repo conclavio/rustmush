@@ -707,3 +707,34 @@ fn dt_physical_capture_only_nested_occupants_and_hosts_pass_the_same_control_gat
     );
     Ok(())
 }
+
+#[test]
+fn dt_physical_receipt_projects_only_the_committed_root_and_exact_v2_shape() -> TestResult {
+    let mut definitions = mush_core::DefinitionRegistryBuilder::new();
+    let action = definitions.register(
+        owner()?,
+        mush_core::physical_transition::action_descriptor()?,
+    )?;
+    let schema = definitions.register(owner()?, outcome_descriptor()?)?;
+    let historical = definitions.register(owner()?, outcome_descriptor_v1()?)?;
+    let digest = DefinitionDigest::for_canonical_value("sim.test.receipt", &json!({}))?;
+    let data = json!({"root":42,"structural_digest":digest});
+    let outcome = RulesValue::new(schema.clone(), data.clone())?;
+    let projected = project_structural_receipt(&action, &schema, &action, &outcome)?;
+    check_eq!(projected.summary(), "Spatial update for #42 committed.");
+    check_eq!(projected.data(), &json!({"root":42}));
+
+    for invalid in [
+        json!({"root":42}),
+        json!({"root":u64::MAX,"structural_digest":digest}),
+        json!({"root":42,"structural_digest":"invalid"}),
+        json!({"root":42,"structural_digest":digest,"name":"Hidden cabin"}),
+    ] {
+        let outcome = RulesValue::new(schema.clone(), invalid)?;
+        check!(project_structural_receipt(&action, &schema, &action, &outcome).is_err());
+    }
+    let old_outcome = RulesValue::new(historical.clone(), data)?;
+    check!(project_structural_receipt(&action, &schema, &action, &old_outcome).is_err());
+    check!(project_structural_receipt(&action, &schema, &historical, &outcome).is_err());
+    Ok(())
+}

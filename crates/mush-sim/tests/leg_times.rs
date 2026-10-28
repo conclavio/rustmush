@@ -31,8 +31,11 @@ use mush_sim::{
     CarrierHooks, CarrierJourney, JourneyBook, LegDef, RouteDef, SimulationModule, SpatialParent,
     SpatialState, Transition,
 };
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::{authoritative::AcknowledgedWorld as TestWorld, text_of};
 use smol_str::SmolStr;
+
+#[path = "support/space_command.rs"]
+mod space_command;
 
 // ---- the rig -------------------------------------------------------------
 
@@ -128,14 +131,14 @@ fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
 }
 
 fn ok(tw: &mut TestWorld, line: &str) -> String {
-    let events = tw.run(GOD, line);
+    let events = space_command::run(tw, GOD, line);
     let t = texts(&events);
     assert!(!has_error(&events), "{line:?} was refused: {t}");
     t
 }
 
 fn refused(tw: &mut TestWorld, line: &str) -> String {
-    let events = tw.run(GOD, line);
+    let events = space_command::run(tw, GOD, line);
     let t = texts(&events);
     assert!(has_error(&events), "{line:?} was accepted: {t}");
     t
@@ -281,7 +284,7 @@ fn records(tw: &mut TestWorld, fx: &Fx, log: &mut Vec<ModuleOp>) {
     *tw.world_mut()
         .module_state_mut::<SpatialState>()
         .expect("sim state") = st;
-    drain_out(&mut out, log);
+    drain_out(tw, &mut out, log);
     result.expect("members");
 }
 
@@ -314,12 +317,15 @@ fn drain(tw: &mut TestWorld, log: &mut Vec<ModuleOp>) {
     log.extend(tw.take_module_ops());
 }
 
-fn drain_out(out: &mut Outbox, log: &mut Vec<ModuleOp>) {
+fn drain_out(tw: &mut TestWorld, out: &mut Outbox, log: &mut Vec<ModuleOp>) {
+    let mut ops = Vec::new();
     for deferred in out.take_deferred() {
         if let Deferred::Persist(op) = deferred {
-            log.push(op);
+            ops.push(op);
         }
     }
+    log.extend(ops.iter().cloned());
+    tw.persist_legacy_ops(ops);
 }
 
 /// Run `f` with a staff command context over the engine, logging what it
@@ -345,26 +351,8 @@ fn with_ctx<R>(
         };
         f(&mut ctx)
     };
-    drain_out(&mut out, log);
+    drain_out(tw, &mut out, log);
     (result, out.take())
-}
-
-fn fold_kv_ops(log: &[ModuleOp]) -> Vec<(SmolStr, serde_json::Value)> {
-    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
-    for op in log {
-        if op.ns != "sim" {
-            continue;
-        }
-        match &op.op {
-            ModuleWrite::JsonSet { key, value } => {
-                kv.retain(|(k, _)| k != key);
-                kv.push((key.clone(), value.clone()));
-            }
-            ModuleWrite::Del { key } => kv.retain(|(k, _)| k != key),
-            ModuleWrite::StreamAppend { .. } => {}
-        }
-    }
-    kv
 }
 
 fn doc_mut<'a>(kv: &'a mut [(SmolStr, serde_json::Value)], key: &str) -> &'a mut serde_json::Value {
@@ -377,11 +365,13 @@ fn doc_mut<'a>(kv: &'a mut [(SmolStr, serde_json::Value)], key: &str) -> &'a mut
 
 /// A fresh world over the same objects at `now`, booted from `kv`.
 fn reboot(
+    source: &TestWorld,
     kv: Vec<(SmolStr, serde_json::Value)>,
     hooks: Option<Arc<Probe>>,
     now: i64,
 ) -> (TestWorld, Fx) {
     let mut tw = boot_with(hooks);
+    tw.adopt_store(source);
     tw.set_now(now);
     let fx = objects(&mut tw);
     tw.modules_loaded(HashMap::from([(
@@ -544,8 +534,8 @@ fn ic9_leg_times_survive_the_wire_and_a_reboot() {
 
     // A reboot keeps them.
     drain(&mut tw, &mut log);
-    let kv = fold_kv_ops(&log);
-    let (tw2, fx2) = reboot(kv.clone(), None, 1_100);
+    let kv = tw.persisted_kv("sim");
+    let (tw2, fx2) = reboot(&tw, kv.clone(), None, 1_100);
     let again = journey(&tw2, fx2.hull);
     assert_eq!(again.leg_times(), Some(&[300u32, 500][..]));
     assert_eq!(again.leg_due_at(0), Some(1_300));
@@ -556,7 +546,7 @@ fn ic9_leg_times_survive_the_wire_and_a_reboot() {
     for bad in [serde_json::json!([5]), serde_json::json!([0, 5])] {
         let mut kv_bad = kv.clone();
         doc_mut(&mut kv_bad, &key)["leg_s"] = bad.clone();
-        let (tw3, fx3) = reboot(kv_bad, None, 1_100);
+        let (tw3, fx3) = reboot(&tw, kv_bad, None, 1_100);
         assert!(
             book(&tw3).held.contains_key(key.as_str()),
             "{bad} was not held"
@@ -807,9 +797,9 @@ fn ic9_carrier_hooks_narrate_and_refuse_manual_departure() {
     let (mut tw, fx, mut log) = scene(Some(probe.clone()), 1_000);
     ok(&mut tw, &depart_line(&fx));
     drain(&mut tw, &mut log);
-    let kv = fold_kv_ops(&log);
+    let kv = tw.persisted_kv("sim");
     let probe2 = Arc::new(Probe::default());
-    let (tw2, fx2) = reboot(kv, Some(probe2.clone()), 2_000);
+    let (tw2, fx2) = reboot(&tw, kv, Some(probe2.clone()), 2_000);
     assert!(
         matches!(
             state(&tw2).parent_of(fx2.hull),

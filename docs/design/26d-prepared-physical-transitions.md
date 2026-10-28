@@ -55,6 +55,8 @@ records must be prepared by their actual owners before those operations can migr
 Existing synchronous legacy callers
 retain their current interface; they do not silently enqueue a second deferred
 operation.
+The subsequent [26f slice](26f-prepared-interior-command.md) migrates the
+standalone `@spatial/space` command to this boundary.
 
 ## Gate before personnel history becomes authority
 
