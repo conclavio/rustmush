@@ -5336,7 +5336,27 @@ pub fn check_move_attempt(
     dest: ObjId,
     lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RichText> {
-    for h in reg.hooks(HookPoint::MoveAttempt) {
+    check_move_attempt_via(
+        reg.hooks(HookPoint::MoveAttempt),
+        w,
+        actor,
+        exit,
+        dest,
+        lens,
+    )
+}
+
+/// The one ordinary movement-hook loop, also used by inert admission with the
+/// actual registered slice. No structural-transition exemption is attached.
+pub(crate) fn check_move_attempt_via(
+    hooks: &[HookReg],
+    w: &World,
+    actor: ObjId,
+    exit: Option<ObjId>,
+    dest: ObjId,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> Result<(), RichText> {
+    for h in hooks {
         let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.move_attempt(&ctx, actor, exit, dest)?;
     }

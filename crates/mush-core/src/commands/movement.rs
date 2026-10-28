@@ -13,9 +13,10 @@ use mush_proto::{OutputEvent, RichText};
 
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::Flags;
-use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
+use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock_with};
 use crate::module::{WorldEvent, check_move_attempt, emit_world_event};
 use crate::obj::{LIMBO, Obj, ObjId};
+use crate::object_read::{ObjectRead, PlainRead};
 use crate::output::{Outbox, name_span, primary_name};
 use crate::world::World;
 
@@ -27,36 +28,94 @@ use super::{attr_text, narrative_emit, show_room};
 /// `;`-segments and aliases.
 #[must_use]
 pub fn find_exit(w: &World, actor: ObjId, name: &str) -> Option<ObjId> {
-    let loc = w.get(actor)?.location?;
-    if let Some(e) = exit_in(w, loc, name) {
-        return Some(e);
+    match find_exit_with(&mut PlainRead::new(w), actor, name) {
+        Ok(found) => found,
+        Err(never) => match never {},
     }
-    if let Some(zone) = w.get(loc).and_then(|r| r.zone)
-        && let Some(e) = exit_in(w, zone, name)
-    {
-        return Some(e);
-    }
-    if loc != LIMBO {
-        return exit_in(w, LIMBO, name);
-    }
-    None
 }
 
-fn exit_in(w: &World, holder: ObjId, q: &str) -> Option<ObjId> {
-    w.exits_of(holder).iter().copied().find(|&e| {
-        w.get(e)
-            .is_some_and(|o| !o.flags.contains(Flags::GOING) && exit_name_matches(o, q))
-    })
+/// The same ordered lookup through an explicit reader. A proof reader records
+/// both absent and nonmatching candidates, as well as each holder's exit list.
+pub(crate) fn find_exit_with<'w, R: ObjectRead<'w>>(
+    reader: &mut R,
+    actor: ObjId,
+    name: &str,
+) -> Result<Option<ObjId>, R::Error> {
+    let Some(loc) = reader.object(actor)?.and_then(|object| object.location) else {
+        return Ok(None);
+    };
+    if let Some(exit) = exit_in_with(reader, loc, name)? {
+        return Ok(Some(exit));
+    }
+    if let Some(zone) = reader.object(loc)?.and_then(|room| room.zone)
+        && let Some(exit) = exit_in_with(reader, zone, name)?
+    {
+        return Ok(Some(exit));
+    }
+    if loc != LIMBO {
+        return exit_in_with(reader, LIMBO, name);
+    }
+    Ok(None)
+}
+
+fn exit_in_with<'w, R: ObjectRead<'w>>(
+    reader: &mut R,
+    holder: ObjId,
+    query: &str,
+) -> Result<Option<ObjId>, R::Error> {
+    let Some(holder) = reader.object(holder)? else {
+        return Ok(None);
+    };
+    for exit in &holder.exits {
+        let Some(object) = reader.object(*exit)? else {
+            continue;
+        };
+        if object.flags.contains(Flags::GOING) {
+            continue;
+        }
+        if exit_name_matches_with_work(object, query, |units| reader.charge_work(units))? {
+            return Ok(Some(*exit));
+        }
+    }
+    Ok(None)
 }
 
 /// Whether exit `o` answers to `q`: exact (case-insensitive) over its
 /// `;`-segments and aliases. Shared with `@macro`'s exit note.
 pub(super) fn exit_name_matches(o: &Obj, q: &str) -> bool {
-    o.name
+    match exit_name_matches_with_work(o, q, |_| Ok::<(), std::convert::Infallible>(())) {
+        Ok(matches) => matches,
+        Err(never) => match never {},
+    }
+}
+
+fn exit_name_matches_with_work<E>(
+    object: &Obj,
+    query: &str,
+    mut charge: impl FnMut(usize) -> Result<(), E>,
+) -> Result<bool, E> {
+    charge(
+        object
+            .name
+            .len()
+            .saturating_add(query.len())
+            .saturating_add(1),
+    )?;
+    if object
+        .name
         .split(';')
         .map(str::trim)
-        .any(|seg| seg.eq_ignore_ascii_case(q))
-        || o.aliases.iter().any(|a| a.eq_ignore_ascii_case(q))
+        .any(|segment| segment.eq_ignore_ascii_case(query))
+    {
+        return Ok(true);
+    }
+    for alias in &object.aliases {
+        charge(alias.len().saturating_add(1))?;
+        if alias.eq_ignore_ascii_case(query) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Move `actor` through `exit`: check the exit's `Basic` lock, consult
@@ -145,11 +204,30 @@ pub fn traverse_exit(
 /// that way.` when the exit has none). `None` when there is no lock or it
 /// passes.
 fn exit_lock_refusal(w: &World, actor: ObjId, exit: ObjId) -> Option<String> {
-    let lock = w.get(exit)?.locks.get(&LockType::Basic)?;
-    if eval_lock(w, lock, actor, MAX_LOCK_DEPTH) {
+    let allowed = match exit_lock_allows_with(&mut PlainRead::new(w), actor, exit) {
+        Ok(allowed) => allowed,
+        Err(never) => match never {},
+    };
+    if allowed {
         return None;
     }
     Some(attr_text(w, exit, "fail").unwrap_or_else(|| "You can't go that way.".to_string()))
+}
+
+/// Basic-lock policy shared with inert admission. A missing object or unset
+/// lock retains the existing unlocked result; route resolution is separate.
+pub(crate) fn exit_lock_allows_with<'w, R: ObjectRead<'w>>(
+    reader: &mut R,
+    actor: ObjId,
+    exit: ObjId,
+) -> Result<bool, R::Error> {
+    let Some(lock) = reader
+        .object(exit)?
+        .and_then(|object| object.locks.get(&LockType::Basic))
+    else {
+        return Ok(true);
+    };
+    eval_lock_with(reader, lock, actor, MAX_LOCK_DEPTH)
 }
 
 /// Why a traversal was refused (S8.1, 14a #1): the exit's own lock, or a

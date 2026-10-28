@@ -31,6 +31,7 @@ use crate::module::{
     InputContext, InputStacks, ModuleStateMap, Scene, SceneId, StateInit, StateSlotInfo,
 };
 use crate::obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
+use crate::object_read::{ObjectRead, PlainRead};
 use crate::output::ConnId;
 
 /// Maximum `@parent` hops for attribute inheritance lookups.
@@ -530,6 +531,10 @@ impl World {
         self.objs.get(id.0 as usize).and_then(Option::as_ref)
     }
 
+    pub(crate) fn object_slot_count(&self) -> usize {
+        self.objs.len()
+    }
+
     /// Mutable lookup. Marks the object dirty, since the caller is
     /// presumably about to change it. Prefer the typed mutators — they
     /// maintain indexes; raw `get_mut` is for fields with no index
@@ -620,20 +625,10 @@ impl World {
     /// continues upward.
     #[must_use]
     pub fn attr(&self, obj: ObjId, name: &str) -> Option<&Attr> {
-        let key = UncasedName::from(name);
-        let mut cur = self.get(obj)?;
-        if let Some(a) = cur.attrs.get_uncased(&key) {
-            return Some(a);
+        match attr_with(&mut PlainRead::new(self), obj, name) {
+            Ok(value) => value,
+            Err(never) => match never {},
         }
-        for _ in 0..MAX_PARENT_DEPTH {
-            cur = self.get(cur.parent?)?;
-            if let Some(a) = cur.attrs.get_uncased(&key)
-                && !a.flags.contains(AttrFlags::NO_INHERIT)
-            {
-                return Some(a);
-            }
-        }
-        None
     }
 
     /// Drain and return the set of objects mutated since the last call.
@@ -804,24 +799,10 @@ impl World {
     /// transition projecting several objects at once) pre-validates every move
     /// with this, after which `move_to` cannot fail.
     pub fn can_move_to(&self, obj: ObjId, dest: ObjId) -> Result<(), WorldError> {
-        self.ensure(obj)?;
-        self.ensure(dest)?;
-        if obj == dest {
-            return Err(WorldError::Cycle { obj, dest });
+        match can_move_to_with(&mut PlainRead::new(self), obj, dest) {
+            Ok(result) => result,
+            Err(never) => match never {},
         }
-        let mut cur = Some(dest);
-        let mut hops = 0usize;
-        while let Some(c) = cur {
-            if c == obj {
-                return Err(WorldError::Cycle { obj, dest });
-            }
-            cur = self.get(c).and_then(|o| o.location);
-            hops += 1;
-            if hops > self.objs.len() {
-                break; // pre-existing cycle above us; don't loop forever
-            }
-        }
-        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1923,6 +1904,70 @@ impl World {
             }
         }
     }
+}
+
+/// The exact inheritance walk used by both legacy and tracked reads. Missing
+/// parents are ordinary absence; a tracked resource error remains distinct.
+pub(crate) fn attr_with<'w, R: ObjectRead<'w>>(
+    read: &mut R,
+    obj: ObjId,
+    name: &str,
+) -> Result<Option<&'w Attr>, R::Error> {
+    read.charge_work(name.len().saturating_add(1))?;
+    let key = UncasedName::from(name);
+    let Some(mut cur) = read.object(obj)? else {
+        return Ok(None);
+    };
+    if let Some(attr) = cur.attrs.get_uncased(&key) {
+        return Ok(Some(attr));
+    }
+    for _ in 0..MAX_PARENT_DEPTH {
+        let Some(parent) = cur.parent else {
+            return Ok(None);
+        };
+        let Some(next) = read.object(parent)? else {
+            return Ok(None);
+        };
+        cur = next;
+        if let Some(attr) = cur.attrs.get_uncased(&key)
+            && !attr.flags.contains(AttrFlags::NO_INHERIT)
+        {
+            return Ok(Some(attr));
+        }
+    }
+    Ok(None)
+}
+
+/// Preserve `can_move_to`'s validation and error order while allowing a
+/// prepared admission to bound and record every object edge it follows.
+pub(crate) fn can_move_to_with<'w, R: ObjectRead<'w>>(
+    read: &mut R,
+    obj: ObjId,
+    dest: ObjId,
+) -> Result<Result<(), WorldError>, R::Error> {
+    if read.object(obj)?.is_none() {
+        return Ok(Err(WorldError::NoSuchObj(obj)));
+    }
+    if read.object(dest)?.is_none() {
+        return Ok(Err(WorldError::NoSuchObj(dest)));
+    }
+    if obj == dest {
+        return Ok(Err(WorldError::Cycle { obj, dest }));
+    }
+    let mut cur = Some(dest);
+    let mut hops = 0usize;
+    while let Some(id) = cur {
+        read.charge_work(1)?;
+        if id == obj {
+            return Ok(Err(WorldError::Cycle { obj, dest }));
+        }
+        cur = read.object(id)?.and_then(|object| object.location);
+        hops += 1;
+        if hops > read.object_slots()? {
+            break; // Existing cycles still terminate with the legacy result.
+        }
+    }
+    Ok(Ok(()))
 }
 
 #[cfg(test)]
