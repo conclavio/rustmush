@@ -1,18 +1,22 @@
 # 27. IC field operations — detachments, combat, and salvage
 
-**Draft 0.2, 2026-10-28. Owner decisions recorded; implementation not yet built.**
+**Draft 0.3, 2026-10-28. All 45 survey decisions recorded; implementation not yet built.**
 Based on `origin/main` at `2cbe9f7c264c79ee6ce6790a3c5ad420a30bec3b` and the owner's
 2026-10-28 rulings. This is the shared brief for doc 26 DT.1–DT.3, backlog H1 and H2.
-Rechecked against `origin/main` at `ed245516` before publication on the same date.
-The owner accepted all 39 survey defaults with the eight amendments recorded below. §7 is the
-decision record; §9 contains new follow-up questions, which are not covered by that acceptance.
+Rechecked against `origin/main` at `62d093c2` before this update on the same date.
+The owner accepted all 39 original questions with eight amendments, then all six follow-ups
+with the human-NPC commander and actual NPC embarkation qualifications below. §§7 and 9 are
+decision records; none of those 45 questions remains unanswered.
 
 ## 1. Shared goal and authority of this draft
 
 A player aboard a carrier selects a saved detachment plan, assigns physically embarked units
-that the participants may use, and launches a sortie. Humans and AI-controlled units occupy the
+that the participants may use, and launches a sortie. Player-crewed, NPC-crewed and automated units occupy the
 same roster. The first active player in slot order commands it, with leadership automatically
-returning to an earlier slot when that player becomes active again. The group can encounter another force on
+returning to an earlier slot when that player becomes active again. Without an active player,
+an assigned, available human NPC commander may lead. That NPC is a real character who embarked
+on the ship before it left its last port, not a software mind or a newly generated persona.
+Without either kind of available commander, units retain standing orders/doctrine. The group can encounter another force on
 real ground, withdraw, leave disabled units behind, and return with survivors. A recovery crew
 can subsequently reach a disabled unit, attach a tow, move it and load it into a carrier. The
 recovered unit has precisely the damage and surviving equipment it had in the field. Physical
@@ -22,7 +26,7 @@ This is one persistent world lifecycle, divided into three workstreams:
 
 | Stream | Owns | Delivers to the others |
 |---|---|---|
-| **DT.1–DT.3: detachments** | Plans/presets, live roster, accepted human assignments, command and launch coordination | Named units, authorized operators, roster revision, command principal and launch intent |
+| **DT.1–DT.3: detachments** | Plans/presets, live roster, accepted player assignments, real embarked NPC personnel, command and launch coordination | Named units, authorized operators, roster revision, command principal and launch intent |
 | **H1: IC field combat** | Field authority, combat entry/exit, durable physical outcomes and observer projections | Exact unit condition and position, causal outcome records, custody handoff, observation evidence |
 | **H2: physical recovery and salvage** | Inspection, attachment, towing/dragging, loading, recovery custody and salvage-claim handoff | The same damaged unit in a new physical location, recovery provenance and legal claim/evidence |
 
@@ -32,7 +36,7 @@ H2 must preserve enough information for H3; it does not restore a unit as a side
 Full infantry, orbital fighting and facility sieges are not silently included in this first ground
 slice. Their exclusion is a proposed delivery scope, not a claim that the simulator forbids them.
 
-The owner's explicit rulings in §2 and accepted decisions in §7 supersede conflicting earlier
+The owner's explicit rulings in §2 and accepted decisions in §§7 and 9 supersede conflicting earlier
 proposals. Existing accepted world rules in §3 continue except where these decisions amend them.
 §§4–6 express the common design and delivery plan; exact schemas, cut sizes and implementation
 briefs still need engineering review. Acceptance of the design does not claim any code has shipped.
@@ -46,8 +50,8 @@ briefs still need engineering review. Acceptance of the design does not claim an
 | FO-3 | Salvage is a separate physical operation: tow or drag the unit back to a ship and load it. |
 | FO-4 | On unclaimed/unowned ground anyone capable of recovery may salvage a disabled/destroyed unit. On owned ground BOTH the unit owner and landholder are legally entitled to recover it; neither needs the other's permission. Others may physically take it unlawfully; discovery/evidence, rather than an omniscient prohibition, makes enforcement possible. Title transfer follows Q-S2/Q-S13/Q-S15. |
 | FO-5 | Players can keep multiple detachment presets, choose one for a mission and change the plan before launch. |
-| FO-6 | Squad size defaults to six. Tanks/bipeds occupy one slot each; future battle armor/infantry occupy a slot as one command group (for example six armor troopers or eighteen rifle infantry). Humans may occupy any slot. Leadership belongs to the first active player in slot order, automatically falling through on death/incapacitation, disconnect or unit disablement and returning when an earlier player becomes active again. With no active player there is no leader: units continue their last order or act for themselves. An order is an order to both humans and AIs. |
-| FO-7 | AI assignments are dynamic. The physical units must have embarked; an AI grouping does not have to have been declared or embarked at the port. `+sortie` is an appropriate player-facing verb family. |
+| FO-6 | Squad size defaults to six. Tanks/bipeds occupy one slot each; future battle armor/infantry occupy a slot as one command group (for example six armor troopers or eighteen rifle infantry). Players may occupy any slot. Leadership belongs to the first active player in slot order, automatically falling through on death/incapacitation, disconnect or unit disablement and returning when an earlier player becomes active again. FO-15 qualifies the no-player case: an assigned, available human NPC commander may lead; without either kind of commander, units continue their last order or act for themselves. An order is an order to both players and NPC/automated recipients. |
+| FO-7 | Unit assignments, AI profiles and squad groupings are dynamic. Physical units and real NPC personnel must have embarked (FO-16); a fixed AI squad/grouping need not have been declared at the port. Software mind/profile selection does not create personnel. `+sortie` is an appropriate player-facing verb family. |
 | FO-8 | The carrier's charter owner, detachment organizer and detachment leader need not be the same person, and the charter owner need not accompany the sortie. Any player aboard may form a detachment from units they have permission to use. |
 | FO-9 | Personal ownership inherently grants use, and the owner may permit other players to use their units. Organization-owned units support organization-wide and individual-unit permissions. Granting permissions is itself permissioned and cannot convey more authority than the grantor holds. |
 | FO-10 | The OOC simulators are combat-code proving grounds and consequence-free practice. Their lobby, reset, team, allocation and lifecycle conventions do not define IC world rules. |
@@ -55,10 +59,13 @@ briefs still need engineering review. Acceptance of the design does not claim an
 | FO-12 | There is no player permadeath. The worst-case recovery route is retrieval by a third-party NPC organization to a known port such as Phobos for recuperation. The player may later return in another owned vessel, a newly acquired coop unit or passage aboard another player's vessel to recover/salvage the original unit. Crew retrieval never retrieves or repairs that unit automatically. |
 | FO-13 | Any mobile unit may tow one disabled unit of up to twice its own tonnage. Speed is reduced by the tonnage differential; a twenty-ton tug dragging forty tons moves very slowly. Recovery-optimized vehicles remain useful. Towing is physical, and does not bypass terrain or loading capacity. |
 | FO-14 | H3 is an explicit post-H2 milestone for component stripping, scrapping and repair/restoration together. H2 still delivers whole-hull recovery in its damaged state. |
+| FO-15 | An authorized embarked organizer can launch a no-player detachment without becoming its continuing leader. Its assigned NPC commander is a human in-world, satisfying the requirement for a human making command decisions. The software driving that NPC does not make the character an in-world automated mind. Existing active-player priority remains; no new NPC is created by a disconnect. |
+| FO-16 | Every NPC assigned a unit or eligible to become squad leader is a real in-world character who was embarked on the carrier when it left its last port. Preparation resolves that actual personnel manifest; it cannot conjure crew at the field. Unit assignment and grouping over those embarked people and units remain dynamic. |
 
 The owner accepted the remaining defaults in §7 as written. The examples of six battle-armor
 troopers and eighteen rifle infantry illustrate group representation, not universal authored
-strengths. No NPC squad leader or permadeath exception is implied by any earlier wording.
+strengths. FO-15/FO-16 explicitly amend the earlier blanket exclusion of NPC leadership. There
+is still no player-permadeath exception.
 
 ## 3. Existing world decisions to retain, rather than ask again
 
@@ -75,8 +82,13 @@ strengths. No NPC squad leader or permadeath exception is implied by any earlier
   through authoritative boundaries.
 - Taking possession does not automatically transfer title. T3's existing legal routes include
   public salvage claims with a contest window, voluntary transfer/abandonment, forfeiture and
-  insurer acquisition. FO-4 settles recovery entitlement; Q-S2 asks whether to retain T3's title
-  procedure for it.
+  insurer acquisition. FO-4 settles recovery entitlement; Q-S2 retains T3's title procedure.
+
+[Doc 17](17-unit-minds.md) D-UM-52/53 and doc 10 T9 already distinguish an in-world person from
+the decision driver: an AI-played human NPC is a character principal under the Warrant, whereas
+an automated unit mind is not. The character retains real location, perception, injury and
+identity. The new NPC leadership ruling uses this existing distinction; it does not relax the
+setting's human-command law or appoint a software mind to a human office.
 
 [Doc 08](08-economy-organizations-ownership.md) separates title, custody, operation and maintenance.
 Its organization and economy implementations already exist; doc 26's old suggestion that those
@@ -121,15 +133,24 @@ missing one. The first H1/H2 integration must round-trip this distinction even b
 | Hull epoch | Doc 23's seal interval; membership changes neither open nor close it |
 | Engagement | An interval of tactical authority over particular field units and terrain |
 | Organizer | The person editing/forming the plan; need not hold slot 1 or own the carrier |
-| Leader | First active player by ascending slot number; automatically recomputed, with no NPC fallback leader (Q-D4) |
+| Leader | First active player by ascending slot number; otherwise an assigned, available, authorized human NPC commander from the last-port embarked personnel (Q-D4/Q-F1) |
 | Operator | The character actually holding a unit's station/control channels |
 | Owner / custodian / payer | Separately resolved economic and physical principals; leadership grants none of these automatically |
 
-The six-slot interpretation, activation/freeze rules and succession are settled below. A human
-in any slot remains a human actor: a delivered order never moves their unit
-or asserts their consent. AI reassignment on an embarked hull still respects the mind's licence,
+The six-slot interpretation, activation/freeze rules and succession are settled below. A player
+in any slot retains judgment: a delivered order never moves their unit or asserts their consent.
+An NPC human is a real character driven by software, distinct from the hull's in-world mind.
+Their assignment/command role references that character's embarked identity, location and
+authority; the arena's synthetic persona or lowest-unit-ID convention is not an IC substitute.
+Software-mind reassignment on an embarked hull still respects the mind's licence,
 installed core, seal, compute admission and control rules. Dynamic AI does not mean free hardware,
 an unlimited licence or an in-flight reseal.
+
+Preparation resolves both the carrier's physical unit manifest and its real NPC personnel at
+last-port departure. A plan can assign an embarked NPC to a permitted unit or nominate them for
+command after departure; it cannot create an NPC, import someone left at port, or treat a newly
+selected AI profile as an embarked person. Actual control, seating and communication rules still
+apply. NPC decision drivers and licensed hardware minds remain separate integration contracts.
 
 ### 4.3 Permission to use is not possession or legality
 
@@ -197,18 +218,19 @@ Q-H11 creates a global outage exception: freeze campaign and tactical progressio
 IC work during recovery/countdown, then resume from the checkpoint without outage catch-up.
 Journey durations and event ordering remain intact; a single local engagement still cannot hold
 another player's journey. The five-minute countdown runs on real elapsed time after consistent
-recovery is ready. The treatment of explicitly real-time legal windows is the new Q-F3 in §9.
+recovery is ready. Accepted Q-F3 excludes outage/countdown from the salvage contest window,
+preserves its remaining duration and publishes the adjusted deadline on unfreeze.
 
 ## 5. Delivery boundaries and dependency order
 
-**Shared policy decisions are recorded.** Pin the records above with their existing owners,
-resolve the affected follow-ups in §9, then write implementation briefs for all three streams.
+**All surveyed policy decisions are recorded.** Pin the records above with their existing owners,
+including NPC personnel/command identity and the accepted §9 rules, then write implementation briefs for all three streams.
 This documentation task does not start their code implementation.
 
 | Cut | Concrete result | Dependency / proof |
 |---|---|---|
 | DT.1 | Common roster/order contract; human/AI delivery; simulator adapter for exercising it | Slot meaning, leader/succession and order-delivery policy agreed; IC semantics own the model |
-| DT.2 | Multiple presets, editable resolved plans, consent, permission checks and unit reservations aboard a carrier | Shared asset authority contract; no charter-holder shortcut; DT.1 records |
+| DT.2 | Multiple presets, editable resolved plans, consent, permission checks, last-port NPC personnel resolution and unit reservations aboard a carrier | Shared asset/personnel authority contract; no charter-holder shortcut; DT.1 records |
 | DT.3 | Preflight, per-unit launch/recover reconciliation, durable sortie membership/history and restart behavior | DT.2; existing S.1–S.3 epoch hosts; any required actual IC-mind host for AI-controlled hulls |
 | H1-A | Persistent field-unit and component state, defeat/epoch classification and crash-safe handoff | Shared unit/authority contract; can develop alongside DT.1/DT.2 |
 | H1-B | Entry, reinforcement, withdrawal and demotion on actual ground under the chosen clock/risk rules | H1-A; shared global freeze/resume support (Q-H11); first slice's field controls, crew outcome and observer projection; DT.3 for the group story |
@@ -218,11 +240,15 @@ This documentation task does not start their code implementation.
 | H2-C | Separate recovery sortie retrieves a casualty produced by H1; lawful and unlawful variants | H1-C, H2-A/B; exact component/cargo/provenance preservation across restart |
 | H3 (post-H2) | Component stripping, scrapping and workshop repair/restoration; compatible replacement parts, resources, work time and resulting capability | H2-C and its preserved manifests/provenance; title/use authority for destructive work; minimal restoration before broad economic playtesting |
 
-The H1/H2 sublabels are planning proposals, not historical landed cuts. S.4/S.5 remains the
-first IC-mind integration path from doc 23: use that contract when a licensed mind flies IC;
-do not claim coreless epoch bookkeeping already supplies it. M8's broader procurement/contraband
-programme is not a blanket prerequisite for human-operated combat or towing. Conversely, a
-test-only permit is not sufficient production authorization for an AI unit.
+The H1/H2 sublabels are planning proposals, not historical landed cuts. The accepted
+[doc 17h](17h-m8-contraband-procurement-plan.md) Q-M8-1 now splits doc 23's S.4: M8e/S.4a
+provides a sealed dormant mind aboard a rig, while S.4b supplies the later thinking host. Use
+the actual production claim/admission and live-host contracts when a licensed unit mind flies
+IC; neither coreless epoch bookkeeping nor a dormant seal supplies live execution. This is
+separate from a real NPC character's decision driver. M8's broader procurement/contraband
+programme is not a blanket prerequisite for player/NPC-crewed combat or towing, and a test-only
+permit is not production authorization. Doc 17h Q-M8-2 leaves combat testimony to H1; its
+observer-derived evidence must follow Q-H6 rather than exposing the objective arena tape.
 
 H1 coordinates the global freeze/resume integration with the existing clock and server owners;
 this shared prerequisite must cover all clock readers before live H1/H2 acceptance. Pausing one
@@ -249,15 +275,21 @@ duplicate or expose a real unit.
    It includes their own biped, a personally lent unit and organization units granted through
    both unit-specific and scoped wildcard authority. A missing/revoked grant is reported before
    launch. Changing the live plan does not silently rewrite either preset.
-2. A second human accepts a later slot. The first active player leads, initially in slot 1. AI control is
-   assigned to embarked hulls after arrival at the field; no AI squad had to embark at port.
+2. A second player accepts a later slot. The first active player leads, initially in slot 1.
+   A real NPC human also embarked before the carrier left its last port. Assign that character
+   a permitted unit/command role and choose software mind profiles after arrival at the field;
+   no fixed AI squad had to embark at port. Reject an invented or non-embarked NPC assignment.
    Launch records each unit once, its actual principal, active roster revision and hull epoch.
-3. The leader issues the same `ORDER` to a human and an AI. The human can acknowledge or decline
-   without involuntary helm/fire changes; the AI attempts it under its actual sensors and limits.
+3. The leader issues the same `ORDER` to a player, an NPC crew member and an automated unit.
+   The player can acknowledge or decline without involuntary helm/fire changes; NPC and unit
+   controllers attempt it under their actual knowledge, sensors and limits.
    Loss of contact produces uncertainty rather than a false completed/acknowledged state.
    Disable/disconnect the leader: the next active player's slot takes command without swapping
    units. Reactivate/reconnect the earlier player: command returns. With no active players,
-   there is no leader, and units continue orders or their available autonomous behavior.
+   the assigned available NPC human commander may lead under the same bounded mission grants.
+   Remove that commander too: there is no leader, and units continue orders/doctrine. A returning
+   active player resumes command without swapping slots. Separately prove a prepared NPC-led
+   sortie launched by an organizer who stays aboard; the NPC remains the real field commander.
 4. A lawful frontier encounter disables a biped by a head/cockpit hit and another unit by engine
    damage. One weapon is destroyed and another jammed. Surviving equipment remains identifiable.
    The rest of the force withdraws. The field keeps exact casualties and their positions; a
@@ -289,7 +321,8 @@ its practice reset cannot reach the IC asset/claim paths.
 **Answered 2026-10-28:** all 39 questions are settled. The owner amended Q-D1, Q-D4, Q-H11,
 Q-H12, Q-S1, Q-S6, Q-S11 and Q-S12 and accepted every other default as written. Each decision
 below records the resulting policy; alternatives remain for rationale/history, not as active
-choices. New questions in §9 were generated by this review and remain unanswered.
+choices. The six follow-up questions in §9 have also been answered; Q-F1 further qualifies Q-D4
+with real, embarked human-NPC leadership.
 
 ### A. Detachment shape and mission planning
 
@@ -326,9 +359,12 @@ choices. New questions in §9 were generated by this review and remain unanswere
 - **Decision (owner ruling):** scan slots in ascending order and select the first active player.
   Death/incapacitation, disconnect or disablement removes that player from active leadership;
   an earlier-slot player automatically resumes leadership when active again. No slot swaps or
-  deputy ceremony. With no active players there is no squad leader; units continue their last
-  orders or act for themselves through their available controllers/doctrine. No NPC replacement
-  leader. "Death" here is combat unavailability, not player permadeath (Q-H12).
+  deputy ceremony. **Qualified by accepted Q-F1:** with no active player, an explicitly assigned,
+  available and authorized human NPC commander may lead. They must be a real character who
+  embarked on this ship before its last-port departure (FO-16), not an NPC created on disconnect.
+  Without either an active player or that commander there is no leader; units continue their
+  last orders or act through available doctrine. Returning active players resume priority.
+  "Death" here is combat unavailability, not player permadeath (Q-H12).
   The implementation predicate is a connected, capable player controlling their non-disabled
   assigned unit in the active detachment; keyboard inactivity alone is not disconnect. Reconnect
   does not override continuing incapacity/disablement. Version the leadership term separately
@@ -338,13 +374,14 @@ choices. New questions in §9 were generated by this review and remain unanswere
   units. It does not grant new asset permissions: Q-F2 settles the successor's authority scope.
 
 **Q-D5 — What consent does a launch command represent?**
-- **Decision (accepted default):** each human accepts their unit assignment and marks ready for the current plan
+- **Decision (accepted default):** each player accepts their unit assignment and marks ready for the current plan
   revision while seated; the leader launches ready units only after preflight reports omissions.
   Editing their unit or leader invalidates that readiness. An order never creates consent or
-  transfers helm authority. A human seat is not silently converted to an AI slot if unready.
+  transfers helm authority. A player's seat is not silently converted to an AI slot if unready.
   Acceptance includes Q-D4's automatic succession, which does not invalidate consent each time
   availability changes. Deliberate prelaunch plan/priority edits still require renewed readiness.
-  The all-AI roster's launch issuer is the new Q-F1, not an implied NPC leader.
+  Q-F1 permits an authorized embarked organizer to launch a prepared NPC-led no-player roster;
+  organizer, human NPC commander and unit controllers remain separately identified.
 - **Alternative:** accepting an invitation lets the leader launch that member whenever seated.
 - **Why:** group launch remains one useful action, but the actual crew knows the selected plan
   and authority. It also makes skipped/unready members explicit rather than accidental stranding.
@@ -541,7 +578,7 @@ choices. New questions in §9 were generated by this review and remain unanswere
   through OOC channels during the countdown; gameplay mutations/new world actions are not
   admitted until unfreeze.
   Reconnecting players receive the current freeze/countdown status. A further outage requires
-  consistent recovery and a fresh countdown. Q-F3 covers explicitly real-time legal deadlines.
+  consistent recovery and a fresh countdown. Q-F3 pauses the real-time salvage contest window.
 - **Alternative:** simulate the elapsed outage under recorded standing orders before reconnects,
   allowing additional casualties and completed recovery work during the downtime.
 - **Why:** an infrastructure outage should not manufacture an unattended defeat or finish a
@@ -558,8 +595,8 @@ choices. New questions in §9 were generated by this review and remain unanswere
   port such as Phobos to recover. The player may arrange a later return using another owned
   vessel, a newly acquired coop unit or passage aboard another player's vessel. The abandoned
   unit, installed equipment and cargo stay at their actual field location; crew rescue neither
-  repairs/retrieves that unit nor closes its epoch. Q-F4 asks the fallback service's timing and
-  destination/capture policy; the guaranteed recovery outcome itself is settled.
+  repairs/retrieves that unit nor closes its epoch. Accepted Q-F4 supplies a bounded campaign-time
+  delay, nearest eligible known safe port/fallback, and a cap on capture delaying return to play.
 - **Alternative:** deliver the full injury, treatment, prisoner and ransom system with H1.
 - **Why:** defeats retain material and logistical consequences while the player has an assured
   way back to play. The NPC rescue is an explicit world outcome, not an OOC unit reset.
@@ -669,7 +706,7 @@ choices. New questions in §9 were generated by this review and remain unanswere
 - **Decision (owner ruling):** H2 recovers whole hulls with their component/ammo/cargo manifest.
   Add an explicit next milestone, H3, for stripping, scrapping and repair/restoration together,
   preserving component identity, condition and provenance when parts are detached or consumed.
-  Field stripping and scrap yields belong to that milestone; Q-F5/Q-F6 cover its new title issues.
+  Field stripping and scrap yields belong to that milestone under accepted Q-F5/Q-F6 title rules.
 - **Alternative:** build whole-hull recovery, component harvesting and scrap recipes together.
 - **Why:** delivers the requested tow/load loop sooner and preserves the information later
   systems need. It avoids replacing recoverable machines with abstract commodity rewards.
@@ -705,7 +742,8 @@ choices. New questions in §9 were generated by this review and remain unanswere
   If the claim fails, no automatic reimbursement is minted: costs follow an agreed contract or
   adjudicated remedy, with repair-at-risk shown before spending. Existing component titles persist.
   Self-recovery by the existing owner does not create pending title or these provisional-use
-  restrictions. Repair permission does not yet settle destructive stripping/scrapping (Q-F5).
+  restrictions. Q-F5 requires resolved title or existing-owner permission for destructive
+  stripping/scrapping; custody's repair-at-risk permission alone does not authorize it.
 - **Alternative:** allow provisional operation pending contest, with recorded return/compensation
   obligations if the claim later fails.
 - **Why:** preserves a practical damaged-hull custody state without turning possession into a
@@ -716,6 +754,8 @@ choices. New questions in §9 were generated by this review and remain unanswere
   with a durable deadline and notice sent to identifiable affected principals through actual
   communication. Online acknowledgement is not required. Publication contains claim identity,
   rights asserted and the claimant's evidence, not hidden live positions or a global damage dump.
+  **Amended by accepted Q-F3:** count available real hours, excluding server unavailability and
+  the recovery countdown. Persist remaining duration and publish the adjusted deadline at resume.
 - **Alternative:** three IC days (three real hours at rate 24), allowing much faster reuse.
 - **Why:** title contests should remain answerable by players who log in daily; campaign-speed
   expiry would often resolve the dispute while they sleep. Physical recovery itself never waits
@@ -725,12 +765,12 @@ choices. New questions in §9 were generated by this review and remain unanswere
 
 | Existing source | What changes or remains |
 |---|---|
-| Doc 26 D-26-1/2/3/5/7 and Q-26-6 | Rewritten around presets, dynamic AI assignment, human orders, separate organizer/leader and real unit grants; no port-declared AI group or charter-based formation authority |
+| Doc 26 D-26-1/2/3/5/7 and Q-26-6 | Rewritten around presets, dynamic assignments, player/NPC orders, separate organizer/leader and real unit grants; physical units and NPC humans embark, fixed AI groupings need not; no charter-based formation authority |
 | Doc 23 Q-23-5 and S.0b | `+sortie` and the player's sortie are permitted; retain the epoch/operation distinction rather than banning a word |
 | Doc 23 destruction close | Q-H7/Q-H9 require recoverable disablement to remain distinct from terminal destruction; amend the IC close adapter accordingly |
 | Doc 20 §17 | Promotion is an implementation mechanism; its 256-cell site and existing TV departure refusal are not universal IC rules; Q-H10 accepts the D-20-7 amendment for this delivery |
 | Doc 16 / 16c H1–H3 | Practice resets, fixed teams, untargetable wrecks, public replay and snapshot-tail rollback cannot silently become IC policy; H2 is more than another cargo `SalvageSource`; H3 consumes real component state |
-| Doc 10 3A/5A/6A/T2/T3 | World framework retained except the optional player-permadeath carve-out, superseded by Q-H12; clocks and salvage-title policy are now settled subject to §9 follow-ups |
+| Doc 10 3A/5A/6A/T2/T3 and T9; doc 17 D-UM-52/53 | No player permadeath (Q-H12); clocks and salvage-title policy settled through §9; real NPC human principals remain distinct from their software drivers and from in-world automated unit minds |
 
 Verified implementation seams at the review revision:
 
@@ -750,31 +790,43 @@ Verified implementation seams at the review revision:
 - `crates/tacsim/src/minds/ic_sortie/participant.rs` still exposes the fixture start/close
   boundary; licensed IC controllers require the actual host integration, not a fabricated permit.
 
-**Review status:** owner-approved design decisions with explicit unanswered follow-ups in §9.
+**Review status:** all 45 survey decisions approved, including the NPC-human/embarkation qualifications.
 Only documentation has changed. Test/story requirements above describe future acceptance, not
 gameplay tests run by this revision.
 
-## 9. New follow-ups raised by the answers
+## 9. Follow-up decisions
 
-These six questions are **not yet accepted**. They resolve intersections introduced by the
-amendments; they do not reopen the 39 decisions above. Q-F1/Q-F2 affect DT briefs, Q-F3/Q-F4
-affect the shared clock/crew boundary, and Q-F5/Q-F6 can be settled for the post-H2 H3 milestone.
+**Accepted 2026-10-28.** Q-F1's default is accepted with a real human NPC commander whose
+character was embarked at the carrier's last-port departure; Q-F2–Q-F6 are accepted as written.
+Q-F1/Q-F2 affect DT briefs, Q-F3/Q-F4 the shared clock/crew boundary, and Q-F5/Q-F6 the post-H2
+H3 milestone. The implementation briefs still choose schemas, exact timing and content values.
 
-**Q-F1 — Who launches a detachment with no active human member?**
-- **Proposed default:** an authorized embarked organizer/launch principal can launch the ready
-  AI-only roster and its prepared objectives, without becoming its squad leader or acquiring
-  remote field command. Record that principal separately from the effective leader.
-- **Alternative:** require an active human roster member to lead every launch, even if the
+**Q-F1 — Who launches a detachment with no active player member?**
+- **Decision (owner ruling):** an authorized embarked organizer/launch principal can launch the
+  ready NPC-led roster and its prepared objectives, without becoming its squad leader or
+  acquiring remote field command. The field commander is still human: a real NPC character,
+  implemented by software but a person under the Warrant. That character, like any NPC assigned
+  a unit or eligible for leadership, must have been embarked on the ship at its last-port
+  departure. Resolve their actual identity, location, capability and mission authority.
+  Unit/controller assignments may change aboard; they cannot manufacture NPC personnel.
+  Keep launch principal, effective human commander and unit controller distinct. Active-player
+  slot priority remains; an assigned available NPC commander leads when no player is active.
+  If neither is available, standing orders/doctrine continue without a leader. Disconnect never
+  spawns a replacement person. A unit mind cannot occupy the human command role.
+- **Alternative:** require an active player roster member to lead every launch, even if the
   detachment later becomes leaderless.
-- **Why:** Q-D5 assigned launch to the leader, while Q-D4 now deliberately gives an AI-only roster
-  no leader. Separating launch coordination preserves the organizer/leader distinction and
-  permits useful AI-only plans without inventing an NPC commander.
+- **Why:** launch coordination need not be continuing field command. A real embarked NPC human
+  supports sorties without player crew while retaining the setting's human decision-maker,
+  physical personnel, attribution and permission requirements. This qualifies Q-D4's earlier
+  blanket no-player/no-leader statement without treating a software profile as a person.
 
 **Q-F2 — What command rights does an automatic successor receive?**
-- **Proposed default:** preparation obtains explicit, bounded mission grants for the
+- **Decision (accepted default):** preparation obtains explicit, bounded mission grants for the
   current-leader role from each relevant owner or authorized grantor. They follow Q-D4's
   succession only for the accepted roster/mission and remain subject to Q-A2/Q-A3 revocation.
   Preflight exposes any unit that cannot accept this role grant; nothing silently widens authority.
+  The role may be held by the eligible player or the assigned human NPC under Q-F1; NPC identity
+  and embarkation are prerequisites, not substitutes for those grants.
 - **Alternative:** succession changes the leader, but each successor can issue effective AI
   orders only to units covered by their own personal grants.
 - **Why:** an automatic successor may lack the previous leader's individual permissions.
@@ -782,17 +834,17 @@ affect the shared clock/crew boundary, and Q-F5/Q-F6 can be settled for the post
   neither option skips the first active player or grants permission merely by holding a slot.
 
 **Q-F3 — Does the global outage freeze pause the 48-real-hour salvage contest window?**
-- **Proposed default:** exclude world unavailability and the restart countdown from that
+- **Decision (accepted default):** exclude world unavailability and the restart countdown from that
   window. Persist its remaining duration, resume the deadline at unfreeze, and publish the
   adjustment. It still counts 48 available real hours, not accelerated campaign hours.
 - **Alternative:** keep the original wall-clock deadline; a deadline that passes during outage
   is processed only after unfreeze, without an extra opportunity to object.
 - **Why:** Q-S15 was chosen to give players time to contest; unavailable servers should not
-  consume it. This would explicitly amend the accepted real-time wording. Until answered, do
-  not silently shift legal deadlines or treat an H1-local pause as a complete global freeze.
+  consume it. This explicitly amends the accepted real-time wording. Persist the adjustment;
+  an H1-local pause is not a complete global freeze.
 
 **Q-F4 — When and where does guaranteed NPC crew retrieval return a player?**
-- **Proposed default:** after ordinary rescue cannot resolve the casualty, record an NPC
+- **Decision (accepted default):** after ordinary rescue cannot resolve the casualty, record an NPC
   extraction with a published, bounded campaign-time delay to the nearest eligible safe port
   known to the character, with a guaranteed fallback such as Phobos. Injury/capture may delay
   it only up to that bound; funds or another player's refusal cannot remove the guaranteed
@@ -804,7 +856,7 @@ affect the shared clock/crew boundary, and Q-F5/Q-F6 can be settled for the post
   The exact delay is tuning after the service policy is chosen.
 
 **Q-F5 — May a non-owner strip or scrap a unit while salvage title is pending?**
-- **Proposed default:** require resolved title or explicit permission from the existing title
+- **Decision (accepted default):** require resolved title or explicit permission from the existing title
   owner for destructive stripping/scrapping. Q-S14's stabilization and documented repair at
   risk remain permitted; they do not authorize consuming another party's property.
 - **Alternative:** allow destructive processing at risk, with preserved component/value records
@@ -813,7 +865,7 @@ affect the shared clock/crew boundary, and Q-F5/Q-F6 can be settled for the post
   did not decide. Waiting for title avoids making a successful contest meaningless.
 
 **Q-F6 — Can field-recovered components establish their own salvage claims?**
-- **Proposed default:** yes, where the stripping itself was authorized. Track each recovered
+- **Decision (accepted default):** yes, where the stripping itself was authorized. Track each recovered
   part's identity, condition and parent-hull provenance, with a claim scoped to those parts.
   The remaining chassis cannot also claim or consume the same component/value.
 - **Alternative:** require whole-hull recovery/title resolution before any component claim.

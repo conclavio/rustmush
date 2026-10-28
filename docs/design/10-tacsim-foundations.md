@@ -644,8 +644,11 @@ beacon detection, rescue, capture and ransom as separate facts. **Owner amendmen
 (doc 27 Q-H12): there is no player permadeath.** In the worst case a third-party NPC organization
 retrieves the player to a known port such as Phobos to recover. The disabled unit and its
 equipment remain in the field for a later recovery expedition; crew rescue does not repair or
-retrieve the hull. Doc 27 Q-F4 leaves the service timing/destination and capture boundary open,
-not the guarantee. This supersedes the previous campaign-lethality permission for player death.
+retrieve the hull. Accepted doc 27 Q-F4 specifies a published bounded campaign-time delay to
+the nearest eligible safe port known to the character, with a fallback such as Phobos. Injury,
+capture or lack of funds cannot remove that guaranteed route; world freeze pauses the delay.
+Exact timing is content tuning. This supersedes the previous campaign-lethality permission
+for player death.
 
 Progression expands options and trust rather than creating an inexorable stat treadmill. Bounded
 competence improves reliability and information; certifications express an issuer's trust; contacts
