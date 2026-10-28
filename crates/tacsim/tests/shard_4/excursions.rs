@@ -220,7 +220,7 @@ fn sweep(tw: &mut TestWorld, secs: i64) {
     let _ = tw.fire_due(t.saturating_mul(1000));
 }
 
-fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
+pub(crate) fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
     tw.seen_by(events, who).join("\n")
 }
 
@@ -239,7 +239,7 @@ fn economy(tw: &TestWorld) -> &EconomyStore {
     tw.world().module_state::<EconomyStore>().expect("economy")
 }
 
-fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
+pub(crate) fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
     match store(tw).port_map(&cid(LANE_PACK), &cid(entry)) {
         PortMapState::Present(map) => map.clone(),
         other => panic!("{entry}'s map: {other:?}"),
@@ -473,7 +473,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 }
 
 /// A chartered pilot whose hull the yard has made a Dray-P.
-fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
+pub(crate) fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
     let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
@@ -624,7 +624,7 @@ fn ticket(tw: &mut TestWorld, hull: ObjId, seq: u32) -> Option<Ticket> {
 }
 
 /// A command and the submissions it queued.
-fn command(rig: &mut Rig, who: ObjId, line: &str) -> (String, Vec<AuthoritativeSubmit>) {
+pub(crate) fn command(rig: &mut Rig, who: ObjId, line: &str) -> (String, Vec<AuthoritativeSubmit>) {
     let out = run(&mut rig.tw, who, line);
     let queued = drain(&mut rig.tw);
     (out, queued)
@@ -676,7 +676,7 @@ fn rigs_of(tw: &TestWorld, pilot: ObjId) -> Vec<ObjId> {
 /// **A Dray-P on Ahuna Flank's pad**, its pilot aboard: chartered, refitted, `n_rigs` rigs
 /// leased, 20 t of reaction mass and 20 crew-days loaded, boarded and hopped there with
 /// `+ship/undock ahuna`; the pilot, the hull's row and the rigs by slot.
-fn on_pad_as(
+pub(crate) fn on_pad_as(
     rig: &mut Rig,
     who: &str,
     seed: i64,
@@ -731,7 +731,7 @@ pub(crate) fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId
     on_pad_as(rig, "Pilot", 1, "Salt Moth", n_rigs)
 }
 
-fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
+pub(crate) fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
     tw.world()
         .module_state::<SpatialState>()
         .expect("the simulation")
@@ -860,7 +860,7 @@ pub(crate) fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
 }
 
 /// How many times `line` appears in `text`.
-fn count(text: &str, line: &str) -> usize {
+pub(crate) fn count(text: &str, line: &str) -> usize {
     text.matches(line).count()
 }
 
@@ -1115,7 +1115,7 @@ pub(crate) fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
 /// append never reached the store — harmless until a placement sealed a ledger chunk, which the
 /// house yard's lay-up and its drones' placements made happen here (a reboot then refused the
 /// unsealed chunk 0 and the gap after it). The world's own writes fold first, then these.
-fn keeping<T>(rig: &mut Rig, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
+pub(crate) fn keeping<T>(rig: &mut Rig, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
     let mut out = mush_core::Outbox::new();
     let result = {
         let engine = rig.tw.engine_mut();
@@ -1145,7 +1145,7 @@ fn keeping<T>(rig: &mut Rig, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T 
 }
 
 /// Staff place `tv` `Direct` on `domain` at `(x, y)`, facing south.
-fn staff_place_on(rig: &mut Rig, tv: ObjId, domain: mush_sim::DomainId, x: i64, y: i64) {
+pub(crate) fn staff_place_on(rig: &mut Rig, tv: ObjId, domain: mush_sim::DomainId, x: i64, y: i64) {
     let placed = keeping(rig, |ctx| {
         let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
             .map_err(|e| e.to_string())?;
@@ -1166,7 +1166,7 @@ fn staff_place_on(rig: &mut Rig, tv: ObjId, domain: mush_sim::DomainId, x: i64, 
 }
 
 /// Staff place `tv` back `Interior` in `row`'s bay compartment.
-fn staff_bay(rig: &mut Rig, tv: ObjId, row: &HullRow) {
+pub(crate) fn staff_bay(rig: &mut Rig, tv: ObjId, row: &HullRow) {
     let bay = ObjId(row.rooms[&cid("bay")]);
     let slot = mush_sim::SlotId::new("rigs").expect("a slot");
     let placed = keeping(rig, |ctx| {
@@ -3967,8 +3967,10 @@ fn staff_close_is_reported_once_after_a_new_action_starts() {
     let current = record_of(&mut rig.tw, tv).expect("the new recover");
     let recover = current.act.as_ref().expect("the new recover is active");
     assert!(recover.ordinal > receipt.ordinal);
+    // Doc 23 cut S.3 (A1): the close abandoned the rig's open epoch, so its notice is the
+    // owner's one notice of the abandonment.
     let notice = format!(
-        "Staff closed rig #{}'s excursion and cancelled its work. Its location and hopper are unchanged.",
+        "Staff closed rig #{}'s excursion and cancelled its work. It stands where it is, abandoned, until staff bring it home; its hopper is unchanged.",
         tv.0
     );
 

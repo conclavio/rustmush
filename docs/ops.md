@@ -1173,12 +1173,16 @@ Royalty or a character with `SIM_ADMIN` can operate on an explicit rig object id
 ```text
 @tacsim/tv close #<rig>
 @tacsim/tv home #<rig>
+@tacsim/tv home #<rig> #<hull>
 @tacsim/tv unload #<rig>
 ```
 
 `close` closes the excursion, cancels the rig's active work, fill plan and queued
 unload, and releases its mining pocket locks. It leaves the rig where it stands
-and preserves its hopper and charge.
+and preserves its hopper and charge. A close with the rig out of its bay abandons
+it: the rig stands where it is, flagged abandoned with the instant, until staff
+bring it home; nothing else clears the flag, no act takes it out again, and its
+carrier cannot lift with it out. The operator is told once.
 Use it to clear another pilot's orphaned work after correcting the underlying cause.
 
 `home` performs the same cancellation and requests return to the rig's existing
@@ -1186,6 +1190,22 @@ assigned bay room and compartment. The hull must be docked at a site or normal p
 The request is durable before placement; the surface tick completes it, including
 after restart. It preserves the hopper and charge; bay charging starts when the
 return is confirmed. Use this for a stranded rig or a rig staff moved out of place.
+A home of an abandoned rig is a recovery; the rig's black box names the staff
+member who recovered it.
+
+`home #<rig> #<hull>` brings an abandoned rig into another hull's bay: the named
+hull must be a carrier with a readable bay and room in it, settled on the site the
+rig stands on (any hull — another player's or a house's). A rig that is not
+abandoned is refused ("home it into its own hull"), as is a hull not settled on
+the rig's site, a bay with no room, and a rig whose lease has lapsed. The rig
+stays abandoned until the placement lands; its black box closes only then, naming
+the hull it was brought into and the staff member who did it. While the request
+waits (the hull lifted, its bay changed or filled) the notice names its remedy —
+`@tacsim/tv home #<rig> #<hull>` again, into that hull or another on the site — and
+`@tacsim/tv close #<rig>` cancels it in place, the rig still abandoned. The rig's
+lease is untouched: the yard still leases it to its lessee on the first hull, and
+the recovering hull lifts with it aboard. What either party may then do with it is
+not yet ruled (doc 23 §8).
 
 A blocked home reports its reason once to the staff member and operator. Correct
 the cause and let it retry, or issue `@tacsim/tv home #<rig>` to replace the request

@@ -240,6 +240,8 @@ fn s2_ceres_to_stickney_opens_and_closes() {
             at_ic: arrival,
             close: IcCloseKind::ReturnedToBase { base: stickney },
             abandoned: false,
+            abandoned_ic: None,
+            recovered_by: None,
             unrecorded: false,
         }
     );

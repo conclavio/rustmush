@@ -1093,6 +1093,13 @@ pub struct OpenSortie {
     /// and flagged until a home or a recover closes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub abandoned: bool,
+    /// **The IC instant staff abandoned it** (doc 23 cut S.3, the lead's A1; D-23-4: "flagged
+    /// `abandoned` with the instant"): the instant of the staff `close` that first set
+    /// [`OpenSortie::abandoned`] — a second `close` keeps the first instant. The flag and the
+    /// instant live until the epoch closes (a home or a recover takes the record's `sortie`)
+    /// and nothing else clears them. Skipped when `None` (schema 1 stands).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abandoned_ic: Option<i64>,
     /// **Whether the epoch's open line was never written** (the S.1 fix round's F2): the black
     /// box was dark or full, or the open was prepared off the composed path. The epoch is real
     /// either way; the close line carries the flag so an inspection tells "no line" from "no
@@ -1325,6 +1332,10 @@ impl RigRecord {
                 .is_some_and(|open| open.id.launch_ic != at_ic)
             {
                 return Err("an epoch and its open excursion name one launch".to_owned());
+            }
+            // Doc 23 cut S.3 (A1): the abandonment's instant belongs to an abandoned epoch.
+            if sortie.abandoned_ic.is_some() && !sortie.abandoned {
+                return Err("only an abandoned epoch carries its abandonment's instant".to_owned());
             }
         }
         if let Some(last) = &self.last {

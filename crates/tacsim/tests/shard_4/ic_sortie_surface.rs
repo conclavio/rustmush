@@ -11,6 +11,13 @@
 //! world task's composed path, so the black box participant appends in each finish's own bundle
 //! and its chunk reaches the store a reboot boots from. Every world asserts no namespace write
 //! was refused.
+//!
+//! **Doc 23 cut S.3 — abandonment and recovery** (doc 23 §2 "Recovery", "Abandonment", §4
+//! D-23-4, §9's S.3 row; the S.3 brief's lead rulings A1–A6): the `s3_` tests below — an
+//! abandoned rig keeps its flag and its instant, told once; a staff home of an abandoned rig is
+//! a recovery, naming its recoverer; a home mid-excursion still returns; a second carrier brings
+//! another's abandoned rig in; the home's refusals; and a ship placed into a hangar port is
+//! recovered.
 
 use mush_core::ObjId;
 use tacsim::arena::mind::SortieId;
@@ -22,9 +29,10 @@ use tacsim::surface::{ActKind, ActResult, RefusedCode, TvState};
 use mush_roll::commerce::ic_claims::IcCloseKind;
 
 use crate::excursions::{
-    RAMP, act_go, due_of, finish, finishes, fire, in_bay, land, land_all, no_refused_writes,
-    on_pad, projection, put_charge, reboot_with, record_of, recovery_order, recovery_staff,
-    staff_place, stocked, store,
+    RAMP, act_go, command, count, due_of, finish, finishes, fire, in_bay, keeping, land, land_all,
+    no_refused_writes, on_pad, on_pad_as, port_map, projection, prospector, put_charge,
+    reboot_with, record_of, recovery_order, recovery_staff, said, staff_bay, staff_place,
+    staff_place_on, stocked, store,
 };
 
 /// A hull's black box lines, decoded (the store's open tail); every entry decodes (the fix
@@ -197,6 +205,8 @@ fn s1_one_excursion_opens_and_closes_across_a_restart() {
             at_ic: due,
             close: IcCloseKind::ReturnedToBase { base: hull },
             abandoned: false,
+            abandoned_ic: None,
+            recovered_by: None,
             unrecorded: false,
         }
     );
@@ -289,6 +299,11 @@ fn s1_a_parked_rig_keeps_its_epoch_until_staff_home_recovers_it() {
     assert_eq!(*sortie, open.id);
     assert_eq!(*close, IcCloseKind::RecoveredToBase { base: hull });
     assert!(!abandoned);
+    // Doc 23 cut S.3 (A3): a parked rig's recovery names the staff actor who brought it in.
+    assert!(
+        matches!(&both[1], BlackBoxLine::SortieClosed { recovered_by: Some(by), abandoned_ic: None, .. } if *by == staff),
+        "{both:?}"
+    );
     for _ in 0..3 {
         let (_, queued) = fire(&mut rig);
         land_all(&mut rig, &queued);
@@ -307,8 +322,11 @@ fn s1_a_parked_rig_keeps_its_epoch_until_staff_home_recovers_it() {
 
 /// **3. A staff close with the rig out flags the epoch and keeps it** (§10 tier 1 item 3;
 /// D-23-4; L5): after the launch's end, staff `close` clears the excursion and keeps the epoch,
-/// `abandoned`, with no `sortie_closed` line; a staff `home` then closes it `returned_to_base`
-/// with `abandoned` on the line.
+/// `abandoned`, with no `sortie_closed` line; a staff `home` then closes it with `abandoned` on
+/// the line. **Doc 23 cut S.3** (A1–A3; the S.3 brief's test 2, amending this one): the close's
+/// IC instant is the epoch's `abandoned_ic`, and a staff home of an abandoned rig is a recovery
+/// — `recovered_to_base` into its own hull (S.1 asserted `returned_to_base`), the staff actor
+/// the recoverer, `abandoned_ic` on the line; the record's epoch is gone.
 #[test]
 fn s1_a_staff_close_with_the_rig_out_flags_and_keeps_the_epoch() {
     let mut rig = stocked();
@@ -321,11 +339,17 @@ fn s1_a_staff_close_with_the_rig_out_flags_and_keeps_the_epoch() {
         .and_then(|record| record.sortie)
         .expect("the epoch is open");
     let staff = recovery_staff(&mut rig.tw);
+    let t = rig.tw.world().world_ic_now().at;
     recovery_order(&mut rig, staff, "close", tv);
     let record = record_of(&mut rig.tw, tv).expect("the record");
     assert_eq!(record.excursion, None, "the close clears the excursion");
     let kept = record.sortie.clone().expect("the epoch is kept");
     assert!(kept.abandoned, "flagged abandoned");
+    assert_eq!(
+        kept.abandoned_ic,
+        Some(t),
+        "with the close's instant (S.3, A1)"
+    );
     assert_eq!(kept.id, open.id);
     assert_eq!(lines(&rig, tv).len(), 1, "abandonment closes nothing");
     for _ in 0..3 {
@@ -345,13 +369,23 @@ fn s1_a_staff_close_with_the_rig_out_flags_and_keeps_the_epoch() {
     let both = lines(&rig, tv);
     assert_eq!(both.len(), 2, "{both:?}");
     let BlackBoxLine::SortieClosed {
-        close, abandoned, ..
+        close,
+        abandoned,
+        abandoned_ic,
+        recovered_by,
+        ..
     } = &both[1]
     else {
         panic!("the close line: {both:?}");
     };
-    assert_eq!(*close, IcCloseKind::ReturnedToBase { base: hull });
+    assert_eq!(
+        *close,
+        IcCloseKind::RecoveredToBase { base: hull },
+        "a staff home of an abandoned rig is a recovery (S.3, A2)"
+    );
     assert!(*abandoned, "the line carries the flag");
+    assert_eq!(*abandoned_ic, Some(t), "and its instant (S.3, A1)");
+    assert_eq!(*recovered_by, Some(staff), "and the recoverer (S.3, A3)");
     no_refused_writes(&rig.tw);
 }
 
@@ -449,7 +483,8 @@ fn s1_a_re_run_finish_mints_nothing() {
 /// the act clear, and the epoch the finish would have opened opens in the close's own commit,
 /// abandoned on the record (never on the line), with one `mind_sealed` line as the finish would
 /// have written it. The held finish is refused as stale and writes nothing; a staff `home` then
-/// closes the epoch `returned_to_base`, abandoned.
+/// closes the epoch, abandoned — **doc 23 cut S.3** (A2): `recovered_to_base`, a staff home of
+/// an abandoned rig being a recovery (S.1 asserted `returned_to_base`).
 #[test]
 fn s1_a_staff_close_before_the_launch_finish_opens_the_epoch_abandoned() {
     let mut rig = stocked();
@@ -516,7 +551,11 @@ fn s1_a_staff_close_before_the_launch_finish_opens_the_epoch_abandoned() {
         panic!("the close line: {both:?}");
     };
     assert_eq!(*sortie, open.id);
-    assert_eq!(*close, IcCloseKind::ReturnedToBase { base: hull });
+    assert_eq!(
+        *close,
+        IcCloseKind::RecoveredToBase { base: hull },
+        "a staff home of an abandoned rig is a recovery (S.3, A2)"
+    );
     assert!(*abandoned && !*unrecorded);
     no_refused_writes(&rig.tw);
 }
@@ -664,5 +703,639 @@ fn s2_a_rig_launched_on_a_pad_names_its_carriers_open_epoch() {
         "the ship's epoch is still open after the rig's recover"
     );
     assert_eq!(lines(&rig, hull), shipped, "the ship's box is unmoved");
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 23 cut S.3 — abandonment and recovery
+// ---------------------------------------------------------------------------
+
+/// The world's IC instant.
+fn ic_now(rig: &crate::excursions::Rig) -> i64 {
+    rig.tw.world().world_ic_now().at
+}
+
+/// A rig's open epoch's abandonment: `(abandoned, abandoned_ic)`.
+fn abandonment(rig: &mut crate::excursions::Rig, tv: ObjId) -> Option<(bool, Option<i64>)> {
+    record_of(&mut rig.tw, tv)
+        .and_then(|record| record.sortie)
+        .map(|open| (open.abandoned, open.abandoned_ic))
+}
+
+/// The abandonment notice (A1): the close receipt's line to the operator.
+fn abandoned_notice(tv: ObjId) -> String {
+    format!(
+        "Staff closed rig #{}'s excursion and cancelled its work. It stands where it is, \
+         abandoned, until staff bring it home; its hopper is unchanged.",
+        tv.0
+    )
+}
+
+/// The plain close's notice: a close that abandons nothing new.
+fn plain_close_notice(tv: ObjId) -> String {
+    format!(
+        "Staff closed rig #{}'s excursion and cancelled its work. Its location and hopper are \
+         unchanged.",
+        tv.0
+    )
+}
+
+/// Fire `n` times, landing everything; how many times `who` heard `line`.
+fn fire_and_count(rig: &mut crate::excursions::Rig, n: usize, who: ObjId, line: &str) -> usize {
+    let mut heard = 0;
+    for _ in 0..n {
+        let (events, queued) = fire(rig);
+        heard += count(&said(&rig.tw, &events, who), line);
+        land_all(rig, &queued);
+    }
+    heard
+}
+
+/// **S.3 test 1. An abandoned rig keeps its flag and its instant across a restart** (A1;
+/// D-23-4): launched, finished and closed by staff at IC `t`, the record's epoch is
+/// `abandoned` with `abandoned_ic == Some(t)`, and after a reboot the same. The lessee's launch
+/// from the ground is refused as the rig is out of the bay; a second staff `close` keeps `t`;
+/// and once staff put the rig back in its bay by hand, a launch is refused by S.1's start
+/// refusal — no act takes an abandoned rig out. The operator heard the abandonment notice
+/// exactly once, counted across the reboot (the second close says the plain close).
+#[test]
+fn s3_an_abandoned_rig_keeps_its_flag_and_its_instant_across_a_restart() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let staff = recovery_staff(&mut rig.tw);
+    let t = ic_now(&rig);
+    recovery_order(&mut rig, staff, "close", tv);
+    assert_eq!(abandonment(&mut rig, tv), Some((true, Some(t))));
+    let notice = abandoned_notice(tv);
+    let mut heard = fire_and_count(&mut rig, 3, pilot, &notice);
+    assert_eq!(heard, 1, "the owner is told once");
+
+    let mut rig = reboot_with(rig, &[pilot, staff]);
+    assert_eq!(
+        abandonment(&mut rig, tv),
+        Some((true, Some(t))),
+        "the flag and the instant survive a restart"
+    );
+    heard += fire_and_count(&mut rig, 3, pilot, &notice);
+    assert_eq!(heard, 1, "and not again after the reboot");
+
+    // No act takes it out: from the ground the launch is refused, the rig being out.
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 launch go");
+    assert_eq!(out.trim(), tacsim::port::tv::LAUNCH_OUT.replace("{n}", "1"));
+    assert!(queued.is_empty());
+
+    // A second close keeps the first instant, and says the plain close.
+    assert!(ic_now(&rig) > t, "time moved");
+    recovery_order(&mut rig, staff, "close", tv);
+    assert_eq!(
+        abandonment(&mut rig, tv),
+        Some((true, Some(t))),
+        "a second close keeps the first instant"
+    );
+    let plain = plain_close_notice(tv);
+    let mut told_plain = 0;
+    for _ in 0..3 {
+        let (events, queued) = fire(&mut rig);
+        let said_now = said(&rig.tw, &events, pilot);
+        heard += count(&said_now, &notice);
+        told_plain += count(&said_now, &plain);
+        land_all(&mut rig, &queued);
+    }
+    assert_eq!(heard, 1, "the abandonment is told once in all");
+    assert_eq!(told_plain, 1, "the second close says the plain close, once");
+
+    // Put back in its bay by a staff write, the rig still cannot leave: S.1's start refusal.
+    staff_bay(&mut rig, tv, &row);
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 launch go");
+    assert_eq!(queued.len(), 1, "the start is submitted: {out}");
+    let refused = land(&mut rig, &queued[0]).expect_err("the start is refused");
+    assert!(
+        refused.contains("that rig's last trip is still open; staff must bring it home first"),
+        "{refused}"
+    );
+    assert_eq!(abandonment(&mut rig, tv), Some((true, Some(t))));
+    assert_eq!(lines(&rig, tv).len(), 1, "abandonment closes nothing");
+    no_refused_writes(&rig.tw);
+}
+
+/// **S.3 test 3. A home mid-excursion with the charge to come home still returns** (A2's
+/// "otherwise", A3): launched and finished, never closed, a staff `home` closes the epoch
+/// `returned_to_base` into the Dray-P — not abandoned, no recoverer, no instant.
+#[test]
+fn s3_a_home_mid_excursion_still_returns() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let hull = ObjId(row.hull);
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let open = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.sortie)
+        .expect("the epoch is open");
+    let staff = recovery_staff(&mut rig.tw);
+    let t = ic_now(&rig);
+    recovery_order(&mut rig, staff, "home", tv);
+    assert_eq!(
+        record_of(&mut rig.tw, tv).and_then(|record| record.sortie),
+        None
+    );
+    let both = lines(&rig, tv);
+    assert_eq!(both.len(), 2, "{both:?}");
+    assert_eq!(
+        both[1],
+        BlackBoxLine::SortieClosed {
+            unit: tv,
+            sortie: open.id,
+            at_ic: t,
+            close: IcCloseKind::ReturnedToBase { base: hull },
+            abandoned: false,
+            abandoned_ic: None,
+            recovered_by: None,
+            unrecorded: false,
+        }
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// `@tacsim/tv home #<tv> #<into>` as staff, and exactly one recovery queued; landed.
+fn home_into(rig: &mut crate::excursions::Rig, staff: ObjId, tv: ObjId, into: ObjId) {
+    let line = format!("@tacsim/tv home #{} #{}", tv.0, into.0);
+    let (out, queued) = command(rig, staff, &line);
+    assert_eq!(queued.len(), 1, "{line}: {out}");
+    assert_eq!(queued[0].actor, staff);
+    assert_eq!(
+        queued[0].action.key().id.as_str(),
+        "tacsim_surface_recovery"
+    );
+    land_all(rig, &queued);
+}
+
+/// A launched and finished rig on Ahuna Flank, abandoned by a staff `close`, its carrier then
+/// taken off the pad by a staff write (`mush_sim::unplace` through `keeping`, so `berth_of`
+/// reads `Elsewhere`), the Tally Moth flown in and settled beside it before that: the pilot, the
+/// carrier, the rig, the staff actor, the close's instant, and the Tally Moth's pilot and row.
+fn abandoned_and_carrier_gone(
+    rig: &mut crate::excursions::Rig,
+) -> (
+    ObjId,
+    ObjId,
+    ObjId,
+    ObjId,
+    i64,
+    (ObjId, tacsim::port::HullRow),
+) {
+    let (pilot, row, tvs) = on_pad(rig, 1);
+    let tv = tvs[0];
+    let salt = ObjId(row.hull);
+    let _ = act_go(rig, pilot, "+tv/1 launch go");
+    let _ = finish(rig, tv, pilot);
+    let staff = recovery_staff(&mut rig.tw);
+    let t = ic_now(rig);
+    recovery_order(rig, staff, "close", tv);
+    // The second carrier flies in first: a programme hull taken off every map holds the Co-op's
+    // enrolment ("the programme is still being set up"), so the Tally Moth enrols and flies
+    // while the Salt Moth still stands on the pad beside it, then the Salt Moth is taken away.
+    let (other, tally_row, none) = on_pad_as(rig, "Other", 2, "Tally Moth", 0);
+    assert!(none.is_empty());
+    keeping(rig, |ctx| {
+        mush_sim::unplace(
+            ctx,
+            salt,
+            "doc 23 cut S.3: the abandoned rig's carrier is gone",
+        )
+    })
+    .expect("staff take the Salt Moth off the pad");
+    assert!(matches!(
+        tacsim::port::ship::berth_of(rig.tw.world(), salt),
+        tacsim::port::ship::Berth::Elsewhere
+    ));
+    (pilot, salt, tv, staff, t, (other, tally_row))
+}
+
+/// **S.3 test 4. A second carrier recovers an abandoned rig** (A4; §2 "Recovery"; D-23-2): the
+/// Salt Moth's rig is launched, finished and abandoned on Ahuna Flank; the Tally Moth, another
+/// pilot's Dray-P with no rigs, flies Ceres to Ahuna by the production path and settles; then the
+/// Salt Moth is taken off the pad by a staff write. Staff `home #<rig> #<Tally Moth>`: the receipt
+/// keeps the assigned hull and names the recoverer (`into`) with the recoverer's bay, and (the
+/// fix round's R1) leaves the epoch open and abandoned, with no line. Across a reboot between the
+/// order and the completion, the tick places the rig `Interior` in the Tally Moth's bay and the
+/// finish lands, closing the epoch `recovered_to_base` into the Tally Moth, the staff actor the
+/// recoverer, abandoned with its instant; the operator hears the home naming the Tally Moth, and
+/// the projection reads `Out` (R3: a foreign bay, as the tick reads it). The lease is untouched;
+/// the lessee's `+tv/1 launch` is refused with `LAUNCH_NOT_SITE` — because the lessee's own hull
+/// is off the pad, not because the rig sits in another hull's bay (today's behaviour; doc 23 §8
+/// defers what either may do) — and the Tally Moth's `+ship/lift` is filed, not held: the
+/// departure guard walks the hull's leased rigs, and the rig rides along.
+#[test]
+fn s3_a_second_carrier_recovers_an_abandoned_rig() {
+    let mut rig = stocked();
+    let (pilot, salt, tv, staff, t, (other, tally_row)) = abandoned_and_carrier_gone(&mut rig);
+    let tally = ObjId(tally_row.hull);
+    let lease = store(&rig.tw).tv_lease_on(tv).cloned().expect("the lease");
+    assert_eq!(lease.hull, salt);
+
+    home_into(&mut rig, staff, tv, tally);
+    let record = record_of(&mut rig.tw, tv).expect("the record");
+    assert_eq!(
+        record
+            .sortie
+            .as_ref()
+            .map(|open| (open.abandoned, open.abandoned_ic)),
+        Some((true, Some(t))),
+        "the epoch stays open and abandoned until the completion (R1)"
+    );
+    let receipt = record.recovery.expect("the receipt");
+    assert_eq!(
+        (receipt.into, receipt.hull, receipt.pending),
+        (Some(tally), salt, true),
+        "the receipt names the recoverer and keeps the assigned hull"
+    );
+    assert_eq!(
+        receipt.bay_room,
+        Some(ObjId(
+            tally_row.rooms[&mush_core::CanonicalId::new("bay").expect("an id")]
+        )),
+        "the recoverer's bay"
+    );
+    assert_eq!(
+        lines(&rig, tv).len(),
+        1,
+        "no close line at the receipt (R1)"
+    );
+
+    let mut rig = reboot_with(rig, &[pilot, other, staff]);
+    let notice = format!(
+        "Staff brought rig #{} into hull #{}'s bay. Its hopper is unchanged; unload it before \
+         departure.",
+        tv.0, tally.0
+    );
+    let heard = fire_and_count(&mut rig, 4, pilot, &notice);
+    assert!(
+        in_bay(&rig.tw, tv, &tally_row),
+        "the rig lands Interior in the recoverer's bay"
+    );
+    assert!(
+        record_of(&mut rig.tw, tv)
+            .and_then(|record| record.recovery)
+            .is_some_and(|receipt| !receipt.pending),
+        "the finish landed"
+    );
+    assert_eq!(
+        heard, 1,
+        "the operator hears the home, naming the recoverer"
+    );
+    assert_one_recovery_into(&rig, tv, tally, (t, staff));
+    assert_eq!(
+        record_of(&mut rig.tw, tv).and_then(|record| record.sortie),
+        None,
+        "the completion took the epoch"
+    );
+    assert_eq!(
+        projection(&rig.tw, tv).map(|rec| rec.state),
+        Some(TvState::Out),
+        "a foreign bay reads out (R3)"
+    );
+    assert_eq!(
+        store(&rig.tw).tv_lease_on(tv),
+        Some(&lease),
+        "the lease is untouched"
+    );
+    after_the_recovery(&mut rig, (pilot, other), tv);
+    no_refused_writes(&rig.tw);
+}
+
+/// **The rig's black box holds its open line and exactly one close**: `recovered_to_base` into
+/// `base`, abandoned at `t`, recovered by `staff` (the fix round's R1: written at the completion,
+/// into the hull the rig landed in).
+fn assert_one_recovery_into(
+    rig: &crate::excursions::Rig,
+    tv: ObjId,
+    base: ObjId,
+    (t, staff): (i64, ObjId),
+) {
+    let all = lines(rig, tv);
+    let closes: Vec<&BlackBoxLine> = all
+        .iter()
+        .filter(|line| matches!(line, BlackBoxLine::SortieClosed { .. }))
+        .collect();
+    assert_eq!((all.len(), closes.len()), (2, 1), "{all:?}");
+    let BlackBoxLine::SortieClosed {
+        close,
+        abandoned,
+        abandoned_ic,
+        recovered_by,
+        ..
+    } = closes[0]
+    else {
+        panic!("the close line: {all:?}");
+    };
+    assert_eq!(*close, IcCloseKind::RecoveredToBase { base });
+    assert_eq!(
+        (*abandoned, *abandoned_ic, *recovered_by),
+        (true, Some(t), Some(staff))
+    );
+}
+
+/// **The fix round's R2 (a). A second-carrier home waits while its hull is gone, then completes**
+/// (R1 (d)): ordered into the Tally Moth, which staff then take off the pad before any surface
+/// fire (`mush_sim::unplace` through `keeping`) — the next fires tell the wait once, naming the
+/// retry into the Tally Moth, and the rig's epoch is still open and abandoned, with no close line.
+/// Staff place the Tally Moth back on Ahuna's domain (`staff_place_on`); the next fires place the
+/// rig in its bay and the finish closes the epoch into the Tally Moth — the hull it landed in —
+/// with exactly one `sortie_closed` line.
+#[test]
+fn s3_a_second_carrier_home_waits_while_its_hull_is_gone() {
+    let mut rig = stocked();
+    let (_, _, tv, staff, t, (_, tally_row)) = abandoned_and_carrier_gone(&mut rig);
+    let tally = ObjId(tally_row.hull);
+    home_into(&mut rig, staff, tv, tally);
+    keeping(&mut rig, |ctx| {
+        mush_sim::unplace(ctx, tally, "doc 23 cut S.3: the recovering hull leaves")
+    })
+    .expect("staff take the Tally Moth off the pad");
+    let wait = format!(
+        "Rig #{0} recovery is waiting: the recovering hull is no longer settled on the rig's \
+         site. Staff can retry @tacsim/tv home #{0} #{1} or cancel with @tacsim/tv close #{0}.",
+        tv.0, tally.0
+    );
+    assert_eq!(fire_and_count(&mut rig, 3, staff, &wait), 1, "told once");
+    assert_eq!(
+        abandonment(&mut rig, tv),
+        Some((true, Some(t))),
+        "the epoch is still open and abandoned"
+    );
+    assert_eq!(lines(&rig, tv).len(), 1, "no close line while it waits");
+    assert!(!in_bay(&rig.tw, tv, &tally_row));
+
+    let ahuna = mush_sim::DomainId(
+        port_map(&rig.tw, "ahuna_port")
+            .domain
+            .expect("Ahuna's domain"),
+    );
+    staff_place_on(&mut rig, tally, ahuna, 0, 0);
+    let _ = fire_and_count(&mut rig, 4, staff, &wait);
+    assert!(
+        in_bay(&rig.tw, tv, &tally_row),
+        "the rig lands in the Tally Moth"
+    );
+    assert_eq!(
+        record_of(&mut rig.tw, tv).and_then(|record| record.sortie),
+        None
+    );
+    assert_one_recovery_into(&rig, tv, tally, (t, staff));
+    no_refused_writes(&rig.tw);
+}
+
+/// A staff home into `into` refused with `answer`: nothing queued, nothing written.
+fn refused_home_into(
+    rig: &mut crate::excursions::Rig,
+    (staff, tv, into): (ObjId, ObjId, ObjId),
+    answer: &str,
+) {
+    let before = record_of(&mut rig.tw, tv);
+    let _ = rig.tw.take_module_ops();
+    let (out, queued) = command(
+        rig,
+        staff,
+        &format!("@tacsim/tv home #{} #{}", tv.0, into.0),
+    );
+    assert_eq!(out.trim(), answer);
+    assert!(queued.is_empty(), "a refused home queues nothing");
+    assert!(
+        rig.tw.take_module_ops().is_empty(),
+        "a refused home writes nothing"
+    );
+    assert_eq!(record_of(&mut rig.tw, tv), before);
+}
+
+/// **The fix round's R2 (b). A home into a full bay is refused** (R1 (c)): the Tally Moth settles
+/// on Ahuna beside the Salt Moth with both its bay's rigs aboard, so a home of the Salt Moth's
+/// abandoned rig into it answers "That hull's bay has no room for the rig." and writes nothing.
+#[test]
+fn s3_a_home_into_a_full_bay_is_refused() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let staff = recovery_staff(&mut rig.tw);
+    recovery_order(&mut rig, staff, "close", tv);
+    let (_, tally_row, theirs) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 2);
+    assert!(theirs.iter().all(|own| in_bay(&rig.tw, *own, &tally_row)));
+    refused_home_into(
+        &mut rig,
+        (staff, tv, ObjId(tally_row.hull)),
+        "That hull's bay has no room for the rig.",
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// **The fix round's R2 (b). A home into another hull needs the lease standing**: the rig's lease
+/// is ended by a staff write to its stored document across a reboot (no verb ends a lease with
+/// the rig out), so the rig's identity reads its last receipt and no lease names the hull; a home
+/// into the Tally Moth answers "That rig's lease must stand to recover it into another hull." and
+/// writes nothing.
+#[test]
+fn s3_a_home_into_another_hull_needs_its_lease() {
+    let mut rig = stocked();
+    let (pilot, _, tv, staff, _, (other, tally_row)) = abandoned_and_carrier_gone(&mut rig);
+    let lease = store(&rig.tw).tv_lease_on(tv).cloned().expect("the lease");
+    let mut rig = reboot_with(rig, &[pilot, other, staff]);
+    let ended = ic_now(&rig);
+    {
+        let key = tacsim::port::tv::tv_lease_key(lease.lease);
+        let data = rig.store.get_mut(tacsim::NS).expect("tacsim's documents");
+        let (_, value) = data
+            .kv
+            .iter_mut()
+            .find(|(at, _)| *at == key)
+            .expect("the lease document");
+        value["status"] = serde_json::json!("returned");
+        value["ended_at_ic"] = serde_json::json!(ended);
+    }
+    let mut rig = reboot_with(rig, &[pilot, other, staff]);
+    assert_eq!(store(&rig.tw).tv_lease_on(tv), None, "the lease ended");
+    refused_home_into(
+        &mut rig,
+        (staff, tv, ObjId(tally_row.hull)),
+        "That rig's lease must stand to recover it into another hull.",
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// **The fix round's R4. A replaced abandoning close still tells the owner once**: staff close
+/// the rig out (abandoning its epoch) and close it again before any surface fire — the one
+/// receipt the record keeps is the second, which carries the abandonment forward, so the next
+/// fires tell the abandonment once and the plain close never.
+#[test]
+fn s3_a_replaced_abandoning_close_still_tells_the_owner() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let staff = recovery_staff(&mut rig.tw);
+    recovery_order(&mut rig, staff, "close", tv);
+    recovery_order(&mut rig, staff, "close", tv);
+    assert!(
+        record_of(&mut rig.tw, tv)
+            .and_then(|record| record.recovery)
+            .is_some_and(|receipt| receipt.abandoned),
+        "the second receipt carries the notice"
+    );
+    let mut abandoned = 0;
+    let mut plain = 0;
+    for _ in 0..3 {
+        let (events, queued) = fire(&mut rig);
+        let heard = said(&rig.tw, &events, pilot);
+        abandoned += count(&heard, &abandoned_notice(tv));
+        plain += count(&heard, &plain_close_notice(tv));
+        land_all(&mut rig, &queued);
+    }
+    assert_eq!((abandoned, plain), (1, 0));
+    no_refused_writes(&rig.tw);
+}
+
+/// Today's behaviour once another hull holds the rig (A4; doc 23 §8 defers it): the lessee's
+/// launch is refused, and the recoverer's lift is filed (its guard walks its own leased rigs).
+fn after_the_recovery(rig: &mut crate::excursions::Rig, (pilot, other): (ObjId, ObjId), tv: ObjId) {
+    let before = record_of(&mut rig.tw, tv);
+    let (out, queued) = command(rig, pilot, "+tv/1 launch go");
+    assert!(
+        queued.is_empty(),
+        "the lessee's launch submits nothing: {out}"
+    );
+    assert_eq!(
+        out.trim(),
+        tacsim::port::tv::LAUNCH_NOT_SITE.replace("{name}", "Salt Moth"),
+        "the lessee's hull is off the pad"
+    );
+    assert_eq!(record_of(&mut rig.tw, tv), before);
+    let (out, queued) = command(rig, other, "+ship/lift ceres");
+    assert!(
+        out.contains("Clearance filed for "),
+        "the lift is not held: {out}"
+    );
+    assert_eq!(queued.len(), 1, "one burn: {out}");
+}
+
+/// **S.3 test 5. A home into another hull is refused unless the rig is abandoned and the hull is
+/// settled on its site** (A4): `home #<rig> #<hull>` on a rig whose epoch is open but not
+/// abandoned answers "That rig is not abandoned; home it into its own hull."; once abandoned,
+/// naming a Dray-P docked at Ceres, or an object that is no carrier, answers "That hull is not
+/// settled on the rig's site with a readable bay." Each refusal queues nothing and writes
+/// nothing.
+#[test]
+fn s3_a_home_into_another_hull_is_refused_off_the_rule() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let (_, ceres_row) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    let at_ceres = ObjId(ceres_row.hull);
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let staff = recovery_staff(&mut rig.tw);
+    let refuse = |rig: &mut crate::excursions::Rig, into: ObjId, answer: &str| {
+        let before = record_of(&mut rig.tw, tv);
+        let _ = rig.tw.take_module_ops();
+        let (out, queued) = command(
+            rig,
+            staff,
+            &format!("@tacsim/tv home #{} #{}", tv.0, into.0),
+        );
+        assert_eq!(out.trim(), answer);
+        assert!(queued.is_empty(), "a refused home queues nothing");
+        assert!(
+            rig.tw.take_module_ops().is_empty(),
+            "a refused home writes nothing"
+        );
+        assert_eq!(record_of(&mut rig.tw, tv), before);
+    };
+    refuse(
+        &mut rig,
+        at_ceres,
+        "That rig is not abandoned; home it into its own hull.",
+    );
+    recovery_order(&mut rig, staff, "close", tv);
+    for into in [at_ceres, pilot] {
+        refuse(
+            &mut rig,
+            into,
+            "That hull is not settled on the rig's site with a readable bay.",
+        );
+    }
+    assert!(!in_bay(&rig.tw, tv, &row));
+    assert_eq!(lines(&rig, tv).len(), 1);
+    no_refused_writes(&rig.tw);
+}
+
+/// **S.3 test 6. A ship placed into a hangar port is recovered** (A5; §2 "Recovery"): the Salt
+/// Moth flew Ceres to Ahuna Flank under an open epoch and is settled there; staff place it into
+/// Stickney's berth — `mush_sim::place` `Direct` on Stickney's domain through `keeping`
+/// (`staff_place_on`), the write the arrival itself makes, so `berth_of` reads `Docked` at
+/// Stickney, a hangar port. Its own journey (to Ahuna) never arrived at Stickney, so the next
+/// port fire closes the epoch `recovered_to_base` into Stickney's host room at the IC now, naming
+/// no recoverer; the journey book is untouched. (A passage that docks by its own drive still
+/// closes `returned_to_base`: S.2's `s2_ceres_to_stickney_opens_and_closes`, unchanged.)
+#[test]
+fn s3_a_ship_placed_into_a_hangar_port_is_recovered() {
+    let mut rig = stocked();
+    let (_, row, _) = on_pad(&mut rig, 0);
+    let hull = ObjId(row.hull);
+    let ship = ship_epoch(&mut rig, hull).expect("the Salt Moth's epoch is open on the pad");
+    let journey = |rig: &crate::excursions::Rig| {
+        rig.tw
+            .world()
+            .module_state::<mush_sim::JourneyBook>()
+            .and_then(|book| book.get(hull).cloned())
+    };
+    let flown = journey(&rig).expect("the journey to Ahuna");
+    let stickney = port_map(&rig.tw, "stickney_port");
+    let domain = mush_sim::DomainId(stickney.domain.expect("Stickney's domain"));
+    let host = ObjId(stickney.host.expect("Stickney's host room"));
+    staff_place_on(&mut rig, hull, domain, 0, 0);
+    assert!(
+        tacsim::port::ship::hangar_port_of(rig.tw.world(), hull).is_some(),
+        "docked at Stickney, a hangar port"
+    );
+    let pages = tacsim::port::epoch_pages(rig.tw.world());
+    let mut closed_at = None;
+    for _ in 0..3 {
+        let (_, queued) = fire(&mut rig);
+        let epoch = queued
+            .iter()
+            .any(|submit| submit.action.key().id.as_str() == tacsim::port::EPOCH_ACTION);
+        land_all(&mut rig, &queued);
+        if epoch {
+            closed_at = Some(ic_now(&rig));
+            break;
+        }
+    }
+    let at = closed_at.expect("the next port fire closes the epoch");
+    assert_eq!(ship_epoch(&mut rig, hull), None, "the epoch is closed");
+    let both = lines(&rig, hull);
+    assert_eq!(both.len(), 2, "{both:?}");
+    assert_eq!(
+        both[1],
+        BlackBoxLine::SortieClosed {
+            unit: hull,
+            sortie: ship.id,
+            at_ic: at,
+            close: IcCloseKind::RecoveredToBase { base: host },
+            abandoned: false,
+            abandoned_ic: None,
+            recovered_by: None,
+            unrecorded: false,
+        }
+    );
+    assert_eq!(journey(&rig), Some(flown), "the journey book is untouched");
+    assert_eq!(
+        tacsim::port::epoch_pages(rig.tw.world()),
+        pages + 1,
+        "the recovered close is paged once (the fix round's R7)"
+    );
     no_refused_writes(&rig.tw);
 }

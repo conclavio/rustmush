@@ -1,6 +1,6 @@
 # 23. IC sorties — the seal epoch, the voyage, and the hosts that open and close one
 
-**Draft 0.6, 2026-10-27 — S.0, S.1 and S.2 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+**Draft 0.7, 2026-10-27 — S.0 to S.3 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
 same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
@@ -346,6 +346,7 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
 - **S.3 — Abandonment and recovery (small).** The `abandoned` flag's lifetime and the owner's one
   notice; `RecoveredToBase` when a second carrier recovers another's rig and the black box names
   the recoverer; a carrier destroyed with rigs out (reserved until a destruction path exists).
+  *As built: §14 (the second carrier's close lands at the placement, not at the order).*
 - **S.4 — The first IC mind: the claim, the pool and the resume rule, with the drone phase
   (medium; lands inside D-UM-47's cut, not before).** The `StartPermit`/`CloseEvent` producer on
   the surface tick for a drone flying a held mind, replacing `participant.rs`'s fixture boundary and
@@ -647,6 +648,111 @@ as its hangar (D-23-2; §10 item 2).
   pinned IC span moved 46,297 → 46,897, one 600 IC s step of the queue's tail: the sell step after
   the docking back at Ceres waits the fire the close takes — V1's accepted window, now visible in
   a pin. Nothing in the arm or the record moved.
+
+### S.3 — abandonment and recovery, as built (2026-10-27, branch `claude/ic-sorties-s3`, on S.2)
+
+Built from S.2 (`8fb432ab`, PR #45 with its CI fix round) through the cut loop: the lead's brief
+with six rulings A1–A6 (`plan-data/ic-sorties/cuts/S.3/brief.md`), one builder, one lens, one fix
+round in which the lead ruled R1 (below). This is the last custody cut before the drone phase
+(S.4): the `abandoned` flag has a lifetime and an instant, a home of an abandoned rig is a
+recovery and the black box names the recoverer, a second carrier may bring another's rig in, and a
+ship docked at a hangar its own journey did not bring it to closes recovered.
+
+- **The flag's lifetime and the owner's one notice (A1, D-23-4).** `OpenSortie` gains
+  `abandoned_ic: Option<i64>` (serde default, skipped when `None`; `RigRecord::check` refuses an
+  instant without the flag): the IC instant of the staff `close` that abandoned the rig, set at
+  both abandoning sites (the plain close with the rig out and the close-window case F3 that opens
+  the epoch abandoned); a second close keeps the first instant. Nothing clears the flag but the
+  epoch's close — no act takes an abandoned rig out (the command layer refuses `LAUNCH_OUT` from
+  the ground; S.1's start refusal "that rig's last trip is still open; staff must bring it home
+  first" is reachable only after a staff write back into the bay, and both are pinned) and the
+  carrier cannot lift with it out (D-20-7, the departure guard, untouched). The close receipt's
+  line to the operator is the one notice, reworded: *Staff closed rig #n's excursion and cancelled
+  its work. It stands where it is, abandoned, until staff bring it home; its hopper is unchanged.*
+  — told once through `recovery_told`, not again after a reboot, and carried onto a replacing
+  receipt when the replaced one was an untold abandoning close (`RecoveryReceipt.abandoned` means
+  "this receipt owes the abandonment notice"); a close with no epoch open keeps S.1's sentence.
+- **A home of an abandoned rig is a recovery (A2, A3).** The own-hull home's kind rule is
+  `RecoveredToBase { base: hull }` when the epoch is abandoned or the rig is parked (S.1's L6),
+  `ReturnedToBase` otherwise (a home mid-excursion with the charge to come home); a recover act
+  keeps `ReturnedToBase` even on an abandoned epoch (the rig comes in under its own drive). The
+  `sortie_closed` line gains `abandoned_ic` and `recovered_by: Option<ObjId>` (both skipped when
+  `None`; S.1's and S.2's JSON byte-identical), the recoverer set through
+  `BlackBoxLine::recovered_by(staff)` exactly when the close is `RecoveredToBase` on a surface
+  epoch; `check` refuses a recoverer of 0, equal to the unit, or on any other kind. S.1's
+  close-then-home tests now assert `RecoveredToBase` (listed in the builder's report).
+- **A second carrier recovers another's rig (A4; R1 at the fix round).** `@tacsim/tv home #<rig>
+  #<hull>`, staff only: the rig's epoch must be open and abandoned (*That rig is not abandoned; home
+  it into its own hull.*), its lease must stand (*That rig's lease must stand to recover it into
+  another hull.* — the tick's lease fence would otherwise wait for good), the named hull must be a
+  carrier with a readable bay settled on the site the rig stands on (*That hull is not settled on
+  the rig's site with a readable bay.*) with room in the compartment (*That hull's bay has no room
+  for the rig.*); any such hull — another player's, a house's — bounded in practice to the
+  programme and yard rows. The recoverers are server facts read at the offer (one hull list per
+  offer, `Seek`), never a submitted choice; the revision facet is `staff_<actor>_into_<hull>` so a
+  hull landing on the site fences nothing but an order naming it; the idempotency key carries the
+  recoverer. The receipt gains `into: Option<ObjId>` (`hull` stays the assigned hull; the bay
+  fields are the recoverer's). **The lens found that closing the epoch at the receipt, as the
+  own-hull home does, left no way out when the recovering hull lifted or its bay filled before the
+  placement: the black box would name a bay the rig never reached and no verb could re-target it.
+  The lead ruled (R1): a second-carrier home closes the epoch at the completion** — the receipt
+  leaves the record's `sortie` open and abandoned and writes no line; the tick's completion, the
+  staff actor's typed finish (the same provider's prepare, which already appends through
+  `black_box::append`), takes the `sortie` and appends `RecoveredToBase { base: <the recoverer> }`
+  with `recovered_by: <the staff actor>`, `abandoned: true`, `abandoned_ic`, in the bundle that
+  confirms the placement. So, while it waits, `home #rig #B2` (or `#B` again) replaces the receipt
+  through the existing gate, and `close` cancels it in place with the rig still abandoned, as S.1
+  says. The wait notice for this home names its remedy, `@tacsim/tv home #n #hull`, and three new
+  wait reasons (the recovering hull no longer settled on the rig's site; its bay changed; the rig
+  cannot be placed in its bay). The own-hull home keeps its receipt-time close (its base is fixed);
+  a comment at both sites says why they differ. `project()` reads a rig in a foreign bay as `Out`
+  (its own bay `Bay`), agreeing with the tick's projection. **The lease is untouched**: the yard
+  still leases the rig to its lessee on the first hull; the recovering hull lifts with it aboard
+  (the departure guard walks leased rigs); the lessee's `+tv/n launch` is refused today with
+  `LAUNCH_NOT_SITE` because its own hull is off the pad, not because of the foreign bay. The
+  operator's notice names the recoverer (*Staff brought rig #n into hull #m's bay. …*).
+- **The ship's recovery (A5).** The epoch arm's close kind is `RecoveredToBase { base: <the port's
+  host room> }` when the journey book has no arrival at this port's host — exactly the binding
+  `epoch_due` already makes for `at_ic` (which stays `now` there), the endpoints being host rooms
+  wherever they are compared and an arrived journey kept and persisted — else `ReturnedToBase`;
+  `recovered_by: None` (a staff placement is a GOD write and no verb records an actor on a hull
+  yet). `EpochDue`/`EpochOffer` carry `recovered` (skipped when false; the S.2 offer JSON
+  byte-identical) and the composed prepare requires equality. A recovered close pages once a boot
+  per hull (`EpochWarn::Recovered`, counted in `epoch_pages`) so a misread own-drive docking
+  would be visible. **There is no staff `close` for a ship**: its hangar is a port, never destroyed
+  or closed, and D-23-4's abandonment is the rig's; `@tacsim/port clear` stands down a filed
+  clearance before any epoch and is untouched.
+- **Reserved (A6).** A carrier destroyed with rigs out: no destruction path exists; one comment
+  where the surface close kinds are chosen names `Destroyed` for it.
+- **Gates.** `hull_view_berth` is `pub(crate)`. The `@tacsim/tv` help line and the
+  legacy-handlers note carry the second form; the baseline is unmoved. No cost-lane count moved
+  (`cost_lane.rs` drives no staff recovery, so the second-carrier finish's chunk write is in no
+  census). The panic budget is unmoved. `docs/ops.md`'s staff rig recovery section carries the
+  abandonment and the second-carrier home.
+- **Tests.** `shard_4/ic_sortie_surface.rs`: an abandoned rig keeps its flag and instant across a
+  restart (the two refusals, a second close keeping the instant, the reworded notice once and the
+  plain one once); a staff home of an abandoned rig is a recovery (S.1's test 3 amended); a home
+  mid-excursion still returns; a second carrier recovers an abandoned rig across a reboot between
+  the order and the completion (the receipt's `into`, the rig `Interior` in the recoverer's bay,
+  exactly one close line naming the recoverer, the lessee's launch refused, the recoverer's lift
+  filed); the same home waits while its hull is gone (the exact wait sentence once, the epoch still
+  open and abandoned, the completion after the hull is placed back, the line's base the hull the
+  rig landed in); a home into a full bay, into another hull without a lease, on a rig that is not
+  abandoned, and into a hull off the site are refused with nothing written; a replaced abandoning
+  close still tells the owner; a ship placed into Stickney's berth closes recovered at the fire's
+  `now` with the journey book untouched and one page. The strict-shape unit test gains the
+  `abandoned_ic` and `recovered_by` cases in a frame of its own (the M7 limit); the S.1 and S.2
+  cases are byte-identical. The builder's test 4 flies the second carrier in before the first is
+  taken off the pad (the Co-op refuses enrolment with a programme hull unplaced); the recovery is
+  exercised as specified.
+- **Not done / owed (doc 23 §8 unless said).** What the lessee or the recoverer may do with a rig
+  in another's bay (the finish sets `charge.in_bay = true` there, so it recharges from a foreign
+  hull; `into_berth.ready` accepts the recoverer on any site once the rig is already in its bay);
+  salvage, seizure, who holds an abandoned hull; the lessee's own hull held by `TV_AWAY` while
+  another carries its rig (D-20-7); a carried-forward abandonment notice on a pending home that
+  never completes is never told; no test drives the idempotency key's recoverer segment, the
+  not-fenced-by-a-landing-hull revision, or a re-target to a third carrier end to end (the harness
+  cannot enrol a third pilot with a programme hull unplaced); a destruction path; retention.
 
 ## 15. The review of Draft 0.1, and what it changed
 

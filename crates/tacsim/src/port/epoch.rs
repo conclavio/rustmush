@@ -279,6 +279,11 @@ pub(crate) struct EpochDue {
     pub(crate) recorded: bool,
     /// An open from a site, not a hangar port (R6, paged once).
     pub(crate) from_field: bool,
+    /// **Doc 23 cut S.3** (A5; §2 "Recovery"): a close at a hangar port the hull's own journey
+    /// did not bring it to — the journey book's journey for the hull has no arrival at this
+    /// port's host — so the hull was brought in by other means than its own drive and the
+    /// close is `RecoveredToBase`. `false` for an open.
+    pub(crate) recovered: bool,
 }
 
 /// Whether `who` can warrant an act: a live object, never GOD (R2).
@@ -345,9 +350,13 @@ pub(crate) fn epoch_due(
         } else {
             live_helm(w, hull).ok_or("the epoch's principal is gone and the hull has no helm")?
         };
-        let at_ic = journey
+        // Doc 23 cut S.3 (A5): the same test decides the instant and the kind — the journey's
+        // arrival here is a return under the hull's own drive; no such arrival (another
+        // journey's port, or none) is a hull brought in by other means, a recovery, at now.
+        let arrived = journey
             .filter(|journey| journey.route().endpoints().1 == host)
-            .and_then(mush_sim::CarrierJourney::arrival_at)
+            .and_then(mush_sim::CarrierJourney::arrival_at);
+        let at_ic = arrived
             .unwrap_or_else(|| w.world_ic_now().at)
             .max(open.opened_ic);
         return Ok(Some(EpochDue {
@@ -359,6 +368,7 @@ pub(crate) fn epoch_due(
             base: host,
             recorded: true,
             from_field: false,
+            recovered: arrived.is_none(),
         }));
     }
     let Some(journey) = journey else {
@@ -411,6 +421,7 @@ pub(crate) fn epoch_due(
         base,
         recorded: recorded.is_some_and(|departed| departed.pilot == principal),
         from_field: !is_hangar_port(def),
+        recovered: false,
     }))
 }
 
@@ -504,6 +515,10 @@ pub(crate) enum EpochWarn {
     Missed,
     /// [`MAX_EPOCH_ATTEMPTS`] submissions did not land.
     Exhausted,
+    /// **Doc 23 cut S.3's fix round, R7**: a close read as a recovery ([`EpochDue::recovered`]) —
+    /// docked at a hangar port the hull's own journey did not bring it to — paged so a misread
+    /// own-drive docking shows in the pages.
+    Recovered,
 }
 
 /// Page `why` for `hull` once a boot.
@@ -570,6 +585,15 @@ pub(crate) fn epoch_agents(
                         EpochWarn::FromField,
                         "the hull left a site, not a hangar port, with no epoch open; the epoch \
                          opens from the field",
+                    );
+                }
+                if due.op == EpochOp::Close && due.recovered {
+                    page(
+                        state,
+                        hull,
+                        EpochWarn::Recovered,
+                        "the ship is docked at a hangar port its own journey did not bring it to; \
+                         its epoch closes recovered_to_base",
                     );
                 }
                 if due.op == EpochOp::Open && mush_tactics::module::unit_of(w, hull).is_none() {
@@ -727,6 +751,10 @@ struct EpochOffer {
     unit_definition: Option<DefinitionDigest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     class: Option<UnitClass>,
+    /// **Doc 23 cut S.3** (A5): a close into a hangar port the hull's own journey did not bring
+    /// it to ([`EpochDue::recovered`]). Skipped when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    recovered: bool,
 }
 
 /// The offer's facts for `due` on `hull` (an open's seal over the live unit, V6).
@@ -740,6 +768,7 @@ fn offer_of(w: &World, store: &TacsimStore, hull: ObjId, due: &EpochDue) -> Epoc
         seal: None,
         unit_definition: None,
         class: None,
+        recovered: due.recovered,
     };
     if due.op == EpochOp::Open
         && let Some(unit) = mush_tactics::module::unit_of(w, hull)
@@ -975,6 +1004,7 @@ impl ActionProvider for EpochProvider {
                         && due.id == offer.id
                         && due.principal == actor
                         && due.base == offer.base
+                        && due.recovered == offer.recovered
                 })
                 .ok_or_else(|| conflict("that ship's epoch has already moved"))?;
             if op == EpochOp::Open
@@ -1016,12 +1046,24 @@ impl ActionProvider for EpochProvider {
                 let Some(epoch) = record.open.take() else {
                     return Err(conflict("that ship has no such epoch open"));
                 };
-                // `destroyed` is reserved: there is no wreck path for a ship yet.
+                // `destroyed` is reserved: there is no wreck path for a ship yet. **Doc 23 cut
+                // S.3** (A5): a hull docked at a hangar port its own journey did not bring it to
+                // was brought in by other means than its own drive (§2 "Recovery") and closes
+                // `RecoveredToBase`; the line names no recoverer (A3: a staff placement is a GOD
+                // write that leaves no actor on the hull). There is no staff `close` for a ship:
+                // a ship's hangar is a port, never destroyed or closed, and D-23-4's abandonment
+                // is the rig's; `@tacsim/port clear` stands down a filed clearance before any
+                // epoch and is not an end of one.
+                let base = offer.base;
                 let line = BlackBoxLine::ship_closed(
                     hull,
                     &epoch,
                     offer.at_ic,
-                    IcCloseKind::ReturnedToBase { base: offer.base },
+                    if offer.recovered {
+                        IcCloseKind::RecoveredToBase { base }
+                    } else {
+                        IcCloseKind::ReturnedToBase { base }
+                    },
                 );
                 black_box::append(context, Some(&self.black_box), hull, line)?
             }

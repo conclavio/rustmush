@@ -1416,9 +1416,10 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
     }
 }
 
-/// The hull's site berth, owned: `(entry, domain, ramp, bay room, bay slot)`.
+/// The hull's site berth, owned: `(entry, domain, ramp, bay room, bay slot)`. **Doc 23 cut
+/// S.3** (A4): also how a staff home reads a second carrier (`crate::surface::recovery`).
 #[allow(clippy::type_complexity)]
-fn hull_view_berth(
+pub(crate) fn hull_view_berth(
     w: &World,
     hull: ObjId,
 ) -> Option<(

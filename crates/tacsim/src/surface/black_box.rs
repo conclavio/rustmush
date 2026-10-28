@@ -292,6 +292,18 @@ pub enum BlackBoxLine {
         close: IcCloseKind,
         /// Whether staff closed the excursion with the rig out first (D-23-4).
         abandoned: bool,
+        /// **When staff abandoned it** (doc 23 cut S.3, the lead's A1;
+        /// [`crate::surface::excursion::OpenSortie::abandoned_ic`]): the instant of the staff
+        /// `close` that first flagged the epoch. Skipped when `None`, so S.1's and S.2's lines
+        /// print byte for byte as they did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        abandoned_ic: Option<i64>,
+        /// **Who recovered it** (doc 23 cut S.3, the lead's A3): the staff actor whose home
+        /// brought the rig in, set exactly when `close` is `recovered_to_base` on a surface
+        /// epoch. A ship's recovery writes `None`: a placement by staff is a GOD write that
+        /// leaves no actor on the hull, and no verb records one yet. Skipped when `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovered_by: Option<ObjId>,
         /// **Whether the epoch's open line was never written** (the S.1 fix round's F2;
         /// [`crate::surface::excursion::OpenSortie::unrecorded`]): the black box was dark or
         /// full, or the open was prepared off the composed path — so an inspection reading a
@@ -374,8 +386,11 @@ impl BlackBoxLine {
     }
 
     /// **A ship's close line** (doc 23 cut S.2, V4): closed `close` at `at_ic` — S.2 writes
-    /// `returned_to_base` into the arrival port's host room; `destroyed` is reserved (no wreck
-    /// path), and a ship is never abandoned in S.2 (no staff close for a ship until S.3).
+    /// `returned_to_base` into the arrival port's host room, and **doc 23 cut S.3** (A5)
+    /// `recovered_to_base` into a hangar port the ship's own journey did not bring it to;
+    /// `destroyed` is reserved (no wreck path). A ship is never abandoned (there is no staff
+    /// `close` for a ship: D-23-4's abandonment is the rig's) and its recovery names no
+    /// recoverer (A3: a staff placement leaves no actor on the hull).
     #[must_use]
     pub fn ship_closed(
         hull: ObjId,
@@ -389,12 +404,15 @@ impl BlackBoxLine {
             at_ic,
             close,
             abandoned: false,
+            abandoned_ic: None,
+            recovered_by: None,
             unrecorded: epoch.unrecorded,
         }
     }
 
     /// **The close line of `open`** (L6, L7): closed `close` at `at_ic`, carrying the epoch's
-    /// `abandoned` and (the S.1 fix round's F2) `unrecorded` flags.
+    /// `abandoned` (and, doc 23 cut S.3's A1, its instant) and (the S.1 fix round's F2)
+    /// `unrecorded` flags; no recoverer ([`BlackBoxLine::recovered_by`] names one).
     #[must_use]
     pub fn sortie_closed(
         tv: ObjId,
@@ -408,8 +426,27 @@ impl BlackBoxLine {
             at_ic,
             close,
             abandoned: open.abandoned,
+            abandoned_ic: open.abandoned.then_some(open.abandoned_ic).flatten(),
+            recovered_by: None,
             unrecorded: open.unrecorded,
         }
+    }
+
+    /// **A surface close naming its recoverer** (doc 23 cut S.3, the lead's A3): a
+    /// `recovered_to_base` close's `recovered_by` set to `staff`, the actor whose home brought
+    /// the rig in; any other line, or any other close kind, unchanged — the recoverer is written
+    /// exactly when the close is a recovery.
+    #[must_use]
+    pub fn recovered_by(mut self, staff: ObjId) -> BlackBoxLine {
+        if let BlackBoxLine::SortieClosed {
+            close: IcCloseKind::RecoveredToBase { .. },
+            recovered_by,
+            ..
+        } = &mut self
+        {
+            *recovered_by = Some(staff);
+        }
+        self
     }
 
     /// The hull the line is about.
@@ -502,16 +539,37 @@ impl BlackBoxLine {
                     );
                 }
             }
-            BlackBoxLine::SortieClosed { close, .. } => match close {
-                IcCloseKind::ReturnedToBase { base }
-                | IcCloseKind::PoweredDownInBase { base }
-                | IcCloseKind::RecoveredToBase { base } => {
-                    if *base == hull || base.0 == 0 {
-                        return Err("a hull closes into another hull".to_owned());
+            BlackBoxLine::SortieClosed {
+                close,
+                abandoned,
+                abandoned_ic,
+                recovered_by,
+                ..
+            } => {
+                match close {
+                    IcCloseKind::ReturnedToBase { base }
+                    | IcCloseKind::PoweredDownInBase { base }
+                    | IcCloseKind::RecoveredToBase { base } => {
+                        if *base == hull || base.0 == 0 {
+                            return Err("a hull closes into another hull".to_owned());
+                        }
                     }
+                    IcCloseKind::Destroyed => {}
                 }
-                IcCloseKind::Destroyed => {}
-            },
+                // Doc 23 cut S.3 (A1, A3): the instant is an abandonment's, the recoverer a
+                // recovery's.
+                if abandoned_ic.is_some() && !*abandoned {
+                    return Err(
+                        "only an abandoned epoch closes with its abandonment's instant".to_owned(),
+                    );
+                }
+                if recovered_by.is_some_and(|by| by.0 == 0 || by == hull)
+                    || (recovered_by.is_some()
+                        && !matches!(close, IcCloseKind::RecoveredToBase { .. }))
+                {
+                    return Err("only a recovery names its recoverer, another object".to_owned());
+                }
+            }
         }
         Ok(())
     }
@@ -790,6 +848,7 @@ pub(crate) fn open_epoch(
         operator: excursion.operator,
         opened_ic: due_ic,
         abandoned: false,
+        abandoned_ic: None,
         unrecorded: false,
         seal,
     };
@@ -1039,6 +1098,7 @@ mod tests {
             operator: ObjId(10),
             opened_ic: 800,
             abandoned: false,
+            abandoned_ic: None,
             unrecorded: false,
             seal,
         }
@@ -1180,6 +1240,8 @@ mod tests {
             at_ic: 4_000,
             close: IcCloseKind::RecoveredToBase { base },
             abandoned: true,
+            abandoned_ic: None,
+            recovered_by: None,
             unrecorded: false,
         };
         assert!(
@@ -1224,6 +1286,145 @@ mod tests {
             serde_json::json!({"hull": 20, "slot": 1, "sortie": {"ic": {"hull": 20, "at_ic": 100}}})
         );
         assert_eq!(carried.check(ObjId(30)), Ok(()));
+        // Doc 23 cut S.3 (A1, A3): the abandonment's instant and the recoverer, in their own
+        // frame (the M7 stack-frame limit).
+        s3_the_abandonment_and_the_recoverer_are_strict();
+    }
+
+    /// **Doc 23 cut S.3's two fields on the close line** (A1, A3): `abandoned_ic` beside
+    /// `abandoned`, `recovered_by` on a recovery, each skipped when `None` (the cases above print
+    /// byte for byte as S.1 and S.2 pinned them); `recovered_by` touches a recovery only;
+    /// `check` refuses an instant on an epoch never abandoned and a recoverer on any other close.
+    fn s3_the_abandonment_and_the_recoverer_are_strict() {
+        let abandoned = crate::surface::excursion::OpenSortie {
+            abandoned: true,
+            abandoned_ic: Some(2_500),
+            ..opened(None)
+        };
+        let value = serde_json::to_value(&abandoned).expect("encodes");
+        assert_eq!(value["abandoned"], true);
+        assert_eq!(value["abandoned_ic"], 2_500);
+        assert!(
+            serde_json::to_value(opened(None))
+                .expect("encodes")
+                .get("abandoned_ic")
+                .is_none(),
+            "skipped when none"
+        );
+        let recovered = BlackBoxLine::sortie_closed(
+            ObjId(30),
+            &abandoned,
+            4_000,
+            IcCloseKind::RecoveredToBase { base: ObjId(21) },
+        )
+        .recovered_by(ObjId(9));
+        let value = serde_json::to_value(&recovered).expect("encodes");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "sortie_closed",
+                "unit": 30,
+                "sortie": {"ic": {"hull": 30, "at_ic": 500}},
+                "at_ic": 4000,
+                "close": {"kind": "recovered_to_base", "base": 21},
+                "abandoned": true,
+                "abandoned_ic": 2500,
+                "recovered_by": 9,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<BlackBoxLine>(value.clone()).ok(),
+            Some(recovered.clone())
+        );
+        assert_eq!(recovered.check(ObjId(30)), Ok(()));
+        let mut extra = value;
+        extra["recoverer"] = serde_json::json!(9);
+        assert!(
+            serde_json::from_value::<BlackBoxLine>(extra).is_err(),
+            "strict"
+        );
+        // A return is no recovery: `recovered_by` leaves it alone.
+        let returned = BlackBoxLine::sortie_closed(
+            ObjId(30),
+            &abandoned,
+            4_000,
+            IcCloseKind::ReturnedToBase { base: ObjId(20) },
+        );
+        assert_eq!(returned.clone().recovered_by(ObjId(9)), returned);
+        assert_eq!(
+            serde_json::to_value(&returned).expect("encodes")["abandoned_ic"],
+            2_500
+        );
+        let line = |close: IcCloseKind, abandoned: bool, at: Option<i64>, by: Option<ObjId>| {
+            BlackBoxLine::SortieClosed {
+                unit: ObjId(30),
+                sortie: SortieId::ic(ObjId(30), 500),
+                at_ic: 4_000,
+                close,
+                abandoned,
+                abandoned_ic: at,
+                recovered_by: by,
+                unrecorded: false,
+            }
+        };
+        let recovery = IcCloseKind::RecoveredToBase { base: ObjId(20) };
+        let back = IcCloseKind::ReturnedToBase { base: ObjId(20) };
+        assert!(
+            line(recovery, true, Some(1), Some(ObjId(9)))
+                .check(ObjId(30))
+                .is_ok()
+        );
+        assert!(
+            line(recovery, false, None, Some(ObjId(9)))
+                .check(ObjId(30))
+                .is_ok()
+        );
+        assert!(
+            line(recovery, false, Some(1), None)
+                .check(ObjId(30))
+                .is_err(),
+            "an instant with no abandonment"
+        );
+        assert!(
+            line(back, true, Some(1), Some(ObjId(9)))
+                .check(ObjId(30))
+                .is_err(),
+            "a recoverer on a return"
+        );
+        assert!(
+            line(recovery, true, None, Some(ObjId(0)))
+                .check(ObjId(30))
+                .is_err(),
+            "no one recovers"
+        );
+        // A ship's close never names one (A3, A5).
+        let epoch = crate::port::epoch::ShipEpoch {
+            id: SortieId::ic(ObjId(40), 900),
+            from: CanonicalId::new("ceres_port").expect("an id"),
+            base: ObjId(7),
+            principal: ObjId(10),
+            opened_ic: 900,
+            unrecorded: false,
+            seal: None,
+        };
+        let ship = BlackBoxLine::ship_closed(
+            ObjId(40),
+            &epoch,
+            5_000,
+            IcCloseKind::RecoveredToBase { base: ObjId(8) },
+        );
+        assert_eq!(
+            serde_json::to_value(&ship).expect("encodes"),
+            serde_json::json!({
+                "kind": "sortie_closed",
+                "unit": 40,
+                "sortie": {"ic": {"hull": 40, "at_ic": 900}},
+                "at_ic": 5000,
+                "close": {"kind": "recovered_to_base", "base": 8},
+                "abandoned": false,
+            })
+        );
+        assert_eq!(ship.check(ObjId(40)), Ok(()));
     }
 
     /// **A rig's open line names its carrier's open epoch, or none** (doc 23 cut S.2, V7; the fix
