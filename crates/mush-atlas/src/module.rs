@@ -346,6 +346,20 @@ impl AtlasModule {
         self.window_movement = Some(reader);
         self
     }
+
+    fn movement_readers(
+        &self,
+    ) -> Result<Vec<&mush_core::locomotion::composed::ComposedOwnerReader>, ModError> {
+        [&self.composed_movement, &self.window_movement]
+            .into_iter()
+            .flatten()
+            .map(|reader| {
+                reader.get().ok_or_else(|| {
+                    ModError::msg("Atlas movement reader was not supplied by composition")
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for AtlasModule {
@@ -521,6 +535,11 @@ impl GameModule for AtlasModule {
         Ok(())
     }
 
+    fn audit_typed_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
+        crate::movement_audit::audit_typed(ctx, &self.movement_readers()?)
+            .map_err(|e| ModError::msg(format!("Atlas typed movement proof audit failed: {e}")))
+    }
+
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
@@ -539,15 +558,7 @@ impl GameModule for AtlasModule {
                     reason: "Atlas movement requires complete knowledge history".into(),
                 });
             }
-            let readers = [&self.composed_movement, &self.window_movement]
-                .into_iter()
-                .flatten()
-                .map(|reader| {
-                    reader.get().ok_or_else(|| {
-                        ModError::msg("Atlas movement reader was not supplied by composition")
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let readers = self.movement_readers()?;
             let history = movement_history.ledger.inspect(&data.ledger);
             crate::movement_audit::audit_boot(ctx, &data, &history, &travel, &readers)?;
             movement_history
