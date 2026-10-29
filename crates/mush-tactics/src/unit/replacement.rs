@@ -83,8 +83,10 @@ pub struct ReplacementJournal {
     pub before: DefinitionRef,
     /// Exact new registered root.
     pub after: DefinitionRef,
-    /// Actual displaced state, retained for later custody.
-    pub displaced: ComponentState,
+    /// Actual displaced state, retained for later custody; `None` when the
+    /// component is fitted into a mount the preimage did not have (doc 17h cut
+    /// M8b: a core fitted into a coreless chassis).
+    pub displaced: Option<ComponentState>,
     /// Exact inserted state.
     pub inserted: ComponentState,
 }
@@ -153,17 +155,17 @@ pub fn replace_component(
     {
         return Err(mismatch("replacement unchanged unit shape/rules"));
     }
-    let old = before
-        .components
-        .iter()
-        .find(|row| &row.id == component)
-        .ok_or_else(|| UnitError::UnknownComponent(component.clone()))?;
+    // Doc 17h cut M8b (G2): the preimage may lack the component altogether —
+    // a fitting into the coreless base of a finite family. Everything else must
+    // still be the target's exactly.
+    let old = before.components.iter().find(|row| &row.id == component);
     let new = after
         .components
         .iter()
         .find(|row| &row.id == component)
         .ok_or_else(|| UnitError::UnknownComponent(component.clone()))?;
-    if old.install != new.install
+    if old.is_some_and(|old| old.install != new.install)
+        || (old.is_none() && unit.components.contains_key(component))
         || before
             .components
             .iter()
@@ -205,7 +207,10 @@ pub fn replace_component(
     {
         return Err(mismatch("replacement duplicate asset"));
     }
-    let displaced = ComponentState::capture(unit, component)?;
+    let displaced = match old {
+        Some(_) => Some(ComponentState::capture(unit, component)?),
+        None => None,
+    };
     let mut post = unit.clone();
     post.schema = target.clone();
     post.rules = after.rules.clone();

@@ -64,7 +64,8 @@ impl CoreRefitFactoryConfig {
             return self.payment.action_descriptor(name).map_err(bad);
         }
         let mut refs = vec![self.payment.recipe.clone()];
-        refs.extend(self.payment.fitted_units.iter().cloned());
+        refs.extend(self.payment.ungovern.iter().map(|u| u.recipe.clone()));
+        refs.extend(self.payment.roots().cloned());
         refs.sort();
         refs.dedup();
         DefinitionDescriptor::new(DefinitionKind::new("action").map_err(bad)?,DefinitionId::new(name).map_err(bad)?,1,
@@ -132,10 +133,11 @@ impl RefitOwnerAuthority for Acknowledged {
             || o.core_acceptance != subject.core_acceptance
             || o.hull != subject.hull
             || o.unit_revision != subject.unit_revision
-            || o.displaced.installed.asset != subject.displaced
+            || o.displaced_asset() != subject.displaced
             || o.class() != subject.class
+            || o.kind != subject.kind
             || o.policy
-                .target(o.class())
+                .target_for(o.kind, &o.before, o.class())
                 .map_err(|_| RefitError::Integrity)?
                 != &subject.target
             || p.orders

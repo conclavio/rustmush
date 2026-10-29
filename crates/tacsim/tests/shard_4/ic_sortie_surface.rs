@@ -1656,6 +1656,7 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
             seal_digest: None,
             seal_check: SealCheck::NoSeal,
             licence_state: None,
+            ungoverned_note: None,
         }
     );
 
@@ -1710,6 +1711,7 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
             seal_digest: Some(seal.seal_digest.clone()),
             seal_check: SealCheck::Matches,
             licence_state: Some(SealLicenceState::Doctrine),
+            ungoverned_note: None,
         }
     );
 

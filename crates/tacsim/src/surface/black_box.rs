@@ -58,6 +58,7 @@ use smol_str::SmolStr;
 
 use crate::arena::core::CoreClass;
 use crate::arena::mind::{MindSeal, SortieId};
+use crate::arena::mind_seal::Admission;
 use crate::definitions::UnitClass;
 use crate::deliberation::order::CharacterRef;
 use crate::minds::licence_state::SealLicenceState;
@@ -194,6 +195,10 @@ pub struct SealFacts {
     /// IC audit does (`crate::minds::ic_sortie::audit`). Skipped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub core_class: Option<CoreClass>,
+    /// **What an ungoverned seal admitted** (doc 17h cut M8b C4; D-UM-42): the seal line's
+    /// field, evidence only. Absent for every governed seal, so no record before M8b moves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admissions: Vec<Admission>,
 }
 
 impl SealFacts {
@@ -204,7 +209,7 @@ impl SealFacts {
     pub fn of(seal: &MindSeal, licence_state: SealLicenceState) -> SealFacts {
         // `sealed_line` writes `Some(licence_state)`; the parameter is the same state.
         let fallback_state = licence_state;
-        let (mind, source, card_digest, class, governed, licence, licence_state) =
+        let (mind, source, card_digest, class, governed, licence, licence_state, admissions) =
             match seal.sealed_line(licence_state) {
                 crate::arena::ledger::EventKind::MindSealed {
                     mind,
@@ -214,6 +219,7 @@ impl SealFacts {
                     governed,
                     licence,
                     licence_state,
+                    admissions,
                     ..
                 } => (
                     mind,
@@ -223,6 +229,7 @@ impl SealFacts {
                     governed,
                     licence,
                     licence_state.unwrap_or(fallback_state),
+                    admissions,
                 ),
                 // `sealed_line` builds `MindSealed` and nothing else; the seal's own fields are
                 // the same facts.
@@ -234,6 +241,7 @@ impl SealFacts {
                     seal.governed,
                     SmolStr::new(seal.origin.licence_label()),
                     fallback_state,
+                    seal.admissions(fallback_state),
                 ),
             };
         SealFacts {
@@ -248,6 +256,7 @@ impl SealFacts {
             fallback: seal.fallback.clone(),
             core: seal.core.clone(),
             core_class: seal.core.as_ref().map(|_| seal.core_class),
+            admissions,
         }
     }
 }
@@ -311,6 +320,11 @@ pub enum BlackBoxLine {
         fallback: Option<SmolStr>,
         /// The pool admission, recorded (D-23-8).
         admitted: Admitted,
+        /// **What an ungoverned seal admitted** (doc 17h cut M8b C4; D-UM-42): `under_floor`,
+        /// `unfiled`, `unlicensed`, `over_class` — a record field, never a notice. Absent for a
+        /// governed seal and with no seal.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        admissions: Vec<Admission>,
     },
     /// **An epoch closed** (doc 23 §6 "At the close"; D-23-1): the hull arrived in a hangar or
     /// was recovered.
@@ -536,8 +550,13 @@ impl BlackBoxLine {
                 licence,
                 seal_digest,
                 fallback,
+                admissions,
                 ..
             } => {
+                // Doc 17h cut M8b: only an ungoverned seal admits anything.
+                if !admissions.is_empty() && *governed != Some(false) {
+                    return Err("only an ungoverned seal records admissions".to_owned());
+                }
                 match hangar {
                     Hangar::Bay { hull: of, slot, .. } => {
                         if *of == hull || of.0 == 0 || *slot == 0 {
@@ -645,6 +664,7 @@ fn sealed_line(
         seal_digest: seal.map(|s| s.seal_digest.clone()),
         fallback: seal.and_then(|s| s.fallback.clone()),
         admitted,
+        admissions: seal.map(|s| s.admissions.clone()).unwrap_or_default(),
     }
 }
 
@@ -1156,7 +1176,28 @@ mod tests {
             fallback: Some(crate::match_::NO_CORE_FALLBACK.into()),
             core: None,
             core_class: None,
+            admissions: Vec::new(),
         }
+    }
+
+    /// **Doc 17h cut M8b G12**: only an ungoverned seal records admissions — a governed open
+    /// line carrying one is refused by `check`; the same line ungoverned stands.
+    #[test]
+    fn m8b_a_governed_line_carries_no_admissions() {
+        let admitted = Admitted {
+            class: Some(UnitClass::Vehicle),
+            host: EpochHost::Surface,
+            count: 1,
+        };
+        let mut governed = facts();
+        governed.admissions = vec![Admission::UnderFloor];
+        let line =
+            BlackBoxLine::mind_sealed(&opened(Some(governed.clone())), ObjId(30), None, admitted);
+        assert!(line.check(ObjId(30)).is_err());
+        let mut ungoverned = governed;
+        ungoverned.governed = false;
+        let line = BlackBoxLine::mind_sealed(&opened(Some(ungoverned)), ObjId(30), None, admitted);
+        assert_eq!(line.check(ObjId(30)), Ok(()));
     }
 
     /// **The two line shapes** (L7): the open line is `kind: mind_sealed`, flat, with the hangar,

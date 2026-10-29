@@ -121,7 +121,8 @@ const DIGESTS: [(&str, &str); 10] = [
     ),
     (
         "tacsim.pack.cores",
-        "3ad7f6910ec8ba53e82a93b852b3d82ef771206516b084e3238696a675233903",
+        // Doc 17h cut M8b: the three ungoverned twin cores joined the pack.
+        "a5c8d97b007d7fcec0e34d97be7d45fa6df18d99e50a5658ce72e74aa1e049f7",
     ),
     (
         "tacsim.pack.line_tank",
@@ -2400,8 +2401,21 @@ fn m3_every_shipped_chassis_binds_its_core() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     let id = |word: &str| mush_core::CanonicalId::new(word).expect("a canonical id");
 
-    // The three cores, minted as `core` definitions.
-    assert_eq!(fielded.cores.len(), 3, "the cores pack's three");
+    // The three cores, minted as `core` definitions — and, since doc 17h cut M8b (C2), their
+    // three ungoverned twins, which no chassis fits.
+    assert_eq!(
+        fielded.cores.len(),
+        6,
+        "the cores pack's three and their twins"
+    );
+    for (core, class) in [
+        ("tacsim.core.doctrine_ungoverned", CoreClass::I),
+        ("tacsim.core.line_ungoverned", CoreClass::II),
+        ("tacsim.core.command_ungoverned", CoreClass::III),
+    ] {
+        let def = fielded.cores.get(&id(core)).expect("the twin is loaded");
+        assert_eq!((def.class, def.governed), (class, false), "{core}");
+    }
     for (core, class) in [
         (content::CORE_DOCTRINE, CoreClass::I),
         (content::CORE_LINE, CoreClass::II),

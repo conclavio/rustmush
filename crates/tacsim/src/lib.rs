@@ -648,7 +648,7 @@ impl TacsimRuleset {
     /// Registry preparation. Ordinary layers retain the existing fielded set.
     pub(crate) fn definition_catalog(&self) -> Result<definitions::Catalog, ModError> {
         match &self.governed_hardware {
-            Some(hardware) => Ok(hardware.family.catalog().clone()),
+            Some(hardware) => Ok(hardware.catalog().clone()),
             None => definitions::Catalog::build_fielded(&self.loaded_packs()?, NS)
                 .map_err(|e| ModError::msg(e.to_string())),
         }

@@ -27,10 +27,13 @@ fn shipped_hardware_pins_prices_quotas_and_bounded_hourly_schedules() -> Result 
     let hardware = PublishedHardware::shipped()?;
     check_eq!(
         hardware.pack().manifest().digest().to_hex(),
-        "cf2312086dfd7a3b5c93000c97ac292ab6522f966d0d3bcc8bec1e7ee71aa7cc"
+        // Doc 17h cut M8b: the `core_ungovern` recipe and `ungovern_minor` joined the pack.
+        "a02575bd977a18d3b67938f45a46374428fd894b52c8962a9e52b6306b516e2c"
     );
     check_eq!(hardware.catalogue().monthly_dies(), [64, 16, 4]);
     check_eq!(hardware.catalogue().fitting_minor(), 10_000);
+    // Doc 17h cut M8b C7: the ungoverning refit's fee, provisionally the fitting fee.
+    check_eq!(hardware.catalogue().ungovern_minor(), 10_000);
     for (index, class) in CLASSES.into_iter().enumerate() {
         check_eq!(
             hardware.catalogue().finished_minor(class),
@@ -44,6 +47,7 @@ fn shipped_hardware_pins_prices_quotas_and_bounded_hourly_schedules() -> Result 
         for (process, units) in [
             (HardwareProcess::Integrate, [24, 48, 96]),
             (HardwareProcess::Refit, [1, 2, 4]),
+            (HardwareProcess::Ungovern, [1, 2, 4]),
         ] {
             let Some(PackEntry::HardwareRecipe(recipe)) = hardware
                 .pack()

@@ -14,7 +14,9 @@ use mush_core::{
 };
 use mush_economy::{
     AccountId,
-    core_refit::{RefitCancellationRequest, RefitFundingRequest, RefitInstallationRequest},
+    core_refit::{
+        RefitCancellationRequest, RefitFundingRequest, RefitInstallationRequest, RefitKind,
+    },
     registry_filing::{EconomyRequest, InitialFilingParticipant as EconomyParticipant},
 };
 use mush_tactics::component_replacement::{ComponentReplacementParticipant, ReplacementRequest};
@@ -29,6 +31,14 @@ struct OfferSelector {
     incoming: ObjId,
     manufacture: CommitToken,
     class: DieClass,
+    /// Doc 17h cut M8b C2: `core_ungovern` offers the ungoverning refit at its
+    /// own facility; absent, the chartered `core_refit`.
+    #[serde(
+        default,
+        skip_serializing_if = "RefitKind::is_refit",
+        deserialize_with = "mush_economy::core_refit::present_ungovern"
+    )]
+    recipe: RefitKind,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,6 +188,7 @@ impl Provider {
                 s.incoming,
                 s.manufacture,
                 s.class,
+                s.recipe,
             )?;
             let row = RefitOffer {
                 format: 1,
@@ -199,6 +210,7 @@ impl Provider {
                 observed_ic: live.at,
                 observed_utc: live.utc,
                 expires_utc: live.utc.checked_add(OFFER_SECONDS).ok_or(Error::Capacity)?,
+                kind: s.recipe,
             };
             row.validate()?;
             let out = self.owner(ctx, owner::Request::Offer(Box::new(row.clone())))?;
@@ -266,7 +278,7 @@ impl Provider {
                 .industry
                 .reserve_slot(
                     txn,
-                    intent.offer.policy.factory,
+                    intent.offer.site()?.factory,
                     intent.offer.facility.maximum_slots(),
                     &wo_holder(id).map_err(bad)?,
                     &at,
@@ -428,7 +440,7 @@ impl Provider {
                 .map_err(bad)?;
             let row = before.install(&payment, &tactics, &physical)?;
             r.industry
-                .release_slot(txn, row.intent.offer.policy.factory, row.capacity, 1)
+                .release_slot(txn, row.intent.offer.site()?.factory, row.capacity, 1)
                 .map_err(bad)?;
             r.families.terminal_heads(txn, &row)?;
             txn.replace(&r.families.orders, &id, row).map_err(bad)?;
@@ -471,7 +483,7 @@ impl Provider {
             )?;
             let row = out.order.ok_or(Error::Integrity)?;
             r.industry
-                .release_slot(txn, row.intent.offer.policy.factory, row.capacity, 1)
+                .release_slot(txn, row.intent.offer.site()?.factory, row.capacity, 1)
                 .map_err(bad)?;
             r.families.terminal_heads(txn, &row)?;
             txn.replace(&r.families.orders, &id, row).map_err(bad)?;
@@ -618,7 +630,11 @@ impl ActionProvider for Provider {
                     .index
                     .as_ref()
                     .is_none_or(|i| i.offers >= MAX_ORDERS)
-                    || authority::allow(&engine.world, &r.config, query.actor()).is_err()
+                    || [RefitKind::CoreRefit, RefitKind::CoreUngovern]
+                        .into_iter()
+                        .all(|kind| {
+                            authority::allow(&engine.world, &r.config, query.actor(), kind).is_err()
+                        })
                 {
                     return Ok(None);
                 }
@@ -658,6 +674,25 @@ impl ActionProvider for Provider {
                     )?);
                 }
                 parameters.push(parameter("manufacture", Kind::Text { maximum_bytes: 32 })?);
+                // Doc 17h cut M8b C2: the ungoverning recipe, optional, offered
+                // only where the policy composes it and the operator may run it.
+                if r.config.payment.ungovern.is_some()
+                    && authority::allow(
+                        &engine.world,
+                        &r.config,
+                        query.actor(),
+                        RefitKind::CoreUngovern,
+                    )
+                    .is_ok()
+                {
+                    parameters.push(ProjectedParameter {
+                        id: mush_core::CanonicalId::new("recipe").map_err(|_| fail())?,
+                        required: false,
+                        kind: Kind::Choice {
+                            choices: vec![RefitKind::CoreUngovern.recipe_id().to_owned()],
+                        },
+                    });
+                }
             }
             2 => {
                 if projection
@@ -761,6 +796,11 @@ impl ActionProvider for Provider {
             guards
                 .add_definition(r.config.payment.recipe.clone(), definitions)
                 .map_err(|_| fail())?;
+            if let Some(ungovern) = &r.config.payment.ungovern {
+                guards
+                    .add_definition(ungovern.recipe.clone(), definitions)
+                    .map_err(|_| fail())?;
+            }
         }
         let (id, label) = match self.index {
             0 => ("initialize-core-refit", "Initialize core refitting"),

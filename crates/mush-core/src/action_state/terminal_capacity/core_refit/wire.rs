@@ -87,7 +87,9 @@ impl Row {
                                 != Some(number(replacement, "to_revision")?)
                             || field(replacement, "before")? != field(&row.offer, "before")?
                             || field(replacement, "component")? != field(&row.offer, "component")?
-                            || field(replacement, "displaced")? != field(&row.offer, "displaced")?
+                            // Doc 17h cut M8b G2: both absent for a fitting into a
+                            // coreless base.
+                            || replacement.get("displaced") != row.offer.get("displaced")
                             || field(
                                 field(field(replacement, "inserted")?, "installed")?,
                                 "asset",
@@ -133,15 +135,28 @@ impl Row {
     pub(super) fn hull(&self) -> Result<ObjId, ActionStateError> {
         parsed(field(&self.offer, "hull")?)
     }
+    /// The displaced core's asset; `None` with no asset, and with no displaced component at
+    /// all (doc 17h cut M8b G2: a fitting into a coreless base writes none).
     pub(super) fn displaced(&self) -> Result<Option<ObjId>, ActionStateError> {
+        let Some(displaced) = self.offer.get("displaced") else {
+            return Ok(None);
+        };
         parsed(
-            field(field(&self.offer, "displaced")?, "installed")?
+            field(displaced, "installed")?
                 .get("asset")
                 .unwrap_or(&Value::Null),
         )
     }
     pub(super) fn resource(&self) -> Result<ResourceRef, ActionStateError> {
-        let factory: ObjId = parsed(field(&self.policy, "factory")?)?;
+        // Doc 17h cut M8b C2: the ungoverning recipe holds its own facility's
+        // slot; an offer with no `kind` is the chartered fitting.
+        let factory: ObjId = match self.offer.get("kind") {
+            None => parsed(field(&self.policy, "factory")?)?,
+            Some(kind) if kind.as_str() == Some("core_ungovern") => {
+                parsed(field(field(&self.policy, "ungovern")?, "factory")?)?
+            }
+            Some(_) => return Err(refused("core refit kind")),
+        };
         let owner = owner_id()?;
         Ok(ResourceRef::new(
             owner.clone(),

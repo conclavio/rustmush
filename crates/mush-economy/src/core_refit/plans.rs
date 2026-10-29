@@ -23,8 +23,14 @@ impl FundingIntent {
         self.subject.matches_policy(&self.policy)?;
         self.supplier.validate(&self.policy, &self.subject)
     }
-    pub fn price(&self) -> Amount {
-        self.policy.price()
+    /// The subject's recipe's fee (doc 17h cut M8b C2: `core_ungovern`
+    /// charges `ungovern_minor`); a recipe the policy does not compose is refused.
+    pub fn price(&self) -> Result<Amount, Error> {
+        self.policy.price_for(self.subject.kind)
+    }
+    /// The account the subject's recipe pays; refused as `price`.
+    pub fn provider_account(&self) -> Result<crate::AccountId, Error> {
+        Ok(self.policy.site(self.subject.kind)?.provider.account)
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -110,7 +116,7 @@ pub(super) fn funding(
     )?;
     p.hold_ops.push(HoldOp::Place {
         account: intent.subject.payer,
-        amount: intent.price(),
+        amount: intent.price()?,
         beneficiary: Some(PrincipalId::System(intent.policy.issuer.clone())),
         purpose: HoldPurpose::Reservation {
             kind: HOLD_PURPOSE.into(),
@@ -160,12 +166,12 @@ pub(super) fn terminal(
         }
         lines.push(RequestedLine {
             account: intent.subject.payer,
-            delta: intent.price().checked_neg().ok_or(Error::Invalid)?,
+            delta: intent.price()?.checked_neg().ok_or(Error::Invalid)?,
             memo: "core fitting".into(),
         });
         lines.push(RequestedLine {
-            account: intent.policy.provider.account,
-            delta: intent.price(),
+            account: intent.provider_account()?,
+            delta: intent.price()?,
             memo: "core fitting".into(),
         });
     }
@@ -197,7 +203,7 @@ pub(super) fn terminal(
     p.hold_ops.push(if install {
         HoldOp::Capture {
             hold,
-            amount: intent.price(),
+            amount: intent.price()?,
         }
     } else {
         HoldOp::Release { hold }

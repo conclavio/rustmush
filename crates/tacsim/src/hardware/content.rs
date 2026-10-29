@@ -8,13 +8,15 @@ pub const VERSION: u32 = 1;
 pub const CATALOGUE: &str = "tacsim.hardware.catalogue";
 pub const INTEGRATE: &str = "core_integrate";
 pub const REFIT: &str = "core_refit";
+/// The ungoverning refit's recipe (doc 17h cut M8b C2).
+pub const UNGOVERN: &str = "core_ungovern";
 pub const CLASSES: [CoreClass; 3] = [CoreClass::I, CoreClass::II, CoreClass::III];
 
 fn bad(detail: &str) -> DefinitionError {
     DefinitionError::value("governed hardware content", detail)
 }
 
-/// Two distinct certified workflows. Neither is a pooled commodity recipe.
+/// Three distinct workflows. None is a pooled commodity recipe.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HardwareProcess {
@@ -22,18 +24,24 @@ pub enum HardwareProcess {
     Integrate,
     /// One delivered certified core replaces the designated governed component.
     Refit,
+    /// **The ungoverning refit** (doc 17h cut M8b C2; doc 17 §10, D-UM-42): one
+    /// delivered core replaces the component as its ungoverned twin, at a
+    /// facility holding `core_ungovern` and not `core_refit`.
+    Ungovern,
 }
 impl HardwareProcess {
     pub const fn recipe_id(self) -> &'static str {
         match self {
             Self::Integrate => INTEGRATE,
             Self::Refit => REFIT,
+            Self::Ungovern => UNGOVERN,
         }
     }
     pub const fn facility_capability(self) -> &'static str {
         match self {
             Self::Integrate => "core_integration",
             Self::Refit => "core_refit",
+            Self::Ungovern => "core_ungovern",
         }
     }
 }
@@ -106,6 +114,9 @@ pub struct HardwareCatalogueDef {
     core_minor: [i64; 3],
     integration_permille: u16,
     fitting_minor: i64,
+    /// **The ungoverning refit's fee** (doc 17h cut M8b C7), centicredits.
+    /// Provisional per the owner's economy rule: the fitting fee.
+    ungovern_minor: i64,
     monthly_dies: [u16; 3],
 }
 #[derive(Deserialize)]
@@ -119,6 +130,7 @@ struct CatalogueWire {
     core_minor: [i64; 3],
     integration_permille: u16,
     fitting_minor: i64,
+    ungovern_minor: i64,
     monthly_dies: [u16; 3],
 }
 impl<'de> Deserialize<'de> for HardwareCatalogueDef {
@@ -133,6 +145,7 @@ impl<'de> Deserialize<'de> for HardwareCatalogueDef {
             core_minor: w.core_minor,
             integration_permille: w.integration_permille,
             fitting_minor: w.fitting_minor,
+            ungovern_minor: w.ungovern_minor,
             monthly_dies: w.monthly_dies,
         };
         value.validate().map_err(serde::de::Error::custom)?;
@@ -148,6 +161,7 @@ impl HardwareCatalogueDef {
             || self.tank_minor != 10_000_000
             || self.integration_permille != 100
             || self.fitting_minor != mush_economy::core_refit::FITTING_MINOR
+            || !(1..=self.tank_minor).contains(&self.ungovern_minor)
             || self.monthly_dies.iter().any(|n| !(1..=1024).contains(n))
         {
             return Err(bad(
@@ -184,6 +198,10 @@ impl HardwareCatalogueDef {
     }
     pub const fn fitting_minor(&self) -> i64 {
         self.fitting_minor
+    }
+    /// The ungoverning refit's fee (doc 17h cut M8b C7).
+    pub const fn ungovern_minor(&self) -> i64 {
+        self.ungovern_minor
     }
     pub const fn monthly_dies(&self) -> [u16; 3] {
         self.monthly_dies

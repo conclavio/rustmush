@@ -202,6 +202,7 @@ impl RegisteredInspectionWriter {
             seal_check: facts.seal_check,
             licence_state: facts.licence_state,
             at_ic,
+            ungoverned_note: facts.ungoverned_note,
         };
         record.validate()?;
         let key = record.key();

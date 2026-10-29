@@ -2,7 +2,7 @@
 use super::*;
 use mush_core::clock::{ClockRef, ClockStamp};
 use mush_org::{OrgId, OrgScopeId, SystemPrincipalId};
-use records::{HullClass, InspectionRecord, Provenance, SealCheck};
+use records::{HullClass, InspectionRecord, Provenance, SealCheck, UngovernedNote};
 use smol_str::SmolStr;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -55,6 +55,7 @@ fn record(policy: &RegistryInspectionPolicy) -> TestResult<InspectionRecord> {
             clock: ClockRef::WorldIc { generation: 1 },
             at: 1_000,
         },
+        ungoverned_note: None,
     })
 }
 
@@ -280,5 +281,31 @@ fn m8a_the_inspections_of_a_hull_ring_at_sixty_four() -> TestResult {
             "{bad}"
         );
     }
+    Ok(())
+}
+
+/// **Doc 17h cut M8b G11**: a record carrying the ungoverning refit's note round-trips; a
+/// record with no core may not carry one.
+#[test]
+fn m8b_a_record_carries_the_ungoverned_note_only_with_a_core() -> TestResult {
+    let policy = policy()?;
+    let mut noted = record(&policy)?;
+    noted.ungoverned_note = Some(UngovernedNote {
+        facility: ObjId(9),
+        at_ic: 12_345,
+    });
+    noted.validate()?;
+    let value = serde_json::to_value(&noted)?;
+    check_eq!(
+        value.get("ungoverned_note").cloned().unwrap_or_default(),
+        serde_json::json!({"facility": 9, "at_ic": 12_345})
+    );
+    check_eq!(serde_json::from_value::<InspectionRecord>(value)?, noted);
+    check_eq!(noted.facts().ungoverned_note, noted.ungoverned_note);
+    let mut coreless = noted.clone();
+    coreless.core = None;
+    coreless.governed = None;
+    coreless.class = HullClass::Zero;
+    check!(coreless.validate().is_err());
     Ok(())
 }

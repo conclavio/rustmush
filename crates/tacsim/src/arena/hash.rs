@@ -1632,6 +1632,40 @@ mod tests {
         ])
     }
 
+    /// **Doc 17h cut M8b C5**: the `unlawful` bit is a record field — two arenas whose
+    /// ledgers differ only in a `fired` line's `unlawful` hash equal (the hash folds the
+    /// ledger's sequence, item 11, never a line's bytes). The test the brief names,
+    /// `each_new_row_field_moves_the_state_hash`, was deleted in 17b cut M4.6 (see
+    /// `m3_every_part_of_the_answer_the_drop_and_the_seal_digest_moves_the_hash`'s head); this
+    /// pins the same rule for the new field. An `armed` line is a line: it moves the
+    /// sequence, as every line does, and is written only for an ungoverned core.
+    #[test]
+    fn m8b_the_unlawful_bit_is_a_record_field_never_folded() {
+        use crate::arena::ledger::EventKind;
+        let fired = |unlawful| EventKind::Fired {
+            unit: ObjId(4),
+            weapon: smol_str::SmolStr::new_static("cannon"),
+            shot_seq: 1,
+            target: ObjId(9),
+            range_cm: 4_000,
+            rounds: 1,
+            by: Some(smol_str::SmolStr::new_static("mind")),
+            slot: Some(1),
+            unlawful,
+        };
+        let mut lawful = two_tanks();
+        let mut unlawful = two_tanks();
+        lawful
+            .ledger
+            .append(0, fired(false), Vec::new(), 0)
+            .expect("room");
+        unlawful
+            .ledger
+            .append(0, fired(true), Vec::new(), 0)
+            .expect("room");
+        assert_eq!(state_hash(&lawful), state_hash(&unlawful));
+    }
+
     #[test]
     fn fnv_folds_bytes_in_order() {
         assert_eq!(fnv1a64_update(FNV_OFFSET_BASIS, b""), FNV_OFFSET_BASIS);

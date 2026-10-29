@@ -873,35 +873,60 @@ pub(crate) fn carried_rigs(
         if crate::relay_foundry::known_cargo(w, rig.tv) {
             return Err(format!("relay cargo #{} is unavailable", rig.tv.0));
         }
-        let unit = crate::port::hull::live_unit_id(w, rig.tv)
-            .or_else(|| pool_unit.clone())
-            .ok_or_else(|| format!("rig #{} has no unit", rig.tv.0))?;
-        let logistics = store
-            .definitions()
-            .specs
-            .get(&unit)
-            .and_then(|spec| spec.logistics.as_ref())
-            .ok_or_else(|| format!("rig #{}'s unit {unit} carries no logistics", rig.tv.0))?;
-        let dry_kg = u64::from(logistics.dry_mass_t)
-            .checked_mul(1_000)
-            .ok_or_else(|| format!("rig #{}'s dry mass overflows", rig.tv.0))?;
-        let accepted: Vec<CanonicalId> = goods
-            .goods
-            .iter()
-            .filter(|good| {
-                logistics
-                    .stowage
-                    .values()
-                    .any(|compartment| compartment.accepts.contains(&good.stowage))
-            })
-            .map(|good| good.id.clone())
-            .collect();
-        out.push(CarriedRig {
-            tv: rig.tv.0,
-            dry_kg,
-            hopper: rig.hopper.map(|vault| vault.0),
-            goods: accepted,
-        });
+        out.push(carried_rig(
+            w,
+            store,
+            rig.tv,
+            rig.hopper,
+            pool_unit.as_ref(),
+            goods,
+        )?);
     }
     Ok(out)
+}
+
+/// **One rig as the payload counts it** ([`carried_rigs`]' per-rig read): its dry mass and the
+/// goods its hopper accepts, from its live unit's logistics (a fitted root reads as its base
+/// chassis, `crate::port::hull::live_unit_id`; doc 17h cut M8b G1), else the pool's unit's.
+///
+/// # Errors
+///
+/// A rig whose unit or logistics cannot be read.
+pub(crate) fn carried_rig(
+    w: &World,
+    store: &TacsimStore,
+    tv: ObjId,
+    hopper: Option<VaultId>,
+    pool_unit: Option<&CanonicalId>,
+    goods: &GoodsTable,
+) -> Result<CarriedRig, String> {
+    let unit = crate::port::hull::live_unit_id(w, tv)
+        .or_else(|| pool_unit.cloned())
+        .ok_or_else(|| format!("rig #{} has no unit", tv.0))?;
+    let logistics = store
+        .definitions()
+        .specs
+        .get(&unit)
+        .and_then(|spec| spec.logistics.as_ref())
+        .ok_or_else(|| format!("rig #{}'s unit {unit} carries no logistics", tv.0))?;
+    let dry_kg = u64::from(logistics.dry_mass_t)
+        .checked_mul(1_000)
+        .ok_or_else(|| format!("rig #{}'s dry mass overflows", tv.0))?;
+    let accepted: Vec<CanonicalId> = goods
+        .goods
+        .iter()
+        .filter(|good| {
+            logistics
+                .stowage
+                .values()
+                .any(|compartment| compartment.accepts.contains(&good.stowage))
+        })
+        .map(|good| good.id.clone())
+        .collect();
+    Ok(CarriedRig {
+        tv: tv.0,
+        dry_kg,
+        hopper: hopper.map(|vault| vault.0),
+        goods: accepted,
+    })
 }

@@ -58,6 +58,16 @@ pub enum SealCheck {
     NoSeal,
 }
 
+/// **The note on the inspected core's title** (doc 17h cut M8b C2): the core was fitted by
+/// the ungoverning refit at `facility`, completing at IC second `at_ic`. A record field for
+/// M8d's seizure; M8a's reply lines do not print it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UngovernedNote {
+    pub facility: ObjId,
+    pub at_ic: i64,
+}
+
 /// **What tacsim read of the hull** (the facts half of an [`InspectionRecord`]): the fields
 /// the operator's reply prints and the record retains, in the record's own words.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,6 +89,9 @@ pub struct InspectionFacts {
     /// The licence state the open trip's seal was read under; `None` with no trip or on a
     /// seal recorded before M8a.
     pub licence_state: Option<super::super::SealLicenceState>,
+    /// The ungoverning refit's note on the core's title (doc 17h cut M8b C2); `None` for a
+    /// core never ungoverned and with no core.
+    pub ungoverned_note: Option<UngovernedNote>,
 }
 
 /// **One inspection** (doc 17h cut M8a, A4): who asked, under what authority and
@@ -115,6 +128,10 @@ pub struct InspectionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub licence_state: Option<super::super::SealLicenceState>,
     pub at_ic: ClockStamp,
+    /// The ungoverning refit's note (doc 17h cut M8b C2): absent for every core never
+    /// ungoverned, so every M8a record reads as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ungoverned_note: Option<UngovernedNote>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +156,8 @@ struct RecordWire {
     #[serde(default)]
     licence_state: Option<super::super::SealLicenceState>,
     at_ic: ClockStamp,
+    #[serde(default)]
+    ungoverned_note: Option<UngovernedNote>,
 }
 impl TryFrom<RecordWire> for InspectionRecord {
     type Error = PublicationError;
@@ -160,6 +179,7 @@ impl TryFrom<RecordWire> for InspectionRecord {
             seal_check: w.seal_check,
             licence_state: w.licence_state,
             at_ic: w.at_ic,
+            ungoverned_note: w.ungoverned_note,
         };
         v.validate()?;
         Ok(v)
@@ -178,6 +198,7 @@ impl InspectionRecord {
             seal_digest: self.seal_digest.clone(),
             seal_check: self.seal_check,
             licence_state: self.licence_state,
+            ungoverned_note: self.ungoverned_note,
         }
     }
 }
@@ -230,6 +251,7 @@ impl Record for InspectionRecord {
             || (no_core && (self.core.is_some() || self.class != HullClass::Zero))
             || (self.seal_check == SealCheck::NoSeal) != self.seal_digest.is_none()
             || (self.seal_digest.is_none() && self.licence_state.is_some())
+            || (self.core.is_none() && self.ungoverned_note.is_some())
             || self
                 .seal_digest
                 .as_ref()

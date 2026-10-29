@@ -1,7 +1,11 @@
 //! Explicit shipped hardware host composition. These are configuration values,
 //! never certified stock, money, readiness, a title or a fitting capability.
 use super::{HardwareProcess, PublishedHardware};
-use crate::{TacsimRuleset, config::LoadedPack, definitions::core_replacement::GovernedLineCores};
+use crate::{
+    TacsimRuleset,
+    config::LoadedPack,
+    definitions::core_replacement::{GovernedLineCores, SurfaceRigCores},
+};
 use mush_core::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, ModError, ObjId,
     OwnerId, Registrar,
@@ -9,7 +13,7 @@ use mush_core::{
 use mush_economy::{
     AccountId, CatalogRef, EconomyModule, InstrumentId, VaultId,
     core_integration::{CoreDeliveryPromise, CorePaymentPolicy, ScopedCoreAccount},
-    core_refit::RefitPaymentPolicy,
+    core_refit::{CorelessBase, RefitPaymentPolicy, UngovernTerms},
     registry_filing::InitialFilingPolicy,
 };
 use mush_industry::{
@@ -42,14 +46,36 @@ pub struct HardwareDeployment {
     pub issuer: SystemPrincipalId,
     pub factory: ObjId,
     pub output_container: ObjId,
+    /// **The ungoverning refit's site** (doc 17h cut M8b C2), when composed: a
+    /// facility holding `core_ungovern` and not `core_refit`, and the provider
+    /// it pays. The shipped launch composes none (who runs one is the Tether's
+    /// back room, doc 17h §4); a test composes one.
+    pub ungovern: Option<UngoverningSite>,
+}
+
+/// **An ungoverning shop** (doc 17h cut M8b C2): who is paid and where.
+#[derive(Clone, Debug)]
+pub struct UngoverningSite {
+    pub provider: ScopedCoreAccount,
+    pub factory: ObjId,
+    /// The shop's fee, centicredits; `None` takes the catalogue's `ungovern_minor`
+    /// (provisional: the fitting fee).
+    pub fee_minor: Option<i64>,
 }
 
 #[derive(Clone)]
 pub(crate) struct Registration {
-    pub(crate) family: GovernedLineCores,
+    pub(crate) family: Box<GovernedLineCores>,
+    /// Doc 17h cut M8b C1: the rig's family, built over the line family's
+    /// catalog, so its catalog is the whole fitted set.
+    pub(crate) rig: Box<SurfaceRigCores>,
     content: DefinitionDescriptor,
 }
 impl Registration {
+    /// The whole fitted catalog: the fielded units, the line roots, the rig roots.
+    pub(crate) fn catalog(&self) -> &crate::definitions::Catalog {
+        self.rig.catalog()
+    }
     pub(crate) fn register(&self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.definition_validator(
             DefinitionKind::new("content").map_err(bad)?,
@@ -119,7 +145,6 @@ impl RosterPolicy {
                 .hardware
                 .state
                 .registration
-                .family
                 .catalog()
                 .units
                 .clone(),
@@ -133,13 +158,26 @@ impl RosterPolicy {
                 .state
                 .refit
                 .payment()
-                .fitted_units
-                .iter()
+                .roots()
                 .cloned()
                 .collect(),
         )
     }
 }
+/// **The two fitting families over `layer`'s fielded catalog** (doc 17h cut M8b C1): the line
+/// family, then the rig family built on its catalog. Each holds a whole catalog, so they are
+/// built here, boxed, off the caller's frame (the M7 memory-size gate).
+#[inline(never)]
+fn families(
+    layer: &TacsimRuleset,
+) -> Result<(Box<GovernedLineCores>, Box<SurfaceRigCores>), ModError> {
+    let catalog = crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
+        .map_err(bad)?;
+    let family = Box::new(GovernedLineCores::build(catalog).map_err(bad)?);
+    let rig = Box::new(SurfaceRigCores::build(family.catalog().clone()).map_err(bad)?);
+    Ok((family, rig))
+}
+
 impl GovernedHardware {
     pub(crate) fn roster_policy(&self) -> Result<RosterPolicy, ModError> {
         Ok(RosterPolicy {
@@ -199,9 +237,7 @@ impl GovernedHardware {
             ));
         }
         let publication = PublishedHardware::shipped().map_err(bad)?;
-        let catalog = crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
-            .map_err(bad)?;
-        let family = GovernedLineCores::build(catalog).map_err(bad)?;
+        let (family, rig) = families(layer)?;
         let content = origin_content_descriptor(deployment.grades)?;
         let mut defs = DefinitionRegistryBuilder::new();
         let content_ref = defs
@@ -261,13 +297,31 @@ impl GovernedHardware {
             crate::arena::core::CoreClass::II,
             crate::arena::core::CoreClass::III,
         ];
-        let fitted_units = core_classes
-            .map(|class| family.definition(class).cloned())
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| bad("finite governed family"))?
-            .try_into()
-            .map_err(|_| bad("three fitted roots"))?;
+        // Doc 17h cut M8b: one `[I, II, III]` per family, governed or the twins.
+        let roots_of = |family: &crate::definitions::core_replacement::CoreFamily,
+                        governed: bool|
+         -> Result<[mush_core::DefinitionRef; 3], ModError> {
+            core_classes
+                .map(|class| family.root(class, governed).cloned())
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| bad("finite fitted family"))?
+                .try_into()
+                .map_err(|_| bad("three fitted roots"))
+        };
+        let fitted_units = roots_of(&family, true)?;
+        let ungovern = match &deployment.ungovern {
+            Some(site) => Some(UngovernTerms {
+                provider: site.provider.clone(),
+                factory: site.factory,
+                recipe: publication.definition(HardwareProcess::Ungovern).clone(),
+                fee_minor: site
+                    .fee_minor
+                    .unwrap_or(publication.catalogue().ungovern_minor()),
+                twins: vec![roots_of(&family, false)?, roots_of(&rig, false)?],
+            }),
+            None => None,
+        };
         let fitting = RefitPaymentPolicy {
             issuer: deployment.issuer,
             instrument: payment.instrument.clone(),
@@ -275,13 +329,23 @@ impl GovernedHardware {
             factory: deployment.factory,
             recipe: publication.definition(HardwareProcess::Refit).clone(),
             fitted_units,
+            families: vec![roots_of(&rig, true)?],
+            ungovern,
+            // Doc 17h cut M8b G2 (the lead's ruling): the shipped coreless terrain
+            // vehicle is the rig family's base; `core_refit` fits a core into it.
+            coreless: vec![CorelessBase {
+                base: rig
+                    .catalog()
+                    .units
+                    .get(crate::definitions::content::TV_PROSPECTOR)
+                    .ok_or_else(|| bad("the shipped rig"))?
+                    .definition
+                    .clone(),
+                family: 1,
+            }],
         };
         let component = ComponentId::new("core").map_err(bad)?;
-        let roots = fitting
-            .fitted_units
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
+        let roots = fitting.roots().cloned().collect::<BTreeSet<_>>();
         let action = fitting
             .action_ref(mush_economy::core_refit::INSTALL_ACTION)
             .map_err(bad)?;
@@ -308,7 +372,11 @@ impl GovernedHardware {
         Ok(Self {
             state: Box::new(GovernedHardwareState {
                 publication,
-                registration: Registration { family, content },
+                registration: Registration {
+                    family,
+                    rig,
+                    content,
+                },
                 origin,
                 factory,
                 refit,
@@ -328,6 +396,10 @@ impl GovernedHardware {
     pub fn family(&self) -> &GovernedLineCores {
         &self.state.registration.family
     }
+    /// The surface rig's fitting family (doc 17h cut M8b C1).
+    pub fn rig_family(&self) -> &SurfaceRigCores {
+        &self.state.registration.rig
+    }
 
     /// Uses the normal acknowledged pack-load route. Preparing composition alone
     /// does not create a publication receipt or authorize either recipe callback.
@@ -337,12 +409,8 @@ impl GovernedHardware {
                 "governed hardware requires one explicitly enabled composition",
             ));
         }
-        let family = GovernedLineCores::build(
-            crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
-                .map_err(bad)?,
-        )
-        .map_err(bad)?;
-        if family.catalog().descriptors != self.state.registration.family.catalog().descriptors {
+        let (_, rig) = families(&layer)?;
+        if rig.catalog().descriptors != self.state.registration.catalog().descriptors {
             return Err(bad("hardware composition catalogue changed"));
         }
         let packs = layer.loaded.as_mut().map_err(|e| bad(e.as_str()))?;
@@ -411,7 +479,7 @@ impl GovernedHardware {
     }
     pub fn tactics(&self) -> Result<TacticsModule, ModError> {
         Ok(
-            TacticsModule::with_catalog(self.state.registration.family.catalog().units.clone())
+            TacticsModule::with_catalog(self.state.registration.catalog().units.clone())
                 .with_component_replacement(
                     self.state.refit.replacement_policy(),
                     self.state
@@ -419,13 +487,7 @@ impl GovernedHardware {
                         .action(mush_economy::core_refit::INSTALL_ACTION)
                         .map_err(bad)?,
                     self.state.refit.component().clone(),
-                    self.state
-                        .refit
-                        .payment()
-                        .fitted_units
-                        .iter()
-                        .cloned()
-                        .collect(),
+                    self.state.refit.payment().roots().cloned().collect(),
                 ),
         )
     }

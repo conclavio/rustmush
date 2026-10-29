@@ -35,7 +35,7 @@ pub use authority::Authorization;
 pub use policy::RegistryInspectionPolicy;
 pub use records::{
     HullClass, INSPECTIONS_PER_HULL, InspectionFacts, InspectionRecord, Provenance, SealCheck,
-    inspection_key, inspection_slots,
+    UngovernedNote, inspection_key, inspection_slots,
 };
 pub use writer::{InspectionWriter, RegisteredInspectionWriter};
 

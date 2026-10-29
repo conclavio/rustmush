@@ -15,7 +15,7 @@ use mush_core::{ActionTxn, Ctx, ObjId, StateFamilyHandle, World};
 use mush_org::OrgStore;
 use mush_tactics::TacticalUnit;
 
-use super::{HullClass, InspectionFacts, Provenance, SealCheck};
+use super::{HullClass, InspectionFacts, Provenance, SealCheck, UngovernedNote};
 use crate::arena::core::{CoreClass, CoreHardware, read_core};
 use crate::port::families::PortHandles;
 use crate::surface::black_box::SealFacts;
@@ -156,7 +156,32 @@ pub fn hull_facts(
         seal_digest: seal.map(|facts| facts.seal_digest.clone()),
         seal_check: seal_check(seal, hardware.as_ref()),
         licence_state: seal.and_then(|facts| facts.licence_state),
+        ungoverned_note: None,
     }
+}
+
+/// **The ungoverning refit's note on `core`'s title** (doc 17h cut M8b C2), read from the
+/// economy (`EconomyStore::core_provenance_note`): a record field, printed by no reply line.
+/// `Err` when the economy's refit history cannot be read: the note fails closed (G9), and the
+/// inspection refuses rather than record "never ungoverned". A world with no economy has no
+/// managed core to note.
+fn ungoverned_note(w: &World, core: ObjId) -> Result<Option<UngovernedNote>, ()> {
+    if w.module_state_owner(std::any::TypeId::of::<mush_economy::EconomyStore>())
+        .is_none_or(|owner| owner.as_str() != "economy")
+    {
+        return Ok(None);
+    }
+    let Some(economy) = w.module_state::<mush_economy::EconomyStore>() else {
+        return Ok(None);
+    };
+    Ok(economy
+        .core_provenance_note(core)
+        .map_err(|_| ())?
+        .map(|note| match note {
+            mush_economy::CoreProvenanceNote::Ungoverned { facility, at_ic } => {
+                UngovernedNote { facility, at_ic }
+            }
+        }))
 }
 
 /// **A hull the programme knows** (the fix round's F2: the provider's gate, so the line
@@ -198,8 +223,14 @@ pub(crate) fn read_unit<R: Reads>(w: &World, reader: &mut R, hull: ObjId) -> Opt
             crate::minds::provenance::provenance_of(w, reader, core)
         });
     let (seal, opened_ic) = open_trip(w, reader, hull);
+    let mut facts = hull_facts(hull, unit, provenance, seal.as_ref());
+    // G9: a note that cannot be read refuses the read (the provider's uniform refusal).
+    facts.ungoverned_note = match facts.core {
+        Some(core) => ungoverned_note(w, core).ok()?,
+        None => None,
+    };
     Some(HullFacts {
-        facts: hull_facts(hull, unit, provenance, seal.as_ref()),
+        facts,
         name: crate::port::coop::name_of(w, hull),
         seal,
         opened_ic,
@@ -333,6 +364,7 @@ mod tests {
             fallback: None,
             core: (class != CoreClass::Zero).then(|| "core".into()),
             core_class: (class != CoreClass::Zero).then_some(class),
+            admissions: Vec::new(),
         }
     }
 
@@ -466,6 +498,7 @@ mod tests {
             seal_digest: Some("d".repeat(64).into()),
             seal_check: SealCheck::Differs,
             licence_state: Some(SealLicenceState::Recalled),
+            ungoverned_note: None,
         };
         let line = receipt_words(&worst, true, &"W".repeat(40));
         assert!(
@@ -492,6 +525,7 @@ mod tests {
             seal_digest: None,
             seal_check: SealCheck::NoSeal,
             licence_state: None,
+            ungoverned_note: None,
         };
         assert_eq!(
             receipt_words(&rom, false, ""),

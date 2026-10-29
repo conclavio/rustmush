@@ -11,7 +11,10 @@ use mush_testkit::TestWorld;
 use tacsim::arena::core::CoreClass;
 use tacsim::definitions::{
     Catalog,
-    core_replacement::{GovernedLineCores, LINE_I, LINE_II, LINE_III},
+    core_replacement::{
+        FittingRecipe, GovernedLineCores, LINE_I, LINE_I_UNGOVERNED, LINE_II, LINE_II_UNGOVERNED,
+        LINE_III, LINE_III_UNGOVERNED,
+    },
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -103,7 +106,8 @@ fn captured(unit: &TacticalUnit) -> Result<ComponentState, Box<dyn std::error::E
 fn governed_family_registers_exact_roots_without_reminting_unrelated_components() -> TestResult {
     let stock = Catalog::build_fielded(&[], tacsim::NS)?;
     let (family, world) = fixture()?;
-    assert_eq!(family.catalog().units.len(), stock.units.len() + 2);
+    // Doc 17h cut M8b C2: two governed roots and the three ungoverned twins.
+    assert_eq!(family.catalog().units.len(), stock.units.len() + 5);
     for old in stock.units.specs() {
         assert_eq!(family.catalog().units.get_exact(&old.definition), Some(old));
     }
@@ -147,6 +151,27 @@ fn governed_family_registers_exact_roots_without_reminting_unrelated_components(
         assert_eq!(actual_rules, original_rules);
     }
     assert!(family.definition(CoreClass::Zero).is_none());
+    // Doc 17h cut M8b C2: the ungoverned twin of each class, the same chassis with the
+    // governor's bit off in its core's payload.
+    for (class, name) in [
+        (CoreClass::I, LINE_I_UNGOVERNED),
+        (CoreClass::II, LINE_II_UNGOVERNED),
+        (CoreClass::III, LINE_III_UNGOVERNED),
+    ] {
+        let reference = family.twin(class).ok_or("twin missing")?;
+        assert_eq!(reference.key().id.as_str(), name);
+        let twin = TacticalUnit::from_spec(
+            family
+                .catalog()
+                .units
+                .get_exact(reference)
+                .ok_or("twin spec missing")?,
+            ObjId(5),
+        )?;
+        let hardware = tacsim::arena::core::read_core(&twin).ok_or("twin core")?;
+        assert_eq!((hardware.class, hardware.governed), (class, false));
+    }
+    assert!(family.twin(CoreClass::Zero).is_none());
     Ok(())
 }
 
@@ -279,7 +304,7 @@ fn every_finite_transition_preserves_damage_ammo_capabilities_and_current_mobili
                 .map(|key| (key, post.capability(key)))
                 .collect();
             assert_eq!(after_caps, before_caps);
-            assert_eq!(journal.displaced, displaced);
+            assert_eq!(journal.displaced, Some(displaced));
             assert_eq!(journal.inserted, incoming);
             assert_eq!(journal.from_revision, current.revision());
             assert_eq!(journal.to_revision, post.revision());
@@ -387,7 +412,74 @@ fn incoming_damage_class_governance_missing_asset_and_duplicate_asset_refuse() -
                 .replace(registry(&world)?, &current, &bad, current.revision(), 0)
                 .is_err()
         );
+        // Doc 17h cut M8b C2: no tamper of a governed component passes the ungoverning
+        // recipe either; it fits only a twin's own intact payload.
+        assert!(
+            family
+                .replace_with(
+                    FittingRecipe::Ungovern,
+                    registry(&world)?,
+                    &current,
+                    &bad,
+                    current.revision(),
+                    0
+                )
+                .is_err()
+        );
     }
+    // Doc 17h cut M8b C2 (the moved pin): the ungoverned payload of the class's own twin is
+    // refused by the governed recipe (`core_refit`) and accepted by the ungoverning one
+    // (`core_ungovern`), which fits the twin root; the tampered payload on the governed
+    // component above is refused by both.
+    let twin = captured(&change(
+        &TacticalUnit::from_spec(
+            family
+                .catalog()
+                .units
+                .get_exact(family.twin(CoreClass::III).ok_or("twin missing")?)
+                .ok_or("twin spec missing")?,
+            ObjId(200),
+        )?,
+        vec![UnitMutationOp::SetComponentAsset {
+            component: core.clone(),
+            asset: Some(ObjId(302)),
+        }],
+    )?)?;
+    assert!(
+        family
+            .replace(registry(&world)?, &current, &twin, current.revision(), 0)
+            .is_err(),
+        "core_refit refuses an ungoverned payload"
+    );
+    let (fitted, _) = family.replace_with(
+        FittingRecipe::Ungovern,
+        registry(&world)?,
+        &current,
+        &twin,
+        current.revision(),
+        0,
+    )?;
+    assert_eq!(
+        fitted.schema(),
+        family.twin(CoreClass::III).ok_or("twin missing")?
+    );
+    assert_eq!(
+        tacsim::arena::core::read_core(&fitted).map(|hw| (hw.class, hw.governed)),
+        Some((CoreClass::III, false))
+    );
+    assert!(
+        family
+            .replace_with(
+                FittingRecipe::Ungovern,
+                registry(&world)?,
+                &current,
+                &captured(&healthy)?,
+                current.revision(),
+                0
+            )
+            .is_err(),
+        "core_ungovern refuses a governed payload"
+    );
     let already_installed = change(
         &current,
         vec![UnitMutationOp::SetComponentAsset {
@@ -426,9 +518,12 @@ fn unsupported_chassis_missing_core_mount_and_moved_mount_refuse() -> TestResult
     let incoming = captured(&incoming_unit(&family, CoreClass::I, ObjId(302))?)?;
     let mut refused = 0;
     for spec in
-        family.catalog().units.specs().filter(|spec| {
-            ![LINE_I, LINE_II, LINE_III].contains(&spec.definition.key().id.as_str())
-        })
+        // Doc 17h cut M8b C2: the family's roots now include the three twins.
+        family
+            .catalog()
+            .units
+            .specs()
+            .filter(|spec| !family.contains(&spec.definition))
     {
         let other = TacticalUnit::from_spec(spec, ObjId(101))?;
         assert!(

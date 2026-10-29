@@ -185,7 +185,11 @@ fn every_shipped_definition_loads_validates_and_binds() {
         components,
         ["cannon", "machine_gun", "visual_sensor", "power", "core"]
     );
-    assert_eq!(catalog.cores.len(), 3, "the cores pack's three");
+    assert_eq!(
+        catalog.cores.len(),
+        6,
+        "the cores pack's three and, since doc 17h cut M8b, their three ungoverned twins"
+    );
     assert_eq!(
         spec.sensor_height_cm, 150,
         "doc 16 §3.2's default, authored"

@@ -90,7 +90,87 @@ pub struct MindSeal {
     pub rom_identity: MindIdentity,
     pub rom: SealedCards,
 }
+/// **What an ungoverned seal admitted that a governed one refuses** (doc 17h cut M8b C4; doc
+/// 17 §10, D-UM-17, D-UM-41, D-UM-42): one word per lifted check, a field of the seal's
+/// lines (`MindSealed`, the black box's open line), never a notice and never a word on a
+/// player surface — detection is evidence only. A governed seal admits none, and the field is
+/// then absent, so no line written before M8b moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Admission {
+    /// A card or rule under the Compact floor (D-UM-17's floor, lifted at the seal).
+    UnderFloor,
+    /// A personal draft with no filed certificate.
+    Unfiled,
+    /// A line whose licence is not in force (`draft`, `lapsed`, `revoked`, `recalled`).
+    Unlicensed,
+    /// A mind rated above its core's class.
+    OverClass,
+}
+
 impl MindSeal {
+    /// **Whether this seal lifts the floor** (doc 17h cut M8b C4; D-UM-17 "an ungoverned core
+    /// alone skips it", D-UM-42): it names a core and that core is ungoverned. A hull with no
+    /// core flies the ROM, governed. Every pod core is governed (D-UM-41), so no arena seal
+    /// lifts it in play.
+    #[must_use]
+    pub fn lifts_floor(&self) -> bool {
+        self.core.is_some() && !self.governed
+    }
+    /// The floor this seal's own cards are held to: the captured Compact floor, or none on an
+    /// ungoverned core. [`MindSeal::odds_floor_permille`] keeps the captured floor either way,
+    /// so a governed seal's bytes and digest are what they were.
+    #[must_use]
+    pub fn effective_floor(&self) -> u32 {
+        if self.lifts_floor() {
+            0
+        } else {
+            self.odds_floor_permille
+        }
+    }
+    /// **What this seal admitted** (doc 17h cut M8b C4), in [`Admission`]'s order: empty for a
+    /// governed seal. `licence_state` is the line's (M8a's parameter).
+    #[must_use]
+    pub fn admissions(
+        &self,
+        licence_state: crate::minds::licence_state::SealLicenceState,
+    ) -> Vec<Admission> {
+        use crate::minds::licence_state::SealLicenceState as State;
+        if !self.lifts_floor() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if self.class != CoreClass::Zero
+            && self.channels.contains(&Channel::Fire)
+            && self.cards.under_floor(self.odds_floor_permille)
+        {
+            out.push(Admission::UnderFloor);
+        }
+        // G5: a seal that fell to the ROM runs no draft and no licence's mind.
+        if self.class != CoreClass::Zero
+            && !self.requested.origin.is_doctrine()
+            && self.requested.origin.certificate().is_none()
+        {
+            out.push(Admission::Unfiled);
+        }
+        // G5 (the lead's ruling): `unlicensed` is a record-only word in M8b — the governed
+        // refusal of an unlicensed line is upstream (IC execution needs a filed certificate
+        // and an admitted claim, M8c/M8e), not at the seal.
+        if self.class != CoreClass::Zero
+            && matches!(
+                licence_state,
+                State::Draft | State::Lapsed | State::Revoked | State::Recalled
+            )
+        {
+            out.push(Admission::Unlicensed);
+        }
+        if self.core_class > CoreClass::Zero
+            && self.cards.definition.declared_class > self.core_class
+        {
+            out.push(Admission::OverClass);
+        }
+        out
+    }
     #[must_use]
     pub fn identity(&self) -> MindIdentity {
         MindIdentity {
@@ -147,6 +227,7 @@ impl MindSeal {
             licence: self.origin.licence_label().into(),
             licence_state: Some(licence_state),
             principal: self.principal.clone(),
+            admissions: self.admissions(licence_state),
         }
     }
     /// Validate complete custody before any arena catalog/source publication.
@@ -197,11 +278,12 @@ impl MindSeal {
         if self.channels != expected_channels {
             return Err(invalid("sealed stations do not match the hull"));
         }
+        // Doc 17h cut M8b C4: an ungoverned core's cards are held to no floor.
         self.cards.verify(
             &classes.row(self.class),
             weapons,
             &self.channels,
-            self.odds_floor_permille,
+            self.effective_floor(),
         )?;
         self.rom.verify(
             &classes.row(CoreClass::Zero),

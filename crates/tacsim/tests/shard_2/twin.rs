@@ -1468,6 +1468,7 @@ fn m1b2_the_probes_line_rules_count_what_they_name() {
                 rounds: 1,
                 by: by.map(Into::into),
                 slot: by.map(|_| 1),
+                unlawful: false,
             },
             draws: Vec::new(),
             hash: 0,

@@ -478,7 +478,7 @@ impl SealEngine {
 /// [`Arena::odds_floor_permille`] is, whose `closed` moves only with a ledger
 /// line (17b cut M3.6's `sortie_closed`), which the hash folds through the
 /// ledger's sequence.
-pub use super::mind_seal::{MindSeal, SealRef};
+pub use super::mind_seal::{Admission, MindSeal, SealRef};
 
 /// **The word a sortie closes with at the match's end** (17b cut M3.6; doc 17
 /// §12, §13): every sortie still open when the match ends, at any of its six

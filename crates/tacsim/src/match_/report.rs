@@ -1657,21 +1657,35 @@ impl Fold {
                 rounds,
                 by,
                 slot,
+                unlawful,
             } => {
                 // **17b cut M1b.1** (D-UM-14): the attribution, appended only
                 // when the line carries it — a seat's or a machine's shot reads
-                // byte for byte as it always did.
+                // byte for byte as it always did. Doc 17h cut M8b C5: an
+                // unlawful shot says so here, the staff spelling, and nowhere a
+                // player reads.
                 format!(
                     "{word} unit={} weapon={weapon} shot={shot_seq} target={} range_cm={range_cm} \
-                     rounds={rounds}{}{}",
+                     rounds={rounds}{}{}{}",
                     unit(id),
                     unit(target),
                     by.as_ref()
                         .map(|by| format!(" by={by}"))
                         .unwrap_or_default(),
-                    slot.map(|slot| format!(" slot={slot}")).unwrap_or_default()
+                    slot.map(|slot| format!(" slot={slot}")).unwrap_or_default(),
+                    if *unlawful { " unlawful" } else { "" }
                 )
             }
+            // Doc 17h cut M8b C5: the unlawful arming, staff only.
+            EventKind::Armed {
+                unit: id,
+                weapon,
+                slot,
+                ..
+            } => format!(
+                "{word} unit={} weapon={weapon} slot={slot} unlawful",
+                unit(id)
+            ),
             EventKind::Impact {
                 shot_seq,
                 unit: id,
@@ -3115,6 +3129,7 @@ mod tests {
             rounds,
             by: None,
             slot: None,
+            unlawful: false,
         }
     }
 
@@ -3444,6 +3459,7 @@ mod tests {
                 rounds: 1,
                 by: Some(SmolStr::new("cond")),
                 slot: Some(1),
+                unlawful: false,
             },
         );
         let report = fold(&tape.0, &roster(), Reader::Staff, RULES);
@@ -3631,6 +3647,7 @@ mod tests {
             licence: SmolStr::new_static("doctrine"),
             licence_state: Some(crate::minds::licence_state::SealLicenceState::Doctrine),
             principal,
+            admissions: Vec::new(),
         };
         let mut tape = Tape::new();
         tape.at(
