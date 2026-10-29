@@ -10,6 +10,10 @@ The accepted design rules live in [doc 27](27-ic-field-operations-design-and-sur
 | `H2-B` / `H2-C` | Ground tenure pinned at attach (`Q-S3`), lawful/unlawful recovery entitlement (`FO-4`, `Q-S1`), private authoritative recovery records, evidence-gated unlawful salvage actions (`Q-S4`), post-close black-box access rules (`P-3`), public salvage claims with a 48-available-real-hour contest window (`Q-S2`, `Q-S13`–`Q-S15`, `Q-F3`), `Q-R1` bare-prior-title rejection, and pending-title custody gates (`Q-S14`, `Q-F5`) | `mush_tactics::field_ops::salvage` |
 | `H3` | Component stripping with parent-hull provenance & double-strip/double-claim prevention (`Q-S11`, `Q-F5`, `Q-F6`), hull scrapping, in-place section/component repair (including pending-custody repair-at-risk per `Q-S14`), section reconstruction, destroyed/stripped component replacement (`FO-2`, `Q-S12`), component rearming, and facility restoration cost quoting (`WorkshopFacilityTariff`, `WorkshopCostQuote`) | `mush_tactics::field_ops::workshop` |
 | `Sortie & Arena Loop` | Carrier personnel manifests with embarkation origin tracking (`FO-16`, `Q-R2`), port NPC crew pools & daily IC wage settlement (`Q-R5`, `Q-H11`), explicit unit expense payer policies (`Q-A4`), organizer-launched & no-player NPC-commanded field sorties with partial-launch persistence (`FO-6`–`FO-9`, `FO-15`, `Q-D3`–`Q-D6`, `Q-F1`, `Q-F2`, `P-1`), plus `tacsim` live `Arena` reconciliation, surface `BlockTenure` ground-tenure mapping, and active-combat mining pause (`Q-H1`) | `mush_tactics::field_ops::sortie`, `tacsim::field_ops` |
+| `W-clock` | Unplanned-outage detection (`>= 120 s` vs `< 120 s` silent re-anchor, `Q-R4`), 5-minute (`300 s`) recovery countdown freeze (`FO-11`, `Q-H11`), reconnect banner & milestone broadcasts (`5m`, `3m`, `1m`, `30s`, `10s`, `0s`), in-flight unit state quarantine (`P-4`), and automatic 48-hour salvage claim deadline extension (`Q-F3`, `Q-F4`) bridged with `mush_core::clock::WorldTimeline` | `mush_tactics::field_ops::clock`, `tacsim::field_ops` |
+| `Live Coupled Towing & Interdiction` | Coupled surface drive motion (`attach_site_tow`, `step_coupled_tow_motion`, `coupled_drive_rates_for_tow`, `step_coupled_surface_tow_drive_leg`), mid-tow combat interdiction (`interdict_active_tow`) severing the towline and promoting both tug & casualty to `1:1` combat (`H1-B` + `H2-A`, `Q-S7`), emergency tow drop (`emergency_drop_tow`), and tug/casualty damage synchronization (`apply_field_damage_with_recovery_sync`) | `mush_tactics::field_ops::recovery`, `mush_tactics::field_ops::engagement`, `tacsim::field_ops` |
+| `Black-Box Forensics & Contraband Provenance` | Tamper-evident per-hull black-box flight logs (`BlackBoxFlightEntry`, `append_black_box_entry`), physical-custody forensic extraction (`extract_black_box_forensics` -> `BlackBoxForensicReport` -> `SalvageEvidenceKind::BlackBoxForensics`, `FO-4`, `Q-S4`, `P-3`), unlawful field hot-stripping (`StripAuthorization::UnlawfulFieldHotStrip`), and contraband component provenance gating at legitimate workshops (`ProvenanceLegalityStatus`, `ContrabandReason`, `WorkshopError::ContrabandComponentRefused`, `Q-F5`, `Q-F6`) | `mush_tactics::field_ops::salvage`, `mush_tactics::field_ops::workshop`, `tacsim::field_ops` |
+| `Field Engineering & Resupply Tenders` | Registered mobile recovery rigs & resupply tenders (`FieldTenderState`, `FieldEngineeringBook`), field component unjamming (`field_unjam_component`), damaged section field stabilization (`field_stabilize_damaged_section`), field ammo rearming & charge transfer (`field_resupply_ammo_and_charge`), and strict enforcement of the `H3` workshop boundary (`FieldEngineeringError::RequiresWorkshopFacility` for destroyed sections, destroyed/stripped components, and irrecoverable wrecks) | `mush_tactics::field_ops::engineering`, `tacsim::field_ops` |
 
 ---
 
@@ -150,3 +154,55 @@ The accepted design rules live in [doc 27](27-ic-field-operations-design-and-sur
   - `reconcile_arena_to_field_engagement`: reconciles `Arena::returned_units()` and combat `Notice`s into `FieldSiteEngagementBook`, `FieldCustodyLedger`, `CrewSurvivalBook`, and observer-bounded `FieldObservationBook` using `Arena` contact visibility (`Q-H6`, `Q-H8`, `Q-H12`).
   - `block_letter_at_site_pose` & `ground_tenure_at_site_pose`: maps a casualty's `FieldPose` (`x_cm`, `y_cm`) to its `10 m` surface cell and `4×4` frontier block letter (`'A'..='P'`) and resolves live `tacsim::surface::claims::BlockTenure` records into `GroundTenure` (`FO-4`, `Q-S1`, `Q-S3`).
   - `can_run_surface_mining_for_unit`: enforces `Q-H1` by refusing/pausing surface mining on a site while `site_book.is_engaged()` is true or when the unit is not `Operational` on `FieldSurface`.
+
+---
+
+## 7. `W-clock` — Unplanned-Outage Freeze, 5-Minute Recovery Countdown & Deadline Extension (`mush_tactics::field_ops::clock`, `tacsim::field_ops`)
+
+- **Outage Threshold & Silent Re-anchor (`OutageFreezeConfig`, `FieldClockCoordinator::resolve_startup_gap`, `Q-R4`)**:
+  - Sub-threshold restart gaps (`< 120` real seconds) return `FieldOutageResolution::SilentReanchor`, re-anchoring `(real_anchor, ic_anchor)` from the last durable checkpoint with zero countdown and zero unseen IC catch-up.
+  - Gaps meeting or exceeding `DEFAULT_OUTAGE_FREEZE_THRESHOLD_REAL_S = 120` enter `FieldOutageResolution::CountdownFrozen(ActiveFieldFreeze)` for `DEFAULT_OUTAGE_COUNTDOWN_REAL_S = 300` (`5` real minutes, `FO-11`, `Q-R4`).
+- **Reconnect Banner, Milestone Broadcasts & In-Flight Quarantine (`P-4`)**:
+  - `reconnect_banner(now_real_unix)` produces `OutageReconnectBanner` with exact `remaining_real_secs` and `frozen_ic_unix`.
+  - `poll_due_broadcast_milestones(now_real_unix)` emits `OutageBroadcastMilestone::{FiveMinutes, ThreeMinutes, OneMinute, ThirtySeconds, TenSeconds, Unfrozen}` at most once per countdown.
+  - `quarantine_unit` / `clear_quarantine` holds units with corrupted/ambiguous mid-outage state in `QuarantinedUnitRecord` without mutating, deleting, or rolling back healthy units (`P-4`).
+- **Unfreeze & Salvage Deadline Extension (`complete_unfreeze_and_adjust_claims`, `Q-F3`, `Q-F4`)**:
+  - Accumulates `outage_paused_real_secs = unfreeze_real_unix - frozen_real_unix` (downtime + countdown) and extends every pending 48-hour salvage claim deadline on `SalvageClaimBook` (`AdjustedSalvageClaimDeadline`).
+  - `tacsim::field_ops::{resolve_world_outage_with_field_clock, complete_world_outage_unfreeze_with_field_clock}` synchronize `FieldClockCoordinator` directly with `mush_core::clock::WorldTimeline`.
+
+---
+
+## 8. Live Coupled Surface Drive & Mid-Tow Combat Interdiction (`mush_tactics::field_ops::recovery`, `mush_tactics::field_ops::engagement`, `tacsim::field_ops`)
+
+- **Coupled Surface Motion (`attach_site_tow`, `step_coupled_tow_motion`)**:
+  - Validates same-site non-combat presence for both tug and casualty on `FieldSiteEngagementBook` and advances both `RecoveryOperation::{tug_pose, casualty_pose}` and `FieldSiteEngagementBook` unit poses in lockstep within `coupled_speed_cms * dt_secs`.
+  - `EngagementError::UnitCoupledToActiveTow` refuses independent withdrawal or site demotion while a unit is coupled to an active tow (`Q-S7`).
+- **Mid-Tow Combat Interdiction & Emergency Drop (`interdict_active_tow`, `emergency_drop_tow`, `H1-B` + `H2-A`)**:
+  - Hostile contact during an active tow severs the towline (`RecoveryStage::Released` at the current coupled pose) and promotes the site into `1:1` combat (`promote_to_engagement`).
+  - `apply_field_damage_with_recovery_sync` and `RecoveryBook::sync_casualty_damage` propagate field combat damage onto coupled operations: disabling the tug releases the casualty in place, while obliterating the casualty (`Irrecoverable`) aborts the tow (`RecoveryStage::AbortedIrrecoverable`).
+- **Surface Drive Rate Scaling (`coupled_drive_rates_for_tow`, `step_coupled_surface_tow_drive_leg`)**:
+  - Bridges `RecoveryOperation` with `tacsim::surface::drive::{DriveRates, secs_of_cost, cu_of_cost}`, scaling `max_speed_cms` to `op.coupled_speed_cms()` and scaling `cu_per_nominal_cell` proportionally to combined mass `(tug_mass_kg + casualty_mass_kg) / tug_mass_kg`.
+
+---
+
+## 9. Black-Box Forensics & Contraband Component Provenance (`mush_tactics::field_ops::salvage`, `mush_tactics::field_ops::workshop`, `tacsim::field_ops`)
+
+- **Tamper-Evident Black-Box Flight Log (`BlackBoxFlightEntry`, `BlackBoxForensicReport`, `FO-4`, `Q-H6`, `Q-H9`, `Q-S4`, `P-3`)**:
+  - `SalvageClaimBook::append_black_box_entry` (and `tacsim::field_ops::{record_surface_black_box_line_to_forensics, record_arena_notices_to_black_box}`) records combat hits, section destruction, disablement, and sortie seal/close events onto each hull's black box.
+  - `extract_black_box_forensics` requires physical custody/bay access (`P-3`) and produces a `BlackBoxForensicReport` that converts directly via `into_salvage_evidence()` into `SalvageEvidenceKind::BlackBoxForensics` to vacate unlawful third-party salvage claims (`Q-S4`).
+- **Unlawful Hot-Stripping & Contraband Provenance (`StripAuthorization::UnlawfulFieldHotStrip`, `ProvenanceLegalityStatus`, `ContrabandReason`, `Q-F5`, `Q-F6`)**:
+  - Field hot-stripping on owned land without owner/landholder authority opens a contestable part salvage claim (`SalvageSubject::StrippedComponent`).
+  - When a hull or part salvage claim is vacated, `mark_stripped_component_contraband_on_vacated_claim` marks all associated stripped components `ProvenanceLegalityStatus::Contraband { rightful_owner, reason }`.
+  - Legitimate workshops (`allow_contraband == false`) refuse installing contraband parts with `WorkshopError::ContrabandComponentRefused` until cleared by the rightful owner (`clear_contraband_provenance`).
+
+---
+
+## 10. Field Engineering, Mobile Recovery Rigs & Resupply Tenders (`mush_tactics::field_ops::engineering`, `tacsim::field_ops`)
+
+- **Mobile Field Tenders (`FieldTenderState`, `FieldEngineeringBook`)**:
+  - Tracks operational field tenders / recovery rigs on a site with finite `spare_parts_kg`, `ammo_supply_rounds`, `charge_reserve_cu`, and `max_service_distance_cm`.
+  - Refuses field engineering while either tender or target is in active combat (`TenderInActiveCombat` / `TargetInActiveCombat`) or while the target is coupled to an active tow (`TargetCoupledToActiveTow`).
+- **Field Repairs vs. `H3` Workshop Boundary**:
+  - `field_unjam_component` (`field_unjam_tacsim_unit`): clears a `Jammed` component back to `Intact` or `Damaged` in the field using spare parts (`DEFAULT_UNJAM_SPARE_PARTS_KG`), while refusing `Destroyed` components or components hosted in a `Destroyed` section (`FieldEngineeringError::RequiresWorkshopFacility`).
+  - `field_stabilize_damaged_section` (`field_stabilize_tacsim_unit_section`): patches structural internals on a `Damaged` section (`DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT`), while refusing `Destroyed`, `Wreck`, or `Irrecoverable` sections (`FieldEngineeringError::RequiresWorkshopFacility`).
+  - `field_resupply_ammo_and_charge` (`field_resupply_tacsim_unit`): transfers ammunition rounds and power charge (`CU`) from the tender's reserves, computing deterministic credit billing via `UnitExpensePolicy::payer_for(UnitExpenseCategory::Ammunition)`.

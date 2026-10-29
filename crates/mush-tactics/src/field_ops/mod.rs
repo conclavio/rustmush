@@ -19,14 +19,28 @@
 //!   `Q-R2`, `Q-R5`, `P-1`): detachment sortie staging, partial-launch persistence,
 //!   carrier personnel embarkation manifests, NPC crew contracts/wages, unit expense
 //!   policies, bounded mission-leader succession, and field-to-roster availability sync.
+//! - [`clock`] (`W-clock`, `FO-11`, `Q-H11`, `Q-F3`, `Q-F4`, `Q-R4`, `P-4`): global outage
+//!   freeze, 5-minute recovery countdown (`5m`, `2m`, `1m`, unfreeze), sub-threshold silent
+//!   re-anchor, incompatible-state quarantine, and salvage contest deadline extension.
+//! - [`engineering`] (`H1-A`, `H2-A`, `H3` Field vs. Workshop Boundary): mobile field
+//!   engineering tenders, in-field weapon unjamming, damaged-section stabilization, field
+//!   ammo/charge resupply, and workshop-boundary enforcement.
 
+pub mod clock;
 pub mod condition;
 pub mod engagement;
+pub mod engineering;
 pub mod recovery;
 pub mod salvage;
 pub mod sortie;
 pub mod workshop;
 
+pub use clock::{
+    ActiveFieldFreeze, AdjustedSalvageClaimDeadline, ClockFreezeError,
+    DEFAULT_OUTAGE_COUNTDOWN_REAL_S, DEFAULT_OUTAGE_FREEZE_THRESHOLD_REAL_S, FieldClockCoordinator,
+    FieldOutageResolution, MAX_QUARANTINED_UNITS, OutageBroadcastMilestone, OutageFreezeConfig,
+    OutageReconnectBanner, OutageUnfreezeReport, QuarantinedUnitRecord,
+};
 pub use condition::{
     AuthorityHandoffRequest, ComponentCondition, ConditionError, FieldAuthorityKind,
     FieldCloseOutcome, FieldCustodyLedger, FieldCustodyRecord, FieldEpochDisposition,
@@ -43,6 +57,12 @@ pub use engagement::{
     SafePortCandidate, SiteUnitPresence, WithdrawalDestination, resolve_link_loss_posture,
     select_extraction_port,
 };
+pub use engineering::{
+    DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM, DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
+    DEFAULT_UNJAM_SPARE_PARTS_KG, FieldEngineeringActionKind, FieldEngineeringBook,
+    FieldEngineeringError, FieldEngineeringLogEntry, FieldTenderState, MAX_FIELD_ENGINEERING_LOGS,
+    MAX_FIELD_TENDERS,
+};
 pub use recovery::{
     AttachTowRequest, BayCapacitySpec, DEFAULT_MAX_ATTACH_DISTANCE_CM, FieldInspectionReport,
     FieldPose, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_RECOVERY_OPERATIONS,
@@ -51,9 +71,10 @@ pub use recovery::{
     inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille, tow_speed_factor_permille,
 };
 pub use salvage::{
-    AtRiskRepairEntry, AuthoritativeRecoveryRecord, CONTEST_WINDOW_AVAILABLE_REAL_SECS,
-    ContestGround, ContestSuccessReason, CustodyAction, CustodyTitleStatus, GroundTenure,
-    MAX_AUTHORITATIVE_RECOVERY_RECORDS, MAX_CLAIM_ENTRIES, MAX_SALVAGE_CLAIMS,
+    AtRiskRepairEntry, AuthoritativeRecoveryRecord, BlackBoxFlightEntry, BlackBoxForensicReport,
+    CONTEST_WINDOW_AVAILABLE_REAL_SECS, ContestGround, ContestSuccessReason, CustodyAction,
+    CustodyTitleStatus, GroundTenure, MAX_AUTHORITATIVE_RECOVERY_RECORDS,
+    MAX_BLACK_BOX_ENTRIES_PER_HULL, MAX_CLAIM_ENTRIES, MAX_SALVAGE_CLAIMS,
     RecoveryAuthorityContext, RecoveryEntitlement, SalvageClaim, SalvageClaimBook, SalvageClaimId,
     SalvageClaimState, SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord,
     SalvageSubject, check_custody_action_allowed, evaluate_recovery_entitlement,
@@ -66,10 +87,11 @@ pub use sortie::{
     is_occupant_fit_for_duty, sync_detachment_availability_from_field,
 };
 pub use workshop::{
-    ComponentProvenance, FALLBACK_SECTION_SCRAP_KG, MAX_STRIPPED_COMPONENTS, MAX_WORKSHOP_ORDERS,
-    ReplacementPartSpec, SCRAP_KG_PER_STRUCTURAL_POINT, ScrapYieldReport, StripAuthorization,
-    StrippedComponentRecord, WorkshopBook, WorkshopCostQuote, WorkshopError,
-    WorkshopFacilityTariff, WorkshopOperationKind, WorkshopWorkOrderRecord,
+    ComponentProvenance, ContrabandReason, FALLBACK_SECTION_SCRAP_KG, MAX_STRIPPED_COMPONENTS,
+    MAX_WORKSHOP_ORDERS, ProvenanceLegalityStatus, ReplacementPartSpec,
+    SCRAP_KG_PER_STRUCTURAL_POINT, ScrapYieldReport, StripAuthorization, StrippedComponentRecord,
+    WorkshopBook, WorkshopCostQuote, WorkshopError, WorkshopFacilityTariff, WorkshopOperationKind,
+    WorkshopWorkOrderRecord,
 };
 
 #[cfg(test)]
@@ -1025,6 +1047,798 @@ mod tests {
         let encoded = serde_json::to_string(&book)?;
         let decoded: RecoveryBook = serde_json::from_str(&encoded)?;
         check_eq!(decoded, book);
+        Ok(())
+    }
+
+    #[test]
+    fn w_clock_freeze_countdown_silent_reanchor_quarantine_and_claim_deadline_adjustment()
+    -> TestResult {
+        let mut clock = FieldClockCoordinator::new(
+            OutageFreezeConfig {
+                freeze_threshold_real_s: 30,
+                countdown_duration_real_s: 300,
+            },
+            IC_SURFACE_CLOCK_RATE,
+        )?;
+        let mut salvage_book = SalvageClaimBook::new();
+        let mut custody_ledger = FieldCustodyLedger::new();
+        let mut site_book = FieldSiteEngagementBook::new(ObjId(900))?;
+
+        let fixture = build_biped_fixture(ObjId(201))?;
+        let mut fixture_mismatch = build_biped_fixture(ObjId(202))?;
+        let pose_201 = FieldPose {
+            site: ObjId(900),
+            x_cm: 100,
+            y_cm: 100,
+        };
+        let pose_202 = FieldPose {
+            site: ObjId(900),
+            x_cm: 200,
+            y_cm: 100,
+        };
+        site_book.deploy_surface_unit(
+            &mut custody_ledger,
+            &fixture.unit,
+            &fixture.anatomy,
+            SmolStr::new("expedition"),
+            pose_201,
+            None,
+            1_000,
+        )?;
+        site_book.deploy_surface_unit(
+            &mut custody_ledger,
+            &fixture_mismatch.unit,
+            &fixture_mismatch.anatomy,
+            SmolStr::new("expedition"),
+            pose_202,
+            None,
+            1_000,
+        )?;
+
+        // Seed initial checkpoint at real=10_000, ic=50_000.
+        clock.record_checkpoint(10_000, 50_000)?;
+
+        // Sub-threshold restart (< 30s lost wall time): silent re-anchor with no freeze (`Q-R4`).
+        let silent = clock.evaluate_restart_gap(10_020, &mut salvage_book)?;
+        check_eq!(
+            silent,
+            FieldOutageResolution::SilentReanchor {
+                lost_real_s: 20,
+                anchored_real_s: 10_020,
+                anchored_ic_s: 50_000,
+            }
+        );
+        check!(!clock.is_frozen());
+
+        // File a pending salvage claim before the outage (`Q-F3`).
+        let op_id = RecoveryOpId::new(1)?;
+        salvage_book.record_physical_attach(
+            op_id,
+            ObjId(201),
+            ObjId(300),
+            &RecoveryAuthorityContext {
+                recoverer: ObjId(50),
+                unit_title_holder: ObjId(60),
+                has_owner_authorization: false,
+                has_landholder_authorization: false,
+                ground_tenure_at_attach: GroundTenure::Unclaimed,
+            },
+            50_000,
+        )?;
+        salvage_book.record_bay_load(op_id, ObjId(800), 50_010)?;
+        let custody_status = salvage_book.resolve_hull_recovery_custody(op_id, 10_020)?;
+        let (claim_id, initial_deadline) = match custody_status {
+            CustodyTitleStatus::PendingSalvageClaim {
+                claim_id,
+                deadline_real_s,
+                ..
+            } => (claim_id, deadline_real_s),
+            other => return Err(format!("expected pending salvage claim, got {other:?}").into()),
+        };
+
+        // Outage restart >= 30s (600s outage from 10_020 to 10_620): freezes clock & starts 5m countdown (`FO-11`, `Q-H11`).
+        let frozen_res = clock.evaluate_restart_gap(10_620, &mut salvage_book)?;
+        check_eq!(
+            frozen_res,
+            FieldOutageResolution::OutageCountdownStarted {
+                lost_real_s: 600,
+                frozen_at_real_s: 10_020,
+                frozen_ic_s: 50_000,
+                countdown_started_real_s: 10_620,
+                unfreeze_at_real_s: 10_920,
+                initial_milestones: vec![OutageBroadcastMilestone::FiveMinutes {
+                    remaining_real_s: 300,
+                }],
+            }
+        );
+        check!(clock.is_frozen());
+
+        // Reconnect banner shows frozen status and remaining countdown (`Q-H11`).
+        let banner = clock
+            .reconnect_banner(10_700)
+            .ok_or("expected reconnect banner")?;
+        check_eq!(banner.frozen_ic_s, 50_000);
+        check_eq!(banner.remaining_countdown_real_s, Some(220));
+
+        // Mutate fixture_mismatch's unit revision outside site_book/custody_ledger to simulate an
+        // incompatible post-outage persisted revision (`Q-H11`).
+        let bump_plan = UnitMutationPlan::new(
+            vec![UnitMutationOp::SetCell {
+                addr: CellAddr::Section {
+                    section: SectionId::new("head")?,
+                    cell: CellId::new("internals")?,
+                },
+                value: 7,
+            }],
+            Some(fixture_mismatch.unit.revision()),
+            None,
+        )?;
+        let (bumped_202, _) = apply(&fixture_mismatch.unit, &bump_plan, 50_000)?;
+        fixture_mismatch.unit = bumped_202;
+
+        // Audit site units: ObjId(201) is clean; ObjId(202) has a revision mismatch and is quarantined (`Q-H11`).
+        check_eq!(
+            clock.audit_or_quarantine_site_unit(
+                &site_book,
+                &custody_ledger,
+                &fixture.unit,
+                10_700
+            )?,
+            None
+        );
+        let q_rec = clock
+            .audit_or_quarantine_site_unit(
+                &site_book,
+                &custody_ledger,
+                &fixture_mismatch.unit,
+                10_700,
+            )?
+            .ok_or("expected ObjId(202) to be quarantined")?;
+        check_eq!(q_rec.unit, ObjId(202));
+        check_eq!(
+            clock.ensure_unfrozen(),
+            Err(ClockFreezeError::WorldClockFrozen {
+                frozen_at_real_s: 10_020,
+                frozen_ic_s: 50_000,
+            })
+        );
+
+        // Advance countdown milestones: 2m at 10_800 (120s left), 1m at 10_860 (60s left) (`FO-11`, `Q-H11`).
+        let (m2, rep2) = clock.step_countdown(10_800, &mut salvage_book)?;
+        check_eq!(rep2, None);
+        check_eq!(
+            m2,
+            vec![OutageBroadcastMilestone::TwoMinutes {
+                remaining_real_s: 120
+            }]
+        );
+        // Stepping again in the same window does not duplicate the broadcast.
+        let (m2_dup, _) = clock.step_countdown(10_810, &mut salvage_book)?;
+        check!(m2_dup.is_empty());
+
+        let (m1, rep1) = clock.step_countdown(10_860, &mut salvage_book)?;
+        check_eq!(rep1, None);
+        check_eq!(
+            m1,
+            vec![OutageBroadcastMilestone::OneMinute {
+                remaining_real_s: 60
+            }]
+        );
+
+        // Complete countdown at 10_920: unfreezes and extends salvage claim deadline by 900s (600s outage + 300s countdown) (`Q-F3`, `P-4`).
+        let (m_unfreeze, report_opt) = clock.step_countdown(10_920, &mut salvage_book)?;
+        check_eq!(m_unfreeze, vec![OutageBroadcastMilestone::Unfrozen]);
+        let report = report_opt.ok_or("expected unfreeze report")?;
+        check!(!clock.is_frozen());
+        check_eq!(report.unavailable_real_s, 900);
+        check_eq!(report.adjusted_salvage_claims.len(), 1);
+        check_eq!(report.adjusted_salvage_claims[0].claim_id, claim_id);
+        check_eq!(
+            report.adjusted_salvage_claims[0].adjusted_deadline_real_s,
+            initial_deadline + 900
+        );
+
+        // Quarantined unit remains blocked until staff releases it (`Q-H11`).
+        check!(matches!(
+            clock.ensure_unit_not_quarantined(ObjId(202)),
+            Err(ClockFreezeError::UnitQuarantined {
+                unit: ObjId(202),
+                ..
+            })
+        ));
+        clock.release_quarantined_unit(ObjId(202));
+        clock.ensure_unit_not_quarantined(ObjId(202))?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn live_coupled_surface_tow_motion_and_mid_tow_combat_interdiction() -> TestResult {
+        let site = ObjId(910);
+        let tug_id = ObjId(301);
+        let cas_id = ObjId(302);
+        let attacker_id = ObjId(303);
+
+        let tug_fixture = build_biped_fixture(tug_id)?;
+        let mut cas_fixture = build_biped_fixture(cas_id)?;
+        let attacker_fixture = build_biped_fixture(attacker_id)?;
+
+        // Immobilize cas_fixture (destroy both legs).
+        let internals = CellId::new("internals")?;
+        let destroyed = ConditionId::new("destroyed")?;
+        let left_leg = SectionId::new("left_leg")?;
+        let right_leg = SectionId::new("right_leg")?;
+        let plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: left_leg.clone(),
+                        cell: internals.clone(),
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: left_leg.clone(),
+                    condition: destroyed.clone(),
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: right_leg.clone(),
+                        cell: internals.clone(),
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: right_leg.clone(),
+                    condition: destroyed.clone(),
+                },
+            ],
+            Some(cas_fixture.unit.revision()),
+            None,
+        )?;
+        let (immobile_cas, _) = apply(&cas_fixture.unit, &plan, 1_000)?;
+        cas_fixture.unit = immobile_cas;
+        let cas_assessment = assess_tactical_unit(&cas_fixture.unit, &cas_fixture.anatomy);
+        check_eq!(cas_assessment.state, OperationalState::Immobile);
+
+        let mut ledger = FieldCustodyLedger::new();
+        let mut site_book = FieldSiteEngagementBook::new(site)?;
+        let mut recovery_book = RecoveryBook::new();
+        let initial_pose = FieldPose {
+            site,
+            x_cm: 500,
+            y_cm: 500,
+        };
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &tug_fixture.unit,
+            &tug_fixture.anatomy,
+            SmolStr::new("expedition"),
+            initial_pose,
+            None,
+            1_000,
+        )?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &cas_fixture.unit,
+            &cas_fixture.anatomy,
+            SmolStr::new("expedition"),
+            initial_pose,
+            None,
+            1_000,
+        )?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &attacker_fixture.unit,
+            &attacker_fixture.anatomy,
+            SmolStr::new("raiders"),
+            FieldPose {
+                site,
+                x_cm: 1_200,
+                y_cm: 500,
+            },
+            None,
+            1_000,
+        )?;
+
+        let op_id = site_book.attach_site_tow(
+            &mut recovery_book,
+            AttachTowRequest {
+                tug: tug_id,
+                tug_state: OperationalState::Operational,
+                tug_can_move: true,
+                tug_base_speed_cms: 1_000,
+                tug_mass_kg: 20_000,
+                rig_profile: TowRigProfile::Standard,
+                tug_pose: initial_pose,
+                casualty_assessment: cas_assessment,
+                casualty_mass: UnitMassProfile::new(20_000, 0, 0, 300, 400)?,
+                casualty_pose: initial_pose,
+                max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+                at_ic: 1_005,
+            },
+        )?;
+
+        // Independent surface motion for either coupled unit is refused (`Q-S7`).
+        let next_pose = FieldPose {
+            site,
+            x_cm: 900,
+            y_cm: 500,
+        };
+        check_eq!(
+            site_book.record_surface_motion(tug_id, next_pose, None),
+            Err(EngagementError::UnitCoupledToActiveTow {
+                unit: tug_id,
+                op_id,
+            })
+        );
+        check_eq!(
+            site_book.record_surface_motion(cas_id, next_pose, None),
+            Err(EngagementError::UnitCoupledToActiveTow {
+                unit: cas_id,
+                op_id,
+            })
+        );
+
+        // Coupled tow motion updates both tug and casualty atomically (`Q-S7`).
+        site_book.step_coupled_tow_motion(
+            &mut ledger,
+            &mut recovery_book,
+            op_id,
+            1,
+            next_pose,
+            5,
+            1_010,
+        )?;
+        check_eq!(
+            site_book.unit_presence(tug_id).ok_or("missing tug")?.pose,
+            next_pose
+        );
+        check_eq!(
+            site_book.unit_presence(cas_id).ok_or("missing cas")?.pose,
+            next_pose
+        );
+
+        // Hostile interdiction mid-tow promotes the site to active combat at the coupled pose (`H1-B`, `H2-A`).
+        let handoffs = site_book.interdict_active_tow(
+            &mut ledger,
+            &recovery_book,
+            op_id,
+            attacker_id,
+            42,
+            1,
+            1_012,
+        )?;
+        check!(site_book.is_engaged());
+        let tug_handoff = handoffs
+            .iter()
+            .find(|h| h.unit == tug_id)
+            .ok_or("missing tug handoff")?;
+        check_eq!(tug_handoff.handoff_pose, next_pose);
+        check_eq!(tug_handoff.active_recovery_op, Some(op_id));
+
+        // Emergency drop detaches the casualty at its current pose so the tug can maneuver at full speed.
+        let drop_pose = site_book.emergency_drop_tow(&mut recovery_book, op_id, 2, 1_013)?;
+        check_eq!(drop_pose, next_pose);
+        check_eq!(recovery_book.active_operation_for_tug(tug_id), None);
+
+        // Settle and demote combat, re-attach tow, promote to combat, and verify auto-detach when tug is immobilized (`H2-A`, `Q-H8`).
+        site_book.set_settlement_gate(DemotionSettlementGate::default());
+        site_book.demote_engagement(&mut ledger, 1_400)?;
+        let cas_assessment2 = assess_tactical_unit(&cas_fixture.unit, &cas_fixture.anatomy);
+        let op2_id = site_book.attach_site_tow(
+            &mut recovery_book,
+            AttachTowRequest {
+                tug: tug_id,
+                tug_state: OperationalState::Operational,
+                tug_can_move: true,
+                tug_base_speed_cms: 1_000,
+                tug_mass_kg: 20_000,
+                rig_profile: TowRigProfile::Standard,
+                tug_pose: next_pose,
+                casualty_assessment: cas_assessment2,
+                casualty_mass: UnitMassProfile::new(20_000, 0, 0, 300, 400)?,
+                casualty_pose: next_pose,
+                max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+                at_ic: 1_405,
+            },
+        )?;
+        site_book.promote_to_engagement(
+            &mut ledger,
+            43,
+            FieldPromotionTrigger::ExplicitHostileAction {
+                attacker: attacker_id,
+                target: tug_id,
+            },
+            1,
+            1_406,
+        )?;
+        // Destroy tug's legs while towing: apply_field_damage_with_recovery_sync auto-detaches the tow!
+        let tug_leg_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: left_leg.clone(),
+                        cell: internals.clone(),
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: left_leg,
+                    condition: destroyed.clone(),
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: right_leg.clone(),
+                        cell: internals,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: right_leg,
+                    condition: destroyed,
+                },
+            ],
+            Some(tug_fixture.unit.revision()),
+            None,
+        )?;
+        let (_, _, auto_detached) = site_book.apply_field_damage_with_recovery_sync(
+            &mut ledger,
+            &mut recovery_book,
+            &tug_fixture.unit,
+            &tug_leg_plan,
+            &tug_fixture.anatomy,
+            1_407,
+        )?;
+        check_eq!(auto_detached, Some(op2_id));
+        check_eq!(recovery_book.active_operation_for_tug(tug_id), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn black_box_forensics_and_contraband_component_provenance() -> TestResult {
+        let hull_id = ObjId(401);
+        let tug_id = ObjId(402);
+        let owner_id = ObjId(40);
+        let thief_id = ObjId(41);
+        let base_id = ObjId(850);
+        let op_id = RecoveryOpId::new(77)?;
+
+        let fixture = build_biped_fixture(hull_id)?;
+        let mut recipient_fixture = build_biped_fixture(ObjId(403))?;
+        let mut salvage_book = SalvageClaimBook::new();
+        let mut workshop_book = WorkshopBook::new();
+
+        // Append combat damage and unlawful tow attach on owner's ground (`FO-4`, `Q-S4`, `P-3`).
+        salvage_book.append_black_box_entry(
+            hull_id,
+            BlackBoxFlightEntry::EpochOpened {
+                sortie_id: SmolStr::new("sortie.920"),
+                host_site: SmolStr::new("site.920"),
+                operator: Some(owner_id),
+                mind_label: SmolStr::new("Standard Doctrine"),
+                governed: true,
+                at_ic: 2_000,
+            },
+        )?;
+        salvage_book.append_black_box_entry(
+            hull_id,
+            BlackBoxFlightEntry::CombatDamageRecorded {
+                attacker: Some(thief_id),
+                section: SectionId::new("head")?,
+                resulting_state: OperationalState::Disabled,
+                at_ic: 2_010,
+            },
+        )?;
+        let unlawful_auth_ctx = RecoveryAuthorityContext {
+            recoverer: thief_id,
+            unit_title_holder: owner_id,
+            has_owner_authorization: false,
+            has_landholder_authorization: false,
+            ground_tenure_at_attach: GroundTenure::Owned {
+                landholder: owner_id,
+                claim_id: Some(SmolStr::new("deed.alpha")),
+            },
+        };
+        salvage_book.record_physical_attach(op_id, hull_id, tug_id, &unlawful_auth_ctx, 2_020)?;
+
+        // Thief performs an unlawful hot field strip of `carbine` on owner's ground (`FO-4`, `Q-F6`).
+        let carbine = ComponentId::new("carbine")?;
+        let (_, _, stripped) = workshop_book.strip_component(
+            &fixture.unit,
+            &fixture.anatomy,
+            &carbine,
+            thief_id,
+            &StripAuthorization::UnlawfulFieldHotStrip {
+                authority_ctx: unlawful_auth_ctx,
+            },
+            Some(&mut salvage_book),
+            2_025,
+        )?;
+        let stripped_rec_id = stripped.record_id;
+        check_eq!(
+            stripped.provenance.legality,
+            ProvenanceLegalityStatus::ContrabandHotPart {
+                rightful_owner: owner_id,
+                reason: ContrabandReason::UnlawfulFieldStripOnOwnedGround,
+            }
+        );
+
+        // Before bay load closes the epoch, black-box forensic extraction is refused (`P-3`, `Q-H9`).
+        check_eq!(
+            salvage_book.extract_black_box_forensics(op_id, owner_id, true, 2_030),
+            Err(SalvageError::CasualtyNotYetLoadedInBay(hull_id))
+        );
+
+        // Close epoch in bay and extract black-box forensics (`P-3`, `Q-S4`).
+        salvage_book.record_bay_load(op_id, base_id, 2_040)?;
+        let forensics = salvage_book.extract_black_box_forensics(op_id, owner_id, true, 2_050)?;
+        check!(forensics.reveals_unlawful_recovery);
+        check_eq!(
+            forensics.unlawful_stripped_components,
+            vec![carbine.clone()]
+        );
+        check_eq!(
+            forensics.minted_evidence.kind,
+            SalvageEvidenceKind::RecoveredBlackBox {
+                hull: hull_id,
+                read_at_ic: 2_050,
+            }
+        );
+
+        // Destroy `carbine` on recipient_fixture so we can attempt to install the stripped part.
+        let destroyed = ConditionId::new("destroyed")?;
+        let cond_cell = CellId::new("condition")?;
+        let destroy_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: carbine.clone(),
+                        cell: cond_cell,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetComponentCondition {
+                    component: carbine.clone(),
+                    condition: destroyed,
+                },
+            ],
+            Some(recipient_fixture.unit.revision()),
+            None,
+        )?;
+        let (damaged_recipient, _) = apply(&recipient_fixture.unit, &destroy_plan, 2_055)?;
+        recipient_fixture.unit = damaged_recipient;
+
+        // Lawful workshop refuses to install the contraband hot part (`FO-4`, `Q-F6`).
+        let replacement_spec = ReplacementPartSpec::from_stripped_record(&stripped);
+        let install_res = workshop_book.replace_component_in_slot(
+            &recipient_fixture.unit,
+            &recipient_fixture.anatomy,
+            &carbine,
+            &replacement_spec,
+            thief_id,
+            &CustodyTitleStatus::ResolvedTitle { owner: thief_id },
+            false,
+            600,
+            120,
+            Some(&mut salvage_book),
+            2_060,
+        );
+        check_eq!(
+            install_res,
+            Err(WorkshopError::ContrabandComponentRefused {
+                record_id: stripped_rec_id,
+                parent_hull: hull_id,
+                rightful_owner: owner_id,
+                reason: ContrabandReason::UnlawfulFieldStripOnOwnedGround,
+            })
+        );
+
+        // Rightful owner clears contraband provenance after recovery, allowing lawful installation.
+        workshop_book.clear_contraband_provenance(stripped_rec_id, owner_id)?;
+        workshop_book.replace_component_in_slot(
+            &recipient_fixture.unit,
+            &recipient_fixture.anatomy,
+            &carbine,
+            &replacement_spec,
+            owner_id,
+            &CustodyTitleStatus::ResolvedTitle { owner: owner_id },
+            true,
+            600,
+            120,
+            Some(&mut salvage_book),
+            2_070,
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn field_engineering_tender_unjam_stabilize_resupply_and_workshop_boundary() -> TestResult {
+        let site = ObjId(930);
+        let tender_id = ObjId(501);
+        let target_id = ObjId(502);
+        let organizer = ObjId(70);
+        let ammo_sponsor = ObjId(71);
+
+        let mut fixture = build_biped_fixture(target_id)?;
+        let pose = FieldPose {
+            site,
+            x_cm: 200,
+            y_cm: 200,
+        };
+
+        let mut eng_book = FieldEngineeringBook::new();
+        eng_book.register_tender(FieldTenderState {
+            tender_unit: tender_id,
+            site_id: site,
+            pose,
+            operational_state: OperationalState::Operational,
+            spare_parts_kg: 500,
+            ammo_supply_rounds: 100,
+            charge_reserve_cu: 200,
+            max_service_distance_cm: DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM,
+        })?;
+
+        // 1. Jam `carbine`, damage `left_arm`, deplete `needler` ammo, and destroy `left_leg`.
+        let carbine = ComponentId::new("carbine")?;
+        let needler = ComponentId::new("needler")?;
+        let left_arm = SectionId::new("left_arm")?;
+        let left_leg = SectionId::new("left_leg")?;
+        let internals = CellId::new("internals")?;
+        let ammo_cell = CellId::new("ammo")?;
+
+        let plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetComponentCondition {
+                    component: carbine.clone(),
+                    condition: ConditionId::new("jammed")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: left_arm.clone(),
+                        cell: internals.clone(),
+                    },
+                    value: 6,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: left_arm.clone(),
+                    condition: ConditionId::new("damaged")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: needler.clone(),
+                        cell: ammo_cell.clone(),
+                    },
+                    value: 2,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: left_leg.clone(),
+                        cell: internals,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: left_leg.clone(),
+                    condition: ConditionId::new("destroyed")?,
+                },
+            ],
+            Some(fixture.unit.revision()),
+            None,
+        )?;
+        let (damaged_unit, _) = apply(&fixture.unit, &plan, 3_000)?;
+        fixture.unit = damaged_unit;
+
+        // Field tender unjams `carbine` in the field.
+        let unjam_entry = eng_book.field_unjam_component(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            &carbine,
+            None,
+            DEFAULT_UNJAM_SPARE_PARTS_KG,
+            false,
+            false,
+            30,
+            3_030,
+        )?;
+        check_eq!(
+            unjam_entry.action,
+            FieldEngineeringActionKind::UnjamComponent {
+                component_id: carbine,
+                restored_condition: ComponentCondition::Intact,
+                spare_parts_consumed_kg: DEFAULT_UNJAM_SPARE_PARTS_KG,
+            }
+        );
+
+        // Field tender stabilizes damaged `left_arm` (+6 structural points).
+        let patch_entry = eng_book.field_stabilize_damaged_section(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            &left_arm,
+            6,
+            DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
+            false,
+            false,
+            60,
+            3_090,
+        )?;
+        check_eq!(
+            patch_entry.action,
+            FieldEngineeringActionKind::StabilizeDamagedSection {
+                section_id: left_arm,
+                points_restored: 6,
+                spare_parts_consumed_kg: 150,
+            }
+        );
+
+        // Field tender refuses to reconstruct destroyed `left_leg` (`H3` workshop boundary).
+        let destroyed_res = eng_book.field_stabilize_damaged_section(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            &left_leg,
+            12,
+            DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
+            false,
+            false,
+            60,
+            3_150,
+        );
+        check_eq!(
+            destroyed_res,
+            Err(FieldEngineeringError::RequiresWorkshopFacility {
+                unit: target_id,
+                reason: SmolStr::new_static(
+                    "destroyed section cannot be reconstructed in the field; workshop facility required",
+                ),
+            })
+        );
+
+        // Field tender rearms `needler` and transfers 40 CU charge, billing `ammo_sponsor` via `UnitExpensePolicy`.
+        let policy = UnitExpensePolicy {
+            ammo_payer: ammo_sponsor,
+            recovery_payer: organizer,
+            repair_payer: organizer,
+        };
+        let resupply_entry = eng_book.field_resupply_ammo_and_charge(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            Some((&needler, &ammo_cell, 20)),
+            40,
+            5,
+            2,
+            Some(&policy),
+            false,
+            false,
+            20,
+            3_170,
+        )?;
+        // `needler` had 2/30 ammo so 20 rounds transferred (20 * 5 = 100) + 40 CU * 2 = 80 => 180 credits.
+        check_eq!(
+            resupply_entry.action,
+            FieldEngineeringActionKind::FieldResupply {
+                component_id: Some(needler),
+                rounds_transferred: 20,
+                charge_transferred_cu: 40,
+                billed_credits: 180,
+                billed_payer: Some(ammo_sponsor),
+            }
+        );
+
+        let tender_after = eng_book.tender(tender_id).ok_or("expected tender")?;
+        check_eq!(tender_after.spare_parts_kg, 500 - 10 - 150);
+        check_eq!(tender_after.ammo_supply_rounds, 80);
+        check_eq!(tender_after.charge_reserve_cu, 160);
+
         Ok(())
     }
 }

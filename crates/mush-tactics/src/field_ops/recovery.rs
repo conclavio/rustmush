@@ -740,7 +740,10 @@ impl RecoveryOperation {
                 proposed: self.updated_at_ic,
             });
         }
-        if !self.casualty_state.is_towable() {
+        if !self.casualty_state.is_towable()
+            && !(self.casualty_state == OperationalState::Irrecoverable
+                && matches!(self.stage, RecoveryStage::Detached { .. }))
+        {
             return Err(RecoveryError::TargetNotTowable {
                 casualty: self.casualty,
                 state: self.casualty_state,
@@ -1227,6 +1230,66 @@ impl RecoveryBook {
         self.operations
             .get(&id)
             .ok_or(RecoveryError::UnknownOperation(id))
+    }
+
+    /// Synchronize an active tow operation when its towed `casualty` suffers additional
+    /// combat damage (`Q-H8`, `Q-S7`).
+    ///
+    /// Updates the pinned `casualty_state` and `casualty_unit_revision` on the active
+    /// operation so subsequent bay loading accepts the newly damaged revision. If the
+    /// additional hits rendered the casualty [`OperationalState::Irrecoverable`], the
+    /// operation automatically detaches at its current pose.
+    ///
+    /// # Errors
+    /// Returns [`RecoveryError`] if `at_ic` regresses or revision counter overflows.
+    pub fn sync_casualty_damage(
+        &mut self,
+        casualty: ObjId,
+        new_state: OperationalState,
+        new_unit_revision: u64,
+        at_ic: i64,
+    ) -> Result<Option<(RecoveryOpId, RecoveryStage)>, RecoveryError> {
+        let Some(op_id) = self
+            .active_operation_for_casualty(casualty)
+            .map(RecoveryOperation::id)
+        else {
+            return Ok(None);
+        };
+        let current = self
+            .operations
+            .get(&op_id)
+            .ok_or(RecoveryError::UnknownOperation(op_id))?;
+        if at_ic < current.updated_at_ic {
+            return Err(RecoveryError::TimestampRegression {
+                previous: current.updated_at_ic,
+                proposed: at_ic,
+            });
+        }
+        let next_rev = current
+            .revision
+            .checked_add(1)
+            .ok_or(RecoveryError::OperationIdOverflow)?;
+        let pose = current
+            .stage
+            .active_pose()
+            .ok_or(RecoveryError::OperationNotActive(op_id))?;
+        let dist = current.stage.distance_towed_cm();
+
+        let op = self
+            .operations
+            .get_mut(&op_id)
+            .ok_or(RecoveryError::UnknownOperation(op_id))?;
+        op.revision = next_rev;
+        op.casualty_state = new_state;
+        op.casualty_unit_revision = new_unit_revision;
+        op.updated_at_ic = at_ic;
+        if !new_state.is_towable() {
+            op.stage = RecoveryStage::Detached {
+                pose,
+                distance_towed_cm: dist,
+            };
+        }
+        Ok(Some((op_id, op.stage.clone())))
     }
 
     /// Complete a recovery operation by loading the towed casualty into a carrier bay

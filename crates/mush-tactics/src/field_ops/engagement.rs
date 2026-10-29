@@ -17,7 +17,9 @@ use crate::field_ops::condition::{
     FieldUnitAssessment, OperationalState, UnitAnatomyProfile, assess_tactical_unit,
     ic_condition_plan,
 };
-use crate::field_ops::recovery::{FieldPose, RecoveryOpId};
+use crate::field_ops::recovery::{
+    AttachTowRequest, FieldPose, RecoveryBook, RecoveryError, RecoveryOpId, RecoveryStage,
+};
 use crate::unit::{ComponentId, SectionId, TacticalUnit, UnitError, UnitMutationPlan, apply};
 
 /// Unengaged frontier surface IC clock rate (`24` IC seconds per `1` wall-clock second, `Q-R3`).
@@ -432,6 +434,14 @@ impl FieldSiteEngagementBook {
             .units
             .get_mut(&unit)
             .ok_or(EngagementError::UnknownSiteUnit(unit))?;
+        if let Some(coupled_op) = presence.active_recovery_op
+            && active_recovery_op != Some(coupled_op)
+        {
+            return Err(EngagementError::UnitCoupledToActiveTow {
+                unit,
+                op_id: coupled_op,
+            });
+        }
         if !presence.assessment.can_move && active_recovery_op.is_none() {
             return Err(EngagementError::UnitCannotMoveUnderOwnPower {
                 unit,
@@ -443,6 +453,203 @@ impl FieldSiteEngagementBook {
         presence.cumulative_distance_cm = presence.cumulative_distance_cm.saturating_add(step_cm);
         presence.active_recovery_op = active_recovery_op;
         Ok(presence.cumulative_distance_cm)
+    }
+
+    /// Attach a mobile tug on this site to a towable casualty on this site, coupling both
+    /// units' poses and setting `active_recovery_op` on both [`SiteUnitPresence`] records
+    /// (`H2-A`, `Q-S5`–`Q-S9`).
+    ///
+    /// # Errors
+    /// Returns [`EngagementError`] if either unit is not on the site, already coupled to
+    /// an active tow, or `RecoveryBook::attach` refuses the coupling.
+    pub fn attach_site_tow(
+        &mut self,
+        recovery_book: &mut RecoveryBook,
+        req: AttachTowRequest,
+    ) -> Result<RecoveryOpId, EngagementError> {
+        let tug = req.tug;
+        let casualty = req.casualty_assessment.unit;
+        if !self.units.contains_key(&tug) {
+            return Err(EngagementError::UnknownSiteUnit(tug));
+        }
+        if !self.units.contains_key(&casualty) {
+            return Err(EngagementError::UnknownSiteUnit(casualty));
+        }
+        let coupled_pose = req.tug_pose;
+        let op = recovery_book
+            .attach(req)
+            .map_err(EngagementError::Recovery)?;
+        let op_id = op.id();
+
+        if let Some(tug_p) = self.units.get_mut(&tug) {
+            tug_p.pose = coupled_pose;
+            tug_p.active_recovery_op = Some(op_id);
+        }
+        if let Some(cas_p) = self.units.get_mut(&casualty) {
+            let pull_cm = cas_p.pose.distance_cm_to(&coupled_pose).unwrap_or(0);
+            cas_p.pose = coupled_pose;
+            cas_p.cumulative_distance_cm = cas_p.cumulative_distance_cm.saturating_add(pull_cm);
+            cas_p.active_recovery_op = Some(op_id);
+        }
+        Ok(op_id)
+    }
+
+    /// Advance an active coupled tow operation across the site surface (`H1-B` + `H2-A`, `FO-13`, `Q-S7`).
+    ///
+    /// Steps `recovery_book.advance_tow(...)` (enforcing `step_dist_cm <= coupled_speed_cms * dt_secs`),
+    /// updates both `tug` and `casualty` poses on `self` in lockstep (`Q-S7`), and if the
+    /// site is unengaged (`FieldAuthorityKind::FieldSurface`), synchronizes both units'
+    /// surface custody coordinates in `ledger`.
+    ///
+    /// # Errors
+    /// Returns [`EngagementError`] if the operation is unknown, the step exceeds coupled
+    /// tow speed, either unit is missing from the site, or custody handoff fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step_coupled_tow_motion(
+        &mut self,
+        ledger: &mut FieldCustodyLedger,
+        recovery_book: &mut RecoveryBook,
+        op_id: RecoveryOpId,
+        expected_revision: u64,
+        next_pose: FieldPose,
+        dt_secs: u32,
+        at_ic: i64,
+    ) -> Result<(u64, u32), EngagementError> {
+        if next_pose.site != self.site {
+            return Err(EngagementError::SiteMismatch {
+                expected: self.site,
+                actual: next_pose.site,
+            });
+        }
+        let op = recovery_book
+            .advance_tow(op_id, expected_revision, next_pose, dt_secs, at_ic)
+            .map_err(EngagementError::Recovery)?;
+        let tug = op.tug();
+        let casualty = op.casualty();
+        let coupled_speed_cms = op.coupled_speed_cms();
+        let total_towed_cm = op.stage().distance_towed_cm();
+
+        let _ = self.record_surface_motion(tug, next_pose, Some(op_id))?;
+        let _ = self.record_surface_motion(casualty, next_pose, Some(op_id))?;
+
+        if !self.is_engaged() {
+            for unit_id in [tug, casualty] {
+                if let Some(rec) = ledger.get(unit_id).cloned()
+                    && let Some(presence) = self.units.get(&unit_id)
+                {
+                    ledger
+                        .handoff(AuthorityHandoffRequest {
+                            unit: unit_id,
+                            expected_generation: rec.authority_generation(),
+                            next_authority: FieldAuthorityKind::FieldSurface {
+                                site: next_pose.site,
+                                x_cm: next_pose.x_cm,
+                                y_cm: next_pose.y_cm,
+                            },
+                            operational_state: presence.assessment.state,
+                            unit_revision: presence.assessment.unit_revision,
+                            sortie_id: rec.sortie_id(),
+                            cargo_mass_kg: rec.cargo_mass_kg(),
+                            cargo_volume_l: rec.cargo_volume_l(),
+                            at_ic,
+                        })
+                        .map_err(EngagementError::Condition)?;
+                }
+            }
+        }
+
+        Ok((total_towed_cm, coupled_speed_cms))
+    }
+
+    /// Promote the site to tactical combat (`1:1` wall clock) when a hostile `challenger`
+    /// interdicts an active tow operation `op_id` (`Q-S7`, `Q-S9`, `Q-R3`).
+    ///
+    /// Preserves `active_recovery_op: Some(op_id)` on both `tug` and `casualty` in the
+    /// resulting [`MotionClockHandoff`] records so the tug either fights at its coupled
+    /// tow speed or executes [`Self::emergency_drop_tow`].
+    ///
+    /// # Errors
+    /// Returns [`EngagementError`] if `op_id` is not active, `challenger`/`tug`/`casualty`
+    /// is not on the site, or promotion fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn interdict_active_tow(
+        &mut self,
+        ledger: &mut FieldCustodyLedger,
+        recovery_book: &RecoveryBook,
+        op_id: RecoveryOpId,
+        challenger: ObjId,
+        instance_id: u64,
+        initial_hostile_contacts: u32,
+        at_ic: i64,
+    ) -> Result<Vec<MotionClockHandoff>, EngagementError> {
+        if !self.units.contains_key(&challenger) {
+            return Err(EngagementError::UnknownSiteUnit(challenger));
+        }
+        let op = recovery_book.get(op_id).ok_or(EngagementError::Recovery(
+            RecoveryError::UnknownOperation(op_id),
+        ))?;
+        if !op.stage().is_active() {
+            return Err(EngagementError::Recovery(
+                RecoveryError::OperationNotActive(op_id),
+            ));
+        }
+        let tug = op.tug();
+        let casualty = op.casualty();
+        if !self.units.contains_key(&tug) {
+            return Err(EngagementError::UnknownSiteUnit(tug));
+        }
+        if !self.units.contains_key(&casualty) {
+            return Err(EngagementError::UnknownSiteUnit(casualty));
+        }
+
+        self.promote_to_engagement(
+            ledger,
+            instance_id,
+            FieldPromotionTrigger::RecoveryInterdiction {
+                challenger,
+                tug,
+                casualty,
+            },
+            initial_hostile_contacts,
+            at_ic,
+        )
+    }
+
+    /// Emergency quick-release of an active tow line (e.g. when interdicted under fire),
+    /// uncoupling `tug` and `casualty` at their current [`FieldPose`] so the tug regains
+    /// full uncoupled mobility while the casualty remains in place as a targetable hull
+    /// (`Q-H8`, `Q-S5`, `Q-S7`).
+    ///
+    /// # Errors
+    /// Returns [`EngagementError`] if `op_id` is unknown, not active, or `expected_revision` mismatches.
+    pub fn emergency_drop_tow(
+        &mut self,
+        recovery_book: &mut RecoveryBook,
+        op_id: RecoveryOpId,
+        expected_revision: u64,
+        at_ic: i64,
+    ) -> Result<FieldPose, EngagementError> {
+        let op = recovery_book
+            .detach(op_id, expected_revision, at_ic)
+            .map_err(EngagementError::Recovery)?;
+        let tug = op.tug();
+        let casualty = op.casualty();
+        let drop_pose = match op.stage() {
+            RecoveryStage::Detached { pose, .. } => *pose,
+            _ => FieldPose {
+                site: self.site,
+                x_cm: 0,
+                y_cm: 0,
+            },
+        };
+        if let Some(tug_p) = self.units.get_mut(&tug) {
+            tug_p.active_recovery_op = None;
+        }
+        if let Some(cas_p) = self.units.get_mut(&casualty) {
+            cas_p.active_recovery_op = None;
+            cas_p.pose = drop_pose;
+        }
+        Ok(drop_pose)
     }
 
     /// Promote the site from unengaged IC surface mode (`rate 24`) to an active combat
@@ -758,6 +965,60 @@ impl FieldSiteEngagementBook {
         }
 
         Ok((updated_unit, assessment))
+    }
+
+    /// Apply causal combat damage to `unit_before` and synchronize any active tow operation
+    /// in `recovery_book` (`Q-H8`, `Q-S7`).
+    ///
+    /// - If `unit_before` is an active towing `tug` and the damage renders it immobile or
+    ///   non-operational, the tow operation automatically detaches at its current pose and
+    ///   clears `active_recovery_op` on both tug and casualty (returning `Some(detached_op_id)`).
+    /// - If `unit_before` is an active towed `casualty`, updates its pinned `casualty_state`
+    ///   and `casualty_unit_revision` on `recovery_book` (and auto-detaches if `Irrecoverable`).
+    ///
+    /// # Errors
+    /// Returns [`EngagementError`] if damage application or recovery synchronization fails.
+    pub fn apply_field_damage_with_recovery_sync(
+        &mut self,
+        ledger: &mut FieldCustodyLedger,
+        recovery_book: &mut RecoveryBook,
+        unit_before: &TacticalUnit,
+        damage_plan: &UnitMutationPlan,
+        anatomy: &UnitAnatomyProfile,
+        at_ic: i64,
+    ) -> Result<(TacticalUnit, FieldUnitAssessment, Option<RecoveryOpId>), EngagementError> {
+        let unit_id = unit_before.object();
+        let (updated_unit, assessment) =
+            self.apply_field_damage(ledger, unit_before, damage_plan, anatomy, at_ic)?;
+
+        let mut detached_op = None;
+        if let Some((op_id, rev)) = recovery_book
+            .active_operation_for_tug(unit_id)
+            .map(|op| (op.id(), op.revision()))
+            && (!assessment.can_move || !assessment.state.is_operational())
+        {
+            let _ = self.emergency_drop_tow(recovery_book, op_id, rev, at_ic)?;
+            detached_op = Some(op_id);
+        }
+
+        if let Some((op_id, stage)) = recovery_book
+            .sync_casualty_damage(unit_id, assessment.state, assessment.unit_revision, at_ic)
+            .map_err(EngagementError::Recovery)?
+            && matches!(stage, RecoveryStage::Detached { .. })
+        {
+            if let Some(op) = recovery_book.get(op_id) {
+                let tug = op.tug();
+                if let Some(tug_p) = self.units.get_mut(&tug) {
+                    tug_p.active_recovery_op = None;
+                }
+            }
+            if let Some(cas_p) = self.units.get_mut(&unit_id) {
+                cas_p.active_recovery_op = None;
+            }
+            detached_op = Some(op_id);
+        }
+
+        Ok((updated_unit, assessment, detached_op))
     }
 
     /// Demote an active field engagement back to persistent surface state once the
@@ -1649,6 +1910,16 @@ pub enum EngagementError {
         /// Maximum entries.
         max: usize,
     },
+    /// Unit is currently coupled to an active tow operation (`op_id`); its pose cannot be
+    /// written independently (`Q-S7`).
+    UnitCoupledToActiveTow {
+        /// Unit object id.
+        unit: ObjId,
+        /// Active recovery operation id.
+        op_id: RecoveryOpId,
+    },
+    /// Underlying [`RecoveryError`].
+    Recovery(RecoveryError),
     /// Underlying [`ConditionError`].
     Condition(ConditionError),
     /// Underlying [`UnitError`].
@@ -1731,6 +2002,13 @@ impl fmt::Display for EngagementError {
             Self::MaxObservationsReached { observer, max } => {
                 write!(f, "observer {observer} reached observation limit ({max})")
             }
+            Self::UnitCoupledToActiveTow { unit, op_id } => {
+                write!(
+                    f,
+                    "unit {unit} is coupled to active tow {op_id}; advance or drop the tow rather than moving independently"
+                )
+            }
+            Self::Recovery(e) => write!(f, "field recovery error: {e}"),
             Self::Condition(e) => write!(f, "field condition error: {e}"),
             Self::Unit(e) => write!(f, "tactical unit error: {e}"),
         }

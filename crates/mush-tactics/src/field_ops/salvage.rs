@@ -10,8 +10,10 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::field_ops::clock::AdjustedSalvageClaimDeadline;
+use crate::field_ops::condition::OperationalState;
 use crate::field_ops::recovery::RecoveryOpId;
-use crate::unit::ComponentId;
+use crate::unit::{ComponentId, SectionId};
 
 /// Contest window duration in available real seconds (`48` hours = `172_800` seconds, `Q-S15`).
 pub const CONTEST_WINDOW_AVAILABLE_REAL_SECS: i64 = 48 * 3_600;
@@ -24,6 +26,9 @@ pub const MAX_SALVAGE_CLAIMS: usize = 1_024;
 
 /// Maximum contests or at-risk repair entries on a single [`SalvageClaim`].
 pub const MAX_CLAIM_ENTRIES: usize = 64;
+
+/// Maximum forensic flight/combat recorder entries retained per hull (`P-3`, `Q-H6`, `Q-S4`).
+pub const MAX_BLACK_BOX_ENTRIES_PER_HULL: usize = 256;
 
 /// Recognized ground tenure at the casualty's position when physical attachment begins (`Q-S1`, `Q-S3`).
 ///
@@ -545,6 +550,95 @@ pub fn check_custody_action_allowed(
     }
 }
 
+/// Structured forensic entry recorded in a hull's flight/combat black box (`P-3`, `Q-H6`, `Q-H9`, `Q-S4`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "entry_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BlackBoxFlightEntry {
+    /// Hull epoch opened on dispatch (`D-23-1`, `Q-H9`).
+    EpochOpened {
+        /// Sortie/epoch identifier.
+        sortie_id: SmolStr,
+        /// Site or port where the epoch opened.
+        host_site: SmolStr,
+        /// Operator / warrant principal, if any.
+        operator: Option<ObjId>,
+        /// Sealed mind label (`Standard Doctrine` or licensed profile).
+        mind_label: SmolStr,
+        /// Whether the core ran under governor constraints.
+        governed: bool,
+        /// IC timestamp when the epoch opened.
+        at_ic: i64,
+    },
+    /// Causal section damage or operational disablement recorded during field combat (`Q-H6`–`Q-H9`).
+    CombatDamageRecorded {
+        /// Attacker unit id, if attributed by onboard sensors/telemetry.
+        attacker: Option<ObjId>,
+        /// Damaged or destroyed section id.
+        section: SectionId,
+        /// Resulting operational state of the hull.
+        resulting_state: OperationalState,
+        /// IC timestamp of the impact.
+        at_ic: i64,
+    },
+    /// Physical tow attachment recorded by hull telemetry (`Q-S1`, `Q-S3`, `Q-S4`).
+    TowAttached {
+        /// Physical recovery operation id.
+        operation_id: RecoveryOpId,
+        /// Towing unit id.
+        tug: ObjId,
+        /// Recoverer actor/faction id.
+        recoverer: ObjId,
+        /// Ground tenure captured at attachment (`Q-S3`).
+        ground_tenure: GroundTenure,
+        /// Legal entitlement evaluated at attachment (`Q-S1`).
+        entitlement: RecoveryEntitlement,
+        /// IC timestamp when tow attachment completed.
+        at_ic: i64,
+    },
+    /// Component detached from the hull in the field (`Q-S11`, `Q-F6`).
+    FieldComponentStripped {
+        /// Stripped component slot/instance id.
+        component: ComponentId,
+        /// Actor who detached the component.
+        stripped_by: ObjId,
+        /// Whether the field strip was lawful at the hull's site position.
+        lawful: bool,
+        /// IC timestamp when the component was stripped.
+        at_ic: i64,
+    },
+    /// Hull epoch closed upon bay recovery (`RecoveredToBase`, `P-3`, `Q-H9`).
+    EpochClosedInBay {
+        /// Recovery operation id that delivered the hull, if towed in.
+        operation_id: Option<RecoveryOpId>,
+        /// Carrier or base object id where the epoch closed.
+        base: ObjId,
+        /// IC timestamp when bay load closed the epoch.
+        at_ic: i64,
+    },
+}
+
+/// Complete forensic extraction report produced when an actor with physical bay access
+/// inspects a recovered hull's closed black box (`P-3`, `Q-H6`, `Q-S4`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlackBoxForensicReport {
+    /// Casualty hull object id.
+    pub hull: ObjId,
+    /// Recovery operation id.
+    pub operation_id: RecoveryOpId,
+    /// Carrier or base where the hull epoch closed (`P-3`).
+    pub closed_in_base: ObjId,
+    /// Chronological flight/combat/tow/strip entries extracted from the hull's recorder.
+    pub entries: Vec<BlackBoxFlightEntry>,
+    /// Verifiable [`SalvageEvidenceRecord`] (`SalvageEvidenceKind::RecoveredBlackBox`) minted
+    /// for `reader` by this physical extraction (`Q-S4`, `P-3`).
+    pub minted_evidence: SalvageEvidenceRecord,
+    /// Whether the recorder tape proves that `operation_id` was an `UnlawfulOnOwnedGround` recovery.
+    pub reveals_unlawful_recovery: bool,
+    /// Components recorded on the tape as unlawfully field-stripped from this hull.
+    pub unlawful_stripped_components: Vec<ComponentId>,
+}
+
 /// Ledger managing private authoritative recovery records, evidence-gated inspection,
 /// post-close black-box access, public salvage claims, outage freeze extensions, and
 /// 48-hour contest adjudication (`H2-B`, `H2-C`).
@@ -555,6 +649,8 @@ pub struct SalvageClaimBook {
     recovery_records: BTreeMap<RecoveryOpId, AuthoritativeRecoveryRecord>,
     claims: BTreeMap<SalvageClaimId, SalvageClaim>,
     stripped_components_by_hull: BTreeMap<ObjId, BTreeSet<ComponentId>>,
+    #[serde(default)]
+    black_box_tapes: BTreeMap<ObjId, Vec<BlackBoxFlightEntry>>,
 }
 
 impl SalvageClaimBook {
@@ -566,7 +662,37 @@ impl SalvageClaimBook {
             recovery_records: BTreeMap::new(),
             claims: BTreeMap::new(),
             stripped_components_by_hull: BTreeMap::new(),
+            black_box_tapes: BTreeMap::new(),
         }
+    }
+
+    /// Append a [`BlackBoxFlightEntry`] to `hull`'s onboard flight/combat recorder (`P-3`, `Q-H6`, `Q-H9`).
+    ///
+    /// # Errors
+    /// Returns [`SalvageError`] if `hull.0 == 0` or `hull`'s tape has reached [`MAX_BLACK_BOX_ENTRIES_PER_HULL`].
+    pub fn append_black_box_entry(
+        &mut self,
+        hull: ObjId,
+        entry: BlackBoxFlightEntry,
+    ) -> Result<(), SalvageError> {
+        if hull.0 == 0 {
+            return Err(SalvageError::InvalidObjectId("hull"));
+        }
+        let tape = self.black_box_tapes.entry(hull).or_default();
+        if tape.len() >= MAX_BLACK_BOX_ENTRIES_PER_HULL {
+            return Err(SalvageError::BlackBoxTapeFull {
+                hull,
+                max: MAX_BLACK_BOX_ENTRIES_PER_HULL,
+            });
+        }
+        tape.push(entry);
+        Ok(())
+    }
+
+    /// Recorded [`BlackBoxFlightEntry`] log for `hull`, if any.
+    #[must_use]
+    pub fn black_box_tape_for_hull(&self, hull: ObjId) -> &[BlackBoxFlightEntry] {
+        self.black_box_tapes.get(&hull).map_or(&[], Vec::as_slice)
     }
 
     /// Record the private authoritative recovery record when physical attachment begins (`Q-S1`, `Q-S3`, `Q-S4`).
@@ -609,11 +735,22 @@ impl SalvageClaimBook {
             recoverer: authority_ctx.recoverer,
             unit_title_holder: authority_ctx.unit_title_holder,
             ground_tenure_at_attach: authority_ctx.ground_tenure_at_attach.clone(),
-            entitlement,
+            entitlement: entitlement.clone(),
             attached_at_ic,
             loaded_into_base: None,
             loaded_at_ic: None,
         };
+        let tape = self.black_box_tapes.entry(casualty).or_default();
+        if tape.len() < MAX_BLACK_BOX_ENTRIES_PER_HULL {
+            tape.push(BlackBoxFlightEntry::TowAttached {
+                operation_id,
+                tug,
+                recoverer: authority_ctx.recoverer,
+                ground_tenure: authority_ctx.ground_tenure_at_attach.clone(),
+                entitlement,
+                at_ic: attached_at_ic,
+            });
+        }
         self.recovery_records.insert(operation_id, record);
         self.recovery_records
             .get(&operation_id)
@@ -637,9 +774,20 @@ impl SalvageClaimBook {
             .recovery_records
             .get_mut(&operation_id)
             .ok_or(SalvageError::UnknownRecoveryOperation(operation_id))?;
+        let casualty = rec.casualty;
         rec.loaded_into_base = Some(base);
         rec.loaded_at_ic = Some(loaded_at_ic);
-        Ok(rec)
+        let tape = self.black_box_tapes.entry(casualty).or_default();
+        if tape.len() < MAX_BLACK_BOX_ENTRIES_PER_HULL {
+            tape.push(BlackBoxFlightEntry::EpochClosedInBay {
+                operation_id: Some(operation_id),
+                base,
+                at_ic: loaded_at_ic,
+            });
+        }
+        self.recovery_records
+            .get(&operation_id)
+            .ok_or(SalvageError::UnknownRecoveryOperation(operation_id))
     }
 
     /// Inspect a private [`AuthoritativeRecoveryRecord`] using acquired evidence (`Q-S4`).
@@ -727,6 +875,74 @@ impl SalvageClaimBook {
                 hull: rec.casualty,
                 read_at_ic,
             },
+        })
+    }
+
+    /// Extract a full [`BlackBoxForensicReport`] from a recovered hull's closed black box (`P-3`, `Q-H6`, `Q-S4`).
+    ///
+    /// Requires the hull to be loaded in a bay (`loaded_into_base.is_some()`) and `reader`
+    /// to hold physical/custody access to that bay (`has_physical_bay_access == true`).
+    /// Returns the chronological recorder tape, flags any unlawful recovery or unlawful
+    /// field component stripping recorded on the tape, and mints a verifiable
+    /// [`SalvageEvidenceRecord`] (`SalvageEvidenceKind::RecoveredBlackBox`) for `reader`.
+    ///
+    /// # Errors
+    /// Returns [`SalvageError`] if `operation_id` is unknown, the hull has not been loaded
+    /// into a bay, or `reader` lacks physical bay access.
+    pub fn extract_black_box_forensics(
+        &self,
+        operation_id: RecoveryOpId,
+        reader: ObjId,
+        has_physical_bay_access: bool,
+        read_at_ic: i64,
+    ) -> Result<BlackBoxForensicReport, SalvageError> {
+        let minted_evidence = self.read_recovered_black_box(
+            operation_id,
+            reader,
+            has_physical_bay_access,
+            read_at_ic,
+        )?;
+        let rec = self
+            .recovery_records
+            .get(&operation_id)
+            .ok_or(SalvageError::UnknownRecoveryOperation(operation_id))?;
+        let closed_in_base = rec
+            .loaded_into_base
+            .ok_or(SalvageError::CasualtyNotYetLoadedInBay(rec.casualty))?;
+        let entries = self.black_box_tape_for_hull(rec.casualty).to_vec();
+
+        let reveals_unlawful_recovery = !rec.entitlement.is_lawful()
+            || entries.iter().any(|entry| {
+                matches!(
+                    entry,
+                    BlackBoxFlightEntry::TowAttached {
+                        operation_id: op,
+                        entitlement,
+                        ..
+                    } if *op == operation_id && !entitlement.is_lawful()
+                )
+            });
+
+        let unlawful_stripped_components = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                BlackBoxFlightEntry::FieldComponentStripped {
+                    component,
+                    lawful: false,
+                    ..
+                } => Some(component.clone()),
+                _ => None,
+            })
+            .collect();
+
+        Ok(BlackBoxForensicReport {
+            hull: rec.casualty,
+            operation_id,
+            closed_in_base,
+            entries,
+            minted_evidence,
+            reveals_unlawful_recovery,
+            unlawful_stripped_components,
         })
     }
 
@@ -976,17 +1192,37 @@ impl SalvageClaimBook {
 
     /// Resume all paused salvage claim contest windows after a global outage freeze and
     /// 5-minute countdown complete, extending each claim's `deadline_real_s` by the
-    /// exact frozen real duration (`Q-F3`, `P-4`).
-    pub fn resume_claims_after_outage(&mut self, unfreeze_at_real_s: i64) {
+    /// exact frozen real duration and returning the published deadline adjustments (`Q-F3`, `P-4`).
+    pub fn resume_claims_after_outage(
+        &mut self,
+        unfreeze_at_real_s: i64,
+    ) -> Vec<AdjustedSalvageClaimDeadline> {
+        let mut adjusted = Vec::new();
         for claim in self.claims.values_mut() {
             if claim.state.is_pending()
                 && let Some(paused_at) = claim.paused_at_real_s.take()
             {
+                let previous_deadline_real_s = claim.deadline_real_s;
                 let delta = unfreeze_at_real_s.saturating_sub(paused_at).max(0);
                 claim.total_paused_real_s = claim.total_paused_real_s.saturating_add(delta);
                 claim.deadline_real_s = claim.deadline_real_s.saturating_add(delta);
+                let remaining_available_real_s = claim
+                    .deadline_real_s
+                    .saturating_sub(unfreeze_at_real_s)
+                    .max(0);
+                adjusted.push(AdjustedSalvageClaimDeadline {
+                    claim_id: claim.id,
+                    subject: claim.subject.clone(),
+                    claimant: claim.claimant,
+                    prior_owner: claim.prior_owner,
+                    previous_deadline_real_s,
+                    adjusted_deadline_real_s: claim.deadline_real_s,
+                    remaining_available_real_s,
+                    total_paused_real_s: claim.total_paused_real_s,
+                });
             }
         }
+        adjusted
     }
 
     /// Submit a contest against a pending [`SalvageClaim`] within its 48-available-real-hour
@@ -1266,6 +1502,13 @@ pub enum SalvageError {
         /// Maximum entries.
         max: usize,
     },
+    /// Maximum forensic black-box entries reached for a hull (`MAX_BLACK_BOX_ENTRIES_PER_HULL`).
+    BlackBoxTapeFull {
+        /// Hull object id.
+        hull: ObjId,
+        /// Maximum entries per hull.
+        max: usize,
+    },
 }
 
 impl fmt::Display for SalvageError {
@@ -1344,6 +1587,9 @@ impl fmt::Display for SalvageError {
             Self::MaxClaimsReached { max } => write!(f, "salvage claim limit ({max}) reached"),
             Self::MaxClaimEntriesReached { claim_id, max } => {
                 write!(f, "salvage claim {claim_id} entry limit ({max}) reached")
+            }
+            Self::BlackBoxTapeFull { hull, max } => {
+                write!(f, "black box tape for hull {hull} reached limit ({max})")
             }
         }
     }
