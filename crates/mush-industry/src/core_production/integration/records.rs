@@ -5,7 +5,9 @@ use super::{
     progress::CoreProgress,
 };
 use crate::{
-    core_production::records::DieCertificate, facility::FacilityRecord, workorder::WorkOrderId,
+    core_production::{DieClass, DieSource, UncertifiedDie, records::DieCertificate},
+    facility::FacilityRecord,
+    workorder::WorkOrderId,
 };
 use mush_core::{ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId, ReservationId};
 use mush_economy::{
@@ -67,28 +69,66 @@ pub(crate) struct AcceptedIntent {
     pub(crate) policy: CorePaymentPolicy,
     pub(crate) facility: FacilityRecord,
     pub(crate) recipe: PublishedCoreRecipe,
-    pub(crate) certificate: DieCertificate,
+    /// The importer's certificate for a certified die; absent for a heirloom or grey one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) certificate: Option<Box<DieCertificate>>,
+    /// **A heirloom or grey die's staff issue** (doc 17h cut M8b-2, H2), in place of a
+    /// certificate: exactly one of the two is present. Absent for a certified die, so a
+    /// certified intent keeps its bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) uncertified: Option<Box<UncertifiedDie>>,
     pub(crate) lot: Lot,
     pub(crate) accepted_at: ClockStamp,
     pub(crate) expires_at: ClockStamp,
 }
 impl AcceptedIntent {
+    /// `true` for a certified die: the site it integrates at.
+    pub(crate) fn certified(&self) -> bool {
+        self.uncertified.is_none()
+    }
+    /// The die's source word (doc 17h cut M8b-2, H1).
+    pub(crate) fn source(&self) -> DieSource {
+        self.uncertified
+            .as_deref()
+            .map_or(DieSource::Certified, UncertifiedDie::source)
+    }
+    /// The die's class and issuing operation, from whichever record the intent carries.
+    pub(crate) fn die(&self) -> Result<(DieClass, CommitToken), Error> {
+        match (&self.certificate, &self.uncertified) {
+            (Some(c), None) => Ok((c.class, c.operation)),
+            (None, Some(u)) => Ok((u.class(), u.operation())),
+            _ => Err(Error::Integrity),
+        }
+    }
+    /// The factory this intent's site integrates at.
+    pub(crate) fn site_factory(&self) -> Result<ObjId, Error> {
+        Ok(self.policy.site(self.certified()).map_err(bad)?.factory)
+    }
+    /// The container this intent's site births its cores into (fix round 1, L2).
+    pub(crate) fn site_container(&self) -> Result<ObjId, Error> {
+        Ok(self
+            .policy
+            .site(self.certified())
+            .map_err(bad)?
+            .output_container)
+    }
     pub(crate) fn validate(&self) -> Result<(), Error> {
         self.policy.validate().map_err(bad)?;
         self.recipe.validate()?;
-        self.certificate.matches_lot(&self.lot).map_err(bad)?;
+        match (&self.certificate, &self.uncertified) {
+            (Some(c), None) => c.matches_lot(&self.lot).map_err(bad)?,
+            (None, Some(u)) => u.matches_lot(&self.lot).map_err(bad)?,
+            _ => return Err(Error::Integrity),
+        }
+        let (class, _) = self.die()?;
         if self.format != 1
             || self.offer_digest.as_bytes() == &[0; 32]
-            || self.facility.object() != self.policy.factory
-            || self.facility.owner()
-                != &mush_org::PrincipalId::Organization(self.policy.integrator.organization)
-            || !self
-                .facility
-                .capabilities()
-                .iter()
-                .any(|v| v.as_str() == "core_integration")
+            || !super::offer::holds_site(
+                &self.facility,
+                &self.policy.site(self.certified()).map_err(bad)?,
+            )
             || self.recipe.definition() != &self.policy.recipe
-            || self.recipe.class() != self.certificate.class
+            || self.recipe.class() != class
             || self.expires_at
                 != mush_inventory::reservation_deadline(&self.accepted_at).map_err(bad)?
         {
@@ -111,10 +151,11 @@ impl AcceptedIntent {
     }
     pub(crate) fn subject(&self) -> Result<CoreFundingSubject, Error> {
         self.validate()?;
-        let class = match self.certificate.class {
-            crate::core_production::DieClass::I => mush_economy::core_integration::CoreClass::I,
-            crate::core_production::DieClass::II => mush_economy::core_integration::CoreClass::II,
-            crate::core_production::DieClass::III => mush_economy::core_integration::CoreClass::III,
+        let (class, operation) = self.die()?;
+        let class = match class {
+            DieClass::I => mush_economy::core_integration::CoreClass::I,
+            DieClass::II => mush_economy::core_integration::CoreClass::II,
+            DieClass::III => mush_economy::core_integration::CoreClass::III,
         };
         let s = CoreFundingSubject {
             order: self.order.0,
@@ -125,12 +166,13 @@ impl AcceptedIntent {
             payer: self.payer,
             input_vault: self.lot.endpoint().0,
             die_lot: self.lot.id().0,
-            die_certificate: self.certificate.operation,
+            die_certificate: operation,
             class,
             recipe: self.policy.recipe.clone(),
             policy: self.policy.digest().map_err(bad)?,
             accepted_at: self.accepted_at.clone(),
             expires_at: self.expires_at.clone(),
+            source: self.source(),
         };
         s.validate().map_err(bad)?;
         Ok(s)
@@ -149,9 +191,14 @@ impl AcceptedIntent {
         }
         match &offer.input {
             super::offer::OfferedInput::SupplierStock { certificate, lot }
-                if certificate.as_ref() == &self.certificate && lot.as_ref() == &self.lot => {}
+                if self.certificate.as_deref() == Some(certificate.as_ref())
+                    && lot.as_ref() == &self.lot => {}
             super::offer::OfferedInput::RequesterSupplied {}
-                if !self.policy.supplier_stock.contains(&self.lot.endpoint().0) => {}
+                if self.certificate.is_some()
+                    && !self.policy.supplier_stock.contains(&self.lot.endpoint().0) => {}
+            super::offer::OfferedInput::Uncertified {}
+                if self.uncertified.is_some()
+                    && !self.policy.supplier_stock.contains(&self.lot.endpoint().0) => {}
             _ => return Err(Error::Integrity),
         }
         Ok(())
@@ -162,8 +209,8 @@ impl AcceptedIntent {
             self.digest()?,
             self.requester,
             self.policy.recipe.clone(),
-            self.policy.factory,
-            self.policy.output_container,
+            self.site_factory()?,
+            self.site_container()?,
         )
         .map_err(bad)
     }
@@ -201,7 +248,9 @@ impl ReservedOutput {
     pub(crate) fn validate(&self, intent: &AcceptedIntent) -> Result<(), Error> {
         if self.object.0 < 2
             || self.object == intent.policy.factory
+            || self.object == intent.site_factory()?
             || self.object == intent.policy.output_container
+            || self.object == intent.site_container()?
             || self.object_digest.as_bytes() == &[0; 32]
             || self.action != intent.policy.action_ref(super::RESERVE).map_err(bad)?
         {

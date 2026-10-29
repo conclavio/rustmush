@@ -21,8 +21,10 @@ pub mod nonconformance;
 pub(crate) mod producer;
 pub mod protocol;
 pub mod registration;
+pub mod score;
 pub mod service_read;
 pub use families::RatingFamilies;
+pub use score::{RatingScore, RatingTally, rating_score, score_per_credit};
 
 pub const FORMAT: u16 = 1;
 pub const MAX_CASES: usize = 1_755;
@@ -592,6 +594,11 @@ impl TrialEnd {
         }
         Ok(())
     }
+    /// How the trial ended (doc 17h §3 M8f: the rating score's win count).
+    #[must_use]
+    pub const fn outcome(&self) -> TrialOutcome {
+        self.outcome
+    }
 }
 record!(CaseResult, CaseResultWire, { key: CaseKey, binding: CaseBinding, meter: MeterSummary, coverage: Coverage, refusals: u32, outcome: CaseOutcome, #[serde(deserialize_with="required_option")] terminal: Option<TrialEnd> });
 impl CaseResult {
@@ -685,6 +692,11 @@ impl CaseResult {
     #[must_use]
     pub const fn outcome(&self) -> &CaseOutcome {
         &self.outcome
+    }
+    /// A trial's terminal (doc 17h §3 M8f: the rating score reads it).
+    #[must_use]
+    pub const fn terminal(&self) -> Option<&TrialEnd> {
+        self.terminal.as_ref()
     }
 }
 

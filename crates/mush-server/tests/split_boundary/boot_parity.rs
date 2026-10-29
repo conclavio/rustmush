@@ -1475,6 +1475,7 @@ fn format_two_launch() -> tacsim::launch::LaunchDeployment {
             },
             terms: MarketTerms::PROVISIONAL,
         }),
+        procurement: Vec::new(),
     }
 }
 

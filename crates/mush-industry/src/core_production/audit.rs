@@ -20,6 +20,9 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, runtime: &Runtime) -> Result<(), Error>
     {
         return Err(Error::Integrity);
     }
+    // Doc 17h cut M8b-2: the heirloom and grey issues, checked against the one lot scan
+    // below (fix round 1, L4).
+    let issues = super::uncertified::audit_records(ctx, &f.uncertified, &f.inventory)?;
     let mut certs = BTreeMap::new();
     let mut lots = BTreeMap::new();
     let mut after = None;
@@ -121,6 +124,7 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, runtime: &Runtime) -> Result<(), Error>
                 return Err(Error::Capacity);
             }
             let lot = entry.value();
+            super::uncertified::check_lot(&issues, lot)?;
             if let Lineage::Origin { source } = lot.lineage()
                 && source.provider.as_str() == crate::NS
                 && source.kind.starts_with("certified_core_die")

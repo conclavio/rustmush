@@ -65,6 +65,11 @@ pub struct CommerceFamilies {
     /// the inspection writer installs.
     pub(crate) registry_inspections:
         StateFamilyHandle<String, super::registry_inspection::records::InspectionRecord>,
+    /// Doc 17h cut M8d D4: principals barred from new licences
+    /// (`roll_registry_revoked_principals`), keyed as the holder indexes key; written from
+    /// tacsim's transaction through the inspection writer's delegation.
+    pub(crate) revoked_principals:
+        StateFamilyHandle<String, super::registry_inspection::principal::RevokedPrincipal>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) house_renewal_operations:
@@ -136,6 +141,7 @@ impl CommerceFamilies {
             update_positions: register(reg)?,
             registry_recalls: register(reg)?,
             registry_inspections: register(reg)?,
+            revoked_principals: register(reg)?,
             registry_revocations: register(reg)?,
             revoked_terms: register(reg)?,
             withdrawals: register(reg)?,
@@ -324,6 +330,10 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         // person first, so one person's rows are contiguous.
         // M8c B1: an organisation's rows are keyed `org/{org:020}/licence/...`
         // (`Holder::key_prefix`); the two heads never collide.
+        // Doc 17h cut M8d D4: `{character:020}` or `org/{org:020}`.
+        "roll_registry_revoked_principals" => {
+            super::registry_inspection::principal::valid_key(key, person, org_number)
+        }
         "roll_mind_paid_holdings" => {
             (person(head) || (head == "org" && parts.next().is_some_and(org_number)))
                 && parts.next() == Some("licence")

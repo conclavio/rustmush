@@ -168,6 +168,35 @@ fn a_canon_event_advances_a_watching_clock_and_completion_fires_the_consequence(
     );
 }
 
+/// Doc 17h cut M8d D7: a clock watching the Red Dies kind (`minds.unwarranted`) advances on
+/// a line that names nobody — the member gate is skipped for a world kind — while a clock on
+/// an ordinary kind stays gated.
+#[test]
+fn m8d_a_world_kind_advances_its_clock_without_naming_a_member() {
+    let (mut engine, nick, _bob) = boot();
+    setup_loop(&mut engine, nick);
+    run(&mut engine, GOD, "@faction/create Republic");
+    run(&mut engine, GOD, "@front/create Republic=The Red Dies");
+    run(&mut engine, GOD, "@clock/create 1=Ungoverned cores found/6");
+    run(&mut engine, GOD, "@clock/set 1=on:minds.unwarranted");
+    let gated = mush_faction::ClockId(0);
+    let red = mush_faction::ClockId(1);
+    assert_eq!(
+        sim(&engine).clocks[&red].advance_on.as_deref(),
+        Some(mush_faction::RED_DIES_KIND)
+    );
+    emit_canon(&mut engine, mush_faction::RED_DIES_KIND, &[]);
+    assert_eq!(sim(&engine).clocks[&red].filled, 1, "one step on");
+    assert!(!sim(&engine).clocks[&red].completed);
+    emit_canon(&mut engine, "scene.concluded", &[]);
+    assert_eq!(
+        sim(&engine).clocks[&gated].filled,
+        0,
+        "ordinary kinds stay gated"
+    );
+    assert_eq!(sim(&engine).clocks[&red].filled, 1);
+}
+
 #[test]
 fn a_covert_clock_flip_stays_covert_not_public() {
     // Regression: fire_consequence used to hardcode the flipped control record

@@ -4335,6 +4335,12 @@ pub(crate) fn register_with_core_origins(
     let mut action_shapes = descriptors.clone();
     if let Some(config) = origins {
         action_shapes.extend([config.policy.action(true)?, config.policy.action(false)?]);
+        for (_, source) in crate::core_production::uncertified::ACTIONS {
+            action_shapes.push(crate::core_production::uncertified::action(
+                &config.policy,
+                source,
+            )?);
+        }
     }
     if let Some(config) = factory {
         if config.payment().delivery.is_some() {

@@ -1,6 +1,8 @@
-//! Doc 27 (`H1-A` / `H2-A`) — `tacsim` integration for field-unit component
-//! survival, operational state assessment, IC combat-return mutation plans,
-//! hull-epoch close validation, and universal towing across stock unit schemas.
+//! Doc 27 (`H1-A`–`H1-C`, `H2-A`–`H2-C`, `H3`) — `tacsim` integration for field-unit
+//! component survival, operational state assessment, IC combat-return mutation plans,
+//! hull-epoch close validation, field combat promotion/demotion & crew survival,
+//! universal towing, recovery entitlement & 48-hour salvage claims, and workshop
+//! component stripping, scrapping, and restoration across stock unit schemas.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -8,16 +10,32 @@ use std::fmt;
 use mush_core::ObjId;
 use mush_roll::commerce::ic_claims::IcCloseKind;
 pub use mush_tactics::field_ops::{
-    AttachTowRequest, AuthorityHandoffRequest, BayCapacitySpec, ComponentCondition, ConditionError,
-    DEFAULT_MAX_ATTACH_DISTANCE_CM, FieldAuthorityKind, FieldCloseOutcome, FieldCustodyLedger,
-    FieldCustodyRecord, FieldEpochDisposition, FieldInspectionReport, FieldPose,
-    FieldUnitAssessment, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_FIELD_CUSTODY_UNITS,
-    MAX_RECOVERY_OPERATIONS, MAX_TOW_MASS_RATIO_PERMILLE, OperationalState, RecoveryBook,
-    RecoveryError, RecoveryOpId, RecoveryOperation, RecoveryStage, SectionCondition, TowEvaluation,
-    TowRigProfile, TugInspectionContext, UnitAnatomyProfile, UnitMassProfile, assess_tactical_unit,
-    effective_component_condition, effective_section_condition, ic_condition_plan,
-    inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille, tow_speed_factor_permille,
-    validate_close_outcome,
+    AtRiskRepairEntry, AttachTowRequest, AuthoritativeRecoveryRecord, AuthorityHandoffRequest,
+    BayCapacitySpec, COMBAT_WALL_CLOCK_RATE, CONTEST_WINDOW_AVAILABLE_REAL_SECS,
+    CarrierDepartureOutcome, ComponentCondition, ComponentProvenance, ConditionError,
+    ContestGround, ContestSuccessReason, CrewSurvivalBook, CustodyAction, CustodyTitleStatus,
+    DEFAULT_FALLBACK_SAFE_PORT, DEFAULT_MAX_ATTACH_DISTANCE_CM, DemotionOutcome,
+    DemotionSettlementGate, EngagementError, FALLBACK_SECTION_SCRAP_KG, FieldAuthorityKind,
+    FieldCloseOutcome, FieldCustodyLedger, FieldCustodyRecord, FieldEpochDisposition,
+    FieldInspectionReport, FieldObservationBook, FieldPose, FieldPromotionTrigger,
+    FieldSiteEngagementBook, FieldUnitAssessment, GroundTenure, IC_SURFACE_CLOCK_RATE,
+    LinkLossPosture, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_AUTHORITATIVE_RECOVERY_RECORDS,
+    MAX_CLAIM_ENTRIES, MAX_CREW_RECORDS, MAX_FIELD_CUSTODY_UNITS, MAX_OBSERVATIONS_PER_ACTOR,
+    MAX_RECOVERY_OPERATIONS, MAX_SALVAGE_CLAIMS, MAX_SITE_UNITS, MAX_STRIPPED_COMPONENTS,
+    MAX_TOW_MASS_RATIO_PERMILLE, MAX_WORKSHOP_ORDERS, MotionClockHandoff, ObservationSource,
+    ObservedCombatFact, ObserverCombatEntry, OccupantSurvivalState, OperationalState,
+    RecoveryAuthorityContext, RecoveryBook, RecoveryEntitlement, RecoveryError, RecoveryOpId,
+    RecoveryOperation, RecoveryStage, ReplacementPartSpec, SCRAP_KG_PER_STRUCTURAL_POINT,
+    SafePortCandidate, SalvageClaim, SalvageClaimBook, SalvageClaimId, SalvageClaimState,
+    SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject,
+    ScrapYieldReport, SectionCondition, SiteUnitPresence, StripAuthorization,
+    StrippedComponentRecord, TowEvaluation, TowRigProfile, TugInspectionContext,
+    UnitAnatomyProfile, UnitMassProfile, WithdrawalDestination, WorkshopBook, WorkshopError,
+    WorkshopOperationKind, WorkshopWorkOrderRecord, assess_tactical_unit,
+    check_custody_action_allowed, effective_component_condition, effective_section_condition,
+    evaluate_recovery_entitlement, ic_condition_plan, inspect_field_unit,
+    resolve_link_loss_posture, scaled_tow_speed_cms, select_extraction_port,
+    tow_mass_ratio_permille, tow_speed_factor_permille, validate_close_outcome,
 };
 use mush_tactics::{
     CellAddr, CellId, ComponentId, SectionId, TacticalUnit, UnitError, UnitMutationPlan, apply,
@@ -420,8 +438,14 @@ pub enum FieldOpsError {
     Unit(UnitError),
     /// Underlying [`ConditionError`].
     Condition(ConditionError),
+    /// Underlying [`EngagementError`].
+    Engagement(EngagementError),
     /// Underlying [`RecoveryError`].
     Recovery(RecoveryError),
+    /// Underlying [`SalvageError`].
+    Salvage(SalvageError),
+    /// Underlying [`WorkshopError`].
+    Workshop(WorkshopError),
 }
 
 impl fmt::Display for FieldOpsError {
@@ -429,7 +453,10 @@ impl fmt::Display for FieldOpsError {
         match self {
             Self::Unit(e) => write!(f, "tactical unit error: {e}"),
             Self::Condition(e) => write!(f, "field condition error: {e}"),
+            Self::Engagement(e) => write!(f, "field engagement error: {e}"),
             Self::Recovery(e) => write!(f, "field recovery error: {e}"),
+            Self::Salvage(e) => write!(f, "field salvage error: {e}"),
+            Self::Workshop(e) => write!(f, "field workshop error: {e}"),
         }
     }
 }
@@ -880,6 +907,636 @@ mod tests {
             to_ic_close_kind(loaded.close_outcome),
             IcCloseKind::RecoveredToBase { base: ObjId(900) }
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn h1b_h1c_sortie_engagement_clock_handoff_crew_extraction_and_persistent_casualty()
+    -> TestResult {
+        let catalog = load_stock_catalog()?;
+        let (biped_before, biped_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.biped_mk1", ObjId(501))?;
+        let (tank_enemy, tank_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(502))?;
+        let (tank_reinforce, _) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(503))?;
+
+        let biped_anatomy = anatomy_for_unit_spec(&biped_spec)?;
+        let tank_anatomy = anatomy_for_unit_spec(&tank_spec)?;
+
+        let site = ObjId(770);
+        let carrier = ObjId(910);
+        let pilot = ObjId(810);
+
+        let mut ledger = FieldCustodyLedger::new();
+        let mut site_book = FieldSiteEngagementBook::new(site)?;
+        let mut crew_book = CrewSurvivalBook::new();
+        let mut obs_book = FieldObservationBook::new();
+
+        crew_book.board_unit(pilot, biped_before.object())?;
+
+        let pose_biped = FieldPose {
+            site,
+            x_cm: 1_000,
+            y_cm: 1_000,
+        };
+        let pose_enemy = FieldPose {
+            site,
+            x_cm: 3_000,
+            y_cm: 1_000,
+        };
+
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &biped_before,
+            &biped_anatomy,
+            SmolStr::new("expedition"),
+            pose_biped,
+            Some(carrier),
+            1_000,
+        )?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &tank_enemy,
+            &tank_anatomy,
+            SmolStr::new("raiders"),
+            pose_enemy,
+            None,
+            1_000,
+        )?;
+
+        // Surface drive on the rate-24 IC domain clock before combat promotion (`Q-R3`).
+        let engaged_pose_biped = FieldPose {
+            site,
+            x_cm: 1_800,
+            y_cm: 1_000,
+        };
+        let moved_cm =
+            site_book.record_surface_motion(biped_before.object(), engaged_pose_biped, None)?;
+        check_eq!(moved_cm, 800);
+
+        // Promote site to wall-clock combat (`1:1`) on explicit hostile action (`Q-H1`, `Q-H2`, `Q-R3`).
+        let promo_handoffs = site_book.promote_to_engagement(
+            &mut ledger,
+            99,
+            FieldPromotionTrigger::ExplicitHostileAction {
+                attacker: tank_enemy.object(),
+                target: biped_before.object(),
+            },
+            1,
+            1_020,
+        )?;
+        check_eq!(site_book.current_clock_rate(), COMBAT_WALL_CLOCK_RATE);
+        check_eq!(promo_handoffs.len(), 2);
+
+        // Reinforce engagement with a friendly line_tank (`Q-H3`).
+        site_book.reinforce_engagement(
+            &mut ledger,
+            &tank_reinforce,
+            &tank_anatomy,
+            SmolStr::new("expedition"),
+            FieldPose {
+                site,
+                x_cm: 500,
+                y_cm: 1_000,
+            },
+            Some(carrier),
+            1_025,
+        )?;
+
+        // Enemy tank inflicts a headshot on `biped_mk1` (`Q-H7`, `FO-1`).
+        let head = SectionId::new("head")?;
+        let internals = CellId::new("internals")?;
+        let cannon = ComponentId::new("cannon")?;
+        let ammo = CellId::new("ammo")?;
+        let headshot = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: head.clone(),
+                        cell: internals,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: head,
+                    condition: ConditionId::new("destroyed")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: cannon.clone(),
+                        cell: ammo,
+                    },
+                    value: 6,
+                },
+            ],
+            Some(biped_before.revision()),
+            None,
+        )?;
+        let (_disabled_biped, biped_assess) = site_book.apply_field_damage(
+            &mut ledger,
+            &biped_before,
+            &headshot,
+            &biped_anatomy,
+            1_030,
+        )?;
+        check_eq!(biped_assess.state, OperationalState::Disabled);
+        check!(biped_assess.intact_components.contains(&cannon));
+
+        // Pilot survives with zero permadeath (`FO-12`, `Q-H12`) and requests guaranteed NPC extraction
+        // after an initial friendly rescue window expires (`Q-F4`, `P-5`).
+        crew_book.record_unit_defeat_survival(
+            pilot,
+            biped_before.object(),
+            biped_assess.state,
+            engaged_pose_biped,
+            true,
+            true,
+            1_030,
+        )?;
+        crew_book.begin_friendly_rescue(
+            pilot,
+            tank_reinforce.object(),
+            engaged_pose_biped,
+            200,
+            1_040,
+        )?;
+        let port_candidates = vec![SafePortCandidate {
+            port_id: SmolStr::new("stickney"),
+            eligible_and_known: true,
+            transit_duration_ic: 400,
+        }];
+        check!(
+            crew_book
+                .request_npc_extraction(pilot, &port_candidates, 600, 1_100)
+                .is_err()
+        );
+        crew_book.request_npc_extraction(pilot, &port_candidates, 600, 1_250)?;
+        let extracted = crew_book.complete_npc_extraction(pilot, 1_650)?;
+        check_eq!(
+            *extracted,
+            OccupantSurvivalState::RecoveredAtPort {
+                port: SmolStr::new("stickney"),
+                left_unit_in_field: biped_before.object(),
+                arrived_at_ic: 1_650,
+            }
+        );
+
+        // Observer-bounded post-battle knowledge (`Q-H6`): only `tank_reinforce` inspected `biped_mk1`.
+        obs_book.record_observation(
+            tank_reinforce.object(),
+            ObservationSource::FieldInspection,
+            ObservedCombatFact::SurvivingComponentsRevealed {
+                unit: biped_before.object(),
+                surviving_components: biped_assess.surviving_components(),
+            },
+            1_035,
+        )?;
+        check!(obs_book.knows_surviving_components(tank_reinforce.object(), biped_before.object()));
+        check!(!obs_book.knows_surviving_components(tank_enemy.object(), biped_before.object()));
+
+        // Enemy withdraws, friendly tank stows in carrier bay, engagement settles and demotes (`Q-H4`, `Q-S10`).
+        site_book.withdraw_unit(
+            &mut ledger,
+            tank_enemy.object(),
+            false,
+            WithdrawalDestination::PerimeterSurface {
+                pose: FieldPose {
+                    site: ObjId(771),
+                    x_cm: 0,
+                    y_cm: 0,
+                },
+            },
+            1_040,
+        )?;
+        site_book.withdraw_unit(
+            &mut ledger,
+            tank_reinforce.object(),
+            false,
+            WithdrawalDestination::CarrierBay {
+                carrier,
+                slot: SmolStr::new("bay_alpha"),
+            },
+            1_042,
+        )?;
+        site_book.set_settlement_gate(DemotionSettlementGate::default());
+        let demoted = site_book.demote_engagement(&mut ledger, 1_045)?;
+        check_eq!(
+            demoted.persistent_field_casualties,
+            vec![biped_before.object()]
+        );
+
+        // Carrier departure requires explicit leave-behind confirmation for `biped_mk1` (`Q-H10`).
+        check!(site_book.depart_carrier(carrier, false, 1_050).is_err());
+        let departed = site_book.depart_carrier(carrier, true, 1_052)?;
+        check_eq!(departed.stowed_units, vec![tank_reinforce.object()]);
+        check_eq!(departed.left_behind_units, vec![biped_before.object()]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn h2b_h2c_end_to_end_lawful_and_unlawful_recovery_sorties_and_48h_salvage_contest()
+    -> TestResult {
+        let catalog = load_stock_catalog()?;
+        let (tank_unit, tank_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(601))?;
+        let (biped_before, biped_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.biped_mk1", ObjId(602))?;
+
+        let head = SectionId::new("head")?;
+        let internals = CellId::new("internals")?;
+        let headshot = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: head.clone(),
+                        cell: internals,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: head,
+                    condition: ConditionId::new("destroyed")?,
+                },
+            ],
+            Some(biped_before.revision()),
+            None,
+        )?;
+        let (disabled_biped, _) = apply(&biped_before, &headshot, 500)?;
+        let biped_assess = assess_tacsim_unit(&disabled_biped, Some(&biped_spec))?;
+        let tank_assess = assess_tacsim_unit(&tank_unit, Some(&tank_spec))?;
+        let tank_mass = unit_mass_profile_for_spec(&tank_spec, 0, 0)?;
+        let biped_mass = unit_mass_profile_for_spec(&biped_spec, 0, 0)?;
+
+        let site = ObjId(780);
+        let pose = FieldPose {
+            site,
+            x_cm: 0,
+            y_cm: 0,
+        };
+        let bay_pose = FieldPose {
+            site,
+            x_cm: 1_500,
+            y_cm: 0,
+        };
+        let carrier_bay = BayCapacitySpec {
+            max_units: 2,
+            current_units: 0,
+            max_mass_kg: 100_000,
+            current_mass_kg: 0,
+            max_volume_l: 20_000,
+            current_volume_l: 0,
+            max_width_cm: 800,
+            max_height_cm: 1_500,
+        };
+
+        // 1. Lawful landholder recovery on owned ground: rejects `BarePriorTitle` (`Q-R1`) and
+        // transfers clean title after 48 available real hours (`Q-S1`, `Q-S2`, `Q-S13`–`Q-S15`).
+        let mut rec_book = RecoveryBook::new();
+        let mut salv_book = SalvageClaimBook::new();
+        let unit_owner = ObjId(10);
+        let landholder = ObjId(20);
+        let carrier = ObjId(920);
+
+        let op = rec_book.attach(AttachTowRequest {
+            tug: tank_unit.object(),
+            tug_state: tank_assess.state,
+            tug_can_move: tank_assess.can_move,
+            tug_base_speed_cms: base_speed_cms_for_spec(&tank_spec),
+            tug_mass_kg: tank_mass.total_mass_kg(),
+            rig_profile: TowRigProfile::Standard,
+            tug_pose: pose,
+            casualty_assessment: biped_assess.clone(),
+            casualty_mass: biped_mass,
+            casualty_pose: pose,
+            max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+            at_ic: 1_000,
+        })?;
+        let op_id = op.id();
+
+        let lawful_ctx = RecoveryAuthorityContext {
+            recoverer: landholder,
+            unit_title_holder: unit_owner,
+            has_owner_authorization: false,
+            has_landholder_authorization: true,
+            ground_tenure_at_attach: GroundTenure::Owned {
+                landholder,
+                claim_id: Some(SmolStr::new("deed.frontier_780")),
+            },
+        };
+        salv_book.record_physical_attach(
+            op_id,
+            disabled_biped.object(),
+            tank_unit.object(),
+            &lawful_ctx,
+            1_000,
+        )?;
+        rec_book.advance_tow(op_id, 1, bay_pose, 4, 1_004)?;
+        rec_book.load_into_bay(LoadIntoBayRequest {
+            id: op_id,
+            expected_revision: 2,
+            carrier,
+            slot: SmolStr::new("mech_bay_1"),
+            carrier_pose: bay_pose,
+            max_load_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+            bay_capacity: &carrier_bay,
+            casualty_unit: &disabled_biped,
+            at_ic: 1_010,
+        })?;
+        salv_book.record_bay_load(op_id, carrier, 1_010)?;
+
+        let status = salv_book.resolve_hull_recovery_custody(op_id, 50_000)?;
+        let claim_id = match status {
+            CustodyTitleStatus::PendingSalvageClaim { claim_id, .. } => claim_id,
+            CustodyTitleStatus::ResolvedTitle { .. } => {
+                return Err("expected PendingSalvageClaim".into());
+            }
+        };
+
+        let bare_contest = salv_book.submit_contest(
+            claim_id,
+            unit_owner,
+            ContestGround::BarePriorTitle,
+            55_000,
+        )?;
+        check_eq!(bare_contest.valid_to_vacate, None);
+
+        let (settled_status, _) =
+            salv_book.adjudicate_claim(claim_id, 50_000 + CONTEST_WINDOW_AVAILABLE_REAL_SECS)?;
+        check_eq!(
+            settled_status,
+            CustodyTitleStatus::ResolvedTitle { owner: landholder }
+        );
+
+        // 2. Unlawful third-party recovery on owned ground: vacated when proven with acquired evidence (`FO-4`, `Q-S4`).
+        let pirate = ObjId(30);
+        let op2 = rec_book.attach(AttachTowRequest {
+            tug: tank_unit.object(),
+            tug_state: tank_assess.state,
+            tug_can_move: tank_assess.can_move,
+            tug_base_speed_cms: base_speed_cms_for_spec(&tank_spec),
+            tug_mass_kg: tank_mass.total_mass_kg(),
+            rig_profile: TowRigProfile::Standard,
+            tug_pose: pose,
+            casualty_assessment: biped_assess,
+            casualty_mass: biped_mass,
+            casualty_pose: pose,
+            max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+            at_ic: 2_000,
+        })?;
+        let op2_id = op2.id();
+        let unlawful_ctx = RecoveryAuthorityContext {
+            recoverer: pirate,
+            unit_title_holder: landholder,
+            has_owner_authorization: false,
+            has_landholder_authorization: false,
+            ground_tenure_at_attach: GroundTenure::Owned {
+                landholder,
+                claim_id: Some(SmolStr::new("deed.frontier_780")),
+            },
+        };
+        salv_book.record_physical_attach(
+            op2_id,
+            disabled_biped.object(),
+            tank_unit.object(),
+            &unlawful_ctx,
+            2_000,
+        )?;
+        rec_book.load_into_bay(LoadIntoBayRequest {
+            id: op2_id,
+            expected_revision: 1,
+            carrier: ObjId(999),
+            slot: SmolStr::new("pirate_bay"),
+            carrier_pose: pose,
+            max_load_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+            bay_capacity: &carrier_bay,
+            casualty_unit: &disabled_biped,
+            at_ic: 2_010,
+        })?;
+        salv_book.record_bay_load(op2_id, ObjId(999), 2_010)?;
+
+        // Duplicate active hull claim for the same unit is refused unless we test on a fresh SalvageClaimBook.
+        let mut salv_book_unlawful = SalvageClaimBook::new();
+        salv_book_unlawful.record_physical_attach(
+            op2_id,
+            disabled_biped.object(),
+            tank_unit.object(),
+            &unlawful_ctx,
+            2_000,
+        )?;
+        salv_book_unlawful.record_bay_load(op2_id, ObjId(999), 2_010)?;
+        let status2 = salv_book_unlawful.resolve_hull_recovery_custody(op2_id, 60_000)?;
+        let claim2_id = match status2 {
+            CustodyTitleStatus::PendingSalvageClaim { claim_id, .. } => claim_id,
+            CustodyTitleStatus::ResolvedTitle { .. } => {
+                return Err("expected PendingSalvageClaim".into());
+            }
+        };
+        let evidence = SalvageEvidenceRecord {
+            operation_id: op2_id,
+            casualty: disabled_biped.object(),
+            holder: landholder,
+            kind: SalvageEvidenceKind::DirectWitness {
+                witness: landholder,
+                observed_at_ic: 2_002,
+            },
+        };
+        salv_book_unlawful.submit_contest(
+            claim2_id,
+            landholder,
+            ContestGround::UnlawfulRecovery { evidence },
+            61_000,
+        )?;
+        let (vacated_status, _) = salv_book_unlawful.adjudicate_claim(claim2_id, 61_100)?;
+        check_eq!(
+            vacated_status,
+            CustodyTitleStatus::ResolvedTitle { owner: landholder }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn h3_stock_biped_component_stripping_workshop_restoration_and_scrapping() -> TestResult {
+        let catalog = load_stock_catalog()?;
+        let (donor_before, biped_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.biped_mk1", ObjId(701))?;
+        let (recipient_before, _) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.biped_mk1", ObjId(702))?;
+        let anatomy = anatomy_for_unit_spec(&biped_spec)?;
+
+        let head = SectionId::new("head")?;
+        let internals = CellId::new("internals")?;
+        let cannon = ComponentId::new("cannon")?;
+        let machine_gun = ComponentId::new("machine_gun")?;
+        let visual_sensor = ComponentId::new("visual_sensor")?;
+        let ammo = CellId::new("ammo")?;
+
+        let cannon_ammo_init = donor_before
+            .cell(&CellAddr::Component {
+                component: cannon.clone(),
+                cell: ammo.clone(),
+            })
+            .ok_or("missing cannon ammo")?
+            .current;
+
+        // Donor suffers a headshot after spending 3 rounds of cannon ammo (`Disabled`).
+        let donor_hit = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: head.clone(),
+                        cell: internals.clone(),
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: head.clone(),
+                    condition: ConditionId::new("destroyed")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: cannon.clone(),
+                        cell: ammo.clone(),
+                    },
+                    value: cannon_ammo_init - 3,
+                },
+            ],
+            Some(donor_before.revision()),
+            None,
+        )?;
+        let (donor_disabled, _) = apply(&donor_before, &donor_hit, 100)?;
+
+        let owner = ObjId(10);
+        let custody = CustodyTitleStatus::ResolvedTitle { owner };
+        let mut workshop = WorkshopBook::new();
+
+        // 1. Strip the surviving `cannon` from `donor_disabled` (`Q-S11`, `Q-F5`, `Q-F6`).
+        let (donor_stripped, _, stripped_cannon) = workshop.strip_component(
+            &donor_disabled,
+            &anatomy,
+            &cannon,
+            owner,
+            &StripAuthorization::BayOrWorkshop {
+                custody: custody.clone(),
+                has_explicit_owner_permission: false,
+            },
+            None,
+            110,
+        )?;
+        check_eq!(
+            stripped_cannon.provenance.parent_hull,
+            donor_disabled.object()
+        );
+        check_eq!(
+            stripped_cannon.cells.get(&ammo).map(|c| c.current),
+            Some(cannon_ammo_init - 3)
+        );
+
+        // 2. Strip the surviving `visual_sensor` from `recipient_before` before `recipient` loses its cannon,
+        // and use that sensor to restore `donor_stripped`'s reconstructed head!
+        let (recipient_no_sensor, _, stripped_sensor) = workshop.strip_component(
+            &recipient_before,
+            &anatomy,
+            &visual_sensor,
+            owner,
+            &StripAuthorization::BayOrWorkshop {
+                custody: custody.clone(),
+                has_explicit_owner_permission: false,
+            },
+            None,
+            115,
+        )?;
+
+        // Recipient also has both weapons destroyed -> `Unarmed`.
+        let recipient_disarm = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetComponentCondition {
+                    component: cannon.clone(),
+                    condition: ConditionId::new("destroyed")?,
+                },
+                UnitMutationOp::SetComponentCondition {
+                    component: machine_gun,
+                    condition: ConditionId::new("destroyed")?,
+                },
+            ],
+            Some(recipient_no_sensor.revision()),
+            None,
+        )?;
+        let (recipient_unarmed, _) = apply(&recipient_no_sensor, &recipient_disarm, 120)?;
+        let unarmed_assess = assess_tacsim_unit(&recipient_unarmed, Some(&biped_spec))?;
+        check_eq!(unarmed_assess.state, OperationalState::Unarmed);
+
+        // Install the salvaged `cannon` from `donor` into `recipient_unarmed` -> `Operational` (`FO-2`, `Q-S12`)!
+        let cannon_replacement = ReplacementPartSpec::from_stripped_record(&stripped_cannon);
+        let (recipient_rearmed, rearmed_assess, _) = workshop.replace_component_in_slot(
+            &recipient_unarmed,
+            &anatomy,
+            &cannon,
+            &cannon_replacement,
+            owner,
+            &custody,
+            false,
+            1_200,
+            180,
+            None,
+            130,
+        )?;
+        check_eq!(rearmed_assess.state, OperationalState::Operational);
+        check!(rearmed_assess.can_fire);
+        check_eq!(
+            recipient_rearmed
+                .cell(&CellAddr::Component {
+                    component: cannon,
+                    cell: ammo,
+                })
+                .map(|c| c.current),
+            Some(cannon_ammo_init - 3)
+        );
+
+        // 3. Reconstruct `donor_stripped`'s destroyed `head` and install `stripped_sensor` (`FO-2`, `Q-S12`).
+        let (donor_head_rebuilt, _, _) = workshop.reconstruct_section(
+            &donor_stripped,
+            &anatomy,
+            &head,
+            owner,
+            &custody,
+            false,
+            2_500,
+            300,
+            None,
+            140,
+        )?;
+        let sensor_replacement = ReplacementPartSpec::from_stripped_record(&stripped_sensor);
+        let (donor_restored, donor_restored_assess, _) = workshop.replace_component_in_slot(
+            &donor_head_rebuilt,
+            &anatomy,
+            &visual_sensor,
+            &sensor_replacement,
+            owner,
+            &custody,
+            false,
+            900,
+            120,
+            None,
+            150,
+        )?;
+        // Donorstill has its `machine_gun`, `power`, and `core` intact in `torso`, so with `head`
+        // reconstructed and `visual_sensor` replaced, `donor_restored` is back to `Operational`!
+        check_eq!(donor_restored_assess.state, OperationalState::Operational);
+        check!(donor_restored_assess.can_move);
+        check!(donor_restored_assess.can_fire);
+
+        // 4. Scrap `donor_restored` under resolved title (`Q-S11`, `Q-F5`).
+        let (_scrapped_unit, scrap_report) =
+            workshop.scrap_hull(&donor_restored, &anatomy, owner, &custody, false, 200)?;
+        check_eq!(
+            scrap_report.final_assessment.state,
+            OperationalState::Irrecoverable
+        );
+        check!(scrap_report.structural_scrap_kg > 0);
 
         Ok(())
     }

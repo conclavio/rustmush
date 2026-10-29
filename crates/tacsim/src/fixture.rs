@@ -148,6 +148,8 @@ pub fn config() -> TacsimConfig {
         harness: crate::config::HarnessConfig::default(),
         // Doc 23 cut S.1: the black box's line cap, at its default.
         surface: crate::config::SurfaceConfig::default(),
+        // Doc 17h cut M8f: the procurement defaults.
+        procurement: crate::config::ProcurementConfig::default(),
     }
 }
 

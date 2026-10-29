@@ -472,3 +472,114 @@ fn jobs_and_completion_bind_exact_immutable_subject_and_publication() -> TestRes
     );
     Ok(())
 }
+
+/// Doc 17h §3 M8f (the fix round's H8): the procurement tally counts exactly
+/// the pages a receipt lists. Its window starts at `from` and names the next
+/// page, `from` past the last page is refused, and a missing page, a short
+/// read or a page whose content is not the receipt's (another digest under
+/// the same key) is `Integrity`.
+#[test]
+fn procurement_tally_counts_only_the_receipts_own_pages() -> TestResult {
+    use crate::commerce::procurement_read::{count_window, window_keys};
+    use mush_core::read_service::OwnerReadError;
+    let (receipt, pages) = certificate()?;
+    let keys = window_keys(&receipt, 0)?;
+    check_eq!(keys.len(), 1);
+    let page = pages.first().ok_or("page")?;
+    check_eq!(keys.first(), Some(&page.key()));
+    let counted = count_window(&receipt, 0, &[Some(page)])?;
+    check_eq!(counted.next(), None, "one page: no further read");
+    check_eq!(
+        counted.tally().score(),
+        None,
+        "a probe-only class scores nothing"
+    );
+    check_eq!(
+        window_keys(&receipt, 1).map(|k| k.len()),
+        Err(OwnerReadError::Refused),
+        "from past the last page"
+    );
+    check_eq!(
+        count_window(&receipt, 0, &[None]).map(|p| p.next()),
+        Err(OwnerReadError::Integrity),
+        "a missing page"
+    );
+    check_eq!(
+        count_window(&receipt, 0, &[]).map(|p| p.next()),
+        Err(OwnerReadError::Integrity),
+        "a short read"
+    );
+    // The same key, another content: the digest the receipt lists differs.
+    let foreign = PageContent::new(
+        page.content().subject,
+        page.content().compatibility,
+        0,
+        vec![row(
+            RatingClass::I,
+            CaseKind::Probe {
+                pair: 1,
+                name: ProbeName::EmptyUnarmed,
+            },
+            100,
+            20,
+        )?],
+    )?;
+    let forged = RatingPage::new(page.job, receipt.id(), receipt.result().id(), foreign)?;
+    check_eq!(forged.key(), page.key());
+    check_eq!(
+        count_window(&receipt, 0, &[Some(&forged)]).map(|p| p.next()),
+        Err(OwnerReadError::Integrity),
+        "a page that is not the receipt's"
+    );
+    Ok(())
+}
+
+/// Doc 17h §3 M8f (H8): a trial case never ends a passing class without a
+/// terminal. The constructor refuses a conformant trial with none, and a
+/// kernel outcome on a trial, so the score's "no terminal is no win" arm is
+/// reached only by a budget-faulted trial, whose class does not pass.
+#[test]
+fn a_passing_trial_always_carries_its_terminal() -> TestResult {
+    let key = CaseKey::new(
+        RatingClass::I,
+        CaseKind::Trial {
+            variant: 0,
+            layout: TrialLayout::Duel,
+            seed: 1,
+            swapped: false,
+        },
+    )?;
+    let meter = MeterSummary::new(1, 10, 1, Some(Peak::new(10, 1, 0, 0)?), 0, 0, 0, 0)?;
+    let coverage = Coverage::new(Applicability::Armed, 1, 1, hash(8))?;
+    let binding = CaseBinding::new(hash(2), hash(4), hash(6), hash(7));
+    check!(
+        CaseResult::new(
+            key.clone(),
+            binding.clone(),
+            meter.clone(),
+            coverage.clone(),
+            0,
+            CaseOutcome::Conformant {},
+            None
+        )
+        .is_err(),
+        "a conformant trial without a terminal"
+    );
+    check!(
+        CaseResult::new(
+            key,
+            binding,
+            meter,
+            coverage,
+            0,
+            CaseOutcome::Kernel {
+                expected: KernelOutcome::Passed,
+                actual: KernelOutcome::Passed,
+            },
+            None
+        )
+        .is_err(),
+        "a kernel outcome on a trial"
+    );
+    Ok(())
+}

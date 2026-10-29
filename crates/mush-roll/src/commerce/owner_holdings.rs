@@ -195,6 +195,13 @@ fn project_owner_for(
     let held_as = check_title(holder, charter.id, title, |org, scope| {
         super::org_holder::scoped_actor(ctx.world(), org, scope, holder).is_ok()
     })?;
+    // Doc 17h cut M8d D4: a principal the Registry revoked flies, seals and reads no held term
+    // while the window runs; the term itself is untouched and resumes after it.
+    if super::registry_inspection::principal::barred_read(ctx, families, held_as)
+        .map_err(|_| OwnerProjectionError::Unavailable)?
+    {
+        return Err(OwnerProjectionError::NotHeld);
+    }
     let birth = read(ctx, &families.operations, licence.operation.to_hex())?;
     let ownership = super::charter_transfer::history::current_for(ctx, families, birth, held_as)
         .map_err(|_| OwnerProjectionError::NotHeld)?;

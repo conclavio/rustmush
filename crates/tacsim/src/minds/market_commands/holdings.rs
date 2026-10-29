@@ -103,7 +103,7 @@ pub(crate) fn holdings(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     // The whole view shows the paid section only to a character granted on
     // the root: a curator granted on a House's scope sees its titles.
     let paid_too =
-        org.is_none_or(|o| mush_roll::commerce::org_holder::acts_for(ctx.w, o, ctx.actor).is_ok());
+        org.is_none_or(|o| mush_roll::commerce::org_holder::reads_for(ctx.w, o, ctx.actor).is_ok());
     let lines = match which {
         Holdings::Owner(cursor) => {
             let (rows, more) = owner_section(ctx, &roll, Some(cursor), org)?;

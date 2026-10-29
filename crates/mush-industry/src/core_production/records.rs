@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{Error, MAX_CERTIFICATES, OriginPolicy, bad, encode};
 
+/// **Where a die came from** (doc 17h cut M8b-2, H1): a sibling of [`DieClass`], which is
+/// pinned on the wire and gains no arm. The economy's funding subject and title birth carry
+/// this word; the heirloom and grey records are `super::uncertified`.
+pub use mush_economy::core_integration::DieSource;
+
 /// Governed physical die classes. The ROM class has no manufactured die.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

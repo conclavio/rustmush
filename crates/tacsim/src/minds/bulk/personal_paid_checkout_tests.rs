@@ -92,6 +92,16 @@ impl GameModule for PlayerTacsim {
             },
             Arc::new(holder_grant_fixture),
         )?;
+        // Doc 17h §3 M8f: the actor's own Roll procurement read
+        // (`procurement_read_fixture`).
+        reg.command(
+            mush_core::CommandSpec {
+                name: "@procurement-read-fixture".into(),
+                shape: mush_core::ArgShape::Raw,
+                ..Default::default()
+            },
+            Arc::new(procurement_read_fixture),
+        )?;
         let mut shared = self.shared.lock().map_err(module_error)?;
         shared.reconformance = self.resources.reconformance();
         shared.manifest = Some(manifest);
@@ -111,11 +121,51 @@ impl GameModule for PlayerTacsim {
     }
 }
 
+/// Doc 17h §3 M8f (H8): `@procurement-read-fixture <org>` reads the Roll's
+/// GOD-only `ProcurementHoldings` through the composed `OriginalOwnerReader`
+/// AS THE TYPING ACTOR (a command binds the read's caller to its actor), and
+/// prints `refused`, `unavailable` or `holdings <n>`.
+fn procurement_read_fixture(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::CmdError> {
+    use mush_roll::commerce::command_reader::RollCommandReadRequest;
+    use mush_roll::commerce::holding_reader::OriginalReadRequest;
+    let org = ctx
+        .args
+        .raw()
+        .trim()
+        .parse::<u64>()
+        .map(mush_org::OrgId)
+        .map_err(|_| mush_core::CmdError::msg("Usage: @procurement-read-fixture <org>"))?;
+    let Some(roll) = ctx
+        .w
+        .module_state::<crate::minds::market_commands::MindCommandService>()
+        .map(|service| service.roll.clone())
+    else {
+        return Err(mush_core::CmdError::msg("unavailable"));
+    };
+    let line = match ctx.read_owner(
+        &roll,
+        OriginalReadRequest::command(RollCommandReadRequest::procurement_holdings(org, None)),
+    ) {
+        Err(mush_core::read_service::OwnerReadError::Refused) => "refused".to_owned(),
+        Err(_) => "unavailable".to_owned(),
+        Ok(result) => match result.into_command().and_then(
+            mush_roll::commerce::command_reader::RollCommandReadResult::into_procurement_holdings,
+        ) {
+            Some(page) => format!("holdings {}", page.rows().len()),
+            None => "unavailable".to_owned(),
+        },
+    };
+    let actor = ctx.actor;
+    ctx.out.info(actor, line);
+    Ok(())
+}
+
 /// M8c F11, the test admin: `revoke #<obj>` drops every `roll.holder.org`
 /// grant to the object; `limit #<obj> <org> <max|none>` replaces them with
 /// one on the organisation's root scope limited to `max` minor units
 /// (`none`: unlimited). A real Org mutation through `mush_org::submit`:
-/// `@org/grant` has no revoke and refuses `limit=` for this capability.
+/// `@org/grant` has no revoke (doc 17h §3 M8f P2a: it admits `limit=` on this
+/// capability now; the fixture keeps the replace-in-one-step form).
 fn holder_grant_fixture(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::CmdError> {
     use mush_org::{
         CapabilityGrant, CapabilityId, GrantLimit, OrgAction, OrgId, OrgMutationOp,
@@ -676,7 +726,9 @@ impl PlayerWorld {
         cfg.match_.ai_fill = true;
         let real = crate::TacsimRuleset::with_config(cfg);
         let real = if entitlements {
+            // Doc 17h §3 M8f: and the procurement tick's two reads.
             real.with_mind_entitlement_holdings(manifest.clone())
+                .with_procurement_reads()
         } else if dependent_owners {
             real.with_dependent_owner_holdings(manifest.clone())
         } else if f.source_forms {

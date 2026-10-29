@@ -222,6 +222,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             output_container: h.output_container,
         },
         market,
+        procurement: Vec::new(),
     };
     r.flush();
     Ok((r, deployment))
@@ -271,6 +272,8 @@ fn grant_registry(r: &mut Rig, d: &LaunchDeployment) -> Result {
             "roll.registry.recall",
             "roll.registry.revoke",
             "roll.registry.inspect",
+            // Doc 17h cut M8d D3: the runbook's fourth grant.
+            "roll.registry.fine",
         ] {
             command(
                 r.world_mut(),
@@ -466,7 +469,10 @@ fn registry_verbs(r: &mut Rig, actor: ObjId) -> Result<Vec<String>> {
         .filter(|verb| {
             matches!(
                 verb.as_str(),
-                "roll-registry-recall" | "roll-registry-revocation" | "roll-registry-inspection"
+                "roll-registry-recall"
+                    | "roll-registry-revocation"
+                    | "roll-registry-inspection"
+                    | "roll-registry-fine"
             )
         })
         .collect())
@@ -525,6 +531,14 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
         r.plan("industry", "issue_core_die", GOD, json!({"class":"i"}))
             .is_ok()
     );
+    // Doc 17h cut M8b-2 (H3): the launch composes the staff issues of heirloom and grey dies
+    // beside the certified one; no vendor sells either (doc 17h §4).
+    for action in [
+        mush_industry::core_production::ISSUE_HEIRLOOM_ACTION,
+        mush_industry::core_production::ISSUE_GREY_ACTION,
+    ] {
+        check!(r.action("industry", action).is_ok(), "{action} is composed");
+    }
     check!(r.action("market", "purchase_house_mind").is_ok());
     check!(r.action("roll", "conduct_trial_admit").is_ok());
     // 17g C1c: the production format composes every player-market owner
@@ -926,6 +940,120 @@ async fn named_launch_format_two_checks_market_identities_at_boot() -> Result {
     Ok(())
 }
 
+/// Doc 17h §3 M8f (P2; the fix round's H8): each procurement policy's
+/// identities are checked at boot, one refusal per arm: the agent must be a
+/// live Player-kind character and not GOING, the scope must be the House
+/// organisation's ROOT scope (where its treasury pays a buy from), and a
+/// named backing faction must exist. The valid policy boots, and the launch
+/// hands its policies to the procurement tick.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_checks_procurement_identities_at_boot() -> Result {
+    use crate::launch::{ProcurementPolicy, ProcurementRole};
+    let disagree = "named launch procurement identities disagree";
+    let policy = |r: &mut Rig, d: &LaunchDeployment| -> Result<ProcurementPolicy> {
+        let org = d.houses.meridiani.organization;
+        let root = r
+            .world()
+            .world()
+            .module_state::<OrgStore>()
+            .ok_or("Org")?
+            .state()
+            .org(org)
+            .ok_or("the House org")?
+            .root_scope;
+        let agent = r.world_mut().world_mut().create(
+            ObjKind::Player,
+            "Procurement agent",
+            GOD,
+            Some(d.venue.room),
+        )?;
+        Ok(ProcurementPolicy {
+            org,
+            scope: root,
+            agent,
+            budget_minor_per_ic_month: None,
+            standing: Some(d.republic),
+            cap_permille: None,
+            roles: ProcurementRole::all(),
+        })
+    };
+    let refuses =
+        |change: &dyn Fn(&mut Rig, &mut ProcurementPolicy) -> Result, case: &str| -> Result {
+            let (mut r, mut d) = setup_with(2)?;
+            let mut p = policy(&mut r, &d)?;
+            change(&mut r, &mut p)?;
+            d.procurement = vec![p];
+            match reboot(&mut r, &d) {
+                Ok(()) => Err(format!("the launch booted with {case}").into()),
+                Err(error) => {
+                    check!(
+                        error.to_string().contains(disagree),
+                        "{case}: {error} lacks {disagree:?}"
+                    );
+                    Ok(())
+                }
+            }
+        };
+    refuses(
+        &|r, p| {
+            p.agent =
+                r.world_mut()
+                    .world_mut()
+                    .create(ObjKind::Thing, "Agent stand-in", GOD, None)?;
+            Ok(())
+        },
+        "an agent that is a Thing",
+    )?;
+    refuses(
+        &|r, p| {
+            r.world_mut()
+                .world_mut()
+                .get_mut(p.agent)
+                .ok_or("the agent")?
+                .flags
+                .insert(mush_core::Flags::GOING);
+            Ok(())
+        },
+        "an agent that is GOING",
+    )?;
+    refuses(
+        &|_, p| {
+            p.agent = ObjId(u32::MAX);
+            Ok(())
+        },
+        "an agent that does not exist",
+    )?;
+    refuses(
+        &|r, p| {
+            // A real scope of another org (the Basin importer's die stock).
+            p.scope = r.deployment.stock_scope;
+            Ok(())
+        },
+        "a scope that is not the House's root",
+    )?;
+    refuses(
+        &|_, p| {
+            p.standing = Some(mush_faction::FactionId(u64::MAX));
+            Ok(())
+        },
+        "a backing faction that does not exist",
+    )?;
+    let (mut r, mut d) = setup_with(2)?;
+    let p = policy(&mut r, &d)?;
+    d.procurement = vec![p.clone()];
+    reboot(&mut r, &d)?;
+    let state = r
+        .world()
+        .world()
+        .module_state::<crate::procurement::tick::ProcurementState>()
+        .ok_or("the procurement slot")?;
+    check!(
+        state.is_agent(p.org, p.agent),
+        "the launch hands its policies to the tick"
+    );
+    Ok(())
+}
+
 /// 17g C1c: C1b's interim pin (format 2 composed no market owner) moves to
 /// format 1, where it is permanent. A format-1 deployment initializes and
 /// activates the House chain exactly as before C1: the House actions are
@@ -990,13 +1118,14 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
     let market = d.market.clone().ok_or("a format-2 market")?;
     let operator = operator(&d)?;
     let principals = [GOD, operator, market.clerk, r.buyer];
-    // Sorted: the three verbs `grant_registry`'s three grants open.
+    // Sorted: the four verbs `grant_registry`'s four grants open (M8d: the fine).
     let both = vec![
+        "roll-registry-fine".to_owned(),
         "roll-registry-inspection".to_owned(),
         "roll-registry-recall".to_owned(),
         "roll-registry-revocation".to_owned(),
     ];
-    let lacks = readiness(operator, "lacks recall, revocation and inspection");
+    let lacks = readiness(operator, "lacks recall, revocation, inspection and fine");
     // Before the grants: no one, and God reads what the operator lacks.
     for actor in principals {
         check!(
@@ -1117,8 +1246,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks recall, revocation and inspection"),
-            (second, "lacks recall, revocation and inspection"),
+            (first, "lacks recall, revocation, inspection and fine"),
+            (second, "lacks recall, revocation, inspection and fine"),
         ]))
     );
     // One grant each, a different one: each reads what it still lacks.
@@ -1127,8 +1256,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks revocation and inspection"),
-            (second, "lacks recall and inspection")
+            (first, "lacks revocation, inspection and fine"),
+            (second, "lacks recall, inspection and fine")
         ]))
     );
     check_eq!(
@@ -1145,12 +1274,19 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks inspection"),
-            (second, "lacks inspection")
+            (first, "lacks inspection and fine"),
+            (second, "lacks inspection and fine")
         ]))
     );
     grant(&mut r, first, "roll.registry.inspect")?;
     grant(&mut r, second, "roll.registry.inspect")?;
+    // Doc 17h cut M8d D3: the fine is the fourth, a grant of its own.
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([(first, "lacks fine"), (second, "lacks fine")]))
+    );
+    grant(&mut r, first, "roll.registry.fine")?;
+    grant(&mut r, second, "roll.registry.fine")?;
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([(first, "ready"), (second, "ready")]))
@@ -1161,11 +1297,12 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
         check_eq!(
             verbs,
             vec![
+                "roll-registry-fine".to_owned(),
                 "roll-registry-inspection".to_owned(),
                 "roll-registry-recall".to_owned(),
                 "roll-registry-revocation".to_owned(),
             ],
-            "#{} holds all three",
+            "#{} holds all four",
             op.0
         );
     }
@@ -1196,7 +1333,10 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
         vec![
             help,
             line,
-            readiness(operator(&d)?, "lacks recall, revocation and inspection")
+            readiness(
+                operator(&d)?,
+                "lacks recall, revocation, inspection and fine"
+            )
         ]
     );
     // Terms that do not divide into whole credits or days: the price renders
@@ -1398,7 +1538,7 @@ async fn author_parameters_satisfy_the_registered_providers() -> Result {
 /// 17g C2c test 6 (C2 plan §2.1, the C2c brief; on the launch rig beside C2a's
 /// test 4, for the same reason: the providers project nothing unbooted). The
 /// format-2 Active launch registers the market's command read
-/// (`mind_market_commands` v1) and, since 17g C2e, grants it to TacSim (33
+/// (`mind_market_commands` v2 since doc 17h M8f) and, since 17g C2e, grants it to TacSim (33
 /// services and 35 grants with the scoped passenger facts; the counts and the
 /// mechanics fingerprint are printed, the counts pinned). With the
 /// buyer at the counter, the parameter objects `@mind/publish` builds for
@@ -1455,7 +1595,7 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
             key.owner.as_str() == "market"
                 && key.kind.as_str() == "owner_read"
                 && key.id.as_str() == "mind_market_commands"
-                && entry.reference().version() == 1
+                && entry.reference().version() == 2
         }),
         "the market's command read is registered"
     );
@@ -1819,5 +1959,66 @@ async fn trade_parameters_satisfy_the_registered_providers() -> Result {
             "the buyer is not offered {action:?}"
         );
     }
+    Ok(())
+}
+
+/// **Doc 17h cut M8d D7 (Q-M8-5).** The format-2 launch, which composes the Registry
+/// inspection, makes the Red Dies front on the Republic's board at world build: one front, one
+/// six-segment clock advancing on `minds.unwarranted`, none filled. A `minds.unwarranted` line
+/// — which names nobody — moves it one step (the event emitted here, as the faction suite
+/// does; the line's producer is the chronicle's tick); a restart makes no second front.
+#[tokio::test(flavor = "current_thread")]
+async fn m8d_the_launch_makes_the_red_dies_front_on_the_republic() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let red_dies = |r: &Rig| -> Result<(mush_faction::FrontId, mush_faction::Clock)> {
+        let sim = r
+            .world()
+            .world()
+            .module_state::<mush_faction::SimState>()
+            .ok_or("fronts")?;
+        let fronts: Vec<_> = sim
+            .fronts
+            .values()
+            .filter(|f| f.title == mush_faction::RED_DIES_TITLE)
+            .collect();
+        check_eq!(fronts.len(), 1, "one Red Dies front");
+        let front = fronts[0];
+        check_eq!(front.faction, d.republic, "on the Republic's board");
+        let clocks: Vec<_> = sim
+            .clocks
+            .values()
+            .filter(|c| c.front == front.id)
+            .collect();
+        check_eq!(clocks.len(), 1);
+        Ok((front.id, clocks[0].clone()))
+    };
+    let (front, clock) = red_dies(&r)?;
+    check_eq!(clock.segments, mush_faction::RED_DIES_SEGMENTS);
+    check_eq!(clock.filled, 0);
+    check_eq!(
+        clock.advance_on.as_deref(),
+        Some(mush_faction::RED_DIES_KIND)
+    );
+    {
+        let engine = r.world_mut().engine_mut();
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        engine.emit_world_event(
+            &mush_core::WorldEvent::CanonRecorded {
+                canon_id: 0,
+                kind: crate::minds::registry_inspection::unwarranted::KIND.into(),
+                entities: Vec::new(),
+                source: String::new(),
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    r.flush();
+    check_eq!(red_dies(&r)?.1.filled, 1, "the front's clock one step on");
+    reboot(&mut r, &d)?;
+    let (again, _) = red_dies(&r)?;
+    check_eq!(again, front, "a restart makes no second front");
     Ok(())
 }

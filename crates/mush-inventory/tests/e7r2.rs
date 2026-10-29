@@ -1008,3 +1008,89 @@ fn e7r2_p4_the_fact_provider_registers_no_separate_salvage_namespace() {
         "P4 added a KIND on the existing `inventory.*` provider, never a namespace"
     );
 }
+
+// ---- Doc 17h cut M8b-2 fix round 1 (L1): `@inv/lot`'s lineage lines ----
+
+/// Every root arm's line, read by the vault's owner and by staff: the source id is cut to
+/// its first eight characters in every branch; the heirloom and grey lines are staff's, and
+/// the owner reads a heirloom on the origin line's shape and a grey lot with no lineage line.
+#[test]
+fn m8b2_lot_lineage_lines_cut_the_id_and_keep_the_new_words_for_staff() {
+    let (mut tw, families) = boot(None);
+    let pat = tw.spawn_player("Pat");
+    let stash = vault_for(&mut tw, pat, "stash");
+    let hex = "0123456789abcdef0123456789abcdef";
+    let source = |kind: &str| ExternalRef {
+        provider: "industry".into(),
+        kind: kind.into(),
+        id: hex.into(),
+        revision: Some(1),
+    };
+    let lots = [
+        (
+            LotId(0x0a01),
+            mush_inventory::Lineage::Origin {
+                source: source("certified_core_die.v1"),
+            },
+        ),
+        (
+            LotId(0x0a02),
+            mush_inventory::Lineage::Heirloom {
+                source: source("enclave_heirloom.v1"),
+            },
+        ),
+        (LotId(0x0a03), mush_inventory::Lineage::Grey {}),
+    ];
+    for (id, lineage) in &lots {
+        let engine = tw.engine_mut();
+        apply(engine, &families, |txn| {
+            families
+                .mint_root(
+                    txn,
+                    stash,
+                    &commodity("tacsim.electronics"),
+                    1,
+                    Grade::new(3).expect("grade"),
+                    lineage.clone(),
+                    *id,
+                )
+                .map(|_| ())
+        })
+        .expect("a root lot mints");
+    }
+    let read =
+        |tw: &mut TestWorld, actor: ObjId, id: LotId| ok(tw, actor, &format!("@inv/lot {id}"));
+    for actor in [pat, GOD] {
+        for (id, _) in &lots {
+            assert!(!read(&mut tw, actor, *id).contains(hex), "no full id");
+        }
+    }
+    let origin = read(&mut tw, pat, lots[0].0);
+    assert!(
+        origin.contains("  origin: industry/certified_core_die.v1/01234567"),
+        "{origin}"
+    );
+    assert_eq!(
+        read(&mut tw, GOD, lots[0].0).lines().last(),
+        origin.lines().last(),
+        "the origin line is the same for staff"
+    );
+    let player = read(&mut tw, pat, lots[1].0);
+    assert!(
+        player.contains("  origin: industry/enclave_heirloom.v1/01234567"),
+        "{player}"
+    );
+    assert!(!player.contains("heirloom:"), "{player}");
+    let staff = read(&mut tw, GOD, lots[1].0);
+    assert!(
+        staff.contains("  heirloom: industry/enclave_heirloom.v1/01234567"),
+        "{staff}"
+    );
+    let player = read(&mut tw, pat, lots[2].0);
+    assert!(
+        !player.contains("grey") && !player.contains("origin:"),
+        "{player}"
+    );
+    let staff = read(&mut tw, GOD, lots[2].0);
+    assert!(staff.contains("  grey: no origin recorded"), "{staff}");
+}

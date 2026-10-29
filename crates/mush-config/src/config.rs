@@ -100,6 +100,8 @@
 //! | `[tacsim.match].reclaim_min_ms` | `5000` | **16b cut Y.3** (16c `N4`; doc 07 §1.3): world milliseconds after a dropped line (the linkdead grace run out, or a `QUIT`) before `BOARD` takes the tank back from its unit mind (the reflex controller until 17b cut M4.3); `0` to `600000` |
 //! | `[tacsim.command].max_span` | `4` | **16b cut Y.2** (doc 16 §2 W8): the most squads one commander may hold a live `ORDER` on at once; `1` to `32`, held at the world |
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
+//! | `[tacsim.procurement].budget_minor_per_ic_month` | `200000` | **Doc 17h cut M8f** (Q-M8-6, provisional): a House procurement policy's monthly budget, minor credits per IC calendar month, when its deployment row names none; `1` to `100000000` |
+//! | `[tacsim.procurement].cap_permille` | `400` | **Doc 17h cut M8f** (D-UM-54's diversity cap, provisional): the most of an organisation's titled hulls one charter's licences may cover, per mille, when its row names none; `1` to `1000` |
 //! | `[tacsim.minds].fill_class` | `"I"` | Default AI fill class cap when its lead has selected none; pilot minds use `max_class` independently, and every seal also respects its rating and chassis core |
 //! | `[tacsim.minds].max_class` | `"III"` | Operator maximum for pilot and AI fill minds; `0`, `I`, `II` or `III` |
 //! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out; 17b cut M5.1 lets a principal choose a lawful preset with `SIM MIND`, sealed from 17b cut M5.2) |
@@ -682,6 +684,30 @@ pub struct TacsimCfg {
     /// `[tacsim.surface]` — **doc 20 cut SM.10**: the Registry interlock lever (§9.4; lead
     /// ruling 9). Always `true` in phase 1; `false` is refused at boot.
     pub surface: TacsimSurfaceCfg,
+    /// `[tacsim.procurement]` — **doc 17h cut M8f**: the defaults of a House's procurement
+    /// policy (the monthly budget and the diversity cap).
+    pub procurement: TacsimProcurementCfg,
+}
+
+/// `[tacsim.procurement]` — doc 17h cut M8f (Q-M8-6; D-UM-54): the provisional defaults a
+/// deployment's procurement policy takes when its row names none (the owner's economy-defaults
+/// rule, 2026-10-24: reasonable defaults, tuned as we go).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimProcurementCfg {
+    /// Minor credits a House may spend on licences per IC calendar month (2,000cr).
+    pub budget_minor_per_ic_month: i64,
+    /// The most of an organisation's titled hulls one charter's licences may cover, per mille.
+    pub cap_permille: u16,
+}
+
+impl Default for TacsimProcurementCfg {
+    fn default() -> Self {
+        Self {
+            budget_minor_per_ic_month: 200_000,
+            cap_permille: 400,
+        }
+    }
 }
 
 /// `[tacsim.surface]` — doc 20 cut SM.10 (§9.4; lead ruling 9, D16, OC13): the Registry
@@ -852,6 +878,7 @@ impl Default for TacsimCfg {
             harness: TacsimHarnessCfg::default(),
             geology: TacsimGeologyCfg::default(),
             surface: TacsimSurfaceCfg::default(),
+            procurement: TacsimProcurementCfg::default(),
         }
     }
 }
@@ -1553,6 +1580,12 @@ pub struct TacsimMindsCfg {
     /// per microsecond); never a throttle, never read by a match. At least
     /// `1`; stock `5`.
     pub cpu_lens_ms: u32,
+    /// **Doc 17h cut M8d D3** (Q-M8-6, provisional): the largest Registry fine, minor
+    /// units. At least 1; stock `100_000` (10× doc 17's 100cr filing fee).
+    pub fine_cap_minor: i64,
+    /// **Doc 17h cut M8d D4** (Q-M8-6, provisional): how long a revoked principal may hold
+    /// no new licence, IC days. 1 to 3650; stock `90` (one audit term).
+    pub revocation_ic_days: u32,
 }
 
 impl Default for TacsimMindsCfg {
@@ -1579,6 +1612,8 @@ impl Default for TacsimMindsCfg {
             pool_floor_ops_s: 120_000,
             workers: 2,
             cpu_lens_ms: 5,
+            fine_cap_minor: 100_000,
+            revocation_ic_days: 90,
         }
     }
 }
@@ -2659,6 +2694,38 @@ scene_turn_dedline_secs = 30
         assert!(
             toml::from_str::<Config>("[tacsim.surface]\nregistry_interlok = true").is_err(),
             "deny_unknown_fields refuses a misspelt surface key"
+        );
+    }
+
+    #[test]
+    fn procurement_defaults_and_refuses_a_misspelt_key() {
+        // Doc 17h cut M8f (Q-M8-6, D-UM-54): the provisional defaults, an explicit value read
+        // back, and a near-miss key refused (the host bands the values, `config_ext`).
+        let defaulted: Config = toml::from_str(
+            "[server]
+data_dir = \"./world\"",
+        )
+        .unwrap();
+        assert_eq!(
+            defaulted.tacsim.procurement.budget_minor_per_ic_month,
+            200_000
+        );
+        assert_eq!(defaulted.tacsim.procurement.cap_permille, 400);
+        let set: Config = toml::from_str(
+            "[tacsim.procurement]
+budget_minor_per_ic_month = 5000
+cap_permille = 250",
+        )
+        .unwrap();
+        assert_eq!(set.tacsim.procurement.budget_minor_per_ic_month, 5_000);
+        assert_eq!(set.tacsim.procurement.cap_permille, 250);
+        assert!(
+            toml::from_str::<Config>(
+                "[tacsim.procurement]
+cap_permile = 400"
+            )
+            .is_err(),
+            "deny_unknown_fields refuses a misspelt procurement key"
         );
     }
 

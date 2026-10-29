@@ -45,6 +45,8 @@ impl InspectionWriter {
         }
         policy.validate().map_err(error)?;
         reg.delegate_state_family(&families.registry_inspections, ACTION_OWNER)?;
+        // Doc 17h cut M8d D4: the revoked principals, written from tacsim's transaction.
+        reg.delegate_state_family(&families.revoked_principals, ACTION_OWNER)?;
         self.0
             .set(Registration {
                 families,
@@ -71,6 +73,23 @@ impl InspectionWriter {
             writer: self.clone(),
             action: action.clone(),
         })
+    }
+}
+
+impl InspectionWriter {
+    /// Doc 17h cut M8d D5: the record family, for a reader that is not the inspection's own
+    /// action (the hull cover's exclusion). Read only; the Roll installs the cell first.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn family(&self) -> Result<StateFamilyHandle<String, InspectionRecord>, ModError> {
+        Ok(self
+            .0
+            .get()
+            .ok_or_else(|| error("inspection writer not installed"))?
+            .families
+            .registry_inspections
+            .clone())
     }
 }
 
@@ -135,6 +154,91 @@ impl RegisteredInspectionWriter {
     #[must_use]
     pub fn offered(&self, world: &World, actor: ObjId) -> bool {
         self.authorize(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d D3: whether `actor` may fine now — the inspection's test under the
+    /// fine's own capability.
+    #[must_use]
+    pub fn fine_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_fine(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d D3: the live fine authorization, observed (`authority::observe_fine`).
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not granted the fine, or an owner is not
+    /// ready.
+    pub fn authorize_fine(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_fine(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8d D4: whether `actor` may revoke a principal now — the inspection's test
+    /// under the existing `roll.registry.revoke`.
+    #[must_use]
+    pub fn revoke_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_revoke(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d D4: the live revocation authorization (`authority::observe_revoke`).
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not granted, or an owner is not ready.
+    pub fn authorize_revoke(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_revoke(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8d D4: the revoked principals' family.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn revoked_principals(
+        &self,
+    ) -> Result<StateFamilyHandle<String, super::principal::RevokedPrincipal>, ModError> {
+        Ok(self
+            .registration()
+            .map_err(error)?
+            .families
+            .revoked_principals
+            .clone())
+    }
+    /// **Land one principal revocation** (doc 17h cut M8d D4): observe the revocation grant
+    /// again, then write `record` over any earlier one of the principal.
+    ///
+    /// # Errors
+    /// The authorization, a record that does not validate, or the write.
+    pub fn revoke_principal(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        record: super::principal::RevokedPrincipal,
+    ) -> Result<super::principal::RevokedPrincipal, PublicationError> {
+        let r = self.registration()?;
+        let world = ctx.world().map_err(bad)?;
+        self.authorize_revoke(world, record.operator)?;
+        record.validate()?;
+        let key = record.key();
+        let family = &r.families.revoked_principals;
+        if txn.get(family, &key).map_err(bad)?.is_some() {
+            txn.replace(family, &key, record.clone()).map_err(bad)?;
+        } else {
+            txn.insert(family, &key, record.clone()).map_err(bad)?;
+        }
+        Ok(record)
     }
     /// The live authorization, observed.
     ///
@@ -203,6 +307,7 @@ impl RegisteredInspectionWriter {
             licence_state: facts.licence_state,
             at_ic,
             ungoverned_note: facts.ungoverned_note,
+            holder: facts.holder,
         };
         record.validate()?;
         let key = record.key();

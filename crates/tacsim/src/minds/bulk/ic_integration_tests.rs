@@ -551,6 +551,18 @@ impl IcWorld {
         } else {
             composition
         };
+        // Doc 17h cut M8d fix round K9 (D5 composed): a product excluding an ungoverned core
+        // is decided over the Registry inspection's records, so the inspection composes with it.
+        let excluding = coverage_products.as_ref().is_some_and(|products| {
+            products
+                .iter()
+                .any(|p| p.excludes(crate::underwriting::CoverageExclusion::UngovernedCore))
+        });
+        let composition = if excluding {
+            composition.with_registry_inspection(coverage::void_policy()?)?
+        } else {
+            composition
+        };
         let composition = if let Some(qualified) = &qualified_coverage {
             if !conduct {
                 return Err("qualified fixture requires actual Conduct".into());

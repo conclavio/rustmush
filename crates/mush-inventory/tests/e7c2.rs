@@ -2672,3 +2672,106 @@ fn vf_b14_reconcile_stops_at_the_marker_cap() {
         "and the marker walk has its own declared page budget"
     );
 }
+
+// ---- Doc 17h cut M8b-2 (H1): the heirloom and grey root arms ----
+
+#[test]
+fn m8b2_mint_root_takes_the_heirloom_and_grey_arms_and_refuses_a_parent() {
+    let (mut world, families) = boot();
+    let at = endpoint(81);
+    let heirloom = Lineage::Heirloom {
+        source: ExternalRef {
+            provider: "industry".into(),
+            kind: "enclave_heirloom.v1".into(),
+            id: "1".into(),
+            revision: Some(1),
+        },
+    };
+    for (n, lineage) in [(1u64, heirloom.clone()), (2, Lineage::Grey {})] {
+        assert!(lineage.is_root() && lineage.parents().is_empty());
+        let minted = apply(world.engine_mut(), &families, |txn| {
+            families.mint_root(
+                txn,
+                at,
+                &commodity("tacsim.electronics"),
+                1,
+                Grade::new(30).expect("grade"),
+                lineage.clone(),
+                LotId(n),
+            )
+        })
+        .expect("a root arm mints");
+        assert_eq!((minted.lineage(), minted.depth()), (&lineage, 0));
+    }
+    let split = Lineage::Split { parent: LotId(1) };
+    assert!(!split.is_root());
+    assert_eq!(
+        apply(world.engine_mut(), &families, |txn| {
+            families.mint_root(
+                txn,
+                at,
+                &commodity("tacsim.electronics"),
+                1,
+                Grade::new(30).expect("grade"),
+                split,
+                LotId(3),
+            )
+        }),
+        Err(InventoryError::InvalidLineage)
+    );
+    assert_eq!(
+        serde_json::to_value(Lineage::Grey {}).expect("encodes"),
+        serde_json::json!({"kind": "grey"})
+    );
+    assert_eq!(
+        serde_json::to_value(&heirloom).expect("encodes")["kind"],
+        serde_json::json!("heirloom")
+    );
+}
+
+/// Doc 17h cut M8b-2 (the lead's ruling on H1): the two new root arms move no existing
+/// arm's bytes. Each of `Origin`, `Split`, `Merge` and `Tranche` encodes to its pinned form
+/// and decodes from it unchanged.
+#[test]
+fn m8b2_the_existing_lineage_arms_keep_their_bytes() {
+    let tranche = serde_json::to_value(TrancheId(7)).expect("encodes");
+    let cases = [
+        (
+            Lineage::Origin {
+                source: ExternalRef {
+                    provider: "industry".into(),
+                    kind: "certified_core_die.v1".into(),
+                    id: "ab".into(),
+                    revision: Some(1),
+                },
+            },
+            serde_json::json!({"kind":"origin","source":{"provider":"industry",
+                "kind":"certified_core_die.v1","id":"ab","revision":1}}),
+        ),
+        (
+            Lineage::Split { parent: LotId(1) },
+            serde_json::json!({"kind":"split","parent":serde_json::to_value(LotId(1)).expect("encodes")}),
+        ),
+        (
+            Lineage::Merge {
+                parents: vec![LotId(1), LotId(2)],
+            },
+            serde_json::json!({"kind":"merge","parents":[
+                serde_json::to_value(LotId(1)).expect("encodes"),
+                serde_json::to_value(LotId(2)).expect("encodes")]}),
+        ),
+        (
+            Lineage::Tranche {
+                tranche: TrancheId(7),
+            },
+            serde_json::json!({"kind":"tranche","tranche":tranche}),
+        ),
+    ];
+    for (lineage, wire) in cases {
+        assert_eq!(serde_json::to_value(&lineage).expect("encodes"), wire);
+        assert_eq!(
+            serde_json::from_value::<Lineage>(wire).expect("decodes"),
+            lineage
+        );
+    }
+}

@@ -201,7 +201,8 @@ fn scope_for(vis: Visibility) -> CanonScope {
 /// `CanonRecorded` observer: advance every non-completed clock that watches this
 /// canon `kind` **and** whose faction has a member among the event's entities
 /// (the relevance gate — a Camarilla clock advances on a scene its members were
-/// in, not on every scene anywhere).
+/// in, not on every scene anywhere). A world kind ([`WORLD_KINDS`], doc 17h cut M8d D7)
+/// skips the gate: its line names nobody, and its board counts every one.
 ///
 /// Termination: this runs synchronously inside `emit_world_event`, and a
 /// completing clock records a fresh `CanonRecorded` that re-enters here. Two
@@ -229,9 +230,11 @@ fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         sim.clocks_watching(kind)
             .into_iter()
             .filter(|&cid| {
-                sim.clocks
-                    .get(&cid)
-                    .is_some_and(|c| entities.iter().any(|&e| fac.is_member(e, c.faction)))
+                WORLD_KINDS.contains(&kind.as_str())
+                    || sim
+                        .clocks
+                        .get(&cid)
+                        .is_some_and(|c| entities.iter().any(|&e| fac.is_member(e, c.faction)))
             })
             .collect()
     };
@@ -620,11 +623,44 @@ pub fn publish_front(
     )
 }
 
+/// Whose board a front goes on: an Org operator's faction (made on first use), or an
+/// existing faction named directly (doc 17h cut M8d D7: the Republic, a faction with no Org).
+#[derive(Clone, Copy)]
+enum Board {
+    Operator(mush_org::OrgId),
+    Faction(FactionId),
+}
+
 /// Content-authored front clock. Planning precedes its canon append.
 #[allow(clippy::too_many_arguments)]
 fn publish_front_clock(
     ctx: &mut Ctx<'_>,
     operator: mush_org::OrgId,
+    title: &str,
+    clock_title: &str,
+    segments: u8,
+    initial: u8,
+    advance_on: Option<&str>,
+    consequence: &str,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    publish_board_clock(
+        ctx,
+        Board::Operator(operator),
+        title,
+        clock_title,
+        segments,
+        initial,
+        advance_on,
+        consequence,
+        draft,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_board_clock(
+    ctx: &mut Ctx<'_>,
+    board: Board,
     title: &str,
     clock_title: &str,
     segments: u8,
@@ -641,22 +677,45 @@ fn publish_front_clock(
     {
         return Err("Invalid front title/clock.".into());
     }
+    let mut factions = ctx
+        .w
+        .module_state::<FactionState>()
+        .cloned()
+        .ok_or("Factions unavailable.")?;
+    let simulation = ctx
+        .w
+        .module_state::<SimState>()
+        .cloned()
+        .ok_or("Fronts unavailable.")?;
+    let operator = match board {
+        Board::Operator(operator) => operator,
+        Board::Faction(id) => {
+            let faction = factions
+                .factions
+                .get(&id)
+                .cloned()
+                .ok_or("Faction unavailable.")?;
+            return open_front_clock(
+                ctx,
+                factions,
+                simulation,
+                faction,
+                title,
+                clock_title,
+                segments,
+                initial,
+                advance_on,
+                consequence,
+                draft,
+            );
+        }
+    };
     let org_name = ctx
         .w
         .module_state::<mush_org::OrgStore>()
         .and_then(|s| s.state().org(operator))
         .map(|o| o.name.clone())
         .ok_or("Operator unavailable.")?;
-    let mut factions = ctx
-        .w
-        .module_state::<FactionState>()
-        .cloned()
-        .ok_or("Factions unavailable.")?;
-    let mut simulation = ctx
-        .w
-        .module_state::<SimState>()
-        .cloned()
-        .ok_or("Fronts unavailable.")?;
     let faction = if let Some(f) = factions.factions.values().find(|f| f.org == Some(operator)) {
         f.clone()
     } else {
@@ -673,6 +732,37 @@ fn publish_front_clock(
         factions.factions.insert(id, f.clone());
         f
     };
+    open_front_clock(
+        ctx,
+        factions,
+        simulation,
+        faction,
+        title,
+        clock_title,
+        segments,
+        initial,
+        advance_on,
+        consequence,
+        draft,
+    )
+}
+
+/// The front and its one clock on `faction`'s board: idempotent by title within the
+/// faction, then one canon append, then the exact post-images.
+#[allow(clippy::too_many_arguments)]
+fn open_front_clock(
+    ctx: &mut Ctx<'_>,
+    factions: FactionState,
+    mut simulation: SimState,
+    faction: Faction,
+    title: &str,
+    clock_title: &str,
+    segments: u8,
+    initial: u8,
+    advance_on: Option<&str>,
+    consequence: &str,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
     if let Some(f) = simulation
         .fronts
         .values()
@@ -962,6 +1052,42 @@ pub fn register_programme_principal(
         data::persist_faction(ctx.out, f);
     }
     Ok(())
+}
+
+/// **The Red Dies** (doc 17h cut M8d D7, Q-M8-5): the front's title, owner-named in doc 17h §3.
+pub const RED_DIES_TITLE: &str = "The Red Dies";
+/// The canon kind the Red Dies clock advances on: `minds.unwarranted`, committed once per
+/// Registry inspection that finds an ungoverned core (doc 17h cut M8d D6).
+pub const RED_DIES_KIND: &str = "minds.unwarranted";
+/// The Red Dies clock's length (Q-M8-5's default).
+pub const RED_DIES_SEGMENTS: u8 = 6;
+
+/// Canon kinds whose watching clocks advance **without** the member gate of
+/// [`on_canon_recorded`]: a world-scale finding that names no member by design (the
+/// unwarranted line names nobody, D-UM-42's evidence-only rule), watched by a board that
+/// counts every such finding anywhere.
+const WORLD_KINDS: [&str; 1] = [RED_DIES_KIND];
+
+/// Doc 17h cut M8d D7: the Red Dies front on `board`'s faction (the Republic's, Q-M8-5), made
+/// in code at world build as the relay fronts are; its one clock of six advances on
+/// [`RED_DIES_KIND`], and its end is the consequence canon line and nothing else, until the
+/// owner names a consequence. Idempotent by title on the board.
+pub fn seed_red_dies_front(
+    ctx: &mut Ctx<'_>,
+    board: FactionId,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    publish_board_clock(
+        ctx,
+        Board::Faction(board),
+        RED_DIES_TITLE,
+        "Ungoverned cores found",
+        RED_DIES_SEGMENTS,
+        0,
+        Some(RED_DIES_KIND),
+        "The Red Dies: the Registry has found ungoverned cores enough to move the Republic.",
+        draft,
+    )
 }
 
 /// R10's original four-segment case, driven only by typed service decisions.

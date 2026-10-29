@@ -232,3 +232,28 @@ fn underwriting_ordinary_product_accepts_empty_approvals_without_qualification()
     );
     Ok(())
 }
+
+/// **M8d D5**: the exclusion is a product binding. A product without one encodes and digests
+/// as before (the field is skipped); binding `UngovernedCore` changes the digest and is read
+/// back; an unordered or repeated list is refused at decode.
+#[test]
+fn m8d_the_ungoverned_core_exclusion_is_a_product_binding() -> TestResult {
+    let plain = product()?;
+    let encoded = serde_json::to_value(&plain)?;
+    check!(encoded.get("exclusions").is_none(), "skipped when empty");
+    check!(!plain.excludes(CoverageExclusion::UngovernedCore));
+    let excluding = plain
+        .clone()
+        .with_exclusions(vec![CoverageExclusion::UngovernedCore])?;
+    check!(excluding.excludes(CoverageExclusion::UngovernedCore));
+    check_ne!(excluding.digest()?, plain.digest()?);
+    let back = CoverageProductV1::decode(&serde_json::to_vec(&excluding)?)?;
+    check_eq!(back, excluding);
+    let mut doubled = serde_json::to_value(&excluding)?;
+    doubled["exclusions"] = json!(["ungoverned_core", "ungoverned_core"]);
+    check!(CoverageProductV1::decode(&serde_json::to_vec(&doubled)?).is_err());
+    let mut unknown = serde_json::to_value(&excluding)?;
+    unknown["exclusions"] = json!(["weather"]);
+    check!(CoverageProductV1::decode(&serde_json::to_vec(&unknown)?).is_err());
+    Ok(())
+}

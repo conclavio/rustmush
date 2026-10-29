@@ -473,6 +473,16 @@ impl InitialFilingBuilder {
             &rows.filed.content,
             &rows.line,
         )?;
+        // Doc 17h cut M8d fix round K3: filing writes an owner licence, so a principal the
+        // Registry revoked files nothing — the filer, or the organisation of a House filing.
+        let issued = match request.house {
+            Some((org, _)) => super::Holder::Organization {
+                org,
+                acting: inv.actor(),
+            },
+            None => super::Holder::Character(inv.actor()),
+        };
+        super::registry_inspection::principal::refuse(context, txn, &self.families, issued)?;
         // Only the one complete builder writes these post-images. No same-commit
         // triggers are emitted by this initial-filing provider.
         rows.stage(txn, &self.families)?;
