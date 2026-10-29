@@ -505,6 +505,14 @@ must bind its actor, route, clock and commit to genuine same-commit owner receip
 and records. It never reruns current geometry or classifies history from today's
 World. Native participant publication and recovery joins remain unfinished.
 
+Atlas can now join its actual window plan to a genuine Core projection preview
+and Sim's ordered capture as one read-only candidate. The selected room and
+metric target are available before Sim capture; the shared proposal is then
+built from the actual Atlas and Sim digests without a placeholder digest. The
+join checks actor, source, admitted/projected rooms and original UTC, recaptures
+the Atlas selectors, and retains both owners' independent evidence for recheck.
+It still grants no receipt, native patch, installation or personnel eligibility.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

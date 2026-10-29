@@ -96,6 +96,13 @@ owner = "sim"
 reason = "The read-only occupancy fixture seeds an empty custody index, then uses the actual Sim mark helper to exercise the same arena-exclusion predicate as legacy participants. It demonstrates selector parity only, not a durable custody transfer."
 
 [[site]]
+path = "crates/mush-atlas/src/movement_window_joint_tests.rs"
+accessor = "World::module_state_mut"
+slot = "SpatialState"
+owner = "sim"
+reason = "Read-only joint-capture tests use the actual registered and booted Sim slot to seed small native window records and inject unsupported placement or changed-preimage faults. The real Core preview probe always refuses before staging any action; these fixtures create no substitute owner, receipt, install or personnel eligibility."
+
+[[site]]
 path = "crates/mush-sim/src/physical_tests.rs"
 accessor = "World::module_state_insert"
 slot = "FocusState"

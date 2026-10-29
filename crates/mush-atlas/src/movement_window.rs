@@ -25,6 +25,10 @@ pub const MAX_WINDOW_PLAN_SURFACES: usize = 8;
 const SELECTOR_BYTES: usize = 8 * 1024 * 1024;
 const OCCUPANCY_BYTES: usize = 1024 * 1024;
 
+#[path = "movement_window_joint.rs"]
+mod joint;
+pub use joint::JointWindowMovementCapture;
+
 /// Immutable observations from the real owner slots. There is deliberately no
 /// decoder or install capability: a future placement protocol needs its own
 /// versioned proof, grants, and final Sim/Atlas owner binds.
@@ -50,10 +54,7 @@ impl WindowArrivalPlan {
         &self,
         sim_capture: DefinitionDigest,
     ) -> Result<WindowProjection, CaptureError> {
-        let (room, target) = proposal_target(
-            &self.capture,
-            self.placement.as_ref().map(|p| (p.domain, &p.outcome)),
-        )?;
+        let (room, target) = self.projection_target()?;
         if sim_capture.as_bytes() == &[0; 32] {
             return Err(CaptureError::Invalid);
         }
@@ -63,6 +64,14 @@ impl WindowArrivalPlan {
             sim_capture,
             target,
         ))
+    }
+    /// Actual selector data needed to request a genuine Core projection
+    /// preview. This contains no placeholder Sim digest or placement grant.
+    pub fn projection_target(&self) -> Result<(ObjId, Option<WindowMetricTarget>), CaptureError> {
+        proposal_target(
+            &self.capture,
+            self.placement.as_ref().map(|p| (p.domain, &p.outcome)),
+        )
     }
     /// Attest only the Atlas selector portion of an exact Core proposal.
     pub fn check_projection(&self, projection: &WindowProjection) -> Result<(), CaptureError> {
