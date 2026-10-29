@@ -99,6 +99,10 @@ async fn fixture(store: &InMemoryStore, kind: ObjKind, placed: bool) -> TestResu
     Ok(rig)
 }
 fn stage(rig: &mut Rig, nonce: u8) -> TestResult {
+    stage_line(rig, "north", nonce)
+}
+
+fn stage_line(rig: &mut Rig, line: &str, nonce: u8) -> TestResult {
     let definitions = rig
         .world
         .engine()
@@ -130,7 +134,7 @@ fn stage(rig: &mut Rig, nonce: u8) -> TestResult {
         .action_providers()
         .ok_or("providers")?
         .get_exact(&action)?;
-    stage_definition_with_nonce(rig, "north", action, nonce)
+    stage_definition_with_nonce(rig, line, action, nonce)
 }
 
 async fn entering(store: &InMemoryStore, kind: ObjKind) -> TestResult<Rig> {
@@ -297,7 +301,20 @@ async fn commit(
     store: &InMemoryStore,
     nonce: u8,
 ) -> TestResult<Box<AuthoritativeBundle>> {
-    stage(rig, nonce)?;
+    commit_line(rig, store, "north", nonce).await
+}
+
+async fn commit_line(
+    rig: &mut Rig,
+    store: &InMemoryStore,
+    line: &str,
+    nonce: u8,
+) -> TestResult<Box<AuthoritativeBundle>> {
+    let before_location = location(rig);
+    let before_native = sim(rig)?.placements.get(&rig.actor).cloned();
+    let before_rows = rig.world.engine().action_state().len();
+    let before_journal = sim(rig)?.recovery.next_seq(WINDOW_MOVEMENT_LOG);
+    stage_line(rig, line, nonce)?;
     let (bundle, installation) = rig
         .world
         .engine_mut()
@@ -310,6 +327,14 @@ async fn commit(
     store
         .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
         .await?;
+    // Store acknowledgement alone installs none of the participating owners.
+    assert_eq!(location(rig), before_location);
+    assert_eq!(sim(rig)?.placements.get(&rig.actor), before_native.as_ref());
+    assert_eq!(rig.world.engine().action_state().len(), before_rows);
+    assert_eq!(
+        sim(rig)?.recovery.next_seq(WINDOW_MOVEMENT_LOG),
+        before_journal
+    );
     rig.world.engine_mut().install_composed_action_announcing(
         installation,
         &mut Outbox::default(),
@@ -447,6 +472,167 @@ async fn lost_ack_restores_the_genuine_window_pair_and_original_journal_once() -
 }
 
 #[tokio::test]
+async fn actual_window_repose_departure_and_return_preserve_each_original_native_phase()
+-> TestResult {
+    for kind in [ObjKind::Player, ObjKind::Npc] {
+        let store = InMemoryStore::new();
+        let mut rig = entering(&store, kind).await?;
+        let around =
+            rig.world
+                .world_mut()
+                .create(ObjKind::Exit, "around", GOD, Some(rig.destination))?;
+        rig.world
+            .world_mut()
+            .link_exit(around, Some(rig.destination))?;
+        persist_legacy(&mut rig.world, &store).await?;
+        let rows = rig.world.engine().action_state().len();
+        let recovery = sim(&rig)?.recovery.next_seq("recovery");
+        let entry = commit(&mut rig, &store, 0xf0).await?;
+        let entered = record(&entry)?
+            .evidence()?
+            .final_placement()
+            .cloned()
+            .ok_or("entry")?;
+        assert!(matches!(
+            entered.parent,
+            mush_sim::SpatialParent::Direct { .. }
+        ));
+
+        let repose = commit_line(&mut rig, &store, "around", 0xf1).await?;
+        let reposed_record = record(&repose)?;
+        let reposed = reposed_record
+            .evidence()?
+            .final_placement()
+            .cloned()
+            .ok_or("repose")?;
+        assert_eq!(reposed.revision, entered.revision + 1);
+        assert!(matches!(
+            reposed.parent,
+            mush_sim::SpatialParent::Direct { .. }
+        ));
+        assert_eq!(reposed_record.evidence()?.stage_count(), 2);
+        assert_eq!(location(&rig), Some(rig.destination));
+        // The real native re-pose and journal survive even though Core's
+        // ordinary same-room move has no object write or timestamp change.
+        assert!(
+            !repose
+                .writes()
+                .iter()
+                .any(|write| matches!(write, ReplayWrite::ObjectSet { .. }))
+        );
+
+        let departure = commit_line(&mut rig, &store, "south", 0xf2).await?;
+        let departed_record = record(&departure)?;
+        let departed = departed_record
+            .evidence()?
+            .final_placement()
+            .cloned()
+            .ok_or("release")?;
+        assert_eq!(departed.revision, reposed.revision + 1);
+        assert_eq!(departed.parent, mush_sim::SpatialParent::Unplaced);
+        assert_eq!(
+            departed
+                .unplaced
+                .as_ref()
+                .and_then(|info| info.previous.as_ref()),
+            Some(&reposed.parent)
+        );
+        assert_eq!(departed_record.evidence()?.stage_count(), 2);
+        assert_eq!(location(&rig), Some(rig.source));
+        assert_eq!(sim(&rig)?.placements.get(&rig.actor), Some(&departed));
+        drop(rig);
+        rig = base_fixture(&store, kind).await?;
+        assert_eq!(sim(&rig)?.placements.get(&rig.actor), Some(&departed));
+        assert_eq!(location(&rig), Some(rig.source));
+
+        let returned_bundle = commit(&mut rig, &store, 0xf3).await?;
+        let returned = record(&returned_bundle)?
+            .evidence()?
+            .final_placement()
+            .cloned()
+            .ok_or("return")?;
+        assert_eq!(returned.revision, departed.revision + 1);
+        assert!(matches!(
+            returned.parent,
+            mush_sim::SpatialParent::Direct { .. }
+        ));
+        assert!(returned.unplaced.is_none());
+        assert_eq!(rig.world.engine().action_state().len(), rows + 8);
+        assert_eq!(rig.moved.load(Ordering::SeqCst), 0);
+        assert_eq!(sim(&rig)?.recovery.next_seq("recovery"), recovery);
+        drop(rig);
+        let restarted = base_fixture(&store, kind).await?;
+        assert_eq!(location(&restarted), Some(restarted.destination));
+        assert_eq!(
+            sim(&restarted)?.placements.get(&restarted.actor),
+            Some(&returned)
+        );
+        let entries = sim(&restarted)?.recovery.open_entries(WINDOW_MOVEMENT_LOG);
+        assert_eq!(entries.len(), 4);
+        for (bundle, journal) in [entry, repose, departure, returned_bundle]
+            .iter()
+            .zip(entries)
+        {
+            record(bundle)?.matches_journal_entry(journal.seq, &journal.value)?;
+        }
+        assert_eq!(restarted.world.engine().action_state().len(), rows + 8);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn lost_ack_of_actual_window_departure_restores_release_once() -> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = entering(&store, ObjKind::Player).await?;
+    commit(&mut rig, &store, 0xf4).await?;
+    let before = sim(&rig)?.placements.get(&rig.actor).cloned();
+    stage_line(&mut rig, "south", 0xf5)?;
+    let (bundle, installation) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged")?
+        .into_parts();
+    let released = record(&bundle)?
+        .evidence()?
+        .final_placement()
+        .cloned()
+        .ok_or("release")?;
+    assert_eq!(released.parent, mush_sim::SpatialParent::Unplaced);
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    assert_eq!(location(&rig), Some(rig.destination));
+    assert_eq!(sim(&rig)?.placements.get(&rig.actor), before.as_ref());
+    assert_eq!(sim(&rig)?.recovery.next_seq(WINDOW_MOVEMENT_LOG), 1);
+    drop(installation);
+    drop(rig);
+    for _ in 0..2 {
+        let restarted = base_fixture(&store, ObjKind::Player).await?;
+        assert_eq!(location(&restarted), Some(restarted.source));
+        assert_eq!(
+            sim(&restarted)?.placements.get(&restarted.actor),
+            Some(&released)
+        );
+        let entries = sim(&restarted)?.recovery.open_entries(WINDOW_MOVEMENT_LOG);
+        assert_eq!(entries.len(), 2);
+        record(&bundle)?.matches_journal_entry(entries[1].seq, &entries[1].value)?;
+    }
+    let mush_store::IdempotencyStatus::FinalizedExact(retry) = store
+        .authoritative_idempotency_status(bundle.idempotency(), bundle.ingress_hash())
+        .await?
+    else {
+        return Err("missing exact release retry".into());
+    };
+    assert_eq!(retry.token(), bundle.token());
+    assert_eq!(retry.bundle_hash(), bundle.bundle_hash());
+    Ok(())
+}
+
+#[tokio::test]
 async fn changed_missing_or_gapped_original_window_journals_refuse_before_any_boot_mutation()
 -> TestResult {
     for mode in 0..3 {
@@ -483,7 +669,7 @@ async fn changed_missing_or_gapped_original_window_journals_refuse_before_any_bo
 }
 
 #[tokio::test]
-async fn already_placed_departure_preserves_the_real_core_hook_veto_and_installs_nothing()
+async fn non_window_placed_departure_preserves_the_real_core_hook_veto_and_installs_nothing()
 -> TestResult {
     let store = InMemoryStore::new();
     let mut rig = fixture(&store, ObjKind::Player, true).await?;
