@@ -173,6 +173,22 @@ pub(crate) fn state_of(
 ///
 /// # Errors
 ///
+/// **The owner row first, the paid view only when no owner row names the licence** (doc 17h
+/// cut M8g's finding). A refused owner read poisons the whole preparation
+/// (`PrepareCtx::read_owner_preimage`): every later owner read in it answers `Unavailable`. The
+/// paid view (`OwnPaid`) refuses an owner licence, so asked first it left the owner row
+/// unreadable and every owner licence, a character's or an organisation's, read as missing.
+/// The owner holdings page reads refuse nothing a launch could still pass: a character's own
+/// pages always answer, and an organisation's refuse only a character acting for none of its
+/// scopes.
+fn owner_then_paid<S, V>(
+    mut state: S,
+    owner: impl FnOnce(&mut S) -> Option<V>,
+    paid: impl FnOnce(&mut S) -> Option<V>,
+) -> Option<V> {
+    owner(&mut state).or_else(|| paid(&mut state))
+}
+
 /// The refusal lines above, said to the operator.
 fn resolve(
     ctx: &mut PrepareCtx<'_>,
@@ -216,26 +232,33 @@ fn resolve(
                 || refuse(MIND_NO_LICENCE.replace("{licence}", &licence.get().to_string()));
             let reads = crate::match_::original_access::DispatchReads::of(world)
                 .ok_or_else(|| refuse(MIND_UNAVAILABLE.to_owned()))?;
-            // A paid licence's view, else (fix round 1, J2) an owner licence's row of the owner
-            // projection: the phase, the revoked bit (an owner row has none; a revoked owner
+            // An owner licence's row of the owner projection (fix round 1, J2), else a paid
+            // licence's view: the phase, the revoked bit (an owner row has none; a revoked owner
             // term is refused by the admission read below), the selling bit and the mind's name.
-            let (phase, revoked, selling, name) = match reads.paid(ctx, txn, licence, org) {
-                Some(view) => (
-                    view.phase(),
-                    view.revoked(),
-                    view.selling(),
-                    view.name().to_owned(),
-                ),
-                None => {
-                    let row = reads.owner(ctx, txn, licence, org).ok_or_else(missing)?;
-                    (
-                        row.owner_phase(),
-                        false,
-                        row.selling(),
-                        row.name().to_owned(),
-                    )
-                }
-            };
+            let (phase, revoked, selling, name) = owner_then_paid(
+                (&mut *ctx, &mut *txn),
+                |(ctx, txn)| {
+                    reads.owner(ctx, txn, licence, org).map(|row| {
+                        (
+                            row.owner_phase(),
+                            false,
+                            row.selling(),
+                            row.name().to_owned(),
+                        )
+                    })
+                },
+                |(ctx, txn)| {
+                    reads.paid(ctx, txn, licence, org).map(|view| {
+                        (
+                            view.phase(),
+                            view.revoked(),
+                            view.selling(),
+                            view.name().to_owned(),
+                        )
+                    })
+                },
+            )
+            .ok_or_else(missing)?;
             let holder = match org {
                 Some(org) => Holder::Organization { org, acting: actor },
                 None => Holder::Character(actor),
