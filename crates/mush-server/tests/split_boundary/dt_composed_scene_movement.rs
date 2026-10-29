@@ -69,6 +69,64 @@ async fn commit(
 }
 
 #[tokio::test]
+async fn actual_journey_read_refuses_post_ack_publication_in_every_locomotion_profile() -> TestResult
+{
+    for action in [
+        mush_core::locomotion::transition::ACTION,
+        mush_core::locomotion::scene_transition::ACTION,
+        ACTION,
+    ] {
+        let store = InMemoryStore::new();
+        let mut rig = fixture(&store, ObjKind::Player).await?;
+        let (source, destination, _) = start_scenes(&mut rig, &store).await?;
+        let before = [
+            entries(&rig, source)?.len(),
+            entries(&rig, destination)?.len(),
+        ];
+        stage_action(&mut rig, "north", action)?;
+        let revision = rig.world.engine().action_state().revision();
+        let records = rig.world.engine().action_state().len();
+        let (bundle, install) = rig
+            .world
+            .engine_mut()
+            .take_staged_action()?
+            .ok_or("staged")?
+            .into_parts();
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await?;
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await?;
+        // Deliberately violate the writer barrier to test the retained actual
+        // Sim read. The slot incarnation and every SpatialState row stay fixed.
+        rig.world
+            .world_mut()
+            .module_state_mut::<mush_sim::JourneyBook>()
+            .ok_or("journeys")?
+            .held
+            .insert("cjourney:late".into(), "repair required".into());
+        let mut out = Outbox::default();
+        assert!(
+            rig.world
+                .engine_mut()
+                .install_composed_action_announcing(install, &mut out, &mut Effects::default())
+                .is_err(),
+            "{action}"
+        );
+        assert!(out.is_empty());
+        assert_eq!(location(&rig), Some(rig.source));
+        assert_eq!(entries(&rig, source)?.len(), before[0]);
+        assert_eq!(entries(&rig, destination)?.len(), before[1]);
+        assert_eq!(rig.world.engine().action_state().revision(), revision);
+        assert_eq!(rig.world.engine().action_state().len(), records);
+        assert!(rig.world.engine().action_state().reservation_lost());
+        assert_eq!(rig.moved.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn lost_ack_restores_exact_original_owner_proofs_and_transcripts_without_callbacks()
 -> TestResult {
     let store = InMemoryStore::new();

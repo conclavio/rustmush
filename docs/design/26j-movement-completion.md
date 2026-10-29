@@ -411,9 +411,18 @@ unchanged. Failed, repeated or incorrectly typed guards poison the read even
 when service/provider code catches the error. A stale field snapshot refuses
 all prepared typed and owner images before any apply.
 
+Sim now registers a real, self-granted read service over its existing JourneyBook
+slot. The structural, ordinary, joint Scenes and composed locomotion providers
+retain record presence and the shared under-way predicate for their actual
+dependency/ancestor roots, plus the absence of held journey records. A held
+record or changed selected predicate after writer custody refuses publication
+before any typed, Core or owner apply. Allocator and tick-cursor progress do not
+invalidate an otherwise unchanged read. The service snapshots at most 512 roots
+and never clones or serializes routes, anomalies or the entire book.
+
 This adds no owner image, callback coverage or authority mirror. The native
-window participant still needs real journey/deployment read services and the
-placement/occupancy fences before it can publish a window transition.
+window participant still needs deployment/control read services and the complete
+placement/topology fences before it can publish a window transition.
 
 ## Remaining completion protocol
 

@@ -89,7 +89,10 @@ struct LocomotionHandles {
     crossings: LocomotionCrossings,
 }
 
-pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+pub(crate) fn register(
+    reg: &mut Registrar<'_>,
+    journey_read: crate::movement_reads::JourneyRead,
+) -> Result<(), ModError> {
     let participant = reg.definition(participant_descriptor()?)?;
     let action = reg.definition(mush_core::locomotion::transition::action_descriptor()?)?;
     let outcome = reg.definition(outcome_descriptor()?)?;
@@ -107,6 +110,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             outcome,
             service: service.clone(),
             crossings: crossings.clone(),
+            journey_read,
         },
     )?;
     reg.state(LocomotionHandles { service, crossings });
@@ -568,6 +572,7 @@ struct Provider {
     outcome: DefinitionRef,
     service: CoreLocomotion<LocomotionParticipant>,
     crossings: LocomotionCrossings,
+    journey_read: crate::movement_reads::JourneyRead,
 }
 
 pub(super) fn validate_invocation(invocation: &ActionInvocation) -> Result<(), ActionError> {
@@ -619,6 +624,12 @@ impl ActionProvider for Provider {
             capture(state, world, &route, &world.world_ic_now(), true)
                 .map_err(|_| unavailable("locomotion capture unavailable"))?
         };
+        crate::movement_reads::retain_journeys(
+            context,
+            txn,
+            &self.journey_read,
+            &captured.facts.read_dependencies,
+        )?;
         let receipt = context
             .prepare_captured_locomotion(txn, &self.service)
             .map_err(|_| unavailable("captured locomotion refused"))?;

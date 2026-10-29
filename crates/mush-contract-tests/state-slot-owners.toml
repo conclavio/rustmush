@@ -47,6 +47,20 @@
 # ---------------------------------------------------------------------------
 
 [[site]]
+path = "crates/mush-server/tests/split_boundary/dt_composed_scene_movement.rs"
+accessor = "World::module_state_mut"
+slot = "JourneyBook"
+owner = "sim"
+reason = "Test-only fault injection changes the actual registered Sim journey slot after Store ACK while leaving its incarnation and all spatial/object rows fixed. All three genuine locomotion profiles must refuse publication through the retained owner read, including Scenes and typed images. This grants no journey or personnel authority."
+
+[[site]]
+path = "crates/mush-server/tests/split_boundary/dt_physical_transitions.rs"
+accessor = "World::module_state_mut"
+slot = "JourneyBook"
+owner = "sim"
+reason = "Test-only post-ACK fault injection proves a structural reanchor cannot publish after the separate registered Sim journey preimage changes. The fixture uses the real production coordinator, Store acknowledgement and native participant; it does not construct a substitute owner or permit."
+
+[[site]]
 path = "crates/mush-atlas/src/movement_window_tests.rs"
 accessor = "World::module_state_insert"
 slot = "AtlasState"
