@@ -58,7 +58,7 @@ async fn write(store: &InMemoryStore, ops: Vec<ModuleWrite>) -> TestResult {
         .await?;
     Ok(())
 }
-async fn mapped(
+pub(super) async fn mapped(
     store: &InMemoryStore,
     kind: ObjKind,
     before: Option<Vec<RecordKey>>,

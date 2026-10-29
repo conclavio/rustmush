@@ -154,16 +154,33 @@ impl ActionProvider for Provider {
                     admission.exit(),
                     admission.destination(),
                 ));
+                let destination = admission.destination();
+                let actor = admission.actor();
+                let preview = ctx
+                    .preview_captured_locomotion_projection(&BTreeSet::new(), destination)
+                    .unwrap();
+                assert_eq!(preview.actor(), actor);
+                assert_eq!(preview.admitted_room(), destination);
+                assert_eq!(preview.destination(), destination);
                 if matches!(control.mode, Mode::Twice) {
                     txn.insert(&self.marker, &0, 1).unwrap();
                     assert!(ctx.admit_captured_locomotion(txn).is_err());
+                    assert!(
+                        ctx.preview_captured_locomotion_projection(&BTreeSet::new(), destination)
+                            .is_err()
+                    );
                 }
             }
             Mode::IgnoreRefusal => {
                 txn.insert(&self.marker, &0, 1).unwrap();
                 assert!(ctx.admit_captured_locomotion(txn).is_err());
             }
-            Mode::Skip => {}
+            Mode::Skip => {
+                assert!(
+                    ctx.preview_captured_locomotion_projection(&BTreeSet::new(), crate::LIMBO)
+                        .is_err()
+                );
+            }
         }
         if matches!(control.mode, Mode::Admit | Mode::Skip) {
             txn.insert(&self.marker, &0, 1).unwrap();

@@ -101,6 +101,8 @@ enum Case {
     Noncontiguous,
     PermissiveFactory,
     MissingBinding,
+    RetainedAction,
+    MissingProvider,
 }
 #[derive(Clone, Copy)]
 struct Config {
@@ -136,8 +138,22 @@ impl GameModule for Coordinator {
             |_: &DefinitionValidationContext<'_>| Ok(()),
         )?;
         for id in ["complete_move", "other_move"] {
-            let action = reg.definition(descriptor("action", id))?;
-            reg.action_provider(action, Provider)?;
+            let mut shape = descriptor("action", id);
+            if id == "complete_move"
+                && matches!(self.0.case, Case::RetainedAction | Case::MissingProvider)
+            {
+                shape = DefinitionDescriptor::new(
+                    shape.kind().clone(),
+                    shape.id().clone(),
+                    shape.version(),
+                    shape.payload().clone(),
+                )
+                .map_err(bad)?;
+            }
+            let action = reg.definition(shape)?;
+            if id != "complete_move" || !matches!(self.0.case, Case::MissingProvider) {
+                reg.action_provider(action, Provider)?;
+            }
         }
         if self.0.request {
             reg.request_owner_participant::<Adapter<0>>(action())?;
@@ -357,6 +373,7 @@ fn metadata_cannot_replace_actual_type_slot_request_grant_or_callback() {
         Case::DuplicateCoverage,
         Case::Noncontiguous,
         Case::PermissiveFactory,
+        Case::MissingProvider,
     ] {
         assert!(
             compose(Config {
@@ -381,6 +398,28 @@ fn metadata_cannot_replace_actual_type_slot_request_grant_or_callback() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn an_enabled_exact_action_need_not_be_the_authoring_default() {
+    // Framework contract only; these fixtures prove no physical movement.
+    let (engine, _) = compose(Config {
+        case: Case::RetainedAction,
+        ..Config::default()
+    })
+    .unwrap();
+    let definitions = engine.registry.definitions().unwrap();
+    assert!(!definitions.get_exact(&action()).unwrap().is_current());
+    assert!(definitions.current(action().key()).is_none());
+    assert!(
+        engine
+            .registry
+            .action_providers()
+            .unwrap()
+            .get_exact(&action())
+            .is_ok()
+    );
+    assert_eq!(manifest(&engine).snapshot().groups().len(), 1);
 }
 
 #[test]

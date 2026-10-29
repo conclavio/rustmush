@@ -3,7 +3,7 @@
 //! This supplies the real release/place transition data for an already attached
 //! actor with no physical dependents. The supplied projection still needs the
 //! actual Atlas owner's attestation. The native adapter requires Core's genuine
-//! window intent; composition and producer wiring remain required. No decoder
+//! window intent; actual composition supplies the producer and owner joins. No decoder
 //! mints executable plans, live routing or personnel eligibility.
 
 use std::collections::BTreeSet;
@@ -30,7 +30,7 @@ mod publication;
 #[path = "window_record.rs"]
 mod record;
 pub use evidence::{WindowMovementEvidence, validate_evidence};
-pub use history::{WINDOW_MOVEMENT_LOG, WindowMovementHistory};
+pub use history::{MAX_WINDOW_MOVEMENT_COMMITS, WINDOW_MOVEMENT_LOG, WindowMovementHistory};
 pub use ordered::{OrderedWindowMovementCapture, capture_ordered};
 pub use publication::{WindowMovementParticipant, WindowSelection, WindowSelector};
 pub use record::WindowMovementRecord;

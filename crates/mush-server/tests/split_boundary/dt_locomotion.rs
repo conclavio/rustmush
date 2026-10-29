@@ -131,7 +131,7 @@ pub(super) async fn assert_native_refusal_before_any_boot_mutation(
 }
 
 #[tokio::test]
-async fn unconfigured_window_journal_refuses_before_any_owner_boot_mutation() -> TestResult {
+async fn unpaired_window_journal_refuses_before_any_owner_boot_mutation() -> TestResult {
     for malformed in [false, true] {
         let store = InMemoryStore::new();
         let key = mush_core::chunk_key(mush_sim::window_movement::WINDOW_MOVEMENT_LOG, 0);
@@ -252,7 +252,6 @@ pub(super) fn stage_action_with_nonce(
     action_id: &str,
     nonce: u8,
 ) -> TestResult {
-    let token = CommitToken::from_bytes([nonce; 16]);
     let action = rig
         .world
         .engine()
@@ -266,6 +265,16 @@ pub(super) fn stage_action_with_nonce(
         })
         .cloned()
         .ok_or("locomotion action")?;
+    stage_definition_with_nonce(rig, line, action, nonce)
+}
+
+pub(super) fn stage_definition_with_nonce(
+    rig: &mut Rig,
+    line: &str,
+    action: mush_core::DefinitionRef,
+    nonce: u8,
+) -> TestResult {
+    let token = CommitToken::from_bytes([nonce; 16]);
     let request = RequestUid::from_bytes([nonce; 16]);
     let principal = PrincipalId::Object { id: rig.actor };
     let invocation = ActionInvocation::new(ActionInvocationDraft {

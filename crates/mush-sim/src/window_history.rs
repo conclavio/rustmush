@@ -10,6 +10,10 @@ use mush_core::{
 };
 
 pub const WINDOW_MOVEMENT_LOG: &str = "window_movement";
+// Each journal body is at most 16 KiB. Even one chunk per commit, with its
+// key/envelope overhead, stays within the 8 MiB original-history boot budget.
+// A checkpoint/archival protocol is required before widening this horizon.
+pub const MAX_WINDOW_MOVEMENT_COMMITS: u64 = 256;
 const FAMILY: &str = "window_locomotion_crossings";
 const FAMILY_BYTES: usize = 192 * 1024;
 const HISTORY_BYTES: usize = 8 * 1024 * 1024;
@@ -20,7 +24,7 @@ fn bad(error: impl std::fmt::Display) -> ModError {
 }
 
 /// Real Sim registration and typed-state handles, never a replacement owner.
-/// The future actual provider must retain native state/append bindings too.
+/// The actual provider retains native state/append bindings independently.
 #[derive(Clone)]
 pub struct WindowMovementHistory {
     records: StateFamilyHandle<CommitToken, WindowMovementRecord>,
@@ -212,6 +216,9 @@ pub(super) fn check_append(
     record: &WindowMovementRecord,
     append: &PreparedLedgerAppend,
 ) -> Result<(), ParticipantError> {
+    if append.seq() >= MAX_WINDOW_MOVEMENT_COMMITS {
+        return Err(ParticipantError::ImageLimit);
+    }
     let write = append
         .authoritative_replay_write(
             OwnerId::new(crate::NS).map_err(|_| ParticipantError::Authority)?,

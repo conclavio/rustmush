@@ -13,6 +13,50 @@ use mush_scenes::movement_composed::{ComposedScenesMovementParticipant, particip
 pub(crate) type SceneReader = Arc<OnceLock<ComposedOwnerReader>>;
 pub(crate) type AtlasReader = Arc<OnceLock<ComposedOwnerReader>>;
 
+pub(crate) fn window_selector() -> mush_sim::window_movement::WindowSelector {
+    Arc::new(|world, actor, source, destination, at| {
+        let refused = |_| {
+            mush_core::participant::ParticipantError::refused("Atlas window selection unavailable")
+        };
+        let plan = mush_atlas::movement_window::plan(world, actor, source, destination, at)
+            .map_err(refused)?;
+        let (room, target) = plan.projection_target().map_err(refused)?;
+        Ok(mush_sim::window_movement::WindowSelection::new(
+            room,
+            plan.digest().map_err(refused)?,
+            target,
+        ))
+    })
+}
+
+pub(crate) fn window_factory(reader: AtlasReader) -> mush_sim::ComposedMovementFactory {
+    Arc::new(move |reg, builder| {
+        let mut definitions = DefinitionRegistryBuilder::new();
+        let owner = OwnerId::new("atlas").map_err(bad)?;
+        let participant = definitions
+            .register(
+                owner.clone(),
+                mush_atlas::movement_window_participant::participant_descriptor()?,
+            )
+            .map_err(bad)?;
+        let observers = mush_atlas::movement_window_participant::observer_descriptors()?
+            .into_iter()
+            .map(|descriptor| definitions.register(owner.clone(), descriptor).map_err(bad))
+            .collect::<Result<Vec<_>, _>>()?;
+        let service = builder
+            .owner::<mush_atlas::movement_window_participant::AtlasWindowMovementParticipant>(
+                reg,
+                participant.clone(),
+                observers,
+            )?
+            .finish(reg)?;
+        reader
+            .set(service.owner_reader(&participant).map_err(bad)?)
+            .map_err(|_| bad("window Atlas reader already belongs to a composition"))?;
+        Ok(service)
+    })
+}
+
 fn bad(error: impl std::fmt::Display) -> ModError {
     ModError::msg(error.to_string())
 }

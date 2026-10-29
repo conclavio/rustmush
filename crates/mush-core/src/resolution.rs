@@ -284,6 +284,24 @@ impl<'a> PrepareCtx<'a> {
         }
     }
 
+    /// Read-only projection preview of this preparation's retained, genuinely
+    /// admitted captured command. This creates no movement image capability
+    /// and cannot replace or repeat admission after a refusal.
+    pub fn preview_captured_locomotion_projection(
+        &self,
+        dependencies: &std::collections::BTreeSet<crate::ObjId>,
+        projected_room: crate::ObjId,
+    ) -> Result<crate::locomotion::preview::LocomotionPreview, crate::participant::ParticipantError>
+    {
+        if let Some(error) = &self.owner_error {
+            return Err(error.clone());
+        }
+        self.captured_admission
+            .as_ref()
+            .ok_or(crate::participant::ParticipantError::Unavailable)?
+            .preview_projection(self.world()?, dependencies, projected_room)
+    }
+
     /// Reserve the closed Registry job's exact future completion keys. The job
     /// and validated post-images must belong to this invocation and transaction.
     pub fn reserve_registry_rating_completion(
