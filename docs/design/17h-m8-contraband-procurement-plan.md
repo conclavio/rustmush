@@ -752,6 +752,31 @@ Seizure is split to **M8d2** (§5). M8d carries:
 - `RevokedPrincipal`;
 - the cover exclusion.
 
-### M8e — the sealed mind aboard, doc 23 S.4a (building, cut from main at `8fd6476f`)
+### M8e — the sealed mind aboard, doc 23 S.4a (PR #93, merged 2026-10-29 as `913e29dd`)
+
+The cut is `f84511ae`, with fix round 1 folded in, plus a merge of main. It follows the owner's
+option C.
+
+Review: one Opus lens found no blocker. Fix round 1 then made owner licences seal, stopped a seal
+that fell to the ROM from writing a mark, and tested the filed-path refusals in a commerce world
+without poisoning the commit.
+
+**What landed:**
+- **`+tv/<n> launch mind=<filed:N|draft:name> [org=<org>]`.** The held filed mind seals with the
+  licence's real state, for both paid and owner licences.
+- **The licence state decides the seal.** Lapsed or revoked seals Doctrine and tells only the
+  operator. A funded transfer refuses with D-UM-40's sentence, which the owner approved.
+- **The seal mark** is written in the finish's bundle for a mind that flew.
+- **The ungoverned rig's unfiled draft** seals with its `admissions`.
+- **The cored-rig excursion harness**, with fitted rigs and the market together, and M8b's owed
+  real `+tv` drive and mine.
+
+**Not built (S.4b):** the claim Open/Close, the pool seat and the `abi` drop on resume.
+
+**Owed to M8g:** six world tests that need a filed, rated, licensed mind on a port world.
+
+**Known limits:**
+- No recall bit reaches the seal, so a recalled revision reads as no licence.
+- `pending` arises only from a sale.
 
 ### M8f — procurement (building)
