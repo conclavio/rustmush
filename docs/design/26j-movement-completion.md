@@ -645,6 +645,15 @@ original tail and seal policy is checked before a binding can publish any final
 tail; discarding the binding is inert. This primitive supplies no owner identity
 or movement completion, and the existing two-distinct-log batch is unchanged.
 
+Scenes also supplies a bounded passive capture of the original admitted leg
+and optional projected leg. It retains each leg's original join-before-leave
+events, local clock stamps and witness order, including a return to the source
+and explicit no-op legs. Its strict canonical decoder validates route continuity
+and per-leg grammar; decoded observations never become an append or movement
+capability. Tests compare a two-leg loop with the actual registered legacy
+observer. The ordered native adapter and original-history join remain required
+before the registered single-leg window profile can widen its support.
+
 V2 registers no offer or live command route. Its manifest remains partial:
 the bounded original journal refuses a 257th commit until a real checkpoint or
 archival protocol is implemented, rather than accepting an unrecoverable tail.

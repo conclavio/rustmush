@@ -53,6 +53,7 @@ mod movement_audit;
 pub mod movement_composed;
 pub mod movement_participant;
 pub mod movement_window;
+pub mod movement_window_capture;
 mod panel;
 
 use mush_core::locomotion::scene_transition::SceneLocomotionReader;
