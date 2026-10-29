@@ -75,7 +75,6 @@ mod auth;
 mod config;
 mod hooks;
 mod ip;
-mod picture;
 mod ws;
 
 /// The observability metrics registry moved to `mush-config` (the shared,

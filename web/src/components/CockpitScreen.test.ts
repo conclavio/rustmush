@@ -524,21 +524,21 @@ describe("CockpitScreen, 17b cut M5.5", () => {
   });
 });
 
-// Doc 21 cut G.3c: the first-person picture above the map is the viewer's to
-// ask for — 100 KB/s a viewer — and is stopped when the screen goes.
+// Doc 21 cut G.3c; doc 28 P2: the picture above the map is the viewer's to
+// show — drawn client-side by `mush-pixel-wasm` — and is stopped when the
+// screen goes.
 describe("the picture", () => {
-  it("is asked for only on the viewer's word, and stopped when the screen goes", async () => {
+  it("is shown only on the viewer's word, and stopped when the screen goes", async () => {
     localStorage.removeItem("rustmush.picture");
     const m = await seated();
-    const asks = (): unknown[][] => m.setPicture.mock.calls.filter((c) => c[0] === true);
-    expect(asks()).toHaveLength(0);
+    expect(m.app.picture.on).toBe(false);
     await fireEvent.click(screen.getByRole("button", { name: "Show the picture" }));
     await tick();
-    expect(asks()).toEqual([[true, 0]]);
+    expect(m.app.picture.on).toBe(true);
     expect(localStorage.getItem("rustmush.picture")).toBe("on");
     expect(screen.getByText("Waiting for the first picture…")).toBeTruthy();
     m.unmount();
-    expect(m.setPicture.mock.calls.at(-1)).toEqual([false, 0]);
+    expect(m.app.picture.on).toBe(false);
     localStorage.removeItem("rustmush.picture");
   });
 });

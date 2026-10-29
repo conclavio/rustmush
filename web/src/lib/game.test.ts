@@ -1844,8 +1844,8 @@ describe("the cockpit feeds", () => {
       "utf8",
     );
     const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
-    expect([...reached].sort()).toEqual(["helm", "picture", "setPicture"]);
-    for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
+    expect([...reached].sort()).toEqual(["helm", "picture"]);
+    for (const send of ["app.submit", "app.runBinding", "app.client", "app.act(", "app.setPicture"]) {
       expect(src, `PictureView calls ${send}`).not.toContain(send);
     }
   });
