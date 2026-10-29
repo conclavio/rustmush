@@ -93,7 +93,8 @@ impl ComponentCondition {
             "intact" | "ready" | "ok" | "nominal" => Self::Intact,
             "damaged" | "degraded" | "worn" => Self::Damaged,
             "jammed" | "offline" | "disabled" | "fault" => Self::Jammed,
-            "destroyed" | "wreck" | "ruined" | "irrecoverable" | "dead" => Self::Destroyed,
+            "destroyed" | "wreck" | "ruined" | "irrecoverable" | "dead" | "stripped"
+            | "removed" => Self::Destroyed,
             _ => Self::Intact,
         }
     }
@@ -736,7 +737,9 @@ pub fn ic_condition_plan(
         let after_comp = after
             .component(comp_id)
             .ok_or_else(|| ConditionError::MissingComponent(comp_id.clone()))?;
-        let target_cond = if let Some(profile) = anatomy {
+        let target_cond = if after_comp.condition.as_str() == "stripped" {
+            after_comp.condition.clone()
+        } else if let Some(profile) = anatomy {
             let eff =
                 effective_component_condition(after, comp_id, &target_section_conditions, profile)
                     .unwrap_or(ComponentCondition::Intact);
