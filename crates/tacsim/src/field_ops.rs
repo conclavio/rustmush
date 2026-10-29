@@ -1,41 +1,50 @@
 //! Doc 27 (`H1-A`–`H1-C`, `H2-A`–`H2-C`, `H3`) — `tacsim` integration for field-unit
 //! component survival, operational state assessment, IC combat-return mutation plans,
 //! hull-epoch close validation, field combat promotion/demotion & crew survival,
-//! universal towing, recovery entitlement & 48-hour salvage claims, and workshop
-//! component stripping, scrapping, and restoration across stock unit schemas.
+//! sortie roster/manifest/crew-pool/expense orchestration, universal towing,
+//! surface block-tenure & mining-pause bridges, recovery entitlement & 48-hour
+//! salvage claims, and workshop component stripping, scrapping, rearming, cost
+//! quoting, and restoration across stock unit schemas.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use mush_core::ObjId;
+use mush_org::PrincipalId;
 use mush_roll::commerce::ic_claims::IcCloseKind;
 pub use mush_tactics::field_ops::{
-    AtRiskRepairEntry, AttachTowRequest, AuthoritativeRecoveryRecord, AuthorityHandoffRequest,
-    BayCapacitySpec, COMBAT_WALL_CLOCK_RATE, CONTEST_WINDOW_AVAILABLE_REAL_SECS,
-    CarrierDepartureOutcome, ComponentCondition, ComponentProvenance, ConditionError,
-    ContestGround, ContestSuccessReason, CrewSurvivalBook, CustodyAction, CustodyTitleStatus,
+    ActiveFieldSortie, AtRiskRepairEntry, AttachTowRequest, AuthoritativeRecoveryRecord,
+    AuthorityHandoffRequest, BayCapacitySpec, COMBAT_WALL_CLOCK_RATE,
+    CONTEST_WINDOW_AVAILABLE_REAL_SECS, CarrierDepartureOutcome, CarrierPersonnelManifest,
+    ComponentCondition, ComponentProvenance, ConditionError, ContestGround, ContestSuccessReason,
+    CrewMemberKind, CrewSurvivalBook, CustodyAction, CustodyTitleStatus,
     DEFAULT_FALLBACK_SAFE_PORT, DEFAULT_MAX_ATTACH_DISTANCE_CM, DemotionOutcome,
-    DemotionSettlementGate, EngagementError, FALLBACK_SECTION_SCRAP_KG, FieldAuthorityKind,
-    FieldCloseOutcome, FieldCustodyLedger, FieldCustodyRecord, FieldEpochDisposition,
-    FieldInspectionReport, FieldObservationBook, FieldPose, FieldPromotionTrigger,
-    FieldSiteEngagementBook, FieldUnitAssessment, GroundTenure, IC_SURFACE_CLOCK_RATE,
-    LinkLossPosture, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_AUTHORITATIVE_RECOVERY_RECORDS,
-    MAX_CLAIM_ENTRIES, MAX_CREW_RECORDS, MAX_FIELD_CUSTODY_UNITS, MAX_OBSERVATIONS_PER_ACTOR,
-    MAX_RECOVERY_OPERATIONS, MAX_SALVAGE_CLAIMS, MAX_SITE_UNITS, MAX_STRIPPED_COMPONENTS,
-    MAX_TOW_MASS_RATIO_PERMILLE, MAX_WORKSHOP_ORDERS, MotionClockHandoff, ObservationSource,
-    ObservedCombatFact, ObserverCombatEntry, OccupantSurvivalState, OperationalState,
-    RecoveryAuthorityContext, RecoveryBook, RecoveryEntitlement, RecoveryError, RecoveryOpId,
-    RecoveryOperation, RecoveryStage, ReplacementPartSpec, SCRAP_KG_PER_STRUCTURAL_POINT,
-    SafePortCandidate, SalvageClaim, SalvageClaimBook, SalvageClaimId, SalvageClaimState,
-    SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject,
-    ScrapYieldReport, SectionCondition, SiteUnitPresence, StripAuthorization,
+    DemotionSettlementGate, EmbarkationOrigin, EmbarkedPersonRecord, EngagementError,
+    FALLBACK_SECTION_SCRAP_KG, FieldAuthorityKind, FieldCloseOutcome, FieldCustodyLedger,
+    FieldCustodyRecord, FieldEpochDisposition, FieldInspectionReport, FieldObservationBook,
+    FieldPose, FieldPromotionTrigger, FieldSiteEngagementBook, FieldUnitAssessment, GroundTenure,
+    IC_DAY_SECONDS, IC_SURFACE_CLOCK_RATE, LinkLossPosture, LoadIntoBayRequest,
+    LoadedCasualtyOutcome, MAX_AUTHORITATIVE_RECOVERY_RECORDS, MAX_CLAIM_ENTRIES,
+    MAX_CREW_POOL_CONTRACTS, MAX_CREW_RECORDS, MAX_FIELD_CUSTODY_UNITS, MAX_MANIFEST_PERSONNEL,
+    MAX_OBSERVATIONS_PER_ACTOR, MAX_RECOVERY_OPERATIONS, MAX_SALVAGE_CLAIMS, MAX_SITE_UNITS,
+    MAX_STRIPPED_COMPONENTS, MAX_TOW_MASS_RATIO_PERMILLE, MAX_WORKSHOP_ORDERS,
+    MissionLeaderRoleGrant, MotionClockHandoff, NpcCrewContract, NpcMissionScope,
+    ObservationSource, ObservedCombatFact, ObserverCombatEntry, OccupantSurvivalState,
+    OperationalState, PortCrewPool, RecoveryAuthorityContext, RecoveryBook, RecoveryEntitlement,
+    RecoveryError, RecoveryOpId, RecoveryOperation, RecoveryStage, ReplacementPartSpec,
+    SCRAP_KG_PER_STRUCTURAL_POINT, SafePortCandidate, SalvageClaim, SalvageClaimBook,
+    SalvageClaimId, SalvageClaimState, SalvageContest, SalvageError, SalvageEvidenceKind,
+    SalvageEvidenceRecord, SalvageSubject, ScrapYieldReport, SectionCondition, SiteUnitPresence,
+    SortieError, SortieLaunchBlockReason, SortieSlotLaunchState, StripAuthorization,
     StrippedComponentRecord, TowEvaluation, TowRigProfile, TugInspectionContext,
-    UnitAnatomyProfile, UnitMassProfile, WithdrawalDestination, WorkshopBook, WorkshopError,
+    UnitAnatomyProfile, UnitExpenseCategory, UnitExpensePolicy, UnitMassProfile,
+    WithdrawalDestination, WorkshopBook, WorkshopCostQuote, WorkshopError, WorkshopFacilityTariff,
     WorkshopOperationKind, WorkshopWorkOrderRecord, assess_tactical_unit,
     check_custody_action_allowed, effective_component_condition, effective_section_condition,
-    evaluate_recovery_entitlement, ic_condition_plan, inspect_field_unit,
+    evaluate_recovery_entitlement, ic_condition_plan, inspect_field_unit, is_occupant_fit_for_duty,
     resolve_link_loss_posture, scaled_tow_speed_cms, select_extraction_port,
-    tow_mass_ratio_permille, tow_speed_factor_permille, validate_close_outcome,
+    sync_detachment_availability_from_field, tow_mass_ratio_permille, tow_speed_factor_permille,
+    validate_close_outcome,
 };
 use mush_tactics::{
     CellAddr, CellId, ComponentId, SectionId, TacticalUnit, UnitError, UnitMutationPlan, apply,
@@ -43,9 +52,14 @@ use mush_tactics::{
 use smol_str::SmolStr;
 
 use crate::arena::damage::{HULL_SECTION, POWER_CAPABILITY, UnitReturn, WEAPON_CAPABILITY_PREFIX};
+use crate::arena::ledger::EventKind;
+use crate::arena::perception::Notice;
+use crate::arena::state::Arena;
 use crate::definitions::unit::{
     AMMO_CELL, CONDITION_CELL, ComponentRole, Consequence, INTERNALS_CELL, UnitSpec,
 };
+use crate::surface::address::{block_letter, pocket_of_cell};
+use crate::surface::claims::BlockTenure;
 
 /// Default dry-mass conversion factor (`kg` per maximum armor + internals point)
 /// for combat units that do not declare a spacecraft `logistics.dry_mass_t` block.
@@ -431,6 +445,268 @@ pub fn base_speed_cms_for_spec(spec: &UnitSpec) -> u32 {
         .map_or(0, |mode| mode.rules.max_speed_cms)
 }
 
+/// Convert a frontier site [`FieldPose`] (`x_cm`, `y_cm`) into its `10 m` surface cell
+/// and resolve the `4×4` frontier block letter (`'A'..='P'`) (`FO-4`, `Q-S1`, `Q-S3`).
+#[must_use]
+pub fn block_letter_at_site_pose(pose: FieldPose) -> Option<char> {
+    let cell_x = pose.x_cm.div_euclid(1_000);
+    let cell_y = pose.y_cm.div_euclid(1_000);
+    let pocket = pocket_of_cell((cell_x, cell_y))?;
+    block_letter(pocket.0, pocket.1)
+}
+
+/// Resolve the [`GroundTenure`] at a casualty's [`FieldPose`] from the frontier site's
+/// [`BlockTenure`] table (`FO-4`, `Q-S1`, `Q-S3`).
+///
+/// When a block is held by an organization principal rather than an object principal,
+/// `org_landholder_fallback` (or the block's `place` object id if `None`) is used as
+/// the `ObjId` landholder handle.
+#[must_use]
+pub fn ground_tenure_at_site_pose(
+    pose: FieldPose,
+    block_tenures: &BTreeMap<char, BlockTenure>,
+    now_ic: i64,
+    org_landholder_fallback: Option<ObjId>,
+) -> GroundTenure {
+    let Some(letter) = block_letter_at_site_pose(pose) else {
+        return GroundTenure::Unclaimed;
+    };
+    let Some(tenure) = block_tenures.get(&letter) else {
+        return GroundTenure::Unclaimed;
+    };
+    let Some(claim) = &tenure.claim else {
+        return GroundTenure::Unclaimed;
+    };
+    if !claim.live(now_ic) {
+        return GroundTenure::Unclaimed;
+    }
+    let landholder = if let PrincipalId::Object(obj) = claim.holder {
+        obj
+    } else {
+        org_landholder_fallback.unwrap_or(tenure.place)
+    };
+    GroundTenure::Owned {
+        landholder,
+        claim_id: Some(SmolStr::new(format!(
+            "block.{letter}.epoch.{}",
+            claim.epoch
+        ))),
+    }
+}
+
+/// Check whether `unit` is eligible to run an unengaged frontier surface mining pass
+/// on `site_book` (`Q-H1`).
+///
+/// Surface mining pauses/refuses while `site_book.is_engaged()` is true or when `unit`
+/// is not an `Operational` unit on the site.
+#[must_use]
+pub fn can_run_surface_mining_for_unit(site_book: &FieldSiteEngagementBook, unit: ObjId) -> bool {
+    if site_book.is_engaged() {
+        return false;
+    }
+    let Some(presence) = site_book.unit_presence(unit) else {
+        return false;
+    };
+    presence.assessment.state == OperationalState::Operational
+}
+
+/// Summary of reconciling an [`Arena`] combat step or match return into IC field-operations
+/// books (`H1-A`, `H1-B`, `H1-C`, `Q-H6`, `Q-H8`, `Q-H12`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArenaFieldReconciliationReport {
+    /// Post-reconciliation [`TacticalUnit`] and [`FieldUnitAssessment`] per unit on the site.
+    pub updated_units: BTreeMap<ObjId, (TacticalUnit, FieldUnitAssessment)>,
+    /// Number of observer-bounded [`ObservedCombatFact`] records appended from `notices`.
+    pub observations_recorded: usize,
+}
+
+/// Reconcile [`Arena::returned_units`] and combat [`Notice`]s into a [`FieldSiteEngagementBook`],
+/// [`FieldCustodyLedger`], [`CrewSurvivalBook`], and observer-bounded [`FieldObservationBook`]
+/// (`H1-A`, `H1-B`, `H1-C`, `Q-H6`, `Q-H8`, `Q-H12`).
+///
+/// # Errors
+/// Returns [`FieldOpsError`] if anatomy derivation, IC condition-plan construction,
+/// field-damage application, crew survival recording, or observation logging fails.
+#[allow(clippy::too_many_arguments)]
+pub fn reconcile_arena_to_field_engagement(
+    arena: &Arena,
+    notices: &[Notice],
+    pre_combat_units: &BTreeMap<ObjId, (TacticalUnit, Option<UnitSpec>)>,
+    unit_pilots: &BTreeMap<ObjId, ObjId>,
+    site_book: &mut FieldSiteEngagementBook,
+    ledger: &mut FieldCustodyLedger,
+    crew_book: &mut CrewSurvivalBook,
+    obs_book: &mut FieldObservationBook,
+    at_ic: i64,
+) -> Result<ArenaFieldReconciliationReport, FieldOpsError> {
+    let site = site_book.site();
+    let mut updated_units = BTreeMap::new();
+
+    for unit_return in arena.returned_units() {
+        let Some((before, spec_opt)) = pre_combat_units.get(&unit_return.unit) else {
+            continue;
+        };
+        let anatomy = match spec_opt {
+            Some(spec) => anatomy_for_unit_spec(spec)?,
+            None => anatomy_for_tactical_unit(before)?,
+        };
+        let field_pose = FieldPose {
+            site,
+            x_cm: unit_return.pose.x_cm,
+            y_cm: unit_return.pose.y_cm,
+        };
+        if let Some(presence) = site_book.unit_presence(unit_return.unit)
+            && presence.pose != field_pose
+            && presence.assessment.can_move
+        {
+            let _ = site_book
+                .record_surface_motion(unit_return.unit, field_pose, None)
+                .map_err(FieldOpsError::Engagement)?;
+        }
+
+        let plan_opt = ic_condition_plan(
+            before,
+            &unit_return.cells,
+            Some(&anatomy),
+            Some(SmolStr::new("arena_combat_return")),
+        )
+        .map_err(FieldOpsError::Condition)?;
+
+        let (post_unit, assessment) = match plan_opt {
+            Some(plan) => site_book
+                .apply_field_damage(ledger, before, &plan, &anatomy, at_ic)
+                .map_err(FieldOpsError::Engagement)?,
+            None => {
+                let assess = assess_tactical_unit(before, &anatomy);
+                (before.clone(), assess)
+            }
+        };
+
+        if assessment.state != OperationalState::Operational
+            && let Some(&pilot) = unit_pilots.get(&unit_return.unit)
+            && matches!(
+                crew_book.state(pilot),
+                Some(OccupantSurvivalState::AboardUnit { .. })
+            )
+        {
+            crew_book
+                .record_unit_defeat_survival(
+                    pilot,
+                    unit_return.unit,
+                    assessment.state,
+                    field_pose,
+                    true,
+                    false,
+                    at_ic,
+                )
+                .map_err(FieldOpsError::Engagement)?;
+        }
+
+        updated_units.insert(unit_return.unit, (post_unit, assessment));
+    }
+
+    let mut observations_recorded: usize = 0;
+    for (_ts, event, _details) in notices {
+        let (target_unit, attacker_opt, fact_opt) = match event {
+            EventKind::Hit {
+                unit: attacker,
+                target,
+                section,
+                ..
+            } => {
+                let sec_id = SectionId::new(section.as_str()).map_err(FieldOpsError::Unit)?;
+                (
+                    *target,
+                    Some(*attacker),
+                    Some(ObservedCombatFact::SectionDamaged {
+                        unit: *target,
+                        section: sec_id,
+                    }),
+                )
+            }
+            EventKind::SectionDestroyed {
+                unit: target,
+                section,
+                by,
+                ..
+            } => {
+                let sec_id = SectionId::new(section.as_str()).map_err(FieldOpsError::Unit)?;
+                (
+                    *target,
+                    *by,
+                    Some(ObservedCombatFact::SectionDamaged {
+                        unit: *target,
+                        section: sec_id,
+                    }),
+                )
+            }
+            EventKind::UnitDisabled { unit: target } => {
+                let state = updated_units
+                    .get(target)
+                    .map_or(OperationalState::Disabled, |(_, assess)| assess.state);
+                (
+                    *target,
+                    None,
+                    Some(ObservedCombatFact::UnitOperationalStateObserved {
+                        unit: *target,
+                        state,
+                    }),
+                )
+            }
+            EventKind::UnitDestroyed { unit: target, by } => {
+                let state = updated_units
+                    .get(target)
+                    .map_or(OperationalState::Wreck, |(_, assess)| assess.state);
+                (
+                    *target,
+                    *by,
+                    Some(ObservedCombatFact::UnitOperationalStateObserved {
+                        unit: *target,
+                        state,
+                    }),
+                )
+            }
+            _ => (ObjId(0), None, None),
+        };
+
+        let Some(fact) = fact_opt else {
+            continue;
+        };
+
+        let mut direct_observers = BTreeSet::new();
+        direct_observers.insert(target_unit);
+        if let Some(attacker) = attacker_opt {
+            direct_observers.insert(attacker);
+        }
+        for &candidate in pre_combat_units.keys() {
+            if arena
+                .contacts
+                .of(candidate)
+                .any(|(_, c)| c.target == target_unit)
+            {
+                direct_observers.insert(candidate);
+            }
+        }
+
+        for observer_unit in direct_observers {
+            obs_book
+                .record_observation(
+                    observer_unit,
+                    ObservationSource::DirectLineOfSight,
+                    fact.clone(),
+                    at_ic,
+                )
+                .map_err(FieldOpsError::Engagement)?;
+            observations_recorded = observations_recorded.saturating_add(1);
+        }
+    }
+
+    Ok(ArenaFieldReconciliationReport {
+        updated_units,
+        observations_recorded,
+    })
+}
+
 /// Errors returned by `tacsim::field_ops`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FieldOpsError {
@@ -446,6 +722,8 @@ pub enum FieldOpsError {
     Salvage(SalvageError),
     /// Underlying [`WorkshopError`].
     Workshop(WorkshopError),
+    /// Underlying [`SortieError`].
+    Sortie(SortieError),
 }
 
 impl fmt::Display for FieldOpsError {
@@ -457,6 +735,7 @@ impl fmt::Display for FieldOpsError {
             Self::Recovery(e) => write!(f, "field recovery error: {e}"),
             Self::Salvage(e) => write!(f, "field salvage error: {e}"),
             Self::Workshop(e) => write!(f, "field workshop error: {e}"),
+            Self::Sortie(e) => write!(f, "field sortie error: {e}"),
         }
     }
 }
@@ -1537,6 +1816,441 @@ mod tests {
             OperationalState::Irrecoverable
         );
         check!(scrap_report.structural_scrap_kg > 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn surface_block_tenure_mining_pause_and_workshop_cost_quote_and_rearm() -> TestResult {
+        use mush_org::PrincipalId;
+
+        use crate::surface::claims::{BlockClaim, BlockTenure};
+
+        let catalog = load_stock_catalog()?;
+        let (biped_before, biped_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.biped_mk1", ObjId(801))?;
+        let anatomy = anatomy_for_unit_spec(&biped_spec)?;
+
+        // 1. Surface block letter & live vs lapsed `BlockTenure` -> `GroundTenure` (`FO-4`, `Q-S1`, `Q-S3`).
+        let site = ObjId(790);
+        // `x_cm = 5_000, y_cm = 5_000` -> cell `(5, 5)` -> south-west block `(0, 0)` = `'M'`.
+        let pose_block_m = FieldPose {
+            site,
+            x_cm: 5_000,
+            y_cm: 5_000,
+        };
+        check_eq!(block_letter_at_site_pose(pose_block_m), Some('M'));
+
+        let landholder = ObjId(44);
+        let mut tenure_m =
+            BlockTenure::new(CanonicalId::new("tacsim.port.site_790")?, 'M', ObjId(990));
+        tenure_m.claim = Some(BlockClaim {
+            holder: PrincipalId::Object(landholder),
+            account: None,
+            epoch: 2,
+            opened_ic: None,
+            registered_ic: 1_000,
+            term_start_ic: 1_000,
+            term_end_ic: 10_000,
+            worked_at_term_start: 0,
+            discovered_ic: None,
+            declared: None,
+            fee: None,
+            refund: None,
+            lapsed_ic: None,
+        });
+        let mut tenures = BTreeMap::new();
+        tenures.insert('M', tenure_m);
+        check_eq!(
+            ground_tenure_at_site_pose(pose_block_m, &tenures, 5_000, None),
+            GroundTenure::Owned {
+                landholder,
+                claim_id: Some(SmolStr::new("block.M.epoch.2")),
+            }
+        );
+        // After `term_end_ic`, the lapsed block resolves to `GroundTenure::Unclaimed`.
+        check_eq!(
+            ground_tenure_at_site_pose(pose_block_m, &tenures, 15_000, None),
+            GroundTenure::Unclaimed
+        );
+
+        // 2. Surface mining pause during active site combat (`Q-H1`).
+        let mut ledger = FieldCustodyLedger::new();
+        let mut site_book = FieldSiteEngagementBook::new(site)?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &biped_before,
+            &anatomy,
+            SmolStr::new("miners"),
+            pose_block_m,
+            None,
+            1_000,
+        )?;
+        check!(can_run_surface_mining_for_unit(
+            &site_book,
+            biped_before.object()
+        ));
+
+        site_book.promote_to_engagement(
+            &mut ledger,
+            101,
+            FieldPromotionTrigger::MutualEngagementOrder {
+                initiator: biped_before.object(),
+                opponent: ObjId(899),
+            },
+            1,
+            1_010,
+        )?;
+        check!(!can_run_surface_mining_for_unit(
+            &site_book,
+            biped_before.object()
+        ));
+
+        // 3. Workshop cost quote and component rearming (`H3`, `Q-S12`, `Q-A4`).
+        let cannon = ComponentId::new("cannon")?;
+        let machine_gun = ComponentId::new("machine_gun")?;
+        let ammo = CellId::new("ammo")?;
+        let disarm_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: cannon.clone(),
+                        cell: ammo.clone(),
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: machine_gun,
+                        cell: ammo.clone(),
+                    },
+                    value: 0,
+                },
+            ],
+            Some(biped_before.revision()),
+            None,
+        )?;
+        let (depleted_biped, _) = apply(&biped_before, &disarm_plan, 1_100)?;
+        let depleted_assess = assess_tacsim_unit(&depleted_biped, Some(&biped_spec))?;
+        check_eq!(depleted_assess.state, OperationalState::Unarmed);
+
+        let owner = ObjId(10);
+        let custody = CustodyTitleStatus::ResolvedTitle { owner };
+        let mut workshop = WorkshopBook::new();
+        let tariff = WorkshopFacilityTariff::default();
+        let quote = workshop.quote_full_restoration(&depleted_biped, &anatomy, &tariff)?;
+        check!(!quote.components_to_rearm.is_empty());
+        check!(quote.total_resource_cost > 0);
+
+        let (_rearmed_biped, rearmed_assess, order) = workshop.rearm_component(
+            &depleted_biped,
+            &anatomy,
+            &cannon,
+            &ammo,
+            10,
+            owner,
+            &custody,
+            false,
+            150,
+            60,
+            None,
+            1_200,
+        )?;
+        check_eq!(
+            order.kind,
+            WorkshopOperationKind::RearmComponent {
+                component: cannon,
+                cell: ammo,
+                rounds_added: 10,
+            }
+        );
+        check_eq!(rearmed_assess.state, OperationalState::Operational);
+        check!(rearmed_assess.can_fire);
+
+        Ok(())
+    }
+
+    #[test]
+    fn sortie_roster_crew_pool_manifest_and_live_arena_reconciliation() -> TestResult {
+        use mush_tactics::detachment::{
+            Controller as DetController, DetachmentId, DetachmentRoster, LeadershipPolicy, Member,
+            Slot,
+        };
+
+        use crate::arena::state::Team;
+        use crate::arena::test_support::{arena_of, line_tank, pose as arena_pose};
+
+        let site = ObjId(795);
+        let carrier = ObjId(950);
+        let home_port = ObjId(960);
+        let organizer = ObjId(50);
+        let pilot_red = ObjId(60);
+        let npc_blue = ObjId(70);
+        let red_tank_id = ObjId(810);
+        let blue_tank_id = ObjId(811);
+
+        let catalog = load_stock_catalog()?;
+        let (red_before, tank_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", red_tank_id)?;
+        let (blue_before, _) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", blue_tank_id)?;
+        let red_anatomy = anatomy_for_unit_spec(&tank_spec)?;
+        let blue_anatomy = anatomy_for_unit_spec(&tank_spec)?;
+
+        let mut red_custody = line_tank(red_tank_id, Team::Red, arena_pose(1_500, 1_500));
+        red_custody.unit = red_before.clone();
+        let mut blue_custody = line_tank(blue_tank_id, Team::Blue, arena_pose(2_500, 1_500));
+        blue_custody.unit = blue_before.clone();
+
+        // 1. Assemble detachment roster, manifest, crew pool, and active sortie (`FO-6`–`FO-9`, `FO-15`, `FO-16`, `P-1`).
+        let s0 = Slot::new(1)?;
+        let s1 = Slot::new(2)?;
+        let members = vec![
+            Member {
+                slot: s0,
+                unit: red_tank_id,
+                controller: DetController::Player {
+                    character: pilot_red,
+                },
+            },
+            Member {
+                slot: s1,
+                unit: blue_tank_id,
+                controller: DetController::Npc {
+                    character: npc_blue,
+                },
+            },
+        ];
+        let mut roster = DetachmentRoster::new(
+            DetachmentId(55),
+            1,
+            members,
+            Some(npc_blue),
+            LeadershipPolicy::default(),
+        )?;
+
+        let mut manifest = CarrierPersonnelManifest::new(carrier)?;
+        manifest.embark_person(
+            pilot_red,
+            CrewMemberKind::Player,
+            EmbarkationOrigin::LastPortDeparture { port: home_port },
+            1_000,
+        )?;
+        manifest.embark_person(
+            npc_blue,
+            CrewMemberKind::HumanNpc,
+            EmbarkationOrigin::LastPortDeparture { port: home_port },
+            1_000,
+        )?;
+
+        let mut crew_pool = PortCrewPool::new();
+        crew_pool.register_available_npc(
+            npc_blue,
+            home_port,
+            200,
+            NpcMissionScope::DetachmentCommander,
+        )?;
+        crew_pool.hire_npc(npc_blue, organizer, home_port, 1_000)?;
+
+        let mut sortie = ActiveFieldSortie::stage_from_roster(
+            1,
+            organizer,
+            Some(carrier),
+            &roster,
+            &crew_pool,
+            1_000,
+        )?;
+        sortie.set_unit_expense_policy(
+            red_tank_id,
+            UnitExpensePolicy {
+                ammo_payer: organizer,
+                recovery_payer: pilot_red,
+                repair_payer: organizer,
+            },
+        )?;
+        check_eq!(
+            sortie
+                .expense_policies()
+                .get(&red_tank_id)
+                .map(|p| p.payer_for(UnitExpenseCategory::AmmunitionAndConsumables)),
+            Some(organizer)
+        );
+        check_eq!(
+            sortie
+                .expense_policies()
+                .get(&red_tank_id)
+                .map(|p| p.payer_for(UnitExpenseCategory::FieldRecoveryAndTowing)),
+            Some(pilot_red)
+        );
+
+        let mut ledger = FieldCustodyLedger::new();
+        let mut site_book = FieldSiteEngagementBook::new(site)?;
+        let mut crew_book = CrewSurvivalBook::new();
+        let mut obs_book = FieldObservationBook::new();
+
+        crew_book.board_unit(pilot_red, red_tank_id)?;
+        crew_book.board_unit(npc_blue, blue_tank_id)?;
+
+        let s0_launch = sortie.launch_slot(
+            s0,
+            &roster,
+            Some(&mut manifest),
+            &crew_pool,
+            &crew_book,
+            1_010,
+        )?;
+        check_eq!(
+            s0_launch,
+            SortieSlotLaunchState::Launched {
+                launched_at_ic: 1_010
+            }
+        );
+        let s1_launch = sortie.launch_slot(
+            s1,
+            &roster,
+            Some(&mut manifest),
+            &crew_pool,
+            &crew_book,
+            1_010,
+        )?;
+        check_eq!(
+            s1_launch,
+            SortieSlotLaunchState::Launched {
+                launched_at_ic: 1_010
+            }
+        );
+
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &red_before,
+            &red_anatomy,
+            SmolStr::new("red"),
+            FieldPose {
+                site,
+                x_cm: 1_500,
+                y_cm: 1_500,
+            },
+            Some(carrier),
+            1_010,
+        )?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &blue_before,
+            &blue_anatomy,
+            SmolStr::new("blue"),
+            FieldPose {
+                site,
+                x_cm: 2_500,
+                y_cm: 1_500,
+            },
+            Some(carrier),
+            1_010,
+        )?;
+        site_book.promote_to_engagement(
+            &mut ledger,
+            500,
+            FieldPromotionTrigger::ExplicitHostileAction {
+                attacker: blue_tank_id,
+                target: red_tank_id,
+            },
+            1,
+            1_020,
+        )?;
+
+        // 2. Run a live `Arena` where `red_tank_id` suffers hull destruction (`Wreck`), and reconcile
+        // into `site_book`, `ledger`, `crew_book`, `obs_book`, and `sortie` leadership (`Q-H6`, `Q-H8`, `P-1`).
+        let mut arena = arena_of(vec![red_custody, blue_custody]);
+        let hull = SectionId::new("hull")?;
+        let internals = CellId::new("internals")?;
+        let wreck_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: hull.clone(),
+                        cell: internals,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: hull,
+                    condition: ConditionId::new("wreck")?,
+                },
+            ],
+            Some(red_before.revision()),
+            None,
+        )?;
+        if let Some(red_state) = arena.unit_mut(red_tank_id) {
+            let (wrecked_unit, _) = apply(&red_state.unit, &wreck_plan, 1_025)?;
+            red_state.unit = wrecked_unit;
+        }
+        let mut notices = Vec::new();
+        arena.destroy_unit(red_tank_id, 1_025, Some(blue_tank_id), &mut notices);
+
+        let mut pre_combat = BTreeMap::new();
+        pre_combat.insert(red_tank_id, (red_before, None));
+        pre_combat.insert(blue_tank_id, (blue_before, None));
+        let mut unit_pilots = BTreeMap::new();
+        unit_pilots.insert(red_tank_id, pilot_red);
+        unit_pilots.insert(blue_tank_id, npc_blue);
+
+        let report = reconcile_arena_to_field_engagement(
+            &arena,
+            &notices,
+            &pre_combat,
+            &unit_pilots,
+            &mut site_book,
+            &mut ledger,
+            &mut crew_book,
+            &mut obs_book,
+            1_030,
+        )?;
+        let (_, red_post_assess) = report
+            .updated_units
+            .get(&red_tank_id)
+            .ok_or("missing red_tank_id in reconciliation report")?;
+        check_eq!(red_post_assess.state, OperationalState::Wreck);
+        check!(red_post_assess.is_towable);
+        // Turret cannon and visual_sensor survive intact on a hull-wrecked tank (`FO-1`)!
+        check!(
+            red_post_assess
+                .intact_components
+                .contains(&ComponentId::new("cannon")?)
+        );
+        check!(report.observations_recorded > 0);
+        check!(!obs_book.digest_for_observer(blue_tank_id).is_empty());
+
+        // Pilot survived (`FO-12`) and detachment leadership automatically succeeds to `s1` (`npc_blue`, `P-1`, `Q-F2`).
+        let connections = BTreeMap::new();
+        let mut command_authorized = BTreeSet::new();
+        command_authorized.insert(s1);
+        let change = sortie.reconcile_leadership_from_field(
+            &mut roster,
+            &site_book,
+            &crew_book,
+            &connections,
+            &command_authorized,
+            1_035,
+            1_035,
+        )?;
+        check!(change.is_some());
+        check_eq!(
+            roster.leader().map(|l| (l.slot, l.character)),
+            Some((s1, npc_blue))
+        );
+        check_eq!(
+            sortie.leader_grant(),
+            Some(&MissionLeaderRoleGrant {
+                sortie_id: 1,
+                leader: npc_blue,
+                leader_kind: CrewMemberKind::HumanNpc,
+                command_slot: s1,
+                term: roster.term(),
+                can_direct_tactical_units: true,
+                can_authorize_field_recovery: true,
+                grants_persistent_org_authority: false,
+                granted_at_ic: 1_035,
+            })
+        );
 
         Ok(())
     }
