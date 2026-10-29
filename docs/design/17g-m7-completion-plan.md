@@ -316,6 +316,9 @@ and doc 17 §22.
 
 - **House owner attestation.** C0's runway; also an M8 prerequisite. Build it before
   any world needs more than about 350 IC days.
+  **Closed 2026-10-29** by doc 17h M8c (the verb, #77) and M8h (#129): a tick attests every due
+  House filing as the House's agent, so the 365-day term is a renewal cycle. Shortening it to 90
+  is the owner's call.
 - **Paid Follow licences.** Paid writers support Pin only
   (`personal_paid_holdings.rs:248-249`). This was parked in Codex's log along with
   the original-major producer, the House and dependent major variants, and scoped
