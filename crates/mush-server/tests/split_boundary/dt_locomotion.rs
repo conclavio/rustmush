@@ -129,6 +129,39 @@ pub(super) async fn assert_native_refusal_before_any_boot_mutation(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn unconfigured_window_journal_refuses_before_any_owner_boot_mutation() -> TestResult {
+    for malformed in [false, true] {
+        let store = InMemoryStore::new();
+        let key = mush_core::chunk_key(mush_sim::window_movement::WINDOW_MOVEMENT_LOG, 0);
+        // Unsupported stored input only; this claims no movement or receipt.
+        let value = if malformed {
+            json!({"unsupported":"window history"})
+        } else {
+            json!({"chunk":0,"sealed":false,
+                "entries":[{"seq":0,"value":{"op":"window_locomotion_v2"}}]})
+        };
+        store
+            .write(mush_store::WriteBatch {
+                serial: 990,
+                durable: true,
+                module_ops: vec![mush_store::ModuleOp {
+                    ns: "sim".into(),
+                    op: mush_store::ModuleWrite::JsonSet {
+                        key: key.clone(),
+                        value: value.clone(),
+                    },
+                }],
+                ..Default::default()
+            })
+            .await?;
+        assert_native_refusal_before_any_boot_mutation(&store, "sim").await?;
+        assert_eq!(store.module_json_get("sim", &key).await?, Some(value));
+    }
+    Ok(())
+}
+
 impl mush_core::GameModule for ObserveMoved {
     fn name(&self) -> &'static str {
         "dt_locomotion_test"

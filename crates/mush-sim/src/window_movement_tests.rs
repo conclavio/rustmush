@@ -1300,6 +1300,36 @@ fn native_window_journal_bounds_precede_copying_and_other_owner_logs_stay_separa
 }
 
 #[test]
+fn unconfigured_window_history_refuses_raw_legacy_and_omitted_journals_before_loading() {
+    let sim = crate::SimulationModule::new();
+    let mut data = mush_core::ModuleBootData::default();
+    sim.audit_native_movement_history(&data).unwrap();
+    data.ledger.push(("log:other:0".into(), "unrelated".into()));
+    data.omitted.insert(WINDOW_MOVEMENT_LOG.into(), 0);
+    sim.audit_native_movement_history(&data).unwrap();
+    for mode in 0..4 {
+        let mut changed = data.clone();
+        match mode {
+            0 => changed.ledger.push((
+                mush_core::chunk_key(WINDOW_MOVEMENT_LOG, 0),
+                "unparsed unsupported history".into(),
+            )),
+            1 => changed
+                .kv
+                .push((mush_core::chunk_key(WINDOW_MOVEMENT_LOG, 0), Value::Null)),
+            2 => {
+                changed.omitted.insert(WINDOW_MOVEMENT_LOG.into(), 1);
+            }
+            _ => changed
+                .ledger
+                .push((format!("log:{WINDOW_MOVEMENT_LOG}").into(), String::new())),
+        }
+        let error = sim.audit_native_movement_history(&changed).unwrap_err();
+        assert!(error.to_string().contains("configured native publisher"));
+    }
+}
+
+#[test]
 fn real_release_and_place_phases_match_legacy_application_without_publication() {
     let mut rig = Rig::new();
     let target = WindowTarget::at(DomainId(1), 30, 40, 50);

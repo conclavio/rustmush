@@ -579,6 +579,13 @@ Registration alone enables no provider or live route. Native state binding and
 producer integration remain required, and none of this certifies an aboard
 interval or reconstructs current placement from historical evidence.
 
+Until the actual native publisher and recovery join are configured, Sim rejects
+the dedicated window journal during the global read-only boot phase, before
+any module migration or load callback. Positive omitted-chunk floors cannot
+hide an unsupported history. The local load hook repeats this guard for drivers
+that call it directly. Passive history registration alone does not opt into a
+publisher, and unrelated legacy Sim logs retain their existing loading behavior.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
