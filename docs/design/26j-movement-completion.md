@@ -242,6 +242,31 @@ placement admission, compound Core projection, owner binds, output custody and
 new versioned historical verifiers remain prerequisites for window completion.
 Existing v1 definitions and the refusal of open-window composed movement remain.
 
+## Bounded Core movement preview
+
+A genuine locomotion admission can now produce an owned, read-only Core object
+preview for the admitted move and one hypothetical subsequent room projection.
+The ordinary image path shares its row builder. The projected preview reads
+the first move's bounded postimages over original tracked World facts; it never
+clones World or accepts caller object rows. Only captured objects are readable,
+and unobserved scope is an error. Original admission object facts remain fenced
+independently from the image's bounded dependency census.
+
+Both steps share the existing 512-object/1 MiB image-read budget and the
+256-object carried-subtree cap. The second step repeats the actual containment,
+inverse-membership, live-object, cycle and depth checks over that overlay. At
+most four objects are touched: actor, original source, admitted room and final
+projection. Returning to the source does not collapse into a no-op: the actor
+can move to the end of its contents, and the intermediate room still receives
+the original preparation UTC. Genuine self-loops preserve their bytes.
+
+The preview is neither a Sim placement decision nor an installation capability.
+It exposes no decoder, receipt, write list or publication method. Existing v1
+images still accept only the admitted move. A joint window protocol must bind
+its real Sim/Atlas projection and any participant-behavior attachment, supply
+new historical verifiers, and retain durable map output before selecting these
+effects in a live route.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

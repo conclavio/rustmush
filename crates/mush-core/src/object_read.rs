@@ -222,6 +222,7 @@ impl<'w> ObjectRead<'w> for TrackedRead<'w> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ReadTrace {
     rows: BTreeMap<ObjId, Option<Obj>>,
     limits: ReadLimits,
@@ -236,6 +237,16 @@ impl fmt::Debug for ReadTrace {
 }
 
 impl ReadTrace {
+    /// A bounded original snapshot, distinguishing recorded absence from a row
+    /// that was never observed. Rows were preflighted before entering the trace.
+    pub(crate) fn observed(&self, id: ObjId) -> Option<Option<&Obj>> {
+        self.rows.get(&id).map(Option::as_ref)
+    }
+
+    pub(crate) fn observed_ids(&self) -> impl Iterator<Item = ObjId> + '_ {
+        self.rows.keys().copied()
+    }
+
     pub(crate) fn matches(&self, world: &World) -> bool {
         self.matches_with(|id| world.get(id))
     }
