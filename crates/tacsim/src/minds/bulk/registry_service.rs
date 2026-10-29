@@ -74,6 +74,8 @@ pub(in crate::minds) fn register_profiles(
                     "revoke".into(),
                     "inspect".into(),
                     "fine".into(),
+                    "seize".into(),
+                    "forfeit".into(),
                 ]
             } else {
                 vec![
@@ -84,6 +86,8 @@ pub(in crate::minds) fn register_profiles(
                     "revoke".into(),
                     "inspect".into(),
                     "fine".into(),
+                    "seize".into(),
+                    "forfeit".into(),
                 ]
             },
             shape: ArgShape::Raw,
@@ -363,7 +367,7 @@ pub(in crate::minds) fn rating_held(w: &mush_core::World, actor: ObjId) -> bool 
 /// lines inside the 120-column floor; the line break stands in for the `; `
 /// that joined `@registry/cancel` to the second clause (17g C2e hygiene; the
 /// help prose itself stays as written, the lead's ruling R5).
-pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <licence> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull> and @registry/fine <hull>[/<n>] <amount> (Registry operators)";
+pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <licence> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull> and @registry/fine <hull>[/<n>] <amount> (Registry operators)\n@registry/seize <hull> and @registry/forfeit <hull>[/<n>] (Registry operators)";
 
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // 17g C2d: the operators' commands answer for themselves (the driver's
@@ -380,6 +384,13 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Doc 17h cut M8d D3: `fine`, the Registry's sanction on what an inspection found.
     if ctx.switches.has("fine") {
         return crate::minds::registry_inspection::fine::command(ctx, HELP);
+    }
+    // Doc 17h cut M8d2 S4/S5: the seizure of an inspected core, and its forfeit.
+    if ctx.switches.has("seize") {
+        return crate::minds::registry_inspection::seizure::seize_command(ctx, HELP);
+    }
+    if ctx.switches.has("forfeit") {
+        return crate::minds::registry_inspection::seizure::forfeit_command(ctx, HELP);
     }
     if ctx.switches.has("recall") {
         return crate::minds::market_commands::registry::registry(

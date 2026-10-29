@@ -2372,6 +2372,9 @@ mod tests {
             mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY,
             mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY,
             mush_roll::commerce::registry_inspection::REGISTRY_FINE_CAPABILITY,
+            // Doc 17h cut M8d2: the seizure and the forfeit.
+            mush_roll::commerce::registry_inspection::REGISTRY_SEIZE_CAPABILITY,
+            mush_roll::commerce::registry_inspection::REGISTRY_FORFEIT_CAPABILITY,
         ];
         // DT.2a declares all six distinct unit rights without granting them.
         let unit_capabilities = [

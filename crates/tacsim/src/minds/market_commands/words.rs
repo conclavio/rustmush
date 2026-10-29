@@ -155,6 +155,25 @@ pub(crate) const AMBIGUOUS_PRINCIPAL: &str =
     "That name is a character and an organisation; name the character as #<n>.";
 /// M8d D4: the named inspection read no ungoverned core.
 pub(crate) const NOTHING_TO_REVOKE: &str = "That inspection found nothing to revoke for.";
+/// Doc 17h cut M8d2 S4: `@registry/seize` staged.
+pub(crate) const SEIZING: &str = "Seizing the core in hull #{hull}.";
+/// M8d2: the seizure is not composed here.
+pub(crate) const SEIZE_OFF: &str = "Registry seizure is not configured here.";
+/// M8d2 S4 (the lead's wording): the newest inspection grounds no seizure, or is too old.
+pub(crate) const NOTHING_TO_SEIZE: &str =
+    "The latest inspection of that hull found nothing to seize.";
+/// M8d2 S4: the newest inspection's core is already seized.
+pub(crate) const ALREADY_SEIZED: &str = "That inspection's core is already seized.";
+/// M8d2 S4: the provider's receipt.
+pub(crate) const SEIZED: &str = "Seized the core in hull #{hull}. It stays fitted and flies nothing; it may be forfeited after {days} IC days.";
+/// M8d2 S5: `@registry/forfeit` staged.
+pub(crate) const FORFEITING: &str = "Forfeiting the core seized from hull #{hull}.";
+/// M8d2 S5: no seizure on that hull (or on that inspection).
+pub(crate) const NO_SUCH_SEIZURE: &str = "No such seizure.";
+/// M8d2 S5 (the lead's wording): before the hold has run.
+pub(crate) const IN_HOLD: &str = "That seizure is still within its hold.";
+/// M8d2 S5: the provider's receipt.
+pub(crate) const FORFEITED: &str = "The core seized from hull #{hull} is forfeit to the Registry.";
 /// M8d D3: the provider's receipt, rendered from the fine it recorded.
 pub(crate) const FINED: &str =
     "Fined the holder of hull #{hull} {amount}. The fine is levied when the Registry next settles.";

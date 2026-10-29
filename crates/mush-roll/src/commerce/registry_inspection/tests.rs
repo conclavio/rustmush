@@ -310,3 +310,123 @@ fn m8b_a_record_carries_the_ungoverned_note_only_with_a_core() -> TestResult {
     check!(coreless.validate().is_err());
     Ok(())
 }
+
+/// **Doc 17h cut M8d2 S2: the seizure's proof.** An ungoverned newest inspection naming the
+/// fitted core, within the age, proves the key `hull/<8 hex>/inspection/<seq>`, and so (M8b-2)
+/// does a grey or heirloom one on a governed core; a governed certified one, a coreless one, a
+/// stale one (or one on another clock) and one whose core has moved do not, each with its own
+/// word.
+#[test]
+fn m8d2_the_newest_ungoverned_inspection_proves_a_seizure() -> TestResult {
+    use seizure::{NotSeizable, hold_elapsed, prove};
+    let p = policy()?;
+    let mut r = record(&p)?;
+    r.governed = Some(false);
+    r.seq = 3;
+    let at = |s: i64| ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at: s,
+    };
+    let proof =
+        prove(&r, Some(ObjId(78)), &at(1_000 + 3 * 86_400), 3).map_err(|e| format!("{e:?}"))?;
+    check_eq!(proof.key.as_str(), "hull/0000004d/inspection/3");
+    check_eq!(
+        (proof.hull, proof.core, proof.seq),
+        (ObjId(77), ObjId(78), 3)
+    );
+    check_eq!(
+        prove(&r, Some(ObjId(78)), &at(1_001 + 3 * 86_400), 3),
+        Err(NotSeizable::Stale)
+    );
+    check_eq!(
+        prove(&r, Some(ObjId(78)), &at(999), 3),
+        Err(NotSeizable::Stale)
+    );
+    let other_clock = ClockStamp {
+        clock: ClockRef::WorldIc { generation: 2 },
+        at: 1_000,
+    };
+    check_eq!(
+        prove(&r, Some(ObjId(78)), &other_clock, 3),
+        Err(NotSeizable::Stale)
+    );
+    check_eq!(
+        prove(&r, Some(ObjId(79)), &at(1_000), 3),
+        Err(NotSeizable::CoreMoved)
+    );
+    check_eq!(prove(&r, None, &at(1_000), 3), Err(NotSeizable::CoreMoved));
+    let mut governed = r.clone();
+    governed.governed = Some(true);
+    check_eq!(
+        prove(&governed, Some(ObjId(78)), &at(1_000), 3),
+        Err(NotSeizable::NothingToSeize)
+    );
+    // M8b-2: grey and heirloom are grounds of their own, governed or not.
+    for word in [Provenance::Grey, Provenance::Heirloom] {
+        let mut grey = governed.clone();
+        grey.provenance = word;
+        let proof = prove(&grey, Some(ObjId(78)), &at(1_000), 3).map_err(|e| format!("{e:?}"))?;
+        check_eq!(proof.key.as_str(), "hull/0000004d/inspection/3");
+    }
+    let mut coreless = r.clone();
+    coreless.governed = None;
+    coreless.core = None;
+    coreless.class = HullClass::Zero;
+    coreless.provenance = Provenance::Unknown;
+    check_eq!(
+        prove(&coreless, None, &at(1_000), 3),
+        Err(NotSeizable::NothingToSeize)
+    );
+    // The hold: three IC days from the seizure, to the second, on the same clock only.
+    check!(!hold_elapsed(&at(1_000), &at(999 + 3 * 86_400), 3));
+    check!(hold_elapsed(&at(1_000), &at(1_000 + 3 * 86_400), 3));
+    check!(!hold_elapsed(&at(1_000), &other_clock, 0));
+    Ok(())
+}
+
+/// **Doc 17h cut M8d2 S4: the seizure record's census.** A seized record validates; its forfeit
+/// needs all three fields, not before the hold, and a commit of its own; a record seizing the
+/// hull itself, or with the hold ending before the seizure, does not.
+#[test]
+fn m8d2_the_seizure_records_census() -> TestResult {
+    use super::super::records::Record;
+    let token = |n: u8| mush_core::CommitToken::from_bytes([n; 16]);
+    let seized = SeizureRecord {
+        format: 1,
+        inspection: token(1),
+        hull: ObjId(77),
+        seq: 3,
+        core: ObjId(78),
+        seizure: token(2),
+        at_ic: 1_000,
+        forfeit_after_ic: 1_000 + 3 * 86_400,
+        seized_by: ObjId(42),
+        forfeit: None,
+        forfeited_at_ic: None,
+        forfeited_by: None,
+    };
+    seized.validate()?;
+    check_eq!(seized.key(), "hull/0000004d/inspection/3");
+    let forfeited = SeizureRecord {
+        forfeit: Some(token(3)),
+        forfeited_at_ic: Some(seized.forfeit_after_ic),
+        forfeited_by: Some(ObjId(41)),
+        ..seized.clone()
+    };
+    forfeited.validate()?;
+    check!(forfeited.forfeited() && forfeited.seized() == seized);
+    type SeizureChange = Box<dyn Fn(&mut SeizureRecord)>;
+    let bad: [SeizureChange; 5] = [
+        Box::new(|r| r.core = r.hull),
+        Box::new(|r| r.forfeit_after_ic = r.at_ic - 1),
+        Box::new(|r| r.forfeited_by = None),
+        Box::new(|r| r.forfeited_at_ic = Some(r.forfeit_after_ic - 1)),
+        Box::new(|r| r.forfeit = Some(r.seizure)),
+    ];
+    for change in bad {
+        let mut record = forfeited.clone();
+        change(&mut record);
+        check!(record.validate().is_err());
+    }
+    Ok(())
+}

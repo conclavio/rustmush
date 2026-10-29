@@ -307,18 +307,21 @@ pub(crate) fn seal_held(
             identity: &held.identity,
             profiles: &[],
             fallback: &fallback,
+            impounded: false,
         },
     )
 }
 
 /// **The ROM seal over the rig's unit** (doc 23 cut S.1's `seal_rom_for`), for a licence whose
-/// state falls the hull to doctrine.
+/// state falls the hull to doctrine, or (doc 17h cut M8d2) for a rig whose core is impounded,
+/// sealed then as no core.
 pub(crate) fn seal_rom(
     tv: ObjId,
     unit: &mush_tactics::TacticalUnit,
     sortie: SortieId,
     operator: ObjId,
     store: &TacsimStore,
+    impounded: bool,
 ) -> Result<MindSeal, crate::match_::seal::SealError> {
     crate::match_::seal::seal_rom_for(
         tv,
@@ -329,6 +332,7 @@ pub(crate) fn seal_rom(
             minds: &store.cfg.minds,
             reflex: &store.cfg.arena.reflex,
             principal: Some(CharacterRef::Character { id: operator }),
+            impounded,
         },
     )
 }
@@ -352,7 +356,7 @@ pub(crate) fn dispatch(
     let Some(word) = word else {
         return Ok(None);
     };
-    let (unit, governed) = {
+    let (unit, governed, impounded) = {
         let world = ctx
             .world()
             .map_err(|_| refuse(MIND_UNAVAILABLE.to_owned()))?;
@@ -361,7 +365,8 @@ pub(crate) fn dispatch(
             .ok_or_else(|| refuse(MIND_NO_CORE.to_owned()))?;
         let core =
             crate::arena::core::read_core(&unit).ok_or_else(|| refuse(MIND_NO_CORE.to_owned()))?;
-        (unit, core.governed)
+        let impounded = crate::match_::seal::core_impounded(world, &unit);
+        (unit, core.governed, impounded)
     };
     let resolved = resolve(ctx, txn, actor, word, governed)?;
     let world = ctx
@@ -371,6 +376,20 @@ pub(crate) fn dispatch(
         .module_state::<TacsimStore>()
         .ok_or_else(|| refuse(MIND_UNAVAILABLE.to_owned()))?;
     let sortie = SortieId::ic(tv, launch_ic);
+    // Doc 17h cut M8d2 ("impounded in place"): the word still resolves, so its refusals stand,
+    // but a rig whose core the Registry holds flies the ROM — no core, Class 0, governed —
+    // under `doctrine`, naming no licence and no holder (the licence takes no flight mark).
+    // Nothing else is said: the holder reads the claim on the core's title.
+    if impounded {
+        let seal = seal_rom(tv, &unit, sortie, actor, store, true)
+            .map_err(|error| refuse(error.to_string()))?;
+        return Ok(Some(assemble(
+            &seal,
+            SealLicenceState::Doctrine,
+            None,
+            None,
+        )));
+    }
     let (seal, state, licence, holder) = match resolved {
         Resolved::Held {
             held,
@@ -388,7 +407,7 @@ pub(crate) fn dispatch(
             licence,
             holder,
         } => (
-            seal_rom(tv, &unit, sortie, actor, store),
+            seal_rom(tv, &unit, sortie, actor, store, false),
             state,
             Some(licence),
             Some(holder),

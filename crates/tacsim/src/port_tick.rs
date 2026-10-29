@@ -224,18 +224,10 @@ pub(crate) fn register_with_coverage(
     if let Some(coverage) = coverage {
         outcomes.push(coverage.outcome()?);
     }
-    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner.
+    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner (M8d's
+    // fine and principal revocation, M8d2's seizure and forfeit beside it).
     if let Some(inspection) = inspection {
-        let [_, outcome] = inspection.descriptors()?;
-        outcomes.push(outcome);
-        // Doc 17h cut M8d D3: the fine's outcome, when it composes.
-        if let Some([_, outcome]) = inspection.fine_descriptors()? {
-            outcomes.push(outcome);
-        }
-        // Doc 17h cut M8d D4: the principal revocation's outcome, when it composes.
-        if let Some([_, outcome]) = inspection.principal_descriptors()? {
-            outcomes.push(outcome);
-        }
+        inspection_descriptors(inspection, &mut outcomes, false)?;
     }
     reg.definition_validator(
         kind("outcome")?,
@@ -334,18 +326,10 @@ pub(crate) fn register_with_coverage(
     if let Some(coverage) = coverage {
         actions.extend(coverage.descriptors()?);
     }
-    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner.
+    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner (M8d's
+    // fine and principal revocation, M8d2's seizure and forfeit beside it).
     if let Some(inspection) = inspection {
-        let [action, _] = inspection.descriptors()?;
-        actions.push(action);
-        // Doc 17h cut M8d D3: the fine's action, when it composes.
-        if let Some([action, _]) = inspection.fine_descriptors()? {
-            actions.push(action);
-        }
-        // Doc 17h cut M8d D4: the principal revocation's action, when it composes.
-        if let Some([action, _]) = inspection.principal_descriptors()? {
-            actions.push(action);
-        }
+        inspection_descriptors(inspection, &mut actions, true)?;
     }
     reg.definition_validator(
         kind("action")?,
@@ -2997,6 +2981,36 @@ impl EventHook for ReconnectNotices {
     }
 }
 
+/// **The Registry inspection's descriptors** (doc 17h cut M8a), the actions or the outcomes:
+/// the inspection's, M8d's fine and principal revocation and M8d2's seizure and forfeit, each
+/// when it composes. Its own frame (doc 17h cut M8d2: `register_with_coverage` measured 67,174
+/// bytes at main `c04e6fd2` under CI's `CARGO_INCREMENTAL=0`, over the M7 bound).
+#[inline(never)]
+fn inspection_descriptors(
+    inspection: &crate::minds::registry_inspection::Composition,
+    into: &mut Vec<mush_core::DefinitionDescriptor>,
+    actions: bool,
+) -> Result<(), ModError> {
+    let pick = |[action, outcome]: [mush_core::DefinitionDescriptor; 2]| {
+        if actions { action } else { outcome }
+    };
+    into.push(pick(inspection.descriptors()?));
+    // Doc 17h cut M8d D3: the fine's, when it composes.
+    if let Some(pair) = inspection.fine_descriptors()? {
+        into.push(pick(pair));
+    }
+    // Doc 17h cut M8d D4: the principal revocation's, when it composes.
+    if let Some(pair) = inspection.principal_descriptors()? {
+        into.push(pick(pair));
+    }
+    // Doc 17h cut M8d2: the seizure's and the forfeit's, when they compose.
+    if let Some([seize, seized, forfeit, forfeited]) = inspection.seizure_descriptors()? {
+        into.push(pick([seize, seized]));
+        into.push(pick([forfeit, forfeited]));
+    }
+    Ok(())
+}
+
 /// The Registry inspection's provider and slot (doc 17h cut M8a), and the fine's when it
 /// composes (doc 17h cut M8d D3), over the registered references. Its own frame, so
 /// `register_with_coverage` stays under the M7 memory-size bound.
@@ -3037,7 +3051,18 @@ fn register_inspection(
         (Some(action), Some(outcome)) => Some((action, outcome)),
         _ => None,
     };
-    inspection.register(reg, action, outcome, fine, principal)
+    // Doc 17h cut M8d2: the seizure's four references, all or none.
+    use crate::minds::registry_inspection::seizure as s;
+    let seizure = match (
+        action_refs.get(s::SEIZE_ACTION).cloned(),
+        outcome_refs.get(s::SEIZE_OUTCOME).cloned(),
+        action_refs.get(s::FORFEIT_ACTION).cloned(),
+        outcome_refs.get(s::FORFEIT_OUTCOME).cloned(),
+    ) {
+        (Some(a), Some(b), Some(c), Some(d)) => Some([a, b, c, d]),
+        _ => None,
+    };
+    inspection.register(reg, action, outcome, fine, principal, seizure)
 }
 
 #[cfg(test)]

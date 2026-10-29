@@ -26,6 +26,7 @@ pub mod facts;
 pub mod fine;
 pub mod principal;
 mod provider;
+pub mod seizure;
 pub mod unwarranted;
 
 use std::sync::{Arc, Mutex};
@@ -53,9 +54,43 @@ pub struct Composition {
     /// Doc 17h cut M8d D4: the revocation term in IC days when `@registry/revoke principal=`
     /// composes (`MindCommerce::with_registry_principal_revocation`).
     pub(crate) principals: Option<u32>,
+    /// Doc 17h cut M8d2 S4/S5: the seizure's terms when `@registry/seize` and
+    /// `@registry/forfeit` compose (`MindCommerce::with_registry_seizure`).
+    pub(crate) seizures: Option<seizure::SeizureTerms>,
 }
 
 impl Composition {
+    /// Doc 17h cut M8d2: the four seizure descriptors, when the seizure composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn seizure_descriptors(
+        &self,
+    ) -> Result<Option<[DefinitionDescriptor; 4]>, ModError> {
+        self.seizures
+            .map(|_| self.policy.seizure_descriptors())
+            .transpose()
+    }
+    /// Doc 17h cut M8d2: the economy's closed seizure plan's terms — the two actions and the
+    /// Registry org — when the seizure composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn economy_seizure(
+        &self,
+    ) -> Result<Option<mush_economy::registry_filing::seizure::SeizureConfig>, ModError> {
+        if self.seizures.is_none() {
+            return Ok(None);
+        }
+        let [seize, _, forfeit, _] = self.policy.seizure_refs()?;
+        Ok(Some(
+            mush_economy::registry_filing::seizure::SeizureConfig {
+                seize,
+                forfeit,
+                claimant: self.policy.organization(),
+            },
+        ))
+    }
     /// The action and outcome descriptors, for the crate's validators and registration.
     ///
     /// # Errors
@@ -94,6 +129,7 @@ impl Composition {
         outcome: DefinitionRef,
         fine: Option<(DefinitionRef, DefinitionRef)>,
         principal: Option<(DefinitionRef, DefinitionRef)>,
+        seizure: Option<[DefinitionRef; 4]>,
     ) -> Result<(), ModError> {
         if reg.module() != crate::NS
             || action != self.policy.action()?
@@ -177,12 +213,30 @@ impl Composition {
                 ));
             }
         };
+        // Doc 17h cut M8d2 S4/S5: the seizure's two providers, each binding the economy leg.
+        let seizures = match (seizure, self.seizures) {
+            (Some(refs), Some(terms)) => {
+                if refs != self.policy.seizure_refs()? {
+                    return Err(ModError::msg(
+                        "Registry seizure registration differs from its composition",
+                    ));
+                }
+                Some(seizure::register(reg, refs, &writer, terms)?)
+            }
+            (None, None) => None,
+            _ => {
+                return Err(ModError::msg(
+                    "Registry seizure registration differs from its composition",
+                ));
+            }
+        };
         reg.state(InspectionHost {
             writer,
             attempts: Arc::new(Mutex::new((i64::MIN, 0))),
             pending,
             fines,
             principals,
+            seizures,
         });
         Ok(())
     }
@@ -202,6 +256,8 @@ pub struct InspectionHost {
     pub(crate) fines: Option<fine::FineHost>,
     /// Doc 17h cut M8d D4: the principal revocation, when it composes.
     pub(crate) principals: Option<principal::PrincipalHost>,
+    /// Doc 17h cut M8d2 S4/S5: the seizure, when it composes.
+    pub(crate) seizures: Option<seizure::SeizureHost>,
 }
 
 impl InspectionHost {

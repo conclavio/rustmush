@@ -274,6 +274,9 @@ fn grant_registry(r: &mut Rig, d: &LaunchDeployment) -> Result {
             "roll.registry.inspect",
             // Doc 17h cut M8d D3: the runbook's fourth grant.
             "roll.registry.fine",
+            // Doc 17h cut M8d2: the fifth and sixth.
+            "roll.registry.seize",
+            "roll.registry.forfeit",
         ] {
             command(
                 r.world_mut(),
@@ -473,6 +476,8 @@ fn registry_verbs(r: &mut Rig, actor: ObjId) -> Result<Vec<String>> {
                     | "roll-registry-revocation"
                     | "roll-registry-inspection"
                     | "roll-registry-fine"
+                    | "roll-registry-seize"
+                    | "roll-registry-forfeit"
             )
         })
         .collect())
@@ -1118,14 +1123,20 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
     let market = d.market.clone().ok_or("a format-2 market")?;
     let operator = operator(&d)?;
     let principals = [GOD, operator, market.clerk, r.buyer];
-    // Sorted: the four verbs `grant_registry`'s four grants open (M8d: the fine).
+    // Sorted: the six verbs `grant_registry`'s six grants open (M8d: the fine; M8d2: the
+    // seizure and the forfeit).
     let both = vec![
         "roll-registry-fine".to_owned(),
+        "roll-registry-forfeit".to_owned(),
         "roll-registry-inspection".to_owned(),
         "roll-registry-recall".to_owned(),
         "roll-registry-revocation".to_owned(),
+        "roll-registry-seize".to_owned(),
     ];
-    let lacks = readiness(operator, "lacks recall, revocation, inspection and fine");
+    let lacks = readiness(
+        operator,
+        "lacks recall, revocation, inspection, fine, seize and forfeit",
+    );
     // Before the grants: no one, and God reads what the operator lacks.
     for actor in principals {
         check!(
@@ -1246,8 +1257,14 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks recall, revocation, inspection and fine"),
-            (second, "lacks recall, revocation, inspection and fine"),
+            (
+                first,
+                "lacks recall, revocation, inspection, fine, seize and forfeit"
+            ),
+            (
+                second,
+                "lacks recall, revocation, inspection, fine, seize and forfeit"
+            ),
         ]))
     );
     // One grant each, a different one: each reads what it still lacks.
@@ -1256,8 +1273,11 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks revocation, inspection and fine"),
-            (second, "lacks recall, inspection and fine")
+            (
+                first,
+                "lacks revocation, inspection, fine, seize and forfeit"
+            ),
+            (second, "lacks recall, inspection, fine, seize and forfeit")
         ]))
     );
     check_eq!(
@@ -1274,8 +1294,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks inspection and fine"),
-            (second, "lacks inspection and fine")
+            (first, "lacks inspection, fine, seize and forfeit"),
+            (second, "lacks inspection, fine, seize and forfeit")
         ]))
     );
     grant(&mut r, first, "roll.registry.inspect")?;
@@ -1283,10 +1303,25 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     // Doc 17h cut M8d D3: the fine is the fourth, a grant of its own.
     check_eq!(
         launch_lines(&mut r, GOD).last(),
-        Some(&line([(first, "lacks fine"), (second, "lacks fine")]))
+        Some(&line([
+            (first, "lacks fine, seize and forfeit"),
+            (second, "lacks fine, seize and forfeit")
+        ]))
     );
     grant(&mut r, first, "roll.registry.fine")?;
     grant(&mut r, second, "roll.registry.fine")?;
+    // Doc 17h cut M8d2: the seizure and the forfeit, a grant each.
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([
+            (first, "lacks seize and forfeit"),
+            (second, "lacks seize and forfeit")
+        ]))
+    );
+    for op in [first, second] {
+        grant(&mut r, op, "roll.registry.seize")?;
+        grant(&mut r, op, "roll.registry.forfeit")?;
+    }
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([(first, "ready"), (second, "ready")]))
@@ -1298,11 +1333,13 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
             verbs,
             vec![
                 "roll-registry-fine".to_owned(),
+                "roll-registry-forfeit".to_owned(),
                 "roll-registry-inspection".to_owned(),
                 "roll-registry-recall".to_owned(),
                 "roll-registry-revocation".to_owned(),
+                "roll-registry-seize".to_owned(),
             ],
-            "#{} holds all four",
+            "#{} holds all six",
             op.0
         );
     }
@@ -1335,7 +1372,7 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
             line,
             readiness(
                 operator(&d)?,
-                "lacks recall, revocation, inspection and fine"
+                "lacks recall, revocation, inspection, fine, seize and forfeit"
             )
         ]
     );

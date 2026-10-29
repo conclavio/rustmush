@@ -19,6 +19,7 @@ mod authority;
 mod policy;
 pub mod principal;
 pub(crate) mod records;
+pub mod seizure;
 #[cfg(test)]
 mod tests;
 mod writer;
@@ -39,6 +40,7 @@ pub use records::{
     HullClass, INSPECTIONS_PER_HULL, InspectionFacts, InspectionRecord, Provenance, SealCheck,
     UngovernedNote, inspection_key, inspection_slots,
 };
+pub use seizure::{SEIZURE_FAMILY, SeizureRecord};
 pub use writer::{InspectionWriter, RegisteredInspectionWriter};
 
 /// The Org capability a Registry operator holds on the configured scope to inspect.
@@ -48,6 +50,12 @@ const CAPABILITY: &str = REGISTRY_INSPECTION_CAPABILITY;
 /// of its own on the inspection's scope, observed by its own twin
 /// (`authority::observe_fine`), never implied by the inspection grant.
 pub const REGISTRY_FINE_CAPABILITY: &str = "roll.registry.fine";
+/// **The Org capability a Registry operator holds to seize** (doc 17h cut M8d2 S4): its own, on
+/// the inspection's scope, observed by its own twin (`authority::observe_seize`).
+pub const REGISTRY_SEIZE_CAPABILITY: &str = "roll.registry.seize";
+/// **The Org capability a Registry operator holds to forfeit a seized core** (doc 17h cut M8d2
+/// S5), observed by its own twin (`authority::observe_forfeit`).
+pub const REGISTRY_FORFEIT_CAPABILITY: &str = "roll.registry.forfeit";
 
 /// The owner of the inspection action and outcome definitions and of the provider that
 /// prepares them: tacsim, which reads the hull.

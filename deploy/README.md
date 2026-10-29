@@ -738,13 +738,20 @@ Every id below is the one your world printed; replace every id in the example.
    @org/grant #<operator>=Registry roll.registry.revoke scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.inspect scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.fine scope=#<review scope>
+   @org/grant #<operator>=Registry roll.registry.seize scope=#<review scope>
+   @org/grant #<operator>=Registry roll.registry.forfeit scope=#<review scope>
    ```
 
    The third grant lets the operator read a hull with `@registry/inspect #<hull>`. The fourth
    lets them fine the holder of a hull an inspection found ungoverned with
    `@registry/fine #<hull> <amount>` (the amount in credits, up to
    `[tacsim.minds].fine_cap_minor`); the fine is one obligation on the holder's account, due
-   at once, paid to the Registry's levy account.
+   at once, paid to the Registry's levy account. The fifth lets them seize the core of a hull
+   whose latest inspection found it ungoverned, grey or heirloom, with `@registry/seize #<hull>`
+   (the inspection at most `[tacsim.minds].seizure_inspection_max_age_ic_days` old): the core
+   stays fitted, its title carries the Registry's claim and the hull flies the drive ROM. The
+   sixth lets them take the core's title for the Registry with `@registry/forfeit #<hull>`, once
+   `[tacsim.minds].seizure_hold_ic_days` have passed.
 
 10. As #1, `+act roll-initialize-commerce with {}`, then the three industry
     initialize actions the same way: `initialize-core-die-stock`,
@@ -755,8 +762,9 @@ Every id below is the one your world printed; replace every id in the example.
     The last line names every operator in ascending order, in one line:
     `Registry operators: #<op> ready.`, or with two operators
     `Registry operators: #<a> ready, #<b> ready.`. An operator shown with
-    `lacks` and one or more of `recall`, `revocation`, `inspection` and `fine` (for
-    example `lacks fine`, or `lacks recall, revocation, inspection and fine`)
+    `lacks` and one or more of `recall`, `revocation`, `inspection`, `fine`, `seize` and
+    `forfeit` (for example `lacks forfeit`, or
+    `lacks recall, revocation, inspection, fine, seize and forfeit`)
     is missing those step-9 grants (re-run each `@org/grant` it names), or the
     Registry is suspended or its scope retired.
 

@@ -358,7 +358,7 @@ impl MindCommerce {
             (&self.state.minds_facts, &self.state.registry_inspection)
         {
             provider.with_registry_findings(std::sync::Arc::new(
-                crate::minds::registry_inspection::unwarranted::Findings,
+                crate::minds::registry_inspection::seizure::Findings,
             ))?;
         }
         Ok(())
@@ -876,6 +876,7 @@ impl MindCommerce {
             writer,
             fines: None,
             principals: None,
+            seizures: None,
         });
         self.install_registry_findings()?;
         Ok(self)
@@ -919,6 +920,33 @@ impl MindCommerce {
             ));
         }
         inspection.principals = Some(days);
+        Ok(self)
+    }
+
+    /// Doc 17h cut M8d2 S4/S5: `@registry/seize` and `@registry/forfeit` over the composed
+    /// inspection — its operators holding `roll.registry.seize` / `roll.registry.forfeit`, the
+    /// Registry org (the inspection policy's) the claimant and the forfeit's recipient, under
+    /// `terms` (`[tacsim.minds].seizure_inspection_max_age_ic_days`, `seizure_hold_ic_days`).
+    /// The economy's closed seizure plan composes with it (`configure_economy`); it needs the
+    /// native core manufacture the hardware composes. Needs [`Self::with_registry_inspection`].
+    pub fn with_registry_seizure(
+        mut self,
+        terms: crate::minds::registry_inspection::seizure::SeizureTerms,
+    ) -> Result<Self, ModError> {
+        let inspection = self
+            .state
+            .registry_inspection
+            .as_mut()
+            .ok_or_else(|| ModError::msg("Registry seizure needs the Registry inspection"))?;
+        if terms.max_age_ic_days == 0 {
+            return Err(ModError::msg(
+                "Registry seizure needs an inspection age of at least one IC day",
+            ));
+        }
+        if inspection.seizures.is_some() {
+            return Err(ModError::msg("Registry seizure already configured"));
+        }
+        inspection.seizures = Some(terms);
         Ok(self)
     }
 
@@ -1079,6 +1107,18 @@ impl MindCommerce {
             module.with_initial_filing(self.state.filing.clone(), self.state.filing_action.clone());
         let module = match &self.state.charter_transfer_action {
             Some(action) => module.with_mind_charter_transfers(action.clone()),
+            None => module,
+        };
+        // Doc 17h cut M8d2 S1: the economy's closed seizure plan, with the Registry's seizure.
+        let module = match self
+            .state
+            .registry_inspection
+            .as_ref()
+            .map(crate::minds::registry_inspection::Composition::economy_seizure)
+            .transpose()?
+            .flatten()
+        {
+            Some(config) => module.with_core_seizure(config),
             None => module,
         };
         let module = match &self.state.pending_charters {

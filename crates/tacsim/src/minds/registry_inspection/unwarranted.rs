@@ -434,15 +434,5 @@ fn commit(ctx: &mut Ctx<'_>, hull: ObjId, find: Find) {
     );
 }
 
-/// The public findings' source for the `minds` fact provider (D6): a seizure, never yet (its
-/// producer is M8d2's). The unwarranted finding is scoped (K6) and read by no condition.
-pub(crate) struct Findings;
-
-impl mush_roll::commerce::facts::RegistryFindings for Findings {
-    fn seized(&self, _: &World, _: ObjId, _: u64) -> Option<i64> {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests;

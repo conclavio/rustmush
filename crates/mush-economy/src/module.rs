@@ -1721,6 +1721,7 @@ struct EconomyModuleState {
     original_major: Option<mush_core::mechanics::DefinitionRef>,
     house_update: Option<crate::registry_filing::update::house::HouseUpdateConfig>,
     charter_transfer: Option<mush_core::mechanics::DefinitionRef>,
+    seizure: Option<crate::registry_filing::seizure::SeizureConfig>,
     providers: CustodyTable,
     config: EconomyConfig,
     facts: crate::facts::FactTable,
@@ -1768,6 +1769,7 @@ impl std::fmt::Debug for EconomyModule {
             .field("original_major", &self.state.original_major)
             .field("house_update", &self.state.house_update)
             .field("charter_transfer", &self.state.charter_transfer)
+            .field("seizure", &self.state.seizure)
             .field("providers", &self.state.providers)
             .field("config", &self.state.config)
             .field("facts", &self.state.facts)
@@ -1892,6 +1894,18 @@ impl EconomyModule {
     #[must_use]
     pub fn with_mind_charter_transfers(mut self, action: mush_core::DefinitionRef) -> Self {
         self.state.charter_transfer = Some(action);
+        self
+    }
+    /// **The Registry's seizure and forfeit of managed cores** (doc 17h cut M8d2, S1): the
+    /// two exact tacsim actions and the claimant org. The producer proves the inspection and
+    /// binds it in the same union; this enables only the economy's closed leg and its
+    /// paired boot audit. Requires native manufacture (`with_core_integration`).
+    #[must_use]
+    pub fn with_core_seizure(
+        mut self,
+        config: crate::registry_filing::seizure::SeizureConfig,
+    ) -> Self {
+        self.state.seizure = Some(config);
         self
     }
     /// Add the three exact closed Market purchase actions to the existing
@@ -2275,6 +2289,7 @@ impl GameModule for EconomyModule {
                 self.state.derived_update.as_ref(),
                 self.state.original_major.as_ref(),
                 self.state.house_update.as_ref(),
+                self.state.seizure.as_ref(),
             )?;
         }
         if (self.state.house_purchases.is_some()
@@ -2288,6 +2303,7 @@ impl GameModule for EconomyModule {
             || self.state.original_major.is_some()
             || self.state.house_update.is_some()
             || self.state.charter_transfer.is_some()
+            || self.state.seizure.is_some()
             || self.state.core_integration.is_some()
             || self.state.core_refit.is_some()
             || self.state.charter_pending.is_some()
@@ -2464,6 +2480,7 @@ impl GameModule for EconomyModule {
             self.state.paid_resale.is_some(),
             self.state.core_refit.is_some(),
             self.state.coverage.is_some(),
+            self.state.seizure.is_some(),
         )?;
         store
             .fold
