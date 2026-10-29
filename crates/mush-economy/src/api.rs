@@ -2101,6 +2101,18 @@ fn create_obligation_with_terms(
         }
         (debit.owner.clone(), credit.owner.clone())
     };
+    open_obligation(ctx, spec, debtor, creditor, service_terms)
+}
+
+/// The obligation record over a checked `spec`, persisted on the caller's batch and gated on
+/// its durable acknowledgement: the creators' shared tail.
+fn open_obligation(
+    ctx: &mut Ctx<'_>,
+    spec: ObligationSpec,
+    debtor: PrincipalId,
+    creditor: PrincipalId,
+    service_terms: Option<crate::obligation::ServiceTerms>,
+) -> Result<ObligationId, EconomyError> {
     let id = {
         let store = ctx
             .w
@@ -2140,6 +2152,120 @@ fn create_obligation_with_terms(
     }
     ctx.gate_on_durable_ack();
     Ok(id)
+}
+
+/// **A sanction** (doc 17h cut M8d D3; doc 17 §10): one fine the Registry levies on a
+/// principal's account for what an inspection found.
+pub struct SanctionSpec {
+    /// The sanctioned principal's account (never a `System` account: a fine mints nothing).
+    pub debit_account: AccountId,
+    /// The levy sink paid.
+    pub credit_account: AccountId,
+    /// The fine.
+    pub amount: Amount,
+    /// The one due instant, World IC seconds.
+    pub due_ic: i64,
+    /// The obligation's ordinary grace after the due instant.
+    pub grace: crate::obligation::GracePolicy,
+    /// The inspection the fine is for, as its owner keys it (a record, never a surface).
+    pub inspection: SmolStr,
+    /// The authority the fine is levied under: the Org capability and scope the actor must
+    /// hold it on, live (`roll.registry.fine` on the Registry's scope, for the Roll).
+    pub capability: mush_org::CapabilityId,
+    /// The scope the capability is held on.
+    pub scope: mush_org::OrgScopeId,
+    /// Who levies it: the object whose live grant is checked. The Registry's fine is
+    /// recorded by its operator's action and levied later by a tick running as GOD, so the
+    /// grant is the operator's, named here, and re-checked live at creation.
+    pub levied_by: ObjId,
+}
+
+/// **Create a one-period sanction obligation** (doc 17h cut M8d D3): one due instant, the
+/// obligation's existing grace and delinquency after it, debiting the sanctioned principal's
+/// account — under `spec.levied_by`'s live Org grant of `spec.capability` on `spec.scope` (the
+/// amount presented to any grant limit), **not** anyone's debit authority — and paying
+/// the levy sink. An account that cannot pay carries the obligation into grace and
+/// delinquency exactly as any other; nothing is minted, and a `System` account is refused.
+///
+/// # Errors
+/// `Unauthorized` without the live grant, for an empty or oversized inspection key, or on
+/// a `System` debit; the account and instrument refusals of [`create_obligation`].
+pub fn create_sanction_obligation(
+    ctx: &mut Ctx<'_>,
+    spec: SanctionSpec,
+) -> Result<ObligationId, EconomyError> {
+    if spec.inspection.is_empty()
+        || spec.inspection.len() > crate::MAX_REASON_BYTES
+        || spec.inspection.chars().any(char::is_control)
+    {
+        return Err(EconomyError::Unauthorized);
+    }
+    if spec.amount.is_zero() || spec.amount.is_negative() {
+        return Err(EconomyError::ZeroLine(0));
+    }
+    if spec.debit_account == spec.credit_account {
+        return Err(EconomyError::ScopeOwnerMismatch);
+    }
+    let allowed = mush_org::authorize_in_world(
+        ctx.w,
+        &mush_org::AuthRequest {
+            actor: spec.levied_by,
+            capability: spec.capability.clone(),
+            scope: spec.scope,
+            now: ctx.w.now(),
+            amount: Some(spec.amount.minor()),
+        },
+    );
+    if !matches!(allowed, mush_org::Decision::Allow(_)) {
+        return Err(EconomyError::Unauthorized);
+    }
+    let (debtor, creditor) = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
+        if store.frozen {
+            return Err(EconomyError::EconomyFrozen);
+        }
+        let snap = store.snapshot();
+        let debit = snap
+            .account(spec.debit_account)
+            .ok_or(EconomyError::NoSuchAccount(spec.debit_account))?;
+        let credit = snap
+            .account(spec.credit_account)
+            .ok_or(EconomyError::NoSuchAccount(spec.credit_account))?;
+        if matches!(debit.owner, PrincipalId::System(_)) {
+            return Err(EconomyError::Unauthorized);
+        }
+        if debit.status != crate::record::AccountStatus::Active {
+            return Err(EconomyError::InactiveAccount(spec.debit_account));
+        }
+        if credit.status != crate::record::AccountStatus::Active {
+            return Err(EconomyError::InactiveAccount(spec.credit_account));
+        }
+        if debit.instrument != credit.instrument {
+            return Err(EconomyError::NotBalanced(debit.instrument.clone()));
+        }
+        (debit.owner.clone(), credit.owner.clone())
+    };
+    let obligation = ObligationSpec {
+        debit_account: spec.debit_account,
+        credit_account: spec.credit_account,
+        amount: spec.amount,
+        // One period: one due instant and no cadence, so the first settlement satisfies it.
+        schedule: crate::clock::EconomicSchedule::new(
+            crate::EconomicClock::WorldIc,
+            spec.due_ic,
+            None,
+            1,
+        ),
+        grace: spec.grace,
+        notify_on_success: true,
+        cause: crate::obligation::ObligationCause::Sanction {
+            inspection: spec.inspection,
+        },
+    };
+    open_obligation(ctx, obligation, debtor, creditor, None)
 }
 
 /// Enroll a quoted recurring service using the ordinary obligation creator.

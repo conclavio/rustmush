@@ -92,6 +92,10 @@ pub struct InspectionFacts {
     /// The ungoverning refit's note on the core's title (doc 17h cut M8b C2); `None` for a
     /// core never ungoverned and with no core.
     pub ungoverned_note: Option<UngovernedNote>,
+    /// **The hull's title holder when the inspection was written** (doc 17h cut M8d fix round
+    /// K1): the principal a fine follows and the only one a principal revocation may name, so
+    /// a title moved after the inspection dodges neither. `None` for an untitled hull.
+    pub holder: Option<mush_org::PrincipalId>,
 }
 
 /// **One inspection** (doc 17h cut M8a, A4): who asked, under what authority and
@@ -132,6 +136,10 @@ pub struct InspectionRecord {
     /// ungoverned, so every M8a record reads as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ungoverned_note: Option<UngovernedNote>,
+    /// The title holder at the inspection (doc 17h cut M8d K1): absent on every record written
+    /// before it, which decodes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<mush_org::PrincipalId>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -158,6 +166,8 @@ struct RecordWire {
     at_ic: ClockStamp,
     #[serde(default)]
     ungoverned_note: Option<UngovernedNote>,
+    #[serde(default)]
+    holder: Option<mush_org::PrincipalId>,
 }
 impl TryFrom<RecordWire> for InspectionRecord {
     type Error = PublicationError;
@@ -180,6 +190,7 @@ impl TryFrom<RecordWire> for InspectionRecord {
             licence_state: w.licence_state,
             at_ic: w.at_ic,
             ungoverned_note: w.ungoverned_note,
+            holder: w.holder,
         };
         v.validate()?;
         Ok(v)
@@ -199,6 +210,7 @@ impl InspectionRecord {
             seal_check: self.seal_check,
             licence_state: self.licence_state,
             ungoverned_note: self.ungoverned_note,
+            holder: self.holder.clone(),
         }
     }
 }

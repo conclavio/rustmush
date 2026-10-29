@@ -1769,8 +1769,11 @@ struct VfState {
     ended: Option<Result<LeaseEnd, ContractError>>,
     /// E6a step 1 (S3): the spec `@vf/create` hands to `create_obligation`.
     ruleset_spec: Option<ObligationSpec>,
-    /// E6a step 1 (S3): the last `create_obligation` outcome.
+    /// E6a step 1 (S3): the last `create_obligation` outcome (and, doc 17h cut M8d D3,
+    /// the last `create_sanction_obligation` outcome).
     created: Option<Result<ObligationId, EconomyError>>,
+    /// Doc 17h cut M8d D3: the spec `@vf/sanction` hands to `create_sanction_obligation`.
+    sanction_spec: Option<mush_economy::SanctionSpec>,
     /// E6a step 1 (S3): the last `cancel_obligation` / `reinstate_obligation`
     /// outcome (`@vf/cancelob`, `@vf/restore`), the reinstate's `bool` folded in.
     ruleset: Option<Result<bool, EconomyError>>,
@@ -1837,6 +1840,9 @@ impl Vf {
     fn stage_create(&self, spec: ObligationSpec) {
         self.0.lock().expect("probe lock").ruleset_spec = Some(spec);
     }
+    fn stage_sanction(&self, spec: mush_economy::SanctionSpec) {
+        self.0.lock().expect("probe lock").sanction_spec = Some(spec);
+    }
     fn created(&self) -> Result<ObligationId, EconomyError> {
         self.0
             .lock()
@@ -1887,6 +1893,7 @@ impl GameModule for VfMod {
                     "create",
                     "cancelob",
                     "restore",
+                    "sanction",
                 ]
                 .iter()
                 .copied()
@@ -1911,6 +1918,19 @@ impl GameModule for VfMod {
                             .take()
                             .expect("stage a spec first");
                     let outcome = mush_economy::create_obligation(ctx, spec);
+                    st.0.lock().expect("probe lock").created = Some(outcome);
+                    return Ok(());
+                }
+                // Doc 17h cut M8d D3: `@vf/sanction` is `create_sanction_obligation` with the
+                // staged spec, under the ACTOR's Org grant.
+                if ctx.switches.has("sanction") {
+                    let spec =
+                        st.0.lock()
+                            .expect("probe lock")
+                            .sanction_spec
+                            .take()
+                            .expect("stage a sanction first");
+                    let outcome = mush_economy::create_sanction_obligation(ctx, spec);
                     st.0.lock().expect("probe lock").created = Some(outcome);
                     return Ok(());
                 }
@@ -5365,4 +5385,168 @@ fn stale_pages(tw: &TestWorld, id: ContractId) -> Vec<String> {
         );
     }
     all.into_iter().map(|e| e.context.clone()).collect()
+}
+
+// ======================================================================
+// ---- Doc 17h cut M8d D3: the one-period sanction ----
+// ======================================================================
+
+/// The Registry's org and its root scope.
+fn registry_scope(tw: &mut TestWorld) -> mush_org::OrgScopeId {
+    ok(tw, GOD, "@org/create Registry");
+    let state = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("the org store")
+        .state();
+    state
+        .orgs()
+        .find(|o| o.name == "Registry")
+        .expect("the Registry org")
+        .root_scope
+}
+
+fn sanction(
+    debit: AccountId,
+    credit: AccountId,
+    scope: mush_org::OrgScopeId,
+    amount: i64,
+    due_ic: i64,
+    levied_by: ObjId,
+) -> mush_economy::SanctionSpec {
+    mush_economy::SanctionSpec {
+        debit_account: debit,
+        credit_account: credit,
+        amount: Amount::from_minor(amount),
+        due_ic,
+        grace: GracePolicy::new(1),
+        inspection: "hull/0000000c/7".into(),
+        capability: mush_org::CapabilityId::new("roll.registry.fine").expect("a capability"),
+        scope,
+        levied_by,
+    }
+}
+
+/// **M8d D3**: a sanction is one obligation, due once, levied under the Registry's own grant
+/// — never the debtor's consent and never anyone's debit authority — and paid to the sink;
+/// without the grant, or on a `System` account, it is refused and nothing is written; it
+/// survives a restart, settles once and is then satisfied.
+#[test]
+fn m8d_a_sanction_is_one_period_under_the_registry_grant() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 500);
+    let clerk = tw.spawn_player("Clerk");
+    let scope = registry_scope(&mut tw);
+    let due = tw.world().game_now_unix();
+
+    // No grant: refused, nothing written.
+    vf.stage_sanction(sanction(r.pat_acct, r.quinn_acct, scope, 120, due, clerk));
+    ok(&mut tw, clerk, "@vf/sanction");
+    assert_eq!(vf.created(), Err(EconomyError::Unauthorized));
+    assert_eq!(snap(&tw).obligations().count(), 0);
+
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@org/grant #{}=Registry roll.registry.fine", clerk.0),
+    );
+    // A `System` account is never fined: a fine mints nothing.
+    vf.stage_sanction(sanction(r.faucet, r.quinn_acct, scope, 120, due, clerk));
+    ok(&mut tw, clerk, "@vf/sanction");
+    assert_eq!(vf.created(), Err(EconomyError::Unauthorized));
+    // An empty inspection key is refused.
+    let mut keyless = sanction(r.pat_acct, r.quinn_acct, scope, 120, due, clerk);
+    keyless.inspection = SmolStr::default();
+    vf.stage_sanction(keyless);
+    ok(&mut tw, clerk, "@vf/sanction");
+    assert_eq!(vf.created(), Err(EconomyError::Unauthorized));
+    assert_eq!(snap(&tw).obligations().count(), 0);
+
+    // The clerk may not debit Pat's wallet; the grant is what levies the fine.
+    vf.stage_sanction(sanction(r.pat_acct, r.quinn_acct, scope, 120, due, clerk));
+    ok(&mut tw, clerk, "@vf/sanction");
+    let id = vf.created().expect("the granted sanction");
+    let o = obligation(&tw, id);
+    assert_eq!(o.debtor, mush_org::PrincipalId::Object(r.pat));
+    assert_eq!(
+        o.cause,
+        ObligationCause::Sanction {
+            inspection: "hull/0000000c/7".into()
+        }
+    );
+    assert_eq!(o.schedule.cadence, None, "one period");
+    assert_eq!(o.schedule.next_due, due);
+    assert_eq!(o.schedule.clock, EconomicClock::WorldIc);
+    assert_eq!(o.status, ObligationStatus::Active);
+
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    assert_eq!(
+        obligation(&tw, id).cause,
+        o.cause,
+        "the fine survives a restart"
+    );
+
+    sweep_at(&mut tw, 150);
+    assert_eq!(bal(&tw, r.pat_acct), 380, "the fine was collected");
+    assert_eq!(bal(&tw, r.quinn_acct), 120, "paid to the sink");
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Satisfied);
+    sweep_at(&mut tw, 250);
+    assert_eq!(bal(&tw, r.pat_acct), 380, "due once, never again");
+}
+
+/// **M8d D3**: an account that cannot pay carries the fine; nothing is minted.
+#[test]
+fn m8d_an_account_that_cannot_pay_carries_the_sanction() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 50);
+    let clerk = tw.spawn_player("Clerk");
+    let scope = registry_scope(&mut tw);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@org/grant #{}=Registry roll.registry.fine", clerk.0),
+    );
+    let due = tw.world().game_now_unix();
+    vf.stage_sanction(sanction(r.pat_acct, r.quinn_acct, scope, 120, due, clerk));
+    ok(&mut tw, clerk, "@vf/sanction");
+    let id = vf.created().expect("the granted sanction");
+    sweep_at(&mut tw, 150);
+    assert_eq!(bal(&tw, r.pat_acct), 50, "nothing taken that is not there");
+    assert_eq!(bal(&tw, r.quinn_acct), 0, "nothing minted");
+    let status = obligation(&tw, id).status;
+    assert!(
+        matches!(
+            status,
+            ObligationStatus::Grace { .. } | ObligationStatus::Delinquent
+        ),
+        "the fine is carried: {status:?}"
+    );
+}
+
+/// **M8d D3**: the grant checked is the levier's, named on the spec, whoever runs the call — a
+/// tick running as GOD levies under the operator's grant, and GOD naming an ungranted
+/// character levies nothing.
+#[test]
+fn m8d_a_sanction_is_levied_under_the_named_leviers_grant() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 500);
+    let clerk = tw.spawn_player("Clerk");
+    let scope = registry_scope(&mut tw);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@org/grant #{}=Registry roll.registry.fine", clerk.0),
+    );
+    let due = tw.world().game_now_unix();
+    vf.stage_sanction(sanction(r.pat_acct, r.quinn_acct, scope, 120, due, r.quinn));
+    ok(&mut tw, GOD, "@vf/sanction");
+    assert_eq!(vf.created(), Err(EconomyError::Unauthorized));
+    vf.stage_sanction(sanction(r.pat_acct, r.quinn_acct, scope, 120, due, clerk));
+    ok(&mut tw, GOD, "@vf/sanction");
+    let id = vf.created().expect("levied under the clerk's grant");
+    assert_eq!(
+        obligation(&tw, id).debtor,
+        mush_org::PrincipalId::Object(r.pat)
+    );
 }

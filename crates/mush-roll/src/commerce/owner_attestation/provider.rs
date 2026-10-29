@@ -507,6 +507,8 @@ impl Provider {
         .map_err(invalid)?;
         txn.insert(&self.families.terms, &next.key(), next.clone())
             .map_err(invalid)?;
+        // Doc 17h cut M8d fix round K5 (the lead's ruling): attesting an existing owner licence
+        // passes the write bar — the same licence continues. Its use stays barred.
         txn.replace(&self.families.licences, &id.key(), current.clone())
             .map_err(invalid)?;
         if txn

@@ -56,6 +56,7 @@ fn record(policy: &RegistryInspectionPolicy) -> TestResult<InspectionRecord> {
             at: 1_000,
         },
         ungoverned_note: None,
+        holder: None,
     })
 }
 

@@ -126,6 +126,8 @@ impl PaidResaleWriter {
         reg.delegate_state_family(&families.paid_resale_heads, "market")?;
         reg.delegate_state_family(&families.paid_holders, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
+        // Doc 17h cut M8d D4: the revoked principals, read by the bars in the market's steps.
+        reg.delegate_state_family(&families.revoked_principals, "market")?;
         // 17g C2f: the immediate Accept and the Settle move the holdings row.
         reg.delegate_state_family(&families.paid_holdings, "market")?;
         // Market's paid-resale boot audit re-proves each offer's and
@@ -366,6 +368,14 @@ impl RegisteredPaidResaleWriter {
         if accounts.requester() != facts.requester() || accounts.other() != counterparty {
             return Err(PublicationError::Mismatch);
         }
+        // Doc 17h cut M8d D4: a revoked seller offers nothing and a revoked buyer accepts or
+        // funds nothing.
+        super::super::registry_inspection::principal::refuse_parties(
+            ctx,
+            txn,
+            &r.families,
+            &[facts.seller(), facts.buyer()],
+        )?;
         let world = ctx.world().map_err(bad)?;
         Ok(PreparedPaidResale {
             state: Box::new(PreparedPaidResaleState {
@@ -575,6 +585,8 @@ impl RegisteredPaidResaleWriter {
             )?;
             txn.insert(&f.paid_holders, &holder.key(), holder.clone())
                 .map_err(bad)?;
+            // Doc 17h cut M8d D4: a revoked principal accepts no transferred licence.
+            super::super::registry_inspection::principal::refuse(ctx, txn, f, pointer.holder())?;
             txn.replace(&f.paid_licences, &pointer.key(), pointer.clone())
                 .map_err(bad)?;
             if txn.get(&f.paid_holders, &holder.key()).map_err(bad)? != Some(&holder)
@@ -654,6 +666,15 @@ impl RegisteredPaidResaleWriter {
             .cloned()
             .ok_or(PublicationError::Missing)?;
         before.validate()?;
+        // Doc 17h cut M8d D4: a funded resale with a revoked party refuses its next step; the
+        // operator's term revocation still refunds it.
+        let terms = &before.economic().consent().terms;
+        super::super::registry_inspection::principal::refuse_parties(
+            ctx,
+            txn,
+            f,
+            &[terms.seller, terms.buyer],
+        )?;
         if before.reference()? != intent.before
             || !matches!(before.state(), PaidResaleState::Funded {})
         {
@@ -871,6 +892,8 @@ impl RegisteredPaidResaleWriter {
             )?;
             txn.insert(&f.paid_holders, &holder.key(), holder.clone())
                 .map_err(bad)?;
+            // Doc 17h cut M8d D4: a revoked principal accepts no transferred licence.
+            super::super::registry_inspection::principal::refuse(ctx, txn, f, pointer.holder())?;
             txn.replace(&f.paid_licences, &pointer.key(), pointer.clone())
                 .map_err(bad)?;
             if txn.get(&f.paid_holders, &holder.key()).map_err(bad)? != Some(&holder)

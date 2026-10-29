@@ -168,6 +168,106 @@ impl RegistryInspectionPolicy {
         let [_, action, outcome] = self.definitions()?;
         Ok([action, outcome])
     }
+    /// Doc 17h cut M8d D3: the fine's action and outcome descriptors, tacsim's, the action
+    /// referencing the same authority.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn fine_descriptors(&self) -> Result<[DefinitionDescriptor; 2], ModError> {
+        let [authority, _, _] = self.definitions()?;
+        let authority_ref = DefinitionRegistryBuilder::new()
+            .register(owner()?, authority)
+            .map_err(error)?;
+        let action = descriptor(
+            "action",
+            "registry_mind_fine",
+            json!({
+                "format": 1,
+                "protocol": "registry_inspection_fine_v1",
+                "reads": ["unwarranted_inspection", "hull_title_holder"],
+                "writes": "one_fine_record",
+                "levies": "one_period_sanction_obligation",
+                "capability": REGISTRY_FINE_CAPABILITY
+            }),
+        )?
+        .with_references(vec![authority_ref]);
+        let outcome = descriptor(
+            "outcome",
+            "registry_mind_fined",
+            json!({"format": 1, "fields": ["hull", "seq", "amount", "operator", "summary"]}),
+        )?;
+        Ok([action, outcome])
+    }
+    /// Doc 17h cut M8d D3: the fine action's exact identity (tacsim's owner).
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn fine_action(&self) -> Result<DefinitionRef, ModError> {
+        let [action, _] = self.fine_descriptors()?;
+        DefinitionRegistryBuilder::new()
+            .register(action_owner()?, action)
+            .map_err(error)
+    }
+    /// Doc 17h cut M8d D3: the fine outcome's exact identity (tacsim's owner).
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn fine_outcome(&self) -> Result<DefinitionRef, ModError> {
+        let [_, outcome] = self.fine_descriptors()?;
+        DefinitionRegistryBuilder::new()
+            .register(action_owner()?, outcome)
+            .map_err(error)
+    }
+    /// Doc 17h cut M8d D4: the principal revocation's action and outcome descriptors,
+    /// tacsim's, the action referencing the same authority.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn principal_descriptors(&self) -> Result<[DefinitionDescriptor; 2], ModError> {
+        let [authority, _, _] = self.definitions()?;
+        let authority_ref = DefinitionRegistryBuilder::new()
+            .register(owner()?, authority)
+            .map_err(error)?;
+        let action = descriptor(
+            "action",
+            "registry_principal_revocation",
+            json!({
+                "format": 1,
+                "protocol": "registry_principal_revocation_v1",
+                "reads": ["unwarranted_inspection"],
+                "writes": "one_revoked_principal",
+                "bars": "new_licences_for_the_term",
+                "capability": super::super::registry_revocation::REGISTRY_REVOCATION_CAPABILITY
+            }),
+        )?
+        .with_references(vec![authority_ref]);
+        let outcome = descriptor(
+            "outcome",
+            "registry_principal_revoked",
+            json!({"format": 1, "fields": ["principal", "until_ic", "operator", "summary"]}),
+        )?;
+        Ok([action, outcome])
+    }
+    /// Doc 17h cut M8d D4: the principal revocation action's exact identity.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn principal_action(&self) -> Result<DefinitionRef, ModError> {
+        let [action, _] = self.principal_descriptors()?;
+        DefinitionRegistryBuilder::new()
+            .register(action_owner()?, action)
+            .map_err(error)
+    }
+    /// Doc 17h cut M8d D4: the principal revocation outcome's exact identity.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn principal_outcome(&self) -> Result<DefinitionRef, ModError> {
+        let [_, outcome] = self.principal_descriptors()?;
+        DefinitionRegistryBuilder::new()
+            .register(action_owner()?, outcome)
+            .map_err(error)
+    }
     /// `[authority, action, outcome]`: the authority under the Roll's owner, the action and
     /// outcome under tacsim's ([`ACTION_OWNER`]); the action references the authority.
     pub(crate) fn definitions(&self) -> Result<[DefinitionDescriptor; 3], ModError> {

@@ -1233,6 +1233,8 @@ impl GameModule for TacsimRuleset {
         relay_foundry::boot(ctx).map_err(ModError::msg)?;
         relay_mobile::boot(ctx).map_err(ModError::msg)?;
         relay_world::boot(ctx).map_err(ModError::msg)?;
+        // Doc 17h cut M8d D6/D7: the unwarranted chronicle's reconcile and the Red Dies front.
+        minds::registry_inspection::unwarranted::boot(ctx).map_err(ModError::msg)?;
         store::audit_mind_revisions(ctx).map_err(|error| ModError::msg(error.to_string()))?;
         let (red, blue) = match_::net::ensure_nets(ctx);
         if red.is_none() || blue.is_none() {

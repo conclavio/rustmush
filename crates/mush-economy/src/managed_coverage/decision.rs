@@ -30,6 +30,16 @@ pub enum CoverageDecisionKindV1 {
         close_digest: DefinitionDigest,
         transition: u64,
     },
+    /// **The cover is void** (doc 17h cut M8d D5): the close would have paid, but the product
+    /// excludes what a Registry inspection recorded on the covered hull within the term (an
+    /// ungoverned core); nothing pays and the premium stays earned. `inspection` is that
+    /// inspection's commit.
+    Voided {
+        close: CommitToken,
+        close_digest: DefinitionDigest,
+        transition: u64,
+        inspection: CommitToken,
+    },
 }
 impl CoverageDecisionKindV1 {
     pub const fn pays(&self) -> bool {
@@ -120,6 +130,18 @@ impl CoverageDecisionV1 {
                 close_digest,
                 transition,
             } => (close, close_digest, transition),
+            // Doc 17h cut M8d D5: the void names the inspection that excluded the loss.
+            CoverageDecisionKindV1::Voided {
+                close,
+                close_digest,
+                transition,
+                inspection,
+            } => {
+                if inspection == close || *inspection == self.operation {
+                    return Err(refused());
+                }
+                (close, close_digest, transition)
+            }
         };
         if *evidence == self.operation || digest.as_bytes() == &[0; 32] || *transition == 0 {
             return Err(refused());
@@ -181,6 +203,14 @@ impl CoverageDecisionV1 {
                 }
             }
             CoverageDecisionKindV1::CleanClose { .. } => (),
+            // Doc 17h cut M8d D5: a void is decided by the service, inside the term's clock.
+            CoverageDecisionKindV1::Voided { inspection, .. } => {
+                if [c.operation, c.basis.product, c.basis.quote, c.basis.ic_open]
+                    .contains(inspection)
+                {
+                    return Err(refused());
+                }
+            }
         }
         Ok(())
     }

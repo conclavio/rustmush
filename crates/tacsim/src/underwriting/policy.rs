@@ -253,6 +253,18 @@ impl Terminal {
                 }
                 (close, close_digest, transition)
             }
+            // Doc 17h cut M8d D5: a void is a covered loss the product's exclusion refused.
+            CoverageDecisionKindV1::Voided {
+                close,
+                close_digest,
+                transition,
+                ..
+            } => {
+                if !self.close.covered_loss(c)? {
+                    return Err(CoverageError::Product);
+                }
+                (close, close_digest, transition)
+            }
         };
         if *event != self.close.close
             || *digest != self.close.digest

@@ -86,6 +86,42 @@ pub(crate) fn observe(
     p: &RegistryInspectionPolicy,
     actor: ObjId,
 ) -> Result<(Authorization, ClockStamp), PublicationError> {
+    observe_capability(world, readiness, p, actor, CAPABILITY)
+}
+/// **The fine's twin** (doc 17h cut M8d D3): the same live observation for
+/// [`REGISTRY_FINE_CAPABILITY`] — an operator the inspection grant admits is not thereby a
+/// fining operator.
+pub(crate) fn observe_fine(
+    world: &World,
+    readiness: &Readiness,
+    p: &RegistryInspectionPolicy,
+    actor: ObjId,
+) -> Result<(Authorization, ClockStamp), PublicationError> {
+    observe_capability(world, readiness, p, actor, REGISTRY_FINE_CAPABILITY)
+}
+/// **The principal revocation's twin** (doc 17h cut M8d D4): the same live observation for
+/// the existing `roll.registry.revoke` capability.
+pub(crate) fn observe_revoke(
+    world: &World,
+    readiness: &Readiness,
+    p: &RegistryInspectionPolicy,
+    actor: ObjId,
+) -> Result<(Authorization, ClockStamp), PublicationError> {
+    observe_capability(
+        world,
+        readiness,
+        p,
+        actor,
+        super::super::registry_revocation::REGISTRY_REVOCATION_CAPABILITY,
+    )
+}
+fn observe_capability(
+    world: &World,
+    readiness: &Readiness,
+    p: &RegistryInspectionPolicy,
+    actor: ObjId,
+    capability: &str,
+) -> Result<(Authorization, ClockStamp), PublicationError> {
     p.validate()?;
     readiness.check(p)?;
     if p.operators.binary_search(&actor).is_err()
@@ -122,7 +158,7 @@ pub(crate) fn observe(
         world,
         &AuthRequest {
             actor,
-            capability: CapabilityId::new(CAPABILITY).ok_or(PublicationError::Invalid)?,
+            capability: CapabilityId::new(capability).ok_or(PublicationError::Invalid)?,
             scope: p.scope,
             now: world.now(),
             amount: None,

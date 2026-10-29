@@ -807,6 +807,26 @@ pub struct MindsConfig {
     /// Stock 5; at least 1 ([`MindsConfig::validate`]).
     #[serde(default = "default_cpu_lens_ms")]
     pub cpu_lens_ms: u32,
+    /// **The largest Registry fine, minor units** (doc 17h cut M8d D3; Q-M8-6, provisional):
+    /// `@registry/fine` refuses an amount above it. Stock 100,000 (10× doc 17's 100cr filing
+    /// fee); at least 1.
+    #[serde(default = "default_fine_cap_minor")]
+    pub fine_cap_minor: i64,
+    /// **How long a revoked principal may hold no new licence, IC days** (doc 17h cut M8d
+    /// D4; Q-M8-6, provisional): `@registry/revoke principal=`'s term. Stock 90 (one audit
+    /// term); 1 to 3,650.
+    #[serde(default = "default_revocation_ic_days")]
+    pub revocation_ic_days: u32,
+}
+
+/// `fine_cap_minor`'s default: 10× doc 17's 100cr filing fee (Q-M8-6).
+const fn default_fine_cap_minor() -> i64 {
+    100_000
+}
+
+/// `revocation_ic_days`' default: one audit term (Q-M8-6).
+const fn default_revocation_ic_days() -> u32 {
+    90
 }
 
 /// `workers`' default: doc 17 §6's two.
@@ -913,6 +933,9 @@ impl Default for MindsConfig {
             workers: default_workers(),
             // 17b cut M4.2: doc 17 §18's five milliseconds, printed beside.
             cpu_lens_ms: default_cpu_lens_ms(),
+            // Doc 17h cut M8d (Q-M8-6): the provisional fine cap and revocation term.
+            fine_cap_minor: default_fine_cap_minor(),
+            revocation_ic_days: default_revocation_ic_days(),
         }
     }
 }
@@ -983,6 +1006,19 @@ impl MindsConfig {
             return Err(format!(
                 "[tacsim.minds].cpu_lens_ms must be at least 1 (it is {})",
                 self.cpu_lens_ms
+            ));
+        }
+        // Doc 17h cut M8d D3/D4: the fine cap at least 1, the revocation term 1 to 3,650.
+        if self.fine_cap_minor < 1 {
+            return Err(format!(
+                "[tacsim.minds].fine_cap_minor must be at least 1 (it is {})",
+                self.fine_cap_minor
+            ));
+        }
+        if !(1..=3_650).contains(&self.revocation_ic_days) {
+            return Err(format!(
+                "[tacsim.minds].revocation_ic_days must be 1 to 3650 (it is {})",
+                self.revocation_ic_days
             ));
         }
         self.validate_classes()

@@ -36,7 +36,9 @@ pub use host::{
 };
 pub use registration::CoverageConfiguration;
 
-pub use product::{ApprovedConductV1, CoverageProductV1, LossRule, SafeConductRole};
+pub use product::{
+    ApprovedConductV1, CoverageExclusion, CoverageProductV1, LossRule, SafeConductRole,
+};
 pub use terms::{CoverageAmounts, CoverageIllustration, CoverageTermsV1};
 pub use window::CoverageWindow;
 
