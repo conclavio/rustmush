@@ -267,6 +267,41 @@ its real Sim/Atlas projection and any participant-behavior attachment, supply
 new historical verifiers, and retain durable map output before selecting these
 effects in a live route.
 
+## Bounded Sim window movement capture
+
+Sim can now derive release and direct-placement candidate phases from a genuine
+Core preview and hypothetical passive entry coordinates. It shares the actual
+transition planner: release keeps the admitted Core location, carries the
+original UTC into unplacement metadata, and advances the real placement
+revision. A subsequent placement sees that released state and advances the
+revision again. Reposing within one domain has one phase. Missing placement
+and an explicit unplaced record remain different observations.
+
+This initial scope requires an already attached Sim participant for placement,
+with no physical dependents or structural/control host records on the actor.
+Interior/attached source parents, held state, closed/non-window targets,
+inconsistent indexes or domain aliases, and exhausted revisions refuse. Every
+selected phase must plan successfully; a failed second phase publishes neither
+the earlier release nor any Core move. Real journey-seal and IC-exclusion
+checks remain in the transition path. The candidate uses the Core-validated
+hypothetical final room rather than invoking a resolver over the pre-move
+World; the actual Atlas owner must attest that room in the future protocol.
+
+The existing resident Sim census/4 MiB byte bound precedes its temporary state
+copy. Selected original records are capped at 16 KiB and the final capture at
+128 KiB. Opaque placement, anchor, egress and station payloads receive an
+iterative preflight (64 levels, 65,536 aggregate nodes and 4 MiB text) before
+recursive resident encoding. Rechecking retains the observed IC stamp, requires
+the same clock generation and nondecreasing time, keeps the Core preview's UTC,
+and compares the actual bounded native facts and phase data.
+
+This is candidate data only. It creates no participant grant, Core or Sim
+installation, audit append, receipt, decoder, output or eligibility evidence.
+Participant-behavior attachment, actual Atlas attestation, compound object and
+ledger publication, historical verifiers and the remaining owner joins still
+belong to a new versioned completion protocol. Existing v1 routing and window
+refusals are unchanged.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

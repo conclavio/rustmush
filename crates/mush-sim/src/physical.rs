@@ -55,7 +55,10 @@ const MAX_RESIDENT_RECORDS: usize = 4096;
 const MAX_RESIDENT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Stop serialization before allocating/cloning an oversized input record.
-fn encoded_size<T: Serialize + ?Sized>(value: &T, limit: usize) -> Result<usize, ParticipantError> {
+pub(crate) fn encoded_size<T: Serialize + ?Sized>(
+    value: &T,
+    limit: usize,
+) -> Result<usize, ParticipantError> {
     struct Limit {
         used: usize,
         limit: usize,
