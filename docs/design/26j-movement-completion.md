@@ -362,6 +362,29 @@ window primary, v2 Scenes join and end-to-end physical recovery follow. The
 registration test uses an execution-refusing primary and establishes no Sim
 placement evidence. Live routing and personnel eligibility remain disabled.
 
+## Ordered window movement observations
+
+Sim now has a distinct v2 candidate capture for the admitted Core step followed
+by each selected native release/place phase. Each stage retains its actual
+before/after ancestry digests and ordered crossing facts at the original IC
+stamp. Adjacent ancestry digests must agree. A return to the original room
+keeps the intermediate step, and a brief carrier visit retains both entry and
+exit instead of collapsing to an empty net result.
+
+One aggregate 256-crossing and 512-dependency bound covers all stages. The
+128 KiB capture limit remains. Tests exercise a genuine Core preview with 128
+people entering and leaving (256 crossings); one additional person refuses the
+whole capture. No Core object, native placement, audit or module marker is
+published. Rechecking preserves original UTC while requiring nondecreasing IC
+time in the same clock generation.
+
+Native phase plans stay typed and private. The original v1 candidate and its
+digest domain retain their exact bytes; v2 wraps that evidence with the ordered
+observations and an explicit uncertified coverage label. These are still
+hypothetical candidates. The actual Sim participant, same-commit recovery and
+crossing records, historical verifier, joint Scenes adapter and durable map
+output remain required before a window movement can be installed or routed.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
