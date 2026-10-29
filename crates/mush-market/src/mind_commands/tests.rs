@@ -1510,3 +1510,66 @@ fn procurement_reads_the_organisations_row() -> TestResult {
     );
     Ok(())
 }
+
+/// Doc 17h §3 M8f round 2 (the human path of H1): on an organisation's row,
+/// `/buy/pay … org=`'s quote is the actor's OWN newest, never a newer quote
+/// another member (or the House's agent) made on the same listing, whose
+/// Fund the provider would refuse the actor:
+/// - member A quotes at 900, then B quotes the same listing at 950: A's
+///   `OwnPurchase` names A's quote, B's names B's;
+/// - a member with no quote of its own there has none to fund (`None`),
+///   though the row holds two.
+#[test]
+fn org_own_purchase_funds_the_actors_own_quote() -> TestResult {
+    use crate::mind_entitlement::tests::{
+        command_config, command_org_index, command_org_quote, current_listing_fixture,
+    };
+    let config = command_config(400)?;
+    let listed = token([0x43, 0, 0, 1], 1);
+    let org = mush_org::OrgId(3);
+    let (a, b, c) = (ObjId(51), ObjId(52), ObjId(53));
+    let mut memory = Memory::default();
+    memory.add(current_listing_fixture(&config, listed)?);
+    let mut quote_as = |n: u8, acting: ObjId, at: i64| -> TestResult<CommitToken> {
+        let quote = Box::new(command_org_quote(
+            token([n, 0, 0, 0], 1),
+            listed,
+            (org, acting),
+            at,
+            1_200,
+        )?);
+        let publication = quote.publication();
+        memory.quotes.insert(publication, *quote);
+        Ok(publication)
+    };
+    let mine = quote_as(0xd0, a, 900)?;
+    let theirs = quote_as(0xd1, b, 950)?;
+    memory
+        .orgs
+        .insert(org, command_org_index(org, &[mine, theirs])?);
+    for member in [a, b, c] {
+        memory.members.insert((org, member));
+    }
+    let source = &memory;
+    let quote_of = |actor: ObjId| -> TestResult<Option<CommitToken>> {
+        Ok(answer(
+            &source,
+            own(actor.0),
+            || true,
+            &config,
+            MarketCommandRequest::own_purchase_for(&code(listed), Some(org)),
+        )?
+        .into_own_purchase()
+        .ok_or("an own-purchase answer")?
+        .and_then(|view| view.quote())
+        .map(|quote| quote.quote()))
+    };
+    check_eq!(
+        quote_of(a)?,
+        Some(mine),
+        "A funds A's quote, not B's newer one"
+    );
+    check_eq!(quote_of(b)?, Some(theirs), "B funds B's");
+    check_eq!(quote_of(c)?, None, "C quoted nothing to fund");
+    Ok(())
+}

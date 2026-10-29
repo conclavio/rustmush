@@ -348,59 +348,115 @@ fn run(
     restart_with(f, world, &house, false)?;
     quiet(world, &mut n, 6, "a 0 per mille line is never a candidate")?;
     check!(ledger(world).is_empty());
-    // H2 (the 0‰ line admitted from here on, through the test seam): the
-    //    agent quotes, then its Fund is refused (its grant now limited below
-    //    the price): the listing is skipped for the month, nothing more is
-    //    queued, and no money moves.
+    // H2 (the 0‰ line admitted from here on, through the test seam): only the
+    //    FUND is refused. The agent quotes a listing; GOD then holds 950 of the
+    //    treasury's 1000 (a Quote freezes no money, so the hold cannot refuse
+    //    it, and the tick's treasury check ran before it), and the Fund fails
+    //    on funds. With the hold released, the listing is skipped for the
+    //    month: the agent quotes the line's OTHER listing, never the refused
+    //    one again; held again, that Fund is refused too, both pages are
+    //    paged, and with every listing skipped the month closes.
     restart(f, world, &house)?;
-    let step = next_step(world, &mut n, 4)?;
-    check_eq!(
-        step,
-        Some(("quote_derived_mind".to_owned(), true)),
-        "{}",
+    let describe = |world: &PlayerWorld| {
         world
             .engine
             .world
             .module_state::<ProcurementState>()
             .map(|s| s.describe(org))
             .unwrap_or_default()
-            + format!(
-                " treasury={:?}",
-                store(world)?.snapshot().account(treasury).map(|a| (
-                    a.instrument.as_str().to_owned(),
-                    a.posted_balance,
-                    a.scope
-                ))
-            )
-            .as_str()
-    );
-    let limit = |world: &mut PlayerWorld, max: &str| {
-        world.say(
-            GOD,
-            &format!("@holder-grant-fixture limit #{} {} {max}", agent.0, org.0),
-        )
     };
-    limit(world, "99")?;
-    check_eq!(
-        pulse(world, &mut n)?,
-        Some(("purchase_derived_mind".to_owned(), false)),
-        "the Fund is refused"
-    );
-    // The refused Fund skips its listing for the month; the agent may then
-    // quote the line's other listing, which its 99 limit also refuses (the
-    // Quote asks with the price), until that quote's wait ends too. Nothing
-    // lands and the month closes.
-    for _ in 0..16 {
-        if let Some((id, true)) = pulse(world, &mut n)? {
-            return Err(format!("{id} landed under a limit below the price").into());
-        }
+    let hold = |world: &mut PlayerWorld| -> TestResult {
+        world.say(GOD, &format!("@hold/place {treasury}=950"))?;
+        check_eq!(
+            store(world)?
+                .snapshot()
+                .account(treasury)
+                .ok_or("treasury")?
+                .held_amount,
+            Amount::from_minor(950),
+            "GOD's hold is placed"
+        );
+        Ok(())
+    };
+    let release = |world: &mut PlayerWorld| -> TestResult {
+        let id = store(world)?
+            .snapshot()
+            .holds_of(treasury)
+            .find(|h| h.status == mush_economy::HoldStatus::Held)
+            .ok_or("GOD's hold")?
+            .id;
+        world.say(GOD, &format!("@hold/release {}", id.0))?;
+        check_eq!(
+            store(world)?
+                .snapshot()
+                .account(treasury)
+                .ok_or("treasury")?
+                .held_amount,
+            Amount::ZERO,
+            "GOD's hold is released"
+        );
+        Ok(())
+    };
+    // The listing the agent's newest quote names.
+    let quoted = |world: &PlayerWorld| {
+        rows(&disk(world), "market", "market_mind_entitlement_quote")
+            .into_iter()
+            .filter(|q| q.get("buyer") == Some(&json!({"org": org, "acting": agent})))
+            .max_by_key(|q| {
+                q.get("quoted_at_utc")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default()
+            })
+            .and_then(|q| q.get("listing").cloned())
+            .ok_or("the agent's quote")
+    };
+    let mut refused_listings = Vec::new();
+    for round in 0..2 {
+        let step = next_step(world, &mut n, 4)?;
+        check_eq!(
+            step,
+            Some(("quote_derived_mind".to_owned(), true)),
+            "round {round}: {}",
+            describe(world)
+        );
+        let listing = quoted(world)?;
+        check!(
+            !refused_listings.contains(&listing),
+            "round {round}: a refused listing is never quoted again ({listing})"
+        );
+        hold(world)?;
+        check_eq!(
+            pulse(world, &mut n)?,
+            Some(("purchase_derived_mind".to_owned(), false)),
+            "round {round}: the Fund, and only the Fund, is refused"
+        );
+        // The next fire sees no funded purchase: the listing is skipped, the
+        // page is paged, and nothing is queued.
+        check_eq!(pulse(world, &mut n)?, None, "round {round}: no second Fund");
+        let paged = describe(world);
+        let text: mush_core::CommitToken = serde_json::from_value(listing.clone())?;
+        check!(
+            paged.contains(&format!("fund refused {text}")),
+            "round {round}: {paged}"
+        );
+        release(world)?;
+        refused_listings.push(listing);
     }
+    check!(
+        refused_listings.first() != refused_listings.last(),
+        "the line's two listings, each quoted once"
+    );
     quiet(
         world,
         &mut n,
         4,
         "every listing is skipped; the month is closed",
     )?;
+    check!(
+        describe(world).contains("nothing affordable under the cap is listed"),
+        "{}",
+        describe(world)
+    );
     check!(ledger(world).is_empty());
     check_eq!(posted(world, treasury)?, Amount::from_minor(1000));
     check_eq!(
@@ -415,7 +471,6 @@ fn run(
     // 4. The buy. H1: after the agent quotes, the human member quotes the same
     //    line for the House (a NEWER quote on the House's row); the agent
     //    funds its OWN quote, never the member's.
-    limit(world, &BUDGET.to_string())?;
     restart(f, world, &house)?;
     let step = next_step(world, &mut n, 4)?;
     check_eq!(
@@ -439,16 +494,7 @@ fn run(
             .as_str()
     );
     // The listing the agent quoted: its newest quote for the House.
-    let listing = rows(&disk(world), "market", "market_mind_entitlement_quote")
-        .into_iter()
-        .filter(|q| q.get("buyer") == Some(&json!({"org": org, "acting": agent})))
-        .max_by_key(|q| {
-            q.get("quoted_at_utc")
-                .and_then(Value::as_i64)
-                .unwrap_or_default()
-        })
-        .and_then(|q| q.get("listing").cloned())
-        .ok_or("the agent's quote")?;
+    let listing = quoted(world)?;
     commit(
         world,
         "market",
@@ -468,7 +514,7 @@ fn run(
                 let hold = store(world)?
                     .snapshot()
                     .holds_of(treasury)
-                    .next()
+                    .find(|h| h.status == mush_economy::HoldStatus::Held)
                     .ok_or("the treasury's hold")?
                     .clone();
                 check_eq!(
@@ -620,9 +666,11 @@ fn run(
     world.engine.world.set_now(now);
 
     // 9. H3: next month, the agent buys, then loses its grant between the
-    //    Fund and the Grant. Three Grants and three Refunds are refused, the
-    //    escrow is paged for staff, and the policy moves on: nothing more is
-    //    queued.
+    //    Fund and the Grant, and the policy gains a backing faction the agent
+    //    is no member of. Settling runs before the standing gate (and before
+    //    the open-purchases read the revoked grant no longer passes): three
+    //    Grants and three Refunds are still queued (and refused), the escrow is
+    //    paged for staff, and the policy moves on: nothing more is queued.
     let month = crate::procurement::Period::of_ic(world.engine.world.world_ic_now().at);
     for _ in 0..64 {
         let next = world.engine.world.now().checked_add(86_400).ok_or("time")?;
@@ -667,6 +715,11 @@ fn run(
         "the Funded row, before any Grant"
     );
     world.say(GOD, &format!("@holder-grant-fixture revoke #{}", agent.0))?;
+    let standing = crate::launch::ProcurementPolicy {
+        standing: Some(mush_faction::FactionId(9_999)),
+        ..house.clone()
+    };
+    arm(world, &standing, true)?;
     let mut refused = Vec::new();
     for _ in 0..12 {
         match pulse(world, &mut n)? {
@@ -695,5 +748,11 @@ fn run(
         4,
         "the escrow is paged and the policy moves on",
     )?;
+    let paged = describe(world);
+    check!(paged.contains("escrow held"), "{paged}");
+    // No new buy follows: the revoked agent cannot read the House's open
+    // purchases, so the visit is refused there (round 2), before the standing
+    // gate is even asked.
+    check!(paged.contains("/open"), "the new buy is refused: {paged}");
     Ok(())
 }
