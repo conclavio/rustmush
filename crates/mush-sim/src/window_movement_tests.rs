@@ -1152,6 +1152,154 @@ fn passive_record_refuses_rebound_header_target_final_image_and_required_fields(
 }
 
 #[test]
+fn window_record_append_requires_the_exact_prepared_log_position_and_body() {
+    let mut rig = Rig::new();
+    let projected = rig.projected;
+    let capture = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    let record = WindowMovementRecord::decode(&passive_record_value(&capture, 0)).unwrap();
+    // A generic local Ledger is data-only test input, not a native owner patch.
+    let mut ledger = mush_core::Ledger::default();
+    let exact = ledger
+        .prepare_append(WINDOW_MOVEMENT_LOG, record.journal_value())
+        .unwrap();
+    history::check_append(&record, &exact).unwrap();
+    assert_eq!(ledger.next_seq(WINDOW_MOVEMENT_LOG), 0);
+    let wrong_log = ledger
+        .prepare_append("other", record.journal_value())
+        .unwrap();
+    assert!(history::check_append(&record, &wrong_log).is_err());
+    let mut body = record.journal_value();
+    body["at_utc"] = json!(999);
+    let wrong_body = ledger.prepare_append(WINDOW_MOVEMENT_LOG, body).unwrap();
+    assert!(history::check_append(&record, &wrong_body).is_err());
+    let _ = ledger
+        .apply_prepared(exact)
+        .expect("local fixture data only");
+    let wrong_position = ledger
+        .prepare_append(WINDOW_MOVEMENT_LOG, record.journal_value())
+        .unwrap();
+    assert!(history::check_append(&record, &wrong_position).is_err());
+    assert_eq!(rig.state().recovery.next_seq(WINDOW_MOVEMENT_LOG), 0);
+    assert_eq!(
+        rig.engine.world.get(rig.actor).unwrap().location,
+        Some(rig.source)
+    );
+}
+
+#[test]
+fn window_history_schema_cannot_be_registered_by_another_namespace() {
+    let mut registry = mush_core::Registry::new();
+    let mut reg = Registrar::new(&mut registry, "window_probe");
+    let error = WindowMovementHistory::register(&mut reg)
+        .err()
+        .expect("wrong owner");
+    assert!(error.to_string().contains("actual Sim owner"));
+}
+
+#[test]
+fn passive_window_journal_join_refuses_missing_changed_duplicate_and_gapped_entries() {
+    let mut rig = Rig::new();
+    let projected = rig.projected;
+    let capture = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    // Only passive wire/journal matching is exercised here. These fixture
+    // bytes cannot satisfy the public audit's separate genuine Core join.
+    let record = WindowMovementRecord::decode(&passive_record_value(&capture, 0)).unwrap();
+    let document = json!({"chunk":0,"sealed":false,
+        "entries":[{"seq":0,"value":record.journal_value()}]});
+    let data = |document: &Value| mush_core::ModuleBootData {
+        ledger: vec![(
+            mush_core::chunk_key(WINDOW_MOVEMENT_LOG, 0),
+            serde_json::to_string(document).unwrap(),
+        )],
+        ..Default::default()
+    };
+    let lookup = |commit: &CommitToken| Ok((*commit == record.commit()).then_some(&record));
+    assert_eq!(
+        history::journal_commits(&data(&document), lookup).unwrap(),
+        BTreeSet::from([record.commit()])
+    );
+    assert!(history::journal_commits(&data(&document), |_| Ok(None)).is_err());
+    for change in 0..8 {
+        let mut changed = document.clone();
+        match change {
+            0 => changed["entries"][0]["value"]["at_utc"] = json!(999),
+            1 => changed["entries"][0]["value"]["commit"] = json!(CommitToken::from_bytes([9; 16])),
+            2 => changed["entries"][0]["seq"] = json!(1),
+            3 => {
+                let duplicate = json!({"seq":1,"value":record.journal_value()});
+                changed["entries"].as_array_mut().unwrap().push(duplicate);
+            }
+            4 => changed["entries"][0]["value"]["extra"] = json!(true),
+            5 => {
+                changed["entries"][0]["value"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("commit");
+            }
+            6 => changed["entries"][0]["extra"] = json!(true),
+            _ => changed["chunk"] = json!(1),
+        }
+        assert!(
+            history::journal_commits(&data(&changed), lookup).is_err(),
+            "case {change}"
+        );
+    }
+    let mut duplicate_chunk = data(&document);
+    duplicate_chunk
+        .ledger
+        .push(duplicate_chunk.ledger[0].clone());
+    assert!(history::journal_commits(&duplicate_chunk, lookup).is_err());
+    let mut missing_first = data(&document);
+    missing_first.ledger[0].0 = mush_core::chunk_key(WINDOW_MOVEMENT_LOG, 1);
+    let mut later = document;
+    later["chunk"] = json!(1);
+    missing_first.ledger[0].1 = serde_json::to_string(&later).unwrap();
+    assert!(history::journal_commits(&missing_first, lookup).is_err());
+}
+
+#[test]
+fn native_window_journal_bounds_precede_copying_and_other_owner_logs_stay_separate() {
+    let mut data = mush_core::ModuleBootData {
+        ledger: vec![("log:other:0".into(), "x".repeat(8 * 1024 * 1024 + 1))],
+        ..Default::default()
+    };
+    assert!(history::journal_docs(&data).unwrap().is_empty());
+    data.ledger[0].0 = format!("log:{WINDOW_MOVEMENT_LOG}:0").into();
+    assert!(history::journal_docs(&data).is_err());
+    data.ledger = (0..=4096)
+        .map(|n| {
+            (
+                format!("log:{WINDOW_MOVEMENT_LOG}:{n}").into(),
+                String::new(),
+            )
+        })
+        .collect();
+    assert!(history::journal_docs(&data).is_err());
+    data.ledger = vec![(
+        format!("log:{WINDOW_MOVEMENT_LOG}:{}", "9".repeat(129)).into(),
+        String::new(),
+    )];
+    assert!(history::journal_docs(&data).is_err());
+    data.ledger = vec![(
+        format!("log:{WINDOW_MOVEMENT_LOG}:00").into(),
+        String::new(),
+    )];
+    assert!(history::journal_docs(&data).is_err());
+    data.ledger.clear();
+    data.kv
+        .push((format!("log:{WINDOW_MOVEMENT_LOG}:0").into(), json!({})));
+    assert!(history::journal_docs(&data).is_err());
+}
+
+#[test]
 fn real_release_and_place_phases_match_legacy_application_without_publication() {
     let mut rig = Rig::new();
     let target = WindowTarget::at(DomainId(1), 30, 40, 50);

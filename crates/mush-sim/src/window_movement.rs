@@ -18,6 +18,8 @@ use crate::transition::{Plan, Transition};
 
 #[path = "window_evidence.rs"]
 mod evidence;
+#[path = "window_history.rs"]
+mod history;
 #[path = "window_native_fence.rs"]
 mod native_fence;
 #[path = "window_ordered.rs"]
@@ -25,6 +27,7 @@ mod ordered;
 #[path = "window_record.rs"]
 mod record;
 pub use evidence::{WindowMovementEvidence, validate_evidence};
+pub use history::{WINDOW_MOVEMENT_LOG, WindowMovementHistory};
 pub use ordered::{OrderedWindowMovementCapture, capture_ordered};
 pub use record::WindowMovementRecord;
 

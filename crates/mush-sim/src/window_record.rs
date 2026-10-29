@@ -129,6 +129,20 @@ impl WindowMovementRecord {
     pub fn journal_value(&self) -> Value {
         self.wire.journal_value()
     }
+    pub fn matches_journal_entry(
+        &self,
+        sequence: u64,
+        value: &Value,
+    ) -> Result<(), ParticipantError> {
+        preflight(value)?;
+        if sequence != self.wire.journal.sequence
+            || journal_digest(value)? != self.wire.journal.digest
+            || *value != self.wire.journal_value()
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
     pub fn evidence(&self) -> Result<WindowMovementEvidence, ParticipantError> {
         self.wire.validate()
     }
