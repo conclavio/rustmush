@@ -3,6 +3,58 @@
 use super::*;
 
 #[test]
+fn deployment_projection_fingerprint_bounds_marks_and_text_before_encoding() {
+    let mut test =
+        mush_testkit::TestWorld::with_modules(vec![Box::new(crate::SimulationModule::new())]);
+    let actual = |w: &mush_core::World| {
+        deployment_fingerprint(
+            w.module_state::<crate::DeployedUnits>()
+                .expect("registered index"),
+        )
+    };
+    let empty = actual(test.world()).expect("empty index");
+    for unit in 0..4096 {
+        crate::deployed::mark(
+            test.world_mut(),
+            ObjId(unit),
+            crate::DeployedMark::new(1, "arena"),
+        );
+    }
+    let full = actual(test.world()).expect("4096 marks");
+    assert_ne!(full, empty);
+    crate::deployed::mark(
+        test.world_mut(),
+        ObjId(4096),
+        crate::DeployedMark::new(1, "arena"),
+    );
+    assert_eq!(actual(test.world()), Err(OwnerReadError::Limit));
+    for unit in 0..=4096 {
+        crate::deployed::clear(test.world_mut(), ObjId(unit));
+    }
+    crate::deployed::mark(
+        test.world_mut(),
+        ObjId(1),
+        crate::DeployedMark::new(1, "x".repeat(1025)),
+    );
+    assert_eq!(actual(test.world()), Err(OwnerReadError::Limit));
+    crate::deployed::clear(test.world_mut(), ObjId(1));
+    for unit in 0..64 {
+        crate::deployed::mark(
+            test.world_mut(),
+            ObjId(unit),
+            crate::DeployedMark::new(1, "x".repeat(1024)),
+        );
+    }
+    assert!(actual(test.world()).is_ok());
+    crate::deployed::mark(
+        test.world_mut(),
+        ObjId(64),
+        crate::DeployedMark::new(1, "x"),
+    );
+    assert_eq!(actual(test.world()), Err(OwnerReadError::Limit));
+}
+
+#[test]
 fn journey_fingerprints_bound_selected_roots_and_refuse_any_held_record() {
     let mut book = JourneyBook::default();
     assert_eq!(
