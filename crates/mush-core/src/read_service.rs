@@ -4,7 +4,7 @@
 //! caller-made owner lens escapes.
 
 use std::any::{Any, TypeId};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Write};
@@ -94,6 +94,8 @@ impl OwnerReadCaller {
 /// budget. The result is owned and 'static, so no borrowed typed row escapes.
 pub struct OwnerReadContext<'a> {
     world: &'a World,
+    state: Option<&'a (dyn Any + Send)>,
+    state_guard: RefCell<Option<Box<dyn StateReadGuard>>>,
     typed: ModuleActionState<'a>,
     caller: &'a OwnerReadCaller,
     reads: Cell<u16>,
@@ -101,6 +103,36 @@ pub struct OwnerReadContext<'a> {
     exhausted: Cell<bool>,
 }
 impl<'a> OwnerReadContext<'a> {
+    /// Retain one bounded, pure fingerprint of this service's actual state.
+    /// The projection must use only the provided state and immutable captured
+    /// request data. Core evaluates it at final validation; the service call
+    /// itself is never replayed. A second guard or failed projection poisons
+    /// this read. Typed-family reads keep their existing guards.
+    pub fn guard_state<T, F>(&self, snapshot: F) -> Result<DefinitionDigest, OwnerReadError>
+    where
+        T: Any + Send,
+        F: Fn(&T) -> Result<DefinitionDigest, OwnerReadError> + Send + 'static,
+    {
+        if self.exhausted.get() {
+            return Err(OwnerReadError::Limit);
+        }
+        self.exhausted.set(true);
+        if self.state_guard.borrow().is_some() {
+            return Err(OwnerReadError::Limit);
+        }
+        let state = self
+            .state
+            .and_then(|state| state.downcast_ref::<T>())
+            .ok_or(OwnerReadError::Integrity)?;
+        let original = snapshot(state)?;
+        *self.state_guard.borrow_mut() = Some(Box::new(TypedStateReadGuard::<T, F> {
+            original,
+            snapshot,
+            marker: PhantomData,
+        }));
+        self.exhausted.set(false);
+        Ok(original)
+    }
     pub const fn world(&self) -> &'a World {
         self.world
     }
@@ -456,6 +488,8 @@ impl OwnerReadRegistry {
         }
         let context = OwnerReadContext {
             world,
+            state: Some(state),
+            state_guard: RefCell::new(None),
             typed: ModuleActionState::for_module(lens, Some(r.owner.as_str())),
             caller,
             reads: Cell::new(0),
@@ -468,6 +502,9 @@ impl OwnerReadRegistry {
         }
         // Complete every module callback before the final readiness/slot check.
         encoded_size(&result, MAX_OWNER_READ_RESULT_BYTES)?;
+        if let Some(guard) = context.state_guard.borrow().as_ref() {
+            guard.recheck(state)?;
+        }
         ready()?;
         if world.participant_captured_slot(&capture).is_none() {
             return Err(OwnerReadError::Integrity);
@@ -481,6 +518,7 @@ impl OwnerReadRegistry {
                 dependencies: r.dependencies.clone(),
                 capture,
                 readiness: self.readiness.clone(),
+                state_guard: context.state_guard.into_inner(),
             },
         ))
     }
@@ -493,6 +531,29 @@ struct ReadObservation {
     dependencies: BTreeSet<OwnerId>,
     capture: crate::module::ErasedSlotCapture,
     readiness: MechanicalOwnerReadiness,
+    state_guard: Option<Box<dyn StateReadGuard>>,
+}
+
+trait StateReadGuard: Send {
+    fn recheck(&self, state: &(dyn Any + Send)) -> Result<(), OwnerReadError>;
+}
+struct TypedStateReadGuard<T, F> {
+    original: DefinitionDigest,
+    snapshot: F,
+    marker: PhantomData<fn() -> T>,
+}
+impl<T, F> StateReadGuard for TypedStateReadGuard<T, F>
+where
+    T: Any + Send,
+    F: Fn(&T) -> Result<DefinitionDigest, OwnerReadError> + Send + 'static,
+{
+    fn recheck(&self, state: &(dyn Any + Send)) -> Result<(), OwnerReadError> {
+        let state = state.downcast_ref::<T>().ok_or(OwnerReadError::Integrity)?;
+        if (self.snapshot)(state)? != self.original {
+            return Err(OwnerReadError::Integrity);
+        }
+        Ok(())
+    }
 }
 
 /// Core-owned proof of which registered services were actually called. No
@@ -527,8 +588,18 @@ impl ReadObservations {
             {
                 return Err(ParticipantError::Slot);
             }
+            if let Some(guard) = &r.state_guard {
+                let state = world
+                    .participant_captured_slot(&r.capture)
+                    .ok_or(ParticipantError::Slot)?;
+                guard
+                    .recheck(state)
+                    .map_err(|_| ParticipantError::refused("owner read state changed"))?;
+            }
         }
-        Ok(())
+        // Fingerprint projections are owner code too, so complete them before
+        // the final readiness check just as at the original service call.
+        self.require_ready()
     }
 
     /// Callback-free final latch check while owner slots are mutably bound.
@@ -639,6 +710,8 @@ impl<'a> OwnerReadContext<'a> {
     ) -> Self {
         Self {
             world,
+            state: None,
+            state_guard: RefCell::new(None),
             typed: ModuleActionState::for_module(lens, Some(owner)),
             caller,
             reads: Cell::new(0),
