@@ -202,6 +202,71 @@ Production's composed manifest now covers Scenes and both Atlas callbacks,
 leaving five explicit callback blockers. Personnel crossing evidence stays
 uncertified, and ordinary command routing remains disabled.
 
+## Bounded window-arrival planning
+
+Atlas can now capture the original window arrival as a read-only plan. It shares
+the actual entry-cell selector and room resolver with legacy placement: first
+covering selection before the drawn check, first matching portal in either
+direction, a second lookup by that portal's record key, first matching surface,
+all non-custodied participants' occupied xy cells (including the actor and
+other heights), and distance/y/x entry ordering. The planned pose uses a fresh
+passive posture. Overlapping surfaces can project it into a different room;
+the plan retains the actual resolver result rather than assuming the admitted
+destination.
+
+The plan separately retains any release selected before the placement attempt.
+A full destination does not erase that release or imply it succeeded. Missing
+slots, undrawn or inconsistent window lookups, absent geometry, absent room
+indices and no free cells remain distinct observations or attempt results.
+
+Rechecking recaptures the original actor, route and UTC. Selected geometry is
+hashed from actual bounded surfaces, cell data, room tables and footprint
+inputs, not a cached composite digest or revision alone. Portal captures
+include the real scanned prefix and second geometry lookup. Occupancy captures
+copy only ids, revisions, xy and the actual arena-exclusion result; opaque
+participant postures and World are never cloned. Nonfinite footprint and
+portal coordinates retain their original float bits in the fingerprints,
+including when legacy selection falls back to the footprint or grid centre.
+
+Explicit planning refuses oversized or unsafe inputs before copying or
+encoding them: eight surfaces, 65,536 cells and 4,096 room ids per surface,
+4,096 placement rows, 4,096 scanned portals with 64 KiB of aggregate keys,
+the existing footprint point bound, and checked grid dimensions/coordinates.
+Selector and occupancy encodings have separate 8 MiB and 1 MiB caps; the final
+plan is at most 256 KiB. These are explicit planning bounds, not new limits on
+ordinary legacy placement.
+
+This cut supplies observations and an attempted entry pose only. It has no
+decoder, write capability, authority definition or command route. Genuine Sim
+placement admission, compound Core projection, owner binds, output custody and
+new versioned historical verifiers remain prerequisites for window completion.
+Existing v1 definitions and the refusal of open-window composed movement remain.
+
+## Bounded Core movement preview
+
+A genuine locomotion admission can now produce an owned, read-only Core object
+preview for the admitted move and one hypothetical subsequent room projection.
+The ordinary image path shares its row builder. The projected preview reads
+the first move's bounded postimages over original tracked World facts; it never
+clones World or accepts caller object rows. Only captured objects are readable,
+and unobserved scope is an error. Original admission object facts remain fenced
+independently from the image's bounded dependency census.
+
+Both steps share the existing 512-object/1 MiB image-read budget and the
+256-object carried-subtree cap. The second step repeats the actual containment,
+inverse-membership, live-object, cycle and depth checks over that overlay. At
+most four objects are touched: actor, original source, admitted room and final
+projection. Returning to the source does not collapse into a no-op: the actor
+can move to the end of its contents, and the intermediate room still receives
+the original preparation UTC. Genuine self-loops preserve their bytes.
+
+The preview is neither a Sim placement decision nor an installation capability.
+It exposes no decoder, receipt, write list or publication method. Existing v1
+images still accept only the admitted move. A joint window protocol must bind
+its real Sim/Atlas projection and any participant-behavior attachment, supply
+new historical verifiers, and retain durable map output before selecting these
+effects in a live route.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

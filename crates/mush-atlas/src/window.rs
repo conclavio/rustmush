@@ -1329,20 +1329,32 @@ pub fn entry_cell(
         .find(|(_, s)| s.surface == geo.surface)?;
     let index = u16::try_from(surface.rooms.iter().position(|r| *r == room)? + 1).ok()?;
     let taken = occupied(w, domain, surface);
-    let free: Vec<(u16, u16)> = surface
+    let geometry = portal
+        .and_then(|key| records.portals.get(key))
+        .map(|p| &p.geometry);
+    let (x, y) = entry_cell_on_surface(surface, index, geo, geometry, &taken)?;
+    Some((si, x, y))
+}
+
+/// The selector shared by legacy placement and bounded movement planning.
+pub(crate) fn entry_cell_on_surface(
+    surface: &SurfaceComposite,
+    index: u16,
+    geo: &RoomGeo,
+    portal: Option<&crate::record::PortalGeometry>,
+    taken: &BTreeSet<(u16, u16)>,
+) -> Option<(u16, u16)> {
+    let mut free = surface
         .cells
         .iter()
         .filter(|(x, y, c)| c.room == index && standable(*c) && !taken.contains(&(*x, *y)))
         .map(|(x, y, _)| (x, y))
-        .collect();
-    if free.is_empty() {
-        return None;
-    }
+        .peekable();
+    free.peek()?;
     // The doorway's own cell centre is the target, so the entry cell lines up
     // with the door rather than beside it.
     let target: PointCm = portal
-        .and_then(|k| records.portals.get(k))
-        .and_then(|p| match &p.geometry {
+        .and_then(|geometry| match geometry {
             crate::record::PortalGeometry::Segment(a, b) => {
                 let a = a.xy().to_cm().ok()?;
                 let b = b.xy().to_cm().ok()?;
@@ -1361,13 +1373,12 @@ pub fn entry_cell(
                 .shape()
                 .map_or(surface.grid.centre(0, 0), |s| s.centre())
         });
-    let best = free.iter().copied().min_by_key(|&(x, y)| {
+    free.min_by_key(|&(x, y)| {
         let c = surface.grid.centre(x, y);
         let dx = c.x - target.x;
         let dy = c.y - target.y;
         (dx * dx + dy * dy, y, x)
-    })?;
-    Some((si, best.0, best.1))
+    })
 }
 
 /// Place `obj` in `room` on `domain`'s map (doc 14 §3.4 *Placement*).
@@ -1414,6 +1425,15 @@ pub fn resolve_room(w: &World, domain: DomainId, pose: &Pose) -> Option<ObjId> {
     let st = w.module_state::<AtlasState>()?;
     let entry = st.windows.open.get(&domain.0)?;
     let composite = entry.composite.as_ref()?;
+    resolve_composite_room(composite, st.limits.nearest_room_cells, pose)
+}
+
+/// The actual room projection policy over an already selected composite.
+pub(crate) fn resolve_composite_room(
+    composite: &Composite,
+    reach: u32,
+    pose: &Pose,
+) -> Option<ObjId> {
     let p = pose_cm(pose);
     let z_cm = i64::from(pose.z_cm);
     // The surface: the one whose ground at the pose is nearest its height.
@@ -1435,7 +1455,6 @@ pub fn resolve_room(w: &World, domain: DomainId, pose: &Pose) -> Option<ObjId> {
     if let Some(room) = surface.room_at(x, y) {
         return Some(room);
     }
-    let reach = st.limits.nearest_room_cells;
     let mut best: Option<(u32, ObjId)> = None;
     for (cx, cy, cell) in surface.cells.iter() {
         if cell.room == 0 {
