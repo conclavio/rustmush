@@ -254,11 +254,9 @@ impl OperationalState {
     pub const fn epoch_disposition(self) -> FieldEpochDisposition {
         match self {
             Self::Irrecoverable => FieldEpochDisposition::CloseDestroyed,
-            Self::Operational
-            | Self::Immobile
-            | Self::Unarmed
-            | Self::Disabled
-            | Self::Wreck => FieldEpochDisposition::RemainOpen,
+            Self::Operational | Self::Immobile | Self::Unarmed | Self::Disabled | Self::Wreck => {
+                FieldEpochDisposition::RemainOpen
+            }
         }
     }
 }
@@ -543,9 +541,12 @@ pub fn assess_tactical_unit(
         .values()
         .any(|c| *c == SectionCondition::Irrecoverable);
     let all_sections_destroyed = !section_conditions.is_empty()
-        && section_conditions
-            .values()
-            .all(|c| matches!(c, SectionCondition::Destroyed | SectionCondition::Irrecoverable));
+        && section_conditions.values().all(|c| {
+            matches!(
+                c,
+                SectionCondition::Destroyed | SectionCondition::Irrecoverable
+            )
+        });
 
     let core_wrecked_or_destroyed = !anatomy.core_sections.is_empty()
         && anatomy.core_sections.iter().any(|sec_id| {
@@ -736,13 +737,9 @@ pub fn ic_condition_plan(
             .component(comp_id)
             .ok_or_else(|| ConditionError::MissingComponent(comp_id.clone()))?;
         let target_cond = if let Some(profile) = anatomy {
-            let eff = effective_component_condition(
-                after,
-                comp_id,
-                &target_section_conditions,
-                profile,
-            )
-            .unwrap_or(ComponentCondition::Intact);
+            let eff =
+                effective_component_condition(after, comp_id, &target_section_conditions, profile)
+                    .unwrap_or(ComponentCondition::Intact);
             eff.to_condition_id().map_err(ConditionError::Unit)?
         } else {
             after_comp.condition.clone()
@@ -759,8 +756,8 @@ pub fn ic_condition_plan(
         return Ok(None);
     }
 
-    let plan = UnitMutationPlan::new(ops, Some(before.revision()), cause)
-        .map_err(ConditionError::Unit)?;
+    let plan =
+        UnitMutationPlan::new(ops, Some(before.revision()), cause).map_err(ConditionError::Unit)?;
     Ok(Some(plan))
 }
 
@@ -1180,7 +1177,10 @@ impl FieldCustodyLedger {
         }
         if (current.operational_state == OperationalState::Irrecoverable
             || req.operational_state == OperationalState::Irrecoverable)
-            && matches!(req.next_authority, FieldAuthorityKind::CombatInstance { .. })
+            && matches!(
+                req.next_authority,
+                FieldAuthorityKind::CombatInstance { .. }
+            )
         {
             return Err(ConditionError::IrrecoverableUnitCannotEnterCombat(req.unit));
         }

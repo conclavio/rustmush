@@ -374,10 +374,7 @@ mod tests {
         check!(initial.can_move);
         check!(initial.can_fire);
         check!(!initial.is_towable);
-        check_eq!(
-            initial.epoch_disposition,
-            FieldEpochDisposition::RemainOpen
-        );
+        check_eq!(initial.epoch_disposition, FieldEpochDisposition::RemainOpen);
         check_eq!(initial.intact_components.len(), 5);
 
         let head = SectionId::new("head")?;
@@ -738,28 +735,16 @@ mod tests {
         let tug_mass_kg = 20_000;
         let base_speed_cms = 1_200;
 
-        let speed_half = scaled_tow_speed_cms(
-            base_speed_cms,
-            tug_mass_kg,
-            10_000,
-            TowRigProfile::Standard,
-        )?;
+        let speed_half =
+            scaled_tow_speed_cms(base_speed_cms, tug_mass_kg, 10_000, TowRigProfile::Standard)?;
         check_eq!(speed_half, 840);
 
-        let speed_equal = scaled_tow_speed_cms(
-            base_speed_cms,
-            tug_mass_kg,
-            20_000,
-            TowRigProfile::Standard,
-        )?;
+        let speed_equal =
+            scaled_tow_speed_cms(base_speed_cms, tug_mass_kg, 20_000, TowRigProfile::Standard)?;
         check_eq!(speed_equal, 660);
 
-        let speed_double = scaled_tow_speed_cms(
-            base_speed_cms,
-            tug_mass_kg,
-            40_000,
-            TowRigProfile::Standard,
-        )?;
+        let speed_double =
+            scaled_tow_speed_cms(base_speed_cms, tug_mass_kg, 40_000, TowRigProfile::Standard)?;
         check_eq!(speed_double, 300);
 
         check!(speed_half > speed_equal);
@@ -775,12 +760,7 @@ mod tests {
         check!(opt_double > speed_double);
 
         check_eq!(
-            scaled_tow_speed_cms(
-                base_speed_cms,
-                tug_mass_kg,
-                40_001,
-                TowRigProfile::Standard,
-            ),
+            scaled_tow_speed_cms(base_speed_cms, tug_mass_kg, 40_001, TowRigProfile::Standard,),
             Err(RecoveryError::ExceedsTonnageCap {
                 tug_mass_kg: 20_000,
                 casualty_mass_kg: 40_001,

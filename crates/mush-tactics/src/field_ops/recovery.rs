@@ -142,7 +142,9 @@ impl From<UnitMassProfile> for UnitMassProfileWire {
 }
 
 /// Towing rig profile of the towing unit (`FO-13`, `Q-S6`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TowRigProfile {
     /// Universal baseline tow coupling available to any mobile unit.
@@ -349,13 +351,15 @@ pub fn inspect_field_unit(
     let tow_evaluation = tug_ctx.map(|ctx| {
         let casualty_mass_kg = mass.total_mass_kg();
         let max_casualty_mass_kg = ctx.tug_mass_kg.saturating_mul(2);
-        let mass_ratio_permille = (ctx.tug_mass_kg > 0)
-            .then(|| casualty_mass_kg.saturating_mul(1_000) / ctx.tug_mass_kg);
+        let mass_ratio_permille =
+            (ctx.tug_mass_kg > 0).then(|| casualty_mass_kg.saturating_mul(1_000) / ctx.tug_mass_kg);
         let distance_cm = ctx.tug_pose.distance_cm_to(&pose);
 
         let refusal = if ctx.tug == target {
             Some("self_tow")
-        } else if !ctx.tug_state.is_operational() || !ctx.tug_can_move || ctx.tug_base_speed_cms == 0
+        } else if !ctx.tug_state.is_operational()
+            || !ctx.tug_can_move
+            || ctx.tug_base_speed_cms == 0
         {
             Some("tug_not_mobile")
         } else if !assessment.state.is_towable() {
@@ -983,10 +987,7 @@ impl RecoveryBook {
     ///
     /// # Errors
     /// Returns [`RecoveryError`] if attachment preconditions or the `2×` tonnage cap fail.
-    pub fn attach(
-        &mut self,
-        req: AttachTowRequest,
-    ) -> Result<&RecoveryOperation, RecoveryError> {
+    pub fn attach(&mut self, req: AttachTowRequest) -> Result<&RecoveryOperation, RecoveryError> {
         let casualty = req.casualty_assessment.unit;
         if req.tug.0 == 0 {
             return Err(RecoveryError::InvalidObjectId("tug"));
@@ -1039,13 +1040,13 @@ impl RecoveryBook {
             });
         }
 
-        let distance_cm = req
-            .tug_pose
-            .distance_cm_to(&req.casualty_pose)
-            .ok_or(RecoveryError::SiteMismatch {
-                tug_site: req.tug_pose.site,
-                target_site: req.casualty_pose.site,
-            })?;
+        let distance_cm =
+            req.tug_pose
+                .distance_cm_to(&req.casualty_pose)
+                .ok_or(RecoveryError::SiteMismatch {
+                    tug_site: req.tug_pose.site,
+                    target_site: req.casualty_pose.site,
+                })?;
         if distance_cm > req.max_attach_distance_cm {
             return Err(RecoveryError::OutOfAttachRange {
                 distance_cm,
@@ -1081,9 +1082,7 @@ impl RecoveryBook {
             coupled_speed_cms,
             casualty_state: req.casualty_assessment.state,
             casualty_unit_revision: req.casualty_assessment.unit_revision,
-            stage: RecoveryStage::Attached {
-                pose: req.tug_pose,
-            },
+            stage: RecoveryStage::Attached { pose: req.tug_pose },
             started_at_ic: req.at_ic,
             updated_at_ic: req.at_ic,
         };
@@ -1133,12 +1132,13 @@ impl RecoveryBook {
             .stage
             .active_pose()
             .ok_or(RecoveryError::OperationNotActive(id))?;
-        let step_dist_cm = prev_pose
-            .distance_cm_to(&next_pose)
-            .ok_or(RecoveryError::SiteMismatch {
-                tug_site: prev_pose.site,
-                target_site: next_pose.site,
-            })?;
+        let step_dist_cm =
+            prev_pose
+                .distance_cm_to(&next_pose)
+                .ok_or(RecoveryError::SiteMismatch {
+                    tug_site: prev_pose.site,
+                    target_site: next_pose.site,
+                })?;
         let max_step_cm = u64::from(current.coupled_speed_cms)
             .checked_mul(u64::from(dt_secs))
             .ok_or(RecoveryError::MassOverflow)?;
@@ -1295,12 +1295,13 @@ impl RecoveryBook {
             .stage
             .active_pose()
             .ok_or(RecoveryError::OperationNotActive(id))?;
-        let distance_cm = tow_pose
-            .distance_cm_to(&carrier_pose)
-            .ok_or(RecoveryError::SiteMismatch {
-                tug_site: tow_pose.site,
-                target_site: carrier_pose.site,
-            })?;
+        let distance_cm =
+            tow_pose
+                .distance_cm_to(&carrier_pose)
+                .ok_or(RecoveryError::SiteMismatch {
+                    tug_site: tow_pose.site,
+                    target_site: carrier_pose.site,
+                })?;
         if distance_cm > max_load_distance_cm {
             return Err(RecoveryError::OutOfAttachRange {
                 distance_cm,
@@ -1626,7 +1627,9 @@ impl fmt::Display for RecoveryError {
                 f,
                 "unit dimensions must be non-zero (got {width_cm}x{height_cm} cm)"
             ),
-            Self::MassOverflow => f.write_str("arithmetic overflow in mass or distance calculation"),
+            Self::MassOverflow => {
+                f.write_str("arithmetic overflow in mass or distance calculation")
+            }
             Self::ZeroTugBaseSpeed => f.write_str("tug base speed must be non-zero"),
             Self::ExceedsTonnageCap {
                 tug_mass_kg,
@@ -1692,7 +1695,9 @@ impl fmt::Display for RecoveryError {
                 f,
                 "revision mismatch on {id}: expected {expected}, actual {actual}"
             ),
-            Self::OperationNotActive(id) => write!(f, "recovery operation {id} is no longer active"),
+            Self::OperationNotActive(id) => {
+                write!(f, "recovery operation {id} is no longer active")
+            }
             Self::TimestampRegression { previous, proposed } => write!(
                 f,
                 "timestamp regression: previous {previous}, proposed {proposed}"
@@ -1731,7 +1736,10 @@ impl fmt::Display for RecoveryError {
             Self::BaySlotFull {
                 current_units,
                 max_units,
-            } => write!(f, "carrier bay slot full ({current_units}/{max_units} units)"),
+            } => write!(
+                f,
+                "carrier bay slot full ({current_units}/{max_units} units)"
+            ),
             Self::BayDimensionExceeded {
                 unit_width_cm,
                 unit_height_cm,

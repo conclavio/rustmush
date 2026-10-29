@@ -26,7 +26,7 @@ use smol_str::SmolStr;
 
 use crate::arena::damage::{HULL_SECTION, POWER_CAPABILITY, UnitReturn, WEAPON_CAPABILITY_PREFIX};
 use crate::definitions::unit::{
-    AMMO_CELL, ComponentRole, CONDITION_CELL, Consequence, INTERNALS_CELL, UnitSpec,
+    AMMO_CELL, CONDITION_CELL, ComponentRole, Consequence, INTERNALS_CELL, UnitSpec,
 };
 
 /// Default dry-mass conversion factor (`kg` per maximum armor + internals point)
@@ -286,11 +286,7 @@ pub fn apply_ic_condition_handoff(
     .map_err(FieldOpsError::Condition)?;
 
     let post_unit = match &plan_opt {
-        Some(plan) => {
-            apply(before, plan, at_ic)
-                .map_err(FieldOpsError::Unit)?
-                .0
-        }
+        Some(plan) => apply(before, plan, at_ic).map_err(FieldOpsError::Unit)?.0,
         None => before.clone(),
     };
     let assessment = assess_tactical_unit(&post_unit, &anatomy);
@@ -590,12 +586,8 @@ mod tests {
         check_eq!(cannon_ammo_after, cannon_ammo_before - 2);
 
         check!(
-            validate_ic_close_for_unit(
-                ic_unit.object(),
-                assessment.state,
-                IcCloseKind::Destroyed
-            )
-            .is_err()
+            validate_ic_close_for_unit(ic_unit.object(), assessment.state, IcCloseKind::Destroyed)
+                .is_err()
         );
         check!(
             validate_ic_close_for_unit(
