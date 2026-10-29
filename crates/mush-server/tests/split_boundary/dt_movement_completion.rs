@@ -132,3 +132,42 @@ fn actual_scenes_adapter_covers_only_its_callback_in_the_complete_production_man
     assert_eq!(retained.digest()?, frozen.digest());
     Ok(())
 }
+
+#[test]
+fn composed_action_resolves_the_distinct_actual_scenes_group_and_retains_other_blockers()
+-> TestResult {
+    let engine = production()?;
+    let definitions = engine.registry.definitions().ok_or("definitions")?;
+    let action = definitions
+        .iter()
+        .find(|entry| {
+            entry.reference().key().owner.as_str() == "sim"
+                && entry.reference().key().kind.as_str() == "action"
+                && entry.reference().key().id.as_str() == mush_core::locomotion::composed::ACTION
+        })
+        .ok_or("composed action")?
+        .reference();
+    let snapshot = engine
+        .registry
+        .movement_completion_manifest(action)
+        .ok_or("manifest")?
+        .snapshot();
+    assert_eq!(snapshot.entries().len(), 8);
+    assert_eq!(snapshot.groups().len(), 1);
+    assert_eq!(snapshot.groups()[0].ordinals(), &[0]);
+    assert_eq!(
+        snapshot.groups()[0].participant().key().id.as_str(),
+        mush_scenes::movement_composed::PARTICIPANT
+    );
+    assert!(snapshot.has_blockers());
+    assert_eq!(
+        snapshot
+            .entries()
+            .iter()
+            .filter(|entry| entry.coverage()
+                == mush_core::locomotion::completion::MovementCoverage::LegacyBlocker)
+            .count(),
+        7
+    );
+    Ok(())
+}

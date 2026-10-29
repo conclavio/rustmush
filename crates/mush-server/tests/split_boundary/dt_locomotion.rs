@@ -104,15 +104,21 @@ pub(super) async fn fixture(store: &InMemoryStore, kind: ObjKind) -> TestResult<
     })
 }
 
-fn token() -> CommitToken {
-    CommitToken::from_bytes([0xa9; 16])
-}
-
 fn stage(rig: &mut Rig, line: &str) -> TestResult {
     stage_action(rig, line, mush_core::locomotion::transition::ACTION)
 }
 
 pub(super) fn stage_action(rig: &mut Rig, line: &str, action_id: &str) -> TestResult {
+    stage_action_with_nonce(rig, line, action_id, 0xa9)
+}
+
+pub(super) fn stage_action_with_nonce(
+    rig: &mut Rig,
+    line: &str,
+    action_id: &str,
+    nonce: u8,
+) -> TestResult {
+    let token = CommitToken::from_bytes([nonce; 16]);
     let action = rig
         .world
         .engine()
@@ -126,7 +132,7 @@ pub(super) fn stage_action(rig: &mut Rig, line: &str, action_id: &str) -> TestRe
         })
         .cloned()
         .ok_or("locomotion action")?;
-    let request = RequestUid::from_bytes([0xa9; 16]);
+    let request = RequestUid::from_bytes([nonce; 16]);
     let principal = PrincipalId::Object { id: rig.actor };
     let invocation = ActionInvocation::new(ActionInvocationDraft {
         request,
@@ -157,7 +163,7 @@ pub(super) fn stage_action(rig: &mut Rig, line: &str, action_id: &str) -> TestRe
         captured,
         &action,
         &invocation,
-        token(),
+        token,
     )?;
     let (outcome, resolution, mut definitions, eligible_witnesses, durable_outbox, semantic_events) =
         output.into_parts();
@@ -165,7 +171,7 @@ pub(super) fn stage_action(rig: &mut Rig, line: &str, action_id: &str) -> TestRe
     definitions.sort();
     definitions.dedup();
     let bundle = AuthoritativeBundle::new(AuthoritativeBundleDraft {
-        token: token(),
+        token,
         request,
         idempotency: invocation.idempotency().clone(),
         ingress_hash: CanonicalHash::from_bytes([0xaa; 32]),
@@ -177,7 +183,7 @@ pub(super) fn stage_action(rig: &mut Rig, line: &str, action_id: &str) -> TestRe
         definitions,
         writes: prepared.authoritative_replay_writes(),
         outcome,
-        resolution: resolution.map(|resolution| resolution.bind(token())),
+        resolution: resolution.map(|resolution| resolution.bind(token)),
         semantic_events,
         eligible_witnesses,
         durable_outbox,

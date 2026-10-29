@@ -31,13 +31,25 @@ fn bad(error: impl std::fmt::Display) -> ModError {
     ModError::msg(error.to_string())
 }
 
-pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
-    let descriptor = scene_transition::scenes_participant_descriptor()?;
+pub(crate) fn register(
+    reg: &mut Registrar<'_>,
+    atomic: bool,
+    composed: bool,
+) -> Result<(), ModError> {
     reg.definition_validator(
         DefinitionKind::new("owner_participant").map_err(bad)?,
         |ctx: &DefinitionValidationContext<'_>| {
-            let descriptor =
-                scene_transition::scenes_participant_descriptor().map_err(|e| e.to_string())?;
+            let descriptors = [
+                scene_transition::scenes_participant_descriptor().map_err(|e| e.to_string())?,
+                crate::movement_composed::participant_descriptor().map_err(|e| e.to_string())?,
+            ];
+            let descriptor = descriptors
+                .into_iter()
+                .find(|descriptor| {
+                    descriptor.id() == &ctx.definition().reference().key().id
+                        && descriptor.version() == ctx.definition().reference().version()
+                })
+                .ok_or_else(|| "unknown Scenes movement participant".to_string())?;
             let payload = descriptor.payload().clone();
             let expected = DefinitionRegistryBuilder::new()
                 .register(OwnerId::new(NS).map_err(|e| e.to_string())?, descriptor)
@@ -51,7 +63,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             Ok(())
         },
     )?;
-    let participant = reg.definition(descriptor.as_current())?;
+    if composed {
+        crate::movement_composed::register(reg)?;
+    }
+    if !atomic {
+        return Ok(());
+    }
+    let participant =
+        reg.definition(scene_transition::scenes_participant_descriptor()?.as_current())?;
     let action = DefinitionRegistryBuilder::new()
         .register(
             OwnerId::new("sim").map_err(bad)?,
@@ -83,14 +102,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 /// registration-time handle. Neither it nor a capture grants movement power.
 pub struct ScenesMovementParticipant;
 
-struct EventsPatch {
-    capture: MovementCapture,
+pub(crate) struct EventsPatch {
+    pub(crate) capture: MovementCapture,
     appends: Vec<PreparedLedgerAppend>,
-    references: Vec<SceneLedgerAppendRef>,
+    pub(crate) references: Vec<SceneLedgerAppendRef>,
 }
 
 impl EventsPatch {
-    fn prepare(
+    pub(crate) fn prepare(
         state: &ScenesState,
         actor: ObjId,
         from: Option<ObjId>,
@@ -149,7 +168,7 @@ impl EventsPatch {
             .map_err(|_| refused("Scenes movement transcript tails changed"))
     }
 
-    fn writes(&self) -> Result<Vec<ReplayWrite>, ParticipantError> {
+    pub(crate) fn writes(&self) -> Result<Vec<ReplayWrite>, ParticipantError> {
         let owner = OwnerId::new(NS).map_err(|_| ParticipantError::Authority)?;
         self.appends
             .iter()
@@ -171,9 +190,9 @@ impl EventsPatch {
 }
 
 pub struct ScenesMovementPatch {
-    binding: OwnerPreparationBinding,
-    prepared_at: ClockStamp,
-    events: EventsPatch,
+    pub(crate) binding: OwnerPreparationBinding,
+    pub(crate) prepared_at: ClockStamp,
+    pub(crate) events: EventsPatch,
 }
 
 pub struct BoundScenesMovement<'a> {

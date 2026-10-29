@@ -142,6 +142,31 @@ production action or command route. Production Sim/Scenes integration and the
 Atlas owner adapter follow; durable Core presentation and remaining callbacks
 are still required before ordinary dispatch can select the protocol.
 
+## Production Sim and Scenes composition
+
+Production now registers the composed action with the real Sim primary and a
+distinct Scenes transcript adapter. The composition root adds concrete observer
+owners through an opaque builder during Sim registration, so adding Atlas will
+not introduce a Sim-to-Atlas dependency. Scenes receives only its scoped reader;
+the full receipt reader remains with Sim.
+
+The composed action has its own Sim recovery operation and immutable crossing
+family, with separate plan and capture digest domains. Ordinary and earlier
+Sim+Scenes v1 records keep their original definitions and codecs. All crossing
+families retain their uncertified coverage label. Sim still refuses any open
+window, direct placement, or other unsupported physical lifecycle.
+
+Scenes prepares the same bounded original event selection and actual Ledger
+appends for both protocols. Its cold audit joins both receipt families to the
+original log positions in one bounded audit, before pausing scenes or dropping
+closed tails. Duplicate claims across protocols, missing events and changed
+capture material refuse boot. Adding a participant to a later composition does
+not reinterpret older partial manifests.
+
+Only the Scenes observer has prepared coverage in this composition. No command
+route or legal-action offer selects the composed action. Atlas integration,
+other callbacks and durable Core presentation remain live-migration gates.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
