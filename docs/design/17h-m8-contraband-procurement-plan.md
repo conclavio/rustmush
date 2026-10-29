@@ -516,6 +516,21 @@ M8d's seizure (the removal order, seize and forfeit) is split to a cut **M8d2** 
 It needs one act spanning four owners: the economy, the industry refit, tactics and the Registry.
 The economy cannot read the Registry's inspection records.
 
+**M8e re-scoped by the owner, 2026-10-28 (option C):** "M8e: take option C, move the claim
+Open/Close and the seat to S.4b with the custody design". The M8e builder found that a four-owner
+IC claim cannot sit on a surface excursion, for three reasons:
+- an IC base accepts only a fixed-domain anchor (`mush-sim/src/ic_exclusion.rs:317`), and a ship's
+  bay is a moving object;
+- the Open needs the hull inside the base, which the rig has already left when the finish runs;
+- an active claim freezes the hull, so the sim refuses its placement moves and tactics refuses
+  "held by an IC sortie" (`mush-tactics/src/ic_custody.rs:252`).
+
+M8e therefore ships the sealed mind's seal line with the licence's real state, Doctrine on a lapse,
+the pending-transfer refusal, the seal mark, the ungoverned draft and the cored-rig excursion
+harness. E2 (the production four-owner Open and Close) and E3 (the pool seat) move to **S.4b**,
+with a custody design for moving anchors. Q-M8-1's tier 2 now proves the seal and its evidence on
+an excursion, not a held claim.
+
 1. **Q-M8-1, the tier-2 split.** S.4a (the sealed, dormant mind aboard a rig) built as M8e now;
    the thinking mind (the drone phase) after M8; doc 23 §9's "lands inside D-UM-47's cut, not
    before" amended to say so; the claim half of 17g §4's "IC claims and hull cover in live play"
