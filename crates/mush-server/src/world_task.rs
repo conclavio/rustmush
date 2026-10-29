@@ -3085,9 +3085,7 @@ pub fn next_outage_wake_unix_ms(
         }
     };
     let remaining = unfreeze_at_real_unix.saturating_sub(now_unix);
-    let wake_sec = if remaining <= 0 {
-        now_unix
-    } else if !tracked.announced_5m && remaining > 120 {
+    let wake_sec = if remaining <= 0 || (!tracked.announced_5m && remaining > 120) {
         now_unix
     } else if !tracked.announced_2m && remaining > 60 {
         if remaining <= 120 {
@@ -3416,11 +3414,12 @@ async fn run(
             (None, mode) => mode,
         };
         let clock_frozen = engine.world.world_timeline().is_frozen();
-        let outage_wake_due = if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
-            next_outage_wake_unix_ms(&engine.world, &outage_countdown, unix_now_s())
-        } else {
-            None
-        };
+        let outage_wake_due =
+            if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
+                next_outage_wake_unix_ms(&engine.world, &outage_countdown, unix_now_s())
+            } else {
+                None
+            };
         let next_due = if clock_frozen {
             outage_wake_due
         } else {

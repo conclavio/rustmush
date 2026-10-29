@@ -204,7 +204,7 @@ pub struct World {
     /// Versioned world-IC truth.  The server hydrates its append-only epoch log
     /// before module boot; ordinary module code reads it synchronously through
     /// this world-owned value.
-    world_timeline: WorldTimeline,
+    world_timeline: Box<WorldTimeline>,
     /// Active scenes (transient world state; module data persists via
     /// module ops).
     scenes: BTreeMap<SceneId, Scene>,
@@ -402,7 +402,7 @@ impl World {
     /// configuration behavior.
     pub fn set_game_clock(&mut self, clock: GameClock) {
         self.game_clock = clock;
-        self.world_timeline = WorldTimeline::from_game_clock(clock);
+        *self.world_timeline = WorldTimeline::from_game_clock(clock);
     }
 
     /// The configured IC game clock.
@@ -414,7 +414,7 @@ impl World {
     /// Install a fully validated persisted world timeline at boot.
     pub fn set_world_timeline(&mut self, timeline: WorldTimeline) {
         self.game_clock = game_clock_for_timeline(&timeline, self.now);
-        self.world_timeline = timeline;
+        *self.world_timeline = timeline;
     }
 
     /// Record a durable checkpoint on the world timeline at the current wall-clock

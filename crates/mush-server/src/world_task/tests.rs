@@ -11741,7 +11741,14 @@ fn w_clock_outage_countdown_admits_inspection_and_ooc_while_refusing_movement_an
     }
 
     // Room exits and world mutations are refused during the countdown.
-    for refused in ["north", "n", "go north", "@dig Pit", "get box", "attack target"] {
+    for refused in [
+        "north",
+        "n",
+        "go north",
+        "@dig Pit",
+        "get box",
+        "attack target",
+    ] {
         assert_eq!(
             admit_outage_countdown_msg(&world, &WorldMsg::Inbound(cmd(refused))),
             Admission::Refuse(RefusalReason::OutageCountdown),

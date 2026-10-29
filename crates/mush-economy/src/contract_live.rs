@@ -5796,7 +5796,8 @@ pub fn resume_real_time_deadlines(ctx: &mut Ctx<'_>, unavailable_secs: i64) -> u
     for mut c in candidates {
         let active_at_freeze = c.paused_real_remaining_secs.is_some_and(|rem| rem > 0)
             || (c.paused_real_remaining_secs.is_none()
-                && c.effective_real_window_end().is_some_and(|end| end > frozen_at));
+                && c.effective_real_window_end()
+                    .is_some_and(|end| end > frozen_at));
         if !active_at_freeze && c.paused_real_remaining_secs.is_none() {
             continue;
         }

@@ -1335,7 +1335,9 @@ impl EconomicContract {
     /// consent surface).
     #[must_use]
     pub fn effective_deadline(&self) -> Option<EconomicDeadline> {
-        self.consent.deadline.map(|deadline| self.effective_before_deadline(deadline))
+        self.consent
+            .deadline
+            .map(|deadline| self.effective_before_deadline(deadline))
     }
 
     /// Effective `Before` deadline after applying any outage/freeze extension on
@@ -1345,7 +1347,9 @@ impl EconomicContract {
         if deadline.clock == EconomicClock::RealUtc && self.real_deadline_extension_secs > 0 {
             EconomicDeadline {
                 clock: deadline.clock,
-                at: deadline.at.saturating_add(self.real_deadline_extension_secs),
+                at: deadline
+                    .at
+                    .saturating_add(self.real_deadline_extension_secs),
             }
         } else {
             deadline

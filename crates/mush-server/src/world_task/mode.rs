@@ -666,25 +666,8 @@ pub(super) fn admit_world_msg(mode: WorldMode, world: &World, msg: &WorldMsg) ->
 }
 
 const OUTAGE_COUNTDOWN_EXTRA_ALLOWED: &[&str] = &[
-    "ooc",
-    "+ooc",
-    "page",
-    "p",
-    "+channel",
-    "+com",
-    "comlist",
-    "comtitle",
-    "addcom",
-    "delcom",
-    "time",
-    "@time",
-    "when",
-    "@when",
-    "score",
-    "+sheet",
-    "+status",
-    "@stats",
-    "@ps",
+    "ooc", "+ooc", "page", "p", "+channel", "+com", "comlist", "comtitle", "addcom", "delcom",
+    "time", "@time", "when", "@when", "score", "+sheet", "+status", "@stats", "@ps",
 ];
 
 pub(super) fn admit_outage_countdown_msg(world: &World, msg: &WorldMsg) -> Admission {

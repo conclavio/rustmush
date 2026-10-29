@@ -996,7 +996,7 @@ impl crate::cmd::Ctx<'_> {
     /// second (`W-clock`).
     ///
     /// Holds both `world_ic_now` and the compatibility `GameClock` readers at the
-    /// frozen IC timestamp until [`Ctx::resume_world_time`] is invoked, and emits
+    /// frozen IC timestamp until [`Self::resume_world_time`] is invoked, and emits
     /// [`crate::module::WorldEvent::WorldClockFrozen`] so real-time deadline owners
     /// pause their windows (`Q-F3`, `P-4`).
     pub fn freeze_world_time(&mut self) -> Result<WorldClockFreeze, WorldTimelineChangeError> {
