@@ -601,9 +601,10 @@ fn ordered_occupancy_ignores_unconsulted_pose_fields_and_has_no_fence_without_a_
     capture
         .recheck_occupancy(rig.state())
         .expect("same cell observations");
-    capture
-        .recheck(&rig.engine.world)
-        .expect("unconsulted pose fields");
+    // Occupancy alone ignores these fields; complete native publication is
+    // deliberately stricter and retains the actual canonical slot preimage.
+    assert!(capture.recheck_native(rig.state()).is_err());
+    assert!(capture.recheck(&rig.engine.world).is_err());
     let empty = ordered(&mut rig, None, None);
     let encoded: Value = serde_json::from_slice(&empty.encode()).expect("bytes");
     assert_eq!(encoded["occupancy"], Value::Null);
@@ -611,6 +612,62 @@ fn ordered_occupancy_ignores_unconsulted_pose_fields_and_has_no_fence_without_a_
     empty
         .recheck_occupancy(rig.state())
         .expect("no occupancy was consulted");
+}
+
+#[test]
+fn native_bind_fence_rechecks_canonical_control_allocator_held_and_derived_state_without_world() {
+    for change in 0..6 {
+        let mut rig = Rig::new();
+        let projected = rig.projected;
+        let capture = ordered(
+            &mut rig,
+            Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+            Some(projected),
+        );
+        capture
+            .recheck_native(rig.state())
+            .expect("actual native slot");
+        match change {
+            0 => {
+                rig.state().control_gen.insert(ObjId(999), 1);
+            }
+            1 => {
+                rig.state().next_domain_id += 1;
+            }
+            2 => {
+                rig.state().recovery_room = ObjId(999);
+            }
+            3 => {
+                rig.state().held_assignments.insert(
+                    ObjId(999),
+                    crate::HeldPlacement {
+                        key: "assignment:999".into(),
+                        reason: "held".into(),
+                    },
+                );
+            }
+            4 => {
+                rig.state().derived.domain_direct.clear();
+            }
+            _ => {
+                rig.state()
+                    .unbound_placement_docs
+                    .insert("placement:bad".into(), "held".into());
+            }
+        }
+        assert!(
+            capture.recheck_native(rig.state()).is_err(),
+            "change {change}"
+        );
+        assert!(
+            capture.recheck(&rig.engine.world).is_err(),
+            "change {change}"
+        );
+        assert_eq!(
+            rig.engine.world.get(rig.actor).expect("actor").location,
+            Some(rig.source)
+        );
+    }
 }
 
 #[test]

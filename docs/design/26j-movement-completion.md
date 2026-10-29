@@ -469,6 +469,19 @@ refuses a pending closed movement. Limits are 4096 marks, 1 MiB of encoded image
 This remains a projection guard: the independent Tactics read is still the
 custody source, and neither read supplies a checkout or movement capability.
 
+The ordered window candidate now retains a separate native-slot preimage over
+the complete canonical placement, domain, space, mount, control, held-row and
+allocator fields. A callback-free recheck accepts only the original state and
+consistent rebuilt indexes. Unknown placement identities refuse. This is
+deliberately conservative about unrelated native edits: the existing 4096-row,
+4 MiB resident envelope and opaque-value preflight run before encoding, and the
+new fingerprint has a 4 MiB bound. No World or SpatialState is copied to validate
+the bind. The original v1 candidate bytes remain unchanged.
+
+This guard supplies no installation or authority. Core rows, actual owner reads,
+Atlas selectors and the actual recovery-ledger append still bind independently;
+native primary publication and same-commit records remain unfinished.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

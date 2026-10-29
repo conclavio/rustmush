@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 use crate::data::{DomainId, SpatialParent, SpatialState};
 use crate::transition::{Plan, Transition};
 
+#[path = "window_native_fence.rs"]
+mod native_fence;
 #[path = "window_ordered.rs"]
 mod ordered;
 pub use ordered::{OrderedWindowMovementCapture, capture_ordered};
