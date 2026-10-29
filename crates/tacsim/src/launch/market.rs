@@ -242,6 +242,7 @@ mod tests {
                 output_container: ObjId(32),
             },
             market: None,
+            procurement: Vec::new(),
         })
     }
     fn format_two() -> Result<LaunchDeployment> {
@@ -257,6 +258,60 @@ mod tests {
             terms: MarketTerms::PROVISIONAL,
         });
         Ok(d)
+    }
+
+    /// Doc 17h §3 M8f (P2): a deployment's procurement policies decode only on format 2, each
+    /// naming a distinct named House and a distinct agent that is neither the market's clerk
+    /// nor a Registry operator, inside its own bounds; empty, the deployment serializes without
+    /// the key (its `launch_deployment` descriptor does not move).
+    #[test]
+    fn procurement_policies_decode_only_where_they_can_buy() -> Result {
+        use super::super::{ProcurementPolicy, ProcurementRole};
+        let policy = |org: u64, agent: u32| ProcurementPolicy {
+            org: OrgId(org),
+            scope: OrgScopeId(org),
+            agent: ObjId(agent),
+            budget_minor_per_ic_month: None,
+            standing: None,
+            cap_permille: None,
+            roles: ProcurementRole::all(),
+        };
+        let bare = format_two()?;
+        check!(
+            serde_json::to_value(&bare)?.get("procurement").is_none(),
+            "no policy, no key"
+        );
+        let mut d = format_two()?;
+        d.procurement = vec![policy(2, 60), policy(1, 61)];
+        d.validate()?;
+        let decoded = LaunchDeployment::decode(&serde_json::to_vec(&d)?)?;
+        check_eq!(decoded.procurement, d.procurement);
+        let mut one = format_one()?;
+        one.procurement = vec![policy(2, 60)];
+        check!(
+            one.validate().is_err(),
+            "format 1 has no market to buy from"
+        );
+        for (policies, why) in [
+            (vec![policy(9, 60)], "not a named House"),
+            (vec![policy(2, 60), policy(2, 61)], "one House twice"),
+            (vec![policy(2, 60), policy(1, 60)], "one agent twice"),
+            (vec![policy(2, 40)], "the market's clerk"),
+            (vec![policy(2, 41)], "a Registry operator"),
+            (vec![policy(2, 0)], "agent #0"),
+            (
+                vec![ProcurementPolicy {
+                    cap_permille: Some(0),
+                    ..policy(2, 60)
+                }],
+                "a cap of zero",
+            ),
+        ] {
+            let mut d = format_two()?;
+            d.procurement = policies;
+            check!(d.validate().is_err(), "{why}");
+        }
+        Ok(())
     }
 
     #[test]

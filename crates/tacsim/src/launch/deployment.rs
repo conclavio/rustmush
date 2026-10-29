@@ -111,6 +111,94 @@ pub struct LaunchDeployment {
     /// the deployment minus `mode`) does not move.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market: Option<PlayerMarket>,
+    /// Doc 17h §3 M8f (P2): the named Houses' procurement policies, at most one per House,
+    /// format 2 only. Skipped when empty, so a deployment without procurement serializes, and
+    /// its `launch_deployment` descriptor reads, exactly as before M8f.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procurement: Vec<ProcurementPolicy>,
+}
+
+/// Doc 17h §3 M8f (P2): which listing forms a procurement policy may buy (the player market's
+/// three: `sealed`, `open`, `open_resale`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcurementRole {
+    Sealed,
+    Open,
+    OpenResale,
+}
+impl ProcurementRole {
+    /// Every form, the default.
+    #[must_use]
+    pub fn all() -> Vec<Self> {
+        vec![Self::Sealed, Self::Open, Self::OpenResale]
+    }
+}
+
+/// Doc 17h §3 M8f (the lead's rulings P2, P4): one named House's procurement policy. The House
+/// buys mind licences from the player market's listings, once per IC calendar month, through
+/// one named acting character, its **procurement agent**: an NPC character the operator creates
+/// (a Player-kind object), stands at the market's venue, and grants `roll.holder.org` on the
+/// organisation's root scope **with a limit of the monthly budget** (`@org/grant <agent>=<org>
+/// roll.holder.org limit=<budget>`), so the grant is the second safety beside the ledger's
+/// monthly cap. Naming the agent here grants nothing (the Registry operators' precedent): every
+/// buy re-asks the grant live. `standing`, when set, is the House's backing faction: the agent
+/// is made a member of it, so the per-character standing rules admit the House's agent (Q-M8-4,
+/// the lead's call; no new standing predicate). Budget and cap left out take
+/// `[tacsim.procurement]`'s defaults (`crate::config::ProcurementConfig`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcurementPolicy {
+    /// One of the three named Houses' organisations.
+    pub org: OrgId,
+    /// The organisation's ROOT scope: the scope its treasury pays a buy from and the agent's
+    /// grant names (M8c F5). Boot checks it is the root.
+    pub scope: OrgScopeId,
+    /// The House's procurement agent: a live, non-GOING Player-kind character, never #0 or GOD.
+    pub agent: ObjId,
+    /// Minor credits per IC calendar month; absent, `[tacsim.procurement]`'s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_minor_per_ic_month: Option<i64>,
+    /// The House's backing faction (Q-M8-4); absent, it buys only lines no standing rule
+    /// restricts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<FactionId>,
+    /// D-UM-54's diversity cap, per mille of the House's titled hulls; absent,
+    /// `[tacsim.procurement]`'s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap_permille: Option<u16>,
+    /// The listing forms it may buy, distinct and non-empty; default all three.
+    #[serde(default = "ProcurementRole::all")]
+    pub roles: Vec<ProcurementRole>,
+}
+impl ProcurementPolicy {
+    /// The policy's own bounds (decode): the agent neither #0 nor GOD; a named budget 1 to
+    /// `MAX_PROCUREMENT_BUDGET_MINOR`, a named cap 1 to 1000; the roles non-empty and distinct.
+    #[must_use]
+    pub fn holds(&self) -> bool {
+        let mut roles = self.roles.clone();
+        roles.sort_unstable();
+        roles.dedup();
+        self.agent != ObjId(0)
+            && self.agent != GOD
+            && self
+                .budget_minor_per_ic_month
+                .is_none_or(|b| (1..=crate::config::MAX_PROCUREMENT_BUDGET_MINOR).contains(&b))
+            && self.cap_permille.is_none_or(|c| (1..=1000).contains(&c))
+            && !self.roles.is_empty()
+            && roles.len() == self.roles.len()
+    }
+    /// The monthly budget, the policy's own or the configured default.
+    #[must_use]
+    pub fn budget(&self, defaults: &crate::config::ProcurementConfig) -> i64 {
+        self.budget_minor_per_ic_month
+            .unwrap_or(defaults.budget_minor_per_ic_month)
+    }
+    /// The diversity cap, the policy's own or the configured default.
+    #[must_use]
+    pub fn cap(&self, defaults: &crate::config::ProcurementConfig) -> u16 {
+        self.cap_permille.unwrap_or(defaults.cap_permille)
+    }
 }
 
 /// 17g C1b: the player market's world identities and tuning (format 2).
@@ -231,7 +319,35 @@ impl LaunchDeployment {
         {
             return Err(ModError::msg("launch deployment player market differs"));
         }
+        if !self.procurement_holds(&houses) {
+            return Err(ModError::msg("launch deployment procurement differs"));
+        }
         Ok(())
+    }
+    /// Doc 17h §3 M8f (P2): the procurement policies' shape. None without the player market
+    /// (it buys from the market's listings); each policy holds its own bounds
+    /// (`ProcurementPolicy::holds`), names one of the three named Houses' organisations, and no
+    /// two name one organisation or one agent; the agent is not the market's clerk or a
+    /// Registry operator.
+    fn procurement_holds(&self, houses: &[&HouseDeployment; 3]) -> bool {
+        if self.procurement.is_empty() {
+            return true;
+        }
+        let Some(market) = &self.market else {
+            return false;
+        };
+        self.procurement.len() <= houses.len()
+            && self.procurement.iter().enumerate().all(|(index, policy)| {
+                policy.holds()
+                    && houses.iter().any(|house| house.organization == policy.org)
+                    && policy.agent != market.clerk
+                    && !market.registry_authority.operators.contains(&policy.agent)
+                    && self
+                        .procurement
+                        .iter()
+                        .take(index)
+                        .all(|other| other.org != policy.org && other.agent != policy.agent)
+            })
     }
     /// 17g C1b: format 2's shape and bounds, and every typed policy built once.
     /// - The Registry recipient is a system principal (the personal price

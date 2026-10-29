@@ -29,6 +29,9 @@ use mush_roll::commerce::{
 mod owner_qualification;
 #[path = "renewal_integration_tests.rs"]
 mod renewal;
+// Doc 17h §3 M8f: the procurement tick end to end.
+#[path = "procurement_integration_tests.rs"]
+mod procurement;
 
 #[path = "derived_update_integration_tests.rs"]
 mod derived_update;
@@ -922,9 +925,10 @@ fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestRes
 ///   non-staff member refunds the organisation's escrow (the economy pins
 ///   the act to a live member whose principal matches, the market re-asks
 ///   the grant, and the second member finds the organisation's row);
-/// - a limited grant cannot complete (the Grant asks no amount, and mush-org
-///   fails closed); unlimited, the member completes a second purchase and
-///   the organisation holds the licence with the member acting;
+/// - doc 17h §3 M8f P2a: the Grant asks with the price, so a grant limited
+///   below it refuses the Grant and one limited at the price completes a
+///   second purchase, the organisation holding the licence with the member
+///   acting;
 /// - S3: the second member, a non-staff character who never bought,
 ///   renews it end to end (Draft, Fund, Grant): the treasury pays, the
 ///   renewed pointer names the second member as acting, the holdings row
@@ -1062,6 +1066,22 @@ fn org_members_with(
         Some(&json!({"org": org, "acting": member})),
         "the holder is the organisation, the member acting"
     );
+    // Doc 17h §3 M8f H1 (the lead's ruling): only the quoting member funds
+    // an organisation's quote; another granted member is refused.
+    limit(world, second, "none")?;
+    check!(
+        crate::test_checks::refused(prepare_public(
+            world,
+            "market",
+            "purchase_derived_mind",
+            1,
+            second,
+            base + 30,
+            json!({"quote": token(base + 3)})
+        ))?,
+        "another member cannot fund the member's quote"
+    );
+    world.say(GOD, &format!("@holder-grant-fixture revoke #{}", second.0))?;
     world.say(GOD, &format!("@holder-grant-fixture revoke #{}", member.0))?;
     let fund = json!({"quote": token(base + 3)});
     check!(
@@ -1097,9 +1117,25 @@ fn org_members_with(
         EconomicOwner::Organization(org),
         "the hold is placed by the organisation"
     );
-    // S1: the quoting member loses its grant; the second member refunds.
+    // S1: the quoting member loses its grant; the second member refunds,
+    // under a grant limited at the price (doc 17h §3 M8f P2a: the Refund asks
+    // with the price, so a limit below it refuses and one above it refunds).
     world.say(GOD, &format!("@holder-grant-fixture revoke #{}", member.0))?;
-    limit(world, second, "none")?;
+    limit(world, second, "99")?;
+    check!(
+        crate::test_checks::refused(prepare_public(
+            world,
+            "market",
+            "refund_derived_mind",
+            1,
+            second,
+            base + 31,
+            json!({"operation": token(base + 5)})
+        ))?,
+        "a limit below the price refuses the Refund"
+    );
+    // A limit ABOVE the price refunds as well.
+    limit(world, second, "150")?;
     commit(
         world,
         "market",
@@ -1145,6 +1181,8 @@ fn org_members_with(
         json!({"quote": token(base + 7)}),
     )?;
     let settle = json!({"operation": token(base + 8)});
+    // Doc 17h §3 M8f P2a: the Grant asks the grant with the quoted price.
+    limit(world, member, "99")?;
     check!(
         crate::test_checks::refused(prepare_public(
             world,
@@ -1155,9 +1193,9 @@ fn org_members_with(
             base + 9,
             settle.clone()
         ))?,
-        "a limited grant fails closed at the Grant, which asks no amount"
+        "a grant limited below the price refuses the Grant"
     );
-    limit(world, member, "none")?;
+    limit(world, member, "100")?;
     commit(
         world,
         "market",
@@ -1191,6 +1229,16 @@ fn org_members_with(
             .posted_balance)
     };
     let before = held(&w)?;
+    // Doc 17h §3 M8f P2a: a limited grant renews. The Draft moves no money
+    // and asks as a read, so a grant limited to 1 drafts; the Fund asks with
+    // the renewal's price, so that limit refuses it and one at the price pays.
+    let renewal_limit = |w: &mut PlayerWorld, max: &str| {
+        w.say(
+            GOD,
+            &format!("@holder-grant-fixture limit #{} {} {max}", second.0, org.0),
+        )
+    };
+    renewal_limit(&mut w, "1")?;
     commit(
         &mut w,
         "market",
@@ -1200,6 +1248,27 @@ fn org_members_with(
         base + 20,
         json!({"licence": a.licence().get()}),
     )?;
+    let renewal: mush_roll::commerce::renewal::RenewalOperationV1 = serde_json::from_value(
+        rows(&disk(&w), "roll", "roll_mind_renewal_operation")
+            .into_iter()
+            .find(|v| v.get("operation") == Some(&json!(token(base + 20))))
+            .ok_or("the drafted renewal")?,
+    )?;
+    let price = renewal.binding().price_minor();
+    check!(price > 1, "a renewal price above the limit of 1");
+    check!(
+        crate::test_checks::refused(prepare_public(
+            &mut w,
+            "market",
+            "fund_mind_renewal",
+            1,
+            second,
+            base + 32,
+            json!({"operation": token(base + 20)})
+        ))?,
+        "a limit below the renewal price refuses the Fund"
+    );
+    renewal_limit(&mut w, &price.to_string())?;
     commit(
         &mut w,
         "market",
@@ -1513,6 +1582,10 @@ pub(super) async fn exercise(
     .await?;
     story_phase("entitlement.org_members", || async {
         org_members(f, &granted, owner)
+    })?
+    .await?;
+    story_phase("entitlement.procurement", || async {
+        procurement::procurement_tick(f, &granted, owner)
     })?
     .await?;
     resale_routes::exercise(

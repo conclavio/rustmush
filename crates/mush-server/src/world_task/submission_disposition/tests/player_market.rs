@@ -1077,6 +1077,7 @@ pub(super) async fn launch_world(
             },
             terms: MarketTerms::PROVISIONAL,
         }),
+        procurement: Vec::new(),
     })
 }
 /// Write the deployment where `[tacsim.minds].launch_path` names it.
