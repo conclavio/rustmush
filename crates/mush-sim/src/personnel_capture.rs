@@ -845,9 +845,11 @@ fn derive_views(
             &after_ancestry_digest,
             &crossings,
         )?,
-        CaptureDomain::Window => digest(
-            "sim.window_locomotion.phase.v1",
-            &serde_json::json!({"prepared_at":stamp,"before_ancestry_digest":before_ancestry_digest,"after_ancestry_digest":after_ancestry_digest,"crossings":crossings}),
+        CaptureDomain::Window => window_phase_digest(
+            stamp,
+            &before_ancestry_digest,
+            &after_ancestry_digest,
+            &crossings,
         )?,
     };
     Ok(CaptureFacts {
@@ -858,6 +860,21 @@ fn derive_views(
         crossings,
         read_dependencies: reads.dependencies,
     })
+}
+
+pub(crate) fn window_phase_digest(
+    stamp: &ClockStamp,
+    before: &DefinitionDigest,
+    after: &DefinitionDigest,
+    crossings: &[Crossing],
+) -> Result<DefinitionDigest, ParticipantError> {
+    crate::locomotion_capture::check_material(stamp, crossings)?;
+    digest(
+        "sim.window_locomotion.phase.v1",
+        &serde_json::json!({
+            "prepared_at":stamp,"before_ancestry_digest":before,"after_ancestry_digest":after,"crossings":crossings,
+        }),
+    )
 }
 
 #[cfg(test)]

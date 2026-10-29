@@ -94,7 +94,10 @@ pub(crate) fn derive(
     )
 }
 
-fn check_material(stamp: &ClockStamp, crossings: &[Crossing]) -> Result<(), ParticipantError> {
+pub(crate) fn check_material(
+    stamp: &ClockStamp,
+    crossings: &[Crossing],
+) -> Result<(), ParticipantError> {
     if !matches!(stamp.clock, ClockRef::WorldIc { generation } if generation > 0)
         || crossings.len() > MAX_CROSSINGS
     {

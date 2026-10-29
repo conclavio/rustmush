@@ -3,7 +3,7 @@
 //! This supplies the real release/place transition data for an already attached
 //! actor with no physical dependents. The supplied projection still needs the
 //! actual Atlas owner's attestation. There is no receipt, write capability,
-//! decoder, live route, or personnel-eligibility claim here.
+//! executable decoder, live route, or personnel-eligibility claim here.
 
 use std::collections::BTreeSet;
 
@@ -16,10 +16,13 @@ use serde_json::{Value, json};
 use crate::data::{DomainId, SpatialParent, SpatialState};
 use crate::transition::{Plan, Transition};
 
+#[path = "window_evidence.rs"]
+mod evidence;
 #[path = "window_native_fence.rs"]
 mod native_fence;
 #[path = "window_ordered.rs"]
 mod ordered;
+pub use evidence::{WindowMovementEvidence, validate_evidence};
 pub use ordered::{OrderedWindowMovementCapture, capture_ordered};
 
 pub const MAX_WINDOW_MOVEMENT_BYTES: usize = 128 * 1024;

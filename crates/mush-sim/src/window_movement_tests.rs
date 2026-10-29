@@ -352,6 +352,10 @@ fn ordered_capture_keeps_native_v1_bytes_and_three_linked_original_stages() {
     assert_eq!(data["native"], value(&original));
     assert_ne!(captured.digest(), original.digest());
     assert_eq!(captured.stage_count(), 3);
+    let historical = validate_evidence(&data, captured.digest()).expect("historical data only");
+    assert_eq!(historical.actor(), captured.actor());
+    assert_eq!(historical.stage_count(), 3);
+    assert_eq!(historical.crossing_count(), 0);
     let stages = data["stages"].as_array().expect("stages");
     assert_eq!(
         stages
@@ -420,12 +424,22 @@ fn ordered_loop_retains_both_steps_and_release_or_no_native_work_stays_distinct(
     assert_eq!(value["stages"][1]["kind"], json!("place"));
     let released = ordered(&mut rig, None, None);
     assert_eq!(released.stage_count(), 2);
+    validate_evidence(
+        &serde_json::from_slice(&released.encode()).unwrap(),
+        released.digest(),
+    )
+    .expect("release evidence");
     let actor = rig.actor;
     rig.state().placements.remove(&actor);
     let rebuilt = crate::graph::rebuild(rig.state());
     rig.state().derived = rebuilt;
     let empty = ordered(&mut rig, None, None);
     assert_eq!(empty.stage_count(), 1);
+    validate_evidence(
+        &serde_json::from_slice(&empty.encode()).unwrap(),
+        empty.digest(),
+    )
+    .expect("empty native evidence");
 }
 
 #[test]
@@ -846,6 +860,15 @@ fn ordered_capture_counts_both_sides_of_a_transient_carrier_visit_against_one_bu
         );
         if children == 127 {
             let capture = capture.expect("256 total crossings");
+            assert_eq!(
+                validate_evidence(
+                    &serde_json::from_slice(&capture.encode()).unwrap(),
+                    capture.digest()
+                )
+                .expect("original bounded evidence")
+                .crossing_count(),
+                256
+            );
             let value: Value = serde_json::from_slice(&capture.encode()).expect("bytes");
             assert_eq!(
                 value["stages"][0]["crossings"]
@@ -878,6 +901,95 @@ fn ordered_capture_counts_both_sides_of_a_transient_carrier_visit_against_one_bu
         );
         assert!(!rig.state().placements.contains_key(&actor));
     }
+}
+
+#[test]
+fn historical_window_evidence_refuses_rebound_malformed_phases_scopes_and_headers() {
+    let mut rig = Rig::new();
+    let projected = rig.projected;
+    let capture = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    let original: Value = serde_json::from_slice(&capture.encode()).expect("capture");
+    let mut cases = Vec::new();
+    for field in [
+        "format",
+        "authority",
+        "coverage",
+        "native",
+        "stages",
+        "read_dependencies",
+        "occupancy",
+        "native_preimage",
+    ] {
+        let mut value = original.clone();
+        value.as_object_mut().unwrap().remove(field);
+        cases.push(value);
+    }
+    for field in ["source", "before", "after", "target"] {
+        let mut value = original.clone();
+        value["native"].as_object_mut().unwrap().remove(field);
+        cases.push(value);
+    }
+    for change in 0..13 {
+        let mut value = original.clone();
+        match change {
+            0 => value["unknown"] = json!(true),
+            1 => value["native"]["phases"][0]["unknown"] = json!(true),
+            2 => value["native"]["phases"][0]["placements"][0]["revision"] = json!(0),
+            3 => value["native"]["phases"][0]["audit"]["reason"] = json!("rewritten"),
+            4 => value["native"]["after"]["revision"] = json!(999),
+            5 => value["native"]["target"]["x_cm"] = json!(999),
+            6 => value["native_preimage"]["digest"] = json!(DefinitionDigest::from_bytes([0; 32])),
+            7 => value["occupancy"]["domain"] = json!(999),
+            8 => value["read_dependencies"][1] = value["read_dependencies"][0].clone(),
+            9 => value["stages"][1]["kind"] = json!("place"),
+            10 => {
+                value["stages"][1]["before_ancestry_digest"] =
+                    json!(DefinitionDigest::from_bytes([1; 32]))
+            }
+            11 => value["native"]["at_utc"] = json!(101),
+            _ => {
+                value["native"]["phases"][1]["placements"][0]["parent"]["pose"]["heading_mdeg"] =
+                    json!(100)
+            }
+        }
+        cases.push(value);
+    }
+    for (index, value) in cases.into_iter().enumerate() {
+        let rebound = DefinitionDigest::for_canonical_value_with_limit(
+            "sim.window_movement.capture.v2",
+            &value,
+            MAX_WINDOW_MOVEMENT_BYTES,
+        )
+        .expect("rebound digest");
+        assert!(validate_evidence(&value, rebound).is_err(), "case {index}");
+    }
+    assert!(validate_evidence(&original, DefinitionDigest::from_bytes([0; 32])).is_err());
+    assert!(validate_evidence(&original, DefinitionDigest::from_bytes([1; 32])).is_err());
+}
+
+#[test]
+fn historical_window_preflight_bounds_input_before_recursive_work() {
+    let mut nested = Value::Null;
+    for _ in 0..97 {
+        nested = json!([nested]);
+    }
+    let expected = DefinitionDigest::from_bytes([1; 32]);
+    assert!(matches!(
+        validate_evidence(&nested, expected),
+        Err(ParticipantError::ImageLimit)
+    ));
+    assert!(matches!(
+        validate_evidence(&json!(vec![Value::Null; 65_536]), expected),
+        Err(ParticipantError::ImageLimit)
+    ));
+    assert!(matches!(
+        validate_evidence(&json!("x".repeat(MAX_WINDOW_MOVEMENT_BYTES + 1)), expected),
+        Err(ParticipantError::ImageLimit)
+    ));
 }
 
 #[test]
