@@ -246,6 +246,44 @@ fn captured_player_and_npc_prepare_both_ledgers_and_only_joint_families() -> Tes
 }
 
 #[test]
+fn focus_presence_drift_refuses_both_native_and_scene_publication() -> TestResult {
+    let mut rig = Rig::new(ObjKind::Player)?;
+    let unit =
+        rig.engine
+            .world
+            .create(ObjKind::Thing, "other unit", GOD, Some(mush_core::LIMBO))?;
+    rig.engine.world.take_dirty();
+    let prepared = rig.prepare("north")?;
+    let revision = rig.engine.action_state().revision();
+    let records = rig.engine.action_state().len();
+    let (_, install) = prepared.0.into_parts();
+    // Seed only the actual exclusion predicate. This is not a typed lease or
+    // proxy-seat authority, and no SpatialState generation is changed.
+    let focus = crate::ActiveFocus {
+        account: mush_core::AccountId::mint("focus_test", 1)?,
+        actor: rig.actor,
+        driver: rig.actor,
+        unit,
+        station: crate::StationId::new("pilot").ok_or("station")?,
+        acquired_at: rig.engine.world.world_ic_now(),
+        epoch: 1,
+        reach: crate::ReachProof::Console { room: rig.source },
+        proxy: false,
+    };
+    rig.engine
+        .world
+        .module_state_mut::<crate::FocusState>()
+        .ok_or("focus")?
+        .claim(focus);
+    check!(rig.engine.install_composed_action(install).is_err());
+    rig.unpublished()?;
+    check_eq!(rig.engine.action_state().revision(), revision);
+    check_eq!(rig.engine.action_state().len(), records);
+    check!(rig.engine.action_state().reservation_lost());
+    Ok(())
+}
+
+#[test]
 fn joint_provider_requires_actual_capture() -> TestResult {
     let mut rig = Rig::new(ObjKind::Player)?;
     check!(

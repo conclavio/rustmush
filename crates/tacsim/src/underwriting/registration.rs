@@ -127,7 +127,17 @@ impl CoverageConfiguration {
             .ok_or_else(|| bad("coverage requires actual IC composition"))?;
         Ok(Registration {
             config: self.clone(),
-            host: CoverageHost::new(self.protocol.clone(), self.writer.clone(), ic, self.service),
+            // Doc 17h cut M8d D5: the inspection's record cell, for the exclusion.
+            host: CoverageHost::new(
+                self.protocol.clone(),
+                self.writer.clone(),
+                ic,
+                self.service,
+                layer
+                    .registry_inspection
+                    .as_ref()
+                    .map(|inspection| inspection.writer.clone()),
+            ),
             readiness: Readiness::default(),
         })
     }

@@ -16,6 +16,232 @@ use super::dt_unit_authority::persist_legacy;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn scenes_and_composed_history_refuse_before_sim_projection_repairs() -> TestResult {
+    use super::dt_locomotion::audit_before_projection_repair;
+    for (action, families) in [
+        (
+            mush_core::locomotion::scene_transition::ACTION,
+            ["locomotion_scene_transitions", "locomotion_scene_crossings"],
+        ),
+        (
+            mush_core::locomotion::composed::ACTION,
+            ["composed_locomotion", "composed_locomotion_crossings"],
+        ),
+    ] {
+        let store = InMemoryStore::new();
+        let mut rig = fixture(&store, ObjKind::Player).await?;
+        stage_action(&mut rig, "n", action)?;
+        let (bundle, installation) = rig
+            .world
+            .engine_mut()
+            .take_staged_action()?
+            .ok_or("staged")?
+            .into_parts();
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await?;
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await?;
+        rig.world
+            .engine_mut()
+            .install_composed_action(installation)?;
+        let records: Vec<_> = families
+            .into_iter()
+            .map(|family| {
+                row(&bundle, family).map(|(key, value)| {
+                    mush_core::ActionStateBootRecord::new("sim", key, value.clone())
+                })
+            })
+            .collect::<TestResult<_>>()?;
+        assert_eq!(records.len(), 2);
+        audit_before_projection_repair(records.clone(), false)?;
+        for record in &records {
+            audit_before_projection_repair(vec![record.clone()], true)?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn scenes_rejects_malformed_owner_proofs_in_the_early_typed_phase() -> TestResult {
+    async fn preflight(
+        records: Vec<mush_core::ActionStateBootRecord>,
+    ) -> TestResult<Result<(), mush_core::ModError>> {
+        let store = InMemoryStore::new();
+        let mut rig = fixture(&store, ObjKind::Player).await?;
+        rig.world.engine_mut().hydrate_action_state(records)?;
+        Ok(rig.world.engine_mut().audit_typed_history())
+    }
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store, ObjKind::Player).await?;
+    start_scenes(&mut rig, &store).await?;
+    let bundle = commit(&mut rig, &store, "n", ACTION, 0xe4).await?;
+    let records: Vec<_> = ["composed_locomotion", "composed_locomotion_crossings"]
+        .into_iter()
+        .map(|family| {
+            row(&bundle, family).map(|(key, value)| {
+                mush_core::ActionStateBootRecord::new("sim", key, value.clone())
+            })
+        })
+        .collect::<TestResult<_>>()?;
+    preflight(records.clone()).await??;
+    for fault in 0..6 {
+        let mut changed = records.clone();
+        let movement = changed
+            .iter_mut()
+            .find(|row| row.key.contains("/composed_locomotion/"))
+            .ok_or("composed row")?;
+        let effect = movement.value["value"]["effects"]
+            .as_array_mut()
+            .ok_or("effects")?
+            .iter_mut()
+            .find(|effect| effect["participant"]["key"]["owner"] == "scenes")
+            .ok_or("Scenes effect")?;
+        assert_eq!(
+            effect["proof"]["appends"]
+                .as_array()
+                .ok_or("appends")?
+                .len(),
+            2
+        );
+        match fault {
+            0 => effect["proof"]["format"] = json!(2),
+            1 => effect["proof"]["unexpected"] = json!(true),
+            2 => {
+                effect["proof"]
+                    .as_object_mut()
+                    .ok_or("proof")?
+                    .remove("appends");
+            }
+            3 => {
+                effect["proof"]["appends"][1]["scene"] =
+                    effect["proof"]["appends"][0]["scene"].clone()
+            }
+            4 => effect["proof"]["appends"][0]["unexpected"] = json!(true),
+            _ => {
+                let extra = effect["proof"]["appends"][0].clone();
+                effect["proof"]["appends"]
+                    .as_array_mut()
+                    .ok_or("appends")?
+                    .push(extra);
+            }
+        }
+        // The generic Core codec still accepts its rebound proof hash. This
+        // deliberately corrupted typed fixture is not a native event claim.
+        let digest = mush_core::DefinitionDigest::for_canonical_value_with_limit(
+            "core.composed_locomotion.owner_proof.v1",
+            &json!({"binding":effect["binding"],"capture_digest":effect["capture_digest"],"proof":effect["proof"]}),
+            mush_core::locomotion::composed::MAX_MOVEMENT_PROOF_BYTES + 4096,
+        )?;
+        effect["proof_digest"] = serde_json::to_value(digest)?;
+        let error = preflight(changed)
+            .await?
+            .err()
+            .ok_or("malformed Scenes proof accepted")?;
+        assert!(
+            error.to_string().contains("Scenes typed movement proof"),
+            "{error}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn actual_tactics_custody_and_readiness_guard_every_locomotion_profile_after_ack()
+-> TestResult {
+    for action in [
+        mush_core::locomotion::transition::ACTION,
+        mush_core::locomotion::scene_transition::ACTION,
+        ACTION,
+    ] {
+        for freeze in [false, true] {
+            let store = InMemoryStore::new();
+            let mut rig = fixture(&store, ObjKind::Player).await?;
+            let (source, destination, _) = start_scenes(&mut rig, &store).await?;
+            let _ = rig.world.run(
+                mush_core::GOD,
+                &format!("@unit/create #{}=tacsim.unit.line_tank", rig.actor.0),
+            );
+            let snapshot = rig
+                .world
+                .world()
+                .module_state::<mush_tactics::UnitStore>()
+                .ok_or("Tactics")?
+                .units
+                .get(&rig.actor)
+                .cloned()
+                .ok_or("actual unit creation")?;
+            persist_legacy(&mut rig.world, &store).await?;
+            let before = [
+                entries(&rig, source)?.len(),
+                entries(&rig, destination)?.len(),
+            ];
+            stage_action(&mut rig, "north", action)?;
+            let revision = rig.world.engine().action_state().revision();
+            let records = rig.world.engine().action_state().len();
+            let (bundle, install) = rig
+                .world
+                .engine_mut()
+                .take_staged_action()?
+                .ok_or("staged")?
+                .into_parts();
+            store
+                .reserve_authoritative_intent((*bundle).clone())
+                .await?;
+            store
+                .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+                .await?;
+            if freeze {
+                rig.world.engine().registry.freeze_mechanics_owner(
+                    &mush_core::OwnerId::new("tactics")?,
+                    mush_core::IncidentId(119),
+                    mush_core::RecoveryReason::IntegrityViolation {
+                        code: mush_core::CanonicalId::new("custody_test")?,
+                    },
+                )?;
+            } else {
+                // Fault injection changes the actual Tactics marker only;
+                // Sim's projection and all spatial/Core rows remain fixed.
+                rig.world
+                    .world_mut()
+                    .module_state_mut::<mush_tactics::UnitStore>()
+                    .ok_or("Tactics")?
+                    .deployed
+                    .insert(
+                        rig.actor,
+                        mush_tactics::custody::DeployedMarker {
+                            mark: mush_sim::DeployedMark::new(119, "arena"),
+                            domain: None,
+                            pose: None,
+                            snapshot,
+                        },
+                    );
+                assert!(!mush_sim::deployed::is_deployed(
+                    rig.world.world(),
+                    rig.actor
+                ));
+            }
+            assert!(
+                rig.world
+                    .engine_mut()
+                    .install_composed_action(install)
+                    .is_err(),
+                "{action}, freeze {freeze}"
+            );
+            assert_eq!(location(&rig), Some(rig.source));
+            assert_eq!(entries(&rig, source)?.len(), before[0]);
+            assert_eq!(entries(&rig, destination)?.len(), before[1]);
+            assert_eq!(rig.world.engine().action_state().revision(), revision);
+            assert_eq!(rig.world.engine().action_state().len(), records);
+            assert!(rig.world.engine().action_state().reservation_lost());
+            assert_eq!(rig.moved.load(Ordering::SeqCst), 0);
+        }
+    }
+    Ok(())
+}
+
 fn row<'a>(bundle: &'a AuthoritativeBundle, family: &str) -> TestResult<(&'a str, &'a Value)> {
     bundle
         .writes()
@@ -66,6 +292,64 @@ async fn commit(
     assert!(out.is_empty());
     assert!(!rig.world.engine().has_legacy_persistence_work());
     Ok(bundle)
+}
+
+#[tokio::test]
+async fn actual_journey_read_refuses_post_ack_publication_in_every_locomotion_profile() -> TestResult
+{
+    for action in [
+        mush_core::locomotion::transition::ACTION,
+        mush_core::locomotion::scene_transition::ACTION,
+        ACTION,
+    ] {
+        let store = InMemoryStore::new();
+        let mut rig = fixture(&store, ObjKind::Player).await?;
+        let (source, destination, _) = start_scenes(&mut rig, &store).await?;
+        let before = [
+            entries(&rig, source)?.len(),
+            entries(&rig, destination)?.len(),
+        ];
+        stage_action(&mut rig, "north", action)?;
+        let revision = rig.world.engine().action_state().revision();
+        let records = rig.world.engine().action_state().len();
+        let (bundle, install) = rig
+            .world
+            .engine_mut()
+            .take_staged_action()?
+            .ok_or("staged")?
+            .into_parts();
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await?;
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await?;
+        // Deliberately violate the writer barrier to test the retained actual
+        // Sim read. The slot incarnation and every SpatialState row stay fixed.
+        rig.world
+            .world_mut()
+            .module_state_mut::<mush_sim::JourneyBook>()
+            .ok_or("journeys")?
+            .held
+            .insert("cjourney:late".into(), "repair required".into());
+        let mut out = Outbox::default();
+        assert!(
+            rig.world
+                .engine_mut()
+                .install_composed_action_announcing(install, &mut out, &mut Effects::default())
+                .is_err(),
+            "{action}"
+        );
+        assert!(out.is_empty());
+        assert_eq!(location(&rig), Some(rig.source));
+        assert_eq!(entries(&rig, source)?.len(), before[0]);
+        assert_eq!(entries(&rig, destination)?.len(), before[1]);
+        assert_eq!(rig.world.engine().action_state().revision(), revision);
+        assert_eq!(rig.world.engine().action_state().len(), records);
+        assert!(rig.world.engine().action_state().reservation_lost());
+        assert_eq!(rig.moved.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -304,6 +588,10 @@ async fn boot_refuses_missing_or_changed_original_events() -> TestResult {
             })
             .await?;
         drop(rig);
+        if mode == 1 {
+            super::dt_locomotion::assert_native_refusal_before_any_boot_mutation(&store, "scenes")
+                .await?;
+        }
         assert!(
             fixture(&store, ObjKind::Player).await.is_err(),
             "boot accepted corruption mode {mode}"

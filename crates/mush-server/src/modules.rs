@@ -191,6 +191,135 @@ async fn load_module_boot(
     Ok((boot, action_state))
 }
 
+/// Read only coordinator-reserved primary documents before module migrations.
+/// The production backends list keys without decoding ordinary docs or cold
+/// ledger chunks. Atomic typed hydration performs the actual family validation.
+async fn load_typed_history(
+    store: &dyn ObjectStore,
+    modules: &[Box<dyn GameModule>],
+) -> Result<Vec<ActionStateBootRecord>, String> {
+    let mut records = Vec::new();
+    let mut bytes = 0_usize;
+    for module in modules {
+        let ns = module.name();
+        let keys = store
+            .module_keys(ns)
+            .await
+            .map_err(|e| format!("listing {ns} typed history: {e}"))?;
+        for key in keys
+            .into_iter()
+            .filter(|key| is_action_state_persistence_key(key))
+        {
+            if records.len() >= mush_core::action_state::MAX_ACTION_STATE_BOOT_RECORDS {
+                return Err("typed history exceeds boot record limit".into());
+            }
+            let value = store
+                .module_json_get(ns, &key)
+                .await
+                .map_err(|e| format!("reading {ns}:{key} typed history: {e}"))?
+                .ok_or_else(|| format!("typed history disappeared at {ns}:{key}"))?;
+            let encoded = mush_core::canonical_json_bytes_with_limit(
+                &value,
+                mush_core::action_state::MAX_ACTION_STATE_RECORD_BYTES,
+            )
+            .map_err(|e| format!("unbounded typed history at {ns}:{key}: {e}"))?;
+            bytes = bytes
+                .checked_add(encoded.len())
+                .ok_or("typed history byte overflow")?;
+            if bytes > mush_core::action_state::MAX_ACTION_STATE_BOOT_BYTES {
+                return Err("typed history exceeds boot byte limit".into());
+            }
+            records.push(ActionStateBootRecord::new(ns, key, value));
+        }
+    }
+    Ok(records)
+}
+
+/// Ephemeral comparison of the immutable partition across migrations. This is
+/// not an authority digest or a runtime state mirror. Sort in place and encode
+/// one bounded record at a time rather than cloning the complete partition.
+fn typed_history_fingerprint(records: &mut [ActionStateBootRecord]) -> Result<[u8; 32], String> {
+    use sha2::{Digest as _, Sha256};
+    if records.len() > mush_core::action_state::MAX_ACTION_STATE_BOOT_RECORDS {
+        return Err("typed history exceeds boot record limit".into());
+    }
+    records.sort_by(|a, b| (&a.namespace, &a.key).cmp(&(&b.namespace, &b.key)));
+    let mut hash = Sha256::new();
+    hash.update(b"rustmush.boot.typed_history.v1\0");
+    let mut total = 0_usize;
+    for record in records {
+        let encoded = mush_core::canonical_json_bytes_with_limit(
+            &record.value,
+            mush_core::action_state::MAX_ACTION_STATE_RECORD_BYTES,
+        )
+        .map_err(|e| format!("invalid typed history fingerprint: {e}"))?;
+        total = total
+            .checked_add(encoded.len())
+            .ok_or("typed history byte overflow")?;
+        if total > mush_core::action_state::MAX_ACTION_STATE_BOOT_BYTES {
+            return Err("typed history exceeds boot byte limit".into());
+        }
+        for bytes in [
+            record.namespace.as_bytes(),
+            record.key.as_bytes(),
+            encoded.as_slice(),
+        ] {
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        }
+    }
+    Ok(hash.finalize().into())
+}
+
+/// Complete every native history join before any migration or load callback.
+/// Retry whole fetches remain read-only; no manifest reset is written here.
+async fn audit_native_histories(
+    engine: &mut Engine,
+    store: &dyn ObjectStore,
+    expected_typed: [u8; 32],
+    boot: &mut HashMap<SmolStr, ModuleBootData>,
+    records: &mut Vec<ActionStateBootRecord>,
+) -> Result<std::collections::BTreeSet<SmolStr>, String> {
+    if typed_history_fingerprint(records)? != expected_typed {
+        return Err(
+            "coordinator-reserved typed history changed during native history fetch".into(),
+        );
+    }
+    let names: Vec<_> = engine
+        .modules()
+        .iter()
+        .map(|module| SmolStr::new(module.name()))
+        .collect();
+    let mut whole = std::collections::BTreeSet::new();
+    for name in names {
+        let data = boot.get_mut(&name).ok_or("missing native boot namespace")?;
+        match engine.audit_module_boot_history(&name, data) {
+            Ok(()) => {}
+            Err(ModError::RetryFullFetch { .. }) => {
+                // Release the narrowed namespace before fetching its replacement.
+                boot.remove(&name);
+                records.retain(|record| record.namespace != name);
+                let (mut data, rows) = load_one_namespace(store, &name, Fetch::Whole).await?;
+                records.extend(rows);
+                engine
+                    .audit_module_boot_history(&name, &mut data)
+                    .map_err(|e| {
+                        format!("native history audit failed after whole fetch for {name}: {e}")
+                    })?;
+                boot.insert(name.clone(), data);
+                whole.insert(name);
+            }
+            Err(error) => return Err(format!("native history audit failed for {name}: {error}")),
+        }
+    }
+    if typed_history_fingerprint(records)? != expected_typed {
+        return Err(
+            "coordinator-reserved typed history changed during native history retry".into(),
+        );
+    }
+    Ok(whole)
+}
+
 /// The schema version a namespace's [`SCHEMA_KEY`] doc claims, if any.
 async fn ns_version(store: &dyn ObjectStore, ns: &str) -> Result<Option<u32>, String> {
     let doc = store
@@ -346,17 +475,54 @@ pub async fn run_module_migrations(
 }
 
 /// The full module boot sequence over an already-constructed engine (see
-/// the module docs): migrations → boot data → `module_loaded` per module →
+/// the module docs): typed/native history audits → migrations → boot data → `module_loaded` per module →
 /// `all_modules_loaded` (every `on_all_loaded`, then the census) → durable
 /// write-through of whatever boot persisted. Call between
 /// [`Engine::from_composition`] (or the compatibility
 /// [`Engine::with_modules`] wrapper) and spawning the world task.
 pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Result<(), String> {
-    run_module_migrations(store, engine.registry.migrations()).await?;
-    let (mut boot, action_state) = load_module_boot(store, engine.modules()).await?;
+    let mut history = load_typed_history(store, engine.modules()).await?;
+    let history_fingerprint = typed_history_fingerprint(&mut history)?;
     engine
-        .hydrate_action_state(action_state)
+        .hydrate_action_state(history)
         .map_err(|error| format!("action-state boot failed: {error}"))?;
+    engine
+        .audit_typed_history()
+        .map_err(|error| format!("typed history audit failed: {error}"))?;
+    let (mut original, mut original_rows) = load_module_boot(store, engine.modules()).await?;
+    let whole = audit_native_histories(
+        engine,
+        store,
+        history_fingerprint,
+        &mut original,
+        &mut original_rows,
+    )
+    .await?;
+    drop(original);
+    drop(original_rows);
+    run_module_migrations(store, engine.registry.migrations()).await?;
+    let (mut boot, mut action_state) = load_module_boot(store, engine.modules()).await?;
+    // Preserve successful whole-fetch decisions without writing a manifest
+    // before all native validators have passed. Recheck after migrations too.
+    for name in &whole {
+        boot.remove(name);
+        action_state.retain(|record| &record.namespace != name);
+        let (data, rows) = load_one_namespace(store, name, Fetch::Whole).await?;
+        boot.insert(name.clone(), data);
+        action_state.extend(rows);
+    }
+    if typed_history_fingerprint(&mut action_state)? != history_fingerprint {
+        return Err("coordinator-reserved typed history changed during module migrations".into());
+    }
+    audit_native_histories(
+        engine,
+        store,
+        history_fingerprint,
+        &mut boot,
+        &mut action_state,
+    )
+    .await?;
+    drop(action_state);
     load_requested_streams(store, engine.modules(), &mut boot).await?;
     let mut out = Outbox::new();
     let mut fx = Effects::new();
@@ -474,7 +640,7 @@ const BOOT_SERIAL: u64 = 0;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// S6 (doc 14 §4.6): the game's sheet composes its rules interface beside it,
     /// carrying the chargen stages.
@@ -590,6 +756,209 @@ mod tests {
         loaded: Arc<AtomicBool>,
     }
 
+    struct NativeBootProbe {
+        audits: Arc<AtomicUsize>,
+        loaded: Arc<AtomicUsize>,
+    }
+    impl GameModule for NativeBootProbe {
+        fn name(&self) -> &'static str {
+            "native_boot_test"
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            let audits = self.audits.clone();
+            reg.migrations(
+                self.name(),
+                vec![Migration {
+                    version: 1,
+                    description: "native whole-fetch ordering fixture".into(),
+                    apply: Arc::new(move |key, value| {
+                        if key != "doc:migrate" {
+                            return Ok(value);
+                        }
+                        if audits.load(Ordering::SeqCst) < 2 {
+                            return Err(
+                                "migration ran before the successful whole-history audit".into()
+                            );
+                        }
+                        Ok(serde_json::json!({"after":true}))
+                    }),
+                }],
+            )
+        }
+        fn audit_boot_history(
+            &self,
+            _: &mush_core::ModuleCtx<'_>,
+            data: &ModuleBootData,
+        ) -> Result<(), ModError> {
+            self.audits.fetch_add(1, Ordering::SeqCst);
+            if !data.omitted.is_empty() {
+                return Err(ModError::RetryFullFetch {
+                    module: self.name().into(),
+                    reason: "whole native history required".into(),
+                });
+            }
+            if data.kv.iter().any(|(key, _)| key == "refuse_native") {
+                return Err(ModError::msg("native history refused"));
+            }
+            Ok(())
+        }
+        fn on_world_loaded(
+            &mut self,
+            _: &mut mush_core::ModuleCtx<'_>,
+            data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            if !data.omitted.is_empty() {
+                return Err(ModError::msg("load lost its audited whole history"));
+            }
+            self.loaded.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn native_manifest() -> serde_json::Value {
+        serde_json::to_value(BootManifest {
+            format: mush_core::BOOT_MANIFEST_FORMAT,
+            skip_log_chunks_below: [(SmolStr::new("checkpoint"), 1)].into(),
+            skip_key_prefixes: Vec::new(),
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn native_refusal_and_failed_whole_retry_leave_migrations_and_manifest_untouched() {
+        for narrowed in [false, true] {
+            let store = InMemoryStore::new();
+            let mut ops = vec![
+                stamp("toy", 1),
+                ModuleOp {
+                    ns: "toy".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "doc:one".into(),
+                        value: serde_json::json!({"a":1}),
+                    },
+                },
+                ModuleOp {
+                    ns: "native_boot_test".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "refuse_native".into(),
+                        value: serde_json::Value::Bool(true),
+                    },
+                },
+            ];
+            if narrowed {
+                ops.push(ModuleOp {
+                    ns: "native_boot_test".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: BOOT_MANIFEST_KEY.into(),
+                        value: native_manifest(),
+                    },
+                });
+            }
+            write_ops(&store, ops).await.unwrap();
+            let audits = Arc::new(AtomicUsize::new(0));
+            let loaded = Arc::new(AtomicUsize::new(0));
+            let mut engine = Box::new(
+                Engine::with_modules(
+                    World::new_minimal(),
+                    mush_core::Registry::new(),
+                    vec![
+                        Box::new(ToyMod { loaded: Vec::new() }),
+                        Box::new(NativeBootProbe {
+                            audits: audits.clone(),
+                            loaded: loaded.clone(),
+                        }),
+                    ],
+                )
+                .unwrap(),
+            );
+            let _ = engine.world.take_dirty();
+            let error = boot_modules(&mut engine, &store).await.unwrap_err();
+            assert!(error.contains("native history audit failed"), "{error}");
+            assert_eq!(audits.load(Ordering::SeqCst), if narrowed { 2 } else { 1 });
+            assert_eq!(loaded.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                store.module_json_get("toy", SCHEMA_KEY).await.unwrap(),
+                Some(serde_json::json!({"version":1}))
+            );
+            assert_eq!(
+                store.module_json_get("toy", "doc:one").await.unwrap(),
+                Some(serde_json::json!({"a":1}))
+            );
+            assert_eq!(
+                store
+                    .module_json_get("native_boot_test", SCHEMA_KEY)
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                store
+                    .module_json_get("native_boot_test", BOOT_MANIFEST_KEY)
+                    .await
+                    .unwrap(),
+                narrowed.then(native_manifest)
+            );
+            assert!(engine.world.take_dirty().is_empty());
+            assert!(engine.take_module_ops().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn native_whole_retry_precedes_migration_and_is_retained_without_manifest_reset() {
+        let store = InMemoryStore::new();
+        write_ops(
+            &store,
+            vec![
+                ModuleOp {
+                    ns: "native_boot_test".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: BOOT_MANIFEST_KEY.into(),
+                        value: native_manifest(),
+                    },
+                },
+                ModuleOp {
+                    ns: "native_boot_test".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "doc:migrate".into(),
+                        value: serde_json::json!({"before":true}),
+                    },
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let audits = Arc::new(AtomicUsize::new(0));
+        let loaded = Arc::new(AtomicUsize::new(0));
+        let mut engine = Box::new(
+            Engine::with_modules(
+                World::new_minimal(),
+                mush_core::Registry::new(),
+                vec![Box::new(NativeBootProbe {
+                    audits: audits.clone(),
+                    loaded: loaded.clone(),
+                })],
+            )
+            .unwrap(),
+        );
+        boot_modules(&mut engine, &store).await.unwrap();
+        assert!(audits.load(Ordering::SeqCst) >= 2);
+        assert_eq!(loaded.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .module_json_get("native_boot_test", "doc:migrate")
+                .await
+                .unwrap(),
+            Some(serde_json::json!({"after":true}))
+        );
+        assert_eq!(
+            store
+                .module_json_get("native_boot_test", BOOT_MANIFEST_KEY)
+                .await
+                .unwrap(),
+            Some(native_manifest())
+        );
+    }
+
     impl GameModule for StateBootMod {
         fn name(&self) -> &'static str {
             "state_boot_test"
@@ -625,6 +994,23 @@ mod tests {
         ) -> Result<Vec<(SmolStr, u32)>, ModError> {
             self.streams_requested.store(true, Ordering::SeqCst);
             Ok(Vec::new())
+        }
+
+        fn audit_typed_history(&self, ctx: &mush_core::ModuleCtx<'_>) -> Result<(), ModError> {
+            let captured = self
+                .handle
+                .lock()
+                .map_err(|e| ModError::msg(e.to_string()))?;
+            let handle = captured
+                .as_ref()
+                .ok_or_else(|| ModError::msg("missing test handle"))?;
+            let row = ctx
+                .action_state(handle, &7)
+                .map_err(|e| ModError::msg(e.to_string()))?;
+            if row.is_some_and(|value| value.amount == 9) {
+                return Err(ModError::msg("framework history audit refused"));
+            }
+            Ok(())
         }
 
         fn on_world_loaded(
@@ -838,6 +1224,120 @@ mod tests {
             engine.action_state().get(&handle, &7).unwrap(),
             Some(&BootState { amount: 3 })
         );
+    }
+
+    #[tokio::test]
+    async fn typed_history_refusal_precedes_other_modules_migrations_and_callbacks() {
+        let store = InMemoryStore::new();
+        seed_authoritative_op(&store, boot_state_op("7", 9)).await;
+        write_ops(
+            &store,
+            vec![
+                stamp("toy", 1),
+                ModuleOp {
+                    ns: "toy".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "doc:one".into(),
+                        value: serde_json::json!({"a":1}),
+                    },
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let captured = Arc::new(Mutex::new(None));
+        let streams = Arc::new(AtomicBool::new(false));
+        let loaded = Arc::new(AtomicBool::new(false));
+        let mut engine = Box::new(
+            Engine::with_modules(
+                World::new_minimal(),
+                mush_core::Registry::new(),
+                vec![
+                    // This earlier module has an actual pending schema migration.
+                    Box::new(ToyMod { loaded: Vec::new() }),
+                    Box::new(StateBootMod {
+                        handle: captured,
+                        streams_requested: streams.clone(),
+                        loaded: loaded.clone(),
+                    }),
+                ],
+            )
+            .unwrap(),
+        );
+        let _ = engine.world.take_dirty();
+        let error = boot_modules(&mut engine, &store).await.unwrap_err();
+        assert!(error.contains("typed history audit failed"), "{error}");
+        assert_eq!(
+            store.module_json_get("toy", SCHEMA_KEY).await.unwrap(),
+            Some(serde_json::json!({"version":1}))
+        );
+        assert_eq!(
+            store.module_json_get("toy", "doc:one").await.unwrap(),
+            Some(serde_json::json!({"a":1}))
+        );
+        assert!(!streams.load(Ordering::SeqCst));
+        assert!(!loaded.load(Ordering::SeqCst));
+        assert!(engine.world.take_dirty().is_empty());
+        assert!(engine.take_module_ops().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manifest_cannot_hide_previously_audited_typed_history() {
+        let store = InMemoryStore::new();
+        seed_authoritative_op(&store, boot_state_op("7", 3)).await;
+        write_ops(
+            &store,
+            vec![ModuleOp {
+                ns: "state_boot_test".into(),
+                op: ModuleWrite::JsonSet {
+                    key: BOOT_MANIFEST_KEY.into(),
+                    value: serde_json::to_value(BootManifest {
+                        format: mush_core::BOOT_MANIFEST_FORMAT,
+                        skip_log_chunks_below: Default::default(),
+                        skip_key_prefixes: vec!["action-state/".into()],
+                    })
+                    .unwrap(),
+                },
+            }],
+        )
+        .await
+        .unwrap();
+        let (mut engine, _, streams, loaded) = state_boot_engine();
+        let error = boot_modules(&mut engine, &store).await.unwrap_err();
+        assert!(error.contains("typed history changed"), "{error}");
+        assert!(!streams.load(Ordering::SeqCst));
+        assert!(!loaded.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn typed_partition_comparison_is_order_independent_and_binds_all_fields() {
+        let first = ActionStateBootRecord::new(
+            "owner",
+            "action-state/v1/family/1",
+            serde_json::json!({"a":1}),
+        );
+        let second = ActionStateBootRecord::new(
+            "owner",
+            "action-state/v1/family/2",
+            serde_json::json!({"b":2}),
+        );
+        let expected = typed_history_fingerprint(&mut [first.clone(), second.clone()]).unwrap();
+        assert_eq!(
+            expected,
+            typed_history_fingerprint(&mut [second.clone(), first.clone()]).unwrap()
+        );
+        for change in 0..3 {
+            let mut changed = first.clone();
+            match change {
+                0 => changed.namespace = "other".into(),
+                1 => changed.key = "action-state/v1/family/9".into(),
+                _ => changed.value = serde_json::json!({"a":9}),
+            }
+            assert_ne!(
+                expected,
+                typed_history_fingerprint(&mut [changed, second.clone()]).unwrap()
+            );
+        }
     }
 
     #[tokio::test]
@@ -2371,6 +2871,12 @@ mod tests {
             // M8c: acting for an organisation holder, and the seal-mark writer.
             mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY,
             mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY,
+            mush_roll::commerce::registry_inspection::REGISTRY_FINE_CAPABILITY,
+            // M8g G3: the Registry's read of the quirk claims.
+            mush_roll::commerce::registry_inspection::REGISTRY_CLAIMS_CAPABILITY,
+            // Doc 17h cut M8d2: the seizure and the forfeit.
+            mush_roll::commerce::registry_inspection::REGISTRY_SEIZE_CAPABILITY,
+            mush_roll::commerce::registry_inspection::REGISTRY_FORFEIT_CAPABILITY,
         ];
         // DT.2a declares all six distinct unit rights without granting them.
         let unit_capabilities = [

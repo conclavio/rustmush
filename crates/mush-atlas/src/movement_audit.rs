@@ -66,32 +66,65 @@ impl Audit {
                 movement_participant::participant_descriptor()?,
             )
             .map_err(bad)?;
-        if receipt.effect().participant() != &expected {
+        let window_participant = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new(crate::NS).map_err(bad)?,
+                crate::movement_window_participant::participant_descriptor()?,
+            )
+            .map_err(bad)?;
+        let is_window = receipt.effect().participant() == &window_participant;
+        if receipt.effect().participant() != &expected && !is_window {
             return Err(bad("unknown Atlas movement proof profile"));
         }
         let value = receipt.effect().proof();
+        if is_window {
+            crate::movement_window::preflight_evidence(value).map_err(bad)?;
+        }
         mush_core::canonical_json_bytes_with_limit(
             value,
             mush_core::locomotion::composed::MAX_MOVEMENT_PROOF_BYTES,
         )
         .map_err(bad)?;
-        let proof: Proof = serde_json::from_value(value.clone()).map_err(bad)?;
-        if proof.format != 1 || serde_json::to_value(&proof).map_err(bad)? != *value {
-            return Err(bad("invalid Atlas movement proof"));
-        }
-        let bytes = mush_core::canonical_json_bytes_with_limit(
-            &proof.capture,
-            crate::movement::MAX_MOVEMENT_CAPTURE_BYTES,
-        )
-        .map_err(bad)?;
-        let capture = MovementCapture::decode(&bytes).map_err(bad)?;
-        let digest = movement_participant::capture_digest(&capture).map_err(bad)?;
+        let (capture, digest, history_next, event) = if is_window {
+            let projection = receipt
+                .window_projection()
+                .ok_or_else(|| bad("Atlas window proposal missing"))?;
+            let proof: crate::movement_window_participant::Proof =
+                serde_json::from_value(value.clone()).map_err(bad)?;
+            if proof.format != 1 || serde_json::to_value(&proof).map_err(bad)? != *value {
+                return Err(bad("invalid Atlas window proof"));
+            }
+            let capture = crate::movement_window::validate_evidence(&proof.window, projection)
+                .map_err(bad)?;
+            (
+                capture,
+                projection.atlas_capture_digest(),
+                proof.history_next,
+                proof.event,
+            )
+        } else {
+            if receipt.window_projection().is_some() {
+                return Err(bad("ordinary Atlas proof has window projection"));
+            }
+            let proof: Proof = serde_json::from_value(value.clone()).map_err(bad)?;
+            if proof.format != 1 || serde_json::to_value(&proof).map_err(bad)? != *value {
+                return Err(bad("invalid Atlas movement proof"));
+            }
+            let bytes = mush_core::canonical_json_bytes_with_limit(
+                &proof.capture,
+                crate::movement::MAX_MOVEMENT_CAPTURE_BYTES,
+            )
+            .map_err(bad)?;
+            let capture = MovementCapture::decode(&bytes).map_err(bad)?;
+            let digest = movement_participant::capture_digest(&capture).map_err(bad)?;
+            (capture, digest, proof.history_next, proof.event)
+        };
         if capture.actor() != receipt.actor()
             || capture.from() != receipt.source()
             || capture.to() != receipt.destination()
             || capture.at() != receipt.at_utc()
             || capture.atlas_slot() != SlotPresence::Present
-            || capture.window_effect() != WindowEffect::NoSelectedEffect
+            || (!is_window && capture.window_effect() != WindowEffect::NoSelectedEffect)
             || &digest != receipt.effect().owner_capture_digest()
         {
             return Err(bad(
@@ -110,24 +143,23 @@ impl Audit {
             .planned_known()
             .map(|doc| known_digest(Some(&doc.places)).map_err(bad))
             .transpose()?;
-        if proof.event.is_some() != after.is_some()
-            || proof
-                .event
+        if event.is_some() != after.is_some()
+            || event
                 .as_ref()
-                .is_some_and(|event| event.sequence != proof.history_next)
+                .is_some_and(|event| event.sequence != history_next)
         {
             return Err(bad(
                 "Atlas movement proof has inconsistent knowledge effect claims",
             ));
         }
         self.pending
-            .entry(proof.history_next)
+            .entry(history_next)
             .or_default()
             .push(Expected {
                 actor: receipt.actor(),
                 before,
                 after,
-                event: proof.event,
+                event,
                 commit: receipt.commit(),
                 stamp: receipt.prepared_at().clone(),
                 at_utc: receipt.at_utc(),
@@ -145,6 +177,16 @@ impl Audit {
         } else {
             self.charge(256)?;
             self.known.insert(actor, digest);
+        }
+        Ok(())
+    }
+    fn check_typed_claims(&self) -> Result<(), ModError> {
+        if self
+            .pending
+            .values()
+            .any(|claims| claims.iter().filter(|claim| claim.event.is_some()).count() > 1)
+        {
+            return Err(bad("Atlas receipts claim the same knowledge position"));
         }
         Ok(())
     }
@@ -250,27 +292,47 @@ impl Audit {
     }
 }
 
+fn collect_receipts(
+    ctx: &ModuleCtx<'_>,
+    readers: &[&ComposedOwnerReader],
+) -> Result<Audit, ModError> {
+    let mut audit = Audit::new();
+    for reader in readers {
+        let mut after = None;
+        loop {
+            let page = reader
+                .scan_receipts(ctx, after.as_deref(), 128)
+                .map_err(bad)?;
+            for receipt in page.entries() {
+                audit.add(receipt)?;
+            }
+            after = page.next_after().map(ToString::to_string);
+            if after.is_none() {
+                break;
+            }
+        }
+    }
+    audit.check_typed_claims()?;
+    Ok(audit)
+}
+
+/// Validate only retained owner proofs before migrations or any module load.
+/// This neither reads current geometry nor certifies native journal positions.
+pub(crate) fn audit_typed(
+    ctx: &ModuleCtx<'_>,
+    readers: &[&ComposedOwnerReader],
+) -> Result<(), ModError> {
+    collect_receipts(ctx, readers).map(|_| ())
+}
+
 pub(crate) fn audit_boot(
     ctx: &ModuleCtx<'_>,
     data: &ModuleBootData,
     history: &LedgerHistory,
     travel: &TravelState,
-    reader: &ComposedOwnerReader,
+    readers: &[&ComposedOwnerReader],
 ) -> Result<(), ModError> {
-    let mut audit = Audit::new();
-    let mut after = None;
-    loop {
-        let page = reader
-            .scan_receipts(ctx, after.as_deref(), 128)
-            .map_err(bad)?;
-        for receipt in page.entries() {
-            audit.add(receipt)?;
-        }
-        after = page.next_after().map(ToString::to_string);
-        if after.is_none() {
-            break;
-        }
-    }
+    let mut audit = collect_receipts(ctx, readers)?;
     audit.read_history(data, history)?;
     audit.finish(travel)
 }

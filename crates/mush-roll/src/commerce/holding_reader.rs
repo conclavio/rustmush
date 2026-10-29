@@ -5,7 +5,9 @@
 //! mind commands' own-actor kinds (`command_reader`), so the commands spend
 //! no owner-read service or grant of their own. `original_owner_holding` is
 //! version 2 for it; the original-holding kinds and their encodings are
-//! unchanged.
+//! unchanged. Doc 17h §3 M8f: version 3 adds the two GOD-only procurement
+//! kinds (`procurement_read`), the version bumped as 17g C2a bumped it for
+//! the command kinds.
 
 use super::command_reader::{RollCommandReadRequest, RollCommandReadResult};
 use super::families::CommerceFamilies;
@@ -146,8 +148,12 @@ pub(crate) fn descriptor(manifest: &DefinitionRef) -> Result<DefinitionDescripto
     }
     // 17g C2a: version 2 declares the folded command kinds (`command_reader`),
     // own-actor only, source-free and without account ids.
-    let commands = json!({"own_only":true,"maximum_rows":super::command_reader::MAXIMUM_ROWS,"account_ids":false});
-    Ok(DefinitionDescriptor::new(DefinitionKind::new("owner_read").map_err(error)?,DefinitionId::new("original_owner_holding").map_err(error)?,2,
+    // Doc 17h §3 M8f: and the two GOD-only procurement kinds.
+    // Doc 17h §3 M8h: and the GOD-only House attestation walk.
+    let commands = json!({"own_only":true,"maximum_rows":super::command_reader::MAXIMUM_ROWS,"account_ids":false,
+        "procurement":{"caller":"god","tally_pages":super::procurement_read::TALLY_PAGES_PER_READ,"holdings":super::procurement_read::HOLDINGS_PER_READ},
+        "house_attestation":{"caller":"god","licences":super::house_attestation_read::HOUSE_LICENCES_PER_READ}});
+    Ok(DefinitionDescriptor::new(DefinitionKind::new("owner_read").map_err(error)?,DefinitionId::new("original_owner_holding").map_err(error)?,3,
         json!({"format":1,"original_only":true,"own_assets_per_page":OWN_ASSETS_PER_PAGE,"source_bytes":false,"manifest":manifest,"commands":commands}))
         .map_err(error)?.with_references(vec![manifest.clone()]))
 }
@@ -221,7 +227,7 @@ impl OwnerReadService for OriginalOwnerReader {
                 let command = super::command_reader::read(
                     ctx,
                     roll,
-                    &self.families,
+                    (&self.families, &self.ratings),
                     self.commands.as_ref(),
                     request,
                 )?;

@@ -24,14 +24,29 @@ impl FundingIntent {
         self.subject.validate()?;
         self.policy.validate()?;
         self.supplier.validate(&self.policy, &self.subject)?;
+        let site = self.policy.site(self.subject.source.is_certified())?;
         if self.subject.policy != self.policy.digest()?
             || self.subject.recipe != self.policy.recipe
-            || [self.policy.supplier.account, self.policy.integrator.account]
-                .contains(&self.subject.payer)
+            || [
+                self.policy.supplier.account,
+                self.policy.integrator.account,
+                site.integrator.account,
+            ]
+            .contains(&self.subject.payer)
+            || (self.payment == DiePayment::Uncertified) == self.subject.source.is_certified()
         {
             return Err(Error::Integrity);
         }
         Ok(())
+    }
+    /// The account the integration fee is paid to: the site's integrator (doc 17h cut
+    /// M8b-2, H2).
+    pub fn integrator_account(&self) -> Result<crate::AccountId, Error> {
+        Ok(self
+            .policy
+            .site(self.subject.source.is_certified())?
+            .integrator
+            .account)
     }
     pub fn price(&self) -> Amount {
         self.payment.price(self.subject.class)
@@ -63,8 +78,8 @@ impl CoreOutputBirth {
             || order.intent() != subject.intent
             || order.requester() != subject.requester
             || order.recipe() != &subject.recipe
-            || order.facility() != policy.factory
-            || order.container() != policy.output_container
+            || order.facility() != policy.site(subject.source.is_certified())?.factory
+            || order.container() != policy.site(subject.source.is_certified())?.output_container
         {
             return Err(Error::Integrity);
         }
@@ -80,6 +95,10 @@ impl CoreOutputBirth {
     fn validate(&self, policy: &CorePaymentPolicy) -> Result<(), Error> {
         if self.object.0 < 2
             || [policy.factory, policy.output_container].contains(&self.object)
+            || policy
+                .ungoverned
+                .as_ref()
+                .is_some_and(|u| [u.factory, u.output_container].contains(&self.object))
             || self.object_digest.as_bytes() == &[0; 32]
             || self.reservation_action != policy.action_ref("reserve_core_output")?
         {
@@ -145,7 +164,11 @@ fn base(
         },
         lines,
     );
-    plan.description = "Certified core integration".into();
+    plan.description = if intent.payment == DiePayment::Uncertified {
+        "Core integration".into()
+    } else {
+        "Certified core integration".into()
+    };
     Ok(plan)
 }
 pub(super) fn funding(
@@ -212,10 +235,15 @@ pub(super) fn terminal(
         lines.push(RequestedLine {
             account: intent.subject.payer,
             delta: intent.price().checked_neg().ok_or(Error::Invalid)?,
-            memo: "certified core".into(),
+            // Doc 17h cut M8b-2: an uncertified die's integration is not a certified core.
+            memo: if intent.payment == DiePayment::Uncertified {
+                "core integration".into()
+            } else {
+                "certified core".into()
+            },
         });
         lines.push(RequestedLine {
-            account: intent.policy.integrator.account,
+            account: intent.integrator_account()?,
             delta: Amount::from_minor(intent.subject.class.integration_minor()),
             memo: "core integration".into(),
         });

@@ -50,6 +50,13 @@ impl CoreFactoryConfig {
         if config.mode != self.mode || config.payment.factory != self.payment.factory {
             return Err(Error::Invalid);
         }
+        // Doc 17h cut M8b-2 fix round 1 (L4): the back room that integrates heirloom and grey
+        // dies is the one that ungoverns, so its cores can be fitted where they are made.
+        if let Some(u) = &self.payment.ungoverned
+            && config.payment.ungovern.as_ref().map(|r| r.factory) != Some(u.factory)
+        {
+            return Err(Error::Invalid);
+        }
         self.refit = Some(config);
         Ok(self)
     }
@@ -179,7 +186,8 @@ impl CoreOfferAuthority for AcknowledgedOffers {
         }
         match &offer.input {
             super::offer::OfferedInput::SupplierStock { certificate, lot } => {
-                if certificate.operation != subject.die_certificate
+                if !subject.source.is_certified()
+                    || certificate.operation != subject.die_certificate
                     || lot.id().0 != subject.die_lot
                     || lot.endpoint().0 != subject.input_vault
                 {
@@ -187,7 +195,18 @@ impl CoreOfferAuthority for AcknowledgedOffers {
                 }
             }
             super::offer::OfferedInput::RequesterSupplied {} => {
-                if offer.policy.supplier_stock.contains(&subject.input_vault) {
+                if !subject.source.is_certified()
+                    || offer.policy.supplier_stock.contains(&subject.input_vault)
+                {
+                    return Err(unavailable());
+                }
+            }
+            // Doc 17h cut M8b-2 (H2): the ungoverning site's offer funds only a heirloom or
+            // grey die the requester brings.
+            super::offer::OfferedInput::Uncertified {} => {
+                if subject.source.is_certified()
+                    || offer.policy.supplier_stock.contains(&subject.input_vault)
+                {
                     return Err(unavailable());
                 }
             }

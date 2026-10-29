@@ -49,6 +49,8 @@ mod locomotion;
 mod locomotion_capture;
 mod locomotion_composed;
 mod locomotion_scenes;
+pub mod movement_custody;
+mod movement_reads;
 pub use locomotion_composed::ComposedMovementFactory;
 mod personnel;
 mod personnel_capture;
@@ -60,6 +62,8 @@ pub mod station;
 pub mod tick;
 pub mod transition;
 pub mod window;
+pub mod window_movement;
+pub mod window_occupancy;
 
 use std::sync::{Arc, OnceLock};
 
@@ -173,6 +177,7 @@ pub struct SimulationModule {
     atomic_scene_movement:
         Option<Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>>,
     composed_movement: Option<ComposedMovementFactory>,
+    tactics_movement_reads: Option<movement_custody::CustodyReadFactory>,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -187,6 +192,10 @@ impl std::fmt::Debug for SimulationModule {
                 &self.atomic_scene_movement.is_some(),
             )
             .field("composed_movement", &self.composed_movement.is_some())
+            .field(
+                "tactics_movement_reads",
+                &self.tactics_movement_reads.is_some(),
+            )
             .finish()
     }
 }
@@ -210,6 +219,7 @@ impl SimulationModule {
             ic_custody: None,
             atomic_scene_movement: None,
             composed_movement: None,
+            tactics_movement_reads: None,
         }
     }
 
@@ -238,6 +248,21 @@ impl SimulationModule {
     #[must_use]
     pub fn with_composed_movement(mut self, factory: ComposedMovementFactory) -> Self {
         self.composed_movement = Some(factory);
+        self
+    }
+
+    /// Require the fixed actual Tactics custody read in every closed movement
+    /// preparation. The Tactics module must register the matching service; no
+    /// caller callback can stand in for the retained Core read observation.
+    #[must_use]
+    pub fn with_tactics_movement_reads<S>(mut self) -> Self
+    where
+        S: mush_core::read_service::OwnerReadService<
+                Request = movement_custody::MovementCustodyRequest,
+                Output = movement_custody::MovementCustodyFacts,
+            >,
+    {
+        self.tactics_movement_reads = Some(movement_custody::factory::<S>());
         self
     }
 
@@ -281,6 +306,20 @@ impl SimulationModule {
     pub fn with_carrier_hooks(mut self, hooks: Arc<dyn journey::CarrierHooks>) -> SimulationModule {
         self.carrier_hooks = Some(hooks);
         self
+    }
+
+    /// These audits read registered handles and already-hydrated typed history,
+    /// not live placement projections or other modules' loaded state.
+    fn audit_movement_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
+        physical::loaded(ctx)?;
+        locomotion::loaded(ctx)?;
+        if self.atomic_scene_movement.is_some() {
+            locomotion_scenes::loaded(ctx)?;
+        }
+        if self.composed_movement.is_some() {
+            locomotion_composed::loaded(ctx)?;
+        }
+        Ok(())
     }
 }
 
@@ -1024,13 +1063,19 @@ impl GameModule for SimulationModule {
             handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
         tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
-        physical::register(reg, self.ic_custody.is_some())?;
-        locomotion::register(reg)?;
+        let tactics_read = self
+            .tactics_movement_reads
+            .as_ref()
+            .map(|factory| factory(reg))
+            .transpose()?;
+        let movement_reads = movement_reads::register(reg, tactics_read)?;
+        physical::register(reg, self.ic_custody.is_some(), movement_reads.clone())?;
+        locomotion::register(reg, movement_reads.clone())?;
         if let Some(reader) = &self.atomic_scene_movement {
-            locomotion_scenes::register(reg, reader)?;
+            locomotion_scenes::register(reg, reader, movement_reads.clone())?;
         }
         if let Some(factory) = &self.composed_movement {
-            locomotion_composed::register(reg, factory)?;
+            locomotion_composed::register(reg, factory, movement_reads)?;
         }
         // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
         // arena holds. Always composed, even with no game layer above — the
@@ -1137,11 +1182,19 @@ impl GameModule for SimulationModule {
         Ok(())
     }
 
+    fn audit_typed_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
+        self.audit_movement_history(ctx)
+    }
+
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
         mut data: ModuleBootData,
     ) -> Result<(), ModError> {
+        // A missing/mismatched receipt pair must refuse before Sim's legacy
+        // loaders can quarantine, reconcile projections, or advance journeys.
+        // The server hydrates the typed-state partition before any load hook.
+        self.audit_movement_history(ctx)?;
         ic_exclusion::load(ctx, &mut data, self.ic_custody.is_some())?;
         if let Some(config) = &self.ic_custody {
             config.loaded(ctx)?;
@@ -1167,14 +1220,9 @@ impl GameModule for SimulationModule {
     }
 
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
-        physical::loaded(ctx)?;
-        locomotion::loaded(ctx)?;
-        if self.atomic_scene_movement.is_some() {
-            locomotion_scenes::loaded(ctx)?;
-        }
-        if self.composed_movement.is_some() {
-            locomotion_composed::loaded(ctx)?;
-        }
+        // Retain the final check for drivers invoking final composition
+        // directly and for changes made by intervening module load hooks.
+        self.audit_movement_history(ctx)?;
         // The coordinator hydrated typed leases before the load callbacks.
         // Read them through Sim's real owner lens before the first command:
         // a restarted pilot may reclaim before any periodic tick has fired.

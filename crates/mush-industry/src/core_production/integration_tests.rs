@@ -355,6 +355,7 @@ impl FactoryRig {
             )?,
         )?;
         let policy = CorePaymentPolicy {
+            ungoverned: None,
             delivery: delivery
                 .then_some(mush_economy::core_integration::CoreDeliveryPromise::PersonalCustodyV1),
             issuer,

@@ -61,9 +61,10 @@ impl Provider {
         }
         .map_err(|e| e.to_string())
     }
-    /// `amount`: the quoted price (minor units) at the Fund, `None` at the
-    /// Grant (M8c F2: `roll.holder.org` is amount-bearing; only the spending
-    /// act asks with the price).
+    /// `amount`: the quoted price (minor units), at the Fund and at the Grant
+    /// (M8c F2: `roll.holder.org` is amount-bearing; doc 17h §3 M8f P2a:
+    /// every step of the organisation's buy that moves money asks with it,
+    /// so a grant limited at or over the price completes what it bought).
     fn current(
         &self,
         inv: &ActionInvocation,
@@ -149,6 +150,13 @@ impl Provider {
         if q.publication != quote {
             return Err("quote key differs".into());
         }
+        // Doc 17h §3 M8f H1 (the lead's ruling): an organisation's quote is
+        // funded by the member who quoted it, and by no other, so no member
+        // spends the treasury on another's quote; the Grant and the Refund
+        // stay open to any granted member (M8c S1).
+        if matches!(q.buyer, Holder::Organization { acting, .. } if acting != inv.actor()) {
+            return Err("entitlement quote is another member's".into());
+        }
         let observed = self.current(inv, txn, ctx, &q, Some(q.price.minor()))?;
         // 17g C2f: the buyer's index row (M8c S1: the character, or the
         // organisation).
@@ -215,13 +223,17 @@ impl Provider {
         before.validate()?;
         // M8c F2: the terminal is the buyer's (a character itself, or any
         // character acting for the buying organisation now, re-asked here),
-        // or GOD's refund.
+        // or GOD's refund. Doc 17h §3 M8f P2a: the Grant and the Refund move
+        // the escrowed price, so the grant is asked with it.
         let buyer_acts = match before.quote.buyer {
             Holder::Character(c) => c == inv.actor(),
-            Holder::Organization { org, .. } => {
-                org_holder::acts_for(ctx.world().map_err(|e| e.to_string())?, org, inv.actor())
-                    .is_ok()
-            }
+            Holder::Organization { org, .. } => org_holder::acts_for_amount(
+                ctx.world().map_err(|e| e.to_string())?,
+                org,
+                inv.actor(),
+                Some(before.quote.price.minor()),
+            )
+            .is_ok(),
         };
         if before.operation != operation
             || before.phase != (PurchasePhase::Funded {})
@@ -239,7 +251,13 @@ impl Provider {
             if before.participants != self.config.participants {
                 return Err("entitlement participants are historical".into());
             }
-            Some(self.current(inv, txn, ctx, &before.quote, None)?)
+            Some(self.current(
+                inv,
+                txn,
+                ctx,
+                &before.quote,
+                Some(before.quote.price.minor()),
+            )?)
         } else {
             None
         };

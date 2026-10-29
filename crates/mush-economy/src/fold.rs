@@ -106,6 +106,12 @@ pub struct FoldState {
         skip_serializing_if = "crate::core_integration::receipt::CoreReceiptAudit::uninitialized"
     )]
     pub(crate) core_receipts: crate::core_integration::receipt::CoreReceiptAudit,
+    /// Doc 17h cut M8d2 S1: the Registry's seize and forfeit receipts of managed cores.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::seizure::SeizureReceiptAudit::uninitialized"
+    )]
+    pub(crate) seizure_receipts: crate::registry_filing::seizure::SeizureReceiptAudit,
     #[serde(
         default,
         skip_serializing_if = "crate::core_refit::receipt::RefitReceiptAudit::uninitialized"
@@ -199,6 +205,7 @@ impl FoldState {
         self.paid_resale_receipts.observe(tx);
         self.coverage_receipts.observe(tx);
         self.core_receipts.observe(tx);
+        self.seizure_receipts.observe(tx);
         self.refit_receipts.observe(tx);
         self.filing_receipts.observe(tx);
         self.update_receipts.observe(tx);

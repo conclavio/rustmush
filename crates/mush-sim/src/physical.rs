@@ -55,7 +55,10 @@ const MAX_RESIDENT_RECORDS: usize = 4096;
 const MAX_RESIDENT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Stop serialization before allocating/cloning an oversized input record.
-fn encoded_size<T: Serialize + ?Sized>(value: &T, limit: usize) -> Result<usize, ParticipantError> {
+pub(crate) fn encoded_size<T: Serialize + ?Sized>(
+    value: &T,
+    limit: usize,
+) -> Result<usize, ParticipantError> {
     struct Limit {
         used: usize,
         limit: usize,
@@ -228,7 +231,11 @@ pub(crate) fn participant_descriptor() -> Result<DefinitionDescriptor, ModError>
     .map_err(|e| ModError::msg(e.to_string()))
 }
 
-pub(crate) fn register(reg: &mut Registrar<'_>, ic_custody: bool) -> Result<(), ModError> {
+pub(crate) fn register(
+    reg: &mut Registrar<'_>,
+    ic_custody: bool,
+    movement_reads: crate::movement_reads::MovementReads,
+) -> Result<(), ModError> {
     let descriptor = participant_descriptor()?;
     let historical = participant_descriptor_v1()?;
     let expected = [
@@ -286,6 +293,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>, ic_custody: bool) -> Result<(), 
             outcome,
             service: service.clone(),
             personnel: personnel.clone(),
+            movement_reads,
         },
     )?;
     reg.state(Handles {
@@ -1052,6 +1060,7 @@ struct Provider {
     outcome: DefinitionRef,
     service: CorePhysicalTransitions<SpatialParticipant>,
     personnel: crate::personnel::PersonnelCrossings,
+    movement_reads: crate::movement_reads::MovementReads,
 }
 impl Provider {
     fn input(&self, invocation: &ActionInvocation) -> Result<Intent, ActionError> {
@@ -1181,6 +1190,7 @@ impl ActionProvider for Provider {
             )
             .map_err(|_| error("personnel capture unavailable"))?
         };
+        crate::movement_reads::retain(context, txn, &self.movement_reads, &captured.nodes)?;
         let request = PreparedCrossingIntent {
             intent: input,
             prepared_at: captured.capture.prepared_at.clone(),

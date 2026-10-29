@@ -157,6 +157,16 @@ impl EconomySnapshot {
     /// A bounded continuation of the existing current-title index. Seeking the
     /// cursor uses the ordered index; it never scans another owner's assets or
     /// walks an arbitrary prefix merely to find the next owned charter.
+    /// **Whether `owner` holds a mind charter title** (doc 17h cut M8g G3): an active asset it
+    /// owns whose title was born of a Registry filing (the managed charter index, never a
+    /// catalogue word). The quirk claim's "an author".
+    #[must_use]
+    pub fn holds_charter_title(&self, owner: &PrincipalId) -> bool {
+        self.assets_of(owner).any(|asset| {
+            asset.lifecycle == crate::AssetLifecycle::Active
+                && self.managed_titles.charter(asset.object).is_some()
+        })
+    }
     pub fn assets_of_after(
         &self,
         owner: &PrincipalId,

@@ -14,11 +14,13 @@ pub mod integration;
 mod participant;
 mod provider;
 mod records;
+pub mod uncertified;
 pub use config::{
     CoreOriginConfig, CoreOriginMode, OriginAgent, OriginPolicy, origin_content_descriptor,
 };
 pub(crate) use provider::Runtime;
-pub use records::{CertifiedOrigin, DieCertificate, DieCertificates, DieClass};
+pub use records::{CertifiedOrigin, DieCertificate, DieCertificates, DieClass, DieSource};
+pub use uncertified::{ISSUE_GREY_ACTION, ISSUE_HEIRLOOM_ACTION, UncertifiedDie, UncertifiedDies};
 #[cfg(test)]
 mod tests;
 

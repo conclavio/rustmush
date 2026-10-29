@@ -48,6 +48,10 @@ pub(crate) fn registry(
     if which == RegistryCommand::Inspect {
         return crate::minds::registry_inspection::command::inspect(ctx, usage);
     }
+    // Doc 17h cut M8d D4 (Q-M8-3): `@registry/revoke principal=<who> <inspection>`.
+    if which == RegistryCommand::Revoke && ctx.args.raw().trim().starts_with("principal=") {
+        return crate::minds::registry_inspection::principal::command(ctx, usage);
+    }
     let number =
         super::author::number(ctx.args.raw().trim()).ok_or_else(|| CmdError::msg(usage))?;
     super::service(ctx).map_err(|_| off())?;

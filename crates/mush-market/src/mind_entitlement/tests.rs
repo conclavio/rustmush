@@ -329,6 +329,34 @@ pub(crate) fn command_quote(
     q.validate()?;
     Ok(q)
 }
+/// Doc 17h §3 M8f: `command_quote` with the organisation `org` as buyer,
+/// `acting` quoting for it.
+pub(crate) fn command_org_quote(
+    publication: CommitToken,
+    listing: CommitToken,
+    (org, acting): (mush_org::OrgId, ObjId),
+    quoted: i64,
+    expires: i64,
+) -> TestResult<EntitlementQuoteV1> {
+    let mut q = command_quote(publication, listing, acting, quoted, expires)?;
+    q.buyer = mush_economy::Holder::Organization { org, acting };
+    q.validate()?;
+    Ok(q)
+}
+/// Doc 17h §3 M8f: the organisation's buyer index row (M8c S1).
+pub(crate) fn command_org_index(
+    org: mush_org::OrgId,
+    quotes: &[CommitToken],
+) -> TestResult<super::EntitlementActorIndex> {
+    let row = super::EntitlementActorIndex {
+        format: 1,
+        buyer: super::BuyerKey::Organization(org),
+        quotes: quotes.iter().copied().collect(),
+        operations: std::collections::BTreeSet::new(),
+    };
+    row.validate()?;
+    Ok(row)
+}
 /// 17g C2g: `q` funded as the open purchase `operation`.
 pub(crate) fn command_purchase(
     q: EntitlementQuoteV1,

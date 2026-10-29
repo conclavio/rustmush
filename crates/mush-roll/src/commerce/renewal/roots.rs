@@ -31,6 +31,10 @@ pub(crate) struct RenewalFence {
     action: DefinitionRef,
     commit: CommitToken,
     holder: Holder,
+    /// Doc 17h §3 M8f P2a: the renewal's price for the steps that move
+    /// money (Fund, Grant, Refund), a read's zero for the others (the Draft
+    /// and the closes: a limited grant renews, the lead's ruling).
+    amount: Option<i64>,
     transition: Publication,
     fresh: Option<RenewalFacts>,
 }
@@ -39,8 +43,15 @@ impl RenewalFence {
         if ctx.action() != &self.action
             || ctx.commit_token() != self.commit
             // M8c B3: the invocation's actor is the holder or acts for its
-            // organisation (`org_holder::acts_as`, re-asked at every step).
-            || org_holder::acts_as(ctx.world(), self.holder, ctx.invocation().actor()).is_err()
+            // organisation (`org_holder::acts_as`, re-asked at every step;
+            // doc 17h §3 M8f P2a: with the price at a step that moves money).
+            || org_holder::acts_as_amount(
+                ctx.world(),
+                self.holder,
+                ctx.invocation().actor(),
+                self.amount,
+            )
+            .is_err()
             || ctx.invocation().principal()
                 != &(mush_core::action::PrincipalId::Object {
                     id: ctx.invocation().actor(),
@@ -54,7 +65,7 @@ impl RenewalFence {
             return Err(PublicationError::Mismatch);
         }
         if let Some(facts) = &self.fresh {
-            facts.check_fresh(ctx)?;
+            facts.check_fresh(ctx, self.amount)?;
         }
         Ok(())
     }
@@ -192,6 +203,16 @@ impl RenewalRoots {
                     Holder::Character(mush_core::GOD)
                 } else {
                     after.binding.holder
+                },
+                amount: if matches!(
+                    transition,
+                    Publication::Ordinary(
+                        Transition::Fund | Transition::Grant | Transition::Refund
+                    )
+                ) {
+                    Some(after.binding.price_minor())
+                } else {
+                    org_holder::READ_AMOUNT
                 },
                 transition,
                 fresh: fresh.cloned(),

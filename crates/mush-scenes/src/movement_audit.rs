@@ -179,26 +179,28 @@ impl Audit {
         }
         Ok(())
     }
+    fn check_empty_captures(&self) -> Result<(), ModError> {
+        for proof in self.proofs.iter().filter(|proof| proof.events.is_empty()) {
+            let capture = json!({"format":1,"actor":proof.route.actor,"from":proof.route.from,
+                "to":proof.route.to,"at":proof.route.at,"events":[]});
+            if scene_transition::scene_capture_digest(&capture)
+                .map_err(|_| bad("Scenes empty movement capture cannot be hashed"))?
+                != proof.digest
+            {
+                return Err(bad(
+                    "Scenes empty movement capture differs from its receipt",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
-pub(crate) fn audit_boot(
+fn collect_receipts(
     ctx: &ModuleCtx<'_>,
-    data: &ModuleBootData,
-    history: &mush_core::LedgerHistory,
     reader: Option<&SceneLocomotionReader>,
     composed: Option<&ComposedOwnerReader>,
-) -> Result<(), ModError> {
-    if !data.omitted.is_empty() {
-        return Err(ModError::RetryFullFetch {
-            module: crate::NS.into(),
-            reason: "Scenes movement audit requires the complete transcript history".into(),
-        });
-    }
-    // Validate the whole authoritative history, including duplicate chunks and
-    // closed-scene logs, before matching any selected positions.
-    if !history.is_clean() {
-        return Err(bad("Scenes movement history validation failed"));
-    }
+) -> Result<Audit, ModError> {
     let mut audit = Audit::new();
     if let Some(reader) = reader {
         let mut after = None;
@@ -249,6 +251,38 @@ pub(crate) fn audit_boot(
             }
         }
     }
+    audit.check_empty_captures()?;
+    Ok(audit)
+}
+
+/// Validate actual retained proof grammar, unique claimed positions and empty
+/// capture digests without loading or reconstructing any live scene.
+pub(crate) fn audit_typed(
+    ctx: &ModuleCtx<'_>,
+    reader: Option<&SceneLocomotionReader>,
+    composed: Option<&ComposedOwnerReader>,
+) -> Result<(), ModError> {
+    collect_receipts(ctx, reader, composed).map(|_| ())
+}
+
+pub(crate) fn audit_boot(
+    ctx: &ModuleCtx<'_>,
+    data: &ModuleBootData,
+    history: &mush_core::LedgerHistory,
+    reader: Option<&SceneLocomotionReader>,
+    composed: Option<&ComposedOwnerReader>,
+) -> Result<(), ModError> {
+    if !data.omitted.is_empty() {
+        return Err(ModError::RetryFullFetch {
+            module: crate::NS.into(),
+            reason: "Scenes movement audit requires the complete transcript history".into(),
+        });
+    }
+    // Native transcript validation remains a separate mandatory join.
+    if !history.is_clean() {
+        return Err(bad("Scenes movement history validation failed"));
+    }
+    let mut audit = collect_receipts(ctx, reader, composed)?;
     audit.read_history(&data.ledger)?;
     audit.finish()
 }

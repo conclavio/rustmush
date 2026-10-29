@@ -965,6 +965,7 @@ pub(super) async fn launch_world(
             treasury,
             publisher: GOD,
             source_name: source_name.into(),
+            attestation_agent: None,
         });
     }
     let [meridiani, coprates, tycho]: [HouseDeployment; 3] =
@@ -1077,6 +1078,7 @@ pub(super) async fn launch_world(
             },
             terms: MarketTerms::PROVISIONAL,
         }),
+        procurement: Vec::new(),
     })
 }
 /// Write the deployment where `[tacsim.minds].launch_path` names it.

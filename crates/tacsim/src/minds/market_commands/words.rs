@@ -127,6 +127,69 @@ pub(crate) const INSPECTION_OFF: &str = "Registry inspection is not configured h
 pub(crate) const INSPECT_REFUSED: &str = mush_core::action::SUBMISSION_REFUSED_LINE;
 /// M8a: a hull the programme does not know, or one with no unit.
 pub(crate) const NO_SUCH_HULL: &str = "No such hull.";
+/// Doc 17h cut M8d D3: `@registry/fine <inspection> <amount>` staged.
+pub(crate) const FINING: &str = "Fining the holder of hull #{hull} {amount}.";
+/// M8d D3: the fine is not composed here.
+pub(crate) const FINE_OFF: &str = "Registry fines are not configured here.";
+/// M8d D3: an inspection the hull's ring does not hold (to an operator).
+pub(crate) const NO_SUCH_INSPECTION: &str = "No such inspection.";
+/// M8d D3: the named inspection read no ungoverned core.
+pub(crate) const NOTHING_TO_FINE: &str = "That inspection found nothing to fine.";
+/// M8d D3: an amount outside 0.01cr to the configured cap.
+pub(crate) const FINE_RANGE: &str = "A fine is from 0.01cr to {amount}.";
+/// M8d D3: the inspection recorded no holder the Registry can fine (fix round K1).
+pub(crate) const NO_FINE_HOLDER: &str = "That hull has no holder this Registry can fine.";
+/// M8d D3: that inspection was already fined.
+pub(crate) const ALREADY_FINED: &str = "That inspection has already been fined.";
+/// Doc 17h cut M8d D4: `@registry/revoke principal=` staged.
+pub(crate) const REVOKING_PRINCIPAL: &str = "Revoking {who} for {days} IC days.";
+/// M8d fix round K2: the revoked principal's one notice (the lead's wording).
+pub(crate) const PRINCIPALS_BARRED: &str =
+    "The Registry has barred your mind licences until {until}.";
+/// M8d D4: the provider's receipt, rendered from the record it wrote.
+pub(crate) const PRINCIPAL_REVOKED: &str = "{who} holds no new licence until {until}.";
+/// M8d D4: `<who>` names no live character and no organisation the operator may see.
+pub(crate) const NO_SUCH_PRINCIPAL: &str = "No such character or organisation.";
+/// M8d D4: `<who>` names both a character and an organisation.
+pub(crate) const AMBIGUOUS_PRINCIPAL: &str =
+    "That name is a character and an organisation; name the character as #<n>.";
+/// M8d D4: the named inspection read no ungoverned core.
+pub(crate) const NOTHING_TO_REVOKE: &str = "That inspection found nothing to revoke for.";
+/// Doc 17h cut M8g G3: the author's receipt for a filed quirk claim (the lead's wording; one
+/// line, confirming nothing).
+pub(crate) const CLAIM_FILED: &str = "Your claim is filed.";
+/// M8g G3: the claim is not composed here.
+pub(crate) const CLAIMS_OFF: &str = "Registry claims are not configured here.";
+/// M8g G3: `@registry/claims` with nothing filed.
+pub(crate) const NO_CLAIMS: &str = "No claims are filed with the Registry.";
+/// M8g G3: one claim's header line for an operator.
+pub(crate) const CLAIM_LINE: &str = "{author} (#{number}) claim {seq}, {at}: hulls {hulls}.";
+/// M8g G3: the author's own words, framed as theirs.
+pub(crate) const CLAIM_WORDS: &str = "  In their words: {text}";
+/// M8g G3: claims past the read's page.
+pub(crate) const MORE_CLAIMS: &str = "{count} older claims are not shown.";
+/// Doc 17h cut M8d2 S4: `@registry/seize` staged.
+pub(crate) const SEIZING: &str = "Seizing the core in hull #{hull}.";
+/// M8d2: the seizure is not composed here.
+pub(crate) const SEIZE_OFF: &str = "Registry seizure is not configured here.";
+/// M8d2 S4 (the lead's wording): the newest inspection grounds no seizure, or is too old.
+pub(crate) const NOTHING_TO_SEIZE: &str =
+    "The latest inspection of that hull found nothing to seize.";
+/// M8d2 S4: the newest inspection's core is already seized.
+pub(crate) const ALREADY_SEIZED: &str = "That inspection's core is already seized.";
+/// M8d2 S4: the provider's receipt.
+pub(crate) const SEIZED: &str = "Seized the core in hull #{hull}. It stays fitted and flies nothing; it may be forfeited after {days} IC days.";
+/// M8d2 S5: `@registry/forfeit` staged.
+pub(crate) const FORFEITING: &str = "Forfeiting the core seized from hull #{hull}.";
+/// M8d2 S5: no seizure on that hull (or on that inspection).
+pub(crate) const NO_SUCH_SEIZURE: &str = "No such seizure.";
+/// M8d2 S5 (the lead's wording): before the hold has run.
+pub(crate) const IN_HOLD: &str = "That seizure is still within its hold.";
+/// M8d2 S5: the provider's receipt.
+pub(crate) const FORFEITED: &str = "The core seized from hull #{hull} is forfeit to the Registry.";
+/// M8d D3: the provider's receipt, rendered from the fine it recorded.
+pub(crate) const FINED: &str =
+    "Fined the holder of hull #{hull} {amount}. The fine is levied when the Registry next settles.";
 
 /// 17g C2d: the brief's words for the named buyer's accepts, which list and
 /// select the live offers naming the actor (`trade::offer_lines`,

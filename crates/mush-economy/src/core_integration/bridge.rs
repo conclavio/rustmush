@@ -170,7 +170,12 @@ impl EconomyStore {
                 die_lot: subject.die_lot,
                 die_certificate: subject.die_certificate,
                 class: subject.class,
-                supplier: history.policy().supplier.organization,
+                // Fix round 1 (L4): no supplier stocked a heirloom or grey die.
+                supplier: subject
+                    .source
+                    .is_certified()
+                    .then_some(history.policy().supplier.organization),
+                source: subject.source,
             }));
         }
         Ok(None)
@@ -180,7 +185,9 @@ impl EconomyStore {
 /// **A core's title birth, in the words a provenance read needs** (doc 17h cut M8a, A6):
 /// the acceptance and completion commits, the die lot and certificate the funding named,
 /// the class ordered and the supplier organization that stocked the die (the importer in
-/// the one shipped composition, `tacsim::hardware::composition`).
+/// the one shipped composition, `tacsim::hardware::composition`), and the die's source (doc
+/// 17h cut M8b-2: for a heirloom or grey die the "certificate" is the staff issue's
+/// operation and `supplier` is `None`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoreTitleBirth {
     /// The titled output.
@@ -197,6 +204,11 @@ pub struct CoreTitleBirth {
     pub die_certificate: mush_core::CommitToken,
     /// The class ordered.
     pub class: super::CoreClass,
-    /// The supplier organization of the payment policy.
-    pub supplier: mush_org::OrgId,
+    /// The supplier organization of the payment policy, for a certified die; `None` for a
+    /// heirloom or grey die, which no supplier stocked (doc 17h cut M8b-2 fix round 1, L4).
+    pub supplier: Option<mush_org::OrgId>,
+    /// **Where the die came from** (doc 17h cut M8b-2, H2): the funding subject's source,
+    /// `Certified` for the importer's stock, `Heirloom` or `Grey` for a die integrated at the
+    /// ungoverning site. Replayed from the history, so it survives a restart.
+    pub source: super::DieSource,
 }

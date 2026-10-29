@@ -304,11 +304,14 @@ impl Provider {
                 {
                     return Err(Refuse::Uniform);
                 }
-                super::super::org_holder::org_actor(
+                // Doc 17h §3 M8f H7: the attestation charges no fee, so the
+                // grant is asked as a read and a limited grant attests.
+                super::super::org_holder::org_actor_amount(
                     ctx.world().map_err(invalid)?,
                     org,
                     house.scope(),
                     actor,
+                    super::super::org_holder::READ_AMOUNT,
                 )
                 .map_err(|_| Refuse::Uniform)?;
                 super::super::Holder::Organization { org, acting: actor }
@@ -321,12 +324,14 @@ impl Provider {
             }),
             _ => None,
         };
+        // Doc 17h §3 M8h: the attestation moves no money, so the organisation's title is asked
+        // as a read too (a limited grant attests, M8f H7); a character's is unchanged.
         let ownership = super::super::charter_transfer::history::current_in_txn_for(
             txn,
             ctx.world().map_err(invalid)?,
             &self.families,
             &birth,
-            holder,
+            (holder, super::super::org_holder::READ_AMOUNT),
         )?;
         if (org.is_none()
             && (birth.economic.house.is_some()
@@ -377,8 +382,12 @@ impl Provider {
         let world = ctx.world().map_err(invalid)?;
         let observed = world.world_ic_now();
         let now = WorldIcSeconds::from_stamp(&observed).map_err(invalid)?;
-        let title_revision =
-            super::super::owner_qualification::current_title_for(world, holder, licence.charter)?;
+        let title_revision = super::super::owner_qualification::current_title_for(
+            world,
+            holder,
+            licence.charter,
+            super::super::org_holder::READ_AMOUNT,
+        )?;
         if now < old.window.term_end() {
             return Err(Refuse::Uniform);
         }
@@ -507,6 +516,8 @@ impl Provider {
         .map_err(invalid)?;
         txn.insert(&self.families.terms, &next.key(), next.clone())
             .map_err(invalid)?;
+        // Doc 17h cut M8d fix round K5 (the lead's ruling): attesting an existing owner licence
+        // passes the write bar — the same licence continues. Its use stays barred.
         txn.replace(&self.families.licences, &id.key(), current.clone())
             .map_err(invalid)?;
         if txn

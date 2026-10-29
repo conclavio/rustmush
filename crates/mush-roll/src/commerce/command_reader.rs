@@ -8,7 +8,7 @@
 //! **Capacity (C2 plan §2.4, fallback 1).** The format-2 Active launch already
 //! held 31 owner-read services and all 32 grants before C2, so these kinds
 //! are not a service of their own: they are folded into
-//! `holding_reader::OriginalOwnerReader` (`original_owner_holding` v2), which
+//! `holding_reader::OriginalOwnerReader` (`original_owner_holding` v3), which
 //! is already own-only over `RollStore` and already granted to TacSim. A
 //! command wraps its request in `OriginalReadRequest::command` and unwraps
 //! `OriginalReadResult::into_command`. The kinds answer only when Active
@@ -68,6 +68,12 @@
 //!   offered the actor the empty list, which the command prints alike, so
 //!   the read is no oracle.
 //!
+//! - `ProcurementTally` and `ProcurementHoldings` (doc 17h §3 M8f): the
+//!   one exception to "own only": GOD only, the procurement tick's reads,
+//!   refused to every other caller (`procurement_read`); and, the same way,
+//!   `HouseAttestationDue` (doc 17h §3 M8h), the House attestation tick's
+//!   walk (`house_attestation_read`).
+//!
 //! The named buyer's resale step (immediate Accept or escrowed Fund) is not
 //! a kind of this read: the C2d fix round removed a `ResaleStep` kind that
 //! ran the paid-resale reader's `observe` for any licence (reviewers C2D-R2
@@ -90,7 +96,7 @@ use mush_core::{RequestUid, StateFamilyHandle};
 use serde::Serialize;
 
 /// The command kinds' declared row ceiling, inside `MAX_OWNER_READ_ROWS`
-/// (declared in `original_owner_holding` v2's configuration).
+/// (declared in `original_owner_holding` v3's configuration).
 pub(super) const MAXIMUM_ROWS: u16 = 64;
 const DAY: i64 = 86_400;
 
@@ -134,6 +140,24 @@ enum ReadKind {
     },
     CharterOffers {
         filed: FiledRevisionId,
+    },
+    /// Doc 17h §3 M8f: GOD only (`procurement_read`): the score count of
+    /// one rating's result pages, from page `from`.
+    ProcurementTally {
+        rating: super::rating::RatingRef,
+        from: u16,
+    },
+    /// Doc 17h §3 M8f: GOD only (`procurement_read`): an organisation's
+    /// current paid licences by charter, after `after`.
+    ProcurementHoldings {
+        org: mush_org::OrgId,
+        after: Option<LicenceId>,
+    },
+    /// Doc 17h §3 M8h: GOD only (`house_attestation_read`): the House owner
+    /// licences due for attestation, walking the owner licences after
+    /// `after`.
+    HouseAttestationDue {
+        after: Option<LicenceId>,
     },
 }
 /// 17g C2c: the two halves of `+minds/holdings`.
@@ -211,6 +235,30 @@ impl RollCommandReadRequest {
     pub const fn own_paid_for(licence: LicenceId, org: Option<mush_org::OrgId>) -> Self {
         Self {
             kind: ReadKind::OwnPaid { licence, org },
+        }
+    }
+    /// Doc 17h §3 M8f: GOD only; the procurement tick's rating count
+    /// (`procurement_read::tally`).
+    #[must_use]
+    pub const fn procurement_tally(rating: super::rating::RatingRef, from: u16) -> Self {
+        Self {
+            kind: ReadKind::ProcurementTally { rating, from },
+        }
+    }
+    /// Doc 17h §3 M8f: GOD only; the organisation's current licences
+    /// (`procurement_read::holdings`).
+    #[must_use]
+    pub const fn procurement_holdings(org: mush_org::OrgId, after: Option<LicenceId>) -> Self {
+        Self {
+            kind: ReadKind::ProcurementHoldings { org, after },
+        }
+    }
+    /// Doc 17h §3 M8h: GOD only; the House attestation tick's walk
+    /// (`house_attestation_read::due`).
+    #[must_use]
+    pub const fn house_attestation_due(after: Option<LicenceId>) -> Self {
+        Self {
+            kind: ReadKind::HouseAttestationDue { after },
         }
     }
     /// 17g C2g: the live pending-charter offers naming the actor on the
@@ -498,8 +546,42 @@ pub enum RollCommandReadResult {
     CharterOffers {
         offers: Vec<CharterOfferView>,
     },
+    /// Doc 17h §3 M8f: `ProcurementTally`.
+    ProcurementTally(super::procurement_read::ProcurementTallyPage),
+    /// Doc 17h §3 M8f: `ProcurementHoldings`.
+    ProcurementHoldings(super::procurement_read::ProcurementHoldingsPage),
+    /// Doc 17h §3 M8h: `HouseAttestationDue`.
+    HouseAttestationDue(super::house_attestation_read::HouseAttestationDuePage),
 }
 impl RollCommandReadResult {
+    /// Doc 17h §3 M8f: the `ProcurementTally` answer.
+    #[must_use]
+    pub fn into_procurement_tally(self) -> Option<super::procurement_read::ProcurementTallyPage> {
+        match self {
+            Self::ProcurementTally(page) => Some(page),
+            _ => None,
+        }
+    }
+    /// Doc 17h §3 M8f: the `ProcurementHoldings` answer.
+    #[must_use]
+    pub fn into_procurement_holdings(
+        self,
+    ) -> Option<super::procurement_read::ProcurementHoldingsPage> {
+        match self {
+            Self::ProcurementHoldings(page) => Some(page),
+            _ => None,
+        }
+    }
+    /// Doc 17h §3 M8h: the `HouseAttestationDue` answer.
+    #[must_use]
+    pub fn into_house_attestation_due(
+        self,
+    ) -> Option<super::house_attestation_read::HouseAttestationDuePage> {
+        match self {
+            Self::HouseAttestationDue(page) => Some(page),
+            _ => None,
+        }
+    }
     /// The open-shell answer, or `None` if this answered another kind.
     #[must_use]
     pub const fn open_shell(&self) -> Option<Option<RequestUid>> {
@@ -566,10 +648,28 @@ impl RollCommandReadResult {
 pub(super) fn read(
     ctx: &OwnerReadContext<'_>,
     roll: &RollStore,
-    families: &CommerceFamilies,
+    (families, ratings): (&CommerceFamilies, &super::rating::RatingFamilies),
     shells: Option<&ShellReservations>,
     request: RollCommandReadRequest,
 ) -> Result<RollCommandReadResult, OwnerReadError> {
+    // Doc 17h §3 M8f: the two procurement kinds read no filing shell, so they
+    // answer wherever the original-holdings read is composed (GOD only).
+    match request.kind {
+        ReadKind::ProcurementTally { rating, from } => {
+            return super::procurement_read::tally(ctx, ratings, &rating, from)
+                .map(RollCommandReadResult::ProcurementTally);
+        }
+        ReadKind::ProcurementHoldings { org, after } => {
+            return super::procurement_read::holdings(ctx, families, org, after)
+                .map(RollCommandReadResult::ProcurementHoldings);
+        }
+        // Doc 17h §3 M8h: the House attestation tick's walk, as GOD's.
+        ReadKind::HouseAttestationDue { after } => {
+            return super::house_attestation_read::due(ctx, roll, families, after)
+                .map(RollCommandReadResult::HouseAttestationDue);
+        }
+        _ => {}
+    }
     let shells = shells.ok_or(OwnerReadError::Unavailable)?;
     // M8c B3: the holder a read is for: the actor itself, or the organisation
     // named by `org=` acting through the actor. Each own read re-asks the
@@ -615,6 +715,10 @@ pub(super) fn read(
             .map_err(|_| OwnerReadError::Refused),
         ReadKind::CharterOffers { filed } => charter_offers(ctx, families, filed)
             .map(|offers| RollCommandReadResult::CharterOffers { offers }),
+        // Answered above.
+        ReadKind::ProcurementTally { .. }
+        | ReadKind::ProcurementHoldings { .. }
+        | ReadKind::HouseAttestationDue { .. } => Err(OwnerReadError::Unavailable),
     }
 }
 
@@ -707,7 +811,8 @@ pub(super) fn own_paid(
     // the organisation's, whoever acted when it was bought. The bare read
     // never answers an organisation's licence, nor the reverse.
     if !pointer.holder().same_principal(holder)
-        || super::org_holder::acts_as(ctx.world(), pointer.holder(), ctx.actor()).is_err()
+        // Doc 17h §3 M8f (P2a): a read, so a limited grant reads.
+        || super::org_holder::reads_as(ctx.world(), pointer.holder(), ctx.actor()).is_err()
     {
         return Err(OwnerReadError::Refused);
     }

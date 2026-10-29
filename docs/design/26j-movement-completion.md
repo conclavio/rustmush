@@ -267,6 +267,306 @@ its real Sim/Atlas projection and any participant-behavior attachment, supply
 new historical verifiers, and retain durable map output before selecting these
 effects in a live route.
 
+## Bounded Sim window movement capture
+
+Sim can now derive release and direct-placement candidate phases from a genuine
+Core preview and hypothetical passive entry coordinates. It shares the actual
+transition planner: release keeps the admitted Core location, carries the
+original UTC into unplacement metadata, and advances the real placement
+revision. A subsequent placement sees that released state and advances the
+revision again. Reposing within one domain has one phase. Missing placement
+and an explicit unplaced record remain different observations.
+
+This initial scope requires an already attached Sim participant for placement,
+with no physical dependents or structural/control host records on the actor.
+Interior/attached source parents, held state, closed/non-window targets,
+inconsistent indexes or domain aliases, and exhausted revisions refuse. Every
+selected phase must plan successfully; a failed second phase publishes neither
+the earlier release nor any Core move. Real journey-seal and IC-exclusion
+checks remain in the transition path. The candidate uses the Core-validated
+hypothetical final room rather than invoking a resolver over the pre-move
+World; the actual Atlas owner must attest that room in the future protocol.
+
+The existing resident Sim census/4 MiB byte bound precedes its temporary state
+copy. Selected original records are capped at 16 KiB and the final capture at
+128 KiB. Opaque placement, anchor, egress and station payloads receive an
+iterative preflight (64 levels, 65,536 aggregate nodes and 4 MiB text) before
+recursive resident encoding. Rechecking retains the observed IC stamp, requires
+the same clock generation and nondecreasing time, keeps the Core preview's UTC,
+and compares the actual bounded native facts and phase data.
+
+This is candidate data only. It creates no participant grant, Core or Sim
+installation, audit append, receipt, decoder, output or eligibility evidence.
+Participant-behavior attachment, actual Atlas attestation, compound object and
+ledger publication, historical verifiers and the remaining owner joins still
+belong to a new versioned completion protocol. Existing v1 routing and window
+refusals are unchanged.
+
+## Versioned window composition kernel
+
+Core's separate version 2 of `sim_composed_locomotion` accepts the real Sim
+primary's immutable window proposal. Only Core can mint its captured-command
+intent and bounded read seed. The proposal names the admitted room's subsequent
+projection, passive metric target, and actual Atlas/Sim capture digests. It is
+bound into every observer intent, owner capture and proof; proposal data alone
+grants no geometry or placement authority.
+
+The kernel shares the bounded Core row builder for both steps. It retains the
+intermediate room's timestamp and the source contents ordering on a return,
+with at most four touched objects and the existing aggregate read/image bounds.
+Every actual owner and Core preimage must bind before publication. Late callback
+roster changes, stale projection rooms, owner refusal and a final bind failure
+publish no movement or earlier owner image. When both Core steps are no-ops,
+there are no object rows; an absent placement target remains explicit.
+
+The new `window_composed_locomotion` receipt family wraps its exact versioned
+movement record and proposal. Its strict canonical decoder verifies the full
+proposal binding for every owner; old v1 action definitions, digest domains and
+receipt bytes retain their meaning. Sim receives the full receipt while an
+observer receives only its own proof and the common immutable proposal.
+
+This slice supplies the Core kernel and real registered test composition only.
+Production Sim, Atlas and Scenes window adapters, original-history verifiers,
+participant attachment and durable map output still require subsequent slices.
+Window-arrival notifications remain an explicit completion requirement even
+after placement can commit. Partial manifests remain partial, crossing evidence
+remains uncertified, and no command route or offer selects version 2.
+
+## Atlas window selector attestation
+
+An optional Atlas adapter now joins version 2 through its real `AtlasState`
+participant. It verifies the primary's exact metric target and projected room
+against the original bounded Atlas plan, including the resolver's admitted-room
+fallback. The complete plan digest joins the common Core proposal. Failed
+selected placement attempts refuse this profile; they cannot be relabeled as a
+successful release-only arrival while their output is still unimplemented.
+
+Discovery uses the same real known-document and knowledge-journal preparation
+as v1. Its new proof retains the original window plan and exact journal boundary.
+Final binding recomputes Atlas's actual geometry, portal prefix/lookup, footprint
+and resolver inputs without trusting revisions or a cached composite digest.
+The Sim owner must independently retain occupancy and physical topology. The
+Atlas slot check cannot substitute for that joint native fence.
+
+Historical decoding preflights 32 levels and 65,536 nodes before recursive
+encoding or cloning, then accepts bounded, strict evidence data without
+manufacturing an executable window plan. Boot audits both configured profiles against
+one original knowledge history, so duplicate position claims across profiles
+also refuse recovery. It does not re-run old selectors over current geometry.
+Existing v1 proof and journal bytes retain their meaning.
+
+The new group covers only `travel_discovery`. The actual `window_arrival`
+callback remains an explicit blocker until durable map delivery joins. Current
+production composition still selects the earlier v1 adapters; the real Sim
+window primary, v2 Scenes join and end-to-end physical recovery follow. The
+registration test uses an execution-refusing primary and establishes no Sim
+placement evidence. Live routing and personnel eligibility remain disabled.
+
+## Ordered window movement observations
+
+Sim now has a distinct v2 candidate capture for the admitted Core step followed
+by each selected native release/place phase. Each stage retains its actual
+before/after ancestry digests and ordered crossing facts at the original IC
+stamp. Adjacent ancestry digests must agree. A return to the original room
+keeps the intermediate step, and a brief carrier visit retains both entry and
+exit instead of collapsing to an empty net result.
+
+One aggregate 256-crossing and 512-dependency bound covers all stages. The
+128 KiB capture limit remains. Tests exercise a genuine Core preview with 128
+people entering and leaving (256 crossings); one additional person refuses the
+whole capture. No Core object, native placement, audit or module marker is
+published. Rechecking preserves original UTC while requiring nondecreasing IC
+time in the same clock generation.
+
+Native phase plans stay typed and private. The original v1 candidate and its
+digest domain retain their exact bytes; v2 wraps that evidence with the ordered
+observations and an explicit uncertified coverage label. These are still
+hypothetical candidates. The actual Sim participant, same-commit recovery and
+crossing records, historical verifier, joint Scenes adapter and durable map
+output remain required before a window movement can be installed or routed.
+
+## Native owner read preimages
+
+The ordered window candidate also retains a selected-domain metric occupancy
+fingerprint. Atlas selection and Sim's callback-free occupancy recheck now share
+the same bounded scalar collector: map key, stored object id, revision and XY.
+Coordinate changes without revision bumps, insertion/removal and domain changes
+invalidate it. Z, heading and opaque posture are not occupancy inputs. The
+collector retains the 4096-placement scan bound and the existing coordinate
+limits; Atlas keeps its original six-field evidence and custody exclusion bit.
+
+The fingerprint is only the native placement portion. Actual custody exclusion
+preimages, topology, Core rows, Atlas selectors and owner readiness still need
+their own checks. It grants no admission, receipt, personnel interval or route.
+
+The existing owner-read service can now retain one pure, bounded fingerprint of
+selected fields in its actual legacy state slot. Core checks those fields after
+the service returns, at final writer custody and before post-acknowledgement
+publication. The actual service runs once. Slot identity, requester/owner
+readiness and typed-family read guards keep their existing checks and limits.
+
+This closes the gap where a slot's contents could change while its incarnation
+remained the same. Unrelated fields may change when the selected projection is
+unchanged. Failed, repeated or incorrectly typed guards poison the read even
+when service/provider code catches the error. A stale field snapshot refuses
+all prepared typed and owner images before any apply.
+
+Sim now registers a real, self-granted read service over its existing JourneyBook
+slot. The structural, ordinary, joint Scenes and composed locomotion providers
+retain record presence and the shared under-way predicate for their actual
+dependency/ancestor roots, plus the absence of held journey records. A held
+record or changed selected predicate after writer custody refuses publication
+before any typed, Core or owner apply. Allocator and tick-cursor progress do not
+invalidate an otherwise unchanged read. The service snapshots at most 512 roots
+and never clones or serializes routes, anomalies or the entire book.
+
+The same providers also retain an independently registered read over the actual
+ephemeral FocusState slot. Its bounded projection checks the existing
+`has_focus_on` and `focus_of_actor` presence predicates for the affected closure.
+New actor or unit focus after custody refuses before publication; unrelated
+focus activity remains valid. This is an exclusion preimage, not a control
+lease, grant or proxy-seat capability. Both handles share immutable heap storage
+in providers; neither legacy slot is copied or written by the read services.
+
+The same preparations retain the actual Sim IC exclusion slot's loaded state,
+owner generation and selected identity-presence predicates. The selected lookup
+is shared with the existing exclusion helper; an inconsistent active index
+refuses. Retaining the owner's existing global generation conservatively refuses
+any intervening custody update, including an open/close cycle. This reads at most
+512 ids and does not copy historical custody records or construct a seal, Open,
+Close or four-owner admission capability.
+
+These read joins add no owner image, callback coverage or authority mirror. The
+native window participant still needs complete placement/topology fences and
+same-commit records before it can publish a window transition.
+
+Tactics now offers an opt-in, Sim-only owner-read service over its real UnitStore.
+It observes active-unit presence, held/miskeyed/duplicate record claims and OOC/IC
+custody, retaining the selected metadata through Core's state guard. It reads
+Tactics' own markers and IC owner generation even when the Sim projection is
+empty. Frozen records stay held. Unit cells, checkout snapshots and historical
+custody bodies are neither copied nor serialized by the service.
+
+The data contract bounds requests to 512 objects, the global record scan to 4096
+rows, selected record metadata to 512 rows and the retained image to 128 KiB.
+Selected keys/arena names have a 1024-byte individual and shared 64 KiB text
+bound. These facts are not custody, physical admission or title capabilities.
+The production root now configures both this real Tactics service and Sim's
+typed read join. Structural, ordinary, joint Scenes and composed locomotion
+providers retain that actual read before preparing owner publication. Held
+records or OOC/IC custody refuse; the response must cover exactly the requested
+ids in order. Tactics readiness and its state preimage remain checked after Store
+ACK. Root configuration selects a typed registered service with the fixed
+Tactics descriptor, rather than supplying a callback that claims a check ran.
+Standalone Sim compositions keep their existing configuration. This adds no
+movement route or callback-completion claim.
+
+The existing Sim deployment projection also has its own retained read. Its
+complete, bounded index is fingerprinted because domain exclusion and occupancy
+may consult markers outside the moving subtree. Any index drift conservatively
+refuses a pending closed movement. Limits are 4096 marks, 1 MiB of encoded image,
+1024 bytes per arena name and 64 KiB of shared name text, checked before encoding.
+This remains a projection guard: the independent Tactics read is still the
+custody source, and neither read supplies a checkout or movement capability.
+
+The ordered window candidate now retains a separate native-slot preimage over
+the complete canonical placement, domain, space, mount, control, held-row and
+allocator fields. A callback-free recheck accepts only the original state and
+consistent rebuilt indexes. Unknown placement identities refuse. This is
+deliberately conservative about unrelated native edits: the existing 4096-row,
+4 MiB resident envelope and opaque-value preflight run before encoding, and the
+new fingerprint has a 4 MiB bound. No World or SpatialState is copied to validate
+the bind. The original v1 candidate bytes remain unchanged.
+
+This guard supplies no installation or authority. Core rows, actual owner reads,
+Atlas selectors and the actual recovery-ledger append still bind independently;
+native primary publication and same-commit records remain unfinished.
+
+Ordered candidates now reuse the actual locomotion projection-dependency walk
+for the complete Core inventory. Ordinary carried things and people remain
+supported and join the Core read dependencies. Additional native placements,
+spaces, mounts, control surfaces and held assignments refuse this actor-only
+profile; a hosted domain refuses even when empty or retired. The shared actual
+physical exclusion helper checks the complete captured dependency set, including
+carried people. Both the 512-dependency and 256-crossing budgets remain shared.
+The original v1 candidate is unchanged. Compound hosts need their own real owner
+join before this scope can widen; no refused case becomes a partial publication.
+
+Ordered window evidence now has a separate, strict historical decoder. It
+checks exact required/unknown fields, original clocks, ordered dependency ids,
+linked stage ancestry and shared phase digests, the aggregate crossing budget,
+and the exact release/place revision, projection, audit and final-record chain.
+The full capture digest must match the supplied retained digest. Input depth,
+nodes, text and encoded bytes are bounded before recursive decoding or cloning.
+
+Decoded evidence remains passive: it cannot create a Core preview, native Plan,
+owner patch, installation or eligibility interval. A later recovery auditor
+must bind its actor, route, clock and commit to genuine same-commit owner receipts
+and records. It never reruns current geometry or classifies history from today's
+World. Native participant publication and recovery joins remain unfinished.
+
+Atlas can now join its actual window plan to a genuine Core projection preview
+and Sim's ordered capture as one read-only candidate. The selected room and
+metric target are available before Sim capture; the shared proposal is then
+built from the actual Atlas and Sim digests without a placeholder digest. The
+join checks actor, source, admitted/projected rooms and original UTC, recaptures
+the Atlas selectors, and retains both owners' independent evidence for recheck.
+It still grants no receipt, native patch, installation or personnel eligibility.
+
+Sim's existing structural, ordinary, Scenes and composed typed movement
+histories are now audited at the start of its world-load hook, before its IC,
+relay, spatial-repair or journey loaders can mutate state. The final composition
+audit remains in place. Missing or mismatched receipt/crossing pairs therefore
+cannot first move an unrelated object through Sim's projection repair. This is
+a Sim-local typed-history barrier; the cross-owner recovery gate and native
+window journal/receipt joins below remain required.
+
+The server now hydrates and audits the reserved typed partition before module
+schema migrations or module load callbacks. Core dispatches a read-only,
+owner-stamped typed-history audit to every actual registered module; Sim uses
+its existing receipt/crossing checks. The ordinary boot fetch must match the
+same immutable partition after migrations, so a reserved-tree rewrite or
+manifest omission refuses before loading. Direct `Engine::modules_loaded`
+also audits all modules before the first load callback. Per-module drivers must
+invoke the audit explicitly, as the server does. Native owner journals and
+foreign observer recovery still require their own pre-mutation validators;
+this typed-only phase does not certify those unfinished joins.
+
+Atlas participates in the early typed phase with the same strict owner-proof
+decoder used by its native knowledge-history audit. Both ordinary and window
+profiles bind the original actor, route, UTC, capture digest and knowledge
+effect claims; two prepared events cannot claim one knowledge position across
+the readers. Multiple no-op observations at a boundary remain valid. This pass
+uses no current geometry, callback or loaded Atlas projection. The later audit
+still requires the real journal events and current knowledge projection.
+
+Scenes also runs its actual typed receipt/proof readers in that early phase.
+Atomic and composed claims share one bounded position index, so duplicate
+transcript claims refuse before loading, and no-event captures already require
+their exact route/UTC digest. This does not hydrate, pause or reconstruct a live
+scene. Nonempty captures still require the later original-transcript join;
+typed claims alone never stand in for committed native events.
+
+Core and the server now also expose a read-only native-history phase. Every
+configured Atlas knowledge and Scenes transcript join runs before module
+migrations or the first load callback. A narrowed history gets at most one
+whole-fetch retry without writing a manifest or running a load. The server
+rechecks the fresh post-migration snapshot globally before loading; direct
+`Engine::modules_loaded` likewise validates every owner first. Native audits
+retain their existing bounds and later restoration checks, with extra boot-only
+validation passes rather than cached authority or a reconstructed World. Sim's
+future native window journal still needs its own exact receipt/record join.
+
+The window record wire format now binds ordered Sim evidence to the original
+Core v2 header, projection, final-placement digest and a claimed native journal
+position/body digest. Its genuine-receipt constructor and matcher retain the
+actual action, participant, commit, exit, clocks and plan/capture digests. The
+decoder checks bounds before cloning and rejects missing/unknown fields or
+rebound inconsistent headers and native final images. These are passive data:
+decoding does not prove a journal append or create an installation. The native
+publisher, same-commit family append and cold original-position join remain
+required before enabling the profile.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

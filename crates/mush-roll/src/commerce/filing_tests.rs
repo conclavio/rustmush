@@ -464,7 +464,7 @@ pub(super) struct Fixture {
     pub(super) shell: ObjId,
 }
 impl Fixture {
-    fn new(credit: bool) -> Self {
+    pub(super) fn new(credit: bool) -> Self {
         Self::new_with_market(credit, false)
     }
     fn new_with_market(credit: bool, market: bool) -> Self {
@@ -954,6 +954,96 @@ fn original_filing_installs_actual_fee_title_rows_roots_and_replays_together() {
             .posted_balance,
         Amount::from_minor(-100)
     );
+}
+
+/// Bar `who` from World IC now for ten IC seconds (the record a principal revocation writes),
+/// replacing any earlier one; the window's end.
+fn revoke_for_ten(f: &mut Fixture, who: ObjId, operation: u8) -> i64 {
+    let now = f.engine.world.world_ic_now().at;
+    let family = f.families.revoked_principals.clone();
+    let key = format!("{:020}", who.0);
+    let held = f
+        .engine
+        .action_state()
+        .get(&family, &key)
+        .unwrap()
+        .is_some();
+    let record = super::registry_inspection::RevokedPrincipal {
+        format: 1,
+        principal: mush_org::PrincipalId::Object(who),
+        from_ic: now,
+        until_ic: now + 10,
+        inspection: token(40),
+        hull: ObjId(12),
+        seq: 1,
+        operation: token(operation),
+        operator: ObjId(5),
+    };
+    let mut txn = f.engine.action_transaction(&family).unwrap();
+    if held {
+        txn.replace(&family, &key, record).unwrap();
+    } else {
+        txn.insert(&family, &key, record).unwrap();
+    }
+    let (_, installation) = txn.prepare().unwrap().into_parts();
+    f.engine.install_prepared_action(installation).unwrap();
+    now + 10
+}
+
+/// Move the world's clock until its IC second reaches `until`.
+fn pass(f: &mut Fixture, until: i64) {
+    let wall = f.engine.world.now();
+    let mut step = 1;
+    while f.engine.world.world_ic_now().at < until {
+        f.engine.world.set_now(wall + step);
+        step *= 2;
+    }
+}
+
+/// **Doc 17h cut M8d D4 with fix round K3: the write and use bars at both ends of the window**
+/// (the lead's ruling on option (c)):
+/// - **K3**: a revoked filer files nothing — the filing that would write their owner licence is
+///   refused while the window runs, and admitted once it ends;
+/// - **the use bar**: the filed owner licence reads as held through the registered holding
+///   reader (the dispatch holding's read); revoked again, it reads nothing from the window's
+///   first instant, and the same held term reads again when the window ends, nothing destroyed.
+#[test]
+fn m8d_a_revoked_principal_files_nothing_and_uses_nothing_until_the_window_ends() {
+    let mut f = Fixture::new(true);
+    let end = revoke_for_ten(&mut f, GOD, 41);
+    let request = f.request();
+    assert!(
+        f.engine
+            .prepare_registered_composed_authoritative_action(
+                &config().initial_filing_action().unwrap(),
+                &request,
+                token(4),
+            )
+            .is_err(),
+        "K3: a revoked filer files nothing"
+    );
+    pass(&mut f, end);
+    let (prepared, _) = f
+        .engine
+        .prepare_registered_composed_authoritative_action(
+            &config().initial_filing_action().unwrap(),
+            &request,
+            token(4),
+        )
+        .unwrap();
+    let (_, install) = prepared.into_parts();
+    f.engine.install_composed_action(install).unwrap();
+    let held = |f: &mut Fixture| {
+        read_holding(&mut f.engine, GOD, "own")
+            .ok()
+            .and_then(super::holding_reader::OriginalReadResult::into_holding)
+            .is_some()
+    };
+    assert!(held(&mut f), "filed once the window ended, and held");
+    let end = revoke_for_ten(&mut f, GOD, 42);
+    assert!(!held(&mut f), "barred from its first instant");
+    pass(&mut f, end);
+    assert!(held(&mut f), "the held term resumes when the window ends");
 }
 
 #[test]

@@ -180,6 +180,45 @@ impl Registration {
                 return Err(bad("named launch market identities disagree"));
             }
         }
+        // Doc 17h §3 M8f (P2): each procurement policy's identities, in the market check's
+        // shape: the agent a live, non-GOING Player-kind character; the scope the
+        // organisation's root (where its treasury pays a buy from, M8c F5); the backing
+        // faction, when named, a faction. The grant and the faction membership are runtime
+        // facts the tick re-reads every fire (an unmet one pages and buys nothing).
+        for policy in &self.deployment.procurement {
+            let live = world
+                .get(policy.agent)
+                .is_some_and(|o| o.kind == ObjKind::Player && !o.flags.contains(Flags::GOING));
+            let root = orgs
+                .state()
+                .org(policy.org)
+                .is_some_and(|org| org.root_scope == policy.scope);
+            let faction = policy.standing.is_none_or(|faction| {
+                world
+                    .module_state::<mush_faction::FactionState>()
+                    .is_some_and(|s| s.factions.contains_key(&faction))
+            });
+            if !live || !root || !faction {
+                return Err(bad("named launch procurement identities disagree"));
+            }
+        }
+        // Doc 17h §3 M8h (A1): each House's own attestation agent, in the procurement check's
+        // shape: a live, non-GOING Player-kind character. Its `roll.holder.org` grant on the
+        // House's scope is a runtime fact the tick re-reads every fire (an unmet one pages and
+        // attests nothing); a policy's agent was checked above.
+        for house in [
+            &self.deployment.houses.meridiani,
+            &self.deployment.houses.coprates,
+            &self.deployment.houses.tycho,
+        ] {
+            if let Some(agent) = house.attestation_agent
+                && world
+                    .get(agent)
+                    .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::GOING))
+            {
+                return Err(bad("named launch House attestation identities disagree"));
+            }
+        }
         Ok(())
     }
     /// 17g C1b: the decoded deployment this launch registered. 17g C1c's bare

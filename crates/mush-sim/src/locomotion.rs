@@ -89,7 +89,10 @@ struct LocomotionHandles {
     crossings: LocomotionCrossings,
 }
 
-pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+pub(crate) fn register(
+    reg: &mut Registrar<'_>,
+    movement_reads: crate::movement_reads::MovementReads,
+) -> Result<(), ModError> {
     let participant = reg.definition(participant_descriptor()?)?;
     let action = reg.definition(mush_core::locomotion::transition::action_descriptor()?)?;
     let outcome = reg.definition(outcome_descriptor()?)?;
@@ -107,6 +110,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             outcome,
             service: service.clone(),
             crossings: crossings.clone(),
+            movement_reads,
         },
     )?;
     reg.state(LocomotionHandles { service, crossings });
@@ -202,7 +206,7 @@ pub(super) struct Captured {
 /// host's room. Refuse those additional projection writes, including when the
 /// host is a carried hull or an occupant of its separately anchored cabin.
 /// Every consulted child/mount/anchor relation joins the final topology fence.
-fn projection_dependencies(
+pub(crate) fn projection_dependencies(
     state: &SpatialState,
     world: &World,
     actor: mush_core::ObjId,
@@ -568,6 +572,7 @@ struct Provider {
     outcome: DefinitionRef,
     service: CoreLocomotion<LocomotionParticipant>,
     crossings: LocomotionCrossings,
+    movement_reads: crate::movement_reads::MovementReads,
 }
 
 pub(super) fn validate_invocation(invocation: &ActionInvocation) -> Result<(), ActionError> {
@@ -619,6 +624,12 @@ impl ActionProvider for Provider {
             capture(state, world, &route, &world.world_ic_now(), true)
                 .map_err(|_| unavailable("locomotion capture unavailable"))?
         };
+        crate::movement_reads::retain(
+            context,
+            txn,
+            &self.movement_reads,
+            &captured.facts.read_dependencies,
+        )?;
         let receipt = context
             .prepare_captured_locomotion(txn, &self.service)
             .map_err(|_| unavailable("captured locomotion refused"))?;

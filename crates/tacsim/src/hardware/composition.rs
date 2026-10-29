@@ -53,11 +53,16 @@ pub struct HardwareDeployment {
     pub ungovern: Option<UngoverningSite>,
 }
 
-/// **An ungoverning shop** (doc 17h cut M8b C2): who is paid and where.
+/// **An ungoverning shop** (doc 17h cut M8b C2): who is paid and where. The same shop is the
+/// ungoverning integration site (doc 17h cut M8b-2, H2), where a heirloom or grey die is
+/// integrated with no certificate.
 #[derive(Clone, Debug)]
 pub struct UngoverningSite {
     pub provider: ScopedCoreAccount,
     pub factory: ObjId,
+    /// The shop's own completed-work container (doc 17h cut M8b-2 fix round 1, L2): a
+    /// back-room core is born here, never in the chartered factory's.
+    pub output_container: ObjId,
     /// The shop's fee, centicredits; `None` takes the catalogue's `ungovern_minor`
     /// (provisional: the fitting fee).
     pub fee_minor: Option<i64>,
@@ -291,6 +296,16 @@ impl GovernedHardware {
                 code: code.into(),
             }),
             delivery: Some(CoreDeliveryPromise::PersonalCustodyV1),
+            // Doc 17h cut M8b-2 (H2): the ungoverning shop also integrates heirloom and grey
+            // dies, paid to its own provider. Absent at launch (doc 17h §4), so the launch's
+            // payment policy keeps its digest.
+            ungoverned: deployment.ungovern.as_ref().map(|site| {
+                mush_economy::core_integration::UngovernedIntegration {
+                    integrator: site.provider.clone(),
+                    factory: site.factory,
+                    output_container: site.output_container,
+                }
+            }),
         };
         let core_classes = [
             crate::arena::core::CoreClass::I,

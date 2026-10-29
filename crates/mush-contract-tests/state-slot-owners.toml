@@ -47,6 +47,34 @@
 # ---------------------------------------------------------------------------
 
 [[site]]
+path = "crates/mush-server/tests/split_boundary/dt_composed_scene_movement.rs"
+accessor = "World::module_state_mut"
+slot = "UnitStore"
+owner = "tactics"
+reason = "Test-only post-ACK fault injection puts a marker in the actual Tactics slot while leaving Sim's projection and every spatial/Core row fixed. All three genuine locomotion profiles must refuse through the retained Tactics read; the fixture grants no deployment or movement authority."
+
+[[site]]
+path = "crates/mush-server/tests/split_boundary/dt_physical_transitions.rs"
+accessor = "World::module_state_mut"
+slot = "UnitStore"
+owner = "tactics"
+reason = "Test-only post-ACK custody drift proves a real structural reanchor retains Tactics' own marker preimage independently of Sim's projection. A unit is created by the real Tactics command before preparing, acknowledging and refusing the move; no substitute owner or participant is used."
+
+[[site]]
+path = "crates/mush-server/tests/split_boundary/dt_composed_scene_movement.rs"
+accessor = "World::module_state_mut"
+slot = "JourneyBook"
+owner = "sim"
+reason = "Test-only fault injection changes the actual registered Sim journey slot after Store ACK while leaving its incarnation and all spatial/object rows fixed. All three genuine locomotion profiles must refuse publication through the retained owner read, including Scenes and typed images. This grants no journey or personnel authority."
+
+[[site]]
+path = "crates/mush-server/tests/split_boundary/dt_physical_transitions.rs"
+accessor = "World::module_state_mut"
+slot = "JourneyBook"
+owner = "sim"
+reason = "Test-only post-ACK fault injection proves a structural reanchor cannot publish after the separate registered Sim journey preimage changes. The fixture uses the real production coordinator, Store acknowledgement and native participant; it does not construct a substitute owner or permit."
+
+[[site]]
 path = "crates/mush-atlas/src/movement_window_tests.rs"
 accessor = "World::module_state_insert"
 slot = "AtlasState"
@@ -66,6 +94,13 @@ accessor = "World::module_state_insert"
 slot = "DeployedUnits"
 owner = "sim"
 reason = "The read-only occupancy fixture seeds an empty custody index, then uses the actual Sim mark helper to exercise the same arena-exclusion predicate as legacy participants. It demonstrates selector parity only, not a durable custody transfer."
+
+[[site]]
+path = "crates/mush-atlas/src/movement_window_joint_tests.rs"
+accessor = "World::module_state_mut"
+slot = "SpatialState"
+owner = "sim"
+reason = "Read-only joint-capture tests use the actual registered and booted Sim slot to seed small native window records and inject unsupported placement or changed-preimage faults. The real Core preview probe always refuses before staging any action; these fixtures create no substitute owner, receipt, install or personnel eligibility."
 
 [[site]]
 path = "crates/mush-sim/src/physical_tests.rs"
@@ -1588,3 +1623,17 @@ accessor = "World::module_state_mut"
 slot = "UnitStore"
 owner = "tactics"
 reason = "Doc 17h cut M8a fix round 1 (F2): test-only. The inspection test copies a rig's TacticalUnit onto a fresh Thing in the tactics store's RAM, an object with a unit that is no programme hull, so the typed inspection action can be shown refusing it through the provider's own known-hull read. Nothing persists; production writes units only through the tactics owner."
+
+[[site]]
+path = "crates/tacsim/src/minds/registry_inspection/fine.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 17h cut M8d fix round K1, for the `port/coop.rs` row's reason: the Registry
+fine's levy tick charges the holder the inspection recorded, and a holder with no
+credit account is never refused for want of one (the carried-debt rule) — the tick
+takes the account id from `economy`'s allocator before `mush_economy::open_account`
+writes it through the economy module's own path, the `port/apply.rs` precedent.
+The site refuses when the slot is absent.
+"""

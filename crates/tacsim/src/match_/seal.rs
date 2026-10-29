@@ -233,6 +233,10 @@ pub(crate) struct SealPolicy<'a> {
     pub(crate) identity: &'a SealIdentity,
     pub(crate) profiles: &'a [(SmolStr, StockCard)],
     pub(crate) fallback: &'a Option<SmolStr>,
+    /// **The fitted core is impounded** (doc 17h cut M8d2, "impounded in place"): the seal
+    /// reads the hull as having no core — the ROM, Class 0, governed — while the core stays
+    /// physically fitted. Only the IC ROM seal ([`seal_rom_for`]) ever sets it.
+    pub(crate) impounded: bool,
 }
 impl<'a> From<&'a SealTerms> for SealPolicy<'a> {
     fn from(v: &'a SealTerms) -> Self {
@@ -250,6 +254,7 @@ impl<'a> From<&'a SealTerms> for SealPolicy<'a> {
             identity: &v.identity,
             profiles: &v.profiles,
             fallback: &v.fallback,
+            impounded: false,
         }
     }
 }
@@ -477,6 +482,26 @@ pub(crate) struct IcSealConfig<'a> {
     pub(crate) reflex: &'a ReflexConfig,
     /// The warrant principal.
     pub(crate) principal: Option<CharacterRef>,
+    /// Whether the fitted core is impounded ([`core_impounded`]; doc 17h cut M8d2).
+    pub(crate) impounded: bool,
+}
+
+/// **Whether `unit`'s fitted core is impounded** (doc 17h cut M8d2, the lead's S3 ruling):
+/// its core component's titled asset is held by a Registry seizure, or owned by the Registry
+/// org after a forfeit ([`mush_economy::EconomyStore::core_impounded`], read from the world's
+/// economy store, the same store every seal path's `World` carries). No core, no asset or no
+/// economy reads `false`. [`read_core`] itself stays physical: M8a's inspection reports what
+/// is fitted.
+#[must_use]
+pub(crate) fn core_impounded(w: &mush_core::World, unit: &mush_tactics::TacticalUnit) -> bool {
+    let asset = read_core(unit).and_then(|hw| {
+        let component = mush_tactics::ComponentId::new(hw.component.as_str()).ok()?;
+        unit.component(&component)?.asset
+    });
+    asset.is_some_and(|core| {
+        w.module_state::<mush_economy::EconomyStore>()
+            .is_some_and(|store| store.core_impounded(core))
+    })
 }
 
 /// **The ROM seal over a hull with no custody** (doc 23 §7, cut S.1's L8): `unit`'s seal under
@@ -521,6 +546,7 @@ pub(crate) fn seal_rom_for(
             identity: &identity,
             profiles: &[],
             fallback: &fallback,
+            impounded: cfg.impounded,
         },
     )
 }
@@ -539,7 +565,13 @@ pub(crate) fn seal_with_policy(
     if !weapons.is_empty() {
         channels.push(Channel::Fire);
     }
-    let hardware = read_core(unit);
+    // Doc 17h cut M8d2: an impounded core seals as no core (the ROM, Class 0, governed), so
+    // nothing it carries flies and no floor is lifted (`MindSeal::lifts_floor` needs a core).
+    let hardware = if terms.impounded {
+        None
+    } else {
+        read_core(unit)
+    };
     if let Some(hw) = hardware.as_ref()
         && hw.governed
         && terms.rated > hw.class
@@ -1870,6 +1902,7 @@ mod m4_tests {
                 minds: &minds,
                 reflex: &reflex,
                 principal: principal.clone(),
+                impounded: false,
             },
         )
         .expect("a coreless hull seals the ROM");

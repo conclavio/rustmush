@@ -212,30 +212,7 @@ pub(crate) fn register_with_coverage(
     } else {
         None
     };
-    // One `outcome` validator for the whole crate, over the very descriptors
-    // registered next (built once, so the two cannot drift).
-    let mut outcomes = outcome_descriptors(test_world)?;
-    outcomes.push(crate::detachment::planning::outcome_descriptor()?);
-    if let Some(ic) = ic {
-        outcomes.push(ic.outcome()?);
-    }
-    if let Some(coverage) = coverage {
-        outcomes.push(coverage.outcome()?);
-    }
-    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner.
-    if let Some(inspection) = inspection {
-        let [_, outcome] = inspection.descriptors()?;
-        outcomes.push(outcome);
-    }
-    reg.definition_validator(
-        kind("outcome")?,
-        crate::definitions::exact_validator(outcomes.clone()),
-    )?;
-    let mut outcome_refs: BTreeMap<String, DefinitionRef> = BTreeMap::new();
-    for descriptor in outcomes {
-        let id = descriptor.id().as_str().to_owned();
-        outcome_refs.insert(id, reg.definition(descriptor)?);
-    }
+    let outcome_refs = register_outcomes(reg, test_world, ic, coverage, inspection)?;
     let probe_outcome = outcome_refs.get(PROBE_OUTCOME).cloned();
     let stock_outcome = outcome_refs
         .get(crate::port::stock::STOCK_OUTCOME)
@@ -317,16 +294,17 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::detachment::planning::action_descriptor(
         &outcome_refs,
     )?);
+    actions.push(crate::procurement::action_descriptor(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
     if let Some(coverage) = coverage {
         actions.extend(coverage.descriptors()?);
     }
-    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner.
+    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner (and the
+    // fine's, the principal revocation's and the quirk claim's when they compose).
     if let Some(inspection) = inspection {
-        let [action, _] = inspection.descriptors()?;
-        actions.push(action);
+        inspection_descriptors(inspection, 0, &mut actions)?;
     }
     reg.definition_validator(
         kind("action")?,
@@ -338,17 +316,10 @@ pub(crate) fn register_with_coverage(
         action_refs.insert(id, reg.definition(descriptor)?);
     }
     // Doc 17h cut M8a: the Registry inspection's provider and slot over the registered
-    // action and outcome (`minds::registry_inspection`).
+    // action and outcome (`minds::registry_inspection`); doc 17h cut M8d D3 the fine's beside
+    // them, in a frame of their own.
     if let Some(inspection) = inspection {
-        let action = action_refs
-            .get(crate::minds::registry_inspection::INSPECTION_ACTION)
-            .cloned()
-            .ok_or_else(|| ModError::msg("Registry inspection action unregistered"))?;
-        let outcome = outcome_refs
-            .get(crate::minds::registry_inspection::INSPECTION_OUTCOME)
-            .cloned()
-            .ok_or_else(|| ModError::msg("Registry inspection outcome unregistered"))?;
-        inspection.register(reg, action, outcome)?;
+        register_inspection(reg, inspection, &action_refs, &outcome_refs)?;
     }
     let probe_action = action_refs.get(PROBE_ACTION).cloned();
     if let (Some(action), Some(outcome), Some(marks)) =
@@ -507,6 +478,12 @@ pub(crate) fn register_with_coverage(
     let quest =
         crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
     crate::detachment::planning::register(reg, &action_refs, &outcome_refs, unit_authority)?;
+    // Doc 17h cut M8f: the procurement ledger, its record action and the `tacsim.procurement`
+    // tick, unconditionally (no policy, no visit).
+    crate::procurement::register(reg, &action_refs, &outcome_refs)?;
+    // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
+    // (no agent, no visit).
+    crate::house_attestation::register(reg)?;
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,
@@ -540,6 +517,41 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots.
     crate::surface::tick::register(reg)?;
     Ok(())
+}
+
+/// Build each outcome once for validation and registration, keeping descriptor
+/// construction temporaries out of the main port registration's stack frame.
+fn register_outcomes(
+    reg: &mut Registrar<'_>,
+    test_world: bool,
+    ic: Option<&crate::minds::ic_sortie::registration::Registration>,
+    coverage: Option<&crate::underwriting::registration::Registration>,
+    inspection: Option<&crate::minds::registry_inspection::Composition>,
+) -> Result<BTreeMap<String, DefinitionRef>, ModError> {
+    let mut outcomes = outcome_descriptors(test_world)?;
+    outcomes.push(crate::detachment::planning::outcome_descriptor()?);
+    outcomes.push(crate::procurement::outcome_descriptor()?);
+    if let Some(ic) = ic {
+        outcomes.push(ic.outcome()?);
+    }
+    if let Some(coverage) = coverage {
+        outcomes.push(coverage.outcome()?);
+    }
+    // Doc 17h cut M8a: the Registry inspection's outcome (and the fine's, the principal
+    // revocation's and the quirk claim's when they compose, doc 17h cut M8g G3).
+    if let Some(inspection) = inspection {
+        inspection_descriptors(inspection, 1, &mut outcomes)?;
+    }
+    reg.definition_validator(
+        kind("outcome")?,
+        crate::definitions::exact_validator(outcomes.clone()),
+    )?;
+    let mut outcome_refs = BTreeMap::new();
+    for descriptor in outcomes {
+        let id = descriptor.id().as_str().to_owned();
+        outcome_refs.insert(id, reg.definition(descriptor)?);
+    }
+    Ok(outcome_refs)
 }
 
 /// Keep descriptor construction temporaries out of the main registration frame.
@@ -2980,6 +2992,98 @@ impl EventHook for ReconnectNotices {
             },
         );
     }
+}
+
+/// **The Registry inspection's descriptors of one kind** (`which`: 0 the actions, 1 the
+/// outcomes): the inspection's own, and the fine's (doc 17h cut M8d D3), the principal
+/// revocation's (D4), the quirk claim's (cut M8g G3) and the seizure's and forfeit's (cut
+/// M8d2) when they compose. Its own frame, so
+/// `register_with_coverage` stays under the M7 memory-size bound.
+#[inline(never)]
+fn inspection_descriptors(
+    inspection: &crate::minds::registry_inspection::Composition,
+    which: usize,
+    into: &mut Vec<mush_core::DefinitionDescriptor>,
+) -> Result<(), ModError> {
+    let mut pairs = vec![inspection.descriptors()?];
+    pairs.extend(inspection.fine_descriptors()?);
+    pairs.extend(inspection.principal_descriptors()?);
+    pairs.extend(inspection.claim_descriptors()?);
+    for pair in pairs {
+        let [action, outcome] = pair;
+        into.push(if which == 0 { action } else { outcome });
+    }
+    // Doc 17h cut M8d2: the seizure's and the forfeit's, when they compose.
+    if let Some([seize, seized, forfeit, forfeited]) = inspection.seizure_descriptors()? {
+        into.push(if which == 0 { seize } else { seized });
+        into.push(if which == 0 { forfeit } else { forfeited });
+    }
+    Ok(())
+}
+
+/// The Registry inspection's provider and slot (doc 17h cut M8a), and the fine's when it
+/// composes (doc 17h cut M8d D3), over the registered references. Its own frame, so
+/// `register_with_coverage` stays under the M7 memory-size bound.
+#[inline(never)]
+fn register_inspection(
+    reg: &mut Registrar<'_>,
+    inspection: &crate::minds::registry_inspection::Composition,
+    action_refs: &BTreeMap<String, DefinitionRef>,
+    outcome_refs: &BTreeMap<String, DefinitionRef>,
+) -> Result<(), ModError> {
+    let action = action_refs
+        .get(crate::minds::registry_inspection::INSPECTION_ACTION)
+        .cloned()
+        .ok_or_else(|| ModError::msg("Registry inspection action unregistered"))?;
+    let outcome = outcome_refs
+        .get(crate::minds::registry_inspection::INSPECTION_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("Registry inspection outcome unregistered"))?;
+    let fine = match (
+        action_refs
+            .get(crate::minds::registry_inspection::fine::FINE_ACTION)
+            .cloned(),
+        outcome_refs
+            .get(crate::minds::registry_inspection::fine::FINE_OUTCOME)
+            .cloned(),
+    ) {
+        (Some(action), Some(outcome)) => Some((action, outcome)),
+        _ => None,
+    };
+    let principal = match (
+        action_refs
+            .get(crate::minds::registry_inspection::principal::PRINCIPAL_ACTION)
+            .cloned(),
+        outcome_refs
+            .get(crate::minds::registry_inspection::principal::PRINCIPAL_OUTCOME)
+            .cloned(),
+    ) {
+        (Some(action), Some(outcome)) => Some((action, outcome)),
+        _ => None,
+    };
+    let claim = match (
+        action_refs
+            .get(crate::minds::registry_inspection::claims::CLAIM_ACTION)
+            .cloned(),
+        outcome_refs
+            .get(crate::minds::registry_inspection::claims::CLAIM_OUTCOME)
+            .cloned(),
+    ) {
+        (Some(action), Some(outcome)) => Some((action, outcome)),
+        _ => None,
+    };
+    // Doc 17h cut M8d2: the seizure's four references, all or none.
+    use crate::minds::registry_inspection::seizure as s;
+    let seizure = match (
+        action_refs.get(s::SEIZE_ACTION).cloned(),
+        outcome_refs.get(s::SEIZE_OUTCOME).cloned(),
+        action_refs.get(s::FORFEIT_ACTION).cloned(),
+        outcome_refs.get(s::FORFEIT_OUTCOME).cloned(),
+    ) {
+        (Some(a), Some(b), Some(c), Some(d)) => Some([a, b, c, d]),
+        _ => None,
+    };
+    inspection.register(reg, action, outcome, fine, principal, claim, seizure)
 }
 
 #[cfg(test)]

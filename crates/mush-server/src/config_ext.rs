@@ -433,6 +433,13 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // figure, mapped straight across and held at least 1 by
             // `validate` below; printed by the minds lane, read by no match.
             cpu_lens_ms: cfg.minds.cpu_lens_ms,
+            // Doc 17h cut M8d D3/D4 (Q-M8-6): the fine cap and the revocation term,
+            // mapped straight across and held by `validate` below.
+            fine_cap_minor: cfg.minds.fine_cap_minor,
+            revocation_ic_days: cfg.minds.revocation_ic_days,
+            // Doc 17h cut M8d2 (Q-M8-6): the seizure's inspection age and hold.
+            seizure_inspection_max_age_ic_days: cfg.minds.seizure_inspection_max_age_ic_days,
+            seizure_hold_ic_days: cfg.minds.seizure_hold_ic_days,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
@@ -487,6 +494,12 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         surface: tacsim::config::SurfaceConfig {
             black_box_max_lines: cfg.surface.black_box_max_lines,
         },
+        // Doc 17h cut M8f: the procurement policy's defaults, mapped straight across and banded
+        // by `validate` below.
+        procurement: tacsim::config::ProcurementConfig {
+            budget_minor_per_ic_month: cfg.procurement.budget_minor_per_ic_month,
+            cap_permille: cfg.procurement.cap_permille,
+        },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
     // Each answers one sentence naming the TOML key and the value it was given,
@@ -507,6 +520,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     typed.harness.validate()?;
     // Doc 23 cut S.1: `[tacsim.surface].black_box_max_lines`, in the same pattern.
     typed.surface.validate()?;
+    typed.procurement.validate()?;
     // Verify here, at the host, so the boot fails with the file's name in the message.
     // The check is pure and the module repeats it at wiring over the same operator
     // sources and the same game seed sources (the lane, when the layer is on — the
@@ -1000,6 +1014,25 @@ mod tests {
              interlock is phase 1's only claim enforcement until the fight exists (doc 20 §9.4)."
         );
         assert!(tacsim_config(&TacsimCfg::default()).is_ok());
+        // Doc 17h cut M8f: `[tacsim.procurement]` maps straight across, both band ends boot.
+        for (body, budget, cap) in [
+            ("budget_minor_per_ic_month = 1\ncap_permille = 1\n", 1, 1),
+            (
+                "budget_minor_per_ic_month = 100000000\ncap_permille = 1000\n",
+                100_000_000,
+                1000,
+            ),
+        ] {
+            let cfg = tacsim_cfg(&format!("[tacsim.procurement]\n{body}"));
+            let typed = tacsim_config(&cfg).expect("a banded procurement block boots");
+            assert_eq!(
+                typed.procurement,
+                tacsim::config::ProcurementConfig {
+                    budget_minor_per_ic_month: budget,
+                    cap_permille: cap,
+                }
+            );
+        }
     }
 
     /// A directory in `pack_paths` is searched, in **sorted** order, so which pack wins
@@ -1843,6 +1876,25 @@ mod tests {
                 "orders_per_minute = 601\n",
                 "[tacsim.command].orders_per_minute",
                 "601",
+            ),
+            // Doc 17h cut M8f: the procurement defaults' bands, each refused by name.
+            (
+                "[tacsim.procurement]",
+                "budget_minor_per_ic_month = 0\n",
+                "[tacsim.procurement].budget_minor_per_ic_month",
+                "0",
+            ),
+            (
+                "[tacsim.procurement]",
+                "budget_minor_per_ic_month = 100000001\n",
+                "[tacsim.procurement].budget_minor_per_ic_month",
+                "100000001",
+            ),
+            (
+                "[tacsim.procurement]",
+                "cap_permille = 1001\n",
+                "[tacsim.procurement].cap_permille",
+                "1001",
             ),
             // 17b cut M1b.1 (doc 17 §5, D-UM-17 as amended): the Compact floor
             // is 10 to 950 in steps of 10 (17b cut M3.3 widened it from 100) —

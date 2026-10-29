@@ -18,6 +18,83 @@ use super::dt_unit_authority::{persist_legacy, stage, submit};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn actual_tactics_marker_refuses_structural_publication_even_without_sim_projection()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    ordinary(
+        &mut rig.world,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", rig.unit.0),
+    )?;
+    let snapshot = rig
+        .world
+        .world()
+        .module_state::<mush_tactics::UnitStore>()
+        .ok_or("Tactics")?
+        .units
+        .get(&rig.unit)
+        .cloned()
+        .ok_or("actual unit")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let submission = submit(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0),
+    )?;
+    stage(&mut rig.world, &store, &submission).await?;
+    let revision = rig.world.engine().action_state().revision();
+    let records = rig.world.engine().action_state().len();
+    let before = state(&rig.world)?
+        .spaces
+        .get(&rig.left)
+        .ok_or("space")?
+        .clone();
+    let (bundle, install) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged")?
+        .into_parts();
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    // Test-only custody drift in the real Tactics owner slot. No corresponding
+    // Sim marker, spatial row, Core row or typed revision is changed.
+    rig.world
+        .world_mut()
+        .module_state_mut::<mush_tactics::UnitStore>()
+        .ok_or("Tactics")?
+        .deployed
+        .insert(
+            rig.unit,
+            mush_tactics::custody::DeployedMarker {
+                mark: mush_sim::DeployedMark::new(119, "arena"),
+                domain: None,
+                pose: None,
+                snapshot,
+            },
+        );
+    assert!(!mush_sim::deployed::is_deployed(
+        rig.world.world(),
+        rig.unit
+    ));
+    assert!(
+        rig.world
+            .engine_mut()
+            .install_composed_action(install)
+            .is_err()
+    );
+    assert_eq!(state(&rig.world)?.spaces.get(&rig.left), Some(&before));
+    assert_eq!(rig.world.engine().action_state().revision(), revision);
+    assert_eq!(rig.world.engine().action_state().len(), records);
+    assert!(rig.world.engine().action_state().reservation_lost());
+    Ok(())
+}
+
 // A thin test ingress adapter calls the production typed helper. It supplies no
 // authority, object images, participant patches or replacement planner.
 struct MovementIngress(Arc<AtomicBool>, Arc<AtomicBool>);
@@ -507,6 +584,53 @@ async fn late_sim_drift_refuses_installation_without_publishing_the_prepared_rec
             host: restarted.carrier
         }
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_journey_read_refuses_post_ack_structural_publication() -> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let line = format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0);
+    let submission = submit(&mut rig.world, GOD, &line)?;
+    stage(&mut rig.world, &store, &submission).await?;
+    let revision = rig.world.engine().action_state().revision();
+    let records = rig.world.engine().action_state().len();
+    let before = state(&rig.world)?
+        .spaces
+        .get(&rig.left)
+        .ok_or("space")?
+        .clone();
+    let (bundle, install) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged")?
+        .into_parts();
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    // Test-only corruption of the separate registered Sim slot after custody;
+    // no placement, topology, object or typed revision is changed.
+    rig.world
+        .world_mut()
+        .module_state_mut::<mush_sim::JourneyBook>()
+        .ok_or("journeys")?
+        .held
+        .insert("cjourney:late".into(), "repair required".into());
+    assert!(
+        rig.world
+            .engine_mut()
+            .install_composed_action(install)
+            .is_err()
+    );
+    assert_eq!(state(&rig.world)?.spaces.get(&rig.left), Some(&before));
+    assert_eq!(rig.world.engine().action_state().revision(), revision);
+    assert_eq!(rig.world.engine().action_state().len(), records);
+    assert!(rig.world.engine().action_state().reservation_lost());
     Ok(())
 }
 
@@ -1042,6 +1166,7 @@ async fn personnel_capture_boot_audit_requires_exact_pair_and_retains_v1_without
         .collect();
     assert_eq!(rows.len(), 2);
     audit_captures(rows.clone())?;
+    super::dt_locomotion::audit_before_projection_repair(rows.clone(), false)?;
     let capture_index = rows
         .iter()
         .position(|row| row.key.contains("/personnel_crossings/"))
@@ -1051,8 +1176,13 @@ async fn personnel_capture_boot_audit_requires_exact_pair_and_retains_v1_without
         .position(|row| row.key.contains("/physical_transitions/"))
         .ok_or("physical")?;
     assert!(audit_captures(vec![rows.get(capture_index).ok_or("capture")?.clone()]).is_err());
+    super::dt_locomotion::audit_before_projection_repair(
+        vec![rows.get(capture_index).ok_or("capture")?.clone()],
+        true,
+    )?;
     let mut missing = rows.clone();
     missing.remove(capture_index);
+    super::dt_locomotion::audit_before_projection_repair(missing.clone(), true)?;
     assert!(audit_captures(missing).is_err());
     for field in ["operator", "root"] {
         let mut mismatched = rows.clone();

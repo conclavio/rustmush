@@ -3,7 +3,7 @@
 //!
 //! **The read.** `MarketCommandReader` is an `OwnerReadService` over the
 //! entitlement owner's own listing family (descriptor `owner_read`
-//! `mind_market_commands` v1), granted to TacSim alone. It is registered
+//! `mind_market_commands` v2 since doc 17h M8f's procurement kinds), granted to TacSim alone. It is registered
 //! whenever the market composes personal entitlements (`MarketModule::
 //! with_mind_entitlements`). Every kind is free of the seller, the author,
 //! any account, revision, rating or digest: a listing row becomes a
@@ -429,8 +429,70 @@ enum ReadKind {
         licence: LicenceId,
     },
     OwnQuotes,
+    /// Doc 17h §3 M8f: GOD only (`procurement`).
+    ProcurementListings {
+        after: Option<CommitToken>,
+    },
+    /// Doc 17h §3 M8f: GOD only; the agent's own quote and funded purchase
+    /// on one listing, from the organisation's row (H1).
+    ProcurementPurchase {
+        agent: ObjId,
+        listing: CommitToken,
+        org: mush_org::OrgId,
+    },
+    /// Doc 17h §3 M8f: GOD only; `OwnOpen` on the organisation's row, read
+    /// as its agent.
+    ProcurementOpen {
+        agent: ObjId,
+        org: mush_org::OrgId,
+    },
+    /// Doc 17h §3 M8f: GOD only; one purchase's phase and facts.
+    ProcurementOperation {
+        operation: CommitToken,
+    },
 }
 impl MarketCommandRequest {
+    /// Doc 17h §3 M8f: GOD only; the current listings with their revision
+    /// and rating, after `after` (`procurement::listings`).
+    #[must_use]
+    pub const fn procurement_listings(after: Option<CommitToken>) -> Self {
+        Self {
+            kind: ReadKind::ProcurementListings { after },
+        }
+    }
+    /// Doc 17h §3 M8f: GOD only; the agent's OWN newest quote and funded
+    /// purchase on `listing`, from the organisation's buyer index row, read as
+    /// `agent`, whose grant the read re-asks (`org_holder::reads_for`).
+    /// Another member's record on the listing is not the agent's (H1).
+    #[must_use]
+    pub const fn procurement_purchase(
+        agent: ObjId,
+        listing: CommitToken,
+        org: mush_org::OrgId,
+    ) -> Self {
+        Self {
+            kind: ReadKind::ProcurementPurchase {
+                agent,
+                listing,
+                org,
+            },
+        }
+    }
+    /// Doc 17h §3 M8f: GOD only; the organisation's open funded purchases,
+    /// read as `agent`.
+    #[must_use]
+    pub const fn procurement_open(agent: ObjId, org: mush_org::OrgId) -> Self {
+        Self {
+            kind: ReadKind::ProcurementOpen { agent, org },
+        }
+    }
+    /// Doc 17h §3 M8f: GOD only; one purchase's phase and facts.
+    #[must_use]
+    pub const fn procurement_operation(operation: CommitToken) -> Self {
+        Self {
+            kind: ReadKind::ProcurementOperation { operation },
+        }
+    }
     /// 17g C3a: every quote on the actor's own index row, newest first.
     #[must_use]
     pub const fn own_quotes() -> Self {
@@ -566,8 +628,10 @@ impl OwnQuoteView {
 }
 
 /// 17g C2g: the actor's own record on one listing (`OwnPurchase`): the
-/// listing's code and protocol, the NEWEST indexed quote on it (live or
-/// expired) and the earliest-quoted funded purchase on it (its operation
+/// listing's code and protocol, the NEWEST indexed quote on it the actor
+/// made itself (live or expired; on an organisation's row another member's
+/// quote is never this one: M8f round 2) and the earliest-quoted funded
+/// purchase on it (its operation
 /// token, the Grant's and Refund's `operation`). At least one of the two is
 /// present. No seller, account, digest or other buyer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -721,8 +785,45 @@ pub enum MarketCommandResult {
     OwnQuotes {
         quotes: Vec<OwnQuoteRowView>,
     },
+    /// Doc 17h §3 M8f: `ProcurementListings`.
+    ProcurementListings(procurement::ProcurementListingsPage),
+    /// Doc 17h §3 M8f: `ProcurementOperation`, `None` for no such purchase.
+    ProcurementOperation {
+        found: Option<procurement::ProcurementOperationView>,
+    },
+    /// Doc 17h §3 M8f: `ProcurementPurchase`, `None` when the agent has no
+    /// record on the listing.
+    ProcurementPurchase {
+        found: Option<procurement::AgentPurchaseView>,
+    },
 }
 impl MarketCommandResult {
+    /// Doc 17h §3 M8f: the `ProcurementListings` answer.
+    #[must_use]
+    pub fn into_procurement_listings(self) -> Option<procurement::ProcurementListingsPage> {
+        match self {
+            Self::ProcurementListings(page) => Some(page),
+            _ => None,
+        }
+    }
+    /// Doc 17h §3 M8f: the `ProcurementPurchase` answer.
+    #[must_use]
+    pub fn into_procurement_purchase(self) -> Option<Option<procurement::AgentPurchaseView>> {
+        match self {
+            Self::ProcurementPurchase { found } => Some(found),
+            _ => None,
+        }
+    }
+    /// Doc 17h §3 M8f: the `ProcurementOperation` answer.
+    #[must_use]
+    pub fn into_procurement_operation(
+        self,
+    ) -> Option<Option<procurement::ProcurementOperationView>> {
+        match self {
+            Self::ProcurementOperation { found } => Some(found),
+            _ => None,
+        }
+    }
     /// The counter answer, or `None` if this answered another kind.
     #[must_use]
     pub const fn at_counter(&self) -> Option<bool> {
@@ -805,7 +906,8 @@ pub(crate) fn descriptor(manifest: &DefinitionRef) -> Result<DefinitionDescripto
     DefinitionDescriptor::new(
         DefinitionKind::new("owner_read").map_err(error)?,
         DefinitionId::new("mind_market_commands").map_err(error)?,
-        1,
+        // Doc 17h §3 M8f: 2 adds the GOD-only procurement kinds.
+        2,
         serde_json::json!({
             "format": 1,
             "listings_per_page": LISTINGS_PER_PAGE,
@@ -816,6 +918,9 @@ pub(crate) fn descriptor(manifest: &DefinitionRef) -> Result<DefinitionDescripto
             "seller": false,
             "account_ids": false,
             "digests": false,
+            // Doc 17h §3 M8f: the GOD-only procurement kinds, which carry the
+            // listed revision and rating to the tick and to no player.
+            "procurement": {"caller": "god", "revision": true, "rating": true, "instrument": true},
             "manifest": manifest,
         }),
     )
@@ -941,6 +1046,31 @@ pub(crate) fn answer<'a>(
         ReadKind::ListingByCode { code } => {
             by_code(source, &code, current).map(MarketCommandResult::ListingByCode)
         }
+        ReadKind::ProcurementListings { after } => {
+            procurement::god(own.actor)?;
+            procurement::listings(source, after, SCANS, current)
+                .map(MarketCommandResult::ProcurementListings)
+        }
+        ReadKind::ProcurementPurchase {
+            agent,
+            listing,
+            org,
+        } => {
+            procurement::god(own.actor)?;
+            let (quotes, operations) = own_rows(source, agent, Some(org))?;
+            Ok(MarketCommandResult::ProcurementPurchase {
+                found: procurement::agent_purchase(&quotes, &operations, agent, listing),
+            })
+        }
+        ReadKind::ProcurementOpen { agent, org } => {
+            procurement::god(own.actor)?;
+            own_open(source, agent, Some(org)).map(|open| MarketCommandResult::OwnOpen { open })
+        }
+        ReadKind::ProcurementOperation { operation } => {
+            procurement::god(own.actor)?;
+            procurement::operation(source, operation)
+                .map(|found| MarketCommandResult::ProcurementOperation { found })
+        }
     }
 }
 
@@ -1039,8 +1169,9 @@ impl<'a> OwnSource<'a> for Lens<'_, 'a> {
         )
     }
     fn acts_for(&self, org: mush_org::OrgId, actor: ObjId) -> Result<(), OwnerReadError> {
-        use mush_roll::commerce::org_holder::{OrgActorError, acts_for};
-        acts_for(self.ctx.world(), org, actor).map_err(|e| match e {
+        // Doc 17h §3 M8f (the P2a ruling): a read, so a limited grant reads.
+        use mush_roll::commerce::org_holder::{OrgActorError, reads_for};
+        reads_for(self.ctx.world(), org, actor).map_err(|e| match e {
             OrgActorError::Unavailable => OwnerReadError::Unavailable,
             OrgActorError::NotForOrg => OwnerReadError::Refused,
         })
@@ -1195,8 +1326,13 @@ pub(crate) fn own_purchase<'a>(
     if listings.len() > 1 {
         return Err(OwnerReadError::Refused);
     }
+    // The quote a Fund pays is the actor's OWN (M8f round 2): on an
+    // organisation's row another member's newer quote is that member's to
+    // fund, and the provider refuses the Fund of a quote the actor did not
+    // make.
     let newest = quotes
         .iter()
+        .filter(|q| q.buyer().acting_character() == actor)
         .max_by_key(|q| (q.quoted_at_utc(), q.publication()));
     let earliest = operations
         .iter()
@@ -1448,6 +1584,9 @@ pub(crate) fn by_code<'a>(
         _ => Ok(CodeLookup::Ambiguous),
     }
 }
+
+#[path = "mind_commands/procurement.rs"]
+pub mod procurement;
 
 #[cfg(test)]
 #[path = "mind_commands/tests.rs"]

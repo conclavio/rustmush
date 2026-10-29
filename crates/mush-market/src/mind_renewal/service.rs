@@ -467,7 +467,8 @@ fn own(ctx: &Ctx<'_>, s: &Service, licence: LicenceId) -> Result<RenewalInventor
     let item = list.into_single().map_err(|_| unavailable())?;
     // M8c B3: a character acting for the holding organisation owns its
     // renewal (`org_holder::acts_as`); a character holder must be the actor.
-    if mush_roll::commerce::org_holder::acts_as(ctx.w, item.holder(), ctx.actor).is_err() {
+    // Doc 17h §3 M8f (P2a): the front moves no money; the step re-asks.
+    if mush_roll::commerce::org_holder::reads_as(ctx.w, item.holder(), ctx.actor).is_err() {
         return Err(unavailable());
     }
     Ok(item)

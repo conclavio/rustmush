@@ -233,6 +233,18 @@ impl CoverageRetention {
                 close_digest,
                 transition,
             } => (*close, *close_digest, *transition),
+            // Doc 17h cut M8d D5: a voided cover was a destruction the exclusion refused.
+            CoverageDecisionKindV1::Voided {
+                close: voided,
+                close_digest,
+                transition,
+                ..
+            } => {
+                if !matches!(close.kind, CloseKind::Destroyed {}) {
+                    return Err(PublicationError::Mismatch);
+                }
+                (*voided, *close_digest, *transition)
+            }
         };
         if close.operation != operation
             || close.event_digest != event

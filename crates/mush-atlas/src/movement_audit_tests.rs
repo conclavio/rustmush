@@ -95,7 +95,25 @@ fn missing_or_orphaned_prepared_event_changed_clock_and_double_claim_refuse() {
         .get_mut(&0)
         .unwrap()
         .push(expected(&original));
+    assert!(doubled.check_typed_claims().is_err());
     assert!(doubled.boundary(0, Some(&original)).is_err());
+}
+
+#[test]
+fn early_typed_claims_allow_multiple_no_op_observations_at_one_boundary() {
+    let original = mutation();
+    let mut audit = audit(&original);
+    for _ in 0..2 {
+        let mut no_op = expected(&original);
+        no_op.after = None;
+        no_op.event = None;
+        audit.pending.get_mut(&0).unwrap().push(no_op);
+    }
+    audit.check_typed_claims().unwrap();
+    assert!(
+        audit.boundary(0, None).is_err(),
+        "native event still requires its separate audit"
+    );
 }
 #[test]
 fn no_op_observations_bind_the_original_knowledge_boundary_and_absence_is_not_empty() {

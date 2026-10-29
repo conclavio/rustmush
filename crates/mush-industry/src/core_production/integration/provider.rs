@@ -37,6 +37,15 @@ struct OfferSelector {
     class: DieClass,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supplier_lot: Option<String>,
+    /// Doc 17h cut M8b-2 (H2): `core_ungovern` names the ungoverning site, whose input is a
+    /// heirloom or grey die the buyer supplies. Absent for the chartered site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    site: Option<SiteWord>,
+}
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SiteWord {
+    CoreUngovern,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,6 +116,9 @@ fn validate(inv: &ActionInvocation, index: usize) -> Result<(), Error> {
         }
         1 => {
             let s = decode::<OfferSelector>(inv.parameters())?;
+            if s.site.is_some() && s.supplier_lot.is_some() {
+                return Err(Error::Invalid);
+            }
             if let Some(id) = s.supplier_lot {
                 lot_id(&id)?;
             }
@@ -204,15 +216,17 @@ impl Provider {
             {
                 return Err(Error::Capacity);
             }
-            let input = match selected.supplier_lot {
-                Some(id) => {
+            let input = match (selected.supplier_lot, selected.site) {
+                (Some(id), None) => {
                     let (certificate, lot) = self.certificate(txn, lot_id(&id)?)?;
                     OfferedInput::SupplierStock {
                         certificate: Box::new(certificate),
                         lot: Box::new(lot),
                     }
                 }
-                None => OfferedInput::RequesterSupplied {},
+                (None, None) => OfferedInput::RequesterSupplied {},
+                (None, Some(SiteWord::CoreUngovern)) => OfferedInput::Uncertified {},
+                (Some(_), Some(_)) => return Err(Error::Invalid),
             };
             let live = authority::offer(
                 ctx.world().map_err(bad)?,
@@ -276,16 +290,24 @@ impl Provider {
             if offer.requester != inv.actor() {
                 return Err(Error::Unavailable);
             }
-            let (certificate, lot) = match (&offer.input, selected.input_lot) {
+            let (certificate, uncertified, lot) = match (&offer.input, selected.input_lot) {
                 (OfferedInput::SupplierStock { certificate, lot }, None) => {
                     let (c, current) = self.certificate(txn, lot.id())?;
                     if &c != certificate.as_ref() || &current != lot.as_ref() {
                         return Err(Error::Unavailable);
                     }
-                    (c, current)
+                    (Some(Box::new(c)), None, current)
                 }
                 (OfferedInput::RequesterSupplied {}, Some(id)) => {
-                    self.certificate(txn, lot_id(&id)?)?
+                    let (c, lot) = self.certificate(txn, lot_id(&id)?)?;
+                    (Some(Box::new(c)), None, lot)
+                }
+                // Doc 17h cut M8b-2 (H2): the ungoverning site takes a heirloom or grey lot
+                // and its staff issue; a certified lot is refused there, as an uncertified
+                // one is refused at the chartered site (it has no certificate).
+                (OfferedInput::Uncertified {}, Some(id)) => {
+                    let (u, lot) = self.uncertified(txn, lot_id(&id)?)?;
+                    (None, Some(Box::new(u)), lot)
                 }
                 _ => return Err(Error::Invalid),
             };
@@ -316,6 +338,7 @@ impl Provider {
                 facility: offer.facility.clone(),
                 recipe: offer.recipe.clone(),
                 certificate,
+                uncertified,
                 lot,
                 accepted_at: at.clone(),
                 expires_at: mush_inventory::reservation_deadline(&at).map_err(bad)?,
@@ -332,7 +355,7 @@ impl Provider {
                 .industry
                 .reserve_slot(
                     txn,
-                    intent.policy.factory,
+                    intent.site_factory()?,
                     intent.facility.maximum_slots(),
                     &wo_holder(order).map_err(bad)?,
                     &at,
@@ -557,7 +580,7 @@ impl Provider {
             let input = r.inputs.publish(txn, ctx, witness.as_ref()).map_err(bad)?;
             row.verify_input(&input)?;
             r.industry
-                .release_slot(txn, row.intent.policy.factory, row.capacity, 1)
+                .release_slot(txn, row.intent.site_factory()?, row.capacity, 1)
                 .map_err(bad)?;
             r.families.remove_schedule(txn, selected_order)?;
             txn.replace(&r.families.orders, &selected_order, row)
@@ -676,6 +699,32 @@ impl Provider {
             .ok_or(Error::Unavailable)?;
         c.matches_lot(&lot).map_err(bad)?;
         Ok((c, lot))
+    }
+    /// **A heirloom or grey lot and its staff issue** (doc 17h cut M8b-2, H2): the record
+    /// keyed by the lot, matching it exactly. A certified lot has none.
+    fn uncertified(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: LotId,
+    ) -> Result<(crate::core_production::UncertifiedDie, Lot), Error> {
+        let lot = txn
+            .get(&self.runtime.industry.inventory.lots, &id)
+            .map_err(bad)?
+            .cloned()
+            .ok_or(Error::Unavailable)?;
+        if !matches!(lot.lineage(), Lineage::Heirloom { .. } | Lineage::Grey {}) {
+            return Err(Error::Invalid);
+        }
+        let u = txn
+            .get(
+                &self.runtime.origins.uncertified.records,
+                &crate::core_production::UncertifiedDies::key(id),
+            )
+            .map_err(bad)?
+            .cloned()
+            .ok_or(Error::Unavailable)?;
+        u.matches_lot(&lot).map_err(bad)?;
+        Ok((u, lot))
     }
     fn before(
         &self,
@@ -808,16 +857,23 @@ impl ActionProvider for Provider {
                     return Ok(None);
                 }
                 let mut classes = vec![];
+                let (mut ungoverning, mut chartering) = (false, false);
                 for class in DieClass::ALL {
-                    if authority::can_offer(
-                        &engine.world,
-                        &r.definitions,
-                        &r.config,
-                        query.actor(),
-                        class,
-                    )
-                    .is_ok()
-                    {
+                    let offers = |certified| {
+                        authority::can_offer(
+                            &engine.world,
+                            &r.definitions,
+                            &r.config,
+                            query.actor(),
+                            class,
+                            certified,
+                        )
+                        .is_ok()
+                    };
+                    let (chartered, back_room) = (offers(true), offers(false));
+                    ungoverning |= back_room;
+                    chartering |= chartered;
+                    if chartered || back_room {
                         classes.push(
                             serde_json::to_value(class)
                                 .map_err(|_| fail())?
@@ -844,6 +900,16 @@ impl ActionProvider for Provider {
                     false,
                     Kind::Text { maximum_bytes: 20 },
                 )?);
+                // Fix round 1 (L4): an actor who may offer only in the back room must name it.
+                if ungoverning {
+                    parameters.push(parameter(
+                        "site",
+                        !chartering,
+                        Kind::Choice {
+                            choices: vec!["core_ungovern".to_owned()],
+                        },
+                    )?);
+                }
             }
             2 => {
                 if projection

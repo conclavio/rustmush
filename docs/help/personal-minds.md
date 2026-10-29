@@ -14,6 +14,9 @@
   keep working.
 - `@mind/attest <filed>` renews your owner's licence once its term is due. Add
   `org=<org>` to renew a House's licence for an organisation you act for.
+- `@mind/claim #<hull> [#<hull>...] <text>` files a claim with the Registry: you hold a mind's
+  charter and believe the hulls you name, which your own sensors saw in the field, run your mind.
+  The Registry may inspect them; your claim confirms nothing, and the reply is only that it is filed.
 - `@mind/fork <licence>=<name>` makes a working copy of a mind you hold an Open licence
   for. `@mind/localcopy` still copies your own drafts.
 

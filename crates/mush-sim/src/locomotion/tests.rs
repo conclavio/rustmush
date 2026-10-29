@@ -281,6 +281,179 @@ fn generic_preparation_cannot_replace_actual_dispatch_capture() -> TestResult {
 }
 
 #[test]
+fn deployment_projection_drift_refuses_publication_without_claiming_custody() -> TestResult {
+    let mut rig = Rig::new(ObjKind::Player)?;
+    let other = rig
+        .engine
+        .world
+        .create(ObjKind::Thing, "other", GOD, Some(mush_core::LIMBO))?;
+    rig.engine.world.take_dirty();
+    let prepared = rig.prepare("north")?;
+    rig.stage(prepared)?;
+    let (_, install) = rig
+        .engine
+        .take_staged_action()?
+        .ok_or("staged")?
+        .into_parts();
+    // Only the actual Sim projection is changed. This fault injection is no
+    // checkout, Tactics marker or physical custody authority.
+    crate::deployed::mark(
+        &mut rig.engine.world,
+        other,
+        crate::DeployedMark::new(120, "arena"),
+    );
+    check!(rig.engine.install_composed_action(install).is_err());
+    check!(rig.engine.action_state().reservation_lost());
+    rig.assert_unpublished()?;
+    Ok(())
+}
+
+#[test]
+fn retained_journey_preimage_refuses_post_custody_drift_but_allows_allocator_progress() -> TestResult
+{
+    for change in 0..3 {
+        let mut rig = Rig::new(ObjKind::Player)?;
+        let hull = rig
+            .engine
+            .world
+            .create(ObjKind::Thing, "carried hull", GOD, Some(rig.actor))?;
+        rig.engine.world.take_dirty();
+        let prepared = rig.prepare("north")?;
+        rig.stage(prepared)?;
+        let (_, install) = rig
+            .engine
+            .take_staged_action()?
+            .ok_or("staged")?
+            .into_parts();
+        let journey = if change == 1 {
+            let route = crate::RouteDef::new(
+                CanonicalId::new("test")?,
+                (rig.source, rig.destination),
+                vec![crate::LegDef::new(rig.destination, 30)?],
+                CanonicalId::new("manual")?,
+                0,
+            )?;
+            let now = rig.engine.world.world_ic_now();
+            Some(crate::CarrierJourney::new(
+                crate::JourneyId(1),
+                hull,
+                route,
+                SpatialParent::Interior {
+                    space: rig.destination,
+                    slot: None,
+                },
+                now.clone(),
+                now,
+                0,
+                crate::JourneyState::Cruising,
+                None,
+            )?)
+        } else {
+            None
+        };
+        let book = rig
+            .engine
+            .world
+            .module_state_mut::<crate::JourneyBook>()
+            .ok_or("journeys")?;
+        match change {
+            0 => {
+                book.held
+                    .insert("cjourney:broken".into(), "retained repair fact".into());
+            }
+            1 => {
+                book.journeys.insert(hull, journey.ok_or("journey")?);
+            }
+            _ => {
+                book.next_id += 1;
+                book.cursor += 1;
+            }
+        }
+        let installed = rig.engine.install_composed_action(install);
+        if change < 2 {
+            check!(installed.is_err());
+            check!(rig.engine.action_state().reservation_lost());
+            rig.assert_unpublished()?;
+        } else {
+            installed?;
+            check_eq!(
+                rig.engine.world.get(rig.actor).and_then(|o| o.location),
+                Some(rig.destination)
+            );
+            check!(!rig.engine.action_state().reservation_lost());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn retained_focus_preimage_refuses_new_actor_or_unit_control_but_preserves_unrelated_focus()
+-> TestResult {
+    for change in 0..3 {
+        let mut rig = Rig::new(ObjKind::Player)?;
+        let hull = rig
+            .engine
+            .world
+            .create(ObjKind::Thing, "carried hull", GOD, Some(rig.actor))?;
+        let other = rig
+            .engine
+            .world
+            .create(ObjKind::Npc, "other", GOD, Some(mush_core::LIMBO))?;
+        let other_unit =
+            rig.engine
+                .world
+                .create(ObjKind::Thing, "other unit", GOD, Some(mush_core::LIMBO))?;
+        rig.engine.world.take_dirty();
+        let prepared = rig.prepare("north")?;
+        rig.stage(prepared)?;
+        let (_, install) = rig
+            .engine
+            .take_staged_action()?
+            .ok_or("staged")?
+            .into_parts();
+        let actor = if change == 0 { rig.actor } else { other };
+        let focus = crate::ActiveFocus {
+            account: mush_core::AccountId::mint("focus_test", 1)?,
+            actor,
+            driver: actor,
+            unit: if change == 1 { hull } else { other_unit },
+            station: crate::StationId::new("pilot").ok_or("station")?,
+            acquired_at: rig.engine.world.world_ic_now(),
+            epoch: 1,
+            reach: crate::ReachProof::Console { room: rig.source },
+            proxy: false,
+        };
+        rig.engine
+            .world
+            .module_state_mut::<crate::FocusState>()
+            .ok_or("focus")?
+            .claim(focus);
+        let installed = rig.engine.install_composed_action(install);
+        if change < 2 {
+            check!(installed.is_err());
+            check!(rig.engine.action_state().reservation_lost());
+            rig.assert_unpublished()?;
+        } else {
+            installed?;
+            check_eq!(
+                rig.engine.world.get(rig.actor).and_then(|o| o.location),
+                Some(rig.destination)
+            );
+            check_eq!(
+                rig.engine
+                    .world
+                    .module_state::<crate::FocusState>()
+                    .ok_or("focus")?
+                    .len(),
+                1
+            );
+            check!(!rig.engine.action_state().reservation_lost());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn self_loop_exit_keeps_all_object_bytes_and_still_prepares_real_audit() -> TestResult {
     let mut rig = Rig::new(ObjKind::Player)?;
     rig.engine.world.link_exit(rig.exit, Some(rig.source))?;

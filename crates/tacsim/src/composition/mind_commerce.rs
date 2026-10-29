@@ -346,7 +346,22 @@ impl MindCommerce {
         let provider = mush_roll::commerce::facts::MindsFactProvider::new();
         self.state.roll = self.state.roll.with_minds_facts(provider.clone())?;
         self.state.minds_facts = Some(provider);
+        self.install_registry_findings()?;
         Ok(self)
+    }
+
+    /// Doc 17h cut M8d D6: with both the minds facts and the inspection composed (in either
+    /// order), the public findings `minds.unwarranted` and `minds.seized` read the
+    /// inspection's chronicle.
+    fn install_registry_findings(&self) -> Result<(), ModError> {
+        if let (Some(provider), Some(_)) =
+            (&self.state.minds_facts, &self.state.registry_inspection)
+        {
+            provider.with_registry_findings(std::sync::Arc::new(
+                crate::minds::registry_inspection::seizure::Findings,
+            ))?;
+        }
+        Ok(())
     }
 
     /// Explicit fixed-base IC custody. No host event or start transition is
@@ -856,8 +871,100 @@ impl MindCommerce {
             .state
             .roll
             .with_registry_inspection(policy.clone(), writer.clone())?;
-        self.state.registry_inspection =
-            Some(crate::minds::registry_inspection::Composition { policy, writer });
+        self.state.registry_inspection = Some(crate::minds::registry_inspection::Composition {
+            policy,
+            writer,
+            fines: None,
+            principals: None,
+            claims: false,
+            seizures: None,
+        });
+        self.install_registry_findings()?;
+        Ok(self)
+    }
+
+    /// Doc 17h cut M8d D3: `@registry/fine` over the composed inspection — the inspection's
+    /// operators holding `roll.registry.fine`, the fine paid to `credit` (the deployment's
+    /// levy sink). Needs [`Self::with_registry_inspection`] first.
+    pub fn with_registry_fines(
+        mut self,
+        credit: mush_economy::AccountId,
+    ) -> Result<Self, ModError> {
+        let inspection = self
+            .state
+            .registry_inspection
+            .as_mut()
+            .ok_or_else(|| ModError::msg("Registry fines need the Registry inspection"))?;
+        if inspection.fines.is_some() {
+            return Err(ModError::msg("Registry fines already configured"));
+        }
+        inspection.fines = Some(credit);
+        Ok(self)
+    }
+
+    /// **Doc 17h cut M8g G3: the quirk claim** over the composed inspection — `@mind/claim`
+    /// for a charter title holder naming hulls they earned, filed with the inspection's
+    /// Registry, and `@registry/claims` for its operators holding `roll.registry.claims`.
+    /// Needs [`Self::with_registry_inspection`] first.
+    pub fn with_registry_claims(mut self) -> Result<Self, ModError> {
+        let inspection = self
+            .state
+            .registry_inspection
+            .as_mut()
+            .ok_or_else(|| ModError::msg("Registry claims need the Registry inspection"))?;
+        if inspection.claims {
+            return Err(ModError::msg("Registry claims already configured"));
+        }
+        inspection.claims = true;
+        Ok(self)
+    }
+
+    /// Doc 17h cut M8d D4: `@registry/revoke principal=` over the composed inspection — the
+    /// inspection's operators holding `roll.registry.revoke`, barring a principal for `days`
+    /// IC days (`[tacsim.minds].revocation_ic_days`). Needs [`Self::with_registry_inspection`].
+    pub fn with_registry_principal_revocation(mut self, days: u32) -> Result<Self, ModError> {
+        let inspection =
+            self.state.registry_inspection.as_mut().ok_or_else(|| {
+                ModError::msg("principal revocation needs the Registry inspection")
+            })?;
+        if days == 0 {
+            return Err(ModError::msg(
+                "Registry principal revocation needs a term of at least one IC day",
+            ));
+        }
+        if inspection.principals.is_some() {
+            return Err(ModError::msg(
+                "Registry principal revocation already configured",
+            ));
+        }
+        inspection.principals = Some(days);
+        Ok(self)
+    }
+
+    /// Doc 17h cut M8d2 S4/S5: `@registry/seize` and `@registry/forfeit` over the composed
+    /// inspection — its operators holding `roll.registry.seize` / `roll.registry.forfeit`, the
+    /// Registry org (the inspection policy's) the claimant and the forfeit's recipient, under
+    /// `terms` (`[tacsim.minds].seizure_inspection_max_age_ic_days`, `seizure_hold_ic_days`).
+    /// The economy's closed seizure plan composes with it (`configure_economy`); it needs the
+    /// native core manufacture the hardware composes. Needs [`Self::with_registry_inspection`].
+    pub fn with_registry_seizure(
+        mut self,
+        terms: crate::minds::registry_inspection::seizure::SeizureTerms,
+    ) -> Result<Self, ModError> {
+        let inspection = self
+            .state
+            .registry_inspection
+            .as_mut()
+            .ok_or_else(|| ModError::msg("Registry seizure needs the Registry inspection"))?;
+        if terms.max_age_ic_days == 0 {
+            return Err(ModError::msg(
+                "Registry seizure needs an inspection age of at least one IC day",
+            ));
+        }
+        if inspection.seizures.is_some() {
+            return Err(ModError::msg("Registry seizure already configured"));
+        }
+        inspection.seizures = Some(terms);
         Ok(self)
     }
 
@@ -1018,6 +1125,18 @@ impl MindCommerce {
             module.with_initial_filing(self.state.filing.clone(), self.state.filing_action.clone());
         let module = match &self.state.charter_transfer_action {
             Some(action) => module.with_mind_charter_transfers(action.clone()),
+            None => module,
+        };
+        // Doc 17h cut M8d2 S1: the economy's closed seizure plan, with the Registry's seizure.
+        let module = match self
+            .state
+            .registry_inspection
+            .as_ref()
+            .map(crate::minds::registry_inspection::Composition::economy_seizure)
+            .transpose()?
+            .flatten()
+        {
+            Some(config) => module.with_core_seizure(config),
             None => module,
         };
         let module = match &self.state.pending_charters {

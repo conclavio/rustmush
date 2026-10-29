@@ -106,6 +106,12 @@ checked!(RenewalBindingV1,BindingWire,{
     holder_basis:Option<RenewalHolderBasisV1>,
 });
 impl RenewalBindingV1 {
+    /// The renewal's price in minor units (doc 17h §3 M8f P2a: the renewal
+    /// steps that move money ask an organisation's grant with it).
+    #[must_use]
+    pub fn price_minor(&self) -> i64 {
+        self.grant.renewal().price().minor()
+    }
     pub fn validate(&self) -> Result<(), PublicationError> {
         self.grant.validate()?;
         let template = self.grant.renewal();

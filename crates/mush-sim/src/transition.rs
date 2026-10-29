@@ -623,6 +623,46 @@ pub(crate) fn plan_at(
     t: &Transition,
     observed_at: i64,
 ) -> Result<Plan, SpatialError> {
+    plan_at_with_core_preview(st, w, t, observed_at, None)
+}
+
+/// The projection is hypothetical Core-validated data. This helper grants no
+/// Atlas resolver attestation or Sim publication capability.
+pub(crate) fn plan_window_place(
+    st: &SpatialState,
+    w: &World,
+    parent: &SpatialParent,
+    preview: &mush_core::locomotion::preview::LocomotionPreview,
+) -> Result<Plan, SpatialError> {
+    let SpatialParent::Direct { domain, .. } = parent else {
+        return Err(SpatialError::NotPlaced(preview.actor()));
+    };
+    if !st
+        .domains
+        .get(domain)
+        .is_some_and(|record| record.window.is_some())
+    {
+        return Err(SpatialError::NoSuchDomain(*domain));
+    }
+    plan_at_with_core_preview(
+        st,
+        w,
+        &Transition::Place {
+            obj: preview.actor(),
+            parent: parent.clone(),
+        },
+        preview.at_utc(),
+        Some(preview),
+    )
+}
+
+fn plan_at_with_core_preview(
+    st: &SpatialState,
+    w: &World,
+    t: &Transition,
+    observed_at: i64,
+    preview: Option<&mush_core::locomotion::preview::LocomotionPreview>,
+) -> Result<Plan, SpatialError> {
     let mut plan = Plan::default();
     match t {
         Transition::Place { obj, parent } => {
@@ -671,7 +711,35 @@ pub(crate) fn plan_at(
             let mut post = st.clone();
             post.placements.insert(obj, rec.clone());
             post.derived = rebuild(&post);
-            projections_for(&post, w, obj, &mut plan.projections)?;
+            if let Some(preview) = preview {
+                let dependents = post.descendant_edges(obj);
+                if preview.actor() != obj || !dependents.is_empty() {
+                    return Err(SpatialError::HasDependents {
+                        obj,
+                        count: dependents.len(),
+                    });
+                }
+                let destination = preview.destination();
+                if preview
+                    .object(obj)
+                    .ok()
+                    .flatten()
+                    .and_then(|object| object.location)
+                    != Some(destination)
+                {
+                    return Err(SpatialError::Projection {
+                        obj,
+                        dest: destination,
+                        reason: "Core preview did not capture this projection".into(),
+                    });
+                }
+                // Core already checked both containment moves over its actual
+                // bounded overlay. The Atlas owner must separately attest this
+                // resolver result before any future composed installation.
+                plan.projections.push((obj, destination));
+            } else {
+                projections_for(&post, w, obj, &mut plan.projections)?;
+            }
             plan.audit = serde_json::json!({
                 "op": "place", "obj": obj.0, "parent": serde_json::to_value(parent).unwrap_or_default(),
                 "previous": prev.map(|p| serde_json::to_value(&p.parent).unwrap_or_default()),

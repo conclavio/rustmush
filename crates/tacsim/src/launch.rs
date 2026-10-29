@@ -11,7 +11,8 @@ mod venue;
 pub use content::LaunchRecipe;
 pub use deployment::{
     HardwareCoordinates, HouseDeployment, LaunchDeployment, LaunchMode, LaunchVenue,
-    MAX_DEPLOYMENT_BYTES, MarketTerms, NamedHouses, PlayerMarket, RegistryAuthority,
+    MAX_DEPLOYMENT_BYTES, MarketTerms, NamedHouses, PlayerMarket, ProcurementPolicy,
+    ProcurementRole, RegistryAuthority,
 };
 pub(crate) use registration::Registration;
 
@@ -177,6 +178,21 @@ impl LaunchComposition {
                     .with_paid_mind_resales(p.clerk, p.resale_offer_seconds)?
                     .with_registry_recall(p.recall)?
                     .with_registry_inspection(p.inspection)?
+                    .with_registry_fines(p.fines)?
+                    .with_registry_principal_revocation(
+                        prepared_layer.config().minds.revocation_ic_days,
+                    )?
+                    // Doc 17h cut M8g G3: the quirk claim and its Registry read.
+                    .with_registry_claims()?
+                    .with_registry_seizure(
+                        crate::minds::registry_inspection::seizure::SeizureTerms {
+                            max_age_ic_days: prepared_layer
+                                .config()
+                                .minds
+                                .seizure_inspection_max_age_ic_days,
+                            hold_ic_days: prepared_layer.config().minds.seizure_hold_ic_days,
+                        },
+                    )?
                     .with_mind_renewals(p.renewal)?
                     .with_mind_renewal_service()?
                     .with_author_withdrawal()?
@@ -302,8 +318,9 @@ pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket
     let items = operators
         .into_iter()
         .map(|operator| {
-            // Doc 17h cut M8a: three capabilities; what is lacking is named in this
-            // order, joined as prose (`lacks recall, revocation and inspection`).
+            // Doc 17h cut M8a: three capabilities (M8d: four, M8g: five); what is lacking is named
+            // in this order, joined as prose (`lacks recall, revocation, inspection, fine and
+            // claims`).
             let lacking: Vec<&str> = [
                 (
                     mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
@@ -316,6 +333,25 @@ pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket
                 (
                     mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY,
                     "inspection",
+                ),
+                // Doc 17h cut M8d D3: the fine, the fourth.
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_FINE_CAPABILITY,
+                    "fine",
+                ),
+                // Doc 17h cut M8g G3: the claims read, the fifth.
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_CLAIMS_CAPABILITY,
+                    "claims",
+                ),
+                // Doc 17h cut M8d2: the seizure and the forfeit, the fifth and sixth.
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_SEIZE_CAPABILITY,
+                    "seize",
+                ),
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_FORFEIT_CAPABILITY,
+                    "forfeit",
                 ),
             ]
             .into_iter()

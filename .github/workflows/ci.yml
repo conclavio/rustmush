@@ -165,6 +165,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Recompute all thinks and substeps for twenty-four Class III hulls over 900 seconds
         run: cargo test -p tacsim --lib m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep -- --ignored --nocapture
+  # Doc 17h cut M8g G4 (D-UM-42), dispatch-only (G5): the leak battery. An ungoverned core
+  # sealing an unfiled draft aboard is learned by no witness and only through the built
+  # channels; every test of the `m8_leaks` module is `#[ignore]`d, so this module filter is
+  # the one place it runs (the gated-test inventory reads it).
+  m8-leak-battery:
+    name: M8 leak battery
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Every witness asks every question; only the built channels answer
+        run: |
+          cargo test -p tacsim --test shard_4 m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
   test:
     runs-on: ubuntu-latest
     # 2026-10-20: the job had no timeout of its own, so GitHub's 360-minute

@@ -784,6 +784,7 @@ fn offer_of(w: &World, store: &TacsimStore, hull: ObjId, due: &EpochDue) -> Epoc
                 minds: &store.cfg.minds,
                 reflex: &store.cfg.arena.reflex,
                 principal: Some(CharacterRef::Character { id: due.principal }),
+                impounded: crate::match_::seal::core_impounded(w, unit),
             },
         );
         match sealed {

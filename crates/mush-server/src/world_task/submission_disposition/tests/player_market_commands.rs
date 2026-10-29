@@ -731,8 +731,9 @@ fn no_listing(code: &str) -> String {
 
 /// 17g C2c test 7 under its binding name, real since 17g C2e (C2e plan §2.4
 /// item 3, reviews FE-F1, FE-F4 and AD-F10). On the format-2 Active launch
-/// the registry composes 35 owner-read services and 38 grants (including
-/// DT.2b1 planning and Tacsim's unit-authority requester), so the
+/// the registry composes 40 owner-read services and 43 grants (including
+/// DT.2b1 planning, Tacsim's unit-authority requester, Sim's four movement
+/// readers and the root composition's Tactics movement-custody reader), so the
 /// `+minds` read is the composed one, granted to TacSim, and not a fixture.
 /// At the counter, `+minds` reads the real listing family through the
 /// granted reader (`Lens::scan` over the live store, the venue gate through
@@ -752,7 +753,7 @@ async fn listings_are_identical_for_every_principal_at_the_counter() -> TestResu
         for restarted in [false, true] {
             check_eq!(
                 w.server.owner_read_counts(),
-                Some((35, 38)),
+                Some((40, 43)),
                 "the composed reads (restarted: {restarted})"
             );
             let mut at_counter = Vec::new();
@@ -1734,7 +1735,7 @@ const NO_OFFER_999: &str = "You have no offer for licence 999.";
 const NO_CHARTER_OFFER_999: &str = "You have no offer for filed mind 999.";
 
 /// `@registry`'s help (17g C2d; doc 17h cut M8a adds the inspection line).
-const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)\n@registry/inspect <hull> (Registry operators)";
+const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <licence> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull>, @registry/fine <hull>[/<n>] <amount> and @registry/claims (Registry operators)\n@registry/seize <hull> and @registry/forfeit <hull>[/<n>] (Registry operators)";
 /// The Registry commands' refusal without the player market.
 const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
 

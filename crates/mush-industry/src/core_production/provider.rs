@@ -22,6 +22,8 @@ pub(crate) struct Families {
     pub(crate) quotas: StateFamilyHandle<String, Quota>,
     pub(crate) deployment: StateFamilyHandle<(), OriginIndex>,
     pub(crate) inventory: InventoryFamilies,
+    /// Doc 17h cut M8b-2 (H3): the heirloom and grey issues.
+    pub(crate) uncertified: super::uncertified::Families,
 }
 #[derive(Clone)]
 pub(crate) struct Runtime {
@@ -217,6 +219,28 @@ fn register_origin_paths(
             },
         )?;
     }
+    // Doc 17h cut M8b-2 (H3): the staff issues of heirloom and grey dies, beside the
+    // certified issue and outside its owner participant and quota.
+    for (name, source) in super::uncertified::ACTIONS {
+        let action = reg.definition(super::uncertified::action(&runtime.config.policy, source)?)?;
+        if !fixed(&action, "action", name) {
+            return Err(mod_error(Error::Invalid));
+        }
+        reg.action_provider(
+            action.clone(),
+            super::uncertified::Provider {
+                source,
+                action,
+                outcome: outcome.clone(),
+                policy: runtime.config.policy.clone(),
+                mode: runtime.config.mode,
+                families: runtime.families.uncertified.clone(),
+                inventory: runtime.families.inventory.clone(),
+                readiness: readiness.clone(),
+                refusal: super::uncertified::refusal()?,
+            },
+        )?;
+    }
     if let Some(r) = &runtime.integration {
         if let Some(delivery) = &r.delivery {
             reg.core_integration_delivery_capacity(
@@ -336,6 +360,11 @@ impl Runtime {
             |r: &Quota| r.validate().map_err(|e| e.to_string()),
             encode::<Quota>,
         )?;
+        let uncertified = super::uncertified::register_families(
+            reg,
+            config.certificate_reader.as_deref(),
+            family,
+        )?;
         let deployment = reg.state_family(
             family("industry_core_die_deployment")?,
             |_: &()| Ok("registry".into()),
@@ -349,6 +378,7 @@ impl Runtime {
             quotas,
             deployment,
             inventory: industry_families.inventory.clone(),
+            uncertified,
         };
         Self::register_factory(
             reg,

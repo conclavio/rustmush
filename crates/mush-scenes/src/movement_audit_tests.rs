@@ -140,8 +140,12 @@ fn duplicate_claims_and_budget_exhaustion_refuse_before_new_proofs() {
 #[test]
 fn empty_capture_is_authenticated_without_inventing_a_transcript_row() {
     let mut empty = audit(&[]);
+    empty.check_empty_captures().expect("typed empty capture");
     empty
         .read_history(&[])
         .expect("no claimed ledger positions");
     empty.finish().expect("exact empty capture");
+    let mut changed = audit(&[]);
+    changed.proofs[0].digest = DefinitionDigest::from_bytes([1; 32]);
+    assert!(changed.check_empty_captures().is_err());
 }

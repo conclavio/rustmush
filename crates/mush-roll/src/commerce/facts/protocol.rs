@@ -5,7 +5,7 @@ use mush_core::action::{ActionInvocation, PerceivedRef, PrincipalId};
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
-use mush_core::{CommitToken, DefinitionRef, GOD, ModError};
+use mush_core::{CommitToken, DefinitionRef, GOD, ModError, ObjId};
 use mush_economy::ExternalRef;
 use serde::Deserialize;
 use serde_json::json;
@@ -17,6 +17,17 @@ pub(super) const TRANSFERRED: &str = "licence.transferred";
 /// M8c B5/B7: the term generation flew on an ungoverned core
 /// (`seal_marks`), scoped exactly as `licence.lapsed` is.
 pub(super) const UNATTESTABLE: &str = "licence.unattestable";
+/// Doc 17h cut M8d D6: a Registry seizure of the core in a hull (public: the hull named,
+/// never the mind). Parsed here; its producer is the seizure, which M8d splits out.
+pub(super) const SEIZED: &str = "seized";
+/// Doc 17h cut M8d D6: a Registry inspection that found an ungoverned core. **Scoped** (fix
+/// round K6, the lead's ruling; D-UM-42): a public fact keyed by hull would let anyone probe a
+/// hull for an ungoverned core, so it resolves for no contract condition, as `claimed`; the
+/// world's signal is the canon line, which names nobody, and the Red Dies clock.
+pub(super) const UNWARRANTED: &str = "unwarranted";
+/// Doc 17h cut M8d D6: M8g's claim (scoped). Produced by a filed claim
+/// ([`claimed_reference`]); no public condition resolves it.
+pub(super) const CLAIMED: &str = "claimed";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FactKey {
@@ -24,6 +35,12 @@ pub(super) enum FactKey {
     Lapsed(LicenceId, TermGeneration),
     Transferred(CommitToken, u64),
     Unattestable(LicenceId, TermGeneration),
+    /// `hull/<16 hex>` at revision = the hull's inspection sequence.
+    Seized(ObjId, u64),
+    /// `hull/<16 hex>` at revision = the hull's inspection sequence.
+    Unwarranted(ObjId, u64),
+    /// `hull/<16 hex>` at revision = the hull's inspection sequence (M8g).
+    Claimed(ObjId, u64),
 }
 impl FactKey {
     pub(super) fn parse(reference: &ExternalRef) -> Option<Self> {
@@ -53,8 +70,23 @@ impl FactKey {
                         .contains(&generation))
                 .then_some(Self::Transferred(operation, generation))
             }
+            SEIZED | UNWARRANTED | CLAIMED => {
+                let hull = number(reference.id.as_str(), "hull")?;
+                let hull = ObjId(u32::try_from(hull).ok()?);
+                let seq = reference.revision.filter(|seq| *seq != 0)?;
+                (hull_key(hull) == reference.id.as_str()).then_some(match reference.kind.as_str() {
+                    SEIZED => Self::Seized(hull, seq),
+                    UNWARRANTED => Self::Unwarranted(hull, seq),
+                    _ => Self::Claimed(hull, seq),
+                })
+            }
             _ => None,
         }
+    }
+    /// The public spellings: a filed revision and a seizure (a public act naming its hull).
+    /// Every other kind — `unwarranted` (K6) included — malformed or not, stays scoped.
+    pub(super) const fn is_public(self) -> bool {
+        matches!(self, Self::Filed(_) | Self::Seized(..))
     }
     #[cfg(test)]
     pub(super) fn reference(self) -> ExternalRef {
@@ -65,6 +97,9 @@ impl FactKey {
             Self::Transferred(operation, generation) => {
                 (TRANSFERRED, operation.to_hex(), generation)
             }
+            Self::Seized(hull, seq) => (SEIZED, hull_key(hull), seq),
+            Self::Unwarranted(hull, seq) => (UNWARRANTED, hull_key(hull), seq),
+            Self::Claimed(hull, seq) => (CLAIMED, hull_key(hull), seq),
         };
         ExternalRef {
             provider: PROVIDER.into(),
@@ -73,6 +108,21 @@ impl FactKey {
             revision: Some(revision),
         }
     }
+}
+/// A hull's fact id: `hull/` and its number as sixteen lower-case hex digits, the other
+/// subjects' spelling. A fact reference is a contract's record, never a player surface.
+/// **One `minds.claimed` reference** (doc 17h cut M8g G3): the claim's fact for `hull` at the
+/// claim's sequence `seq` — the producer M8d reserved this kind for.
+pub(crate) fn claimed_reference(hull: ObjId, seq: u64) -> ExternalRef {
+    ExternalRef {
+        provider: PROVIDER.into(),
+        kind: CLAIMED.into(),
+        id: hull_key(hull).into(),
+        revision: Some(seq),
+    }
+}
+pub(super) fn hull_key(hull: ObjId) -> String {
+    format!("hull/{:016x}", hull.0)
 }
 fn number(text: &str, prefix: &str) -> Option<u64> {
     let text = text.strip_prefix(prefix)?.strip_prefix('/')?;
@@ -180,12 +230,43 @@ mod tests {
             bad.revision = revision;
             assert!(FactKey::parse(&bad).is_none());
         }
-        // D-UM-42: detection is evidence only; no seizure, warrant or claim
-        // fact exists (M8c B7 keeps them unparsed).
+        // Doc 17h cut M8d D6 inverts the M8 pin: `seized`, `unwarranted` and `claimed` parse
+        // over a hull and an inspection sequence; a licence id under their kinds, or no kind,
+        // does not.
         for kind in ["seized", "unwarranted", "claimed", ""] {
             let mut bad = lapse.reference();
             bad.kind = kind.into();
             assert!(FactKey::parse(&bad).is_none());
+        }
+        let hull = ObjId(12);
+        for key in [
+            FactKey::Seized(hull, 1),
+            FactKey::Unwarranted(hull, 3),
+            FactKey::Claimed(hull, u64::MAX),
+            FactKey::Unwarranted(ObjId(u32::MAX), 1),
+        ] {
+            assert_eq!(FactKey::parse(&key.reference()), Some(key));
+        }
+        assert!(FactKey::Seized(hull, 1).is_public());
+        assert!(!FactKey::Unwarranted(hull, 1).is_public(), "K6: scoped");
+        assert!(!FactKey::Claimed(hull, 1).is_public());
+        assert!(!lapse.is_public() && filed.is_public());
+        let found = FactKey::Unwarranted(hull, 2).reference();
+        for revision in [None, Some(0)] {
+            let mut bad = found.clone();
+            bad.revision = revision;
+            assert!(FactKey::parse(&bad).is_none());
+        }
+        for id in [
+            "hull/12",
+            "hull/000000000000000C",
+            "hull/0000000100000000",
+            "licence/000000000000000c",
+            "hull/000000000000000c/extra",
+        ] {
+            let mut bad = found.clone();
+            bad.id = id.into();
+            assert!(FactKey::parse(&bad).is_none(), "{id}");
         }
         for revision in [None, Some(0), Some(1), Some(u64::MAX)] {
             let mut bad = transfer.reference();

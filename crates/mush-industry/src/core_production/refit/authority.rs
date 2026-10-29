@@ -156,6 +156,8 @@ pub(crate) fn current(
     if native.subject().requester != requester
         || native.subject().class != expected
         || output.object != incoming
+        // Doc 17h cut M8b-2 (H2): a heirloom- or grey-born core is fitted only ungoverned.
+        || (!native.subject().source.is_certified() && kind != RefitKind::CoreUngovern)
     {
         return Err(Error::Unavailable);
     }

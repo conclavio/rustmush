@@ -124,16 +124,25 @@ pub(crate) fn require_unmanaged_mutations(
         return Err(EconomyError::TooLarge("too many asset ops"));
     }
     for operation in &plan.asset_ops {
-        if snapshot.managed_titles.contains(operation.object())
-            && matches!(
-                operation,
-                AssetOp::Title { .. }
-                    | AssetOp::TransferTitle { .. }
-                    | AssetOp::Encumber { .. }
-                    | AssetOp::SetCatalog { .. }
-                    | AssetOp::Abandon { .. }
-                    | AssetOp::WriteOff { .. }
-            )
+        let object = operation.object();
+        if !snapshot.managed_titles.contains(object) {
+            continue;
+        }
+        // Doc 17h cut M8d2 S1: a Registry seizure's claim is the one encumbrance a managed
+        // title can carry, so a `Release` is the seizure family's too, and a held title
+        // takes no op at all outside its closed plan (its audit would refuse the boot).
+        if matches!(
+            operation,
+            AssetOp::Title { .. }
+                | AssetOp::TransferTitle { .. }
+                | AssetOp::Encumber { .. }
+                | AssetOp::Release { .. }
+                | AssetOp::SetCatalog { .. }
+                | AssetOp::Abandon { .. }
+                | AssetOp::WriteOff { .. }
+        ) || snapshot
+            .asset(object)
+            .is_some_and(|asset| !asset.encumbrances.is_empty())
         {
             return Err(EconomyError::Unauthorized);
         }

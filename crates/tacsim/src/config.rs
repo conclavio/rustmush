@@ -807,6 +807,45 @@ pub struct MindsConfig {
     /// Stock 5; at least 1 ([`MindsConfig::validate`]).
     #[serde(default = "default_cpu_lens_ms")]
     pub cpu_lens_ms: u32,
+    /// **The largest Registry fine, minor units** (doc 17h cut M8d D3; Q-M8-6, provisional):
+    /// `@registry/fine` refuses an amount above it. Stock 100,000 (10× doc 17's 100cr filing
+    /// fee); at least 1.
+    #[serde(default = "default_fine_cap_minor")]
+    pub fine_cap_minor: i64,
+    /// **How long a revoked principal may hold no new licence, IC days** (doc 17h cut M8d
+    /// D4; Q-M8-6, provisional): `@registry/revoke principal=`'s term. Stock 90 (one audit
+    /// term); 1 to 3,650.
+    #[serde(default = "default_revocation_ic_days")]
+    pub revocation_ic_days: u32,
+    /// **How old an inspection may be to ground a seizure, IC days** (doc 17h cut M8d2 S2;
+    /// Q-M8-6, provisional): `@registry/seize` refuses on an older newest inspection. Stock 3;
+    /// 1 to 3,650.
+    #[serde(default = "default_seizure_inspection_max_age_ic_days")]
+    pub seizure_inspection_max_age_ic_days: u32,
+    /// **How long a seizure is held before a forfeit, IC days** (doc 17h cut M8d2 S5; Q-M8-6,
+    /// provisional): `@registry/forfeit` refuses within it. Stock 3; 0 to 3,650.
+    #[serde(default = "default_seizure_hold_ic_days")]
+    pub seizure_hold_ic_days: u32,
+}
+
+/// `seizure_inspection_max_age_ic_days`' default (Q-M8-6).
+const fn default_seizure_inspection_max_age_ic_days() -> u32 {
+    mush_roll::commerce::registry_inspection::seizure::DEFAULT_INSPECTION_MAX_AGE_IC_DAYS
+}
+
+/// `seizure_hold_ic_days`' default (Q-M8-6).
+const fn default_seizure_hold_ic_days() -> u32 {
+    mush_roll::commerce::registry_inspection::seizure::DEFAULT_SEIZURE_HOLD_IC_DAYS
+}
+
+/// `fine_cap_minor`'s default: 10× doc 17's 100cr filing fee (Q-M8-6).
+const fn default_fine_cap_minor() -> i64 {
+    100_000
+}
+
+/// `revocation_ic_days`' default: one audit term (Q-M8-6).
+const fn default_revocation_ic_days() -> u32 {
+    90
 }
 
 /// `workers`' default: doc 17 §6's two.
@@ -913,6 +952,12 @@ impl Default for MindsConfig {
             workers: default_workers(),
             // 17b cut M4.2: doc 17 §18's five milliseconds, printed beside.
             cpu_lens_ms: default_cpu_lens_ms(),
+            // Doc 17h cut M8d (Q-M8-6): the provisional fine cap and revocation term.
+            fine_cap_minor: default_fine_cap_minor(),
+            revocation_ic_days: default_revocation_ic_days(),
+            // Doc 17h cut M8d2 (Q-M8-6): the provisional seizure age and hold.
+            seizure_inspection_max_age_ic_days: default_seizure_inspection_max_age_ic_days(),
+            seizure_hold_ic_days: default_seizure_hold_ic_days(),
         }
     }
 }
@@ -983,6 +1028,32 @@ impl MindsConfig {
             return Err(format!(
                 "[tacsim.minds].cpu_lens_ms must be at least 1 (it is {})",
                 self.cpu_lens_ms
+            ));
+        }
+        // Doc 17h cut M8d D3/D4: the fine cap at least 1, the revocation term 1 to 3,650.
+        if self.fine_cap_minor < 1 {
+            return Err(format!(
+                "[tacsim.minds].fine_cap_minor must be at least 1 (it is {})",
+                self.fine_cap_minor
+            ));
+        }
+        if !(1..=3_650).contains(&self.revocation_ic_days) {
+            return Err(format!(
+                "[tacsim.minds].revocation_ic_days must be 1 to 3650 (it is {})",
+                self.revocation_ic_days
+            ));
+        }
+        // Doc 17h cut M8d2: the inspection age 1 to 3,650 IC days, the hold at most 3,650.
+        if !(1..=3_650).contains(&self.seizure_inspection_max_age_ic_days) {
+            return Err(format!(
+                "[tacsim.minds].seizure_inspection_max_age_ic_days must be 1 to 3650 (it is {})",
+                self.seizure_inspection_max_age_ic_days
+            ));
+        }
+        if self.seizure_hold_ic_days > 3_650 {
+            return Err(format!(
+                "[tacsim.minds].seizure_hold_ic_days must be 0 to 3650 (it is {})",
+                self.seizure_hold_ic_days
             ));
         }
         self.validate_classes()
@@ -1870,6 +1941,58 @@ pub struct TacsimConfig {
     /// **Doc 23 cut S.1** — the part of `[tacsim.surface]` the game reads: the black box's
     /// line cap. **Live.**
     pub surface: SurfaceConfig,
+    /// **Doc 17h cut M8f** — `[tacsim.procurement]`: a procurement policy's defaults.
+    /// **Live** (`crate::procurement`).
+    pub procurement: ProcurementConfig,
+}
+
+/// **The largest monthly budget a procurement policy may name** (doc 17h cut M8f): a bound on
+/// an operator's typo, not a tuning value (the launch's own price ceiling).
+pub const MAX_PROCUREMENT_BUDGET_MINOR: i64 = 100_000_000;
+
+/// **`[tacsim.procurement]`** (doc 17h cut M8f; Q-M8-6, D-UM-54): the defaults a House's
+/// procurement policy takes when its deployment row names none. Provisional (the owner's
+/// economy-defaults rule).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcurementConfig {
+    /// Minor credits per IC calendar month (2,000cr).
+    pub budget_minor_per_ic_month: i64,
+    /// The diversity cap, per mille of the organisation's titled hulls (400).
+    pub cap_permille: u16,
+}
+
+impl Default for ProcurementConfig {
+    fn default() -> Self {
+        Self {
+            budget_minor_per_ic_month: 200_000,
+            cap_permille: 400,
+        }
+    }
+}
+
+impl ProcurementConfig {
+    /// **Check `[tacsim.procurement]`**: the budget 1 to [`MAX_PROCUREMENT_BUDGET_MINOR`], the
+    /// cap 1 to 1000.
+    ///
+    /// # Errors
+    ///
+    /// The sentence naming the key.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=MAX_PROCUREMENT_BUDGET_MINOR).contains(&self.budget_minor_per_ic_month) {
+            return Err(format!(
+                "[tacsim.procurement].budget_minor_per_ic_month must be 1 to \
+                 {MAX_PROCUREMENT_BUDGET_MINOR} (it is {})",
+                self.budget_minor_per_ic_month
+            ));
+        }
+        if !(1..=1000).contains(&self.cap_permille) {
+            return Err(format!(
+                "[tacsim.procurement].cap_permille must be 1 to 1000 (it is {})",
+                self.cap_permille
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// **The most lines one hull's black box holds, by default** (doc 23 cut S.1, the lead's L2):

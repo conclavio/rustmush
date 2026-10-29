@@ -45,6 +45,12 @@ impl InspectionWriter {
         }
         policy.validate().map_err(error)?;
         reg.delegate_state_family(&families.registry_inspections, ACTION_OWNER)?;
+        // Doc 17h cut M8d D4: the revoked principals, written from tacsim's transaction.
+        reg.delegate_state_family(&families.revoked_principals, ACTION_OWNER)?;
+        // Doc 17h cut M8g G3: the quirk claims, written from tacsim's transaction.
+        reg.delegate_state_family(&families.mind_claims, ACTION_OWNER)?;
+        // Doc 17h cut M8d2 S4: the seizure records, written from tacsim's transaction.
+        reg.delegate_state_family(&families.registry_seizures, ACTION_OWNER)?;
         self.0
             .set(Registration {
                 families,
@@ -71,6 +77,23 @@ impl InspectionWriter {
             writer: self.clone(),
             action: action.clone(),
         })
+    }
+}
+
+impl InspectionWriter {
+    /// Doc 17h cut M8d D5: the record family, for a reader that is not the inspection's own
+    /// action (the hull cover's exclusion). Read only; the Roll installs the cell first.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn family(&self) -> Result<StateFamilyHandle<String, InspectionRecord>, ModError> {
+        Ok(self
+            .0
+            .get()
+            .ok_or_else(|| error("inspection writer not installed"))?
+            .families
+            .registry_inspections
+            .clone())
     }
 }
 
@@ -135,6 +158,275 @@ impl RegisteredInspectionWriter {
     #[must_use]
     pub fn offered(&self, world: &World, actor: ObjId) -> bool {
         self.authorize(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d D3: whether `actor` may fine now — the inspection's test under the
+    /// fine's own capability.
+    #[must_use]
+    pub fn fine_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_fine(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d D3: the live fine authorization, observed (`authority::observe_fine`).
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not granted the fine, or an owner is not
+    /// ready.
+    pub fn authorize_fine(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_fine(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8g G3: whether `actor` may read the quirk claims now — the inspection's
+    /// test under `roll.registry.claims`.
+    #[must_use]
+    pub fn claims_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_claims(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8g G3: the live claims-read authorization (`authority::observe_claims`).
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not granted, or an owner is not ready.
+    pub fn authorize_claims(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_claims(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8g G3: the quirk claims' family, for the operators' read.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn claims_family(&self) -> Result<StateFamilyHandle<String, super::ClaimRecord>, ModError> {
+        Ok(self
+            .registration()
+            .map_err(error)?
+            .families
+            .mind_claims
+            .clone())
+    }
+    /// **Land one quirk claim** (doc 17h cut M8g G3): the claim action must be the policy's;
+    /// the record is the author's next ring slot, overwriting the oldest once 32 are held.
+    /// Who may claim and which hulls they earned are tacsim's to establish before this.
+    ///
+    /// # Errors
+    /// A foreign action, an owner not ready, a record that does not validate, or the write.
+    pub fn file_quirk_claim(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        action: &DefinitionRef,
+        author: ObjId,
+        hulls: Vec<ObjId>,
+        text: smol_str::SmolStr,
+    ) -> Result<super::ClaimRecord, PublicationError> {
+        let r = self.registration()?;
+        if action != &r.policy.claim_action().map_err(bad)? {
+            return Err(PublicationError::Mismatch);
+        }
+        r.readiness.check(&r.policy)?;
+        let world = ctx.world().map_err(bad)?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        let at_ic = world.world_ic_now();
+        let family = &r.families.mind_claims;
+        let mut newest = 0_u64;
+        for key in super::claims::claim_slots(author) {
+            if let Some(held) = txn.get(family, &key).map_err(bad)? {
+                if held.author != author {
+                    return Err(PublicationError::Mismatch);
+                }
+                newest = newest.max(held.seq);
+            }
+        }
+        let record = super::ClaimRecord {
+            format: 1,
+            claim: ctx.commit_token(),
+            action: action.clone(),
+            authority: r.policy.clone(),
+            author,
+            seq: newest.checked_add(1).ok_or(PublicationError::Invalid)?,
+            hulls,
+            text,
+            at_ic,
+        };
+        record.validate()?;
+        let key = record.key();
+        if txn.get(family, &key).map_err(bad)?.is_some() {
+            txn.replace(family, &key, record.clone()).map_err(bad)?;
+        } else {
+            txn.insert(family, &key, record.clone()).map_err(bad)?;
+        }
+        Ok(record)
+    }
+    /// Doc 17h cut M8d2 S4: whether `actor` may seize now — the inspection's test under the
+    /// seizure's own capability.
+    #[must_use]
+    pub fn seize_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_seize(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d2 S4: the live seizure authorization (`authority::observe_seize`).
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not granted the seizure, or an owner is
+    /// not ready.
+    pub fn authorize_seize(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_seize(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8d2 S5: whether `actor` may forfeit now.
+    #[must_use]
+    pub fn forfeit_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_forfeit(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d2 S5: the live forfeit authorization (`authority::observe_forfeit`).
+    ///
+    /// # Errors
+    /// As [`Self::authorize_seize`].
+    pub fn authorize_forfeit(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_forfeit(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8d D4: whether `actor` may revoke a principal now — the inspection's test
+    /// under the existing `roll.registry.revoke`.
+    #[must_use]
+    pub fn revoke_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_revoke(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d D4: the live revocation authorization (`authority::observe_revoke`).
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not granted, or an owner is not ready.
+    pub fn authorize_revoke(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_revoke(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8d D4: the revoked principals' family.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn revoked_principals(
+        &self,
+    ) -> Result<StateFamilyHandle<String, super::principal::RevokedPrincipal>, ModError> {
+        Ok(self
+            .registration()
+            .map_err(error)?
+            .families
+            .revoked_principals
+            .clone())
+    }
+    /// Doc 17h cut M8d2 S4: the seizure records' family.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn seizures(&self) -> Result<StateFamilyHandle<String, super::SeizureRecord>, ModError> {
+        Ok(self
+            .registration()
+            .map_err(error)?
+            .families
+            .registry_seizures
+            .clone())
+    }
+    /// **Land one seizure record** (doc 17h cut M8d2 S4/S5): observe the acting operator's
+    /// grant again (the seizure's for a fresh record, the forfeit's for one that is forfeited),
+    /// then insert a fresh record or replace the seized one with its forfeit.
+    ///
+    /// # Errors
+    /// The authorization, a record that does not validate, a seize over an existing record or
+    /// a forfeit of none, or the write.
+    pub fn write_seizure(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        record: super::SeizureRecord,
+    ) -> Result<super::SeizureRecord, PublicationError> {
+        let r = self.registration()?;
+        let world = ctx.world().map_err(bad)?;
+        match record.forfeited_by {
+            Some(by) => self.authorize_forfeit(world, by)?,
+            None => self.authorize_seize(world, record.seized_by)?,
+        };
+        record.validate()?;
+        let key = record.key();
+        let family = &r.families.registry_seizures;
+        let held = txn.get(family, &key).map_err(bad)?.cloned();
+        match (&held, record.forfeited_by) {
+            (None, None) => txn.insert(family, &key, record.clone()).map_err(bad)?,
+            (Some(held), Some(_))
+                if held.forfeited_by.is_none() && held.seized() == record.seized() =>
+            {
+                txn.replace(family, &key, record.clone()).map_err(bad)?;
+            }
+            _ => return Err(PublicationError::Mismatch),
+        }
+        Ok(record)
+    }
+    /// **Land one principal revocation** (doc 17h cut M8d D4): observe the revocation grant
+    /// again, then write `record` over any earlier one of the principal.
+    ///
+    /// # Errors
+    /// The authorization, a record that does not validate, or the write.
+    pub fn revoke_principal(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        record: super::principal::RevokedPrincipal,
+    ) -> Result<super::principal::RevokedPrincipal, PublicationError> {
+        let r = self.registration()?;
+        let world = ctx.world().map_err(bad)?;
+        self.authorize_revoke(world, record.operator)?;
+        record.validate()?;
+        let key = record.key();
+        let family = &r.families.revoked_principals;
+        if txn.get(family, &key).map_err(bad)?.is_some() {
+            txn.replace(family, &key, record.clone()).map_err(bad)?;
+        } else {
+            txn.insert(family, &key, record.clone()).map_err(bad)?;
+        }
+        Ok(record)
     }
     /// The live authorization, observed.
     ///
@@ -203,6 +495,7 @@ impl RegisteredInspectionWriter {
             licence_state: facts.licence_state,
             at_ic,
             ungoverned_note: facts.ungoverned_note,
+            holder: facts.holder,
         };
         record.validate()?;
         let key = record.key();

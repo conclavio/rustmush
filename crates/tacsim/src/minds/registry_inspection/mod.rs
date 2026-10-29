@@ -21,9 +21,14 @@
 //! readiness. The named launch composes it beside recall and revocation
 //! (`crate::launch::market`).
 
+pub mod claims;
 pub mod command;
 pub mod facts;
+pub mod fine;
+pub mod principal;
 mod provider;
+pub mod seizure;
+pub mod unwarranted;
 
 use std::sync::{Arc, Mutex};
 
@@ -44,9 +49,51 @@ pub const INSPECTION_OUTCOME: &str = "registry_mind_inspected";
 pub struct Composition {
     pub(crate) policy: RegistryInspectionPolicy,
     pub(crate) writer: InspectionWriter,
+    /// Doc 17h cut M8d D3: the levy sink's account when `@registry/fine` composes
+    /// (`MindCommerce::with_registry_fines`).
+    pub(crate) fines: Option<mush_economy::AccountId>,
+    /// Doc 17h cut M8d D4: the revocation term in IC days when `@registry/revoke principal=`
+    /// composes (`MindCommerce::with_registry_principal_revocation`).
+    pub(crate) principals: Option<u32>,
+    /// Doc 17h cut M8g G3: whether the quirk claim composes (`MindCommerce::with_registry_claims`).
+    pub(crate) claims: bool,
+    /// Doc 17h cut M8d2 S4/S5: the seizure's terms when `@registry/seize` and
+    /// `@registry/forfeit` compose (`MindCommerce::with_registry_seizure`).
+    pub(crate) seizures: Option<seizure::SeizureTerms>,
 }
 
 impl Composition {
+    /// Doc 17h cut M8d2: the four seizure descriptors, when the seizure composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn seizure_descriptors(
+        &self,
+    ) -> Result<Option<[DefinitionDescriptor; 4]>, ModError> {
+        self.seizures
+            .map(|_| self.policy.seizure_descriptors())
+            .transpose()
+    }
+    /// Doc 17h cut M8d2: the economy's closed seizure plan's terms — the two actions and the
+    /// Registry org — when the seizure composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn economy_seizure(
+        &self,
+    ) -> Result<Option<mush_economy::registry_filing::seizure::SeizureConfig>, ModError> {
+        if self.seizures.is_none() {
+            return Ok(None);
+        }
+        let [seize, _, forfeit, _] = self.policy.seizure_refs()?;
+        Ok(Some(
+            mush_economy::registry_filing::seizure::SeizureConfig {
+                seize,
+                forfeit,
+                claimant: self.policy.organization(),
+            },
+        ))
+    }
     /// The action and outcome descriptors, for the crate's validators and registration.
     ///
     /// # Errors
@@ -55,15 +102,52 @@ impl Composition {
         self.policy.tacsim_descriptors()
     }
 
+    /// Doc 17h cut M8d D3: the fine's action and outcome descriptors, when it composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn principal_descriptors(
+        &self,
+    ) -> Result<Option<[DefinitionDescriptor; 2]>, ModError> {
+        self.principals
+            .map(|_| self.policy.principal_descriptors())
+            .transpose()
+    }
+
+    /// Doc 17h cut M8g G3: the quirk claim's action and outcome descriptors, when it composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn claim_descriptors(&self) -> Result<Option<[DefinitionDescriptor; 2]>, ModError> {
+        self.claims
+            .then(|| self.policy.claim_descriptors())
+            .transpose()
+    }
+
+    /// Doc 17h cut M8d D3: the fine's action and outcome descriptors, when it composes.
+    pub(crate) fn fine_descriptors(&self) -> Result<Option<[DefinitionDescriptor; 2]>, ModError> {
+        self.fines
+            .map(|_| self.policy.fine_descriptors())
+            .transpose()
+    }
+
     /// Register the provider over the registered `action` and `outcome`, and the slot.
     ///
     /// # Errors
     /// A registrar that is not this crate's, or a reference that is not the policy's.
+    // One optional reference set per composed extension (the fine, the principal revocation,
+    // the quirk claim, the seizure): M8g G3 and M8d2 brought the count to eight; bundling them
+    // would only move the list (`port_tick::register_with_coverage`'s precedent).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn register(
         &self,
         reg: &mut Registrar<'_>,
         action: DefinitionRef,
         outcome: DefinitionRef,
+        fine: Option<(DefinitionRef, DefinitionRef)>,
+        principal: Option<(DefinitionRef, DefinitionRef)>,
+        claim: Option<(DefinitionRef, DefinitionRef)>,
+        seizure: Option<[DefinitionRef; 4]>,
     ) -> Result<(), ModError> {
         if reg.module() != crate::NS
             || action != self.policy.action()?
@@ -78,9 +162,125 @@ impl Composition {
             action.clone(),
             provider::Provider::new(action, outcome, writer.clone())?,
         )?;
+        // Doc 17h cut M8d D6: the unwarranted chronicle's observer and tick, on the same slot.
+        let pending = unwarranted::Pending::default();
+        unwarranted::register(reg, pending.clone())?;
+        // Doc 17h cut M8d D3: the fine's family, provider, observer and levy tick.
+        let fines = match (fine, self.fines) {
+            (Some((fine_action, fine_outcome)), Some(credit)) => {
+                if fine_action != self.policy.fine_action()?
+                    || fine_outcome != self.policy.fine_outcome()?
+                {
+                    return Err(ModError::msg(
+                        "Registry fine registration differs from its composition",
+                    ));
+                }
+                let family = fine::family(reg)?;
+                reg.action_provider(
+                    fine_action.clone(),
+                    fine::Provider::new(
+                        fine_action.clone(),
+                        fine_outcome,
+                        writer.clone(),
+                        family.clone(),
+                        credit,
+                    )?,
+                )?;
+                let host = fine::FineHost {
+                    action: fine_action,
+                    family,
+                    pending: fine::Pending::default(),
+                    paged: Arc::default(),
+                };
+                fine::register_levy(reg, &host)?;
+                Some(host)
+            }
+            (None, None) => None,
+            _ => {
+                return Err(ModError::msg(
+                    "Registry fine registration differs from its composition",
+                ));
+            }
+        };
+        // Doc 17h cut M8d D4: the principal revocation's provider.
+        let principals = match (principal, self.principals) {
+            (Some((action, outcome)), Some(days)) => {
+                if action != self.policy.principal_action()?
+                    || outcome != self.policy.principal_outcome()?
+                {
+                    return Err(ModError::msg(
+                        "Registry principal revocation differs from its composition",
+                    ));
+                }
+                reg.action_provider(
+                    action.clone(),
+                    principal::Provider::new(action.clone(), outcome, writer.clone(), days)?,
+                )?;
+                let host = principal::PrincipalHost {
+                    action,
+                    days,
+                    notices: principal::Notices::default(),
+                };
+                principal::register_notices(reg, &writer, &host.notices)?;
+                Some(host)
+            }
+            (None, None) => None,
+            _ => {
+                return Err(ModError::msg(
+                    "Registry principal revocation differs from its composition",
+                ));
+            }
+        };
+        // Doc 17h cut M8g G3: the quirk claim's provider.
+        let claims = match (claim, self.claims) {
+            (Some((action, outcome)), true) => {
+                if action != self.policy.claim_action()?
+                    || outcome != self.policy.claim_outcome()?
+                {
+                    return Err(ModError::msg(
+                        "Registry claim registration differs from its composition",
+                    ));
+                }
+                reg.action_provider(
+                    action.clone(),
+                    claims::Provider::new(action.clone(), outcome, writer.clone())?,
+                )?;
+                // The earned-contacts index the claim reads; no producer until the IC fight.
+                reg.state(crate::minds::earned_contacts::EarnedContacts::default());
+                Some(claims::ClaimHost { action })
+            }
+            (None, false) => None,
+            _ => {
+                return Err(ModError::msg(
+                    "Registry claim registration differs from its composition",
+                ));
+            }
+        };
+        // Doc 17h cut M8d2 S4/S5: the seizure's two providers, each binding the economy leg.
+        let seizures = match (seizure, self.seizures) {
+            (Some(refs), Some(terms)) => {
+                if refs != self.policy.seizure_refs()? {
+                    return Err(ModError::msg(
+                        "Registry seizure registration differs from its composition",
+                    ));
+                }
+                Some(seizure::register(reg, refs, &writer, terms)?)
+            }
+            (None, None) => None,
+            _ => {
+                return Err(ModError::msg(
+                    "Registry seizure registration differs from its composition",
+                ));
+            }
+        };
         reg.state(InspectionHost {
             writer,
             attempts: Arc::new(Mutex::new((i64::MIN, 0))),
+            pending,
+            fines,
+            principals,
+            claims,
+            seizures,
         });
         Ok(())
     }
@@ -94,6 +294,16 @@ impl Composition {
 pub struct InspectionHost {
     pub(crate) writer: RegisteredInspectionWriter,
     pub(crate) attempts: Arc<Mutex<(i64, u64)>>,
+    /// Doc 17h cut M8d D6: the hulls whose inspections changed, not yet chronicled (RAM).
+    pub(crate) pending: unwarranted::Pending,
+    /// Doc 17h cut M8d D3: the fine, when it composes.
+    pub(crate) fines: Option<fine::FineHost>,
+    /// Doc 17h cut M8d D4: the principal revocation, when it composes.
+    pub(crate) principals: Option<principal::PrincipalHost>,
+    /// Doc 17h cut M8g G3: the quirk claim, when it composes.
+    pub(crate) claims: Option<claims::ClaimHost>,
+    /// Doc 17h cut M8d2 S4/S5: the seizure, when it composes.
+    pub(crate) seizures: Option<seizure::SeizureHost>,
 }
 
 impl InspectionHost {
@@ -114,6 +324,12 @@ impl InspectionHost {
     #[must_use]
     pub fn writer(&self) -> &RegisteredInspectionWriter {
         &self.writer
+    }
+
+    /// Doc 17h cut M8d D3: the fine, when it composes.
+    #[must_use]
+    pub fn fines(&self) -> Option<&fine::FineHost> {
+        self.fines.as_ref()
     }
 }
 

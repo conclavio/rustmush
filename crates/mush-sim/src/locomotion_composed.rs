@@ -93,6 +93,7 @@ struct Handles {
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     factory: &ComposedMovementFactory,
+    movement_reads: crate::movement_reads::MovementReads,
 ) -> Result<(), ModError> {
     let participant = reg.definition(participant_descriptor()?)?;
     let action = reg.definition(composed::action_descriptor()?)?;
@@ -115,6 +116,7 @@ pub(crate) fn register(
             outcome,
             service: service.clone(),
             crossings: crossings.clone(),
+            movement_reads,
         },
     )?;
     reg.state(Handles { service, crossings });
@@ -136,6 +138,7 @@ struct Provider {
     outcome: DefinitionRef,
     service: ComposedLocomotion,
     crossings: LocomotionCrossings,
+    movement_reads: crate::movement_reads::MovementReads,
 }
 impl ActionProvider for Provider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
@@ -168,6 +171,12 @@ impl ActionProvider for Provider {
             locomotion::capture_composed(state, world, &route, &world.world_ic_now(), true)
                 .map_err(|_| unavailable("composed locomotion capture unavailable"))?
         };
+        crate::movement_reads::retain(
+            context,
+            txn,
+            &self.movement_reads,
+            &captured.facts.read_dependencies,
+        )?;
         let receipt = context
             .prepare_composed_locomotion(txn, &self.service)
             .map_err(|_| unavailable("composed locomotion refused"))?;

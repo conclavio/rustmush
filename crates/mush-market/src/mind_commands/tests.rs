@@ -1362,3 +1362,214 @@ fn market_command_read_answers_the_counter_rule_and_the_policy() -> TestResult {
     check_eq!(memory.take_scans(), vec![(Some(code(listed)), CODE_ROWS)]);
     Ok(())
 }
+
+/// Doc 17h §3 M8f (P3, P5): the procurement kinds answer GOD alone (the tick's caller) and
+/// refuse every other caller before reading anything; `ProcurementListings` pages the current
+/// listings without the counter, each with the listed revision and rating, and never a row
+/// the policy no longer admits; `ProcurementOperation` answers one purchase's phase and facts,
+/// `None` for a token that names none; `ProcurementOpen` and `ProcurementPurchase` answer for
+/// the named agent and the named organisation only.
+#[test]
+fn procurement_kinds_answer_god_alone() -> TestResult {
+    use crate::mind_entitlement::tests::{command_config, current_listing_fixture};
+    let config = command_config(400)?;
+    let older = command_config(300)?;
+    let listed = token([0x40, 0, 0, 1], 1);
+    let stale = token([0x41, 0, 0, 1], 1);
+    let mut memory = Memory::default();
+    let row = current_listing_fixture(&config, listed)?;
+    let subject = row.procurement_subject();
+    memory.add(row);
+    memory.add(current_listing_fixture(&older, stale)?);
+    let buyer = ObjId(8);
+    let paid = purchase_into(&mut memory, 0xb0, listed, buyer, 90)?;
+    let source = &memory;
+    let ask = |actor: u32, request| answer(&source, own(actor), || false, &config, request);
+    let org = mush_org::OrgId(3);
+    for request in [
+        MarketCommandRequest::procurement_listings(None),
+        MarketCommandRequest::procurement_operation(paid),
+        MarketCommandRequest::procurement_open(buyer, org),
+        MarketCommandRequest::procurement_purchase(buyer, listed, org),
+    ] {
+        check_eq!(
+            ask(8, request),
+            Err(OwnerReadError::Refused),
+            "a player's call"
+        );
+    }
+    check!(memory.take_scans().is_empty() && memory.take_reads().is_empty());
+    let page = ask(1, MarketCommandRequest::procurement_listings(None))?
+        .into_procurement_listings()
+        .ok_or("a page")?;
+    check_eq!(
+        page.rows().len(),
+        1,
+        "only the current listing, away from any counter"
+    );
+    let first = page.rows().first().ok_or("the listing")?;
+    check_eq!(first.view().publication(), listed);
+    check_eq!((first.revision(), first.rating()), subject);
+    check_eq!(page.next(), None);
+    let view = ask(1, MarketCommandRequest::procurement_operation(paid))?
+        .into_procurement_operation()
+        .ok_or("an operation answer")?
+        .ok_or("the purchase")?;
+    check_eq!(
+        (
+            view.operation(),
+            view.listing(),
+            view.price_minor(),
+            view.org()
+        ),
+        (paid, listed, 400, None)
+    );
+    check_eq!(view.phase(), procurement::ProcurementPhase::Funded);
+    check_eq!(
+        ask(1, MarketCommandRequest::procurement_operation(stale))?.into_procurement_operation(),
+        Some(None),
+        "no such purchase"
+    );
+    // The buyer does not act for the organisation: its row reads refused.
+    check_eq!(
+        ask(1, MarketCommandRequest::procurement_open(buyer, org)),
+        Err(OwnerReadError::Refused)
+    );
+    procurement_reads_the_organisations_row()
+}
+
+/// Doc 17h §3 M8f with M8c S1's buyer index: the House agent's quote sits on
+/// the organisation's row. GOD's procurement read finds it as the agent, whose
+/// grant the read asks as a read (the P2a ruling: a budget-limited grant
+/// reads); while the agent does not act for the organisation the read is
+/// refused, and the agent itself is refused the GOD-only kind outright.
+fn procurement_reads_the_organisations_row() -> TestResult {
+    use crate::mind_entitlement::tests::{
+        command_config, command_org_index, command_org_quote, current_listing_fixture,
+    };
+    let config = command_config(400)?;
+    let listed = token([0x42, 0, 0, 1], 1);
+    let (org, agent) = (mush_org::OrgId(3), ObjId(50));
+    let mut memory = Memory::default();
+    memory.add(current_listing_fixture(&config, listed)?);
+    let quote = Box::new(command_org_quote(
+        token([0xc0, 0, 0, 0], 1),
+        listed,
+        (org, agent),
+        900,
+        1_200,
+    )?);
+    let quoted = quote.publication();
+    memory.quotes.insert(quoted, *quote);
+    // H1: a NEWER quote by another member on the same listing is not the
+    // agent's, and its read never returns it.
+    let theirs = Box::new(command_org_quote(
+        token([0xc1, 0, 0, 0], 1),
+        listed,
+        (org, ObjId(51)),
+        950,
+        1_200,
+    )?);
+    let theirs_token = theirs.publication();
+    memory.quotes.insert(theirs_token, *theirs);
+    memory
+        .orgs
+        .insert(org, command_org_index(org, &[quoted, theirs_token])?);
+    {
+        let source = &memory;
+        let ask = |actor: u32, request| answer(&source, own(actor), || true, &config, request);
+        check_eq!(
+            ask(
+                1,
+                MarketCommandRequest::procurement_purchase(agent, listed, org)
+            ),
+            Err(OwnerReadError::Refused),
+            "the agent does not act for the House yet"
+        );
+    }
+    memory.members.insert((org, agent));
+    let source = &memory;
+    let ask = |actor: u32, request| answer(&source, own(actor), || true, &config, request);
+    let found = ask(
+        1,
+        MarketCommandRequest::procurement_purchase(agent, listed, org),
+    )?
+    .into_procurement_purchase()
+    .ok_or("a procurement purchase answer")?
+    .ok_or("the agent's record")?;
+    check_eq!(found.quote(), Some(quoted));
+    check!(!found.funded());
+    check_eq!(found.price_minor(), 400);
+    check_eq!(
+        ask(
+            50,
+            MarketCommandRequest::procurement_purchase(agent, listed, org)
+        ),
+        Err(OwnerReadError::Refused),
+        "the agent is refused the GOD-only kind"
+    );
+    Ok(())
+}
+
+/// Doc 17h §3 M8f round 2 (the human path of H1): on an organisation's row,
+/// `/buy/pay … org=`'s quote is the actor's OWN newest, never a newer quote
+/// another member (or the House's agent) made on the same listing, whose
+/// Fund the provider would refuse the actor:
+/// - member A quotes at 900, then B quotes the same listing at 950: A's
+///   `OwnPurchase` names A's quote, B's names B's;
+/// - a member with no quote of its own there has none to fund (`None`),
+///   though the row holds two.
+#[test]
+fn org_own_purchase_funds_the_actors_own_quote() -> TestResult {
+    use crate::mind_entitlement::tests::{
+        command_config, command_org_index, command_org_quote, current_listing_fixture,
+    };
+    let config = command_config(400)?;
+    let listed = token([0x43, 0, 0, 1], 1);
+    let org = mush_org::OrgId(3);
+    let (a, b, c) = (ObjId(51), ObjId(52), ObjId(53));
+    let mut memory = Memory::default();
+    memory.add(current_listing_fixture(&config, listed)?);
+    let mut quote_as = |n: u8, acting: ObjId, at: i64| -> TestResult<CommitToken> {
+        let quote = Box::new(command_org_quote(
+            token([n, 0, 0, 0], 1),
+            listed,
+            (org, acting),
+            at,
+            1_200,
+        )?);
+        let publication = quote.publication();
+        memory.quotes.insert(publication, *quote);
+        Ok(publication)
+    };
+    let mine = quote_as(0xd0, a, 900)?;
+    let theirs = quote_as(0xd1, b, 950)?;
+    memory
+        .orgs
+        .insert(org, command_org_index(org, &[mine, theirs])?);
+    for member in [a, b, c] {
+        memory.members.insert((org, member));
+    }
+    let source = &memory;
+    let quote_of = |actor: ObjId| -> TestResult<Option<CommitToken>> {
+        Ok(answer(
+            &source,
+            own(actor.0),
+            || true,
+            &config,
+            MarketCommandRequest::own_purchase_for(&code(listed), Some(org)),
+        )?
+        .into_own_purchase()
+        .ok_or("an own-purchase answer")?
+        .and_then(|view| view.quote())
+        .map(|quote| quote.quote()))
+    };
+    check_eq!(
+        quote_of(a)?,
+        Some(mine),
+        "A funds A's quote, not B's newer one"
+    );
+    check_eq!(quote_of(b)?, Some(theirs), "B funds B's");
+    check_eq!(quote_of(c)?, None, "C quoted nothing to fund");
+    Ok(())
+}
