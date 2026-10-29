@@ -548,6 +548,17 @@ lapsed after C0's 365-day runway. In M8h a tick attests each due House filing as
 reusing M8f's procurement agent where the House has one. An Unattestable filing lapses. The 365-day
 term stays and becomes a renewal cycle. M8h closes 17g §4's first deferral.
 
+**M8g rulings (the lead's, 2026-10-29), each overridable by the owner:**
+- **The quirk claim counts IC contacts only** (D-UM-55). A sim or range match is OOC training. If
+  no arena mode lands its results in the world, `@mind/claim` refuses every hull until the IC fight
+  (16c H1), the same deferral as testimony. Co-presence on a site is put to the owner as an
+  alternative.
+- **`@registry/claims` is a line-mode read**, gated by `roll.registry.claims`, with no projected
+  offer.
+- **`@unit/show` and the other `@unit/*` builder verbs are raw staff builder and debug tools**, like
+  reading the store, so they are outside D-UM-42's witness set. Staff's in-world reads stay in it.
+  The leak battery names the exemption.
+
 **M8d2 ruling (the lead's, 2026-10-28): the seized core is impounded in place.** A physical
 removal would need new protocol in four crates (tactics' replacement journal, mush-core's core
 exchange, an industry order kind replayed by the refit audit, and the union's root). It would also
