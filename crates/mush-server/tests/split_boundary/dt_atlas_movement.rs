@@ -174,6 +174,83 @@ async fn commit(
 }
 
 #[tokio::test]
+async fn atlas_rejects_malformed_owner_proofs_in_the_early_typed_phase() -> TestResult {
+    async fn preflight(
+        rows: Vec<mush_core::ActionStateBootRecord>,
+    ) -> TestResult<Result<(), mush_core::ModError>> {
+        let store = InMemoryStore::new();
+        let mut rig = fixture(&store, ObjKind::Player).await?;
+        // A structurally valid Core record must hydrate successfully first.
+        // The actual Atlas owner then validates its own proof grammar without
+        // relying on the original World's geometry or knowledge projection.
+        rig.world.engine_mut().hydrate_action_state(rows)?;
+        Ok(rig.world.engine_mut().audit_typed_history())
+    }
+    let store = InMemoryStore::new();
+    let mut rig = mapped(&store, ObjKind::Player, None).await?;
+    let bundle = commit(&mut rig, &store, "n", 0xd4).await?;
+    let rows: Vec<_> = bundle
+        .writes()
+        .iter()
+        .filter_map(|write| match write {
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } if namespace.as_str() == "sim" && key.as_str().starts_with("action-state/") => Some(
+                mush_core::ActionStateBootRecord::new("sim", key.as_str(), value.clone()),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows.len(), 2);
+    preflight(rows.clone()).await??;
+    for fault in 0..6 {
+        let mut changed = rows.clone();
+        let movement = changed
+            .iter_mut()
+            .find(|row| row.key.contains("/composed_locomotion/"))
+            .ok_or("composed row")?;
+        let effect = movement.value["value"]["effects"]
+            .as_array_mut()
+            .ok_or("effects")?
+            .iter_mut()
+            .find(|effect| effect["participant"]["key"]["owner"] == "atlas")
+            .ok_or("Atlas effect")?;
+        match fault {
+            0 => effect["proof"]["format"] = json!(2),
+            1 => effect["proof"]["unexpected"] = json!(true),
+            2 => {
+                effect["proof"]
+                    .as_object_mut()
+                    .ok_or("proof")?
+                    .remove("event");
+            }
+            3 => effect["proof"]["capture"]["at"] = json!(999),
+            4 => effect["proof"]["history_next"] = json!(999),
+            _ => effect["proof"]["event"] = Value::Null,
+        }
+        // Rebind the generic Core proof hash, so its normal codec accepts the
+        // row and the refusal proves the real Atlas-specific validator ran.
+        let digest = mush_core::DefinitionDigest::for_canonical_value_with_limit(
+            "core.composed_locomotion.owner_proof.v1",
+            &json!({"binding":effect["binding"],"capture_digest":effect["capture_digest"],"proof":effect["proof"]}),
+            mush_core::locomotion::composed::MAX_MOVEMENT_PROOF_BYTES + 4096,
+        )?;
+        effect["proof_digest"] = serde_json::to_value(digest)?;
+        let error = preflight(changed)
+            .await?
+            .err()
+            .ok_or("malformed Atlas proof accepted")?;
+        assert!(
+            error.to_string().contains("Atlas typed movement proof"),
+            "{error}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn lost_ack_recovers_actual_known_document_and_original_atlas_proof_in_the_same_commit()
 -> TestResult {
     let store = InMemoryStore::new();

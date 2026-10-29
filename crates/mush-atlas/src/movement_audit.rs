@@ -180,6 +180,16 @@ impl Audit {
         }
         Ok(())
     }
+    fn check_typed_claims(&self) -> Result<(), ModError> {
+        if self
+            .pending
+            .values()
+            .any(|claims| claims.iter().filter(|claim| claim.event.is_some()).count() > 1)
+        {
+            return Err(bad("Atlas receipts claim the same knowledge position"));
+        }
+        Ok(())
+    }
     fn boundary(&mut self, sequence: u64, mutation: Option<&Mutation>) -> Result<(), ModError> {
         let mut claimed = false;
         if let Some(expected) = self.pending.remove(&sequence) {
@@ -282,13 +292,10 @@ impl Audit {
     }
 }
 
-pub(crate) fn audit_boot(
+fn collect_receipts(
     ctx: &ModuleCtx<'_>,
-    data: &ModuleBootData,
-    history: &LedgerHistory,
-    travel: &TravelState,
     readers: &[&ComposedOwnerReader],
-) -> Result<(), ModError> {
+) -> Result<Audit, ModError> {
     let mut audit = Audit::new();
     for reader in readers {
         let mut after = None;
@@ -305,6 +312,27 @@ pub(crate) fn audit_boot(
             }
         }
     }
+    audit.check_typed_claims()?;
+    Ok(audit)
+}
+
+/// Validate only retained owner proofs before migrations or any module load.
+/// This neither reads current geometry nor certifies native journal positions.
+pub(crate) fn audit_typed(
+    ctx: &ModuleCtx<'_>,
+    readers: &[&ComposedOwnerReader],
+) -> Result<(), ModError> {
+    collect_receipts(ctx, readers).map(|_| ())
+}
+
+pub(crate) fn audit_boot(
+    ctx: &ModuleCtx<'_>,
+    data: &ModuleBootData,
+    history: &LedgerHistory,
+    travel: &TravelState,
+    readers: &[&ComposedOwnerReader],
+) -> Result<(), ModError> {
+    let mut audit = collect_receipts(ctx, readers)?;
     audit.read_history(data, history)?;
     audit.finish(travel)
 }

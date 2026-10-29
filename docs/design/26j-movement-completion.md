@@ -532,6 +532,14 @@ invoke the audit explicitly, as the server does. Native owner journals and
 foreign observer recovery still require their own pre-mutation validators;
 this typed-only phase does not certify those unfinished joins.
 
+Atlas participates in the early typed phase with the same strict owner-proof
+decoder used by its native knowledge-history audit. Both ordinary and window
+profiles bind the original actor, route, UTC, capture digest and knowledge
+effect claims; two prepared events cannot claim one knowledge position across
+the readers. Multiple no-op observations at a boundary remain valid. This pass
+uses no current geometry, callback or loaded Atlas projection. The later audit
+still requires the real journal events and current knowledge projection.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
