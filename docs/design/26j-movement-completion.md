@@ -436,9 +436,9 @@ any intervening custody update, including an open/close cycle. This reads at mos
 512 ids and does not copy historical custody records or construct a seal, Open,
 Close or four-owner admission capability.
 
-This adds no owner image, callback coverage or authority mirror. The native
-window participant still needs the configured Tactics custody read join and the complete
-placement/topology fences before it can publish a window transition.
+These read joins add no owner image, callback coverage or authority mirror. The
+native window participant still needs complete placement/topology fences and
+same-commit records before it can publish a window transition.
 
 Tactics now offers an opt-in, Sim-only owner-read service over its real UnitStore.
 It observes active-unit presence, held/miskeyed/duplicate record claims and OOC/IC
@@ -451,8 +451,15 @@ The data contract bounds requests to 512 objects, the global record scan to 4096
 rows, selected record metadata to 512 rows and the retained image to 128 KiB.
 Selected keys/arena names have a 1024-byte individual and shared 64 KiB text
 bound. These facts are not custody, physical admission or title capabilities.
-Real Sim/Atlas composition tests exercise the service and held lifecycle data;
-the production movement providers still need the configured Tactics read join.
+The production root now configures both this real Tactics service and Sim's
+typed read join. Structural, ordinary, joint Scenes and composed locomotion
+providers retain that actual read before preparing owner publication. Held
+records or OOC/IC custody refuse; the response must cover exactly the requested
+ids in order. Tactics readiness and its state preimage remain checked after Store
+ACK. Root configuration selects a typed registered service with the fixed
+Tactics descriptor, rather than supplying a callback that claims a check ran.
+Standalone Sim compositions keep their existing configuration. This adds no
+movement route or callback-completion claim.
 
 ## Remaining completion protocol
 

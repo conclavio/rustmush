@@ -177,6 +177,7 @@ pub struct SimulationModule {
     atomic_scene_movement:
         Option<Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>>,
     composed_movement: Option<ComposedMovementFactory>,
+    tactics_movement_reads: Option<movement_custody::CustodyReadFactory>,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -191,6 +192,10 @@ impl std::fmt::Debug for SimulationModule {
                 &self.atomic_scene_movement.is_some(),
             )
             .field("composed_movement", &self.composed_movement.is_some())
+            .field(
+                "tactics_movement_reads",
+                &self.tactics_movement_reads.is_some(),
+            )
             .finish()
     }
 }
@@ -214,6 +219,7 @@ impl SimulationModule {
             ic_custody: None,
             atomic_scene_movement: None,
             composed_movement: None,
+            tactics_movement_reads: None,
         }
     }
 
@@ -242,6 +248,21 @@ impl SimulationModule {
     #[must_use]
     pub fn with_composed_movement(mut self, factory: ComposedMovementFactory) -> Self {
         self.composed_movement = Some(factory);
+        self
+    }
+
+    /// Require the fixed actual Tactics custody read in every closed movement
+    /// preparation. The Tactics module must register the matching service; no
+    /// caller callback can stand in for the retained Core read observation.
+    #[must_use]
+    pub fn with_tactics_movement_reads<S>(mut self) -> Self
+    where
+        S: mush_core::read_service::OwnerReadService<
+                Request = movement_custody::MovementCustodyRequest,
+                Output = movement_custody::MovementCustodyFacts,
+            >,
+    {
+        self.tactics_movement_reads = Some(movement_custody::factory::<S>());
         self
     }
 
@@ -1028,7 +1049,12 @@ impl GameModule for SimulationModule {
             handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
         tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
-        let movement_reads = movement_reads::register(reg)?;
+        let tactics_read = self
+            .tactics_movement_reads
+            .as_ref()
+            .map(|factory| factory(reg))
+            .transpose()?;
+        let movement_reads = movement_reads::register(reg, tactics_read)?;
         physical::register(reg, self.ic_custody.is_some(), movement_reads.clone())?;
         locomotion::register(reg, movement_reads.clone())?;
         if let Some(reader) = &self.atomic_scene_movement {

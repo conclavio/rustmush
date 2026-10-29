@@ -16,6 +16,100 @@ use super::dt_unit_authority::persist_legacy;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn actual_tactics_custody_and_readiness_guard_every_locomotion_profile_after_ack()
+-> TestResult {
+    for action in [
+        mush_core::locomotion::transition::ACTION,
+        mush_core::locomotion::scene_transition::ACTION,
+        ACTION,
+    ] {
+        for freeze in [false, true] {
+            let store = InMemoryStore::new();
+            let mut rig = fixture(&store, ObjKind::Player).await?;
+            let (source, destination, _) = start_scenes(&mut rig, &store).await?;
+            let _ = rig.world.run(
+                mush_core::GOD,
+                &format!("@unit/create #{}=tacsim.unit.line_tank", rig.actor.0),
+            );
+            let snapshot = rig
+                .world
+                .world()
+                .module_state::<mush_tactics::UnitStore>()
+                .ok_or("Tactics")?
+                .units
+                .get(&rig.actor)
+                .cloned()
+                .ok_or("actual unit creation")?;
+            persist_legacy(&mut rig.world, &store).await?;
+            let before = [
+                entries(&rig, source)?.len(),
+                entries(&rig, destination)?.len(),
+            ];
+            stage_action(&mut rig, "north", action)?;
+            let revision = rig.world.engine().action_state().revision();
+            let records = rig.world.engine().action_state().len();
+            let (bundle, install) = rig
+                .world
+                .engine_mut()
+                .take_staged_action()?
+                .ok_or("staged")?
+                .into_parts();
+            store
+                .reserve_authoritative_intent((*bundle).clone())
+                .await?;
+            store
+                .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+                .await?;
+            if freeze {
+                rig.world.engine().registry.freeze_mechanics_owner(
+                    &mush_core::OwnerId::new("tactics")?,
+                    mush_core::IncidentId(119),
+                    mush_core::RecoveryReason::IntegrityViolation {
+                        code: mush_core::CanonicalId::new("custody_test")?,
+                    },
+                )?;
+            } else {
+                // Fault injection changes the actual Tactics marker only;
+                // Sim's projection and all spatial/Core rows remain fixed.
+                rig.world
+                    .world_mut()
+                    .module_state_mut::<mush_tactics::UnitStore>()
+                    .ok_or("Tactics")?
+                    .deployed
+                    .insert(
+                        rig.actor,
+                        mush_tactics::custody::DeployedMarker {
+                            mark: mush_sim::DeployedMark::new(119, "arena"),
+                            domain: None,
+                            pose: None,
+                            snapshot,
+                        },
+                    );
+                assert!(!mush_sim::deployed::is_deployed(
+                    rig.world.world(),
+                    rig.actor
+                ));
+            }
+            assert!(
+                rig.world
+                    .engine_mut()
+                    .install_composed_action(install)
+                    .is_err(),
+                "{action}, freeze {freeze}"
+            );
+            assert_eq!(location(&rig), Some(rig.source));
+            assert_eq!(entries(&rig, source)?.len(), before[0]);
+            assert_eq!(entries(&rig, destination)?.len(), before[1]);
+            assert_eq!(rig.world.engine().action_state().revision(), revision);
+            assert_eq!(rig.world.engine().action_state().len(), records);
+            assert!(rig.world.engine().action_state().reservation_lost());
+            assert_eq!(rig.moved.load(Ordering::SeqCst), 0);
+        }
+    }
+    Ok(())
+}
+
 fn row<'a>(bundle: &'a AuthoritativeBundle, family: &str) -> TestResult<(&'a str, &'a Value)> {
     bundle
         .writes()

@@ -247,6 +247,7 @@ fn compose_server_modules<E>(
     let composed_scene_receipts = Arc::default();
     let composed_atlas_receipts = Arc::default();
     let simulation = mush_sim::SimulationModule::new()
+        .with_tactics_movement_reads::<mush_tactics::movement_custody::MovementCustodyReader>()
         .with_atomic_scene_movement(Arc::clone(&scene_movement_receipts))
         .with_composed_movement(movement::factory(
             Arc::clone(&composed_scene_receipts),
@@ -258,6 +259,7 @@ fn compose_server_modules<E>(
         Some(launch) => launch.tactics(),
         None => mush_tactics::TacticsModule::with_catalog(tacsim::composition::tactics_catalog()),
     }
+    .with_movement_custody_reads()
     .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy));
     let (tactics, simulation) = match commerce {
         Some(c) => c.configure_ic_physical(tactics, simulation),
