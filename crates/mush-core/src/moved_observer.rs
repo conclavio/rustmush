@@ -56,8 +56,8 @@ impl MovedObserverRoster {
     pub const fn digest(&self) -> DefinitionDigest {
         self.digest
     }
-    /// Every present callback currently blocks prepared movement completion;
-    /// none has an implemented durable completion adapter in this slice.
+    /// Every entry uses legacy callback delivery. Protocol-specific prepared
+    /// coverage is inspected separately through the completion manifest.
     pub fn has_blockers(&self) -> bool {
         !self.entries.is_empty()
     }

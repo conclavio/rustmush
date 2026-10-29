@@ -466,6 +466,11 @@ where
         reg.require_current_moved_observer(&observer)?;
         let sim_handle = reg.request_owner_participant::<P>(action.clone())?;
         let scenes_handle = reg.request_owner_participant::<S>(action.clone())?;
+        reg.require_moved_completion::<S>(
+            action.clone(),
+            scenes_participant.clone(),
+            vec![observer.clone()],
+        )?;
         let records = register_records(reg)?;
         Ok(Self {
             sim_participant,

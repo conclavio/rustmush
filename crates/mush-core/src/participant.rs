@@ -541,6 +541,20 @@ impl ParticipantRegistry {
                 })
         })
     }
+
+    /// Completion coverage must resolve the declared concrete adapter, not just
+    /// another adapter publishing the same-shaped metadata.
+    pub(crate) fn grants_exact_type(
+        &self,
+        adapter_type: TypeId,
+        definition: &DefinitionRef,
+        requester: &OwnerId,
+        action: &DefinitionRef,
+    ) -> bool {
+        self.registrations.iter().any(|registration| {
+            registration.adapter_type == adapter_type && registration.definition == *definition
+        }) && self.grants_exact(definition, requester, action)
+    }
 }
 
 pub(crate) struct ParticipantPreparation<'a> {
