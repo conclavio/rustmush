@@ -530,6 +530,14 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
         r.plan("industry", "issue_core_die", GOD, json!({"class":"i"}))
             .is_ok()
     );
+    // Doc 17h cut M8b-2 (H3): the launch composes the staff issues of heirloom and grey dies
+    // beside the certified one; no vendor sells either (doc 17h §4).
+    for action in [
+        mush_industry::core_production::ISSUE_HEIRLOOM_ACTION,
+        mush_industry::core_production::ISSUE_GREY_ACTION,
+    ] {
+        check!(r.action("industry", action).is_ok(), "{action} is composed");
+    }
     check!(r.action("market", "purchase_house_mind").is_ok());
     check!(r.action("roll", "conduct_trial_admit").is_ok());
     // 17g C1c: the production format composes every player-market owner

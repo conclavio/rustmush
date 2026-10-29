@@ -176,8 +176,25 @@ impl Row {
     fn intent_digest(&self) -> Result<DefinitionDigest, ActionStateError> {
         digest("industry.core_integration_intent.v1", &self.intent)
     }
+    /// **The factory the order's site integrates at** (doc 17h cut M8b-2, H2): the policy's
+    /// chartered factory, or its ungoverning site's when the intent carries a heirloom or grey
+    /// die's staff issue (`uncertified`) in place of a certificate.
+    fn site_factory(&self) -> Result<ObjId, ActionStateError> {
+        self.site("factory")
+    }
+    /// The container the order's site births its core into (fix round 1, L2): the policy's
+    /// own, or its ungoverning site's.
+    fn site_container(&self) -> Result<ObjId, ActionStateError> {
+        self.site("output_container")
+    }
+    fn site(&self, name: &str) -> Result<ObjId, ActionStateError> {
+        if present(&self.intent, "uncertified")?.is_some() {
+            return parsed(field(field(&self.policy, "ungoverned")?, name)?);
+        }
+        parsed(field(&self.policy, name)?)
+    }
     fn resource(&self) -> Result<ResourceRef, ActionStateError> {
-        let factory: ObjId = parsed(field(&self.policy, "factory")?)?;
+        let factory = self.site_factory()?;
         let owner = owner_id("industry")?;
         Ok(ResourceRef::new(
             owner.clone(),
@@ -392,8 +409,8 @@ fn paired(view: &View<'_>, r: &Row, historical: bool) -> Result<(), ActionStateE
                 r.intent_digest()?,
                 r.requester()?,
                 parsed(field(&r.policy, "recipe")?)?,
-                parsed(field(&r.policy, "factory")?)?,
-                parsed(field(&r.policy, "output_container")?)?,
+                r.site_factory()?,
+                r.site_container()?,
             )
             .map_err(bad)?;
             if field(&output, "order")? != &json!(birth) {
@@ -464,8 +481,8 @@ fn require_future_room(view: &View<'_>, r: &Row) -> Result<(), ActionStateError>
         r.intent_digest()?,
         r.requester()?,
         parsed(field(&r.policy, "recipe")?)?,
-        parsed(field(&r.policy, "factory")?)?,
-        parsed(field(&r.policy, "output_container")?)?,
+        r.site_factory()?,
+        r.site_container()?,
     )
     .map_err(bad)?;
     let mut complete = serde_json::to_value(action_reference(&r.policy, 3)?).map_err(bad)?;

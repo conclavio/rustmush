@@ -15,7 +15,7 @@ use mush_economy::{
 };
 use mush_industry::{
     IndustryModule,
-    core_production::{CoreOriginMode, OriginAgent},
+    core_production::{CoreOriginMode, DieClass, OriginAgent},
 };
 use mush_inventory::{Grade, InventoryHandleCell, InventoryModule};
 use mush_org::{OrgModule, OrgStore, PrincipalId, SystemPrincipalId};
@@ -385,6 +385,9 @@ impl Rig {
         let shop = w
             .world_mut()
             .create(ObjKind::Thing, "Back-room shop", GOD, None)?;
+        let shop_output =
+            w.world_mut()
+                .create(ObjKind::Thing, "Back-room completed work", GOD, None)?;
         for line in ["@org/create Tether", "@org/scope create Tether=backroom"] {
             command(&mut w, GOD, line)?;
         }
@@ -445,6 +448,7 @@ impl Rig {
                     scope: backroom,
                 },
                 factory: shop,
+                output_container: shop_output,
                 // Doc 17h cut M8b G3: unequal to the fitting fee, so the settlement is
                 // proved to credit the recipe's own fee.
                 fee_minor: Some(SHOP_FEE),
@@ -485,7 +489,14 @@ impl Rig {
         })
     }
     fn new() -> Result<Self> {
-        let mut r = Self::provision(Vec::new())?;
+        Self::new_with(Vec::new(), |_| Ok(()))
+    }
+    /// [`Rig::new`] with `extra` modules composed for the provisioning boot only, and `setup`
+    /// run while they are (doc 17h cut M8b-2: the Class III end-user entitlement fixture).
+    fn new_with(extra: Vec<Box<dyn GameModule>>, setup: fn(&mut Self) -> Result) -> Result<Self> {
+        let mut r = Self::provision(extra)?;
+        setup(&mut r)?;
+        r.flush();
         let agent = r.deployment.agents[1].actor;
         r.reboot(CoreOriginMode::Initialize)?;
         r.initialize_roll()?;
@@ -862,10 +873,22 @@ fn refit_class_one(
     accept: CommitToken,
     recipe: Option<&str>,
 ) -> Result {
+    refit_class(r, hull, incoming, accept, DieClass::I, recipe)
+}
+
+/// [`refit_class_one`] at any class.
+fn refit_class(
+    r: &mut Rig,
+    hull: ObjId,
+    incoming: ObjId,
+    accept: CommitToken,
+    class: DieClass,
+    recipe: Option<&str>,
+) -> Result {
     let buyer = r.buyer;
     let agent = r.deployment.agents[1].actor;
     let mut params = json!({"requester":buyer.0,"hull":hull.0,"incoming":incoming.0,
-        "manufacture":accept.to_hex(),"class":"i"});
+        "manufacture":accept.to_hex(),"class":class});
     if let Some(recipe) = recipe {
         params["recipe"] = json!(recipe);
     }
@@ -879,7 +902,8 @@ fn refit_class_one(
     let id =
         serde_json::from_value::<mush_industry::workorder::WorkOrderId>(order["order"].clone())?
             .to_string();
-    r.progress("advance_core_refit", 1)?;
+    // The shipped fitting works 1, 2 and 4 hours by class.
+    r.progress("advance_core_refit", [1, 2, 4][class.index()])?;
     r.perform(
         "industry",
         "install_core_component",
@@ -1138,6 +1162,521 @@ async fn m8b_a_rig_is_fitted_at_stickney_then_ungoverned_in_the_back_room() -> R
             .core_provenance_note(second)?,
         Some(note)
     );
+    Ok(())
+}
+
+/// The Class III end-user entitlement (`core3_end_user`), which no shipped composition
+/// provisions (doc 17h §2.2): a test-only staff command registering it, composed for the
+/// rig's provisioning boot only (`mush-industry`'s delivery fixture's pattern).
+const CORE3: &str = "tacsim.licence.core3_end_user";
+struct Core3Fixture;
+impl GameModule for Core3Fixture {
+    fn name(&self) -> &'static str {
+        "m8b2core3fixture"
+    }
+    fn register(
+        &mut self,
+        reg: &mut mush_core::Registrar<'_>,
+    ) -> std::result::Result<(), mush_core::ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        reg.command(
+            mush_core::CommandSpec {
+                name: "@core3-fixture".into(),
+                shape: mush_core::ArgShape::Raw,
+                ..mush_core::CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut mush_core::Ctx<'_>| {
+                if ctx.actor != GOD {
+                    return Err(mush_core::CmdError::msg("fixture operator"));
+                }
+                mush_economy::register_instrument(
+                    ctx,
+                    mush_economy::InstrumentDef {
+                        id: mush_economy::InstrumentId::new(CORE3)
+                            .ok_or_else(|| mush_core::CmdError::msg("instrument"))?,
+                        ruleset: "tacsim".into(),
+                        code: "licence.core3_end_user".into(),
+                        kind: mush_economy::InstrumentKind::Entitlement,
+                        scale: 0,
+                        transferable: false,
+                        negative_policy: mush_economy::NegativePolicy::SystemOnly,
+                        status: mush_economy::InstrumentStatus::Active,
+                        display: None,
+                        revision: 1,
+                    },
+                )
+                .map_err(|e| mush_core::CmdError::msg(e.to_string()))
+            }),
+        )?;
+        Ok(())
+    }
+}
+/// The buyer holds one Class III end-user entitlement.
+fn entitle(r: &mut Rig) -> Result {
+    let buyer = r.buyer;
+    for line in [
+        "@core3-fixture".to_owned(),
+        format!("@account/open #{}={CORE3}", buyer.0),
+        format!("@account/system core.licence.fixture={CORE3}"),
+    ] {
+        command(r.world_mut(), GOD, &line)?;
+    }
+    let (account, faucet) = {
+        let e = r
+            .world()
+            .world()
+            .module_state::<EconomyStore>()
+            .ok_or("Economy owner")?;
+        let s = e.snapshot();
+        let of = |owner: &dyn Fn(&PrincipalId) -> bool| {
+            s.accounts()
+                .find(|a| owner(&a.owner) && a.instrument.as_str() == CORE3)
+                .map(|a| a.id)
+                .ok_or("an entitlement account")
+        };
+        (
+            of(&|o| *o == PrincipalId::Object(buyer))?,
+            of(&|o| matches!(o, PrincipalId::System(n) if n.as_str() == "core.licence.fixture"))?,
+        )
+    };
+    command(
+        r.world_mut(),
+        GOD,
+        &format!("@econ/mint {}={} 1", faucet.0, account.0),
+    )
+}
+/// A rig whose buyer holds the Class III entitlement.
+fn entitled_rig() -> Result<Rig> {
+    Rig::new_with(vec![Box::new(Core3Fixture)], entitle)
+}
+
+/// The buyer's own vault, a container they carry: where a staff issue puts a heirloom or grey
+/// die for the buyer to bring to the back room.
+fn stash(r: &mut Rig) -> Result<mush_economy::VaultId> {
+    let buyer = r.buyer;
+    let bag =
+        r.world_mut()
+            .world_mut()
+            .create(ObjKind::Thing, "Buyer's satchel", buyer, Some(buyer))?;
+    command(
+        r.world_mut(),
+        GOD,
+        &format!(
+            "@vault/create BuyerStash=container:#{} owner=#{}",
+            bag.0, buyer.0
+        ),
+    )?;
+    let vault = r
+        .world()
+        .world()
+        .module_state::<EconomyStore>()
+        .ok_or("Economy owner")?
+        .snapshot()
+        .vaults()
+        .find(|v| v.name.as_str() == "BuyerStash")
+        .map(|v| v.id)
+        .ok_or("the buyer's stash")?;
+    r.flush();
+    Ok(vault)
+}
+
+/// GOD's issue of one die under `action` (`issue_heirloom_die`, `issue_grey_die`) into
+/// `vault`: the lot.
+fn issue(r: &mut Rig, action: &str, params: Value) -> Result<mush_inventory::LotId> {
+    let (_, die) = r.perform("industry", action, GOD, params)?;
+    Ok(serde_json::from_value::<mush_inventory::LotId>(
+        die["lot"].clone(),
+    )?)
+}
+
+/// One core of `class`, integrated in the back room from the buyer's uncertified `lot` and
+/// delivered to the buyer: the acceptance's commit and the core.
+fn integrate_uncertified(
+    r: &mut Rig,
+    lot: mush_inventory::LotId,
+    class: DieClass,
+) -> Result<(CommitToken, ObjId)> {
+    let buyer = r.buyer;
+    let agent = r.deployment.agents[1].actor;
+    let (offer, _) = r
+        .perform(
+            "industry",
+            "offer_core_integration",
+            agent,
+            json!({"requester":buyer.0,"class":class,"site":"core_ungovern"}),
+        )
+        .map_err(|e| format!("the back room's offer: {e}"))?;
+    let (accept, order) = r.perform(
+        "industry",
+        "accept_core_integration",
+        buyer,
+        json!({"offer":offer.to_hex(),"payer":r.payer.0.to_string(),"input_lot":lot.to_string()}),
+    )
+    .map_err(|e| format!("the buyer's acceptance: {e}"))?;
+    let id =
+        serde_json::from_value::<mush_industry::workorder::WorkOrderId>(order["order"].clone())?
+            .to_string();
+    let params = json!({"order":id});
+    r.perform("industry", "reserve_core_output", buyer, params.clone())
+        .map_err(|e| format!("the output's reservation: {e}"))?;
+    // The shipped `core_integrate` works 24, 48 and 96 hours by class.
+    r.progress("advance_core_integration", [24, 48, 96][class.index()])
+        .map_err(|e| format!("the work: {e}"))?;
+    let (_, completed) = r
+        .perform(
+            "industry",
+            "complete_core_integration",
+            buyer,
+            params.clone(),
+        )
+        .map_err(|e| format!("the completion: {e}"))?;
+    let output = serde_json::from_value::<ObjId>(completed["object"].clone())?;
+    // Fix round 1 (L2, D-UM-42): the back-room core is born in the shop's own container,
+    // never the chartered factory's.
+    let shop = r
+        .deployment
+        .ungovern
+        .as_ref()
+        .ok_or("the back-room shop")?
+        .output_container;
+    let born = r.world().world().get(output).ok_or("the core")?.location;
+    check_eq!(born, Some(shop));
+    check!(born != Some(r.deployment.output_container));
+    r.perform("industry", "deliver_core_output", buyer, params)
+        .map_err(|e| format!("the delivery: {e}"))?;
+    Ok((accept, output))
+}
+
+/// The integration's uniform refusal (doc 17h cut M8b-2 fix round 1, L3).
+const MANUFACTURE_REFUSAL: &str = "Core manufacture is unavailable or changed.";
+/// The refit's uniform refusal.
+const REFIT_REFUSAL: &str = "Core refit is unavailable or changed.";
+
+/// The text of a step that must refuse; an acceptance is the test's failure.
+fn refusal_text<T>(result: Result<T>) -> Result<String> {
+    match result {
+        Ok(_) => Err("accepted where a refusal was expected".into()),
+        Err(refused) => Ok(refused.to_string()),
+    }
+}
+
+/// The economy's birth of `core`: its source and class.
+fn birth_of(
+    r: &Rig,
+    core: ObjId,
+) -> Result<(
+    mush_economy::core_integration::DieSource,
+    mush_economy::core_integration::CoreClass,
+)> {
+    let birth = r
+        .world()
+        .world()
+        .module_state::<EconomyStore>()
+        .ok_or("the economy")?
+        .core_title_birth(core)
+        .map_err(|e| format!("{e:?}"))?
+        .ok_or("the core's birth")?;
+    Ok((birth.source, birth.class))
+}
+
+/// `core`'s provenance word, read as M8a's inspection reads it.
+fn provenance(r: &Rig, core: ObjId) -> crate::minds::registry_inspection::Provenance {
+    let engine = r.world().engine();
+    let mut reader = crate::minds::registry_inspection::facts::StoreRead(engine.action_state());
+    crate::minds::provenance::provenance_of(&engine.world, &mut reader, core)
+}
+
+/// A coreless prospector rig titled to the buyer, standing in `at`.
+fn rig_at(r: &mut Rig, at: ObjId) -> Result<ObjId> {
+    let buyer = r.buyer;
+    let hull =
+        r.world_mut()
+            .world_mut()
+            .create(ObjKind::Thing, "Prospector rig", buyer, Some(at))?;
+    command(
+        r.world_mut(),
+        GOD,
+        &format!(
+            "@unit/create #{}={}",
+            hull.0,
+            crate::definitions::content::TV_PROSPECTOR
+        ),
+    )?;
+    command(
+        r.world_mut(),
+        GOD,
+        &format!("@asset/title #{}=#{}", hull.0, buyer.0),
+    )?;
+    r.flush();
+    Ok(hull)
+}
+
+/// **Doc 17h cut M8b-2, a heirloom die** (H1–H4): only GOD issues one (the agent and the
+/// buyer are refused); the governed facility refuses it with its uniform refusal; in the back
+/// room (a facility holding `core_ungovern`) it integrates as Class III paid to the shop alone,
+/// its title birth's source is `heirloom` and its provenance `Heirloom`; the governed refit
+/// refuses the core, and the ungoverning refit fits it (displacing a certified Class I fitted
+/// at Stickney first: `core_ungovern` never fits a coreless chassis, M8b G2) as the rig's
+/// ungoverned Class III, which `read_core` reads and M8a's inspection prints. After a restart the birth's source, the
+/// provenance and the fitted unit are unchanged (the integration's receipt audit replays).
+#[tokio::test(flavor = "current_thread")]
+async fn m8b2_a_heirloom_integrates_in_the_back_room_as_an_ungoverned_three() -> Result {
+    use crate::definitions::core_replacement::RIG_III_UNGOVERNED;
+    use crate::minds::registry_inspection::facts::{StoreRead, read_unit as read};
+    use crate::minds::registry_inspection::{HullClass, Provenance};
+    use mush_economy::core_integration::{CoreClass, DieSource};
+    let mut r = entitled_rig()?;
+    let buyer = r.buyer;
+    let agent = r.deployment.agents[1].actor;
+    let shop = r
+        .deployment
+        .ungovern
+        .as_ref()
+        .ok_or("the back-room shop")?
+        .clone();
+    let vault = stash(&mut r)?;
+    // H3: GOD-only. The stock agent (who may issue certified dies) and the buyer are refused.
+    for actor in [agent, buyer] {
+        check!(crate::test_checks::refused(r.plan(
+            "industry",
+            "issue_heirloom_die",
+            actor,
+            json!({"vault":vault.0})
+        ))?);
+    }
+    r.flush();
+    let quotas = r.rows("industry_core_die_quota");
+    let lot = issue(&mut r, "issue_heirloom_die", json!({"vault":vault.0}))?;
+    r.flush();
+    check_eq!(
+        r.rows("industry_core_die_quota"),
+        quotas,
+        "a heirloom counts against no quota"
+    );
+    let record = r
+        .rows("industry_core_die_uncertified")
+        .into_iter()
+        .find(|row| row["lot"] == json!(lot))
+        .ok_or("the heirloom's issue")?;
+    check_eq!(record["source"], json!("heirloom"));
+    check_eq!(record["label"], json!("die.h"));
+    check_eq!(record["class"], json!(DieClass::III));
+    // H2: the chartered site refuses it (its uniform refusal: the lot has no certificate).
+    let (governed_offer, _) = r.perform(
+        "industry",
+        "offer_core_integration",
+        agent,
+        json!({"requester":buyer.0,"class":DieClass::III}),
+    )?;
+    let before = r.money(r.payer)?;
+    let refused = refusal_text(r.plan(
+        "industry",
+        "accept_core_integration",
+        buyer,
+        json!({"offer":governed_offer.to_hex(),"payer":r.payer.0.to_string(),
+                "input_lot":lot.to_string()}),
+    ))?;
+    check!(
+        refused.contains("accept_core_integration") && refused.contains(MANUFACTURE_REFUSAL),
+        "{refused}"
+    );
+    check_eq!(r.money(r.payer)?, before);
+    // H2: the back room integrates it, the integration fee paid to the shop alone.
+    let money = (
+        r.money(r.payer)?,
+        r.money(shop.provider.account)?,
+        r.money(r.deployment.integrator.account)?,
+        r.money(r.deployment.supplier_account)?,
+    );
+    let (accept, core) = integrate_uncertified(&mut r, lot, DieClass::III)?;
+    let fee = CoreClass::III.integration_minor();
+    check_eq!(r.money(r.payer)?.0, money.0.0 - fee);
+    check_eq!(r.money(shop.provider.account)?.0, money.1.0 + fee);
+    check_eq!(r.money(r.deployment.integrator.account)?, money.2);
+    check_eq!(r.money(r.deployment.supplier_account)?, money.3);
+    check_eq!(birth_of(&r, core)?, (DieSource::Heirloom, CoreClass::III));
+    check_eq!(provenance(&r, core), Provenance::Heirloom);
+    // The governed refit never fits it (it would be fitted governed); the ungoverning refit
+    // fits it as the rig's ungoverned twin.
+    let factory = r.deployment.factory;
+    r.world_mut().world_mut().move_to(buyer, factory)?;
+    let hull = rig_at(&mut r, factory)?;
+    // The positive control (fix round 1, L3): through the same `refit_class` call, the
+    // chartered refit fits a certified core to this rig. The ungoverning refit never fits a
+    // coreless chassis (doc 17h cut M8b G2), so the heirloom will displace it.
+    let (certified_accept, certified) = integrate_class_one(&mut r)?;
+    refit_class(&mut r, hull, certified, certified_accept, DieClass::I, None)
+        .map_err(|e| format!("the chartered fitting: {e}"))?;
+    let refused = refusal_text(refit_class(&mut r, hull, core, accept, DieClass::III, None))?;
+    check!(
+        refused.contains("offer_core_refit") && refused.contains(REFIT_REFUSAL),
+        "the chartered refit refuses the heirloom at its offer: {refused}"
+    );
+    r.world_mut().world_mut().move_to(buyer, shop.factory)?;
+    r.world_mut().world_mut().move_to(hull, shop.factory)?;
+    r.flush();
+    refit_class(
+        &mut r,
+        hull,
+        core,
+        accept,
+        DieClass::III,
+        Some("core_ungovern"),
+    )
+    .map_err(|e| format!("the ungoverning refit: {e}"))?;
+    let fitted = mush_tactics::module::unit_of(r.world().world(), hull)
+        .ok_or("the fitted rig")?
+        .clone();
+    check_eq!(fitted.schema().key().id.as_str(), RIG_III_UNGOVERNED);
+    check_eq!(
+        crate::arena::core::read_core(&fitted).map(|hw| (hw.class, hw.governed)),
+        Some((crate::arena::core::CoreClass::III, false))
+    );
+    {
+        let engine = r.world().engine();
+        let mut reader = StoreRead(engine.action_state());
+        let found = read(&engine.world, &mut reader, hull).ok_or("the fitted rig reads")?;
+        check_eq!(found.facts.core, Some(core));
+        check_eq!(found.facts.class, HullClass::III);
+        check_eq!(found.facts.governed, Some(false));
+        check_eq!(found.facts.provenance, Provenance::Heirloom);
+        let receipt =
+            crate::minds::registry_inspection::facts::receipt(&engine.world, &found.facts, false);
+        check!(
+            receipt.contains("provenance heirloom"),
+            "the inspection prints it: {receipt}"
+        );
+    }
+    r.reboot(CoreOriginMode::Active)?;
+    check_eq!(birth_of(&r, core)?, (DieSource::Heirloom, CoreClass::III));
+    check_eq!(provenance(&r, core), Provenance::Heirloom);
+    check_eq!(
+        mush_tactics::module::unit_of(r.world().world(), hull),
+        Some(&fitted)
+    );
+    Ok(())
+}
+
+/// **Doc 17h cut M8b-2, grey dies** (H1–H4): a grey die of each class, issued by GOD with no
+/// origin recorded, integrates in the back room as a core of that class whose birth's source is
+/// `grey` and provenance `Grey`; the Class I one is fitted only ungoverned. The chartered site
+/// refuses a grey lot, the back room refuses a certified one, and after a restart every
+/// birth's source is unchanged.
+#[tokio::test(flavor = "current_thread")]
+async fn m8b2_grey_dies_integrate_as_ungoverned_cores_of_their_class() -> Result {
+    use crate::definitions::core_replacement::RIG_I_UNGOVERNED;
+    use crate::minds::registry_inspection::Provenance;
+    use mush_economy::core_integration::{CoreClass, DieSource};
+    let mut r = entitled_rig()?;
+    let buyer = r.buyer;
+    let agent = r.deployment.agents[1].actor;
+    let shop = r
+        .deployment
+        .ungovern
+        .as_ref()
+        .ok_or("the back-room shop")?
+        .clone();
+    let vault = stash(&mut r)?;
+    check!(crate::test_checks::refused(r.plan(
+        "industry",
+        "issue_grey_die",
+        agent,
+        json!({"class":"i","vault":vault.0})
+    ))?);
+    let mut cores = Vec::new();
+    for (die, class) in [
+        (DieClass::I, CoreClass::I),
+        (DieClass::II, CoreClass::II),
+        (DieClass::III, CoreClass::III),
+    ] {
+        let lot = issue(
+            &mut r,
+            "issue_grey_die",
+            json!({"class":die,"vault":vault.0}),
+        )?;
+        let shop_before = r.money(shop.provider.account)?.0;
+        let (accept, core) = integrate_uncertified(&mut r, lot, die)?;
+        check_eq!(
+            r.money(shop.provider.account)?.0,
+            shop_before + class.integration_minor()
+        );
+        check_eq!(birth_of(&r, core)?, (DieSource::Grey, class));
+        check_eq!(provenance(&r, core), Provenance::Grey);
+        cores.push((accept, core, class));
+    }
+    // The chartered site refuses a grey lot; the back room refuses a certified one.
+    let grey = issue(
+        &mut r,
+        "issue_grey_die",
+        json!({"class":"i","vault":vault.0}),
+    )?;
+    let (governed_offer, _) = r.perform(
+        "industry",
+        "offer_core_integration",
+        agent,
+        json!({"requester":buyer.0,"class":"i"}),
+    )?;
+    let refused = refusal_text(r.plan(
+        "industry",
+        "accept_core_integration",
+        buyer,
+        json!({"offer":governed_offer.to_hex(),"payer":r.payer.0.to_string(),
+                "input_lot":grey.to_string()}),
+    ))?;
+    check!(
+        refused.contains("accept_core_integration") && refused.contains(MANUFACTURE_REFUSAL),
+        "{refused}"
+    );
+    let (_, die) = r.perform("industry", "issue_core_die", agent, json!({"class":"i"}))?;
+    let certified = serde_json::from_value::<mush_inventory::LotId>(die["lot"].clone())?;
+    let (back_room_offer, _) = r.perform(
+        "industry",
+        "offer_core_integration",
+        agent,
+        json!({"requester":buyer.0,"class":"i","site":"core_ungovern"}),
+    )?;
+    let refused = refusal_text(r.plan(
+        "industry",
+        "accept_core_integration",
+        buyer,
+        json!({"offer":back_room_offer.to_hex(),"payer":r.payer.0.to_string(),
+                "input_lot":certified.to_string()}),
+    ))?;
+    check!(
+        refused.contains("accept_core_integration") && refused.contains(MANUFACTURE_REFUSAL),
+        "{refused}"
+    );
+    // The Class I grey core is fitted only ungoverned.
+    let (accept, core, _) = cores[0];
+    let factory = r.deployment.factory;
+    r.world_mut().world_mut().move_to(buyer, factory)?;
+    let hull = rig_at(&mut r, factory)?;
+    // As for the heirloom: the positive control first, a certified core fitted at Stickney
+    // through the same call (M8b G2), then the grey core refused at the refit's offer.
+    let (certified_accept, certified) = integrate_class_one(&mut r)?;
+    refit_class_one(&mut r, hull, certified, certified_accept, None)
+        .map_err(|e| format!("the chartered fitting: {e}"))?;
+    let refused = refusal_text(refit_class_one(&mut r, hull, core, accept, None))?;
+    check!(
+        refused.contains("offer_core_refit") && refused.contains(REFIT_REFUSAL),
+        "the chartered refit refuses the grey core at its offer: {refused}"
+    );
+    r.world_mut().world_mut().move_to(buyer, shop.factory)?;
+    r.world_mut().world_mut().move_to(hull, shop.factory)?;
+    r.flush();
+    refit_class_one(&mut r, hull, core, accept, Some("core_ungovern"))
+        .map_err(|e| format!("the ungoverning refit: {e}"))?;
+    let fitted = mush_tactics::module::unit_of(r.world().world(), hull).ok_or("the fitted rig")?;
+    check_eq!(fitted.schema().key().id.as_str(), RIG_I_UNGOVERNED);
+    check_eq!(
+        crate::arena::core::read_core(fitted).map(|hw| (hw.class, hw.governed)),
+        Some((crate::arena::core::CoreClass::I, false))
+    );
+    r.reboot(CoreOriginMode::Active)?;
+    for (_, core, class) in cores {
+        check_eq!(birth_of(&r, core)?, (DieSource::Grey, class));
+        check_eq!(provenance(&r, core), Provenance::Grey);
+    }
     Ok(())
 }
 

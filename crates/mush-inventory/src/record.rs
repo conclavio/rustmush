@@ -281,14 +281,36 @@ pub enum Lineage {
         /// The immutable lineage root it was minted from.
         tranche: TrancheId,
     },
+    /// **A heirloom die** (doc 17h cut M8b-2, H1): minted from outside the inventory
+    /// from an enclave's heirloom stock, under no importer. `source` names the
+    /// staff issue that minted it (the industry's `enclave_heirloom.v1` record).
+    Heirloom {
+        /// The domain journal entry that produced it.
+        source: ExternalRef,
+    },
+    /// **A grey lot** (doc 17h cut M8b-2, H1): minted from outside the inventory
+    /// with no origin recorded at all.
+    Grey {},
 }
 
 impl Lineage {
+    /// A root arm: matter that entered the inventory from outside, naming no older
+    /// lot (`Origin`, and doc 17h cut M8b-2's `Heirloom` and `Grey`).
+    #[must_use]
+    pub const fn is_root(&self) -> bool {
+        matches!(
+            self,
+            Self::Origin { .. } | Self::Heirloom { .. } | Self::Grey {}
+        )
+    }
+
     /// Every parent lot this arm names, in canonical order.
     #[must_use]
     pub fn parents(&self) -> Vec<LotId> {
         match self {
-            Self::Origin { .. } | Self::Tranche { .. } => Vec::new(),
+            Self::Origin { .. } | Self::Tranche { .. } | Self::Heirloom { .. } | Self::Grey {} => {
+                Vec::new()
+            }
             Self::Split { parent } => vec![*parent],
             Self::Merge { parents } => parents.clone(),
         }

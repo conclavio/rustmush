@@ -41,6 +41,64 @@ impl CoreClass {
     }
 }
 
+/// **Where a die came from** (doc 17h cut M8b-2, H1): the funding subject's and the title
+/// birth's source word. `Certified` is the importer's `certified_core_die.v1` stock and is
+/// written by absence; `Heirloom` (`enclave_heirloom.v1`, an ungoverned Class III) and `Grey`
+/// (no origin recorded, of a declared class) integrate only at the ungoverning site
+/// ([`CorePaymentPolicy::site`]). Industry re-exports it beside its pinned `DieClass`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DieSource {
+    #[default]
+    Certified,
+    Heirloom,
+    Grey,
+}
+impl DieSource {
+    /// `true` for the importer's certified stock: the word written by absence.
+    #[must_use]
+    pub const fn is_certified(&self) -> bool {
+        matches!(self, Self::Certified)
+    }
+}
+/// A present `source` must be an uncertified one: `certified` is written by absence.
+fn present_uncertified<'de, D: serde::Deserializer<'de>>(d: D) -> Result<DieSource, D::Error> {
+    match DieSource::deserialize(d)? {
+        DieSource::Certified => Err(serde::de::Error::custom(
+            "a certified die is written by absence",
+        )),
+        source => Ok(source),
+    }
+}
+
+/// **The ungoverning integration site** (doc 17h cut M8b-2, H2; doc 17 §10, D-UM-42): the
+/// facility holding `core_ungovern` (and neither `core_integration` nor `core_refit`) where a
+/// heirloom or grey die is integrated with no certificate, the organization account its
+/// integration fee is paid to, and its own completed-work container (fix round 1, L2: a
+/// back-room core never passes through the chartered factory's). Absent when the composition
+/// names no such shop.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UngovernedIntegration {
+    pub integrator: ScopedCoreAccount,
+    pub factory: ObjId,
+    pub output_container: ObjId,
+}
+
+/// The site one source integrates at: the chartered factory for a certified die, the
+/// ungoverning one for a heirloom or grey die.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntegrationSite<'a> {
+    pub integrator: &'a ScopedCoreAccount,
+    pub factory: ObjId,
+    /// Where the site's completed cores are born.
+    pub output_container: ObjId,
+    /// The facility capability the site's facility holds.
+    pub capability: &'static str,
+    /// The Org capability the site's operator holds on the integrator's scope.
+    pub operator_capability: &'static str,
+}
+
 /// Exact configured account and actual coherent organization compartment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +131,10 @@ pub struct CorePaymentPolicy {
     pub catalogs: [CatalogRef; 3],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<CoreDeliveryPromise>,
+    /// The ungoverning site (doc 17h cut M8b-2, H2). Absent when not composed, so a policy
+    /// without it keeps its bytes and digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ungoverned: Option<UngovernedIntegration>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,6 +156,13 @@ struct PolicyWire {
     catalogs: [CatalogWire; 3],
     #[serde(default, deserialize_with = "present_delivery")]
     delivery: Option<CoreDeliveryPromise>,
+    #[serde(default, deserialize_with = "present_ungoverned")]
+    ungoverned: Option<UngovernedIntegration>,
+}
+fn present_ungoverned<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<UngovernedIntegration>, D::Error> {
+    UngovernedIntegration::deserialize(d).map(Some)
 }
 fn present_delivery<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -113,6 +182,7 @@ impl<'de> Deserialize<'de> for CorePaymentPolicy {
             output_container: w.output_container,
             recipe: w.recipe,
             delivery: w.delivery,
+            ungoverned: w.ungoverned,
             catalogs: w.catalogs.map(|c| CatalogRef {
                 ruleset: c.ruleset,
                 code: c.code,
@@ -131,6 +201,17 @@ impl CorePaymentPolicy {
             || self.recipe.key().id.as_str() != "core_integrate"
             || self.recipe.version() != 1
             || self.recipe.digest().as_bytes() == &[0; 32]
+        {
+            return Err(Error::Invalid);
+        }
+        // The shop is its own organization, factory and container (fix round 1, L2 and L4):
+        // nothing of the chartered site is the back room's.
+        if let Some(u) = &self.ungoverned
+            && ([self.supplier.account, self.integrator.account].contains(&u.integrator.account)
+                || u.integrator.organization == self.integrator.organization
+                || u.factory == u.output_container
+                || [self.factory, self.output_container].contains(&u.factory)
+                || [self.factory, self.output_container].contains(&u.output_container))
         {
             return Err(Error::Invalid);
         }
@@ -157,6 +238,31 @@ impl CorePaymentPolicy {
         let bytes = mush_core::mechanics::canonical_json_bytes_with_limit(&value, SUBJECT_BYTES)
             .map_err(|_| Error::Capacity)?;
         Ok(DefinitionDigest::from_bytes(Sha256::digest(bytes).into()))
+    }
+
+    /// **The site a die of `certified`-ness integrates at** (doc 17h cut M8b-2, H2): a
+    /// certified die at the chartered factory (`core_integration`, `industry.core.integrate`),
+    /// a heirloom or grey die only at the ungoverning one (`core_ungovern`,
+    /// `industry.core.ungovern`). An uncertified die on a policy composed without the
+    /// ungoverning site is refused.
+    pub fn site(&self, certified: bool) -> Result<IntegrationSite<'_>, Error> {
+        if certified {
+            return Ok(IntegrationSite {
+                integrator: &self.integrator,
+                factory: self.factory,
+                output_container: self.output_container,
+                capability: "core_integration",
+                operator_capability: "industry.core.integrate",
+            });
+        }
+        let u = self.ungoverned.as_ref().ok_or(Error::Invalid)?;
+        Ok(IntegrationSite {
+            integrator: &u.integrator,
+            factory: u.factory,
+            output_container: u.output_container,
+            capability: "core_ungovern",
+            operator_capability: "industry.core.ungovern",
+        })
     }
 
     /// Shared exact action recipe. Historical receipts reconstruct this full
@@ -236,12 +342,15 @@ impl CorePaymentPolicy {
 pub(crate) enum DiePayment {
     SupplierStock,
     RequesterSupplied,
+    /// A heirloom or grey die the requester brings to the ungoverning site (doc 17h cut
+    /// M8b-2, H2): the integration fee only, paid to that site's integrator.
+    Uncertified,
 }
 impl DiePayment {
     pub(crate) const fn price(self, class: CoreClass) -> Amount {
         Amount::from_minor(match self {
             Self::SupplierStock => class.finished_minor(),
-            Self::RequesterSupplied => class.integration_minor(),
+            Self::RequesterSupplied | Self::Uncertified => class.integration_minor(),
         })
     }
 }
@@ -257,12 +366,17 @@ pub struct CoreFundingSubject {
     pub payer: AccountId,
     pub input_vault: VaultId,
     pub die_lot: u64,
+    /// The die's issuing operation: the certificate's for a certified die, the staff issue's
+    /// for a heirloom or grey one (doc 17h cut M8b-2).
     pub die_certificate: CommitToken,
     pub class: CoreClass,
     pub recipe: DefinitionRef,
     pub policy: DefinitionDigest,
     pub accepted_at: ClockStamp,
     pub expires_at: ClockStamp,
+    /// Where the die came from (doc 17h cut M8b-2, H1). Absent for a certified die.
+    #[serde(default, skip_serializing_if = "DieSource::is_certified")]
+    pub source: DieSource,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -281,6 +395,8 @@ struct SubjectWire {
     policy: DefinitionDigest,
     accepted_at: ClockStamp,
     expires_at: ClockStamp,
+    #[serde(default, deserialize_with = "present_uncertified")]
+    source: DieSource,
 }
 impl<'de> Deserialize<'de> for CoreFundingSubject {
     fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
@@ -300,6 +416,7 @@ impl<'de> Deserialize<'de> for CoreFundingSubject {
             policy: w.policy,
             accepted_at: w.accepted_at,
             expires_at: w.expires_at,
+            source: w.source,
         };
         subject.validate().map_err(serde::de::Error::custom)?;
         Ok(subject)
@@ -316,6 +433,7 @@ impl CoreFundingSubject {
             || !matches!(self.accepted_at.clock, ClockRef::WorldIc { generation } if generation > 0)
             || self.expires_at.clock != self.accepted_at.clock
             || self.accepted_at.at.checked_add(RESERVATION_SECONDS) != Some(self.expires_at.at)
+            || (self.source == DieSource::Heirloom && self.class != CoreClass::III)
         {
             return Err(Error::Invalid);
         }
@@ -331,5 +449,146 @@ impl CoreFundingSubject {
         let bytes = mush_core::mechanics::canonical_json_bytes_with_limit(&value, SUBJECT_BYTES)
             .map_err(|_| Error::Capacity)?;
         Ok(DefinitionDigest::from_bytes(Sha256::digest(bytes).into()))
+    }
+}
+
+#[cfg(test)]
+mod m8b2_tests {
+    //! Doc 17h cut M8b-2 (H1, H2): the die's source word, written by absence for a certified
+    //! die, and the two integration sites.
+    use super::*;
+    use mush_core::{
+        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
+    };
+
+    fn recipe() -> DefinitionRef {
+        DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("tacsim").expect("an owner"),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("recipe").expect("a kind"),
+                    DefinitionId::new("core_integrate").expect("an id"),
+                    1,
+                    serde_json::json!({"fixture": "core_integrate"}),
+                )
+                .expect("a descriptor"),
+            )
+            .expect("registers")
+    }
+    fn account(n: u64) -> ScopedCoreAccount {
+        ScopedCoreAccount {
+            account: AccountId(n),
+            organization: OrgId(n),
+            scope: OrgScopeId(n),
+        }
+    }
+    fn chartered() -> CorePaymentPolicy {
+        CorePaymentPolicy {
+            issuer: SystemPrincipalId::new("hardware.factory").expect("an issuer"),
+            instrument: InstrumentId::new("tacsim.credit").expect("an instrument"),
+            supplier: account(1),
+            integrator: account(2),
+            supplier_stock: [VaultId(1), VaultId(2)],
+            factory: ObjId(10),
+            output_container: ObjId(11),
+            recipe: recipe(),
+            catalogs: ["a", "b", "c"].map(|code| CatalogRef {
+                ruleset: "tacsim".into(),
+                code: code.into(),
+            }),
+            delivery: None,
+            ungoverned: None,
+        }
+    }
+    fn composed() -> CorePaymentPolicy {
+        CorePaymentPolicy {
+            ungoverned: Some(UngovernedIntegration {
+                integrator: account(3),
+                factory: ObjId(20),
+                output_container: ObjId(21),
+            }),
+            ..chartered()
+        }
+    }
+
+    #[test]
+    fn m8b2_a_certified_source_and_an_absent_site_are_written_by_absence() {
+        let value = serde_json::to_value(chartered()).expect("encodes");
+        assert!(value.get("ungoverned").is_none());
+        assert!(present_uncertified(serde_json::json!("certified")).is_err());
+        for (word, source) in [("heirloom", DieSource::Heirloom), ("grey", DieSource::Grey)] {
+            assert_eq!(
+                present_uncertified(serde_json::json!(word)).expect("reads"),
+                source
+            );
+        }
+        let decoded: CorePaymentPolicy =
+            serde_json::from_value(serde_json::to_value(composed()).expect("encodes"))
+                .expect("decodes");
+        assert_eq!(decoded, composed());
+    }
+
+    #[test]
+    fn m8b2_each_source_integrates_at_its_own_site() {
+        let policy = composed();
+        let governed = policy.site(true).expect("the chartered site");
+        assert_eq!(
+            (governed.factory, governed.integrator, governed.capability),
+            (ObjId(10), &account(2), "core_integration")
+        );
+        assert_eq!(governed.operator_capability, "industry.core.integrate");
+        let back_room = policy.site(false).expect("the ungoverning site");
+        assert_eq!(
+            (
+                back_room.factory,
+                back_room.integrator,
+                back_room.capability
+            ),
+            (ObjId(20), &account(3), "core_ungovern")
+        );
+        assert_eq!(back_room.operator_capability, "industry.core.ungovern");
+        assert!(
+            chartered().site(false).is_err(),
+            "no shop, no uncertified die"
+        );
+        assert_eq!(
+            DiePayment::Uncertified.price(CoreClass::III),
+            Amount::from_minor(CoreClass::III.integration_minor())
+        );
+        assert_eq!(
+            (governed.output_container, back_room.output_container),
+            (ObjId(11), ObjId(21)),
+            "a back-room core is born in the shop's own container (fix round 1, L2)"
+        );
+        // The shop is none of the chartered site: not its factory or container, not paid as
+        // its supplier or integrator, not its integrator's organization; and its own factory
+        // is not its container.
+        let site =
+            |integrator: ScopedCoreAccount, factory: u32, output: u32| UngovernedIntegration {
+                integrator,
+                factory: ObjId(factory),
+                output_container: ObjId(output),
+            };
+        let same_org = ScopedCoreAccount {
+            account: AccountId(9),
+            organization: OrgId(2),
+            scope: OrgScopeId(9),
+        };
+        for bad in [
+            site(account(3), 10, 21),
+            site(account(3), 11, 21),
+            site(account(3), 20, 10),
+            site(account(3), 20, 11),
+            site(account(3), 20, 20),
+            site(account(2), 20, 21),
+            site(account(1), 20, 21),
+            site(same_org, 20, 21),
+        ] {
+            let policy = CorePaymentPolicy {
+                ungoverned: Some(bad),
+                ..chartered()
+            };
+            assert!(policy.validate().is_err());
+        }
     }
 }

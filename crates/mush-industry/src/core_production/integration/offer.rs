@@ -4,7 +4,7 @@ use super::{IntegrationError as Error, PublishedCoreRecipe, bad};
 use crate::core_production::records::DieCertificate;
 use crate::facility::FacilityRecord;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
-use mush_economy::core_integration::{CoreClass, CorePaymentPolicy};
+use mush_economy::core_integration::{CoreClass, CorePaymentPolicy, IntegrationSite};
 use mush_inventory::Lot;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,28 @@ pub(crate) enum OfferedInput {
     /// Buyer's acceptance later supplies its own exact certified input; this
     /// offer does not inspect or authorize a guessed private customer vault.
     RequesterSupplied {},
+    /// **The ungoverning site's input** (doc 17h cut M8b-2, H2): the operator of the facility
+    /// holding `core_ungovern` consents to integrate, for the named recipient and class, a
+    /// heirloom or grey die the buyer's acceptance supplies with no certificate.
+    Uncertified {},
+}
+impl OfferedInput {
+    /// `false` for the ungoverning site's input: the site a die of this input integrates at.
+    pub(crate) const fn certified(&self) -> bool {
+        !matches!(self, Self::Uncertified {})
+    }
+}
+
+/// **Whether `facility` is `site`'s** (doc 17h cut M8b-2, H2): the site's object, owned by its
+/// integrator's organization, holding its capability; the ungoverning site's facility holds
+/// neither `core_integration` nor `core_refit`.
+pub(crate) fn holds_site(facility: &FacilityRecord, site: &IntegrationSite<'_>) -> bool {
+    let holds = |word: &str| facility.capabilities().iter().any(|c| c.as_str() == word);
+    facility.object() == site.factory
+        && facility.owner() == &mush_org::PrincipalId::Organization(site.integrator.organization)
+        && holds(site.capability)
+        && (site.capability != "core_ungovern"
+            || (!holds("core_integration") && !holds("core_refit")))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -99,14 +121,10 @@ impl FactoryOffer {
                     .policy
                     .action_ref("offer_core_integration")
                     .map_err(bad)?
-            || self.facility.object() != self.policy.factory
-            || self.facility.owner()
-                != &mush_org::PrincipalId::Organization(self.policy.integrator.organization)
-            || !self
-                .facility
-                .capabilities()
-                .iter()
-                .any(|c| c.as_str() == "core_integration")
+            || !holds_site(
+                &self.facility,
+                &self.policy.site(self.input.certified()).map_err(bad)?,
+            )
             || self.recipe.definition() != &self.policy.recipe
             || self.observed_utc.checked_add(OFFER_SECONDS) != Some(self.expires_utc)
             || !matches!(self.observed_ic.clock, ClockRef::WorldIc { generation } if generation > 0)

@@ -127,11 +127,22 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, runtime: &Runtime) -> Result<Projection
             }
             let offer = offers.get(&row.intent.offer).ok_or(Error::Integrity)?;
             row.intent.matches_offer(offer)?;
-            if ctx
-                .action_state(&runtime.origins.certificates, &row.intent.certificate.key())
-                .map_err(bad)?
-                != Some(&row.intent.certificate)
-            {
+            // The die's retained proof: the certificate, or the staff issue of a heirloom or
+            // grey die (doc 17h cut M8b-2).
+            let retained = match (&row.intent.certificate, &row.intent.uncertified) {
+                (Some(c), None) => {
+                    ctx.action_state(&runtime.origins.certificates, &c.key())
+                        .map_err(bad)?
+                        == Some(c.as_ref())
+                }
+                (None, Some(u)) => {
+                    ctx.action_state(&runtime.origins.uncertified.records, &u.key())
+                        .map_err(bad)?
+                        == Some(u.as_ref())
+                }
+                _ => false,
+            };
+            if !retained {
                 return Err(Error::Integrity);
             }
             row.verify_payment(payments.get(&row.accepted).ok_or(Error::Integrity)?)?;
@@ -317,7 +328,7 @@ fn capacity(
     runtime: &Runtime,
     row: &CoreIntegrationOrder,
 ) -> Result<(), Error> {
-    let resource = crate::facility::facility_resource(row.intent.policy.factory).map_err(bad)?;
+    let resource = crate::facility::facility_resource(row.intent.site_factory()?).map_err(bad)?;
     let holder = crate::workorder::wo_holder(row.intent.order).map_err(bad)?;
     let id = ReservationId::derive(&holder, &resource).map_err(bad)?;
     if row.capacity != id {
@@ -325,7 +336,7 @@ fn capacity(
     }
     let initial = ReservationRecord::held(id, resource, holder, 1, row.intent.expires_at.clone())
         .map_err(bad)?;
-    let key = crate::facility::facility_capacity_key(row.intent.policy.factory).map_err(bad)?;
+    let key = crate::facility::facility_capacity_key(row.intent.site_factory()?).map_err(bad)?;
     let book = ctx
         .action_state(&runtime.industry.facility_books, &key)
         .map_err(bad)?;
