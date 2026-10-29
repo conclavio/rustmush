@@ -42,7 +42,7 @@ pub fn observer_descriptors() -> Result<Vec<DefinitionDescriptor>, ModError> {
         .map(|id| mush_core::moved_observer::descriptor(id, 1))
         .collect()
 }
-pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+pub(crate) fn register_validator(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.definition_validator(
         DefinitionKind::new("owner_participant").map_err(bad)?,
         |ctx: &DefinitionValidationContext<'_>| {
@@ -52,7 +52,15 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                     participant_descriptor().map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?;
-            if ctx.definition().reference() != &expected
+            let window = DefinitionRegistryBuilder::new()
+                .register(
+                    OwnerId::new(NS).map_err(|e| e.to_string())?,
+                    crate::movement_window_participant::participant_descriptor()
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            if (ctx.definition().reference() != &expected
+                && ctx.definition().reference() != &window)
                 || !ctx.definition().references().is_empty()
             {
                 return Err("unknown Atlas participant definition".into());
@@ -60,6 +68,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             Ok(())
         },
     )?;
+    Ok(())
+}
+pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     let participant = reg.definition(participant_descriptor()?.as_current())?;
     let mut definitions = DefinitionRegistryBuilder::new();
     let action = definitions
@@ -134,6 +145,7 @@ pub struct Patch {
     history_fence: DefinitionDigest,
     append: Option<PreparedLedgerAppend>,
     known: Option<KnownDoc>,
+    window: Option<Box<crate::movement_window::WindowArrivalPlan>>,
 }
 pub struct BoundAtlasMovement<'a> {
     known: &'a mut BTreeMap<ObjId, Vec<RecordKey>>,
@@ -154,6 +166,9 @@ impl BoundParticipant for BoundAtlasMovement<'_> {
 impl Patch {
     fn local(&self, state: &AtlasState) -> Result<(), ParticipantError> {
         self.capture.recheck_owner(state).map_err(|_| refused())?;
+        if let Some(window) = &self.window {
+            window.recheck_owner(state).map_err(|_| refused())?;
+        }
         if !state.movement_history.enabled
             || state.movement_history.ledger.next_seq(history::LOG) != self.history_next
             || state.movement_history.fence()? != self.history_fence
@@ -170,6 +185,120 @@ impl Patch {
         Ok(())
     }
 }
+pub(crate) fn prepare_knowledge(
+    state: &AtlasState,
+    ctx: &OwnerPrepareContext<'_>,
+    intent: MovementIntent,
+    window: Option<crate::movement_window::WindowArrivalPlan>,
+) -> Result<OwnerPreparation<MovementDraft, Patch>, ParticipantError> {
+    if !state.movement_history.enabled {
+        return Err(refused());
+    }
+    let capture = if let Some(window) = &window {
+        window.capture().clone()
+    } else {
+        crate::movement::capture(
+            ctx.world(),
+            intent.actor(),
+            intent.source(),
+            intent.destination(),
+            intent.at_utc(),
+        )
+        .map_err(|_| refused())?
+    };
+    if capture.atlas_slot() != SlotPresence::Present
+        || (window.is_none() && capture.window_effect() != WindowEffect::NoSelectedEffect)
+    {
+        return Err(refused());
+    }
+    if let Discovery::Mapped {
+        known_before: Some(before),
+        ..
+    } = capture.discovery()
+    {
+        history::canonical_known(before)?;
+    }
+    let digest = if let Some(window) = &window {
+        window.digest().map_err(|_| refused())?
+    } else {
+        capture_digest(&capture)?
+    };
+    let known = capture.planned_known();
+    let history_next = state.movement_history.ledger.next_seq(history::LOG);
+    let history_fence = state.movement_history.fence()?;
+    let (append, event) = if let Some(known) = &known {
+        let event = Mutation {
+            format: 1,
+            actor: intent.actor(),
+            at_utc: intent.at_utc(),
+            source: Source::Prepared {
+                commit: intent.commit(),
+                prepared_at: intent.prepared_at().clone(),
+                capture_digest: digest,
+            },
+            known: known.clone(),
+        };
+        let append = state
+            .movement_history
+            .ledger
+            .prepare_append_bounded(history::LOG, event.value()?, history::RESIDENT_BYTES)
+            .map_err(|_| refused())?;
+        let claim = EventClaim {
+            sequence: append.seq(),
+            digest: event.digest()?,
+        };
+        (Some(append), Some(claim))
+    } else {
+        (None, None)
+    };
+    let proof = if let Some(window) = &window {
+        serde_json::to_value(crate::movement_window_participant::Proof {
+            format: 1,
+            window: serde_json::to_value(window).map_err(|_| ParticipantError::Encoding)?,
+            history_next,
+            event,
+        })
+        .map_err(|_| ParticipantError::Encoding)?
+    } else {
+        serde_json::to_value(Proof {
+            format: 1,
+            capture: serde_json::to_value(&capture).map_err(|_| ParticipantError::Encoding)?,
+            history_next,
+            event,
+        })
+        .map_err(|_| ParticipantError::Encoding)?
+    };
+    let output = MovementDraft::new(ctx, &intent, digest, proof)?;
+    let mut writes = Vec::new();
+    if let Some(known) = &known {
+        writes.push(ReplayWrite::ModuleJsonSet {
+            namespace: OwnerId::new(NS).map_err(|_| refused())?,
+            key: mush_core::AuthoritativeKey::parse_canonical(
+                crate::travel::known_key(intent.actor()).as_str(),
+            )
+            .map_err(|_| refused())?,
+            value: serde_json::to_value(known).map_err(|_| ParticipantError::Encoding)?,
+        });
+    }
+    if let Some(append) = &append {
+        writes.push(
+            append
+                .authoritative_replay_write(OwnerId::new(NS).map_err(|_| refused())?)
+                .map_err(|_| refused())?,
+        );
+    }
+    let patch = Patch {
+        binding: ctx.preparation_binding(),
+        stamp: intent.prepared_at().clone(),
+        capture,
+        history_next,
+        history_fence,
+        append,
+        known,
+        window: window.map(Box::new),
+    };
+    Ok(OwnerPreparation::new(output, patch, writes))
+}
 impl OwnerParticipant for AtlasMovementParticipant {
     type State = AtlasState;
     type Request = MovementIntent;
@@ -182,98 +311,10 @@ impl OwnerParticipant for AtlasMovementParticipant {
         ctx: &OwnerPrepareContext<'_>,
         intent: MovementIntent,
     ) -> Result<OwnerPreparation<Self::Output, Patch>, ParticipantError> {
-        if !state.movement_history.enabled {
+        if intent.window_projection().is_some() {
             return Err(refused());
         }
-        let capture = crate::movement::capture(
-            ctx.world(),
-            intent.actor(),
-            intent.source(),
-            intent.destination(),
-            intent.at_utc(),
-        )
-        .map_err(|_| refused())?;
-        if capture.atlas_slot() != SlotPresence::Present
-            || capture.window_effect() != WindowEffect::NoSelectedEffect
-        {
-            return Err(refused());
-        }
-        if let Discovery::Mapped {
-            known_before: Some(before),
-            ..
-        } = capture.discovery()
-        {
-            history::canonical_known(before)?;
-        }
-        let digest = capture_digest(&capture)?;
-        let known = capture.planned_known();
-        let history_next = state.movement_history.ledger.next_seq(history::LOG);
-        let history_fence = state.movement_history.fence()?;
-        let (append, event) = if let Some(known) = &known {
-            let event = Mutation {
-                format: 1,
-                actor: intent.actor(),
-                at_utc: intent.at_utc(),
-                source: Source::Prepared {
-                    commit: intent.commit(),
-                    prepared_at: intent.prepared_at().clone(),
-                    capture_digest: digest,
-                },
-                known: known.clone(),
-            };
-            let append = state
-                .movement_history
-                .ledger
-                .prepare_append_bounded(history::LOG, event.value()?, history::RESIDENT_BYTES)
-                .map_err(|_| refused())?;
-            let claim = EventClaim {
-                sequence: append.seq(),
-                digest: event.digest()?,
-            };
-            (Some(append), Some(claim))
-        } else {
-            (None, None)
-        };
-        let proof = Proof {
-            format: 1,
-            capture: serde_json::to_value(&capture).map_err(|_| ParticipantError::Encoding)?,
-            history_next,
-            event,
-        };
-        let output = MovementDraft::new(
-            ctx,
-            &intent,
-            digest,
-            serde_json::to_value(proof).map_err(|_| ParticipantError::Encoding)?,
-        )?;
-        let mut writes = Vec::new();
-        if let Some(known) = &known {
-            writes.push(ReplayWrite::ModuleJsonSet {
-                namespace: OwnerId::new(NS).map_err(|_| refused())?,
-                key: mush_core::AuthoritativeKey::parse_canonical(
-                    crate::travel::known_key(intent.actor()).as_str(),
-                )
-                .map_err(|_| refused())?,
-                value: serde_json::to_value(known).map_err(|_| ParticipantError::Encoding)?,
-            });
-        }
-        if let Some(append) = &append {
-            writes.push(
-                append
-                    .authoritative_replay_write(OwnerId::new(NS).map_err(|_| refused())?)
-                    .map_err(|_| refused())?,
-            );
-        }
-        let patch = Patch {
-            binding: ctx.preparation_binding(),
-            stamp: intent.prepared_at().clone(),
-            capture,
-            history_next,
-            history_fence,
-            append,
-            known,
-        };
-        Ok(OwnerPreparation::new(output, patch, writes))
+        prepare_knowledge(state, ctx, intent, None)
     }
     fn recheck(
         &self,
@@ -298,6 +339,9 @@ impl OwnerParticipant for AtlasMovementParticipant {
         .map_err(|_| refused())?;
         if current != patch.capture {
             return Err(refused());
+        }
+        if let Some(window) = &patch.window {
+            window.recheck(ctx.world()).map_err(|_| refused())?;
         }
         patch.local(state)
     }

@@ -230,6 +230,218 @@ fn shares_portal_cell_and_projection_selectors_without_world_mutation() {
 }
 
 #[test]
+fn proposal_binds_actual_metric_selection_and_preserves_unresolved_room_fallback() {
+    let f = fixture();
+    let plan = f.plan();
+    let sim = DefinitionDigest::from_bytes([7; 32]);
+    let projection = plan.projection_proposal(sim).expect("proposal data");
+    let EntryOutcome::Selected {
+        x_cm, y_cm, z_cm, ..
+    } = plan.placement().unwrap().outcome()
+    else {
+        panic!("selected")
+    };
+    assert_eq!(projection.projected_room(), f.to);
+    assert_eq!(
+        projection.target(),
+        Some(WindowMetricTarget::at(7, *x_cm, *y_cm, *z_cm))
+    );
+    assert_eq!(projection.atlas_capture_digest(), plan.digest().unwrap());
+    plan.check_projection(&projection).unwrap();
+    let value = serde_json::to_value(&plan).unwrap();
+    assert_eq!(
+        validate_evidence(&value, &projection).unwrap(),
+        *plan.capture()
+    );
+    assert!(
+        plan.projection_proposal(DefinitionDigest::from_bytes([0; 32]))
+            .is_err()
+    );
+    // An absent resolver result uses the same admitted-room fallback as Sim.
+    let mut hypothetical = plan.clone();
+    if let EntryOutcome::Selected { projected_room, .. } =
+        &mut hypothetical.placement.as_mut().unwrap().outcome
+    {
+        *projected_room = None;
+    }
+    assert_eq!(
+        hypothetical
+            .projection_proposal(sim)
+            .unwrap()
+            .projected_room(),
+        f.to
+    );
+}
+
+#[test]
+fn owner_bind_rechecks_actual_geometry_portal_and_resolver_inputs_without_revisions() {
+    for change in 0..4 {
+        let mut f = fixture();
+        let p = portal("door", f.from, f.to, Point3(0.0, 1.0, 0.0));
+        f.state().records.portals.insert(p.key.clone(), p);
+        let plan = f.plan();
+        plan.recheck_owner(f.world.module_state::<AtlasState>().unwrap())
+            .unwrap();
+        match change {
+            0 => {
+                f.surface().grid.origin.x += 1;
+            }
+            1 => {
+                f.state()
+                    .records
+                    .portals
+                    .get_mut(&key("door"))
+                    .unwrap()
+                    .geometry = PortalGeometry::Point(Point3(2.0, 2.0, 0.0));
+            }
+            2 => {
+                f.state().limits.nearest_room_cells += 1;
+            }
+            _ => {
+                let to = f.to;
+                f.state().records.roomgeo.get_mut(&to).unwrap().footprint = Footprint::Anchor {
+                    point: Point2(0.0, 0.0),
+                    radius_m: 1.0,
+                };
+            }
+        }
+        assert!(
+            plan.recheck_owner(f.world.module_state::<AtlasState>().unwrap())
+                .is_err()
+        );
+        // Historical validation uses original evidence, never today's geometry.
+        let projection = plan
+            .projection_proposal(DefinitionDigest::from_bytes([7; 32]))
+            .unwrap();
+        assert!(validate_evidence(&serde_json::to_value(&plan).unwrap(), &projection).is_ok());
+    }
+}
+
+#[test]
+fn sim_occupancy_requires_its_joint_owner_fence_and_is_not_an_atlas_slot_fact() {
+    let mut f = fixture();
+    let plan = f.plan();
+    let EntryOutcome::Selected {
+        x_cm, y_cm, z_cm, ..
+    } = plan.placement().unwrap().outcome()
+    else {
+        panic!("selected")
+    };
+    f.place(vec![placed(ObjId(999), 7, *x_cm, *y_cm, *z_cm)]);
+    plan.recheck_owner(f.world.module_state::<AtlasState>().unwrap())
+        .unwrap();
+    assert!(plan.recheck(&f.world).is_err());
+}
+
+#[test]
+fn failed_selected_placement_cannot_be_attested_as_a_release_only_success() {
+    let mut f = fixture();
+    let records = (0..3)
+        .flat_map(|y| {
+            (0..3).map(move |x| {
+                placed(
+                    ObjId(100 + x + y * 3),
+                    7,
+                    i64::from(x) * 100 + 50,
+                    i64::from(y) * 100 + 50,
+                    0,
+                )
+            })
+        })
+        .collect();
+    f.place(records);
+    let full = f.plan();
+    assert!(matches!(
+        full.placement().unwrap().outcome(),
+        EntryOutcome::NoFreeCell
+    ));
+    assert!(
+        full.projection_proposal(DefinitionDigest::from_bytes([7; 32]))
+            .is_err()
+    );
+    // No selected placement retains an explicit null target.
+    f.state().windows.open.clear();
+    let none = f.plan();
+    let projection = none
+        .projection_proposal(DefinitionDigest::from_bytes([7; 32]))
+        .unwrap();
+    assert_eq!(projection.target(), None);
+    assert!(validate_evidence(&serde_json::to_value(none).unwrap(), &projection).is_ok());
+}
+
+#[test]
+fn window_historical_evidence_is_strict_even_if_its_digest_is_recomputed() {
+    let f = fixture();
+    let plan = f.plan();
+    let projection = plan
+        .projection_proposal(DefinitionDigest::from_bytes([7; 32]))
+        .unwrap();
+    let base = serde_json::to_value(&plan).unwrap();
+    let mut cases = Vec::new();
+    for field in ["placement", "format", "capture"] {
+        let mut changed = base.clone();
+        changed.as_object_mut().unwrap().remove(field);
+        cases.push(changed);
+    }
+    for field in ["domain", "portal", "geometry", "occupancy", "outcome"] {
+        let mut changed = base.clone();
+        changed["placement"].as_object_mut().unwrap().remove(field);
+        cases.push(changed);
+    }
+    let mut changed = base.clone();
+    changed["placement"]["portal"]["unknown"] = json!(true);
+    cases.push(changed);
+    let mut changed = base.clone();
+    changed["placement"]["geometry"]["unknown"] = json!(true);
+    cases.push(changed);
+    let mut changed = base.clone();
+    changed["placement"]["outcome"]["unknown"] = json!(true);
+    cases.push(changed);
+    let mut changed = base.clone();
+    changed["placement"]["portal"]["probes"] = json!(MAX_WINDOW_PLAN_PORTAL_PROBES + 1);
+    cases.push(changed);
+    let mut changed = base.clone();
+    changed["placement"]["occupancy"]["records"] = json!(MAX_WINDOW_PLAN_PLACEMENTS + 1);
+    cases.push(changed);
+    let mut changed = base.clone();
+    changed["placement"]["outcome"]["surface"] = json!(MAX_WINDOW_PLAN_SURFACES);
+    cases.push(changed);
+    let mut changed = base.clone();
+    changed["placement"]["domain"] = json!(8);
+    cases.push(changed);
+    for value in cases {
+        let rebound = WindowProjection::new(
+            projection.projected_room(),
+            digest(
+                "atlas.window_arrival.capture.v1",
+                &value,
+                MAX_WINDOW_PLAN_BYTES,
+            )
+            .unwrap(),
+            projection.sim_window_capture_digest(),
+            projection.target(),
+        );
+        assert!(validate_evidence(&value, &rebound).is_err());
+    }
+    let mut changed = base;
+    changed["placement"]["outcome"]["x_cm"] = json!(999);
+    assert!(validate_evidence(&changed, &projection).is_err());
+}
+
+#[test]
+fn historical_preflight_bounds_depth_nodes_and_text_before_recursive_work() {
+    let mut nested = serde_json::Value::Null;
+    for _ in 0..32 {
+        nested = json!([nested]);
+    }
+    preflight_evidence(&nested).unwrap();
+    assert!(preflight_evidence(&json!([nested])).is_err());
+    preflight_evidence(&json!(vec![serde_json::Value::Null; 65_535])).unwrap();
+    assert!(preflight_evidence(&json!(vec![serde_json::Value::Null; 65_536])).is_err());
+    assert!(preflight_evidence(&json!("x".repeat(MAX_WINDOW_PLAN_BYTES + 1))).is_err());
+}
+
+#[test]
 fn own_cell_and_other_height_occupancy_preserve_ties_and_arena_exclusion() {
     let mut f = fixture();
     let other = ObjId(999);

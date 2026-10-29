@@ -271,6 +271,7 @@ pub struct AtlasModule {
     config: AtlasConfig,
     shelf: Vec<Pack>,
     composed_movement: Option<Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>>,
+    window_movement: Option<Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>>,
 }
 
 impl std::fmt::Debug for AtlasModule {
@@ -279,6 +280,7 @@ impl std::fmt::Debug for AtlasModule {
             .field("config", &self.config)
             .field("shelf", &self.shelf)
             .field("composed_movement", &self.composed_movement.is_some())
+            .field("window_movement", &self.window_movement.is_some())
             .finish()
     }
 }
@@ -291,6 +293,7 @@ impl AtlasModule {
             config: AtlasConfig::default(),
             shelf: Vec::new(),
             composed_movement: None,
+            window_movement: None,
         }
     }
 
@@ -312,6 +315,7 @@ impl AtlasModule {
             config,
             shelf,
             composed_movement: None,
+            window_movement: None,
         }
     }
 
@@ -330,6 +334,16 @@ impl AtlasModule {
         reader: Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>,
     ) -> Self {
         self.composed_movement = Some(reader);
+        self
+    }
+    /// Join discovery and selector attestation to the separate v2 action.
+    /// Window-arrival output remains outside this participant's coverage.
+    #[must_use]
+    pub fn with_window_composed_movement(
+        mut self,
+        reader: Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>,
+    ) -> Self {
+        self.window_movement = Some(reader);
         self
     }
 }
@@ -478,8 +492,14 @@ impl GameModule for AtlasModule {
         reg.subscribe_moved("travel_discovery", 1, Arc::new(crate::travel::on_moved))?;
         // S4: a character who walks onto, off or across a window's rooms.
         reg.subscribe_moved("window_arrival", 1, Arc::new(crate::window::on_moved))?;
+        if self.composed_movement.is_some() || self.window_movement.is_some() {
+            crate::movement_participant::register_validator(reg)?;
+        }
         if self.composed_movement.is_some() {
             crate::movement_participant::register(reg)?;
+        }
+        if self.window_movement.is_some() {
+            crate::movement_window_participant::register(reg)?;
         }
         reg.subscribe(
             WorldEventKind::Disconnected,
@@ -509,21 +529,27 @@ impl GameModule for AtlasModule {
         let Loaded { records, dropped } = parse(&data, ctx.w);
         let (travel, dropped_travel) = crate::travel::hydrate(&data.kv, ctx.w, &records);
         let mut movement_history = crate::movement_history::MovementHistory {
-            enabled: self.composed_movement.is_some(),
+            enabled: self.composed_movement.is_some() || self.window_movement.is_some(),
             ..Default::default()
         };
-        if let Some(reader) = &self.composed_movement {
+        if movement_history.enabled {
             if !data.omitted.is_empty() {
                 return Err(ModError::RetryFullFetch {
                     module: NS.into(),
                     reason: "Atlas movement requires complete knowledge history".into(),
                 });
             }
-            let reader = reader.get().ok_or_else(|| {
-                ModError::msg("Atlas movement reader was not supplied by composition")
-            })?;
+            let readers = [&self.composed_movement, &self.window_movement]
+                .into_iter()
+                .flatten()
+                .map(|reader| {
+                    reader.get().ok_or_else(|| {
+                        ModError::msg("Atlas movement reader was not supplied by composition")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let history = movement_history.ledger.inspect(&data.ledger);
-            crate::movement_audit::audit_boot(ctx, &data, &history, &travel, reader)?;
+            crate::movement_audit::audit_boot(ctx, &data, &history, &travel, &readers)?;
             movement_history
                 .ledger
                 .restore_from_history(&history)
