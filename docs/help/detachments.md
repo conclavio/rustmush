@@ -4,12 +4,27 @@ Use `+sortie/plans` to see your private presets and editable mission drafts.
 Use `+sortie/invitations` to see drafts that assign you a player slot. These
 commands prepare a plan; activation and physical launch are later steps.
 
+To hire an NPC, meet them at a port and use `+sortie/crew`. It lists the available
+people in your room, their agreed duties and whether they can command a detachment.
+Use the exact `+sortie/hire #<NPC>=<terms>` command printed beside their terms.
+If the terms change or the NPC leaves, inspect the current list again.
+`+sortie/contract #<NPC>` shows your accepted agreement, even after leaving port.
+Only the employer and the hired character can inspect that contract.
+
+Hiring does not move the person or assign them a vehicle. They board through
+ordinary movement. Preparation and launch will check who is currently inside
+the carrier. Hiring currently records employment and scope without charging or
+accruing wages; future pay will follow contract terms rather than time aboard.
+
 A plan has up to six numbered command slots. Loading a preset creates an
 independent draft, so editing a mission does not rewrite your saved preset.
 Several plans may refer to the same unit without reserving it.
 
 | Command | Purpose |
 |---|---|
+| `+sortie/crew` | Inspect NPCs currently available for hire in this port room |
+| `+sortie/hire #<NPC>=<printed terms>` | Accept the displayed employment terms |
+| `+sortie/contract #<NPC>` | Inspect your recorded crew agreement |
 | `+sortie/preset <name>=<plan JSON>` | Create a private preset |
 | `+sortie/copy <preset>:<revision>=<name>` | Copy one of your presets |
 | `+sortie/load <preset>:<revision>` | Create a draft from a preset |

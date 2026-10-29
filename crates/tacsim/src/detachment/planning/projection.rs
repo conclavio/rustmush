@@ -395,7 +395,7 @@ fn report_lines(
         ));
     }
     lines.extend([
-        "Unresolved before activation: durable embarkation intervals and last-port departure personnel proof; NPC contracts and capability checks.".to_owned(),
+        "Before activation: recheck current carrier containment, NPC contracts, agreed duties and capability checks. No boarding-history evidence is required.".to_owned(),
         "Unresolved before activation: mind licences, installed controller/profile compatibility, financial responsibility and explicit mission-command grants.".to_owned(),
         "Unresolved before activation: unit reservations and complete atomic launch preflight. No units are reserved or launched by this report.".to_owned(),
         "A ready declaration checks the real helm lease when committed. Current station, lease, permissions and every launch prerequisite must be checked again at activation.".to_owned(),

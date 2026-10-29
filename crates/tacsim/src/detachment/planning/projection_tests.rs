@@ -342,7 +342,8 @@ fn dt_preparation_reports_only_the_viewers_permissions_and_keeps_activation_unre
         "private object names are never looked up"
     );
     check!(rendered.contains("ready declared for this exact revision"));
-    check!(rendered.contains("last-port departure personnel proof"));
+    check!(rendered.contains("current carrier containment"));
+    check!(!rendered.contains("last-port departure personnel proof"));
     check!(rendered.contains("NPC contracts"));
     check!(rendered.contains("mind licences"));
     check!(rendered.contains("unit reservations"));

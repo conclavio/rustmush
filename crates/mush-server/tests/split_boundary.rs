@@ -38,6 +38,8 @@ mod dt_atlas_movement;
 mod dt_atomic_scene_movement;
 #[path = "split_boundary/dt_composed_scene_movement.rs"]
 mod dt_composed_scene_movement;
+#[path = "split_boundary/dt_crew_hiring.rs"]
+mod dt_crew_hiring;
 #[path = "split_boundary/dt_locomotion.rs"]
 mod dt_locomotion;
 #[path = "split_boundary/dt_movement_completion.rs"]
