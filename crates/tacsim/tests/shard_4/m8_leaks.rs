@@ -8,7 +8,7 @@
 //! | the owner's box read, `+hull/box` (M8a) | the hull's owner (and staff, M8a's readers) | positive control, then every absence |
 //! | the Registry's inspection, `@registry/inspect` (M8a) | the Registry's operator | positive control, then every absence |
 //! | the attestation refusal (M8c) | the licence's holder, at renewal | the absence only: an unfiled draft has no licence, so its flight writes no seal mark; the positive control needs a filed, rated, licensed mind on a port world (G1's combined world) and is owed there |
-//! | the claim's inspection (`@mind/claim`, G3) | the Registry's operator | owed: the verb is not on main; [`g4_the_claim_channel_is_owed_until_mind_claim_lands`] trips the day it lands |
+//! | the claim's inspection (`@mind/claim`, G3) | the Registry's operator (`@registry/claims`) | the lead's branch (B): no IC detection until the fight, so every hull an author names is refused with `+hull/box`'s one sentence; [`g4_the_claim_channel_refuses_every_hull_until_the_ic_fight`] proves it and that nobody learns anything, before and after a restart. The positive control (a filed claim the operator reads) is owed to the fight's producer |
 //! | testimony | — | owed to the fight (Q-M8-2, H1) |
 //!
 //! `sim_lenses/observer_rule.rs`'s pattern, here rather than in the mushd lens harness for the
@@ -69,8 +69,10 @@ const NOT_THROUGH: &str = "That did not go through. Nothing changed.";
 /// reads stay checked — `look`, `examine`, `+hull/box` beyond the box's readers, the port verbs,
 /// `@tacsim/port status`, the web.
 const STAFF_EXEMPT: [&str; 1] = ["@unit/"];
-/// The `@mind` family's answer to a switch it does not have: `@mind/claim` today (G3 adds it).
-const UNKNOWN_CLAIM: &str = "Unknown switch \"/claim\" for @mind.";
+/// The words of the claim the owner tries to file: a leak of the claim would print them.
+const CLAIM_WORDS: &str = "zzqclaim it pauses on a lost contact the way mine does";
+/// The operator's read with nothing filed (doc 17h cut M8g G3).
+const NO_CLAIMS: &str = "No claims are filed with the Registry.";
 /// The connection the web witness's queries arrive on.
 const WEB_CONN: u64 = 7_000;
 
@@ -566,23 +568,122 @@ fn g4_an_ungoverned_core_sealing_a_draft_is_learned_through_the_built_channels_o
     no_refused_writes(&rig.tw);
 }
 
-/// **The claim channel is owed** (doc 17h §3 M8g G3; D-UM-55): `@mind/claim` is not on main, so
-/// the claim's inspection — the fourth built channel — has no case here yet. This trips the day
-/// the verb lands (today the `@mind` family answers its unknown-switch line): replace it with the
-/// channel's case (the Registry's inspection of a claimed hull, its positive control first, then
-/// every absence, in the battery's world).
+/// **The claim channel under the lead's branch (B)** (doc 17h §3 M8g G3; D-UM-55): a claim is
+/// IC testimony, and no IC detection exists until the fight (16c H1), so the earned-contacts
+/// index has no producer and `@mind/claim` refuses every hull an author names with `+hull/box`'s
+/// one sentence — and nobody learns anything of the attempt.
+///
+/// The world: the battery's (the rig's owner on the pad with one leased rig, the Registry's one
+/// operator, a pilot on the same pad, a bystander beside the owner, staff), with the quirk claim
+/// composed and the operator granted `roll.registry.claims`.
+///
+/// 1. The control: the operator's `@registry/claims` is a live read ("No claims are filed with
+///    the Registry."), and the owner's `@mind/claim` is the verb (a malformed line is its usage).
+/// 2. The owner names their own rig, the pilot's hull, and both: each attempt is refused with
+///    [`tacsim::surface::hull::NO_BOX`], nothing is queued, and nothing filed; the attempts'
+///    every event is read as each other witness hears it — none hears the claim's words, nor
+///    any line at all.
+/// 3. Every non-operator's `@registry/claims` is the driver's one sentence; the operator still
+///    reads nothing filed.
+/// 4. All of it again after a restart.
 #[test]
 #[ignore = "dispatch-only (doc 17h M8g G5): the CI `m8-leak-battery` job runs it"]
-fn g4_the_claim_channel_is_owed_until_mind_claim_lands() {
+fn g4_the_claim_channel_refuses_every_hull_until_the_ic_fight() {
     let mut rig = crate::excursions::stocked_fitted();
+    let registry = rig.tw.spawn_player("Registry operator");
     let (pilot, _, tvs) = on_pad(&mut rig, 1);
-    let (out, queued) = command(
+    let tv = tvs[0];
+    let (mut rig, policy) = reboot_with_inspection(rig, registry, &[registry, pilot]);
+    let (second, second_row, none) = on_pad_as(&mut rig, "Second pilot", 3, "Ember Moth", 0);
+    assert!(none.is_empty());
+    let second_hull = ObjId(second_row.hull);
+    let bystander = rig.tw.spawn_player("Bystander");
+    let beside = rig
+        .tw
+        .world()
+        .get(pilot)
+        .and_then(|o| o.location)
+        .expect("the owner stands somewhere");
+    teleport(&mut rig.tw, bystander, beside);
+    let (out, _) = command(
         &mut rig,
-        pilot,
-        &format!("@mind/claim #{} saw it", tvs[0].0),
+        GOD,
+        &format!(
+            "@org/grant #{}=Registry roll.registry.claims scope=#{}",
+            registry.0,
+            policy.scope().0
+        ),
     );
+    assert!(!out.contains("rror"), "the claims grant: {out}");
+    let witnesses = [
+        (bystander, "the bystander"),
+        (second, "a pilot"),
+        (GOD, "staff"),
+        (registry, "the Registry's operator"),
+    ];
+    let usage = "@mind/claim #<hull> [#<hull>...] <text> (testimony to the Registry: hulls your own \
+                 sensors saw)";
+
+    let mut leaks: Vec<String> = Vec::new();
+    for round in ["before a restart", "after a restart"] {
+        // 1. The control: the operator's read is live, and `@mind/claim` is the verb.
+        assert_eq!(
+            ask_whole(&mut rig, registry, "@registry/claims"),
+            NO_CLAIMS,
+            "{round}"
+        );
+        assert_eq!(
+            ask_whole(&mut rig, pilot, "@mind/claim no hull named"),
+            usage,
+            "{round}"
+        );
+        // 2. Every hull is refused with the observer's one sentence; nothing queued or filed,
+        // and nobody else hears anything.
+        for hulls in [
+            format!("#{}", tv.0),
+            format!("#{}", second_hull.0),
+            format!("#{} #{}", tv.0, second_hull.0),
+        ] {
+            let line = format!("@mind/claim {hulls} {CLAIM_WORDS}");
+            let events = rig.tw.run(pilot, &line);
+            let queued = drain(&mut rig.tw);
+            assert!(queued.is_empty(), "{line} submitted ({round})");
+            assert_eq!(
+                rig.tw.seen_by(&events, pilot).join("\n"),
+                tacsim::surface::hull::NO_BOX,
+                "{line} ({round})"
+            );
+            for (who, seat) in witnesses {
+                let seen = heard(&rig, &events, who);
+                if !seen.trim().is_empty() {
+                    leaks.push(format!("{seat} heard `{line}` ({round}): {seen}"));
+                }
+            }
+        }
+        // 3. Every non-operator's read is the driver's one sentence; nothing was filed.
+        for (who, seat) in witnesses.iter().filter(|(who, _)| *who != registry) {
+            assert_eq!(
+                ask_whole(&mut rig, *who, "@registry/claims"),
+                NOT_THROUGH,
+                "{seat} ({round})"
+            );
+        }
+        assert_eq!(ask_whole(&mut rig, pilot, "@registry/claims"), NOT_THROUGH);
+        assert_eq!(
+            ask_whole(&mut rig, registry, "@registry/claims"),
+            NO_CLAIMS,
+            "nothing filed ({round})"
+        );
+        // 4. Again, after a restart.
+        if round == "before a restart" {
+            rig = reboot_with(rig, &[pilot, registry, second, bystander]);
+        }
+    }
     assert!(
-        out.trim() == UNKNOWN_CLAIM && queued.is_empty(),
-        "`@mind/claim` has landed: write the claim channel's case here (G4): {out}"
+        leaks.is_empty(),
+        "{} leak(s):\n\n{}",
+        leaks.len(),
+        leaks.join("\n\n")
     );
+    no_refused_writes(&rig.tw);
 }

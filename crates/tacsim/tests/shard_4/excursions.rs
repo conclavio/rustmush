@@ -361,7 +361,8 @@ pub(crate) fn god(rig: &mut Rig, line: &str) {
 /// world; then the Roll's acknowledged setup (a reboot under `Initialize`, GOD's one
 /// `initialize_commerce`) and the reboot under `Active` with the inspection policy over that
 /// authority — the mind commerce prepared as the hardware flow's rig prepares it, with nothing
-/// else composed (no market, no IC claims). The Registry's `@registry` registers with any
+/// else composed (no market, no IC claims) past the inspection's fine, principal revocation and
+/// quirk claim (doc 17h cut M8g G3). The Registry's `@registry` registers with any
 /// Active commerce, so the switch is reachable here. The policy, for the record's `authority`.
 pub(crate) fn reboot_with_inspection(
     rig: Rig,
@@ -468,6 +469,9 @@ pub(crate) fn reboot_with_inspection(
                     // Doc 17h cut M8d D4: the principal revocation, a 90-IC-day term.
                     .with_registry_principal_revocation(90)
                     .expect("the principal revocation composes")
+                    // Doc 17h cut M8g G3: the quirk claim, as the named launch composes it.
+                    .with_registry_claims()
+                    .expect("the claim composes")
             } else {
                 commerce
             }
