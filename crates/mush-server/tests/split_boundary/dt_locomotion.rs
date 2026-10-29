@@ -28,6 +28,107 @@ pub(super) struct Rig {
 }
 
 struct ObserveMoved(Arc<AtomicUsize>);
+
+// Instrumentation only: no physical participant, proof or substitute owner.
+struct PendingBootWitness {
+    migrated: Arc<AtomicUsize>,
+    loaded: Arc<AtomicUsize>,
+}
+impl mush_core::GameModule for PendingBootWitness {
+    fn name(&self) -> &'static str {
+        "dt_native_boot"
+    }
+    fn register(&mut self, reg: &mut mush_core::Registrar<'_>) -> Result<(), mush_core::ModError> {
+        let migrated = self.migrated.clone();
+        reg.migrations(
+            self.name(),
+            vec![mush_core::Migration {
+                version: 1,
+                description: "observe native recovery ordering".into(),
+                apply: Arc::new(move |_, _| {
+                    migrated.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"after":true}))
+                }),
+            }],
+        )
+    }
+    fn on_world_loaded(
+        &mut self,
+        _: &mut mush_core::ModuleCtx<'_>,
+        _: mush_core::ModuleBootData,
+    ) -> Result<(), mush_core::ModError> {
+        self.loaded.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+pub(super) async fn assert_native_refusal_before_any_boot_mutation(
+    store: &InMemoryStore,
+    owner: &str,
+) -> TestResult {
+    store
+        .write(mush_store::WriteBatch {
+            serial: 991,
+            durable: true,
+            module_ops: vec![mush_store::ModuleOp {
+                ns: "dt_native_boot".into(),
+                op: mush_store::ModuleWrite::JsonSet {
+                    key: "doc:pending".into(),
+                    value: json!({"before":true}),
+                },
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let mut config = mush_config::config::Config::default();
+    config.tacsim.enabled = true;
+    let llm = Arc::new(mush_llm::LlmService::from_config(
+        &mush_llm::LlmConfig::default(),
+    )?);
+    let migrated = Arc::new(AtomicUsize::new(0));
+    let loaded = Arc::new(AtomicUsize::new(0));
+    let mut modules = mush_server::boot::game_modules(&config, &llm)?;
+    modules.insert(
+        0,
+        Box::new(PendingBootWitness {
+            migrated: migrated.clone(),
+            loaded: loaded.clone(),
+        }),
+    );
+    modules.push(Box::new(ObserveMoved(Arc::new(AtomicUsize::new(0)))));
+    let world = mush_server::persist::load_or_seed_world(store).await?;
+    let mut engine = Box::new(Engine::with_modules(
+        world,
+        mush_server::world_task::base_registry(),
+        modules,
+    )?);
+    let _ = engine.world.take_dirty();
+    let error = mush_server::modules::boot_modules(&mut engine, store)
+        .await
+        .err()
+        .ok_or("native corruption was accepted")?;
+    assert!(
+        error.contains(&format!("native history audit failed for {owner}")),
+        "{error}"
+    );
+    assert_eq!(migrated.load(Ordering::SeqCst), 0);
+    assert_eq!(loaded.load(Ordering::SeqCst), 0);
+    assert!(engine.world.take_dirty().is_empty());
+    assert!(engine.take_module_ops().is_empty());
+    assert_eq!(
+        store
+            .module_json_get("dt_native_boot", "doc:pending")
+            .await?,
+        Some(json!({"before":true}))
+    );
+    assert_eq!(
+        store
+            .module_json_get("dt_native_boot", mush_server::modules::SCHEMA_KEY)
+            .await?,
+        None
+    );
+    Ok(())
+}
 impl mush_core::GameModule for ObserveMoved {
     fn name(&self) -> &'static str {
         "dt_locomotion_test"

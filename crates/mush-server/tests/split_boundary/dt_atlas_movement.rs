@@ -535,6 +535,10 @@ async fn cold_boot_refuses_missing_or_changed_actual_known_documents_and_origina
         };
         write(&store, vec![op]).await?;
         drop(rig);
+        if mode == 3 {
+            super::dt_locomotion::assert_native_refusal_before_any_boot_mutation(&store, "atlas")
+                .await?;
+        }
         assert!(
             fixture(&store, ObjKind::Player).await.is_err(),
             "boot accepted Atlas corruption mode {mode}"

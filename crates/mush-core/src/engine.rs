@@ -2262,6 +2262,11 @@ impl Engine {
     ) -> Result<(), ModError> {
         self.audit_typed_history()?;
         for index in 0..self.modules.len() {
+            let name = SmolStr::new(self.modules[index].name());
+            let data = boot.entry(name.clone()).or_default();
+            self.audit_module_boot_history(&name, data)?;
+        }
+        for index in 0..self.modules.len() {
             let data = boot.remove(self.modules[index].name()).unwrap_or_default();
             self.load_module_at(index, data, out, fx)?;
         }
@@ -2294,6 +2299,40 @@ impl Engine {
             module.audit_typed_history(&ctx)?;
         }
         Ok(())
+    }
+
+    /// Run one actual owner's read-only native history validator. Per-module
+    /// drivers must finish these audits for every owner before migrations or
+    /// the first `module_loaded` call. A retry grants no mutation permission.
+    pub fn audit_module_boot_history(
+        &mut self,
+        name: &str,
+        data: &mut ModuleBootData,
+    ) -> Result<(), ModError> {
+        let module = self
+            .modules
+            .iter()
+            .find(|module| module.name() == name)
+            .ok_or_else(|| ModError::msg(format!("no module named {name:?}")))?;
+        data.normalize();
+        let module_name = SmolStr::new(module.name());
+        let typed_state = crate::action_state::ModuleActionState::for_dispatch(
+            crate::action_state::TypedStateLens::Live(&self.action_state),
+            Some(module_name.as_str()),
+            GOD,
+        );
+        let mut out = Outbox::new();
+        let ctx = Ctx {
+            w: &mut self.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &self.registry,
+            module: Some(module_name),
+            typed_state,
+        };
+        module.audit_boot_history(&ctx, data)
     }
 
     /// **The end of boot** (16b cut U.4, 16c `B-37`): every module's

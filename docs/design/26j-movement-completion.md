@@ -547,6 +547,16 @@ their exact route/UTC digest. This does not hydrate, pause or reconstruct a live
 scene. Nonempty captures still require the later original-transcript join;
 typed claims alone never stand in for committed native events.
 
+Core and the server now also expose a read-only native-history phase. Every
+configured Atlas knowledge and Scenes transcript join runs before module
+migrations or the first load callback. A narrowed history gets at most one
+whole-fetch retry without writing a manifest or running a load. The server
+rechecks the fresh post-migration snapshot globally before loading; direct
+`Engine::modules_loaded` likewise validates every owner first. Native audits
+retain their existing bounds and later restoration checks, with extra boot-only
+validation passes rather than cached authority or a reconstructed World. Sim's
+future native window journal still needs its own exact receipt/record join.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
