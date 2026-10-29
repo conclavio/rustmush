@@ -1720,6 +1720,18 @@ Dies front; the quirk claim and `minds.claimed`; NPC procurement with the divers
 observer-rule leak tests prove an ungoverned core is learned only through the five evidence channels;
 the zero-PC test in which an NPC org re-equips from the Roll on its own budget with no charter over
 the cap.
+*Planned and built as doc 17h's cuts M8a–M8g, plus M8b-2 and M8d2 (2026-10-28). Owner rulings are
+in 17h §5.*
+- **The gate reads "the four built channels"** until the fight (16c H1) brings the fifth,
+  testimony (Q-M8-2). The four are the owner's box read, the Registry's inspection, the attestation
+  refusal and the claim's inspection.
+- **"IC sorties" is tier 2 as restated in doc 23 §10.** The sealed, dormant mind aboard is in M8.
+  The claim Open/Close moves to S.4b with the drone phase (Q-M8-1, and option C).
+- **`minds.unwarranted` is Registry-scoped, not public** (D-UM-42). The public signal is the canon
+  line, which names nobody, and the Red Dies clock.
+- **A principal's revocation bars the principal**, for 90 IC days by default, rather than revoking
+  each held term. It bars new licences, the use of held licences and their movement; held terms
+  resume when the window ends.
 *Sortie and stations, and R-D: gated on IC sorties rather than IC combat alone, since an unlicensed
 mind on an organisation's miners is contraband too; procurement buys only listed lines (a fixture
 that an unlisted mind is never procured); a quirk-claim test proves the engine confirms nothing until
