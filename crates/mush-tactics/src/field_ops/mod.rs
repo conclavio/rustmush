@@ -1,9 +1,26 @@
-//! Field-unit component survival (`H1-A`) and universal towing & recovery
-//! foundation (`H2-A`) (design doc 27 §4.1, §4.4, §5, `FO-1`–`FO-3`, `FO-10`,
-//! `FO-13`, `Q-H7`–`Q-H9`, `Q-S5`–`Q-S9`, `Q-S11`).
+//! IC Field Operations (`H1-A`–`H1-C`, `H2-A`–`H2-C`, `H3`):
+//! - [`condition`] (`H1-A`): section-localized component survival, operational states,
+//!   hull-epoch close gating, and versioned IC authority handoff.
+//! - [`engagement`] (`H1-B` & `H1-C`): field combat entry, motion-clock handoff,
+//!   reinforcement, withdrawal, demotion settlement, carrier leave-behind confirmation,
+//!   link-loss posture, crew survival / guaranteed NPC extraction, and observer-bounded
+//!   post-battle records.
+//! - [`recovery`] (`H2-A`): universal tow coupling (`<= 2x` tug mass cap), tonnage
+//!   speed scaling, field inspection, exclusive attachment, coupled movement, and
+//!   carrier bay loading.
+//! - [`salvage`] (`H2-B` & `H2-C`): ground tenure at attach, lawful/unlawful recovery
+//!   entitlement, private recovery records, evidence-gated unlawful salvage actions,
+//!   post-close black-box access rules, public salvage title claims, and the
+//!   48-available-real-hour contest workflow.
+//! - [`workshop`] (`H3`): component stripping with parent-hull provenance, hull
+//!   scrapping, in-place repair (including pending-custody repair-at-risk), section
+//!   reconstruction, and destroyed/stripped component replacement.
 
 pub mod condition;
+pub mod engagement;
 pub mod recovery;
+pub mod salvage;
+pub mod workshop;
 
 pub use condition::{
     AuthorityHandoffRequest, ComponentCondition, ConditionError, FieldAuthorityKind,
@@ -12,12 +29,35 @@ pub use condition::{
     UnitAnatomyProfile, assess_tactical_unit, effective_component_condition,
     effective_section_condition, ic_condition_plan, install_point_section, validate_close_outcome,
 };
+pub use engagement::{
+    COMBAT_WALL_CLOCK_RATE, CarrierDepartureOutcome, CrewSurvivalBook, DEFAULT_FALLBACK_SAFE_PORT,
+    DemotionOutcome, DemotionSettlementGate, EngagementError, FieldObservationBook,
+    FieldPromotionTrigger, FieldSiteEngagementBook, IC_SURFACE_CLOCK_RATE, LinkLossPosture,
+    MAX_CREW_RECORDS, MAX_OBSERVATIONS_PER_ACTOR, MAX_SITE_UNITS, MotionClockHandoff,
+    ObservationSource, ObservedCombatFact, ObserverCombatEntry, OccupantSurvivalState,
+    SafePortCandidate, SiteUnitPresence, WithdrawalDestination, resolve_link_loss_posture,
+    select_extraction_port,
+};
 pub use recovery::{
     AttachTowRequest, BayCapacitySpec, DEFAULT_MAX_ATTACH_DISTANCE_CM, FieldInspectionReport,
     FieldPose, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_RECOVERY_OPERATIONS,
     MAX_TOW_MASS_RATIO_PERMILLE, RecoveryBook, RecoveryError, RecoveryOpId, RecoveryOperation,
     RecoveryStage, TowEvaluation, TowRigProfile, TugInspectionContext, UnitMassProfile,
     inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille, tow_speed_factor_permille,
+};
+pub use salvage::{
+    AtRiskRepairEntry, AuthoritativeRecoveryRecord, CONTEST_WINDOW_AVAILABLE_REAL_SECS,
+    ContestGround, ContestSuccessReason, CustodyAction, CustodyTitleStatus, GroundTenure,
+    MAX_AUTHORITATIVE_RECOVERY_RECORDS, MAX_CLAIM_ENTRIES, MAX_SALVAGE_CLAIMS,
+    RecoveryAuthorityContext, RecoveryEntitlement, SalvageClaim, SalvageClaimBook, SalvageClaimId,
+    SalvageClaimState, SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord,
+    SalvageSubject, check_custody_action_allowed, evaluate_recovery_entitlement,
+};
+pub use workshop::{
+    ComponentProvenance, FALLBACK_SECTION_SCRAP_KG, MAX_STRIPPED_COMPONENTS, MAX_WORKSHOP_ORDERS,
+    ReplacementPartSpec, SCRAP_KG_PER_STRUCTURAL_POINT, ScrapYieldReport, StripAuthorization,
+    StrippedComponentRecord, WorkshopBook, WorkshopError, WorkshopOperationKind,
+    WorkshopWorkOrderRecord,
 };
 
 #[cfg(test)]

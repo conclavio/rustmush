@@ -61,7 +61,12 @@ pub fn require_core_delivery(
     }
     // This first delivery moves only ordinary personal containment. No vault
     // endpoint or nested vault ancestry can be smuggled through a CarryAttempt.
-    for start in [object, history.policy().output_container, requester] {
+    // Doc 17h cut M8b-2 fix round 1 (L2): the container of the site the core was born at.
+    let container = history
+        .policy()
+        .site(history.subject().source.is_certified())?
+        .output_container;
+    for start in [object, container, requester] {
         let mut at = Some(start);
         let mut seen = BTreeSet::new();
         while let Some(id) = at {

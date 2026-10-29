@@ -689,6 +689,8 @@ impl RegisteredRenewalWriter {
                 &f.house_economics,
                 &economics,
             )?;
+            // Doc 17h cut M8d fix round K5 (the lead's ruling): renewing an existing held term
+            // passes the write bar — the same licence continues. Its use stays barred.
             txn.replace(&f.paid_licences, &licence.key(), licence.clone())
                 .map_err(invalid)?;
             txn.insert(&f.paid_terms, &term.key(), term.clone())

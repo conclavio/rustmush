@@ -614,6 +614,12 @@ fn lots(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError>
     Ok(())
 }
 
+/// A lineage source id as `@inv/lot` prints it: its first eight characters at most (doc 17h
+/// cut M8b-2 fix round 1, L1: never a full operation hex on this surface).
+fn short_id(id: &str) -> &str {
+    id.char_indices().nth(8).map_or(id, |(end, _)| &id[..end])
+}
+
 fn lot(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
     let Some(id) = LotId::parse(ctx.args.raw()) else {
         return Err(CmdError::msg(NO_SUCH_LOT));
@@ -638,13 +644,42 @@ fn lot(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> 
         ),
     );
     match record.lineage() {
+        // Doc 17h cut M8b-2 fix round 1 (L1): the source id is printed to its first eight
+        // characters at most, so no full operation hex reaches this surface.
         crate::record::Lineage::Origin { source } => ctx.out.info(
             ctx.actor,
             format!(
                 "  origin: {}/{}/{}",
-                source.provider, source.kind, source.id
+                source.provider,
+                source.kind,
+                short_id(&source.id)
             ),
         ),
+        // Doc 17h cut M8b-2 (H1, H5): the heirloom and grey arms' own lines are staff's
+        // (ROYALTY, this module's staff tier). Any other viewer of the vault sees a heirloom
+        // on the origin line's existing shape and no lineage line for a grey lot, so no new
+        // sentence reaches a player.
+        crate::record::Lineage::Heirloom { source } => {
+            let word = if mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty) {
+                "heirloom"
+            } else {
+                "origin"
+            };
+            ctx.out.info(
+                ctx.actor,
+                format!(
+                    "  {word}: {}/{}/{}",
+                    source.provider,
+                    source.kind,
+                    short_id(&source.id)
+                ),
+            );
+        }
+        crate::record::Lineage::Grey {} => {
+            if mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty) {
+                ctx.out.info(ctx.actor, "  grey: no origin recorded");
+            }
+        }
         crate::record::Lineage::Split { parent } => {
             ctx.out.info(ctx.actor, format!("  split from {parent}"));
         }

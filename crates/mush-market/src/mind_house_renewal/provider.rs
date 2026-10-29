@@ -142,11 +142,23 @@ impl Provider {
         row.validate()?;
         // M8c B3: a character acting for the holding organisation runs its
         // steps (`org_holder::acts_as`).
+        // Doc 17h §3 M8f P2a: the steps that move money (Fund, Grant,
+        // Refund) ask an organisation's grant with the renewal's price, the
+        // others (a retry's read, the unfunded close) as a read.
+        let amount = if matches!(
+            self.kind,
+            Transition::Fund | Transition::Grant | Transition::Refund
+        ) {
+            Some(row.binding().price_minor())
+        } else {
+            mush_roll::commerce::org_holder::READ_AMOUNT
+        };
         if row.operation() != operation
-            || mush_roll::commerce::org_holder::acts_as(
+            || mush_roll::commerce::org_holder::acts_as_amount(
                 ctx.world().map_err(invalid)?,
                 row.binding().holder(),
                 actor,
+                amount,
             )
             .is_err()
         {

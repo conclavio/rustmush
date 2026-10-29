@@ -53,12 +53,19 @@ pub(crate) fn cleanup(world: &World, defs: &Definitions) -> Result<(), Error> {
     }
     Ok(())
 }
+/// The live facts of the site a die of `certified`-ness integrates at (doc 17h cut M8b-2,
+/// H2): the chartered factory, or the ungoverning one.
 fn current(
     world: &World,
     defs: &Definitions,
     config: &CoreFactoryConfig,
     class: DieClass,
+    certified: bool,
 ) -> Result<Live, Error> {
+    let site = config
+        .payment
+        .site(certified)
+        .map_err(|_| Error::Unavailable)?;
     cleanup(world, defs)?;
     owned::<OrgStore>(world, "org")?;
     defs.0
@@ -84,16 +91,10 @@ fn current(
     let store = world
         .module_state::<crate::IndustryStore>()
         .ok_or(Error::Unavailable)?;
-    let facility = store
-        .facility(config.payment.factory)
-        .ok_or(Error::Unavailable)?;
+    let facility = store.facility(site.factory).ok_or(Error::Unavailable)?;
     if !store.is_complete()
         || store.is_facility_quarantined(facility.object())
-        || facility.owner() != &PrincipalId::Organization(config.payment.integrator.organization)
-        || !facility
-            .capabilities()
-            .iter()
-            .any(|c| c.as_str() == "core_integration")
+        || !super::offer::holds_site(facility, &site)
         || world
             .get(facility.object())
             .is_none_or(|o| o.flags.contains(Flags::GOING))
@@ -105,10 +106,10 @@ fn current(
         .ok_or(Error::Unavailable)?
         .state();
     let org = orgs
-        .org(config.payment.integrator.organization)
+        .org(site.integrator.organization)
         .ok_or(Error::Unavailable)?;
     let scope = orgs
-        .scope(config.payment.integrator.scope)
+        .scope(site.integrator.scope)
         .ok_or(Error::Unavailable)?;
     if org.status != OrgStatus::Active || scope.status != ScopeStatus::Active || scope.org != org.id
     {
@@ -151,13 +152,15 @@ pub(crate) fn can_offer(
     config: &CoreFactoryConfig,
     operator: ObjId,
     class: DieClass,
+    certified: bool,
 ) -> Result<(), Error> {
-    current(world, defs, config, class)?;
+    current(world, defs, config, class, certified)?;
+    let site = config.payment.site(certified).map_err(bad)?;
     allow(
         world,
         operator,
-        config.payment.integrator.scope,
-        "industry.core.integrate",
+        site.integrator.scope,
+        site.operator_capability,
     )
 }
 pub(crate) fn offer(
@@ -169,18 +172,19 @@ pub(crate) fn offer(
     class: DieClass,
     input: &OfferedInput,
 ) -> Result<Live, Error> {
-    let mut live = current(world, defs, config, class)?;
+    let mut live = current(world, defs, config, class, input.certified())?;
     if world
         .get(requester)
         .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::GOING))
     {
         return Err(Error::Unavailable);
     }
+    let site = config.payment.site(input.certified()).map_err(bad)?;
     allow(
         world,
         operator,
-        config.payment.integrator.scope,
-        "industry.core.integrate",
+        site.integrator.scope,
+        site.operator_capability,
     )?;
     if let OfferedInput::SupplierStock { certificate, lot } = input {
         certificate.matches_lot(lot).map_err(bad)?;
@@ -255,7 +259,13 @@ pub(crate) fn complete(
     intent: &AcceptedIntent,
 ) -> Result<Live, Error> {
     intent.validate()?;
-    let live = current(world, defs, config, intent.recipe.class())?;
+    let live = current(
+        world,
+        defs,
+        config,
+        intent.recipe.class(),
+        intent.certified(),
+    )?;
     if live.facility != intent.facility
         || live.recipe != intent.recipe
         || config.payment != intent.policy

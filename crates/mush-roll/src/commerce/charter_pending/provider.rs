@@ -678,6 +678,14 @@ impl Provider {
             2 | 3 => self.terminal(inv, txn, ctx)?,
             _ => return Err(PublicationError::Invalid),
         };
+        // Doc 17h cut M8d D4: no step of a pending charter sale with a revoked party; the
+        // refusal discards the whole step, and nothing is refunded automatically.
+        super::super::registry_inspection::principal::refuse_parties(
+            ctx,
+            txn,
+            &self.f,
+            &[offer.seller, offer.buyer],
+        )?;
         Ok(AuthoritativeActionOutput::new(RulesValue::new(self.outcome.clone(),json!({"operation":ctx.commit_token(),"offer":offer.operation,"charter":offer.charter})).map_err(bad)?)
             .with_definitions(vec![self.action.clone(),self.outcome.clone(),self.retention.clone()])
             .with_eligible_witnesses(vec![inv.principal().clone()]))

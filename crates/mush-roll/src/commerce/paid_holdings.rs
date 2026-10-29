@@ -83,7 +83,7 @@ impl PaidHolding {
     }
 }
 /// The holder's key prefix (`Holder::key_prefix`).
-fn holder_prefix(holder: Holder) -> String {
+pub(crate) fn holder_prefix(holder: Holder) -> String {
     holder.key_prefix()
 }
 impl Record for PaidHolding {
@@ -245,8 +245,9 @@ pub(crate) fn page(
     after: Option<LicenceId>,
 ) -> Result<PaidHoldingsPage, OwnerReadError> {
     // M8c B3: a character reads its own rows; an organisation's rows are read
-    // by a character acting for it (`org_holder::acts_as`, re-asked here).
-    if org_holder::acts_as(ctx.world(), holder, ctx.actor()).is_err() {
+    // by a character acting for it (`org_holder::reads_as`, re-asked here: a
+    // read, so a limited grant reads, doc 17h §3 M8f P2a).
+    if org_holder::reads_as(ctx.world(), holder, ctx.actor()).is_err() {
         return Err(OwnerReadError::Refused);
     }
     let start = page_start(holder, after);

@@ -304,11 +304,14 @@ impl Provider {
                 {
                     return Err(Refuse::Uniform);
                 }
-                super::super::org_holder::org_actor(
+                // Doc 17h §3 M8f H7: the attestation charges no fee, so the
+                // grant is asked as a read and a limited grant attests.
+                super::super::org_holder::org_actor_amount(
                     ctx.world().map_err(invalid)?,
                     org,
                     house.scope(),
                     actor,
+                    super::super::org_holder::READ_AMOUNT,
                 )
                 .map_err(|_| Refuse::Uniform)?;
                 super::super::Holder::Organization { org, acting: actor }
@@ -507,6 +510,8 @@ impl Provider {
         .map_err(invalid)?;
         txn.insert(&self.families.terms, &next.key(), next.clone())
             .map_err(invalid)?;
+        // Doc 17h cut M8d fix round K5 (the lead's ruling): attesting an existing owner licence
+        // passes the write bar — the same licence continues. Its use stays barred.
         txn.replace(&self.families.licences, &id.key(), current.clone())
             .map_err(invalid)?;
         if txn

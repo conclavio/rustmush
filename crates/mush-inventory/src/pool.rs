@@ -1833,6 +1833,39 @@ impl InventoryFamilies {
         source: mush_economy::ExternalRef,
         child: LotId,
     ) -> Result<Lot, InventoryError> {
+        self.mint_root(
+            txn,
+            endpoint,
+            commodity,
+            amount,
+            grade,
+            Lineage::Origin { source },
+            child,
+        )
+    }
+
+    /// **Mint one lot under any root lineage** (doc 17h cut M8b-2, H1): `mint_origin`'s
+    /// verb for the heirloom and grey arms beside `Origin`. The same conservation rule
+    /// holds: the caller's bundle answers for the quantity.
+    ///
+    /// # Errors
+    /// [`InventoryError`] as [`mint_origin`](Self::mint_origin), and for a lineage that
+    /// names an older lot (a split, a merge or a tranche is never a root).
+    /// **Nothing is written on an error.**
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_root(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        amount: u64,
+        grade: Grade,
+        lineage: Lineage,
+        child: LotId,
+    ) -> Result<Lot, InventoryError> {
+        if !lineage.is_root() {
+            return Err(InventoryError::InvalidLineage);
+        }
         self.require_new_lot(txn, child)?;
         if txn.get(&self.lots, &child)?.is_some() {
             return Err(InventoryError::AlreadyExists);
@@ -1843,7 +1876,7 @@ impl InventoryFamilies {
             commodity.clone(),
             amount,
             grade,
-            Lineage::Origin { source },
+            lineage,
             0,
         )?;
         self.move_lots(txn, endpoint, 1)?;
@@ -2040,6 +2073,9 @@ pub enum InventoryError {
     /// The endpoint has no lineage root to mint from.
     #[error("nothing has been dissolved into that pool")]
     NoTranche,
+    /// A minted lot's lineage named an older lot (doc 17h cut M8b-2's `mint_root`).
+    #[error("a minted lot names no older lot")]
+    InvalidLineage,
     /// A split must leave a remainder.
     #[error("that lot holds {quantity}; a split of {requested} leaves nothing behind")]
     SplitTooLarge {

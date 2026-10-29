@@ -231,13 +231,13 @@ impl EntitlementPurchase {
         // M8c B1/B3: the payer is the holder's principal's account (a
         // personal account, or the organisation's treasury on one of its
         // scopes). F2: a character's purchase is funded by that character;
-        // an organisation's by any live character, the market's provider
-        // having re-asked the organisation's grant for this actor
-        // (`org_holder::acts_for`, with the price) before this participant
-        // runs; the quoting character need not be the funding one.
+        // an organisation's by the member who quoted it (doc 17h §3 M8f H1,
+        // the lead's ruling), the market's provider having re-asked the
+        // organisation's grant for this actor (`org_holder::acts_for`, with
+        // the price) before this participant runs.
         let actor_fits = match self.buyer {
             crate::Holder::Character(c) => context.actor == c,
-            crate::Holder::Organization { .. } => true,
+            crate::Holder::Organization { acting, .. } => context.actor == acting,
         };
         if state.frozen
             || !self.protocol.matches_action(context.action, "fund")

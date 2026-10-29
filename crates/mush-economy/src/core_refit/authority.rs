@@ -207,6 +207,11 @@ fn current(
     {
         return Err(Error::Integrity);
     }
+    // Doc 17h cut M8b-2 (H2): a core born of a heirloom or grey die is never fitted governed.
+    // Only the ungoverning recipe fits it, as its class's ungoverned twin.
+    if !native.subject().source.is_certified() && s.kind != super::RefitKind::CoreUngovern {
+        return Err(Error::Unavailable);
+    }
     let mut titles = vec![
         title(state, s.incoming, &PrincipalId::Object(s.requester), None)?,
         title(state, s.hull, &PrincipalId::Object(s.requester), None)?,

@@ -265,7 +265,10 @@ fn org_for(
     let refuse = || words::word!(NOT_FOR_ORG);
     let org = mush_economy::resolve_org_visible(ctx, text).ok_or_else(refuse)?;
     match scope {
-        OrgScope::Root => mush_roll::commerce::org_holder::acts_for(ctx.w, org, ctx.actor),
+        // Doc 17h §3 M8f (P2a): the pre-gate moves no money (the provider
+        // re-asks with the amount), so a limited grant passes it.
+        OrgScope::Root => mush_roll::commerce::org_holder::reads_for(ctx.w, org, ctx.actor),
+        // H7: asked as a read too (`acts_anywhere` asks every scope so).
         OrgScope::Title => mush_roll::commerce::org_holder::acts_anywhere(ctx.w, org, ctx.actor),
     }
     .map_err(|_| refuse())?;

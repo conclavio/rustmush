@@ -251,6 +251,13 @@ fn project_paid_for(
             })?;
         }
     }
+    // Doc 17h cut M8d D4: a principal the Registry revoked flies, seals and reads no held paid
+    // term while the window runs; the term itself is untouched and resumes after it.
+    if super::registry_inspection::principal::barred_read(ctx, families, licence.holder())
+        .map_err(|_| OwnerProjectionError::Unavailable)?
+    {
+        return Err(OwnerProjectionError::NotHeld);
+    }
     let term = read(
         ctx,
         &families.paid_terms,

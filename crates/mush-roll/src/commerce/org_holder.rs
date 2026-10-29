@@ -29,7 +29,17 @@
 //! minor units (`acts_for_amount`), so a grant with a `GrantLimit` limits
 //! and a request over it is denied; every other act asks with no amount,
 //! which mush-org denies for a limited grant (fail closed) and allows for an
-//! unlimited one.
+//! unlimited one. Doc 17h §3 M8f P2a: every step of the organisation's buy
+//! that moves money asks with its amount — the Quote and the Fund, the Grant
+//! and the Refund with the quoted price — and so do the renewal steps that
+//! move money (Fund, Grant, Refund, with the renewal's price,
+//! `acts_as_amount`); `@org/grant … roll.holder.org limit=<minor>` is
+//! admitted (mush-org's amount-carrying capabilities). The lead's P2a ruling:
+//! a READ moves no money and asks with zero (`reads_for`, `reads_as`), which
+//! any limit admits; so does a renewal's Draft and its unfunded close, every
+//! command pre-gate (H7) and the House attestation, which charges no fee.
+//! A limited grant therefore buys, renews, attests and reads; only an act
+//! that moves money is limited, by its amount.
 use mush_core::{Flags, ObjId, World};
 use mush_org::{
     AuthRequest, CapabilityId, Decision, OrgId, OrgScopeId, OrgStatus, OrgStore, ScopeStatus,
@@ -162,6 +172,34 @@ pub fn acts_for(world: &World, org: OrgId, actor: ObjId) -> Result<(), OrgActorE
     org_actor(world, org, scope, actor)
 }
 
+/// The amount a READ asks with (doc 17h §3 M8f, the lead's P2a ruling): a
+/// read moves no money, so it asks with zero, which any `GrantLimit` admits
+/// (a limit is never negative) and an unlimited grant admits as ever.
+pub const READ_AMOUNT: Option<i64> = Some(0);
+
+/// **A read for the organisation** (P2a ruling): `acts_for` asked with
+/// [`READ_AMOUNT`], so a budget-limited grant reads what it may buy. The
+/// buyer index (`own_rows`), the holdings read and the paid read use it;
+/// every step that moves money still asks with its amount.
+///
+/// # Errors
+/// As `acts_for`.
+pub fn reads_for(world: &World, org: OrgId, actor: ObjId) -> Result<(), OrgActorError> {
+    acts_for_amount(world, org, actor, READ_AMOUNT)
+}
+
+/// `acts_as` for a read ([`reads_for`] for an organisation holder).
+///
+/// # Errors
+/// As `acts_as`.
+pub fn reads_as(
+    world: &World,
+    holder: mush_economy::Holder,
+    actor: ObjId,
+) -> Result<(), OrgActorError> {
+    acts_as_amount(world, holder, actor, READ_AMOUNT)
+}
+
 /// `acts_for`, the grant asked with `amount` (the spending acts: the Quote
 /// and the Fund pass the quoted price in minor units, F2).
 ///
@@ -182,13 +220,16 @@ pub fn acts_for_amount(
 /// act asks a title's own scope (F5): `@mind/attest … org=` (the House
 /// attestation asks the House's scope) and the owner section of
 /// `+minds/holdings org=` (each title re-asked on its scope,
-/// `check_title`). Every paid-family form pre-gates with `acts_for`.
+/// `check_title`). Every paid-family form pre-gates with `reads_for`. Doc
+/// 17h §3 M8f H7 (the lead's ruling): a pre-gate and a read move no money,
+/// so the grant is asked as a read ([`READ_AMOUNT`]) and a limited grant
+/// passes it.
 ///
 /// # Errors
 /// As `org_actor`; `NotForOrg` when no scope of the organisation admits the
 /// actor.
 pub fn acts_anywhere(world: &World, org: OrgId, actor: ObjId) -> Result<(), OrgActorError> {
-    match acts_for(world, org, actor) {
+    match reads_for(world, org, actor) {
         Err(OrgActorError::NotForOrg) => {}
         other => return other,
     }
@@ -201,7 +242,7 @@ pub fn acts_anywhere(world: &World, org: OrgId, actor: ObjId) -> Result<(), OrgA
         .collect();
     if scopes
         .into_iter()
-        .any(|scope| org_actor(world, org, scope, actor).is_ok())
+        .any(|scope| org_actor_amount(world, org, scope, actor, READ_AMOUNT).is_ok())
     {
         Ok(())
     } else {
@@ -220,16 +261,36 @@ pub fn acts_as(
     holder: mush_economy::Holder,
     actor: ObjId,
 ) -> Result<(), OrgActorError> {
+    acts_as_amount(world, holder, actor, None)
+}
+
+/// `acts_as`, an organisation's grant asked with `amount` (minor units):
+/// doc 17h §3 M8f P2a, the renewal steps that move money (Fund, Grant,
+/// Refund) pass the renewal's price so a limited grant limits.
+///
+/// # Errors
+/// As `acts_as`; an amount over a grant's limit is `NotForOrg`.
+pub fn acts_as_amount(
+    world: &World,
+    holder: mush_economy::Holder,
+    actor: ObjId,
+    amount: Option<i64>,
+) -> Result<(), OrgActorError> {
     match holder {
         mush_economy::Holder::Character(c) if c == actor => Ok(()),
         mush_economy::Holder::Character(_) => Err(OrgActorError::NotForOrg),
-        mush_economy::Holder::Organization { org, .. } => acts_for(world, org, actor),
+        mush_economy::Holder::Organization { org, .. } => {
+            acts_for_amount(world, org, actor, amount)
+        }
     }
 }
 
 /// `acts_as`, then the holder as a record written by `actor` now carries it:
 /// a character holder unchanged, an organisation holder re-stamped with
-/// `actor` as its acting character (the attribution of this act, B1).
+/// `actor` as its acting character (the attribution of this act, B1). Its
+/// callers draft a renewal (the binding and the offer), which moves no money,
+/// so the grant is asked as a read ([`READ_AMOUNT`], the P2a ruling: a limited
+/// grant renews; the renewal's Fund asks with its price).
 ///
 /// # Errors
 /// As `acts_as`.
@@ -238,7 +299,7 @@ pub fn acting_as(
     holder: mush_economy::Holder,
     actor: ObjId,
 ) -> Result<mush_economy::Holder, OrgActorError> {
-    acts_as(world, holder, actor)?;
+    reads_as(world, holder, actor)?;
     Ok(match holder {
         mush_economy::Holder::Character(c) => mush_economy::Holder::Character(c),
         mush_economy::Holder::Organization { org, .. } => {

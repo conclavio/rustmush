@@ -1588,3 +1588,17 @@ accessor = "World::module_state_mut"
 slot = "UnitStore"
 owner = "tactics"
 reason = "Doc 17h cut M8a fix round 1 (F2): test-only. The inspection test copies a rig's TacticalUnit onto a fresh Thing in the tactics store's RAM, an object with a unit that is no programme hull, so the typed inspection action can be shown refusing it through the provider's own known-hull read. Nothing persists; production writes units only through the tactics owner."
+
+[[site]]
+path = "crates/tacsim/src/minds/registry_inspection/fine.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 17h cut M8d fix round K1, for the `port/coop.rs` row's reason: the Registry
+fine's levy tick charges the holder the inspection recorded, and a holder with no
+credit account is never refused for want of one (the carried-debt rule) — the tick
+takes the account id from `economy`'s allocator before `mush_economy::open_account`
+writes it through the economy module's own path, the `port/apply.rs` precedent.
+The site refuses when the slot is absent.
+"""

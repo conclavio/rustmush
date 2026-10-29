@@ -295,12 +295,13 @@ fn org_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// The one capability an [`AuthRequest`](crate::AuthRequest) ever carries an amount
-/// for. A `GrantLimit` on anything else is inert-but-lethal: `limit_ok` answers
+/// The capabilities an [`AuthRequest`](crate::AuthRequest) carries an amount for:
+/// the economy's posting, and (doc 17h §3 M8f P2a) the Roll's `roll.holder.org`,
+/// whose buy steps that move money ask with their amount. A `GrantLimit` on anything else is inert-but-lethal: `limit_ok` answers
 /// `AmountRequired` for every amount-free request, so the grant authorizes *nothing*,
 /// forever (A13). `@org/grant` therefore refuses `limit=` outside this list rather
 /// than minting a grant that silently never works.
-const AMOUNT_CAPABILITIES: &[&str] = &["economy.account.post"];
+const AMOUNT_CAPABILITIES: &[&str] = &["economy.account.post", "roll.holder.org"];
 
 /// Pull `key=value` options out of a free-form tail, returning the remaining words
 /// and the recognized options (lower-cased keys). An unrecognized `k=v` word stays

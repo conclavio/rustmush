@@ -101,7 +101,10 @@ impl CoreOutputPolicy for Policy {
             {
                 return Err(OwnerReadError::Integrity);
             }
-            let key = crate::facility::facility_capacity_key(row.intent.policy.factory)
+            let key = row
+                .intent
+                .site_factory()
+                .and_then(|f| crate::facility::facility_capacity_key(f).map_err(super::bad))
                 .map_err(|_| OwnerReadError::Integrity)?;
             if ctx.action_state(&self.industry.capacity_index, &row.capacity)? != Some(&key) {
                 return Err(OwnerReadError::Integrity);

@@ -388,9 +388,21 @@ impl Provider {
             if proof.open != c.basis.ic_open {
                 return Err(CoverageError::Authority);
             }
-            let pays = proof.covered_loss(c)?;
+            let covered = proof.covered_loss(c)?;
+            // Doc 17h cut M8d D5: the exclusion, decided again from this transaction.
+            let product =
+                families::read(txn, &self.families.products, c.basis.product.to_hex())?.product;
+            let world_now = ctx.world().map_err(bad)?.world_ic_now();
+            let voided = if covered {
+                self.host.voiding(&product, c, &world_now, |family, slot| {
+                    txn.get(family, slot).map(|row| row.cloned()).map_err(bad)
+                })?
+            } else {
+                None
+            };
+            let pays = covered && voided.is_none();
             if self.index != if pays { 3 } else { 4 }
-                || cancel && pays
+                || cancel && covered
                 || inv.actor()
                     != if cancel {
                         c.terms.buyer
@@ -400,7 +412,14 @@ impl Provider {
             {
                 return Err(CoverageError::Authority);
             }
-            let reason = if pays {
+            let reason = if let Some(inspection) = voided {
+                CoverageDecisionKindV1::Voided {
+                    close: proof.close,
+                    close_digest: proof.digest,
+                    transition: proof.transition,
+                    inspection,
+                }
+            } else if pays {
                 CoverageDecisionKindV1::Destroyed {
                     loss: proof.close,
                     loss_digest: proof.digest,

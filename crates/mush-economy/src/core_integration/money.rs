@@ -413,7 +413,7 @@ impl AuthEval for CoreAuth<'_> {
                     ));
         }
         self.phase == Transition::Complete
-            && ((account.id == self.intent.policy.integrator.account
+            && ((self.intent.integrator_account() == Ok(account.id)
                 && delta.minor() == self.intent.subject.class.integration_minor())
                 || (self.intent.payment == super::subject::DiePayment::SupplierStock
                     && account.id == self.intent.policy.supplier.account

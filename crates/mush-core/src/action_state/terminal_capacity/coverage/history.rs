@@ -143,6 +143,19 @@ impl Row {
                 return Err(refused("coverage destruction window"));
             }
             (field(reason, "loss")?, field(reason, "loss_digest")?)
+        } else if cause == "voided" {
+            // Doc 17h cut M8d D5: a void releases a covered loss the product's exclusion
+            // refused, naming the Registry inspection that recorded the excluded fact.
+            shape(
+                reason,
+                &["kind", "close", "close_digest", "transition", "inspection"],
+            )?;
+            let inspection: CommitToken = parsed(field(reason, "inspection")?)?;
+            if !covered || inspection == operation || &json!(inspection) == field(reason, "close")?
+            {
+                return Err(refused("coverage void requires a covered loss"));
+            }
+            (field(reason, "close")?, field(reason, "close_digest")?)
         } else {
             if !["clean_close", "cancelled", "expired_clean"].contains(&cause)
                 || covered

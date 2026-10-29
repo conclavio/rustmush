@@ -24,6 +24,18 @@ pub enum SafeConductRole {
 /// elimination are excluded. Paid claims convey any surviving wreck title to
 /// the insurer in that same transition. Transfer requires cancellation and a
 /// fresh quote; there is no coverage assignment or retroactive activation.
+/// **What a product does not cover** (doc 17h cut M8d D5; doc 17 §10, D-UM-42): the
+/// exclusion policy `CoverageTermsV1` leaves to the product binding. A policy on a product
+/// with an exclusion is voided (`CoverageDecisionKindV1::Voided`, pays nothing) when the
+/// excluded fact is recorded on the covered hull within the term.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageExclusion {
+    /// A Registry inspection read an ungoverned core on the covered hull within the term
+    /// (Tycho's condition).
+    UngovernedCore,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LossRule {
@@ -154,6 +166,9 @@ pub struct CoverageProductV1 {
     approvals: Vec<ApprovedConductV1>,
     quote_seconds: i64,
     loss_rule: LossRule,
+    /// Doc 17h cut M8d D5: skipped when empty, so a product without one digests as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    exclusions: Vec<CoverageExclusion>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -169,6 +184,8 @@ struct ProductWire {
     approvals: Rows<ApprovedConductV1, 16>,
     quote_seconds: i64,
     loss_rule: LossRule,
+    #[serde(default)]
+    exclusions: Rows<CoverageExclusion, 4>,
 }
 impl TryFrom<ProductWire> for CoverageProductV1 {
     type Error = CoverageError;
@@ -192,6 +209,10 @@ impl TryFrom<ProductWire> for CoverageProductV1 {
             {
                 return Err(CoverageError::Product);
             }
+        }
+        // Doc 17h cut M8d D5: canonical exclusion order, no repeats.
+        if w.exclusions.0.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(CoverageError::Product);
         }
         let mut seen = BTreeSet::new();
         for approval in &w.approvals.0 {
@@ -219,6 +240,7 @@ impl TryFrom<ProductWire> for CoverageProductV1 {
             approvals: w.approvals.0,
             quote_seconds: w.quote_seconds,
             loss_rule: w.loss_rule,
+            exclusions: w.exclusions.0,
         };
         product.encoded()?;
         Ok(product)
@@ -250,7 +272,28 @@ impl CoverageProductV1 {
             approvals: Rows(approvals),
             quote_seconds,
             loss_rule: LossRule::RecordedIcDestructionWithWreckTitle,
+            exclusions: Rows(Vec::new()),
         })
+    }
+    /// Doc 17h cut M8d D5: this product with `exclusions` bound (canonical order, at most 4).
+    ///
+    /// # Errors
+    /// An unordered, repeated or oversized list.
+    pub fn with_exclusions(
+        self,
+        exclusions: Vec<CoverageExclusion>,
+    ) -> Result<Self, CoverageError> {
+        let mut value = self.encoded()?;
+        value.as_object_mut().ok_or(CoverageError::Product)?.insert(
+            "exclusions".into(),
+            serde_json::to_value(&exclusions).map_err(|_| CoverageError::Product)?,
+        );
+        serde_json::from_value(value).map_err(|_| CoverageError::Product)
+    }
+    /// Doc 17h cut M8d D5: whether the product excludes `exclusion`.
+    #[must_use]
+    pub fn excludes(&self, exclusion: CoverageExclusion) -> bool {
+        self.exclusions.contains(&exclusion)
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, CoverageError> {
         if bytes.is_empty() || bytes.len() > Self::MAX_BYTES {
@@ -312,6 +355,11 @@ impl CoverageProductV1 {
 // Direct serde callers also stop at the entry ceiling; the byte decoder adds
 // the complete document bound before parsing. No unbounded intermediate list.
 struct Rows<T, const N: usize>(Vec<T>);
+impl<T, const N: usize> Default for Rows<T, N> {
+    fn default() -> Self {
+        Rows(Vec::new())
+    }
+}
 impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for Rows<T, N> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct Bounded<T, const N: usize>(PhantomData<T>);

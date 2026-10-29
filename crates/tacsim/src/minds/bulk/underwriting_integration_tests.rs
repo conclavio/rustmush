@@ -435,7 +435,10 @@ fn setup(
         vec![selected_base(w.base, w.field)?.definition().clone()],
         vec![],
         600,
-    )?;
+    )?
+    // Doc 17h cut M8d K9: Tycho's exclusion, bound on the product the branches share; the loss
+    // branch reads no ungoverned inspection and pays, the void branch reads one and is void.
+    .with_exclusions(vec![crate::underwriting::CoverageExclusion::UngovernedCore])?;
     let configured = boot(f, &w, &w.snapshot(), vec![product.clone()])?;
     Ok((configured, product, payer, treasury, org, scope))
 }
@@ -565,6 +568,16 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
         original_money.0,
     )?;
     loss_branch(
+        f,
+        &w,
+        &installed,
+        permit.clone(),
+        zone.clone(),
+        payer,
+        treasury,
+        original_money,
+    )?;
+    void_branch(
         f,
         &w,
         &installed,
@@ -1015,6 +1028,146 @@ fn loss_branch(
     check!(crate::arena::damage::is_wreck(
         mush_tactics::module::unit_of(&cold.engine.world, hull).ok_or("retained wreck")?
     ));
+    Ok(())
+}
+/// The Registry inspection policy the void fixture composes (`IcWorld`, K9): GOD the one
+/// operator. No authority is exercised; the records are seeded.
+pub(super) fn void_policy()
+-> TestResult<mush_roll::commerce::registry_inspection::RegistryInspectionPolicy> {
+    Ok(
+        mush_roll::commerce::registry_inspection::RegistryInspectionPolicy::new(
+            issuer()?,
+            mush_org::OrgId(0),
+            mush_org::OrgScopeId(0),
+            vec![GOD],
+        )?,
+    )
+}
+
+/// **Doc 17h cut M8d D5, composed (fix round K9)**: on the same bound policy, a Registry
+/// inspection reading an ungoverned core on the covered hull within the term (seeded through
+/// the bootstrapping seam; no rig carries a real one) voids the cover. The covered loss takes
+/// the no-pay action at once, the native decision is `Voided` naming that inspection, and only
+/// the premium has moved.
+#[allow(clippy::too_many_arguments)]
+fn void_branch(
+    f: &PurchaseFixture,
+    base: &IcWorld,
+    saved: &Durable,
+    permit: Arc<crate::underwriting::WithheldDeparture>,
+    zone: DefinitionRef,
+    payer: MoneyAccount,
+    treasury: MoneyAccount,
+    original: (Amount, Amount),
+) -> TestResult {
+    let mut w = base.reboot(f, saved)?;
+    let h = host(&w)?;
+    let hull = w.hulls[0];
+    let history = w
+        .engine
+        .world
+        .module_state::<EconomyStore>()
+        .ok_or("E4")?
+        .coverage_history(token(FIRST + 4))?
+        .clone();
+    let starts = history.consent().terms.starts_at.clone();
+    let loss = starts.at + 1;
+    w.engine.world.set_now(loss);
+    // The inspection that read an ungoverned core, inside the term.
+    let policy = void_policy()?;
+    let inspection = mush_core::CommitToken::from_bytes([0x5d; 16]);
+    let record = mush_roll::commerce::registry_inspection::InspectionRecord {
+        format: 1,
+        inspection,
+        action: policy.action()?,
+        authority: policy.clone(),
+        operator: GOD,
+        authorization: serde_json::from_value(json!({
+            "at": 0,
+            "organization_revision": 1,
+            "scope_revision": 1,
+            "sources": [{"tag": "grant", "revision": 1}]
+        }))?,
+        hull,
+        seq: 1,
+        core: Some(ObjId(u32::MAX - 7)),
+        class: crate::minds::registry_inspection::HullClass::I,
+        governed: Some(false),
+        provenance: crate::minds::registry_inspection::Provenance::Unknown,
+        seal_digest: None,
+        seal_check: crate::minds::registry_inspection::SealCheck::NoSeal,
+        licence_state: None,
+        at_ic: mush_core::ClockStamp {
+            clock: starts.clock.clone(),
+            at: loss,
+        },
+        ungoverned_note: None,
+        holder: None,
+    };
+    let family = crate::minds::registry_inspection::InspectionHost::of(&w.engine.world)
+        .ok_or("the composed inspection")?
+        .writer()
+        .family()?;
+    {
+        let slot = mush_roll::commerce::registry_inspection::inspection_key(hull, 1);
+        let mut txn = w.engine.action_transaction(&family)?;
+        txn.insert(&family, &slot, record)?;
+        let (_, installation) = txn.prepare()?.into_parts();
+        w.engine.install_prepared_action(installation)?;
+    }
+    let event = ic_sortie::fixture_covered_loss(
+        &w.engine.world,
+        BUYER,
+        token(FIRST + 2),
+        w.base,
+        permit,
+        zone,
+        DefinitionDigest::from_bytes([74; 32]),
+    )?;
+    let closing = w.host.enqueue_close(&event)?;
+    w.land(&closing, FIRST + 40, hull, true)?;
+    let h2 = h.clone();
+    let pending = context(&mut w, GOD, move |ctx| {
+        h2.terminal(ctx, token(FIRST + 4), false)
+    })?;
+    let released = land_ticket(&mut w, pending, FIRST + 41)?;
+    check_eq!(released.kind(), "released", "a void pays nothing, at once");
+    let decided = w
+        .engine
+        .world
+        .module_state::<EconomyStore>()
+        .ok_or("E4")?
+        .coverage_history(token(FIRST + 4))?
+        .clone();
+    let reason = &decided
+        .terminal()
+        .ok_or("native terminal")?
+        .decision()
+        .reason;
+    check!(
+        matches!(
+            reason,
+            mush_economy::managed_coverage::CoverageDecisionKindV1::Voided { inspection: i, .. }
+                if *i == inspection
+        ),
+        "the cover is void, naming the inspection: {reason:?}"
+    );
+    check!(!reason.pays());
+    check_eq!(
+        money(&w, payer)?,
+        original
+            .0
+            .checked_sub(Amount::from_minor(100))
+            .ok_or("premium")?,
+        "no claim paid"
+    );
+    check_eq!(
+        money(&w, treasury)?,
+        original
+            .1
+            .checked_add(Amount::from_minor(100))
+            .ok_or("premium")?
+    );
     Ok(())
 }
 fn cold_corruption(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> TestResult {
