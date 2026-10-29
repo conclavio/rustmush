@@ -111,6 +111,16 @@ impl LocomotionIntent {
         super::scene_transition::exact_action(action)?;
         Self::new_bound(world, invocation, action, commit, admission)
     }
+    pub(crate) fn new_composed(
+        world: &World,
+        invocation: &ActionInvocation,
+        action: &DefinitionRef,
+        commit: CommitToken,
+        admission: &LocomotionAdmission,
+    ) -> Result<Self, ParticipantError> {
+        super::composed::exact_action(action)?;
+        Self::new_bound(world, invocation, action, commit, admission)
+    }
     fn new_bound(
         world: &World,
         invocation: &ActionInvocation,
