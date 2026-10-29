@@ -67,7 +67,9 @@ pub(crate) fn kind() -> Result<DefinitionKind, ModError> {
     DefinitionKind::new(KIND).map_err(bad)
 }
 
-pub(crate) fn descriptor(id: &str, version: u32) -> Result<DefinitionDescriptor, ModError> {
+/// Exact passive metadata for a named legacy callback. This neither subscribes
+/// an observer nor grants prepared completion or movement authority.
+pub fn descriptor(id: &str, version: u32) -> Result<DefinitionDescriptor, ModError> {
     DefinitionDescriptor::new(
         kind()?,
         DefinitionId::new(id).map_err(bad)?,

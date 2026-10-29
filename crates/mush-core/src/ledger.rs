@@ -504,6 +504,14 @@ impl Ledger {
             let Some(remaining) = max_bytes.checked_sub(bytes) else {
                 return false;
             };
+            // Reject excessive depth and scalar data iteratively before the
+            // streaming encoder recurses into a malformed resident value.
+            let mut value_budget = remaining;
+            for entry in &tail.open_entries {
+                if !bounded_value(&entry.value, &mut value_budget) {
+                    return false;
+                }
+            }
             let resident = (
                 id,
                 tail.open_chunk,
@@ -2962,6 +2970,7 @@ mod tests {
             ledger.prepare_append_bounded("s", serde_json::json!(1), 4096),
             Err(LedgerAppendError::ResidentLimit { .. })
         ));
+        assert!(!ledger.resident_within_bounds(1, 4096));
         assert_eq!(ledger.logs["s"].next_seq, 1);
     }
 
