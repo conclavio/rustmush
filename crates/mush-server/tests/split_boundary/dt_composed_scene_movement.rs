@@ -65,6 +65,90 @@ async fn scenes_and_composed_history_refuse_before_sim_projection_repairs() -> T
 }
 
 #[tokio::test]
+async fn scenes_rejects_malformed_owner_proofs_in_the_early_typed_phase() -> TestResult {
+    async fn preflight(
+        records: Vec<mush_core::ActionStateBootRecord>,
+    ) -> TestResult<Result<(), mush_core::ModError>> {
+        let store = InMemoryStore::new();
+        let mut rig = fixture(&store, ObjKind::Player).await?;
+        rig.world.engine_mut().hydrate_action_state(records)?;
+        Ok(rig.world.engine_mut().audit_typed_history())
+    }
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store, ObjKind::Player).await?;
+    start_scenes(&mut rig, &store).await?;
+    let bundle = commit(&mut rig, &store, "n", ACTION, 0xe4).await?;
+    let records: Vec<_> = ["composed_locomotion", "composed_locomotion_crossings"]
+        .into_iter()
+        .map(|family| {
+            row(&bundle, family).map(|(key, value)| {
+                mush_core::ActionStateBootRecord::new("sim", key, value.clone())
+            })
+        })
+        .collect::<TestResult<_>>()?;
+    preflight(records.clone()).await??;
+    for fault in 0..6 {
+        let mut changed = records.clone();
+        let movement = changed
+            .iter_mut()
+            .find(|row| row.key.contains("/composed_locomotion/"))
+            .ok_or("composed row")?;
+        let effect = movement.value["value"]["effects"]
+            .as_array_mut()
+            .ok_or("effects")?
+            .iter_mut()
+            .find(|effect| effect["participant"]["key"]["owner"] == "scenes")
+            .ok_or("Scenes effect")?;
+        assert_eq!(
+            effect["proof"]["appends"]
+                .as_array()
+                .ok_or("appends")?
+                .len(),
+            2
+        );
+        match fault {
+            0 => effect["proof"]["format"] = json!(2),
+            1 => effect["proof"]["unexpected"] = json!(true),
+            2 => {
+                effect["proof"]
+                    .as_object_mut()
+                    .ok_or("proof")?
+                    .remove("appends");
+            }
+            3 => {
+                effect["proof"]["appends"][1]["scene"] =
+                    effect["proof"]["appends"][0]["scene"].clone()
+            }
+            4 => effect["proof"]["appends"][0]["unexpected"] = json!(true),
+            _ => {
+                let extra = effect["proof"]["appends"][0].clone();
+                effect["proof"]["appends"]
+                    .as_array_mut()
+                    .ok_or("appends")?
+                    .push(extra);
+            }
+        }
+        // The generic Core codec still accepts its rebound proof hash. This
+        // deliberately corrupted typed fixture is not a native event claim.
+        let digest = mush_core::DefinitionDigest::for_canonical_value_with_limit(
+            "core.composed_locomotion.owner_proof.v1",
+            &json!({"binding":effect["binding"],"capture_digest":effect["capture_digest"],"proof":effect["proof"]}),
+            mush_core::locomotion::composed::MAX_MOVEMENT_PROOF_BYTES + 4096,
+        )?;
+        effect["proof_digest"] = serde_json::to_value(digest)?;
+        let error = preflight(changed)
+            .await?
+            .err()
+            .ok_or("malformed Scenes proof accepted")?;
+        assert!(
+            error.to_string().contains("Scenes typed movement proof"),
+            "{error}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn actual_tactics_custody_and_readiness_guard_every_locomotion_profile_after_ack()
 -> TestResult {
     for action in [

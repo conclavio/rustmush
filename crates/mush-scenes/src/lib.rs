@@ -119,6 +119,11 @@ pub struct ScenesModule {
     composed_movement: Option<Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>>,
 }
 
+type MovementReaders<'a> = (
+    Option<&'a SceneLocomotionReader>,
+    Option<&'a mush_core::locomotion::composed::ComposedOwnerReader>,
+);
+
 impl ScenesModule {
     /// A fresh module instance, with no sealer gate (conferral is unrestricted).
     #[must_use]
@@ -163,6 +168,25 @@ impl ScenesModule {
     ) -> Self {
         self.composed_movement = Some(reader);
         self
+    }
+
+    fn movement_readers(&self) -> Result<MovementReaders<'_>, ModError> {
+        let missing = |protocol| {
+            ModError::msg(format!(
+                "Scenes {protocol} movement reader was not supplied by the Sim composition"
+            ))
+        };
+        let atomic = self
+            .atomic_movement
+            .as_ref()
+            .map(|reader| reader.get().ok_or_else(|| missing("atomic")))
+            .transpose()?;
+        let composed = self
+            .composed_movement
+            .as_ref()
+            .map(|reader| reader.get().ok_or_else(|| missing("composed")))
+            .transpose()?;
+        Ok((atomic, composed))
     }
 }
 
@@ -265,6 +289,12 @@ impl GameModule for ScenesModule {
         Ok(())
     }
 
+    fn audit_typed_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
+        let (atomic, composed) = self.movement_readers()?;
+        movement_audit::audit_typed(ctx, atomic, composed)
+            .map_err(|e| ModError::msg(format!("Scenes typed movement proof audit failed: {e}")))
+    }
+
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
@@ -281,26 +311,7 @@ impl GameModule for ScenesModule {
         // J1: share one structural inspection across the movement receipt
         // audit and live-tail restoration; it retains indices and open tails.
         let history = mush_core::inspect_ledger(&data.ledger, None);
-        let atomic = self
-            .atomic_movement
-            .as_ref()
-            .map(|reader| {
-                reader.get().ok_or_else(|| {
-                    ModError::msg(
-                        "Scenes atomic movement reader was not supplied by the Sim composition",
-                    )
-                })
-            })
-            .transpose()?;
-        let composed =
-            self.composed_movement
-                .as_ref()
-                .map(|reader| {
-                    reader.get().ok_or_else(|| {
-            ModError::msg("Scenes composed movement reader was not supplied by the Sim composition")
-        })
-                })
-                .transpose()?;
+        let (atomic, composed) = self.movement_readers()?;
         if atomic.is_some() || composed.is_some() {
             movement_audit::audit_boot(ctx, &data, &history, atomic, composed)?;
         }
