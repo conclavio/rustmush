@@ -2591,6 +2591,7 @@ mod fixture {
                     // destroyed turret is not the chassis's fatal hull, and the
                     // fatal words beside it.
                     aspect: Aspect::Left,
+                    facing: tacsim::arena::perception::ContactFacing::Left,
                     reads_dead: Some(false),
                     fatal: Some(vec![SmolStr::new_static("hull")]),
                     unit_type: Some("tacsim.unit.line_tank".into()),
@@ -2613,6 +2614,7 @@ mod fixture {
                     condition: None,
                     // 17b cut M1a.3: nose-on; no reading, so no fatal words.
                     aspect: Aspect::Front,
+                    facing: tacsim::arena::perception::ContactFacing::Front,
                     reads_dead: Some(false),
                     fatal: None,
                     unit_type: Some("tacsim.unit.line_tank".into()),
@@ -2633,6 +2635,7 @@ mod fixture {
                     // 17b cut M1a.3: an aspect is told for an unclassified
                     // return — the plot's heading — and no odds ever are.
                     aspect: Aspect::Front,
+                    facing: tacsim::arena::perception::ContactFacing::Front,
                     reads_dead: Some(false),
                     fatal: None,
                     unit_type: None,
@@ -2651,6 +2654,7 @@ mod fixture {
                     cell: Some((50, 33)),
                     condition: None,
                     aspect: Aspect::Rear,
+                    facing: tacsim::arena::perception::ContactFacing::Rear,
                     reads_dead: Some(false),
                     fatal: None,
                     unit_type: None,
@@ -4428,6 +4432,7 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
         cell: None,
         condition: None,
         aspect: tacsim::arena::perception::Aspect::Front,
+        facing: tacsim::arena::perception::ContactFacing::Front,
         reads_dead: None,
         fatal: None,
         unit_type: None,

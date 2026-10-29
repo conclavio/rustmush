@@ -1186,7 +1186,7 @@ pub fn register_server_commands_with_cap(
         Arc::new(move |ctx: &mut Ctx<'_>| discord_cmd(&q, ctx)),
     )?;
     let q = Arc::clone(queue);
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@ps".into(),
             shape: ArgShape::None,
@@ -1201,7 +1201,7 @@ pub fn register_server_commands_with_cap(
         Arc::new(move |ctx: &mut Ctx<'_>| ps_cmd(&q, ctx)),
     )?;
     let q = Arc::clone(queue);
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@stats".into(),
             shape: ArgShape::None,

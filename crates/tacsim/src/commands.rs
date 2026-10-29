@@ -530,8 +530,11 @@ fn time_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned);
     match rhs {
-        // `@tacsim/time rate=<n>` — the one write.
+        // `@tacsim/time rate=<n>` — rate generation write.
         Some(rhs) if lhs.eq_ignore_ascii_case("rate") => time_rate(ctx, &rhs),
+        // `@tacsim/time freeze` / `@tacsim/time resume` — deliberate W-clock freeze/resume.
+        None if lhs.eq_ignore_ascii_case("freeze") => time_freeze(ctx),
+        None if lhs.eq_ignore_ascii_case("resume") => time_resume(ctx),
         _ => time_show(ctx),
     }
 }
@@ -548,17 +551,20 @@ fn declared_policies(ctx: &Ctx<'_>) -> Result<Vec<(&'static str, String)>, CmdEr
 }
 
 fn time_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let epoch = ctx
-        .w
-        .world_timeline()
-        .epochs()
-        .last()
-        .copied()
-        .ok_or_else(|| CmdError::msg("This world has no time generation."))?;
+    if ctx.w.world_timeline().epochs().is_empty() {
+        return Err(CmdError::msg("This world has no time generation."));
+    }
+    let epoch = ctx.w.world_timeline().current();
     let mut rows = vec![format!(
         "World time: generation {}, {} IC seconds per real second (anchored at IC {}).",
         epoch.generation, epoch.rate, epoch.ic_anchor
     )];
+    if let Some(freeze) = ctx.w.world_timeline().freeze() {
+        rows.push(format!(
+            "  status: frozen at IC {} (since real {})",
+            freeze.frozen_ic_unix, freeze.frozen_real_unix
+        ));
+    }
     for (subsystem, word) in declared_policies(ctx)? {
         rows.push(format!(
             "  {subsystem}: {}",
@@ -570,6 +576,45 @@ fn time_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
     lines(ctx, rows);
+    Ok(())
+}
+
+fn time_freeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !is_staff(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(
+            "Only staff freeze or resume the world's time.",
+        ));
+    }
+    let freeze = ctx
+        .freeze_world_time()
+        .map_err(|error| CmdError::msg(format!("The world clock was not frozen: {error}")))?;
+    lines(
+        ctx,
+        vec![format!(
+            "World time frozen on generation {} at IC {} (real {}).",
+            freeze.generation, freeze.frozen_ic_unix, freeze.frozen_real_unix
+        )],
+    );
+    Ok(())
+}
+
+fn time_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !is_staff(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(
+            "Only staff freeze or resume the world's time.",
+        ));
+    }
+    let (freeze, epoch) = ctx
+        .resume_world_time()
+        .map_err(|error| CmdError::msg(format!("The world clock was not resumed: {error}")))?;
+    let unavailable_secs = epoch.real_anchor.saturating_sub(freeze.frozen_real_unix);
+    lines(
+        ctx,
+        vec![format!(
+            "World time resumed on generation {} at IC {} after {} real second(s) paused.",
+            epoch.generation, epoch.ic_anchor, unavailable_secs
+        )],
+    );
     Ok(())
 }
 

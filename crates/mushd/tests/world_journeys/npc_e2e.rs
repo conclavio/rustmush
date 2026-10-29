@@ -27,10 +27,12 @@
 
 use std::sync::Arc;
 
-use mush_core::module::{TickHandler, apply_async_completion};
+use mush_core::module::TickHandler;
 use mush_core::{
-    ConnId, Ctx, Effect, Effects, Engine, GOD, Inbound, ObjId, ObjKind, Outbox, ParsedArgs,
-    SwitchSet, World,
+    CanonicalId, CommitToken, ConnId, Ctx, Effect, Effects, Engine, GOD, IdempotencyKey,
+    IdempotencyScope, Inbound, ObjId, ObjKind, OfferExecutionContext, OfferKeyRing, OfferSecret,
+    OfferSubmission, Outbox, OwnerId, ParsedArgs, PrincipalId, RequestUid, ResolutionKeyRing,
+    ResolutionSecret, ScopedIdempotencyKey, SwitchSet, World, WorldCommand,
 };
 use mush_llm::{
     BudgetConfig, BudgetLimit, CompletionResponse, ContentBlock, LlmProvider, LlmService,
@@ -82,6 +84,17 @@ impl Rig {
             .await
             .expect("module boot");
         engine.set_now(1_000);
+        engine.set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x41; 32]).expect("offer secret"), [])
+                .expect("offer ring"),
+        );
+        engine.set_resolution_keys(
+            ResolutionKeyRing::new(
+                ResolutionSecret::new(1, [0x52; 32]).expect("resolution secret"),
+                [],
+            )
+            .expect("resolution ring"),
+        );
 
         // A room to work in; God moves there so staff commands have a location.
         let bar = engine
@@ -186,15 +199,16 @@ impl Rig {
         payload: &str,
     ) -> Vec<(mush_core::Audience, OutputEvent)> {
         let mut out = Outbox::new();
-        apply_async_completion(
-            &self.engine.registry,
-            &mut self.engine.world,
+        let mut fx = Effects::new();
+        self.engine.step(
+            Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                module: SmolStr::new("npc"),
+                actor: npc,
+                correlation,
+                payload: payload.to_string(),
+            }),
             &mut out,
-            SmolStr::new("npc"),
-            npc,
-            correlation,
-            payload,
-            mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+            &mut fx,
         );
         out.take()
     }
@@ -422,26 +436,76 @@ async fn toy_roll_uses_the_npcs_real_sheet_pool() {
         input: serde_json::json!({ "pool_expr": "strength+brawl", "difficulty": 6 }),
     }]));
     let done = run_npc_turn_async(&svc, &payload).await;
-    let events = rig.complete(npc, corr, &done);
+    let _events = rig.complete(npc, corr, &done);
 
-    // The ruleset rolled the NPC's REAL pool on-loop and rendered it to the
-    // room: the I3 roll line (`roll  Bartender  Strength+Brawl  <7 dice> = N
-    // successes  diff 6`) shows the resolved trait labels and exactly seven
-    // die faces, proving it can't fabricate a bigger pool than its sheet.
-    let roll_line = events.iter().find_map(|(_, ev)| match ev {
-        OutputEvent::Narrative { text, .. } => {
-            let t = text.to_plain_text();
-            let dice = t
-                .split_once("Strength+Brawl  ")
-                .and_then(|(_, rest)| rest.split_once(" = "))
-                .map_or(0, |(faces, _)| faces.split_whitespace().count());
-            (t.starts_with("roll  ") && dice == 7).then_some(t)
-        }
-        _ => None,
-    });
-    assert!(
-        roll_line.is_some(),
-        "the room saw the NPC roll its real 7-die Strength+Brawl pool: {events:?}"
+    // The completion projected `toy_roll` onto the authoritative `toy_roll`
+    // action; resolving and preparing it against the engine rolls the NPC's
+    // REAL 7-die Strength+Brawl pool from its sheet.
+    let submit = rig
+        .engine
+        .take_authoritative_submit()
+        .expect("a queued authoritative toy_roll submission");
+    assert_eq!(submit.actor, npc);
+    assert_eq!(submit.action.key().id.as_str(), "toy_roll");
+    let principal = PrincipalId::Object { id: npc };
+    let query = rig
+        .engine
+        .legal_action_query(principal.clone(), npc, submit.subject.clone())
+        .expect("legal-action query");
+    let projection = rig
+        .engine
+        .project_legal_actions(&query)
+        .expect("legal-action projection");
+    let offer = projection
+        .projected_for_action(&submit.action)
+        .expect("projected toy_roll offer");
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner: OwnerId::new("toy").expect("owner"),
+            namespace: CanonicalId::new("toy_roll").expect("namespace"),
+        },
+        0,
+        IdempotencyKey::Request(RequestUid::from_bytes([0x42; 16])),
+    );
+    let resolved = rig
+        .engine
+        .resolve_legal_action(
+            &projection,
+            OfferExecutionContext {
+                request: RequestUid::from_bytes([0x42; 16]),
+                principal,
+                actor: query.actor(),
+                idempotency,
+                viewer_scope: query.viewer_scope(),
+                now: None,
+            },
+            OfferSubmission {
+                offer: offer.offer(),
+                subject: submit.subject,
+                targets: submit.targets,
+                parameters: submit.parameters,
+            },
+        )
+        .expect("offer resolves");
+    let (action, resolved, _guards) = resolved.into_authoritative_parts();
+    let (_prepared, output) = rig
+        .engine
+        .prepare_registered_resolved_authoritative_action(
+            &action,
+            &resolved,
+            CommitToken::from_bytes([0x42; 16]),
+        )
+        .expect("provider prepares");
+    let data = output.outcome().data();
+    assert_eq!(
+        data["pool"], 7,
+        "resolved 7-die Strength+Brawl pool: {data}"
+    );
+    assert_eq!(
+        data["roll"]["dice"].as_array().map(Vec::len),
+        Some(7),
+        "rolled 7 dice: {data}"
     );
 }
 

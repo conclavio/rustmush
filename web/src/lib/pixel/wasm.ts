@@ -1,4 +1,4 @@
-// The cockpit picture drawn in the browser (doc 21 cut G.3b): the
+// The pixel engine drawn in the browser (doc 21 cut G.3b; doc 28 P2): the
 // `mush-pixel-wasm` module's plain exports (no wasm-bindgen), wrapped. The
 // ABI is the crate's own doc; this file is its one caller.
 //
@@ -9,12 +9,29 @@
 // kept.
 
 /** The ABI version this file speaks (`mush_pixel_wasm::ABI_VERSION`). */
-export const PIXEL_ABI = 1;
+export const PIXEL_ABI = 2;
 
 /** `mp_feed`'s number for `arena.cockpit`. */
 export const FEED_COCKPIT = 1;
 /** `mp_feed`'s number for `arena.map`. */
 export const FEED_MAP = 2;
+/** `mp_feed`'s number for `sky.chart`. */
+export const FEED_CHART = 3;
+/** `mp_feed`'s number for `arena.replay`. */
+export const FEED_REPLAY = 4;
+/** `mp_feed`'s number for `replay.cursor`. */
+export const FEED_REPLAY_CURSOR = 5;
+
+/** `mp_kind`'s number for the first-person cockpit (`CockpitPicture`). */
+export const KIND_COCKPIT = 1;
+/** `mp_kind`'s number for the cockpit's overhead camera (`OverheadPicture`). */
+export const KIND_OVERHEAD = 2;
+/** `mp_kind`'s number for the orbital sky chart (`ChartPicture`). */
+export const KIND_CHART = 3;
+/** `mp_kind`'s number for the armour doll page (`DollPicture`). */
+export const KIND_DOLL = 4;
+/** `mp_kind`'s number for the match replay (`ReplayPicture`). */
+export const KIND_REPLAY = 5;
 
 /** What the picture is drawn for: the look's offset from the hull, and the
  * hull's own offset from the frame's heading and an ordered heading when the
@@ -28,6 +45,7 @@ export interface PixelLook {
 interface PixelExports {
   memory: WebAssembly.Memory;
   mp_abi(): number;
+  mp_kind(kind: number): number;
   mp_input(len: number): number;
   mp_feed(feed: number, len: number): number;
   mp_render(w: number, h: number, look: number, hull: number, ordered: number, hasOrdered: number): number;
@@ -40,6 +58,7 @@ interface PixelExports {
 const EXPORTS: (keyof PixelExports)[] = [
   "memory",
   "mp_abi",
+  "mp_kind",
   "mp_input",
   "mp_feed",
   "mp_render",
@@ -50,7 +69,7 @@ const EXPORTS: (keyof PixelExports)[] = [
 ];
 
 /** **The picture module, instantiated.** Throws on a module that is not
- * this ABI, so a caller falls back to the server's picture. */
+ * this ABI. */
 export class PixelModule {
   readonly #x: PixelExports;
   #width = 0;
@@ -65,6 +84,12 @@ export class PixelModule {
     this.#x = x;
   }
 
+  /** Choose which picture {@link render} draws (`KIND_*`); whether the module
+   * knew it. */
+  setKind(kind: number): boolean {
+    return this.#x.mp_kind(kind) === 1;
+  }
+
   /** Keep a keyframe of `feed` (raw JSON text, or `null` to forget it);
    * whether the module kept it. */
   feed(feed: number, json: string | null): boolean {
@@ -74,9 +99,10 @@ export class PixelModule {
     return this.#x.mp_feed(feed, bytes.length) === 1;
   }
 
-  /** Draw a `width` x `height` frame for `look`; whether one was drawn
-   * (nothing is, with no cockpit held). */
-  render(width: number, height: number, look: PixelLook): boolean {
+  /** Draw a `width` x `height` frame of the chosen picture (or `kind` when
+   * given) for `look`; whether one was drawn. */
+  render(width: number, height: number, look: PixelLook, kind?: number): boolean {
+    if (kind !== undefined && !this.setKind(kind)) return false;
     const ordered = look.orderedMdeg ?? null;
     const drawn =
       this.#x.mp_render(

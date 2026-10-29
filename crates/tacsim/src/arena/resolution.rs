@@ -276,6 +276,23 @@ impl UnitProfile {
 /// of doc 16 §9.
 pub const DIRECT_BANDS: [&str; 4] = ["front", "right", "rear", "left"];
 
+/// **The eight facing bands a contact's plot can present to a viewer** (doc 22
+/// D-22-9, 2026-10-28): the sensor ruling D-22-4 reserved, in clockwise order
+/// from dead ahead.
+pub const FACING_BANDS: [&str; 8] = [
+    "front",
+    "front_right",
+    "right",
+    "rear_right",
+    "rear",
+    "rear_left",
+    "left",
+    "front_left",
+];
+
+/// An eighth of a turn in millidegrees (45°).
+const EIGHTH_MDEG: u32 = 45_000;
+
 /// A quarter turn in millidegrees.
 const QUARTER_MDEG: u32 = 90_000;
 
@@ -323,6 +340,25 @@ pub fn facet_band_from(target: &UnitState, from_x_cm: i64, from_y_cm: i64) -> &'
 #[must_use]
 pub fn facet_band_seen(target: &SeenPose, shooter: &UnitState) -> &'static str {
     band_toward(target, shooter.pose.x_cm, shooter.pose.y_cm)
+}
+
+/// **The eight-way facing `target`'s plot presents to `shooter`** (doc 22
+/// D-22-9): the same relative bearing off the plot as [`facet_band_seen`],
+/// split into eight 45° sectors centred on the target's axes ([`FACING_BANDS`])
+/// so the cockpit picture can pick a diagonal sprite facing while the four
+/// armour facets stay [`DIRECT_BANDS`].
+#[must_use]
+pub fn facing_band_seen(target: &SeenPose, shooter: &UnitState) -> &'static str {
+    let absolute = bearing_of(
+        shooter.pose.x_cm.saturating_sub(target.x_cm),
+        shooter.pose.y_cm.saturating_sub(target.y_cm),
+    );
+    let relative = (absolute + FULL_MDEG).saturating_sub(target.heading_mdeg) % FULL_MDEG;
+    let sector = ((relative + EIGHTH_MDEG / 2) % FULL_MDEG) / EIGHTH_MDEG;
+    FACING_BANDS
+        .get(usize::try_from(sector).unwrap_or(0))
+        .copied()
+        .unwrap_or("front")
 }
 
 /// The one sector rule the three readings above share (16b cut AE.2 factored it
