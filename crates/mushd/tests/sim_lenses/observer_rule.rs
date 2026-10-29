@@ -4711,6 +4711,7 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         condition: None,
         // 17b cut M1a.3: the stub is an unarmed hull, so no `reads_dead`.
         aspect: tacsim::arena::perception::Aspect::Front,
+        facing: tacsim::arena::perception::ContactFacing::Front,
         reads_dead: None,
         fatal: None,
         unit_type: None,

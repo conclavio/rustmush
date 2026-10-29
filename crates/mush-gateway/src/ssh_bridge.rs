@@ -118,7 +118,7 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         self
     }
 
-    /// The terminal picture's knobs, from `[pixel]` (doc 21 cut G.1b).
+    /// The terminal picture's knobs, from `[pixel]` (doc 21 cuts G.1b, G.2b).
     #[must_use]
     pub fn with_pixel(mut self, cfg: &mush_config::config::PixelCfg) -> SshBridge<A> {
         self.pixel = mush_net_ssh::PixelConfig::from_millis(
@@ -127,7 +127,8 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
             cfg.step_down_after,
             cfg.step_up_after_s,
             cfg.diagnostics,
-        );
+        )
+        .with_sixel_max_scale(cfg.sixel_max_scale);
         self
     }
 

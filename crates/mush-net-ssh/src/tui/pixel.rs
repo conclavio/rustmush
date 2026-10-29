@@ -1,29 +1,34 @@
-//! **The pixel cockpit view** (spike 2026-10-21; doc 21 cuts G.1, G.2): a
-//! first-person picture of the arena streamed over the kitty graphics
-//! protocol or as sixel, drawn by `mush-pixel`'s cockpit [`Picture`] from the
-//! feeds the TUI already holds.
+//! **The pixel view** (doc 21 cuts G.1, G.2, G.4, G.5b, G.6a, G.8, G.12b):
+//! the arena cockpit and overhead cameras (bucket A) and the orbital chart,
+//! armour doll and match replay diagrams (bucket B), streamed over the kitty
+//! graphics protocol or as DEC sixel from the feeds the TUI already holds.
 //!
 //! What lives here is the per-connection state the SSH TUI keeps for it; the
-//! picture itself (map, camera, sprites, instruments) is the engine's:
+//! pictures themselves (map, camera, sprites, scenes, instruments) are the
+//! engine's (`mush-pixel`):
 //!
 //! - **The probe**: `@tui` sends a one-pixel kitty query and `CSI c` right
-//!   after the first frame. A graphics OK arriving first means kitty; the
+//!   after the first frame, plus `CSI ? u` for the kitty keyboard protocol
+//!   (G.4). A graphics OK arriving first means kitty; the
 //!   DA1 reply arriving first, or neither within [`PROBE_TIMEOUT`], means
 //!   none; the DA1 reply's attributes say whether the terminal draws sixel,
 //!   whichever came first, and a `CSI 6 ; h ; w t` reply before it gives the
 //!   cell size sixel is drawn in. The result is a [`Graphics`] record; the
-//!   view opens only when it, or the player's `@pixel/encoder`, yields an
-//!   encoder — kitty, then sixel.
+//!   view opens only when it, or the player's `@pixel/encoder`
+//!   ([`EncoderChoice`]), yields an encoder — kitty, then sixel.
 //! - **Two encoders.** Kitty's picture is one image under one id, scaled by
 //!   the terminal into the cell box. Sixel's is drawn into the cell grid at
 //!   its own pixel size, so the frame is sized to fit the box in the
-//!   terminal's cell pixels, sent again whenever the text
+//!   terminal's cell pixels (up to [`PixelConfig::sixel_max_scale`]), sent
+//!   again whenever the text
 //!   frame wrote into its box ([`PixelView::text_touched`]), and wiped by a
 //!   full text repaint when it closes or its box changes.
-//! - **The camera**: the sim's own `x_cm`/`y_cm`/`heading_mdeg` plus a LOCAL
-//!   heading offset the pilot turns with toggle-turn keys (press to start
-//!   turning, press again to stop) — the camera on a leash. The sim is not
-//!   told; this spike proves the picture and the pacing, not the order.
+//! - **The helm and the look** (G.4, `super::helm`): turning (`Left`/`Right`
+//!   or `a`/`d`) sends `HEADING` orders to the sim and predicts the hull's
+//!   heading between pulses — held while pressed where the terminal answers
+//!   the kitty keyboard protocol (`CSI > 15 u`), toggled otherwise; the look
+//!   (`q`/`e` or `,`/`.`, recentred by `c`) is a local camera offset over that
+//!   hull heading.
 //! - **The frame clock**: the output pump ticks [`FRAME_INTERVAL`]; each
 //!   tick advances the turn, renders, and sends the frame only when its
 //!   pixels (or the cell box it is scaled into) changed since the last send.
@@ -111,9 +116,9 @@ const KEYBOARD_QUERY: &[u8] = b"\x1b[?u";
 /// it always has.
 const KEYBOARD_POP: &[u8] = b"\x1b[<u";
 
-/// **The view's knobs** (doc 21 cut G.1b), from `[pixel]` in `mushd.toml`
-/// through `SshHooks::pixel_config`: the clock, the step-down on a slow link,
-/// and the box-wide staff diagnostics.
+/// **The view's knobs** (doc 21 cuts G.1b, G.2b), from `[pixel]` in
+/// `mushd.toml` through `SshHooks::pixel_config`: the clock, the step-down on
+/// a slow link, the sixel upscale cap, and the box-wide staff diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PixelConfig {
     /// The picture's clock (20 Hz).
@@ -125,6 +130,9 @@ pub struct PixelConfig {
     pub step_down_after: u32,
     /// How long the writes must keep up before stepping back up.
     pub step_up_after: Duration,
+    /// How far a sixel frame is scaled up to fill its box, at most (G.2b;
+    /// doc 21a `W-22`).
+    pub sixel_max_scale: usize,
     /// The staff diagnostics, box-wide (the owner's ruling of 2026-10-22):
     /// the `u` key and the engineering numbers on the status line.
     pub diagnostics: bool,
@@ -137,6 +145,7 @@ impl Default for PixelConfig {
             low_interval: Duration::from_millis(100),
             step_down_after: 3,
             step_up_after: Duration::from_secs(10),
+            sixel_max_scale: SIXEL_MAX_SCALE,
             diagnostics: false,
         }
     }
@@ -160,8 +169,17 @@ impl PixelConfig {
             low_interval: Duration::from_millis(low_interval_ms.clamp(frame, 2_000)),
             step_down_after: step_down_after.max(1),
             step_up_after: Duration::from_secs(step_up_after_s.max(1)),
+            sixel_max_scale: SIXEL_MAX_SCALE,
             diagnostics,
         }
+    }
+
+    /// Set the sixel upscale cap from `[pixel].sixel_max_scale`, held to
+    /// `1..=8` (doc 21a `W-22`).
+    #[must_use]
+    pub fn with_sixel_max_scale(mut self, sixel_max_scale: usize) -> PixelConfig {
+        self.sixel_max_scale = sixel_max_scale.clamp(1, 8);
+        self
     }
 }
 
@@ -1219,7 +1237,7 @@ impl PixelView {
         let want = frame_size(width, area, cell);
         let (size, shown, placed) = match encoder {
             Encoder::Kitty => (want, want, image_box(area, want, cell)),
-            Encoder::Sixel => sixel_box(area, want, cell),
+            Encoder::Sixel => sixel_box_scaled(area, want, cell, self.cfg.sixel_max_scale),
         };
         if (self.frame.width(), self.frame.height()) != size {
             self.frame = Frame::new(size.0, size.1);
@@ -1564,6 +1582,18 @@ pub fn frame_size(width: usize, area: CellBox, cell: CellSize) -> Pixels {
 /// 1-based.
 #[must_use]
 pub fn sixel_box(area: CellBox, want: Pixels, cell: CellSize) -> (Pixels, Pixels, CellBox) {
+    sixel_box_scaled(area, want, cell, SIXEL_MAX_SCALE)
+}
+
+/// Like [`sixel_box`], capped at `max_scale` times `want` (`[pixel].sixel_max_scale`,
+/// doc 21a `W-22`).
+#[must_use]
+pub fn sixel_box_scaled(
+    area: CellBox,
+    want: Pixels,
+    cell: CellSize,
+    max_scale: usize,
+) -> (Pixels, Pixels, CellBox) {
     let (col, row, cols, rows) = area;
     let (cw, ch) = (
         usize::from(cell.width.max(1)),
@@ -1571,7 +1601,7 @@ pub fn sixel_box(area: CellBox, want: Pixels, cell: CellSize) -> (Pixels, Pixels
     );
     let avail_cols = usize::from(cols.max(1));
     let avail_rows = usize::from(rows.max(1));
-    let (w, h) = sixel::fill(want, (avail_cols * cw, avail_rows * ch), SIXEL_MAX_SCALE);
+    let (w, h) = sixel::fill(want, (avail_cols * cw, avail_rows * ch), max_scale.max(1));
     let render = if w <= want.0 { (w, h) } else { want };
     let c = w.div_ceil(cw).clamp(1, avail_cols);
     let r = h.div_ceil(ch).clamp(1, avail_rows);
@@ -2415,7 +2445,7 @@ mod tests {
     /// `[pixel]`'s numbers are held to sane bounds.
     #[test]
     fn the_config_is_held_to_sane_bounds() {
-        let cfg = PixelConfig::from_millis(1, 5, 0, 0, true);
+        let cfg = PixelConfig::from_millis(1, 5, 0, 0, true).with_sixel_max_scale(0);
         assert_eq!(cfg.frame_interval, Duration::from_millis(10));
         assert_eq!(
             cfg.low_interval,
@@ -2423,8 +2453,14 @@ mod tests {
             "never faster than the clock"
         );
         assert_eq!(
-            (cfg.step_down_after, cfg.step_up_after),
-            (1, Duration::from_secs(1))
+            (cfg.step_down_after, cfg.step_up_after, cfg.sixel_max_scale),
+            (1, Duration::from_secs(1), 1)
+        );
+        assert_eq!(
+            PixelConfig::default()
+                .with_sixel_max_scale(99)
+                .sixel_max_scale,
+            8
         );
         let cfg = PixelConfig::from_millis(50, 100, 3, 10, false);
         assert_eq!(cfg, PixelConfig::default());

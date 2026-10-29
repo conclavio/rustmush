@@ -3,7 +3,6 @@
 //! row, zlib via `flate2` at a fast level — the frames are flat-shaded and
 //! compress well whatever the level, and this runs twenty times a second.
 
-use std::collections::HashMap;
 use std::io::Write;
 
 use flate2::Compression;
@@ -59,8 +58,15 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
 
 /// The filtered, palette-indexed rows of `pixels` (`w` a row), filling
 /// `palette` as colours appear — or `None` the moment a 257th colour does.
+///
+/// Uses a stack-allocated 1,024-slot open-addressed table (`0` empty, `i + 1`
+/// the palette index) instead of a heap `HashMap` + SipHash per colour change
+/// (doc 21a `W-01`). At most 256 slots are ever occupied, so the load factor
+/// never exceeds 0.25.
 fn index_rows(pixels: &[[u8; 3]], w: usize, palette: &mut Vec<[u8; 3]>) -> Option<Vec<u8>> {
-    let mut index: HashMap<[u8; 3], u8> = HashMap::new();
+    const TABLE_LEN: usize = 1024;
+    const TABLE_MASK: usize = TABLE_LEN - 1;
+    let mut table = [0u16; TABLE_LEN];
     let mut raw: Vec<u8> = Vec::with_capacity(pixels.len() / w.max(1) + pixels.len());
     let mut last: Option<([u8; 3], u8)> = None;
     for row in pixels.chunks_exact(w) {
@@ -69,16 +75,27 @@ fn index_rows(pixels: &[[u8; 3]], w: usize, palette: &mut Vec<[u8; 3]>) -> Optio
             let i = match last {
                 Some((colour, i)) if colour == px => i,
                 _ => {
-                    let i = match index.entry(px) {
-                        std::collections::hash_map::Entry::Occupied(e) => *e.get(),
-                        std::collections::hash_map::Entry::Vacant(e) => {
+                    let [r, g, b] = px;
+                    let key = u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16);
+                    let mut slot = ((key.wrapping_mul(0x9E37_79B9)) >> 22) as usize & TABLE_MASK;
+                    let i = loop {
+                        let entry = table.get(slot).copied().unwrap_or(0);
+                        if entry == 0 {
                             if palette.len() == 256 {
                                 return None;
                             }
                             let i = u8::try_from(palette.len()).unwrap_or(255);
                             palette.push(px);
-                            *e.insert(i)
+                            if let Some(cell) = table.get_mut(slot) {
+                                *cell = u16::from(i) + 1;
+                            }
+                            break i;
                         }
+                        let candidate = (entry - 1) as u8;
+                        if palette.get(usize::from(candidate)) == Some(&px) {
+                            break candidate;
+                        }
+                        slot = (slot + 1) & TABLE_MASK;
                     };
                     last = Some((px, i));
                     i

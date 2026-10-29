@@ -1,6 +1,7 @@
-//! **The picture seam** (doc 21 §3.2, D-21-7; cut G.1): what a renderer —
-//! the SSH TUI today, the web client's socket frame (G.3) and its
-//! WebAssembly render (G.3b) later — asks of the engine.
+//! **The picture seam** (doc 21 §3.2, D-21-7; cuts G.1, G.3): what a renderer
+//! — the SSH TUI (`mush-net-ssh`), the web gateway's socket fallback
+//! (`mush-net-web`, G.3a/G.3c) and the browser's local WebAssembly canvas
+//! renderer (`mush-pixel-wasm`, G.3b) — asks of the engine.
 //!
 //! A [`Picture`] is one producer with its instruments and its clock: it
 //! reads the feeds it names from whatever holds them ([`Feeds`]), draws one

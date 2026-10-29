@@ -9,7 +9,7 @@
 //! instrument inside it, as the 2026-10-21 cockpit drew it.
 //!
 //! ```text
-//! cargo run -p mush-pixel --example fixture -- out/
+//! cargo run -p mush-pixel --example fixture -- [out/] [--scene <all|cockpit|relief|sprites|chart|doll|replay>]
 //! ```
 
 use std::collections::HashMap;
@@ -30,8 +30,73 @@ use serde_json::Value;
 const MAP: &str = include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json");
 const COCKPIT: &str = include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json");
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scene {
+    All,
+    Cockpit,
+    Relief,
+    Sprites,
+    Chart,
+    Doll,
+    Replay,
+}
+
+impl Scene {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "all" => Some(Self::All),
+            "cockpit" => Some(Self::Cockpit),
+            "relief" => Some(Self::Relief),
+            "sprites" => Some(Self::Sprites),
+            "chart" => Some(Self::Chart),
+            "doll" => Some(Self::Doll),
+            "replay" => Some(Self::Replay),
+            _ => None,
+        }
+    }
+
+    fn includes(self, target: Self) -> bool {
+        self == Self::All || self == target
+    }
+}
+
+fn parse_args() -> Result<(String, Scene), String> {
+    let mut out_dir: Option<String> = None;
+    let mut scene = Scene::All;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--scene" {
+            let name = args
+                .next()
+                .ok_or_else(|| "--scene requires a scene name".to_string())?;
+            scene = Scene::parse(&name).ok_or_else(|| {
+                format!(
+                    "unknown --scene {name:?} (expected all, cockpit, relief, sprites, chart, doll or replay)"
+                )
+            })?;
+        } else if let Some(name) = arg.strip_prefix("--scene=") {
+            scene = Scene::parse(name).ok_or_else(|| {
+                format!(
+                    "unknown --scene {name:?} (expected all, cockpit, relief, sprites, chart, doll or replay)"
+                )
+            })?;
+        } else if out_dir.is_none() {
+            out_dir = Some(arg);
+        } else {
+            return Err(format!("unexpected argument {arg:?}"));
+        }
+    }
+    Ok((out_dir.unwrap_or_else(|| ".".to_string()), scene))
+}
+
 fn main() {
-    let out_dir = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+    let (out_dir, scene) = match parse_args() {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+    };
     let (Ok(map_json), Ok(cockpit)) = (
         serde_json::from_str::<Value>(MAP),
         serde_json::from_str::<Value>(COCKPIT),
@@ -55,83 +120,6 @@ fn main() {
     // cockpit's picture box: 160 by 32 cells of 10x20 pixels.
     let mut frame = Frame::new(640, 256);
     const N: u32 = 200;
-    let t0 = Instant::now();
-    for _ in 0..N {
-        picture.draw(&mut frame, &feeds, &Look::default());
-    }
-    let render_us = t0.elapsed().as_micros() / u128::from(N);
-    let t1 = Instant::now();
-    let mut bytes = Vec::new();
-    for _ in 0..N {
-        bytes = png::encode(&frame);
-    }
-    let encode_us = t1.elapsed().as_micros() / u128::from(N);
-    let stream = kitty::frame_bytes(&bytes, 1, 1, 2, 160, 32);
-    let t2 = Instant::now();
-    let mut six = Vec::new();
-    for _ in 0..N {
-        six = sixel::encode(&frame);
-    }
-    let sixel_us = t2.elapsed().as_micros() / u128::from(N);
-    // Home the cursor first so the picture lands at the top left of the
-    // screen it is typed into.
-    let six_stream = sixel::frame_bytes(&six, 1, 1);
-
-    if let Err(err) = std::fs::write(format!("{out_dir}/fixture.png"), &bytes) {
-        eprintln!("fixture.png: {err}");
-    }
-    if let Err(err) = std::fs::write(format!("{out_dir}/fixture.kitty"), &stream) {
-        eprintln!("fixture.kitty: {err}");
-    }
-    if let Err(err) = std::fs::write(format!("{out_dir}/fixture.sixel"), &six_stream) {
-        eprintln!("fixture.sixel: {err}");
-    }
-    let mut full = Frame::new(640, 480);
-    CockpitPicture::with(Overlay::Instruments).draw(&mut full, &feeds, &Look::default());
-    if let Err(err) = std::fs::write(
-        format!("{out_dir}/fixture_instruments.png"),
-        png::encode(&full),
-    ) {
-        eprintln!("fixture_instruments.png: {err}");
-    }
-
-    // G.7a: the heightfield producer over the proving ground's real relief,
-    // from the middle of the ground looking north, a tank 300 m out.
-    let ground = atlas::proving_ground();
-    let cam = Camera {
-        x_cm: 128_000,
-        y_cm: 96_000,
-        heading_mdeg: 20_000,
-    };
-    let tank = Sprite {
-        x_cm: 138_000,
-        y_cm: 124_000,
-        kind: SpriteKind::Red,
-        pose: None,
-    };
-    let mut relief = Frame::new(640, 480);
-    let t3 = Instant::now();
-    for _ in 0..N {
-        heightfield::render(&mut relief, &ground, &cam, None, &[tank]);
-    }
-    let relief_us = t3.elapsed().as_micros() / u128::from(N);
-    let relief_png = png::encode(&relief);
-    if let Err(err) = std::fs::write(format!("{out_dir}/relief.png"), &relief_png) {
-        eprintln!("relief.png: {err}");
-    }
-    println!(
-        "map {}x{} cells, {contacts} contacts, frame {}x{}, {} colours",
-        map.width(),
-        map.height(),
-        frame.width(),
-        frame.height(),
-        frame.count_colours(300)
-    );
-    println!(
-        "render + HUD {render_us} us, png encode {encode_us} us, png {} bytes, kitty stream {} bytes",
-        bytes.len(),
-        stream.len()
-    );
     // What SSH's own zlib makes of each, at a level close to OpenSSH's.
     let squeeze = |b: &[u8]| {
         use std::io::Write;
@@ -139,85 +127,166 @@ fn main() {
         let _ = z.write_all(b);
         z.finish().map_or(0, |v| v.len())
     };
-    println!(
-        "sixel encode {sixel_us} us, sixel stream {} bytes; after zlib: kitty {} bytes, sixel {} bytes",
-        six_stream.len(),
-        squeeze(&stream),
-        squeeze(&six_stream)
-    );
-    println!(
-        "heightfield 640x480 over the proving ground: render {relief_us} us, {} colours, png {} bytes",
-        relief.count_colours(300),
-        relief_png.len()
-    );
-    // The baked colour map (Voxel Space's other half): the same pose, once
-    // baked.
-    let mut baked_ground = ground.clone();
-    let t4 = Instant::now();
-    baked_ground.bake(2350);
-    let bake_ms = t4.elapsed().as_millis();
-    let mut baked = Frame::new(640, 480);
-    let t5 = Instant::now();
-    for _ in 0..N {
-        heightfield::render(&mut baked, &baked_ground, &cam, None, &[tank]);
-    }
-    let baked_us = t5.elapsed().as_micros() / u128::from(N);
-    let baked_png = png::encode(&baked);
-    if let Err(err) = std::fs::write(format!("{out_dir}/relief_baked.png"), &baked_png) {
-        eprintln!("relief_baked.png: {err}");
-    }
-    println!(
-        "heightfield baked: bake {bake_ms} ms once, render {baked_us} us, {} colours, png {} bytes",
-        baked.count_colours(300),
-        baked_png.len()
-    );
-    // A crater 240 m across and 30 m deep on open regolith, the kind of
-    // ground a Ceres site would be: unbaked and baked, from its floor
-    // looking north-east across to the far wall.
-    let mut crater_map = mush_pixel::raycast::Map::new(128, 128, 1000);
-    for y in 0..128 {
-        for x in 0..128 {
-            crater_map.set(x, y, mush_pixel::raycast::Ground::Open);
+    if scene.includes(Scene::Cockpit) {
+        let t0 = Instant::now();
+        for _ in 0..N {
+            picture.draw(&mut frame, &feeds, &Look::default());
         }
-    }
-    let mut crater = heightfield::Terrain::new(crater_map);
-    for y in 0..128 {
-        for x in 0..128 {
-            let d = ((x as f32 - 64.0).powi(2) + (y as f32 - 72.0).powi(2)).sqrt() / 12.0;
-            let cm = if d < 1.0 {
-                -3000.0 + 3800.0 * d * d
-            } else {
-                800.0 * (-(d - 1.0) * 1.5).exp()
-            };
-            crater.set_elev_cm(x, y, cm as i32);
+        let render_us = t0.elapsed().as_micros() / u128::from(N);
+        let t1 = Instant::now();
+        let mut bytes = Vec::new();
+        for _ in 0..N {
+            bytes = png::encode(&frame);
         }
-    }
-    let rim = Camera {
-        x_cm: 58_000,
-        y_cm: 66_000,
-        heading_mdeg: 35_000,
-    };
-    for (name, bake) in [("crater", false), ("crater_baked", true)] {
-        let mut t = crater.clone();
-        if bake {
-            t.bake(9);
+        let encode_us = t1.elapsed().as_micros() / u128::from(N);
+        let stream = kitty::frame_bytes(&bytes, 1, 1, 2, 160, 32);
+        let t2 = Instant::now();
+        let mut six = Vec::new();
+        for _ in 0..N {
+            six = sixel::encode(&frame);
         }
-        let mut f = Frame::new(640, 480);
-        heightfield::render(&mut f, &t, &rim, None, &[]);
-        let bytes = png::encode(&f);
-        if let Err(err) = std::fs::write(format!("{out_dir}/{name}.png"), &bytes) {
-            eprintln!("{name}.png: {err}");
+        let sixel_us = t2.elapsed().as_micros() / u128::from(N);
+        // Home the cursor first so the picture lands at the top left of the
+        // screen it is typed into.
+        let six_stream = sixel::frame_bytes(&six, 1, 1);
+
+        if let Err(err) = std::fs::write(format!("{out_dir}/fixture.png"), &bytes) {
+            eprintln!("fixture.png: {err}");
+        }
+        if let Err(err) = std::fs::write(format!("{out_dir}/fixture.kitty"), &stream) {
+            eprintln!("fixture.kitty: {err}");
+        }
+        if let Err(err) = std::fs::write(format!("{out_dir}/fixture.sixel"), &six_stream) {
+            eprintln!("fixture.sixel: {err}");
+        }
+        let mut full = Frame::new(640, 480);
+        CockpitPicture::with(Overlay::Instruments).draw(&mut full, &feeds, &Look::default());
+        if let Err(err) = std::fs::write(
+            format!("{out_dir}/fixture_instruments.png"),
+            png::encode(&full),
+        ) {
+            eprintln!("fixture_instruments.png: {err}");
         }
         println!(
-            "{name}: {} colours, png {} bytes",
-            f.count_colours(300),
-            bytes.len()
+            "map {}x{} cells, {contacts} contacts, frame {}x{}, {} colours",
+            map.width(),
+            map.height(),
+            frame.width(),
+            frame.height(),
+            frame.count_colours(300)
         );
+        println!(
+            "render + HUD {render_us} us, png encode {encode_us} us, png {} bytes, kitty stream {} bytes",
+            bytes.len(),
+            stream.len()
+        );
+        println!(
+            "sixel encode {sixel_us} us, sixel stream {} bytes; after zlib: kitty {} bytes, sixel {} bytes",
+            six_stream.len(),
+            squeeze(&stream),
+            squeeze(&six_stream)
+        );
+    }
+
+    if scene.includes(Scene::Relief) {
+        // G.7a: the heightfield producer over the proving ground's real relief,
+        // from the middle of the ground looking north, a tank 300 m out.
+        let ground = atlas::proving_ground();
+        let cam = Camera {
+            x_cm: 128_000,
+            y_cm: 96_000,
+            heading_mdeg: 20_000,
+        };
+        let tank = Sprite {
+            x_cm: 138_000,
+            y_cm: 124_000,
+            kind: SpriteKind::Red,
+            pose: None,
+        };
+        let mut relief = Frame::new(640, 480);
+        let t3 = Instant::now();
+        for _ in 0..N {
+            heightfield::render(&mut relief, &ground, &cam, None, &[tank]);
+        }
+        let relief_us = t3.elapsed().as_micros() / u128::from(N);
+        let relief_png = png::encode(&relief);
+        if let Err(err) = std::fs::write(format!("{out_dir}/relief.png"), &relief_png) {
+            eprintln!("relief.png: {err}");
+        }
+        println!(
+            "heightfield 640x480 over the proving ground: render {relief_us} us, {} colours, png {} bytes",
+            relief.count_colours(300),
+            relief_png.len()
+        );
+        // The baked colour map (Voxel Space's other half): the same pose, once
+        // baked.
+        let mut baked_ground = ground.clone();
+        let t4 = Instant::now();
+        baked_ground.bake(2350);
+        let bake_ms = t4.elapsed().as_millis();
+        let mut baked = Frame::new(640, 480);
+        let t5 = Instant::now();
+        for _ in 0..N {
+            heightfield::render(&mut baked, &baked_ground, &cam, None, &[tank]);
+        }
+        let baked_us = t5.elapsed().as_micros() / u128::from(N);
+        let baked_png = png::encode(&baked);
+        if let Err(err) = std::fs::write(format!("{out_dir}/relief_baked.png"), &baked_png) {
+            eprintln!("relief_baked.png: {err}");
+        }
+        println!(
+            "heightfield baked: bake {bake_ms} ms once, render {baked_us} us, {} colours, png {} bytes",
+            baked.count_colours(300),
+            baked_png.len()
+        );
+        // A crater 240 m across and 30 m deep on open regolith, the kind of
+        // ground a Ceres site would be: unbaked and baked, from its floor
+        // looking north-east across to the far wall.
+        let mut crater_map = mush_pixel::raycast::Map::new(128, 128, 1000);
+        for y in 0..128 {
+            for x in 0..128 {
+                crater_map.set(x, y, mush_pixel::raycast::Ground::Open);
+            }
+        }
+        let mut crater = heightfield::Terrain::new(crater_map);
+        for y in 0..128 {
+            for x in 0..128 {
+                let d = ((x as f32 - 64.0).powi(2) + (y as f32 - 72.0).powi(2)).sqrt() / 12.0;
+                let cm = if d < 1.0 {
+                    -3000.0 + 3800.0 * d * d
+                } else {
+                    800.0 * (-(d - 1.0) * 1.5).exp()
+                };
+                crater.set_elev_cm(x, y, cm as i32);
+            }
+        }
+        let rim = Camera {
+            x_cm: 58_000,
+            y_cm: 66_000,
+            heading_mdeg: 35_000,
+        };
+        for (name, bake) in [("crater", false), ("crater_baked", true)] {
+            let mut t = crater.clone();
+            if bake {
+                t.bake(9);
+            }
+            let mut f = Frame::new(640, 480);
+            heightfield::render(&mut f, &t, &rim, None, &[]);
+            let bytes = png::encode(&f);
+            if let Err(err) = std::fs::write(format!("{out_dir}/{name}.png"), &bytes) {
+                eprintln!("{name}.png: {err}");
+            }
+            println!(
+                "{name}: {} colours, png {} bytes",
+                f.count_colours(300),
+                bytes.len()
+            );
+        }
     }
     // Doc 22 cut U.3: the sprite line-up — the shipped sheets across both
     // teams, their facings and a wreck, standing on grass in the text
     // cockpit's frame shape — written to `sprites.png`.
-    {
+    if scene.includes(Scene::Sprites) {
         use mush_pixel::look::{self, Facing};
         use mush_pixel::raycast::{Ground, Map, SpritePose, render};
         let mut ground = Map::new(96, 96, 1000);
@@ -272,7 +341,7 @@ fn main() {
     }
     // Doc 21 cut G.5b: the orbital view, the chart fixture drawn as a scene,
     // in the TUI's picture shape and at 4:3 — `chart.png` and `chart43.png`.
-    {
+    if scene.includes(Scene::Chart) {
         use mush_pixel::chart::{ChartPicture, SKY_CHART_FEED};
         let sky: Value = serde_json::from_str(include_str!(
             "../../../web/src/lib/fixtures/chart/sky_chart.json"
@@ -297,7 +366,7 @@ fn main() {
         }
     }
     // Doc 21 cut G.6a: the armour doll as a page — `doll.png`, `doll43.png`.
-    {
+    if scene.includes(Scene::Doll) {
         use mush_pixel::cockpit::COCKPIT_FEED;
         use mush_pixel::doll::DollPicture;
         let cockpit: Value = serde_json::from_str(include_str!(
@@ -324,7 +393,7 @@ fn main() {
     }
     // Doc 21 cut G.8: the replay fixture over its ground, a second after the
     // first hit and after the wreck — `replay.png` and `replay43.png`.
-    {
+    if scene.includes(Scene::Replay) {
         use mush_pixel::cockpit::ARENA_MAP_FEED;
         use mush_pixel::replay::{REPLAY_CURSOR_FEED, REPLAY_FEED, ReplayPicture};
         let mut doc: Value = serde_json::from_str(include_str!(
@@ -364,17 +433,19 @@ fn main() {
     }
     // Sixel filling a box (G.2b): Windows Terminal's 120x40 at its virtual
     // 10x20 cell, and a high-DPI w11term pane of 240x48 at 15x28.
-    for (ow, oh) in [(1013, 760), (1717, 1288)] {
-        let t = Instant::now();
-        let mut scaled = Vec::new();
-        for _ in 0..N / 4 {
-            scaled = sixel::encode_scaled(&frame, ow, oh);
+    if scene.includes(Scene::Cockpit) {
+        for (ow, oh) in [(1013, 760), (1717, 1288)] {
+            let t = Instant::now();
+            let mut scaled = Vec::new();
+            for _ in 0..N / 4 {
+                scaled = sixel::encode_scaled(&frame, ow, oh);
+            }
+            let us = t.elapsed().as_micros() / u128::from(N / 4);
+            println!(
+                "sixel shown {ow}x{oh}: encode {us} us, {} bytes, {} after zlib",
+                scaled.len(),
+                squeeze(&scaled)
+            );
         }
-        let us = t.elapsed().as_micros() / u128::from(N / 4);
-        println!(
-            "sixel shown {ow}x{oh}: encode {us} us, {} bytes, {} after zlib",
-            scaled.len(),
-            squeeze(&scaled)
-        );
     }
 }

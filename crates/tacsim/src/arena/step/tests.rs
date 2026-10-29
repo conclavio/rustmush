@@ -2460,6 +2460,7 @@ fn u2_row(age_ms: i64) -> FrameContact {
         cell: Some((12, 7)),
         condition: None,
         aspect: crate::arena::perception::Aspect::Front,
+        facing: crate::arena::perception::ContactFacing::Front,
         reads_dead: None,
         fatal: None,
         unit_type: None,
@@ -4037,6 +4038,40 @@ fn m1a3_aspect_odds_and_reads_dead_are_read_off_the_plot_and_the_hold() {
         Some(vec![SmolStr::new_static("hull")]),
         "the fatal words ride the reading, which is the sensors'"
     );
+}
+
+/// **Doc 22 D-22-9**: `FrameContact::facing` reports all eight 45° sectors off
+/// the contact's plot, while `FrameContact::aspect` stays the four-way armour
+/// facet.
+#[test]
+fn d22_9_facing_reports_all_eight_sectors_off_the_plot_while_aspect_stays_four() {
+    use crate::arena::perception::{Aspect, ContactFacing};
+    use m1a3::*;
+    let mut arena = far_field();
+    let blue_id = blue_id(&arena);
+    // In `far_field`, RED is directly south of BLUE, so the bearing from BLUE
+    // to RED is 180° (south). As BLUE's plotted heading sweeps in 45° steps
+    // from 180° (facing south, nose-on to RED) counter-clockwise, RED sees
+    // front, front_right, right, rear_right, rear, rear_left, left, front_left.
+    let expected = [
+        (180_000, ContactFacing::Front, Aspect::Front),
+        (135_000, ContactFacing::FrontRight, Aspect::Right),
+        (90_000, ContactFacing::Right, Aspect::Right),
+        (45_000, ContactFacing::RearRight, Aspect::Rear),
+        (0, ContactFacing::Rear, Aspect::Rear),
+        (315_000, ContactFacing::RearLeft, Aspect::Left),
+        (270_000, ContactFacing::Left, Aspect::Left),
+        (225_000, ContactFacing::FrontLeft, Aspect::Front),
+    ];
+    for (heading_mdeg, want_facing, want_aspect) in expected {
+        if let Some(held) = arena.contacts.get_mut(RED, blue_id) {
+            held.seen_at.heading_mdeg = heading_mdeg;
+        }
+        let f = red(&arena);
+        let r = row(&f, blue_id);
+        assert_eq!(r.facing, want_facing, "heading {heading_mdeg}");
+        assert_eq!(r.aspect, want_aspect, "heading {heading_mdeg}");
+    }
 }
 
 /// **17b cut M1a.3**: `Frame::same_as` compares each new field at the

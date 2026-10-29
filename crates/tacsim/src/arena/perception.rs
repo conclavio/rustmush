@@ -2115,6 +2115,12 @@ pub struct FrameContact {
     /// from the plot, as the row's range and bearing are, never the target's
     /// live heading. On every row of every hull, armed or not.
     pub aspect: Aspect,
+    /// **Which of eight faces the contact's plot was showing when it was last
+    /// seen** (doc 22 D-22-9, 2026-10-28): [`crate::arena::resolution::facing_band_seen`]
+    /// off the contact's plot and the platform's own pose, so the picture can
+    /// pick a diagonal sprite facing while [`FrameContact::aspect`] stays the
+    /// four-way armour facet.
+    pub facing: ContactFacing,
     /// **Whether this platform has any reason to believe the contact is dead**
     /// (17b cut M1a.3; doc 17 §3, D-UM-5), or `None` on a hull with **no
     /// weapons station** — the field is absent there, not `false` (doc 17 §3:
@@ -2223,6 +2229,81 @@ impl Aspect {
             Aspect::Front => "front",
             Aspect::Left | Aspect::Right => "side",
             Aspect::Rear => "rear",
+        }
+    }
+}
+
+/// **Which of eight faces a contact's plot was presenting when it was last seen**
+/// (doc 22 D-22-9, 2026-10-28): the sensor ruling D-22-4 reserved — a viewer is
+/// told which of eight 45° sectors (`front`, `front_right`, `right`,
+/// `rear_right`, `rear`, `rear_left`, `left`, `front_left`) the contact's plot
+/// shows toward the platform's own pose, so the picture can pick a diagonal
+/// sprite facing while the four armour facets stay [`Aspect`].
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactFacing {
+    /// Its front (`337.5°..22.5°`).
+    #[default]
+    Front,
+    /// Between front and right (`22.5°..67.5°`).
+    FrontRight,
+    /// Its right flank (`67.5°..112.5°`).
+    Right,
+    /// Between rear and right (`112.5°..157.5°`).
+    RearRight,
+    /// Its rear (`157.5°..202.5°`).
+    Rear,
+    /// Between rear and left (`202.5°..247.5°`).
+    RearLeft,
+    /// Its left flank (`247.5°..292.5°`).
+    Left,
+    /// Between front and left (`292.5°..337.5°`).
+    FrontLeft,
+}
+
+impl ContactFacing {
+    /// The facing word the cockpit keyframe carries (`front`, `front_right`, …).
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ContactFacing::Front => "front",
+            ContactFacing::FrontRight => "front_right",
+            ContactFacing::Right => "right",
+            ContactFacing::RearRight => "rear_right",
+            ContactFacing::Rear => "rear",
+            ContactFacing::RearLeft => "rear_left",
+            ContactFacing::Left => "left",
+            ContactFacing::FrontLeft => "front_left",
+        }
+    }
+
+    /// **The eight-way facing a band word names** — the word
+    /// [`crate::arena::resolution::facing_band_seen`] answers, which is always
+    /// one of [`crate::arena::resolution::FACING_BANDS`].
+    #[must_use]
+    pub fn from_band(word: &str) -> ContactFacing {
+        match word {
+            "front_right" => ContactFacing::FrontRight,
+            "right" => ContactFacing::Right,
+            "rear_right" => ContactFacing::RearRight,
+            "rear" => ContactFacing::Rear,
+            "rear_left" => ContactFacing::RearLeft,
+            "left" => ContactFacing::Left,
+            "front_left" => ContactFacing::FrontLeft,
+            _ => ContactFacing::Front,
+        }
+    }
+
+    /// The cardinal facing matching a four-way [`Aspect`].
+    #[must_use]
+    pub const fn from_aspect(aspect: Aspect) -> ContactFacing {
+        match aspect {
+            Aspect::Front => ContactFacing::Front,
+            Aspect::Left => ContactFacing::Left,
+            Aspect::Right => ContactFacing::Right,
+            Aspect::Rear => ContactFacing::Rear,
         }
     }
 }
@@ -2464,6 +2545,7 @@ impl FrameContact {
             cell,
             condition,
             aspect,
+            facing,
             reads_dead,
             fatal,
             unit_type,
@@ -2480,6 +2562,7 @@ impl FrameContact {
             cell: their_cell,
             condition: their_condition,
             aspect: their_aspect,
+            facing: their_facing,
             reads_dead: their_reads_dead,
             fatal: their_fatal,
             unit_type: their_unit_type,
@@ -2493,6 +2576,7 @@ impl FrameContact {
             && moving == their_moving
             && cell == their_cell
             && aspect == their_aspect
+            && facing == their_facing
             && reads_dead == their_reads_dead
             && fatal == their_fatal
             && unit_type == their_unit_type
