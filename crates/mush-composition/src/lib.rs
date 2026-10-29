@@ -245,9 +245,13 @@ fn compose_server_modules<E>(
     .collect();
     let scene_movement_receipts = Arc::default();
     let composed_scene_receipts = Arc::default();
+    let composed_atlas_receipts = Arc::default();
     let simulation = mush_sim::SimulationModule::new()
         .with_atomic_scene_movement(Arc::clone(&scene_movement_receipts))
-        .with_composed_movement(movement::factory(Arc::clone(&composed_scene_receipts)))
+        .with_composed_movement(movement::factory(
+            Arc::clone(&composed_scene_receipts),
+            Arc::clone(&composed_atlas_receipts),
+        ))
         .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
         .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks));
     let tactics = match launch {
@@ -286,7 +290,10 @@ fn compose_server_modules<E>(
                 )),
         ),
         Box::new(simulation),
-        atlas_module(atlas),
+        Box::new(
+            tacsim::composition::atlas_module_builder(atlas)
+                .with_composed_movement(composed_atlas_receipts),
+        ),
         Box::new(tactics),
         Box::new(
             mush_propagation::PropagationModule::new()

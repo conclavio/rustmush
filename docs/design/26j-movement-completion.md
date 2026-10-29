@@ -163,9 +163,44 @@ closed tails. Duplicate claims across protocols, missing events and changed
 capture material refuse boot. Adding a participant to a later composition does
 not reinterpret older partial manifests.
 
-Only the Scenes observer has prepared coverage in this composition. No command
-route or legal-action offer selects the composed action. Atlas integration,
-other callbacks and durable Core presentation remain live-migration gates.
+That initial composition covered only the Scenes observer. The next cut below
+adds Atlas discovery and checked window no-effects. No command route or
+legal-action offer selects the composed action; other callbacks and durable
+Core presentation remain live-migration gates.
+
+## Prepared Atlas discovery
+
+The actual Atlas owner now joins both contiguous Atlas callbacks through one
+participant. A covered Player arrival commits the real `known:<actor>` document
+and its knowledge-history entry with movement. FIFO eviction, duplicate visits,
+missing versus empty books, and self-loop discovery retain their original
+meaning. NPC and unmapped arrivals retain a real checked owner observation;
+duplicate visits produce neither a document overwrite nor a synthetic event.
+
+The retained proof contains the original bounded Atlas capture and the exact
+knowledge-history boundary. New knowledge names its actual original ledger
+position and event digest. Read-only effects retain the observed boundary and
+bind the real owner facts, including the journal tail, without fabricating a
+write. All owners still bind before any object, knowledge or transcript image
+is installed.
+
+Later real legacy learning writes its actual document and history entry in the
+same legacy batch. Boot checks each prepared effect at its original history
+position, then advances through later journal mutations before comparing the
+current owner projection. It never compares an old receipt directly to today's
+book or reclassifies it using today's geometry. Missing documents or original
+events, contradictory no-op observations, duplicate claims and orphaned
+prepared events refuse boot before ordinary Atlas cleanup. The existing legacy
+boot normalization of known places remains the projection policy. Untouched
+older books acquire no fabricated history, and only open Ledger tails remain
+in World state; audit indices are transient.
+
+This adapter proves no selected window effect for its covered route. Sim's
+existing refusal of any open window remains; window release, placement,
+re-posing and map delivery still need the real joint placement protocol.
+Production's composed manifest now covers Scenes and both Atlas callbacks,
+leaving five explicit callback blockers. Personnel crossing evidence stays
+uncertified, and ordinary command routing remains disabled.
 
 ## Remaining completion protocol
 
@@ -182,7 +217,7 @@ for example, pauses scenes and persists changes; it cannot serve as a pure
 recovery hydrator. Unknown handler versions or incomplete owner availability
 must hold any pending recovery.
 
-Atlas discovery and window placement, NPC memory and work queues, Tacsim return
+Atlas window placement, NPC memory and work queues, Tacsim return
 markers and tutorial state, weather output, and scripted entry/exit effects each
 need their own real adapter. Nested movement and script timers cannot be treated
 as acknowledged merely because their callbacks returned. No broad World clone,

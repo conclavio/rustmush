@@ -11,12 +11,16 @@ use mush_core::{DefinitionRegistryBuilder, ModError, OwnerId, Registrar};
 use mush_scenes::movement_composed::{ComposedScenesMovementParticipant, participant_descriptor};
 
 pub(crate) type SceneReader = Arc<OnceLock<ComposedOwnerReader>>;
+pub(crate) type AtlasReader = Arc<OnceLock<ComposedOwnerReader>>;
 
 fn bad(error: impl std::fmt::Display) -> ModError {
     ModError::msg(error.to_string())
 }
 
-pub(crate) fn factory(reader: SceneReader) -> mush_sim::ComposedMovementFactory {
+pub(crate) fn factory(
+    reader: SceneReader,
+    atlas_reader: AtlasReader,
+) -> mush_sim::ComposedMovementFactory {
     Arc::new(
         move |reg: &mut Registrar<'_>,
               builder: ComposedLocomotionBuilder|
@@ -29,11 +33,31 @@ pub(crate) fn factory(reader: SceneReader) -> mush_sim::ComposedMovementFactory 
             let observer = definitions
                 .register(owner, scene_transition::observer_descriptor()?)
                 .map_err(bad)?;
+            let atlas_owner = OwnerId::new("atlas").map_err(bad)?;
+            let atlas_participant = definitions
+                .register(
+                    atlas_owner.clone(),
+                    mush_atlas::movement_participant::participant_descriptor()?,
+                )
+                .map_err(bad)?;
+            let atlas_observers = mush_atlas::movement_participant::observer_descriptors()?
+                .into_iter()
+                .map(|descriptor| {
+                    definitions
+                        .register(atlas_owner.clone(), descriptor)
+                        .map_err(bad)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let service = builder
                 .owner::<ComposedScenesMovementParticipant>(
                     reg,
                     participant.clone(),
                     vec![observer],
+                )?
+                .owner::<mush_atlas::movement_participant::AtlasMovementParticipant>(
+                    reg,
+                    atlas_participant.clone(),
+                    atlas_observers,
                 )?
                 .finish(reg)?;
             reader
@@ -41,6 +65,9 @@ pub(crate) fn factory(reader: SceneReader) -> mush_sim::ComposedMovementFactory 
                 .map_err(|_| {
                     bad("composed Scenes movement reader already belongs to a composition")
                 })?;
+            atlas_reader
+                .set(service.owner_reader(&atlas_participant).map_err(bad)?)
+                .map_err(|_| bad("Atlas movement reader already belongs to a composition"))?;
             Ok(service)
         },
     )

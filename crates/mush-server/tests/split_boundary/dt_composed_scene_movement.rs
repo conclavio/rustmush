@@ -96,7 +96,7 @@ async fn lost_ack_restores_exact_original_owner_proofs_and_transcripts_without_c
     let (_, receipt) = row(&bundle, "composed_locomotion")?;
     let receipt = &receipt["value"];
     assert_eq!(receipt["at_utc"], 100);
-    assert_eq!(receipt["effects"].as_array().ok_or("effects")?.len(), 1);
+    assert_eq!(receipt["effects"].as_array().ok_or("effects")?.len(), 2);
     assert_eq!(
         receipt["effects"][0]["participant"]["key"]["owner"],
         "scenes"

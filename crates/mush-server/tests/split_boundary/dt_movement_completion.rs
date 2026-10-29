@@ -134,8 +134,8 @@ fn actual_scenes_adapter_covers_only_its_callback_in_the_complete_production_man
 }
 
 #[test]
-fn composed_action_resolves_the_distinct_actual_scenes_group_and_retains_other_blockers()
--> TestResult {
+fn composed_action_resolves_actual_scenes_and_atlas_groups_and_retains_other_blockers() -> TestResult
+{
     let engine = production()?;
     let definitions = engine.registry.definitions().ok_or("definitions")?;
     let action = definitions
@@ -153,8 +153,13 @@ fn composed_action_resolves_the_distinct_actual_scenes_group_and_retains_other_b
         .ok_or("manifest")?
         .snapshot();
     assert_eq!(snapshot.entries().len(), 8);
-    assert_eq!(snapshot.groups().len(), 1);
+    assert_eq!(snapshot.groups().len(), 2);
     assert_eq!(snapshot.groups()[0].ordinals(), &[0]);
+    assert_eq!(snapshot.groups()[1].ordinals(), &[1, 2]);
+    assert_eq!(
+        snapshot.groups()[1].participant().key().id.as_str(),
+        mush_atlas::movement_participant::PARTICIPANT
+    );
     assert_eq!(
         snapshot.groups()[0].participant().key().id.as_str(),
         mush_scenes::movement_composed::PARTICIPANT
@@ -167,7 +172,7 @@ fn composed_action_resolves_the_distinct_actual_scenes_group_and_retains_other_b
             .filter(|entry| entry.coverage()
                 == mush_core::locomotion::completion::MovementCoverage::LegacyBlocker)
             .count(),
-        7
+        5
     );
     Ok(())
 }

@@ -170,6 +170,27 @@ pub struct MovementCapture {
 }
 
 impl MovementCapture {
+    /// Recheck only Atlas-owned facts at bind. Core retains the actor/room
+    /// object images and the joint Sim participant retains placement facts.
+    pub(crate) fn recheck_owner(&self, state: &AtlasState) -> Result<(), CaptureError> {
+        let placement = match &self.window {
+            WindowObservation::Observed { placement, .. } => *placement,
+            WindowObservation::NotActor => SimPlacementObservation::SlotAbsent,
+        };
+        if capture_observed(
+            Some(state),
+            self.actor_kind,
+            placement,
+            self.actor,
+            self.from,
+            self.to,
+            self.at,
+        )? != *self
+        {
+            return Err(CaptureError::Invalid);
+        }
+        Ok(())
+    }
     #[must_use]
     pub const fn actor(&self) -> ObjId {
         self.actor
