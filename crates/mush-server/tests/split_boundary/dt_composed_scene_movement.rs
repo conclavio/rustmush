@@ -17,6 +17,54 @@ use super::dt_unit_authority::persist_legacy;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[tokio::test]
+async fn scenes_and_composed_history_refuse_before_sim_projection_repairs() -> TestResult {
+    use super::dt_locomotion::audit_before_projection_repair;
+    for (action, families) in [
+        (
+            mush_core::locomotion::scene_transition::ACTION,
+            ["locomotion_scene_transitions", "locomotion_scene_crossings"],
+        ),
+        (
+            mush_core::locomotion::composed::ACTION,
+            ["composed_locomotion", "composed_locomotion_crossings"],
+        ),
+    ] {
+        let store = InMemoryStore::new();
+        let mut rig = fixture(&store, ObjKind::Player).await?;
+        stage_action(&mut rig, "n", action)?;
+        let (bundle, installation) = rig
+            .world
+            .engine_mut()
+            .take_staged_action()?
+            .ok_or("staged")?
+            .into_parts();
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await?;
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await?;
+        rig.world
+            .engine_mut()
+            .install_composed_action(installation)?;
+        let records: Vec<_> = families
+            .into_iter()
+            .map(|family| {
+                row(&bundle, family).map(|(key, value)| {
+                    mush_core::ActionStateBootRecord::new("sim", key, value.clone())
+                })
+            })
+            .collect::<TestResult<_>>()?;
+        assert_eq!(records.len(), 2);
+        audit_before_projection_repair(records.clone(), false)?;
+        for record in &records {
+            audit_before_projection_repair(vec![record.clone()], true)?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn actual_tactics_custody_and_readiness_guard_every_locomotion_profile_after_ack()
 -> TestResult {
     for action in [

@@ -477,6 +477,113 @@ fn audit(records: Vec<ActionStateBootRecord>) -> TestResult {
     Ok(())
 }
 
+pub(super) fn audit_before_projection_repair(
+    records: Vec<ActionStateBootRecord>,
+    refused: bool,
+) -> TestResult {
+    use mush_sim::{
+        DomainClock, DomainId, DomainRecord, DomainStatus, PlacementRecord, Pose, SpatialParent,
+    };
+    let mut world = mush_core::World::new_minimal();
+    let from = world.create(ObjKind::Room, "unrepaired source", GOD, None)?;
+    let to = world.create(ObjKind::Room, "repair destination", GOD, None)?;
+    let object = world.create(
+        ObjKind::Thing,
+        "unrelated repair candidate",
+        GOD,
+        Some(from),
+    )?;
+    for (id, behavior) in [(object, "sim.participant"), (to, "sim.domain")] {
+        world.attach_behavior(
+            id,
+            mush_core::BehaviorId::new(behavior)?,
+            mush_core::BehaviorBinding {
+                schema_version: mush_core::BINDING_SCHEMA_VERSION,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )?;
+    }
+    let domain = DomainRecord {
+        id: DomainId(1),
+        host: to,
+        driver: mush_sim::passive_definition_ref(),
+        status: DomainStatus::Active,
+        clock: DomainClock::Passive,
+        presentation_location: to,
+        revision: 1,
+        window: None,
+    };
+    let placement = PlacementRecord {
+        object,
+        parent: SpatialParent::Direct {
+            domain: domain.id,
+            pose: Pose::passive(mush_sim::passive_rules_value(json!({}))?),
+        },
+        revision: 1,
+        unplaced: None,
+    };
+    let data = mush_core::ModuleBootData {
+        kv: vec![
+            ("domain:1".into(), serde_json::to_value(domain)?),
+            (
+                format!("placement:{}", object.0).into(),
+                serde_json::to_value(placement)?,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut config = mush_config::config::Config::default();
+    config.tacsim.enabled = true;
+    let llm = Arc::new(mush_llm::LlmService::from_config(
+        &mush_llm::LlmConfig::default(),
+    )?);
+    let mut modules = mush_server::boot::game_modules(&config, &llm)?;
+    modules.push(Box::new(ObserveMoved(Arc::new(AtomicUsize::new(0)))));
+    let mut engine = Box::new(Engine::with_modules(
+        world,
+        mush_server::world_task::base_registry(),
+        modules,
+    )?);
+    engine.hydrate_action_state(records)?;
+    let _ = engine.world.take_dirty();
+    let mut out = Outbox::new();
+    let result = engine.module_loaded("sim", data, &mut out, &mut Effects::new());
+    if refused {
+        assert!(
+            result.is_err(),
+            "broken history must refuse in Sim's first load hook"
+        );
+        assert_eq!(
+            engine.world.get(object).ok_or("object")?.location,
+            Some(from)
+        );
+        assert!(engine.world.take_dirty().is_empty());
+        assert!(out.is_empty());
+        assert!(engine.take_module_ops().is_empty());
+        assert!(
+            engine
+                .world
+                .module_state::<mush_sim::SpatialState>()
+                .ok_or("actual Sim")?
+                .placements
+                .is_empty()
+        );
+    } else {
+        result?;
+        assert_eq!(engine.world.get(object).ok_or("object")?.location, Some(to));
+        assert!(
+            engine
+                .world
+                .module_state::<mush_sim::SpatialState>()
+                .ok_or("actual Sim")?
+                .placements
+                .contains_key(&object)
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn actual_boot_requires_both_exact_receipt_and_crossing_records() -> TestResult {
     let store = InMemoryStore::new();
@@ -500,8 +607,10 @@ async fn actual_boot_requires_both_exact_receipt_and_crossing_records() -> TestR
     let records = rows(&bundle);
     assert_eq!(records.len(), 2);
     audit(records.clone())?;
+    audit_before_projection_repair(records.clone(), false)?;
     for record in &records {
         assert!(audit(vec![record.clone()]).is_err());
+        audit_before_projection_repair(vec![record.clone()], true)?;
     }
     let crossing = records
         .iter()
@@ -510,6 +619,7 @@ async fn actual_boot_requires_both_exact_receipt_and_crossing_records() -> TestR
     for field in ["actor", "source", "exit", "destination", "at_utc"] {
         let mut changed = records.clone();
         changed[crossing].value["value"][field] = json!(999999);
+        audit_before_projection_repair(changed.clone(), true)?;
         assert!(audit(changed).is_err(), "accepted mismatched {field}");
     }
     for field in ["source", "exit"] {

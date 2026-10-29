@@ -307,6 +307,20 @@ impl SimulationModule {
         self.carrier_hooks = Some(hooks);
         self
     }
+
+    /// These audits read registered handles and already-hydrated typed history,
+    /// not live placement projections or other modules' loaded state.
+    fn audit_movement_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
+        physical::loaded(ctx)?;
+        locomotion::loaded(ctx)?;
+        if self.atomic_scene_movement.is_some() {
+            locomotion_scenes::loaded(ctx)?;
+        }
+        if self.composed_movement.is_some() {
+            locomotion_composed::loaded(ctx)?;
+        }
+        Ok(())
+    }
 }
 
 fn bid(s: &str) -> BehaviorId {
@@ -1173,6 +1187,10 @@ impl GameModule for SimulationModule {
         ctx: &mut ModuleCtx<'_>,
         mut data: ModuleBootData,
     ) -> Result<(), ModError> {
+        // A missing/mismatched receipt pair must refuse before Sim's legacy
+        // loaders can quarantine, reconcile projections, or advance journeys.
+        // The server hydrates the typed-state partition before any load hook.
+        self.audit_movement_history(ctx)?;
         ic_exclusion::load(ctx, &mut data, self.ic_custody.is_some())?;
         if let Some(config) = &self.ic_custody {
             config.loaded(ctx)?;
@@ -1198,14 +1216,9 @@ impl GameModule for SimulationModule {
     }
 
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
-        physical::loaded(ctx)?;
-        locomotion::loaded(ctx)?;
-        if self.atomic_scene_movement.is_some() {
-            locomotion_scenes::loaded(ctx)?;
-        }
-        if self.composed_movement.is_some() {
-            locomotion_composed::loaded(ctx)?;
-        }
+        // Retain the final check for drivers invoking final composition
+        // directly and for changes made by intervening module load hooks.
+        self.audit_movement_history(ctx)?;
         // The coordinator hydrated typed leases before the load callbacks.
         // Read them through Sim's real owner lens before the first command:
         // a restarted pilot may reclaim before any periodic tick has fired.
