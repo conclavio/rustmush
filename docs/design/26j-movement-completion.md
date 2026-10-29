@@ -482,6 +482,16 @@ This guard supplies no installation or authority. Core rows, actual owner reads,
 Atlas selectors and the actual recovery-ledger append still bind independently;
 native primary publication and same-commit records remain unfinished.
 
+Ordered candidates now reuse the actual locomotion projection-dependency walk
+for the complete Core inventory. Ordinary carried things and people remain
+supported and join the Core read dependencies. Additional native placements,
+spaces, mounts, control surfaces and held assignments refuse this actor-only
+profile; a hosted domain refuses even when empty or retired. The shared actual
+physical exclusion helper checks the complete captured dependency set, including
+carried people. Both the 512-dependency and 256-crossing budgets remain shared.
+The original v1 candidate is unchanged. Compound hosts need their own real owner
+join before this scope can widen; no refused case becomes a partial publication.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

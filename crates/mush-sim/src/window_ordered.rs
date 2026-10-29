@@ -114,7 +114,32 @@ fn derive_ordered(
     stamp: &ClockStamp,
 ) -> Result<Ordered, ParticipantError> {
     let native = derive_phases(world, core, target, stamp)?;
+    let state = world.module_state::<SpatialState>().ok_or_else(refused)?;
+    let projection = crate::locomotion::projection_dependencies(state, world, core.actor())?;
+    // This profile changes only the actor's native placement. Core inventory
+    // may contain ordinary things or people, but any additional native host,
+    // control surface or placed dependent needs a compound physical owner.
+    if state
+        .domains
+        .values()
+        .any(|domain| projection.contains(&domain.host))
+    {
+        return Err(refused());
+    }
+    for node in &projection {
+        if *node != core.actor()
+            && (!matches!(state.parent_of(*node), SpatialParent::Unplaced)
+                || state.spaces.contains_key(node)
+                || state.mounts.contains_key(node)
+                || state.stations.contains_key(node)
+                || state.assignments.contains_key(node)
+                || state.held_assignments.contains_key(node))
+        {
+            return Err(refused());
+        }
+    }
     let mut dependencies = native.dependencies;
+    dependencies.extend(projection);
     dependencies.extend(core.touched_objects());
     dependencies.extend(core.source());
     dependencies.extend([core.actor(), core.admitted_room(), core.destination()]);
@@ -189,6 +214,7 @@ fn derive_ordered(
     {
         return Err(refused());
     }
+    crate::physical::check_affected_nodes(state, world, &dependencies)?;
     let native_value: Value =
         serde_json::from_slice(&native.bytes).map_err(|_| ParticipantError::Encoding)?;
     let value = json!({"format":2,"authority":"hypothetical_requires_joint_owners",

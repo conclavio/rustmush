@@ -206,7 +206,7 @@ pub(super) struct Captured {
 /// host's room. Refuse those additional projection writes, including when the
 /// host is a carried hull or an occupant of its separately anchored cabin.
 /// Every consulted child/mount/anchor relation joins the final topology fence.
-fn projection_dependencies(
+pub(crate) fn projection_dependencies(
     state: &SpatialState,
     world: &World,
     actor: mush_core::ObjId,
