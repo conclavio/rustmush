@@ -76,6 +76,8 @@ pub(super) fn funded(
         pending: None,
         roles: ContractRoles::default(),
         revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     };
     let raw = serde_json::to_vec(&c).map_err(|_| refused())?;
     if raw.len() > super::MAX_PENDING_CONTRACT_BYTES {

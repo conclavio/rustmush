@@ -17,6 +17,7 @@
 
 pub mod campaign_formations;
 pub mod mail_transport;
+mod movement;
 
 use std::sync::Arc;
 
@@ -243,8 +244,14 @@ fn compose_server_modules<E>(
     .chain(game.reserved_rooms.iter().copied())
     .collect();
     let scene_movement_receipts = Arc::default();
+    let composed_scene_receipts = Arc::default();
+    let composed_atlas_receipts = Arc::default();
     let simulation = mush_sim::SimulationModule::new()
         .with_atomic_scene_movement(Arc::clone(&scene_movement_receipts))
+        .with_composed_movement(movement::factory(
+            Arc::clone(&composed_scene_receipts),
+            Arc::clone(&composed_atlas_receipts),
+        ))
         .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
         .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks));
     let tactics = match launch {
@@ -275,6 +282,7 @@ fn compose_server_modules<E>(
         Box::new(
             mush_scenes::ScenesModule::new()
                 .with_atomic_movement(scene_movement_receipts)
+                .with_composed_movement(composed_scene_receipts)
                 .with_sealer_gate(Arc::new(
                     |w: &mush_core::World, run: u64, who: mush_core::ObjId| {
                         mush_economy::stands_in_contract(w, mush_economy::ContractId(run), who)
@@ -282,7 +290,10 @@ fn compose_server_modules<E>(
                 )),
         ),
         Box::new(simulation),
-        atlas_module(atlas),
+        Box::new(
+            tacsim::composition::atlas_module_builder(atlas)
+                .with_composed_movement(composed_atlas_receipts),
+        ),
         Box::new(tactics),
         Box::new(
             mush_propagation::PropagationModule::new()

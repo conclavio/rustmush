@@ -81,3 +81,98 @@ fn independently_composed_production_rosters_have_identical_digests() -> TestRes
     );
     Ok(())
 }
+
+#[test]
+fn actual_scenes_adapter_covers_only_its_callback_in_the_complete_production_manifest() -> TestResult
+{
+    use mush_core::locomotion::completion::{MovementCoverage, MovementManifestSnapshot};
+    let engine = production()?;
+    let definitions = engine.registry.definitions().ok_or("definitions")?;
+    let action = definitions
+        .iter()
+        .find(|entry| {
+            let key = entry.reference().key();
+            key.owner.as_str() == "sim"
+                && key.kind.as_str() == "action"
+                && key.id.as_str() == mush_core::locomotion::scene_transition::ACTION
+        })
+        .ok_or("joint action")?
+        .reference();
+    let frozen = engine
+        .registry
+        .movement_completion_manifest(action)
+        .ok_or("joint manifest")?;
+    let snapshot = frozen.snapshot();
+    let roster = engine.registry.moved_observer_roster()?;
+    assert_eq!(snapshot.action(), action);
+    assert_eq!(snapshot.roster_digest(), roster.digest());
+    assert_eq!(snapshot.entries().len(), 8);
+    assert_eq!(snapshot.groups().len(), 1);
+    assert_eq!(snapshot.groups()[0].owner().as_str(), "scenes");
+    assert_eq!(
+        snapshot.groups()[0].participant().key().id.as_str(),
+        "movement_transcript"
+    );
+    assert!(snapshot.has_blockers());
+    for (index, (entry, actual)) in snapshot.entries().iter().zip(roster.entries()).enumerate() {
+        assert_eq!(usize::from(entry.ordinal()), index);
+        assert_eq!(entry.owner(), actual.owner());
+        assert_eq!(entry.observer(), actual.definition());
+        assert_eq!(
+            entry.coverage(),
+            if entry.owner().as_str() == "scenes" {
+                MovementCoverage::Prepared { group: 0 }
+            } else {
+                MovementCoverage::LegacyBlocker
+            }
+        );
+    }
+    let retained = MovementManifestSnapshot::decode(&snapshot.encode()?, definitions)?;
+    assert_eq!(&retained, snapshot);
+    assert_eq!(retained.digest()?, frozen.digest());
+    Ok(())
+}
+
+#[test]
+fn composed_action_resolves_actual_scenes_and_atlas_groups_and_retains_other_blockers() -> TestResult
+{
+    let engine = production()?;
+    let definitions = engine.registry.definitions().ok_or("definitions")?;
+    let action = definitions
+        .iter()
+        .find(|entry| {
+            entry.reference().key().owner.as_str() == "sim"
+                && entry.reference().key().kind.as_str() == "action"
+                && entry.reference().key().id.as_str() == mush_core::locomotion::composed::ACTION
+        })
+        .ok_or("composed action")?
+        .reference();
+    let snapshot = engine
+        .registry
+        .movement_completion_manifest(action)
+        .ok_or("manifest")?
+        .snapshot();
+    assert_eq!(snapshot.entries().len(), 8);
+    assert_eq!(snapshot.groups().len(), 2);
+    assert_eq!(snapshot.groups()[0].ordinals(), &[0]);
+    assert_eq!(snapshot.groups()[1].ordinals(), &[1, 2]);
+    assert_eq!(
+        snapshot.groups()[1].participant().key().id.as_str(),
+        mush_atlas::movement_participant::PARTICIPANT
+    );
+    assert_eq!(
+        snapshot.groups()[0].participant().key().id.as_str(),
+        mush_scenes::movement_composed::PARTICIPANT
+    );
+    assert!(snapshot.has_blockers());
+    assert_eq!(
+        snapshot
+            .entries()
+            .iter()
+            .filter(|entry| entry.coverage()
+                == mush_core::locomotion::completion::MovementCoverage::LegacyBlocker)
+            .count(),
+        5
+    );
+    Ok(())
+}

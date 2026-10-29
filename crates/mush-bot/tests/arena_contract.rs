@@ -50,8 +50,8 @@ use tacsim::arena::{
     intents::Refusal,
     motion::BlockedCause,
     perception::{
-        Aspect, DriveOutcome, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind, Receiver,
-        RefusalDetail,
+        Aspect, ContactFacing, DriveOutcome, FrameContact, FrameNotice, FrameOdds, Named,
+        NoticeKind, Receiver, RefusalDetail,
     },
     state::{Classification, ContactId, Designator, KeySpot, Power as ArenaPower, Team},
     step::{Frame, FrameFacet, FrameHeat, FrameSection},
@@ -189,6 +189,7 @@ fn friendly_frame() -> Frame {
         // so RB carries none — its cell prints the dash — and the lock on it
         // takes no row either (the frame the arena now builds).
         aspect: Aspect::Front,
+        facing: ContactFacing::Front,
         reads_dead: Some(false),
         fatal: None,
         unit_type: None,
@@ -270,6 +271,7 @@ fn frame() -> Frame {
                 condition: None,
                 // 17b cut M1a.3: broadside, and the lock's own figures below.
                 aspect: Aspect::Left,
+                facing: ContactFacing::Left,
                 reads_dead: Some(false),
                 fatal: None,
                 unit_type: None,
@@ -287,6 +289,7 @@ fn frame() -> Frame {
                 condition: None,
                 // 17b cut M1a.3: an aspect is told, odds never are.
                 aspect: Aspect::Rear,
+                facing: ContactFacing::Rear,
                 reads_dead: Some(false),
                 fatal: None,
                 unit_type: None,

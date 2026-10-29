@@ -368,12 +368,60 @@ fn route_of(intent: &LocomotionIntent) -> ActorMove {
     }
 }
 
+pub(super) fn capture_composed(
+    state: &SpatialState,
+    world: &World,
+    route: &ActorMove,
+    stamp: &ClockStamp,
+    preparing: bool,
+) -> Result<Captured, ParticipantError> {
+    let mut captured = capture(state, world, route, stamp, preparing)?;
+    captured.facts.capture_digest = crate::locomotion_capture::composed_capture_digest(
+        &captured.facts.prepared_at,
+        &captured.facts.before_ancestry_digest,
+        &captured.facts.after_ancestry_digest,
+        &captured.facts.crossings,
+    )?;
+    captured.plan_digest = DefinitionDigest::for_canonical_value(
+        "sim.composed_locomotion.plan.v1",
+        &json!({"base":captured.plan_digest,
+            "capture":captured.facts.capture_digest}),
+    )
+    .map_err(|_| ParticipantError::Encoding)?;
+    Ok(captured)
+}
+
+fn capture_intent(
+    state: &SpatialState,
+    world: &World,
+    intent: &LocomotionIntent,
+    preparing: bool,
+) -> Result<Captured, ParticipantError> {
+    if intent.action().key().id.as_str() == mush_core::locomotion::composed::ACTION {
+        capture_composed(
+            state,
+            world,
+            &route_of(intent),
+            intent.prepared_at(),
+            preparing,
+        )
+    } else {
+        capture(
+            state,
+            world,
+            &route_of(intent),
+            intent.prepared_at(),
+            preparing,
+        )
+    }
+}
+
 fn audit_value(intent: &LocomotionIntent, captured: &Captured) -> Value {
     json!({
-        "op":if intent.action().key().id.as_str() == mush_core::locomotion::scene_transition::ACTION {
-            "locomotion_with_scenes_v1"
-        } else {
-            "locomotion_v1"
+        "op":match intent.action().key().id.as_str() {
+            mush_core::locomotion::scene_transition::ACTION => "locomotion_with_scenes_v1",
+            mush_core::locomotion::composed::ACTION => "composed_locomotion_v1",
+            _ => "locomotion_v1",
         },
         "commit":intent.commit(),
         "action":intent.action(),
@@ -445,13 +493,7 @@ impl OwnerParticipant for LocomotionParticipant {
         {
             return Err(ParticipantError::Authority);
         }
-        let captured = capture(
-            state,
-            ctx.world(),
-            &route_of(&intent),
-            intent.prepared_at(),
-            true,
-        )?;
+        let captured = capture_intent(state, ctx.world(), &intent, true)?;
         let output = LocomotionDraft::new(
             ctx,
             &intent,
@@ -487,13 +529,7 @@ impl OwnerParticipant for LocomotionParticipant {
         {
             return Err(ParticipantError::Authority);
         }
-        let captured = capture(
-            state,
-            ctx.world(),
-            &route_of(&patch.intent),
-            patch.intent.prepared_at(),
-            false,
-        )?;
+        let captured = capture_intent(state, ctx.world(), &patch.intent, false)?;
         if captured.plan_digest != patch.plan_digest
             || captured.facts.capture_digest != patch.capture_digest
         {

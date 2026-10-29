@@ -294,6 +294,166 @@ impl<'a> HoldingAccess<'a> {
     }
 }
 
+/// **The holding reads an IC dispatch makes inside its preparation** (doc 17h cut M8e E4; doc 23
+/// S.4a): the composed seams' own grants, read through `PrepareCtx::read_owner_preimage` as
+/// the action's actor — the lobby's [`HoldingAccess`] reads, at an authoritative act's prepare
+/// instead of a command's. `None` when no holdings seam is composed (a Standard world).
+#[derive(Clone)]
+pub(crate) struct DispatchReads {
+    original: OriginalAccessSeam,
+    house: Option<HouseAccessSeam>,
+}
+
+impl DispatchReads {
+    /// The composed seams, if any.
+    pub(crate) fn of(world: &World) -> Option<DispatchReads> {
+        Some(DispatchReads {
+            original: world.module_state::<OriginalAccessSeam>()?.clone(),
+            house: world.module_state::<HouseAccessSeam>().cloned(),
+        })
+    }
+
+    /// **The actor's paid licence as `+minds/holdings` reads it** (the line-mode `OwnPaid`):
+    /// its phase, revoked bit and selling bit; `org` the organisation it is held by and read
+    /// for (M8c B3). `None` for a licence the actor does not hold, cannot see or cannot read.
+    pub(crate) fn paid(
+        &self,
+        ctx: &mut mush_core::PrepareCtx<'_>,
+        txn: &mut mush_core::ActionTxn<'_>,
+        licence: LicenceId,
+        org: Option<mush_org::OrgId>,
+    ) -> Option<mush_roll::commerce::command_reader::PaidHoldingView> {
+        use mush_roll::commerce::command_reader::{RollCommandReadRequest, RollCommandReadResult};
+        ctx.read_owner_preimage(
+            txn,
+            &self.original.reader,
+            OriginalReadRequest::command(RollCommandReadRequest::own_paid_for(licence, org)),
+        )
+        .ok()
+        .and_then(OriginalReadResult::into_command)
+        .and_then(RollCommandReadResult::into_own_paid)
+    }
+
+    /// **The actor's owner licence as `+minds/holdings` reads it** (doc 17h cut M8e fix round
+    /// 1, J2; the line-mode `OwnHoldings { section: Owner }`, the owner projection's rows): the
+    /// row naming `licence` as its owner licence — its owner phase, selling bit and name — over
+    /// at most [`MAX_OWNER_PAGES`] pages; `org` the organisation read for (M8c B3). `None` for
+    /// a licence no owner row names.
+    pub(crate) fn owner(
+        &self,
+        ctx: &mut mush_core::PrepareCtx<'_>,
+        txn: &mut mush_core::ActionTxn<'_>,
+        licence: LicenceId,
+        org: Option<mush_org::OrgId>,
+    ) -> Option<mush_roll::commerce::command_reader::OwnerHoldingView> {
+        use mush_roll::commerce::command_reader::{
+            HoldingSection, RollCommandReadRequest, RollCommandReadResult,
+        };
+        let mut after = None;
+        for _ in 0..MAX_OWNER_PAGES {
+            let page = ctx
+                .read_owner_preimage(
+                    txn,
+                    &self.original.reader,
+                    OriginalReadRequest::command(RollCommandReadRequest::own_holdings_for(
+                        HoldingSection::Owner,
+                        after,
+                        org,
+                    )),
+                )
+                .ok()
+                .and_then(OriginalReadResult::into_command)
+                .and_then(RollCommandReadResult::into_owner_holdings)?;
+            if let Some(row) = page
+                .rows()
+                .iter()
+                .find(|row| row.owner_licence() == licence)
+            {
+                return Some(row.clone());
+            }
+            after = Some(page.next()?);
+        }
+        None
+    }
+
+    /// **The executable of `licence` admitted for `holder`**, as the lobby's
+    /// `HoldingAccess::resolve` reads it for a filed choice (the House, entitlement, personal
+    /// and original readers, in that order), resolved against the store's sources. `None`
+    /// when no reader admits it.
+    pub(crate) fn executable(
+        &self,
+        ctx: &mut mush_core::PrepareCtx<'_>,
+        txn: &mut mush_core::ActionTxn<'_>,
+        holder: ObjId,
+        licence: LicenceId,
+    ) -> Option<HeldMind> {
+        let holding = self.holding(ctx, txn, holder, licence)?;
+        if holding.actor() != holder {
+            return None;
+        }
+        let sources = ctx.world().ok()?.module_state::<crate::TacsimStore>()?;
+        FiledExecutable::resolve(holding, sources)
+            .ok()
+            .map(FiledExecutable::into_held)
+    }
+
+    fn holding(
+        &self,
+        ctx: &mut mush_core::PrepareCtx<'_>,
+        txn: &mut mush_core::ActionTxn<'_>,
+        holder: ObjId,
+        licence: LicenceId,
+    ) -> Option<PersonalFiledHolding> {
+        if let Some(house) = &self.house {
+            use mush_roll::commerce::house_purchase::customer::{
+                HouseHoldingRequest, HouseHoldingResult,
+            };
+            if let Ok(HouseHoldingResult::Holding(holding)) = ctx.read_owner_preimage(
+                txn,
+                &house.reader,
+                HouseHoldingRequest::admission(holder, licence),
+            ) {
+                return Some(*holding);
+            }
+        }
+        if let Some(reader) = &self.original.entitlement {
+            use mush_roll::commerce::entitlement::customer::EntitlementHoldingRequest;
+            return ctx
+                .read_owner_preimage(
+                    txn,
+                    reader,
+                    EntitlementHoldingRequest::admission(holder, licence),
+                )
+                .ok();
+        }
+        if let Some(reader) = &self.original.personal {
+            return ctx
+                .read_owner_preimage(
+                    txn,
+                    reader,
+                    PersonalFiledRequest::admission(holder, licence),
+                )
+                .ok();
+        }
+        ctx.read_owner_preimage(
+            txn,
+            &self.original.reader,
+            OriginalReadRequest::admission(holder, licence),
+        )
+        .ok()?
+        .into_holding()
+        .map(PersonalFiledHolding::original)
+    }
+}
+
+/// The most owner-holdings pages one dispatch reads looking for its licence (J2).
+pub(crate) const MAX_OWNER_PAGES: usize = 32;
+
+/// `filed:<n>`'s licence, as the lobby reads the word (doc 17h cut M8e E4: `mind=filed:<n>`).
+pub(crate) fn filed_licence(word: &str) -> Option<Option<LicenceId>> {
+    filed_word(word)
+}
+
 fn class_word(class: mush_roll::commerce::rating::RatingClass) -> &'static str {
     use mush_roll::commerce::rating::RatingClass;
     match class {

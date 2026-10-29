@@ -71,6 +71,7 @@ mod contact;
 /// with no live arena behind them.
 pub mod custody;
 pub mod detachment;
+pub mod field_ops;
 pub mod ground;
 pub mod ic_custody;
 pub mod mobility;

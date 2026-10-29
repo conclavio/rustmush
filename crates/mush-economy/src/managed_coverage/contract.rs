@@ -93,6 +93,8 @@ pub(super) fn active(
         pending: None,
         roles: ContractRoles::default(),
         revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     };
     mush_core::canonical_json_bytes_with_limit(
         &serde_json::to_value(&result).map_err(|_| refused())?,

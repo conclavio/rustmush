@@ -19,7 +19,7 @@
 //! another's abandoned rig in; the home's refusals; and a ship placed into a hangar port is
 //! recovered.
 
-use mush_core::ObjId;
+use mush_core::{GOD, ObjId};
 use tacsim::arena::mind::SortieId;
 use tacsim::definitions::UnitClass;
 use tacsim::deliberation::order::CharacterRef;
@@ -1849,5 +1849,316 @@ Queued.",
         "{refusal}"
     );
     assert_eq!(inspections(&rig.tw).len(), 4, "nothing was recorded");
+    no_refused_writes(&rig.tw);
+}
+
+/// **Staff bind `tv` to the fitted root `root`** (doc 17h cut M8e E6a, the staff rebind): the
+/// leased rig's coreless unit stripped and made again from the cored root, in the bay.
+fn fit(rig: &mut crate::excursions::Rig, tv: ObjId, root: &str) {
+    let removed = command(rig, GOD, &format!("@unit/remove #{}", tv.0)).0;
+    assert!(
+        removed.contains("is no longer a tactical unit"),
+        "{removed}"
+    );
+    let created = command(rig, GOD, &format!("@unit/create #{}={root}", tv.0)).0;
+    assert!(
+        !created.contains("No ") && !created.contains("not "),
+        "{root}: {created}"
+    );
+    assert!(
+        mush_tactics::module::unit_of(rig.tw.world(), tv).is_some_and(|unit| unit
+            .schema()
+            .key()
+            .id
+            .as_str()
+            == root),
+        "{root}: the rig is bound to the root"
+    );
+}
+
+/// **Doc 17h cut M8e E6a: a cored rig's epoch on the hardware-configured roster** (doc 23 §6;
+/// D-UM-41): a leased rig bound to the governed rig root, and to its ungoverned twin, opens its
+/// epoch at the launch's end on the composed path. With no mind held the seal is the ROM's
+/// (`doctrine`, no fallback now that a core is fitted), and the record's seal facts name the
+/// core component, its class and the governed bit, which the open line prints; an ungoverned
+/// ROM seal admits nothing (Class 0 lifts no floor). The recover closes the epoch as for a
+/// stock rig, and a reboot keeps both lines.
+#[test]
+fn m8e_a_cored_rig_seals_its_core_and_governed_bit() {
+    use tacsim::definitions::core_replacement::{RIG_I, RIG_I_UNGOVERNED};
+    for (root, governed) in [(RIG_I, true), (RIG_I_UNGOVERNED, false)] {
+        let mut rig = crate::excursions::stocked_fitted();
+        let (pilot, row, tvs) = on_pad(&mut rig, 1);
+        let tv = tvs[0];
+        let hull = ObjId(row.hull);
+        fit(&mut rig, tv, root);
+        let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+        let _ = finish(&mut rig, tv, pilot);
+        let open = record_of(&mut rig.tw, tv)
+            .and_then(|record| record.sortie)
+            .expect("the epoch is open");
+        let facts = open.seal.clone().expect("the rig is sealed");
+        assert_eq!(facts.core.as_deref(), Some("core"), "{root}");
+        assert_eq!(
+            facts.core_class,
+            Some(tacsim::arena::CoreClass::I),
+            "{root}"
+        );
+        assert_eq!(facts.governed, governed, "{root}");
+        assert_eq!(facts.licence.as_str(), "doctrine");
+        assert!(
+            facts.admissions.is_empty(),
+            "{root}: {:?}",
+            facts.admissions
+        );
+        let opened = lines(&rig, tv);
+        assert_eq!(opened.len(), 1, "{root}: {opened:?}");
+        let BlackBoxLine::MindSealed {
+            governed: line_governed,
+            seal_digest,
+            ..
+        } = &opened[0]
+        else {
+            panic!("{root}: the first line is the seal: {opened:?}");
+        };
+        assert_eq!(*line_governed, Some(governed), "{root}");
+        assert_eq!(seal_digest.as_ref(), Some(&facts.seal_digest), "{root}");
+        let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+        let _ = finish(&mut rig, tv, pilot);
+        assert!(in_bay(&rig.tw, tv, &row));
+        let both = lines(&rig, tv);
+        assert_eq!(both.len(), 2, "{root}: {both:?}");
+        assert!(matches!(
+            both[1],
+            BlackBoxLine::SortieClosed {
+                close: IcCloseKind::ReturnedToBase { base },
+                ..
+            } if base == hull
+        ));
+        let rig = reboot_with(rig, &[pilot]);
+        assert_eq!(
+            lines(&rig, tv),
+            both,
+            "{root}: both lines survive a restart"
+        );
+        no_refused_writes(&rig.tw);
+    }
+}
+
+/// The operator saves a personal draft `name` from Standard Doctrine (the workshop's verbs),
+/// pumping the author service — its due fires, its observed submission landed — until the
+/// Roll holds the saved revision (`hardware/flow/launch/story.rs`' `certify` loop).
+fn save_draft(rig: &mut crate::excursions::Rig, who: ObjId, name: &str) {
+    for line in [
+        format!("@mind/new {name} FROM Standard"),
+        format!("@mind/save {name}=first"),
+    ] {
+        let (out, _) = command(rig, who, &line);
+        assert!(!out.contains("Usage"), "{line}: {out}");
+    }
+    let saved = |rig: &crate::excursions::Rig| {
+        rig.tw
+            .world()
+            .module_state::<mush_roll::RollStore>()
+            .and_then(|store| store.mind(who, name).ok().and_then(|mind| mind.latest()))
+            .is_some()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !saved(rig) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the author service did not save {name}"
+        );
+        if let Some(when) = rig.tw.engine_mut().sched.next_due() {
+            rig.tw.fire_due(when);
+        }
+        if let Some(submitted) = rig.tw.engine_mut().take_observed_authoritative_submit() {
+            let (request, _) = submitted.into_parts();
+            land(rig, &request).expect("the author service's save lands");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// `line`'s one start, prepared on the composed path; its refusal message, or `None` when it
+/// landed.
+fn start_refusal(rig: &mut crate::excursions::Rig, who: ObjId, line: &str) -> Option<String> {
+    let (out, queued) = command(rig, who, line);
+    assert_eq!(queued.len(), 1, "{line}: one start: {out}");
+    land(rig, &queued[0]).err()
+}
+
+/// **Doc 17h cut M8e E5: the ungoverned rig seals the operator's unfiled draft aboard** (doc 23
+/// S.4a; D-UM-41, D-UM-42), on the composed path: a rig bound to the ungoverned root, launched
+/// `mind=draft:<name>`, opens its epoch sealed with that draft — its name, the `draft` state, the
+/// ungoverned core and the admissions `unfiled` and `unlicensed`, on the record's facts and on
+/// the open line; no licence, so no holder. The excursion runs as a stock rig's: the recover
+/// closes it, and a reboot keeps both lines.
+#[test]
+fn m8e_an_ungoverned_rig_seals_the_operators_draft_aboard() {
+    use tacsim::arena::mind_seal::Admission;
+    use tacsim::definitions::core_replacement::RIG_I_UNGOVERNED;
+    use tacsim::minds::licence_state::SealLicenceState;
+    let mut rig = crate::excursions::stocked_fitted();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    fit(&mut rig, tv, RIG_I_UNGOVERNED);
+    save_draft(&mut rig, pilot, "Scratch");
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch mind=draft:Scratch go");
+    let sealed = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.act)
+        .and_then(|act| act.seal)
+        .expect("the dispatch sealed the draft at the start");
+    assert_eq!(sealed.licence, None, "a draft has no licence to mark");
+    let _ = finish(&mut rig, tv, pilot);
+    let open = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.sortie)
+        .expect("the epoch is open");
+    let facts = open.seal.clone().expect("sealed");
+    assert_eq!(
+        facts, sealed.facts,
+        "the open epoch keeps the dispatch's seal"
+    );
+    assert_eq!(facts.mind.as_str(), "scratch", "the Roll's canonical name");
+    assert_eq!(facts.licence_state, Some(SealLicenceState::Draft));
+    assert!(!facts.governed);
+    assert_eq!(
+        facts.admissions,
+        vec![Admission::Unfiled, Admission::Unlicensed]
+    );
+    assert_eq!(facts.holder, None);
+    let opened = lines(&rig, tv);
+    let BlackBoxLine::MindSealed {
+        mind,
+        admissions,
+        governed,
+        licence_state,
+        ..
+    } = &opened[0]
+    else {
+        panic!("the seal line: {opened:?}");
+    };
+    assert_eq!(mind.as_deref(), Some("scratch"));
+    assert_eq!(admissions, &vec![Admission::Unfiled, Admission::Unlicensed]);
+    assert_eq!(*governed, Some(false));
+    assert_eq!(*licence_state, Some(SealLicenceState::Draft));
+    let mut rig = reboot_with(rig, &[pilot]);
+    assert_eq!(lines(&rig, tv), opened, "the seal line survives a restart");
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    let _ = finish(&mut rig, tv, pilot);
+    assert!(in_bay(&rig.tw, tv, &row));
+    assert_eq!(lines(&rig, tv).len(), 2);
+    no_refused_writes(&rig.tw);
+}
+
+/// **Doc 17h cut M8e E4: the dispatch refuses by name** (D-UM-41), each refusal the start's
+/// own and the rig left in the bay with nothing sealed: a draft on a governed core
+/// (`MIND_GOVERNED_DRAFT`); a draft the operator does not have (`MIND_NO_DRAFT`); any mind on a
+/// rig with no core (`MIND_NO_CORE`); a filed licence where no holdings are composed
+/// (`MIND_UNAVAILABLE`). At the command, `org=` naming an organisation the operator does not act
+/// for is the `+minds` family's sentence and `org=` without `mind=` the usage, nothing queued.
+#[test]
+fn m8e_the_dispatch_refuses_by_name() {
+    use tacsim::definitions::core_replacement::RIG_I;
+    use tacsim::surface::dispatch::{
+        MIND_GOVERNED_DRAFT, MIND_NO_CORE, MIND_NO_DRAFT, MIND_NOT_FOR_ORG, MIND_UNAVAILABLE,
+    };
+    let mut rig = crate::excursions::stocked_fitted();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    save_draft(&mut rig, pilot, "Scratch");
+    // No core yet: the leased rig is the coreless stock TV.
+    let refused = start_refusal(&mut rig, pilot, "+tv/1 launch mind=draft:Scratch go");
+    assert!(
+        refused.as_deref().is_some_and(|r| r.contains(MIND_NO_CORE)),
+        "{refused:?}"
+    );
+    fit(&mut rig, tv, RIG_I);
+    for (line, want) in [
+        (
+            "+tv/1 launch mind=draft:Scratch go",
+            MIND_GOVERNED_DRAFT.to_owned(),
+        ),
+        ("+tv/1 launch mind=filed:7 go", MIND_UNAVAILABLE.to_owned()),
+    ] {
+        let refused = start_refusal(&mut rig, pilot, line);
+        assert!(
+            refused.as_deref().is_some_and(|r| r.contains(&want)),
+            "{line}: {refused:?}"
+        );
+    }
+    assert!(in_bay(&rig.tw, tv, &row));
+    assert!(record_of(&mut rig.tw, tv).is_none_or(|record| record.act.is_none()));
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 launch mind=filed:7 org=Nobody go");
+    assert_eq!(out.trim(), MIND_NOT_FOR_ORG);
+    assert!(queued.is_empty());
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 launch org=Nobody go");
+    assert_eq!(out.trim(), tacsim::port::tv::TV_USAGE);
+    assert!(queued.is_empty());
+    // An ungoverned core and a draft the operator never saved.
+    let mut rig = crate::excursions::stocked_fitted();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    fit(
+        &mut rig,
+        tvs[0],
+        tacsim::definitions::core_replacement::RIG_I_UNGOVERNED,
+    );
+    let refused = start_refusal(&mut rig, pilot, "+tv/1 launch mind=draft:Nothing go");
+    assert!(
+        refused
+            .as_deref()
+            .is_some_and(|r| r.contains(&MIND_NO_DRAFT.replace("{word}", "Nothing"))),
+        "{refused:?}"
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// **Doc 17h cut M8e fix round 1, J1: the filed path's refusals in a commerce world** — the
+/// fitted roster under the Active mind commerce (`reboot_with_inspection`), so the start's
+/// prepare reads the Roll's real holdings: `mind=filed:7` with no such licence held is the
+/// provider's own `MIND_NO_LICENCE`, nothing is committed (the rig stays in the bay, no act), and
+/// nothing is poisoned (the same rig then launches plainly); `org=<org>` for an organisation the
+/// pilot acts for on its root scope (`roll.holder.org`) reaches the real `own_paid` re-ask for
+/// that organisation and is refused the same; one it does not act for is the command's sentence.
+#[test]
+fn m8e_the_filed_path_refuses_in_a_commerce_world() {
+    use tacsim::definitions::core_replacement::RIG_I;
+    use tacsim::surface::dispatch::{MIND_NO_LICENCE, MIND_NOT_FOR_ORG};
+    let mut rig = crate::excursions::stocked_fitted();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let (mut rig, _) = reboot_with_inspection(rig, pilot, &[pilot]);
+    fit(&mut rig, tv, RIG_I);
+    let missing = MIND_NO_LICENCE.replace("{licence}", "7");
+    let refused = start_refusal(&mut rig, pilot, "+tv/1 launch mind=filed:7 go");
+    assert!(
+        refused.as_deref().is_some_and(|r| r.contains(&missing)),
+        "the provider's own sentence: {refused:?}"
+    );
+    assert!(in_bay(&rig.tw, tv, &row));
+    assert!(record_of(&mut rig.tw, tv).is_none_or(|record| record.act.is_none()));
+    // The org arm: an organisation the pilot acts for, the paid view re-asked for it.
+    for line in [
+        "@org/create Guild".to_owned(),
+        format!("@org/grant #{}=Guild roll.holder.org", pilot.0),
+    ] {
+        god(&mut rig, &line);
+    }
+    let refused = start_refusal(&mut rig, pilot, "+tv/1 launch mind=filed:7 org=Guild go");
+    assert!(
+        refused.as_deref().is_some_and(|r| r.contains(&missing)),
+        "the org re-ask: {refused:?}"
+    );
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 launch mind=filed:7 org=Registry go");
+    assert_eq!(out.trim(), MIND_NOT_FOR_ORG);
+    assert!(queued.is_empty());
+    // Nothing poisoned: a plain launch of the same rig lands and finishes.
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    assert!(
+        record_of(&mut rig.tw, tv)
+            .and_then(|record| record.sortie)
+            .is_some()
+    );
     no_refused_writes(&rig.tw);
 }
