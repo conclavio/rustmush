@@ -361,3 +361,30 @@ fn m8d2_a_held_mind_on_a_seized_rig_seals_the_rom() -> TestResult {
     check!(governed.core.is_some() && governed.governed);
     Ok(())
 }
+
+/// **The owner row is read before the paid view** (doc 17h cut M8g's finding): a refused owner
+/// read poisons the whole preparation, and the paid view refuses every owner licence, so the
+/// paid view is asked only when no owner row names the licence. An owner row answers with no
+/// paid read made; a paid licence (no owner row) is read through its view; neither is missing.
+#[test]
+fn m8g_the_owner_row_is_read_before_the_paid_view() -> TestResult {
+    let order = |owner: Option<u8>, paid: Option<u8>| {
+        let mut asked = Vec::new();
+        let found = owner_then_paid(
+            &mut asked,
+            |asked| {
+                asked.push("owner");
+                owner
+            },
+            |asked| {
+                asked.push("paid");
+                paid
+            },
+        );
+        (found, asked)
+    };
+    check_eq!(order(Some(1), Some(2)), (Some(1), vec!["owner"]));
+    check_eq!(order(None, Some(2)), (Some(2), vec!["owner", "paid"]));
+    check_eq!(order(None, None), (None, vec!["owner", "paid"]));
+    Ok(())
+}
