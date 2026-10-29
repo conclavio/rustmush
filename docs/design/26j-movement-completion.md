@@ -461,6 +461,14 @@ Tactics descriptor, rather than supplying a callback that claims a check ran.
 Standalone Sim compositions keep their existing configuration. This adds no
 movement route or callback-completion claim.
 
+The existing Sim deployment projection also has its own retained read. Its
+complete, bounded index is fingerprinted because domain exclusion and occupancy
+may consult markers outside the moving subtree. Any index drift conservatively
+refuses a pending closed movement. Limits are 4096 marks, 1 MiB of encoded image,
+1024 bytes per arena name and 64 KiB of shared name text, checked before encoding.
+This remains a projection guard: the independent Tactics read is still the
+custody source, and neither read supplies a checkout or movement capability.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

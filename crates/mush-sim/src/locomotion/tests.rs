@@ -281,6 +281,34 @@ fn generic_preparation_cannot_replace_actual_dispatch_capture() -> TestResult {
 }
 
 #[test]
+fn deployment_projection_drift_refuses_publication_without_claiming_custody() -> TestResult {
+    let mut rig = Rig::new(ObjKind::Player)?;
+    let other = rig
+        .engine
+        .world
+        .create(ObjKind::Thing, "other", GOD, Some(mush_core::LIMBO))?;
+    rig.engine.world.take_dirty();
+    let prepared = rig.prepare("north")?;
+    rig.stage(prepared)?;
+    let (_, install) = rig
+        .engine
+        .take_staged_action()?
+        .ok_or("staged")?
+        .into_parts();
+    // Only the actual Sim projection is changed. This fault injection is no
+    // checkout, Tactics marker or physical custody authority.
+    crate::deployed::mark(
+        &mut rig.engine.world,
+        other,
+        crate::DeployedMark::new(120, "arena"),
+    );
+    check!(rig.engine.install_composed_action(install).is_err());
+    check!(rig.engine.action_state().reservation_lost());
+    rig.assert_unpublished()?;
+    Ok(())
+}
+
+#[test]
 fn retained_journey_preimage_refuses_post_custody_drift_but_allows_allocator_progress() -> TestResult
 {
     for change in 0..3 {
