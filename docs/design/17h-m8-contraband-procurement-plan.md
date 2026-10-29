@@ -541,6 +541,15 @@ The economy cannot read the Registry's inspection records.
   - On an org-held licence the warrant principal stays the member (D-23-5), and the org is carried
     as `holder`. "Names the org principal" in §3 M8e means that `holder`.
 
+**M8d2 ruling (the lead's, 2026-10-28): the seized core is impounded in place.** A physical
+removal would need new protocol in four crates (tactics' replacement journal, mush-core's core
+exchange, an industry order kind replayed by the refit audit, and the union's root). It would also
+need a place in the world for the Registry's custody, which does not exist. So the seized core stays
+fitted. Its title is `Disputed` by the Registry, and after a forfeit the Registry owns it. Every seal
+path reads such a core as no core, so the hull flies the ROM at Class 0. Physical removal and a
+custody place move to a cut **M8d3**, after M8, with a custody design. The owner may overrule the
+fiction: a core impounded in place rather than taken.
+
 **M8e re-scoped by the owner, 2026-10-28 (option C):** "M8e: take option C, move the claim
 Open/Close and the seat to S.4b with the custody design". The M8e builder found that a four-owner
 IC claim cannot sit on a surface excursion, for three reasons:
