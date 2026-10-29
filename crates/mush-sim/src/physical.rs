@@ -78,7 +78,7 @@ fn encoded_size<T: Serialize + ?Sized>(value: &T, limit: usize) -> Result<usize,
     Ok(writer.used)
 }
 
-fn resident_bound(state: &SpatialState) -> Result<(), ParticipantError> {
+pub(crate) fn resident_bound(state: &SpatialState) -> Result<(), ParticipantError> {
     let count = state
         .domains
         .len()
@@ -231,9 +231,14 @@ pub(crate) fn participant_descriptor() -> Result<DefinitionDescriptor, ModError>
 pub(crate) fn register(reg: &mut Registrar<'_>, ic_custody: bool) -> Result<(), ModError> {
     let descriptor = participant_descriptor()?;
     let historical = participant_descriptor_v1()?;
-    let expected = [descriptor.clone(), historical.clone()];
+    let expected = [
+        descriptor.clone(),
+        historical.clone(),
+        crate::locomotion::participant_descriptor()?,
+    ];
     // A configured IC custody owner installs the one exact participant
-    // validator for both descriptors, retaining its composition references.
+    // validator for the physical and locomotion descriptors, retaining its
+    // composition references.
     if !ic_custody {
         reg.definition_validator(
             DefinitionKind::new("owner_participant").map_err(|e| ModError::msg(e.to_string()))?,
@@ -460,7 +465,7 @@ fn dependencies(
 
 /// Apply the same lifecycle and control exclusions to every actual affected
 /// object, including people and hulls discovered only by physical capture.
-fn check_affected_nodes(
+pub(crate) fn check_affected_nodes(
     state: &SpatialState,
     world: &World,
     nodes: &BTreeSet<ObjId>,
@@ -644,7 +649,7 @@ struct CapturedPlan {
 
 /// Preparation stamps are exact live truth; later rechecks retain that stamp
 /// and permit only forward progress within its original world-IC generation.
-fn check_capture_clock(
+pub(crate) fn check_capture_clock(
     world: &World,
     prepared_at: &ClockStamp,
     preparing: bool,
@@ -751,7 +756,7 @@ struct StateFence {
     domains: BTreeSet<DomainId>,
     digest: DefinitionDigest,
 }
-fn state_digest(
+pub(crate) fn state_digest(
     state: &SpatialState,
     nodes: &BTreeSet<ObjId>,
     domains: &BTreeSet<DomainId>,

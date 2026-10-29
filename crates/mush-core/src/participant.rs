@@ -846,6 +846,61 @@ impl<'a> ParticipantPreparation<'a> {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_locomotion<
+        P: OwnerParticipant<
+                Request = crate::locomotion::transition::LocomotionIntent,
+                Output = crate::locomotion::transition::LocomotionDraft,
+            >,
+    >(
+        &mut self,
+        service: &crate::locomotion::transition::CoreLocomotion<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        admission: &crate::locomotion::LocomotionAdmission,
+        base: &crate::action_state::ActionReadBase,
+        provider: &crate::action::ProviderRegistrationOrdinal,
+    ) -> Result<crate::locomotion::transition::LocomotionReceipt, ParticipantError> {
+        if self.shell.is_some()
+            || !self.images.is_empty()
+            || !self.registry.grants_exact(
+                &service.participant,
+                self.provider.owner(),
+                self.provider.action(),
+            )
+        {
+            return Err(ParticipantError::Authority);
+        }
+        let intent = crate::locomotion::transition::LocomotionIntent::new(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            admission,
+        )?;
+        let draft = self.prepare(&service.handle, commit, intent)?;
+        if !self.matches_preparation(&draft.binding, commit) {
+            return Err(ParticipantError::Authority);
+        }
+        self.images
+            .require_exact_physical(&service.participant, self.provider.action(), commit)?;
+        let (receipt, image) = service.prepare(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            admission,
+            draft,
+            base,
+            provider,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Locomotion(
+            Box::new(image),
+        ));
+        Ok(receipt)
+    }
+
     pub(crate) fn reserve_shell(
         &mut self,
         service: &crate::reserved_shell::ShellReservations,

@@ -237,12 +237,22 @@ impl fmt::Debug for ReadTrace {
 
 impl ReadTrace {
     pub(crate) fn matches(&self, world: &World) -> bool {
+        self.matches_with(|id| world.get(id))
+    }
+
+    /// The same bounded comparison under Core's exclusive installation borrow.
+    /// No callback or object cloning occurs while binding an image.
+    pub(crate) fn matches_objects(&self, objects: &[Option<Obj>]) -> bool {
+        self.matches_with(|id| objects.get(id.0 as usize).and_then(Option::as_ref))
+    }
+
+    fn matches_with<'a>(&self, mut get: impl FnMut(ObjId) -> Option<&'a Obj>) -> bool {
         let mut budget = Budget::new(self.limits);
         for (id, expected) in &self.rows {
             if budget.visit().is_err() {
                 return false;
             }
-            let live = world.get(*id);
+            let live = get(*id);
             // A changed candidate may now contain a malformed deep tree.
             // Bound it before the derived, recursive Obj equality walk.
             if preflight_entry(&mut budget, *id, live).is_err() || live != expected.as_ref() {

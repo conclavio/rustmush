@@ -45,6 +45,8 @@ mod handoff;
 pub mod ic_exclusion;
 pub mod journey;
 pub mod links;
+mod locomotion;
+mod locomotion_capture;
 mod personnel;
 mod personnel_capture;
 pub mod physical;
@@ -990,6 +992,7 @@ impl GameModule for SimulationModule {
         tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
         physical::register(reg, self.ic_custody.is_some())?;
+        locomotion::register(reg)?;
         // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
         // arena holds. Always composed, even with no game layer above — the
         // admission sites read it unconditionally, and a missing slot would be
@@ -1126,6 +1129,7 @@ impl GameModule for SimulationModule {
 
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
         physical::loaded(ctx)?;
+        locomotion::loaded(ctx)?;
         // The coordinator hydrated typed leases before the load callbacks.
         // Read them through Sim's real owner lens before the first command:
         // a restarted pilot may reclaim before any periodic tick has fired.
