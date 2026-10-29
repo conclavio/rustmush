@@ -7,10 +7,11 @@ use super::super::{
     completion::MovementManifestLease,
     transition::{LocomotionDraft, LocomotionIntent},
 };
-use super::record::{MovementEffectReceipt, Record};
+use super::record::{MovementEffectReceipt, Record, Records};
 use super::{
     ComposedLocomotionReader, ComposedLocomotionReceipt, MAX_COMPOSED_OWNERS, MovementDraft,
-    MovementIntent, SIM_PARTICIPANT, bad, exact_action, refused,
+    MovementIntent, SIM_PARTICIPANT, WindowLocomotionDraft, WindowLocomotionIntent,
+    WindowProjection, bad, exact_action, exact_composition_action, exact_window_action, refused,
 };
 use crate::action_state::{ActionReadBase, ActionTxn};
 use crate::participant::{
@@ -55,7 +56,7 @@ impl ComposedMovementPermit {
     }
     pub(crate) fn check(&self, action: &DefinitionRef) -> Result<(), ParticipantError> {
         self.lease.check()?;
-        exact_action(action)?;
+        exact_composition_action(action)?;
         if self.lease.snapshot()?.action() != action {
             return Err(refused());
         }
@@ -71,14 +72,24 @@ impl ComposedMovementPermit {
     }
 }
 
+struct PrimaryContext<'a> {
+    world: &'a World,
+    invocation: &'a ActionInvocation,
+    action: &'a DefinitionRef,
+    commit: CommitToken,
+    admission: &'a LocomotionAdmission,
+}
+struct PreparedPrimary {
+    base: LocomotionDraft,
+    window: Option<Box<WindowProjection>>,
+}
 trait Primary: Send + Sync {
     fn prepare(
         &self,
         ctx: &mut ParticipantPreparation<'_>,
-        commit: CommitToken,
-        intent: LocomotionIntent,
+        input: &PrimaryContext<'_>,
         permit: &ComposedMovementPermit,
-    ) -> Result<LocomotionDraft, ParticipantError>;
+    ) -> Result<PreparedPrimary, ParticipantError>;
 }
 struct RegisteredPrimary<P: OwnerParticipant<Request = LocomotionIntent, Output = LocomotionDraft>>(
     ParticipantHandle<P>,
@@ -89,11 +100,44 @@ impl<P: OwnerParticipant<Request = LocomotionIntent, Output = LocomotionDraft>> 
     fn prepare(
         &self,
         ctx: &mut ParticipantPreparation<'_>,
-        commit: CommitToken,
-        intent: LocomotionIntent,
+        input: &PrimaryContext<'_>,
         permit: &ComposedMovementPermit,
-    ) -> Result<LocomotionDraft, ParticipantError> {
-        ctx.prepare_composed_participant(&self.0, commit, intent, permit)
+    ) -> Result<PreparedPrimary, ParticipantError> {
+        let intent = LocomotionIntent::new_composed(
+            input.world,
+            input.invocation,
+            input.action,
+            input.commit,
+            input.admission,
+        )?;
+        let base = ctx.prepare_composed_participant(&self.0, input.commit, intent, permit)?;
+        Ok(PreparedPrimary { base, window: None })
+    }
+}
+struct RegisteredWindowPrimary<
+    P: OwnerParticipant<Request = WindowLocomotionIntent, Output = WindowLocomotionDraft>,
+>(ParticipantHandle<P>);
+impl<P: OwnerParticipant<Request = WindowLocomotionIntent, Output = WindowLocomotionDraft>> Primary
+    for RegisteredWindowPrimary<P>
+{
+    fn prepare(
+        &self,
+        ctx: &mut ParticipantPreparation<'_>,
+        input: &PrimaryContext<'_>,
+        permit: &ComposedMovementPermit,
+    ) -> Result<PreparedPrimary, ParticipantError> {
+        let intent = WindowLocomotionIntent::new(
+            input.world,
+            input.invocation,
+            input.action,
+            input.commit,
+            input.admission,
+        )?;
+        let output = ctx.prepare_composed_participant(&self.0, input.commit, intent, permit)?;
+        Ok(PreparedPrimary {
+            base: output.base,
+            window: Some(Box::new(output.projection)),
+        })
     }
 }
 trait PreparedOwner: Send + Sync {
@@ -134,6 +178,7 @@ pub struct ComposedLocomotionBuilder {
     participant: DefinitionRef,
     primary: Box<dyn Primary>,
     owners: Vec<Box<dyn PreparedOwner>>,
+    window: bool,
 }
 impl ComposedLocomotionBuilder {
     pub fn new<P>(
@@ -159,6 +204,33 @@ impl ComposedLocomotionBuilder {
             participant,
             primary: Box::new(RegisteredPrimary(handle)),
             owners: Vec::new(),
+            window: false,
+        })
+    }
+    pub fn new_window<P>(
+        reg: &mut Registrar<'_>,
+        action: DefinitionRef,
+        participant: DefinitionRef,
+    ) -> Result<Self, ModError>
+    where
+        P: OwnerParticipant<Request = WindowLocomotionIntent, Output = WindowLocomotionDraft>,
+    {
+        exact_window_action(&action).map_err(bad)?;
+        if reg.module() != "sim"
+            || participant.key().owner.as_str() != "sim"
+            || participant.key().kind.as_str() != "owner_participant"
+            || participant.key().id.as_str() != SIM_PARTICIPANT
+            || participant.version() != 2
+        {
+            return Err(bad("window locomotion requires its actual v2 Sim primary"));
+        }
+        let handle = reg.request_owner_participant::<P>(action.clone())?;
+        Ok(Self {
+            action,
+            participant,
+            primary: Box::new(RegisteredWindowPrimary(handle)),
+            owners: Vec::new(),
+            window: true,
         })
     }
     pub fn owner<P>(
@@ -207,7 +279,7 @@ impl ComposedLocomotionBuilder {
             .iter()
             .map(|owner| owner.participant().key().owner.clone())
             .collect();
-        let records = super::record::register_records(reg, &readers)?;
+        let records = super::record::register_records(reg, &readers, self.window)?;
         Ok(ComposedLocomotion {
             inner: Arc::new(Service {
                 action: self.action,
@@ -226,7 +298,7 @@ struct Service {
     primary: Box<dyn Primary>,
     owners: Vec<Box<dyn PreparedOwner>>,
     lease: MovementManifestLease,
-    records: crate::StateFamilyHandle<CommitToken, Record>,
+    records: Records,
 }
 #[derive(Clone)]
 pub struct ComposedLocomotion {
@@ -290,10 +362,7 @@ impl ComposedLocomotion {
             || invocation != &admission.binding.invocation
             || action != &admission.binding.action
             || commit != admission.binding.commit
-            || txn
-                .get(&service.records, &commit)
-                .map_err(|_| refused())?
-                .is_some()
+            || service.records.contains(txn, &commit)?
         {
             return Err(refused());
         }
@@ -301,9 +370,17 @@ impl ComposedLocomotion {
         permit.check(action)?;
         txn.read_preimage(base, provider).map_err(|_| refused())?;
         let manifest = service.lease.snapshot()?.clone();
-        let sim_intent =
-            LocomotionIntent::new_composed(world, invocation, action, commit, admission)?;
-        let sim = service.primary.prepare(ctx, commit, sim_intent, &permit)?;
+        let PreparedPrimary { base: sim, window } = service.primary.prepare(
+            ctx,
+            &PrimaryContext {
+                world,
+                invocation,
+                action,
+                commit,
+                admission,
+            },
+            &permit,
+        )?;
         if !ctx.matches_preparation(&sim.binding, commit) {
             return Err(refused());
         }
@@ -314,7 +391,12 @@ impl ComposedLocomotion {
                 .iter()
                 .find(|owner| owner.participant() == group.participant())
                 .ok_or_else(refused)?;
-            let intent = MovementIntent::new(world, invocation, action, commit, admission, group)?;
+            let intent = match window.as_deref() {
+                None => MovementIntent::new(world, invocation, action, commit, admission, group)?,
+                Some(window) => MovementIntent::new_window(
+                    world, invocation, action, commit, admission, group, window,
+                )?,
+            };
             let intent_digest = intent.digest();
             let draft = owner.prepare(ctx, commit, intent, &permit)?;
             if !ctx.matches_preparation(&draft.binding, commit)
@@ -348,14 +430,26 @@ impl ComposedLocomotion {
             });
         }
         ctx.require_composed_images(&permit, action, commit)?;
-        let mut image = super::super::image::LocomotionObjects::prepare(
-            world,
-            admission,
-            &sim.dependencies,
-            service.participant.clone(),
-            action.clone(),
-            commit,
-        )?;
+        let mut image = if let Some(window) = window.as_deref() {
+            super::super::image::LocomotionObjects::prepare_window(
+                world,
+                admission,
+                &sim.dependencies,
+                window.projected_room(),
+                service.participant.clone(),
+                action.clone(),
+                commit,
+            )?
+        } else {
+            super::super::image::LocomotionObjects::prepare(
+                world,
+                admission,
+                &sim.dependencies,
+                service.participant.clone(),
+                action.clone(),
+                commit,
+            )?
+        };
         image.composed = Some(permit);
         let row = Record {
             format: 1,
@@ -375,9 +469,17 @@ impl ComposedLocomotion {
             effects,
             objects: image.digests()?,
         };
-        row.validate()?;
-        txn.insert(&service.records, &commit, row.clone())
-            .map_err(|_| refused())?;
-        Ok((ComposedLocomotionReceipt { row, manifest }, image))
+        row.validate_for(window.as_deref())?;
+        service
+            .records
+            .insert(txn, &commit, &row, window.as_deref())?;
+        Ok((
+            ComposedLocomotionReceipt {
+                row,
+                manifest,
+                window,
+            },
+            image,
+        ))
     }
 }

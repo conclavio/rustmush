@@ -41,6 +41,44 @@ impl std::fmt::Debug for LocomotionObjects {
 }
 
 impl LocomotionObjects {
+    /// Only the distinct closed window kernel can consume a projected image.
+    pub(super) fn prepare_window(
+        world: &World,
+        admission: &LocomotionAdmission,
+        dependencies: &BTreeSet<ObjId>,
+        projected_room: ObjId,
+        participant: DefinitionRef,
+        action: DefinitionRef,
+        commit: CommitToken,
+    ) -> Result<Self, ParticipantError> {
+        super::composed::exact_window_action(&action)?;
+        if admission.binding.action != action || admission.binding.commit != commit {
+            return Err(ParticipantError::Authority);
+        }
+        let PreparedRows {
+            trace,
+            before,
+            after,
+            writes,
+        } = prepare_rows(world, admission, dependencies)?.project(
+            world,
+            admission.actor(),
+            admission.destination(),
+            projected_room,
+            world.now(),
+        )?;
+        Ok(Self {
+            trace,
+            before,
+            after,
+            writes,
+            participant,
+            scenes_participant: None,
+            composed: None,
+            action,
+            commit,
+        })
+    }
     pub(crate) fn prepare(
         world: &World,
         admission: &LocomotionAdmission,

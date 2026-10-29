@@ -144,7 +144,7 @@ impl<'a, 'w: 'a> ObjectRead<'a> for OverlayRead<'a, 'w> {
 }
 
 impl PreparedRows {
-    fn project(
+    pub(super) fn project(
         mut self,
         world: &World,
         actor: ObjId,

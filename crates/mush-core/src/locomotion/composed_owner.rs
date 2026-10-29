@@ -2,7 +2,9 @@
 
 use super::super::LocomotionAdmission;
 use super::super::completion::MovementManifestGroup;
-use super::{MAX_MOVEMENT_PROOF_BYTES, exact_action, refused};
+use super::{
+    MAX_MOVEMENT_PROOF_BYTES, WindowProjection, exact_action, exact_window_action, refused,
+};
 use crate::participant::{OwnerPreparationBinding, OwnerPrepareContext, ParticipantError};
 use crate::{
     ActionInvocation, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId, World,
@@ -22,6 +24,7 @@ pub struct MovementIntent {
     at_utc: i64,
     group: MovementManifestGroup,
     intent_digest: DefinitionDigest,
+    window: Option<Box<WindowProjection>>,
 }
 impl MovementIntent {
     pub(crate) fn new(
@@ -33,6 +36,38 @@ impl MovementIntent {
         group: &MovementManifestGroup,
     ) -> Result<Self, ParticipantError> {
         exact_action(action)?;
+        Self::new_bound(world, invocation, action, commit, admission, group, None)
+    }
+    pub(super) fn new_window(
+        world: &World,
+        invocation: &ActionInvocation,
+        action: &DefinitionRef,
+        commit: CommitToken,
+        admission: &LocomotionAdmission,
+        group: &MovementManifestGroup,
+        window: &WindowProjection,
+    ) -> Result<Self, ParticipantError> {
+        exact_window_action(action)?;
+        window.validate(admission.actor(), admission.destination())?;
+        Self::new_bound(
+            world,
+            invocation,
+            action,
+            commit,
+            admission,
+            group,
+            Some(Box::new(window.clone())),
+        )
+    }
+    fn new_bound(
+        world: &World,
+        invocation: &ActionInvocation,
+        action: &DefinitionRef,
+        commit: CommitToken,
+        admission: &LocomotionAdmission,
+        group: &MovementManifestGroup,
+        window: Option<Box<WindowProjection>>,
+    ) -> Result<Self, ParticipantError> {
         if admission.binding.invocation != *invocation
             || admission.binding.action != *action
             || admission.binding.commit != commit
@@ -44,7 +79,7 @@ impl MovementIntent {
         if !matches!(prepared_at.clock, crate::ClockRef::WorldIc { generation } if generation > 0) {
             return Err(refused());
         }
-        let intent_digest = intent_digest(
+        let intent_digest = intent_digest_for(
             action,
             commit,
             admission.actor(),
@@ -54,6 +89,7 @@ impl MovementIntent {
             &prepared_at,
             world.now(),
             group.binding(),
+            window.as_deref(),
         )?;
         Ok(Self {
             invocation: invocation.clone(),
@@ -66,6 +102,7 @@ impl MovementIntent {
             at_utc: world.now(),
             group: group.clone(),
             intent_digest,
+            window,
         })
     }
     pub fn actor(&self) -> ObjId {
@@ -94,6 +131,9 @@ impl MovementIntent {
     }
     pub const fn group(&self) -> &MovementManifestGroup {
         &self.group
+    }
+    pub fn window_projection(&self) -> Option<&WindowProjection> {
+        self.window.as_deref()
     }
     pub(crate) const fn digest(&self) -> DefinitionDigest {
         self.intent_digest
@@ -168,4 +208,39 @@ pub(crate) fn capture_digest(
         &json!({"intent":intent,"owner_capture":owner_capture}),
     )
     .map_err(|_| ParticipantError::Encoding)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn intent_digest_for(
+    action: &DefinitionRef,
+    commit: CommitToken,
+    actor: ObjId,
+    source: Option<ObjId>,
+    exit: Option<ObjId>,
+    destination: ObjId,
+    prepared_at: &ClockStamp,
+    at_utc: i64,
+    binding: &DefinitionRef,
+    window: Option<&WindowProjection>,
+) -> Result<DefinitionDigest, ParticipantError> {
+    let ordinary = intent_digest(
+        action,
+        commit,
+        actor,
+        source,
+        exit,
+        destination,
+        prepared_at,
+        at_utc,
+        binding,
+    )?;
+    match window {
+        None => Ok(ordinary),
+        Some(window) => DefinitionDigest::for_canonical_value_with_limit(
+            "core.window_composed_locomotion.intent.v1",
+            &json!({"original":ordinary,"window":window}),
+            16 * 1024,
+        )
+        .map_err(|_| ParticipantError::ImageLimit),
+    }
 }
