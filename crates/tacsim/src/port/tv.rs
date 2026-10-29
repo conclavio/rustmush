@@ -77,7 +77,7 @@ pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain 
 +tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting licence in force or in its grace (+licence). Without go it shows the terms and signs nothing.
 +tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released.
 A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
-+tv/<n> launch [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s).
++tv/<n> launch [mind=<mind>] [org=<org>] [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s). A rig with a core flies the mind you name sealed aboard, filed:<licence> for a licence you hold (org=<org> for one your organisation holds) or, on an ungoverned core, draft:<name>; without one it flies Standard Doctrine.
 +tv/<n> recover [go]  bring rig n up the ramp into the bay (300 IC s); a rig further off drives to the ramp first, even while the instruments are dark. With ore in its hopper it unloads into the hold next, on its own.
 +tv/<n> drive <target> [go]  drive rig n over the ground to a pocket (C117), a field (C-NW), a block (C), a site cell (140,96) or a bearing (ne 300); the preview names the charge left after the trip home.
 +tv[/<n>]/map [site] [family]  the site map around rig n, or the whole site: your own readings, the rigs and the hull.
@@ -148,7 +148,7 @@ pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
 /// **The grammar** (doc 20 cut SM.3b; §10): the status, the three acts and the lease.
 /// Replaces SM.3a's `LEASE_USAGE`; no second constant is kept.
-pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/unload [<t>] [go]  or  +tv[/<n>]/plan <pockets|blocks> [family=<good>] [go]  or  +tv[/<n>]/plan show|clear  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
+pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/launch mind=<mind> [org=<org>] [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/unload [<t>] [go]  or  +tv[/<n>]/plan <pockets|blocks> [family=<good>] [go]  or  +tv[/<n>]/plan show|clear  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
 /// A rig within its term (doc 20 cut SM.3b: where it is and its charge): `{n}`, `{mark}`,
 /// `{where}`, `{charge}`, `{span}`, `{hopper}`.
 pub const RIG_LINE: &str = "Rig {n}: {mark}, {where}; charge {charge} %; leased from Occator for {span} more; hopper {hopper}.";
@@ -207,6 +207,11 @@ pub const LAUNCH_PREVIEW: &str = "Rig {n} ({mark}) would go down the {ramp} onto
 pub const LAUNCH_FILED: &str = "Rig {n} starts down the {ramp}: on the ground {when}.";
 /// The launch, done: `{n}`, `{ramp}`, `{site}`.
 pub const LAUNCHED: &str = "Rig {n} is down the {ramp} on {site}.";
+/// **Doc 17h cut M8e E4**: the launch's end, told to the operator alone, when the licence named
+/// had lapsed (or been revoked) at the dispatch and the rig flies Standard Doctrine: `{n}`,
+/// `{licence}`, `{state}`.
+pub const LAUNCHED_DOCTRINE: &str =
+    "Licence {licence} is {state}: rig {n} flies Standard Doctrine sealed aboard.";
 /// A recover with the rig in the bay already: `{n}`.
 pub const RECOVER_IN_BAY: &str = "Rig {n} is in the bay already.";
 /// A recover with the rig not on this hull's ground: `{n}`, `{name}`.
@@ -1535,6 +1540,9 @@ enum Act {
         quiet: bool,
         /// Committed.
         go: bool,
+        /// **Doc 17h cut M8e E4**: a launch's `mind=<word>` and `org=<org>`, as typed (case
+        /// kept): the mind sealed aboard a cored rig.
+        mind: Option<(String, Option<String>)>,
     },
     /// **Doc 20 cut SM.4a**: `+tv/forget <site>|<body> [go]` — the name as typed (case kept,
     /// whitespace collapsed; the brief's reviewer finding F10).
@@ -1866,6 +1874,36 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
         quiet = true;
         next = words.next();
     }
+    // Doc 17h cut M8e E4: `launch [mind=<word>] [org=<org>] [go]`, each once, the values as
+    // typed (a draft's name keeps its case).
+    let mut mind: Option<String> = None;
+    let mut org: Option<String> = None;
+    if act == "launch" {
+        let typed: Vec<&str> = raw.split_whitespace().collect();
+        while let Some(word) = next.as_deref() {
+            let slot = if word.starts_with("mind=") {
+                &mut mind
+            } else if word.starts_with("org=") {
+                &mut org
+            } else {
+                break;
+            };
+            let value = typed
+                .iter()
+                .find(|token| token.to_ascii_lowercase() == word)
+                .and_then(|token| token.split_once('='))
+                .map(|(_, value)| value.to_owned())
+                .filter(|value| !value.is_empty());
+            if slot.is_some() || value.is_none() {
+                return Err(usage());
+            }
+            *slot = value;
+            next = words.next();
+        }
+        if org.is_some() && mind.is_none() {
+            return Err(usage());
+        }
+    }
     let go = match next.as_deref() {
         None => false,
         Some("go") => true,
@@ -1883,7 +1921,12 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
         "lease" if back => Act::Return { go },
         "lease" => Act::Take { go },
         word => match crate::surface::excursion::ActKind::from_word(word) {
-            Some(kind) => Act::Work { kind, quiet, go },
+            Some(kind) => Act::Work {
+                kind,
+                quiet,
+                go,
+                mind: mind.map(|mind| (mind, org)),
+            },
             None => return Err(usage()),
         },
     };
@@ -1972,9 +2015,14 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Act::Status => status(ctx, slot),
         Act::Take { go } => take(ctx, slot, go),
         Act::Return { go } => give_back(ctx, slot, go),
-        Act::Work { kind, quiet, go } => {
+        Act::Work {
+            kind,
+            quiet,
+            go,
+            mind,
+        } => {
             let rig = select(ctx, slot, kind).map_err(CmdError::msg)?;
-            crate::surface::act::act_cmd(ctx, &rig, kind, quiet, go)
+            crate::surface::act::act_cmd(ctx, &rig, kind, quiet, go, mind.as_ref())
         }
         Act::Forget { name, go } => forget(ctx, &name, go),
         Act::Quiet { set } => quiet(ctx, set),
@@ -4470,7 +4518,12 @@ mod tests {
         let parse = |switches: &[&str], raw: &str| -> Result<(Option<u8>, Act), String> {
             parse_parts(&|word| switches.contains(&word), raw).map_err(|e| e.to_string())
         };
-        let work = |kind, quiet, go| Act::Work { kind, quiet, go };
+        let work = |kind, quiet, go| Act::Work {
+            kind,
+            quiet,
+            go,
+            mind: None,
+        };
         assert_eq!(
             parse(&["1", "scan"], ""),
             Ok((Some(1), work(ActKind::Scan, false, false)))

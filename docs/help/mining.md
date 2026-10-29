@@ -70,6 +70,9 @@ map, and yours never show on theirs.
 
   +tv[/<n>]                each rig: where it stands, its charge, its act
   +tv/<n> launch [go]      down the ramp onto the site
+  +tv/<n> launch mind=<mind> [org=<org>] [go]  a rig with a core flies that mind
+                           sealed aboard: filed:<licence>, or draft:<name> on an
+                           ungoverned core
   +tv[/<n>]/map [site] [family]  the site map around the rig, or the whole site
 
 **The quarry screen.** In the full-screen TUI (`help tui`) Alt+q opens the

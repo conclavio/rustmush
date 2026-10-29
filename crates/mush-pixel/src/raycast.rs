@@ -614,7 +614,7 @@ struct Eye {
 }
 
 impl Eye {
-    /// See [`project`].
+    /// See [`project_from`].
     fn project(&self, w: usize, h: usize, s: &Sprite) -> Option<SpriteAt> {
         let invdet = 1.0 / (self.planex * self.diry - self.dirx * self.planey);
         let relx = s.x_cm as f32 / self.cell - self.posx;
@@ -638,10 +638,11 @@ impl Eye {
         })
     }
 
-    fn new(map: &Map, cam: &Camera) -> Eye {
+    fn with_height(map: &Map, cam: &Camera, eye_cm: Option<i64>) -> Eye {
         let cell = map.cell_cm() as f32;
         let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
         let (dirx, diry) = heading.to_radians().det_sin_cos();
+        let eye_cm = eye_cm.unwrap_or(i64::from(EYE_HEIGHT_CM)).max(1) as f32;
         Eye {
             cell,
             posx: cam.x_cm as f32 / cell,
@@ -650,7 +651,7 @@ impl Eye {
             diry,
             planex: diry * PLANE,
             planey: -dirx * PLANE,
-            eye: EYE_HEIGHT_CM as f32 / cell,
+            eye: eye_cm / cell,
         }
     }
 }
@@ -665,13 +666,25 @@ fn block_base(ground: Ground, side: u8) -> Base {
     }
 }
 
-/// Draw the scene into `frame`.
+/// Draw the scene into `frame` from the stock [`EYE_HEIGHT_CM`].
 pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
+    render_from(frame, map, cam, None, sprites);
+}
+
+/// Draw the scene into `frame`, with the eye at `eye_cm` above the ground
+/// (or [`EYE_HEIGHT_CM`] when `None`; doc 21a `W-10`).
+pub fn render_from(
+    frame: &mut Frame,
+    map: &Map,
+    cam: &Camera,
+    eye_cm: Option<i64>,
+    sprites: &[Sprite],
+) {
     let (w, h) = (frame.width(), frame.height());
     if w == 0 || h == 0 {
         return;
     }
-    let e = Eye::new(map, cam);
+    let e = Eye::with_height(map, cam, eye_cm);
     let hf = focal(w);
     let horizon = h / 2;
     let hz = horizon as f32;
@@ -769,6 +782,7 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
 /// Where `sprite` stands in a `w` by `h` picture of flat `map` from `cam`:
 /// its centre column, base row, distance and size, as [`render`] draws it;
 /// `None` behind the eye. The cockpit's HUD boxes the lock with it.
+#[cfg(test)]
 pub(crate) fn project(
     map: &Map,
     cam: &Camera,
@@ -776,7 +790,21 @@ pub(crate) fn project(
     h: usize,
     sprite: &Sprite,
 ) -> Option<SpriteAt> {
-    Eye::new(map, cam).project(w, h, sprite)
+    project_from(map, cam, None, w, h, sprite)
+}
+
+/// Where `sprite` stands in a `w` by `h` picture of flat `map` from `cam`
+/// with the eye at `eye_cm` above the ground (or [`EYE_HEIGHT_CM`] when
+/// `None`; doc 21a `W-10`), as [`render_from`] draws it.
+pub(crate) fn project_from(
+    map: &Map,
+    cam: &Camera,
+    eye_cm: Option<i64>,
+    w: usize,
+    h: usize,
+    sprite: &Sprite,
+) -> Option<SpriteAt> {
+    Eye::with_height(map, cam, eye_cm).project(w, h, sprite)
 }
 
 /// A sprite placed on the screen: its centre column, the row its base

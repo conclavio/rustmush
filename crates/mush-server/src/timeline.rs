@@ -9,8 +9,10 @@ use std::collections::BTreeMap;
 
 use mush_core::{
     GameClock, MAX_WORLD_TIMELINE_EPOCHS, WORLD_TIMELINE_EPOCH_PREFIX, WORLD_TIMELINE_HEAD_KEY,
-    WORLD_TIMELINE_NAMESPACE, World, WorldTimeline, WorldTimelineEpoch, WorldTimelineHead,
-    world_timeline_epoch_key, world_timeline_persistence_ops,
+    WORLD_TIMELINE_NAMESPACE, WORLD_TIMELINE_STATE_KEY, World, WorldClockCheckpoint,
+    WorldClockFreeze, WorldClockFreezeKind, WorldTimeline, WorldTimelineEpoch, WorldTimelineHead,
+    WorldTimelineState, world_timeline_epoch_key, world_timeline_persistence_ops,
+    world_timeline_state_op,
 };
 use mush_store::{ObjectStore, WriteBatch};
 
@@ -78,8 +80,200 @@ pub async fn hydrate_world_timeline(
     Ok(())
 }
 
+/// Outage detection and recovery countdown policy (`W-clock` / `FO-11` / `Q-R4`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutagePolicy {
+    /// Restart downtime threshold in real seconds (`[game].outage_freeze_threshold_s`, default `30`).
+    pub freeze_threshold_s: u64,
+    /// Post-outage recovery countdown in real seconds (`[game].outage_countdown_s`, default `300`).
+    pub countdown_s: u64,
+}
+
+impl Default for OutagePolicy {
+    fn default() -> Self {
+        Self {
+            freeze_threshold_s: 30,
+            countdown_s: 300,
+        }
+    }
+}
+
+/// What [`evaluate_boot_outage`] decided for a restart at `boot_unix`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutageEvaluation {
+    /// No prior durable checkpoint existed; initial checkpoint recorded at `boot_unix`.
+    NoPriorCheckpoint,
+    /// Restart gap was below `freeze_threshold_s`; silently re-anchored with no
+    /// countdown and no catch-up (`Q-R4`).
+    SilentReanchor {
+        /// Wall-clock seconds excluded by the silent re-anchor.
+        lost_secs: i64,
+    },
+    /// Unplanned outage met or exceeded `freeze_threshold_s`; IC world held in
+    /// the recovery countdown (`FO-11`, `Q-H11`, `Q-R4`).
+    OutageFreeze {
+        /// Wall-clock seconds lost before `boot_unix`.
+        lost_secs: i64,
+        /// Installed outage freeze descriptor.
+        freeze: WorldClockFreeze,
+    },
+    /// World clock was already deliberately frozen before the restart.
+    DeliberateFreeze {
+        /// Installed deliberate freeze descriptor.
+        freeze: WorldClockFreeze,
+    },
+}
+
+/// Evaluate a hydrated [`WorldTimeline`] against `boot_unix` and `policy`
+/// (`W-clock` / `Q-R4` / `FO-11`).
+pub fn evaluate_boot_outage(
+    timeline: &mut WorldTimeline,
+    boot_unix: i64,
+    policy: OutagePolicy,
+) -> Result<OutageEvaluation, String> {
+    let threshold = i64::try_from(policy.freeze_threshold_s).unwrap_or(i64::MAX);
+    let countdown = i64::try_from(policy.countdown_s).unwrap_or(300);
+
+    if let Some(existing) = timeline.freeze() {
+        return match existing.kind {
+            WorldClockFreezeKind::Deliberate => {
+                timeline.record_checkpoint(boot_unix);
+                Ok(OutageEvaluation::DeliberateFreeze { freeze: existing })
+            }
+            WorldClockFreezeKind::OutageCountdown {
+                unfreeze_at_real_unix,
+                ..
+            } => {
+                let last_real = timeline
+                    .checkpoint()
+                    .map_or(existing.frozen_real_unix, |cp| cp.real_unix);
+                let gap = boot_unix.saturating_sub(last_real);
+                if gap >= threshold && countdown > 0 {
+                    // Another unplanned outage occurred during the countdown: restart
+                    // the recovery countdown from `boot_unix` while keeping the original
+                    // `frozen_real_unix` and `frozen_ic_unix`.
+                    let unfreeze_at = boot_unix.saturating_add(countdown);
+                    let _ = timeline.resume_at(existing.frozen_real_unix);
+                    let freeze = timeline.freeze_for_outage(
+                        existing.frozen_real_unix,
+                        existing.frozen_ic_unix,
+                        boot_unix,
+                        unfreeze_at,
+                    );
+                    timeline.record_checkpoint(boot_unix);
+                    Ok(OutageEvaluation::OutageFreeze {
+                        lost_secs: boot_unix.saturating_sub(existing.frozen_real_unix),
+                        freeze,
+                    })
+                } else if boot_unix < unfreeze_at_real_unix {
+                    timeline.record_checkpoint(boot_unix);
+                    Ok(OutageEvaluation::OutageFreeze {
+                        lost_secs: boot_unix.saturating_sub(existing.frozen_real_unix),
+                        freeze: existing,
+                    })
+                } else {
+                    timeline
+                        .resume_at(boot_unix)
+                        .map_err(|e| format!("resuming elapsed outage countdown: {e}"))?;
+                    Ok(OutageEvaluation::SilentReanchor {
+                        lost_secs: boot_unix.saturating_sub(existing.frozen_real_unix),
+                    })
+                }
+            }
+        };
+    }
+
+    let Some(cp) = timeline.checkpoint() else {
+        timeline.record_checkpoint(boot_unix);
+        return Ok(OutageEvaluation::NoPriorCheckpoint);
+    };
+
+    if boot_unix <= cp.real_unix {
+        return Ok(OutageEvaluation::SilentReanchor { lost_secs: 0 });
+    }
+
+    let lost_secs = boot_unix.saturating_sub(cp.real_unix);
+    if lost_secs >= threshold {
+        if countdown > 0 {
+            let unfreeze_at = boot_unix.saturating_add(countdown);
+            let freeze =
+                timeline.freeze_for_outage(cp.real_unix, cp.ic_unix, boot_unix, unfreeze_at);
+            timeline.record_checkpoint(boot_unix);
+            Ok(OutageEvaluation::OutageFreeze { lost_secs, freeze })
+        } else {
+            timeline
+                .reanchor_from_checkpoint(boot_unix)
+                .map_err(|e| format!("re-anchoring world timeline after outage: {e}"))?;
+            Ok(OutageEvaluation::SilentReanchor { lost_secs })
+        }
+    } else {
+        timeline
+            .reanchor_from_checkpoint(boot_unix)
+            .map_err(|e| format!("silently re-anchoring world timeline: {e}"))?;
+        Ok(OutageEvaluation::SilentReanchor { lost_secs })
+    }
+}
+
+/// Apply [`evaluate_boot_outage`] to `world`'s hydrated timeline and persist
+/// the updated state when a prior checkpoint or freeze was present (`W-clock`).
+pub async fn apply_boot_outage_policy(
+    world: &mut World,
+    store: &dyn ObjectStore,
+    boot_unix: i64,
+    policy: OutagePolicy,
+) -> Result<OutageEvaluation, String> {
+    let mut timeline = world.world_timeline().clone();
+    let had_persisted_state = !timeline.state().is_empty();
+    let evaluation = evaluate_boot_outage(&mut timeline, boot_unix, policy)?;
+    let should_persist = had_persisted_state
+        || matches!(
+            evaluation,
+            OutageEvaluation::OutageFreeze { .. } | OutageEvaluation::DeliberateFreeze { .. }
+        );
+    if should_persist {
+        let op = world_timeline_state_op(&timeline)
+            .map_err(|error| format!("encoding world timeline state: {error}"))?;
+        store
+            .write(WriteBatch {
+                serial: BOOT_SERIAL,
+                module_ops: vec![op],
+                durable: true,
+                ..WriteBatch::default()
+            })
+            .await
+            .map_err(|error| format!("persisting world timeline outage state: {error}"))?;
+    }
+    world.set_world_timeline(timeline);
+    world.set_now(boot_unix);
+    Ok(evaluation)
+}
+
+/// Record and durably persist a world-IC clock checkpoint at `real_unix` (`W-clock` / `Q-R4`).
+pub async fn persist_world_clock_checkpoint(
+    world: &mut World,
+    store: &dyn ObjectStore,
+    real_unix: i64,
+) -> Result<WorldClockCheckpoint, String> {
+    world.set_now(real_unix);
+    let cp = world.record_world_clock_checkpoint();
+    let op = world_timeline_state_op(world.world_timeline())
+        .map_err(|error| format!("encoding world timeline checkpoint: {error}"))?;
+    store
+        .write(WriteBatch {
+            serial: BOOT_SERIAL,
+            module_ops: vec![op],
+            durable: true,
+            ..WriteBatch::default()
+        })
+        .await
+        .map_err(|error| format!("persisting world timeline checkpoint: {error}"))?;
+    Ok(cp)
+}
+
 fn decode_world_timeline(docs: Vec<(String, serde_json::Value)>) -> Result<WorldTimeline, String> {
-    if docs.len() > MAX_WORLD_TIMELINE_EPOCHS + 1 {
+    let has_state = docs.iter().any(|(key, _)| key == WORLD_TIMELINE_STATE_KEY);
+    let max_docs = MAX_WORLD_TIMELINE_EPOCHS + 1 + usize::from(has_state);
+    if docs.len() > max_docs {
         return Err(format!(
             "world timeline namespace contains {} documents; maximum is {} epochs plus one head",
             docs.len(),
@@ -87,6 +281,7 @@ fn decode_world_timeline(docs: Vec<(String, serde_json::Value)>) -> Result<World
         ));
     }
     let mut head = None;
+    let mut state = None;
     let mut epochs = BTreeMap::new();
     for (key, value) in docs {
         if key == WORLD_TIMELINE_HEAD_KEY {
@@ -100,6 +295,15 @@ fn decode_world_timeline(docs: Vec<(String, serde_json::Value)>) -> Result<World
                     .validated_generation()
                     .map_err(|error| format!("invalid world timeline head: {error}"))?,
             );
+            continue;
+        }
+        if key == WORLD_TIMELINE_STATE_KEY {
+            if state.is_some() {
+                return Err("world timeline contains duplicate state documents".to_owned());
+            }
+            let parsed: WorldTimelineState = serde_json::from_value(value)
+                .map_err(|error| format!("invalid world timeline state: {error}"))?;
+            state = Some(parsed);
             continue;
         }
         let Some(suffix) = key.strip_prefix(WORLD_TIMELINE_EPOCH_PREFIX) else {
@@ -128,8 +332,11 @@ fn decode_world_timeline(docs: Vec<(String, serde_json::Value)>) -> Result<World
         }
     }
     let head = head.ok_or_else(|| "world timeline head is missing".to_owned())?;
-    let timeline = WorldTimeline::from_epochs(epochs.into_values().collect())
-        .map_err(|error| format!("invalid world timeline: {error}"))?;
+    let timeline = WorldTimeline::from_epochs_and_state(
+        epochs.into_values().collect(),
+        state.unwrap_or_default(),
+    )
+    .map_err(|error| format!("invalid world timeline: {error}"))?;
     if timeline.current().generation != head {
         return Err(format!(
             "world timeline head names generation {head}, but contiguous history ends at {}",
@@ -354,5 +561,90 @@ mod tests {
             .expect("reload timeline");
         assert_eq!(loaded.epochs(), &[timeline.current(), next]);
         assert_eq!(loaded.stamp_at(600).at, next.ic_anchor + 100);
+    }
+
+    #[tokio::test]
+    async fn w_clock_restart_below_threshold_silently_reanchors_with_no_catch_up() {
+        let store = InMemoryStore::new();
+        let clock = GameClock {
+            ic_ratio: 4,
+            epoch_offset: 1_000,
+        };
+        let mut world = World::new_minimal();
+        hydrate_world_timeline(&mut world, &store, clock)
+            .await
+            .unwrap();
+        // Record a durable checkpoint at real_unix = 100 (IC = 1_400).
+        let cp = persist_world_clock_checkpoint(&mut world, &store, 100)
+            .await
+            .unwrap();
+        assert_eq!(cp.real_unix, 100);
+        assert_eq!(cp.ic_unix, 1_400);
+
+        // Simulate restart 20s later (< 30s default threshold).
+        let mut booted = World::new_minimal();
+        hydrate_world_timeline(&mut booted, &store, clock)
+            .await
+            .unwrap();
+        let eval = apply_boot_outage_policy(&mut booted, &store, 120, OutagePolicy::default())
+            .await
+            .unwrap();
+        assert_eq!(eval, OutageEvaluation::SilentReanchor { lost_secs: 20 });
+        assert!(!booted.world_timeline().is_frozen());
+        // IC time at real_unix = 120 is re-anchored to the checkpoint's 1_400 (zero catch-up).
+        assert_eq!(booted.world_ic_now().at, 1_400);
+        assert_eq!(booted.game_now_unix(), 1_400);
+        // 10 real seconds later (real_unix = 130), IC advances at 4:1 -> 1_440.
+        booted.set_now(130);
+        assert_eq!(booted.world_ic_now().at, 1_440);
+        assert_eq!(booted.game_now_unix(), 1_440);
+    }
+
+    #[tokio::test]
+    async fn w_clock_restart_above_threshold_enters_5m_outage_countdown_and_persists_state() {
+        let store = InMemoryStore::new();
+        let clock = GameClock {
+            ic_ratio: 4,
+            epoch_offset: 1_000,
+        };
+        let mut world = World::new_minimal();
+        hydrate_world_timeline(&mut world, &store, clock)
+            .await
+            .unwrap();
+        persist_world_clock_checkpoint(&mut world, &store, 100)
+            .await
+            .unwrap();
+
+        // Simulate unplanned outage of 90s (>= 30s threshold): boot at real_unix = 190.
+        let mut booted = World::new_minimal();
+        hydrate_world_timeline(&mut booted, &store, clock)
+            .await
+            .unwrap();
+        let eval = apply_boot_outage_policy(&mut booted, &store, 190, OutagePolicy::default())
+            .await
+            .unwrap();
+        let OutageEvaluation::OutageFreeze { lost_secs, freeze } = eval else {
+            panic!("expected OutageFreeze, got {eval:?}");
+        };
+        assert_eq!(lost_secs, 90);
+        assert_eq!(freeze.frozen_real_unix, 100);
+        assert_eq!(freeze.frozen_ic_unix, 1_400);
+        assert_eq!(
+            freeze.kind,
+            WorldClockFreezeKind::OutageCountdown {
+                countdown_started_real_unix: 190,
+                unfreeze_at_real_unix: 490,
+            }
+        );
+        assert!(booted.world_timeline().is_frozen());
+        // Throughout the 5-minute countdown, both `world_ic_now` and `game_now_unix`
+        // stay pinned at 1_400 without advancing.
+        booted.set_now(350);
+        assert_eq!(booted.world_ic_now().at, 1_400);
+        assert_eq!(booted.game_now_unix(), 1_400);
+
+        // Reloading from the store preserves the persisted outage freeze state.
+        let reloaded = load_or_seed_world_timeline(&store, clock).await.unwrap();
+        assert_eq!(reloaded.freeze(), Some(freeze));
     }
 }

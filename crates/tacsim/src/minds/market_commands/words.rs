@@ -103,7 +103,7 @@ pub(crate) const HOLD_WAIT: &str =
 pub(crate) const NO_LICENCE: &str = "You hold no licence {licence}.";
 /// M8c B3: `org=<org>` names an organisation the actor does not act for
 /// (`org_holder`), one it may not see, or none at all, alike.
-pub(crate) const NOT_FOR_ORG: &str = "You do not act for that organisation.";
+pub const NOT_FOR_ORG: &str = "You do not act for that organisation.";
 pub(crate) const NO_RENEWAL: &str = "Licence {licence} has no renewal offer waiting for you. Ask for one with +minds/renew {licence}.";
 pub(crate) const RESELLING: &str = "Offering licence {licence} to {player} for {price}.";
 pub(crate) const RESELL_TELL: &str =

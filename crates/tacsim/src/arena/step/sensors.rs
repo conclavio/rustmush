@@ -795,8 +795,10 @@ impl Arena {
                 cell: held.seen_at.cell(&self.definition.terrain),
                 condition,
                 // 17b cut M1a.3: the face the plot was showing to where this
-                // platform stands now.
+                // platform stands now, and (doc 22 D-22-9) its eight-way
+                // sprite facing.
                 aspect: Aspect::from_band(facet_band_seen(&held.seen_at, from)),
+                facing: ContactFacing::from_band(facing_band_seen(&held.seen_at, from)),
                 reads_dead,
                 fatal,
                 // Doc 22 D-22-5: the type with the team, never before it.

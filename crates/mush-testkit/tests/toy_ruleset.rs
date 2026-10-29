@@ -516,16 +516,19 @@ fn a_willpower_backed_toy_roll_projects_onto_the_authoritative_action() {
     });
     let host = ability_host();
 
-    // A plain roll stays on the legacy residual.
-    assert!(
-        host.projected_ability(
+    // A plain roll projects onto `toy_roll`.
+    let plain = host
+        .projected_ability(
             tw.world(),
             nick,
             "toy_roll",
-            &json!({ "pool_expr": "strength+brawl" })
+            &json!({ "pool_expr": "strength+brawl" }),
         )
-        .is_none()
-    );
+        .expect("a projected plain roll ability");
+    assert_eq!(plain.action.key().id.as_str(), "toy_roll");
+    assert_eq!(plain.parameters["pool"], "strength+brawl");
+    assert_eq!(plain.parameters["difficulty"], 6);
+    assert_eq!(plain.parameters["ignore_wounds"], false);
     // A jailbroken name maps to nothing.
     assert!(
         host.projected_ability(

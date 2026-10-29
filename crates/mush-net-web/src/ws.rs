@@ -33,14 +33,13 @@
 //! connection-scoped, not part of the session's resumable stream, and carry
 //! `seq: 0`; clients must not treat 0 as a resume point.
 //!
-//! ## The picture (doc 21 cut G.3)
+//! ## The picture (doc 21 cut G.3b; doc 28 P2)
 //!
-//! A [`ClientCommand::Picture`] turns on the first-person cockpit picture
-//! for this connection: the pump keeps the latest `arena.cockpit` and
-//! `arena.map` keyframes from the envelopes it forwards, runs a frame clock
-//! while the picture is on, and sends each changed frame as a PNG in a
-//! **binary** message (the only binary frames on the socket; the client
-//! still may not send any). See [`crate::picture`].
+//! Every web picture (`Cockpit`, `Overhead`, and the bucket-B scenes) is
+//! rendered client-side by `mush-pixel-wasm` from the `Panel` keyframes this
+//! socket already forwards. [`ClientCommand::Picture`] stays on the wire as a
+//! no-op so an older bundle asking for a frame is not closed as a protocol
+//! error.
 //!
 //! ## Keepalive & backpressure
 //!
@@ -120,7 +119,6 @@ use crate::app::AppState;
 use crate::config::WebConfig;
 use crate::hooks::{AttachErr, NewWebConn, ResumeErr, TokenVerdict, WebHooks};
 use crate::ip::client_ip;
-use crate::picture::WebPicture;
 
 /// Subprotocol prefix carrying the auth token.
 const SUBPROTO_PREFIX: &str = "rustmush.v1.";
@@ -467,16 +465,11 @@ async fn pump(
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_nonce: u64 = 0;
     let mut outstanding_pings: u32 = 0;
-    // Doc 21 cut G.3: the picture and its frame clock (a deadline the clock's
-    // own tick moves, polled only while the picture is on; it is the
-    // picture's rate limit, so a request never moves it — doc 21a `X-01`).
-    let mut picture = WebPicture::new();
 
     loop {
         tokio::select! {
             out = rx.recv() => match out {
                 Some(env) => {
-                    picture.observe(&env.event);
                     if !send_env(socket, &env, send_timeout).await {
                         tracing::info!(conn = conn_id, "closing slow/broken web client");
                         close(socket, close_code::SLOW, "too slow").await;
@@ -524,13 +517,17 @@ async fn pump(
                             tracing::debug!(conn = conn_id, ?caps, "client caps declared (ignored)");
                         }
                         Ok(ClientCommand::Picture { on, look_mdeg, kind }) => {
-                            // Transport-local (doc 21 cut G.3): the next
-                            // scheduled tick draws whatever the new request
-                            // wants — the clock is not reset for it, so a
-                            // burst of look changes is still one frame an
-                            // interval (doc 21a `X-01`). Doc 21 cut G.12a:
-                            // `kind` picks the cockpit or the overhead.
-                            picture.request(on, look_mdeg, kind);
+                            // Ignored (doc 28 P2): every web picture is rendered
+                            // client-side by `mush-pixel-wasm`; kept on the wire
+                            // as a no-op so an older bundle asking for a frame is
+                            // not closed as a protocol error.
+                            tracing::debug!(
+                                conn = conn_id,
+                                on,
+                                look_mdeg,
+                                ?kind,
+                                "client picture request (ignored)"
+                            );
                         }
                         Ok(ClientCommand::Composing { active }) => {
                             // A presence hint (interface plan I4, D-I-11): the
@@ -566,16 +563,6 @@ async fn pump(
                 // uninteresting (keepalive is app-level).
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
             },
-            () = tokio::time::sleep_until(picture.deadline()), if picture.is_on() => {
-                picture.tick(tokio::time::Instant::now());
-                if let Some(png) = picture.frame()
-                    && !send_bin(socket, png, send_timeout).await
-                {
-                    tracing::info!(conn = conn_id, "closing slow/broken web client (picture)");
-                    close(socket, close_code::SLOW, "too slow").await;
-                    return;
-                }
-            }
             _ = ping.tick() => {
                 if outstanding_pings >= cfg.max_missed_pongs {
                     tracing::info!(conn = conn_id, "keepalive timeout ({outstanding_pings} unanswered pings)");
@@ -611,15 +598,6 @@ async fn send_env(socket: &mut WebSocket, env: &Envelope, timeout: Duration) -> 
         }
         Err(_elapsed) => false,
     }
-}
-
-/// Sends one picture frame as a binary message; `false` means the
-/// connection is done for (send error or slow-client timeout).
-async fn send_bin(socket: &mut WebSocket, png: Vec<u8>, timeout: Duration) -> bool {
-    matches!(
-        tokio::time::timeout(timeout, socket.send(Message::Binary(png.into()))).await,
-        Ok(Ok(()))
-    )
 }
 
 /// Closes an upgraded socket for a refused fresh attach, spending 4401 —

@@ -1054,7 +1054,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(destroy_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@find".into(),
             help: "@find [<pattern>]  --  List your objects whose names match the \

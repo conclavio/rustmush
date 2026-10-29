@@ -260,7 +260,7 @@ fn page_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// Register the speech commands.
 pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "say".into(),
             help: "say <message>  --  Speak to everyone in your current room. \
@@ -271,7 +271,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(say_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "pose".into(),
             help: "pose <action>  --  Emote: everyone in the room sees your name, a \
@@ -282,7 +282,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(pose_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "semipose".into(),
             help: "semipose <action>  --  Like pose but with no space after your name \
@@ -293,7 +293,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(semipose_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@emit".into(),
             help: "@emit <text>  --  Emit free-form narration to your room with no \
@@ -305,7 +305,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(emit_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "think".into(),
             help: "think <text>  --  Echo text back to yourself only. Nobody else \
@@ -315,7 +315,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(think_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "whisper".into(),
             shape: ArgShape::EqPair,
@@ -326,7 +326,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(whisper_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "page".into(),
             aliases: vec!["p".into()],

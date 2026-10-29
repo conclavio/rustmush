@@ -47,6 +47,18 @@ describe("the picture drawn here", () => {
     expect(p.draw(cockpit, map, 0)).toBe(false);
   });
 
+  it("draws the overhead camera and reports a new frame when the camera swaps (doc 28 P2)", async () => {
+    const m = await module();
+    const p = new LocalPicture(m);
+    const cockpit = fixture("cockpit_frame.json");
+    const map = fixture("arena_map.json");
+    expect(p.draw(cockpit, map, 0, "cockpit")).toBe(true);
+    expect(p.draw(cockpit, map, 0, "cockpit")).toBe(false);
+    expect(p.draw(cockpit, map, 0, "overhead")).toBe(true);
+    expect(p.draw(cockpit, map, 0, "overhead")).toBe(false);
+    expect(p.draw(cockpit, map, 0, "cockpit")).toBe(true);
+  });
+
   it("is not offered where the browser cannot draw it", () => {
     // Node has WebAssembly but no ImageData or animation frames.
     expect(localCapable()).toBe(false);

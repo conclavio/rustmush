@@ -211,10 +211,10 @@ fn h2c_a_willpower_backed_roll_becomes_the_npcs_own_authoritative_submission() {
 }
 
 #[test]
-fn h2c_a_plain_roll_still_runs_the_legacy_ability_and_queues_nothing() {
+fn h2c_a_plain_roll_also_becomes_the_npcs_own_authoritative_submission() {
     let mut tw = boot();
     let r = rig(&mut tw);
-    let (_, text) = complete_turn(&mut tw, &r, 1_000, |npc| {
+    let (correlation, text) = complete_turn(&mut tw, &r, 1_000, |npc| {
         ability_payload(
             npc,
             "toy_roll",
@@ -222,13 +222,25 @@ fn h2c_a_plain_roll_still_runs_the_legacy_ability_and_queues_nothing() {
         )
     });
     assert!(
-        !tw.engine().has_authoritative_submit(),
-        "a plain roll must stay on the residual path"
+        tw.engine().has_authoritative_submit(),
+        "a plain roll also maps onto the coordinator: {text}"
     );
-    assert!(
-        text.contains("roll  ") || text.contains("Strength") || text.contains("success"),
-        "the legacy roll did not narrate: {text}"
+    let submit = tw
+        .engine_mut()
+        .take_authoritative_submit()
+        .expect("a queued submission");
+    assert_eq!(submit.actor, r.npc);
+    assert_eq!(submit.action.key().id.as_str(), "toy_roll");
+    assert_eq!(submit.subject, PerceivedRef::SelfActor);
+    assert!(submit.targets.is_empty());
+    assert_eq!(submit.parameters["pool"], "strength");
+    assert_eq!(submit.parameters["difficulty"], 6);
+    assert_eq!(submit.parameters["ignore_wounds"], false);
+    assert_eq!(
+        submit.key,
+        ability_submit_key(r.npc, correlation, "toy_roll")
     );
+    assert!(!text.contains("roll  "), "the legacy roll ran: {text}");
 }
 
 #[test]

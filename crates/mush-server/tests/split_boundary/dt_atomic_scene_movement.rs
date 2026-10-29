@@ -11,14 +11,14 @@ use super::dt_unit_authority::persist_legacy;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const ACTION: &str = "sim_locomotion_with_scenes";
 
-fn scenes(rig: &Rig) -> TestResult<&ScenesState> {
+pub(super) fn scenes(rig: &Rig) -> TestResult<&ScenesState> {
     rig.world
         .world()
         .module_state::<ScenesState>()
         .ok_or("Scenes state missing".into())
 }
 
-fn entries(rig: &Rig, id: SceneUid) -> TestResult<Vec<SceneEvent>> {
+pub(super) fn entries(rig: &Rig, id: SceneUid) -> TestResult<Vec<SceneEvent>> {
     scenes(rig)?
         .events
         .open_entries(&id.to_string())
@@ -27,7 +27,7 @@ fn entries(rig: &Rig, id: SceneUid) -> TestResult<Vec<SceneEvent>> {
         .collect()
 }
 
-async fn staff(rig: &mut Rig, store: &InMemoryStore) -> TestResult {
+pub(super) async fn staff(rig: &mut Rig, store: &InMemoryStore) -> TestResult {
     rig.world
         .world_mut()
         .get_mut(rig.actor)
@@ -39,7 +39,7 @@ async fn staff(rig: &mut Rig, store: &InMemoryStore) -> TestResult {
     Ok(())
 }
 
-async fn start_scenes(
+pub(super) async fn start_scenes(
     rig: &mut Rig,
     store: &InMemoryStore,
 ) -> TestResult<(SceneUid, SceneUid, ObjId)> {
@@ -51,7 +51,24 @@ async fn start_scenes(
         Some(rig.destination),
     )?;
     rig.world.world_mut().set_connected(destination_host, true);
-    let _ = rig.world.run(rig.actor, "+timestop");
+    let source_host = if rig
+        .world
+        .world()
+        .get(rig.actor)
+        .is_some_and(|actor| actor.kind == ObjKind::Player)
+    {
+        rig.actor
+    } else {
+        let host = rig.world.world_mut().create(
+            ObjKind::Player,
+            "Scene source facilitator",
+            GOD,
+            Some(rig.source),
+        )?;
+        rig.world.world_mut().set_connected(host, true);
+        host
+    };
+    let _ = rig.world.run(source_host, "+timestop");
     let _ = rig.world.run(destination_host, "+timestop");
     let _ = rig.world.run(destination_host, "+timestop/next");
     let source = scenes(rig)?

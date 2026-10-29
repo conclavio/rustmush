@@ -392,6 +392,7 @@ impl StoreReadCompletion for CanonArchiveRead {
 }
 
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "+chronicle".into(),
@@ -408,6 +409,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_chronicle),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: "@canon".into(),

@@ -21,7 +21,7 @@ use mush_testkit::{TestWorld, text_of};
 
 /// The pinned residual: `<ruleset>:<ability>` for every ability that still
 /// reaches `invoke_ability` from the NPC completion with a plain input.
-const RESIDUAL: &[&str] = &["toy:toy_roll"];
+const RESIDUAL: &[&str] = &[];
 
 fn create_agent(tw: &mut TestWorld, template: &str) -> ObjId {
     let created: String = tw
@@ -82,8 +82,8 @@ fn residual_of(
 fn h2c_the_residual_is_pinned_and_can_only_shrink() {
     let mut residual = Vec::new();
 
-    // The toy: `toy_roll` without Willpower is legacy; with Willpower it is the
-    // coordinator's `toy_willpower_roll`.
+    // The toy: `toy_roll` without Willpower maps to `toy_roll`; with Willpower
+    // it maps to `toy_willpower_roll`, leaving zero residual.
     let grounding: Arc<dyn AgentGrounding> = Arc::new(RulesetAgent::new(ToyRuleset::new()));
     let mut tw = TestWorld::with_modules(vec![
         Box::new(mush_jobs::JobsModule::new()),
@@ -92,6 +92,17 @@ fn h2c_the_residual_is_pinned_and_can_only_shrink() {
     ]);
     let npc = create_agent(&mut tw, "alpha");
     residual.extend(residual_of("toy", &tw, grounding.as_ref(), npc));
+    let plain = grounding
+        .projected_ability(
+            tw.world(),
+            npc,
+            "toy_roll",
+            &serde_json::json!({ "pool_expr": "strength" }),
+        )
+        .expect("a plain toy_roll maps to the coordinator");
+    assert_eq!(plain.action.key().id.as_str(), "toy_roll");
+    assert_eq!(plain.parameters["pool"], "strength");
+    assert_eq!(plain.parameters["ignore_wounds"], false);
     let projected = grounding
         .projected_ability(
             tw.world(),

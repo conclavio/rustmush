@@ -47,7 +47,9 @@ pub mod journey;
 pub mod links;
 mod locomotion;
 mod locomotion_capture;
+mod locomotion_composed;
 mod locomotion_scenes;
+pub use locomotion_composed::ComposedMovementFactory;
 mod personnel;
 mod personnel_capture;
 pub mod physical;
@@ -170,6 +172,7 @@ pub struct SimulationModule {
     ic_custody: Option<ic_exclusion::IcExclusionConfig>,
     atomic_scene_movement:
         Option<Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>>,
+    composed_movement: Option<ComposedMovementFactory>,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -183,6 +186,7 @@ impl std::fmt::Debug for SimulationModule {
                 "atomic_scene_movement",
                 &self.atomic_scene_movement.is_some(),
             )
+            .field("composed_movement", &self.composed_movement.is_some())
             .finish()
     }
 }
@@ -205,6 +209,7 @@ impl SimulationModule {
             pulse: tick::PulseConfig::default(),
             ic_custody: None,
             atomic_scene_movement: None,
+            composed_movement: None,
         }
     }
 
@@ -225,6 +230,14 @@ impl SimulationModule {
         reader: Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>,
     ) -> Self {
         self.atomic_scene_movement = Some(reader);
+        self
+    }
+
+    /// Join composition-supplied actual observer adapters to the closed Sim
+    /// movement primary. This registers no command route or legal-action offer.
+    #[must_use]
+    pub fn with_composed_movement(mut self, factory: ComposedMovementFactory) -> Self {
+        self.composed_movement = Some(factory);
         self
     }
 
@@ -1016,6 +1029,9 @@ impl GameModule for SimulationModule {
         if let Some(reader) = &self.atomic_scene_movement {
             locomotion_scenes::register(reg, reader)?;
         }
+        if let Some(factory) = &self.composed_movement {
+            locomotion_composed::register(reg, factory)?;
+        }
         // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
         // arena holds. Always composed, even with no game layer above — the
         // admission sites read it unconditionally, and a missing slot would be
@@ -1155,6 +1171,9 @@ impl GameModule for SimulationModule {
         locomotion::loaded(ctx)?;
         if self.atomic_scene_movement.is_some() {
             locomotion_scenes::loaded(ctx)?;
+        }
+        if self.composed_movement.is_some() {
+            locomotion_composed::loaded(ctx)?;
         }
         // The coordinator hydrated typed leases before the load callbacks.
         // Read them through Sim's real owner lens before the first command:

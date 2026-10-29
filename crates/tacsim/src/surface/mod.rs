@@ -151,6 +151,7 @@ pub mod chart;
 pub mod claims;
 pub mod commands;
 pub mod cursor;
+pub mod dispatch;
 pub mod drive;
 pub mod excursion;
 pub mod geology;

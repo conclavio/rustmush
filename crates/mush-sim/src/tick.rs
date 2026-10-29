@@ -66,12 +66,12 @@ use mush_core::{
     ActionStateError, ActionTxn, ActionWindow, ActionWindowDraft, ActionWindowGuardValidator,
     ActionWindowId, ActionWindowRecord, ActionWindowStateCodec, AuthorityGuardKind, CanonicalHash,
     CanonicalId, ClockProviderContext, ClockProviderFailure, ClockRef, ClockStamp,
-    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DurableOutboxIntent,
-    DurableSchedule, DurableScheduleDraft, DurableScheduleStateCodec, Engine, LegalActionQuery,
-    ModError, ObjId, OwnerId, PerceivedRef, ProjectedParameter, ProjectedParameterKind,
-    ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid,
-    ResolvedActionInvocation, RevisionSet, RulesValue, ScheduleActionAdapter, ScheduleActionDraft,
-    ScheduleAdvance, ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
+    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DurableSchedule,
+    DurableScheduleDraft, DurableScheduleStateCodec, Engine, LegalActionQuery, ModError, ObjId,
+    OwnerId, PerceivedRef, ProjectedParameter, ProjectedParameterKind, ProjectedParameterSchema,
+    ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid, ResolvedActionInvocation,
+    RevisionSet, RulesValue, ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance,
+    ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
     StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowMode,
     WindowRestartPolicy, WindowTimeoutPolicy, action_window_state_family_descriptor,
     canonical_json_bytes_with_limit, durable_schedule_state_family_descriptor,
@@ -114,14 +114,6 @@ pub const COMMIT_FAMILY: &str = "domain_tick_commits";
 pub const ORDER_FAMILY: &str = "standing_orders";
 /// Commit-coupled progress through the three bounded retention scans.
 pub const REAP_FAMILY: &str = "tick_reap_progress";
-
-/// The `OwnerId` the tick's boundary facts are stamped with, and the
-/// `DurableOutboxAdapter` that carries them out of the bundle. They are
-/// **tactics'** facts even though `mush-sim` owns the pulse that emits them
-/// (10b §3.8 OPEN 4; D-E7-17's T2 boundary).
-pub const BOUNDARY_OUTBOX_OWNER: &str = "tactics";
-/// The adapter id the tactics boundary-fact outbox registers under.
-pub const BOUNDARY_OUTBOX_ADAPTER: &str = "tactics.boundary";
 
 /// **The measured unit cap (B5, §9 q6, §7).**
 ///
@@ -1839,31 +1831,6 @@ impl ActionProvider for DomainTickProvider {
             .map_err(|error| state_error(&error))?;
         }
 
-        // ---- T2: typed boundary facts leave the bundle; nothing economic runs ----
-        let mut outbox = Vec::with_capacity(facts.len());
-        for fact in &facts {
-            outbox.push(
-                DurableOutboxIntent::new(
-                    fact.ordinal,
-                    OwnerId::new(BOUNDARY_OUTBOX_OWNER)
-                        .map_err(|_| integrity("the boundary owner is invalid"))?,
-                    CanonicalId::new(BOUNDARY_OUTBOX_ADAPTER)
-                        .map_err(|_| integrity("the boundary adapter is invalid"))?,
-                    json!({
-                        "id": fact.stable_id(),
-                        "kind": fact.kind,
-                        "domain": fact.domain,
-                        "generation": fact.generation,
-                        "tick": fact.tick,
-                        "unit": fact.unit,
-                        "ordinal": fact.ordinal,
-                        "provisional": fact.provisional,
-                    }),
-                )
-                .map_err(|_| integrity("a boundary fact will not encode"))?,
-            );
-        }
-
         let outcome = RulesValue::new(
             self.outcome.clone(),
             json!({
@@ -1889,9 +1856,7 @@ impl ActionProvider for DomainTickProvider {
                 outcome.clone(),
             )
             .map_err(|_| integrity("the tick's resolution will not close"))?;
-        Ok(mush_core::AuthoritativeActionOutput::new(outcome)
-            .with_resolution(prepared)
-            .with_durable_outbox(outbox))
+        Ok(mush_core::AuthoritativeActionOutput::new(outcome).with_resolution(prepared))
     }
 
     fn prepare_resolved_authoritative_with_context(

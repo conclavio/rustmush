@@ -2362,6 +2362,14 @@ impl GameModule for EconomyModule {
             WorldEventKind::CanonRecorded,
             Arc::new(crate::attest::on_canon_recorded),
         );
+        reg.subscribe(
+            WorldEventKind::WorldClockFrozen,
+            Arc::new(crate::contract_live::on_world_clock_frozen),
+        );
+        reg.subscribe(
+            WorldEventKind::WorldClockResumed,
+            Arc::new(crate::contract_live::on_world_clock_resumed),
+        );
         reg.destroy_gate(Arc::new(EconomicDestroyGate));
         // E6a step 1 (DL-04): the notices an org's officers missed while away are
         // rendered at their next connect (the housing `notice.rs` pattern).

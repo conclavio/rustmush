@@ -139,6 +139,12 @@
 //! | `[atlas].pack_paths` | `[]` | S1: content pack files or directories, read **host-side** at boot like `[tacsim].pack_paths`; they go on the `@atlas/pack` shelf and nothing is applied by being listed |
 //! | `[atlas].dwell_floor_s` | `30` | S2: real seconds a traveler stays at every checkpoint at least, so a stake-out can act |
 //! | `[atlas].real_cap_s.<mode>` | `180` for `foot`, `car`, `transit`, `bus` | S2: real seconds a whole passage may take at most, per travel mode; a mode absent is uncapped |
+//! | `[pixel].frame_interval_ms` | `50` | doc 21 G.1b: the terminal picture's clock, milliseconds a frame (`10..=1000`) |
+//! | `[pixel].low_interval_ms` | `100` | doc 21 G.1b: the clock after a step-down (`frame_interval_ms..=2000`) |
+//! | `[pixel].step_down_after` | `3` | doc 21 G.1b: picture writes slower than a frame, in a row, before stepping down |
+//! | `[pixel].step_up_after_s` | `10` | doc 21 G.1b: seconds of picture writes that kept up before stepping back up |
+//! | `[pixel].sixel_max_scale` | `3` | doc 21 G.2b (`W-22`): how far a sixel frame is scaled up to fill its cell box, at most (`1..=8`) |
+//! | `[pixel].diagnostics` | `false` | doc 21 G.1b: staff diagnostics box-wide (`u`/`r` keys and engineering status numbers) |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into `mush_llm::LlmConfig` |
 //!
 //! The `[web]` table deserializes straight into
@@ -1931,6 +1937,15 @@ pub struct GameCfg {
     /// retired. `true` by default; the testkit composes no content module, so a
     /// test world never grows unless the test asks for the lot.
     pub starter_area: bool,
+    /// Doc 27 `W-clock` (`FO-11`, `Q-R4`): lost wall-clock seconds threshold at or
+    /// above which an unplanned restart enters the global recovery countdown freeze.
+    /// Restarts faster than this threshold re-anchor silently from the last durable
+    /// checkpoint with no countdown and no catch-up. Default `30`.
+    pub outage_freeze_threshold_s: u64,
+    /// Doc 27 `W-clock` (`FO-11`, `Q-R4`): real-time recovery countdown duration in
+    /// seconds when an outage at or above `outage_freeze_threshold_s` is detected.
+    /// Default `300` (5 minutes).
+    pub outage_countdown_s: u64,
 }
 
 impl Default for GameCfg {
@@ -1941,6 +1956,8 @@ impl Default for GameCfg {
             ic_ratio: 1,
             ic_epoch: "2020-01-01 00:00".to_string(),
             starter_area: true,
+            outage_freeze_threshold_s: 30,
+            outage_countdown_s: 300,
         }
     }
 }
@@ -2031,6 +2048,10 @@ pub struct PixelCfg {
     /// Seconds of picture writes that kept up before a stepped-down view
     /// steps back up. Default `10`.
     pub step_up_after_s: u64,
+    /// How far a sixel frame is scaled up to fill its cell box, at most
+    /// (doc 21 cut G.2b; 21a `W-22`). Default `3` (`1920x1440` at most for a
+    /// `640x480` frame). Clamped to `1..=8` where it is used.
+    pub sixel_max_scale: usize,
     /// The staff diagnostics, box-wide (the owner's ruling of 2026-10-22):
     /// the `u` key that uncaps the clock and the engineering numbers on the
     /// picture's status line. Default `false`: players see neither;
@@ -2045,6 +2066,7 @@ impl Default for PixelCfg {
             low_interval_ms: 100,
             step_down_after: 3,
             step_up_after_s: 10,
+            sixel_max_scale: 3,
             diagnostics: false,
         }
     }
@@ -2953,6 +2975,34 @@ cap_permile = 400"
         // The example's [llm] block is captured raw here; its typed parse into
         // `mush_llm::LlmConfig` is covered by the server crate that owns it.
         assert!(cfg.llm.is_table());
+        assert_eq!(cfg.pixel, PixelCfg::default());
+    }
+
+    #[test]
+    fn pixel_section_parses_with_sixel_max_scale_and_refuses_unknown_keys() {
+        let absent: Config = toml::from_str("").expect("empty config parses");
+        assert_eq!(absent.pixel, PixelCfg::default());
+        assert_eq!(absent.pixel.sixel_max_scale, 3);
+
+        let set: Config = toml::from_str(
+            "[pixel]\nframe_interval_ms = 40\nlow_interval_ms = 80\nstep_down_after = 2\nstep_up_after_s = 5\nsixel_max_scale = 2\ndiagnostics = true\n",
+        )
+        .expect("[pixel] parses");
+        assert_eq!(
+            set.pixel,
+            PixelCfg {
+                frame_interval_ms: 40,
+                low_interval_ms: 80,
+                step_down_after: 2,
+                step_up_after_s: 5,
+                sixel_max_scale: 2,
+                diagnostics: true,
+            }
+        );
+
+        let typo = toml::from_str::<Config>("[pixel]\nsixel_scale = 2\n")
+            .expect_err("unknown [pixel] key refuses boot");
+        assert!(typo.to_string().contains("sixel_scale"), "{typo}");
     }
 
     // ---- E7 cut 1 independent verify fold ----

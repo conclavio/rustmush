@@ -4396,9 +4396,15 @@ impl Engine {
                         crate::action_state::TypedStateLens::Live(&self.action_state),
                     );
                 }
+                if let Some(notice) = self.world.world_clock_freeze_notice(self.world.now()) {
+                    out.to_actor(actor, OutputEvent::Sys(RichText::tag("system", notice)));
+                }
             }
         } else if announce {
             announce_room(&self.world, actor, " has reconnected.", out);
+            if let Some(notice) = self.world.world_clock_freeze_notice(self.world.now()) {
+                out.to_actor(actor, OutputEvent::Sys(RichText::tag("system", notice)));
+            }
         }
         n == 1
     }
@@ -4438,18 +4444,22 @@ impl Engine {
         out: &mut Outbox,
     ) {
         let first = self.conn_up_inner(conn, actor, caps_structured, false, false, out);
-        if first
-            && self.world.input_depth(actor) == 0
-            && let Some(room) = self.world.get(actor).and_then(|record| record.location)
-        {
-            crate::commands::show_room(
-                &self.registry,
-                &self.world,
-                actor,
-                room,
-                out,
-                crate::action_state::TypedStateLens::Live(&self.action_state),
-            );
+        if first {
+            if self.world.input_depth(actor) == 0
+                && let Some(room) = self.world.get(actor).and_then(|record| record.location)
+            {
+                crate::commands::show_room(
+                    &self.registry,
+                    &self.world,
+                    actor,
+                    room,
+                    out,
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
+                );
+            }
+            if let Some(notice) = self.world.world_clock_freeze_notice(self.world.now()) {
+                out.to_actor(actor, OutputEvent::Sys(RichText::tag("system", notice)));
+            }
         }
     }
 
@@ -5411,7 +5421,7 @@ fn wait_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// Register the engine's commands (`@slowtest`, `@wait`). Called at boot
 /// after [`register_core_commands`](crate::register_core_commands).
 pub fn register_engine_commands(reg: &mut Registry) -> Result<(), RegistryError> {
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@slowtest".into(),
             shape: ArgShape::Raw,
@@ -5425,7 +5435,7 @@ pub fn register_engine_commands(reg: &mut Registry) -> Result<(), RegistryError>
         },
         Arc::new(slowtest_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@wait".into(),
             shape: ArgShape::EqPair,

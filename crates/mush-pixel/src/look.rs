@@ -35,8 +35,8 @@ use serde_json::Value;
 pub const DOLL_MAX_W: usize = 24;
 /// The tallest a doll may be, cells.
 pub const DOLL_MAX_H: usize = 16;
-/// The largest sprite frame, pixels a side.
-pub const SPRITE_MAX: usize = 64;
+/// The largest sprite frame, pixels a side (doc 22 D-22-9: 96x96 frames).
+pub const SPRITE_MAX: usize = 96;
 /// The reserved unit id of the look an unclassified contact is drawn with.
 pub const UNKNOWN: &str = "unknown";
 
@@ -88,29 +88,87 @@ impl Material {
     }
 }
 
-/// Which face a sprite shows.
+/// Which of the eight faces a sprite shows (doc 22 D-22-9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Facing {
     /// Its front, toward the viewer.
     Front,
-    /// Its back.
-    Rear,
+    /// Between its front and its right side.
+    FrontRight,
     /// Its right side: its front points to the viewer's right.
     Right,
+    /// Between its back and its right side.
+    RearRight,
+    /// Its back.
+    Rear,
+    /// Between its back and its left side.
+    RearLeft,
     /// Its left side.
     Left,
+    /// Between its front and its left side.
+    FrontLeft,
 }
 
 impl Facing {
-    /// The face a contact row's `aspect` word names, front when it names
-    /// none.
+    /// All eight facings in clockwise order from `front`.
+    pub const ALL: [Facing; 8] = [
+        Facing::Front,
+        Facing::FrontRight,
+        Facing::Right,
+        Facing::RearRight,
+        Facing::Rear,
+        Facing::RearLeft,
+        Facing::Left,
+        Facing::FrontLeft,
+    ];
+
+    /// The face a contact row's `facing` (or four-way `aspect`) word names,
+    /// `front` when it names none.
     #[must_use]
     pub fn from_aspect(word: &str) -> Facing {
-        match word {
-            "rear" => Facing::Rear,
+        Self::named(word).unwrap_or(Facing::Front)
+    }
+
+    /// Parse an exact eight-way facing name.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Facing> {
+        Some(match word {
+            "front" => Facing::Front,
+            "front_right" => Facing::FrontRight,
             "right" => Facing::Right,
+            "rear_right" => Facing::RearRight,
+            "rear" => Facing::Rear,
+            "rear_left" => Facing::RearLeft,
             "left" => Facing::Left,
-            _ => Facing::Front,
+            "front_left" => Facing::FrontLeft,
+            _ => return None,
+        })
+    }
+
+    /// The word this facing is written as in a sheet or cockpit frame.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Facing::Front => "front",
+            Facing::FrontRight => "front_right",
+            Facing::Right => "right",
+            Facing::RearRight => "rear_right",
+            Facing::Rear => "rear",
+            Facing::RearLeft => "rear_left",
+            Facing::Left => "left",
+            Facing::FrontLeft => "front_left",
+        }
+    }
+
+    /// The nearest cardinal facing, used when a four-facing hand-drawn sheet
+    /// is drawn at a diagonal contact facing.
+    #[must_use]
+    pub const fn cardinal(self) -> Facing {
+        match self {
+            Facing::Front => Facing::Front,
+            Facing::FrontRight | Facing::Right | Facing::RearRight => Facing::Right,
+            Facing::Rear => Facing::Rear,
+            Facing::RearLeft | Facing::Left | Facing::FrontLeft => Facing::Left,
         }
     }
 }
@@ -118,13 +176,17 @@ impl Facing {
 /// One sprite frame: a material a pixel or nothing, row by row from the top.
 pub type SpriteFrame = Vec<Option<Material>>;
 
-/// One facing's frames.
+/// One facing's frames (doc 22 §3.2, D-22-9: up to six poses — `still`,
+/// two to four `moving` frames, and an optional per-facing `wreck`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FacingFrames {
     /// Standing still.
     pub still: SpriteFrame,
     /// The moving cycle, two to four frames.
     pub moving: Vec<SpriteFrame>,
+    /// The wreck frame for this facing, when the sheet gives one per facing
+    /// (doc 22 D-22-9).
+    pub wreck: Option<SpriteFrame>,
     /// Where each weapon's shot leaves, by weapon component id.
     pub muzzles: BTreeMap<String, (usize, usize)>,
 }
@@ -140,23 +202,43 @@ pub struct Sheet {
     pub size_cm: (u32, u32),
     /// The frame pixel that stands on the ground, `(x, y)`.
     pub anchor: (usize, usize),
-    /// The facings: front, rear, right, and left where the sheet gives it.
+    /// The facings: all eight on a D-22-9 baked sheet, or front/rear/right
+    /// (and optional left) on a hand-drawn sheet.
     pub facings: BTreeMap<Facing, FacingFrames>,
-    /// The wreck, one or more frames.
+    /// Top-level wreck frames (hand-drawn sheets); empty when each facing
+    /// carries its own `wreck` in [`FacingFrames::wreck`].
     pub wreck: Vec<SpriteFrame>,
 }
 
 impl Sheet {
+    /// Resolve `facing` against the facings this sheet carries, falling back
+    /// from a missing diagonal to its cardinal side and mirroring `right`
+    /// only when `left` itself is absent.
+    fn resolve_facing(&self, facing: Facing) -> Option<(&FacingFrames, bool)> {
+        if let Some(f) = self.facings.get(&facing) {
+            return Some((f, false));
+        }
+        let cardinal = facing.cardinal();
+        if let Some(f) = self.facings.get(&cardinal) {
+            return Some((f, false));
+        }
+        if cardinal == Facing::Left
+            && let Some(f) = self.facings.get(&Facing::Right)
+        {
+            return Some((f, true));
+        }
+        self.facings
+            .get(&Facing::Front)
+            .or_else(|| self.facings.values().next())
+            .map(|f| (f, false))
+    }
+
     /// The frame to draw for `facing`, moving or still at animation `step`,
-    /// and whether it is drawn mirrored (a left face from the right one).
+    /// and whether it is drawn mirrored (a left face from the right one on a
+    /// sheet that omits `left`).
     #[must_use]
     pub fn frame(&self, facing: Facing, moving: bool, step: usize) -> Option<(&SpriteFrame, bool)> {
-        let (frames, mirrored) = match self.facings.get(&facing) {
-            Some(f) => (Some(f), false),
-            None if facing == Facing::Left => (self.facings.get(&Facing::Right), true),
-            None => (self.facings.get(&Facing::Front), false),
-        };
-        let frames = frames.or_else(|| self.facings.values().next())?;
+        let (frames, mirrored) = self.resolve_facing(facing)?;
         let cycle = frames.moving.len();
         let frame = if moving && cycle > 0 {
             frames.moving.get(step % cycle)?
@@ -166,16 +248,26 @@ impl Sheet {
         Some((frame, mirrored))
     }
 
-    /// The wreck frame for `facing`.
+    /// The wreck frame for `facing`: the facing's own `wreck` pose when the
+    /// sheet gives one (doc 22 D-22-9), else indexed from top-level `wreck`.
     #[must_use]
     pub fn wreck_frame(&self, facing: Facing) -> Option<&SpriteFrame> {
-        let i = match facing {
+        if let Some((frames, _)) = self.resolve_facing(facing)
+            && let Some(wreck) = frames.wreck.as_ref()
+        {
+            return Some(wreck);
+        }
+        if self.wreck.is_empty() {
+            return None;
+        }
+        let i = match facing.cardinal() {
             Facing::Front => 0,
             Facing::Rear => 1,
             Facing::Right => 2,
             Facing::Left => 3,
+            _ => 0,
         };
-        self.wreck.get(i % self.wreck.len().max(1))
+        self.wreck.get(i % self.wreck.len())
     }
 }
 
@@ -623,21 +715,19 @@ fn parse_sheet(v: &Value) -> Result<Sheet, LookError> {
     };
     let mut facings = BTreeMap::new();
     for (name, f) in facings_obj {
-        let facing = match name.as_str() {
-            "front" => Facing::Front,
-            "rear" => Facing::Rear,
-            "right" => Facing::Right,
-            "left" => Facing::Left,
-            other => {
-                return err(format!(
-                    "sprites: facing `{other}` is not front, rear, right or left"
-                ));
-            }
+        let Some(facing) = Facing::named(name.as_str()) else {
+            return err(format!(
+                "sprites: facing `{name}` is not front, front_right, right, rear_right, rear, rear_left, left or front_left"
+            ));
         };
         let Some(fo) = f.as_object() else {
             return err(format!("sprites: facing `{name}` must be an object"));
         };
-        only(fo, &["still", "moving", "muzzles"], "sprites facing")?;
+        only(
+            fo,
+            &["still", "moving", "wreck", "muzzles"],
+            "sprites facing",
+        )?;
         let still = frame(
             fo.get("still").unwrap_or(&Value::Null),
             &format!("{name} still"),
@@ -653,6 +743,10 @@ fn parse_sheet(v: &Value) -> Result<Sheet, LookError> {
                     "sprites: facing `{name}` needs two to four moving frames"
                 ));
             }
+        };
+        let facing_wreck = match fo.get("wreck") {
+            Some(v) => Some(frame(v, &format!("{name} wreck"))?),
+            None => None,
         };
         let mut muzzles = BTreeMap::new();
         if let Some(m) = fo.get("muzzles") {
@@ -678,6 +772,7 @@ fn parse_sheet(v: &Value) -> Result<Sheet, LookError> {
             FacingFrames {
                 still,
                 moving,
+                wreck: facing_wreck,
                 muzzles,
             },
         );
@@ -687,13 +782,31 @@ fn parse_sheet(v: &Value) -> Result<Sheet, LookError> {
             return err(format!("sprites: the {need:?} facing is required").to_lowercase());
         }
     }
-    let wreck: Vec<SpriteFrame> = match obj.get("wreck").and_then(Value::as_array) {
-        Some(list) if (1..=4).contains(&list.len()) => list
-            .iter()
-            .enumerate()
-            .map(|(i, v)| frame(v, &format!("wreck {i}")))
-            .collect::<Result<_, _>>()?,
-        _ => return err("sprites: `wreck` needs one to four frames"),
+    // D-22-9: if any diagonal is given, all eight facings must be given (never
+    // a mirrored left on an asymmetric baked sheet).
+    let has_diagonal = facings.keys().any(|f| f.cardinal() != *f);
+    if has_diagonal {
+        for need in Facing::ALL {
+            if !facings.contains_key(&need) {
+                return err(format!(
+                    "sprites: eight-facing sheet is missing `{}`",
+                    need.as_str()
+                ));
+            }
+        }
+    }
+    let all_have_facing_wreck = !facings.is_empty() && facings.values().all(|f| f.wreck.is_some());
+    let wreck: Vec<SpriteFrame> = match obj.get("wreck") {
+        Some(v) => match v.as_array() {
+            Some(list) if (1..=8).contains(&list.len()) => list
+                .iter()
+                .enumerate()
+                .map(|(i, v)| frame(v, &format!("wreck {i}")))
+                .collect::<Result<_, _>>()?,
+            _ => return err("sprites: `wreck` needs one to eight frames"),
+        },
+        None if all_have_facing_wreck => Vec::new(),
+        None => return err("sprites: `wreck` needs one to eight frames (or a `wreck` per facing)"),
     };
     Ok(Sheet {
         width: w,
@@ -868,6 +981,55 @@ mod tests {
         );
         refused(&|v| v["sprites"]["wreck"] = serde_json::json!([]), "wreck");
         assert!(edited(&|_| {}).is_ok());
+
+        // D-22-9: an eight-facing, six-pose, 96x96 sheet with per-facing wreck
+        // parses, picks every diagonal without mirroring, and refuses a sheet
+        // past 96 or missing one of the eight facings.
+        let row96 = format!("a{}", ".".repeat(95));
+        let frame96: Vec<String> = (0..96).map(|_| row96.clone()).collect();
+        let mut facings8 = serde_json::Map::new();
+        for f in Facing::ALL {
+            facings8.insert(
+                f.as_str().to_string(),
+                serde_json::json!({
+                    "still": frame96,
+                    "moving": [frame96, frame96, frame96, frame96],
+                    "wreck": frame96,
+                    "muzzles": { "cannon": [0, 0] }
+                }),
+            );
+        }
+        let d22_9 = serde_json::json!({
+            "units": ["tacsim.unit.biped_mk1"],
+            "label": "Biped 96",
+            "short": "BP",
+            "sprites": {
+                "size": [96, 96],
+                "size_cm": [520, 1100],
+                "anchor": [0, 95],
+                "palette": { "a": "team" },
+                "facings": facings8,
+            }
+        });
+        let parsed = Look::parse(&d22_9.to_string()).expect("D-22-9 96x96 8-facing sheet");
+        let s8 = parsed.sprites.as_ref().expect("sprites");
+        assert_eq!((s8.width, s8.height), (96, 96));
+        for f in Facing::ALL {
+            let (fr, mirrored) = s8.frame(f, false, 0).expect("facing");
+            assert!(!mirrored, "{f:?} has its own art");
+            assert!(std::ptr::eq(fr, &s8.facings[&f].still));
+            let wr = s8.wreck_frame(f).expect("wreck");
+            assert!(std::ptr::eq(
+                wr,
+                s8.facings[&f].wreck.as_ref().expect("wreck")
+            ));
+        }
+        let mut missing_diag = d22_9.clone();
+        missing_diag["sprites"]["facings"]
+            .as_object_mut()
+            .and_then(|m| m.remove("front_left"));
+        let err = Look::parse(&missing_diag.to_string()).expect_err("missing front_left");
+        assert!(err.0.contains("front_left"), "{err}");
     }
 
     /// Doc 22 cut U.5: every shipped sheet holds together as art, past what

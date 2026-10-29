@@ -47,6 +47,27 @@
 # ---------------------------------------------------------------------------
 
 [[site]]
+path = "crates/mush-atlas/src/movement_window_tests.rs"
+accessor = "World::module_state_insert"
+slot = "AtlasState"
+owner = "atlas"
+reason = "Read-only window-planning fixtures seed the actual Atlas slot on a bare World, including inconsistent window keys and oversized geometry that normal boot rejects. They create no owner proof, action receipt or completion authority; ordinary window integration tests separately exercise the real module composition."
+
+[[site]]
+path = "crates/mush-atlas/src/movement_window_tests.rs"
+accessor = "World::module_state_insert"
+slot = "SpatialState"
+owner = "sim"
+reason = "Read-only window-planning fixtures seed placement observations to compare the shared legacy cell selector, including own-cell occupancy, other heights, release-before-refusal, absent slots and oversized placement scans. They never install a movement or claim successful Sim admission."
+
+[[site]]
+path = "crates/mush-atlas/src/movement_window_tests.rs"
+accessor = "World::module_state_insert"
+slot = "DeployedUnits"
+owner = "sim"
+reason = "The read-only occupancy fixture seeds an empty custody index, then uses the actual Sim mark helper to exercise the same arena-exclusion predicate as legacy participants. It demonstrates selector parity only, not a durable custody transfer."
+
+[[site]]
 path = "crates/mush-sim/src/physical_tests.rs"
 accessor = "World::module_state_insert"
 slot = "FocusState"

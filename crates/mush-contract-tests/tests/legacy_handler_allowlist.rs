@@ -80,7 +80,11 @@ const CATEGORIES: [&str; 5] = [
 /// registered and nothing else did). The one game sheet registers `+sheet`,
 /// `@sheet`, `+chargen`, `+stat` and `+roll` under the same names.
 // 98 -> 97 with cut L: @siteban/lift adds an operational admission workflow.
-const PINNED_BASELINE: usize = 97;
+// 97 -> 0 with P3 (doc 28 §4 Finding 3 / §5): every remaining `baseline` entry
+// is classified under its K8.5 category (`read-only`, `legacy-post-image` with
+// `family`, `authoritative`, or `economy-carve-out`) and cross-checked against
+// the class published by the production composition.
+const PINNED_BASELINE: usize = 0;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

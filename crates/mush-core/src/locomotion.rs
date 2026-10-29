@@ -7,9 +7,12 @@
 //! without installing a production movement path. Future movement composition
 //! must preserve the existing post-movement narrative and observer contract.
 
+pub mod completion;
+pub mod composed;
 pub(crate) mod dispatch;
 pub(crate) mod dispatch_observation;
 pub(crate) mod image;
+pub mod preview;
 pub mod scene_transition;
 pub mod transition;
 pub use dispatch::CapturedLocomotion;
@@ -106,6 +109,28 @@ impl std::fmt::Debug for LocomotionAdmission {
 }
 
 impl LocomotionAdmission {
+    /// Read the bounded Core object state after the admitted move. This is a
+    /// preview only; it grants no publication or observer-completion capability.
+    pub fn preview(
+        &self,
+        world: &World,
+        read_dependencies: &std::collections::BTreeSet<ObjId>,
+    ) -> Result<preview::LocomotionPreview, ParticipantError> {
+        preview::LocomotionPreview::prepare(world, self, read_dependencies, None)
+    }
+
+    /// Preview a subsequent room projection, retaining the intermediate move's
+    /// contents order and timestamps. A caller-selected projection is data only;
+    /// a future versioned protocol must bind its actual Sim/Atlas authority.
+    pub fn preview_projection(
+        &self,
+        world: &World,
+        read_dependencies: &std::collections::BTreeSet<ObjId>,
+        projected_room: ObjId,
+    ) -> Result<preview::LocomotionPreview, ParticipantError> {
+        preview::LocomotionPreview::prepare(world, self, read_dependencies, Some(projected_room))
+    }
+
     #[must_use]
     pub const fn actor(&self) -> ObjId {
         self.route.actor
