@@ -11,6 +11,9 @@ use mush_core::{CanonicalId, GOD, LIMBO, ObjKind};
 use mush_sim::{PlacementRecord, Pose, SpatialParent, WindowOpener};
 use serde_json::json;
 
+#[path = "movement_window_joint_tests.rs"]
+mod joint_tests;
+
 struct Fixture {
     world: World,
     actor: ObjId,
