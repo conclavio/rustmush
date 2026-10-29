@@ -324,12 +324,14 @@ impl Provider {
             }),
             _ => None,
         };
+        // Doc 17h §3 M8h: the attestation moves no money, so the organisation's title is asked
+        // as a read too (a limited grant attests, M8f H7); a character's is unchanged.
         let ownership = super::super::charter_transfer::history::current_in_txn_for(
             txn,
             ctx.world().map_err(invalid)?,
             &self.families,
             &birth,
-            holder,
+            (holder, super::super::org_holder::READ_AMOUNT),
         )?;
         if (org.is_none()
             && (birth.economic.house.is_some()
@@ -380,8 +382,12 @@ impl Provider {
         let world = ctx.world().map_err(invalid)?;
         let observed = world.world_ic_now();
         let now = WorldIcSeconds::from_stamp(&observed).map_err(invalid)?;
-        let title_revision =
-            super::super::owner_qualification::current_title_for(world, holder, licence.charter)?;
+        let title_revision = super::super::owner_qualification::current_title_for(
+            world,
+            holder,
+            licence.charter,
+            super::super::org_holder::READ_AMOUNT,
+        )?;
         if now < old.window.term_end() {
             return Err(Refuse::Uniform);
         }

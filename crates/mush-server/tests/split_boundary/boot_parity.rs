@@ -1415,6 +1415,7 @@ fn format_two_launch() -> tacsim::launch::LaunchDeployment {
         treasury: AccountId(n),
         publisher: ObjId(1),
         source_name: name.into(),
+        attestation_agent: None,
     };
     LaunchDeployment {
         format: 2,

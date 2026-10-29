@@ -70,7 +70,9 @@
 //!
 //! - `ProcurementTally` and `ProcurementHoldings` (doc 17h §3 M8f): the
 //!   one exception to "own only": GOD only, the procurement tick's reads,
-//!   refused to every other caller (`procurement_read`).
+//!   refused to every other caller (`procurement_read`); and, the same way,
+//!   `HouseAttestationDue` (doc 17h §3 M8h), the House attestation tick's
+//!   walk (`house_attestation_read`).
 //!
 //! The named buyer's resale step (immediate Accept or escrowed Fund) is not
 //! a kind of this read: the C2d fix round removed a `ResaleStep` kind that
@@ -149,6 +151,12 @@ enum ReadKind {
     /// current paid licences by charter, after `after`.
     ProcurementHoldings {
         org: mush_org::OrgId,
+        after: Option<LicenceId>,
+    },
+    /// Doc 17h §3 M8h: GOD only (`house_attestation_read`): the House owner
+    /// licences due for attestation, walking the owner licences after
+    /// `after`.
+    HouseAttestationDue {
         after: Option<LicenceId>,
     },
 }
@@ -243,6 +251,14 @@ impl RollCommandReadRequest {
     pub const fn procurement_holdings(org: mush_org::OrgId, after: Option<LicenceId>) -> Self {
         Self {
             kind: ReadKind::ProcurementHoldings { org, after },
+        }
+    }
+    /// Doc 17h §3 M8h: GOD only; the House attestation tick's walk
+    /// (`house_attestation_read::due`).
+    #[must_use]
+    pub const fn house_attestation_due(after: Option<LicenceId>) -> Self {
+        Self {
+            kind: ReadKind::HouseAttestationDue { after },
         }
     }
     /// 17g C2g: the live pending-charter offers naming the actor on the
@@ -534,6 +550,8 @@ pub enum RollCommandReadResult {
     ProcurementTally(super::procurement_read::ProcurementTallyPage),
     /// Doc 17h §3 M8f: `ProcurementHoldings`.
     ProcurementHoldings(super::procurement_read::ProcurementHoldingsPage),
+    /// Doc 17h §3 M8h: `HouseAttestationDue`.
+    HouseAttestationDue(super::house_attestation_read::HouseAttestationDuePage),
 }
 impl RollCommandReadResult {
     /// Doc 17h §3 M8f: the `ProcurementTally` answer.
@@ -551,6 +569,16 @@ impl RollCommandReadResult {
     ) -> Option<super::procurement_read::ProcurementHoldingsPage> {
         match self {
             Self::ProcurementHoldings(page) => Some(page),
+            _ => None,
+        }
+    }
+    /// Doc 17h §3 M8h: the `HouseAttestationDue` answer.
+    #[must_use]
+    pub fn into_house_attestation_due(
+        self,
+    ) -> Option<super::house_attestation_read::HouseAttestationDuePage> {
+        match self {
+            Self::HouseAttestationDue(page) => Some(page),
             _ => None,
         }
     }
@@ -635,6 +663,11 @@ pub(super) fn read(
             return super::procurement_read::holdings(ctx, families, org, after)
                 .map(RollCommandReadResult::ProcurementHoldings);
         }
+        // Doc 17h §3 M8h: the House attestation tick's walk, as GOD's.
+        ReadKind::HouseAttestationDue { after } => {
+            return super::house_attestation_read::due(ctx, roll, families, after)
+                .map(RollCommandReadResult::HouseAttestationDue);
+        }
         _ => {}
     }
     let shells = shells.ok_or(OwnerReadError::Unavailable)?;
@@ -683,9 +716,9 @@ pub(super) fn read(
         ReadKind::CharterOffers { filed } => charter_offers(ctx, families, filed)
             .map(|offers| RollCommandReadResult::CharterOffers { offers }),
         // Answered above.
-        ReadKind::ProcurementTally { .. } | ReadKind::ProcurementHoldings { .. } => {
-            Err(OwnerReadError::Unavailable)
-        }
+        ReadKind::ProcurementTally { .. }
+        | ReadKind::ProcurementHoldings { .. }
+        | ReadKind::HouseAttestationDue { .. } => Err(OwnerReadError::Unavailable),
     }
 }
 

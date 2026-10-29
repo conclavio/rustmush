@@ -64,10 +64,14 @@ pub(crate) fn current_title(
 /// for the organisation on the title's scope under a live `roll.holder.org`
 /// grant (`org_holder::scoped_actor`). Staff and assignment never substitute
 /// for either.
+/// Doc 17h §3 M8h: an organisation's grant is asked with `amount` (the House attestation
+/// moves no money and asks as a read, `org_holder::READ_AMOUNT`, so a limited grant attests,
+/// M8f H7; `None` asks as an act).
 pub(crate) fn current_title_for(
     world: &World,
     holder: super::Holder,
     charter: CharterId,
+    amount: Option<i64>,
 ) -> Result<u64, PublicationError> {
     let (org, acting) = match holder {
         super::Holder::Character(actor) => return current_title(world, actor, charter),
@@ -99,7 +103,7 @@ pub(crate) fn current_title_for(
         || title.frozen
         || title.stolen.is_some()
         || title.lifecycle != mush_economy::AssetLifecycle::Active
-        || super::org_holder::scoped_actor(world, org, title.scope, acting).is_err()
+        || super::org_holder::scoped_actor_amount(world, org, title.scope, acting, amount).is_err()
     {
         return Err(PublicationError::Unavailable);
     }

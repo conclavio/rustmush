@@ -88,8 +88,13 @@ impl AttestationFence {
             || request.licence()? != self.licence
             || request.org() != self.holder.organization()
             || self.holder.acting_character() != self.actor
-            || super::owner_qualification::current_title_for(world, self.holder, self.charter)?
-                != self.title_revision
+            // Doc 17h §3 M8h: asked as a read, as at prepare (M8f H7).
+            || super::owner_qualification::current_title_for(
+                world,
+                self.holder,
+                self.charter,
+                super::org_holder::READ_AMOUNT,
+            )? != self.title_revision
             || now.clock != self.observed.clock
             || now.at < self.observed.at
             || world.now() < self.utc
