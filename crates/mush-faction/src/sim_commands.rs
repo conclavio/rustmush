@@ -476,6 +476,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_clock),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "+clocks".into(),
@@ -487,5 +488,6 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_player_clocks),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }

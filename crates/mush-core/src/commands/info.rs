@@ -505,7 +505,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         .expect("core panel feed registration must not collide");
     core.query_handler(COMMANDS_FEED, Arc::new(CommandsQuery))
         .expect("core query handler registration must not collide");
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "WHO".into(),
             shape: ArgShape::None,
@@ -545,7 +545,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(output_suffix_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "time".into(),
             aliases: vec!["@time".into()],
@@ -559,7 +559,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(time_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "help".into(),
             aliases: vec!["+help".into()],

@@ -5411,7 +5411,7 @@ fn wait_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// Register the engine's commands (`@slowtest`, `@wait`). Called at boot
 /// after [`register_core_commands`](crate::register_core_commands).
 pub fn register_engine_commands(reg: &mut Registry) -> Result<(), RegistryError> {
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@slowtest".into(),
             shape: ArgShape::Raw,
@@ -5425,7 +5425,7 @@ pub fn register_engine_commands(reg: &mut Registry) -> Result<(), RegistryError>
         },
         Arc::new(slowtest_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@wait".into(),
             shape: ArgShape::EqPair,

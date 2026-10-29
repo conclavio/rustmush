@@ -53,6 +53,8 @@ pub const STATE_FAMILY: &str = "roll_state";
 /// state by the registering toy.
 #[derive(Clone, Debug)]
 pub struct ToyActionHandles {
+    /// `<id>_roll` (plain pool roll, no Willpower spend).
+    pub roll: DefinitionRef,
     /// `<id>_willpower_roll`.
     pub willpower_roll: DefinitionRef,
     /// `<id>_willpower_set`.
@@ -189,8 +191,11 @@ struct WillpowerRollProvider {
     action: DefinitionRef,
     outcome: DefinitionRef,
     state: StateFamilyHandle<ObjId, ToyRollState>,
-    /// The projected receipt's kind (`<id>_willpower_roll`).
+    /// The projected receipt's kind (`<id>_willpower_roll` or `<id>_roll`).
     kind: String,
+    /// Whether this action spends one point of Willpower (`true` for
+    /// `<id>_willpower_roll`, `false` for `<id>_roll`).
+    spends_willpower: bool,
 }
 
 struct WillpowerSetProvider {
@@ -352,7 +357,7 @@ impl ActionProvider for WillpowerRollProvider {
             .get(&self.state, &query.actor())
             .map_err(|e| state_error(&e))?
             .map_or(seed, |state| state.willpower_current.min(permanent));
-        if current == 0 {
+        if self.spends_willpower && current == 0 {
             // The resource is spent: the offer stops being projected, which is
             // what makes "one commit per point" observable from outside.
             return Ok(None);
@@ -422,8 +427,16 @@ impl ActionProvider for WillpowerRollProvider {
             expires: None,
             presentation: ActionPresentation::new(
                 self.kind.replace('_', "-"),
-                "Toy Willpower Roll",
-                "Spend one point from the toy Willpower pool and roll a sheet pool.",
+                if self.spends_willpower {
+                    "Toy Willpower Roll"
+                } else {
+                    "Toy Roll"
+                },
+                if self.spends_willpower {
+                    "Spend one point from the toy Willpower pool and roll a sheet pool."
+                } else {
+                    "Roll a sheet pool."
+                },
             )
             .map_err(|_| {
                 error(
@@ -518,7 +531,7 @@ impl ActionProvider for WillpowerRollProvider {
             .as_ref()
             .map_or(request.seed_willpower, |state| state.willpower_current)
             .clamp(0, permanent);
-        if current == 0 {
+        if self.spends_willpower && current == 0 {
             return Err(error(
                 ActionErrorCode::ProviderRejected,
                 "No toy Willpower remains",
@@ -533,8 +546,9 @@ impl ActionProvider for WillpowerRollProvider {
                     "toy roll sequence is exhausted",
                 )
             })?;
+        let spent = i64::from(self.spends_willpower);
         let next = ToyRollState {
-            willpower_current: current - 1,
+            willpower_current: current - spent,
             roll_sequence: sequence,
         };
         if prior.is_some() {
@@ -560,7 +574,7 @@ impl ActionProvider for WillpowerRollProvider {
         let opts = Owod20Opts {
             difficulty: request.difficulty,
             specialty: false,
-            willpower: true,
+            willpower: self.spends_willpower,
             extra_successes: 0,
             again_tens_double: false,
         };
@@ -634,7 +648,7 @@ impl ActionProvider for WillpowerRollProvider {
                         "difficulty": request.difficulty,
                         "modifier": request.modifier,
                         "wound": wound,
-                        "willpower_spent": 1,
+                        "willpower_spent": spent,
                     }),
                 )
                 .map_err(|_| {
@@ -973,6 +987,7 @@ pub fn register_actions(
     schema: Arc<SheetSchema>,
     state: StateFamilyHandle<ObjId, ToyRollState>,
 ) -> Result<(), ModError> {
+    let plain_roll_id = format!("{module}_roll");
     let roll_id = format!("{module}_willpower_roll");
     let set_id = format!("{module}_willpower_set");
     let roll_outcome_id = format!("{module}_willpower_roll_result");
@@ -1004,6 +1019,17 @@ pub fn register_actions(
     let roll_outcome = reg.definition(roll_outcome_descriptor)?;
     let set_outcome = reg.definition(set_outcome_descriptor)?;
 
+    let plain_roll_descriptor = descriptor(
+        "action",
+        &plain_roll_id,
+        json!({
+            "subject": "self_actor",
+            "targets": 0,
+            "state_family": STATE_FAMILY,
+            "resolution": "owod20",
+        }),
+    )?
+    .with_references(vec![roll_outcome.clone()]);
     let roll_descriptor = descriptor(
         "action",
         &roll_id,
@@ -1030,15 +1056,32 @@ pub fn register_actions(
     .with_references(vec![set_outcome.clone()]);
     reg.definition_validator(
         DefinitionKind::new("action").map_err(|e| ModError::msg(e.to_string()))?,
-        exact_validator(&[roll_descriptor.clone(), set_descriptor.clone()]),
+        exact_validator(&[
+            plain_roll_descriptor.clone(),
+            roll_descriptor.clone(),
+            set_descriptor.clone(),
+        ]),
     )?;
+    let plain_roll_action = reg.definition(plain_roll_descriptor)?;
     let roll_action = reg.definition(roll_descriptor)?;
     let set_action = reg.definition(set_descriptor)?;
 
     reg.state(ToyActionHandles {
+        roll: plain_roll_action.clone(),
         willpower_roll: roll_action.clone(),
         willpower_set: set_action.clone(),
     });
+    reg.action_provider(
+        plain_roll_action.clone(),
+        WillpowerRollProvider {
+            schema: Arc::clone(&schema),
+            action: plain_roll_action,
+            outcome: roll_outcome.clone(),
+            state: state.clone(),
+            kind: plain_roll_id,
+            spends_willpower: false,
+        },
+    )?;
     reg.action_provider(
         roll_action.clone(),
         WillpowerRollProvider {
@@ -1047,6 +1090,7 @@ pub fn register_actions(
             outcome: roll_outcome,
             state: state.clone(),
             kind: roll_id,
+            spends_willpower: true,
         },
     )?;
     reg.action_provider(
