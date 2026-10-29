@@ -820,6 +820,10 @@ pub enum WorldEventKind {
     ActionStateChanged,
     /// A checked tactical mutation was persisted (standing damage or custody return).
     TacticalUnitChanged,
+    /// W-clock: the shared world IC clock was frozen (`FO-11`, `Q-H11`, `Q-F3`).
+    WorldClockFrozen,
+    /// W-clock: the shared world IC clock resumed from a freeze (`FO-11`, `Q-H11`, `Q-F3`).
+    WorldClockResumed,
 }
 
 /// A world mutation, delivered to subscribed observers **post-mutation** in
@@ -973,6 +977,24 @@ pub enum WorldEvent {
         /// The encoded keys of the changed records, in key order.
         keys: Vec<SmolStr>,
     },
+    /// W-clock: the shared world IC clock entered a freeze (`FO-11`, `Q-H11`, `Q-F3`).
+    WorldClockFrozen {
+        /// Wall-clock Unix second when the freeze took effect.
+        real_unix: i64,
+        /// Frozen world-IC second.
+        ic_unix: i64,
+    },
+    /// W-clock: the shared world IC clock resumed from a freeze (`FO-11`, `Q-H11`, `Q-F3`).
+    WorldClockResumed {
+        /// Wall-clock Unix second when the clock became frozen / unavailable.
+        frozen_real_unix: i64,
+        /// Wall-clock Unix second when the clock resumed.
+        resumed_real_unix: i64,
+        /// Total real-time seconds of world unavailability excluded (`resumed_real_unix - frozen_real_unix`).
+        unavailable_secs: i64,
+        /// Resumed world-IC second.
+        ic_unix: i64,
+    },
 }
 
 impl WorldEvent {
@@ -993,6 +1015,8 @@ impl WorldEvent {
             WorldEvent::CanonRecorded { .. } => WorldEventKind::CanonRecorded,
             WorldEvent::SceneTurn { .. } => WorldEventKind::SceneTurn,
             WorldEvent::ActionStateChanged { .. } => WorldEventKind::ActionStateChanged,
+            WorldEvent::WorldClockFrozen { .. } => WorldEventKind::WorldClockFrozen,
+            WorldEvent::WorldClockResumed { .. } => WorldEventKind::WorldClockResumed,
         }
     }
 
@@ -1014,7 +1038,9 @@ impl WorldEvent {
             WorldEvent::CanonRecorded { entities, .. } => entities.first().copied().unwrap_or(GOD),
             // Typed state names no actor either: observers run as GOD and
             // decode their own subjects from the carried keys.
-            WorldEvent::ActionStateChanged { .. } => GOD,
+            WorldEvent::ActionStateChanged { .. }
+            | WorldEvent::WorldClockFrozen { .. }
+            | WorldEvent::WorldClockResumed { .. } => GOD,
         }
     }
 }
@@ -5836,16 +5862,14 @@ pub fn room_ambient(
             offer(key, value, &h.module);
         }
     }
-    let clock = w.game_clock();
-    let now = w.now();
     offer(
         SmolStr::new_static(AMBIENT_IC_TIME_KEY),
         serde_json::json!({
-            "unix": clock.ic_unix(now),
-            "hour": clock.ic_hour(now),
-            "minute": clock.ic_minute(now),
-            "season": clock.season(now).to_string(),
-            "time_of_day": clock.time_of_day(now).to_string(),
+            "unix": w.game_now_unix(),
+            "hour": w.ic_hour(),
+            "minute": w.ic_minute(),
+            "season": w.season().to_string(),
+            "time_of_day": w.time_of_day().to_string(),
         }),
         "core",
     );
