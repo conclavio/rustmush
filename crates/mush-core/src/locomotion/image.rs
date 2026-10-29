@@ -26,6 +26,7 @@ pub(crate) struct LocomotionObjects {
     writes: Vec<ReplayWrite>,
     pub(crate) participant: DefinitionRef,
     pub(crate) scenes_participant: Option<DefinitionRef>,
+    pub(crate) composed: Option<super::composed::ComposedMovementPermit>,
     pub(crate) action: DefinitionRef,
     pub(crate) commit: CommitToken,
 }
@@ -147,6 +148,7 @@ impl LocomotionObjects {
             writes,
             participant,
             scenes_participant: None,
+            composed: None,
             action,
             commit,
         };
@@ -172,6 +174,9 @@ impl LocomotionObjects {
     }
 
     pub(crate) fn local(&self, world: &World) -> Result<(), ParticipantError> {
+        if let Some(composed) = &self.composed {
+            composed.check(&self.action)?;
+        }
         if !self.trace.matches(world) {
             return Err(refused());
         }
@@ -183,6 +188,9 @@ impl LocomotionObjects {
         storage: ShellObjectStorage<'_>,
     ) -> Result<BoundLocomotionObjects<'_>, ParticipantError> {
         let ShellObjectStorage { objects, .. } = storage;
+        if let Some(composed) = &self.composed {
+            composed.check(&self.action)?;
+        }
         if !self.trace.matches_objects(objects) {
             return Err(refused());
         }

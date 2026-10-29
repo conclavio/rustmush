@@ -112,6 +112,36 @@ movement receipt formats retain their meaning; a future generic completion
 consumer must include the snapshot and each owner's actual effect proof in its
 own commit. Registry coverage alone never enables an offer or command route.
 
+## Closed composed movement kernel
+
+Core now supplies a separate `sim_composed_locomotion` protocol for the actual
+Sim primary and up to seven registered observer owner slots. The composition
+adds concrete typed adapters before freeze; the resulting opaque service retains
+their real handles and the exact prepared subset of the frozen manifest. Each
+owner receives a Core-minted route, original clocks and group binding. Core
+hashes the actual collected writes and retains each bounded owner proof with the
+historical manifest in the same receipt.
+
+Only this closed action can prepare eight slots and retain empty observer
+images. Ordinary transaction limits remain unchanged. All captured slots,
+incarnations, owner fences and object images bind before any apply. A refusal
+poisons preparation even if a provider catches it. A late Moved subscription
+invalidates every manifest lease, including images already taken for install.
+
+The Sim reader can inspect the full receipt; each observer's read capability
+projects only its own exact participant proof and immutable movement header.
+Read authorization uses the engine's module stamp, not a mutable public context
+field. Unknown historical participant profiles for an owner refuse its audit
+rather than silently disappearing. Snapshot decoding validates retained
+definitions and exact historical bindings independently of current coverage.
+
+Kernel tests exercise eight simultaneous slots, an empty observation, a final
+bind refusal, caught preparation failure, stale slot incarnations, late roster
+drift, receipt corruption and owner-scoped reads. This slice registers no
+production action or command route. Production Sim/Scenes integration and the
+Atlas owner adapter follow; durable Core presentation and remaining callbacks
+are still required before ordinary dispatch can select the protocol.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

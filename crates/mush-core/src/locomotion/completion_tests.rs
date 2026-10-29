@@ -640,3 +640,95 @@ fn a_late_anonymous_callback_invalidates_current_coverage_without_rewriting_hist
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+struct ScopeCoordinator {
+    lease: Arc<std::sync::OnceLock<MovementManifestLease>>,
+    participants: Vec<DefinitionRef>,
+}
+impl GameModule for ScopeCoordinator {
+    fn name(&self) -> &'static str {
+        "sim"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        Coordinator(Config::default()).register(reg)?;
+        let lease = reg.request_movement_manifest(action(), self.participants.clone())?;
+        self.lease
+            .set(lease)
+            .map_err(|_| bad("duplicate lease test registration"))
+    }
+}
+fn scoped_composition(
+    second: bool,
+    participants: Vec<DefinitionRef>,
+) -> (
+    Result<Engine, ModError>,
+    Arc<std::sync::OnceLock<MovementManifestLease>>,
+) {
+    let lease = Arc::new(std::sync::OnceLock::new());
+    let engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![
+            Box::new(ScopeCoordinator {
+                lease: Arc::clone(&lease),
+                participants,
+            }),
+            Box::new(OwnerModule(
+                Config {
+                    second,
+                    ..Config::default()
+                },
+                Arc::new(AtomicUsize::new(0)),
+            )),
+        ],
+    );
+    (engine, lease)
+}
+
+#[test]
+fn closed_scope_requires_all_actual_prepared_groups_and_no_uncovered_substitute() {
+    for (second, participants, accepted) in [
+        (false, vec![participant("primary")], true),
+        (
+            false,
+            vec![participant("primary"), participant("secondary")],
+            false,
+        ),
+        (true, vec![participant("primary")], false),
+        (
+            true,
+            vec![participant("primary"), participant("secondary")],
+            true,
+        ),
+        (
+            false,
+            vec![participant("primary"), participant("primary")],
+            false,
+        ),
+    ] {
+        let (engine, lease) = scoped_composition(second, participants);
+        assert_eq!(engine.is_ok(), accepted);
+        if accepted {
+            let lease = lease.get().expect("lease registration");
+            assert!(lease.check().is_ok());
+            assert_eq!(
+                lease.snapshot().expect("frozen snapshot"),
+                manifest(&engine.expect("engine")).snapshot()
+            );
+        }
+    }
+}
+
+#[test]
+fn lease_clones_close_monotonically_after_actual_late_callback_registration() {
+    let (engine, cell) = scoped_composition(false, vec![participant("primary")]);
+    let mut engine = engine.expect("scope");
+    let lease = cell.get().expect("lease").clone();
+    assert!(lease.check().is_ok());
+    Registrar::new(&mut engine.registry, "owner").subscribe(
+        WorldEventKind::Moved,
+        Arc::new(|_: &mut crate::Ctx<'_>, _: &crate::WorldEvent| {}),
+    );
+    assert!(lease.check().is_err());
+    assert!(cell.get().expect("same lease").snapshot().is_err());
+}

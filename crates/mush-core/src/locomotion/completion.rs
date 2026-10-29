@@ -4,6 +4,10 @@
 
 use std::any::TypeId;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -231,7 +235,26 @@ impl MovementManifestSnapshot {
         }
         Ok(snapshot)
     }
+    pub(crate) fn from_value(value: &serde_json::Value) -> Result<Self, ModError> {
+        canonical_json_bytes_with_limit(value, MAX_MOVEMENT_MANIFEST_BYTES).map_err(bad)?;
+        let wire: SnapshotWire = serde_json::from_value(value.clone()).map_err(bad)?;
+        let snapshot = Self {
+            format: wire.format,
+            action: wire.action,
+            roster_digest: wire.roster_digest,
+            entries: wire.entries,
+            groups: wire.groups,
+        };
+        snapshot.validate_with(None)?;
+        if serde_json::to_value(&snapshot).map_err(bad)? != *value {
+            return Err(bad("movement manifest value is not canonical"));
+        }
+        Ok(snapshot)
+    }
     fn validate(&self, definitions: &DefinitionRegistry) -> Result<(), ModError> {
+        self.validate_with(Some(definitions))
+    }
+    fn validate_with(&self, definitions: Option<&DefinitionRegistry>) -> Result<(), ModError> {
         if self.format != 1
             || self.action.key().kind.as_str() != "action"
             || self.entries.len() > MAX_MOVED_OBSERVERS
@@ -239,7 +262,9 @@ impl MovementManifestSnapshot {
         {
             return Err(bad("movement manifest shape differs"));
         }
-        definitions.inspect_exact(&self.action).map_err(bad)?;
+        if let Some(definitions) = definitions {
+            definitions.inspect_exact(&self.action).map_err(bad)?;
+        }
         let mut roster = Vec::with_capacity(self.entries.len());
         let mut named_observers = BTreeSet::new();
         for (ordinal, entry) in self.entries.iter().enumerate() {
@@ -250,18 +275,23 @@ impl MovementManifestSnapshot {
                 if !named_observers.insert(observer) {
                     return Err(bad("movement manifest repeats a named callback"));
                 }
-                let actual = definitions.inspect_exact(observer).map_err(bad)?;
-                if observer.key().owner != entry.owner
-                    || observer.key().kind.as_str() != "moved_observer"
-                    || actual.payload()
-                        != crate::moved_observer::descriptor(
+                let expected = crate::DefinitionRegistryBuilder::new()
+                    .register(
+                        entry.owner.clone(),
+                        crate::moved_observer::descriptor(
                             observer.key().id.as_str(),
                             observer.version(),
-                        )?
-                        .payload()
-                    || !actual.references().is_empty()
+                        )?,
+                    )
+                    .map_err(bad)?;
+                if observer.key().owner != entry.owner
+                    || observer.key().kind.as_str() != "moved_observer"
+                    || observer != &expected
                 {
                     return Err(bad("movement manifest observer identity differs"));
+                }
+                if let Some(definitions) = definitions {
+                    definitions.inspect_exact(observer).map_err(bad)?;
                 }
             } else if entry.coverage != MovementCoverage::LegacyBlocker {
                 return Err(bad(
@@ -326,18 +356,25 @@ impl MovementManifestSnapshot {
                         .ok_or_else(|| bad("anonymous prepared callback"))?,
                 );
             }
-            let binding_entry = definitions.inspect_exact(&group.binding).map_err(bad)?;
-            let body: Binding =
-                serde_json::from_value(binding_entry.payload().clone()).map_err(bad)?;
-            body.validate(&group.owner)?;
-            if body.action != self.action
-                || body.participant != group.participant
-                || body.observers != observers
-                || binding_entry.references() != body.references()
-            {
+            let expected = crate::DefinitionRegistryBuilder::new()
+                .register(
+                    group.owner.clone(),
+                    binding_descriptor(
+                        group.binding.key().id.as_str(),
+                        group.binding.version(),
+                        self.action.clone(),
+                        group.participant.clone(),
+                        observers,
+                    )?,
+                )
+                .map_err(bad)?;
+            if group.binding != expected {
                 return Err(bad("movement group differs from its retained binding"));
             }
-            definitions.inspect_exact(&group.participant).map_err(bad)?;
+            if let Some(definitions) = definitions {
+                definitions.inspect_exact(&group.binding).map_err(bad)?;
+                definitions.inspect_exact(&group.participant).map_err(bad)?;
+            }
         }
         for entry in &self.entries {
             if let MovementCoverage::Prepared { group } = entry.coverage
@@ -358,6 +395,35 @@ impl MovementManifestSnapshot {
 pub struct FrozenMovementManifest {
     snapshot: MovementManifestSnapshot,
     digest: DefinitionDigest,
+}
+
+/// A closed service receives its snapshot only from actual composition freeze.
+/// Legacy observer mutation invalidates every clone monotonically.
+#[derive(Clone)]
+pub(crate) struct MovementManifestLease {
+    snapshot: Arc<OnceLock<MovementManifestSnapshot>>,
+    invalidated: Arc<AtomicBool>,
+}
+impl MovementManifestLease {
+    pub(crate) fn snapshot(
+        &self,
+    ) -> Result<&MovementManifestSnapshot, crate::participant::ParticipantError> {
+        if self.invalidated.load(Ordering::Acquire) {
+            return Err(crate::participant::ParticipantError::Authority);
+        }
+        self.snapshot
+            .get()
+            .ok_or(crate::participant::ParticipantError::Unavailable)
+    }
+    pub(crate) fn check(&self) -> Result<(), crate::participant::ParticipantError> {
+        self.snapshot().map(|_| ())
+    }
+}
+
+struct ScopeRequest {
+    action: DefinitionRef,
+    participants: BTreeSet<DefinitionRef>,
+    lease: MovementManifestLease,
 }
 impl FrozenMovementManifest {
     pub const fn snapshot(&self) -> &MovementManifestSnapshot {
@@ -384,10 +450,41 @@ struct Requirement {
 pub(crate) struct MovementCompletionBuilder {
     registrations: Vec<Registration>,
     requirements: Vec<Requirement>,
+    scopes: Vec<ScopeRequest>,
 }
 impl MovementCompletionBuilder {
     pub(crate) fn is_empty(&self) -> bool {
-        self.registrations.is_empty() && self.requirements.is_empty()
+        self.registrations.is_empty() && self.requirements.is_empty() && self.scopes.is_empty()
+    }
+    pub(crate) fn request_scope(
+        &mut self,
+        action: DefinitionRef,
+        participants: Vec<DefinitionRef>,
+        invalidated: Arc<AtomicBool>,
+    ) -> Result<MovementManifestLease, ModError> {
+        if self.scopes.len() >= MAX_MOVEMENT_COMPLETION_BINDINGS
+            || participants.is_empty()
+            || participants.len() > MAX_MOVEMENT_COMPLETION_BINDINGS
+            || self.scopes.iter().any(|scope| scope.action == action)
+        {
+            return Err(bad(
+                "movement manifest scope conflicts or exceeds its bound",
+            ));
+        }
+        let unique: BTreeSet<_> = participants.iter().cloned().collect();
+        if unique.len() != participants.len() {
+            return Err(bad("movement manifest scope repeats an owner participant"));
+        }
+        let lease = MovementManifestLease {
+            snapshot: Arc::new(OnceLock::new()),
+            invalidated,
+        };
+        self.scopes.push(ScopeRequest {
+            action,
+            participants: unique,
+            lease: lease.clone(),
+        });
+        Ok(lease)
     }
     pub(crate) fn register<P: OwnerParticipant>(
         &mut self,
@@ -556,6 +653,27 @@ impl MovementCompletionBuilder {
             snapshot.validate(definitions)?;
             let digest = snapshot.digest()?;
             frozen.insert(action, FrozenMovementManifest { snapshot, digest });
+        }
+        for scope in self.scopes {
+            let manifest = frozen
+                .get(&scope.action)
+                .ok_or_else(|| bad("closed movement scope has no frozen manifest"))?;
+            let actual: BTreeSet<_> = manifest
+                .snapshot
+                .groups
+                .iter()
+                .map(|group| group.participant.clone())
+                .collect();
+            if actual != scope.participants {
+                return Err(bad(
+                    "closed movement scope differs from actual prepared coverage",
+                ));
+            }
+            scope
+                .lease
+                .snapshot
+                .set(manifest.snapshot.clone())
+                .map_err(|_| bad("movement manifest lease already belongs to a composition"))?;
         }
         Ok(frozen)
     }
