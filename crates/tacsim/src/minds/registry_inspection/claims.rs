@@ -226,7 +226,7 @@ impl ActionProvider for Provider {
         }
         let record = self
             .writer
-            .file_claim(ctx, txn, &self.action, author, hulls, said.into())
+            .file_quirk_claim(ctx, txn, &self.action, author, hulls, said.into())
             .map_err(|_| self.refusal.clone())?;
         let result = mush_core::mechanics::RulesValue::new(
             self.outcome.clone(),

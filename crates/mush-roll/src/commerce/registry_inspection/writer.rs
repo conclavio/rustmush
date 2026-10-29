@@ -222,7 +222,7 @@ impl RegisteredInspectionWriter {
     ///
     /// # Errors
     /// A foreign action, an owner not ready, a record that does not validate, or the write.
-    pub fn file_claim(
+    pub fn file_quirk_claim(
         &self,
         ctx: &mut PrepareCtx<'_>,
         txn: &mut ActionTxn<'_>,
