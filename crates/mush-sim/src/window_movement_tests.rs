@@ -331,6 +331,367 @@ fn value(capture: &WindowMovementCapture) -> Value {
     serde_json::from_slice(&capture.encode()).expect("encoded")
 }
 
+fn ordered(
+    rig: &mut Rig,
+    target: Option<WindowTarget>,
+    projection: Option<ObjId>,
+) -> OrderedWindowMovementCapture {
+    let core = rig.preview(projection);
+    capture_ordered(&rig.engine.world, core, target).expect("ordered candidate")
+}
+
+#[test]
+fn ordered_capture_keeps_native_v1_bytes_and_three_linked_original_stages() {
+    let mut rig = Rig::new();
+    let target = Some(WindowTarget::at(DomainId(1), 30, 40, 50));
+    let projected = Some(rig.projected);
+    let original = rig.capture(target, projected);
+    let captured = ordered(&mut rig, target, projected);
+    let data: Value = serde_json::from_slice(&captured.encode()).expect("bytes");
+    assert_eq!(data["format"], json!(2));
+    assert_eq!(data["native"], value(&original));
+    assert_ne!(captured.digest(), original.digest());
+    assert_eq!(captured.stage_count(), 3);
+    let stages = data["stages"].as_array().expect("stages");
+    assert_eq!(
+        stages
+            .iter()
+            .map(|s| s["kind"].as_str().expect("kind"))
+            .collect::<Vec<_>>(),
+        vec!["core_admission", "release", "place"]
+    );
+    for pair in stages.windows(2) {
+        assert_eq!(
+            pair[0]["after_ancestry_digest"],
+            pair[1]["before_ancestry_digest"]
+        );
+    }
+    for stage in stages {
+        assert_eq!(stage["crossings"], json!([]));
+        assert_eq!(stage["prepared_at"], json!(captured.prepared_at()));
+    }
+    assert_eq!(captured.actor(), rig.actor);
+    assert_eq!(captured.at_utc(), 100);
+    assert!(captured.read_dependencies().contains(&rig.projected));
+    captured
+        .recheck(&rig.engine.world)
+        .expect("same actual facts");
+    rig.engine.world.set_now(101);
+    captured
+        .recheck(&rig.engine.world)
+        .expect("later time retains original facts");
+    assert_eq!(captured.at_utc(), 100);
+    assert_eq!(
+        rig.engine.world.get(rig.actor).expect("actor").location,
+        Some(rig.source)
+    );
+    assert_eq!(
+        rig.engine
+            .world
+            .module_state::<SpatialState>()
+            .expect("Sim owner")
+            .placements
+            .get(&rig.actor)
+            .expect("record")
+            .revision,
+        7
+    );
+}
+
+#[test]
+fn ordered_loop_retains_both_steps_and_release_or_no_native_work_stays_distinct() {
+    let mut rig = Rig::new();
+    let source = rig.source;
+    let captured = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(2), 30, 40, 0)),
+        Some(source),
+    );
+    let value: Value = serde_json::from_slice(&captured.encode()).expect("bytes");
+    assert_eq!(captured.stage_count(), 2);
+    assert_eq!(
+        value["stages"][0]["before_ancestry_digest"],
+        value["stages"][1]["after_ancestry_digest"]
+    );
+    assert_ne!(
+        value["stages"][0]["before_ancestry_digest"],
+        value["stages"][0]["after_ancestry_digest"]
+    );
+    assert_eq!(value["stages"][1]["kind"], json!("place"));
+    let released = ordered(&mut rig, None, None);
+    assert_eq!(released.stage_count(), 2);
+    let actor = rig.actor;
+    rig.state().placements.remove(&actor);
+    let rebuilt = crate::graph::rebuild(rig.state());
+    rig.state().derived = rebuilt;
+    let empty = ordered(&mut rig, None, None);
+    assert_eq!(empty.stage_count(), 1);
+}
+
+#[test]
+fn ordered_capture_rechecks_native_core_and_original_clock_facts() {
+    for mode in 0..3 {
+        let mut rig = Rig::new();
+        let projected = Some(rig.projected);
+        let captured = ordered(
+            &mut rig,
+            Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+            projected,
+        );
+        match mode {
+            0 => {
+                rig.state()
+                    .domains
+                    .get_mut(&DomainId(1))
+                    .expect("domain")
+                    .status = DomainStatus::Retired;
+            }
+            1 => {
+                rig.engine.world.get_mut(rig.projected).expect("room").name = "changed".into();
+            }
+            _ => {
+                let stamp = rig.engine.world.world_ic_now();
+                rig.engine.world.set_now(99);
+                assert_eq!(rig.engine.world.world_ic_now().clock, stamp.clock);
+            }
+        }
+        assert!(captured.recheck(&rig.engine.world).is_err());
+    }
+}
+
+#[test]
+fn ordered_occupancy_refuses_coordinate_identity_and_membership_drift_without_revision_bumps() {
+    for change in 0..7 {
+        let mut rig = Rig::new();
+        let occupant = rig
+            .engine
+            .world
+            .create(ObjKind::Thing, "other occupant", GOD, Some(rig.projected))
+            .expect("occupant");
+        let spare = rig
+            .engine
+            .world
+            .create(ObjKind::Thing, "spare", GOD, Some(rig.projected))
+            .expect("spare");
+        let actor = rig.actor;
+        let mut record = rig
+            .state()
+            .placements
+            .get(&actor)
+            .expect("placement")
+            .clone();
+        record.object = occupant;
+        if let SpatialParent::Direct { domain, .. } = &mut record.parent {
+            *domain = DomainId(1);
+        }
+        rig.state().placements.insert(occupant, record.clone());
+        rig.state().derived = crate::graph::rebuild(rig.state());
+        let projected = rig.projected;
+        let capture = ordered(
+            &mut rig,
+            Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+            Some(projected),
+        );
+        capture
+            .recheck_occupancy(rig.state())
+            .expect("actual native slot");
+        match change {
+            0 | 1 => {
+                if let SpatialParent::Direct { pose, .. } = &mut rig
+                    .state()
+                    .placements
+                    .get_mut(&occupant)
+                    .expect("occupant")
+                    .parent
+                {
+                    if change == 0 {
+                        pose.x_cm += 1;
+                    } else {
+                        pose.y_cm += 1;
+                    }
+                }
+            }
+            2 => {
+                rig.state()
+                    .placements
+                    .get_mut(&occupant)
+                    .expect("occupant")
+                    .revision += 1;
+            }
+            3 => {
+                rig.state().placements.remove(&occupant);
+            }
+            4 => {
+                if let SpatialParent::Direct { domain, .. } = &mut rig
+                    .state()
+                    .placements
+                    .get_mut(&occupant)
+                    .expect("occupant")
+                    .parent
+                {
+                    *domain = DomainId(2);
+                }
+            }
+            5 => {
+                record.object = spare;
+                rig.state().placements.insert(spare, record);
+            }
+            _ => {
+                rig.state()
+                    .placements
+                    .get_mut(&occupant)
+                    .expect("occupant")
+                    .object = spare;
+            }
+        }
+        rig.state().derived = crate::graph::rebuild(rig.state());
+        assert!(
+            capture.recheck_occupancy(rig.state()).is_err(),
+            "change {change}"
+        );
+        assert!(
+            capture.recheck(&rig.engine.world).is_err(),
+            "change {change}"
+        );
+        assert_eq!(
+            rig.engine.world.get(rig.actor).expect("actor").location,
+            Some(rig.source)
+        );
+    }
+}
+
+#[test]
+fn ordered_occupancy_ignores_unconsulted_pose_fields_and_has_no_fence_without_a_target() {
+    let mut rig = Rig::new();
+    let occupant = rig
+        .engine
+        .world
+        .create(ObjKind::Thing, "occupant", GOD, Some(rig.projected))
+        .expect("occupant");
+    let actor = rig.actor;
+    let mut record = rig
+        .state()
+        .placements
+        .get(&actor)
+        .expect("actor placement")
+        .clone();
+    record.object = occupant;
+    if let SpatialParent::Direct { domain, .. } = &mut record.parent {
+        *domain = DomainId(1);
+    }
+    rig.state().placements.insert(occupant, record);
+    rig.state().derived = crate::graph::rebuild(rig.state());
+    let projected = rig.projected;
+    let capture = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    if let SpatialParent::Direct { pose, .. } = &mut rig
+        .state()
+        .placements
+        .get_mut(&occupant)
+        .expect("occupant")
+        .parent
+    {
+        pose.z_cm += 1;
+        pose.heading_mdeg += 1;
+        pose.posture = crate::passive_rules_value(json!({"changed":true})).expect("posture");
+    }
+    capture
+        .recheck_occupancy(rig.state())
+        .expect("same cell observations");
+    capture
+        .recheck(&rig.engine.world)
+        .expect("unconsulted pose fields");
+    let empty = ordered(&mut rig, None, None);
+    let encoded: Value = serde_json::from_slice(&empty.encode()).expect("bytes");
+    assert_eq!(encoded["occupancy"], Value::Null);
+    rig.state().placements.remove(&occupant);
+    empty
+        .recheck_occupancy(rig.state())
+        .expect("no occupancy was consulted");
+}
+
+#[test]
+fn ordered_capture_counts_both_sides_of_a_transient_carrier_visit_against_one_budget() {
+    for children in [127, 128] {
+        let mut rig = Rig::new();
+        let carrier = rig
+            .engine
+            .world
+            .create(ObjKind::Thing, "carrier", GOD, Some(mush_core::LIMBO))
+            .expect("carrier");
+        for index in 0..children {
+            rig.engine
+                .world
+                .create(
+                    ObjKind::Npc,
+                    &format!("carried {index}"),
+                    GOD,
+                    Some(rig.actor),
+                )
+                .expect("person");
+        }
+        let actor = rig.actor;
+        let admitted = rig.admitted;
+        let projected = rig.projected;
+        let state = rig.state();
+        state.placements.remove(&actor);
+        state.domains.get_mut(&DomainId(1)).expect("window").host = projected;
+        state.spaces.insert(
+            admitted,
+            crate::InteriorSpaceRecord {
+                object: admitted,
+                anchor: crate::SpaceAnchor::MovingObject { host: carrier },
+                compartments: Default::default(),
+                rooms: BTreeSet::from([admitted]),
+                egresses: Default::default(),
+            },
+        );
+        state.derived = crate::graph::rebuild(state);
+        let core = rig.preview(Some(projected));
+        let capture = capture_ordered(
+            &rig.engine.world,
+            core,
+            Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        );
+        if children == 127 {
+            let capture = capture.expect("256 total crossings");
+            let value: Value = serde_json::from_slice(&capture.encode()).expect("bytes");
+            assert_eq!(
+                value["stages"][0]["crossings"]
+                    .as_array()
+                    .expect("entries")
+                    .len(),
+                128
+            );
+            assert_eq!(
+                value["stages"][1]["crossings"]
+                    .as_array()
+                    .expect("exits")
+                    .len(),
+                128
+            );
+            assert_eq!(
+                value["stages"][0]["crossings"][0]["direction"],
+                json!("enter")
+            );
+            assert_eq!(
+                value["stages"][1]["crossings"][0]["direction"],
+                json!("exit")
+            );
+        } else {
+            assert!(matches!(capture, Err(ParticipantError::ImageLimit)));
+        }
+        assert_eq!(
+            rig.engine.world.get(actor).expect("actor").location,
+            Some(rig.source)
+        );
+        assert!(!rig.state().placements.contains_key(&actor));
+    }
+}
+
 #[test]
 fn real_release_and_place_phases_match_legacy_application_without_publication() {
     let mut rig = Rig::new();

@@ -662,6 +662,45 @@ pub(crate) fn derive_actor_move(
     stamp: &ClockStamp,
     baseline_dependencies: &BTreeSet<ObjId>,
 ) -> Result<CaptureFacts, ParticipantError> {
+    derive_actor_move_in(
+        state,
+        world,
+        actor,
+        destination,
+        stamp,
+        baseline_dependencies,
+        CaptureDomain::Locomotion,
+    )
+}
+
+pub(crate) fn derive_window_admission(
+    state: &SpatialState,
+    world: &World,
+    actor: ObjId,
+    destination: ObjId,
+    stamp: &ClockStamp,
+    dependencies: &BTreeSet<ObjId>,
+) -> Result<CaptureFacts, ParticipantError> {
+    derive_actor_move_in(
+        state,
+        world,
+        actor,
+        destination,
+        stamp,
+        dependencies,
+        CaptureDomain::Window,
+    )
+}
+
+fn derive_actor_move_in(
+    state: &SpatialState,
+    world: &World,
+    actor: ObjId,
+    destination: ObjId,
+    stamp: &ClockStamp,
+    baseline_dependencies: &BTreeSet<ObjId>,
+    domain: CaptureDomain,
+) -> Result<CaptureFacts, ParticipantError> {
     if !matches!(stamp.clock, ClockRef::WorldIc { generation } if generation > 0)
         || baseline_dependencies.len() > MAX_DEPENDENCIES
         || world
@@ -689,20 +728,63 @@ pub(crate) fn derive_actor_move(
     let before = View::before(state);
     let mut after = View::before(state);
     after.projections.insert(actor, destination);
-    derive_views(
-        before,
-        after,
-        reads,
-        BTreeSet::from([actor]),
-        stamp,
-        CaptureDomain::Locomotion,
-    )
+    derive_views(before, after, reads, BTreeSet::from([actor]), stamp, domain)
 }
 
 #[derive(Clone, Copy)]
 enum CaptureDomain {
     Structural,
     Locomotion,
+    Window,
+}
+
+/// Original World rows remain the read fences. Both semantic ancestry views
+/// overlay the genuine first Core move; the admitted native plan supplies only
+/// its subsequent actor projection. No World or actor record is substituted.
+pub(crate) fn derive_window_phase(
+    state: &SpatialState,
+    world: &World,
+    actor: ObjId,
+    current_room: ObjId,
+    plan: &Plan,
+    stamp: &ClockStamp,
+    dependencies: &BTreeSet<ObjId>,
+) -> Result<CaptureFacts, ParticipantError> {
+    if !matches!(stamp.clock, ClockRef::WorldIc {generation} if generation > 0)
+        || dependencies.len() > MAX_DEPENDENCIES
+        || !plan.set_spaces.is_empty()
+        || !plan.retire.is_empty()
+        || plan.set_placements.iter().any(|p| p.object != actor)
+        || plan.projections.iter().any(|(object, _)| *object != actor)
+    {
+        return Err(refused("unsupported window personnel phase"));
+    }
+    let mut reads = Reads {
+        world,
+        dependencies: BTreeSet::new(),
+        contents: BTreeMap::new(),
+        steps: 0,
+    };
+    for &dependency in dependencies {
+        reads.touch(dependency)?;
+    }
+    reads.inverse(actor)?;
+    reads.touch(current_room)?;
+    let mut before = View::before(state);
+    before.projections.insert(actor, current_room);
+    let mut after = View::after(state, plan)?;
+    after.projections.entry(actor).or_insert(current_room);
+    for &destination in after.projections.values() {
+        reads.touch(destination)?;
+    }
+    derive_views(
+        before,
+        after,
+        reads,
+        BTreeSet::from([actor]),
+        stamp,
+        CaptureDomain::Window,
+    )
 }
 
 fn derive_views(
@@ -746,6 +828,7 @@ fn derive_views(
     let ancestry_domain = match domain {
         CaptureDomain::Structural => "sim.personnel.ancestry.v1",
         CaptureDomain::Locomotion => "sim.locomotion.ancestry.v1",
+        CaptureDomain::Window => "sim.window_locomotion.ancestry.v1",
     };
     let before_ancestry_digest = digest(ancestry_domain, &old)?;
     let after_ancestry_digest = digest(ancestry_domain, &new)?;
@@ -761,6 +844,10 @@ fn derive_views(
             &before_ancestry_digest,
             &after_ancestry_digest,
             &crossings,
+        )?,
+        CaptureDomain::Window => digest(
+            "sim.window_locomotion.phase.v1",
+            &serde_json::json!({"prepared_at":stamp,"before_ancestry_digest":before_ancestry_digest,"after_ancestry_digest":after_ancestry_digest,"crossings":crossings}),
         )?,
     };
     Ok(CaptureFacts {
