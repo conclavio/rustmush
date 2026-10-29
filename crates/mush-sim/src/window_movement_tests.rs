@@ -460,6 +460,160 @@ fn ordered_capture_rechecks_native_core_and_original_clock_facts() {
 }
 
 #[test]
+fn ordered_occupancy_refuses_coordinate_identity_and_membership_drift_without_revision_bumps() {
+    for change in 0..7 {
+        let mut rig = Rig::new();
+        let occupant = rig
+            .engine
+            .world
+            .create(ObjKind::Thing, "other occupant", GOD, Some(rig.projected))
+            .expect("occupant");
+        let spare = rig
+            .engine
+            .world
+            .create(ObjKind::Thing, "spare", GOD, Some(rig.projected))
+            .expect("spare");
+        let actor = rig.actor;
+        let mut record = rig
+            .state()
+            .placements
+            .get(&actor)
+            .expect("placement")
+            .clone();
+        record.object = occupant;
+        if let SpatialParent::Direct { domain, .. } = &mut record.parent {
+            *domain = DomainId(1);
+        }
+        rig.state().placements.insert(occupant, record.clone());
+        rig.state().derived = crate::graph::rebuild(rig.state());
+        let projected = rig.projected;
+        let capture = ordered(
+            &mut rig,
+            Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+            Some(projected),
+        );
+        capture
+            .recheck_occupancy(rig.state())
+            .expect("actual native slot");
+        match change {
+            0 | 1 => {
+                if let SpatialParent::Direct { pose, .. } = &mut rig
+                    .state()
+                    .placements
+                    .get_mut(&occupant)
+                    .expect("occupant")
+                    .parent
+                {
+                    if change == 0 {
+                        pose.x_cm += 1;
+                    } else {
+                        pose.y_cm += 1;
+                    }
+                }
+            }
+            2 => {
+                rig.state()
+                    .placements
+                    .get_mut(&occupant)
+                    .expect("occupant")
+                    .revision += 1;
+            }
+            3 => {
+                rig.state().placements.remove(&occupant);
+            }
+            4 => {
+                if let SpatialParent::Direct { domain, .. } = &mut rig
+                    .state()
+                    .placements
+                    .get_mut(&occupant)
+                    .expect("occupant")
+                    .parent
+                {
+                    *domain = DomainId(2);
+                }
+            }
+            5 => {
+                record.object = spare;
+                rig.state().placements.insert(spare, record);
+            }
+            _ => {
+                rig.state()
+                    .placements
+                    .get_mut(&occupant)
+                    .expect("occupant")
+                    .object = spare;
+            }
+        }
+        rig.state().derived = crate::graph::rebuild(rig.state());
+        assert!(
+            capture.recheck_occupancy(rig.state()).is_err(),
+            "change {change}"
+        );
+        assert!(
+            capture.recheck(&rig.engine.world).is_err(),
+            "change {change}"
+        );
+        assert_eq!(
+            rig.engine.world.get(rig.actor).expect("actor").location,
+            Some(rig.source)
+        );
+    }
+}
+
+#[test]
+fn ordered_occupancy_ignores_unconsulted_pose_fields_and_has_no_fence_without_a_target() {
+    let mut rig = Rig::new();
+    let occupant = rig
+        .engine
+        .world
+        .create(ObjKind::Thing, "occupant", GOD, Some(rig.projected))
+        .expect("occupant");
+    let actor = rig.actor;
+    let mut record = rig
+        .state()
+        .placements
+        .get(&actor)
+        .expect("actor placement")
+        .clone();
+    record.object = occupant;
+    if let SpatialParent::Direct { domain, .. } = &mut record.parent {
+        *domain = DomainId(1);
+    }
+    rig.state().placements.insert(occupant, record);
+    rig.state().derived = crate::graph::rebuild(rig.state());
+    let projected = rig.projected;
+    let capture = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    if let SpatialParent::Direct { pose, .. } = &mut rig
+        .state()
+        .placements
+        .get_mut(&occupant)
+        .expect("occupant")
+        .parent
+    {
+        pose.z_cm += 1;
+        pose.heading_mdeg += 1;
+        pose.posture = crate::passive_rules_value(json!({"changed":true})).expect("posture");
+    }
+    capture
+        .recheck_occupancy(rig.state())
+        .expect("same cell observations");
+    capture
+        .recheck(&rig.engine.world)
+        .expect("unconsulted pose fields");
+    let empty = ordered(&mut rig, None, None);
+    let encoded: Value = serde_json::from_slice(&empty.encode()).expect("bytes");
+    assert_eq!(encoded["occupancy"], Value::Null);
+    rig.state().placements.remove(&occupant);
+    empty
+        .recheck_occupancy(rig.state())
+        .expect("no occupancy was consulted");
+}
+
+#[test]
 fn ordered_capture_counts_both_sides_of_a_transient_carrier_visit_against_one_budget() {
     for children in [127, 128] {
         let mut rig = Rig::new();

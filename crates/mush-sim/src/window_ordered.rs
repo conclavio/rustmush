@@ -12,6 +12,7 @@ pub struct OrderedWindowMovementCapture {
     digest: DefinitionDigest,
     dependencies: BTreeSet<ObjId>,
     native_phases: Vec<NativePhase>,
+    occupancy: Option<crate::window_occupancy::OccupancyFence>,
 }
 impl OrderedWindowMovementCapture {
     #[must_use]
@@ -40,6 +41,19 @@ impl OrderedWindowMovementCapture {
     }
     pub fn encode(&self) -> Vec<u8> {
         self.bytes.clone()
+    }
+    /// Check just the selected domain's actual placement coordinates at native
+    /// slot bind. This performs no World read or callback. Custody exclusions,
+    /// topology, Core rows and Atlas selectors still need their own guards.
+    pub fn recheck_occupancy(&self, state: &SpatialState) -> Result<(), ParticipantError> {
+        if self
+            .occupancy
+            .as_ref()
+            .is_some_and(|fence| !fence.recheck(state))
+        {
+            return Err(refused());
+        }
+        Ok(())
     }
     pub fn recheck(&self, world: &World) -> Result<(), ParticipantError> {
         if derive_ordered(world, &self.core, self.target, &self.stamp)?.bytes != self.bytes {
@@ -74,12 +88,14 @@ pub fn capture_ordered(
         digest,
         dependencies: derived.dependencies,
         native_phases: derived.native_phases,
+        occupancy: derived.occupancy,
     })
 }
 struct Ordered {
     bytes: Vec<u8>,
     dependencies: BTreeSet<ObjId>,
     native_phases: Vec<NativePhase>,
+    occupancy: Option<crate::window_occupancy::OccupancyFence>,
 }
 fn derive_ordered(
     world: &World,
@@ -101,6 +117,10 @@ fn derive_ordered(
         .module_state::<SpatialState>()
         .ok_or_else(refused)?
         .clone();
+    let occupancy = target
+        .map(|target| crate::window_occupancy::OccupancyFence::capture(&post, target.domain))
+        .transpose()
+        .map_err(|_| refused())?;
     let first = personnel_capture::derive_window_admission(
         &post,
         world,
@@ -161,13 +181,15 @@ fn derive_ordered(
     let native_value: Value =
         serde_json::from_slice(&native.bytes).map_err(|_| ParticipantError::Encoding)?;
     let value = json!({"format":2,"authority":"hypothetical_requires_joint_owners",
-        "coverage":"uncertified_legacy_paths","native":native_value,"stages":stages,"read_dependencies":dependencies});
+        "coverage":"uncertified_legacy_paths","native":native_value,"stages":stages,"read_dependencies":dependencies,
+        "occupancy":occupancy});
     let bytes = mush_core::canonical_json_bytes_with_limit(&value, MAX_WINDOW_MOVEMENT_BYTES)
         .map_err(|_| ParticipantError::ImageLimit)?;
     Ok(Ordered {
         bytes,
         dependencies,
         native_phases: native.phases,
+        occupancy,
     })
 }
 fn stage(kind: &str, facts: &CaptureFacts) -> Value {

@@ -61,6 +61,7 @@ pub mod tick;
 pub mod transition;
 pub mod window;
 pub mod window_movement;
+pub mod window_occupancy;
 
 use std::sync::{Arc, OnceLock};
 
