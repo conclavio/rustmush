@@ -567,6 +567,18 @@ decoding does not prove a journal append or create an installation. The native
 publisher, same-commit family append and cold original-position join remain
 required before enabling the profile.
 
+The optional window-history API now registers the separate
+`sim.window_locomotion_crossings` family only through a Sim-owned registrar.
+Its append checks the genuine Core receipt, ordered capture, and exact prepared
+`window_movement` journal entry before staging a unique commit row. Typed audits
+join receipts and records in both directions; native audits additionally require
+each original journal position/body and reject duplicate commits or orphan rows.
+The dedicated history is bounded to 8 MiB and 4096 chunks before copying; other
+Sim logs are neither borrowed as authority nor inspected through this profile.
+Registration alone enables no provider or live route. Native state binding and
+producer integration remain required, and none of this certifies an aboard
+interval or reconstructs current placement from historical evidence.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
