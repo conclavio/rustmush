@@ -249,6 +249,19 @@ fn game_clock_compatibility(epoch: WorldTimelineEpoch) -> GameClock {
     }
 }
 
+fn game_clock_for_timeline(timeline: &WorldTimeline, now_unix: i64) -> GameClock {
+    let current = timeline.current();
+    match timeline.freeze() {
+        Some(freeze) => game_clock_compatibility(WorldTimelineEpoch {
+            real_anchor: now_unix,
+            ic_anchor: freeze.frozen_ic_unix,
+            rate: current.rate,
+            generation: freeze.generation,
+        }),
+        None => game_clock_compatibility(current),
+    }
+}
+
 impl World {
     /// A minimal bootable world: room `#0` "Limbo" and player `#1` "God"
     /// (WIZARD flag, homed and located in Limbo). Both start dirty.
@@ -367,6 +380,9 @@ impl World {
     /// calls this; core logic never reads the system clock itself.
     pub fn set_now(&mut self, unix_seconds: i64) {
         self.now = unix_seconds;
+        if self.world_timeline.is_frozen() {
+            self.game_clock = game_clock_for_timeline(&self.world_timeline, self.now);
+        }
     }
 
     /// The last time fed in via [`World::set_now`].
@@ -397,8 +413,47 @@ impl World {
 
     /// Install a fully validated persisted world timeline at boot.
     pub fn set_world_timeline(&mut self, timeline: WorldTimeline) {
-        self.game_clock = game_clock_compatibility(timeline.current());
+        self.game_clock = game_clock_for_timeline(&timeline, self.now);
         self.world_timeline = timeline;
+    }
+
+    /// Record a durable checkpoint on the world timeline at the current wall-clock
+    /// timestamp (`W-clock`).
+    pub fn record_world_clock_checkpoint(&mut self) -> crate::clock::WorldClockCheckpoint {
+        self.world_timeline.record_checkpoint(self.now)
+    }
+
+    /// Format a human-facing status line when the world IC clock is frozen (`W-clock`).
+    #[must_use]
+    pub fn world_clock_freeze_notice(&self, now_unix: i64) -> Option<String> {
+        let freeze = self.world_timeline.freeze()?;
+        let ic = self.ic_datetime();
+        match freeze.kind {
+            crate::clock::WorldClockFreezeKind::OutageCountdown {
+                unfreeze_at_real_unix,
+                ..
+            } => {
+                let remaining = unfreeze_at_real_unix.saturating_sub(now_unix).max(0);
+                let mins = remaining / 60;
+                let secs = remaining % 60;
+                let window = if mins > 0 && secs == 0 {
+                    format!("{mins} minute(s) remaining")
+                } else if mins > 0 {
+                    format!("{mins}m {secs}s remaining")
+                } else {
+                    format!("{secs}s remaining")
+                };
+                Some(format!(
+                    "GAME: IC world clock is frozen at {ic} for outage recovery ({window}). \
+                     Reconnects, inspection, and OOC channels are open; IC actions and timers \
+                     resume at unfreeze."
+                ))
+            }
+            crate::clock::WorldClockFreezeKind::Deliberate => Some(format!(
+                "GAME: IC world clock is frozen at {ic}. Reconnects, inspection, and OOC \
+                 channels are open; IC actions and timers are paused until resumed."
+            )),
+        }
     }
 
     /// The complete append-only world-IC epoch history.

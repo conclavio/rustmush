@@ -1904,6 +1904,15 @@ pub struct GameCfg {
     /// retired. `true` by default; the testkit composes no content module, so a
     /// test world never grows unless the test asks for the lot.
     pub starter_area: bool,
+    /// Doc 27 W-clock (FO-11, Q-R4): lost wall-clock seconds threshold at or
+    /// above which an unplanned restart enters the global recovery countdown freeze.
+    /// Restarts faster than this threshold re-anchor silently from the last durable
+    /// checkpoint with no countdown and no catch-up. Default 30.
+    pub outage_freeze_threshold_s: u64,
+    /// Doc 27 W-clock (FO-11, Q-R4): real-time recovery countdown duration in
+    /// seconds when an outage at or above outage_freeze_threshold_s is detected.
+    /// Default 300 (5 minutes).
+    pub outage_countdown_s: u64,
 }
 
 impl Default for GameCfg {
@@ -1914,6 +1923,8 @@ impl Default for GameCfg {
             ic_ratio: 1,
             ic_epoch: "2020-01-01 00:00".to_string(),
             starter_area: true,
+            outage_freeze_threshold_s: 30,
+            outage_countdown_s: 300,
         }
     }
 }

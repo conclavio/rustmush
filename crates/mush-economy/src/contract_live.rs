@@ -627,6 +627,8 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ..ContractRoles::default()
         },
         revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     };
     api::put_contract(ctx, c).map_err(|error| CmdError::msg(error.to_string()))?;
     let meta = ctx
@@ -3309,6 +3311,8 @@ fn amended_draft(
     back.roster_locked = false;
     back.settle_attempts = 0;
     back.revision = back.revision.saturating_add(1);
+    back.real_deadline_extension_secs = 0;
+    back.paused_real_remaining_secs = None;
     // The pure preflight and the actual refund must name the same generation.
     // Preserve the existing already-posted recovery rule as well as a new refund.
     let refunding = refund.is_some_and(|p| !p.hold_ops.is_empty());
@@ -4238,7 +4242,7 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         };
         lines.push(format!(
             "  condition {i}: {}{mark}",
-            render_condition(ctx, cond)
+            render_condition_for_contract(ctx, &c, cond)
         ));
     }
     if let Some(a) = &c.consent.adjudicator {
@@ -4247,7 +4251,7 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !c.consent.evidence.is_empty() {
         lines.push(format!("  permitted evidence: {:?}", c.consent.evidence));
     }
-    if let Some(d) = c.consent.deadline {
+    if let Some(d) = c.effective_deadline() {
         lines.push(format!(
             "  deadline {} on {:?}; on expiry {}",
             d.at,
@@ -4326,7 +4330,7 @@ fn notice_lines(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<String> {
     if c.consent.visibility.announce_issuer() {
         lines.push(format!("  issued by {}", render_principal(ctx, &c.issuer)));
     }
-    if let Some(d) = c.consent.deadline {
+    if let Some(d) = c.effective_deadline() {
         lines.push(format!("  window closes at {} on {:?}", d.at, d.clock));
     }
     let kinds: Vec<String> = c
@@ -4465,6 +4469,20 @@ fn render_deliverable(ctx: &Ctx<'_>, d: &Deliverable) -> String {
                 money_on(ctx, template.debit_account, template.amount)
             )
         }
+    }
+}
+
+fn render_condition_for_contract(
+    ctx: &Ctx<'_>,
+    contract: &EconomicContract,
+    c: &TypedCondition,
+) -> String {
+    match c {
+        TypedCondition::Before { deadline } => {
+            let eff = contract.effective_before_deadline(*deadline);
+            format!("before {} on {:?}", eff.at, eff.clock)
+        }
+        other => render_condition(ctx, other),
     }
 }
 
@@ -4714,6 +4732,8 @@ pub fn offer_lease(ctx: &mut Ctx<'_>, spec: LeaseSpec) -> Result<ContractId, Con
             ..ContractRoles::default()
         },
         revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     };
     // Validate against a **provisional** id: nothing is allocated and nothing is
     // written until the whole shape is known good, so a refusal costs no id.
@@ -5198,6 +5218,8 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
         pending: None,
         roles,
         revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     };
     // Provisional MAX is only for structure/cap checks, never subject authority.
     check_offer_structure(ctx, &c)?;
@@ -5705,4 +5727,266 @@ pub fn refuse_contract_offer(
     }
     crate::commands::note_refusal(ctx, hidden.is_some());
     CmdError::msg(hidden.unwrap_or_else(|| e.to_string()))
+}
+
+// ---- W-clock / Q-F3 / P-4: real-time contest/contract deadline freeze & unfreeze --
+
+/// Pause active real-time (`RealUtc`) contract and salvage contest windows at
+/// `frozen_real_unix`, recording their remaining duration so server-unavailable
+/// time cannot consume a real-time window (`W-clock` / `Q-F3` / `P-4`).
+pub fn pause_real_time_deadlines(ctx: &mut Ctx<'_>, frozen_real_unix: i64) -> usize {
+    let candidates: Vec<EconomicContract> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return 0;
+        };
+        store
+            .snapshot()
+            .contracts()
+            .filter(|c| {
+                !c.state.is_terminal()
+                    && c.consent.managed.is_none()
+                    && c.has_real_time_window()
+                    && c.paused_real_remaining_secs.is_none()
+            })
+            .cloned()
+            .collect()
+    };
+    let mut paused = 0usize;
+    for mut c in candidates {
+        let Some(end) = c.effective_real_window_end() else {
+            continue;
+        };
+        let rem = end.saturating_sub(frozen_real_unix);
+        if rem <= 0 {
+            continue;
+        }
+        c.paused_real_remaining_secs = Some(rem);
+        if let Err(error) = save(ctx, c) {
+            report_contract_write_refusal(ctx, &error);
+            continue;
+        }
+        paused = paused.saturating_add(1);
+    }
+    paused
+}
+
+/// Resume paused real-time (`RealUtc`) contract and salvage contest windows by
+/// excluding `unavailable_secs` (outage + recovery countdown or deliberate
+/// freeze duration) and publishing the adjusted deadline to parties and
+/// audience members (`W-clock` / `Q-F3` / `P-4`).
+pub fn resume_real_time_deadlines(ctx: &mut Ctx<'_>, unavailable_secs: i64) -> usize {
+    let ext = unavailable_secs.max(0);
+    let frozen_at = ctx.w.now().saturating_sub(ext);
+    let candidates: Vec<EconomicContract> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return 0;
+        };
+        store
+            .snapshot()
+            .contracts()
+            .filter(|c| {
+                !c.state.is_terminal()
+                    && c.consent.managed.is_none()
+                    && (c.has_real_time_window() || c.paused_real_remaining_secs.is_some())
+            })
+            .cloned()
+            .collect()
+    };
+    let mut adjusted = 0usize;
+    for mut c in candidates {
+        let active_at_freeze = c.paused_real_remaining_secs.is_some_and(|rem| rem > 0)
+            || (c.paused_real_remaining_secs.is_none()
+                && c.effective_real_window_end().is_some_and(|end| end > frozen_at));
+        if !active_at_freeze && c.paused_real_remaining_secs.is_none() {
+            continue;
+        }
+        c.paused_real_remaining_secs = None;
+        if active_at_freeze && ext > 0 {
+            c.real_deadline_extension_secs = c.real_deadline_extension_secs.saturating_add(ext);
+        }
+        let updated = c.clone();
+        if let Err(error) = save(ctx, c) {
+            report_contract_write_refusal(ctx, &error);
+            continue;
+        }
+        if active_at_freeze
+            && ext > 0
+            && let Some(new_end) = updated.effective_real_window_end()
+        {
+            let msg = format!(
+                "Contract #{} \"{}\" real-time deadline adjusted (+{}s excluded for world clock \
+                 freeze/outage): window now closes at {} on RealUtc.",
+                updated.id, updated.name, ext, new_end
+            );
+            notify_deadline_adjusted(ctx, &updated, &msg);
+            adjusted = adjusted.saturating_add(1);
+        }
+    }
+    adjusted
+}
+
+fn notify_deadline_adjusted(ctx: &mut Ctx<'_>, c: &EconomicContract, msg: &str) {
+    let mut recipients: Vec<PrincipalId> = Vec::new();
+    recipients.push(c.issuer.clone());
+    recipients.extend(c.consent.parties.iter().cloned());
+    recipients.extend(c.consent.visibility.members().iter().cloned());
+    if let Some(AttestorSet::Party(p)) = &c.consent.adjudicator {
+        recipients.push(p.clone());
+    }
+    let mut told_objs: Vec<ObjId> = Vec::new();
+    for p in &recipients {
+        if let PrincipalId::Object(o) = p {
+            if told_objs.contains(o) {
+                continue;
+            }
+            told_objs.push(*o);
+        }
+        notify(ctx, p, msg);
+    }
+}
+
+pub(crate) fn on_world_clock_frozen(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEvent) {
+    if let mush_core::WorldEvent::WorldClockFrozen { real_unix, .. } = ev {
+        let _ = pause_real_time_deadlines(ctx, *real_unix);
+    }
+}
+
+pub(crate) fn on_world_clock_resumed(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEvent) {
+    if let mush_core::WorldEvent::WorldClockResumed {
+        unavailable_secs, ..
+    } = ev
+    {
+        let _ = resume_real_time_deadlines(ctx, *unavailable_secs);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::{EconomicClock, EconomicDeadline};
+    use crate::module::{EconomyModule, EconomyStore};
+    use crate::record::EconomicVisibility;
+    use mush_core::{Effects, Engine, GOD, LIMBO, ObjKind, Outbox, Registry, World, WorldEvent};
+
+    #[test]
+    fn w_clock_freeze_and_resume_events_pause_extend_and_announce_real_utc_contract_deadline() {
+        let mut world = World::new_minimal();
+        let buyer = world
+            .create(ObjKind::Player, "Buyer", GOD, Some(LIMBO))
+            .unwrap();
+        let mut engine = Engine::with_modules(
+            world,
+            Registry::new(),
+            vec![Box::new(EconomyModule::default())],
+        )
+        .unwrap();
+
+        let issuer = PrincipalId::Object(GOD);
+        let consent = ConsentSurface {
+            fact_consent: None,
+            managed: None,
+            parties: vec![PrincipalId::Object(GOD), PrincipalId::Object(buyer)],
+            terms: ContractTerms {
+                consideration: Vec::new(),
+                deliverables: Vec::new(),
+                split: Vec::new(),
+                remainder_to: crate::ids::AccountId(1),
+                on_expiry: Expiry::Refund,
+                outcomes: Vec::new(),
+            },
+            conditions: Vec::new(),
+            deadline: Some(EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 2_000,
+            }),
+            visibility: EconomicVisibility::default(),
+            scope: None,
+            adjudicator: None,
+            evidence: Vec::new(),
+        };
+        let hash = consent_hash(&issuer, &consent);
+        let contract = EconomicContract {
+            id: ContractId(1),
+            issuer,
+            name: SmolStr::new("SalvageContest"),
+            consent,
+            consent_hash: hash,
+            acceptances: Vec::new(),
+            satisfied: Vec::new(),
+            escrow: Vec::new(),
+            state: ContractState::Active,
+            settle_attempts: 0,
+            created_at: 1_000,
+            amendments: 0,
+            generation_started_at: 1_000,
+            disputed_at: None,
+            canon_published: None,
+            roster_locked: false,
+            deposits: Vec::new(),
+            agreements: Vec::new(),
+            pending: None,
+            roles: ContractRoles::default(),
+            revision: 1,
+            real_deadline_extension_secs: 0,
+            paused_real_remaining_secs: None,
+        };
+        engine
+            .world
+            .module_state_mut::<EconomyStore>()
+            .unwrap()
+            .snapshot
+            .put_contract(contract);
+
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        engine.emit_world_event(
+            &WorldEvent::WorldClockFrozen {
+                real_unix: 1_400,
+                ic_unix: 5_000,
+            },
+            &mut out,
+            &mut fx,
+        );
+
+        let paused = engine
+            .world
+            .module_state::<EconomyStore>()
+            .unwrap()
+            .snapshot()
+            .contract(ContractId(1))
+            .unwrap()
+            .clone();
+        assert_eq!(paused.paused_real_remaining_secs, Some(600));
+        assert!(paused.consent_intact());
+
+        engine.emit_world_event(
+            &WorldEvent::WorldClockResumed {
+                frozen_real_unix: 1_400,
+                resumed_real_unix: 1_820,
+                unavailable_secs: 420,
+                ic_unix: 5_000,
+            },
+            &mut out,
+            &mut fx,
+        );
+
+        let resumed = engine
+            .world
+            .module_state::<EconomyStore>()
+            .unwrap()
+            .snapshot()
+            .contract(ContractId(1))
+            .unwrap()
+            .clone();
+        assert_eq!(resumed.paused_real_remaining_secs, None);
+        assert_eq!(resumed.real_deadline_extension_secs, 420);
+        assert_eq!(
+            resumed.effective_deadline(),
+            Some(EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 2_420,
+            })
+        );
+        assert!(resumed.consent_intact());
+    }
 }

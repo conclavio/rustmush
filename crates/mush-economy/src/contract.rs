@@ -722,6 +722,10 @@ impl ContractState {
     }
 }
 
+const fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
+}
+
 /// A typed, consented, escrowed agreement between principals.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EconomicContract {
@@ -812,6 +816,14 @@ pub struct EconomicContract {
     /// The separate roles (08e answer 22). Attribution, never authority.
     #[serde(default)]
     pub roles: ContractRoles,
+    /// Total real-time seconds of world unavailability (`W-clock`, `Q-F3`, `P-4`)
+    /// added to any `EconomicClock::RealUtc` deadline or contest window on this
+    /// contract. Stored outside `consent` so `consent_hash` remains intact.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub real_deadline_extension_secs: i64,
+    /// Remaining real-time seconds captured when the world entered a freeze (`W-clock`, `Q-F3`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_real_remaining_secs: Option<i64>,
     /// Staleness stamp.
     pub revision: u64,
 }
@@ -1315,6 +1327,67 @@ impl EconomicContract {
             *slot = slot.checked_add(hold.amount).unwrap_or(*slot);
         }
         out
+    }
+
+    /// Effective contract deadline after applying any outage/freeze extension
+    /// (`W-clock` / `Q-F3`: real-time salvage contest and contract windows
+    /// exclude server-unavailable duration without mutating the signed
+    /// consent surface).
+    #[must_use]
+    pub fn effective_deadline(&self) -> Option<EconomicDeadline> {
+        self.consent.deadline.map(|deadline| self.effective_before_deadline(deadline))
+    }
+
+    /// Effective `Before` deadline after applying any outage/freeze extension on
+    /// [`EconomicClock::RealUtc`].
+    #[must_use]
+    pub fn effective_before_deadline(&self, deadline: EconomicDeadline) -> EconomicDeadline {
+        if deadline.clock == EconomicClock::RealUtc && self.real_deadline_extension_secs > 0 {
+            EconomicDeadline {
+                clock: deadline.clock,
+                at: deadline.at.saturating_add(self.real_deadline_extension_secs),
+            }
+        } else {
+            deadline
+        }
+    }
+
+    /// Whether this contract has any real-time (`RealUtc`) deadline, `Before`
+    /// condition, or `After` delay that must be held across a world clock
+    /// freeze (`W-clock` / `Q-F3`).
+    #[must_use]
+    pub fn has_real_time_window(&self) -> bool {
+        if self
+            .consent
+            .deadline
+            .is_some_and(|d| d.clock == EconomicClock::RealUtc)
+        {
+            return true;
+        }
+        self.consent.conditions.iter().any(|cond| match cond {
+            TypedCondition::Before { deadline } => deadline.clock == EconomicClock::RealUtc,
+            TypedCondition::After { clock, .. } => *clock == EconomicClock::RealUtc,
+            _ => false,
+        })
+    }
+
+    /// The latest effective real-time (`RealUtc`) deadline or `Before` window
+    /// on this contract, if any.
+    #[must_use]
+    pub fn effective_real_window_end(&self) -> Option<i64> {
+        let mut end = self
+            .effective_deadline()
+            .filter(|d| d.clock == EconomicClock::RealUtc)
+            .map(|d| d.at);
+        for cond in &self.consent.conditions {
+            if let TypedCondition::Before { deadline } = cond
+                && deadline.clock == EconomicClock::RealUtc
+            {
+                let eff = self.effective_before_deadline(*deadline).at;
+                end = Some(end.map_or(eff, |prev| prev.max(eff)));
+            }
+        }
+        end
     }
 }
 
@@ -2209,9 +2282,18 @@ pub fn condition_holds(
             // one — so the manual position handed in here is `i64::MAX`, i.e. the
             // deadline has ALWAYS passed and the condition is unsatisfied. A clock
             // this engine cannot resolve must never be the reason money moves.
-            TypedCondition::Before { deadline } => clocks
-                .now_on(deadline.clock, snapshot, i64::MAX)
-                .is_some_and(|now| now <= deadline.at),
+            TypedCondition::Before { deadline } => {
+                if deadline.clock == EconomicClock::RealUtc
+                    && let Some(rem) = c.paused_real_remaining_secs
+                {
+                    rem >= 0
+                } else {
+                    let effective = c.effective_before_deadline(*deadline);
+                    clocks
+                        .now_on(effective.clock, snapshot, i64::MAX)
+                        .is_some_and(|now| now <= effective.at)
+                }
+            }
             TypedCondition::After {
                 condition,
                 delay,
@@ -3742,6 +3824,8 @@ mod tests {
             pending: None,
             roles: ContractRoles::default(),
             revision: 1,
+            real_deadline_extension_secs: 0,
+            paused_real_remaining_secs: None,
         }
     }
 
@@ -3834,5 +3918,79 @@ mod tests {
             lessor.clone(),
             vec![obligation.clone()]
         )));
+    }
+
+    /// Doc 27 (`W-clock` / `Q-F3` / `P-4`): real-time salvage contest and contract
+    /// deadlines exclude outage + countdown duration while keeping `consent_hash`
+    /// intact.
+    #[test]
+    fn w_clock_real_utc_deadline_and_before_window_extend_without_breaking_consent() {
+        let (issuer, mut consent) = golden_surface();
+        consent.deadline = Some(EconomicDeadline {
+            clock: EconomicClock::RealUtc,
+            at: 2_000,
+        });
+        consent.conditions = vec![TypedCondition::Before {
+            deadline: EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 1_500,
+            },
+        }];
+        let hash = consent_hash(&issuer, &consent);
+        let mut c = shaped(issuer, Vec::new());
+        c.consent = consent;
+        c.consent_hash = hash;
+        c.satisfied = vec![None];
+        assert!(c.consent_intact());
+        assert!(c.has_real_time_window());
+        assert_eq!(c.effective_real_window_end(), Some(2_000));
+
+        // Pause at t = 1_200 (800s remaining on the outer deadline, 300s on `Before`).
+        c.paused_real_remaining_secs = Some(800);
+        assert!(c.consent_intact());
+
+        let snap = EconomySnapshot::default();
+        let make_env = |now: i64| ValidateEnv {
+            auth: &crate::engine::AllowAll,
+            custody: &crate::engine::NoCustody,
+            facts: &crate::engine::NoFacts,
+            now,
+            ic_now: now,
+            next_hold_id: 1,
+            spent: BTreeMap::new(),
+            keys: &crate::engine::MapOnlyKeys,
+        };
+        // Even if wall-clock reaches 1_600 while paused, the `Before` condition holds
+        // because remaining duration (> 0) was positive when the freeze began.
+        let env_during_pause = make_env(1_600);
+        assert!(condition_holds(&c, 0, &snap, &env_during_pause));
+
+        // Unfreeze after 420s of unavailable time (120s outage + 300s countdown).
+        c.paused_real_remaining_secs = None;
+        c.real_deadline_extension_secs = 420;
+        assert!(c.consent_intact());
+        assert_eq!(
+            c.effective_deadline(),
+            Some(EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 2_420,
+            })
+        );
+        assert_eq!(
+            c.effective_before_deadline(EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 1_500,
+            }),
+            EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 1_920,
+            }
+        );
+        // At t = 1_620 (which would have been past 1_500 without extension), `Before`
+        // still holds; at t = 1_921, it expires.
+        let env_after_unfreeze = make_env(1_620);
+        assert!(condition_holds(&c, 0, &snap, &env_after_unfreeze));
+        let env_after_extended_window = make_env(1_921);
+        assert!(!condition_holds(&c, 0, &snap, &env_after_extended_window));
     }
 }

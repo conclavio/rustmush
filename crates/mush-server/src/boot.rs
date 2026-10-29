@@ -644,6 +644,16 @@ async fn build_engine_inner(
     let mut world = load_or_seed_world(&**store).await?;
     let clock = config.game.game_clock().map_err(|e| e.to_string())?;
     timeline::hydrate_world_timeline(&mut world, &**store, clock).await?;
+    let boot_outage = timeline::apply_boot_outage_policy(
+        &mut world,
+        &**store,
+        mush_config::unix_now_s(),
+        timeline::OutagePolicy {
+            freeze_threshold_s: config.game.outage_freeze_threshold_s,
+            countdown_s: config.game.outage_countdown_s,
+        },
+    )
+    .await?;
     // WS04-S3: the all-in-one's own transcription of this root logged the
     // hydrated epoch and this one did not, so the split half installed a
     // persisted IC generation in silence. The deletion of that transcription
@@ -651,6 +661,7 @@ async fn build_engine_inner(
     tracing::info!(
         generation = world.world_timeline().current().generation,
         ic_rate = world.world_timeline().current().rate,
+        ?boot_outage,
         "world timeline installed",
     );
     let mut engine = Engine::from_composition(world, composition);
@@ -701,6 +712,30 @@ async fn build_engine_inner(
         tracing::warn!("boot: no geology installer took the geology key");
     }
     modules::boot_modules(&mut engine, &**store).await?;
+    if let Some(freeze) = engine.world.world_timeline().freeze() {
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        engine.emit_world_event(
+            &mush_core::WorldEvent::WorldClockFrozen {
+                real_unix: freeze.frozen_real_unix,
+                ic_unix: freeze.frozen_ic_unix,
+            },
+            &mut out,
+            &mut fx,
+        );
+        let ops = engine.take_module_ops();
+        if !ops.is_empty() {
+            store
+                .write(mush_store::WriteBatch {
+                    serial: 0,
+                    module_ops: ops,
+                    durable: true,
+                    ..mush_store::WriteBatch::default()
+                })
+                .await
+                .map_err(|e| format!("persisting boot clock freeze module ops: {e}"))?;
+        }
+    }
     // **16b cut F.4**: the simulator's readiness, once — and here, because this
     // is the first moment both halves of it are true or not. The centre's rooms
     // arrive with the starter area's content latch and the tanks arrive with the

@@ -168,10 +168,11 @@ pub(crate) fn resolve_due(at: &NotBefore, window_s: Option<u32>, reached_utc: i6
 }
 
 /// **The IC instant of real second `utc`** through the world's current timeline
-/// generation (a continuous IC axis, `journey.rs`'s relabel note).
+/// generation (a continuous IC axis, `journey.rs`'s relabel note; holds at the
+/// frozen IC timestamp while the world clock is frozen).
 #[must_use]
 pub(crate) fn ic_at_utc(w: &World, utc: i64) -> i64 {
-    w.world_timeline().current().ic_at(utc)
+    w.world_timeline().stamp_at(utc).at
 }
 
 /// **The IC second at real second `real` under the epoch then in force** (doc 18 cut
@@ -205,15 +206,15 @@ pub(crate) fn plan_instant(w: &World, due_utc: i64) -> i64 {
 
 /// **A due instant as the OOC renders print it** (doc 18 §4.4 "real-time ETA and
 /// departure clock"): `"{HH:MM} UTC {day word} (IC {civil date}; in {real span})"`,
-/// `IC clock stopped` for the IC clause at world rate 0, and `"now"` for a due at or
-/// before the present.
+/// `IC clock stopped` for the IC clause at world rate 0 or while frozen, and `"now"`
+/// for a due at or before the present.
 #[must_use]
 pub(crate) fn render_due(w: &World, due_utc: i64) -> String {
     let now = w.now();
     if due_utc <= now {
         return "now".to_owned();
     }
-    let ic = if w.world_timeline().current().rate == 0 {
+    let ic = if w.world_timeline().is_frozen() || w.world_timeline().current().rate == 0 {
         "IC clock stopped".to_owned()
     } else {
         format!(

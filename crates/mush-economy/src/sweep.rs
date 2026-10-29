@@ -1338,8 +1338,10 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         };
         let snap = store.snapshot();
         let lapsed = |c: &crate::contract::EconomicContract| {
-            c.consent
-                .deadline
+            if c.paused_real_remaining_secs.is_some_and(|rem| rem > 0) {
+                return false;
+            }
+            c.effective_deadline()
                 .is_some_and(|d| clocks.passed(&d, snap, i64::MIN))
         };
         // Rule 1: a dispute past its TTL is work only when the ladder has something
@@ -1665,8 +1667,7 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
                     || !crate::contract::qualifying_escrow(c, snap).holds.is_empty()
             })
             .filter(|c| {
-                !c.consent
-                    .deadline
+                !c.effective_deadline()
                     .is_some_and(|d| !clocks.passed(&d, snap, i64::MIN))
             })
             .filter_map(|c| {

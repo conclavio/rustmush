@@ -3050,6 +3050,156 @@ fn scheduled_prepare_stale(error: &crate::action_coordinator::ActionCoordinatorE
     }
 }
 
+/// Tracks which recovery countdown broadcasts (`5`, `2`, and `1` minutes) have
+/// already been announced for the active outage freeze (`W-clock` / `FO-11`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutageCountdownState {
+    unfreeze_at_real_unix: Option<i64>,
+    announced_5m: bool,
+    announced_2m: bool,
+    announced_1m: bool,
+}
+
+/// Next wall-clock millisecond wake for an active outage recovery countdown
+/// (`W-clock` / `FO-11`).
+#[must_use]
+pub fn next_outage_wake_unix_ms(
+    world: &World,
+    state: &OutageCountdownState,
+    now_unix: i64,
+) -> Option<i64> {
+    let freeze = world.world_timeline().freeze()?;
+    let mush_core::WorldClockFreezeKind::OutageCountdown {
+        unfreeze_at_real_unix,
+        ..
+    } = freeze.kind
+    else {
+        return None;
+    };
+    let tracked = if state.unfreeze_at_real_unix == Some(unfreeze_at_real_unix) {
+        *state
+    } else {
+        OutageCountdownState {
+            unfreeze_at_real_unix: Some(unfreeze_at_real_unix),
+            ..OutageCountdownState::default()
+        }
+    };
+    let remaining = unfreeze_at_real_unix.saturating_sub(now_unix);
+    let wake_sec = if remaining <= 0 {
+        now_unix
+    } else if !tracked.announced_5m && remaining > 120 {
+        now_unix
+    } else if !tracked.announced_2m && remaining > 60 {
+        if remaining <= 120 {
+            now_unix
+        } else {
+            unfreeze_at_real_unix.saturating_sub(120)
+        }
+    } else if !tracked.announced_1m {
+        if remaining <= 60 {
+            now_unix
+        } else {
+            unfreeze_at_real_unix.saturating_sub(60)
+        }
+    } else {
+        unfreeze_at_real_unix
+    };
+    Some(wake_sec.max(0).saturating_mul(1_000))
+}
+
+/// Advance the post-outage recovery countdown at `now_unix`, broadcasting at
+/// `5`, `2`, and `1` minutes remaining and unfreezing the shared IC clock (and
+/// adjusting real-time salvage contest deadlines) when the countdown reaches zero
+/// (`W-clock` / `FO-11` / `Q-H11` / `Q-F3`).
+///
+/// Returns `true` when this call unfroze the world clock.
+pub fn step_outage_countdown(
+    engine: &mut Engine,
+    gateway: &Gateway,
+    state: &mut OutageCountdownState,
+    now_unix: i64,
+    out: &mut Outbox,
+    fx: &mut Effects,
+) -> bool {
+    let Some(freeze) = engine.world.world_timeline().freeze() else {
+        *state = OutageCountdownState::default();
+        return false;
+    };
+    let mush_core::WorldClockFreezeKind::OutageCountdown {
+        unfreeze_at_real_unix,
+        ..
+    } = freeze.kind
+    else {
+        *state = OutageCountdownState::default();
+        return false;
+    };
+    if state.unfreeze_at_real_unix != Some(unfreeze_at_real_unix) {
+        *state = OutageCountdownState {
+            unfreeze_at_real_unix: Some(unfreeze_at_real_unix),
+            announced_5m: false,
+            announced_2m: false,
+            announced_1m: false,
+        };
+    }
+    let remaining = unfreeze_at_real_unix.saturating_sub(now_unix);
+    if remaining <= 0 {
+        let mut next = engine.world.world_timeline().clone();
+        if let Ok((freeze, epoch)) = next.resume_at(now_unix) {
+            engine.world.set_world_timeline(next);
+            engine.set_now(now_unix);
+            if let Ok(op) = mush_core::world_timeline_state_op(engine.world.world_timeline()) {
+                out.defer(mush_core::Deferred::Persist(op));
+            }
+            let unavailable_secs = now_unix.saturating_sub(freeze.frozen_real_unix);
+            engine.emit_world_event(
+                &WorldEvent::WorldClockResumed {
+                    frozen_real_unix: freeze.frozen_real_unix,
+                    resumed_real_unix: now_unix,
+                    unavailable_secs,
+                    ic_unix: epoch.ic_anchor,
+                },
+                out,
+                fx,
+            );
+            broadcast_connected(
+                &engine.world,
+                gateway,
+                "GAME: Outage recovery countdown complete — world clock unfrozen. Movement, combat, and scheduled ticks have resumed.",
+            );
+            *state = OutageCountdownState::default();
+            return true;
+        }
+        return false;
+    }
+
+    if !state.announced_5m && remaining > 120 {
+        state.announced_5m = true;
+        broadcast_connected(
+            &engine.world,
+            gateway,
+            "GAME: Unplanned outage recovery countdown — IC world is frozen. 5 minutes remaining until unfreeze. Reconnect and OOC channels are open; world actions and ticks are paused.",
+        );
+    } else if !state.announced_2m && remaining <= 120 && remaining > 60 {
+        state.announced_5m = true;
+        state.announced_2m = true;
+        broadcast_connected(
+            &engine.world,
+            gateway,
+            "GAME: Outage recovery countdown — 2 minutes remaining until world clock unfreeze.",
+        );
+    } else if !state.announced_1m && remaining <= 60 {
+        state.announced_5m = true;
+        state.announced_2m = true;
+        state.announced_1m = true;
+        broadcast_connected(
+            &engine.world,
+            gateway,
+            "GAME: Outage recovery countdown — 1 minute remaining until world clock unfreeze.",
+        );
+    }
+    false
+}
+
 #[allow(clippy::too_many_lines)] // the world loop is one cohesive state machine
 #[allow(clippy::too_many_arguments)] // the world loop threads its whole context
 async fn run(
@@ -3197,6 +3347,7 @@ async fn run(
     // aggregation) so it never rides the hot path more than once a second.
     // `None` forces a sample on the first iteration.
     let mut last_sample: Option<Instant> = None;
+    let mut outage_countdown = OutageCountdownState::default();
     // Top-level shutdown has a priority watch lane, so it cannot be trapped
     // behind the bounded world queue while a commit holds one deferred message.
     let mut shutdown_requested = false;
@@ -3264,7 +3415,17 @@ async fn run(
             },
             (None, mode) => mode,
         };
-        let next_due = engine.sched.next_due();
+        let clock_frozen = engine.world.world_timeline().is_frozen();
+        let outage_wake_due = if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
+            next_outage_wake_unix_ms(&engine.world, &outage_countdown, unix_now_s())
+        } else {
+            None
+        };
+        let next_due = if clock_frozen {
+            outage_wake_due
+        } else {
+            engine.sched.next_due()
+        };
         // Arm the E0 re-emit nudge while any sealed chunk is unacked, so an idle
         // world still re-flushes a dropped seal. A bare `Timer` wake just runs
         // `fire_due` (a no-op when nothing is scheduled) and falls through to the
@@ -3276,15 +3437,17 @@ async fn run(
         // Persistence/re-emit stays live (the re-emit nudge + inbound still run).
         let sched_armed = next_due.is_some()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
-        let durable_schedule_armed = engine
-            .registry
-            .schedule_sources()
-            .is_some_and(|sources| !sources.is_empty())
+        let durable_schedule_armed = !clock_frozen
+            && engine
+                .registry
+                .schedule_sources()
+                .is_some_and(|sources| !sources.is_empty())
             // A retained seal is an older durability predecessor. Let its
             // re-emit wake drain before admitting an exact-token action.
             && retained.is_empty()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
-        let durable_decision_armed = durable_decisions.is_some()
+        let durable_decision_armed = !clock_frozen
+            && durable_decisions.is_some()
             && retained.is_empty()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
         // E7c2 B1: arm the command-ingress adapter only when a prepared action
@@ -3308,7 +3471,8 @@ async fn run(
         // The arena egress is ordinary module-write work, so it is admitted on the
         // same terms as a timer — never while a commit is pending, never while a
         // retained seal is unresolved, and never in a mode that cannot write.
-        let arena_egress_armed = arena_egress.is_some()
+        let arena_egress_armed = !clock_frozen
+            && arena_egress.is_some()
             && pending_commit.is_none()
             && retained.is_empty()
             && !engine.has_legacy_persistence_work()
@@ -4137,10 +4301,24 @@ async fn run(
                 // wake here is then only the re-emit nudge, which drives the
                 // foot-of-loop persistence flush (re-emit stays live while frozen).
                 if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
-                    guarded!(
-                        "fire_due",
-                        engine.fire_due(unix_now_ms(), &mut out, &mut fx)
-                    );
+                    if engine.world.world_timeline().is_frozen() {
+                        guarded!(
+                            "step_outage_countdown",
+                            step_outage_countdown(
+                                &mut engine,
+                                &gateway,
+                                &mut outage_countdown,
+                                now_unix,
+                                &mut out,
+                                &mut fx,
+                            )
+                        );
+                    } else {
+                        guarded!(
+                            "fire_due",
+                            engine.fire_due(unix_now_ms(), &mut out, &mut fx)
+                        );
+                    }
                 }
                 StepOutcome::Continue
             }

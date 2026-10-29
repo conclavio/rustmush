@@ -6951,6 +6951,8 @@ fn dl03_fixture(org_has_vault: bool) -> (EconomySnapshot, mush_economy::Economic
         disputed_at: None,
         agreements: Vec::new(),
         revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     };
     let mut c = c;
     c.consent_hash = mush_economy::consent_hash(&c.issuer, &c.consent);
