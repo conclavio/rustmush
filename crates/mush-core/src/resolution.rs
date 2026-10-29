@@ -1254,6 +1254,59 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Join the captured route, Sim crossing capture and the exact Scenes
+    /// transcript owner in one acknowledged mutation. Empty Scenes output
+    /// remains an authenticated owner observation, never a synthetic write.
+    pub fn prepare_captured_locomotion_with_scenes<P, S>(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        service: &crate::locomotion::scene_transition::CoreLocomotionWithScenes<P, S>,
+    ) -> Result<
+        crate::locomotion::scene_transition::SceneLocomotionReceipt,
+        crate::participant::ParticipantError,
+    >
+    where
+        P: crate::participant::OwnerParticipant<
+                Request = crate::locomotion::transition::LocomotionIntent,
+                Output = crate::locomotion::transition::LocomotionDraft,
+            >,
+        S: crate::participant::OwnerParticipant<
+                Request = crate::locomotion::scene_transition::ScenesMovementIntent,
+                Output = crate::locomotion::scene_transition::ScenesMovementDraft,
+            >,
+    {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            txn.read_preimage(base, provider)
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            let admission = self
+                .captured_admission
+                .as_ref()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            self.participants
+                .as_mut()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?
+                .prepare_locomotion_with_scenes(
+                    service,
+                    txn,
+                    self.commit_token,
+                    admission,
+                    base,
+                    provider,
+                )
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
     /// Reserve one inert charter object using this invocation's actual actor.
     /// The object and typed reservation share this action's single commit.
     pub fn reserve_initial_filing_shell(

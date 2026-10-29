@@ -20,12 +20,11 @@ use crate::mechanics::{
 };
 use crate::module::{ErasedSlotCapture, ModuleStateMap, StateInit};
 
-/// The full optional roster has thirteen adapters: nine commerce, hardware and IC
-/// adapters, underwriting publication, Conduct quota/artifact adapters, and
-/// TacSim's surface black box (doc 23 cut S.1).
+/// The full optional production roster has seventeen adapters, including the
+/// physical and ordinary locomotion protocols and atomic Scenes completion.
 /// Registration headroom does not expand any invocation's images or modules;
 /// adapters sharing an actual state slot still require disjoint full action refs.
-pub const MAX_OWNER_PARTICIPANTS: usize = 16;
+pub const MAX_OWNER_PARTICIPANTS: usize = 24;
 /// An invocation binds at most three distinct slots belonging to two modules.
 pub const MAX_OWNER_PARTICIPANT_IMAGES: usize = 3;
 pub const MAX_OWNER_PARTICIPANT_MODULES: usize = 2;
@@ -901,6 +900,113 @@ impl<'a> ParticipantPreparation<'a> {
         Ok(receipt)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_locomotion_with_scenes<P, S>(
+        &mut self,
+        service: &crate::locomotion::scene_transition::CoreLocomotionWithScenes<P, S>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        admission: &crate::locomotion::LocomotionAdmission,
+        base: &crate::action_state::ActionReadBase,
+        provider: &crate::action::ProviderRegistrationOrdinal,
+    ) -> Result<crate::locomotion::scene_transition::SceneLocomotionReceipt, ParticipantError>
+    where
+        P: OwnerParticipant<
+                Request = crate::locomotion::transition::LocomotionIntent,
+                Output = crate::locomotion::transition::LocomotionDraft,
+            >,
+        S: OwnerParticipant<
+                Request = crate::locomotion::scene_transition::ScenesMovementIntent,
+                Output = crate::locomotion::scene_transition::ScenesMovementDraft,
+            >,
+    {
+        if self.shell.is_some()
+            || !self.images.is_empty()
+            || [&service.sim_participant, &service.scenes_participant]
+                .iter()
+                .any(|reference| {
+                    !self.registry.grants_exact(
+                        reference,
+                        self.provider.owner(),
+                        self.provider.action(),
+                    )
+                })
+        {
+            return Err(ParticipantError::Authority);
+        }
+        let sim_intent = crate::locomotion::transition::LocomotionIntent::new_with_scenes(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            admission,
+        )?;
+        let scenes_intent = crate::locomotion::scene_transition::ScenesMovementIntent::new(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            admission,
+            &service.observer,
+        )?;
+        let sim = self.prepare(&service.sim_handle, commit, sim_intent)?;
+        let context = OwnerPrepareContext {
+            world: self.world,
+            invocation: self.invocation,
+            action: self.provider.action(),
+            commit_token: commit,
+        };
+        // This exception is private to the closed joint protocol. An empty
+        // Scenes image still retains the real owner slot, recheck and bind.
+        let scenes = self.registry.prepare_inner(
+            &service.scenes_handle,
+            self.provider,
+            &context,
+            self.images,
+            scenes_intent,
+            Some(&service.scenes_participant),
+        )?;
+        if !self.matches_preparation(&sim.binding, commit)
+            || !self.matches_preparation(&scenes.binding, commit)
+        {
+            return Err(ParticipantError::Authority);
+        }
+        self.images.require_exact_exchange(
+            &[
+                service.sim_participant.clone(),
+                service.scenes_participant.clone(),
+            ],
+            self.provider.action(),
+            commit,
+        )?;
+        let writes = &self
+            .images
+            .0
+            .iter()
+            .find(|image| image.definition == service.scenes_participant)
+            .ok_or(ParticipantError::Authority)?
+            .writes;
+        let writes_digest =
+            crate::locomotion::scene_transition::verify_scene_writes(&scenes, writes)?;
+        let (receipt, image) = service.prepare(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            admission,
+            sim,
+            scenes,
+            writes_digest,
+            base,
+            provider,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Locomotion(
+            Box::new(image),
+        ));
+        Ok(receipt)
+    }
+
     pub(crate) fn reserve_shell(
         &mut self,
         service: &crate::reserved_shell::ShellReservations,
@@ -1000,6 +1106,18 @@ impl ParticipantRegistry {
         images: &mut OwnerImages,
         request: P::Request,
     ) -> Result<P::Output, ParticipantError> {
+        self.prepare_inner(handle, provider, context, images, request, None)
+    }
+
+    fn prepare_inner<P: OwnerParticipant>(
+        &self,
+        handle: &ParticipantHandle<P>,
+        provider: &ActionProviderEntry,
+        context: &OwnerPrepareContext<'_>,
+        images: &mut OwnerImages,
+        request: P::Request,
+        empty_scenes: Option<&DefinitionRef>,
+    ) -> Result<P::Output, ParticipantError> {
         if !Arc::ptr_eq(&handle.composition, &self.composition)
             || handle.action != *provider.action()
             || handle.requester != *provider.owner()
@@ -1066,7 +1184,16 @@ impl ParticipantRegistry {
             .participant_slot(r.state_type)
             .ok_or(ParticipantError::Slot)?;
         let prepared = r.adapter.prepare(state, context, Box::new(request))?;
-        if prepared.writes.is_empty() || prepared.writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES {
+        let allow_empty = empty_scenes.is_some_and(|allowed| {
+            allowed == &r.definition
+                && allowed.key().owner.as_str() == "scenes"
+                && allowed.key().id.as_str()
+                    == crate::locomotion::scene_transition::SCENES_PARTICIPANT
+                && crate::locomotion::scene_transition::exact_action(context.action).is_ok()
+        });
+        if (prepared.writes.is_empty() && !allow_empty)
+            || prepared.writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES
+        {
             return Err(ParticipantError::ImageLimit);
         }
         for write in &prepared.writes {
@@ -1690,6 +1817,88 @@ mod tests {
             self.registry
                 .prepare(handle, entry, &context, images, request)
         }
+    }
+
+    struct EmptyPreparation(Arc<dyn ErasedAdapter>);
+    impl ErasedAdapter for EmptyPreparation {
+        fn prepare(
+            &self,
+            state: &(dyn Any + Send),
+            context: &OwnerPrepareContext<'_>,
+            request: ErasedValue,
+        ) -> Result<ErasedPreparation, ParticipantError> {
+            let mut prepared = self.0.prepare(state, context, request)?;
+            prepared.writes.clear();
+            Ok(prepared)
+        }
+        fn recheck(
+            &self,
+            state: &(dyn Any + Send),
+            context: &OwnerPrepareContext<'_>,
+            patch: &(dyn Any + Send),
+        ) -> Result<(), ParticipantError> {
+            self.0.recheck(state, context, patch)
+        }
+        fn bind<'a>(
+            self: Arc<Self>,
+            state: &'a mut (dyn Any + Send),
+            patch: ErasedValue,
+        ) -> Result<Box<dyn ErasedBound + 'a>, ParticipantError> {
+            Arc::clone(&self.0).bind(state, patch)
+        }
+        fn accepts_write(&self, write: &ReplayWrite) -> bool {
+            self.0.accepts_write(write)
+        }
+    }
+
+    #[test]
+    fn empty_owner_images_remain_forbidden_outside_exact_scene_protocol() {
+        let mut f = fixture();
+        let registration = f
+            .registry
+            .registrations
+            .iter_mut()
+            .find(|r| r.adapter_type == TypeId::of::<Adapter<1>>())
+            .unwrap();
+        registration.adapter = Arc::new(EmptyPreparation(Arc::clone(&registration.adapter)));
+        let definition = registration.definition.clone();
+        let mut images = OwnerImages::default();
+        assert!(matches!(
+            f.prepare(
+                &f.left,
+                Patch {
+                    before: 10,
+                    after: 11,
+                    refuse: false
+                },
+                &mut images
+            ),
+            Err(ParticipantError::ImageLimit)
+        ));
+        assert!(images.is_empty());
+        let context = OwnerPrepareContext {
+            world: &f.world,
+            invocation: &f.invocation,
+            action: &f.action,
+            commit_token: CommitToken::from_bytes([9; 16]),
+        };
+        assert!(matches!(
+            f.registry.prepare_inner(
+                &f.left,
+                f.providers.get_exact(&f.action).unwrap(),
+                &context,
+                &mut images,
+                Patch {
+                    before: 10,
+                    after: 11,
+                    refuse: false
+                },
+                Some(&definition)
+            ),
+            Err(ParticipantError::ImageLimit)
+        ));
+        assert!(images.is_empty());
+        assert_eq!(f.world.module_state::<Cell<1>>(), Some(&Cell(10)));
     }
 
     // The adapter's own result can be successful while an integrity check

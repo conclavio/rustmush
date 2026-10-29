@@ -192,9 +192,9 @@ impl StateFence {
     }
 }
 
-struct Captured {
-    facts: CaptureFacts,
-    plan_digest: DefinitionDigest,
+pub(super) struct Captured {
+    pub(super) facts: CaptureFacts,
+    pub(super) plan_digest: DefinitionDigest,
     fence: StateFence,
 }
 
@@ -315,7 +315,7 @@ fn projection_dependencies(
     Ok(nodes)
 }
 
-fn capture(
+pub(super) fn capture(
     state: &SpatialState,
     world: &World,
     route: &ActorMove,
@@ -370,7 +370,11 @@ fn route_of(intent: &LocomotionIntent) -> ActorMove {
 
 fn audit_value(intent: &LocomotionIntent, captured: &Captured) -> Value {
     json!({
-        "op":"locomotion_v1",
+        "op":if intent.action().key().id.as_str() == mush_core::locomotion::scene_transition::ACTION {
+            "locomotion_with_scenes_v1"
+        } else {
+            "locomotion_v1"
+        },
         "commit":intent.commit(),
         "action":intent.action(),
         "actor":intent.actor(),
@@ -398,7 +402,7 @@ fn prepare_audit(
     Ok((audit, write))
 }
 
-struct Patch {
+pub(super) struct Patch {
     intent: LocomotionIntent,
     plan_digest: DefinitionDigest,
     capture_digest: DefinitionDigest,
@@ -407,7 +411,7 @@ struct Patch {
     fence: StateFence,
 }
 
-struct Bound<'a> {
+pub(super) struct Bound<'a> {
     audit: BoundLedgerAppend<'a>,
 }
 
@@ -419,7 +423,7 @@ impl BoundParticipant for Bound<'_> {
     }
 }
 
-struct LocomotionParticipant;
+pub(super) struct LocomotionParticipant;
 
 impl OwnerParticipant for LocomotionParticipant {
     type State = SpatialState;
@@ -530,22 +534,26 @@ struct Provider {
     crossings: LocomotionCrossings,
 }
 
+pub(super) fn validate_invocation(invocation: &ActionInvocation) -> Result<(), ActionError> {
+    if invocation.subject() != &PerceivedRef::SelfActor
+        || invocation.principal()
+            != &(PrincipalId::Object {
+                id: invocation.actor(),
+            })
+        || !invocation.targets().is_empty()
+        || invocation
+            .parameters()
+            .as_object()
+            .is_none_or(|parameters| !parameters.is_empty())
+    {
+        return Err(unavailable("captured locomotion invocation refused"));
+    }
+    Ok(())
+}
+
 impl ActionProvider for Provider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
-        if invocation.subject() != &PerceivedRef::SelfActor
-            || invocation.principal()
-                != &(PrincipalId::Object {
-                    id: invocation.actor(),
-                })
-            || !invocation.targets().is_empty()
-            || invocation
-                .parameters()
-                .as_object()
-                .is_none_or(|parameters| !parameters.is_empty())
-        {
-            return Err(unavailable("captured locomotion invocation refused"));
-        }
-        Ok(())
+        validate_invocation(invocation)
     }
 
     fn prepare_authoritative_with_context(

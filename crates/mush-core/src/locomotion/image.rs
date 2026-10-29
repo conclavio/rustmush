@@ -25,6 +25,7 @@ pub(crate) struct LocomotionObjects {
     after: BTreeMap<ObjId, Obj>,
     writes: Vec<ReplayWrite>,
     pub(crate) participant: DefinitionRef,
+    pub(crate) scenes_participant: Option<DefinitionRef>,
     pub(crate) action: DefinitionRef,
     pub(crate) commit: CommitToken,
 }
@@ -145,6 +146,7 @@ impl LocomotionObjects {
             after,
             writes,
             participant,
+            scenes_participant: None,
             action,
             commit,
         };

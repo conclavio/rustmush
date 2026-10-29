@@ -242,7 +242,9 @@ fn compose_server_modules<E>(
     .into_iter()
     .chain(game.reserved_rooms.iter().copied())
     .collect();
+    let scene_movement_receipts = Arc::default();
     let simulation = mush_sim::SimulationModule::new()
+        .with_atomic_scene_movement(Arc::clone(&scene_movement_receipts))
         .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
         .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks));
     let tactics = match launch {
@@ -270,11 +272,15 @@ fn compose_server_modules<E>(
             .with_unit_authority(tacsim::composition::domain_unit_authority(tacsim_delegate)),
         ),
         Box::new(mush_faction::FactionModule::new()),
-        Box::new(mush_scenes::ScenesModule::new().with_sealer_gate(Arc::new(
-            |w: &mush_core::World, run: u64, who: mush_core::ObjId| {
-                mush_economy::stands_in_contract(w, mush_economy::ContractId(run), who)
-            },
-        ))),
+        Box::new(
+            mush_scenes::ScenesModule::new()
+                .with_atomic_movement(scene_movement_receipts)
+                .with_sealer_gate(Arc::new(
+                    |w: &mush_core::World, run: u64, who: mush_core::ObjId| {
+                        mush_economy::stands_in_contract(w, mush_economy::ContractId(run), who)
+                    },
+                )),
+        ),
         Box::new(simulation),
         atlas_module(atlas),
         Box::new(tactics),

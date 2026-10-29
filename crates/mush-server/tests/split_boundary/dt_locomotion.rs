@@ -19,12 +19,12 @@ use super::dt_unit_authority::persist_legacy;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-struct Rig {
-    world: TestWorld,
-    actor: ObjId,
-    source: ObjId,
-    destination: ObjId,
-    moved: Arc<AtomicUsize>,
+pub(super) struct Rig {
+    pub(super) world: TestWorld,
+    pub(super) actor: ObjId,
+    pub(super) source: ObjId,
+    pub(super) destination: ObjId,
+    pub(super) moved: Arc<AtomicUsize>,
 }
 
 struct ObserveMoved(Arc<AtomicUsize>);
@@ -46,7 +46,7 @@ impl mush_core::GameModule for ObserveMoved {
     }
 }
 
-async fn fixture(store: &InMemoryStore, kind: ObjKind) -> TestResult<Rig> {
+pub(super) async fn fixture(store: &InMemoryStore, kind: ObjKind) -> TestResult<Rig> {
     let mut config = mush_config::config::Config::default();
     config.tacsim.enabled = true;
     let llm = Arc::new(mush_llm::LlmService::from_config(
@@ -109,6 +109,10 @@ fn token() -> CommitToken {
 }
 
 fn stage(rig: &mut Rig, line: &str) -> TestResult {
+    stage_action(rig, line, mush_core::locomotion::transition::ACTION)
+}
+
+pub(super) fn stage_action(rig: &mut Rig, line: &str, action_id: &str) -> TestResult {
     let action = rig
         .world
         .engine()
@@ -118,7 +122,7 @@ fn stage(rig: &mut Rig, line: &str) -> TestResult {
         .current(&DefinitionKey {
             owner: OwnerId::new("sim")?,
             kind: DefinitionKind::new("action")?,
-            id: DefinitionId::new(mush_core::locomotion::transition::ACTION)?,
+            id: DefinitionId::new(action_id)?,
         })
         .cloned()
         .ok_or("locomotion action")?;
@@ -190,7 +194,7 @@ fn stage(rig: &mut Rig, line: &str) -> TestResult {
     Ok(())
 }
 
-fn location(rig: &Rig) -> Option<ObjId> {
+pub(super) fn location(rig: &Rig) -> Option<ObjId> {
     rig.world
         .world()
         .get(rig.actor)

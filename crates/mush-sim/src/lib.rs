@@ -47,6 +47,7 @@ pub mod journey;
 pub mod links;
 mod locomotion;
 mod locomotion_capture;
+mod locomotion_scenes;
 mod personnel;
 mod personnel_capture;
 pub mod physical;
@@ -58,7 +59,7 @@ pub mod tick;
 pub mod transition;
 pub mod window;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use std::time::Duration;
 
@@ -167,6 +168,8 @@ pub struct SimulationModule {
     /// composition root may upgrade it from `[tacsim]`.
     pulse: tick::PulseConfig,
     ic_custody: Option<ic_exclusion::IcExclusionConfig>,
+    atomic_scene_movement:
+        Option<Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>>,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -176,6 +179,10 @@ impl std::fmt::Debug for SimulationModule {
             .field("accounts", &self.accounts.is_some())
             .field("routes", &self.routes.is_some())
             .field("carrier_hooks", &self.carrier_hooks.is_some())
+            .field(
+                "atomic_scene_movement",
+                &self.atomic_scene_movement.is_some(),
+            )
             .finish()
     }
 }
@@ -197,6 +204,7 @@ impl SimulationModule {
             carrier_hooks: None,
             pulse: tick::PulseConfig::default(),
             ic_custody: None,
+            atomic_scene_movement: None,
         }
     }
 
@@ -205,6 +213,18 @@ impl SimulationModule {
     #[must_use]
     pub fn with_ic_mind_custody(mut self, config: ic_exclusion::IcExclusionConfig) -> Self {
         self.ic_custody = Some(config);
+        self
+    }
+
+    /// Compose the closed captured-locomotion action with Scenes' real atomic
+    /// transcript participant. The Scenes module must opt in as well. This
+    /// installs no command route and does not certify personnel history.
+    #[must_use]
+    pub fn with_atomic_scene_movement(
+        mut self,
+        reader: Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>,
+    ) -> Self {
+        self.atomic_scene_movement = Some(reader);
         self
     }
 
@@ -993,6 +1013,9 @@ impl GameModule for SimulationModule {
         reg.state(SpatialState::new(self.config.recovery_room));
         physical::register(reg, self.ic_custody.is_some())?;
         locomotion::register(reg)?;
+        if let Some(reader) = &self.atomic_scene_movement {
+            locomotion_scenes::register(reg, reader)?;
+        }
         // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
         // arena holds. Always composed, even with no game layer above — the
         // admission sites read it unconditionally, and a missing slot would be
@@ -1130,6 +1153,9 @@ impl GameModule for SimulationModule {
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
         physical::loaded(ctx)?;
         locomotion::loaded(ctx)?;
+        if self.atomic_scene_movement.is_some() {
+            locomotion_scenes::loaded(ctx)?;
+        }
         // The coordinator hydrated typed leases before the load callbacks.
         // Read them through Sim's real owner lens before the first command:
         // a restarted pilot may reclaim before any periodic tick has fired.
