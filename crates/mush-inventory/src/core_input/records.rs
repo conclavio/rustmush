@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Lineage, Lot, LotId};
+use crate::{Lot, LotId};
 use mush_core::{
     BoundedScalar, CanonicalHash, ClockRef, ClockStamp, IdempotencyKey, IdempotencyKeyText,
     IdempotencyScope, ObjId, PrincipalId, ReservationBook, ReservationId, ReservationRecord,
@@ -217,7 +217,7 @@ impl CoreInputOperation {
             || self.previous == Some(self.identity.order)
             || self.lot.quantity() != 1
             || self.lot.depth() != 0
-            || !matches!(self.lot.lineage(), Lineage::Origin { .. })
+            || !self.lot.lineage().is_root()
         {
             return Err(Error::Integrity);
         }

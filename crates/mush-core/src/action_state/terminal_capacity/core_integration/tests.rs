@@ -1004,3 +1004,44 @@ fn maximal_nested_terminal_and_full_native_facility_book_fit_complete_envelopes(
 
 #[path = "tests/delivery.rs"]
 mod delivery_tests;
+
+/// Doc 17h cut M8b-2 (H2; fix round 1, L2 and L3): an order's site is read from its intent.
+/// With no `uncertified` die it is the policy's own factory and container; with one it is the
+/// policy's `ungoverned` site; and an uncertified intent on a policy with no site is refused.
+#[test]
+fn m8b2_the_order_site_follows_the_intents_die() -> TestResult {
+    let action = DefinitionRegistryBuilder::new().register(
+        crate::OwnerId::new("industry")?,
+        DefinitionDescriptor::new(
+            DefinitionKind::new("action")?,
+            DefinitionId::new("accept_core_integration")?,
+            1,
+            json!({"fixture": true}),
+        )?,
+    )?;
+    let row = |intent: Value| Row {
+        raw: json!({}),
+        order: 1,
+        accepted: CommitToken::from_bytes([1; 16]),
+        action: action.clone(),
+        policy: intent["policy"].clone(),
+        intent,
+        fingerprint: DefinitionDigest::from_bytes([2; 32]),
+    };
+    let chartered = json!({"factory": 10, "output_container": 11});
+    let composed = json!({"factory": 10, "output_container": 11,
+        "ungoverned": {"factory": 20, "output_container": 21}});
+    let certified = row(json!({"policy": composed, "certificate": {}}));
+    assert_eq!(
+        (certified.site_factory()?, certified.site_container()?),
+        (ObjId(10), ObjId(11))
+    );
+    let back_room = row(json!({"policy": composed, "uncertified": {}}));
+    assert_eq!(
+        (back_room.site_factory()?, back_room.site_container()?),
+        (ObjId(20), ObjId(21))
+    );
+    let no_site = row(json!({"policy": chartered, "uncertified": {}}));
+    assert!(no_site.site_factory().is_err() && no_site.site_container().is_err());
+    Ok(())
+}

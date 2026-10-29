@@ -181,7 +181,14 @@ fn accounts(
         return Err(Error::Unavailable);
     }
     accounts.push(payer.clone());
-    for expected in [&policy.supplier, &policy.integrator] {
+    // A heirloom or grey die pays only the ungoverning site's integrator (doc 17h cut M8b-2,
+    // H2); a certified one pays the supplier and the chartered integrator.
+    let payees = if subject.source.is_certified() {
+        vec![&policy.supplier, &policy.integrator]
+    } else {
+        vec![policy.site(false)?.integrator]
+    };
+    for expected in payees {
         organization(world, expected)?;
         let account = state
             .snapshot()
@@ -267,11 +274,12 @@ fn funding_at(
     if utc < supplier.observed_utc || utc >= supplier.expires_utc {
         return Err(Error::Unavailable);
     }
+    let site = policy.site(subject.source.is_certified())?;
     scoped(
         world,
         supplier.operator,
-        &policy.integrator,
-        "industry.core.integrate",
+        site.integrator,
+        site.operator_capability,
         1,
     )?;
     let vault = state
@@ -281,7 +289,17 @@ fn funding_at(
     if vault.status != VaultStatus::Active || !crate::endpoint_state(world, vault.id).is_live() {
         return Err(Error::Unavailable);
     }
-    let payment = if policy.supplier_stock.contains(&vault.id) {
+    let payment = if !subject.source.is_certified() {
+        // Doc 17h cut M8b-2 (H2): the requester's own heirloom or grey lot, never stock.
+        if policy.supplier_stock.contains(&vault.id)
+            || vault.owner != PrincipalId::Object(subject.requester)
+            || vault.scope.is_some()
+            || !crate::may_take_from_vault(world, subject.requester, vault.id)
+        {
+            return Err(Error::Unavailable);
+        }
+        DiePayment::Uncertified
+    } else if policy.supplier_stock.contains(&vault.id) {
         if vault.owner != PrincipalId::Organization(policy.supplier.organization)
             || vault.scope != Some(policy.supplier.scope)
         {

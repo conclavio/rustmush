@@ -10,15 +10,23 @@
 //! proof: it must exist, be readable, and name the birth's die lot and class; then the core is
 //! `certified` by the certificate's importer at the certificate's class. A missing or
 //! unreadable certificate, or one that disagrees with the birth, is `unknown` — never
-//! agreement. M8a's read returns the two words and no other (`heirloom` and `grey` arrive in
-//! cut M8b).
+//! agreement.
+//!
+//! Doc 17h cut M8b-2 (H4): a birth whose source is `heirloom` or `grey` (a die integrated at
+//! the ungoverning site) is proved the same way by the industry's staff issue of that die
+//! ([`mush_industry::core_production::UncertifiedDies`], granted beside the certificates):
+//! the issue must exist, be readable, and name the birth's die lot, operation, class and
+//! source; then the core is `heirloom` or `grey`. Anything else is `unknown`.
 //!
 //! A read: it grants nothing, consumes nothing and vouches for nothing beyond the records.
 
 use mush_core::{ObjId, World};
 use mush_economy::EconomyStore;
+use mush_economy::core_integration::DieSource;
 use mush_economy::core_integration::{CoreClass, CoreTitleBirth};
-use mush_industry::core_production::{DieCertificate, DieCertificates, DieClass};
+use mush_industry::core_production::{
+    DieCertificate, DieCertificates, DieClass, UncertifiedDie, UncertifiedDies,
+};
 pub use mush_roll::commerce::registry_inspection::Provenance;
 
 use crate::minds::registry_inspection::facts::Reads;
@@ -44,7 +52,8 @@ pub fn from_certificate(
         return Provenance::Unknown;
     };
     let grade = economy_class(certificate.class());
-    if certificate.operation() != birth.die_certificate
+    if !birth.source.is_certified()
+        || certificate.operation() != birth.die_certificate
         || certificate.lot().0 != birth.die_lot
         || grade != birth.class
     {
@@ -53,6 +62,28 @@ pub fn from_certificate(
     Provenance::Certified {
         importer: certificate.importer(),
         grade,
+    }
+}
+
+/// **What a birth and its staff issue say together** (doc 17h cut M8b-2, H4): `Heirloom` or
+/// `Grey` when the issue is the birth's (its operation, its lot, its class and its source);
+/// `Unknown` when there is no issue, it disagrees, or the birth is certified.
+#[must_use]
+pub fn from_issue(birth: &CoreTitleBirth, issue: Option<&UncertifiedDie>) -> Provenance {
+    let Some(issue) = issue else {
+        return Provenance::Unknown;
+    };
+    if issue.operation() != birth.die_certificate
+        || issue.lot().0 != birth.die_lot
+        || economy_class(issue.class()) != birth.class
+        || issue.source() != birth.source
+    {
+        return Provenance::Unknown;
+    }
+    match birth.source {
+        DieSource::Heirloom => Provenance::Heirloom,
+        DieSource::Grey => Provenance::Grey,
+        DieSource::Certified => Provenance::Unknown,
     }
 }
 
@@ -76,6 +107,20 @@ pub fn provenance_of<R: Reads>(w: &World, reader: &mut R, core: ObjId) -> Proven
     else {
         return Provenance::Unknown;
     };
+    // M8b-2 (H4): a heirloom or grey birth reads its staff issue, keyed by the die lot.
+    if !birth.source.is_certified() {
+        if !owned_by(std::any::TypeId::of::<UncertifiedDies>(), mush_industry::NS) {
+            return Provenance::Unknown;
+        }
+        let Some(issues) = w.module_state::<UncertifiedDies>() else {
+            return Provenance::Unknown;
+        };
+        let issue = reader.typed(
+            issues.handle(),
+            &UncertifiedDies::key(mush_inventory::LotId(birth.die_lot)),
+        );
+        return from_issue(&birth, issue.as_ref());
+    }
     let Some(certificates) = w.module_state::<DieCertificates>() else {
         return Provenance::Unknown;
     };

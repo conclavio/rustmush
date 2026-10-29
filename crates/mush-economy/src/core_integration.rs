@@ -21,7 +21,8 @@ pub use receipt::{
     CoreFundingReceipt, CorePaymentHistory, CoreTerminalReceipt, CoreTerminalResult,
 };
 pub use subject::{
-    CoreClass, CoreDeliveryPromise, CoreFundingSubject, CorePaymentPolicy, ScopedCoreAccount,
+    CoreClass, CoreDeliveryPromise, CoreFundingSubject, CorePaymentPolicy, DieSource,
+    IntegrationSite, ScopedCoreAccount, UngovernedIntegration,
 };
 
 use mush_core::CommitToken;
