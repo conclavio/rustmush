@@ -437,6 +437,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // mapped straight across and held by `validate` below.
             fine_cap_minor: cfg.minds.fine_cap_minor,
             revocation_ic_days: cfg.minds.revocation_ic_days,
+            // Doc 17h cut M8d2 (Q-M8-6): the seizure's inspection age and hold.
+            seizure_inspection_max_age_ic_days: cfg.minds.seizure_inspection_max_age_ic_days,
+            seizure_hold_ic_days: cfg.minds.seizure_hold_ic_days,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,

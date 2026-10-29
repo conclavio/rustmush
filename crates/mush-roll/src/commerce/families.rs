@@ -73,6 +73,11 @@ pub struct CommerceFamilies {
     /// Doc 17h cut M8g G3: the quirk claims (`roll_mind_claims`), a 32-slot ring per author;
     /// written from tacsim's transaction through the inspection writer's delegation.
     pub(crate) mind_claims: StateFamilyHandle<String, super::registry_inspection::ClaimRecord>,
+    /// Doc 17h cut M8d2 S4: the Registry's seizures (`roll_registry_seizures`), keyed by the
+    /// inspection that grounded each; written from tacsim's transaction through the
+    /// inspection writer's delegation.
+    pub(crate) registry_seizures:
+        StateFamilyHandle<String, super::registry_inspection::SeizureRecord>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) house_renewal_operations:
@@ -146,6 +151,7 @@ impl CommerceFamilies {
             registry_inspections: register(reg)?,
             revoked_principals: register(reg)?,
             mind_claims: register(reg)?,
+            registry_seizures: register(reg)?,
             registry_revocations: register(reg)?,
             revoked_terms: register(reg)?,
             withdrawals: register(reg)?,
@@ -338,6 +344,16 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         // Doc 17h cut M8g G3: an author's 32-slot claim ring,
         // `author/<author, 8 hex>/slot/<seq mod 32, 2 hex>`.
         "roll_mind_claims" => super::registry_inspection::claims::valid_key(key),
+        // Doc 17h cut M8d2: `hull/<8 hex>/inspection/<seq>`.
+        "roll_registry_seizures" => {
+            head == "hull"
+                && parts.next().is_some_and(|v| hex(v, 8, true))
+                && parts.next() == Some("inspection")
+                && parts
+                    .next()
+                    .is_some_and(|v| v.parse::<u64>().is_ok_and(|n| n > 0 && n.to_string() == v))
+                && parts.next().is_none()
+        }
         "roll_registry_revoked_principals" => {
             super::registry_inspection::principal::valid_key(key, person, org_number)
         }

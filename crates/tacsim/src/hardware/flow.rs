@@ -53,6 +53,7 @@ fn filing(deployment: &HardwareDeployment) -> Result<InitialFilingPolicy> {
 fn modules(
     deployment: &HardwareDeployment,
     mode: CoreOriginMode,
+    registry: Option<&mush_roll::commerce::registry_inspection::RegistryInspectionPolicy>,
 ) -> Result<Vec<Box<dyn GameModule>>> {
     let native = filing(deployment)?;
     let hardware = GovernedHardware::prepare(&layer(), mode, deployment.clone(), &native)?;
@@ -74,6 +75,15 @@ fn modules(
         InitialFilingTerms::new(90 * 86400, 3 * 86400)?,
         native,
     )?;
+    // Doc 17h cut M8d2: the Registry's inspection and seizure, when a test names the Registry
+    // (Active only), with the minds facts `minds.seized` resolves through.
+    let commerce = match (registry, mode) {
+        (Some(policy), CoreOriginMode::Active) => commerce
+            .with_registry_inspection(policy.clone())?
+            .with_registry_seizure(SEIZURE_TERMS)?
+            .with_minds_facts()?,
+        _ => commerce,
+    };
     owners.tacsim = commerce.configure_tacsim(owners.tacsim)?;
     owners.economy = commerce.configure_economy(owners.economy)?;
     Ok(vec![
@@ -117,6 +127,8 @@ struct Rig {
     buyer: ObjId,
     payer: AccountId,
     serial: u128,
+    /// Doc 17h cut M8d2: the Registry's inspection policy, once a test names the Registry.
+    registry: Option<mush_roll::commerce::registry_inspection::RegistryInspectionPolicy>,
 }
 impl Drop for Rig {
     fn drop(&mut self) {
@@ -150,7 +162,7 @@ impl Rig {
         {
             r.tasks().signal_stop_all();
         }
-        let modules = modules(&self.deployment, mode)?;
+        let modules = modules(&self.deployment, mode, self.registry.as_ref())?;
         self.restart(modules)?;
         self.flush();
         Ok(())
@@ -486,6 +498,7 @@ impl Rig {
             buyer,
             payer,
             serial: 100,
+            registry: None,
         })
     }
     fn new() -> Result<Self> {
@@ -913,8 +926,17 @@ fn refit_class(
     Ok(())
 }
 
-/// The ROM seal an IC epoch would take over `hull` now, under the shipped minds defaults.
+/// The ROM seal an IC epoch would take over `hull` now, under the shipped minds defaults, the
+/// impounded read taken from the rig's economy as the epoch and launch paths take it.
 fn rom_seal(r: &Rig, hull: ObjId) -> Result<crate::arena::mind::MindSeal> {
+    let unit = mush_tactics::module::unit_of(r.world().world(), hull).ok_or("the rig's unit")?;
+    let impounded = crate::match_::seal::core_impounded(r.world().world(), unit);
+    rom_seal_with(r, hull, impounded)
+}
+
+/// [`rom_seal`] with the impounded read given (doc 17h cut M8d2: the seal over a seized core,
+/// until `@registry/seize` composes a real seizure in this rig).
+fn rom_seal_with(r: &Rig, hull: ObjId, impounded: bool) -> Result<crate::arena::mind::MindSeal> {
     let unit = mush_tactics::module::unit_of(r.world().world(), hull).ok_or("the rig's unit")?;
     let minds = crate::config::MindsConfig::default();
     let reflex = crate::config::ReflexConfig::default();
@@ -927,6 +949,7 @@ fn rom_seal(r: &Rig, hull: ObjId) -> Result<crate::arena::mind::MindSeal> {
             minds: &minds,
             reflex: &reflex,
             principal: None,
+            impounded,
         },
     )?)
 }
@@ -1040,6 +1063,11 @@ async fn m8b_a_rig_is_fitted_at_stickney_then_ungoverned_in_the_back_room() -> R
             true
         )
     );
+    // Doc 17h cut M8d2: a governed rig no seizure holds reads unimpounded.
+    check!(!crate::match_::seal::core_impounded(
+        r.world().world(),
+        &fitted
+    ));
     check!(
         seal.admissions(crate::minds::licence_state::SealLicenceState::Doctrine)
             .is_empty()
@@ -1138,6 +1166,35 @@ async fn m8b_a_rig_is_fitted_at_stickney_then_ungoverned_in_the_back_room() -> R
     }
     let seal = rom_seal(&r, hull)?;
     check!(!seal.governed && seal.lifts_floor());
+    // Doc 17h cut M8d2 ("impounded in place"): the same fitted ungoverned rig, its core
+    // impounded (held by a seizure, or the Registry's after a forfeit), seals the ROM: no
+    // core, Class 0, governed, the no-core fallback, no floor lifted. The core stays fitted.
+    check!(!crate::match_::seal::core_impounded(
+        r.world().world(),
+        &ungoverned
+    ));
+    let held = rom_seal_with(&r, hull, true)?;
+    check_eq!(
+        (
+            held.core.clone(),
+            held.core_class,
+            held.class,
+            held.governed
+        ),
+        (
+            None,
+            crate::arena::core::CoreClass::Zero,
+            crate::arena::core::CoreClass::Zero,
+            true
+        )
+    );
+    check!(!held.lifts_floor());
+    check_eq!(
+        held.fallback.as_deref(),
+        Some(crate::match_::seal::NO_CORE_FALLBACK)
+    );
+    check_eq!(held.engine, crate::arena::mind::SealEngine::Native);
+    check!(crate::arena::core::read_core(&ungoverned).is_some_and(|hw| !hw.governed));
     match seal.sealed_line(crate::minds::licence_state::SealLicenceState::Doctrine) {
         crate::arena::ledger::EventKind::MindSealed {
             governed,
@@ -1819,5 +1876,459 @@ async fn shipped_signed_acceptance_rechecks_facility_before_stage_and_consuming_
             "stale hardware acceptance changed retained images"
         );
     }
+    Ok(())
+}
+
+/// Doc 17h cut M8d2: the shipped seizure terms (`[tacsim.minds]`' defaults).
+const SEIZURE_TERMS: crate::minds::registry_inspection::seizure::SeizureTerms =
+    crate::minds::registry_inspection::seizure::SeizureTerms {
+        max_age_ic_days: 3,
+        hold_ic_days: 3,
+    };
+
+/// **Name the Registry** (doc 17h cut M8d2): a `Registry` org with a `review` scope, one
+/// operator granted `roll.registry.inspect`, `.seize` and `.forfeit` there by GOD (the
+/// runbook's grants), and a reboot that composes the inspection and the seizure over them.
+fn name_registry(
+    r: &mut Rig,
+) -> Result<(
+    ObjId,
+    mush_roll::commerce::registry_inspection::RegistryInspectionPolicy,
+)> {
+    let operator = r.world_mut().spawn_player("Registry operator");
+    for line in ["@org/create Registry", "@org/scope create Registry=review"] {
+        command(r.world_mut(), GOD, line)?;
+    }
+    let (org, scope) = {
+        let orgs = r
+            .world()
+            .world()
+            .module_state::<OrgStore>()
+            .ok_or("Org owner")?
+            .state();
+        let org = orgs
+            .orgs()
+            .find(|o| o.name.as_str() == "Registry")
+            .ok_or("the Registry")?
+            .id;
+        let scope = orgs
+            .scopes_in(org)
+            .find(|s| s.name.as_str() == "review")
+            .ok_or("the review scope")?
+            .id;
+        (org, scope)
+    };
+    for capability in [
+        "roll.registry.inspect",
+        "roll.registry.seize",
+        "roll.registry.forfeit",
+    ] {
+        command(
+            r.world_mut(),
+            GOD,
+            &format!(
+                "@org/grant #{}=Registry {capability} scope=#{}",
+                operator.0, scope.0
+            ),
+        )?;
+    }
+    let policy = mush_roll::commerce::registry_inspection::RegistryInspectionPolicy::new(
+        r.deployment.issuer.clone(),
+        org,
+        scope,
+        vec![operator],
+    )?;
+    r.registry = Some(policy.clone());
+    r.reboot(CoreOriginMode::Active)?;
+    Ok((operator, policy))
+}
+
+/// A rig fitted at Stickney with a certified Class I core, then ungoverned in the back room
+/// with a second (M8b's flow): the hull and its ungoverned core.
+fn ungoverned_rig(r: &mut Rig) -> Result<(ObjId, ObjId)> {
+    let (first_accept, first) = integrate_class_one(r)?;
+    let (second_accept, second) = integrate_class_one(r)?;
+    let buyer = r.buyer;
+    let factory = r.deployment.factory;
+    let shop = r
+        .deployment
+        .ungovern
+        .as_ref()
+        .ok_or("the back-room shop")?
+        .factory;
+    r.world_mut().world_mut().move_to(buyer, factory)?;
+    let hull = rig_at(r, factory)?;
+    refit_class_one(r, hull, first, first_accept, None)?;
+    r.world_mut().world_mut().move_to(buyer, shop)?;
+    r.world_mut().world_mut().move_to(hull, shop)?;
+    r.flush();
+    refit_class_one(r, hull, second, second_accept, Some("core_ungovern"))?;
+    Ok((hull, second))
+}
+
+/// **Land an inspection of `hull` as `operator`** (doc 17h cut M8d2; the deviation M8d's
+/// `seed_ungoverned` set the precedent for): this rig's hulls belong to no port or yard, so the
+/// inspection action's known-hull gate (`facts::known`) refuses them. The record is the real
+/// read of the real hull (`facts::read_unit`: the fitted core, its governor, its provenance, the
+/// holder), at the world's IC now and the ring's next `seq`, decoded through the record's own
+/// strict wire (its census runs) and written in one action-state transaction.
+fn seed_inspection(
+    r: &mut Rig,
+    hull: ObjId,
+    operator: ObjId,
+    policy: &mush_roll::commerce::registry_inspection::RegistryInspectionPolicy,
+) -> Result<u64> {
+    use crate::minds::registry_inspection::facts::{StoreRead, read_unit};
+    use mush_roll::commerce::registry_inspection::{InspectionRecord, inspection_slots};
+    let host = crate::minds::registry_inspection::InspectionHost::of(r.world().world())
+        .ok_or("the inspection is composed")?;
+    let family = host.writer().family()?;
+    let (facts, seq, at_ic) = {
+        let engine = r.world().engine();
+        let mut reader = StoreRead(engine.action_state());
+        let found = read_unit(&engine.world, &mut reader, hull).ok_or("the hull reads")?;
+        let newest = inspection_slots(hull)
+            .filter_map(|slot| engine.action_state().get(&family, &slot).ok().flatten())
+            .map(|record| record.seq)
+            .max()
+            .unwrap_or(0);
+        (found.facts, newest + 1, engine.world.world_ic_now())
+    };
+    r.serial += 1;
+    let mut token = [0x5e; 16];
+    token[..8].copy_from_slice(&u64::try_from(r.serial)?.to_be_bytes());
+    let record: InspectionRecord = serde_json::from_value(json!({
+        "format": 1,
+        "inspection": CommitToken::from_bytes(token),
+        "action": policy.action()?,
+        "authority": policy,
+        "operator": operator,
+        "authorization": {"at": at_ic.at, "organization_revision": 1, "scope_revision": 1,
+            "sources": [{"tag": "grant", "revision": 1}]},
+        "hull": hull,
+        "seq": seq,
+        "core": facts.core,
+        "class": facts.class,
+        "governed": facts.governed,
+        "provenance": facts.provenance,
+        "seal_check": facts.seal_check,
+        "at_ic": at_ic,
+        "ungoverned_note": facts.ungoverned_note,
+        "holder": facts.holder,
+    }))?;
+    let slot = mush_roll::commerce::registry_inspection::inspection_key(hull, seq);
+    {
+        let engine = r.world_mut().engine_mut();
+        let mut txn = engine.action_transaction(&family)?;
+        if txn.get(&family, &slot)?.is_some() {
+            txn.replace(&family, &slot, record)?;
+        } else {
+            txn.insert(&family, &slot, record)?;
+        }
+        let (_, installation) = txn.prepare()?.into_parts();
+        engine.install_prepared_action(installation)?;
+    }
+    r.flush();
+    Ok(seq)
+}
+
+/// The core's title, read from the economy.
+fn title(r: &Rig, core: ObjId) -> Result<mush_economy::EconomicAsset> {
+    Ok(r.world()
+        .world()
+        .module_state::<EconomyStore>()
+        .ok_or("the economy")?
+        .snapshot()
+        .asset(core)
+        .ok_or("the core's title")?
+        .clone())
+}
+
+/// What `actor` is told for `line`, every line joined (the world flushed after).
+fn said(r: &mut Rig, actor: ObjId, line: &str) -> String {
+    let text = r
+        .world_mut()
+        .run(actor, line)
+        .iter()
+        .filter_map(|(_, e)| match e {
+            mush_proto::OutputEvent::Sys(t) => Some(t.to_plain_text()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    r.flush();
+    text
+}
+
+/// The seizure records, decoded.
+fn seizures(r: &Rig) -> Result<Vec<mush_roll::commerce::registry_inspection::SeizureRecord>> {
+    Ok(
+        r.rows(mush_roll::commerce::registry_inspection::SEIZURE_FAMILY)
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<std::result::Result<_, _>>()?,
+    )
+}
+
+/// **Doc 17h cut M8d2, the seizure half of M8d's gate** (S1–S7; the lead's "impounded in
+/// place"). In the hardware flow rig, with the Registry named:
+/// - before any inspection the hull cannot be seized; a stale ungoverned inspection (one IC
+///   second past `seizure_inspection_max_age_ic_days`) cannot be either, by the lead's sentence;
+/// - a fresh inspection of the ungoverned rig is seized: the core title `Disputed { the Registry
+///   org, hull/<8 hex>/inspection/2 }` and still the holder's, one seizure record, `minds.seized`
+///   resolving at the seizure's IC second, and the hull's ROM seal sealed as no core (Class 0,
+///   governed, no floor lifted) while `read_core` still reads the ungoverned core fitted;
+/// - a second seizure is refused; the seized core cannot be refitted (the governed shop refuses
+///   the hull's held core) nor transferred, by its holder or by staff;
+/// - forfeit before the hold refuses ("That seizure is still within its hold.");
+/// - a restart replays it all (the economy's receipt audit and the managed-title index, the
+///   record, the seal);
+/// - after the hold the forfeit moves the title to the Registry org with the claim released,
+///   the hull still sealing the ROM; a second forfeit refuses; a restart replays that too.
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::too_many_lines)]
+async fn m8d2_an_ungoverned_rig_is_seized_impounded_and_forfeited_after_its_hold() -> Result {
+    use crate::minds::registry_inspection::seizure::{
+        FORFEIT_ACTION, Findings, SEIZE_ACTION, fitted_core,
+    };
+    use mush_roll::commerce::facts::RegistryFindings as _;
+    let mut r = Rig::new()?;
+    let (hull, core) = ungoverned_rig(&mut r)?;
+    let (operator, policy) = name_registry(&mut r)?;
+    let registry = PrincipalId::Organization(policy.organization());
+    let n = hull.0;
+    check_eq!(fitted_core(r.world().world(), hull), Some(core));
+
+    // No inspection: nothing to seize.
+    check!(
+        r.plan("tacsim", SEIZE_ACTION, operator, json!({"hull": n}))
+            .is_err()
+    );
+    check_eq!(
+        said(&mut r, operator, &format!("@registry/seize #{n}")),
+        "No such inspection."
+    );
+    // A stale inspection: one IC second past the age.
+    check_eq!(seed_inspection(&mut r, hull, operator, &policy)?, 1);
+    let now = r.world().world().now();
+    r.world_mut().world_mut().set_now(now + 3 * 86_400 + 1);
+    r.flush();
+    check!(
+        r.plan("tacsim", SEIZE_ACTION, operator, json!({"hull": n}))
+            .is_err(),
+        "a stale inspection grounds nothing"
+    );
+    check_eq!(
+        said(&mut r, operator, &format!("@registry/seize #{n}")),
+        "The latest inspection of that hull found nothing to seize."
+    );
+
+    // A fresh inspection (seq 2) grounds the seizure.
+    check_eq!(seed_inspection(&mut r, hull, operator, &policy)?, 2);
+    let before = title(&r, core)?;
+    let (_, outcome) = r.perform("tacsim", SEIZE_ACTION, operator, json!({"hull": n}))?;
+    check_eq!(
+        outcome["summary"].as_str(),
+        Some(
+            format!(
+                "Seized the core in hull #{n}. It stays fitted and flies nothing; it may be \
+                 forfeited after 3 IC days."
+            )
+            .as_str()
+        )
+    );
+    let held = title(&r, core)?;
+    let key = mush_economy::registry_filing::seizure::inspection_key(hull, 2);
+    check_eq!(
+        held.encumbrances,
+        vec![mush_economy::Encumbrance::Disputed {
+            claimant: registry.clone(),
+            reason: key.clone(),
+        }]
+    );
+    check_eq!(
+        held.title_owner,
+        before.title_owner,
+        "seizure keeps the title"
+    );
+    let records = seizures(&r)?;
+    check_eq!(records.len(), 1);
+    let record = records[0].clone();
+    check_eq!(
+        (record.hull, record.seq, record.core, record.seized_by),
+        (hull, 2, core, operator)
+    );
+    check_eq!(record.forfeit_after_ic, record.at_ic + 3 * 86_400);
+    // `minds.seized`, the public finding, at the seizure's IC second.
+    check_eq!(
+        Findings.seized(r.world().world(), hull, 2),
+        Some(record.at_ic)
+    );
+    check_eq!(Findings.seized(r.world().world(), hull, 1), None);
+    // Impounded in place: the ROM seal as no core, the core still fitted and ungoverned.
+    let unit = mush_tactics::module::unit_of(r.world().world(), hull)
+        .ok_or("the rig")?
+        .clone();
+    check!(crate::match_::seal::core_impounded(
+        r.world().world(),
+        &unit
+    ));
+    let rom = rom_seal(&r, hull)?;
+    check_eq!(
+        (rom.core.clone(), rom.class, rom.governed),
+        (None, crate::arena::core::CoreClass::Zero, true)
+    );
+    check!(!rom.lifts_floor());
+    check!(crate::arena::core::read_core(&unit).is_some_and(|hw| !hw.governed));
+
+    // Twice: refused.
+    check!(
+        r.plan("tacsim", SEIZE_ACTION, operator, json!({"hull": n}))
+            .is_err()
+    );
+    check_eq!(
+        said(&mut r, operator, &format!("@registry/seize #{n}")),
+        "That inspection's core is already seized."
+    );
+    // S6: the seized core cannot be sold or transferred, by its holder or by staff.
+    let other = r.world_mut().spawn_player("A buyer of cores");
+    for actor in [r.buyer, GOD] {
+        check!(
+            command(
+                r.world_mut(),
+                actor,
+                &format!("@asset/transfer #{}=#{}", core.0, other.0)
+            )
+            .is_err(),
+            "a seized core cannot be transferred"
+        );
+    }
+    r.flush();
+    check_eq!(title(&r, core)?, held);
+    // S6: nor refitted: the chartered shop refuses the hull whose fitted core is held.
+    let (third_accept, third) = integrate_class_one(&mut r)?;
+    let buyer = r.buyer;
+    let factory = r.deployment.factory;
+    r.world_mut().world_mut().move_to(buyer, factory)?;
+    r.world_mut().world_mut().move_to(hull, factory)?;
+    r.flush();
+    check!(
+        refit_class_one(&mut r, hull, third, third_accept, None).is_err(),
+        "a seized core cannot be refitted out"
+    );
+    check_eq!(fitted_core(r.world().world(), hull), Some(core));
+
+    // Forfeit before the hold: refused, by the lead's sentence.
+    check!(
+        r.plan(
+            "tacsim",
+            FORFEIT_ACTION,
+            operator,
+            json!({"hull": n, "seq": 2})
+        )
+        .is_err()
+    );
+    check_eq!(
+        said(&mut r, operator, &format!("@registry/forfeit #{n}")),
+        "That seizure is still within its hold."
+    );
+
+    // A restart replays the seizure.
+    r.reboot(CoreOriginMode::Active)?;
+    check_eq!(title(&r, core)?, held);
+    check_eq!(seizures(&r)?, vec![record.clone()]);
+    check_eq!(
+        Findings.seized(r.world().world(), hull, 2),
+        Some(record.at_ic)
+    );
+    check_eq!(
+        rom_seal(&r, hull)?.class,
+        crate::arena::core::CoreClass::Zero
+    );
+
+    // After the hold: the title to the Registry org, the claim released.
+    let now = r.world().world().now();
+    r.world_mut().world_mut().set_now(now + 3 * 86_400);
+    r.flush();
+    let (_, outcome) = r.perform(
+        "tacsim",
+        FORFEIT_ACTION,
+        operator,
+        json!({"hull": n, "seq": 2}),
+    )?;
+    check_eq!(
+        outcome["summary"].as_str(),
+        Some(format!("The core seized from hull #{n} is forfeit to the Registry.").as_str())
+    );
+    let forfeit = title(&r, core)?;
+    check_eq!(forfeit.title_owner, registry);
+    check!(forfeit.encumbrances.is_empty());
+    let records = seizures(&r)?;
+    check!(records.len() == 1 && records[0].forfeited());
+    check_eq!(records[0].forfeited_by, Some(operator));
+    // Still impounded: the Registry's core flies nothing.
+    check_eq!(
+        rom_seal(&r, hull)?.class,
+        crate::arena::core::CoreClass::Zero
+    );
+    // Twice: the uniform refusal.
+    check!(
+        r.plan(
+            "tacsim",
+            FORFEIT_ACTION,
+            operator,
+            json!({"hull": n, "seq": 2})
+        )
+        .is_err()
+    );
+    check_eq!(
+        said(&mut r, operator, &format!("@registry/forfeit #{n}/2")),
+        "That did not go through. Nothing changed."
+    );
+    // A restart replays the forfeit.
+    r.reboot(CoreOriginMode::Active)?;
+    check_eq!(title(&r, core)?, forfeit);
+    check_eq!(
+        rom_seal(&r, hull)?.class,
+        crate::arena::core::CoreClass::Zero
+    );
+    Ok(())
+}
+
+/// **Doc 17h cut M8d2: a governed rig cannot be seized** (S4, the record's word): its newest
+/// inspection read a governed certified core, so the provider refuses and the command says the
+/// lead's sentence; its title carries no claim and it seals governed Class I as before.
+#[tokio::test(flavor = "current_thread")]
+async fn m8d2_a_governed_rig_cannot_be_seized() -> Result {
+    use crate::minds::registry_inspection::seizure::SEIZE_ACTION;
+    let mut r = Rig::new()?;
+    let (accept, core) = integrate_class_one(&mut r)?;
+    let buyer = r.buyer;
+    let factory = r.deployment.factory;
+    r.world_mut().world_mut().move_to(buyer, factory)?;
+    let hull = rig_at(&mut r, factory)?;
+    refit_class_one(&mut r, hull, core, accept, None)?;
+    let (operator, policy) = name_registry(&mut r)?;
+    seed_inspection(&mut r, hull, operator, &policy)?;
+    check!(
+        r.plan("tacsim", SEIZE_ACTION, operator, json!({"hull": hull.0}))
+            .is_err()
+    );
+    check_eq!(
+        said(&mut r, operator, &format!("@registry/seize #{}", hull.0)),
+        "The latest inspection of that hull found nothing to seize."
+    );
+    check!(title(&r, core)?.encumbrances.is_empty());
+    check!(seizures(&r)?.is_empty());
+    let seal = rom_seal(&r, hull)?;
+    check_eq!(
+        (seal.class, seal.governed),
+        (crate::arena::core::CoreClass::I, true)
+    );
+    // A non-operator is told the driver's one sentence, before any hull is read.
+    check_eq!(
+        said(&mut r, buyer, &format!("@registry/seize #{}", hull.0)),
+        "That did not go through. Nothing changed."
+    );
     Ok(())
 }

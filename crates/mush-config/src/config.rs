@@ -1586,6 +1586,12 @@ pub struct TacsimMindsCfg {
     /// **Doc 17h cut M8d D4** (Q-M8-6, provisional): how long a revoked principal may hold
     /// no new licence, IC days. 1 to 3650; stock `90` (one audit term).
     pub revocation_ic_days: u32,
+    /// **Doc 17h cut M8d2** (Q-M8-6, provisional): how old an inspection may be to ground a
+    /// seizure, IC days. 1 to 3650; stock `3`.
+    pub seizure_inspection_max_age_ic_days: u32,
+    /// **Doc 17h cut M8d2** (Q-M8-6, provisional): how long a seizure is held before a
+    /// forfeit, IC days. 0 to 3650; stock `3`.
+    pub seizure_hold_ic_days: u32,
 }
 
 impl Default for TacsimMindsCfg {
@@ -1614,6 +1620,8 @@ impl Default for TacsimMindsCfg {
             cpu_lens_ms: 5,
             fine_cap_minor: 100_000,
             revocation_ic_days: 90,
+            seizure_inspection_max_age_ic_days: 3,
+            seizure_hold_ic_days: 3,
         }
     }
 }

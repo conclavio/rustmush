@@ -27,6 +27,7 @@ pub mod facts;
 pub mod fine;
 pub mod principal;
 mod provider;
+pub mod seizure;
 pub mod unwarranted;
 
 use std::sync::{Arc, Mutex};
@@ -56,9 +57,43 @@ pub struct Composition {
     pub(crate) principals: Option<u32>,
     /// Doc 17h cut M8g G3: whether the quirk claim composes (`MindCommerce::with_registry_claims`).
     pub(crate) claims: bool,
+    /// Doc 17h cut M8d2 S4/S5: the seizure's terms when `@registry/seize` and
+    /// `@registry/forfeit` compose (`MindCommerce::with_registry_seizure`).
+    pub(crate) seizures: Option<seizure::SeizureTerms>,
 }
 
 impl Composition {
+    /// Doc 17h cut M8d2: the four seizure descriptors, when the seizure composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn seizure_descriptors(
+        &self,
+    ) -> Result<Option<[DefinitionDescriptor; 4]>, ModError> {
+        self.seizures
+            .map(|_| self.policy.seizure_descriptors())
+            .transpose()
+    }
+    /// Doc 17h cut M8d2: the economy's closed seizure plan's terms — the two actions and the
+    /// Registry org — when the seizure composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn economy_seizure(
+        &self,
+    ) -> Result<Option<mush_economy::registry_filing::seizure::SeizureConfig>, ModError> {
+        if self.seizures.is_none() {
+            return Ok(None);
+        }
+        let [seize, _, forfeit, _] = self.policy.seizure_refs()?;
+        Ok(Some(
+            mush_economy::registry_filing::seizure::SeizureConfig {
+                seize,
+                forfeit,
+                claimant: self.policy.organization(),
+            },
+        ))
+    }
     /// The action and outcome descriptors, for the crate's validators and registration.
     ///
     /// # Errors
@@ -100,6 +135,10 @@ impl Composition {
     ///
     /// # Errors
     /// A registrar that is not this crate's, or a reference that is not the policy's.
+    // One optional reference set per composed extension (the fine, the principal revocation,
+    // the quirk claim, the seizure): M8g G3 and M8d2 brought the count to eight; bundling them
+    // would only move the list (`port_tick::register_with_coverage`'s precedent).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn register(
         &self,
         reg: &mut Registrar<'_>,
@@ -108,6 +147,7 @@ impl Composition {
         fine: Option<(DefinitionRef, DefinitionRef)>,
         principal: Option<(DefinitionRef, DefinitionRef)>,
         claim: Option<(DefinitionRef, DefinitionRef)>,
+        seizure: Option<[DefinitionRef; 4]>,
     ) -> Result<(), ModError> {
         if reg.module() != crate::NS
             || action != self.policy.action()?
@@ -216,6 +256,23 @@ impl Composition {
                 ));
             }
         };
+        // Doc 17h cut M8d2 S4/S5: the seizure's two providers, each binding the economy leg.
+        let seizures = match (seizure, self.seizures) {
+            (Some(refs), Some(terms)) => {
+                if refs != self.policy.seizure_refs()? {
+                    return Err(ModError::msg(
+                        "Registry seizure registration differs from its composition",
+                    ));
+                }
+                Some(seizure::register(reg, refs, &writer, terms)?)
+            }
+            (None, None) => None,
+            _ => {
+                return Err(ModError::msg(
+                    "Registry seizure registration differs from its composition",
+                ));
+            }
+        };
         reg.state(InspectionHost {
             writer,
             attempts: Arc::new(Mutex::new((i64::MIN, 0))),
@@ -223,6 +280,7 @@ impl Composition {
             fines,
             principals,
             claims,
+            seizures,
         });
         Ok(())
     }
@@ -244,6 +302,8 @@ pub struct InspectionHost {
     pub(crate) principals: Option<principal::PrincipalHost>,
     /// Doc 17h cut M8g G3: the quirk claim, when it composes.
     pub(crate) claims: Option<claims::ClaimHost>,
+    /// Doc 17h cut M8d2 S4/S5: the seizure, when it composes.
+    pub(crate) seizures: Option<seizure::SeizureHost>,
 }
 
 impl InspectionHost {

@@ -601,6 +601,19 @@ fn select_boot_checkpoint(
             .head
             .body
             .fold
+            .seizure_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact core seizure receipt coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
             .refit_receipts
             .checkpoint_complete(&saved.rows)
     }) {
@@ -1624,6 +1637,37 @@ fn reconcile_boot_obligations_and_custody(inputs: RemainingReconciliation<'_>) -
     healed_obligations
 }
 
+/// **The Core refit's recovery, then the seizures'** (doc 17h cut M8d2 S1), one call so the
+/// boot's frame stays under the M7 bound. The seizure receipts replay closed; without the
+/// composed seizure the history must be empty (an omitted inventory is never an empty one);
+/// every seized or forfeited core is a managed core birth of the replayed core history (the
+/// index `with_cores` builds from it), and every held core's title is exactly its seizure's
+/// post-image. Runs after the core integration's recovery has closed its history.
+#[inline(never)]
+fn recover_refits_and_seizures(
+    state: &mut FoldState,
+    holds: &BTreeMap<HoldId, Hold>,
+    (refit, seizure): (bool, bool),
+) -> Result<(), ModError> {
+    crate::core_refit::bridge::recover(state, holds, refit)?;
+    let cores = crate::managed_title::ManagedTitleIndex::default().with_cores(&state.core_receipts);
+    let closed = state.seizure_receipts.finish_replay().is_ok()
+        && (seizure || state.seizure_receipts.require_absent().is_ok())
+        && cores.is_ok_and(|index| {
+            state
+                .seizure_receipts
+                .verify_titles(&index, &state.journal_assets)
+                .is_ok()
+        });
+    if closed {
+        Ok(())
+    } else {
+        Err(ModError::msg(
+            "economy: core seizure history refused, unpaired or unlike the managed titles",
+        ))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_coverage(
     ctx: &mut ModuleCtx<'_>,
@@ -1643,6 +1687,7 @@ pub(crate) fn load_boot_with_coverage(
     require_paid_resale: bool,
     require_refit_receipts: bool,
     require_coverage: bool,
+    require_seizure_receipts: bool,
 ) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
@@ -2001,7 +2046,11 @@ pub(crate) fn load_boot_with_coverage(
         &stored_assets,
         require_core_receipts,
     )?;
-    crate::core_refit::bridge::recover(&mut state, &stored_holds, require_refit_receipts)?;
+    recover_refits_and_seizures(
+        &mut state,
+        &stored_holds,
+        (require_refit_receipts, require_seizure_receipts),
+    )?;
     let renewal_offers = crate::managed_renewal::bridge::recover(
         &mut state,
         &mut snapshot,

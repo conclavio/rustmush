@@ -49,6 +49,8 @@ impl InspectionWriter {
         reg.delegate_state_family(&families.revoked_principals, ACTION_OWNER)?;
         // Doc 17h cut M8g G3: the quirk claims, written from tacsim's transaction.
         reg.delegate_state_family(&families.mind_claims, ACTION_OWNER)?;
+        // Doc 17h cut M8d2 S4: the seizure records, written from tacsim's transaction.
+        reg.delegate_state_family(&families.registry_seizures, ACTION_OWNER)?;
         self.0
             .set(Registration {
                 families,
@@ -273,6 +275,52 @@ impl RegisteredInspectionWriter {
         }
         Ok(record)
     }
+    /// Doc 17h cut M8d2 S4: whether `actor` may seize now — the inspection's test under the
+    /// seizure's own capability.
+    #[must_use]
+    pub fn seize_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_seize(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d2 S4: the live seizure authorization (`authority::observe_seize`).
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not granted the seizure, or an owner is
+    /// not ready.
+    pub fn authorize_seize(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_seize(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8d2 S5: whether `actor` may forfeit now.
+    #[must_use]
+    pub fn forfeit_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_forfeit(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8d2 S5: the live forfeit authorization (`authority::observe_forfeit`).
+    ///
+    /// # Errors
+    /// As [`Self::authorize_seize`].
+    pub fn authorize_forfeit(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_forfeit(world, &r.readiness, &r.policy, actor)
+    }
     /// Doc 17h cut M8d D4: whether `actor` may revoke a principal now — the inspection's test
     /// under the existing `roll.registry.revoke`.
     #[must_use]
@@ -309,6 +357,52 @@ impl RegisteredInspectionWriter {
             .families
             .revoked_principals
             .clone())
+    }
+    /// Doc 17h cut M8d2 S4: the seizure records' family.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn seizures(&self) -> Result<StateFamilyHandle<String, super::SeizureRecord>, ModError> {
+        Ok(self
+            .registration()
+            .map_err(error)?
+            .families
+            .registry_seizures
+            .clone())
+    }
+    /// **Land one seizure record** (doc 17h cut M8d2 S4/S5): observe the acting operator's
+    /// grant again (the seizure's for a fresh record, the forfeit's for one that is forfeited),
+    /// then insert a fresh record or replace the seized one with its forfeit.
+    ///
+    /// # Errors
+    /// The authorization, a record that does not validate, a seize over an existing record or
+    /// a forfeit of none, or the write.
+    pub fn write_seizure(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        record: super::SeizureRecord,
+    ) -> Result<super::SeizureRecord, PublicationError> {
+        let r = self.registration()?;
+        let world = ctx.world().map_err(bad)?;
+        match record.forfeited_by {
+            Some(by) => self.authorize_forfeit(world, by)?,
+            None => self.authorize_seize(world, record.seized_by)?,
+        };
+        record.validate()?;
+        let key = record.key();
+        let family = &r.families.registry_seizures;
+        let held = txn.get(family, &key).map_err(bad)?.cloned();
+        match (&held, record.forfeited_by) {
+            (None, None) => txn.insert(family, &key, record.clone()).map_err(bad)?,
+            (Some(held), Some(_))
+                if held.forfeited_by.is_none() && held.seized() == record.seized() =>
+            {
+                txn.replace(family, &key, record.clone()).map_err(bad)?;
+            }
+            _ => return Err(PublicationError::Mismatch),
+        }
+        Ok(record)
     }
     /// **Land one principal revocation** (doc 17h cut M8d D4): observe the revocation grant
     /// again, then write `record` over any earlier one of the principal.

@@ -184,6 +184,15 @@ impl LaunchComposition {
                     )?
                     // Doc 17h cut M8g G3: the quirk claim and its Registry read.
                     .with_registry_claims()?
+                    .with_registry_seizure(
+                        crate::minds::registry_inspection::seizure::SeizureTerms {
+                            max_age_ic_days: prepared_layer
+                                .config()
+                                .minds
+                                .seizure_inspection_max_age_ic_days,
+                            hold_ic_days: prepared_layer.config().minds.seizure_hold_ic_days,
+                        },
+                    )?
                     .with_mind_renewals(p.renewal)?
                     .with_mind_renewal_service()?
                     .with_author_withdrawal()?
@@ -334,6 +343,15 @@ pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket
                 (
                     mush_roll::commerce::registry_inspection::REGISTRY_CLAIMS_CAPABILITY,
                     "claims",
+                ),
+                // Doc 17h cut M8d2: the seizure and the forfeit, the fifth and sixth.
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_SEIZE_CAPABILITY,
+                    "seize",
+                ),
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_FORFEIT_CAPABILITY,
+                    "forfeit",
                 ),
             ]
             .into_iter()

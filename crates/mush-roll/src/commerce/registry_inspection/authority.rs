@@ -109,6 +109,32 @@ pub(crate) fn observe_claims(
 ) -> Result<(Authorization, ClockStamp), PublicationError> {
     observe_capability(world, readiness, p, actor, REGISTRY_CLAIMS_CAPABILITY)
 }
+/// **The seizure's twin** (doc 17h cut M8d2 S4): the live observation for
+/// [`super::REGISTRY_SEIZE_CAPABILITY`].
+pub(crate) fn observe_seize(
+    world: &World,
+    readiness: &Readiness,
+    p: &RegistryInspectionPolicy,
+    actor: ObjId,
+) -> Result<(Authorization, ClockStamp), PublicationError> {
+    observe_capability(world, readiness, p, actor, super::REGISTRY_SEIZE_CAPABILITY)
+}
+/// **The forfeit's twin** (doc 17h cut M8d2 S5): the live observation for
+/// [`super::REGISTRY_FORFEIT_CAPABILITY`].
+pub(crate) fn observe_forfeit(
+    world: &World,
+    readiness: &Readiness,
+    p: &RegistryInspectionPolicy,
+    actor: ObjId,
+) -> Result<(Authorization, ClockStamp), PublicationError> {
+    observe_capability(
+        world,
+        readiness,
+        p,
+        actor,
+        super::REGISTRY_FORFEIT_CAPABILITY,
+    )
+}
 /// **The principal revocation's twin** (doc 17h cut M8d D4): the same live observation for
 /// the existing `roll.registry.revoke` capability.
 pub(crate) fn observe_revoke(

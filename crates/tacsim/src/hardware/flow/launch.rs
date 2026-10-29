@@ -277,6 +277,9 @@ fn grant_registry(r: &mut Rig, d: &LaunchDeployment) -> Result {
             "roll.registry.fine",
             // Doc 17h cut M8g G3: the fifth, the claims read (no projected verb).
             "roll.registry.claims",
+            // Doc 17h cut M8d2: the fifth and sixth.
+            "roll.registry.seize",
+            "roll.registry.forfeit",
         ] {
             command(
                 r.world_mut(),
@@ -476,6 +479,8 @@ fn registry_verbs(r: &mut Rig, actor: ObjId) -> Result<Vec<String>> {
                     | "roll-registry-revocation"
                     | "roll-registry-inspection"
                     | "roll-registry-fine"
+                    | "roll-registry-seize"
+                    | "roll-registry-forfeit"
             )
         })
         .collect())
@@ -1244,16 +1249,19 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
     let market = d.market.clone().ok_or("a format-2 market")?;
     let operator = operator(&d)?;
     let principals = [GOD, operator, market.clerk, r.buyer];
-    // Sorted: the four verbs `grant_registry`'s four grants open (M8d: the fine).
+    // Sorted: the six verbs `grant_registry`'s six grants open (M8d: the fine; M8d2: the
+    // seizure and the forfeit).
     let both = vec![
         "roll-registry-fine".to_owned(),
+        "roll-registry-forfeit".to_owned(),
         "roll-registry-inspection".to_owned(),
         "roll-registry-recall".to_owned(),
         "roll-registry-revocation".to_owned(),
+        "roll-registry-seize".to_owned(),
     ];
     let lacks = readiness(
         operator,
-        "lacks recall, revocation, inspection, fine and claims",
+        "lacks recall, revocation, inspection, fine, claims, seize and forfeit",
     );
     // Before the grants: no one, and God reads what the operator lacks.
     for actor in principals {
@@ -1377,11 +1385,11 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
         Some(&line([
             (
                 first,
-                "lacks recall, revocation, inspection, fine and claims"
+                "lacks recall, revocation, inspection, fine, claims, seize and forfeit"
             ),
             (
                 second,
-                "lacks recall, revocation, inspection, fine and claims"
+                "lacks recall, revocation, inspection, fine, claims, seize and forfeit"
             ),
         ]))
     );
@@ -1391,8 +1399,14 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks revocation, inspection, fine and claims"),
-            (second, "lacks recall, inspection, fine and claims")
+            (
+                first,
+                "lacks revocation, inspection, fine, claims, seize and forfeit"
+            ),
+            (
+                second,
+                "lacks recall, inspection, fine, claims, seize and forfeit"
+            )
         ]))
     );
     check_eq!(
@@ -1409,8 +1423,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks inspection, fine and claims"),
-            (second, "lacks inspection, fine and claims")
+            (first, "lacks inspection, fine, claims, seize and forfeit"),
+            (second, "lacks inspection, fine, claims, seize and forfeit")
         ]))
     );
     grant(&mut r, first, "roll.registry.inspect")?;
@@ -1419,8 +1433,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks fine and claims"),
-            (second, "lacks fine and claims")
+            (first, "lacks fine, claims, seize and forfeit"),
+            (second, "lacks fine, claims, seize and forfeit")
         ]))
     );
     grant(&mut r, first, "roll.registry.fine")?;
@@ -1428,10 +1442,25 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     // Doc 17h cut M8g G3: the claims read is the fifth, with no projected verb.
     check_eq!(
         launch_lines(&mut r, GOD).last(),
-        Some(&line([(first, "lacks claims"), (second, "lacks claims")]))
+        Some(&line([
+            (first, "lacks claims, seize and forfeit"),
+            (second, "lacks claims, seize and forfeit")
+        ]))
     );
     grant(&mut r, first, "roll.registry.claims")?;
     grant(&mut r, second, "roll.registry.claims")?;
+    // Doc 17h cut M8d2: the seizure and the forfeit, a grant each.
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([
+            (first, "lacks seize and forfeit"),
+            (second, "lacks seize and forfeit")
+        ]))
+    );
+    for op in [first, second] {
+        grant(&mut r, op, "roll.registry.seize")?;
+        grant(&mut r, op, "roll.registry.forfeit")?;
+    }
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([(first, "ready"), (second, "ready")]))
@@ -1443,11 +1472,13 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
             verbs,
             vec![
                 "roll-registry-fine".to_owned(),
+                "roll-registry-forfeit".to_owned(),
                 "roll-registry-inspection".to_owned(),
                 "roll-registry-recall".to_owned(),
                 "roll-registry-revocation".to_owned(),
+                "roll-registry-seize".to_owned(),
             ],
-            "#{} holds all four",
+            "#{} holds all six",
             op.0
         );
     }
@@ -1480,7 +1511,7 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
             line,
             readiness(
                 operator(&d)?,
-                "lacks recall, revocation, inspection, fine and claims"
+                "lacks recall, revocation, inspection, fine, claims, seize and forfeit"
             )
         ]
     );

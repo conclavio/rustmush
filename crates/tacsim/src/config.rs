@@ -817,6 +817,25 @@ pub struct MindsConfig {
     /// term); 1 to 3,650.
     #[serde(default = "default_revocation_ic_days")]
     pub revocation_ic_days: u32,
+    /// **How old an inspection may be to ground a seizure, IC days** (doc 17h cut M8d2 S2;
+    /// Q-M8-6, provisional): `@registry/seize` refuses on an older newest inspection. Stock 3;
+    /// 1 to 3,650.
+    #[serde(default = "default_seizure_inspection_max_age_ic_days")]
+    pub seizure_inspection_max_age_ic_days: u32,
+    /// **How long a seizure is held before a forfeit, IC days** (doc 17h cut M8d2 S5; Q-M8-6,
+    /// provisional): `@registry/forfeit` refuses within it. Stock 3; 0 to 3,650.
+    #[serde(default = "default_seizure_hold_ic_days")]
+    pub seizure_hold_ic_days: u32,
+}
+
+/// `seizure_inspection_max_age_ic_days`' default (Q-M8-6).
+const fn default_seizure_inspection_max_age_ic_days() -> u32 {
+    mush_roll::commerce::registry_inspection::seizure::DEFAULT_INSPECTION_MAX_AGE_IC_DAYS
+}
+
+/// `seizure_hold_ic_days`' default (Q-M8-6).
+const fn default_seizure_hold_ic_days() -> u32 {
+    mush_roll::commerce::registry_inspection::seizure::DEFAULT_SEIZURE_HOLD_IC_DAYS
 }
 
 /// `fine_cap_minor`'s default: 10× doc 17's 100cr filing fee (Q-M8-6).
@@ -936,6 +955,9 @@ impl Default for MindsConfig {
             // Doc 17h cut M8d (Q-M8-6): the provisional fine cap and revocation term.
             fine_cap_minor: default_fine_cap_minor(),
             revocation_ic_days: default_revocation_ic_days(),
+            // Doc 17h cut M8d2 (Q-M8-6): the provisional seizure age and hold.
+            seizure_inspection_max_age_ic_days: default_seizure_inspection_max_age_ic_days(),
+            seizure_hold_ic_days: default_seizure_hold_ic_days(),
         }
     }
 }
@@ -1019,6 +1041,19 @@ impl MindsConfig {
             return Err(format!(
                 "[tacsim.minds].revocation_ic_days must be 1 to 3650 (it is {})",
                 self.revocation_ic_days
+            ));
+        }
+        // Doc 17h cut M8d2: the inspection age 1 to 3,650 IC days, the hold at most 3,650.
+        if !(1..=3_650).contains(&self.seizure_inspection_max_age_ic_days) {
+            return Err(format!(
+                "[tacsim.minds].seizure_inspection_max_age_ic_days must be 1 to 3650 (it is {})",
+                self.seizure_inspection_max_age_ic_days
+            ));
+        }
+        if self.seizure_hold_ic_days > 3_650 {
+            return Err(format!(
+                "[tacsim.minds].seizure_hold_ic_days must be 0 to 3650 (it is {})",
+                self.seizure_hold_ic_days
             ));
         }
         self.validate_classes()

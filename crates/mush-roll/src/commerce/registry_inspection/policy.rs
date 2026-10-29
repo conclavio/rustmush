@@ -122,6 +122,12 @@ impl RegistryInspectionPolicy {
     pub const fn scope(&self) -> OrgScopeId {
         self.scope
     }
+    /// The Registry org (doc 17h cut M8d2: a seizure's claimant and a forfeit's recipient,
+    /// Q-M8-4).
+    #[must_use]
+    pub const fn organization(&self) -> OrgId {
+        self.organization
+    }
     /// Exact action identity (tacsim's owner), independent of the current execution manifest.
     ///
     /// # Errors
@@ -316,6 +322,69 @@ impl RegistryInspectionPolicy {
         DefinitionRegistryBuilder::new()
             .register(action_owner()?, outcome)
             .map_err(error)
+    }
+    /// Doc 17h cut M8d2 S4/S5: `[seize action, seize outcome, forfeit action, forfeit
+    /// outcome]`, tacsim's, each action referencing the same authority. The two action ids are
+    /// the economy's closed seizure plan's (`mush_economy::registry_filing::seizure`).
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn seizure_descriptors(&self) -> Result<[DefinitionDescriptor; 4], ModError> {
+        use mush_economy::registry_filing::seizure::{FORFEIT_ACTION_ID, SEIZE_ACTION_ID};
+        let [authority, _, _] = self.definitions()?;
+        let authority_ref = DefinitionRegistryBuilder::new()
+            .register(owner()?, authority)
+            .map_err(error)?;
+        let seize = descriptor(
+            "action",
+            SEIZE_ACTION_ID,
+            json!({
+                "format": 1,
+                "protocol": "registry_core_seizure_v1",
+                "reads": ["newest_inspection", "fitted_core", "core_title"],
+                "writes": ["one_seizure_record", "core_title_disputed"],
+                "capability": super::REGISTRY_SEIZE_CAPABILITY
+            }),
+        )?
+        .with_references(vec![authority_ref.clone()]);
+        let seized = descriptor(
+            "outcome",
+            "registry_core_seized",
+            json!({"format": 1, "fields": ["hull", "seq", "operator", "summary"]}),
+        )?;
+        let forfeit = descriptor(
+            "action",
+            FORFEIT_ACTION_ID,
+            json!({
+                "format": 1,
+                "protocol": "registry_core_forfeit_v1",
+                "reads": ["seizure_record", "seizure_hold"],
+                "writes": ["seizure_record_forfeited", "core_title_to_registry"],
+                "capability": super::REGISTRY_FORFEIT_CAPABILITY
+            }),
+        )?
+        .with_references(vec![authority_ref]);
+        let forfeited = descriptor(
+            "outcome",
+            "registry_core_forfeited",
+            json!({"format": 1, "fields": ["hull", "seq", "operator", "summary"]}),
+        )?;
+        Ok([seize, seized, forfeit, forfeited])
+    }
+    /// Doc 17h cut M8d2: the four seizure definitions' exact identities (tacsim's owner), in
+    /// [`Self::seizure_descriptors`]' order.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn seizure_refs(&self) -> Result<[DefinitionRef; 4], ModError> {
+        let owner = action_owner()?;
+        let [a, b, c, d] = self.seizure_descriptors()?;
+        let register = |descriptor: DefinitionDescriptor| {
+            DefinitionRegistryBuilder::new()
+                .register(owner.clone(), descriptor)
+                .map_err(error)
+        };
+        Ok([register(a)?, register(b)?, register(c)?, register(d)?])
     }
     /// `[authority, action, outcome]`: the authority under the Roll's owner, the action and
     /// outcome under tacsim's ([`ACTION_OWNER`]); the action references the authority.

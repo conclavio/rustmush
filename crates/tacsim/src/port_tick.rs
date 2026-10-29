@@ -2996,7 +2996,8 @@ impl EventHook for ReconnectNotices {
 
 /// **The Registry inspection's descriptors of one kind** (`which`: 0 the actions, 1 the
 /// outcomes): the inspection's own, and the fine's (doc 17h cut M8d D3), the principal
-/// revocation's (D4) and the quirk claim's (cut M8g G3) when they compose. Its own frame, so
+/// revocation's (D4), the quirk claim's (cut M8g G3) and the seizure's and forfeit's (cut
+/// M8d2) when they compose. Its own frame, so
 /// `register_with_coverage` stays under the M7 memory-size bound.
 #[inline(never)]
 fn inspection_descriptors(
@@ -3011,6 +3012,11 @@ fn inspection_descriptors(
     for pair in pairs {
         let [action, outcome] = pair;
         into.push(if which == 0 { action } else { outcome });
+    }
+    // Doc 17h cut M8d2: the seizure's and the forfeit's, when they compose.
+    if let Some([seize, seized, forfeit, forfeited]) = inspection.seizure_descriptors()? {
+        into.push(if which == 0 { seize } else { seized });
+        into.push(if which == 0 { forfeit } else { forfeited });
     }
     Ok(())
 }
@@ -3066,7 +3072,18 @@ fn register_inspection(
         (Some(action), Some(outcome)) => Some((action, outcome)),
         _ => None,
     };
-    inspection.register(reg, action, outcome, fine, principal, claim)
+    // Doc 17h cut M8d2: the seizure's four references, all or none.
+    use crate::minds::registry_inspection::seizure as s;
+    let seizure = match (
+        action_refs.get(s::SEIZE_ACTION).cloned(),
+        outcome_refs.get(s::SEIZE_OUTCOME).cloned(),
+        action_refs.get(s::FORFEIT_ACTION).cloned(),
+        outcome_refs.get(s::FORFEIT_OUTCOME).cloned(),
+    ) {
+        (Some(a), Some(b), Some(c), Some(d)) => Some([a, b, c, d]),
+        _ => None,
+    };
+    inspection.register(reg, action, outcome, fine, principal, claim, seizure)
 }
 
 #[cfg(test)]

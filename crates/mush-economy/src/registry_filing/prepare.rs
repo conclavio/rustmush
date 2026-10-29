@@ -571,6 +571,22 @@ impl InitialFilingParticipant {
         }
     }
     #[inline(never)]
+    pub(super) fn prepare_core_seizure_request(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: seizure::RegistryCoreSeizure,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.seizure.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            seizure::prepare(config, &self.policy, state, context, request)?;
+        Ok(OwnerPreparation::new(
+            EconomyOutput::CoreSeizure(output),
+            EconomyPatch::CoreSeizure(Box::new(patch)),
+            writes,
+        ))
+    }
+    #[inline(never)]
     pub(super) fn prepare_charter_transfer_request(
         &self,
         state: &EconomyStore,

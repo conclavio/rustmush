@@ -835,6 +835,7 @@ pub(crate) fn epoch_facts(
                     principal: Some(CharacterRef::Character {
                         id: excursion.operator,
                     }),
+                    impounded: crate::match_::seal::core_impounded(w, unit),
                 },
             );
             match sealed {

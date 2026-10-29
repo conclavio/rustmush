@@ -539,6 +539,14 @@ pub(crate) fn validate_charter_transfer(
         PlanGuard::CharterTransfer(proof),
     )
 }
+/// Doc 17h cut M8d2 S1: the only path that may encumber or re-title a managed core.
+pub(crate) fn validate_core_seizure(
+    proof: &crate::registry_filing::seizure::ClosedSeizurePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::Seizure(proof))
+}
 pub(crate) fn validate_charter_pending(
     proof: &crate::managed_charter_transfer::ClosedCharterPendingPlan,
     snapshot: &EconomySnapshot,
@@ -591,6 +599,7 @@ enum PlanGuard<'a> {
     Legacy,
     CharterTransfer(&'a crate::registry_filing::charter_transfer::ClosedCharterTransferPlan),
     CharterPending(&'a crate::managed_charter_transfer::ClosedCharterPendingPlan),
+    Seizure(&'a crate::registry_filing::seizure::ClosedSeizurePlan),
     CoreIntegration(&'a crate::core_integration::ClosedCorePlan),
     CoreRefit(&'a crate::core_refit::ClosedRefitPlan),
     Purchase(&'a crate::managed_purchase::ClosedPurchasePlan),
@@ -607,6 +616,7 @@ impl PlanGuard<'_> {
         match self {
             Self::CharterTransfer(proof) => proof.check(plan, snapshot),
             Self::CharterPending(proof) => proof.check(plan, snapshot),
+            Self::Seizure(proof) => proof.check(plan, snapshot),
             _ => crate::managed_title::require_unmanaged_mutations(plan, snapshot),
         }
     }
@@ -623,6 +633,7 @@ impl PlanGuard<'_> {
             Self::CompatibleUpdate(proof) => proof.check(plan, snapshot),
             Self::CharterTransfer(proof) => proof.check(plan, snapshot),
             Self::CharterPending(proof) => proof.check(plan, snapshot),
+            Self::Seizure(proof) => proof.check(plan, snapshot),
         }
     }
 }

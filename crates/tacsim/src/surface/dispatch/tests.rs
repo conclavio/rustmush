@@ -157,7 +157,7 @@ fn m8e_a_lapsed_licence_seals_doctrine_and_names_the_licence() -> TestResult {
     let store = TacsimStore::default();
     let unit = unit(true)?;
     let sortie = SortieId::ic(TV, 500);
-    let rom = seal_rom(TV, &unit, sortie, OPERATOR, &store)?;
+    let rom = seal_rom(TV, &unit, sortie, OPERATOR, &store, false)?;
     for state in [SealLicenceState::Lapsed, SealLicenceState::Revoked] {
         let sealed = assemble(
             &rom,
@@ -328,4 +328,36 @@ fn m8e_the_state_rule_for_paid_and_owner_rows() {
     for phase in [active, grace, OwnerPhase::Lapsed] {
         assert_eq!(state_of(phase, false, true), SealLicenceState::Pending);
     }
+}
+
+/// **A held mind on a seized rig** (doc 17h cut M8d2, "impounded in place"; the dispatch's
+/// impounded branch): the licence still resolves, but the rig flies the ROM sealed as no core —
+/// no core, Class 0, governed, no floor lifted — recorded under `doctrine` with no licence, no
+/// holder and no seal mark, while the core stays fitted. The same rig unimpounded seals the
+/// mind; a governed rig's ROM is unchanged by the flag's absence.
+#[test]
+fn m8d2_a_held_mind_on_a_seized_rig_seals_the_rom() -> TestResult {
+    let store = TacsimStore::default();
+    let rig = unit(false)?;
+    let governed_rig = unit(true)?;
+    let sortie = SortieId::ic(TV, 500);
+    let mind = seal_held(TV, &rig, sortie, &held(true)?, OPERATOR, &store)?;
+    check_eq!(mind.class, CoreClass::I, "unimpounded, the mind flies");
+    let rom = seal_rom(TV, &rig, sortie, OPERATOR, &store, true)?;
+    check_eq!(
+        (rom.core.clone(), rom.core_class, rom.class, rom.governed),
+        (None, CoreClass::Zero, CoreClass::Zero, true)
+    );
+    check!(!rom.lifts_floor());
+    check_eq!(rom.engine, SealEngine::Native);
+    let sealed = assemble(&rom, SealLicenceState::Doctrine, None, None);
+    check_eq!(sealed.facts.licence_state, Some(SealLicenceState::Doctrine));
+    check_eq!(sealed.licence, None);
+    check_eq!(sealed.mark_licence(), None);
+    check_eq!(sealed.facts.holder, None);
+    check!(crate::arena::core::read_core(&rig).is_some_and(|hw| !hw.governed));
+    // A governed rig, not impounded: its ROM seals over its fitted core as before.
+    let governed = seal_rom(TV, &governed_rig, sortie, OPERATOR, &store, false)?;
+    check!(governed.core.is_some() && governed.governed);
+    Ok(())
 }

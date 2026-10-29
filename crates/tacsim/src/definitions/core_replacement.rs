@@ -652,6 +652,7 @@ mod tests {
                     minds: &minds,
                     reflex: &reflex,
                     principal: None,
+                    impounded: false,
                 },
             )
             .expect("seals");
