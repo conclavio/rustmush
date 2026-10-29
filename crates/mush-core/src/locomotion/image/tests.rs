@@ -319,3 +319,202 @@ fn late_oversized_read_dependency_refuses_under_the_exclusive_storage_borrow() {
     assert!(image.bind(storage).is_err());
     assert_eq!(f.world.get(f.actor).unwrap().location, Some(f.source));
 }
+
+#[test]
+fn projected_preview_matches_two_actual_moves_and_never_publishes() {
+    for kind in [ObjKind::Player, ObjKind::Npc] {
+        let mut f = fixture(kind);
+        let projected = f
+            .world
+            .create(ObjKind::Room, "projected", GOD, None)
+            .unwrap();
+        let cargo = f
+            .world
+            .create(ObjKind::Thing, "cargo", GOD, Some(f.actor))
+            .unwrap();
+        f.world.set_now(1234);
+        let admission = f.north();
+        let preview = admission
+            .preview_projection(&f.world, &BTreeSet::from([cargo]), projected)
+            .unwrap();
+        assert_eq!(preview.actor(), f.actor);
+        assert_eq!(preview.source(), Some(f.source));
+        assert_eq!(preview.admitted_room(), f.destination);
+        assert_eq!(preview.destination(), projected);
+        assert_eq!(preview.at_utc(), 1234);
+        assert_eq!(
+            preview.touched_objects().collect::<BTreeSet<_>>(),
+            BTreeSet::from([f.actor, f.source, f.destination, projected])
+        );
+        assert_eq!(f.world.get(f.actor).unwrap().location, Some(f.source));
+        assert_eq!(preview.object(cargo).unwrap(), f.world.get(cargo));
+        preview.recheck(&f.world).unwrap();
+        f.world.move_to(f.actor, f.destination).unwrap();
+        f.world.move_to(f.actor, projected).unwrap();
+        for id in preview.touched_objects() {
+            assert_eq!(preview.object(id).unwrap(), f.world.get(id));
+        }
+        assert!(preview.recheck(&f.world).is_err());
+    }
+}
+
+#[test]
+fn return_projection_retains_intermediate_timestamp_and_source_contents_order() {
+    let mut f = fixture(ObjKind::Player);
+    let later = f
+        .world
+        .create(ObjKind::Thing, "later", GOD, Some(f.source))
+        .unwrap();
+    let source_before = f.world.get(f.source).unwrap().contents.clone();
+    assert_eq!(source_before, vec![f.actor, later]);
+    f.world.set_now(1234);
+    let preview = f
+        .north()
+        .preview_projection(&f.world, &BTreeSet::new(), f.source)
+        .unwrap();
+    assert_eq!(preview.destination(), f.source);
+    assert_eq!(
+        preview.object(f.source).unwrap().unwrap().contents,
+        vec![later, f.actor]
+    );
+    assert_eq!(
+        preview.object(f.destination).unwrap().unwrap().modified,
+        1234
+    );
+    assert_eq!(f.world.get(f.source).unwrap().contents, source_before);
+    f.world.move_to(f.actor, f.destination).unwrap();
+    f.world.move_to(f.actor, f.source).unwrap();
+    for id in preview.touched_objects() {
+        assert_eq!(preview.object(id).unwrap(), f.world.get(id));
+    }
+}
+
+#[test]
+fn self_loop_preview_and_unchanged_projection_preserve_noop_bytes() {
+    let mut f = fixture(ObjKind::Player);
+    f.world.link_exit(f.exit, Some(f.source)).unwrap();
+    let admission = f.north();
+    for preview in [
+        admission.preview(&f.world, &BTreeSet::new()).unwrap(),
+        admission
+            .preview_projection(&f.world, &BTreeSet::new(), f.source)
+            .unwrap(),
+    ] {
+        assert_eq!(preview.touched_objects().count(), 0);
+        assert_eq!(preview.object(f.actor).unwrap(), f.world.get(f.actor));
+        assert_eq!(preview.object(f.source).unwrap(), f.world.get(f.source));
+    }
+    let preview = admission
+        .preview_projection(&f.world, &BTreeSet::new(), f.destination)
+        .unwrap();
+    f.world.move_to(f.actor, f.source).unwrap();
+    f.world.move_to(f.actor, f.destination).unwrap();
+    for id in preview.touched_objects() {
+        assert_eq!(preview.object(id).unwrap(), f.world.get(id));
+    }
+}
+
+#[test]
+fn preview_read_scope_and_original_admission_guards_remain_exact() {
+    let mut f = fixture(ObjKind::Player);
+    let unrelated = f
+        .world
+        .create(ObjKind::Thing, "unrelated", GOD, None)
+        .unwrap();
+    let admission = f.north();
+    let preview = admission.preview(&f.world, &BTreeSet::new()).unwrap();
+    assert!(preview.object(unrelated).is_err());
+    assert!(preview.object(ObjId(u32::MAX)).is_err());
+    let preview = admission
+        .preview(&f.world, &BTreeSet::from([unrelated]))
+        .unwrap();
+    assert_eq!(preview.object(unrelated).unwrap(), f.world.get(unrelated));
+    f.world.get_mut(unrelated).unwrap().name = "changed actual dependency".into();
+    assert!(preview.recheck(&f.world).is_err());
+    let preview = admission.preview(&f.world, &BTreeSet::new()).unwrap();
+    f.world.link_exit(f.exit, Some(f.source)).unwrap();
+    assert!(
+        preview.recheck(&f.world).is_err(),
+        "original exit selection belongs to the admission trace even though no exit row is written"
+    );
+    assert!(
+        admission
+            .preview_projection(&f.world, &BTreeSet::new(), f.source)
+            .is_err()
+    );
+}
+
+#[test]
+fn projected_preview_refuses_cycles_inverse_corruption_and_unsafe_dependencies() {
+    let mut f = fixture(ObjKind::Player);
+    let cargo = f
+        .world
+        .create(ObjKind::Thing, "cargo", GOD, Some(f.actor))
+        .unwrap();
+    let admission = f.north();
+    for target in [f.actor, cargo, ObjId(u32::MAX)] {
+        assert!(
+            admission
+                .preview_projection(&f.world, &BTreeSet::new(), target)
+                .is_err()
+        );
+    }
+    let target = f
+        .world
+        .create(ObjKind::Room, "projected", GOD, None)
+        .unwrap();
+    f.world.get_mut(target).unwrap().contents.push(f.actor);
+    assert!(
+        admission
+            .preview_projection(&f.world, &BTreeSet::new(), target)
+            .is_err()
+    );
+    f.world.get_mut(target).unwrap().contents.clear();
+    f.world.get_mut(target).unwrap().flags.insert(Flags::GOING);
+    assert!(
+        admission
+            .preview_projection(&f.world, &BTreeSet::new(), target)
+            .is_err()
+    );
+    f.world.get_mut(target).unwrap().flags.remove(Flags::GOING);
+    f.world.get_mut(target).unwrap().name = "x".repeat(IMAGE_BYTES);
+    assert!(
+        admission
+            .preview_projection(&f.world, &BTreeSet::new(), target)
+            .is_err()
+    );
+    assert_eq!(f.world.get(f.actor).unwrap().location, Some(f.source));
+}
+
+#[test]
+fn both_preview_steps_share_one_image_dependency_census() {
+    let mut f = fixture(ObjKind::Player);
+    let projected = f
+        .world
+        .create(ObjKind::Room, "projected", GOD, None)
+        .unwrap();
+    let mut dependencies = BTreeSet::new();
+    // Actor, source and admitted destination consume the three other slots.
+    for _ in 0..MAX_LOCOMOTION_DEPENDENCIES - 3 {
+        dependencies.insert(
+            f.world
+                .create(ObjKind::Thing, "dependency", GOD, None)
+                .unwrap(),
+        );
+    }
+    let admission = f.north();
+    admission.preview(&f.world, &dependencies).unwrap();
+    assert!(
+        admission
+            .preview_projection(&f.world, &dependencies, projected)
+            .is_err()
+    );
+    let first = *dependencies.first().unwrap();
+    dependencies.remove(&first);
+    dependencies.insert(projected);
+    let preview = admission
+        .preview_projection(&f.world, &dependencies, projected)
+        .unwrap();
+    assert_eq!(preview.destination(), projected);
+    assert_eq!(f.world.get(f.actor).unwrap().location, Some(f.source));
+}
