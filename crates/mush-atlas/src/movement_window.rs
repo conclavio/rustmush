@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use mush_core::locomotion::composed::{WindowMetricTarget, WindowProjection};
 use mush_core::{DefinitionDigest, ObjId, World, canonical_json_bytes_with_limit};
-use mush_sim::{DomainId, SpatialParent, SpatialState};
+use mush_sim::{DomainId, SpatialState};
 use serde::Serialize;
 
 use crate::geom::PointCm;
@@ -18,7 +18,8 @@ use crate::record::{Endpoint, Footprint, PortalGeometry, RecordKey, Records, Roo
 use crate::window::{self, Composite, SurfaceComposite};
 
 pub const MAX_WINDOW_PLAN_BYTES: usize = 256 * 1024;
-pub const MAX_WINDOW_PLAN_PLACEMENTS: usize = 4096;
+pub const MAX_WINDOW_PLAN_PLACEMENTS: usize =
+    mush_sim::window_occupancy::MAX_WINDOW_OCCUPANCY_PLACEMENTS;
 pub const MAX_WINDOW_PLAN_PORTAL_PROBES: usize = 4096;
 pub const MAX_WINDOW_PLAN_SURFACES: usize = 8;
 const SELECTOR_BYTES: usize = 8 * 1024 * 1024;
@@ -515,36 +516,26 @@ fn occupancy(
     let mut rows = Vec::new();
     let mut taken = BTreeSet::new();
     if let Some(state) = world.module_state::<SpatialState>() {
-        if state.placements.len() > MAX_WINDOW_PLAN_PLACEMENTS {
-            return Err(CaptureError::Limit);
-        }
-        for (key, placement) in &state.placements {
-            let SpatialParent::Direct { domain: held, pose } = &placement.parent else {
-                continue;
-            };
-            if *held != domain {
-                continue;
-            }
-            if pose.x_cm.unsigned_abs() > 1_000_000_000 || pose.y_cm.unsigned_abs() > 1_000_000_000
-            {
-                return Err(CaptureError::Invalid);
-            }
-            let excluded = mush_sim::deployed::excluded(
-                world,
-                mush_sim::deployed::Shown::Unit(placement.object),
-            );
+        let observed =
+            mush_sim::window_occupancy::rows(state, domain).map_err(|error| match error {
+                mush_sim::window_occupancy::OccupancyError::Limit => CaptureError::Limit,
+                mush_sim::window_occupancy::OccupancyError::Coordinate => CaptureError::Invalid,
+            })?;
+        for row in observed {
+            let excluded =
+                mush_sim::deployed::excluded(world, mush_sim::deployed::Shown::Unit(row.object));
             rows.push((
-                *key,
-                placement.object,
-                placement.revision,
-                pose.x_cm,
-                pose.y_cm,
+                row.key,
+                row.object,
+                row.revision,
+                row.x_cm,
+                row.y_cm,
                 excluded,
             ));
             if !excluded
                 && let Some(cell) = surface.cell_of(PointCm {
-                    x: pose.x_cm,
-                    y: pose.y_cm,
+                    x: row.x_cm,
+                    y: row.y_cm,
                 })
             {
                 taken.insert(cell);

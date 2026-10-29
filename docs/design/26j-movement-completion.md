@@ -387,6 +387,18 @@ output remain required before a window movement can be installed or routed.
 
 ## Native owner read preimages
 
+The ordered window candidate also retains a selected-domain metric occupancy
+fingerprint. Atlas selection and Sim's callback-free occupancy recheck now share
+the same bounded scalar collector: map key, stored object id, revision and XY.
+Coordinate changes without revision bumps, insertion/removal and domain changes
+invalidate it. Z, heading and opaque posture are not occupancy inputs. The
+collector retains the 4096-placement scan bound and the existing coordinate
+limits; Atlas keeps its original six-field evidence and custody exclusion bit.
+
+The fingerprint is only the native placement portion. Actual custody exclusion
+preimages, topology, Core rows, Atlas selectors and owner readiness still need
+their own checks. It grants no admission, receipt, personnel interval or route.
+
 The existing owner-read service can now retain one pure, bounded fingerprint of
 selected fields in its actual legacy state slot. Core checks those fields after
 the service returns, at final writer custody and before post-acknowledgement

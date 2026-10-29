@@ -8,7 +8,7 @@ use crate::record::{Access, PortalMode, PortalRec, RoomKind, SurfaceRef, TimePol
 use crate::terrain::TerrainClass;
 use crate::window::{WindowEntry, WindowFrame};
 use mush_core::{CanonicalId, GOD, LIMBO, ObjKind};
-use mush_sim::{PlacementRecord, Pose, WindowOpener};
+use mush_sim::{PlacementRecord, Pose, SpatialParent, WindowOpener};
 use serde_json::json;
 
 struct Fixture {
@@ -465,6 +465,29 @@ fn own_cell_and_other_height_occupancy_preserve_ties_and_arena_exclusion() {
         mush_sim::deployed::DeployedMark::new(1, "arena"),
     );
     let after = f.plan();
+    // The shared scalar collector preserves the original six-field Atlas
+    // evidence, including the separate custody exclusion and map-key order.
+    for (plan, excluded) in [(&before, false), (&after, true)] {
+        let expected = digest(
+            "atlas.movement.window_occupancy.v1",
+            &vec![
+                (f.actor, f.actor, 3_u64, 150_i64, 150_i64, false),
+                (other, other, 3_u64, 150_i64, 50_i64, excluded),
+            ],
+            OCCUPANCY_BYTES,
+        )
+        .expect("original occupancy encoding");
+        assert_eq!(
+            plan.placement
+                .as_ref()
+                .unwrap()
+                .occupancy
+                .as_ref()
+                .unwrap()
+                .digest,
+            expected
+        );
+    }
     assert_eq!(selected(&after), (0, 1, 0, Some(f.to)));
     assert_eq!(before.recheck(&f.world), Err(CaptureError::Invalid));
     let state = f.world.module_state::<AtlasState>().expect("owner");
