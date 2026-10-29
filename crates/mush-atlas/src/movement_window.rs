@@ -6,13 +6,14 @@
 
 use std::collections::BTreeSet;
 
+use mush_core::locomotion::composed::{WindowMetricTarget, WindowProjection};
 use mush_core::{DefinitionDigest, ObjId, World, canonical_json_bytes_with_limit};
 use mush_sim::{DomainId, SpatialParent, SpatialState};
 use serde::Serialize;
 
 use crate::geom::PointCm;
 use crate::module::AtlasState;
-use crate::movement::{CaptureError, MovementCapture, WindowEffect};
+use crate::movement::{CaptureError, MovementCapture, SlotPresence, WindowEffect};
 use crate::record::{Endpoint, Footprint, PortalGeometry, RecordKey, Records, RoomGeo};
 use crate::window::{self, Composite, SurfaceComposite};
 
@@ -34,6 +35,55 @@ pub struct WindowArrivalPlan {
 }
 
 impl WindowArrivalPlan {
+    /// Digest of the complete original selector evidence, never a placement grant.
+    pub fn digest(&self) -> Result<DefinitionDigest, CaptureError> {
+        digest(
+            "atlas.window_arrival.capture.v1",
+            self,
+            MAX_WINDOW_PLAN_BYTES,
+        )
+    }
+    /// Construct proposal data for the separate Core window kernel. Failed
+    /// placement attempts remain unsupported until their real output joins.
+    pub fn projection_proposal(
+        &self,
+        sim_capture: DefinitionDigest,
+    ) -> Result<WindowProjection, CaptureError> {
+        let (room, target) = proposal_target(
+            &self.capture,
+            self.placement.as_ref().map(|p| (p.domain, &p.outcome)),
+        )?;
+        if sim_capture.as_bytes() == &[0; 32] {
+            return Err(CaptureError::Invalid);
+        }
+        Ok(WindowProjection::new(
+            room,
+            self.digest()?,
+            sim_capture,
+            target,
+        ))
+    }
+    /// Attest only the Atlas selector portion of an exact Core proposal.
+    pub fn check_projection(&self, projection: &WindowProjection) -> Result<(), CaptureError> {
+        if self.projection_proposal(projection.sim_window_capture_digest())? != *projection {
+            return Err(CaptureError::Invalid);
+        }
+        Ok(())
+    }
+    /// Final Atlas slot binding cannot borrow World. Recompute every actual
+    /// Atlas selector here; the joint Sim owner must retain occupancy separately.
+    pub(crate) fn recheck_owner(&self, state: &AtlasState) -> Result<(), CaptureError> {
+        self.capture.recheck_owner(state)?;
+        if let Some(placement) = &self.placement
+            && (portal_selection(&state.records, self.capture.from(), self.capture.to())?
+                != placement.portal
+                || geometry_observation(state, placement.domain, self.capture.to())?
+                    != placement.geometry)
+        {
+            return Err(CaptureError::Invalid);
+        }
+        Ok(())
+    }
     #[must_use]
     pub const fn capture(&self) -> &MovementCapture {
         &self.capture
@@ -73,6 +123,41 @@ impl WindowArrivalPlan {
     }
 }
 
+fn proposal_target(
+    capture: &MovementCapture,
+    placement: Option<(u64, &EntryOutcome)>,
+) -> Result<(ObjId, Option<WindowMetricTarget>), CaptureError> {
+    if capture.atlas_slot() != SlotPresence::Present {
+        return Err(CaptureError::Invalid);
+    }
+    let selected = match capture.window_effect() {
+        WindowEffect::NeedsOwnerComposition {
+            place_or_repose, ..
+        } => place_or_repose,
+        _ => None,
+    };
+    match (selected, placement) {
+        (None, None) => Ok((capture.to(), None)),
+        (
+            Some(domain),
+            Some((
+                observed,
+                EntryOutcome::Selected {
+                    x_cm,
+                    y_cm,
+                    z_cm,
+                    projected_room,
+                    ..
+                },
+            )),
+        ) if domain == observed => Ok((
+            projected_room.unwrap_or(capture.to()),
+            Some(WindowMetricTarget::at(domain, *x_cm, *y_cm, *z_cm)),
+        )),
+        _ => Err(CaptureError::Invalid),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PlacementPlan {
     domain: u64,
@@ -109,8 +194,8 @@ impl PortalSelection {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum GeometryObservation {
     MissingWindow,
     Undrawn {
@@ -121,15 +206,20 @@ enum GeometryObservation {
         digest: DefinitionDigest,
     },
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+
+#[path = "movement_window_evidence.rs"]
+mod evidence;
+pub(crate) use evidence::{preflight_evidence, validate_evidence};
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OccupancyObservation {
     records: usize,
     digest: DefinitionDigest,
 }
 
 /// These are selector results, never successful owner effects.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EntryOutcome {
     MissingWindow,
     Undrawn,
@@ -190,38 +280,18 @@ fn placement(
     let mut result = PlacementPlan {
         domain,
         portal,
-        geometry: GeometryObservation::MissingWindow,
+        geometry: geometry_observation(state, domain, to)?,
         occupancy: None,
         outcome: EntryOutcome::MissingWindow,
     };
     let Some(entry) = state.windows.open.get(&domain) else {
         return Ok(result);
     };
-    result.geometry = GeometryObservation::Undrawn {
-        revision: entry.revision,
-    };
     result.outcome = EntryOutcome::Undrawn;
     let Some(composite) = &entry.composite else {
         return Ok(result);
     };
     let geo = state.records.roomgeo.get(&to);
-    check_geometry(composite, geo)?;
-    // Only actual selector inputs are encoded. Feature overlays, tile pins,
-    // cached composite digests, and pending async jobs are not consulted here.
-    let surfaces: Vec<_> = composite
-        .surfaces
-        .iter()
-        .map(|s| (&s.surface, &s.grid, &s.cells, &s.rooms))
-        .collect();
-    let room = geo.map(|geo| (&geo.surface, footprint_bits(&geo.footprint)));
-    result.geometry = GeometryObservation::Drawn {
-        revision: entry.revision,
-        digest: digest(
-            "atlas.movement.window_geometry.v1",
-            &(surfaces, room, state.limits.nearest_room_cells),
-            SELECTOR_BYTES,
-        )?,
-    };
     let Some(geo) = geo else {
         result.outcome = EntryOutcome::NoRoomGeometry;
         return Ok(result);
@@ -273,6 +343,38 @@ fn placement(
         ),
     };
     Ok(result)
+}
+
+fn geometry_observation(
+    state: &AtlasState,
+    domain: u64,
+    to: ObjId,
+) -> Result<GeometryObservation, CaptureError> {
+    let Some(entry) = state.windows.open.get(&domain) else {
+        return Ok(GeometryObservation::MissingWindow);
+    };
+    let Some(composite) = &entry.composite else {
+        return Ok(GeometryObservation::Undrawn {
+            revision: entry.revision,
+        });
+    };
+    let geo = state.records.roomgeo.get(&to);
+    check_geometry(composite, geo)?;
+    // Recompute actual selector inputs, including at the final owner bind.
+    let surfaces: Vec<_> = composite
+        .surfaces
+        .iter()
+        .map(|s| (&s.surface, &s.grid, &s.cells, &s.rooms))
+        .collect();
+    let room = geo.map(|geo| (&geo.surface, footprint_bits(&geo.footprint)));
+    Ok(GeometryObservation::Drawn {
+        revision: entry.revision,
+        digest: digest(
+            "atlas.movement.window_geometry.v1",
+            &(surfaces, room, state.limits.nearest_room_cells),
+            SELECTOR_BYTES,
+        )?,
+    })
 }
 
 fn digest(

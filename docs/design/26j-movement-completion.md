@@ -332,6 +332,36 @@ Window-arrival notifications remain an explicit completion requirement even
 after placement can commit. Partial manifests remain partial, crossing evidence
 remains uncertified, and no command route or offer selects version 2.
 
+## Atlas window selector attestation
+
+An optional Atlas adapter now joins version 2 through its real `AtlasState`
+participant. It verifies the primary's exact metric target and projected room
+against the original bounded Atlas plan, including the resolver's admitted-room
+fallback. The complete plan digest joins the common Core proposal. Failed
+selected placement attempts refuse this profile; they cannot be relabeled as a
+successful release-only arrival while their output is still unimplemented.
+
+Discovery uses the same real known-document and knowledge-journal preparation
+as v1. Its new proof retains the original window plan and exact journal boundary.
+Final binding recomputes Atlas's actual geometry, portal prefix/lookup, footprint
+and resolver inputs without trusting revisions or a cached composite digest.
+The Sim owner must independently retain occupancy and physical topology. The
+Atlas slot check cannot substitute for that joint native fence.
+
+Historical decoding preflights 32 levels and 65,536 nodes before recursive
+encoding or cloning, then accepts bounded, strict evidence data without
+manufacturing an executable window plan. Boot audits both configured profiles against
+one original knowledge history, so duplicate position claims across profiles
+also refuse recovery. It does not re-run old selectors over current geometry.
+Existing v1 proof and journal bytes retain their meaning.
+
+The new group covers only `travel_discovery`. The actual `window_arrival`
+callback remains an explicit blocker until durable map delivery joins. Current
+production composition still selects the earlier v1 adapters; the real Sim
+window primary, v2 Scenes join and end-to-end physical recovery follow. The
+registration test uses an execution-refusing primary and establishes no Sim
+placement evidence. Live routing and personnel eligibility remain disabled.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
