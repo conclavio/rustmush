@@ -437,8 +437,22 @@ any intervening custody update, including an open/close cycle. This reads at mos
 Close or four-owner admission capability.
 
 This adds no owner image, callback coverage or authority mirror. The native
-window participant still needs the separate Tactics custody read and the complete
+window participant still needs the configured Tactics custody read join and the complete
 placement/topology fences before it can publish a window transition.
+
+Tactics now offers an opt-in, Sim-only owner-read service over its real UnitStore.
+It observes active-unit presence, held/miskeyed/duplicate record claims and OOC/IC
+custody, retaining the selected metadata through Core's state guard. It reads
+Tactics' own markers and IC owner generation even when the Sim projection is
+empty. Frozen records stay held. Unit cells, checkout snapshots and historical
+custody bodies are neither copied nor serialized by the service.
+
+The data contract bounds requests to 512 objects, the global record scan to 4096
+rows, selected record metadata to 512 rows and the retained image to 128 KiB.
+Selected keys/arena names have a 1024-byte individual and shared 64 KiB text
+bound. These facts are not custody, physical admission or title capabilities.
+Real Sim/Atlas composition tests exercise the service and held lifecycle data;
+the production movement providers still need the configured Tactics read join.
 
 ## Remaining completion protocol
 

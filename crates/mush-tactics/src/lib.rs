@@ -76,6 +76,7 @@ pub mod ground;
 pub mod ic_custody;
 pub mod mobility;
 pub mod module;
+pub mod movement_custody;
 pub mod sensor;
 pub mod status;
 pub mod unit;

@@ -352,6 +352,7 @@ pub struct TacticsModule {
     sensors: mush_core::SensorPolicyHandle,
     replacement: Option<Arc<dyn crate::component_replacement::Installer>>,
     ic: Option<crate::ic_custody::IcCustodyConfig>,
+    movement_custody_reads: bool,
 }
 
 impl Default for TacticsModule {
@@ -372,6 +373,7 @@ impl TacticsModule {
             sensors: mush_core::SensorPolicyHandle::unwired(),
             replacement: None,
             ic: None,
+            movement_custody_reads: false,
         }
     }
     /// A module with a frozen catalog (a ruleset / dev wiring supplies it).
@@ -385,6 +387,7 @@ impl TacticsModule {
             sensors: mush_core::SensorPolicyHandle::unwired(),
             replacement: None,
             ic: None,
+            movement_custody_reads: false,
         }
     }
 
@@ -393,6 +396,14 @@ impl TacticsModule {
     #[must_use]
     pub fn with_ic_mind_custody(mut self, config: crate::ic_custody::IcCustodyConfig) -> Self {
         self.ic = Some(config);
+        self
+    }
+
+    /// Register bounded movement custody reads for the actual Sim owner. Sim
+    /// must be composed; this adds no mutation grant or movement route.
+    #[must_use]
+    pub fn with_movement_custody_reads(mut self) -> Self {
+        self.movement_custody_reads = true;
         self
     }
 
@@ -1150,6 +1161,9 @@ impl GameModule for TacticsModule {
             record_definition: Some(v2.clone()),
             ..UnitStore::default()
         });
+        if self.movement_custody_reads {
+            crate::movement_custody::register(reg)?;
+        }
         let mut owner_descriptors = Vec::new();
         if let Some(replacement) = &self.replacement {
             owner_descriptors.push(replacement.descriptor(&v2)?);
