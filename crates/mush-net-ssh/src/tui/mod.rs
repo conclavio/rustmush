@@ -124,6 +124,12 @@ impl TuiSession {
             .set_geometry(caps.width, caps.height, caps.color);
     }
 
+    /// Update the terminal cell pixel dimensions from SSH `pty-req` or
+    /// `window-change` pixel sizes.
+    pub fn set_cell_size(&mut self, cell: mush_pixel::caps::CellSize) {
+        self.app.set_cell_size(cell);
+    }
+
     /// Render one frame and return the bytes to write to the channel. Pure
     /// and synchronous: the caller holds the connection lock across this and
     /// drops it before the async write (invariant T2).
@@ -193,12 +199,28 @@ impl TuiSession {
         if picture.is_empty() {
             return Vec::new();
         }
-        let mut bytes = self.paint_text();
+        let text = self.paint_text();
         // The picture goes out after the text, so whatever this text paint
         // wrote into its box is drawn over.
         let _ = self.terminal.backend_mut().take_touched();
-        bytes.extend(picture);
-        bytes
+        if text.is_empty() {
+            return picture;
+        }
+        if let Some(inner) = picture
+            .strip_prefix(mush_pixel::kitty::SYNC_BEGIN)
+            .and_then(|s| s.strip_suffix(mush_pixel::kitty::SYNC_END))
+        {
+            let mut bytes = Vec::with_capacity(text.len() + picture.len());
+            bytes.extend_from_slice(mush_pixel::kitty::SYNC_BEGIN);
+            bytes.extend_from_slice(&text);
+            bytes.extend_from_slice(inner);
+            bytes.extend_from_slice(mush_pixel::kitty::SYNC_END);
+            bytes
+        } else {
+            let mut bytes = text;
+            bytes.extend(picture);
+            bytes
+        }
     }
 
     /// The graphics capability probe (pixel cockpit spike; doc 21 cuts G.1,

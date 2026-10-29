@@ -56,6 +56,111 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out
 }
 
+/// Encode `width` by `height` packed RGBA bytes (`width * height * 4`) as a
+/// PNG: indexed with a `tRNS` alpha table (colour type 3) when at most 256
+/// distinct `(r, g, b, a)` tuples appear, truecolor with alpha (colour type 6)
+/// otherwise.
+#[must_use]
+pub fn encode_rgba(width: usize, height: usize, rgba: &[u8]) -> Vec<u8> {
+    let expected = width.saturating_mul(height).saturating_mul(4);
+    let rgba = rgba.get(..expected).unwrap_or(&[]);
+    let mut palette: Vec<[u8; 4]> = Vec::new();
+    let indexed_raw = index_rgba_rows(rgba.as_chunks::<4>().0, width, &mut palette);
+    let indexed = indexed_raw.is_some();
+    let raw: Vec<u8> = indexed_raw.unwrap_or_else(|| {
+        let row_bytes = width.saturating_mul(4);
+        let mut raw = Vec::with_capacity(height.saturating_mul(1 + row_bytes));
+        if row_bytes > 0 {
+            for row in rgba.chunks_exact(row_bytes) {
+                raw.push(0); // filter: none
+                raw.extend_from_slice(row);
+            }
+        }
+        raw
+    });
+    let mut z = ZlibEncoder::new(Vec::new(), Compression::new(ZLIB_LEVEL));
+    let _ = z.write_all(&raw);
+    let idat = z.finish().unwrap_or_default();
+
+    let mut out = Vec::with_capacity(idat.len() + 80 + palette.len() * 4);
+    out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&u32::try_from(width).unwrap_or(u32::MAX).to_be_bytes());
+    ihdr.extend_from_slice(&u32::try_from(height).unwrap_or(u32::MAX).to_be_bytes());
+    ihdr.push(8); // bit depth
+    ihdr.push(if indexed { 3 } else { 6 }); // colour type: 3 = indexed, 6 = RGBA
+    ihdr.extend_from_slice(&[0, 0, 0]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    if indexed {
+        let mut plte = Vec::with_capacity(palette.len() * 3);
+        let mut trns = Vec::with_capacity(palette.len());
+        let mut any_transparent = false;
+        for &[r, g, b, a] in &palette {
+            plte.extend_from_slice(&[r, g, b]);
+            trns.push(a);
+            if a != u8::MAX {
+                any_transparent = true;
+            }
+        }
+        chunk(&mut out, b"PLTE", &plte);
+        if any_transparent {
+            chunk(&mut out, b"tRNS", &trns);
+        }
+    }
+    chunk(&mut out, b"IDAT", &idat);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// The filtered, palette-indexed rows of RGBA `pixels` (`w` a row), filling
+/// `palette` as `(r, g, b, a)` tuples appear — or `None` the moment a 257th
+/// tuple does.
+fn index_rgba_rows(pixels: &[[u8; 4]], w: usize, palette: &mut Vec<[u8; 4]>) -> Option<Vec<u8>> {
+    if w == 0 {
+        return Some(Vec::new());
+    }
+    const TABLE_LEN: usize = 1024;
+    const TABLE_MASK: usize = TABLE_LEN - 1;
+    let mut table = [0u16; TABLE_LEN];
+    let mut raw: Vec<u8> = Vec::with_capacity(pixels.len() / w + pixels.len());
+    let mut last: Option<([u8; 4], u8)> = None;
+    for row in pixels.chunks_exact(w) {
+        raw.push(0); // filter: none
+        for &px in row {
+            let i = match last {
+                Some((colour, i)) if colour == px => i,
+                _ => {
+                    let key = u32::from_le_bytes(px);
+                    let mut slot = ((key.wrapping_mul(0x9E37_79B9)) >> 22) as usize & TABLE_MASK;
+                    let i = loop {
+                        let entry = table.get(slot).copied().unwrap_or(0);
+                        if entry == 0 {
+                            if palette.len() == 256 {
+                                return None;
+                            }
+                            let i = u8::try_from(palette.len()).unwrap_or(255);
+                            palette.push(px);
+                            if let Some(cell) = table.get_mut(slot) {
+                                *cell = u16::from(i) + 1;
+                            }
+                            break i;
+                        }
+                        let candidate = (entry - 1) as u8;
+                        if palette.get(usize::from(candidate)) == Some(&px) {
+                            break candidate;
+                        }
+                        slot = (slot + 1) & TABLE_MASK;
+                    };
+                    last = Some((px, i));
+                    i
+                }
+            };
+            raw.push(i);
+        }
+    }
+    Some(raw)
+}
+
 /// The filtered, palette-indexed rows of `pixels` (`w` a row), filling
 /// `palette` as colours appear — or `None` the moment a 257th colour does.
 ///
@@ -208,5 +313,28 @@ mod tests {
         assert_eq!(colour, 2);
         assert!(plte.is_empty());
         assert_eq!(raw.len(), 32 * (1 + 32 * 3));
+    }
+
+    #[test]
+    fn encode_rgba_uses_palette_with_trns_and_falls_back_to_type_6() {
+        // Two RGBA colours (one transparent, one opaque): colour type 3 + tRNS.
+        let mut rgba = vec![0u8; 4 * 2 * 4];
+        rgba[4..8].copy_from_slice(&[200, 100, 50, 255]);
+        let png = encode_rgba(4, 2, &rgba);
+        let (colour, plte, raw) = decode_idat(&png);
+        assert_eq!(colour, 3);
+        assert_eq!(plte, vec![0, 0, 0, 200, 100, 50]);
+        assert_eq!(raw, vec![0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        // More than 256 RGBA colours: colour type 6 (RGBA truecolor).
+        let mut busy = Vec::with_capacity(32 * 32 * 4);
+        for y in 0..32u8 {
+            for x in 0..32u8 {
+                busy.extend_from_slice(&[x * 8, y * 8, 7, 200]);
+            }
+        }
+        let (colour, plte, raw) = decode_idat(&encode_rgba(32, 32, &busy));
+        assert_eq!(colour, 6);
+        assert!(plte.is_empty());
+        assert_eq!(raw.len(), 32 * (1 + 32 * 4));
     }
 }

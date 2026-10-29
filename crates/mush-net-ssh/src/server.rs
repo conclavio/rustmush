@@ -57,7 +57,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mush_ansi::AnsiTheme;
-use mush_pixel::caps::{Encoder, EncoderChoice};
+use mush_pixel::caps::{CellSize, Encoder, EncoderChoice};
 use mush_proto::{ClientCaps, InputMode, OutputEvent, PanelFrameKind, RichText};
 use mush_session::{FloodBucket, FloodVerdict, sanitize_line};
 use russh::server::{Auth, Config, Handler, Msg, Response, Server as _, Session};
@@ -300,6 +300,7 @@ impl russh::server::Server for Ingress {
                 lc_all: None,
                 width: 0,
                 height: 0,
+                cell_size: None,
                 mode: Mode::Welcome,
                 tui: None,
                 manifest: TuiManifest::default(),
@@ -396,6 +397,10 @@ struct Shared {
     lc_all: Option<String>,
     width: u16,
     height: u16,
+    /// Cell dimensions in pixels when the SSH client supplied `pix_width` and
+    /// `pix_height` on `pty-req` or `window-change`. `CSI 16 t` in `@tui`
+    /// remains the fallback when the client sends `0`.
+    cell_size: Option<CellSize>,
     mode: Mode,
     /// Active TUI state while [`Mode::Tui`]; `None` in every other mode.
     /// Reached under this same lock by both the input handler and the output
@@ -1580,8 +1585,8 @@ impl Handler for ConnHandler {
         term: &str,
         col_width: u32,
         row_height: u32,
-        _pix_width: u32,
-        _pix_height: u32,
+        pix_width: u32,
+        pix_height: u32,
         modes: &[(russh::Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
@@ -1594,6 +1599,10 @@ impl Handler for ConnHandler {
             sh.term = Some(term.to_owned());
             sh.width = u16::try_from(col_width).unwrap_or(u16::MAX);
             sh.height = u16::try_from(row_height).unwrap_or(u16::MAX);
+            if let Some(cell) = cell_size_from_pty_px(col_width, row_height, pix_width, pix_height)
+            {
+                sh.cell_size = Some(cell);
+            }
             sh.recompute_caps();
         }
         session.channel_success(channel)?;
@@ -1626,8 +1635,8 @@ impl Handler for ConnHandler {
         channel: ChannelId,
         col_width: u32,
         row_height: u32,
-        _pix_width: u32,
-        _pix_height: u32,
+        pix_width: u32,
+        pix_height: u32,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.channel == Some(channel) {
@@ -1635,12 +1644,21 @@ impl Handler for ConnHandler {
                 let mut sh = self.lock();
                 sh.width = u16::try_from(col_width).unwrap_or(u16::MAX);
                 sh.height = u16::try_from(row_height).unwrap_or(u16::MAX);
+                if let Some(cell) =
+                    cell_size_from_pty_px(col_width, row_height, pix_width, pix_height)
+                {
+                    sh.cell_size = Some(cell);
+                }
+                let cell_size = sh.cell_size;
                 sh.recompute_caps();
                 let caps = sh.caps;
                 // Reflow the TUI to the new geometry; the next repaint clears
                 // + redraws at the new size (invariant T4).
                 if let Some(tui) = sh.tui.as_mut() {
                     tui.set_caps(caps);
+                    if let Some(cell) = cell_size {
+                        tui.set_cell_size(cell);
+                    }
                 }
                 (caps, matches!(sh.mode, Mode::Tui))
             };
@@ -1874,6 +1892,23 @@ fn connection_state(shared: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared>
     shared.lock().expect("conn state poisoned")
 }
 
+/// Derive one terminal cell's pixel size when the SSH `pty-req` or
+/// `window-change` message carried non-zero pixel dimensions alongside columns
+/// and rows.
+fn cell_size_from_pty_px(
+    col_width: u32,
+    row_height: u32,
+    pix_width: u32,
+    pix_height: u32,
+) -> Option<CellSize> {
+    if col_width == 0 || row_height == 0 || pix_width == 0 || pix_height == 0 {
+        return None;
+    }
+    let cw = u16::try_from(pix_width / col_width).ok()?;
+    let ch = u16::try_from(pix_height / row_height).ok()?;
+    CellSize::from_px(cw, ch)
+}
+
 impl GameCommands {
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         connection_state(&self.shared)
@@ -1889,6 +1924,9 @@ impl GameCommands {
             let mut sh = self.lock();
             let caps = sh.caps;
             let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
+            if let Some(cell) = sh.cell_size {
+                tui.set_cell_size(cell);
+            }
             tui.set_pixel_choice(sh.pixel_choice);
             tui.set_sounds(sh.sounds_on);
             tui.set_pixel_config(self.hooks.pixel_config());
@@ -3108,6 +3146,7 @@ mod tests {
             lc_all: None,
             width: 0,
             height: 0,
+            cell_size: None,
             mode: Mode::InGame,
             tui: None,
             manifest: TuiManifest::default(),

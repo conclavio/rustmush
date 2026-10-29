@@ -2668,6 +2668,11 @@ impl TuiApp {
                 r.redraw = false;
                 return;
             }
+            Key::GraphicsImageErr(id) => {
+                self.pixel.graphics_image_err(id);
+                r.redraw = false;
+                return;
+            }
             Key::CellSize(cell) => {
                 self.pixel.cell_size(cell);
                 r.redraw = false;
@@ -4453,6 +4458,12 @@ impl TuiApp {
     /// The probe bytes went out: start its clock.
     pub fn pixel_probe_sent(&mut self) {
         self.pixel.probe_sent(Instant::now());
+    }
+
+    /// Set the cell pixel size from SSH `pty-req` or `window-change` pixel
+    /// dimensions.
+    pub fn set_cell_size(&mut self, cell: mush_pixel::caps::CellSize) {
+        self.pixel.set_cell_size(cell);
     }
 
     /// The sounds waiting to go out with the next paint (doc 21 cut G.10).
