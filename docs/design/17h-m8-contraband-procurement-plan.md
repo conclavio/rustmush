@@ -541,6 +541,13 @@ The economy cannot read the Registry's inspection records.
   - On an org-held licence the warrant principal stays the member (D-23-5), and the org is carried
     as `holder`. "Names the org principal" in §3 M8e means that `holder`.
 
+**A cut added at the owner's word, 2026-10-28:** "let's add house attestation to the todo list
+alongside m8g to get it off our defer list". **M8h** makes House owner attestation run in live
+play. M8c built the verb, but the launch's Houses have no curator, so every House filing still
+lapsed after C0's 365-day runway. In M8h a tick attests each due House filing as the House's agent,
+reusing M8f's procurement agent where the House has one. An Unattestable filing lapses. The 365-day
+term stays and becomes a renewal cycle. M8h closes 17g §4's first deferral.
+
 **M8d2 ruling (the lead's, 2026-10-28): the seized core is impounded in place.** A physical
 removal would need new protocol in four crates (tactics' replacement journal, mush-core's core
 exchange, an industry order kind replayed by the refit audit, and the union's root). It would also
