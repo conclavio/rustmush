@@ -35,6 +35,7 @@ pub(crate) fn register(
     reg: &mut Registrar<'_>,
     atomic: bool,
     composed: bool,
+    window: bool,
 ) -> Result<(), ModError> {
     reg.definition_validator(
         DefinitionKind::new("owner_participant").map_err(bad)?,
@@ -42,6 +43,7 @@ pub(crate) fn register(
             let descriptors = [
                 scene_transition::scenes_participant_descriptor().map_err(|e| e.to_string())?,
                 crate::movement_composed::participant_descriptor().map_err(|e| e.to_string())?,
+                crate::movement_window::participant_descriptor().map_err(|e| e.to_string())?,
             ];
             let descriptor = descriptors
                 .into_iter()
@@ -65,6 +67,9 @@ pub(crate) fn register(
     )?;
     if composed {
         crate::movement_composed::register(reg)?;
+    }
+    if window {
+        crate::movement_window::register(reg)?;
     }
     if !atomic {
         return Ok(());

@@ -50,6 +50,8 @@ mod dt_preparation_plans;
 mod dt_unit_authority;
 #[path = "split_boundary/dt_window_movement.rs"]
 mod dt_window_movement;
+#[path = "split_boundary/dt_window_scenes.rs"]
+mod dt_window_scenes;
 #[path = "split_boundary/gateway_link_parity.rs"]
 mod gateway_link_parity;
 #[path = "split_boundary/ipc_authoritative_action.rs"]

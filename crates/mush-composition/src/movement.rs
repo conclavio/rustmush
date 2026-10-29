@@ -29,7 +29,10 @@ pub(crate) fn window_selector() -> mush_sim::window_movement::WindowSelector {
     })
 }
 
-pub(crate) fn window_factory(reader: AtlasReader) -> mush_sim::ComposedMovementFactory {
+pub(crate) fn window_factory(
+    scene_reader: SceneReader,
+    reader: AtlasReader,
+) -> mush_sim::ComposedMovementFactory {
     Arc::new(move |reg, builder| {
         let mut definitions = DefinitionRegistryBuilder::new();
         let owner = OwnerId::new("atlas").map_err(bad)?;
@@ -43,13 +46,31 @@ pub(crate) fn window_factory(reader: AtlasReader) -> mush_sim::ComposedMovementF
             .into_iter()
             .map(|descriptor| definitions.register(owner.clone(), descriptor).map_err(bad))
             .collect::<Result<Vec<_>, _>>()?;
+        let scene_owner = OwnerId::new("scenes").map_err(bad)?;
+        let scene_participant = definitions
+            .register(
+                scene_owner.clone(),
+                mush_scenes::movement_window::participant_descriptor()?,
+            )
+            .map_err(bad)?;
+        let scene_observer = definitions
+            .register(scene_owner, scene_transition::observer_descriptor()?)
+            .map_err(bad)?;
         let service = builder
+            .owner::<mush_scenes::movement_window::WindowScenesMovementParticipant>(
+                reg,
+                scene_participant.clone(),
+                vec![scene_observer],
+            )?
             .owner::<mush_atlas::movement_window_participant::AtlasWindowMovementParticipant>(
                 reg,
                 participant.clone(),
                 observers,
             )?
             .finish(reg)?;
+        scene_reader
+            .set(service.owner_reader(&scene_participant).map_err(bad)?)
+            .map_err(|_| bad("window Scenes reader already belongs to a composition"))?;
         reader
             .set(service.owner_reader(&participant).map_err(bad)?)
             .map_err(|_| bad("window Atlas reader already belongs to a composition"))?;

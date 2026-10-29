@@ -626,6 +626,17 @@ so these routes use the actual hooks without a new admission exemption. Departur
 from a non-window domain still receives the actual Core movement-hook veto and
 receives no exemption from this profile.
 
+The production window composition also joins the actual Scenes transcript owner
+through a separate exact participant and scoped reader. Original source-departure
+and destination-entry events, including scene clock stamps and witnesses, use
+the same bounded prepared ledger batches as the existing transcript adapter.
+Empty captures retain a genuine owner observation. All configured movement
+profiles share one cold transcript-position census, so two receipts cannot claim
+the same original event across profiles. The window adapter currently requires
+the final projected room to equal the admitted room; a second Core room leg
+refuses until ordered transcript capture is implemented. Older window manifests
+without a Scenes group retain their original partial coverage.
+
 V2 registers no offer or live command route. Its manifest remains partial:
 the bounded original journal refuses a 257th commit until a real checkpoint or
 archival protocol is implemented, rather than accepting an unrecoverable tail.

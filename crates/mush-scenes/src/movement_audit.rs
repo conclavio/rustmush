@@ -196,10 +196,10 @@ impl Audit {
     }
 }
 
-fn collect_receipts(
+fn collect_receipts<'a>(
     ctx: &ModuleCtx<'_>,
     reader: Option<&SceneLocomotionReader>,
-    composed: Option<&ComposedOwnerReader>,
+    composed: impl IntoIterator<Item = &'a ComposedOwnerReader>,
 ) -> Result<Audit, ModError> {
     let mut audit = Audit::new();
     if let Some(reader) = reader {
@@ -226,7 +226,7 @@ fn collect_receipts(
             }
         }
     }
-    if let Some(reader) = composed {
+    for reader in composed {
         let mut after = None;
         loop {
             let page = reader
@@ -257,20 +257,20 @@ fn collect_receipts(
 
 /// Validate actual retained proof grammar, unique claimed positions and empty
 /// capture digests without loading or reconstructing any live scene.
-pub(crate) fn audit_typed(
+pub(crate) fn audit_typed<'a>(
     ctx: &ModuleCtx<'_>,
     reader: Option<&SceneLocomotionReader>,
-    composed: Option<&ComposedOwnerReader>,
+    composed: impl IntoIterator<Item = &'a ComposedOwnerReader>,
 ) -> Result<(), ModError> {
     collect_receipts(ctx, reader, composed).map(|_| ())
 }
 
-pub(crate) fn audit_boot(
+pub(crate) fn audit_boot<'a>(
     ctx: &ModuleCtx<'_>,
     data: &ModuleBootData,
     history: &mush_core::LedgerHistory,
     reader: Option<&SceneLocomotionReader>,
-    composed: Option<&ComposedOwnerReader>,
+    composed: impl IntoIterator<Item = &'a ComposedOwnerReader>,
 ) -> Result<(), ModError> {
     if !data.omitted.is_empty() {
         return Err(ModError::RetryFullFetch {

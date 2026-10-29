@@ -52,6 +52,7 @@ pub mod movement;
 mod movement_audit;
 pub mod movement_composed;
 pub mod movement_participant;
+pub mod movement_window;
 mod panel;
 
 use mush_core::locomotion::scene_transition::SceneLocomotionReader;
@@ -117,11 +118,12 @@ pub struct ScenesModule {
     sealer_gate: Option<SealerGate>,
     atomic_movement: Option<Arc<OnceLock<SceneLocomotionReader>>>,
     composed_movement: Option<Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>>,
+    window_movement: Option<Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>>,
 }
 
 type MovementReaders<'a> = (
     Option<&'a SceneLocomotionReader>,
-    Option<&'a mush_core::locomotion::composed::ComposedOwnerReader>,
+    Vec<&'a mush_core::locomotion::composed::ComposedOwnerReader>,
 );
 
 impl ScenesModule {
@@ -132,6 +134,7 @@ impl ScenesModule {
             sealer_gate: None,
             atomic_movement: None,
             composed_movement: None,
+            window_movement: None,
         }
     }
 
@@ -170,6 +173,23 @@ impl ScenesModule {
         self
     }
 
+    /// Join the actual transcript owner to closed window movement. A second
+    /// projected room is refused until ordered transcript capture is supported.
+    #[must_use]
+    pub fn with_window_composed_movement(
+        mut self,
+        reader: Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>,
+    ) -> Self {
+        self.window_movement = Some(reader);
+        self
+    }
+
+    fn has_movement(&self) -> bool {
+        self.atomic_movement.is_some()
+            || self.composed_movement.is_some()
+            || self.window_movement.is_some()
+    }
+
     fn movement_readers(&self) -> Result<MovementReaders<'_>, ModError> {
         let missing = |protocol| {
             ModError::msg(format!(
@@ -186,7 +206,12 @@ impl ScenesModule {
             .as_ref()
             .map(|reader| reader.get().ok_or_else(|| missing("composed")))
             .transpose()?;
-        Ok((atomic, composed))
+        let window = self
+            .window_movement
+            .as_ref()
+            .map(|reader| reader.get().ok_or_else(|| missing("window")))
+            .transpose()?;
+        Ok((atomic, composed.into_iter().chain(window).collect()))
     }
 
     fn inspect_movement_history(
@@ -194,9 +219,7 @@ impl ScenesModule {
         ctx: &ModuleCtx<'_>,
         data: &ModuleBootData,
     ) -> Result<mush_core::LedgerHistory, ModError> {
-        if (self.atomic_movement.is_some() || self.composed_movement.is_some())
-            && !data.omitted.is_empty()
-        {
+        if self.has_movement() && !data.omitted.is_empty() {
             return Err(ModError::RetryFullFetch {
                 module: NS.into(),
                 reason: "Scenes movement audit requires the complete transcript history".into(),
@@ -204,7 +227,7 @@ impl ScenesModule {
         }
         let history = mush_core::inspect_ledger(&data.ledger, None);
         let (atomic, composed) = self.movement_readers()?;
-        if atomic.is_some() || composed.is_some() {
+        if atomic.is_some() || !composed.is_empty() {
             movement_audit::audit_boot(ctx, data, &history, atomic, composed)?;
         }
         Ok(history)
@@ -275,11 +298,12 @@ impl GameModule for ScenesModule {
             reg.subscribe(WorldEventKind::Said { kind }, Arc::new(on_said));
         }
         reg.subscribe_moved("scene_movement_transcript", 1, Arc::new(on_moved))?;
-        if self.atomic_movement.is_some() || self.composed_movement.is_some() {
+        if self.has_movement() {
             movement_participant::register(
                 reg,
                 self.atomic_movement.is_some(),
                 self.composed_movement.is_some(),
+                self.window_movement.is_some(),
             )?;
         }
         // Mechanical resolutions (dice rolls) recorded into the scene log.
@@ -321,7 +345,7 @@ impl GameModule for ScenesModule {
         ctx: &ModuleCtx<'_>,
         data: &ModuleBootData,
     ) -> Result<(), ModError> {
-        if self.atomic_movement.is_none() && self.composed_movement.is_none() {
+        if !self.has_movement() {
             return Ok(());
         }
         self.inspect_movement_history(ctx, data).map(|_| ())

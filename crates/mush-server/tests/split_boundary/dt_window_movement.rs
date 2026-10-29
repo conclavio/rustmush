@@ -21,7 +21,7 @@ fn sim(rig: &Rig) -> TestResult<&mush_sim::SpatialState> {
         .module_state::<mush_sim::SpatialState>()
         .ok_or("Sim unavailable".into())
 }
-async fn fixture(store: &InMemoryStore, kind: ObjKind, placed: bool) -> TestResult<Rig> {
+pub(super) async fn fixture(store: &InMemoryStore, kind: ObjKind, placed: bool) -> TestResult<Rig> {
     let mut rig = super::dt_atlas_movement::mapped(store, kind, None).await?;
     rig.world.world_mut().attach_behavior(
         rig.actor,
@@ -98,7 +98,7 @@ async fn fixture(store: &InMemoryStore, kind: ObjKind, placed: bool) -> TestResu
     }
     Ok(rig)
 }
-fn stage(rig: &mut Rig, nonce: u8) -> TestResult {
+pub(super) fn stage(rig: &mut Rig, nonce: u8) -> TestResult {
     stage_line(rig, "north", nonce)
 }
 
@@ -137,7 +137,7 @@ fn stage_line(rig: &mut Rig, line: &str, nonce: u8) -> TestResult {
     stage_definition_with_nonce(rig, line, action, nonce)
 }
 
-async fn entering(store: &InMemoryStore, kind: ObjKind) -> TestResult<Rig> {
+pub(super) async fn entering(store: &InMemoryStore, kind: ObjKind) -> TestResult<Rig> {
     use mush_atlas::cells::{Cell, Cells};
     use mush_atlas::geom::{PointCm, RectCm};
     use mush_atlas::raster::Grid;
@@ -275,7 +275,7 @@ async fn entering(store: &InMemoryStore, kind: ObjKind) -> TestResult<Rig> {
     );
     Ok(rig)
 }
-fn record(bundle: &AuthoritativeBundle) -> TestResult<WindowMovementRecord> {
+pub(super) fn record(bundle: &AuthoritativeBundle) -> TestResult<WindowMovementRecord> {
     let value = bundle
         .writes()
         .iter()
@@ -296,7 +296,7 @@ fn record(bundle: &AuthoritativeBundle) -> TestResult<WindowMovementRecord> {
         .ok_or("window crossing record")?;
     Ok(WindowMovementRecord::decode(value)?)
 }
-async fn commit(
+pub(super) async fn commit(
     rig: &mut Rig,
     store: &InMemoryStore,
     nonce: u8,
@@ -304,7 +304,7 @@ async fn commit(
     commit_line(rig, store, "north", nonce).await
 }
 
-async fn commit_line(
+pub(super) async fn commit_line(
     rig: &mut Rig,
     store: &InMemoryStore,
     line: &str,
