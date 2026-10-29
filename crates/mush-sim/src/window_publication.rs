@@ -1,5 +1,5 @@
 //! Actual Sim owner adapter. It requires a Core-minted window intent and
-//! remains unregistered until composition supplies the real observer joins.
+//! is registered only with composition-supplied real observer joins.
 
 use super::*;
 use mush_core::locomotion::composed::{
@@ -41,10 +41,23 @@ impl WindowSelection {
             target,
         }
     }
-    fn projection(&self, capture: DefinitionDigest) -> WindowProjection {
+    pub(crate) fn room(&self) -> ObjId {
+        self.room
+    }
+    pub(crate) fn projection(&self, capture: DefinitionDigest) -> WindowProjection {
         WindowProjection::new(self.room, self.atlas_digest, capture, self.target)
     }
-    fn native_target(&self) -> Option<WindowTarget> {
+    pub(crate) fn plan_digest(
+        &self,
+        capture: DefinitionDigest,
+    ) -> Result<DefinitionDigest, ParticipantError> {
+        DefinitionDigest::for_canonical_value(
+            "sim.window_movement.plan.v1",
+            &json!({"capture":capture,"projection":self.projection(capture)}),
+        )
+        .map_err(|_| ParticipantError::Encoding)
+    }
+    pub(crate) fn native_target(&self) -> Option<WindowTarget> {
         self.target.map(|target| {
             WindowTarget::at(
                 DomainId(target.domain()),
@@ -66,6 +79,12 @@ pub struct WindowMovementParticipant {
     selector: WindowSelector,
 }
 impl WindowMovementParticipant {
+    pub(crate) fn prepare_journal(
+        state: &SpatialState,
+        record: &WindowMovementRecord,
+    ) -> Result<PreparedLedgerAppend, ParticipantError> {
+        append(state, record.journal_value())
+    }
     pub fn new(selector: WindowSelector) -> Self {
         Self { selector }
     }
@@ -187,11 +206,7 @@ impl OwnerParticipant for WindowMovementParticipant {
         let capture = capture_ordered(ctx.world(), core, selection.native_target())?;
         capture.recheck_native(state)?;
         let projection = selection.projection(capture.digest());
-        let plan_digest = DefinitionDigest::for_canonical_value(
-            "sim.window_movement.plan.v1",
-            &json!({"capture":capture.digest(),"projection":projection}),
-        )
-        .map_err(|_| ParticipantError::Encoding)?;
+        let plan_digest = selection.plan_digest(capture.digest())?;
         let output = WindowLocomotionDraft::new(
             ctx,
             &intent,
@@ -208,7 +223,7 @@ impl OwnerParticipant for WindowMovementParticipant {
             projection,
             state.recovery.next_seq(WINDOW_MOVEMENT_LOG),
         )?;
-        let append = append(state, record.journal_value())?;
+        let append = Self::prepare_journal(state, &record)?;
         history::check_append(&record, &append)?;
         let journal_write = journal_write(&append)?;
         let mut writes = Vec::new();

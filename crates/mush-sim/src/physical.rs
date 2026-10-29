@@ -244,6 +244,7 @@ pub(crate) fn register(
         crate::locomotion::participant_descriptor()?,
         crate::locomotion_scenes::participant_descriptor()?,
         crate::locomotion_composed::participant_descriptor()?,
+        crate::window_movement::WindowMovementParticipant::descriptor()?,
     ];
     // A configured IC custody owner installs the one exact participant
     // validator for the physical and locomotion descriptors, retaining its

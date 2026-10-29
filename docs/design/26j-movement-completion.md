@@ -595,12 +595,36 @@ then installs only those prepared images. Dropping a binding or refusing a stale
 tail changes nothing. Planning snapshots exclude recovery logs entirely, and
 binding preserves unrelated log tails without cloning them.
 
-The adapter is not registered by default. Its selector returns proposal data;
-the real Atlas observer must still attest the shared header. Actual producer
-registration, retained foreign reads and the genuine same-commit receipt/family
-join remain required before this profile is executable. Native binding tests
-exercise the actual plans and slot mechanics without claiming a Core movement
-commit or personnel evidence from their fixture journal bodies.
+Production composition now registers the separate closed v2 producer, actual
+Sim participant and actual Atlas window-discovery adapter. The selector returns
+proposal data; Atlas independently attests the shared header. Preparation keeps
+the real Journey, Focus, IC exclusion, deployment projection and Tactics custody
+reads through final validation. The genuine Core receipt, ordered capture,
+prepared native journal append and window family row share one commit. Both
+typed directions and original native journal positions are audited before
+migrations or load callbacks. Generic Sim compositions remain opt-in.
+
+V1 remains the authoring default and its receipts/readers remain registered.
+Completion registration requires an enabled provider for the exact action,
+alongside the current actual adapter/callback, owned slot, request and grant;
+retained action metadata alone cannot enable a profile. Core exposes only a
+read-only preview of an already retained captured admission to the producer.
+
+Production tests prove unplaced entry, empty native phases, original journal
+matching, lost acknowledgements, cold typed/native refusals, and failure before
+any owner image is installed when Core preimages drift after acknowledgement.
+Departure from a non-window domain still receives the actual Core movement-hook
+veto and receives no exemption from this profile. Sim's existing gate permits
+ordinary exits from window domains; production lifecycle tests for that route
+follow this initial entry join. Native binding tests exercise release mechanics
+separately without claiming that vetoed departure has become executable.
+
+V2 registers no offer or live command route. Its manifest remains partial:
+the bounded original journal refuses a 257th commit until a real checkpoint or
+archival protocol is implemented, rather than accepting an unrecoverable tail.
+Atlas window map output and other observer effects are not completed, and
+personnel evidence remains uncertified. Incomplete history never reconstructs
+present placement or an aboard interval.
 
 ## Remaining completion protocol
 

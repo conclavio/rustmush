@@ -49,6 +49,7 @@ mod locomotion;
 mod locomotion_capture;
 mod locomotion_composed;
 mod locomotion_scenes;
+mod locomotion_window;
 pub mod movement_custody;
 mod movement_reads;
 pub use locomotion_composed::ComposedMovementFactory;
@@ -177,6 +178,7 @@ pub struct SimulationModule {
     atomic_scene_movement:
         Option<Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>>,
     composed_movement: Option<ComposedMovementFactory>,
+    window_movement: Option<(window_movement::WindowSelector, ComposedMovementFactory)>,
     tactics_movement_reads: Option<movement_custody::CustodyReadFactory>,
 }
 
@@ -192,6 +194,7 @@ impl std::fmt::Debug for SimulationModule {
                 &self.atomic_scene_movement.is_some(),
             )
             .field("composed_movement", &self.composed_movement.is_some())
+            .field("window_movement", &self.window_movement.is_some())
             .field(
                 "tactics_movement_reads",
                 &self.tactics_movement_reads.is_some(),
@@ -219,6 +222,7 @@ impl SimulationModule {
             ic_custody: None,
             atomic_scene_movement: None,
             composed_movement: None,
+            window_movement: None,
             tactics_movement_reads: None,
         }
     }
@@ -248,6 +252,19 @@ impl SimulationModule {
     #[must_use]
     pub fn with_composed_movement(mut self, factory: ComposedMovementFactory) -> Self {
         self.composed_movement = Some(factory);
+        self
+    }
+
+    /// Add the closed v2 profile with actual observer adapters. The selector
+    /// proposes data only; Atlas independently attests it. No live route,
+    /// offer, completed output or personnel eligibility is granted.
+    #[must_use]
+    pub fn with_window_movement(
+        mut self,
+        selector: window_movement::WindowSelector,
+        factory: ComposedMovementFactory,
+    ) -> Self {
+        self.window_movement = Some((selector, factory));
         self
     }
 
@@ -318,6 +335,9 @@ impl SimulationModule {
         }
         if self.composed_movement.is_some() {
             locomotion_composed::loaded(ctx)?;
+        }
+        if self.window_movement.is_some() {
+            locomotion_window::audit_typed(ctx)?;
         }
         Ok(())
     }
@@ -1094,7 +1114,10 @@ impl GameModule for SimulationModule {
             locomotion_scenes::register(reg, reader, movement_reads.clone())?;
         }
         if let Some(factory) = &self.composed_movement {
-            locomotion_composed::register(reg, factory, movement_reads)?;
+            locomotion_composed::register(reg, factory, movement_reads.clone())?;
+        }
+        if let Some((selector, factory)) = &self.window_movement {
+            locomotion_window::register(reg, selector.clone(), factory, movement_reads)?;
         }
         // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
         // arena holds. Always composed, even with no game layer above — the
@@ -1205,8 +1228,16 @@ impl GameModule for SimulationModule {
         self.audit_movement_history(ctx)
     }
 
-    fn audit_boot_history(&self, _: &ModuleCtx<'_>, data: &ModuleBootData) -> Result<(), ModError> {
-        self.audit_native_movement_history(data)
+    fn audit_boot_history(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        data: &ModuleBootData,
+    ) -> Result<(), ModError> {
+        if self.window_movement.is_some() {
+            locomotion_window::audit_native(ctx, data)
+        } else {
+            self.audit_native_movement_history(data)
+        }
     }
 
     fn on_world_loaded(
@@ -1218,7 +1249,7 @@ impl GameModule for SimulationModule {
         // loaders can quarantine, reconcile projections, or advance journeys.
         // The server hydrates the typed-state partition before any load hook.
         self.audit_movement_history(ctx)?;
-        self.audit_native_movement_history(&data)?;
+        self.audit_boot_history(ctx, &data)?;
         ic_exclusion::load(ctx, &mut data, self.ic_custody.is_some())?;
         if let Some(config) = &self.ic_custody {
             config.loaded(ctx)?;

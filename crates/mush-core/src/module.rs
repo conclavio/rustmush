@@ -2632,7 +2632,7 @@ impl Registry {
                     .map(|entry| (entry.module.as_str(), entry.moved_definition.as_ref())),
                 Some(&definitions),
             )?;
-            completion_builder.freeze(&roster, &definitions, &participants)?
+            completion_builder.freeze(&roster, &definitions, &participants, &action_providers)?
         };
         self.mods.movement_manifests = Some(movement_manifests);
         self.owner_reads = Some(owner_reads);

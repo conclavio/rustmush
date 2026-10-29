@@ -1266,6 +1266,43 @@ fn passive_window_journal_join_refuses_missing_changed_duplicate_and_gapped_entr
 }
 
 #[test]
+fn an_exact_append_past_the_recoverable_window_horizon_refuses_without_advancing() {
+    let mut rig = Rig::new();
+    let projected = rig.projected;
+    let capture = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    // Local ledger bytes only, not a claimed Core/Sim commit or physical history.
+    let mut ledger = mush_core::Ledger::default();
+    for sequence in 0..MAX_WINDOW_MOVEMENT_COMMITS {
+        let append = ledger
+            .prepare_append(WINDOW_MOVEMENT_LOG, json!(sequence))
+            .unwrap();
+        ledger.apply_prepared(append).unwrap();
+    }
+    let record =
+        WindowMovementRecord::decode(&passive_record_value(&capture, MAX_WINDOW_MOVEMENT_COMMITS))
+            .unwrap();
+    let append = ledger
+        .prepare_append(WINDOW_MOVEMENT_LOG, record.journal_value())
+        .unwrap();
+    record
+        .matches_journal_entry(append.seq(), &record.journal_value())
+        .unwrap();
+    assert!(matches!(
+        history::check_append(&record, &append),
+        Err(ParticipantError::ImageLimit)
+    ));
+    assert_eq!(
+        ledger.next_seq(WINDOW_MOVEMENT_LOG),
+        MAX_WINDOW_MOVEMENT_COMMITS
+    );
+    assert_eq!(rig.state().recovery.next_seq(WINDOW_MOVEMENT_LOG), 0);
+}
+
+#[test]
 fn native_window_journal_bounds_precede_copying_and_other_owner_logs_stay_separate() {
     let mut data = mush_core::ModuleBootData {
         ledger: vec![("log:other:0".into(), "x".repeat(8 * 1024 * 1024 + 1))],

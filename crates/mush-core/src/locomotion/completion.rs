@@ -552,6 +552,7 @@ impl MovementCompletionBuilder {
         roster: &MovedObserverRoster,
         definitions: &DefinitionRegistry,
         participants: &ParticipantRegistry,
+        actions: &crate::action::ActionProviderRegistry,
     ) -> Result<BTreeMap<DefinitionRef, FrozenMovementManifest>, ModError> {
         for requirement in &self.requirements {
             if !self.registrations.iter().any(|registration| {
@@ -569,7 +570,10 @@ impl MovementCompletionBuilder {
         for registration in self.registrations {
             let body = registration.body;
             if definitions.current(registration.binding.key()) != Some(&registration.binding)
-                || definitions.current(body.action.key()) != Some(&body.action)
+                // Authoring defaults select one version, but multiple exact
+                // closed protocols can have enabled providers concurrently.
+                // A retained definition alone never supplies execution.
+                || actions.get_exact(&body.action).is_err()
                 || definitions.current(body.participant.key()) != Some(&body.participant)
                 || !participants.grants_exact_type(
                     registration.adapter_type,
@@ -579,7 +583,7 @@ impl MovementCompletionBuilder {
                 )
             {
                 return Err(bad(
-                    "movement completion lacks the current actual adapter, request or grant",
+                    "movement completion lacks an enabled action, current actual adapter, request or grant",
                 ));
             }
             definitions.get_exact(&registration.binding).map_err(bad)?;
