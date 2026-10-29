@@ -551,6 +551,37 @@ fn records_refuse_unsorted_duplicate_self_pairs_and_wrong_clock_domains() -> Tes
 }
 
 #[test]
+fn composed_capture_has_its_own_protocol_and_digest_domain() -> TestResult {
+    let ordinary = batch()?;
+    let mut composed = ordinary.clone();
+    let mut definitions = DefinitionRegistryBuilder::new();
+    composed.action = definitions.register(
+        OwnerId::new("sim")?,
+        mush_core::locomotion::composed::action_descriptor()?,
+    )?;
+    composed.participant = definitions.register(
+        OwnerId::new("sim")?,
+        crate::locomotion_composed::participant_descriptor()?,
+    )?;
+    check!(decode_with(&encoded(&composed)?, Protocol::Composed).is_err());
+    composed.capture_digest = composed_capture_digest(
+        &composed.prepared_at,
+        &composed.before_ancestry_digest,
+        &composed.after_ancestry_digest,
+        &composed.crossings,
+    )?;
+    check_ne!(composed.capture_digest, ordinary.capture_digest);
+    let value = encoded(&composed)?;
+    check_eq!(decode_with(&value, Protocol::Composed)?, composed);
+    check!(decode(&value).is_err());
+    check!(decode_with(&value, Protocol::WithScenes).is_err());
+    check!(decode_with(&encoded(&ordinary)?, Protocol::Composed).is_err());
+    composed.capture_digest = ordinary.capture_digest;
+    check!(decode_with(&encoded(&composed)?, Protocol::Composed).is_err());
+    Ok(())
+}
+
+#[test]
 fn durable_definition_versions_are_strict_and_zero_crossings_are_retained() -> TestResult {
     let mut original = batch()?;
     original.crossings.clear();

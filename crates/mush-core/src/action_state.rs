@@ -634,6 +634,11 @@ impl<'a> ModuleActionState<'a> {
         self.dispatch.as_ref()
     }
 
+    /// The engine-stamped module identity, independent of compatibility fields.
+    pub(crate) const fn module_owner(&self) -> Option<&OwnerId> {
+        self.owner.as_ref()
+    }
+
     /// The lens this reader was built from, so a module holding a
     /// [`Ctx`](crate::Ctx) can hand its own live typed state to an engine
     /// predicate instead of reaching for a store-less name.

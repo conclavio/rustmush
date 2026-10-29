@@ -1858,6 +1858,10 @@ gate. M7 must provide Registry recall/revocation and governed renewal admission,
 but does not quietly enable contraband. Frontier never mounts in a hull or
 authors an act; there is no new Command class.
 
+*Closed by doc 17h (2026-10-28):* M8 is planned and built as cuts M8a–M8g, plus M8b-2 and M8d2.
+The organisation holder (M8c) also closes 17g §4's House owner attestation. Testimony stays with
+the fight (Q-M8-2). Recognition and quirk claims are M8g's `@mind/claim`.
+
 OOC matches, proving and bench consume no IC money or seat and do not advance IC
 terms. They may read committed current IC holdings at admission. Running arenas
 read frozen seals, never a market, licence table or wall clock. Actual IC sortie

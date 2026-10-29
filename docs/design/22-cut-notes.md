@@ -114,3 +114,9 @@ what do flat sprites cost against voxel models?
 
 **Ruled (D-22-9)**: sprites, eight facings, six poses, 96 pixels.
 
+## D-22-9 format & 8-way sensor facing (2026-10-28)
+
+- **Sheet format & parser (`mush_pixel::look`)**: `SPRITE_MAX` raised from `64` to `96`; `Facing` expanded to all eight directions (`Front`, `FrontRight`, `Right`, `RearRight`, `Rear`, `RearLeft`, `Left`, `FrontLeft`) in clockwise 45° order with `Facing::ALL`, `Facing::named`, `Facing::from_aspect`, `Facing::as_str`, and `Facing::cardinal`. `Look::parse` accepts all eight facings (requiring all eight when any diagonal is present, while keeping 3/4-facing hand-drawn sheets valid), optional per-facing `"wreck"` inside each facing object, and up to eight top-level `"wreck"` frames. `Sheet::frame` and `Sheet::wreck_frame` resolve exact diagonal frames on 8-facing sheets and fall back to `facing.cardinal()` on 3/4-facing sheets.
+- **8-way sensor facing (`tacsim` & `mush_pixel::cockpit`)**: `tacsim::arena::resolution::facing_band_seen` computes the 45° sector (`FACING_BANDS`) the target presents to the observer from `SeenPose`, stored as `ContactFacing` (`facing`) on `FrameContact` and emitted as `"facing"` on each contact in `arena.cockpit` (`status_frame_held`). Four-way `"aspect"` (`front`/`left`/`right`/`rear`) is preserved unchanged for armour facets, `FireCondition.aspects`, and Rhai unit minds (`Contact.aspect`). `mush_pixel::cockpit::contact_sprite` reads `"facing"` with fallback to `"aspect"`. Canonical cockpit fixtures (`cockpit_frame.json`, `view_frame.json`) re-blessed.
+
+

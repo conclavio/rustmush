@@ -128,6 +128,7 @@ pub mod deliberation;
 pub mod detachment;
 pub mod economy;
 pub mod ephemeris;
+pub mod field_ops;
 pub mod fixture;
 pub mod hardware;
 pub mod ic_return;

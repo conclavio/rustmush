@@ -361,7 +361,19 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
   `ic_integration_tests`' `fixture_start`/`fixture_close` with a production-host twin of its stories;
   admission against a site's pool at the drone's launch; the `abi` drop on resume; long-leg
   snapshots on the surface tick.
-- **S.5 — The M8 gate check (small).** §10's two tiers as dispatch-only CI stories.
+  *Split by the owner, 2026-10-28 (doc 17h Q-M8-1, and the M8e re-scope, option C).*
+  - **S.4a** is built as doc 17h's cut M8e: a cored rig seals a held filed mind's line (the mind,
+    the core, the class, the governed bit and the licence's real state); a lapse seals Doctrine and
+    tells only the operator; a pending transfer refuses; M8c's seal mark is written in the finish's
+    bundle; an ungoverned rig seals an unfiled draft with its admissions. No claim Open/Close and no
+    pool seat: a four-owner IC claim cannot sit on a surface excursion as the tree stands. An IC
+    base accepts only a fixed-domain anchor (`mush-sim ic_exclusion.rs:317`), a ship's bay moves,
+    and an active claim freezes the hull (`mush-tactics ic_custody.rs:252`).
+  - **S.4b** is the claim Open/Close (the production `HostTransition`), the pool seat, the `abi`
+    drop on resume and the long-leg snapshots. It lands with the thinking mind and the drone phase
+    (D-UM-47), after M8, together with a custody design for moving anchors.
+- **S.5 — The M8 gate check (small).** §10's two tiers as dispatch-only CI stories, folded into
+  doc 17h's cut M8g.
 
 ## 10. The M8 gate, restated
 
@@ -381,6 +393,13 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
 **Tier 2 — the first IC mind (S.4).** A drone flying a held mind opens with a real four-owner Open
 and closes with a real Close, its seal line carries the mind, the core and the licence state, and
 M8's own leak and quirk-claim tests have a seal line to read.
+
+**Tier 2 as restated for M8 (doc 17h Q-M8-1, and the owner's option C of 2026-10-28).** On a
+surface excursion, a cored rig seals a held mind's line: the mind, the core, the class, the governed
+bit and the licence state. A lapse seals Doctrine and says so only to the operator, a pending
+transfer refuses, the seal mark reaches the Roll, and the ungoverned rig's seal carries the draft
+and the word. The four-owner Open and Close above moves to S.4b with the drone phase. M8's leak and
+quirk-claim tests read the seal line.
 
 No fight and no region simulation is required by either tier. M8's own cuts (the governed bit,
 inspection verbs, seizure) then have a real epoch to read at each end.

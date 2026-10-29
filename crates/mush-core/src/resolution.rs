@@ -1254,6 +1254,48 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Prepare every owner in the actual frozen manifest for this captured
+    /// route. Any caught refusal still poisons the whole transaction.
+    pub fn prepare_composed_locomotion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        service: &crate::locomotion::composed::ComposedLocomotion,
+    ) -> Result<
+        crate::locomotion::composed::ComposedLocomotionReceipt,
+        crate::participant::ParticipantError,
+    > {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            txn.read_preimage(base, provider)
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            let admission = self
+                .captured_admission
+                .as_ref()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            self.participants
+                .as_mut()
+                .ok_or(crate::participant::ParticipantError::Unavailable)?
+                .prepare_composed_locomotion(
+                    service,
+                    txn,
+                    self.commit_token,
+                    admission,
+                    base,
+                    provider,
+                )
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
     /// Join the captured route, Sim crossing capture and the exact Scenes
     /// transcript owner in one acknowledged mutation. Empty Scenes output
     /// remains an authenticated owner observation, never a synthetic write.

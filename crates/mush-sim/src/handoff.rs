@@ -1121,6 +1121,7 @@ pub(crate) fn register(
             crate::physical::outcome_descriptor()?,
             crate::locomotion::outcome_descriptor()?,
             crate::locomotion_scenes::outcome_descriptor()?,
+            crate::locomotion_composed::outcome_descriptor()?,
         ]),
     )?;
     reg.definition_validator(
@@ -1135,6 +1136,7 @@ pub(crate) fn register(
             mush_core::physical_transition::action_descriptor()?,
             mush_core::locomotion::transition::action_descriptor()?,
             mush_core::locomotion::scene_transition::action_descriptor()?,
+            mush_core::locomotion::composed::action_descriptor()?,
         ]),
     )?;
     let tick_definitions = crate::tick::TickDefinitions {
