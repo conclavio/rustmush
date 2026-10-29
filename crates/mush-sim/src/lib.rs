@@ -1027,14 +1027,14 @@ impl GameModule for SimulationModule {
             handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
         tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
-        let journey_read = movement_reads::register(reg)?;
-        physical::register(reg, self.ic_custody.is_some(), journey_read.clone())?;
-        locomotion::register(reg, journey_read.clone())?;
+        let movement_reads = movement_reads::register(reg)?;
+        physical::register(reg, self.ic_custody.is_some(), movement_reads.clone())?;
+        locomotion::register(reg, movement_reads.clone())?;
         if let Some(reader) = &self.atomic_scene_movement {
-            locomotion_scenes::register(reg, reader, journey_read.clone())?;
+            locomotion_scenes::register(reg, reader, movement_reads.clone())?;
         }
         if let Some(factory) = &self.composed_movement {
-            locomotion_composed::register(reg, factory, journey_read)?;
+            locomotion_composed::register(reg, factory, movement_reads)?;
         }
         // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
         // arena holds. Always composed, even with no game layer above — the

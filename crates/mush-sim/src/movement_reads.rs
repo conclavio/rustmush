@@ -1,10 +1,11 @@
-//! Real owner-read preimages for movement's separate journey state slot.
+//! Real owner-read preimages for movement's separate journey and focus slots.
 //!
 //! The existing movement capture decides admission. This read retains exactly
-//! its journey predicates through final publication, without copying routes,
+//! its owner predicates through final publication, without copying routes,
 //! replaying a service or treating an observation as a lifecycle capability.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use mush_core::read_service::{
     OwnerReadContext, OwnerReadError, OwnerReadHandle, OwnerReadService,
@@ -16,22 +17,28 @@ use mush_core::{
 use serde::Serialize;
 use serde_json::json;
 
-use crate::{JourneyBook, NS};
+use crate::{FocusState, JourneyBook, NS};
 
 const MAX_ROOTS: usize = crate::personnel_capture::MAX_DEPENDENCIES;
 const MAX_SNAPSHOT_BYTES: usize = 64 * 1024;
 pub(super) struct JourneyReader;
-pub(super) type JourneyRead = OwnerReadHandle<JourneyReader>;
+struct FocusReader;
+struct ReadHandles {
+    journeys: OwnerReadHandle<JourneyReader>,
+    focus: OwnerReadHandle<FocusReader>,
+}
+#[derive(Clone)]
+pub(super) struct MovementReads(Arc<ReadHandles>);
 
-#[derive(Serialize)]
-pub(super) struct JourneyRequest {
+#[derive(Clone, Serialize)]
+pub(super) struct MovementReadRequest {
     roots: BTreeSet<ObjId>,
 }
 
 fn bad(error: impl std::fmt::Display) -> ModError {
     ModError::msg(error.to_string())
 }
-pub(super) fn register(reg: &mut Registrar<'_>) -> Result<JourneyRead, ModError> {
+pub(super) fn register(reg: &mut Registrar<'_>) -> Result<MovementReads, ModError> {
     let descriptor = DefinitionDescriptor::new(
         DefinitionKind::new("owner_read").map_err(bad)?,
         DefinitionId::new("movement_journey_preimage").map_err(bad)?,
@@ -41,14 +48,29 @@ pub(super) fn register(reg: &mut Registrar<'_>) -> Result<JourneyRead, ModError>
             "max_roots":MAX_ROOTS,"max_snapshot_bytes":MAX_SNAPSHOT_BYTES}),
     )
     .map_err(bad)?;
+    let focus_descriptor = DefinitionDescriptor::new(
+        DefinitionKind::new("owner_read").map_err(bad)?,
+        DefinitionId::new("movement_focus_preimage").map_err(bad)?,
+        1,
+        json!({"state":"FocusState","purpose":"movement_preimage_only",
+            "fields":["object","has_focus_on","focus_of_actor_present"],
+            "max_roots":MAX_ROOTS,"max_snapshot_bytes":MAX_SNAPSHOT_BYTES}),
+    )
+    .map_err(bad)?;
     let owner = OwnerId::new(NS).map_err(bad)?;
     let expected = DefinitionRegistryBuilder::new()
         .register(owner.clone(), descriptor.clone())
         .map_err(bad)?;
+    let expected_focus = DefinitionRegistryBuilder::new()
+        .register(owner.clone(), focus_descriptor.clone())
+        .map_err(bad)?;
     reg.definition_validator(
         descriptor.kind().clone(),
         move |ctx: &mush_core::DefinitionValidationContext<'_>| {
-            if ctx.definition().reference() == &expected && !ctx.definition().is_current() {
+            if (ctx.definition().reference() == &expected
+                || ctx.definition().reference() == &expected_focus)
+                && !ctx.definition().is_current()
+            {
                 Ok(())
             } else {
                 Err("unknown Sim movement read definition".into())
@@ -56,13 +78,22 @@ pub(super) fn register(reg: &mut Registrar<'_>) -> Result<JourneyRead, ModError>
         },
     )?;
     let definition = reg.definition(descriptor)?;
+    let focus_definition = reg.definition(focus_descriptor)?;
     reg.owner_read_service(
         definition.clone(),
-        BTreeSet::from([owner]),
+        BTreeSet::from([owner.clone()]),
         BTreeSet::new(),
         JourneyReader,
     )?;
-    reg.request_owner_read::<JourneyReader>(definition)
+    reg.owner_read_service(
+        focus_definition.clone(),
+        BTreeSet::from([owner]),
+        BTreeSet::new(),
+        FocusReader,
+    )?;
+    let journeys = reg.request_owner_read::<JourneyReader>(definition)?;
+    let focus = reg.request_owner_read::<FocusReader>(focus_definition)?;
+    Ok(MovementReads(Arc::new(ReadHandles { journeys, focus })))
 }
 
 fn fingerprint(
@@ -88,14 +119,14 @@ fn fingerprint(
 }
 impl OwnerReadService for JourneyReader {
     type State = JourneyBook;
-    type Request = JourneyRequest;
+    type Request = MovementReadRequest;
     type Output = DefinitionDigest;
 
     fn read(
         &self,
         _: &JourneyBook,
         ctx: &OwnerReadContext<'_>,
-        request: JourneyRequest,
+        request: MovementReadRequest,
     ) -> Result<Self::Output, OwnerReadError> {
         if ctx.requester().as_str() != NS {
             return Err(OwnerReadError::Authority);
@@ -104,16 +135,58 @@ impl OwnerReadService for JourneyReader {
     }
 }
 
-pub(super) fn retain_journeys(
+fn focus_fingerprint(
+    focus: &FocusState,
+    roots: &BTreeSet<ObjId>,
+) -> Result<DefinitionDigest, OwnerReadError> {
+    if roots.is_empty() || roots.len() > MAX_ROOTS {
+        return Err(OwnerReadError::Limit);
+    }
+    let rows: Vec<_> = roots
+        .iter()
+        .map(|root| {
+            (
+                *root,
+                focus.has_focus_on(*root),
+                focus.focus_of_actor(*root).is_some(),
+            )
+        })
+        .collect();
+    DefinitionDigest::for_canonical_value_with_limit(
+        "sim.movement.focus_preimage.v1",
+        &json!(rows),
+        MAX_SNAPSHOT_BYTES,
+    )
+    .map_err(|_| OwnerReadError::Limit)
+}
+impl OwnerReadService for FocusReader {
+    type State = FocusState;
+    type Request = MovementReadRequest;
+    type Output = DefinitionDigest;
+
+    fn read(
+        &self,
+        _: &FocusState,
+        ctx: &OwnerReadContext<'_>,
+        request: MovementReadRequest,
+    ) -> Result<Self::Output, OwnerReadError> {
+        if ctx.requester().as_str() != NS {
+            return Err(OwnerReadError::Authority);
+        }
+        ctx.guard_state::<FocusState, _>(move |focus| focus_fingerprint(focus, &request.roots))
+    }
+}
+
+pub(super) fn retain(
     ctx: &mut PrepareCtx<'_>,
     txn: &mut ActionTxn<'_>,
-    reader: &JourneyRead,
+    reads: &MovementReads,
     nodes: &BTreeSet<ObjId>,
 ) -> Result<(), ActionError> {
     let unavailable = || {
         crate::tick::err(
             ActionErrorCode::Unavailable,
-            "movement journey preimage unavailable",
+            "movement owner preimage unavailable",
         )
     };
     let roots = {
@@ -131,7 +204,10 @@ pub(super) fn retain_journeys(
         }
         roots
     };
-    ctx.read_owner_preimage(txn, reader, JourneyRequest { roots })
+    let request = MovementReadRequest { roots };
+    ctx.read_owner_preimage(txn, &reads.0.journeys, request.clone())
+        .map_err(|_| unavailable())?;
+    ctx.read_owner_preimage(txn, &reads.0.focus, request)
         .map(|_| ())
         .map_err(|_| unavailable())
 }

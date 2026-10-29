@@ -23,3 +23,19 @@ fn journey_fingerprints_bound_selected_roots_and_refuse_any_held_record() {
     roots.insert(ObjId(512));
     assert_eq!(fingerprint(&book, &roots), Err(OwnerReadError::Limit));
 }
+
+#[test]
+fn focus_fingerprints_bound_the_same_selected_objects() {
+    let focus = FocusState::default();
+    assert_eq!(
+        focus_fingerprint(&focus, &BTreeSet::new()),
+        Err(OwnerReadError::Limit)
+    );
+    let mut roots: BTreeSet<_> = (0..512).map(ObjId).collect();
+    assert!(focus_fingerprint(&focus, &roots).is_ok());
+    roots.insert(ObjId(512));
+    assert_eq!(
+        focus_fingerprint(&focus, &roots),
+        Err(OwnerReadError::Limit)
+    );
+}

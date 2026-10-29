@@ -420,8 +420,16 @@ before any typed, Core or owner apply. Allocator and tick-cursor progress do not
 invalidate an otherwise unchanged read. The service snapshots at most 512 roots
 and never clones or serializes routes, anomalies or the entire book.
 
+The same providers also retain an independently registered read over the actual
+ephemeral FocusState slot. Its bounded projection checks the existing
+`has_focus_on` and `focus_of_actor` presence predicates for the affected closure.
+New actor or unit focus after custody refuses before publication; unrelated
+focus activity remains valid. This is an exclusion preimage, not a control
+lease, grant or proxy-seat capability. Both handles share immutable heap storage
+in providers; neither legacy slot is copied or written by the read services.
+
 This adds no owner image, callback coverage or authority mirror. The native
-window participant still needs deployment/control read services and the complete
+window participant still needs custody read services and the complete
 placement/topology fences before it can publish a window transition.
 
 ## Remaining completion protocol
