@@ -15,8 +15,9 @@ use crate::field_ops::condition::{
     effective_section_condition, install_point_section,
 };
 use crate::field_ops::salvage::{
-    CustodyAction, CustodyTitleStatus, RecoveryAuthorityContext, SalvageClaimBook, SalvageError,
-    check_custody_action_allowed, evaluate_recovery_entitlement,
+    BlackBoxFlightEntry, CustodyAction, CustodyTitleStatus, RecoveryAuthorityContext,
+    SalvageClaimBook, SalvageClaimId, SalvageError, check_custody_action_allowed,
+    evaluate_recovery_entitlement,
 };
 use crate::unit::{
     CellAddr, CellId, ComponentId, ConditionId, InstallPoint, ScalarCell, SectionId, TacticalUnit,
@@ -35,6 +36,36 @@ pub const MAX_STRIPPED_COMPONENTS: usize = 2_048;
 /// Maximum workshop work-order records retained in one [`WorkshopBook`].
 pub const MAX_WORKSHOP_ORDERS: usize = 2_048;
 
+/// Reason a stripped component is flagged as contraband (`FO-4`, `Q-S4`, `Q-F5`, `Q-F6`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContrabandReason {
+    /// Detached in the field on someone else's owned ground without owner or landholder authority (`FO-4`, `Q-S4`, `Q-F6`).
+    UnlawfulFieldStripOnOwnedGround,
+    /// Salvage claim covering the parent hull or component was contested and vacated (`Q-S13`, `Q-F5`, `Q-F6`).
+    VacatedSalvageClaim {
+        /// Vacated salvage claim id.
+        claim_id: SalvageClaimId,
+    },
+}
+
+/// Legal title/provenance status of a detached component (`FO-4`, `Q-S4`, `Q-F5`, `Q-F6`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProvenanceLegalityStatus {
+    /// Lawfully detached under resolved title, explicit owner permission, or lawful field salvage.
+    #[default]
+    CleanTitle,
+    /// Unlawfully detached or derived from a vacated salvage claim; refused by lawful workshops
+    /// until cleared by `rightful_owner` (`FO-4`, `Q-S4`, `Q-F6`).
+    ContrabandHotPart {
+        /// Rightful legal title holder of the parent hull at the time of stripping.
+        rightful_owner: ObjId,
+        /// Reason the part carries a contraband flag.
+        reason: ContrabandReason,
+    },
+}
+
 /// Provenance recorded on a component stripped from a hull in a bay or in the field (`Q-S11`, `Q-F6`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +82,9 @@ pub struct ComponentProvenance {
     pub stripped_at_ic: i64,
     /// Whether the component was stripped in the field (`true`) or in a bay/workshop (`false`).
     pub field_stripped: bool,
+    /// Legal title/contraband provenance status (`FO-4`, `Q-S4`, `Q-F6`).
+    #[serde(default)]
+    pub legality: ProvenanceLegalityStatus,
 }
 
 /// Durable record of a surviving component detached from a hull (`FO-2`, `Q-S11`, `Q-F6`).
@@ -91,6 +125,14 @@ pub enum StripAuthorization {
     /// Stripping in the field (`Q-F6`): requires lawful field recovery/stripping authority
     /// (`LawfulSelfOrAgent`, `LawfulLandholderOrAgent`, or `LawfulOpenGround`).
     Field {
+        /// Field recovery authority context at the hull's site position.
+        authority_ctx: RecoveryAuthorityContext,
+    },
+    /// Physical field stripping regardless of ground entitlement (`FO-4`, `Q-S4`, `Q-F6`):
+    /// if `authority_ctx` is `UnlawfulOnOwnedGround`, the physical strip succeeds without a
+    /// public theft broadcast, records a `FieldComponentStripped { lawful: false }` entry on
+    /// the hull's black box, and flags the detached part as [`ProvenanceLegalityStatus::ContrabandHotPart`].
+    UnlawfulFieldHotStrip {
         /// Field recovery authority context at the hull's site position.
         authority_ctx: RecoveryAuthorityContext,
     },
@@ -357,7 +399,7 @@ impl WorkshopBook {
             });
         }
 
-        let field_stripped = match authorization {
+        let (field_stripped, legality) = match authorization {
             StripAuthorization::BayOrWorkshop {
                 custody,
                 has_explicit_owner_permission,
@@ -368,7 +410,7 @@ impl WorkshopBook {
                     *has_explicit_owner_permission,
                 )
                 .map_err(WorkshopError::Salvage)?;
-                false
+                (false, ProvenanceLegalityStatus::CleanTitle)
             }
             StripAuthorization::Field { authority_ctx } => {
                 let entitlement =
@@ -379,7 +421,20 @@ impl WorkshopBook {
                         component: component_id.clone(),
                     });
                 }
-                true
+                (true, ProvenanceLegalityStatus::CleanTitle)
+            }
+            StripAuthorization::UnlawfulFieldHotStrip { authority_ctx } => {
+                let entitlement =
+                    evaluate_recovery_entitlement(authority_ctx).map_err(WorkshopError::Salvage)?;
+                let status = if entitlement.is_lawful() {
+                    ProvenanceLegalityStatus::CleanTitle
+                } else {
+                    ProvenanceLegalityStatus::ContrabandHotPart {
+                        rightful_owner: authority_ctx.unit_title_holder,
+                        reason: ContrabandReason::UnlawfulFieldStripOnOwnedGround,
+                    }
+                };
+                (true, status)
             }
         };
 
@@ -453,6 +508,7 @@ impl WorkshopBook {
             .ok_or(WorkshopError::IdOverflow)?;
 
         let host_section = install_point_section(&installed.install).cloned();
+        let is_lawful_strip = matches!(legality, ProvenanceLegalityStatus::CleanTitle);
         let record = StrippedComponentRecord {
             record_id,
             component_id: component_id.clone(),
@@ -468,6 +524,7 @@ impl WorkshopBook {
                 stripped_by: actor,
                 stripped_at_ic: at_ic,
                 field_stripped,
+                legality,
             },
             consumed_into_hull: None,
         };
@@ -475,9 +532,77 @@ impl WorkshopBook {
 
         if let Some(book) = salvage_book {
             book.mark_component_stripped(unit.object(), component_id.clone());
+            if field_stripped {
+                let _ = book.append_black_box_entry(
+                    unit.object(),
+                    BlackBoxFlightEntry::FieldComponentStripped {
+                        component: component_id.clone(),
+                        stripped_by: actor,
+                        lawful: is_lawful_strip,
+                        at_ic,
+                    },
+                );
+            }
         }
 
         Ok((updated_unit, post_assessment, record))
+    }
+
+    /// Flag a detached component record as [`ProvenanceLegalityStatus::ContrabandHotPart`]
+    /// when a salvage claim covering the parent hull or component is contested and vacated
+    /// (`Q-S13`, `Q-F5`, `Q-F6`).
+    ///
+    /// # Errors
+    /// Returns [`WorkshopError`] if `record_id` is unknown or `rightful_owner.0 == 0`.
+    pub fn mark_stripped_component_contraband_on_vacated_claim(
+        &mut self,
+        record_id: u64,
+        claim_id: SalvageClaimId,
+        rightful_owner: ObjId,
+    ) -> Result<&StrippedComponentRecord, WorkshopError> {
+        if rightful_owner.0 == 0 {
+            return Err(WorkshopError::InvalidObjectId("rightful_owner"));
+        }
+        let rec = self
+            .stripped_components
+            .get_mut(&record_id)
+            .ok_or(WorkshopError::UnknownStrippedComponentRecord(record_id))?;
+        rec.provenance.legality = ProvenanceLegalityStatus::ContrabandHotPart {
+            rightful_owner,
+            reason: ContrabandReason::VacatedSalvageClaim { claim_id },
+        };
+        Ok(rec)
+    }
+
+    /// Clear a [`ProvenanceLegalityStatus::ContrabandHotPart`] flag back to
+    /// [`ProvenanceLegalityStatus::CleanTitle`] when authorized by `rightful_owner` (`FO-4`, `Q-S4`).
+    ///
+    /// # Errors
+    /// Returns [`WorkshopError`] if `record_id` is unknown or `authorizing_owner != rightful_owner`.
+    pub fn clear_contraband_provenance(
+        &mut self,
+        record_id: u64,
+        authorizing_owner: ObjId,
+    ) -> Result<&StrippedComponentRecord, WorkshopError> {
+        if authorizing_owner.0 == 0 {
+            return Err(WorkshopError::InvalidObjectId("authorizing_owner"));
+        }
+        let rec = self
+            .stripped_components
+            .get_mut(&record_id)
+            .ok_or(WorkshopError::UnknownStrippedComponentRecord(record_id))?;
+        if let ProvenanceLegalityStatus::ContrabandHotPart { rightful_owner, .. } =
+            &rec.provenance.legality
+            && *rightful_owner != authorizing_owner
+        {
+            return Err(WorkshopError::UnauthorizedContrabandClearance {
+                record_id,
+                rightful_owner: *rightful_owner,
+                actor: authorizing_owner,
+            });
+        }
+        rec.provenance.legality = ProvenanceLegalityStatus::CleanTitle;
+        Ok(rec)
     }
 
     /// Destructively scrap a hull into structural and component scrap yields (`Q-S11`, `Q-F5`).
@@ -1004,6 +1129,18 @@ impl WorkshopBook {
                 return Err(WorkshopError::StrippedComponentAlreadyConsumed {
                     record_id: rec_id,
                     consumed_into_hull: other_hull,
+                });
+            }
+            if let ProvenanceLegalityStatus::ContrabandHotPart {
+                rightful_owner,
+                reason,
+            } = &rec.provenance.legality
+            {
+                return Err(WorkshopError::ContrabandComponentRefused {
+                    record_id: rec_id,
+                    parent_hull: rec.provenance.parent_hull,
+                    rightful_owner: *rightful_owner,
+                    reason: reason.clone(),
                 });
             }
         }
@@ -1573,6 +1710,26 @@ pub enum WorkshopError {
         /// Maximum orders.
         max: usize,
     },
+    /// Lawful workshop refused to install a contraband hot component (`FO-4`, `Q-S4`, `Q-F6`).
+    ContrabandComponentRefused {
+        /// Stripped component record id.
+        record_id: u64,
+        /// Parent hull from which the part was stripped.
+        parent_hull: ObjId,
+        /// Rightful legal title holder.
+        rightful_owner: ObjId,
+        /// Contraband reason.
+        reason: ContrabandReason,
+    },
+    /// Actor attempting to clear contraband provenance is not the rightful owner.
+    UnauthorizedContrabandClearance {
+        /// Stripped component record id.
+        record_id: u64,
+        /// Rightful owner of the part.
+        rightful_owner: ObjId,
+        /// Actor who attempted clearance.
+        actor: ObjId,
+    },
     /// Underlying [`SalvageError`].
     Salvage(SalvageError),
     /// Underlying [`UnitError`].
@@ -1661,6 +1818,23 @@ impl fmt::Display for WorkshopError {
             Self::MaxWorkOrdersReached { max } => {
                 write!(f, "workshop work-order limit ({max}) reached")
             }
+            Self::ContrabandComponentRefused {
+                record_id,
+                parent_hull,
+                rightful_owner,
+                reason,
+            } => write!(
+                f,
+                "workshop refused contraband component {record_id} from {parent_hull} (rightful owner {rightful_owner}, reason {reason:?})"
+            ),
+            Self::UnauthorizedContrabandClearance {
+                record_id,
+                rightful_owner,
+                actor,
+            } => write!(
+                f,
+                "actor {actor} is not authorized to clear contraband component {record_id} owned by {rightful_owner}"
+            ),
             Self::Salvage(e) => write!(f, "salvage authority error: {e}"),
             Self::Unit(e) => write!(f, "tactical unit error: {e}"),
         }

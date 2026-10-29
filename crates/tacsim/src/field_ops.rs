@@ -1,50 +1,59 @@
-//! Doc 27 (`H1-A`–`H1-C`, `H2-A`–`H2-C`, `H3`) — `tacsim` integration for field-unit
-//! component survival, operational state assessment, IC combat-return mutation plans,
-//! hull-epoch close validation, field combat promotion/demotion & crew survival,
-//! sortie roster/manifest/crew-pool/expense orchestration, universal towing,
-//! surface block-tenure & mining-pause bridges, recovery entitlement & 48-hour
-//! salvage claims, and workshop component stripping, scrapping, rearming, cost
-//! quoting, and restoration across stock unit schemas.
+//! Doc 27 (`H1-A`–`H1-C`, `H2-A`–`H2-C`, `H3`, `W-clock`) — `tacsim` integration for
+//! field-unit component survival, operational state assessment, IC combat-return mutation
+//! plans, hull-epoch close validation, field combat promotion/demotion & crew survival,
+//! sortie roster/manifest/crew-pool/expense orchestration, universal & live coupled towing,
+//! surface block-tenure & mining-pause bridges, recovery entitlement & 48-hour salvage
+//! claims, black-box forensics & contraband component provenance, field engineering &
+//! resupply tenders, `W-clock` outage freeze & deadline adjustment, and workshop component
+//! stripping, scrapping, rearming, cost quoting, and restoration across stock unit schemas.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use mush_core::ObjId;
+use mush_core::clock::{WorldTimeline, WorldTimelineEpoch, WorldTimelineError};
 use mush_org::PrincipalId;
 use mush_roll::commerce::ic_claims::IcCloseKind;
 pub use mush_tactics::field_ops::{
-    ActiveFieldSortie, AtRiskRepairEntry, AttachTowRequest, AuthoritativeRecoveryRecord,
-    AuthorityHandoffRequest, BayCapacitySpec, COMBAT_WALL_CLOCK_RATE,
+    ActiveFieldFreeze, ActiveFieldSortie, AdjustedSalvageClaimDeadline, AtRiskRepairEntry,
+    AttachTowRequest, AuthoritativeRecoveryRecord, AuthorityHandoffRequest, BayCapacitySpec,
+    BlackBoxFlightEntry, BlackBoxForensicReport, COMBAT_WALL_CLOCK_RATE,
     CONTEST_WINDOW_AVAILABLE_REAL_SECS, CarrierDepartureOutcome, CarrierPersonnelManifest,
-    ComponentCondition, ComponentProvenance, ConditionError, ContestGround, ContestSuccessReason,
-    CrewMemberKind, CrewSurvivalBook, CustodyAction, CustodyTitleStatus,
-    DEFAULT_FALLBACK_SAFE_PORT, DEFAULT_MAX_ATTACH_DISTANCE_CM, DemotionOutcome,
-    DemotionSettlementGate, EmbarkationOrigin, EmbarkedPersonRecord, EngagementError,
-    FALLBACK_SECTION_SCRAP_KG, FieldAuthorityKind, FieldCloseOutcome, FieldCustodyLedger,
-    FieldCustodyRecord, FieldEpochDisposition, FieldInspectionReport, FieldObservationBook,
-    FieldPose, FieldPromotionTrigger, FieldSiteEngagementBook, FieldUnitAssessment, GroundTenure,
-    IC_DAY_SECONDS, IC_SURFACE_CLOCK_RATE, LinkLossPosture, LoadIntoBayRequest,
-    LoadedCasualtyOutcome, MAX_AUTHORITATIVE_RECOVERY_RECORDS, MAX_CLAIM_ENTRIES,
-    MAX_CREW_POOL_CONTRACTS, MAX_CREW_RECORDS, MAX_FIELD_CUSTODY_UNITS, MAX_MANIFEST_PERSONNEL,
-    MAX_OBSERVATIONS_PER_ACTOR, MAX_RECOVERY_OPERATIONS, MAX_SALVAGE_CLAIMS, MAX_SITE_UNITS,
-    MAX_STRIPPED_COMPONENTS, MAX_TOW_MASS_RATIO_PERMILLE, MAX_WORKSHOP_ORDERS,
+    ClockFreezeError, ComponentCondition, ComponentProvenance, ConditionError, ContestGround,
+    ContestSuccessReason, ContrabandReason, CrewMemberKind, CrewSurvivalBook, CustodyAction,
+    CustodyTitleStatus, DEFAULT_FALLBACK_SAFE_PORT, DEFAULT_MAX_ATTACH_DISTANCE_CM,
+    DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM, DEFAULT_OUTAGE_COUNTDOWN_REAL_S,
+    DEFAULT_OUTAGE_FREEZE_THRESHOLD_REAL_S, DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
+    DEFAULT_UNJAM_SPARE_PARTS_KG, DemotionOutcome, DemotionSettlementGate, EmbarkationOrigin,
+    EmbarkedPersonRecord, EngagementError, FALLBACK_SECTION_SCRAP_KG, FieldAuthorityKind,
+    FieldClockCoordinator, FieldCloseOutcome, FieldCustodyLedger, FieldCustodyRecord,
+    FieldEngineeringActionKind, FieldEngineeringBook, FieldEngineeringError,
+    FieldEngineeringLogEntry, FieldEpochDisposition, FieldInspectionReport, FieldObservationBook,
+    FieldOutageResolution, FieldPose, FieldPromotionTrigger, FieldSiteEngagementBook,
+    FieldTenderState, FieldUnitAssessment, GroundTenure, IC_DAY_SECONDS, IC_SURFACE_CLOCK_RATE,
+    LinkLossPosture, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_AUTHORITATIVE_RECOVERY_RECORDS,
+    MAX_BLACK_BOX_ENTRIES_PER_HULL, MAX_CLAIM_ENTRIES, MAX_CREW_POOL_CONTRACTS, MAX_CREW_RECORDS,
+    MAX_FIELD_CUSTODY_UNITS, MAX_FIELD_ENGINEERING_LOGS, MAX_FIELD_TENDERS, MAX_MANIFEST_PERSONNEL,
+    MAX_OBSERVATIONS_PER_ACTOR, MAX_QUARANTINED_UNITS, MAX_RECOVERY_OPERATIONS, MAX_SALVAGE_CLAIMS,
+    MAX_SITE_UNITS, MAX_STRIPPED_COMPONENTS, MAX_TOW_MASS_RATIO_PERMILLE, MAX_WORKSHOP_ORDERS,
     MissionLeaderRoleGrant, MotionClockHandoff, NpcCrewContract, NpcMissionScope,
     ObservationSource, ObservedCombatFact, ObserverCombatEntry, OccupantSurvivalState,
-    OperationalState, PortCrewPool, RecoveryAuthorityContext, RecoveryBook, RecoveryEntitlement,
-    RecoveryError, RecoveryOpId, RecoveryOperation, RecoveryStage, ReplacementPartSpec,
-    SCRAP_KG_PER_STRUCTURAL_POINT, SafePortCandidate, SalvageClaim, SalvageClaimBook,
-    SalvageClaimId, SalvageClaimState, SalvageContest, SalvageError, SalvageEvidenceKind,
-    SalvageEvidenceRecord, SalvageSubject, ScrapYieldReport, SectionCondition, SiteUnitPresence,
-    SortieError, SortieLaunchBlockReason, SortieSlotLaunchState, StripAuthorization,
-    StrippedComponentRecord, TowEvaluation, TowRigProfile, TugInspectionContext,
-    UnitAnatomyProfile, UnitExpenseCategory, UnitExpensePolicy, UnitMassProfile,
-    WithdrawalDestination, WorkshopBook, WorkshopCostQuote, WorkshopError, WorkshopFacilityTariff,
-    WorkshopOperationKind, WorkshopWorkOrderRecord, assess_tactical_unit,
-    check_custody_action_allowed, effective_component_condition, effective_section_condition,
-    evaluate_recovery_entitlement, ic_condition_plan, inspect_field_unit, is_occupant_fit_for_duty,
-    resolve_link_loss_posture, scaled_tow_speed_cms, select_extraction_port,
-    sync_detachment_availability_from_field, tow_mass_ratio_permille, tow_speed_factor_permille,
-    validate_close_outcome,
+    OperationalState, OutageBroadcastMilestone, OutageFreezeConfig, OutageReconnectBanner,
+    OutageUnfreezeReport, PortCrewPool, ProvenanceLegalityStatus, QuarantinedUnitRecord,
+    RecoveryAuthorityContext, RecoveryBook, RecoveryEntitlement, RecoveryError, RecoveryOpId,
+    RecoveryOperation, RecoveryStage, ReplacementPartSpec, SCRAP_KG_PER_STRUCTURAL_POINT,
+    SafePortCandidate, SalvageClaim, SalvageClaimBook, SalvageClaimId, SalvageClaimState,
+    SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject,
+    ScrapYieldReport, SectionCondition, SiteUnitPresence, SortieError, SortieLaunchBlockReason,
+    SortieSlotLaunchState, StripAuthorization, StrippedComponentRecord, TowEvaluation,
+    TowRigProfile, TugInspectionContext, UnitAnatomyProfile, UnitExpenseCategory,
+    UnitExpensePolicy, UnitMassProfile, WithdrawalDestination, WorkshopBook, WorkshopCostQuote,
+    WorkshopError, WorkshopFacilityTariff, WorkshopOperationKind, WorkshopWorkOrderRecord,
+    assess_tactical_unit, check_custody_action_allowed, effective_component_condition,
+    effective_section_condition, evaluate_recovery_entitlement, ic_condition_plan,
+    inspect_field_unit, is_occupant_fit_for_duty, resolve_link_loss_posture, scaled_tow_speed_cms,
+    select_extraction_port, sync_detachment_availability_from_field, tow_mass_ratio_permille,
+    tow_speed_factor_permille, validate_close_outcome,
 };
 use mush_tactics::{
     CellAddr, CellId, ComponentId, SectionId, TacticalUnit, UnitError, UnitMutationPlan, apply,
@@ -59,7 +68,9 @@ use crate::definitions::unit::{
     AMMO_CELL, CONDITION_CELL, ComponentRole, Consequence, INTERNALS_CELL, UnitSpec,
 };
 use crate::surface::address::{block_letter, pocket_of_cell};
+use crate::surface::black_box::BlackBoxLine;
 use crate::surface::claims::BlockTenure;
+use crate::surface::drive::{DriveRates, cu_of_cost, secs_of_cost};
 
 /// Default dry-mass conversion factor (`kg` per maximum armor + internals point)
 /// for combat units that do not declare a spacecraft `logistics.dry_mass_t` block.
@@ -707,6 +718,482 @@ pub fn reconcile_arena_to_field_engagement(
     })
 }
 
+/// Resolve a startup / unplanned-outage gap across both the kernel [`WorldTimeline`] and
+/// the [`FieldClockCoordinator`] (`W-clock`, `FO-11`, `Q-H11`, `Q-R4`, `P-4`).
+///
+/// - When `timeline.state().checkpoint` exists, syncs it into `clock_coord` before
+///   evaluating the gap at `boot_real_unix`.
+/// - When no checkpoint exists yet, records an initial checkpoint at `boot_real_unix` on
+///   both `timeline` and `clock_coord` and returns `SilentReanchor` with `lost_real_s: 0`.
+/// - For sub-threshold gaps (`< 30 s` default), silently re-anchors `timeline` from its
+///   last checkpoint with zero countdown and zero catch-up (`Q-R4`).
+/// - For threshold gaps (`>= 30 s` default), freezes `timeline` at `(frozen_at_real_s, frozen_ic_s)`
+///   under an [`WorldClockFreezeKind::OutageCountdown`](mush_core::clock::WorldClockFreezeKind::OutageCountdown)
+///   until `unfreeze_at_real_s` (`FO-11`, `Q-R4`).
+///
+/// # Errors
+/// Returns [`FieldOpsError`] if `boot_real_unix` precedes the recorded checkpoint or if
+/// `timeline` fails to re-anchor.
+pub fn resolve_world_outage_with_field_clock(
+    timeline: &mut WorldTimeline,
+    clock_coord: &mut FieldClockCoordinator,
+    salvage_book: &mut SalvageClaimBook,
+    boot_real_unix: i64,
+) -> Result<FieldOutageResolution, FieldOpsError> {
+    let Some(cp) = timeline.state().checkpoint else {
+        let cp = timeline.record_checkpoint(boot_real_unix);
+        clock_coord
+            .record_checkpoint(cp.real_unix, cp.ic_unix)
+            .map_err(FieldOpsError::Clock)?;
+        return Ok(FieldOutageResolution::InitialCheckpointSeeded {
+            real_s: cp.real_unix,
+            ic_s: cp.ic_unix,
+        });
+    };
+
+    clock_coord
+        .record_checkpoint(cp.real_unix, cp.ic_unix)
+        .map_err(FieldOpsError::Clock)?;
+    let resolution = clock_coord
+        .evaluate_restart_gap(boot_real_unix, salvage_book)
+        .map_err(FieldOpsError::Clock)?;
+    match &resolution {
+        FieldOutageResolution::InitialCheckpointSeeded { real_s, .. } => {
+            timeline.record_checkpoint(*real_s);
+        }
+        FieldOutageResolution::SilentReanchor { .. } => {
+            timeline
+                .reanchor_from_checkpoint(boot_real_unix)
+                .map_err(FieldOpsError::WorldTimeline)?;
+        }
+        FieldOutageResolution::OutageCountdownStarted {
+            frozen_at_real_s,
+            frozen_ic_s,
+            countdown_started_real_s,
+            unfreeze_at_real_s,
+            ..
+        } => {
+            timeline.freeze_for_outage(
+                *frozen_at_real_s,
+                *frozen_ic_s,
+                *countdown_started_real_s,
+                *unfreeze_at_real_s,
+            );
+        }
+        FieldOutageResolution::DeliberateFreezePreserved { .. } => {}
+    }
+    Ok(resolution)
+}
+
+/// Result payload returned by [`step_world_outage_countdown_with_field_clock`] (`W-clock`).
+pub type WorldOutageCountdownStep = (
+    Vec<OutageBroadcastMilestone>,
+    Option<(OutageUnfreezeReport, WorldTimelineEpoch)>,
+);
+
+/// Step or complete an active outage recovery countdown on both [`WorldTimeline`] and
+/// [`FieldClockCoordinator`], resuming the world IC clock from `frozen_ic_unix` with
+/// zero unseen catch-up and adjusting all pending 48-hour salvage claim deadlines by
+/// the newly accumulated outage seconds once the countdown finishes (`W-clock`, `FO-11`,
+/// `Q-F3`, `Q-F4`, `Q-R4`).
+///
+/// # Errors
+/// Returns [`FieldOpsError`] if no freeze is active or if `timeline.resume_at` fails.
+pub fn step_world_outage_countdown_with_field_clock(
+    timeline: &mut WorldTimeline,
+    clock_coord: &mut FieldClockCoordinator,
+    salvage_book: &mut SalvageClaimBook,
+    now_real_unix: i64,
+) -> Result<WorldOutageCountdownStep, FieldOpsError> {
+    let (milestones, report_opt) = clock_coord
+        .step_countdown(now_real_unix, salvage_book)
+        .map_err(FieldOpsError::Clock)?;
+    let unfreeze_pair = match report_opt {
+        Some(report) => {
+            let (_, resumed_epoch) = timeline
+                .resume_at(now_real_unix)
+                .map_err(FieldOpsError::WorldTimeline)?;
+            Some((report, resumed_epoch))
+        }
+        None => None,
+    };
+    Ok((milestones, unfreeze_pair))
+}
+
+/// Derive coupled surface [`DriveRates`] for an active [`RecoveryOperation`] (`H2-A`,
+/// `Q-S7`).
+///
+/// - Scales `max_speed_cms` to `op.coupled_speed_cms().max(1)`.
+/// - Scales `cu_per_nominal_cell` proportionally to combined mass
+///   `⌈base_cu * (tug_mass_kg + casualty_mass_kg) / tug_mass_kg⌉` so towing a heavy
+///   casualty consumes proportionally more battery charge per nominal cell.
+#[must_use]
+pub fn coupled_drive_rates_for_tow(
+    base_tug_rates: &DriveRates,
+    op: &RecoveryOperation,
+) -> DriveRates {
+    let tug_mass = op.tug_mass_kg().max(1);
+    let combined_mass = tug_mass.saturating_add(op.casualty_mass().total_mass_kg());
+    let scaled_cu = u64::from(base_tug_rates.cu_per_nominal_cell)
+        .saturating_mul(combined_mass)
+        .div_ceil(tug_mass);
+    DriveRates {
+        max_speed_cms: op.coupled_speed_cms().max(1),
+        cu_per_nominal_cell: u32::try_from(scaled_cu).unwrap_or(u32::MAX),
+    }
+}
+
+/// Advance an active coupled tow along one surface drive leg of atlas path `leg_cost`
+/// (hundredths of a nominal cell), updating both the [`RecoveryOperation`] and the
+/// [`FieldSiteEngagementBook`] poses while computing coupled leg duration (`secs`) and
+/// battery draw (`cu`) via [`coupled_drive_rates_for_tow`] (`H1-B`, `H2-A`, `Q-S7`).
+///
+/// # Errors
+/// Returns [`FieldOpsError`] if the tow operation is unknown, not attached, or fails
+/// coupled motion validation.
+#[allow(clippy::too_many_arguments)]
+pub fn step_coupled_surface_tow_drive_leg(
+    site_book: &mut FieldSiteEngagementBook,
+    ledger: &mut FieldCustodyLedger,
+    recovery_book: &mut RecoveryBook,
+    op_id: RecoveryOpId,
+    expected_generation: u64,
+    base_tug_rates: &DriveRates,
+    leg_cost: u64,
+    destination_pose: FieldPose,
+    now_ic: i64,
+) -> Result<(RecoveryOperation, u32, u32), FieldOpsError> {
+    let op_snapshot = recovery_book
+        .get(op_id)
+        .ok_or(FieldOpsError::Recovery(RecoveryError::UnknownOperation(
+            op_id,
+        )))?
+        .clone();
+    let coupled_rates = coupled_drive_rates_for_tow(base_tug_rates, &op_snapshot);
+    let leg_secs = secs_of_cost(leg_cost, &coupled_rates).unwrap_or(1).max(1);
+    let leg_cu = cu_of_cost(leg_cost, &coupled_rates).unwrap_or(0);
+    let arrival_ic = now_ic.saturating_add(i64::from(leg_secs));
+    site_book
+        .step_coupled_tow_motion(
+            ledger,
+            recovery_book,
+            op_id,
+            expected_generation,
+            destination_pose,
+            leg_secs,
+            arrival_ic,
+        )
+        .map_err(FieldOpsError::Engagement)?;
+    let updated_op = recovery_book
+        .get(op_id)
+        .ok_or(FieldOpsError::Recovery(RecoveryError::UnknownOperation(
+            op_id,
+        )))?
+        .clone();
+    Ok((updated_op, leg_secs, leg_cu))
+}
+
+/// Record a surface [`BlackBoxLine`] (`MindSealed` or `SortieClosed`) into a hull's
+/// tamper-evident black-box forensic log inside [`SalvageClaimBook`] (`FO-4`, `Q-S4`).
+///
+/// # Errors
+/// Returns [`FieldOpsError::Salvage`] if the hull's black-box entry cap is exceeded.
+pub fn record_surface_black_box_line_to_forensics(
+    salvage_book: &mut SalvageClaimBook,
+    line: &BlackBoxLine,
+) -> Result<(), FieldOpsError> {
+    match line {
+        BlackBoxLine::MindSealed {
+            unit,
+            sortie,
+            at_ic,
+            site,
+            mind,
+            governed,
+            ..
+        } => {
+            salvage_book
+                .append_black_box_entry(
+                    *unit,
+                    BlackBoxFlightEntry::EpochOpened {
+                        sortie_id: SmolStr::new(format!("{sortie:?}")),
+                        host_site: SmolStr::new(site.as_str()),
+                        operator: None,
+                        mind_label: mind
+                            .clone()
+                            .unwrap_or_else(|| SmolStr::new_static("unsealed")),
+                        governed: governed.unwrap_or(false),
+                        at_ic: *at_ic,
+                    },
+                )
+                .map_err(FieldOpsError::Salvage)?;
+        }
+        BlackBoxLine::SortieClosed {
+            unit, at_ic, close, ..
+        } => {
+            let base = match close {
+                IcCloseKind::ReturnedToBase { base }
+                | IcCloseKind::PoweredDownInBase { base }
+                | IcCloseKind::RecoveredToBase { base } => *base,
+                IcCloseKind::Destroyed => ObjId(0),
+            };
+            salvage_book
+                .append_black_box_entry(
+                    *unit,
+                    BlackBoxFlightEntry::EpochClosedInBay {
+                        operation_id: None,
+                        base,
+                        at_ic: *at_ic,
+                    },
+                )
+                .map_err(FieldOpsError::Salvage)?;
+        }
+    }
+    Ok(())
+}
+
+/// Record arena combat [`Notice`] events (`Hit`, `SectionDestroyed`) into each affected
+/// unit's black-box flight recorder inside [`SalvageClaimBook`] (`FO-4`, `Q-H6`, `Q-H9`,
+/// `Q-S4`).
+///
+/// # Errors
+/// Returns [`FieldOpsError`] if any section identifier in `notices` is invalid or if
+/// the black-box entry cap is exceeded.
+pub fn record_arena_notices_to_black_box(
+    salvage_book: &mut SalvageClaimBook,
+    notices: &[Notice],
+    updated_states: &BTreeMap<ObjId, OperationalState>,
+    at_ic: i64,
+) -> Result<usize, FieldOpsError> {
+    let mut recorded: usize = 0;
+    for (_ts, event, _details) in notices {
+        match event {
+            EventKind::Hit {
+                unit: attacker,
+                target,
+                section,
+                ..
+            } => {
+                let sec_id = SectionId::new(section.as_str()).map_err(FieldOpsError::Unit)?;
+                let state = updated_states
+                    .get(target)
+                    .copied()
+                    .unwrap_or(OperationalState::Operational);
+                salvage_book
+                    .append_black_box_entry(
+                        *target,
+                        BlackBoxFlightEntry::CombatDamageRecorded {
+                            attacker: Some(*attacker),
+                            section: sec_id,
+                            resulting_state: state,
+                            at_ic,
+                        },
+                    )
+                    .map_err(FieldOpsError::Salvage)?;
+                recorded = recorded.saturating_add(1);
+            }
+            EventKind::SectionDestroyed {
+                unit: target,
+                section,
+                by,
+                ..
+            } => {
+                let sec_id = SectionId::new(section.as_str()).map_err(FieldOpsError::Unit)?;
+                let state = updated_states
+                    .get(target)
+                    .copied()
+                    .unwrap_or(OperationalState::Disabled);
+                salvage_book
+                    .append_black_box_entry(
+                        *target,
+                        BlackBoxFlightEntry::CombatDamageRecorded {
+                            attacker: *by,
+                            section: sec_id,
+                            resulting_state: state,
+                            at_ic,
+                        },
+                    )
+                    .map_err(FieldOpsError::Salvage)?;
+                recorded = recorded.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    Ok(recorded)
+}
+
+/// Unjam a jammed component on a `tacsim` [`TacticalUnit`] in the field using a
+/// registered [`FieldTenderState`], deriving anatomy from `spec` (or fallback unit
+/// inspection) and checking active combat / tow state on `site_book` and
+/// `recovery_book` (`H1-A`, `H2-A`, `H3`).
+///
+/// # Errors
+/// Returns [`FieldOpsError`] if anatomy derivation or field unjam validation fails.
+#[allow(clippy::too_many_arguments)]
+pub fn field_unjam_tacsim_unit(
+    eng_book: &mut FieldEngineeringBook,
+    site_book: &FieldSiteEngagementBook,
+    recovery_book: &RecoveryBook,
+    tender_unit: ObjId,
+    target_unit: &mut TacticalUnit,
+    spec: Option<&UnitSpec>,
+    component_id: &ComponentId,
+    restored_health_cell: Option<&CellId>,
+    spare_parts_cost_kg: u64,
+    elapsed_secs: i64,
+    completed_at_ic: i64,
+) -> Result<FieldEngineeringLogEntry, FieldOpsError> {
+    let anatomy = match spec {
+        Some(s) => anatomy_for_unit_spec(s)?,
+        None => anatomy_for_tactical_unit(target_unit)?,
+    };
+    let target_id = target_unit.object();
+    let target_pose = site_book.unit_presence(target_id).map_or(
+        FieldPose {
+            site: site_book.site(),
+            x_cm: 0,
+            y_cm: 0,
+        },
+        |u| u.pose,
+    );
+    let target_in_active_combat = site_book.is_engaged();
+    let target_coupled_to_tow = recovery_book.active_operation_for_tug(target_id).is_some()
+        || recovery_book
+            .active_operation_for_casualty(target_id)
+            .is_some();
+    eng_book
+        .field_unjam_component(
+            tender_unit,
+            target_unit,
+            target_pose,
+            &anatomy,
+            component_id,
+            restored_health_cell,
+            spare_parts_cost_kg,
+            target_in_active_combat,
+            target_coupled_to_tow,
+            elapsed_secs,
+            completed_at_ic,
+        )
+        .map_err(FieldOpsError::Engineering)
+}
+
+/// Stabilize a damaged (non-destroyed) section on a `tacsim` [`TacticalUnit`] in the
+/// field using a registered [`FieldTenderState`] (`H1-A`, `H2-A`, `H3`).
+///
+/// # Errors
+/// Returns [`FieldOpsError`] if the section is destroyed (requiring a workshop facility)
+/// or any field engineering check fails.
+#[allow(clippy::too_many_arguments)]
+pub fn field_stabilize_tacsim_unit_section(
+    eng_book: &mut FieldEngineeringBook,
+    site_book: &FieldSiteEngagementBook,
+    recovery_book: &RecoveryBook,
+    tender_unit: ObjId,
+    target_unit: &mut TacticalUnit,
+    spec: Option<&UnitSpec>,
+    section_id: &SectionId,
+    requested_points: i64,
+    spare_parts_kg_per_point: u64,
+    elapsed_secs: i64,
+    completed_at_ic: i64,
+) -> Result<FieldEngineeringLogEntry, FieldOpsError> {
+    let anatomy = match spec {
+        Some(s) => anatomy_for_unit_spec(s)?,
+        None => anatomy_for_tactical_unit(target_unit)?,
+    };
+    let target_id = target_unit.object();
+    let target_pose = site_book.unit_presence(target_id).map_or(
+        FieldPose {
+            site: site_book.site(),
+            x_cm: 0,
+            y_cm: 0,
+        },
+        |u| u.pose,
+    );
+    let target_in_active_combat = site_book.is_engaged();
+    let target_coupled_to_tow = recovery_book.active_operation_for_tug(target_id).is_some()
+        || recovery_book
+            .active_operation_for_casualty(target_id)
+            .is_some();
+    eng_book
+        .field_stabilize_damaged_section(
+            tender_unit,
+            target_unit,
+            target_pose,
+            &anatomy,
+            section_id,
+            requested_points,
+            spare_parts_kg_per_point,
+            target_in_active_combat,
+            target_coupled_to_tow,
+            elapsed_secs,
+            completed_at_ic,
+        )
+        .map_err(FieldOpsError::Engineering)
+}
+
+/// Rearm ammunition and/or transfer charge (`CU`) to a `tacsim` [`TacticalUnit`] in the
+/// field from a registered [`FieldTenderState`] (`H1-A`, `H2-A`, `H3`).
+///
+/// # Errors
+/// Returns [`FieldOpsError`] if the target is an unserviceable wreck or any field
+/// engineering check fails.
+#[allow(clippy::too_many_arguments)]
+pub fn field_resupply_tacsim_unit(
+    eng_book: &mut FieldEngineeringBook,
+    site_book: &FieldSiteEngagementBook,
+    recovery_book: &RecoveryBook,
+    tender_unit: ObjId,
+    target_unit: &mut TacticalUnit,
+    spec: Option<&UnitSpec>,
+    weapon_rearm: Option<(&ComponentId, i64)>,
+    requested_charge_cu: u32,
+    credit_cost_per_round: u64,
+    credit_cost_per_cu: u64,
+    expense_policy: Option<&UnitExpensePolicy>,
+    elapsed_secs: i64,
+    completed_at_ic: i64,
+) -> Result<FieldEngineeringLogEntry, FieldOpsError> {
+    let anatomy = match spec {
+        Some(s) => anatomy_for_unit_spec(s)?,
+        None => anatomy_for_tactical_unit(target_unit)?,
+    };
+    let ammo_cell = CellId::new(AMMO_CELL).map_err(FieldOpsError::Unit)?;
+    let weapon_rearm_with_cell = weapon_rearm.map(|(comp, rounds)| (comp, &ammo_cell, rounds));
+    let target_id = target_unit.object();
+    let target_pose = site_book.unit_presence(target_id).map_or(
+        FieldPose {
+            site: site_book.site(),
+            x_cm: 0,
+            y_cm: 0,
+        },
+        |u| u.pose,
+    );
+    let target_in_active_combat = site_book.is_engaged();
+    let target_coupled_to_tow = recovery_book.active_operation_for_tug(target_id).is_some()
+        || recovery_book
+            .active_operation_for_casualty(target_id)
+            .is_some();
+    eng_book
+        .field_resupply_ammo_and_charge(
+            tender_unit,
+            target_unit,
+            target_pose,
+            &anatomy,
+            weapon_rearm_with_cell,
+            requested_charge_cu,
+            credit_cost_per_round,
+            credit_cost_per_cu,
+            expense_policy,
+            target_in_active_combat,
+            target_coupled_to_tow,
+            elapsed_secs,
+            completed_at_ic,
+        )
+        .map_err(FieldOpsError::Engineering)
+}
+
 /// Errors returned by `tacsim::field_ops`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FieldOpsError {
@@ -724,6 +1211,12 @@ pub enum FieldOpsError {
     Workshop(WorkshopError),
     /// Underlying [`SortieError`].
     Sortie(SortieError),
+    /// Underlying [`ClockFreezeError`].
+    Clock(ClockFreezeError),
+    /// Underlying [`FieldEngineeringError`].
+    Engineering(FieldEngineeringError),
+    /// Underlying [`WorldTimelineError`].
+    WorldTimeline(WorldTimelineError),
 }
 
 impl fmt::Display for FieldOpsError {
@@ -736,6 +1229,9 @@ impl fmt::Display for FieldOpsError {
             Self::Salvage(e) => write!(f, "field salvage error: {e}"),
             Self::Workshop(e) => write!(f, "field workshop error: {e}"),
             Self::Sortie(e) => write!(f, "field sortie error: {e}"),
+            Self::Clock(e) => write!(f, "field clock freeze error: {e}"),
+            Self::Engineering(e) => write!(f, "field engineering error: {e}"),
+            Self::WorldTimeline(e) => write!(f, "world timeline error: {e}"),
         }
     }
 }
@@ -2250,6 +2746,661 @@ mod tests {
                 grants_persistent_org_authority: false,
                 granted_at_ic: 1_035,
             })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn w_clock_world_timeline_outage_freeze_countdown_and_salvage_claim_adjustment() -> TestResult {
+        let mut timeline = WorldTimeline::default();
+        let mut clock_coord =
+            FieldClockCoordinator::new(OutageFreezeConfig::default(), IC_SURFACE_CLOCK_RATE)?;
+        let mut salvage_book = SalvageClaimBook::new();
+
+        // 1. Seed initial checkpoint at real=1_000.
+        let init_res = resolve_world_outage_with_field_clock(
+            &mut timeline,
+            &mut clock_coord,
+            &mut salvage_book,
+            1_000,
+        )?;
+        let cp0 = timeline
+            .state()
+            .checkpoint
+            .ok_or("expected initial checkpoint")?;
+        check_eq!(cp0.real_unix, 1_000);
+        check_eq!(
+            init_res,
+            FieldOutageResolution::InitialCheckpointSeeded {
+                real_s: 1_000,
+                ic_s: cp0.ic_unix,
+            }
+        );
+
+        // 2. Sub-threshold restart gap (20s < 30s) silently re-anchors without freezing (`Q-R4`).
+        let sub_res = resolve_world_outage_with_field_clock(
+            &mut timeline,
+            &mut clock_coord,
+            &mut salvage_book,
+            1_020,
+        )?;
+        check_eq!(
+            sub_res,
+            FieldOutageResolution::SilentReanchor {
+                lost_real_s: 20,
+                anchored_real_s: 1_020,
+                anchored_ic_s: cp0.ic_unix,
+            }
+        );
+        check!(timeline.state().freeze.is_none());
+        check_eq!(timeline.stamp_at(1_020).at, cp0.ic_unix);
+
+        // 3. Advance 10 real seconds to real=1_030 and record a durable checkpoint.
+        let cp1 = timeline.record_checkpoint(1_030);
+        clock_coord.record_checkpoint(cp1.real_unix, cp1.ic_unix)?;
+
+        // Open a pending 48h salvage claim before the outage.
+        let op_id = RecoveryOpId::new(1)?;
+        let unit = ObjId(810);
+        salvage_book.record_physical_attach(
+            op_id,
+            unit,
+            ObjId(811),
+            &RecoveryAuthorityContext {
+                recoverer: ObjId(20),
+                unit_title_holder: ObjId(10),
+                has_owner_authorization: false,
+                has_landholder_authorization: false,
+                ground_tenure_at_attach: GroundTenure::Unclaimed,
+            },
+            cp1.ic_unix,
+        )?;
+        salvage_book.record_bay_load(op_id, ObjId(950), cp1.ic_unix + 10)?;
+        let custody_status = salvage_book.resolve_hull_recovery_custody(op_id, 1_030)?;
+        let (claim_id, initial_deadline) = match custody_status {
+            CustodyTitleStatus::PendingSalvageClaim {
+                claim_id,
+                deadline_real_s,
+                ..
+            } => (claim_id, deadline_real_s),
+            other => return Err(format!("expected pending salvage claim, got {other:?}").into()),
+        };
+
+        // 4. Unplanned outage of 300s (boot at real=1_330 >= 30s threshold) enters 5-min countdown (`FO-11`).
+        let freeze_res = resolve_world_outage_with_field_clock(
+            &mut timeline,
+            &mut clock_coord,
+            &mut salvage_book,
+            1_330,
+        )?;
+        check_eq!(
+            freeze_res,
+            FieldOutageResolution::OutageCountdownStarted {
+                lost_real_s: 300,
+                frozen_at_real_s: 1_030,
+                frozen_ic_s: cp1.ic_unix,
+                countdown_started_real_s: 1_330,
+                unfreeze_at_real_s: 1_630,
+                initial_milestones: vec![OutageBroadcastMilestone::FiveMinutes {
+                    remaining_real_s: 300,
+                }],
+            }
+        );
+        // While frozen, `timeline.stamp_at` holds `cp1.ic_unix` constant (`W-clock`).
+        check_eq!(timeline.stamp_at(1_500).at, cp1.ic_unix);
+        let banner = clock_coord
+            .reconnect_banner(1_500)
+            .ok_or("expected reconnect banner")?;
+        check_eq!(banner.remaining_countdown_real_s, Some(130));
+
+        // 5. Complete unfreeze at real=1_630: world IC clock resumes from `cp1.ic_unix` and
+        // the pending salvage claim deadline is extended by 600s (300s downtime + 300s countdown).
+        let (milestones, unfreeze_opt) = step_world_outage_countdown_with_field_clock(
+            &mut timeline,
+            &mut clock_coord,
+            &mut salvage_book,
+            1_630,
+        )?;
+        check_eq!(milestones, vec![OutageBroadcastMilestone::Unfrozen]);
+        let (unfreeze_report, resumed_epoch) = unfreeze_opt.ok_or("expected unfreeze report")?;
+        check_eq!(resumed_epoch.ic_anchor, cp1.ic_unix);
+        check_eq!(resumed_epoch.real_anchor, 1_630);
+        check_eq!(unfreeze_report.unavailable_real_s, 600);
+        check_eq!(unfreeze_report.adjusted_salvage_claims.len(), 1);
+        check_eq!(
+            unfreeze_report.adjusted_salvage_claims[0].claim_id,
+            claim_id
+        );
+        check_eq!(
+            unfreeze_report.adjusted_salvage_claims[0].previous_deadline_real_s,
+            initial_deadline
+        );
+        check_eq!(
+            unfreeze_report.adjusted_salvage_claims[0].adjusted_deadline_real_s,
+            initial_deadline + 600
+        );
+        check_eq!(
+            unfreeze_report.adjusted_salvage_claims[0].total_paused_real_s,
+            600
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn stock_line_tank_tows_wrecked_biped_mk1_with_coupled_drive_rates_and_mid_tow_interdiction()
+    -> TestResult {
+        let catalog = load_stock_catalog()?;
+        let (tug_unit, tug_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(910))?;
+        let (casualty_before, casualty_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.biped_mk1", ObjId(911))?;
+        let (attacker_unit, attacker_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(912))?;
+        let site = ObjId(950);
+
+        // Wreck `biped_mk1` torso so it is a towable wreck.
+        let torso = SectionId::new("torso")?;
+        let internals = CellId::new("internals")?;
+        let wreck_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: torso.clone(),
+                        cell: internals,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: torso,
+                    condition: ConditionId::new("wreck")?,
+                },
+            ],
+            Some(casualty_before.revision()),
+            None,
+        )?;
+        let (casualty_wreck, _) = apply(&casualty_before, &wreck_plan, 1_000)?;
+        let tug_anatomy = anatomy_for_unit_spec(&tug_spec)?;
+        let casualty_anatomy = anatomy_for_unit_spec(&casualty_spec)?;
+        let attacker_anatomy = anatomy_for_unit_spec(&attacker_spec)?;
+        let casualty_assess = assess_tactical_unit(&casualty_wreck, &casualty_anatomy);
+        check_eq!(casualty_assess.state, OperationalState::Wreck);
+
+        let start_pose = FieldPose {
+            site,
+            x_cm: 100,
+            y_cm: 100,
+        };
+        let mut ledger = FieldCustodyLedger::new();
+        let mut site_book = FieldSiteEngagementBook::new(site)?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &tug_unit,
+            &tug_anatomy,
+            SmolStr::new("expedition"),
+            start_pose,
+            None,
+            1_000,
+        )?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &casualty_wreck,
+            &casualty_anatomy,
+            SmolStr::new("expedition"),
+            start_pose,
+            None,
+            1_000,
+        )?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &attacker_unit,
+            &attacker_anatomy,
+            SmolStr::new("raiders"),
+            FieldPose {
+                site,
+                x_cm: 1_500,
+                y_cm: 400,
+            },
+            None,
+            1_000,
+        )?;
+
+        let tug_mass = unit_mass_profile_for_spec(&tug_spec, 0, 0)?;
+        let casualty_mass = unit_mass_profile_for_spec(&casualty_spec, 0, 0)?;
+        let tug_speed = base_speed_cms_for_spec(&tug_spec);
+
+        let mut recovery_book = RecoveryBook::new();
+        let op_id = site_book.attach_site_tow(
+            &mut recovery_book,
+            AttachTowRequest {
+                tug: tug_unit.object(),
+                tug_state: OperationalState::Operational,
+                tug_can_move: true,
+                tug_base_speed_cms: tug_speed,
+                tug_mass_kg: tug_mass.total_mass_kg(),
+                rig_profile: TowRigProfile::Standard,
+                tug_pose: start_pose,
+                casualty_assessment: casualty_assess,
+                casualty_mass,
+                casualty_pose: start_pose,
+                max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+                at_ic: 1_010,
+            },
+        )?;
+        let op = recovery_book.get(op_id).ok_or("expected tow op")?;
+        let base_rates = DriveRates {
+            max_speed_cms: tug_speed,
+            cu_per_nominal_cell: 20,
+        };
+        let coupled_rates = coupled_drive_rates_for_tow(&base_rates, op);
+        check!(coupled_rates.max_speed_cms < base_rates.max_speed_cms);
+        check!(coupled_rates.cu_per_nominal_cell > base_rates.cu_per_nominal_cell);
+
+        // Advance one coupled surface drive leg (cost = 150 = 1 regolith cell).
+        let waypoint = FieldPose {
+            site,
+            x_cm: 350,
+            y_cm: 100,
+        };
+        let (after_leg, leg_secs, leg_cu) = step_coupled_surface_tow_drive_leg(
+            &mut site_book,
+            &mut ledger,
+            &mut recovery_book,
+            op_id,
+            1,
+            &base_rates,
+            150,
+            waypoint,
+            1_010,
+        )?;
+        check!(leg_secs > 0);
+        check!(leg_cu > 0);
+        check_eq!(after_leg.stage().active_pose(), Some(waypoint));
+        check_eq!(
+            site_book.unit_presence(tug_unit.object()).map(|u| u.pose),
+            Some(waypoint)
+        );
+        check_eq!(
+            site_book
+                .unit_presence(casualty_wreck.object())
+                .map(|u| u.pose),
+            Some(waypoint)
+        );
+
+        // Mid-tow combat interdiction promotes the site to active combat at `waypoint`, and
+        // emergency drop detaches the casualty in place (`H1-B` + `H2-A`).
+        let handoffs = site_book.interdict_active_tow(
+            &mut ledger,
+            &recovery_book,
+            op_id,
+            attacker_unit.object(),
+            77,
+            1,
+            1_050,
+        )?;
+        check!(site_book.is_engaged());
+        check!(!handoffs.is_empty());
+        let drop_pose = site_book.emergency_drop_tow(&mut recovery_book, op_id, 2, 1_052)?;
+        check_eq!(drop_pose, waypoint);
+        check_eq!(
+            recovery_book.active_operation_for_tug(tug_unit.object()),
+            None
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn stock_arena_black_box_forensics_and_contraband_component_workshop_refusal() -> TestResult {
+        let catalog = load_stock_catalog()?;
+        let (victim_before, victim_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(920))?;
+        let (raider_unit, _) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(921))?;
+        let (recipient_before, recipient_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(922))?;
+
+        let bay = ObjId(961);
+        let owner_id = ObjId(10);
+        let raider_id = ObjId(20);
+        let op_id = RecoveryOpId::new(88)?;
+
+        let mut salvage_book = SalvageClaimBook::new();
+        let mut workshop = WorkshopBook::new();
+
+        // Record combat hit in live `Arena` notices onto `victim_before`'s black box (`FO-4`, `Q-S4`).
+        let notices: Vec<Notice> = vec![(
+            1_100,
+            EventKind::SectionDestroyed {
+                unit: victim_before.object(),
+                section: SmolStr::new_static("hull"),
+                by: Some(raider_unit.object()),
+                consequences: Vec::new(),
+            },
+            Vec::new(),
+        )];
+        let mut states = BTreeMap::new();
+        states.insert(victim_before.object(), OperationalState::Wreck);
+        let recorded =
+            record_arena_notices_to_black_box(&mut salvage_book, &notices, &states, 1_100)?;
+        check_eq!(recorded, 1);
+
+        // Wreck `victim_before`'s hull section while keeping `cannon` intact.
+        let hull = SectionId::new("hull")?;
+        let internals = CellId::new("internals")?;
+        let cannon = ComponentId::new("cannon")?;
+        let wreck_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: hull.clone(),
+                        cell: internals,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: hull,
+                    condition: ConditionId::new("wreck")?,
+                },
+            ],
+            Some(victim_before.revision()),
+            None,
+        )?;
+        let (victim_wreck, _) = apply(&victim_before, &wreck_plan, 1_100)?;
+        let victim_anatomy = anatomy_for_unit_spec(&victim_spec)?;
+        let recipient_anatomy = anatomy_for_unit_spec(&recipient_spec)?;
+
+        let unlawful_auth_ctx = RecoveryAuthorityContext {
+            recoverer: raider_id,
+            unit_title_holder: owner_id,
+            has_owner_authorization: false,
+            has_landholder_authorization: false,
+            ground_tenure_at_attach: GroundTenure::Owned {
+                landholder: owner_id,
+                claim_id: Some(SmolStr::new("deed.beta")),
+            },
+        };
+        salvage_book.record_physical_attach(
+            op_id,
+            victim_wreck.object(),
+            raider_unit.object(),
+            &unlawful_auth_ctx,
+            1_110,
+        )?;
+
+        // Raider unlawfully hot-strips `cannon` on `owner_id`'s land (`FO-4`, `Q-F6`).
+        let (_, _, stripped_cannon) = workshop.strip_component(
+            &victim_wreck,
+            &victim_anatomy,
+            &cannon,
+            raider_id,
+            &StripAuthorization::UnlawfulFieldHotStrip {
+                authority_ctx: unlawful_auth_ctx,
+            },
+            Some(&mut salvage_book),
+            1_120,
+        )?;
+        check_eq!(
+            stripped_cannon.provenance.legality,
+            ProvenanceLegalityStatus::ContrabandHotPart {
+                rightful_owner: owner_id,
+                reason: ContrabandReason::UnlawfulFieldStripOnOwnedGround,
+            }
+        );
+
+        // Load hull into bay and extract black-box forensics (`FO-4`, `Q-S4`, `P-3`).
+        salvage_book.record_bay_load(op_id, bay, 1_150)?;
+        let forensics = salvage_book.extract_black_box_forensics(op_id, owner_id, true, 1_200)?;
+        check!(forensics.reveals_unlawful_recovery);
+        check_eq!(forensics.unlawful_stripped_components, vec![cannon.clone()]);
+
+        // Prepare `recipient_before` with a destroyed `cannon` so we can attempt installation.
+        let break_cannon_plan = UnitMutationPlan::new(
+            vec![UnitMutationOp::SetComponentCondition {
+                component: cannon.clone(),
+                condition: ConditionId::new("destroyed")?,
+            }],
+            Some(recipient_before.revision()),
+            None,
+        )?;
+        let (recipient_broken, _) = apply(&recipient_before, &break_cannon_plan, 1_220)?;
+
+        // Legitimate workshop refuses to install the contraband cannon (`Q-F6`).
+        let replacement_spec = ReplacementPartSpec::from_stripped_record(&stripped_cannon);
+        let install_refused = workshop.replace_component_in_slot(
+            &recipient_broken,
+            &recipient_anatomy,
+            &cannon,
+            &replacement_spec,
+            raider_id,
+            &CustodyTitleStatus::ResolvedTitle { owner: raider_id },
+            false,
+            600,
+            120,
+            Some(&mut salvage_book),
+            1_250,
+        );
+        check_eq!(
+            install_refused,
+            Err(WorkshopError::ContrabandComponentRefused {
+                record_id: stripped_cannon.record_id,
+                parent_hull: victim_wreck.object(),
+                rightful_owner: owner_id,
+                reason: ContrabandReason::UnlawfulFieldStripOnOwnedGround,
+            })
+        );
+
+        // Once rightful owner clears contraband provenance, installation succeeds.
+        workshop.clear_contraband_provenance(stripped_cannon.record_id, owner_id)?;
+        let (restored_recipient, _, _) = workshop.replace_component_in_slot(
+            &recipient_broken,
+            &recipient_anatomy,
+            &cannon,
+            &replacement_spec,
+            owner_id,
+            &CustodyTitleStatus::ResolvedTitle { owner: owner_id },
+            true,
+            600,
+            120,
+            Some(&mut salvage_book),
+            1_260,
+        )?;
+        let recipient_assess = assess_tacsim_unit(&restored_recipient, Some(&recipient_spec))?;
+        check_eq!(
+            recipient_assess.component_conditions.get(&cannon),
+            Some(&ComponentCondition::Intact)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn stock_tv_prospector_tender_services_damaged_line_tank_and_enforces_workshop_boundary()
+    -> TestResult {
+        let catalog = load_stock_catalog()?;
+        let (tender_unit, _) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.tv_prospector", ObjId(930))?;
+        let (mut tank_unit, tank_spec) =
+            instantiate_stock_unit(&catalog, "tacsim.unit.line_tank", ObjId(931))?;
+        let site = ObjId(970);
+        let pose = FieldPose {
+            site,
+            x_cm: 400,
+            y_cm: 400,
+        };
+
+        let mut ledger = FieldCustodyLedger::new();
+        let mut site_book = FieldSiteEngagementBook::new(site)?;
+        let tank_anatomy = anatomy_for_unit_spec(&tank_spec)?;
+        site_book.deploy_surface_unit(
+            &mut ledger,
+            &tank_unit,
+            &tank_anatomy,
+            SmolStr::new("expedition"),
+            pose,
+            None,
+            1_000,
+        )?;
+        let recovery_book = RecoveryBook::new();
+        let mut eng_book = FieldEngineeringBook::new();
+        eng_book.register_tender(FieldTenderState {
+            tender_unit: tender_unit.object(),
+            site_id: site,
+            pose,
+            operational_state: OperationalState::Operational,
+            spare_parts_kg: 400,
+            ammo_supply_rounds: 50,
+            charge_reserve_cu: 150,
+            max_service_distance_cm: DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM,
+        })?;
+
+        // Jam `cannon`, damage `turret`, deplete `cannon` ammo, and destroy `left_track`.
+        let cannon = ComponentId::new("cannon")?;
+        let turret = SectionId::new("turret")?;
+        let left_track = SectionId::new("left_track")?;
+        let internals = CellId::new("internals")?;
+        let ammo = CellId::new("ammo")?;
+
+        let damage_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetComponentCondition {
+                    component: cannon.clone(),
+                    condition: ConditionId::new("jammed")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: turret.clone(),
+                        cell: internals.clone(),
+                    },
+                    value: 4,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: turret.clone(),
+                    condition: ConditionId::new("damaged")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: cannon.clone(),
+                        cell: ammo,
+                    },
+                    value: 2,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: left_track.clone(),
+                        cell: internals,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: left_track.clone(),
+                    condition: ConditionId::new("destroyed")?,
+                },
+            ],
+            Some(tank_unit.revision()),
+            None,
+        )?;
+        let (damaged_tank, _) = apply(&tank_unit, &damage_plan, 1_010)?;
+        tank_unit = damaged_tank;
+
+        // 1. Field unjam `cannon`.
+        let unjam = field_unjam_tacsim_unit(
+            &mut eng_book,
+            &site_book,
+            &recovery_book,
+            tender_unit.object(),
+            &mut tank_unit,
+            Some(&tank_spec),
+            &cannon,
+            None,
+            DEFAULT_UNJAM_SPARE_PARTS_KG,
+            30,
+            1_040,
+        )?;
+        check_eq!(
+            unjam.action,
+            FieldEngineeringActionKind::UnjamComponent {
+                component_id: cannon.clone(),
+                restored_condition: ComponentCondition::Intact,
+                spare_parts_consumed_kg: DEFAULT_UNJAM_SPARE_PARTS_KG,
+            }
+        );
+
+        // 2. Field stabilize damaged `turret` (+4 points).
+        let patch = field_stabilize_tacsim_unit_section(
+            &mut eng_book,
+            &site_book,
+            &recovery_book,
+            tender_unit.object(),
+            &mut tank_unit,
+            Some(&tank_spec),
+            &turret,
+            4,
+            DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
+            45,
+            1_085,
+        )?;
+        check_eq!(
+            patch.action,
+            FieldEngineeringActionKind::StabilizeDamagedSection {
+                section_id: turret,
+                points_restored: 4,
+                spare_parts_consumed_kg: 100,
+            }
+        );
+
+        // 3. Refuses to reconstruct destroyed `left_track` in the field (`H3` workshop boundary).
+        let track_res = field_stabilize_tacsim_unit_section(
+            &mut eng_book,
+            &site_book,
+            &recovery_book,
+            tender_unit.object(),
+            &mut tank_unit,
+            Some(&tank_spec),
+            &left_track,
+            10,
+            DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
+            60,
+            1_145,
+        );
+        check_eq!(
+            track_res,
+            Err(FieldOpsError::Engineering(
+                FieldEngineeringError::RequiresWorkshopFacility {
+                    unit: tank_unit.object(),
+                    reason: SmolStr::new_static(
+                        "destroyed section cannot be reconstructed in the field; workshop facility required",
+                    ),
+                }
+            ))
+        );
+
+        // 4. Field resupply `cannon` ammo and transfer 25 CU charge.
+        let resupply = field_resupply_tacsim_unit(
+            &mut eng_book,
+            &site_book,
+            &recovery_book,
+            tender_unit.object(),
+            &mut tank_unit,
+            Some(&tank_spec),
+            Some((&cannon, 6)),
+            25,
+            10,
+            2,
+            None,
+            20,
+            1_165,
+        )?;
+        check_eq!(
+            resupply.action,
+            FieldEngineeringActionKind::FieldResupply {
+                component_id: Some(cannon),
+                rounds_transferred: 6,
+                charge_transferred_cu: 25,
+                billed_credits: 110,
+                billed_payer: None,
+            }
         );
 
         Ok(())
