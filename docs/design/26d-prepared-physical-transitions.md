@@ -1,10 +1,12 @@
 # DT.2b2a — Prepared physical transitions
 
-This slice establishes the transaction boundary needed by the actual embarkation
-history required in [doc 27](27-ic-field-operations-design-and-survey.md). A
-character's present location cannot prove when they embarked, and an observer
-that writes history after movement can lose that history on a crash. The physical
-change and its owner records must belong to one acknowledged commit.
+**Personnel scope corrected by the owner, 2026-10-29:**
+[doc 27](27-ic-field-operations-design-and-survey.md) requires current containment
+at preparation and launch, not embarkation history. This document retains the
+merged prepared-physical-transition foundation; it does not require migration of
+ordinary movement, observers or every ancestry-changing path. The historical
+motivation for that migration is withdrawn. Durable DT actions still use the
+coordinator under K8.
 
 ## Ownership and atomicity
 
@@ -58,15 +60,15 @@ operation.
 The subsequent [26f slice](26f-prepared-interior-command.md) migrates the
 standalone `@spatial/space` command to this boundary.
 
-## Gate before personnel history becomes authority
+## Withdrawn personnel-history gate (2026-10-29)
 
 This foundation does not issue embarkation intervals, wage evidence, departure
 manifests or NPC eligibility. It does not infer past embarkation during startup.
-Existing planning reports must continue to identify those prerequisites as
-unresolved.
+These historical records are not prerequisites for personnel eligibility or
+activation. Any later wages accrue from contract terms, not aboard-time evidence.
 
-The following paths must use the prepared boundary or refuse a relevant change
-before intervals can authorize personnel or wages:
+The former proposal required the following paths to use the prepared boundary or
+refuse a relevant change. **That requirement is withdrawn**, not a DT backlog:
 
 - Ordinary exits, home, teleport, carry operations and direct World moves.
 - Object creation and destruction, including occupants evacuated during cleanup.
@@ -75,22 +77,15 @@ before intervals can authorize personnel or wages:
 - Journey departure, arrival, cancellation and rollback, including nested hulls.
 - Custody transfers, putting occupants ashore, quarantine, recovery and boot repair.
 
-Checking only current membership cannot close this gap: an unrecorded departure
-and return could revive an old interval. Each real ancestry change needs its own
-recorded transition or an explicit refusal.
+Current containment is sufficient for the owner's rule. No old interval is used
+to establish eligibility, so a departure and return needs no historical continuity
+proof. Read actual room/interior containment at preparation and launch, including
+nested hulls where supported. Field rescue, transfer and recovered crew use the
+same current check. Crew contracts and activation can proceed without crossing
+certification, departure manifests or a new movement coverage epoch.
 
-Affected personnel enumeration must include both placed actors and unplaced
-Player/NPC objects in every authored interior member room. Moving a nested hull
-can change an occupant's outer-carrier ancestry without changing that person's
-object location. A walk between rooms of the same interior creates no embarkation
-event. Enumeration and encoded-size bounds refuse the complete transition on
-overflow; truncating the crew list is not acceptable.
-
-Intervals will use the world IC clock's generation and timestamp, the actual
-character and carrier identities, and the physical commit identity. Field rescue,
-transfer and recovered crew need real crossing events, not a last-port-only rule.
-Departure manifests must join the actual journey departure commit. Those records
-then provide inputs for the later crew-contract, wage and activation slices.
+Docs 26g–26j are superseded and must not be extended. Retain their merged code for
+now; a later cleanup cut may delete the inert v2 provider if nothing adopts it.
 
 ## Verification
 

@@ -13,7 +13,7 @@ host and clients. IC preparation, NPC personnel and durable launches follow.
 | DT.1a | Neutral numbered roster, leadership selection, versioned orders, recipient history, and an OOC exercise adapter | Deterministic tests cover succession, reconnect flapping, stale delivery, standing orders, and advisory player responses |
 | DT.1b | Production OOC host and client integration | Typed commands, numbered-slot controls and roster display use the same revision; session/control hooks feed availability; player notices and NPC/controller delivery run through actual communications and observation boundaries |
 | DT.2a | Shared unit authority and mission-role grants | Personal lending and organization scopes; bounded delegation and exclusions; prospective revocation; no charter-owner shortcut |
-| DT.2b | Presets, drafts, personnel and preparation | Multiple private plans, actual embarkation events, consent/readiness for a revision, contracted NPC crew and exclusive unit reservations |
+| DT.2b | Presets, drafts, personnel and preparation | Multiple private plans, current carrier containment, consent/readiness for a revision, contracted NPC crew and exclusive unit reservations |
 | DT.3 | Launch and operation history | Preflight then individually durable departures, hull-epoch links, partial failure/retry, returns and unresolved casualties; no rollback of physical departures |
 
 DT.4 subset delegation and DT.5 dedicated communications remain later cuts.
@@ -158,11 +158,19 @@ private contact scope. Player and NPC completion reports are trusted observation
 in this layer; a future command endpoint must authenticate the reporter before
 recording them. Acknowledging an order never invents an attempt or completion.
 
-DT.2 resolves NPC identity from physical presence plus a recorded embarkation
-event, including field rescue/transfer/recovered crew (Q-R2). Older last-port-only
-phrasing is superseded. Crew are hired from bounded port pools, paid per IC day,
-subject to injury and contracted mission scope (Q-R5); numbers are content tuning.
-Assignment never generates a person from a software profile.
+**Owner correction, 2026-10-29:** DT.2 resolves NPC eligibility from current
+containment in the carrier, checked at preparation and launch (FO-16/Q-R2).
+Neither a last-port manifest nor a recorded embarkation event/interval is required.
+Crew are hired at port under contract records referencing real NPCs, subject to
+injury and contracted mission scope (Q-R5). They board through ordinary movement.
+Any later wages accrue from the contract, not aboard-time evidence; numbers are
+content tuning. Assignment never generates a person from a software profile.
+
+Follow [doc 26c's current delivery sequence](26c-detachment-preparation.md#current-delivery-sequence):
+DT.2b3 hiring contract, ordinary boarding, DT.2b4 activation of the six slots
+against current hull contents, then DT.3 launch. Docs 26g–26j are superseded and
+must not be extended; their merged code remains in place for now. No movement
+coverage programme or adoption of the inert v2 provider is a DT prerequisite.
 
 DT.3 separates organizer, actual launch principal, field commander and operator.
 The first three are not necessarily the same person. Roster creation or disbanding

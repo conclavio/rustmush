@@ -4,20 +4,50 @@ The accepted rules remain [doc 27](27-ic-field-operations-design-and-survey.md).
 This implementation brief separates durable planning from the physical and
 economic facts needed to activate a mission.
 
+**Owner correction, 2026-10-29:** current containment in the carrier is the
+personnel eligibility rule, checked at preparation and launch. Embarkation
+intervals, departure manifests and complete movement coverage are not prerequisites.
+Docs 26g–26j are superseded and must not be extended. Their merged code stays in
+place for now; the closed provider is inert on the live command path. A later
+cleanup cut may delete the v2 provider if nothing adopts it.
+
 | Slice | Deliverable | Admission boundary |
 |---|---|---|
 | DT.2b1 | Private presets, independent drafts, invitations and revision-bound player declarations | No reservations, employment contracts, mission-role grants or launches |
 | DT.2b2a | Prepared structural movement foundation | Core object images and the canonical Sim placement patch commit together; no personnel eligibility yet |
 | DT.2b2b.1 | Immutable personnel crossing capture | Same-commit physical evidence is explicitly uncertified while legacy paths remain; no intervals or eligibility |
 | DT.2b2b.2 | Prepared staff interior authoring | `@spatial/space` commits its real topology and crossing capture together; no synchronous fallback |
-| DT.2b2b.3a | Bounded ordinary movement admission | Inert Core proof of actual route, locks and hooks; no relocation or publication capability |
-| DT.2b2b.3b | Captured ordinary command admission | Actual dispatch provenance and retained final gate checks; no production routing or relocation |
-| DT.2b2b.3c | Closed ordinary locomotion transaction | Core-derived location images with actual Sim audit and crossing evidence; no live command route |
-| DT.2b2b.3d | Durable ordinary movement completion | Stable actual observer identities and event planning first; all effects require prepared owner commits and boot recovery before live routing |
-| DT.2b2b.3e+ | Movement coverage, certified intervals and departure manifests | Every membership-changing path records or refuses the transition, including nested occupied hulls; no inferred historical embarkation |
-| DT.2b3 | Contracted NPC crew and wages | Existing characters, accepted terms, actual aboard time and atomic settlement |
-| DT.2b4 | Preparation and activation | Live authority, consent, personnel, licences, exclusive reservations and accepted mission-role grants |
-| DT.3 | Per-unit launch and operation history | Durable actual departures, partial failure/retry, hull epochs, custody and returns |
+| DT.2b2b.3a–3d | Superseded movement work in docs 26g–26j; do not extend | Retain merged code for now; no live-path adoption or DT dependency |
+| DT.2b2b.3e+ | Withdrawn movement-coverage, interval and departure-manifest programme | No further coverage work required for NPC eligibility or contracts |
+| DT.2b3 | Hire a real NPC at port under a contract record | Existing character, accepted terms and mission scope; later wages accrue from the contract, not aboard-time evidence |
+| DT.2b4 | Preparation and activation of the six slots | Resolve who is currently in the hull; live authority, consent, licences, exclusive reservations and accepted mission-role grants |
+| DT.3 | Per-unit launch and operation history | Recheck current containment, then launch the assigned people and units; durable departures, partial failure/retry, hull epochs, custody and returns |
+
+## Current delivery sequence
+
+1. **DT.2b3 — hire:** at port, record the accepted contract referencing a real NPC.
+   Hiring does not create a synthetic pilot or teleport the character. Contract
+   terms define any future wage accrual; wage settlement can follow later.
+2. **Ordinary boarding:** the NPC walks into the ship's interior through existing
+   movement and accompanies the ship. No new movement slice or boarding-history
+   record is needed.
+3. **DT.2b4 — activate:** resolve the plan's six slots against real units and NPCs
+   currently contained in the selected carrier. Read current room/interior
+   containment through the existing physical model. Contract scope, availability,
+   permissions, consent and reservations remain separate checks. Saved plans and
+   crossing records do not substitute for current presence.
+4. **DT.3 — launch:** recheck containment at launch so an NPC who left after
+   preparation cannot launch from a stale roster. Move the assigned people and
+   units into their actual field roles; they need not remain aboard to serve in
+   the launched detachment. Returning, rescued or transferred NPCs qualify on
+   current containment without historical boarding evidence.
+
+Durable hiring, activation and launch changes use the coordinator under K8.
+That does not require ordinary walking or every post-move observer to migrate
+to the closed movement protocol. Cleanup of unused movement infrastructure is
+a separate later cut, not an activation prerequisite.
+Preserve the completed movement work for reconsideration once the core surface
+and mining flow is playable; it is deferred engineering, not rejected as incorrect.
 
 ## DT.2b1 ownership and records
 
@@ -80,24 +110,23 @@ names or another principal's authority. Other principals' permissions remain
 unresolved until their own owner-attributed admission. A physical station
 observation is labelled separately from the actual lease check on Ready.
 
-DT.2b1 reports unresolved embarkation history, crew employment, applicable
-mind/licence admission and reservation/activation work explicitly. Physical
-presence alone does not prove that an NPC embarked before the last-port
-departure. There is no synthetic personnel record, automatic NPC creation,
-teleport, fabricated contract or launch operation in this slice.
+DT.2b1's existing reports identify unresolved crew employment, applicable
+mind/licence admission and reservation/activation work. Any legacy report that
+requires embarkation history must be corrected during DT.2b4 integration: current
+containment establishes physical eligibility. There is no synthetic personnel
+record, automatic NPC creation, teleport, fabricated contract or launch operation
+in DT.2b1. This requirements correction does not claim those runtime reports have
+already changed.
 
 Player commands are documented in [detachment preparation help](../help/detachments.md).
-The physical transaction foundation and its remaining migration gates are specified
+The retained physical transaction foundation is specified
 in [26d](26d-prepared-physical-transitions.md).
 Uncertified crossing capture and its compatibility boundary are specified in
 [26e](26e-personnel-crossing-capture.md).
 The first migrated command is specified in [26f](26f-prepared-interior-command.md).
-Ordinary movement admission and the remaining command migration are specified
-in [26g](26g-locomotion-admission.md).
-Captured command provenance and final admission are specified in
-[26h](26h-locomotion-dispatch.md).
-The closed ordinary transaction is specified in [26i](26i-locomotion-transition.md).
-Durable ordinary movement completion is specified in [26j](26j-movement-completion.md).
+The historical movement work is recorded in [26g](26g-locomotion-admission.md),
+[26h](26h-locomotion-dispatch.md), [26i](26i-locomotion-transition.md) and
+[26j](26j-movement-completion.md). All four are superseded and must not be extended.
 
 ## DT.2b1 verification
 

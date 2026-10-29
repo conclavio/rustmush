@@ -1,5 +1,15 @@
 # DT.2b2b.3d — Durable ordinary movement completion
 
+> **Superseded by the owner's 2026-10-29 correction. Do not extend this design.**
+> [Doc 27 FO-16](27-ic-field-operations-design-and-survey.md) requires current
+> containment at preparation and launch, with no embarkation intervals or
+> movement-history certification. The text below records historical work, not
+> an active migration plan. Leave merged code in place for now; the closed path
+> is inert on the live command route. A later cleanup cut may delete the v2
+> provider if nothing adopts it. Continue with NPC hiring contracts, ordinary
+> boarding, DT.2b4 activation and DT.3 launch as described in
+> [doc 26c](26c-detachment-preparation.md#current-delivery-sequence).
+
 The closed transaction in [26i](26i-locomotion-transition.md) commits location and
 crossing evidence. Ordinary movement also renders departure/arrival output and
 invokes Moved observers. Their effects must survive an acknowledgement loss
