@@ -104,7 +104,46 @@ Resolution is ephemeral and is recomputed after ordinary walking and restart.
 It creates no aboard ledger, reservation or cached authority. Activation and
 launch must call the resolver again and also admit actual unit permissions,
 player consent, control, capability/health, licences and mission-role grants.
-The current report is not a claim that those remaining activation checks are built.
+The current report is not a claim that those remaining checks are built.
+
+## DT.2b4 accepted roster and reservations
+
+`+sortie/activate <draft>:<revision>=mining|combat|recovery` now accepts a complete
+one-to-six-slot player/NPC roster. The organizer, units and people must currently
+be aboard the selected carrier. NPC contracts must belong to the organizer and
+cover the selected duty and any commander assignment. Players must have marked
+Ready for this exact material revision and remain at their actual helm with the
+real Sim control-lease witness. Automated controllers, mind selections and
+financial terms refuse until their actual owner admission is integrated.
+
+The resolved action obtains current Org guards for organizer Deploy and each
+actual operator's OperateCrew right. The bridge is declared for this action;
+Tacsim cannot manufacture a right or impersonate a private owner-read caller.
+Org re-evaluates current grants, title, expiry and denies through final take.
+Tacsim separately re-evaluates the selected draft, current containment, consent,
+contracts and reservations. Leaving and returning before final take qualifies
+by current presence; no continuous-presence or movement-history proof is added.
+
+One coordinator commit writes `tacsim.detachment_active` for the organizer's
+draft and an exclusive `tacsim.detachment_reservations` row for every selected
+unit and person. An exact compound organizer/local-draft identity avoids hash
+collisions; this first activation format admits 32-bit local draft IDs and
+refuses larger ones. The accepted record keeps the material snapshot, contract
+digests, duty, source revision, independent activation revision and IC stamp.
+Editing or discarding the mutable draft cannot rewrite the accepted assignments.
+No physical or financial records are written by activation.
+
+`+sortie/active` exposes the accepted assignments to their organizer and assigned
+players. `+sortie/deactivate <draft>:<activation revision>` closes the record and
+removes precisely its original reservations in one commit, even after a draft
+edit, departure or permission revocation. It does not recall, repair or move
+anything. Reservations do not intercept ordinary movement. Missing acknowledgements
+and retries use the common coordinator's durability and receipt rules.
+
+This cut reserves preparation assignments. It does not seat an NPC, grant a
+mission role or certify health, equipment capability or a launch. DT.3 must
+recheck current containment and admit the real control and operational facts
+before moving the assigned units and people onto the surface.
 
 ## DT.2b1 ownership and records
 

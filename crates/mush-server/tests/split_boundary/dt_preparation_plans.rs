@@ -115,7 +115,9 @@ async fn commit(
     line: &str,
 ) -> TestResult {
     let submission = submit(world, actor, line)?;
-    stage(world, store, &submission).await?;
+    stage(world, store, &submission)
+        .await
+        .map_err(|error| format!("{line}: {error}"))?;
     let (bundle, installation) = world
         .engine_mut()
         .take_staged_action()?
@@ -603,5 +605,100 @@ async fn ready_requires_real_helm_lease_and_final_physical_revalidation() -> Tes
     );
     assert!(report.contains("ready declared for this exact revision"));
     assert!(report.contains("not established"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn activation_requires_current_player_readiness_station_and_helm_lease() -> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let bay = seated_fixture(&mut rig, &store).await?;
+    rig.world.world_mut().move_to(rig.organizer, bay)?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@asset/title #{}=#{}", rig.unit.0, rig.organizer.0),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} operate_crew",
+            rig.unit.0, rig.invitee.0
+        ),
+    )
+    .await?;
+    let payload = plan(&rig);
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        &format!("+sortie/draft {payload}"),
+    )
+    .await?;
+    let selected = draft(&rig.world, rig.organizer, 1)?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.invitee,
+        &declaration("accept", &selected),
+    )
+    .await?;
+    let request = submit(&mut rig.world, rig.organizer, "+sortie/activate 1:1=combat")?;
+    assert!(
+        stage(&mut rig.world, &store, &request).await.is_err(),
+        "Accepted is not Ready"
+    );
+    commit(
+        &mut rig.world,
+        &store,
+        rig.invitee,
+        &format!("@station/handoff #{}/pilot", rig.unit.0),
+    )
+    .await?;
+    install_due_handoff(&mut rig.world, &store).await?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.invitee,
+        &declaration("ready", &selected),
+    )
+    .await?;
+    assert!(
+        rig.world
+            .engine()
+            .authority_witness(&mush_core::AuthorityWitnessRequest::ControlLease {
+                provider: mush_core::OwnerId::new("sim")?,
+                subject: rig.unit,
+                channel: mush_core::ChannelId::new("helm").ok_or("helm channel")?,
+                holder: mush_core::PrincipalId::Object { id: rig.invitee },
+            })?
+            .is_some(),
+        "the assigned player's real helm lease must exist"
+    );
+    let request = submit(&mut rig.world, rig.organizer, "+sortie/activate 1:1=combat")?;
+    stage(&mut rig.world, &store, &request).await?;
+    rig.world
+        .world_mut()
+        .move_to(rig.invitee, mush_core::LIMBO)?;
+    assert!(rig.world.engine_mut().take_staged_action().is_err());
+    rig.world.world_mut().move_to(rig.invitee, bay)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/activate 1:1=combat",
+    )
+    .await?;
+    let accepted = text(
+        &mut rig.world,
+        rig.invitee,
+        &format!("+sortie/active {}:1", rig.organizer.0),
+    );
+    assert!(accepted.contains("Prepared detachment"), "{accepted}");
+    assert!(accepted.contains(&format!("player #{}", rig.invitee.0)));
     Ok(())
 }

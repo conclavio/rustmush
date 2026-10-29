@@ -2,7 +2,8 @@
 
 Use `+sortie/plans` to see your private presets and editable mission drafts.
 Use `+sortie/invitations` to see drafts that assign you a player slot. These
-commands prepare a plan; activation and physical launch are later steps.
+commands prepare a plan. Activate a complete draft to reserve its assignments;
+physical launch follows separately.
 
 To hire an NPC, meet them at a port and use `+sortie/crew`. It lists the available
 people in your room, their agreed duties and whether they can command a detachment.
@@ -35,6 +36,10 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/save <draft>:<revision>=<name>` | Save a private preset copy |
 | `+sortie/discard <draft>:<revision>` | Discard your draft and its invitations |
 | `+sortie/drop-preset <preset>:<revision>` | Delete your private preset |
+| `+sortie/activate <draft>:<revision>=mining\|combat\|recovery` | Accept the current assignments and reserve their units and people |
+| `+sortie/active <draft>` | Inspect your accepted roster and release command |
+| `+sortie/active <organizer>:<draft>` | Inspect an accepted roster that assigns you a player slot |
+| `+sortie/deactivate <draft>:<activation revision>` | Release the accepted assignments |
 
 `+sortie/plan` prints the current accept, ready and decline commands for your
 assignment. Use the complete printed command. Accept first, then mark ready
@@ -86,7 +91,25 @@ can inspect the plan without seeing the organizer's private employment terms.
 These observations do not reserve a unit or establish pilot capability or health.
 An accepted or ready declaration does not grant control, reserve equipment,
 hire crew or authorize a launch. Permissions and control are checked again
-when the later activation and launch steps are admitted.
+when activation and launch are admitted.
+
+Activation requires the organizer, each real unit and each assigned person
+currently aboard the chosen carrier. Each NPC must be hired by the organizer
+under a contract covering the selected duty and any commander assignment.
+Players must be ready for this exact draft and remain at their actual helm
+with a current control lease. The organizer needs deploy permission for each
+unit; its operator needs operate/crew permission. Hiring does not grant those
+unit permissions. Automated controllers, mind selections and financial terms
+remain unavailable for activation in this first cut.
+
+Activation reserves the selected units and people exclusively and saves the
+accepted roster. Editing the draft does not change that roster or release its
+reservations. Inspect `+sortie/active` and use its release command before
+activating another revision. Release remains available if someone leaves or
+permissions change; it does not move people or units. Ordinary walking remains
+available while reserved. Activation establishes assignments, not launch
+readiness: launch still needs current containment, control, capability/health
+and the applicable mission-role grants.
 
 OOC practice continues to use `+sortie/practice` and `+sortie/roster`, described
 in [cockpit help](cockpit.md).

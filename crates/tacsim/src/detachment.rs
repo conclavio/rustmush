@@ -6,10 +6,22 @@
 //! adapter; controller execution retains its own station, observations and
 //! admission. In particular, a contact hint never becomes a known target.
 
+pub mod activation;
 pub mod commands;
 pub mod crew;
 pub mod live;
 pub mod planning;
+
+pub(crate) fn register_preparation(
+    reg: &mut mush_core::Registrar<'_>,
+    actions: &std::collections::BTreeMap<String, mush_core::DefinitionRef>,
+    outcomes: &std::collections::BTreeMap<String, mush_core::DefinitionRef>,
+    unit_authority: bool,
+) -> Result<(), mush_core::ModError> {
+    let planning = planning::register(reg, actions, outcomes, unit_authority)?;
+    let crew = crew::register(reg, actions, outcomes)?;
+    activation::register(reg, actions, outcomes, &planning, &crew, unit_authority)
+}
 
 use mush_core::ObjId;
 use mush_tactics::detachment::orders::{DeliveredOrder, Directive, OrderBook, OrderEnvelope};
