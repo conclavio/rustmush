@@ -36,6 +36,7 @@ pub mod movement;
 mod movement_audit;
 pub mod movement_history;
 pub mod movement_participant;
+pub mod movement_window;
 pub mod physics;
 pub mod place;
 pub mod raster;
