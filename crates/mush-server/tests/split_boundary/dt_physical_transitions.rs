@@ -1166,6 +1166,7 @@ async fn personnel_capture_boot_audit_requires_exact_pair_and_retains_v1_without
         .collect();
     assert_eq!(rows.len(), 2);
     audit_captures(rows.clone())?;
+    super::dt_locomotion::audit_before_projection_repair(rows.clone(), false)?;
     let capture_index = rows
         .iter()
         .position(|row| row.key.contains("/personnel_crossings/"))
@@ -1175,8 +1176,13 @@ async fn personnel_capture_boot_audit_requires_exact_pair_and_retains_v1_without
         .position(|row| row.key.contains("/physical_transitions/"))
         .ok_or("physical")?;
     assert!(audit_captures(vec![rows.get(capture_index).ok_or("capture")?.clone()]).is_err());
+    super::dt_locomotion::audit_before_projection_repair(
+        vec![rows.get(capture_index).ok_or("capture")?.clone()],
+        true,
+    )?;
     let mut missing = rows.clone();
     missing.remove(capture_index);
+    super::dt_locomotion::audit_before_projection_repair(missing.clone(), true)?;
     assert!(audit_captures(missing).is_err());
     for field in ["operator", "root"] {
         let mut mismatched = rows.clone();

@@ -513,6 +513,14 @@ join checks actor, source, admitted/projected rooms and original UTC, recaptures
 the Atlas selectors, and retains both owners' independent evidence for recheck.
 It still grants no receipt, native patch, installation or personnel eligibility.
 
+Sim's existing structural, ordinary, Scenes and composed typed movement
+histories are now audited at the start of its world-load hook, before its IC,
+relay, spatial-repair or journey loaders can mutate state. The final composition
+audit remains in place. Missing or mismatched receipt/crossing pairs therefore
+cannot first move an unrelated object through Sim's projection repair. This is
+a Sim-local typed-history barrier; the cross-owner recovery gate and native
+window journal/receipt joins below remain required.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
