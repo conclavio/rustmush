@@ -666,11 +666,15 @@ The typed owner stamp continues to govern access, and retaining a reader grants
 no execution to an old adapter. The ordered transcript adapter uses this scope
 to keep the earlier single-leg receipts readable.
 
-Atlas's current discovery adapter still captures only the admitted-room leg.
-It now refuses a different final projected room during both preparation and
-historical audit, so the closed root cannot publish that route until actual
-second-leg discovery and its knowledge journal join are implemented. Completing
-Scenes does not complete Atlas discovery for the second Core leg.
+Atlas's version 2 window discovery adapter now joins both original Core room
+legs. Each changed visit appends its actual knowledge mutation at a distinct
+original position in the same movement commit; only the final known-book
+document is published. Unchanged visits retain their explicit observed journal
+boundary. The actual window selector plan remains independently tied to the
+genuine Core projection. Final owner binding rechecks both room discoveries,
+the known-book preimage, selected window facts and original journal tail.
+Version 1's exact participant, completion binding and scoped reader remain for
+its original single-leg receipts; it still refuses a second projected room.
 
 Atlas now supplies a separate bounded passive discovery capture for both legs.
 The projected-room observation uses the admitted leg's proposed knowledge
@@ -680,8 +684,20 @@ The capture shares the single-leg discovery policy, checks exact route continuit
 and original known-book preimages, and distinguishes missing from empty books.
 Its canonical decoder grants no movement, window selection or publication
 authority. Tests compare both observations with the actual registered legacy
-observer; the native publisher and historical knowledge join still need to
-consume this capture before the closed root can admit a second room leg.
+observer. The actual publisher consumes the capture, and historical audit joins
+every leg to the genuine Core header and its original native knowledge mutation.
+Missing or changed second mutations, disconnected positions and inconsistent
+no-op claims refuse before any boot mutation. A production return loop joins
+the real Core and Sim images, both discovery visits and four original Scenes
+events, including lost acknowledgement and repeated cold boots. FIFO eviction,
+duplicate no-op boundaries and NPC discovery negatives use the same real root.
+
+Sim defers window projection repair when the geometry owner's resolver has not
+loaded yet. The final load boundary reconciles those projections against the
+actual hydrated owner, avoiding an intermediate fallback-room move that would
+overwrite a committed return projection. A standalone Sim composition still
+uses its ordinary fallback at that final boundary. This repair is current
+native projection maintenance; historical receipts do not supply room geometry.
 
 V2 registers no offer or live command route. Its manifest remains partial:
 the bounded original journal refuses a 257th commit until a real checkpoint or

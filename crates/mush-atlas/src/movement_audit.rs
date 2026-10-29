@@ -72,7 +72,14 @@ impl Audit {
                 crate::movement_window_participant::participant_descriptor()?,
             )
             .map_err(bad)?;
-        let is_window = receipt.effect().participant() == &window_participant;
+        let old_window_participant = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new(crate::NS).map_err(bad)?,
+                crate::movement_window_participant::participant_descriptor_v1()?,
+            )
+            .map_err(bad)?;
+        let ordered = receipt.effect().participant() == &window_participant;
+        let is_window = ordered || receipt.effect().participant() == &old_window_participant;
         if receipt.effect().participant() != &expected && !is_window {
             return Err(bad("unknown Atlas movement proof profile"));
         }
@@ -85,6 +92,9 @@ impl Audit {
             mush_core::locomotion::composed::MAX_MOVEMENT_PROOF_BYTES,
         )
         .map_err(bad)?;
+        if ordered {
+            return self.add_ordered(receipt, value);
+        }
         let (capture, digest, history_next, event) = if is_window {
             let projection = receipt
                 .window_projection()
@@ -136,7 +146,17 @@ impl Audit {
                 "Atlas movement proof differs from its original movement",
             ));
         }
-        let before = if let Discovery::Mapped { known_before, .. } = capture.discovery() {
+        self.add_discovery(receipt, capture.discovery(), digest, history_next, event)
+    }
+    fn add_discovery(
+        &mut self,
+        receipt: &ComposedOwnerReceipt,
+        discovery: &Discovery,
+        digest: DefinitionDigest,
+        history_next: u64,
+        event: Option<EventClaim>,
+    ) -> Result<(), ModError> {
+        let before = if let Discovery::Mapped { known_before, .. } = discovery {
             if let Some(before) = known_before {
                 history::canonical_known(before).map_err(bad)?;
             }
@@ -144,8 +164,7 @@ impl Audit {
         } else {
             None
         };
-        let after = capture
-            .planned_known()
+        let after = crate::movement::planned_discovery(discovery)
             .map(|doc| known_digest(Some(&doc.places)).map_err(bad))
             .transpose()?;
         if event.is_some() != after.is_some()
@@ -170,6 +189,73 @@ impl Audit {
                 at_utc: receipt.at_utc(),
                 capture: digest,
             });
+        Ok(())
+    }
+    fn add_ordered(
+        &mut self,
+        receipt: &ComposedOwnerReceipt,
+        value: &serde_json::Value,
+    ) -> Result<(), ModError> {
+        let projection = receipt
+            .window_projection()
+            .ok_or_else(|| bad("Atlas window proposal missing"))?;
+        let proof: crate::movement_window_participant::OrderedProof =
+            serde_json::from_value(value.clone()).map_err(bad)?;
+        if proof.format != 2 || serde_json::to_value(&proof).map_err(bad)? != *value {
+            return Err(bad("invalid ordered Atlas window proof"));
+        }
+        let first =
+            crate::movement_window::validate_evidence(&proof.window, projection).map_err(bad)?;
+        let bytes = mush_core::canonical_json_bytes_with_limit(
+            &proof.discovery,
+            crate::movement_window_discovery::MAX_WINDOW_DISCOVERY_BYTES,
+        )
+        .map_err(bad)?;
+        let capture = crate::movement_window_discovery::WindowDiscoveryCapture::decode(&bytes)
+            .map_err(bad)?;
+        capture.check_first(&first).map_err(bad)?;
+        let digest = capture.digest().map_err(bad)?;
+        if capture.actor() != receipt.actor()
+            || capture.source() != receipt.source()
+            || capture.admitted_room() != receipt.destination()
+            || capture.projected_room() != projection.projected_room()
+            || capture.at() != receipt.at_utc()
+            || capture.atlas_slot() != SlotPresence::Present
+            || &digest != receipt.effect().owner_capture_digest()
+            || proof.legs.len() != capture.legs().len()
+        {
+            return Err(bad(
+                "ordered Atlas proof differs from its original movement",
+            ));
+        }
+        let mut next = proof
+            .legs
+            .first()
+            .ok_or_else(|| bad("Atlas discovery legs missing"))?
+            .history_next;
+        for (leg, claim) in capture.legs().iter().zip(proof.legs) {
+            if claim.history_next != next
+                || claim
+                    .event
+                    .as_ref()
+                    .is_some_and(|event| event.digest.as_bytes() == &[0; 32])
+            {
+                return Err(bad("ordered Atlas knowledge positions are disconnected"));
+            }
+            self.charge(512)?;
+            if claim.event.is_some() {
+                next = next
+                    .checked_add(1)
+                    .ok_or_else(|| bad("Atlas knowledge sequence overflow"))?;
+            }
+            self.add_discovery(
+                receipt,
+                leg.discovery(),
+                digest,
+                claim.history_next,
+                claim.event,
+            )?;
+        }
         Ok(())
     }
     fn observe(&mut self, actor: ObjId, digest: DefinitionDigest) -> Result<(), ModError> {

@@ -148,6 +148,23 @@ impl WindowDiscoveryCapture {
         }
         Ok(())
     }
+    /// Recheck Atlas-owned observations at the final owner bind. The genuine
+    /// Core preparation separately retains actor kind and room preimages.
+    pub(crate) fn recheck_owner(&self, state: &AtlasState) -> Result<(), CaptureError> {
+        if capture_observed(
+            Some(state),
+            self.actor_kind,
+            self.actor,
+            self.source,
+            self.admitted_room,
+            self.projected_room,
+            self.at,
+        )? != *self
+        {
+            return Err(CaptureError::Invalid);
+        }
+        Ok(())
+    }
     fn validate(&self) -> Result<(), CaptureError> {
         let count = if self.admitted_room == self.projected_room {
             1
@@ -200,6 +217,26 @@ pub fn capture(
 ) -> Result<WindowDiscoveryCapture, CaptureError> {
     let state = world.module_state::<AtlasState>();
     let kind = world.get(actor).map(|object| object.kind);
+    capture_observed(
+        state,
+        kind,
+        actor,
+        source,
+        admitted_room,
+        projected_room,
+        at,
+    )
+}
+
+fn capture_observed(
+    state: Option<&AtlasState>,
+    kind: Option<ObjKind>,
+    actor: ObjId,
+    source: Option<ObjId>,
+    admitted_room: ObjId,
+    projected_room: ObjId,
+    at: i64,
+) -> Result<WindowDiscoveryCapture, CaptureError> {
     let before = state
         .and_then(|state| state.travel.known.get(&actor))
         .map(Vec::as_slice);

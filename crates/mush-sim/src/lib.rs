@@ -1278,6 +1278,7 @@ impl GameModule for SimulationModule {
         // Retain the final check for drivers invoking final composition
         // directly and for changes made by intervening module load hooks.
         self.audit_movement_history(ctx)?;
+        boot::reconcile_window_projections(ctx)?;
         // The coordinator hydrated typed leases before the load callbacks.
         // Read them through Sim's real owner lens before the first command:
         // a restarted pilot may reclaim before any periodic tick has fired.

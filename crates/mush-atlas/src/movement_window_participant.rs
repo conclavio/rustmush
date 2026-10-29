@@ -3,9 +3,7 @@
 
 use crate::module::{AtlasState, NS};
 use crate::movement_history::refused;
-use crate::movement_participant::{
-    AtlasMovementParticipant, BoundAtlasMovement, EventClaim, Patch,
-};
+use crate::movement_participant::{AtlasMovementParticipant, EventClaim};
 use mush_core::locomotion::composed::{self, MovementDraft, MovementIntent};
 use mush_core::participant::{
     OwnerParticipant, OwnerPreparation, OwnerPrepareContext, ParticipantError,
@@ -19,10 +17,14 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
 pub const PARTICIPANT: &str = "window_movement_discovery";
+#[path = "movement_window_knowledge.rs"]
+mod knowledge;
+pub(crate) use knowledge::OrderedProof;
+pub use knowledge::{BoundWindowKnowledge, WindowKnowledgePatch};
 fn bad(error: impl std::fmt::Display) -> ModError {
     ModError::msg(error.to_string())
 }
-pub fn participant_descriptor() -> Result<DefinitionDescriptor, ModError> {
+pub fn participant_descriptor_v1() -> Result<DefinitionDescriptor, ModError> {
     DefinitionDescriptor::new(DefinitionKind::new("owner_participant").map_err(bad)?, DefinitionId::new(PARTICIPANT).map_err(bad)?, 1,
         json!({"state":"AtlasState","protocol":"composed_atlas_window_discovery_v1",
             "capture_bytes":131072,"key_bytes":65536,"proof_depth":32,"proof_nodes":65536,
@@ -30,6 +32,16 @@ pub fn participant_descriptor() -> Result<DefinitionDescriptor, ModError> {
             "window_policy":"attest_actual_selectors","completion":["travel_discovery"],
             "window_arrival":"requires_durable_map_output","writes":["known_document","movement_knowledge_ledger"],
             "delivery":"same_commit","proof":"original_window_plan_and_knowledge_position_v1"})).map_err(bad)
+}
+pub fn participant_descriptor() -> Result<DefinitionDescriptor, ModError> {
+    DefinitionDescriptor::new(DefinitionKind::new("owner_participant").map_err(bad)?, DefinitionId::new(PARTICIPANT).map_err(bad)?, 2,
+        json!({"state":"AtlasState","protocol":"ordered_atlas_window_discovery_v2",
+            "capture_bytes":262144,"key_bytes_per_leg":65536,"proof_bytes":131072,
+            "proof_depth":32,"proof_nodes":65536,"max_core_legs":2,"known_places":512,
+            "known_policy":"ordered_player_fifo_duplicate_unchanged",
+            "window_policy":"attest_actual_selectors","completion":["travel_discovery"],
+            "window_arrival":"requires_durable_map_output","writes":["final_known_document","ordered_movement_knowledge_ledger"],
+            "delivery":"same_commit","proof":"original_window_plan_and_ordered_knowledge_positions_v2"})).map_err(bad)
 }
 pub fn observer_descriptors() -> Result<Vec<DefinitionDescriptor>, ModError> {
     Ok(vec![mush_core::moved_observer::descriptor(
@@ -54,6 +66,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .map_err(bad)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let old = reg.definition(participant_descriptor_v1()?)?;
+    reg.definition(mush_core::locomotion::completion::binding_descriptor(
+        "atlas_window_discovery_completion",
+        1,
+        action.clone(),
+        old,
+        observers.clone(),
+    )?)?;
     reg.owner_participant(
         part.clone(),
         BTreeSet::from([action.clone()]),
@@ -61,7 +81,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     )?;
     reg.register_moved_completion::<AtlasWindowMovementParticipant>(
         "atlas_window_discovery_completion",
-        1,
+        2,
         action,
         part,
         observers,
@@ -86,20 +106,15 @@ impl OwnerParticipant for AtlasWindowMovementParticipant {
     type State = AtlasState;
     type Request = MovementIntent;
     type Output = MovementDraft;
-    type Patch = Patch;
-    type Bound<'a> = BoundAtlasMovement<'a>;
+    type Patch = WindowKnowledgePatch;
+    type Bound<'a> = BoundWindowKnowledge<'a>;
     fn prepare(
         &self,
         state: &AtlasState,
         ctx: &OwnerPrepareContext<'_>,
         intent: MovementIntent,
-    ) -> Result<OwnerPreparation<MovementDraft, Patch>, ParticipantError> {
+    ) -> Result<OwnerPreparation<MovementDraft, WindowKnowledgePatch>, ParticipantError> {
         let projection = intent.window_projection().ok_or_else(refused)?;
-        // This version captures only discovery at the admitted room. A second
-        // Core leg needs its own actual discovery capture and original history.
-        if projection.projected_room() != intent.destination() {
-            return Err(refused());
-        }
         let plan = crate::movement_window::plan(
             ctx.world(),
             intent.actor(),
@@ -109,22 +124,22 @@ impl OwnerParticipant for AtlasWindowMovementParticipant {
         )
         .map_err(|_| refused())?;
         plan.check_projection(projection).map_err(|_| refused())?;
-        crate::movement_participant::prepare_knowledge(state, ctx, intent, Some(plan))
+        knowledge::prepare(state, ctx, intent, plan)
     }
     fn recheck(
         &self,
         state: &AtlasState,
         ctx: &OwnerPrepareContext<'_>,
-        patch: &Patch,
+        patch: &WindowKnowledgePatch,
     ) -> Result<(), ParticipantError> {
-        AtlasMovementParticipant.recheck(state, ctx, patch)
+        patch.recheck(state, ctx)
     }
     fn bind<'a>(
         self: Arc<Self>,
         state: &'a mut AtlasState,
-        patch: Patch,
+        patch: WindowKnowledgePatch,
     ) -> Result<Self::Bound<'a>, ParticipantError> {
-        Arc::new(AtlasMovementParticipant).bind(state, patch)
+        patch.bind(state)
     }
     fn accepts_write(&self, write: &ReplayWrite) -> bool {
         AtlasMovementParticipant.accepts_write(write)
