@@ -781,6 +781,25 @@ ship docked at a hangar its own journey did not bring it to closes recovered.
   not-fenced-by-a-landing-hull revision, or a re-target to a third carrier end to end (the harness
   cannot enrol a third pilot with a programme hull unplaced); a destruction path; retention.
 
+### S.4a — the sealed mind aboard, as built (2026-10-29, doc 17h cut M8e, PR #93, `913e29dd`)
+
+S.4 was split by the owner (doc 17h Q-M8-1, then option C). S.4a is built.
+- `+tv/<n> launch mind=<filed:N|draft:name> [org=<org>]` seals a held filed mind aboard a cored
+  rig with the licence's real state, for paid and owner licences.
+- A lapsed or revoked licence seals Doctrine, and only the operator is told.
+- A funded transfer refuses, with D-UM-40's sentence, which the owner approved.
+- M8c's seal mark is written in the finish's bundle for a mind that flew.
+- The ungoverned rig seals an unfiled draft with its `admissions`.
+- The cored-rig excursion harness was built, with fitted rigs and commerce together.
+
+No claim Open/Close, pool seat or `abi` drop: an IC base needs a fixed-domain anchor
+(`mush-sim ic_exclusion.rs:317`), and an active claim freezes the hull
+(`mush-tactics ic_custody.rs:252`). Those move to **S.4b**, with the drone phase and a custody
+design for moving anchors.
+
+S.5's dispatch-only stories are folded into doc 17h's M8g. The leak battery is on main (#106,
+#132).
+
 ## 15. The review of Draft 0.1, and what it changed
 
 An independent read-only review on 2026-10-27 (one Opus lens over doc 17, doc 20, 17f, doc 18 and

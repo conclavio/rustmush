@@ -764,14 +764,71 @@ in code.
   excursion harness, and the IC audit over a retained unfiled-draft record.
 - The launch composes no ungoverning shop (§4).
 
-### M8d — the consequences (building)
+### M8d — the consequences (PR #98, merged 2026-10-29 as `8ac942b5`)
 
-Seizure is split to **M8d2** (§5). M8d carries:
-- the unwarranted finding, its canon line and the three fact keys;
-- the Red Dies front;
-- the sanction fine and `@registry/fine`;
-- `RevokedPrincipal`;
-- the cover exclusion.
+The cut is `b3a75dc9`, which includes fix round 1, plus a merge of main. Seizure is split to M8d2.
+
+Review: one Opus lens found no blocker but three holes, all fixed in round 1. The fine followed
+the live title, so a title move could dodge it. The revoked principal was never told. Filing
+escaped the bar.
+
+**What landed:**
+- **The fine.** `@registry/fine <inspection> <amount>` creates a one-period sanction obligation on
+  the holder the inspection recorded, paid to the levy sink, capped at `fine_cap_minor`, and
+  retried if it fails to levy.
+- **The principal bar.** `RevokedPrincipal` comes through `@registry/revoke principal=` (option
+  (c)) and holds for 90 IC days. It bars new licences (filing included), the use of held licences,
+  and their movement. An existing held term still renews or attests. The principal gets one notice.
+- **Tycho's cover exclusion.** `UngovernedCore` raises `Voided`, which does not pay.
+- **The unwarranted finding.** Its chronicle writes a canon line that names nobody.
+- **The facts.** `minds.seized` is public. `minds.unwarranted` is Registry-scoped (D-UM-42).
+  `minds.claimed` was reserved here.
+- **The Red Dies front** on the Republic's board, whose clock has 6 segments.
+
+**A fix that came later, with G4 (#106):** the finding fires on a real rig, whose inspection
+records `core: None`. The rule is `governed == Some(false)`.
+
+**Owed to M8g:**
+- the move bar in a market harness;
+- the purchase refused across the window;
+- the paid licence's use bar;
+- K5's renewal inside the window.
+
+### M8b-2 — heirloom and grey dies (PR #99, merged 2026-10-29 as `76bf5724`)
+
+The cut is `ac1d43a6` with fix round 1.
+
+**What landed:**
+- Two root lineage arms in mush-inventory, `Lineage::Heirloom { source }` and `Lineage::Grey {}`.
+  A grey lot carries no Origin.
+- The heirloom integrates as an ungoverned III, and a grey die as its declared class. Both happen
+  only at a `core_ungovern` facility, through a second integration site that has its OWN output
+  container (D-UM-42).
+- `CoreTitleBirth.source` records the die; `provenance_of` maps it to Heirloom or Grey.
+- GOD-only `issue_heirloom_die` and `issue_grey_die`.
+- `@lot` prints at most 8 characters of an origin id. That also fixes the existing certified
+  line's 32-hex leak.
+
+**Not decided:** the Class III entitlement still applies to a heirloom in the back room. Whether to
+exempt it is the owner's call.
+
+### M8d2 — seizure and forfeit (PR #112, merged 2026-10-29 as `05ad88db`)
+
+The cut is `905df5b5`, plus merges of main.
+
+**What landed:**
+- **`ClosedSeizurePlan`** (`PlanGuard::Seizure`), on the charter transfer's shape. It allows
+  exactly one asset op: `Disputed` to seize, `TransferTitle` to the Registry org to forfeit. It has
+  receipts, an audit, and recovery of the managed-title index.
+- **The proof.** The Roll and tacsim producer proves the newest inspection and binds that proof in
+  the same coordinator union.
+- **Impounded in place** (§5). Every seal path reads a seized or forfeited core as no core.
+- **`@registry/seize`** produces `minds.seized`. **`@registry/forfeit`** acts after
+  `seizure_hold_ic_days`.
+
+**Owed:**
+- **M8d3**, physical removal and a Registry custody place.
+- **To M8g:** the real inspect-then-seize run on a managed core.
 
 ### M8e — the sealed mind aboard, doc 23 S.4a (PR #93, merged 2026-10-29 as `913e29dd`)
 
@@ -800,4 +857,54 @@ without poisoning the commit.
 - No recall bit reaches the seal, so a recalled revision reads as no licence.
 - `pending` arises only from a sale.
 
-### M8f — procurement (building)
+### M8f — procurement (PR #102, merged 2026-10-29 as `c04e6fd2`; round 2 PR #105, `a31108ea`)
+
+PR #102 merged before round 2 was pushed, so round 2 landed separately as #105.
+
+Review found two money bugs. The agent could fund a human member's quote, outside the ledger. A
+refused Fund looped all month. Both are fixed. Round 2 then fixed the human `/buy/pay org=` quote
+and made read failures refuse.
+
+**What landed:**
+- **The rating score**, from trial wins, ranked per credit. A 0‰ line is never bought.
+- **`ProcurementPolicy`**, with a named agent on an operator-held login. Its `roll.holder.org`
+  grant is limited to the budget, which is amount-bearing (P2a).
+- **The `tacsim.procurement` tick**, once per IC calendar month. It buys only listed lines, caps a
+  charter at 400‰ of the org's titled hulls, and settles before its standing gate.
+- **`tacsim.procurement_ledger`**, a typed family (ruling B).
+- **An org quote is funded only by its quoting member.**
+
+**Main red:** main went red after #102 on the M7 stack lint in `port_tick.rs`. Main's own split
+later fixed it, so the hotfix #107 was closed unmerged.
+
+**Test-only seams:** `assume_hulls` and `admit_zero_scores`.
+
+**Owed to M8g:** the zero-PC story.
+
+### M8h — House owner attestation in live play (PR #129, merged 2026-10-29 as `9d80f6bd`)
+
+Added at the owner's word.
+
+**What landed:**
+- **The `tacsim.house_attestation` tick.** It attests each due House filing as the House's agent,
+  reusing the procurement agent or using `attestation_agent`.
+- **An Unattestable filing lapses** and is logged once per boot. Nothing is retried that it can
+  already predict will fail.
+- **A limited grant attests.** The House arm's title and ownership reads ask a read (M8f H7), so a
+  curator holding `limit=1` attests through the verb.
+- **The 365-day term stays.** Shortening it to 90 is the owner's call.
+
+This closes **17g §4's first deferral**.
+
+### M8g — the gate (G3 #111 `4844e847`, G4 #106 `79892b2f`, the claim channel #132 `ec9e87cb`; G1/G2/G5 building)
+
+- **G3, `@mind/claim`.** Lead's ruling (B): every arena mode is a sim, so `EarnedContacts` has no
+  producer and every hull is refused until the IC fight. G3 also built `ClaimRecord`
+  (`roll_mind_claims`, 32 per author), `@registry/claims` (a line-mode read) and the
+  Registry-scoped `minds.claimed`.
+- **G4, the leak battery** (D-UM-42), which is dispatch-only. It found M8d's real-rig finding bug.
+  `@unit/*` is a named exemption (§5). The claim channel's case replaced the tripwire (#132). The
+  dispatch passed (run 40880419607).
+- **G1, G2 and G5.** The combined world is the production `LaunchComposition` over the game
+  content, with an optional ungovern site (§5). The owed composed tests and the dispatch-only
+  stories are building.
