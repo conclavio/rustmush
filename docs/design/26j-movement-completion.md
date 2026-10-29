@@ -540,6 +540,13 @@ the readers. Multiple no-op observations at a boundary remain valid. This pass
 uses no current geometry, callback or loaded Atlas projection. The later audit
 still requires the real journal events and current knowledge projection.
 
+Scenes also runs its actual typed receipt/proof readers in that early phase.
+Atomic and composed claims share one bounded position index, so duplicate
+transcript claims refuse before loading, and no-event captures already require
+their exact route/UTC digest. This does not hydrate, pause or reconstruct a live
+scene. Nonempty captures still require the later original-transcript join;
+typed claims alone never stand in for committed native events.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
