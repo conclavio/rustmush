@@ -511,6 +511,53 @@ async fn late_sim_drift_refuses_installation_without_publishing_the_prepared_rec
 }
 
 #[tokio::test]
+async fn retained_journey_read_refuses_post_ack_structural_publication() -> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let line = format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0);
+    let submission = submit(&mut rig.world, GOD, &line)?;
+    stage(&mut rig.world, &store, &submission).await?;
+    let revision = rig.world.engine().action_state().revision();
+    let records = rig.world.engine().action_state().len();
+    let before = state(&rig.world)?
+        .spaces
+        .get(&rig.left)
+        .ok_or("space")?
+        .clone();
+    let (bundle, install) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged")?
+        .into_parts();
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    // Test-only corruption of the separate registered Sim slot after custody;
+    // no placement, topology, object or typed revision is changed.
+    rig.world
+        .world_mut()
+        .module_state_mut::<mush_sim::JourneyBook>()
+        .ok_or("journeys")?
+        .held
+        .insert("cjourney:late".into(), "repair required".into());
+    assert!(
+        rig.world
+            .engine_mut()
+            .install_composed_action(install)
+            .is_err()
+    );
+    assert_eq!(state(&rig.world)?.spaces.get(&rig.left), Some(&before));
+    assert_eq!(rig.world.engine().action_state().revision(), revision);
+    assert_eq!(rig.world.engine().action_state().len(), records);
+    assert!(rig.world.engine().action_state().reservation_lost());
+    Ok(())
+}
+
+#[tokio::test]
 async fn zero_projection_retains_proposed_host_world_preimage_through_installation() -> TestResult {
     let store = InMemoryStore::new();
     let mut rig = fixture(&store).await?;

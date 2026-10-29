@@ -118,6 +118,7 @@ struct SceneLocomotionHandles {
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     reader: &OnceLock<scene_transition::SceneLocomotionReader>,
+    journey_read: crate::movement_reads::JourneyRead,
 ) -> Result<(), ModError> {
     let participant = reg.definition(participant_descriptor()?)?;
     let action = reg.definition(scene_transition::action_descriptor()?)?;
@@ -157,6 +158,7 @@ pub(crate) fn register(
             outcome,
             service: service.clone(),
             crossings: crossings.clone(),
+            journey_read,
         },
     )?;
     reg.state(SceneLocomotionHandles { service, crossings });
@@ -179,6 +181,7 @@ struct Provider {
     outcome: DefinitionRef,
     service: Service,
     crossings: LocomotionCrossings,
+    journey_read: crate::movement_reads::JourneyRead,
 }
 impl ActionProvider for Provider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
@@ -212,6 +215,12 @@ impl ActionProvider for Provider {
             locomotion::capture(state, world, &route, &world.world_ic_now(), true)
                 .map_err(|_| unavailable("locomotion capture unavailable"))?
         };
+        crate::movement_reads::retain_journeys(
+            context,
+            txn,
+            &self.journey_read,
+            &captured.facts.read_dependencies,
+        )?;
         let receipt = context
             .prepare_captured_locomotion_with_scenes(txn, &self.service)
             .map_err(|_| unavailable("captured scene locomotion refused"))?;
