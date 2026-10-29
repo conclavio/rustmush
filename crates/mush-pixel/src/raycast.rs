@@ -614,7 +614,7 @@ struct Eye {
 }
 
 impl Eye {
-    /// See [`project`].
+    /// See [`project_from`].
     fn project(&self, w: usize, h: usize, s: &Sprite) -> Option<SpriteAt> {
         let invdet = 1.0 / (self.planex * self.diry - self.dirx * self.planey);
         let relx = s.x_cm as f32 / self.cell - self.posx;
