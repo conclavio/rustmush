@@ -530,6 +530,15 @@ The economy cannot read the Registry's inspection records.
 - **Two new player lines** are the lead's wording and await the owner's approval:
   - the revoked principal's notice, "The Registry has barred your mind licences until <IC date>.";
   - the fine's receipt, "The fine is levied when the Registry next settles."
+  - from M8e, the pending-transfer refusal: doc 17 D-UM-40's sentence with "sortie" replaced,
+    "{mind name} is changing hands; it is not sealed aboard until the transfer settles."
+- **M8e review rulings:**
+  - Owner licences seal, through the owner projection.
+  - A seal that fell to the ROM writes no seal mark.
+  - The seal mark is also written by the surface finish, through a delegated family; this follows
+    the coverage-writer precedent.
+  - On an org-held licence the warrant principal stays the member (D-23-5), and the org is carried
+    as `holder`. "Names the org principal" in §3 M8e means that `holder`.
 
 **M8e re-scoped by the owner, 2026-10-28 (option C):** "M8e: take option C, move the claim
 Open/Close and the seat to S.4b with the custody design". The M8e builder found that a four-owner
