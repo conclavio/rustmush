@@ -586,6 +586,22 @@ hide an unsupported history. The local load hook repeats this guard for drivers
 that call it directly. Passive history registration alone does not opt into a
 publisher, and unrelated legacy Sim logs retain their existing loading behavior.
 
+The actual Sim window participant now accepts only Core's opaque window intent.
+It derives the ordered native plans itself, prepares only the final actor
+placement and a bounded dedicated journal append, and retains the original
+context, selector, native and occupancy preimages. Binding builds the bounded
+placement/index postimage before borrowing the selected ledger tail; application
+then installs only those prepared images. Dropping a binding or refusing a stale
+tail changes nothing. Planning snapshots exclude recovery logs entirely, and
+binding preserves unrelated log tails without cloning them.
+
+The adapter is not registered by default. Its selector returns proposal data;
+the real Atlas observer must still attest the shared header. Actual producer
+registration, retained foreign reads and the genuine same-commit receipt/family
+join remain required before this profile is executable. Native binding tests
+exercise the actual plans and slot mechanics without claiming a Core movement
+commit or personnel evidence from their fixture journal bodies.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

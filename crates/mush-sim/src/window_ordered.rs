@@ -43,6 +43,22 @@ impl OrderedWindowMovementCapture {
     pub fn encode(&self) -> Vec<u8> {
         self.bytes.clone()
     }
+    pub(super) fn placement_update(
+        &self,
+    ) -> Result<Option<crate::PlacementRecord>, ParticipantError> {
+        let mut final_record = None;
+        for phase in &self.native_phases {
+            if !phase.plan.set_spaces.is_empty()
+                || !phase.plan.retire.is_empty()
+                || phase.plan.set_placements.len() != 1
+                || phase.plan.set_placements[0].object != self.actor()
+            {
+                return Err(refused());
+            }
+            final_record = phase.plan.set_placements.last().cloned();
+        }
+        Ok(final_record)
+    }
     /// Check just the selected domain's actual placement coordinates at native
     /// slot bind. This performs no World read or callback. Custody exclusions,
     /// topology, Core rows and Atlas selectors still need their own guards.
@@ -148,10 +164,7 @@ fn derive_ordered(
     }
     // The same resident bound and opaque-payload preflight already ran before
     // native planning. Only a bounded SpatialState is copied, never World.
-    let mut post = world
-        .module_state::<SpatialState>()
-        .ok_or_else(refused)?
-        .clone();
+    let mut post = planning_state(world.module_state::<SpatialState>().ok_or_else(refused)?)?;
     let native_fence = native_fence::NativeFence::capture(&post)?;
     let occupancy = target
         .map(|target| crate::window_occupancy::OccupancyFence::capture(&post, target.domain))

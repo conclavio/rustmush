@@ -1,9 +1,10 @@
-//! Read-only Sim plans for a hypothetical, Core-validated window arrival.
+//! Sim planning and the opt-in native adapter for Core-validated window arrival.
 //!
 //! This supplies the real release/place transition data for an already attached
 //! actor with no physical dependents. The supplied projection still needs the
-//! actual Atlas owner's attestation. There is no receipt, write capability,
-//! executable decoder, live route, or personnel-eligibility claim here.
+//! actual Atlas owner's attestation. The native adapter requires Core's genuine
+//! window intent; composition and producer wiring remain required. No decoder
+//! mints executable plans, live routing or personnel eligibility.
 
 use std::collections::BTreeSet;
 
@@ -24,11 +25,14 @@ mod history;
 mod native_fence;
 #[path = "window_ordered.rs"]
 mod ordered;
+#[path = "window_publication.rs"]
+mod publication;
 #[path = "window_record.rs"]
 mod record;
 pub use evidence::{WindowMovementEvidence, validate_evidence};
 pub use history::{WINDOW_MOVEMENT_LOG, WindowMovementHistory};
 pub use ordered::{OrderedWindowMovementCapture, capture_ordered};
+pub use publication::{WindowMovementParticipant, WindowSelection, WindowSelector};
 pub use record::WindowMovementRecord;
 
 pub const MAX_WINDOW_MOVEMENT_BYTES: usize = 128 * 1024;
@@ -198,7 +202,7 @@ fn derive_phases(
         nodes.extend(crate::graph::ancestors(state, domain.host).map_err(|_| refused())?);
     }
     let fence = crate::physical::state_digest(state, &nodes, &domains)?;
-    let mut post = state.clone();
+    let mut post = planning_state(state)?;
     let mut phases = Vec::new();
     if source.is_some() && source != destination {
         let release = crate::transition::plan_at(
@@ -328,6 +332,30 @@ fn posture_bounds(state: &SpatialState) -> Result<(), ParticipantError> {
         }
     }
     Ok(())
+}
+
+// Planning never consults the recovery ledger. Copy only bounded native graph
+// data, so an unrelated log cannot inflate a hypothetical snapshot.
+fn planning_state(state: &SpatialState) -> Result<SpatialState, ParticipantError> {
+    posture_bounds(state)?;
+    crate::physical::resident_bound(state)?;
+    Ok(SpatialState {
+        domains: state.domains.clone(),
+        placements: state.placements.clone(),
+        held_placements: state.held_placements.clone(),
+        unbound_placement_docs: state.unbound_placement_docs.clone(),
+        held_assignments: state.held_assignments.clone(),
+        spaces: state.spaces.clone(),
+        mounts: state.mounts.clone(),
+        stations: state.stations.clone(),
+        assignments: state.assignments.clone(),
+        control_gen: state.control_gen.clone(),
+        next_domain_id: state.next_domain_id,
+        recovery_room: state.recovery_room,
+        in_transit_room: state.in_transit_room,
+        recovery: mush_core::Ledger::default(),
+        derived: state.derived.clone(),
+    })
 }
 fn value_bounds(
     value: &Value,

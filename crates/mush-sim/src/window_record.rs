@@ -110,6 +110,61 @@ impl WindowMovementRecord {
         record.matches_receipt(receipt)?;
         Ok(record)
     }
+    // The actual native participant prepares its journal before Core finishes
+    // the receipt. The provider must independently join that genuine receipt
+    // and this exact append when staging the same-commit history row.
+    pub(super) fn for_intent(
+        ctx: &mush_core::participant::OwnerPrepareContext<'_>,
+        intent: &composed::WindowLocomotionIntent,
+        capture: &OrderedWindowMovementCapture,
+        plan_digest: DefinitionDigest,
+        projection: WindowProjection,
+        journal_sequence: u64,
+    ) -> Result<Self, ParticipantError> {
+        if intent.action() != ctx.action()
+            || intent.commit() != ctx.commit_token()
+            || intent.actor() != ctx.invocation().actor()
+        {
+            return Err(refused());
+        }
+        let participant = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new(crate::NS).map_err(|_| ParticipantError::Authority)?,
+                publication::WindowMovementParticipant::descriptor().map_err(|_| refused())?,
+            )
+            .map_err(|_| refused())?;
+        let evidence =
+            serde_json::from_slice(&capture.encode()).map_err(|_| ParticipantError::Encoding)?;
+        let decoded = validate_evidence(&evidence, capture.digest())?;
+        let mut wire = Wire {
+            format: 1,
+            coverage: Coverage::UncertifiedLegacyPaths,
+            commit: intent.commit(),
+            action: intent.action().clone(),
+            participant,
+            actor: intent.actor(),
+            source: intent.source(),
+            exit: intent.exit(),
+            admitted_room: intent.destination(),
+            projected_room: projection.projected_room(),
+            prepared_at: intent.prepared_at().clone(),
+            at_utc: intent.at_utc(),
+            plan_digest,
+            capture_digest: capture.digest(),
+            projection,
+            evidence,
+            final_placement_digest: final_digest(&decoded)?,
+            journal: JournalClaim {
+                sequence: journal_sequence,
+                digest: DefinitionDigest::from_bytes([0; 32]),
+            },
+        };
+        wire.journal.digest = journal_digest(&wire.journal_value())?;
+        wire.validate()?;
+        Ok(Self {
+            wire: Box::new(wire),
+        })
+    }
     pub fn encode(&self) -> Result<Value, ParticipantError> {
         encode(&self.wire)
     }
@@ -254,7 +309,7 @@ fn encode(wire: &Wire) -> Result<Value, ParticipantError> {
         .map_err(|_| ParticipantError::ImageLimit)?;
     Ok(value)
 }
-fn preflight(value: &Value) -> Result<(), ParticipantError> {
+pub(super) fn preflight(value: &Value) -> Result<(), ParticipantError> {
     let mut nodes = 80_000_usize;
     let mut text = MAX_RECORD_BYTES;
     let mut pending = vec![(value, 1_usize)];

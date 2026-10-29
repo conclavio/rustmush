@@ -1330,6 +1330,184 @@ fn unconfigured_window_history_refuses_raw_legacy_and_omitted_journals_before_lo
 }
 
 #[test]
+fn native_window_binding_discards_without_mutation_and_applies_only_the_final_native_image() {
+    use mush_core::participant::BoundParticipant;
+    let mut rig = Rig::new();
+    let projected = rig.projected;
+    let actor = rig.actor;
+    let capture = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    let before = rig.state().placements.clone();
+    let expected = capture.placement_update().unwrap().unwrap();
+    assert_eq!(expected.revision, 9);
+    // Exercise the actual native binding only. This fixture journal body is
+    // not a receipt, and no Core image, composed action or history is installed.
+    let body = json!({"fixture":"native_bind_only"});
+    let append = rig
+        .state()
+        .recovery
+        .prepare_append(WINDOW_MOVEMENT_LOG, body.clone())
+        .unwrap();
+    drop(publication::bind_capture(rig.state(), &capture, append).unwrap());
+    assert_eq!(rig.state().placements, before);
+    assert_eq!(rig.state().recovery.next_seq(WINDOW_MOVEMENT_LOG), 0);
+    let unrelated = rig
+        .state()
+        .recovery
+        .prepare_append("other", json!({"untouched":true}))
+        .unwrap();
+    rig.state().recovery.apply_prepared(unrelated).unwrap();
+    let append = rig
+        .state()
+        .recovery
+        .prepare_append(WINDOW_MOVEMENT_LOG, body)
+        .unwrap();
+    publication::bind_capture(rig.state(), &capture, append)
+        .unwrap()
+        .apply();
+    assert_eq!(rig.state().placements.get(&actor), Some(&expected));
+    let rebuilt = crate::graph::rebuild(rig.state());
+    assert_eq!(rig.state().derived, rebuilt);
+    assert_eq!(rig.state().recovery.next_seq("other"), 1);
+    assert_eq!(rig.state().recovery.next_seq(WINDOW_MOVEMENT_LOG), 1);
+    assert_eq!(
+        rig.engine.world.get(actor).unwrap().location,
+        Some(rig.source)
+    );
+}
+
+#[test]
+fn native_window_binding_refuses_stale_tails_wrong_logs_and_native_drift_before_mutation() {
+    for change in 0..3 {
+        let mut rig = Rig::new();
+        let projected = rig.projected;
+        let actor = rig.actor;
+        let capture = ordered(
+            &mut rig,
+            Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+            Some(projected),
+        );
+        let log = if change == 1 {
+            "other"
+        } else {
+            WINDOW_MOVEMENT_LOG
+        };
+        let append = rig
+            .state()
+            .recovery
+            .prepare_append(log, json!({"fixture":"bind_only"}))
+            .unwrap();
+        if change == 0 {
+            let intervening = rig
+                .state()
+                .recovery
+                .prepare_append(log, json!({"fixture":"intervening"}))
+                .unwrap();
+            rig.state().recovery.apply_prepared(intervening).unwrap();
+        } else if change == 2 {
+            rig.state().placements.get_mut(&actor).unwrap().revision += 1;
+        }
+        let before = rig.state().placements.clone();
+        let sequence = rig.state().recovery.next_seq(log);
+        assert!(publication::bind_capture(rig.state(), &capture, append).is_err());
+        assert_eq!(rig.state().placements, before);
+        assert_eq!(rig.state().recovery.next_seq(log), sequence);
+        assert_eq!(
+            rig.engine.world.get(actor).unwrap().location,
+            Some(rig.source)
+        );
+    }
+}
+
+#[test]
+fn window_planning_excludes_unrelated_ledger_tails_and_an_empty_native_phase_changes_no_placement()
+{
+    use mush_core::participant::BoundParticipant;
+    let mut rig = Rig::new();
+    let actor = rig.actor;
+    rig.state().placements.remove(&actor);
+    rig.state().derived = crate::graph::rebuild(rig.state());
+    let capture = ordered(&mut rig, None, None);
+    assert!(capture.placement_update().unwrap().is_none());
+    let unrelated = rig
+        .state()
+        .recovery
+        .prepare_append("other", json!({"payload":"x".repeat(32 * 1024)}))
+        .unwrap();
+    rig.state().recovery.apply_prepared(unrelated).unwrap();
+    let snapshot = planning_state(rig.state()).unwrap();
+    assert_eq!(snapshot.recovery.next_seq("other"), 0);
+    assert_eq!(snapshot.placements, rig.state().placements);
+    capture.recheck(&rig.engine.world).unwrap();
+    let append = rig
+        .state()
+        .recovery
+        .prepare_append(WINDOW_MOVEMENT_LOG, json!({"fixture":"empty_bind_only"}))
+        .unwrap();
+    publication::bind_capture(rig.state(), &capture, append)
+        .unwrap()
+        .apply();
+    assert!(rig.state().placements.is_empty());
+    assert_eq!(rig.state().recovery.next_seq("other"), 1);
+    assert_eq!(rig.state().recovery.next_seq(WINDOW_MOVEMENT_LOG), 1);
+    assert_eq!(
+        rig.engine.world.get(actor).unwrap().location,
+        Some(rig.source)
+    );
+}
+
+#[test]
+fn native_window_writer_refuses_foreign_logs_wrong_keys_extra_fields_and_deep_values() {
+    use mush_core::ReplayWrite;
+    use mush_core::participant::OwnerParticipant;
+    let participant = WindowMovementParticipant::new(Arc::new(|_, _, _, _, _| Err(refused())));
+    let mut rig = Rig::new();
+    let projected = rig.projected;
+    let capture = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    let record = capture.placement_update().unwrap().unwrap();
+    let key = mush_core::authoritative::AuthoritativeKey::parse_canonical(
+        crate::data::placement_key(record.object),
+    )
+    .unwrap();
+    let value = serde_json::to_value(&record).unwrap();
+    let write = |key, value| ReplayWrite::ModuleJsonSet {
+        namespace: OwnerId::new(crate::NS).unwrap(),
+        key,
+        value,
+    };
+    assert!(participant.accepts_write(&write(key.clone(), value.clone())));
+    let mut extra = value;
+    extra["extra"] = json!(true);
+    assert!(!participant.accepts_write(&write(key.clone(), extra)));
+    let wrong_key =
+        mush_core::authoritative::AuthoritativeKey::parse_canonical("placement:99999").unwrap();
+    assert!(!participant.accepts_write(&write(wrong_key, serde_json::to_value(record).unwrap())));
+    let mut deep = Value::Null;
+    for _ in 0..101 {
+        deep = json!([deep]);
+    }
+    assert!(!participant.accepts_write(&write(key, deep)));
+    for (log, accepted) in [(WINDOW_MOVEMENT_LOG, true), ("other", false)] {
+        let append = rig
+            .state()
+            .recovery
+            .prepare_append(log, json!({"fixture":"write_shape_only"}))
+            .unwrap();
+        let write = append
+            .authoritative_replay_write(OwnerId::new(crate::NS).unwrap())
+            .unwrap();
+        assert_eq!(participant.accepts_write(&write), accepted);
+    }
+}
+
+#[test]
 fn real_release_and_place_phases_match_legacy_application_without_publication() {
     let mut rig = Rig::new();
     let target = WindowTarget::at(DomainId(1), 30, 40, 50);
