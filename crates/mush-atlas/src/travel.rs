@@ -2464,29 +2464,41 @@ pub fn begin_watch(ctx: &mut Ctx<'_>, who: ObjId, checkpoint: &RecordKey) -> Res
 
 /// Record that `who` knows `place`; persists when it changed.
 pub fn learn(ctx: &mut Ctx<'_>, who: ObjId, place: &RecordKey) {
-    let changed = match state_mut(ctx) {
-        Some(st) => {
-            let places = st.travel.known.entry(who).or_default();
-            if places.contains(place) {
-                false
-            } else {
-                places.push(place.clone());
-                while places.len() > MAX_KNOWN_PLACES {
-                    places.remove(0);
-                }
-                true
-            }
-        }
-        None => false,
+    let Some(st) = state_mut(ctx) else {
+        return;
     };
-    if changed {
-        let doc = KnownDoc {
-            places: state_of(ctx)
-                .and_then(|st| st.travel.known.get(&who).cloned())
-                .unwrap_or_default(),
-        };
-        put_doc(ctx, known_key(who), &doc);
+    let Some(doc) = plan_learn(
+        st.travel
+            .known
+            .get(&who)
+            .map(Vec::as_slice)
+            .unwrap_or_default(),
+        place,
+    ) else {
+        return;
+    };
+    st.travel.known.insert(who, doc.places.clone());
+    put_doc(ctx, known_key(who), &doc);
+}
+
+/// Shared policy, with no new legacy admission bounds. A repeated key leaves
+/// even an oversized historical vector untouched; a new key keeps the newest
+/// 511 existing entries and itself, exactly as the former append/evict loop.
+pub(crate) fn plan_learn(known: &[RecordKey], place: &RecordKey) -> Option<KnownDoc> {
+    if known.contains(place) {
+        return None;
     }
+    let skip = known
+        .len()
+        .saturating_add(1)
+        .saturating_sub(MAX_KNOWN_PLACES);
+    let places = known
+        .iter()
+        .skip(skip)
+        .cloned()
+        .chain(std::iter::once(place.clone()))
+        .collect();
+    Some(KnownDoc { places })
 }
 
 // ---------------------------------------------------------------------------
