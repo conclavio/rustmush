@@ -558,6 +558,9 @@ term stays and becomes a renewal cycle. M8h closes 17g §4's first deferral.
 - **`@unit/show` and the other `@unit/*` builder verbs are raw staff builder and debug tools**, like
   reading the store, so they are outside D-UM-42's witness set. Staff's in-world reads stay in it.
   The leak battery names the exemption.
+- **`LaunchDeployment`'s `HardwareCoordinates` gains an optional ungovern site**, skipped when it is
+  absent. No shipped deployment, policy or digest moves, so §4's "the launch composes no ungoverning
+  shop" stays true. Only M8g's combined test world composes the Tether's back room through it.
 
 **M8d2 ruling (the lead's, 2026-10-28): the seized core is impounded in place.** A physical
 removal would need new protocol in four crates (tactics' replacement journal, mush-core's core
