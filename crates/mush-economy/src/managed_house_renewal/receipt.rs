@@ -13,7 +13,6 @@ use crate::record::{
 use crate::{ContractId, HoldId, TransactionId};
 use mush_core::participant::ParticipantError;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionRef};
-use mush_org::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -292,7 +291,7 @@ pub(super) fn funding_plan(
     })?;
     let mut plan = EconomyPlan::new(
         IdempotencyKey::new(NAMESPACE, format!("{}/fund", origin.operation.to_hex())),
-        PrincipalId::Object(t.buyer),
+        t.buyer.principal(),
         EconomicCause::Ruleset {
             namespace: NAMESPACE.into(),
             correlation: correlation.into(),
@@ -362,7 +361,7 @@ pub(super) fn terminal_plan(
                 if grant { "grant" } else { "refund" }
             ),
         ),
-        PrincipalId::Object(t.buyer),
+        t.buyer.principal(),
         EconomicCause::Ruleset {
             namespace: NAMESPACE.into(),
             correlation: encode(&proof)?.into(),
@@ -437,7 +436,7 @@ impl RenewalHistory {
     pub(super) fn contract(&self) -> Result<EconomicContract, RenewalAuditError> {
         let mut c = contract(&self.origin).map_err(|_| RenewalAuditError::Refused)?;
         c.acceptances.push(Acceptance {
-            party: PrincipalId::Object(self.origin.offer.terms.buyer),
+            party: self.origin.offer.terms.buyer.principal(),
             at: self.funding.posted_at_utc,
             consent_hash: self.origin.consent_hash,
         });
@@ -542,7 +541,7 @@ impl RenewalHistory {
         if h.id != f.hold
             || h.account != terms.payer
             || h.amount != terms.price
-            || h.placed_by != PrincipalId::Object(terms.buyer)
+            || h.placed_by != terms.buyer.principal()
             || h.holder != IdempotencyKey::new(NAMESPACE, format!("{}/fund", o.operation.to_hex()))
             || h.purpose
                 != (HoldPurpose::Escrow {
@@ -822,7 +821,7 @@ impl RenewalReceiptAudit {
                     || origin.operation != operation
                     || !tx.lines.is_empty()
                     || effect.kind != HoldEffectKind::Placed
-                    || tx.actor != PrincipalId::Object(origin.offer.terms.buyer)
+                    || tx.actor != origin.offer.terms.buyer.principal()
                     || tx.idempotency.key.as_str() != format!("{}/fund", operation.to_hex())
                 {
                     return Err(fail());
@@ -895,7 +894,7 @@ impl RenewalReceiptAudit {
         }
         let t = &row.origin.offer.terms;
         let grant = outcome == RenewalOutcome::Granted;
-        if tx.actor != PrincipalId::Object(t.buyer)
+        if tx.actor != t.buyer.principal()
             || tx.idempotency.key.as_str()
                 != format!(
                     "{}/{}",

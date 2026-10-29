@@ -14,7 +14,7 @@ use super::paid_purchase::{
     runtime::{Running, STEP, Seen, rows},
 };
 use super::player_market::{
-    LAUNCH_AUTHOR, Launch, character, initialized_launch_with, launch_active, scratch,
+    LAUNCH_AUTHOR, Launch, acknowledged, character, initialized_launch_with, launch_active, scratch,
 };
 use mush_core::{GOD, ObjId};
 use mush_store::ObjectStore;
@@ -731,7 +731,8 @@ fn no_listing(code: &str) -> String {
 
 /// 17g C2c test 7 under its binding name, real since 17g C2e (C2e plan §2.4
 /// item 3, reviews FE-F1, FE-F4 and AD-F10). On the format-2 Active launch
-/// the registry composes 33 owner-read services and 35 grants, so the
+/// the registry composes 35 owner-read services and 38 grants (including
+/// DT.2b1 planning and Tacsim's unit-authority requester), so the
 /// `+minds` read is the composed one, granted to TacSim, and not a fixture.
 /// At the counter, `+minds` reads the real listing family through the
 /// granted reader (`Lens::scan` over the live store, the venue gate through
@@ -751,7 +752,7 @@ async fn listings_are_identical_for_every_principal_at_the_counter() -> TestResu
         for restarted in [false, true] {
             check_eq!(
                 w.server.owner_read_counts(),
-                Some((33, 35)),
+                Some((35, 38)),
                 "the composed reads (restarted: {restarted})"
             );
             let mut at_counter = Vec::new();
@@ -957,6 +958,128 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
                 .await?,
             vec![ACCOUNT.to_owned()],
             "two personal accounts"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+
+/// M8c B3: `org=<org>` on the buy steps, the renewal steps, `+minds/holdings`
+/// and `@mind/attest` is parsed before any read (a bare `org=` is the form's
+/// usage), then resolved: an unknown organisation and one the actor is not
+/// granted `roll.holder.org` for read alike, `NOT_FOR_ORG`; granted on the
+/// Guild's whole scope tree, every form reads the organisation's own
+/// nothing with the character's own words (the fast suite has no listing,
+/// no licence and no filed mind: the organisation's buy, holding and House
+/// attestation are the composition tests'), another character stays refused,
+/// and the grant changes nothing without `org=`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn org_forms_refuse_without_the_holder_grant() -> TestResult {
+    const NOT_FOR_ORG: &str = "You do not act for that organisation.";
+    const USAGE_FILED: &str = "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]";
+    let mut w = world("mush-m8c-org-forms", 2).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        w.server
+            .command(
+                GOD,
+                format!(
+                    "@teleport #{}=#{}",
+                    p.buyer.0, w.launch.deployment.venue.room.0
+                ),
+            )
+            .await?;
+        for (line, reply) in [
+            ("+minds/buy feed0001 org=", MINDS_HELP),
+            ("+minds/buy/pay feed0001 org=", MINDS_HELP),
+            ("+minds/holdings org=", MINDS_HELP),
+            ("+minds/holdings owner 3 org=", MINDS_HELP),
+            ("+minds/renew 1 org=", MINDS_HELP),
+            ("@mind/attest 1 org=", USAGE_FILED),
+        ] {
+            check_eq!(
+                w.server.command(p.buyer, line.into()).await?,
+                vec![reply.to_owned()],
+                "a bare org=: {line}"
+            );
+        }
+        acknowledged(&w.server, "@org/create Guild".into(), "Created org #").await?;
+        let forms = [
+            "+minds/buy feed0001 org=Guild",
+            "+minds/buy/pay feed0001 org=Guild",
+            "+minds/buy/complete feed0001 org=Guild",
+            "+minds/buy/refund feed0001 org=Guild",
+            "+minds/holdings org=Guild",
+            "+minds/holdings paid 7 org=Guild",
+            "+minds/renew 1 org=Guild",
+            "+minds/renew/pay 1 org=Guild",
+            "+minds/renew/decline 1 org=Guild",
+            "@mind/attest 1 org=Guild",
+        ];
+        for line in forms {
+            check_eq!(
+                w.server.command(p.buyer, line.into()).await?,
+                vec![NOT_FOR_ORG.to_owned()],
+                "ungranted: {line}"
+            );
+            let unknown = line.replace("org=Guild", "org=Nowhere");
+            check_eq!(
+                w.server.command(p.buyer, unknown.clone()).await?,
+                vec![NOT_FOR_ORG.to_owned()],
+                "unknown organisation: {unknown}"
+            );
+        }
+        acknowledged(
+            &w.server,
+            format!("@org/grant #{}=Guild roll.holder.org", p.buyer.0),
+            "Granted",
+        )
+        .await?;
+        for (line, reply) in [
+            ("+minds/buy feed0001 org=Guild", no_listing("feed0001")),
+            ("+minds/buy/pay feed0001 org=Guild", no_quote("feed0001")),
+            (
+                "+minds/buy/complete feed0001 org=Guild",
+                no_purchase("feed0001"),
+            ),
+            (
+                "+minds/buy/refund feed0001 org=Guild",
+                no_purchase("feed0001"),
+            ),
+            ("+minds/holdings org=Guild", HOLD_EMPTY.to_owned()),
+            (
+                "+minds/renew 1 org=Guild",
+                "You hold no licence 1.".to_owned(),
+            ),
+            (
+                "+minds/renew/pay 1 org=Guild",
+                "You hold no licence 1.".to_owned(),
+            ),
+            (
+                "@mind/attest 1 org=Guild",
+                "You own no filed mind 1.".to_owned(),
+            ),
+        ] {
+            check_eq!(
+                w.server.command(p.buyer, line.into()).await?,
+                vec![reply],
+                "granted, nothing held: {line}"
+            );
+        }
+        check_eq!(
+            w.server
+                .command(p.author, "+minds/holdings org=Guild".into())
+                .await?,
+            vec![NOT_FOR_ORG.to_owned()],
+            "another character stays refused"
+        );
+        check_eq!(
+            w.server.command(p.buyer, "+minds/holdings".into()).await?,
+            vec![HOLD_EMPTY.to_owned()],
+            "the grant changes nothing without org="
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })
@@ -1610,14 +1733,14 @@ async fn trade_commands_are_not_open_on_a_house_only_launch() -> TestResult {
 const NO_OFFER_999: &str = "You have no offer for licence 999.";
 const NO_CHARTER_OFFER_999: &str = "You have no offer for filed mind 999.";
 
-/// `@registry`'s help (17g C2d).
-const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)";
+/// `@registry`'s help (17g C2d; doc 17h cut M8a adds the inspection line).
+const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)\n@registry/inspect <hull> (Registry operators)";
 /// The Registry commands' refusal without the player market.
 const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
 
 /// `+minds`'s help, its reply to any other switch set (17g C2d: its last
 /// three lines, the renewal and trade forms).
-const MINDS_HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code>\n+minds/renew <licence> (then /pay or /decline with the same licence)\n+minds/resell <licence>=<player> price=<credits>; +minds/resell/accept <licence> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
+const MINDS_HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>] [org=<org>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code> (each [org=<org>])\n+minds/renew <licence> [org=<org>] (then /pay or /decline with the same licence)\n+minds/resell <licence>=<player> price=<credits>; +minds/resell/accept <licence> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
 
 /// The comparison rule's own cases.
 #[test]

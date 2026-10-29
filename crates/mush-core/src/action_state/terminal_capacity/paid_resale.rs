@@ -73,14 +73,16 @@ pub(super) fn validate_current_holder(
                 "operation",
             ],
         )?;
-        if field(current, "holder")? != original_holder {
+        // M8c F4: by principal (a renewal re-stamps an organisation-held
+        // pointer's `acting` with the renewing actor).
+        if !super::owner_index::same_holder(field(current, "holder")?, original_holder)? {
             return Err(refused("resale original holder differs"));
         }
         return Ok(());
     }
     let id = decimal(field(current, "id")?, u64::MAX)?;
     let (_, allocation) = history::birth_allocation(view, birth)?;
-    if field(&allocation, "holder")? != original_holder
+    if !super::owner_index::same_holder(field(&allocation, "holder")?, original_holder)?
         || history::current_pointer(view, id)? != *current
     {
         return Err(refused("resale current holder proof differs"));

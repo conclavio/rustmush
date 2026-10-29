@@ -32,6 +32,18 @@ mod boot_parity;
 mod boot_store;
 #[path = "split_boundary/cli_args.rs"]
 mod cli_args;
+#[path = "split_boundary/dt_atomic_scene_movement.rs"]
+mod dt_atomic_scene_movement;
+#[path = "split_boundary/dt_locomotion.rs"]
+mod dt_locomotion;
+#[path = "split_boundary/dt_movement_completion.rs"]
+mod dt_movement_completion;
+#[path = "split_boundary/dt_physical_transitions.rs"]
+mod dt_physical_transitions;
+#[path = "split_boundary/dt_preparation_plans.rs"]
+mod dt_preparation_plans;
+#[path = "split_boundary/dt_unit_authority.rs"]
+mod dt_unit_authority;
 #[path = "split_boundary/gateway_link_parity.rs"]
 mod gateway_link_parity;
 #[path = "split_boundary/ipc_authoritative_action.rs"]

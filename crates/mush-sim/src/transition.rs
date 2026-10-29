@@ -157,7 +157,8 @@ pub enum SpatialError {
 }
 
 /// A structural transition (design §7).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Transition {
     /// Place (or re-place) `obj` under `parent`.
     Place {
@@ -243,6 +244,22 @@ pub struct Plan {
     pub projections: Vec<(ObjId, ObjId)>,
     /// The audit line.
     pub audit: serde_json::Value,
+}
+
+/// A member room cannot itself become an interior space. Keep this cheap
+/// canonical guard available to command admission as well as the planner.
+pub(crate) fn check_space_membership(st: &SpatialState, space: ObjId) -> Result<(), SpatialError> {
+    // Cut IC4 (doc 18 §4.2 (c)): two records claiming one room would make its
+    // occupants' projection ambiguous. The space object's self-entry (lead
+    // ruling L4) is not a membership of another space.
+    if let Some(owner) = st.derived.member_of.get(&space)
+        && *owner != space
+    {
+        return Err(SpatialError::Members(format!(
+            "{space} is a room of interior space {owner}; it cannot be a space itself"
+        )));
+    }
+    Ok(())
 }
 
 fn live(w: &World, obj: ObjId) -> Result<(), SpatialError> {
@@ -594,6 +611,18 @@ fn plan_members(
 }
 
 pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, SpatialError> {
+    plan_at(st, w, t, w.now())
+}
+
+/// A retained preparation uses its original observation time while rechecking
+/// the same transition against current facts; elapsed wall time is not a new
+/// unplacement request.
+pub(crate) fn plan_at(
+    st: &SpatialState,
+    w: &World,
+    t: &Transition,
+    observed_at: i64,
+) -> Result<Plan, SpatialError> {
     let mut plan = Plan::default();
     match t {
         Transition::Place { obj, parent } => {
@@ -681,7 +710,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                 unplaced: Some(UnplacedInfo {
                     reason: reason.clone(),
                     by: *by,
-                    at: w.now(),
+                    at: observed_at,
                     previous: Some(prev.parent.clone()),
                     quarantined: false,
                 }),
@@ -731,7 +760,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                     unplaced: Some(UnplacedInfo {
                         reason: reason.clone(),
                         by: None,
-                        at: w.now(),
+                        at: observed_at,
                         previous: Some(prev.parent.clone()),
                         quarantined: true,
                     }),
@@ -742,17 +771,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
         }
         Transition::Space { space, anchor } => {
             let space = *space;
-            // Cut IC4 (doc 18 §4.2 (c)): a member room is walked, never itself
-            // a space — two records claiming one room would make its occupants'
-            // projection ambiguous. The space object's self-entry (lead ruling
-            // L4) is not a membership of another space.
-            if let Some(owner) = st.derived.member_of.get(&space)
-                && *owner != space
-            {
-                return Err(SpatialError::Members(format!(
-                    "{space} is a room of interior space {owner}; it cannot be a space itself"
-                )));
-            }
+            check_space_membership(st, space)?;
             live(w, space)?;
             // The base record: keep an existing one's compartments/rooms, or a
             // fresh Unanchored shell whose sole room is the space itself.
@@ -925,7 +944,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                         unplaced: Some(UnplacedInfo {
                             reason: "under way on a carrier journey".into(),
                             by: None,
-                            at: w.now(),
+                            at: observed_at,
                             previous: prev
                                 .map(|p| p.parent.clone())
                                 .filter(SpatialParent::is_placed),

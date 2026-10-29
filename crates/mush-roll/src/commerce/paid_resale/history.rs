@@ -1,6 +1,7 @@
 //! Immutable acquisition/holder proof, separate from current use eligibility.
 //! Every non-birth holder is tied to the actual Economy owner's complete native
 //! history. Full boot additionally proves the entire unique holder/operation chain.
+use super::super::Holder;
 use super::records::*;
 use crate::commerce::{
     RevisionIdentity,
@@ -12,7 +13,7 @@ use crate::commerce::{
     records::{PublicationError, Record},
     roots::{RequiredRoot, RootAnchor},
 };
-use mush_core::{ClockRef, ObjId, World};
+use mush_core::{ClockRef, World};
 use mush_economy::{
     EconomyStore,
     managed_paid_resale::{PaidBirthRefV1, PaidHolderRefV1},
@@ -26,7 +27,7 @@ fn bad(_: impl std::fmt::Display) -> PublicationError {
 /// and immutable original term have been read and joined.
 pub(crate) struct BirthProof {
     pub(crate) reference: PaidBirthRefV1,
-    pub(crate) holder: ObjId,
+    pub(crate) holder: Holder,
     pub(crate) revision: RevisionIdentity,
     /// 17g C1a: the issuing House of a House-born licence, read from the same
     /// proved allocation row; `None` for every personal birth route. The resale
@@ -102,7 +103,8 @@ pub(crate) fn current_from_birth(
         return Err(PublicationError::Mismatch);
     }
     let Some(reference) = pointer.ownership() else {
-        return if pointer.holder() == birth.holder() {
+        // M8c F4: by principal (a renewal re-stamps an organisation's acting).
+        return if pointer.holder().same_principal(birth.holder()) {
             Ok(())
         } else {
             Err(PublicationError::Mismatch)
@@ -116,7 +118,7 @@ pub(crate) fn current_from_birth(
     let row = read(ctx, &f.paid_resales, holder.acceptance().to_hex())?;
     holder.matches_record(row)?;
     if holder.ownership()? != *reference
-        || holder.holder() != pointer.holder()
+        || !holder.holder().same_principal(pointer.holder())
         || holder.birth() != &birth_reference(birth)?
         || holder.licence() != pointer.id()
     {
@@ -141,7 +143,8 @@ pub(crate) fn current_in_txn(
         return Err(PublicationError::Mismatch);
     }
     let Some(reference) = pointer.ownership() else {
-        return if pointer.holder() == birth.holder() {
+        // M8c F4: by principal (a renewal re-stamps an organisation's acting).
+        return if pointer.holder().same_principal(birth.holder()) {
             Ok(())
         } else {
             Err(PublicationError::Mismatch)
@@ -161,7 +164,7 @@ pub(crate) fn current_in_txn(
         .ok_or(PublicationError::Missing)?;
     holder.matches_record(row)?;
     if holder.ownership()? != *reference
-        || holder.holder() != pointer.holder()
+        || !holder.holder().same_principal(pointer.holder())
         || holder.birth() != &birth_reference(birth)?
         || holder.licence() != pointer.id()
     {
@@ -296,7 +299,7 @@ pub(crate) fn historical(
     ratings: &RatingFamilies,
     licence: &PersonalPaidLicence,
     reference: &PaidHolderRefV1,
-) -> Result<ObjId, PublicationError> {
+) -> Result<Holder, PublicationError> {
     reference.validate().map_err(bad)?;
     let birth = birth(ctx, f, ratings, licence)?;
     if reference.generation == 1 {

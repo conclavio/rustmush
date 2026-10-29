@@ -46,6 +46,14 @@ pub struct CommerceConfig {
     minds_facts: Option<Box<super::facts::MindsFactProvider>>,
     registry_recall: Option<Box<super::registry_recall::RegistryRecallPolicy>>,
     registry_revocation: Option<Box<super::registry_revocation::RegistryRevocationPolicy>>,
+    /// Doc 17h cut M8a: the Registry inspection authority and the writer tacsim's provider
+    /// lands records through (`super::registry_inspection`); the action is tacsim's.
+    registry_inspection: Option<
+        Box<(
+            super::registry_inspection::RegistryInspectionPolicy,
+            super::registry_inspection::InspectionWriter,
+        )>,
+    >,
     owner_qualification: bool,
     owner_attestations: bool,
     compatible_updates: bool,
@@ -151,6 +159,7 @@ impl CommerceConfig {
             minds_facts: None,
             registry_recall: None,
             registry_revocation: None,
+            registry_inspection: None,
             owner_qualification: false,
             owner_attestations: false,
             compatible_updates: false,
@@ -379,6 +388,28 @@ impl CommerceConfig {
         }
         policy.validate().map_err(error)?;
         self.registry_revocation = Some(Box::new(policy));
+        Ok(self)
+    }
+
+    /// Doc 17h cut M8a: explicit Registry inspection authority, and the writer the Roll
+    /// installs for tacsim's provider. No organizations, grants or operators are created;
+    /// every inspection repeats the configured live Org policy.
+    ///
+    /// # Errors
+    /// A configuration that is not Active, a second inspection, or a policy that does not
+    /// validate.
+    pub fn with_registry_inspection(
+        mut self,
+        policy: super::registry_inspection::RegistryInspectionPolicy,
+        writer: super::registry_inspection::InspectionWriter,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.registry_inspection.is_some() {
+            return Err(ModError::msg(
+                "Registry inspection requires one Active configuration",
+            ));
+        }
+        policy.validate().map_err(error)?;
+        self.registry_inspection = Some(Box::new((policy, writer)));
         Ok(self)
     }
 
@@ -836,6 +867,18 @@ impl CommerceConfig {
                 term,
                 grace,
             )?);
+            // M8c B5: the seal-mark ring's writer, registered with the
+            // attestation that consults it.
+            definitions.extend(super::seal_marks::definitions()?);
+            // M8c B4: the House attestation, where House filings are composed.
+            if self.house_filings {
+                let (term, grace) = self.house_terms().durations();
+                definitions.extend(super::owner_attestation::protocol::house_definitions(
+                    &self.manifest,
+                    term,
+                    grace,
+                )?);
+            }
         }
         if self.owner_qualification {
             definitions.extend(super::owner_qualification::protocol::definitions(
@@ -860,6 +903,10 @@ impl CommerceConfig {
         }
         if let Some(policy) = &self.registry_revocation {
             definitions.extend(policy.definitions()?);
+        }
+        // Doc 17h cut M8a: the authority alone; the action and outcome are tacsim's.
+        if let Some(inspection) = &self.registry_inspection {
+            definitions.push(inspection.0.authority_descriptor()?);
         }
         if self.charter_transfers {
             definitions.extend(super::charter_transfer::protocol::definitions()?);
@@ -1596,7 +1643,7 @@ fn register_filing_declarations(
 
 struct AuthorDeclarations {
     retirement_registration: Option<[DefinitionRef; 4]>,
-    attestation_registration: Option<[DefinitionRef; 2]>,
+    attestation_registration: Option<Box<AttestationRegistration>>,
     qualification_registration: Option<[DefinitionRef; 2]>,
     facts_registration: Option<[DefinitionRef; 2]>,
     measured_recall_registration: Option<[DefinitionRef; 2]>,
@@ -1621,17 +1668,10 @@ fn register_author_declarations(
     } else {
         None
     };
-    let attestation_registration = if config.owner_attestations {
-        let (term, grace) = config.terms.durations();
-        let [action, outcome] =
-            super::owner_attestation::protocol::definitions(&config.manifest, term, grace)?;
-        let action = reg.definition(action)?;
-        let outcome = reg.definition(outcome)?;
-        root_actions.insert(action.clone());
-        Some([action, outcome])
-    } else {
-        None
-    };
+    let attestation_registration = config
+        .owner_attestations
+        .then(|| register_attestation_declarations(reg, config, root_actions))
+        .transpose()?;
     let qualification_registration = if config.owner_qualification {
         let [action, outcome] =
             super::owner_qualification::protocol::definitions(&config.manifest)?;
@@ -1667,6 +1707,42 @@ fn register_author_declarations(
         qualification_registration,
         facts_registration,
         measured_recall_registration,
+    }))
+}
+
+/// The owner attestation's definitions (`AttestationRegistration`): the
+/// personal attestation, the seal-mark writer, and the House attestation
+/// when House filings are composed.
+#[inline(never)]
+fn register_attestation_declarations(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    root_actions: &mut BTreeSet<DefinitionRef>,
+) -> Result<Box<AttestationRegistration>, ModError> {
+    let (term, grace) = config.terms.durations();
+    let [action, outcome] =
+        super::owner_attestation::protocol::definitions(&config.manifest, term, grace)?;
+    let action = reg.definition(action)?;
+    let outcome = reg.definition(outcome)?;
+    root_actions.insert(action.clone());
+    let personal = [action, outcome];
+    let [action, outcome] = super::seal_marks::definitions()?;
+    let seal_marks = [reg.definition(action)?, reg.definition(outcome)?];
+    let house = if config.house_filings {
+        let (term, grace) = config.house_terms().durations();
+        let [action, outcome] =
+            super::owner_attestation::protocol::house_definitions(&config.manifest, term, grace)?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some([action, outcome])
+    } else {
+        None
+    };
+    Ok(Box::new(AttestationRegistration {
+        personal,
+        seal_marks,
+        house,
     }))
 }
 
@@ -1717,6 +1793,14 @@ fn register_transfer_declarations(
     } else {
         None
     };
+    // Doc 17h cut M8a: the inspection authority definition and the writer's install
+    // (the record family delegated to tacsim); the action, outcome and provider are
+    // tacsim's, and its boot hook captures the readiness.
+    if let Some(inspection) = config.registry_inspection.as_deref() {
+        let (policy, writer) = inspection;
+        reg.definition(policy.authority_descriptor()?)?;
+        writer.install(reg, families.clone(), policy.clone())?;
+    }
     let charter_transfer_registration = if config.charter_transfers {
         let [offer, accept, offered, transferred] =
             super::charter_transfer::protocol::definitions()?;
@@ -1819,7 +1903,17 @@ struct RegistrationPaths<'a> {
     fork_registration: Option<(&'a dyn super::authored_fork::Installer, [DefinitionRef; 2])>,
     qualification_registration: Option<[DefinitionRef; 2]>,
     derived_registration: Option<[DefinitionRef; 2]>,
-    attestation_registration: Option<[DefinitionRef; 2]>,
+    attestation_registration: Option<Box<AttestationRegistration>>,
+}
+
+/// The owner attestation's definitions, boxed as one (`register`'s frame is
+/// under the M7 memory-size clippy): the personal attestation, M8c B5's
+/// seal-mark writer beside it, and M8c B4's House attestation when House
+/// filings are composed too.
+struct AttestationRegistration {
+    personal: [DefinitionRef; 2],
+    seal_marks: [DefinitionRef; 2],
+    house: Option<[DefinitionRef; 2]>,
 }
 
 struct InstalledReadiness {
@@ -1967,7 +2061,12 @@ fn register_owner_paths(
         )?;
     }
     let attestation_readiness = if let Some(definitions) = attestation_registration {
-        Some(super::owner_attestation::register(
+        let AttestationRegistration {
+            personal,
+            seal_marks,
+            house,
+        } = *definitions;
+        let readiness = super::owner_attestation::register(
             reg,
             families.clone(),
             &config.manifest,
@@ -1975,8 +2074,26 @@ fn register_owner_paths(
             ratings.clone(),
             config.compatibility.clone(),
             config.terms.clone(),
-            definitions,
-        )?)
+            personal,
+        )?;
+        // M8c B5: the seal-mark writer, beside the attestation that consults
+        // the ring.
+        super::seal_marks::register(reg, families.clone(), seal_marks)?;
+        // M8c B4: the House attestation shares the personal one's readiness
+        // latch.
+        if let Some(definitions) = house {
+            super::owner_attestation::register_house(
+                reg,
+                families.clone(),
+                &config.manifest,
+                ratings.clone(),
+                config.compatibility.clone(),
+                config.house_terms().clone(),
+                readiness.clone(),
+                definitions,
+            )?;
+        }
+        Some(readiness)
     } else {
         None
     };

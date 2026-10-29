@@ -58,6 +58,32 @@ impl CharterOwnershipRef {
     }
 }
 
+impl CharterOwnershipRef {
+    /// M8c B4: the birth ownership of a House filing, the organisation's
+    /// generation 1. A House charter is never transferred (`birth` refuses a
+    /// House birth, and no transfer family admits one), so this is also its
+    /// current ownership.
+    pub(crate) fn house_birth(birth: &InitialFilingOperation) -> Result<Self, PublicationError> {
+        birth.validate()?;
+        let Some(house) = &birth.economic.house else {
+            return Err(PublicationError::Mismatch);
+        };
+        if birth.economic.issued_owner != mush_org::PrincipalId::Organization(house.organization())
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(Self {
+            generation: 1,
+            operation: birth.commit,
+            digest: DefinitionDigest::for_canonical_value(
+                "roll.charter_ownership.birth.v1",
+                &serde_json::to_value(birth).map_err(bad)?,
+            )
+            .map_err(bad)?,
+        })
+    }
+}
+
 /// An omitted legacy field is allowed; an explicit null is not a new proof.
 pub(crate) fn present_ownership<'de, D: serde::Deserializer<'de>>(
     d: D,

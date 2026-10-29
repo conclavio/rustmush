@@ -179,6 +179,32 @@ function zoomButton(label: "zoom in" | "zoom out"): HTMLElement {
 }
 
 describe("CockpitScreen mounted", () => {
+  it("shows numbered detachment orders and prefills acknowledgements without sending", async () => {
+    const { cockpit, focusComposer, app } = await seated();
+    cockpit.applyFrame({ ...json("cockpit_frame.json"), detachment: {
+      id: "7", revision: "8", term: "9", leader_slot: 2,
+      slots: [
+        { slot: 1, callsign: "RA", pilot: null, controller: "automated", order_prefill: "ORDER DT:7:8:9 1 " },
+        { slot: 2, callsign: "RB", pilot: "Aster", controller: "player", order_prefill: "ORDER DT:7:8:9 2 " },
+      ], all_order_prefill: "ORDER DT:7:8:9 ALL ",
+      my_order: { sequence: "10", from: "Aster", objective: "hold", response: null },
+      wilco_command: "WILCO DT:7:8 10", negative_command: "NEGATIVE DT:7:8 10",
+    } });
+    await tick();
+    expect(screen.getByText("Leader: slot 2")).toBeTruthy();
+    expect(screen.getByText("Order from Aster: hold")).toBeTruthy();
+    expect(screen.getByText("Response: not acknowledged")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Order 1" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("ORDER DT:7:8:9 1 ");
+    await fireEvent.click(screen.getByRole("button", { name: "Order ALL" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("ORDER DT:7:8:9 ALL ");
+    await fireEvent.click(screen.getByRole("button", { name: "WILCO" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("WILCO DT:7:8 10");
+    await fireEvent.click(screen.getByRole("button", { name: "NEGATIVE" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("NEGATIVE DT:7:8 10");
+    expect(app.helm).not.toHaveBeenCalled();
+  });
+
   it("reads `Not in a cockpit.` before any frame", () => {
     mount();
     expect(screen.getByText(NOT_IN_A_COCKPIT)).toBeTruthy();
@@ -498,21 +524,21 @@ describe("CockpitScreen, 17b cut M5.5", () => {
   });
 });
 
-// Doc 21 cut G.3c: the first-person picture above the map is the viewer's to
-// ask for — 100 KB/s a viewer — and is stopped when the screen goes.
+// Doc 21 cut G.3c; doc 28 P2: the picture above the map is the viewer's to
+// show — drawn client-side by `mush-pixel-wasm` — and is stopped when the
+// screen goes.
 describe("the picture", () => {
-  it("is asked for only on the viewer's word, and stopped when the screen goes", async () => {
+  it("is shown only on the viewer's word, and stopped when the screen goes", async () => {
     localStorage.removeItem("rustmush.picture");
     const m = await seated();
-    const asks = (): unknown[][] => m.setPicture.mock.calls.filter((c) => c[0] === true);
-    expect(asks()).toHaveLength(0);
+    expect(m.app.picture.on).toBe(false);
     await fireEvent.click(screen.getByRole("button", { name: "Show the picture" }));
     await tick();
-    expect(asks()).toEqual([[true, 0]]);
+    expect(m.app.picture.on).toBe(true);
     expect(localStorage.getItem("rustmush.picture")).toBe("on");
     expect(screen.getByText("Waiting for the first picture…")).toBeTruthy();
     m.unmount();
-    expect(m.setPicture.mock.calls.at(-1)).toEqual([false, 0]);
+    expect(m.app.picture.on).toBe(false);
     localStorage.removeItem("rustmush.picture");
   });
 });

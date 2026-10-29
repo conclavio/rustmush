@@ -12,7 +12,8 @@
   a filed mind you own.
 - `@mind/withdraw <filed>` stops new sales of a filed revision. Licences already sold
   keep working.
-- `@mind/attest <filed>` renews your owner's licence once its term is due.
+- `@mind/attest <filed>` renews your owner's licence once its term is due. Add
+  `org=<org>` to renew a House's licence for an organisation you act for.
 - `@mind/fork <licence>=<name>` makes a working copy of a mind you hold an Open licence
   for. `@mind/localcopy` still copies your own drafts.
 
@@ -30,6 +31,16 @@
   `+minds/buy/refund <code>` returns the money.
 - `+minds/holdings` lists your filed minds and licences, their terms and Grace, and any
   purchase waiting to complete.
+
+Acting for an organisation: a character granted `roll.holder.org` by an organisation
+(`@org/grant <char>=<org> roll.holder.org`) may add `org=<org>` to `+minds/buy` and its
+`/pay`, `/complete` and `/refund` steps, to `+minds/renew` and its steps, and to
+`+minds/holdings`. The organisation then holds the licence, its treasury pays, and
+`+minds/holdings org=<org>` lists what it holds. A House's curator granted on the House's
+scope (`scope=<scope>`) may add `org=<org>` to `@mind/attest` to renew the House's filed
+mind. Without the grant every such form answers that you do not act for that organisation.
+A purchase between an organisation and a character of the same account as the seller is
+refused like any sale between one account's characters.
 
 Purchases, resales and transfers between two characters of one account are refused.
 Money held for a purchase stays in escrow until it completes or is refunded; a request

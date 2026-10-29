@@ -68,7 +68,8 @@ pub(crate) fn prepare(
         || op.operation != ctx.commit_token()
         || pointer.operation() != b.birth().operation
         || pointer.term() != term.generation()
-        || pointer.holder() != before.economic().consent().terms.seller
+        || pointer.holder()
+            != super::super::Holder::Character(before.economic().consent().terms.seller)
         || pointer.ownership()
             != if b.ownership().generation == 1 {
                 None

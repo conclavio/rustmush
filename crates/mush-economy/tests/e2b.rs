@@ -1008,6 +1008,150 @@ fn j4_a_narrowed_boot_without_a_usable_checkpoint_asks_for_the_whole_fetch() {
     assert_eq!(bal(&clamped, 1), 121);
 }
 
+/// DT.2a: title authority survives a current checkpoint and RAM-tail eviction;
+/// an older checkpoint cannot fabricate its missing title history. The narrowed
+/// loader must request the retained prefix, then replay the complete journal.
+#[test]
+fn dt_title_lineage_checkpoint_preserves_history_and_old_format_replays_whole() {
+    let mut tw = boot_j3(3, 4);
+    let pilot = setup_mint(&mut tw, 1);
+    let unit = tw
+        .world_mut()
+        .create(
+            mush_core::ObjKind::Thing,
+            "Lineage unit",
+            GOD,
+            Some(mush_core::LIMBO),
+        )
+        .expect("unit");
+    for command in [
+        format!("@asset/title #{}=#{}", unit.0, GOD.0),
+        format!("@asset/transfer #{}=#{}", unit.0, pilot.0),
+        format!("@asset/transfer #{}=#{}", unit.0, GOD.0),
+        format!("@asset/assign #{}=#{} training", unit.0, pilot.0),
+    ] {
+        let output = tw.run(GOD, &command);
+        assert!(!has_error(&output), "{command}: {}", texts(&output));
+    }
+    let lineage = store(&tw)
+        .title_lineage(unit)
+        .expect("journal title lineage");
+    assert_eq!(lineage.journal_seq, 3);
+    assert_eq!(lineage.effect_index, 0);
+    mint_n(&mut tw, 120);
+    sweep_at(&mut tw, 100);
+    let checkpoint = store(&tw).checkpoint().cloned().expect("checkpoint");
+    assert!(
+        store(&tw)
+            .transaction(TransactionId(lineage.journal_seq))
+            .is_none()
+    );
+    let persisted = fold_into(Vec::new(), &mut tw);
+    let floor = manifest_floor(&persisted).expect("manifest floor");
+    assert!(floor > 0);
+    let head = &persisted
+        .iter()
+        .find(|(key, _)| key == &checkpoint.head_key)
+        .expect("head")
+        .1;
+    assert_eq!(head["format"], serde_json::json!(4));
+    assert_eq!(
+        head["body"]["fold"]["title_lineage"][unit.0.to_string()],
+        serde_json::to_value(lineage).expect("stamp")
+    );
+
+    let load = |world: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>, floor: u64| {
+        let kv = kv
+            .into_iter()
+            .filter(|(key, _)| {
+                mush_core::parse_chunk_key(key)
+                    .is_none_or(|(log, chunk)| log != "journal" || chunk >= floor)
+            })
+            .collect();
+        let omitted = if floor == 0 {
+            std::collections::BTreeMap::new()
+        } else {
+            std::collections::BTreeMap::from([(SmolStr::new("journal"), floor)])
+        };
+        world.try_modules_loaded(HashMap::from([(
+            SmolStr::new(NS),
+            ModuleBootData {
+                kv,
+                omitted,
+                ..ModuleBootData::default()
+            },
+        )]))
+    };
+    load(&mut tw, persisted.clone(), floor).expect("new format narrowed boot");
+    assert_eq!(
+        store(&tw).boot_replay().map(|r| r.from_checkpoint),
+        Some(Some(checkpoint.covered_seq))
+    );
+    assert_eq!(store(&tw).title_lineage(unit), Some(lineage));
+    assert_eq!(
+        store(&tw)
+            .snapshot()
+            .asset(unit)
+            .expect("asset")
+            .title_owner,
+        PrincipalId::Object(GOD)
+    );
+    assert!(!store(&tw).is_frozen());
+
+    // Reject format 3 itself, even with the new field still present. The head's
+    // format is outside its state_hash, so this isolates the version gate.
+    let mut old_version = persisted.clone();
+    patch(&mut old_version, &checkpoint.head_key, |head| {
+        head["format"] = serde_json::json!(3)
+    });
+    assert!(matches!(
+        load(&mut tw, old_version, floor),
+        Err(ModError::RetryFullFetch { .. })
+    ));
+
+    // Actual format-3 bodies have no lineage field. A full fetch reconstructs
+    // the transfer stamp from the retained journal, including the free return.
+    let mut old_body = persisted.clone();
+    patch(&mut old_body, &checkpoint.head_key, |head| {
+        head["format"] = serde_json::json!(3);
+        head["body"]["fold"]
+            .as_object_mut()
+            .expect("fold")
+            .remove("title_lineage");
+    });
+    assert!(matches!(
+        load(&mut tw, old_body.clone(), floor),
+        Err(ModError::RetryFullFetch { .. })
+    ));
+    load(&mut tw, old_body, 0).expect("whole journal replay");
+    assert_eq!(
+        store(&tw).boot_replay().map(|r| r.from_checkpoint),
+        Some(None)
+    );
+    assert_eq!(store(&tw).title_lineage(unit), Some(lineage));
+    assert_eq!(
+        store(&tw)
+            .snapshot()
+            .asset(unit)
+            .expect("asset")
+            .title_owner,
+        PrincipalId::Object(GOD)
+    );
+    assert!(!store(&tw).is_frozen());
+
+    let mut missing_required = persisted;
+    patch(&mut missing_required, &checkpoint.head_key, |head| {
+        head["body"]["fold"]
+            .as_object_mut()
+            .expect("fold")
+            .remove("title_lineage");
+    });
+    assert!(matches!(
+        load(&mut tw, missing_required, floor),
+        Err(ModError::RetryFullFetch { .. })
+    ));
+}
+
 /// [`boot_j3`] with the RAM window bounded (doc 13 W2).
 fn boot_w2(tail: usize, every: u64, window_max: usize, window_secs: i64) -> TestWorld {
     TestWorld::with_modules(vec![

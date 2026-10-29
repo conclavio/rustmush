@@ -312,6 +312,39 @@ impl SealedCards {
         })
     }
 
+    /// **Whether any selected card or live rule is under `floor`** (doc 17h cut M8b C4): a
+    /// stock card's `min_odds`, a bound rule's fire odds or an odds predicate. What an
+    /// ungoverned seal records as its `under_floor` admission; it decides nothing.
+    #[must_use]
+    pub fn under_floor(&self, floor: u32) -> bool {
+        let rules = self
+            .programs
+            .iter()
+            .flat_map(|program| program.rows.iter())
+            .filter(|row| !row.inert)
+            .any(|row| {
+                row.program
+                    .rule
+                    .fire()
+                    .is_some_and(|fire| u32::from(fire.min_permille) < floor)
+                    || row.program.rule.predicates().iter().any(|predicate| {
+                        matches!(predicate, super::conditions::RulePredicate::Odds { min_permille, .. }
+                            if u32::from(*min_permille) < floor)
+                    })
+            });
+        let mut catalog = CardCatalog::default();
+        let stock = catalog.admit(self.definition.clone()).is_ok()
+            && (0..self.selected.len())
+                .filter_map(|index| self.selected.key(u8::try_from(index).ok()?))
+                .any(|key| {
+                    catalog.resolve(key).is_ok_and(|card| {
+                        card.stock()
+                            .is_some_and(|card| u32::from(card.min_odds_permille) < floor)
+                    })
+                });
+        rules || stock
+    }
+
     /// Full decode check; digest/name bytes alone never reconstruct values.
     /// # Errors
     /// Every admission error or mismatch against the complete recomputed seal.

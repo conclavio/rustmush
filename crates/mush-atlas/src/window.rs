@@ -788,6 +788,14 @@ impl Windows {
     pub fn covering(&self, room: ObjId) -> Option<&WindowEntry> {
         self.open.values().find(|e| e.rooms.contains(&room))
     }
+
+    /// Preserve first-covering selection before checking whether it is drawn.
+    /// An undrawn earlier match masks later entries for the same room.
+    pub(crate) fn drawn_covering_domain(&self, room: ObjId) -> Option<DomainId> {
+        self.covering(room)
+            .filter(|entry| entry.composite.is_some())
+            .map(|entry| DomainId(entry.domain))
+    }
 }
 
 /// Register a cell size a ruleset's engagements use (doc 14 §5.3).
@@ -1945,9 +1953,7 @@ pub fn on_moved(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEvent) {
     let placed = mush_sim::pose_of(ctx.w, who).map(|(d, _)| d);
     let covering = state(ctx)
         .ok()
-        .and_then(|st| st.windows.covering(to))
-        .filter(|e| e.composite.is_some())
-        .map(|e| DomainId(e.domain));
+        .and_then(|st| st.windows.drawn_covering_domain(to));
     if let Some(d) = placed
         && covering != Some(d)
     {

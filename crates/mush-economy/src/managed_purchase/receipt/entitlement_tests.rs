@@ -111,7 +111,7 @@ fn widen(
         .ok_or("new subject")?
         .clone();
     p.instrument = InstrumentId::new("x".repeat(instrument_bytes)).ok_or("instrument")?;
-    p.buyer = ObjId(u32::MAX);
+    p.buyer = ObjId(u32::MAX).into();
     p.seller = ObjId(u32::MAX - 1);
     p.charter = ObjId(u32::MAX - 2);
     p.title_revision = u64::MAX;
@@ -152,7 +152,7 @@ fn widen(
     row.hold.id = row.funding.hold;
     row.hold.account = p.payer;
     row.hold.amount = p.price;
-    row.hold.placed_by = PrincipalId::Object(p.buyer);
+    row.hold.placed_by = p.buyer.principal();
     row.hold.holder = IdempotencyKey::new(
         crate::managed_entitlement::NAMESPACE,
         format!("{}/fund", row.operation.to_hex()),

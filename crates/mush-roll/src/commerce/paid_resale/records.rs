@@ -1,9 +1,10 @@
 //! Strict structural bindings. Only actual owner reads and opaque Economy
 //! outputs can be published; deserializing these rows grants no rights.
+use super::super::Holder;
 use super::super::paid::PaidTermRecord;
 use super::super::records::{PublicationError, Record};
 use super::super::{CharterId, LicenceId, LineId, TermGeneration, WorldIcSeconds};
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef};
 use mush_economy::managed_paid_resale::{
     PaidBirthRefV1, PaidHolderRefV1, PaidResaleBasisV1, PaidResaleDecisionKindV1,
     PaidResaleHistoryV1, PaidResaleOutcome, PaidResaleTermBasisV1,
@@ -452,7 +453,7 @@ impl HolderTerm {
     }
 }
 checked!(PaidHolderRecord,HolderWire,{
- format:u16,licence:LicenceId,generation:u64,holder:ObjId,birth:PaidBirthRefV1,predecessor:PaidHolderRefV1,
+ format:u16,licence:LicenceId,generation:u64,holder:Holder,birth:PaidBirthRefV1,predecessor:PaidHolderRefV1,
  operation:CommitToken,action:DefinitionRef,acceptance:CommitToken,offer:CommitToken,offer_digest:DefinitionDigest,
  term:HolderTerm,accepted_at_ic:ClockStamp,economic_digest:DefinitionDigest,
 });
@@ -470,7 +471,7 @@ impl Record for PaidHolderRecord {
         if self.format != 1
             || !(2..=65537).contains(&self.generation)
             || self.predecessor.generation.checked_add(1) != Some(self.generation)
-            || self.holder.0 == 0
+            || self.holder.is_nobody()
             || self.operation == self.offer
             || self.acceptance == self.offer
             || self.operation == self.predecessor.operation
@@ -532,7 +533,9 @@ impl PaidHolderRecord {
                 .generation
                 .checked_add(1)
                 .ok_or(PublicationError::Capacity)?,
-            holder: c.terms.buyer,
+            // M8c: a resale names characters only (the offer's buyer is a
+            // character; an organisation-held licence is not resold).
+            holder: Holder::Character(c.terms.buyer),
             birth: binding.birth.clone(),
             predecessor: binding.ownership,
             operation,
@@ -564,7 +567,7 @@ impl PaidHolderRecord {
     pub const fn generation(&self) -> u64 {
         self.generation
     }
-    pub const fn holder(&self) -> ObjId {
+    pub const fn holder(&self) -> Holder {
         self.holder
     }
     pub fn birth(&self) -> &PaidBirthRefV1 {

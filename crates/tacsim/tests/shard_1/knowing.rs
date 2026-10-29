@@ -124,32 +124,17 @@ impl Roster {
     fn modules(self, passenger_v1: bool) -> Vec<Box<dyn mush_core::GameModule>> {
         use tacsim::composition as comp;
 
-        let llm = Arc::new(
-            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-                .expect("a disabled LLM service composes"),
-        );
-        let onboarding = mush_core::OnboardingConfig::default();
         let game = tacsim::GameEconomyConfig::default();
         let cfg = TacsimConfig {
             enabled: true,
             ..TacsimConfig::default()
         };
-        let (mut mods, inventory) = comp::server_modules_with_tacsim(
-            mush_weather::WeatherConfig::default(),
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
             EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
-            &onboarding,
             &game,
-            comp::recovery_policy(&cfg.recovery),
         );
-        mods.push(comp::worldgen_module_with(
-            Arc::clone(&llm),
-            mush_worldgen::WorldgenConfig::default(),
-        ));
-        mods.push(comp::npc_module_with(
-            comp::npc_agent_adapter(),
-            &mush_config::config::NpcCfg::default(),
-        ));
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
         mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
         if passenger_v1 {
             let mut packs = comp::boot_pack_list(true, true).expect("the boot packs verify");

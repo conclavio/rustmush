@@ -495,17 +495,29 @@ fn actual_refit_install_repeats_title_and_unit_preimages_at_all_custody_boundari
     Ok(())
 }
 
-#[test]
-fn actual_second_refit_returns_displaced_core_with_retained_condition_and_current_heads() -> Result
-{
-    let mut s = Fitting::new(false)?;
-    let first = s.accepted(40)?;
-    s.ready(first, 42)?;
-    s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(first))?;
-    let old = s.incoming;
-    // The actual native damage command changes only the installed component's
-    // scalar state. Its exact displaced image is retained by the next fitting.
-    let core = ComponentId::new("core")?;
+/// The second fitting's own certified core, manufactured and delivered (kept out of the test's
+/// frame: the M7 memory-size gate).
+#[inline(never)]
+fn second_core(s: &mut Fitting) -> Result {
+    let operator = s.f.r.policy.agents[1].actor;
+    let certificate = s.f.r.issue(operator, 60, DieClass::I)?;
+    s.f.commit(
+        1,
+        operator,
+        61,
+        json!({"requester":s.f.buyer,"class":"i","supplier_lot":certificate.lot.to_string()}),
+    )?;
+    s.f.commit(2, s.f.buyer, 62, s.f.accept_parameters(61))?;
+    let manufacture = crate::workorder::derive_work_order_id(RequestUid::from_bytes([62; 16]), 0)?;
+    s.incoming = s.complete_manufacture(manufacture, 63)?;
+    s.manufacture = token(62);
+    s.f.commit(7, s.f.buyer, 67, FactoryRig::order_parameters(manufacture))?;
+    Ok(())
+}
+
+/// The installed core damaged by the native command (kept out of the test's frame).
+#[inline(never)]
+fn damage_installed_core(s: &mut Fitting, core: &ComponentId) -> Result {
     let unit = s.unit()?;
     let damage = UnitMutationPlan::new(
         vec![UnitMutationOp::SetComponentCondition {
@@ -524,20 +536,23 @@ fn actual_second_refit_returns_displaced_core_with_retained_condition_and_curren
         ),
     )?;
     s.f.r.flush();
+    Ok(())
+}
+
+#[test]
+fn actual_second_refit_returns_displaced_core_with_retained_condition_and_current_heads() -> Result
+{
+    let mut s = Fitting::new(false)?;
+    let first = s.accepted(40)?;
+    s.ready(first, 42)?;
+    s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(first))?;
+    let old = s.incoming;
+    // The actual native damage command changes only the installed component's
+    // scalar state. Its exact displaced image is retained by the next fitting.
+    let core = ComponentId::new("core")?;
+    damage_installed_core(&mut s, &core)?;
     let displaced = SavedComponent::from_unit(&s.unit()?, &core)?;
-    let operator = s.f.r.policy.agents[1].actor;
-    let certificate = s.f.r.issue(operator, 60, DieClass::I)?;
-    s.f.commit(
-        1,
-        operator,
-        61,
-        json!({"requester":s.f.buyer,"class":"i","supplier_lot":certificate.lot.to_string()}),
-    )?;
-    s.f.commit(2, s.f.buyer, 62, s.f.accept_parameters(61))?;
-    let manufacture = crate::workorder::derive_work_order_id(RequestUid::from_bytes([62; 16]), 0)?;
-    s.incoming = s.complete_manufacture(manufacture, 63)?;
-    s.manufacture = token(62);
-    s.f.commit(7, s.f.buyer, 67, FactoryRig::order_parameters(manufacture))?;
+    second_core(&mut s)?;
     let second = s.accepted(70)?;
     s.reservation_targets(second, true)?;
     s.ready(second, 72)?;
@@ -564,7 +579,7 @@ fn actual_second_refit_returns_displaced_core_with_retained_condition_and_curren
             .ok_or("installed")?
             .replacement
             .displaced,
-        displaced
+        Some(displaced)
     );
     check!(
         matches!(s.position(old)?,AssetPosition::Detached{order,from_hull,..}if order==second&&from_hull==s.hull)
@@ -1038,7 +1053,10 @@ fn actual_class_three_refit_requires_current_personal_entitlement_at_each_instal
 }
 
 #[test]
-fn actual_accepted_refit_finishes_after_operator_departure_without_new_consent() -> Result {
+/// Doc 17h cut M8b G10 (the lead's ruling; was "finishes after operator departure without
+/// new consent"): the install re-checks the offering operator's live grant, so a departed
+/// operator refuses it and the accepted order stays uninstalled (the requester may cancel).
+fn actual_accepted_refit_refuses_install_after_operator_departure() -> Result {
     let mut s = Fitting::new(false)?;
     let id = s.accepted(40)?;
     let accepted = s.order(id)?;
@@ -1052,12 +1070,47 @@ fn actual_accepted_refit_finishes_after_operator_departure_without_new_consent()
         .insert(mush_core::Flags::GOING);
     s.f.r.w.world_mut().take_dirty();
     s.ready(id, 42)?;
-    s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(id))?;
-    let completed = s.order(id)?;
-    check_eq!(completed.intent, accepted.intent);
-    check_eq!(completed.funding, accepted.funding);
-    check!(completed.installation.is_some());
+    check!(
+        s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(id))
+            .is_err()
+    );
+    let held = s.order(id)?;
+    check_eq!(held.intent, accepted.intent);
+    check!(held.installation.is_none());
     s.f.restart(CoreOriginMode::Active)?;
+    Ok(())
+}
+
+/// **Doc 17h cut M8b G10**: the operator's `industry.core.refit` grant lapses between the
+/// acceptance and the install (its `valid_until` passes, which bumps no Org revision); the
+/// install refuses on the live grant and nothing is installed.
+#[test]
+fn m8b_install_refuses_once_the_operators_grant_has_lapsed() -> Result {
+    let mut s = Fitting::new(false)?;
+    let id = s.accepted(40)?;
+    let operator = s.order(id)?.intent.offer.operator;
+    s.ready(id, 42)?;
+    s.f.r.flush();
+    let now = s.f.r.w.world().now();
+    let org = s.f.r.boot.get_mut("org").ok_or("the org boot data")?;
+    let mut lapsed = 0;
+    for (key, value) in &mut org.kv {
+        if key.starts_with("grant:")
+            && value.get("grantee") == Some(&serde_json::json!(operator.0))
+            && value.get("capability") == Some(&serde_json::json!("industry.core.refit"))
+            && let Some(grant) = value.as_object_mut()
+        {
+            grant.insert("valid_until".into(), serde_json::json!(now));
+            lapsed += 1;
+        }
+    }
+    check_eq!(lapsed, 1);
+    s.f.restart(CoreOriginMode::Active)?;
+    check!(
+        s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(id))
+            .is_err()
+    );
+    check!(s.order(id)?.installation.is_none());
     Ok(())
 }
 

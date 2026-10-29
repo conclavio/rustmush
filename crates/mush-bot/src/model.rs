@@ -440,7 +440,7 @@ impl Brain {
         Ok(Reply {
             content: content.unwrap_or("").to_owned(),
             usage: body.get("usage").cloned().unwrap_or(Value::Null),
-            receipt: Receipt::from_body(&body, &self.config),
+            receipt: Receipt::from_slice(&bytes, &body, &self.config),
             error,
         })
     }

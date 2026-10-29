@@ -283,6 +283,9 @@ pub enum IntentKind {
         /// The profile switched to: an index into the hull's sealed set.
         index: u8,
     },
+    /// A delivered detachment objective or cancellation, fenced independently
+    /// of the recipient's helm epoch and never issued by a unit mind.
+    DetachmentCommand(Box<super::detachment::DetachmentCommand>),
 }
 
 /// **What a [`IntentKind::Goal`] asks of the motor** (17b cut M1a.4; doc 17 §4
@@ -331,6 +334,7 @@ impl IntentKind {
                 | IntentKind::ReleaseOrder { .. }
                 | IntentKind::Goal(_)
                 | IntentKind::Profile { .. }
+                | IntentKind::DetachmentCommand(_)
         )
     }
 
@@ -371,6 +375,7 @@ impl IntentKind {
             IntentKind::Heading { .. }
             | IntentKind::Speed { .. }
             | IntentKind::Startup
+            | IntentKind::DetachmentCommand(_)
             | IntentKind::Order(_)
             | IntentKind::ReleaseOrder { .. }
             | IntentKind::Place { .. }
@@ -401,6 +406,7 @@ impl IntentKind {
                 _ => "fire",
             },
             IntentKind::Order(_) => "order",
+            IntentKind::DetachmentCommand(_) => "detachment_order",
             IntentKind::ReleaseOrder { .. } => "release",
             IntentKind::Place { .. } => "place",
             IntentKind::Emcon { .. } => "emcon",
@@ -859,7 +865,10 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
     if source == IntentSource::Mind
         && matches!(
             i.kind,
-            IntentKind::Order(_) | IntentKind::ReleaseOrder { .. } | IntentKind::Place { .. }
+            IntentKind::Order(_)
+                | IntentKind::ReleaseOrder { .. }
+                | IntentKind::Place { .. }
+                | IntentKind::DetachmentCommand(_)
         )
     {
         return IntentOutcome::Refused(Refusal::Channel);
@@ -902,6 +911,9 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
     if let IntentKind::Profile { index } = i.kind {
         return apply_profile(arena, i.unit, index, source);
     }
+    if let IntentKind::DetachmentCommand(command) = &i.kind {
+        return arena.apply_detachment_command(i.unit, command, source);
+    }
     // **16b cut N.2** — the squad's standing order (doc 16 §6 "Deliberation").
     //
     // It is taken here, before the continuous branch, because it is subject to
@@ -918,6 +930,9 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         // deleted the reflex, which took it as it stood.
         if unit.controller == Controller::Pilot {
             return IntentOutcome::Refused(Refusal::NotMachine);
+        }
+        if arena.detachment_owns(i.unit) {
+            return IntentOutcome::Refused(Refusal::NoCommander);
         }
         // A provider reply may arrive after the commander was wrecked. The
         // world record still names its persona, so recheck the actual arena
@@ -1015,6 +1030,9 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         if unit.controller == Controller::Pilot {
             return IntentOutcome::Refused(Refusal::NotMachine);
         }
+        if arena.detachment_owns(i.unit) {
+            return IntentOutcome::Refused(Refusal::NoCommander);
+        }
         release_machine_order(arena, i.unit, *squad, *issuer);
         return IntentOutcome::AppliedContinuous;
     }
@@ -1060,6 +1078,7 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             | IntentKind::Lock { .. }
             | IntentKind::Fire { .. }
             | IntentKind::Order(_)
+            | IntentKind::DetachmentCommand(_)
             | IntentKind::ReleaseOrder { .. }
             | IntentKind::Place { .. }
             | IntentKind::Emcon { .. }
@@ -1608,6 +1627,41 @@ impl Arena {
         order: &crate::deliberation::order::Order,
         expires_ms: i64,
     ) -> crate::arena::perception::FrameOrder {
+        let viewer = order
+            .issuer
+            .or_else(|| self.squad_of(unit).map(|squad| squad.commander));
+        let mut objective = order.objective;
+        // The legacy target field may override the objective's hint.
+        if matches!(
+            objective,
+            crate::deliberation::order::Objective::Engage { .. }
+        ) || matches!(objective, crate::deliberation::order::Objective::Support { of } if of == unit)
+        {
+            objective = crate::deliberation::order::Objective::Engage {
+                target_hint: order.preferred_contact(),
+            };
+        }
+        self.rekey_objective(
+            unit,
+            viewer,
+            order.squad,
+            super::detachment::DetachmentObjective {
+                objective,
+                constraints: order.constraints,
+            },
+            expires_ms,
+        )
+    }
+
+    /// Shared observation boundary for legacy and detachment doctrine.
+    pub(crate) fn rekey_objective(
+        &self,
+        unit: ObjId,
+        viewer: Option<ObjId>,
+        squad: crate::deliberation::SquadId,
+        directive: super::detachment::DetachmentObjective,
+        expires_ms: i64,
+    ) -> crate::arena::perception::FrameOrder {
         use crate::arena::perception::{FrameOrder, MindObjective};
         use crate::deliberation::order::Objective;
         // The `Engage` arm's resolution, lifted so a self-charged `Support`
@@ -1616,17 +1670,18 @@ impl Arena {
         // then this hull's own row for it or none — and, since 17b cut M1b.3
         // (D-UM-17 applied to the hint), only a row it has CLASSIFIED.
         let resolve = || {
-            order.preferred_contact().and_then(|hint| {
-                let viewer = order
-                    .issuer
-                    .or_else(|| self.squad_of(unit).map(|squad| squad.commander))?;
-                let target = self.contacts.resolve(viewer, hint)?.target;
+            let hint = match directive.objective {
+                Objective::Engage { target_hint } => target_hint,
+                _ => None,
+            };
+            hint.and_then(|hint| {
+                let target = self.contacts.resolve(viewer?, hint)?.target;
                 self.contacts
                     .id_of(unit, target)
                     .filter(|id| self.held_classified(unit, *id))
             })
         };
-        let objective = match order.objective {
+        let objective = match directive.objective {
             Objective::Hold => MindObjective::Hold,
             Objective::Advance { to } => MindObjective::Advance { to },
             Objective::Engage { .. } => MindObjective::Engage { target: resolve() },
@@ -1643,10 +1698,11 @@ impl Arena {
             },
         };
         FrameOrder {
-            squad: SmolStr::new(order.squad.to_string()),
+            identity: None,
+            squad: SmolStr::new(squad.to_string()),
             objective,
-            hold_fire: order.constraints.hold_fire,
-            max_range_band: order.constraints.max_range_band,
+            hold_fire: directive.constraints.hold_fire,
+            max_range_band: directive.constraints.max_range_band,
             expires_ms,
         }
     }
@@ -2858,6 +2914,7 @@ mod tests {
             assert_eq!(
                 held,
                 Some(crate::arena::perception::FrameOrder {
+                    identity: None,
                     squad: SmolStr::new("red-1"),
                     objective: crate::arena::perception::MindObjective::Engage { target: None },
                     hold_fire: true,
@@ -3367,6 +3424,7 @@ mod tests {
         assert_eq!(
             arena.rekey_order(WING, &told, 54_250),
             FrameOrder {
+                identity: None,
                 squad: SmolStr::new_static("red-1"),
                 objective: MindObjective::Engage {
                     target: Some(WING_SEES_BA)
@@ -4081,6 +4139,7 @@ mod tests {
         arena.set_controller(RED, Controller::Mind, MachineState::Withdraw);
         if let Some(state) = arena.minds.get_mut(&RED) {
             state.order = Some(crate::arena::perception::FrameOrder {
+                identity: None,
                 squad: SmolStr::new(squad.to_string()),
                 objective: crate::arena::perception::MindObjective::Hold,
                 hold_fire: false,

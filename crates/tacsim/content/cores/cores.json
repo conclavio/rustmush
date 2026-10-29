@@ -3,7 +3,7 @@
     "id": "tacsim.pack.cores",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "3ad7f6910ec8ba53e82a93b852b3d82ef771206516b084e3238696a675233903",
+    "digest": "a5c8d97b007d7fcec0e34d97be7d45fa6df18d99e50a5658ce72e74aa1e049f7",
     "requires": []
   },
   "entries": {
@@ -32,6 +32,33 @@
         "class": "III",
         "governed": true,
         "note": "Class III of doc 17 section 9 (17b cut M3.1): a think every quarter second at 4,500 operations, twenty-four contact rows with the odds on eight, six condition slots and a hundred and twenty-eight memory keys. Named for the command vehicles that carry it and not for commanding: no core of any class gives an order (D-UM-52). Fitted in the heavy's hull, under the armour."
+      }
+    },
+    "tacsim.core.doctrine_ungoverned": {
+      "kind": "core",
+      "def": {
+        "label": "doctrine core",
+        "class": "I",
+        "governed": false,
+        "note": "The doctrine core with its governor taken out (doc 17h cut M8b; doc 17 section 10, D-UM-42): the same Class I box, fitted only by the ungoverning refit or born of a heirloom or grey die. Nothing on the outside says so; the bit is learned through evidence only. No chassis carries it as shipped."
+      }
+    },
+    "tacsim.core.line_ungoverned": {
+      "kind": "core",
+      "def": {
+        "label": "line core",
+        "class": "II",
+        "governed": false,
+        "note": "The line core with its governor taken out (doc 17h cut M8b; doc 17 section 10, D-UM-42): the same Class II box, fitted only by the ungoverning refit or born of a grey die. No chassis carries it as shipped."
+      }
+    },
+    "tacsim.core.command_ungoverned": {
+      "kind": "core",
+      "def": {
+        "label": "command core",
+        "class": "III",
+        "governed": false,
+        "note": "The command core with its governor taken out (doc 17h cut M8b; doc 17 section 10, D-UM-42): the same Class III box, fitted only by the ungoverning refit or born of a heirloom or grey die. No chassis carries it as shipped."
       }
     }
   }

@@ -4,6 +4,7 @@ use super::{Error, MAX_WORK_UNITS};
 use crate::core_production::DieClass;
 use crate::workorder::RecipeRef;
 use mush_core::{DefinitionDigest, DefinitionRef, World};
+use mush_economy::core_refit::RefitKind;
 use serde::{Deserialize, Serialize};
 
 /// Immutable content returned by the adapter installed by trusted composition.
@@ -47,10 +48,11 @@ impl PublishedRefitRecipe {
         Ok(r)
     }
     pub fn validate(&self) -> Result<(), Error> {
-        if self.pack.id().as_str() != "core_refit"
+        let id = self.pack.id().as_str();
+        if !matches!(id, "core_refit" | "core_ungovern")
             || self.pack.digest().as_bytes() == &[0; 32]
             || self.definition.key().kind.as_str() != "recipe"
-            || self.definition.key().id.as_str() != "core_refit"
+            || self.definition.key().id.as_str() != id
             || self.definition.version() != 1
             || self.definition.digest().as_bytes() == &[0; 32]
             || !(1..=MAX_WORK_UNITS).contains(&self.work_units)
@@ -71,6 +73,14 @@ impl PublishedRefitRecipe {
     pub const fn work_units(&self) -> u64 {
         self.work_units
     }
+    /// Which recipe this is (doc 17h cut M8b C2): the pack entry's id.
+    pub fn kind(&self) -> RefitKind {
+        if self.definition.key().id.as_str() == RefitKind::CoreUngovern.recipe_id() {
+            RefitKind::CoreUngovern
+        } else {
+            RefitKind::CoreRefit
+        }
+    }
 }
 
 /// No default adapter exists. Implementations resolve actual published content
@@ -78,5 +88,18 @@ impl PublishedRefitRecipe {
 /// a substitute. Both lookups are repeated before custody by the owner fence.
 pub trait RefitRecipeAuthority: Send + Sync + 'static {
     fn resolve(&self, world: &World, class: DieClass) -> Option<PublishedRefitRecipe>;
+    /// The published recipe of `kind` (doc 17h cut M8b C2). An adapter that
+    /// publishes no ungoverning recipe resolves `core_refit` alone.
+    fn resolve_kind(
+        &self,
+        world: &World,
+        kind: RefitKind,
+        class: DieClass,
+    ) -> Option<PublishedRefitRecipe> {
+        match kind {
+            RefitKind::CoreRefit => self.resolve(world, class),
+            RefitKind::CoreUngovern => None,
+        }
+    }
     fn published_digest(&self, world: &World, recipe: &RecipeRef) -> Option<DefinitionDigest>;
 }

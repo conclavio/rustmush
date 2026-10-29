@@ -2,7 +2,8 @@
 //! These strict records are data. Decoding them never authorizes money, roots,
 //! a grant, or a historical effect; actual registered participants do that.
 
-use mush_core::{CommitToken, DefinitionRef, ObjId};
+use super::Holder;
+use mush_core::{CommitToken, DefinitionRef};
 use mush_economy::managed_purchase::FundingReceipt;
 use serde::{Deserialize, Serialize};
 
@@ -112,7 +113,7 @@ pub struct PaidAllocation {
     pub(crate) quote: CommitToken,
     pub(crate) quote_digest: mush_core::DefinitionDigest,
     pub(crate) product_digest: mush_core::DefinitionDigest,
-    pub(crate) holder: ObjId,
+    pub(crate) holder: Holder,
     pub(crate) charter: CharterId,
     pub(crate) line: LineId,
     pub(crate) filed: FiledRevisionId,
@@ -135,7 +136,7 @@ struct AllocationWire {
     quote: CommitToken,
     quote_digest: mush_core::DefinitionDigest,
     product_digest: mush_core::DefinitionDigest,
-    holder: ObjId,
+    holder: Holder,
     charter: CharterId,
     line: LineId,
     filed: FiledRevisionId,
@@ -204,7 +205,7 @@ impl PaidAllocation {
     pub const fn product_digest(&self) -> mush_core::DefinitionDigest {
         self.product_digest
     }
-    pub const fn holder(&self) -> ObjId {
+    pub const fn holder(&self) -> Holder {
         self.holder
     }
     pub const fn charter(&self) -> CharterId {
@@ -244,7 +245,7 @@ impl Record for PaidAllocation {
     }
     fn validate(&self) -> Result<(), PublicationError> {
         if !matches!(self.format, 1 | 2)
-            || self.holder.0 == 0
+            || self.holder.is_nobody()
             || self.term.get() != 1
             || self.quote == self.operation
             || self.terms.seats().get() != 1

@@ -60,6 +60,11 @@ pub struct CommerceFamilies {
         StateFamilyHandle<String, super::registry_revocation::records::RevokedTerm>,
     pub(crate) registry_recalls:
         StateFamilyHandle<String, super::registry_recall::records::RecallOperation>,
+    /// Doc 17h cut M8a: the Registry's hull inspections (`roll_registry_inspections`), keyed
+    /// by the inspection's commit; written from tacsim's transaction through the delegation
+    /// the inspection writer installs.
+    pub(crate) registry_inspections:
+        StateFamilyHandle<String, super::registry_inspection::records::InspectionRecord>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) house_renewal_operations:
@@ -98,6 +103,8 @@ pub struct CommerceFamilies {
     /// 17g C2f: one row per held paid licence (`roll_mind_paid_holdings`,
     /// the C2b brief §2), delegated to the market as `paid_licences` is.
     pub(crate) paid_holdings: StateFamilyHandle<String, super::paid_holdings::PaidHolding>,
+    /// M8c B5: one ring of seal marks per licence (`roll_licence_seal_marks`).
+    pub(crate) seal_marks: StateFamilyHandle<String, super::seal_marks::SealMarkRing>,
 }
 
 impl CommerceFamilies {
@@ -128,6 +135,7 @@ impl CommerceFamilies {
             line_updates: register(reg)?,
             update_positions: register(reg)?,
             registry_recalls: register(reg)?,
+            registry_inspections: register(reg)?,
             registry_revocations: register(reg)?,
             revoked_terms: register(reg)?,
             withdrawals: register(reg)?,
@@ -138,6 +146,7 @@ impl CommerceFamilies {
             authored_retirements: register(reg)?,
             retired_draft_parents: register(reg)?,
             filed_royalties: register(reg)?,
+            seal_marks: register(reg)?,
             term_economics: register(reg)?,
             entitlement_allocations: register(reg)?,
             house_allocations: register(reg)?,
@@ -217,6 +226,13 @@ fn person(text: &str) -> bool {
             .is_ok_and(|n| n != 0 && u32::try_from(n).is_ok())
 }
 
+/// M8c B1: an organisation's id under the `org/` head of the holdings index:
+/// exactly twenty decimal digits, nonzero (an `OrgId` is a `u64`).
+/// M8c F8: any organisation number, 0 included (mush-org mints from 0).
+fn org_number(text: &str) -> bool {
+    text.len() == 20 && text.bytes().all(|c| c.is_ascii_digit()) && text.parse::<u64>().is_ok()
+}
+
 pub(crate) fn valid_key(family: &str, key: &str) -> bool {
     let mut parts = key.split('/');
     let head = parts.next().unwrap_or("");
@@ -259,6 +275,12 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         "roll_registry_reconformance_heads" | "roll_mind_filed_identity" => {
             hex(head, 64, false) && parts.next().is_none()
         }
+        // M8c B5: one ring per licence, keyed by the licence alone.
+        "roll_licence_seal_marks" => {
+            head == "licence"
+                && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_none()
+        }
         "roll_registry_revoked_terms"
         | "roll_mind_lapse_occurrences"
         | "roll_mind_owner_term"
@@ -269,6 +291,17 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next() == Some("term")
                 && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_none()
+        }
+        // Doc 17h cut M8a fix round 1 (F9): a hull's 64-slot inspection ring,
+        // `hull/<hull, 8 hex>/slot/<seq mod 64, 2 hex>`.
+        "roll_registry_inspections" => {
+            head == "hull"
+                && parts.next().is_some_and(|v| hex(v, 8, true))
+                && parts.next() == Some("slot")
+                && parts.next().is_some_and(|v| {
+                    hex(v, 2, false) && u8::from_str_radix(v, 16).is_ok_and(|n| n < 64)
+                })
                 && parts.next().is_none()
         }
         "roll_mind_line_update_position" => {
@@ -289,8 +322,10 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         }
         // 17g C2f: the two owner indexes keyed by a zero-padded decimal
         // person first, so one person's rows are contiguous.
+        // M8c B1: an organisation's rows are keyed `org/{org:020}/licence/...`
+        // (`Holder::key_prefix`); the two heads never collide.
         "roll_mind_paid_holdings" => {
-            person(head)
+            (person(head) || (head == "org" && parts.next().is_some_and(org_number)))
                 && parts.next() == Some("licence")
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next().is_none()

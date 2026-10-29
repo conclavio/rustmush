@@ -26,6 +26,7 @@ getrandom.workspace = true
 # Panel widget data (`OutputEvent::Panel.data`) arrives as JSON; the TUI's
 # @mail / +intel widgets read it to build their ratatui lines.
 serde_json.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 # Fuzz-style property tests for LineEditor::feed (hostile byte streams).

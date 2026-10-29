@@ -2,6 +2,7 @@
 use super::*;
 
 struct TransferFold {
+    title_lineage: crate::fold::TitleLineageDelta,
     before_covered: Option<u64>,
     before_max_txid: u64,
     before_accounts: Vec<crate::AccountBeforeImage>,
@@ -48,6 +49,8 @@ impl TransferFold {
             ));
         }
         Ok(Self {
+            title_lineage: crate::fold::TitleLineageDelta::prepare(state, tx)
+                .ok_or_else(refused)?,
             before_covered: state.covered_seq,
             before_max_txid: state.max_txid,
             before_accounts,
@@ -61,7 +64,8 @@ impl TransferFold {
         })
     }
     fn matches(&self, state: &FoldState) -> bool {
-        state.journal_assets.get(&self.receipt.charter) == self.before_asset.as_ref()
+        self.title_lineage.matches(state)
+            && state.journal_assets.get(&self.receipt.charter) == self.before_asset.as_ref()
             && state
                 .charter_transfer_receipts
                 .lineage(self.receipt.charter)
@@ -79,6 +83,7 @@ impl TransferFold {
                 })
     }
     fn apply(self, state: &mut FoldState) {
+        self.title_lineage.apply(state);
         for (id, running, seq, touches) in self.after_accounts {
             state.running.insert(id, running);
             state.last_touch.insert(id, seq);

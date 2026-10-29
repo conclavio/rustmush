@@ -325,6 +325,10 @@ impl Runtime {
             |r: &DieCertificate| r.validate().map_err(|e| e.to_string()),
             encode::<DieCertificate>,
         )?;
+        if let Some(reader) = config.certificate_reader.as_deref() {
+            reg.grant_state_family_read(&certificates, reader)?;
+            reg.state(super::records::DieCertificates(certificates.clone()));
+        }
         let quotas = reg.state_family(
             family("industry_core_die_quota")?,
             |s: &String| Ok(s.clone()),
@@ -346,6 +350,34 @@ impl Runtime {
             deployment,
             inventory: industry_families.inventory.clone(),
         };
+        Self::register_factory(
+            reg,
+            config,
+            industry_families,
+            factory,
+            families,
+            definitions,
+            actions,
+            outcome,
+        )
+    }
+
+    /// **The factory's integration and refit owners, then the origin's finish** (kept out of
+    /// `register`'s frame: two runtimes and their policies — doc 17h cut M8b's refit policy
+    /// carries the rig families and the ungoverning site — exceed the M7 memory-size gate
+    /// there).
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn register_factory(
+        reg: &mut Registrar<'_>,
+        config: CoreOriginConfig,
+        industry_families: crate::IndustryFamilies,
+        factory: Option<super::integration::CoreFactoryConfig>,
+        families: Families,
+        definitions: Definitions,
+        actions: [DefinitionRef; 2],
+        outcome: DefinitionRef,
+    ) -> Result<Box<Self>, ModError> {
         let integration = factory
             .map(|factory| {
                 super::integration::runtime::Runtime::register(

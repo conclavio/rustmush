@@ -144,7 +144,7 @@ impl RefitPaymentHistory {
             || f.posted_at < self.intent.supplier.observed_utc
             || f.posted_at >= self.intent.supplier.expires_utc
             || f.hold.account != s.payer
-            || f.hold.amount != self.intent.price()
+            || f.hold.amount != self.intent.price()?
             || f.hold.placed_by != plan.actor
             || f.hold.holder != plan.idempotency
             || f.hold.beneficiary != Some(PrincipalId::System(self.intent.policy.issuer.clone()))
@@ -182,7 +182,7 @@ impl RefitPaymentHistory {
             expected.status = if install {
                 HoldStatus::Consumed {
                     transaction: t.transaction,
-                    amount: self.intent.price(),
+                    amount: self.intent.price()?,
                 }
             } else {
                 HoldStatus::Released
@@ -222,7 +222,7 @@ impl RefitPaymentHistory {
             hold.status = if complete {
                 HoldStatus::Consumed {
                     transaction: TransactionId(u64::MAX),
-                    amount: self.intent.price(),
+                    amount: self.intent.price()?,
                 }
             } else {
                 HoldStatus::Released

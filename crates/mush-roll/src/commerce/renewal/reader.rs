@@ -2,6 +2,7 @@
 //! current issuer/Registry/immediate-parent rights are separately re-resolved.
 //! Existing paid use/source never calls this fresh-issuance reader.
 
+use super::super::{Holder, org_holder};
 use super::super::{
     LicenceId, WorldIcSeconds,
     entitlement::{
@@ -102,7 +103,7 @@ impl RenewalInventory {
 #[derive(Serialize)]
 pub struct RenewalInventoryEntry {
     licence: LicenceId,
-    holder: ObjId,
+    holder: Holder,
     generation: super::super::TermGeneration,
     term_end: WorldIcSeconds,
     last_operation: Option<CommitToken>,
@@ -114,7 +115,7 @@ impl RenewalInventoryEntry {
     pub const fn licence(&self) -> LicenceId {
         self.licence
     }
-    pub const fn holder(&self) -> ObjId {
+    pub const fn holder(&self) -> Holder {
         self.holder
     }
     pub const fn generation(&self) -> super::super::TermGeneration {
@@ -166,8 +167,13 @@ impl RenewalFacts {
         &self,
         ctx: &OwnerPrepareContext<'_>,
     ) -> Result<(), PublicationError> {
-        if self.binding.holder() != ctx.invocation().actor()
-            || self.sale.requester() != self.binding.holder()
+        // M8c F4: the holder, or a character acting for its organisation
+        // (`org_holder::acts_as`, live); the sale and the binding both name
+        // the renewing actor, whoever bought.
+        let actor = ctx.invocation().actor();
+        if org_holder::acts_as(ctx.world(), self.binding.holder(), actor).is_err()
+            || self.sale.requester() != actor
+            || self.binding.holder().acting_character() != actor
             || ctx.world().world_ic_now().at < self.predecessor_term_end.get()
         {
             return Err(PublicationError::Mismatch);
@@ -299,7 +305,7 @@ impl OwnerReadService for RenewalReader {
                 let licence =
                     history::read(ctx, &self.families.paid_licences, status_licence.key())
                         .map_err(integrity)?;
-                if licence.holder() != ctx.actor() {
+                if org_holder::acts_as(ctx.world(), licence.holder(), ctx.actor()).is_err() {
                     return Err(OwnerReadError::Refused);
                 }
                 let entry = self
@@ -314,7 +320,9 @@ impl OwnerReadService for RenewalReader {
         };
         let licence =
             history::read(ctx, &self.families.paid_licences, licence.key()).map_err(integrity)?;
-        if licence.holder() != ctx.actor() {
+        // M8c B3: the holder itself, or a character acting for the holder's
+        // organisation under a live `roll.holder.org` grant (`org_holder::acts_as`).
+        if org_holder::acts_as(ctx.world(), licence.holder(), ctx.actor()).is_err() {
             return Err(OwnerReadError::Refused);
         }
         let term = history::read(
@@ -352,8 +360,14 @@ impl OwnerReadService for RenewalReader {
             licence,
         )
         .map_err(integrity)?;
-        let binding = RenewalBindingV1::capture_holder(licence, term, economics, holder_basis)
-            .map_err(integrity)?;
+        // M8c F4: the binding records the renewing actor as the acting
+        // character of an organisation holder (`org_holder::acting_as`,
+        // the grant asked live).
+        let holder = org_holder::acting_as(ctx.world(), licence.holder(), ctx.actor())
+            .map_err(|_| OwnerReadError::Refused)?;
+        let binding =
+            RenewalBindingV1::capture_holder(licence, term, economics, holder_basis, holder)
+                .map_err(integrity)?;
         let filed =
             history::read(ctx, &self.families.filed, binding.filed.key()).map_err(integrity)?;
         let filing = super::super::line_update::audit::birth(ctx, &self.families, filed)
@@ -409,7 +423,9 @@ impl RenewalReader {
         operation: CommitToken,
     ) -> Result<super::RenewalOperationV1, OwnerReadError> {
         let row = self.verified_operation(roll, ctx, operation)?;
-        if ctx.actor() != mush_core::GOD && row.binding().holder() != ctx.actor() {
+        if ctx.actor() != mush_core::GOD
+            && org_holder::acts_as(ctx.world(), row.binding().holder(), ctx.actor()).is_err()
+        {
             return Err(OwnerReadError::Refused);
         }
         Ok(row)
@@ -460,7 +476,9 @@ impl RenewalReader {
             if entry.encoded_key() != licence.key() {
                 return Err(OwnerReadError::Integrity);
             }
-            if ctx.actor() != mush_core::GOD && licence.holder() != ctx.actor() {
+            if ctx.actor() != mush_core::GOD
+                && org_holder::acts_as(ctx.world(), licence.holder(), ctx.actor()).is_err()
+            {
                 continue;
             }
             if let Some(item) = self.inventory_entry(roll, ctx, licence)? {

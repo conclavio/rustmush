@@ -322,7 +322,10 @@ fn contract(
     if subject.marker(marker.operation(), marker.effect().clone())? != marker {
         return Err(refused());
     }
-    let buyer = PrincipalId::Object(request.buyer);
+    // M8c B3: the contract's issuer and party is the holder's principal (an
+    // organisation buying issues as itself; its acting character is on the
+    // purchase record).
+    let buyer = request.buyer.principal();
     let remainder = request.payouts.first().ok_or_else(refused)?.account;
     let consent = ConsentSurface {
         fact_consent: None,
@@ -441,7 +444,9 @@ pub(crate) fn prepare_funding_in(
     check_offerable(&contract, &state.snapshot).map_err(|_| refused())?;
     let mut plan = EconomyPlan::new(
         IdempotencyKey::new(namespace, format!("{}/fund", operation.to_hex())),
-        PrincipalId::Object(request.buyer),
+        // M8c B3: the hold is placed by the holder's principal, so an
+        // organisation's treasury is debited as the organisation.
+        request.buyer.principal(),
         EconomicCause::Ruleset {
             namespace: namespace.into(),
             correlation: receipt::funding_correlation(

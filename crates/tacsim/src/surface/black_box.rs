@@ -58,8 +58,10 @@ use smol_str::SmolStr;
 
 use crate::arena::core::CoreClass;
 use crate::arena::mind::{MindSeal, SortieId};
+use crate::arena::mind_seal::Admission;
 use crate::definitions::UnitClass;
 use crate::deliberation::order::CharacterRef;
+use crate::minds::licence_state::SealLicenceState;
 use crate::store::TacsimStore;
 
 /// The black box logs' id prefix: a hull's log is `hull.<n>`.
@@ -172,40 +174,76 @@ pub struct SealFacts {
     pub governed: bool,
     /// The licence the core holds, or `doctrine`.
     pub licence: SmolStr,
+    /// **The state that licence was read under at the seal** (doc 17h cut M8a; doc 17 §10):
+    /// the line's parameter, never the seal's field, so `seal_digest` stands. Absent on a
+    /// record written before M8a.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence_state: Option<SealLicenceState>,
     /// All sixty-four of the whole seal's digest (`MindSeal::digest`).
     pub seal_digest: SmolStr,
     /// Why the hull flies a mind other than the one chosen, from the start (`no core: the
     /// ROM` for a terrain vehicle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<SmolStr>,
+    /// **The core component sealed** (the M8a fix round's F5; `MindSeal::core`): the
+    /// component the hull's core capability named at the seal, absent for a hull with no core
+    /// (every terrain vehicle, so no rig's record moved). Skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core: Option<SmolStr>,
+    /// **That core's class at the seal** (`MindSeal::core_class`), present exactly when
+    /// `core` is: what the inspection compares with the class the component reads now, as the
+    /// IC audit does (`crate::minds::ic_sortie::audit`). Skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_class: Option<CoreClass>,
+    /// **What an ungoverned seal admitted** (doc 17h cut M8b C4; D-UM-42): the seal line's
+    /// field, evidence only. Absent for every governed seal, so no record before M8b moves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admissions: Vec<Admission>,
 }
 
 impl SealFacts {
     /// **The facts of `seal`**, through the arena's own line ([`MindSeal::sealed_line`]), so the
-    /// two can never print a seal differently.
+    /// two can never print a seal differently; `licence_state` is what the site that seals
+    /// knows of the licence (doc 17h cut M8a: `Doctrine` for every ROM seal).
     #[must_use]
-    pub fn of(seal: &MindSeal) -> SealFacts {
-        let (mind, source, card_digest, class, governed, licence) = match seal.sealed_line() {
-            crate::arena::ledger::EventKind::MindSealed {
-                mind,
-                source,
-                card_digest,
-                class,
-                governed,
-                licence,
-                ..
-            } => (mind, source, card_digest, class, governed, licence),
-            // `sealed_line` builds `MindSealed` and nothing else; the seal's own fields are the
-            // same facts.
-            _ => (
-                seal.mind.clone(),
-                SmolStr::default(),
-                SmolStr::default(),
-                seal.class,
-                seal.governed,
-                SmolStr::new(seal.origin.licence_label()),
-            ),
-        };
+    pub fn of(seal: &MindSeal, licence_state: SealLicenceState) -> SealFacts {
+        // `sealed_line` writes `Some(licence_state)`; the parameter is the same state.
+        let fallback_state = licence_state;
+        let (mind, source, card_digest, class, governed, licence, licence_state, admissions) =
+            match seal.sealed_line(licence_state) {
+                crate::arena::ledger::EventKind::MindSealed {
+                    mind,
+                    source,
+                    card_digest,
+                    class,
+                    governed,
+                    licence,
+                    licence_state,
+                    admissions,
+                    ..
+                } => (
+                    mind,
+                    source,
+                    card_digest,
+                    class,
+                    governed,
+                    licence,
+                    licence_state.unwrap_or(fallback_state),
+                    admissions,
+                ),
+                // `sealed_line` builds `MindSealed` and nothing else; the seal's own fields are
+                // the same facts.
+                _ => (
+                    seal.mind.clone(),
+                    SmolStr::default(),
+                    SmolStr::default(),
+                    seal.class,
+                    seal.governed,
+                    SmolStr::new(seal.origin.licence_label()),
+                    fallback_state,
+                    seal.admissions(fallback_state),
+                ),
+            };
         SealFacts {
             mind,
             source,
@@ -213,8 +251,12 @@ impl SealFacts {
             class,
             governed,
             licence,
+            licence_state: Some(licence_state),
             seal_digest: SmolStr::new(crate::arena::snapshot::digest_text(&seal.digest())),
             fallback: seal.fallback.clone(),
+            core: seal.core.clone(),
+            core_class: seal.core.as_ref().map(|_| seal.core_class),
+            admissions,
         }
     }
 }
@@ -266,6 +308,10 @@ pub enum BlackBoxLine {
         /// The licence, or `doctrine`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         licence: Option<SmolStr>,
+        /// **The state the licence was read under** (doc 17h cut M8a): `doctrine` on every ROM
+        /// seal; a line written before M8a decodes with it absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        licence_state: Option<SealLicenceState>,
         /// The whole seal's digest.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seal_digest: Option<SmolStr>,
@@ -274,6 +320,11 @@ pub enum BlackBoxLine {
         fallback: Option<SmolStr>,
         /// The pool admission, recorded (D-23-8).
         admitted: Admitted,
+        /// **What an ungoverned seal admitted** (doc 17h cut M8b C4; D-UM-42): `under_floor`,
+        /// `unfiled`, `unlicensed`, `over_class` — a record field, never a notice. Absent for a
+        /// governed seal and with no seal.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        admissions: Vec<Admission>,
     },
     /// **An epoch closed** (doc 23 §6 "At the close"; D-23-1): the hull arrived in a hangar or
     /// was recovered.
@@ -499,8 +550,13 @@ impl BlackBoxLine {
                 licence,
                 seal_digest,
                 fallback,
+                admissions,
                 ..
             } => {
+                // Doc 17h cut M8b: only an ungoverned seal admits anything.
+                if !admissions.is_empty() && *governed != Some(false) {
+                    return Err("only an ungoverned seal records admissions".to_owned());
+                }
                 match hangar {
                     Hangar::Bay { hull: of, slot, .. } => {
                         if *of == hull || of.0 == 0 || *slot == 0 {
@@ -604,9 +660,11 @@ fn sealed_line(
         class: seal.map(|s| s.class),
         governed: seal.map(|s| s.governed),
         licence: seal.map(|s| s.licence.clone()),
+        licence_state: seal.and_then(|s| s.licence_state),
         seal_digest: seal.map(|s| s.seal_digest.clone()),
         fallback: seal.and_then(|s| s.fallback.clone()),
         admitted,
+        admissions: seal.map(|s| s.admissions.clone()).unwrap_or_default(),
     }
 }
 
@@ -762,7 +820,8 @@ pub(crate) fn epoch_facts(
             },
         );
         match sealed {
-            Ok(seal) => Some(SealFacts::of(&seal)),
+            // Doc 17h cut M8a: a ROM seal is read under `doctrine`.
+            Ok(seal) => Some(SealFacts::of(&seal, SealLicenceState::Doctrine)),
             Err(error) => {
                 tracing::error!(
                     tv = tv.0,
@@ -1112,9 +1171,33 @@ mod tests {
             class: CoreClass::Zero,
             governed: true,
             licence: "doctrine".into(),
+            licence_state: Some(SealLicenceState::Doctrine),
             seal_digest: "d".repeat(64).into(),
             fallback: Some(crate::match_::NO_CORE_FALLBACK.into()),
+            core: None,
+            core_class: None,
+            admissions: Vec::new(),
         }
+    }
+
+    /// **Doc 17h cut M8b G12**: only an ungoverned seal records admissions — a governed open
+    /// line carrying one is refused by `check`; the same line ungoverned stands.
+    #[test]
+    fn m8b_a_governed_line_carries_no_admissions() {
+        let admitted = Admitted {
+            class: Some(UnitClass::Vehicle),
+            host: EpochHost::Surface,
+            count: 1,
+        };
+        let mut governed = facts();
+        governed.admissions = vec![Admission::UnderFloor];
+        let line =
+            BlackBoxLine::mind_sealed(&opened(Some(governed.clone())), ObjId(30), None, admitted);
+        assert!(line.check(ObjId(30)).is_err());
+        let mut ungoverned = governed;
+        ungoverned.governed = false;
+        let line = BlackBoxLine::mind_sealed(&opened(Some(ungoverned)), ObjId(30), None, admitted);
+        assert_eq!(line.check(ObjId(30)), Ok(()));
     }
 
     /// **The two line shapes** (L7): the open line is `kind: mind_sealed`, flat, with the hangar,
@@ -1150,14 +1233,33 @@ mod tests {
         assert_eq!(value["seal"], "sealed");
         assert_eq!(value["fallback"], "no core: the ROM");
         assert_eq!(value["licence"], "doctrine");
+        // Doc 17h cut M8a: the licence state beside the licence, and a line written before
+        // it (no `licence_state`) decodes with the state absent.
+        assert_eq!(value["licence_state"], "doctrine");
         assert_eq!(
             value["admitted"],
             serde_json::json!({"class": "vehicle", "host": "surface", "count": 1})
         );
         assert_eq!(
-            serde_json::from_value::<BlackBoxLine>(value).ok(),
+            serde_json::from_value::<BlackBoxLine>(value.clone()).ok(),
             Some(sealed.clone())
         );
+        let mut before_m8a = value;
+        before_m8a
+            .as_object_mut()
+            .expect("an object")
+            .remove("licence_state");
+        match serde_json::from_value::<BlackBoxLine>(before_m8a) {
+            Ok(BlackBoxLine::MindSealed {
+                licence_state,
+                licence,
+                ..
+            }) => {
+                assert_eq!(licence_state, None, "an old line's state is absent");
+                assert_eq!(licence.as_deref(), Some("doctrine"));
+            }
+            other => panic!("an old open line decodes: {other:?}"),
+        }
         assert_eq!(sealed.check(ObjId(30)), Ok(()));
         assert!(sealed.check(ObjId(31)).is_err(), "another hull's line");
 

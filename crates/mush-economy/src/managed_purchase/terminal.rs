@@ -140,10 +140,19 @@ pub(super) fn prepare_in(
         PurchaseOutcome::Granted => "grant",
         PurchaseOutcome::Refunded => "refund",
     };
+    // M8c S1: a character's purchase ends by that character (or GOD's
+    // refund); an organisation's by any live character, the market's
+    // terminal having re-asked the organisation's grant for this actor
+    // (`org_holder::acts_for`) before this participant runs. The payer and
+    // the hold stay checked by principal below, as the Fund subject does.
+    let actor_fits = match purchase.buyer {
+        crate::Holder::Character(c) => context.actor == c,
+        crate::Holder::Organization { .. } => true,
+    };
     if state.frozen
         || !subject.matches_action(context.action, transition)
         || context.commit == request.operation
-        || (context.actor != purchase.buyer
+        || (!actor_fits
             && (outcome != PurchaseOutcome::Refunded || context.actor != mush_core::GOD))
         || context.principal != &(mush_core::PrincipalId::Object { id: context.actor })
         || context.world.get(context.actor).is_none_or(|object| {
@@ -187,7 +196,7 @@ pub(super) fn prepare_in(
             != (HoldPurpose::Escrow {
                 contract: actual.id,
             })
-        || hold.placed_by != PrincipalId::Object(purchase.buyer)
+        || hold.placed_by != purchase.buyer.principal()
         || hold.beneficiary != Some(crate::api::contract_principal())
         || hold.expires.is_some()
         || hold.holder
@@ -218,15 +227,17 @@ pub(super) fn prepare_in(
             state,
             &FundingContext {
                 world: context.world,
-                actor: purchase.buyer,
-                principal: &mush_core::PrincipalId::Object { id: purchase.buyer },
+                // M8c S1: the acting member (the buyer itself for a
+                // character, pinned above), not the character who quoted.
+                actor: context.actor,
+                principal: &mush_core::PrincipalId::Object { id: context.actor },
                 action: marker.effect(),
                 commit: request.operation,
             },
         )?;
     }
     let auth = TerminalAuth {
-        buyer: PrincipalId::Object(purchase.buyer),
+        buyer: purchase.buyer.principal(),
         hold: hold.clone(),
         payouts: purchase.payouts.clone(),
         outcome,

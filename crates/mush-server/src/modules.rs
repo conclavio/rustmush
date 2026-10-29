@@ -1,10 +1,10 @@
 //! The server's view of the composition root, which lives in
-//! [`tacsim::composition`] since 16b cut R-a (R2). Everything the host and its
-//! tests reach as `mush_server::modules::*` is re-exported here unchanged; the
-//! composition tests below stay in this crate because they drive the host's own
-//! boot, persistence and staff seams.
+//! [`mush_composition`]. Everything the host and its tests reach as
+//! `mush_server::modules::*` is re-exported here unchanged; the composition
+//! tests below stay in this crate because they drive the host's own boot,
+//! persistence and staff seams.
 
-pub use tacsim::composition::*;
+pub use mush_composition::*;
 
 use std::collections::HashMap;
 
@@ -1590,6 +1590,14 @@ mod tests {
             );
             assert!(
                 registrations.iter().any(|(spec, owner, class)| {
+                    spec.name == "@unitgrant"
+                        && *owner == Some("org")
+                        && *class == mush_core::CommandCompatibility::Authoritative
+                }),
+                "DT.2a unit grants must use the authoritative coordinator lane"
+            );
+            assert!(
+                registrations.iter().any(|(spec, owner, class)| {
                     spec.name == "@tacsim"
                         && *owner == Some("tacsim")
                         // /tv submits staff recovery, so the primary verb takes
@@ -2345,6 +2353,8 @@ mod tests {
 
     #[test]
     fn the_org_capability_vocabulary_covers_every_economy_capability() {
+        use mush_org::unit_authority::UnitCapability;
+
         // E3b2 §4.10: the wiring vocabulary is `mush_economy::CAPABILITIES` ∪
         // `mush_housing::CAPABILITIES` (E5b) ∪ the two org-administrative ids. If a
         // module starts asking about a capability the server does not wire,
@@ -2357,7 +2367,21 @@ mod tests {
             mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY,
             mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
             mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY,
+            mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY,
+            // M8c: acting for an organisation holder, and the seal-mark writer.
+            mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY,
+            mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY,
         ];
+        // DT.2a declares all six distinct unit rights without granting them.
+        let unit_capabilities = [
+            UnitCapability::OperateCrew,
+            UnitCapability::Deploy,
+            UnitCapability::CommandAssignedAi,
+            UnitCapability::RecoverLoad,
+            UnitCapability::MaintainRefit,
+            UnitCapability::TransferAbandonTitle,
+        ]
+        .map(UnitCapability::as_str);
         // E7 cut 9 (OPEN 5): `mush_campaign::CAPABILITIES` joins them. A `force.*`
         // id missing here fails at REGISTRATION — `@org/grant` refuses it — rather
         // than silently at use, which is the whole point of the typo catcher.
@@ -2368,6 +2392,7 @@ mod tests {
             .chain(mush_housing::CAPABILITIES)
             .chain(mush_campaign::CAPABILITIES)
             .chain(registry_capabilities.iter())
+            .chain(unit_capabilities.iter())
             .chain(NAMED_LAUNCH_HARDWARE_CAPABILITIES.iter())
         {
             let id = mush_org::CapabilityId::new(c).expect("well-formed");
@@ -2395,6 +2420,7 @@ mod tests {
                 + mush_housing::CAPABILITIES.len()
                 + mush_campaign::CAPABILITIES.len()
                 + registry_capabilities.len()
+                + unit_capabilities.len()
                 + NAMED_LAUNCH_HARDWARE_CAPABILITIES.len()
                 + administrative.len()
         );

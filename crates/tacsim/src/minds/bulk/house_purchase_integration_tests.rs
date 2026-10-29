@@ -33,6 +33,8 @@ struct Roll {
     admission: Admission,
     resale: ResaleShared,
     renewals: bool,
+    /// M8c B4: the owner attestations, the House one among them.
+    attestations: bool,
     shared: Shared,
     house: HouseShared,
     renewal: RenewalShared,
@@ -90,12 +92,23 @@ impl GameModule for Roll {
             manifest,
             compatibility,
         )?
+        // M8c F10: the House owner term is its own (365 days, as the launch
+        // composes), so the House attestation is told from the personal one.
+        .with_house_owner_terms(
+            InitialFilingTerms::new(HOUSE_OWNER_TERM_SECONDS, GRACE_SECONDS)
+                .map_err(module_error)?,
+        )?
         .with_house_filings()?
         .with_house_mind_purchases(
             config.writer(),
             participants.clone(),
             config.owner_actions(HouseProtocol::HouseV1)?,
         )?;
+        let commerce = if self.attestations {
+            commerce.with_owner_attestations()?
+        } else {
+            commerce
+        };
         let commerce = if self.renewals {
             let r = mush_market::mind_house_renewal::RenewalConfig::new(
                 &config,
@@ -187,6 +200,11 @@ impl GameModule for Economy {
                 .compatibility
                 .clone()
                 .ok_or_else(|| ModError::msg("compatibility"))?,
+        )?
+        // M8c F10: the same House owner term as the Roll composition.
+        .with_house_owner_terms(
+            InitialFilingTerms::new(HOUSE_OWNER_TERM_SECONDS, GRACE_SECONDS)
+                .map_err(module_error)?,
         )?
         .with_house_filings()?;
         let mut inner = EconomyModule::new()
@@ -336,12 +354,27 @@ fn boot(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
 fn boot_options(registry: &Fixture, saved: &Durable, renewals: bool) -> TestResult<PlayerWorld> {
     boot_resale_options(registry, saved, renewals, false, None)
 }
+/// M8c B4: the House world with the owner attestations composed (the House
+/// attestation among them), nothing else changed.
+fn boot_attestations(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
+    boot_every_option(registry, saved, false, false, None, true)
+}
 fn boot_resale_options(
     registry: &Fixture,
     saved: &Durable,
     renewals: bool,
     paid_resales: bool,
     admission: Admission,
+) -> TestResult<PlayerWorld> {
+    boot_every_option(registry, saved, renewals, paid_resales, admission, false)
+}
+fn boot_every_option(
+    registry: &Fixture,
+    saved: &Durable,
+    renewals: bool,
+    paid_resales: bool,
+    admission: Admission,
+    attestations: bool,
 ) -> TestResult<PlayerWorld> {
     let shared: Shared = Arc::new(Mutex::new(Registered::default()));
     let house: HouseShared = Arc::new(Mutex::new(None));
@@ -373,6 +406,7 @@ fn boot_resale_options(
             admission,
             resale: resale.clone(),
             renewals,
+            attestations,
             renewal: renewal.clone(),
             shared: shared.clone(),
             house: house.clone(),
@@ -1081,7 +1115,7 @@ fn flow(
         "actual six terminal rows"
     );
     let allocation = allocation(&w, FIRST + 2)?;
-    check_eq!(allocation.holder(), BUYER);
+    check_eq!(allocation.holder(), mush_economy::Holder::Character(BUYER));
     check_eq!(allocation.issuer().organization(), organization);
     check_eq!(allocation.issuer().scope(), scope);
     check!(matches!(allocation.phase(), PurchasePhase::Granted { .. }));
@@ -1221,6 +1255,7 @@ pub(super) fn exercise(
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        renewal::attest_house(registry, saved, organization, scope)?;
         ic_tests::exercise_house_two_seats(registry, saved)?;
         resale::exercise(registry, saved)?;
         let (granted, licence, renewed) = flow(registry, saved, organization, scope)?;

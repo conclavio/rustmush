@@ -78,29 +78,14 @@ fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
 fn roster_with(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
     // Reboots audit the foundry through the inventory owner, as production does.
-    let (mut mods, inventory) = comp::server_modules_with_tacsim(
-        mush_weather::WeatherConfig::default(),
+    let (mut mods, inventory) = comp::domain_modules_with_economy(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     // Match production: load the lane catalog when applying the game boot packs.
     mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
@@ -1116,31 +1101,16 @@ async fn a_renamed_tank_is_still_its_slots_tank() {
 fn roster_with_the_layer_off() -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
     let cfg = TacsimConfig::default();
     assert!(!cfg.enabled, "the documented default is off");
     // Reboots audit the foundry through the inventory owner, as production does.
-    let (mut mods, inventory) = comp::server_modules_with_tacsim(
-        mush_weather::WeatherConfig::default(),
+    let (mut mods, inventory) = comp::domain_modules_with_economy(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.push(comp::tacsim_module_wired(cfg, false, inventory));
     // `game_content` false: the starter area, and none of the game's packs.
     mods.push(comp::content_module_with(true, false).expect("the content module composes"));

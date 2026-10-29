@@ -1958,6 +1958,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_scene_staff),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "+recap".into(),
@@ -1974,5 +1975,6 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(scene_recap),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }

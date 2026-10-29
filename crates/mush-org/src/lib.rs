@@ -51,6 +51,9 @@ mod commands;
 mod module;
 mod wiring;
 
+/// Shared personal, organization and accepted-mission unit grants (DT.2a).
+pub mod unit_authority;
+
 /// The maximum org scope-tree depth (root = 0). Enforced at scope creation, so a
 /// containment walk always terminates; a check that would exceed it fails closed.
 pub const MAX_SCOPE_DEPTH: u8 = 8;

@@ -556,6 +556,16 @@ pub(crate) fn seal_with_policy(
         None => (None, CoreClass::Zero, true),
     };
     let class = terms.rated.min(core_class).min(terms.class_cap);
+    // Doc 17h cut M8b C4 (D-UM-17's first point; D-UM-42): an ungoverned core alone
+    // skips the floor check at the seal — its cards are held to no floor, and what that
+    // admitted is the seal's lines' `admissions` field (`MindSeal::admissions`), never a
+    // refusal and never a notice. The seal keeps the captured floor, so a governed seal's
+    // bytes are what they were.
+    let floor = if core.is_some() && !governed {
+        0
+    } else {
+        terms.odds_floor_permille
+    };
     if let Some(certificate) = terms.identity.origin.certificate() {
         let definition = terms.authored.ok_or_else(|| {
             SealError::Schema(crate::arena::schema::SchemaError {
@@ -593,7 +603,7 @@ pub(crate) fn seal_with_policy(
             Some(SmolStr::new_static(NO_CORE_FALLBACK)),
         )
     } else {
-        let cards = prepare_policy_cards(terms, class, weapons, &channels)?;
+        let cards = prepare_policy_cards(terms, class, weapons, &channels, floor)?;
         (
             (*terms.identity).clone(),
             terms.engine_for_minds,
@@ -636,13 +646,22 @@ pub fn prepare_cards(
     weapons: &[crate::arena::rules::RuleWeapon],
     channels: &[Channel],
 ) -> Result<SealedCards, SealError> {
-    prepare_policy_cards(&SealPolicy::from(terms), class, weapons, channels)
+    prepare_policy_cards(
+        &SealPolicy::from(terms),
+        class,
+        weapons,
+        channels,
+        terms.odds_floor_permille,
+    )
 }
+/// `floor` is the floor the cards are held to: the captured Compact floor, or none on an
+/// ungoverned core (doc 17h cut M8b C4).
 fn prepare_policy_cards(
     terms: &SealPolicy<'_>,
     class: CoreClass,
     weapons: &[crate::arena::rules::RuleWeapon],
     channels: &[Channel],
+    floor: u32,
 ) -> Result<SealedCards, SealError> {
     terms.identity.validate()?;
     let (definition, names) = if let Some(definition) = terms.authored {
@@ -670,9 +689,7 @@ fn prepare_policy_cards(
         let selected = sealed_set(terms)?;
         for (name, card) in &selected {
             card.pair(name).map_err(SealError::Card)?;
-            if channels.contains(&Channel::Fire)
-                && !odds_are_lawful(card, terms.odds_floor_permille)
-            {
+            if channels.contains(&Channel::Fire) && !odds_are_lawful(card, floor) {
                 return Err(SealError::Unlawful {
                     floor: terms.odds_floor_permille,
                 });
@@ -691,7 +708,7 @@ fn prepare_policy_cards(
         &terms.classes.row(class),
         weapons,
         channels,
-        terms.odds_floor_permille,
+        floor,
     )?)
 }
 
@@ -1342,16 +1359,16 @@ mod m5_tests {
     #[test]
     fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
-        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=5;stock=2");
+        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=6;stock=3");
         let api4_source = crate::arena::snapshot::digest_from_text(
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API 4 Standard source digest");
-        let api5_source = crate::arena::snapshot::digest_from_text(
-            "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af",
+        let api6_source = crate::arena::snapshot::digest_from_text(
+            "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100",
         )
-        .expect("the reviewed API 5 Standard source digest");
-        assert_eq!(crate::minds::content::standard_digest().0, api5_source);
+        .expect("the observed API 6 Standard source digest");
+        assert_eq!(crate::minds::content::standard_digest().0, api6_source);
         let mut got = Vec::new();
         let mut api4_got = Vec::new();
         for (entry, id) in [(LINE_TANK, 4_u32), (HEAVY_MK1, 5), (TARGET_MK1, 9)] {
@@ -1373,19 +1390,31 @@ mod m5_tests {
                 }
                 assert!(
                     unit.seal.abi == crate::minds::MIND_ABI
-                        && unit.seal.source_sha256 == api5_source
-                        && unit.seal.requested.source_sha256 == api5_source
-                        && unit.seal.rom_identity.source_sha256 == api5_source,
-                    "the actual default seal must carry all reviewed API 5 identities"
+                        && unit.seal.source_sha256 == api6_source
+                        && unit.seal.requested.source_sha256 == api6_source
+                        && unit.seal.rom_identity.source_sha256 == api6_source,
+                    "the actual default seal must carry all reviewed API 6 identities"
                 );
-                // Only the declared ABI and Standard's one-byte comment change
-                // may differ. Hash the actual seal type through its real digest
-                // path; every other custody byte remains covered by the old pins.
+                // Restore only the declared ABI, source and stock provenance.
+                // Every other custody byte remains covered by the old pins.
                 let mut api4 = unit.seal.clone();
                 api4.abi = "rhai=1.26.0;api=4;stock=2".into();
                 api4.source_sha256 = api4_source;
                 api4.requested.source_sha256 = api4_source;
                 api4.rom_identity.source_sha256 = api4_source;
+                for origin in [
+                    &mut api4.origin,
+                    &mut api4.requested.origin,
+                    &mut api4.rom_identity.origin,
+                ] {
+                    match origin {
+                        MindOrigin::Doctrine { revision } => {
+                            assert_eq!(*revision, crate::minds::STOCK_VERSION);
+                            *revision = 2;
+                        }
+                        other => panic!("the default custody has stock provenance: {other:?}"),
+                    }
+                }
                 api4_got.push(format!(
                     "{entry} {which} {}",
                     crate::arena::snapshot::digest_text(&api4.digest())
@@ -1401,9 +1430,9 @@ mod m5_tests {
             }
         }
         // M6's reviewed pins cover full card custody, tagged identity, captured
-        // weapon facts/ROM and API 4. Standard's body is unchanged from M5r;
-        // its API header alone changes the source digest. Cross-host gates must
-        // reproduce this complete array before accepting the release.
+        // weapon facts/ROM and API 4. API6/stock3 changes the command-identity
+        // behavior and those explicitly isolated provenance fields. Cross-host
+        // gates must reproduce this complete array before accepting the release.
         let api4_pinned = [
             "tacsim.unit.line_tank fixture \
              5d0a8af7688090e1ccb4cb8f38f2f610ecf82be8919f684cd341a79613811d8b",
@@ -1428,29 +1457,30 @@ mod m5_tests {
             api4_got, api4_pinned,
             "default seal custody changed beyond the declared ABI/source migration"
         );
-        // N109 emitted these exact API 5 identities for the same nine actual
-        // checkouts. The old pins above independently reject any other custody
-        // change. These are Linux observations; cross-host reproduction remains
-        // required before release acceptance.
+        // DT.1b's observed API6/stock3 identities for these nine actual checkouts:
+        // replacement standing orders now have an identity separate from expiry.
+        // The old pins above independently reject every custody change beyond
+        // the declared ABI, source and stock provenance migration. Captured on
+        // Windows; cross-host reproduction remains required before acceptance.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             39e929340f50b674f1af350ab6f9eebab55428fd195088d7b23ef11560809b5b",
+             b8ae6f8d19a8f170a005a64f0a32f40e5539b03bb578081e631b9b104c83acf8",
             "tacsim.unit.line_tank production_fixture \
-             39e929340f50b674f1af350ab6f9eebab55428fd195088d7b23ef11560809b5b",
+             b8ae6f8d19a8f170a005a64f0a32f40e5539b03bb578081e631b9b104c83acf8",
             "tacsim.unit.line_tank production_principal \
-             b908ec2ff3302187c848725e492d944b49ba2582b26231eb0122880e8751d830",
+             1938c7d2cb01cf99f2a42891cc78b1ea4a9a519948c5b8831f61b25eb0dc7ab2",
             "tacsim.unit.heavy_mk1 fixture \
-             d1afd5882c9385f32f89c1470b5cf390b274148cf6d38f068ec010d499f0774e",
+             0a63182e6648d277d1f6544b23ca2dc24e1eeab133e538c38026f13232310118",
             "tacsim.unit.heavy_mk1 production_fixture \
-             d1afd5882c9385f32f89c1470b5cf390b274148cf6d38f068ec010d499f0774e",
+             0a63182e6648d277d1f6544b23ca2dc24e1eeab133e538c38026f13232310118",
             "tacsim.unit.heavy_mk1 production_principal \
-             6bea8cd8289c331449cf266c4f3e24a19b80999176a894d653449b719114e810",
+             726d1abb88600bf649e246b3f52b3b21764e9f7fcc503bbd73f1cfb26eca0d9c",
             "tacsim.unit.target_mk1 fixture \
-             b0ebb4b258b15c1405b0196a2c4cca364cda938bcf2d980493d47bffcac57528",
+             feb53b8206d252e0463a3ec5a6a42d7295861e36a7f7b5792020ce6746be50c3",
             "tacsim.unit.target_mk1 production_fixture \
-             b0ebb4b258b15c1405b0196a2c4cca364cda938bcf2d980493d47bffcac57528",
+             feb53b8206d252e0463a3ec5a6a42d7295861e36a7f7b5792020ce6746be50c3",
             "tacsim.unit.target_mk1 production_principal \
-             879a3cdaee7b6c57d42da2a1b94dd38f9fc8dd465fdb192cf8de354bc7dffb02",
+             5a5d6868cdea293d29d84095087c035177762f50904a54376882bc6a78a66e3c",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }

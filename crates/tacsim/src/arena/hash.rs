@@ -1404,6 +1404,12 @@ pub fn state_hash(arena: &Arena) -> u64 {
         }
         None => fold.bytes(&[0_u8]),
     }
+    // Empty DT ownership adds no bytes to legacy combat hashes. Tombstones
+    // remain authoritative: otherwise a removed command lane could resurrect.
+    if !arena.detachment_commands.is_empty() {
+        fold.bytes(b"detachment-authority-v1\0");
+        fold_value(fold, &arena.detachment_commands);
+    }
     fold.finish()
 }
 
@@ -1487,6 +1493,10 @@ fn fold_mind(fold: &mut Fold, unit: mush_core::ObjId, mind: &crate::arena::mind:
             fold.bytes(&[u8::from(order.hold_fire), band]);
             fold.bytes(&order.expires_ms.to_le_bytes());
             fold.bytes(order.squad.as_bytes());
+            if let Some(identity) = &order.identity {
+                fold.bytes(b"order-identity-v1\0");
+                fold_value(fold, identity);
+            }
         }
         None => fold.bytes(&[0_u8]),
     }
@@ -1620,6 +1630,40 @@ mod tests {
             tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
             tank(ObjId(9), Team::Blue, pose(6_500, 6_500)),
         ])
+    }
+
+    /// **Doc 17h cut M8b C5**: the `unlawful` bit is a record field — two arenas whose
+    /// ledgers differ only in a `fired` line's `unlawful` hash equal (the hash folds the
+    /// ledger's sequence, item 11, never a line's bytes). The test the brief names,
+    /// `each_new_row_field_moves_the_state_hash`, was deleted in 17b cut M4.6 (see
+    /// `m3_every_part_of_the_answer_the_drop_and_the_seal_digest_moves_the_hash`'s head); this
+    /// pins the same rule for the new field. An `armed` line is a line: it moves the
+    /// sequence, as every line does, and is written only for an ungoverned core.
+    #[test]
+    fn m8b_the_unlawful_bit_is_a_record_field_never_folded() {
+        use crate::arena::ledger::EventKind;
+        let fired = |unlawful| EventKind::Fired {
+            unit: ObjId(4),
+            weapon: smol_str::SmolStr::new_static("cannon"),
+            shot_seq: 1,
+            target: ObjId(9),
+            range_cm: 4_000,
+            rounds: 1,
+            by: Some(smol_str::SmolStr::new_static("mind")),
+            slot: Some(1),
+            unlawful,
+        };
+        let mut lawful = two_tanks();
+        let mut unlawful = two_tanks();
+        lawful
+            .ledger
+            .append(0, fired(false), Vec::new(), 0)
+            .expect("room");
+        unlawful
+            .ledger
+            .append(0, fired(true), Vec::new(), 0)
+            .expect("room");
+        assert_eq!(state_hash(&lawful), state_hash(&unlawful));
     }
 
     #[test]
@@ -2639,6 +2683,7 @@ mod tests {
                 ObjId(4),
                 MindState {
                     order: objective.map(|objective| FrameOrder {
+                        identity: None,
                         squad: "red-1".into(),
                         objective,
                         hold_fire: false,
@@ -3053,6 +3098,7 @@ mod tests {
             let mut arena = base.clone();
             if let Some(state) = arena.minds.get_mut(&ObjId(4)) {
                 state.order = Some(crate::arena::perception::FrameOrder {
+                    identity: None,
                     squad: "red-1".into(),
                     objective: crate::arena::perception::MindObjective::Hold,
                     hold_fire: false,

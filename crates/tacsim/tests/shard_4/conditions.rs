@@ -2903,7 +2903,7 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     // to 10; M5rules moves the ordered rule tree to 11, M5r motor state to 12.
     // Format 16 also carries record-only accepted-order attribution (R4).
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(snapshot.document["format"], 17);
+    assert_eq!(snapshot.document["format"], 18);
     let mut resumed =
         Snapshot::decode(&snapshot.document, definition()).expect("the document decodes");
     resumed.mind_runner = Arc::new(tacsim::arena::mind::NoMind);
@@ -2967,21 +2967,21 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         tacsim::arena::state_hash(&resumed)
     );
 
-    // A format-6 document is refused by name (expected 17 since doc 21 cut G.12a; no migration).
+    // A format-6 document is refused by name (expected 18 since DT.1b; no migration).
     let mut old = snapshot.document.clone();
     old["format"] = serde_json::json!(6);
     assert_eq!(
         Snapshot::head(&old).map(|head| head.format),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 17
+            expected: 18
         })
     );
     assert!(matches!(
         Snapshot::decode(&old, definition()),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 17
+            expected: 18
         })
     ));
 }
@@ -3170,6 +3170,7 @@ fn mind_duel(class: Classification, says: &[(u64, Vec<IntentKind>)]) -> Arena {
 fn hold_fire_on(arena: &mut Arena, unit: ObjId) {
     if let Some(state) = arena.minds.get_mut(&unit) {
         state.order = Some(FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: MindObjective::Hold,
             hold_fire: true,

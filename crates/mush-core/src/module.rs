@@ -493,6 +493,7 @@ pub struct HookReadContext<'a> {
     registry: Option<&'a Registry>,
     read_caller: Option<crate::read_service::OwnerReadCaller>,
     exchange_attempt: Option<&'a crate::core_exchange::ExchangeCarryAttempt>,
+    physical_attempt: Option<&'a crate::physical_transition::PhysicalTransitionAttempt>,
 }
 
 impl<'a> HookReadContext<'a> {
@@ -524,6 +525,7 @@ impl<'a> HookReadContext<'a> {
             registry: None,
             read_caller: None,
             exchange_attempt: None,
+            physical_attempt: None,
         }
     }
 
@@ -541,6 +543,21 @@ impl<'a> HookReadContext<'a> {
         attempt: &'a crate::core_exchange::ExchangeCarryAttempt,
     ) -> Self {
         self.exchange_attempt = Some(attempt);
+        self
+    }
+
+    /// Exact registered structural transition currently evaluating this carry.
+    /// Detached contexts and ordinary movement have no such attribution.
+    pub const fn physical_transition_attempt(
+        &self,
+    ) -> Option<&'a crate::physical_transition::PhysicalTransitionAttempt> {
+        self.physical_attempt
+    }
+    pub(crate) fn with_physical_transition_attempt(
+        mut self,
+        attempt: &'a crate::physical_transition::PhysicalTransitionAttempt,
+    ) -> Self {
+        self.physical_attempt = Some(attempt);
         self
     }
 
@@ -2192,6 +2209,68 @@ mod paired_state_tests {
 // Registration storage (embedded in Registry)
 // ----------------------------------------------------------------------
 
+/// Egress receiver half of an [`OffLoopSimulationHost`].
+///
+/// The world task awaits [`OffLoopEgressReceiver::recv_and_stage`] inside its
+/// `tokio::select!` loop; when at least one message arrives, the receiver stages
+/// the initial message and drains a bounded batch of immediately ready messages
+/// into the host's staging queue, returning the count staged (`Some(n)` with
+/// `n >= 1`) or `None` once the channel closes.
+pub trait OffLoopEgressReceiver: Send {
+    /// Wait for the next egress message, stage it along with a bounded batch of
+    /// immediately queued messages into the host, and return the staged count
+    /// (`None` when the sender side has closed).
+    fn recv_and_stage(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<usize>> + Send + '_>>;
+}
+
+/// Host-facing seam for a module that runs off-loop simulation tasks (such as
+/// `tacsim`'s deterministic arena tasks) alongside the single-threaded world
+/// loop.
+///
+/// Registering an `OffLoopSimulationHost` on [`Registrar`] lets `mush-server`'s
+/// world task drive egress wakeups, stamp and acknowledge ledger writes, and
+/// coordinate graceful shutdown without naming concrete module types.
+pub trait OffLoopSimulationHost: Send + Sync + fmt::Debug {
+    /// Type-erased reference for downcasting in module-specific integration tests.
+    fn as_any(&self) -> &(dyn Any + Send + Sync);
+
+    /// The module name to address when stepping `WorldCommand::ModuleAsyncDone`
+    /// after [`OffLoopEgressReceiver::recv_and_stage`] stages a batch.
+    fn module_name(&self) -> &'static str;
+
+    /// The constant payload tag passed to `WorldCommand::ModuleAsyncDone` for an
+    /// egress drain step.
+    fn egress_payload(&self) -> &'static str;
+
+    /// Claim the single egress receiver for the world loop's `select!`. Returns
+    /// `None` if already claimed.
+    fn take_egress(&self) -> Option<Box<dyn OffLoopEgressReceiver>>;
+
+    /// Bind any unstamped ledger writes queued during the current world step to
+    /// the persistence batch's commit `serial`.
+    fn stamp_ledger_writes(&self, serial: u64);
+
+    /// Release any off-loop tasks waiting on persistence batches up to and
+    /// including `high_water`.
+    fn ack_ledger_upto(&self, high_water: u64);
+
+    /// Synchronously signal all live off-loop tasks to stop without awaiting their
+    /// join handles.
+    fn signal_stop_all(&self);
+
+    /// Close all off-loop task channels and await their termination (bounded by
+    /// the host's join timeout).
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+/// Callback registered by a surface/geology module to install the operator's
+/// [`GeologyBoot`](crate::geology_key::GeologyBoot) into the world's module
+/// state at boot.
+pub type GeologyInstaller =
+    dyn Fn(&mut World, crate::geology_key::GeologyBoot) -> bool + Send + Sync;
+
 /// One registered module tick.
 #[derive(Clone)]
 pub struct TickReg {
@@ -2219,6 +2298,7 @@ struct ObserverReg {
     kind: WorldEventKind,
     module: SmolStr,
     observer: Arc<dyn WorldObserver>,
+    moved_definition: Option<crate::mechanics::DefinitionRef>,
 }
 
 /// One declared cross-namespace write delegation (WS03-A1): module `writer`
@@ -2259,6 +2339,10 @@ pub struct ModuleTables {
     detail_prefixes: Vec<SmolStr>,
     hooks: HashMap<HookPoint, Vec<HookReg>>,
     observers: Vec<ObserverReg>,
+    /// Owners whose exact Moved descriptor validator was installed by Core.
+    moved_observer_factories: BTreeSet<SmolStr>,
+    /// Closed protocols require a current callback, not merely retained metadata.
+    required_moved_observers: BTreeSet<crate::mechanics::DefinitionRef>,
     ticks: Vec<TickReg>,
     panel_feeds: Vec<(SmolStr, SmolStr)>,
     query_handlers: HashMap<SmolStr, (SmolStr, Arc<dyn QueryHandler>)>,
@@ -2306,6 +2390,12 @@ pub struct ModuleTables {
             crate::decision::DecisionCaptureSink,
         ),
     >,
+    /// The one module that hosts off-loop simulation tasks alongside the world
+    /// loop: `(module, host)`.
+    off_loop_simulation_host: Option<(SmolStr, Arc<dyn OffLoopSimulationHost>)>,
+    /// The one module that installs the geology key at boot:
+    /// `(module, installer)`.
+    geology_installer: Option<(SmolStr, Arc<GeologyInstaller>)>,
     state_inits: Vec<StateInit>,
 }
 
@@ -2340,6 +2430,24 @@ impl Registry {
         }
         // 17g C2h: an uncomposed continuation grantee refuses composition.
         self.check_continuation_delegates(module_owners)?;
+        for required in &self.mods.required_moved_observers {
+            if self
+                .mods
+                .observers
+                .iter()
+                .filter(|entry| {
+                    entry.kind == WorldEventKind::Moved
+                        && entry.module.as_str() == required.key().owner.as_str()
+                        && entry.moved_definition.as_ref() == Some(required)
+                })
+                .count()
+                != 1
+            {
+                return Err(ModError::msg(
+                    "joint locomotion requires the exact current Scenes Moved callback",
+                ));
+            }
+        }
         if self.definitions.is_some()
             || self.bridges.is_some()
             || self.definition_migrations.is_some()
@@ -2721,6 +2829,22 @@ impl Registry {
             .collect()
     }
 
+    /// Inspect the actual ordered Moved callback roster without invoking it.
+    /// Anonymous legacy subscriptions are explicit blockers; excess entries
+    /// refuse the whole inspection instead of returning a truncated roster.
+    pub fn moved_observer_roster(
+        &self,
+    ) -> Result<crate::moved_observer::MovedObserverRoster, ModError> {
+        crate::moved_observer::roster(
+            self.mods
+                .observers
+                .iter()
+                .filter(|entry| entry.kind == WorldEventKind::Moved)
+                .map(|entry| (entry.module.as_str(), entry.moved_definition.as_ref())),
+            self.definitions.as_ref(),
+        )
+    }
+
     /// The tick registered by `module` under `tag`, if any.
     #[must_use]
     pub fn tick_reg(&self, module: &str, tag: &str) -> Option<&TickReg> {
@@ -2967,6 +3091,24 @@ impl Registry {
         crate::decision::DecisionCaptureSink,
     )> {
         self.mods.decision_capture_sinks.get(module).cloned()
+    }
+
+    /// The registered off-loop simulation host, if any module installed one.
+    #[must_use]
+    pub fn off_loop_simulation_host(&self) -> Option<Arc<dyn OffLoopSimulationHost>> {
+        self.mods
+            .off_loop_simulation_host
+            .as_ref()
+            .map(|(_, host)| Arc::clone(host))
+    }
+
+    /// The registered geology boot installer, if any module installed one.
+    #[must_use]
+    pub fn geology_installer(&self) -> Option<Arc<GeologyInstaller>> {
+        self.mods
+            .geology_installer
+            .as_ref()
+            .map(|(_, installer)| Arc::clone(installer))
     }
 
     /// Drain the collected state-slot inits (the engine installs them on
@@ -4687,7 +4829,97 @@ impl<'a> Registrar<'a> {
             kind,
             module: self.module.clone(),
             observer,
+            moved_definition: None,
         });
+    }
+
+    pub(crate) fn require_current_moved_observer(
+        &mut self,
+        reference: &crate::mechanics::DefinitionRef,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        self.reg
+            .tables_mut()
+            .required_moved_observers
+            .insert(reference.clone());
+        Ok(())
+    }
+
+    /// Subscribe the actual legacy Moved callback with a stable owner-stamped
+    /// identity. The identity supplies no prepared completion capability.
+    /// Duplicate/current identities and rosters above the bounded limit refuse.
+    pub fn subscribe_moved(
+        &mut self,
+        id: &str,
+        version: u32,
+        observer: Arc<dyn WorldObserver>,
+    ) -> Result<crate::mechanics::DefinitionRef, ModError> {
+        self.require_mechanics_registration_authority()?;
+        let descriptor = crate::moved_observer::descriptor(id, version)?.as_current();
+        let mut count = 0usize;
+        for entry in &self.reg.mods.observers {
+            if entry.kind != WorldEventKind::Moved {
+                continue;
+            }
+            count += 1;
+            if count >= crate::moved_observer::MAX_MOVED_OBSERVERS {
+                return Err(ModError::msg("Moved observer roster is full"));
+            }
+            if entry.module == self.module
+                && entry
+                    .moved_definition
+                    .as_ref()
+                    .is_some_and(|definition| definition.key().id == *descriptor.id())
+            {
+                return Err(ModError::msg(
+                    "Moved observer already has a current callback",
+                ));
+            }
+        }
+        self.ensure_moved_observer_factory()?;
+        let definition = self.definition(descriptor)?;
+        self.reg.tables_mut().observers.push(ObserverReg {
+            kind: WorldEventKind::Moved,
+            module: self.module.clone(),
+            observer,
+            moved_definition: Some(definition.clone()),
+        });
+        Ok(definition)
+    }
+
+    /// Retain an exact historical legacy descriptor without registering a
+    /// callback or making that historical version current or runnable.
+    pub fn retain_moved_observer(
+        &mut self,
+        id: &str,
+        version: u32,
+    ) -> Result<crate::mechanics::DefinitionRef, ModError> {
+        self.require_mechanics_registration_authority()?;
+        let descriptor = crate::moved_observer::descriptor(id, version)?;
+        self.ensure_moved_observer_factory()?;
+        self.definition(descriptor)
+    }
+
+    fn ensure_moved_observer_factory(&mut self) -> Result<(), ModError> {
+        if self
+            .reg
+            .mods
+            .moved_observer_factories
+            .contains(&self.module)
+        {
+            return Ok(());
+        }
+        // This fails if the module preinstalled any validator for the kind.
+        // A permissive external validator can never replace the Core factory.
+        self.definition_validator(
+            crate::moved_observer::kind()?,
+            crate::moved_observer::validate_definition,
+        )?;
+        self.reg
+            .tables_mut()
+            .moved_observer_factories
+            .insert(self.module.clone());
+        Ok(())
     }
 
     /// Declare a typed state slot, installed on the world at engine
@@ -5060,6 +5292,41 @@ impl<'a> Registrar<'a> {
         Ok(())
     }
 
+    /// Register this module as the off-loop simulation host for the world loop.
+    /// At most one module may register a host.
+    pub fn off_loop_simulation_host(
+        &mut self,
+        host: Arc<dyn OffLoopSimulationHost>,
+    ) -> Result<(), ModError> {
+        let tables = self.reg.tables_mut();
+        if let Some((owner, _)) = &tables.off_loop_simulation_host {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "off-loop simulation host",
+                name: SmolStr::new_static("off_loop_simulation_host"),
+                owner: owner.clone(),
+            });
+        }
+        tables.off_loop_simulation_host = Some((self.module.clone(), host));
+        Ok(())
+    }
+
+    /// Register this module's geology key boot installer. At most one module
+    /// may register an installer.
+    pub fn geology_installer(&mut self, installer: Arc<GeologyInstaller>) -> Result<(), ModError> {
+        let tables = self.reg.tables_mut();
+        if let Some((owner, _)) = &tables.geology_installer {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "geology installer",
+                name: SmolStr::new_static("geology_installer"),
+                owner: owner.clone(),
+            });
+        }
+        tables.geology_installer = Some((self.module.clone(), installer));
+        Ok(())
+    }
+
     /// Register the handler for Discord component interactions whose
     /// `custom_id` starts with `prefix` (programme D3, 03 §7a.4). Prefixes are
     /// owner namespaces — `oncall:` — and the gateway keeps `d:` for itself;
@@ -5198,7 +5465,27 @@ pub fn check_move_attempt(
     dest: ObjId,
     lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RichText> {
-    for h in reg.hooks(HookPoint::MoveAttempt) {
+    check_move_attempt_via(
+        reg.hooks(HookPoint::MoveAttempt),
+        w,
+        actor,
+        exit,
+        dest,
+        lens,
+    )
+}
+
+/// The one ordinary movement-hook loop, also used by inert admission with the
+/// actual registered slice. No structural-transition exemption is attached.
+pub(crate) fn check_move_attempt_via(
+    hooks: &[HookReg],
+    w: &World,
+    actor: ObjId,
+    exit: Option<ObjId>,
+    dest: ObjId,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> Result<(), RichText> {
+    for h in hooks {
         let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.move_attempt(&ctx, actor, exit, dest)?;
     }

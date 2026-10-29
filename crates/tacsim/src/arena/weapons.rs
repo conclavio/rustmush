@@ -1057,7 +1057,11 @@ impl Arena {
                     else {
                         return Err(Refusal::Unwarranted);
                     };
-                    condition_is_lawful(cond, self.odds_floor_permille)?;
+                    // Doc 17h cut M8b C4 (D-UM-17's third point, D-UM-42): an
+                    // ungoverned core alone skips the floor at the cited fire.
+                    if !self.floor_lifted(unit) {
+                        condition_is_lawful(cond, self.odds_floor_permille)?;
+                    }
                 }
                 // (3b) hold-fire: the hull's standing order (the ARENA's row —
                 // a mind that ended its order early is still held until the row
@@ -1148,6 +1152,18 @@ impl Arena {
         if let Some(observer) = &mut self.acceptance {
             observer.record(resolution.p_permille);
         }
+        // Doc 17h cut M8b C5 (D-UM-42): a slot's shot under the floor, or on an
+        // unclassified contact, that only an ungoverned core let through — a
+        // record field of the `fired` line, false (absent) on every other shot.
+        let unlawful = self.floor_lifted(unit)
+            && by
+                .slot()
+                .and_then(|n| {
+                    let at = usize::from(n).checked_sub(1)?;
+                    self.conditions.slots(unit).get(at).cloned().flatten()
+                })
+                .as_ref()
+                .is_some_and(|rule| self.rule_unlawful(unit, rule));
         let hash = self.event_hash();
         if let Some(state) = self.unit_mut(unit) {
             state.ready_at_ms.insert(SmolStr::new(weapon), ready_at);
@@ -1203,6 +1219,7 @@ impl Arena {
                 // 17b cut M1b.1 (D-UM-14): who fired, where the law asks.
                 by: by.word().map(SmolStr::new_static),
                 slot: by.slot(),
+                unlawful,
             },
             Vec::new(),
             hash,
@@ -2094,6 +2111,7 @@ mod tests {
                 crate::arena::mind::MindState::fresh(&crate::config::ReflexConfig::default())
             })
             .order = Some(crate::arena::perception::FrameOrder {
+            identity: None,
             squad: SmolStr::new("red-1"),
             objective: crate::arena::perception::MindObjective::Hold,
             hold_fire: true,
@@ -2239,6 +2257,175 @@ mod tests {
         assert_eq!(
             holding_fire(base).resolve_fire_by(RED, "cannon", 0, FiredBy::Machine),
             Err(Refusal::Unwarranted)
+        );
+    }
+
+    /// The ledger's lines so far, as text.
+    fn journal_text(arena: &mut Arena) -> String {
+        let mut journal = Vec::new();
+        arena.ledger.flush();
+        for chunk in arena.ledger.take_chunks() {
+            journal.extend_from_slice(&chunk.bytes);
+        }
+        String::from_utf8(journal).unwrap_or_default()
+    }
+
+    /// `arena` with red's core ungoverned (its seal's governor off).
+    fn ungoverned(mut arena: Arena) -> Arena {
+        if let Some(state) = arena.unit_mut(RED) {
+            state.seal.governed = false;
+        }
+        assert!(arena.floor_lifted(RED));
+        arena
+    }
+
+    /// **Doc 17h cut M8b C4/C5, the floor's second and third points** (D-UM-17, D-UM-42): on
+    /// a governed core an arming under the floor is refused `Unlawful` at its landing and a
+    /// cited fire whose slot fell under the floor is refused `Unlawful`; on an ungoverned core
+    /// both land, the arming journalled as an `armed` line `unlawful: true` and the shot's
+    /// `fired` line carrying `unlawful: true`. A lawful shot on the same ungoverned core
+    /// carries no `unlawful` key, and nothing about it reaches a notice.
+    #[test]
+    fn m8b_an_ungoverned_core_skips_the_floor_at_the_arming_and_the_cited_fire() {
+        use crate::arena::conditions::Arming;
+        let mind = |slot: Option<u8>| FiredBy::Mind { slot };
+        // The arming's landing.
+        let mut governed = a_minds_lock();
+        assert!(!governed.floor_lifted(RED));
+        assert_eq!(
+            governed.resolve_arming(RED, &Arming::Arm(on_lock("machine_gun", 50)), 0),
+            Err(Refusal::Unlawful)
+        );
+        assert!(!journal_text(&mut governed).contains("\"armed\""));
+        let mut lifted = ungoverned(a_minds_lock());
+        assert_eq!(
+            lifted.resolve_arming(RED, &Arming::Arm(on_lock("machine_gun", 50)), 0),
+            Ok(Some(2))
+        );
+        let text = journal_text(&mut lifted);
+        assert!(
+            text.contains(
+                "\"kind\":\"armed\",\"unit\":4,\"weapon\":\"machine_gun\",\"slot\":2,\"unlawful\":true"
+            ),
+            "{text}"
+        );
+        // A lawful arming on the ungoverned core journals nothing.
+        let mut lawful = ungoverned(a_minds_lock());
+        assert_eq!(
+            lawful.resolve_arming(RED, &Arming::Arm(on_lock("machine_gun", 300)), 0),
+            Ok(Some(2))
+        );
+        assert!(!journal_text(&mut lawful).contains("\"armed\""));
+        // The cited fire: the floor raised over S1's 100.
+        let mut under = a_minds_lock();
+        under.odds_floor_permille = 200;
+        assert_eq!(
+            under
+                .clone()
+                .resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::Unlawful)
+        );
+        let mut fires = ungoverned(under);
+        assert_eq!(
+            fires.resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Ok(1)
+        );
+        let text = journal_text(&mut fires);
+        assert!(
+            text.contains("\"by\":\"mind\",\"slot\":1,\"unlawful\":true"),
+            "{text}"
+        );
+        // A lawful shot on the ungoverned core is a plain `fired` line.
+        let mut plain = ungoverned(a_minds_lock());
+        assert_eq!(
+            plain.resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Ok(1)
+        );
+        let text = journal_text(&mut plain);
+        assert!(
+            text.contains("\"fired\"") && !text.contains("unlawful"),
+            "{text}"
+        );
+    }
+
+    /// **Doc 17h cut M8b G11**: the `Arming::Rules` path and an unclassified contact. A
+    /// governed hull refuses a rule set whose odds predicate is under the floor, and an arming
+    /// on a contact it never classified; an ungoverned hull lands both, journalling one `armed`
+    /// line per unlawful row and none for the lawful row beside it.
+    #[test]
+    fn m8b_the_rules_path_and_an_unclassified_contact_are_lifted_and_journalled() {
+        use crate::arena::conditions::{Arming, Rule, RulePredicate, SlotTarget};
+        let under = Rule::fire_rule(
+            on_lock("machine_gun", 300),
+            vec![RulePredicate::Odds {
+                weapon: None,
+                min_permille: 50,
+            }],
+        );
+        let lawful = Rule::fire_rule(on_lock("cannon", 300), Vec::new());
+        let rules = Arming::Rules {
+            slot: None,
+            rules: vec![lawful, under],
+        };
+        let mut governed = a_minds_lock();
+        assert_eq!(
+            governed.resolve_arming(RED, &rules, 0),
+            Err(Refusal::Unlawful)
+        );
+        let mut lifted = ungoverned(a_minds_lock());
+        assert!(lifted.resolve_arming(RED, &rules, 0).is_ok());
+        let text = journal_text(&mut lifted);
+        assert_eq!(text.matches("\"kind\":\"armed\"").count(), 1, "{text}");
+        assert!(text.contains("\"weapon\":\"machine_gun\""), "{text}");
+        // A contact this hull never classified.
+        let mut unknown = on_lock("machine_gun", 300);
+        unknown.target = SlotTarget::Contact {
+            id: crate::arena::state::ContactId(0xdead_beef),
+        };
+        let mut governed = a_minds_lock();
+        assert_eq!(
+            governed.resolve_arming(RED, &Arming::Arm(unknown.clone()), 0),
+            Err(Refusal::Unlawful)
+        );
+        let mut lifted = ungoverned(a_minds_lock());
+        assert!(lifted.resolve_arming(RED, &Arming::Arm(unknown), 0).is_ok());
+        assert!(journal_text(&mut lifted).contains("\"kind\":\"armed\""));
+    }
+
+    /// **Doc 17h cut M8b G6**: the floor comes back with the core. An ungoverned hull whose
+    /// core is destroyed (`destroy_core`'s `RevokeCapability` of `tacsim.core`) flies the ROM,
+    /// and its next under-floor cited fire is refused `Unlawful` again.
+    #[test]
+    fn m8b_the_floor_returns_when_the_ungoverned_core_is_destroyed() {
+        let mind = |slot: Option<u8>| FiredBy::Mind { slot };
+        let mut under = a_minds_lock();
+        under.odds_floor_permille = 200;
+        let mut lifted = ungoverned(under);
+        assert!(
+            lifted
+                .clone()
+                .resolve_fire_by(RED, "cannon", 0, mind(Some(1)))
+                .is_ok()
+        );
+        let state = lifted.unit_mut(RED).expect("red");
+        let key = mush_tactics::CapabilityKey {
+            id: mush_tactics::CapabilityId::new(crate::definitions::unit::CORE_CAPABILITY)
+                .expect("an id"),
+            source: Some(mush_tactics::ComponentId::new("core").expect("an id")),
+        };
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::RevokeCapability { key }],
+            Some(state.unit.revision()),
+            None,
+        )
+        .expect("a plan");
+        state.unit = mush_tactics::apply(&state.unit, &plan, 0)
+            .expect("revokes")
+            .0;
+        assert!(!lifted.floor_lifted(RED), "no core, no lifted floor");
+        assert_eq!(
+            lifted.resolve_fire_by(RED, "cannon", 0, mind(Some(1))),
+            Err(Refusal::Unlawful)
         );
     }
 

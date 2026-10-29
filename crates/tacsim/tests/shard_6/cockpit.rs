@@ -63,29 +63,14 @@ fn config() -> TacsimConfig {
 fn roster_with(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
-    let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
     // Reboots audit the foundry through the inventory owner, as production does.
-    let (mut mods, inventory) = comp::server_modules_with_tacsim(
-        mush_weather::WeatherConfig::default(),
+    let (mut mods, inventory) = comp::domain_modules_with_economy(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     // Match production: load the lane catalog when applying the game boot packs.
     mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
@@ -1252,7 +1237,7 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
         live.get("schema"),
         Some(&serde_json::json!({
             "id": "arena.cockpit",
-            "version": 7,
+            "version": 8,
             "shape": "grid",
             "retain": "latest",
         }))
@@ -3876,7 +3861,7 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
     assert_eq!(
         cockpit::cockpit_cleared(),
         serde_json::json!({
-            "schema": { "id": "arena.cockpit", "version": 7, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 8, "retain": "latest" },
             "seated": false,
         })
     );
@@ -13951,11 +13936,11 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
     ))
     .expect("the fixture is JSON");
     assert_eq!(payload, committed, "the fixture round-trips with the keys");
-    // M7 completes the shared class-based odds projection at version 7.
-    assert_eq!(cockpit::FRAME_VERSION, 7);
+    // DT.1b adds opaque standing-order identity at version 8.
+    assert_eq!(cockpit::FRAME_VERSION, 8);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(7))
+        Some(&serde_json::json!(8))
     );
     assert_eq!(payload.get("t_ms"), Some(&serde_json::json!(61_250)));
     assert_eq!(payload.get("order"), Some(&serde_json::Value::Null));
@@ -14079,6 +14064,7 @@ fn m1a3_the_keyframe_spells_an_order_with_designators_and_the_time_left() {
     let mut frame = fixture::frame();
     let hostile = frame.contacts.first().map(|row| row.id).expect("BA's row");
     frame.order = Some(FrameOrder {
+        identity: None,
         squad: SmolStr::new_static("red-1"),
         objective: MindObjective::Engage {
             target: Some(hostile),
@@ -14092,6 +14078,7 @@ fn m1a3_the_keyframe_spells_an_order_with_designators_and_the_time_left() {
         payload.get("order"),
         Some(&serde_json::json!({
             "squad": "red-1",
+            "identity": null,
             "objective": "engage",
             "target": "BA",
             "to": null,
@@ -14103,6 +14090,7 @@ fn m1a3_the_keyframe_spells_an_order_with_designators_and_the_time_left() {
         }))
     );
     let order = |objective: MindObjective, expires_ms: i64| FrameOrder {
+        identity: None,
         squad: SmolStr::new_static("red-1"),
         objective,
         hold_fire: true,
@@ -14537,10 +14525,10 @@ fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
     use tacsim::arena::weapons::FrameArming;
     let frame = fixture::frame();
     let payload = cockpit::status_frame(fixture::MATCH, &frame);
-    assert_eq!(cockpit::FRAME_VERSION, 7);
+    assert_eq!(cockpit::FRAME_VERSION, 8);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(7))
+        Some(&serde_json::json!(8))
     );
     assert_eq!(
         payload.pointer("/weapons/0/armed"),
@@ -16934,7 +16922,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     // adds `@mind/publish`.
     for line in [
         "@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)",
-        "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed>",
+        "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]",
         "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)",
         "@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)",
     ] {
@@ -18918,4 +18906,259 @@ fn g14_each_contact_carries_one_health_word_or_null() {
             );
         }
     }
+}
+
+/// A real connected practice match: two red players, one red machine and a
+/// blue player. Connections matter independently from the assigned cockpit.
+async fn dt_live_rig() -> Rig {
+    let mut rig = Rig::boot_with(3, y1_config());
+    for n in 0..3 {
+        let actor = rig.pilot(n);
+        let events = rig.tw.connect(actor);
+        rig.log.extend(events);
+    }
+    rig.fly_with_ai(2, 1, 3).await;
+    for n in 0..3 {
+        assert!(rig.frame_for(n).await, "each assigned pilot gets a frame");
+    }
+    rig
+}
+
+fn dt_live_projection(rig: &Rig, n: usize) -> serde_json::Value {
+    rig.query(rig.pilot(n), tacsim::arena_bridge::FRAME_FEED)
+        .get("detachment")
+        .cloned()
+        .expect("the active group's frame carries its roster")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dt_live_opt_in_emits_versioned_roster_and_player_wilco_stays_advisory() {
+    let mut rig = dt_live_rig().await;
+    assert!(
+        rig.query(rig.pilot(0), tacsim::arena_bridge::FRAME_FEED)
+            .get("detachment")
+            .is_none(),
+        "an ordinary practice match has not opted into detachment command"
+    );
+    assert!(rig.say(0, "+sortie").contains("+sortie/practice"));
+
+    let events = rig.events(0, "+sortie/practice");
+    let pushed = Rig::panel(&events).expect("opt-in pushes the production cockpit frame");
+    let roster = pushed
+        .get("detachment")
+        .expect("the pushed frame has the roster");
+    assert_eq!(roster, &dt_live_projection(&rig, 0));
+    for field in ["id", "revision", "term"] {
+        assert!(
+            roster[field]
+                .as_str()
+                .is_some_and(|value| value.parse::<u64>().is_ok()),
+            "{field} preserves its full integer as a wire string"
+        );
+    }
+    assert_eq!(roster["leader_slot"], 1);
+    let slots = roster["slots"].as_array().expect("stable numbered slots");
+    assert_eq!(slots.len(), 3);
+    assert_eq!(
+        slots
+            .iter()
+            .map(|slot| slot["slot"].as_u64())
+            .collect::<Vec<_>>(),
+        [Some(1), Some(2), Some(3)]
+    );
+    assert_eq!(
+        slots
+            .iter()
+            .map(|slot| slot["callsign"].as_str())
+            .collect::<Vec<_>>(),
+        [Some("RA"), Some("RB"), Some("RC")]
+    );
+    assert_eq!(slots[0]["controller"], "player");
+    assert_eq!(slots[1]["controller"], "player");
+    assert_eq!(slots[2]["controller"], "automated");
+    assert!(
+        slots[2]["pilot"].is_null(),
+        "a machine has no invented persona"
+    );
+    assert!(
+        roster["all_order_prefill"]
+            .as_str()
+            .expect("ALL prefill")
+            .ends_with(" ALL ")
+    );
+    assert!(roster["my_order"].is_null());
+    assert!(
+        rig.query(rig.pilot(2), tacsim::arena_bridge::FRAME_FEED)
+            .get("detachment")
+            .is_none(),
+        "opting in red does not expose or activate blue"
+    );
+
+    let player_unit = rig.tank(1);
+    let before = rig.held_frame(1);
+    let epochs = Channel::ALL.map(|channel| rig.epoch(player_unit, channel));
+    let order = format!(
+        "{}WITHDRAW",
+        slots[1]["order_prefill"].as_str().expect("player prefill")
+    );
+    let delivery = rig.events(0, &order);
+    assert!(
+        rig.tw
+            .seen_by(&delivery, rig.pilot(1))
+            .iter()
+            .any(|line| line.contains("Order from") && line.contains("WITHDRAW")),
+        "the connected player receives the advisory order"
+    );
+    let recipient = dt_live_projection(&rig, 1);
+    assert_eq!(recipient["my_order"]["objective"], "WITHDRAW");
+    assert!(recipient["my_order"]["sequence"].is_string());
+    assert!(recipient["my_order"]["response"].is_null());
+    let wilco = recipient["wilco_command"]
+        .as_str()
+        .expect("receipt's fenced response");
+    assert_eq!(
+        rig.say(1, wilco),
+        "WILCO recorded. Your controls remain yours.\n[panel arena.cockpit]"
+    );
+    assert_eq!(dt_live_projection(&rig, 1)["my_order"]["response"], "wilco");
+    assert_eq!(
+        Channel::ALL.map(|channel| rig.epoch(player_unit, channel)),
+        epochs
+    );
+
+    // A machine order after the acknowledgement provides a real arena barrier:
+    // its journal line proves the task has processed the earlier host offers.
+    let machine_order = format!(
+        "{}HOLD",
+        slots[2]["order_prefill"].as_str().expect("machine prefill")
+    );
+    assert!(rig.say(0, &machine_order).starts_with("Order sent;"));
+    assert!(
+        rig.tape_until(|event| matches!(
+            &event.kind,
+            tacsim::arena::ledger::EventKind::DetachmentCommanded { .. }
+        ))
+        .await,
+        "the machine command reaches the actual arena task"
+    );
+    assert!(!rig.tape.iter().any(|event| matches!(&event.kind, tacsim::arena::ledger::EventKind::DetachmentCommanded { unit, .. } if *unit == player_unit)), "neither the player advisory nor WILCO actuates a controller");
+    let after = rig.held_frame(1);
+    assert_eq!(after.pose, before.pose);
+    assert_eq!(after.speed_cms, before.speed_cms);
+    assert_eq!(after.power, before.power);
+    assert!(after.order.is_none());
+    assert_eq!(
+        Channel::ALL.map(|channel| rig.epoch(player_unit, channel)),
+        epochs
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dt_live_controller_delivery_is_journalled_and_stale_or_legacy_orders_refuse() {
+    let mut rig = dt_live_rig().await;
+    assert!(rig.say(0, "+sortie/practice").contains("leader slot 1"));
+    let roster = dt_live_projection(&rig, 0);
+    let id = roster["id"]
+        .as_str()
+        .expect("id")
+        .parse::<u64>()
+        .expect("numeric id");
+    let revision = roster["revision"]
+        .as_str()
+        .expect("revision")
+        .parse::<u64>()
+        .expect("numeric revision");
+    let term = roster["term"]
+        .as_str()
+        .expect("term")
+        .parse::<u64>()
+        .expect("numeric term");
+    let machine = rig
+        .record()
+        .callsigns
+        .iter()
+        .find_map(|(unit, callsign)| (callsign.to_string() == "RC").then_some(*unit))
+        .expect("red's third slot is its machine");
+    let issuer = rig.pilot(0);
+    let issuer_unit = rig.tank(0);
+    let order = format!("ORDER DT:{id}:{revision}:{term} 3 HOLD");
+    assert_eq!(
+        rig.say(0, &order),
+        "Order sent; delivery and acknowledgement are reported separately.\n[panel arena.cockpit]"
+    );
+    let accepted = |event: &tacsim::arena::ledger::LedgerEvent| {
+        matches!(
+            &event.kind,
+            tacsim::arena::ledger::EventKind::DetachmentCommanded { unit, command }
+                if *unit == machine && command.issuer == issuer
+                    && command.issuer_unit == issuer_unit
+                    && command.authority.detachment == id
+                    && command.authority.revision == revision
+                    && command.authority.term == term
+                    && command.authority_epoch > 0
+                    && command.sequence == 1
+                    && command.expires_at_ms.is_none()
+                    && command.directive.is_some_and(|directive| directive.objective == tacsim::deliberation::Objective::Hold)
+        )
+    };
+    assert!(
+        rig.tape_until(accepted).await,
+        "the delivered command carries the admitted fences into the arena ledger"
+    );
+
+    assert_eq!(
+        rig.say(
+            0,
+            &format!(
+                "ORDER DT:{id}:{}:{term} 3 WITHDRAW",
+                revision.wrapping_add(1)
+            )
+        ),
+        "Detachment changed; refresh the roster before ordering."
+    );
+    assert_eq!(
+        rig.say(
+            0,
+            &format!("ORDER DT:{id}:{revision}:{} 3 WITHDRAW", term + 1)
+        ),
+        "Detachment changed; refresh the roster before ordering."
+    );
+    assert_eq!(
+        rig.say(1, &order),
+        "Only the current detachment leader may issue orders."
+    );
+    for command in ["ORDER red-1 WITHDRAW", "ORDER red-1 RELEASE"] {
+        let said = rig.say(0, command);
+        assert!(
+            said.starts_with("Refused:"),
+            "legacy command cannot bypass active detachment ownership: {said}"
+        );
+    }
+    // The next valid command is sequence two: every rejected path left the
+    // detachment journal and sequence allocator untouched.
+    assert!(
+        rig.say(0, &format!("ORDER DT:{id}:{revision}:{term} 3 RELEASE"))
+            .starts_with("Order sent;")
+    );
+    assert!(
+        rig.tape_until(|event| matches!(
+            &event.kind,
+            tacsim::arena::ledger::EventKind::DetachmentCommanded { unit, command }
+                if *unit == machine && command.sequence == 2 && command.directive.is_none()
+        ))
+        .await
+    );
+    let commands = rig
+        .tape
+        .iter()
+        .filter_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::DetachmentCommanded { unit, command }
+                if *unit == machine =>
+            {
+                Some(command.sequence)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(commands, [1, 2]);
 }

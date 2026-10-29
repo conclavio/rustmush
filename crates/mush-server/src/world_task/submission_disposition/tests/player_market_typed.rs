@@ -504,7 +504,7 @@ fn empty_holdings(section: &str) -> Value {
 
 /// 17g C3a test 3 (the C3 plan §4.1, §2.6): on the format-2 Active launch
 /// with no listing, through the real granted reads (the registry still
-/// composes 33 owner-read services and 35 grants: C3 adds none):
+/// composes 35 owner-read services and 38 grants with DT.2b1 planning):
 /// - `mind.market` at the counter is open, `EMPTY`, no rows, no cursor and
 ///   an empty own strip; away from the counter its notice is `COUNTER`; an
 ///   `after` code no listing has is the `NO_LISTING` notice over the first
@@ -525,8 +525,8 @@ async fn typed_market_panels_are_closed_private_and_own_only() -> TestResult {
         let p = w.launch.principals;
         check_eq!(
             w.server.owner_read_counts(),
-            Some((33, 35)),
-            "the composed reads, unchanged by C3"
+            Some((35, 38)),
+            "the composed reads, including DT.2b1 planning and unit authority"
         );
         let known = known_accounts(&w).await?;
         let room = [p.author, p.buyer, w.alt, w.bystander];
@@ -607,7 +607,7 @@ async fn typed_market_panels_are_closed_private_and_own_only() -> TestResult {
                 other => return Err(format!("the room: {feed} {params}: {other:?}").into()),
             }
         }
-        check_eq!(w.server.owner_read_counts(), Some((33, 35)));
+        check_eq!(w.server.owner_read_counts(), Some((35, 38)));
         Ok::<_, Box<dyn std::error::Error>>(())
     })
     .await;
@@ -727,7 +727,8 @@ fn answered(line: &str) -> bool {
 /// which `@mind/file` finds the finished run.
 async fn rated(w: &World, author: ObjId, revision: &mush_roll::Revision) -> TestResult {
     let identity = mush_roll::commerce::RevisionIdentity::capture(revision)?;
-    let end = Instant::now() + Duration::from_secs(14_400);
+    let started = Instant::now();
+    let end = started + Duration::from_secs(14_400);
     let mut settled = false;
     let mut completed: Option<Instant> = None;
     loop {
@@ -755,7 +756,15 @@ async fn rated(w: &World, author: ObjId, revision: &mush_roll::Revision) -> Test
             }
         }
         match completed {
-            Some(_) if settled => return Ok(()),
+            Some(_) if settled => {
+                // The rating's wall, for the dispatch log (as C2's story).
+                eprintln!(
+                    "M7_STORY_RATED elapsed_s={} pulse_ms={}",
+                    started.elapsed().as_secs(),
+                    w.launch.config.tacsim.minds.bulk_maintenance_ms
+                );
+                return Ok(());
+            }
             Some(at) => check!(
                 at.elapsed() < STEP,
                 "Registry work finished. after the completion"

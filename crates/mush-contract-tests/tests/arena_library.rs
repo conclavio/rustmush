@@ -804,11 +804,16 @@ const OBSERVER_NAMES: [&str; 4] = [
 #[test]
 fn the_observer_has_no_path_into_a_pilot_feed() {
     let root = repo_root();
-    let cockpit_path = root.join("crates/tacsim/src/match_/cockpit.rs");
+    let cockpit_paths = [
+        "crates/tacsim/src/match_/cockpit.rs",
+        "crates/tacsim/src/match_/cockpit/frames.rs",
+        "crates/tacsim/src/match_/cockpit/notices.rs",
+        "crates/tacsim/src/match_/cockpit/orders.rs",
+        "crates/tacsim/src/match_/cockpit/sensors_spots.rs",
+        "crates/tacsim/src/match_/cockpit/weapons_fire.rs",
+    ];
     let view_path = root.join("crates/tacsim/src/arena/view.rs");
-    let step_path = root.join("crates/tacsim/src/arena/step.rs");
-    let cockpit = fs::read_to_string(&cockpit_path)
-        .unwrap_or_else(|error| panic!("{}: {error}", cockpit_path.display()));
+    let step_path = root.join("crates/tacsim/src/arena/step/frames.rs");
     // 17b cut M1a.2: the row formatter the cockpit re-exports.
     let view = fs::read_to_string(&view_path)
         .unwrap_or_else(|error| panic!("{}: {error}", view_path.display()));
@@ -826,7 +831,10 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
     let lines: Vec<&str> = step.lines().collect();
     let start = lines
         .iter()
-        .position(|line| line.trim_start().starts_with("fn frames("))
+        .position(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("fn frames(") || trimmed.starts_with("pub(super) fn frames(")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "no `fn frames(` in {}: `Arena::frames` moved, and this gate is now asserting \
@@ -846,18 +854,21 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
             line.len() - trimmed.len() == indent
                 && (trimmed.starts_with("fn ")
                     || trimmed.starts_with("pub fn ")
-                    || trimmed.starts_with("pub(crate) fn "))
+                    || trimmed.starts_with("pub(crate) fn ")
+                    || trimmed.starts_with("pub(super) fn "))
                 && !trimmed.starts_with("pub fn set_frame_workers(")
                 && !trimmed.starts_with("fn frame_candidates(")
+                && !trimmed.starts_with("pub(super) fn frame_candidates(")
                 && !trimmed.starts_with("pub(crate) fn frame_for(")
                 && !trimmed.starts_with("fn frame_mind(")
+                && !trimmed.starts_with("pub(super) fn frame_mind(")
                 && !trimmed.starts_with("pub fn frame_odds(")
         })
         .map_or(lines.len(), |(n, _)| n);
     let frames_text = lines.get(start..end).unwrap_or_default().join("\n");
     assert!(
         frames_text.contains("Frame {"),
-        "the slice of step.rs read as `Arena::frames` builds no `Frame`; the scan is reading \
+        "the slice of step/frames.rs read as `Arena::frames` builds no `Frame`; the scan is reading \
          the wrong place:\n{frames_text}"
     );
     assert!(
@@ -866,19 +877,32 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
             && frames_text.contains("fn frame_for(")
             && frames_text.contains("fn frame_mind(")
             && frames_text.contains("fn frame_odds("),
-        "the slice of step.rs read as `Arena::frames` stops before its worker policy, candidates, `frame_for`, `frame_mind` \
+        "the slice of step/frames.rs read as `Arena::frames` stops before its worker policy, candidates, `frame_for`, `frame_mind` \
          and `frame_odds`, which build its frames (17b cut M1a.3, 17b cut M5.4); re-point \
          it:\n{frames_text}"
     );
 
     let mut offences: Vec<String> = Vec::new();
+    for rel in cockpit_paths {
+        let path = root.join(rel);
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        for name in OBSERVER_NAMES {
+            if let Some((n, _)) = text
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.contains(name))
+            {
+                offences.push(format!("{rel}, line {}: names {name:?}", n + 1));
+            }
+        }
+    }
     // Each text with the file line its first line is.
     for (what, text, first) in [
-        ("crates/tacsim/src/match_/cockpit.rs", cockpit.as_str(), 1),
         ("crates/tacsim/src/arena/view.rs", view.as_str(), 1),
         (
             "`Arena::frames`, `frame_for`, `frame_mind` and `frame_odds` in \
-             crates/tacsim/src/arena/step.rs",
+             crates/tacsim/src/arena/step/frames.rs",
             frames_text.as_str(),
             start + 1,
         ),

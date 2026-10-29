@@ -17,7 +17,8 @@ pub struct RelayMetric;
 /// Freeze a sender's structural address at submission, including aliases that
 /// have no typed ticket read context. This does not calculate distance or claim
 /// the ship's ticket is valid: the existing routing snapshot still owns that.
-pub(crate) fn source_address(world: &World, object: ObjId) -> Option<ObjId> {
+#[must_use]
+pub fn source_address(world: &World, object: ObjId) -> Option<ObjId> {
     let state = world.module_state::<mush_sim::SpatialState>()?;
     if state.is_quarantined(object) {
         return None;

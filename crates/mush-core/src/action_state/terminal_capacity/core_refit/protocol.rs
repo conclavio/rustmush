@@ -139,14 +139,51 @@ impl Protocol {
         for p in &self.participants {
             definitions.get_exact(p).map_err(bad)?;
         }
-        let recipe: DefinitionRef = parsed(field(policy, "recipe")?)?;
-        definitions.get_exact(&recipe).map_err(bad)?;
-        let roots: [DefinitionRef; 3] = parsed(field(policy, "fitted_units")?)?;
-        for r in roots {
+        for r in policy_references(policy)? {
             definitions.get_exact(&r).map_err(bad)?;
         }
         Ok(())
     }
+}
+/// **Every definition a refit policy names** (doc 17h cut M8b): the chartered recipe, the
+/// ungoverning recipe when composed, and every root — the line family, the further families,
+/// the twins and the coreless bases — each with a non-zero digest; sorted, deduplicated. A
+/// line-only policy names what it always did.
+pub(super) fn policy_references(policy: &Value) -> Result<Vec<DefinitionRef>, ActionStateError> {
+    let recipe_of = |value: &Value, id: &str| -> Result<DefinitionRef, ActionStateError> {
+        let recipe: DefinitionRef = parsed(value)?;
+        if recipe.key().kind.as_str() != "recipe"
+            || recipe.key().id.as_str() != id
+            || recipe.version() != 1
+        {
+            return Err(refused("core refit recipe identity"));
+        }
+        Ok(recipe)
+    };
+    let mut refs = vec![recipe_of(field(policy, "recipe")?, "core_refit")?];
+    let roots: [DefinitionRef; 3] = parsed(field(policy, "fitted_units")?)?;
+    refs.extend(roots);
+    if let Some(families) = policy.get("families") {
+        let families: Vec<[DefinitionRef; 3]> = parsed(families)?;
+        refs.extend(families.into_iter().flatten());
+    }
+    if let Some(ungovern) = policy.get("ungovern") {
+        refs.push(recipe_of(field(ungovern, "recipe")?, "core_ungovern")?);
+        let twins: Vec<[DefinitionRef; 3]> = parsed(field(ungovern, "twins")?)?;
+        refs.extend(twins.into_iter().flatten());
+    }
+    if let Some(coreless) = policy.get("coreless") {
+        let bases: Vec<Value> = parsed(coreless)?;
+        for base in bases {
+            refs.push(parsed(field(&base, "base")?)?);
+        }
+    }
+    if refs.iter().any(|r| r.digest().as_bytes() == &[0; 32]) {
+        return Err(refused("core refit zero digest"));
+    }
+    refs.sort();
+    refs.dedup();
+    Ok(refs)
 }
 pub(super) fn action_reference(
     policy: &Value,
@@ -165,18 +202,9 @@ pub(super) fn action_reference(
                 vec![],
             )
         } else {
-            let recipe: DefinitionRef = parsed(field(policy, "recipe")?)?;
-            if recipe.key().kind.as_str() != "recipe"
-                || recipe.key().id.as_str() != "core_refit"
-                || recipe.version() != 1
-            {
-                return Err(refused("core refit recipe identity"));
-            }
-            let roots: [DefinitionRef; 3] = parsed(field(policy, "fitted_units")?)?;
-            let mut refs = vec![recipe];
-            refs.extend(roots);
-            refs.sort();
-            refs.dedup();
+            let refs = policy_references(policy)?;
+            // `fee_minor` is `core_refit`'s fee; the ungoverning recipe's is the policy's
+            // own `ungovern.fee_minor` (doc 17h cut M8b G3), inside `policy`.
             let payload = if index == 0 {
                 json!({"format":1,"protocol":"certified_core_refit_v1","policy":policy,"fee_minor":10000,"reservation_ic_seconds":604800,"incoming":"delivered_certified_core","supplier_consent":"acknowledged_exact_offer_v1"})
             } else {
@@ -239,5 +267,81 @@ pub(super) fn descriptor(name: &str) -> Result<StateFamilyDescriptor, ActionStat
             .map_err(bad)
         }
         _ => Err(refused("core refit family")),
+    }
+}
+
+#[cfg(test)]
+mod m8b_tests {
+    //! Doc 17h cut M8b (G11, G12): the policy's references and the slot's facility.
+    use super::*;
+    use crate::{CommitToken, mechanics::DefinitionDigest};
+
+    fn reference(kind: &str, id: &str) -> DefinitionRef {
+        DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("tacsim").expect("an owner"),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new(kind).expect("a kind"),
+                    DefinitionId::new(id).expect("an id"),
+                    1,
+                    json!({"fixture": id}),
+                )
+                .expect("a descriptor"),
+            )
+            .expect("registers")
+    }
+    fn policy(ungovern_recipe: &str) -> Value {
+        let units = |ids: [&str; 3]| ids.map(|id| reference("unit", id));
+        let fitted = units(["a", "b", "c"]);
+        let rig = units(["d", "e", "f"]);
+        let line_twins = units(["g", "h", "i"]);
+        let rig_twins = units(["j", "k", "l"]);
+        let recipe = reference("recipe", "core_refit");
+        let ungovern = reference("recipe", ungovern_recipe);
+        let base = reference("unit", "m");
+        json!({
+            "recipe": recipe,
+            "fitted_units": fitted,
+            "families": [rig],
+            "ungovern": {
+                "recipe": ungovern,
+                "factory": 20,
+                "twins": [line_twins, rig_twins],
+            },
+            "coreless": [{"base": base, "family": 1}],
+            "factory": 10,
+        })
+    }
+
+    #[test]
+    fn m8b_every_root_and_both_recipes_are_named_and_a_wrong_recipe_is_refused() {
+        let refs = policy_references(&policy("core_ungovern")).expect("names them");
+        assert_eq!(refs.len(), 2 + 13, "two recipes, twelve roots and the base");
+        assert!(policy_references(&policy("core_refit")).is_err());
+    }
+
+    #[test]
+    fn m8b_the_slot_is_the_recipes_own_facility() {
+        let row = |offer: Value| super::super::wire::Row {
+            raw: Value::Null,
+            order: 1,
+            accepted: CommitToken::from_bytes([1; 16]),
+            action: reference("action", "accept_core_refit"),
+            intent: Value::Null,
+            offer,
+            policy: policy("core_ungovern"),
+            fingerprint: DefinitionDigest::from_bytes([2; 32]),
+        };
+        let at = |offer: Value| {
+            row(offer)
+                .resource()
+                .map(|r| format!("{r:?}"))
+                .map_err(|e| format!("{e:?}"))
+        };
+        let chartered = at(json!({})).expect("the chartered slot");
+        let ungoverned = at(json!({"kind": "core_ungovern"})).expect("the shop's slot");
+        assert!(chartered.contains("f10") && ungoverned.contains("f20"));
+        assert!(at(json!({"kind": "core_refit"})).is_err(), "one encoding");
+        assert!(row(json!({})).displaced().expect("reads").is_none());
     }
 }

@@ -101,8 +101,15 @@ pub(crate) fn submit(ctx: &mut Ctx<'_>, action: &MarketAction) -> MindResponse {
 pub(super) fn select(action: &MarketAction) -> Result<Selection, Refusal> {
     let buy = |code: &mush_proto::ListingCode| BuySelection {
         code: code.as_str().to_owned(),
+        org: None,
     };
-    let renew = |licence: u64, which: Renew| Selection::Renew(RenewSelection { licence, which });
+    let renew = |licence: u64, which: Renew| {
+        Selection::Renew(RenewSelection {
+            licence,
+            which,
+            org: None,
+        })
+    };
     let offer = |subject: u64, player: &str, price: &str| -> Result<TradeArguments, Refusal> {
         Ok(TradeArguments {
             subject,

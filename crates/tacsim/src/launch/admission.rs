@@ -63,6 +63,9 @@ impl CopratesAdmission {
             .map_err(|_| bad("launch admission registry already captured"))
     }
 }
+/// M8c B6: an organisation buying a Coprates line is admitted through its
+/// acting character (the `buyer` here); the House family is character-only
+/// until M8f.
 impl HouseBuyerAdmission for CopratesAdmission {
     fn check(
         &self,

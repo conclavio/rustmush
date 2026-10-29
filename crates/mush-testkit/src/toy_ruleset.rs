@@ -619,9 +619,9 @@ impl Ruleset for ToyRuleset {
         }
     }
 
-    /// A Willpower-backed `toy_roll` is the coordinator's own
-    /// `<id>_willpower_roll`; every other ability stays on the legacy
-    /// [`Ruleset::invoke_ability`] residual.
+    /// Both plain and Willpower-backed `toy_roll` map to the coordinator's
+    /// authoritative `<id>_roll` and `<id>_willpower_roll` actions, leaving
+    /// zero legacy [`Ruleset::invoke_ability`] residual.
     fn projected_ability(
         &self,
         w: &World,
@@ -633,12 +633,14 @@ impl Ruleset for ToyRuleset {
             return None;
         }
         let args: ToyRollInput = serde_json::from_value(input.clone()).ok()?;
-        if !args.willpower {
-            return None;
-        }
         let handles = w.module_state::<ToyActionHandles>()?;
+        let action = if args.willpower {
+            handles.willpower_roll.clone()
+        } else {
+            handles.roll.clone()
+        };
         Some(ProjectedAbility {
-            action: handles.willpower_roll.clone(),
+            action,
             parameters: serde_json::json!({
                 "pool": args.pool_expr,
                 "difficulty": u32::from(args.difficulty.unwrap_or(6).clamp(2, 10)),

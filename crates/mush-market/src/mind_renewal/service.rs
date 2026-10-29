@@ -383,12 +383,14 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     r.after = page.next_after().map(ToString::to_string);
     for row in rows {
         if matches!(row.state(), RenewalStateV1::Funded { .. })
-            && live(ctx.w, row.binding().holder())
+            && live(ctx.w, row.binding().holder().acting_character())
         {
+            // M8c B3: the service runs an organisation's steps as the acting
+            // character its binding recorded.
             let _ = admit(
                 &mut r,
                 Selection::Pending(row.operation()),
-                row.binding().holder(),
+                row.binding().holder().acting_character(),
             );
         }
         if r.close.is_none()
@@ -446,12 +448,12 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     for item in inventory.entries() {
         if !item.attempted()
             && ctx.w.world_ic_now().at >= item.term_end().get()
-            && live(ctx.w, item.holder())
+            && live(ctx.w, item.holder().acting_character())
         {
             let _ = admit(
                 &mut r,
                 Selection::Due(item.licence(), item.generation(), item.holder_generation()),
-                item.holder(),
+                item.holder().acting_character(),
             );
         }
     }
@@ -463,7 +465,9 @@ fn own(ctx: &Ctx<'_>, s: &Service, licence: LicenceId) -> Result<RenewalInventor
         .and_then(|v| v.into_inventory())
         .map_err(|_| unavailable())?;
     let item = list.into_single().map_err(|_| unavailable())?;
-    if item.holder() != ctx.actor {
+    // M8c B3: a character acting for the holding organisation owns its
+    // renewal (`org_holder::acts_as`); a character holder must be the actor.
+    if mush_roll::commerce::org_holder::acts_as(ctx.w, item.holder(), ctx.actor).is_err() {
         return Err(unavailable());
     }
     Ok(item)

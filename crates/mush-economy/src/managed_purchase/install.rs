@@ -237,8 +237,8 @@ struct ImageInput {
     next_contract: u64,
 }
 
-fn open_counts(state: &EconomyStore, buyer: ObjId) -> (usize, usize) {
-    let buyer = PrincipalId::Object(buyer);
+fn open_counts(state: &EconomyStore, buyer: crate::Holder) -> (usize, usize) {
+    let buyer = buyer.principal();
     state
         .snapshot
         .contracts()

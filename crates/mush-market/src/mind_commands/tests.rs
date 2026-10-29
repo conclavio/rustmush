@@ -26,6 +26,9 @@ struct Memory {
     rows: BTreeMap<String, EntitlementListingV1>,
     scans: RefCell<Vec<(Option<String>, usize)>>,
     actors: BTreeMap<ObjId, EntitlementActorIndex>,
+    /// M8c S1: the organisations' rows and who acts for each.
+    orgs: BTreeMap<mush_org::OrgId, EntitlementActorIndex>,
+    members: BTreeSet<(mush_org::OrgId, ObjId)>,
     quotes: BTreeMap<CommitToken, EntitlementQuoteV1>,
     operations: BTreeMap<CommitToken, EntitlementPurchaseV1>,
     buyer_offers: BTreeMap<(ObjId, LicenceId), ResaleBuyerOffers>,
@@ -38,6 +41,20 @@ impl<'a> OwnSource<'a> for &'a Memory {
     fn actor_row(&self, actor: ObjId) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError> {
         self.reads.borrow_mut().push(("actors", 1));
         Ok(self.actors.get(&actor))
+    }
+    fn org_row(
+        &self,
+        org: mush_org::OrgId,
+    ) -> Result<Option<&'a EntitlementActorIndex>, OwnerReadError> {
+        self.reads.borrow_mut().push(("orgs", 1));
+        Ok(self.orgs.get(&org))
+    }
+    fn acts_for(&self, org: mush_org::OrgId, actor: ObjId) -> Result<(), OwnerReadError> {
+        if self.members.contains(&(org, actor)) {
+            Ok(())
+        } else {
+            Err(OwnerReadError::Refused)
+        }
     }
     fn quotes(
         &self,

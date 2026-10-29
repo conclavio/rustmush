@@ -1963,6 +1963,7 @@ mod tests {
                 rounds: 1,
                 by: None,
                 slot: None,
+                unlawful: false,
             },
         )
     }

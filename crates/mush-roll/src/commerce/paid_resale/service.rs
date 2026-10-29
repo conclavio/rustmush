@@ -6,7 +6,7 @@ use crate::commerce::{
     records::PublicationError,
 };
 use mush_core::action::{
-    ActionInvocation, AuthorityGuard, IdempotencyKey, IdempotencyKeyText, PerceivedRef, PrincipalId,
+    ActionInvocation, AuthorityGuard, IdempotencyKeyText, PerceivedRef, PrincipalId,
 };
 use mush_core::mechanics::{CanonicalId, OwnerId};
 use mush_core::{ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId, World};
@@ -205,7 +205,7 @@ impl Runtime {
             || !inv.targets().is_empty()
             || inv.parameters() != &v.parameters()
             || inv.idempotency().scope().owner != action.key().owner
-            || inv.idempotency().key() != &IdempotencyKey::Caller(v.key.clone())
+            || !inv.keyed_by(&v.key)
         {
             return Err(PublicationError::Mismatch);
         }

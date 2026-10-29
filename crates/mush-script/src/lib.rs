@@ -109,7 +109,7 @@ impl GameModule for ScriptModule {
         reg.subscribe(WorldEventKind::AttrSet, Arc::new(on_attr_set));
         reg.subscribe(WorldEventKind::ObjCreated, Arc::new(on_obj_created));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
-        reg.subscribe(WorldEventKind::Moved, Arc::new(on_moved));
+        reg.subscribe_moved("movement_scripts", 1, Arc::new(on_moved))?;
         for kind in [
             NarrativeKind::Say,
             NarrativeKind::Pose,

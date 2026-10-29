@@ -883,6 +883,7 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
     let all = [
         ("licence", n),
         ("filed", n),
+        ("hull", n),
         ("price", "1000000.00cr"),
         ("amount", "1000000.00"),
         ("player", player.as_str()),
@@ -923,6 +924,10 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
         ("RECALLING", words::RECALLING),
         ("REVOKING", words::REVOKING),
         ("REGISTRY_OFF", words::REGISTRY_OFF),
+        ("INSPECTING", words::INSPECTING),
+        ("INSPECTION_OFF", words::INSPECTION_OFF),
+        ("INSPECT_REFUSED", words::INSPECT_REFUSED),
+        ("NO_SUCH_HULL", words::NO_SUCH_HULL),
     ] {
         let line = fill(template, &all);
         check!(!line.contains('{'), "{name} is filled: {line}");
@@ -1836,6 +1841,87 @@ fn typed_refusal_codes_are_the_words() -> TestResult {
         fill(words::RENEW_HANDED, &[("licence", "7")]),
         "Handing licence 7 to the renewal service."
     );
+    Ok(())
+}
+
+/// M8c B3: the trailing `org=<org>` (`org_argument`): absent, present after
+/// the form's own arguments (the rest of the line, trimmed, spaces inside),
+/// alone (`+minds/holdings org=<org>`), and bare (malformed); the parses
+/// carry it as typed, the typed steps never, and the wires carry the
+/// organisation's number only when one acts.
+#[test]
+fn org_argument_is_parsed_before_every_form_that_takes_it() -> TestResult {
+    use super::holdings::{Holdings, parse_holdings};
+    use super::market::{parse_buy, quote_parameters_for};
+    use super::org_argument;
+    use super::renew::{Renew, parse_renew};
+    check_eq!(org_argument("feed0001"), Some(("feed0001", None)));
+    check_eq!(org_argument("  feed0001  "), Some(("feed0001", None)));
+    check_eq!(
+        org_argument("feed0001 org=Guild"),
+        Some(("feed0001", Some("Guild")))
+    );
+    check_eq!(
+        org_argument("feed0001 org=The Long Guild "),
+        Some(("feed0001", Some("The Long Guild")))
+    );
+    check_eq!(org_argument("org=#12"), Some(("", Some("#12"))));
+    check_eq!(
+        org_argument("feed0001 org="),
+        None,
+        "a bare org= is malformed"
+    );
+    check_eq!(org_argument("org="), None);
+    check_eq!(
+        parse_buy("feed0001 org=Guild")?,
+        super::market::BuySelection {
+            code: "feed0001".into(),
+            org: Some("Guild".into())
+        }
+    );
+    check_eq!(parse_buy("feed0001")?.org, None);
+    check!(parse_buy("feed0001 org=").is_err());
+    check!(
+        parse_buy("org=Guild").is_err(),
+        "the code is still required"
+    );
+    check_eq!(
+        parse_renew("41 org=Guild", Renew::Pay)?,
+        super::renew::RenewSelection {
+            licence: 41,
+            which: Renew::Pay,
+            org: Some("Guild".into())
+        }
+    );
+    check!(parse_renew("41 org=", Renew::Status).is_err());
+    check_eq!(
+        parse_holdings("org=Guild"),
+        Some((Holdings::All, Some("Guild")))
+    );
+    check_eq!(
+        parse_holdings("paid 7 org=Guild"),
+        Some((Holdings::Paid(7), Some("Guild")))
+    );
+    check_eq!(parse_holdings("owner 3"), Some((Holdings::Owner(3), None)));
+    check_eq!(parse_holdings("org="), None);
+    let token = mush_core::CommitToken::from_bytes([7; 16]);
+    check_eq!(
+        quote_parameters_for(token, None),
+        super::market::quote_parameters(token)
+    );
+    check_eq!(
+        quote_parameters_for(token, Some(mush_org::OrgId(9))),
+        serde_json::json!({"listing": token, "org": 9})
+    );
+    check_eq!(
+        super::author::attest_parameters_for(5, Some(mush_org::OrgId(9))),
+        serde_json::json!({"owner_licence": 5, "org": 9})
+    );
+    check_eq!(
+        super::author::attest_parameters_for(5, None),
+        super::author::attest_parameters(5)
+    );
+    check!(words::NOT_FOR_ORG.chars().count() <= 120);
     Ok(())
 }
 

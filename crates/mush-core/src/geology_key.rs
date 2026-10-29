@@ -113,6 +113,23 @@ pub enum GeologySecretError {
     Retained,
 }
 
+/// What the boot path hands the surface geology installer from the operator's
+/// `[tacsim].geology_key_file` setting.
+///
+/// The boot continues under every variant (a world with no surface mining never
+/// needs the key); the installer converts this into the live geology slot's
+/// state and logs the refuse reason when one applies.
+#[derive(Debug, Clone)]
+pub enum GeologyBoot {
+    /// No `geology_key_file` was set in `mush.toml`.
+    NotConfigured,
+    /// The file was read and validated into a [`GeologySecret`].
+    Key(GeologySecret),
+    /// A path was configured, and reading or validating it failed. The string carries no key
+    /// material (`KeySourceError` never embeds any).
+    Unreadable(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1333,6 +1333,26 @@ impl Fold {
             // **16b cut Y.1**: the pilot's own orders, once per order. Only the
             // issuer reads them — an order the machines' own commander gave, or
             // another pilot's, is not this pilot's to be told about.
+            EventKind::DetachmentCommanded { unit, command } if command.issuer_unit == me => {
+                let recipient = self.unit_word(*unit);
+                let text = if let Some(directive) = command.directive {
+                    let objective = match directive.objective {
+                        crate::deliberation::order::Objective::Engage {
+                            target_hint: Some(contact),
+                        } => format!("engage {}", self.contact_name(contact)),
+                        other => other.as_str().to_owned(),
+                    };
+                    let holding = if directive.constraints.hold_fire {
+                        ", holding fire"
+                    } else {
+                        ""
+                    };
+                    format!("ordered {recipient}{holding}: {objective}.")
+                } else {
+                    format!("cancelled {recipient}'s standing order.")
+                };
+                let _ = self.push_line(t_ms, seq, text);
+            }
             EventKind::Ordered {
                 squad,
                 issuer: Some(issuer),
@@ -1637,21 +1657,35 @@ impl Fold {
                 rounds,
                 by,
                 slot,
+                unlawful,
             } => {
                 // **17b cut M1b.1** (D-UM-14): the attribution, appended only
                 // when the line carries it — a seat's or a machine's shot reads
-                // byte for byte as it always did.
+                // byte for byte as it always did. Doc 17h cut M8b C5: an
+                // unlawful shot says so here, the staff spelling, and nowhere a
+                // player reads.
                 format!(
                     "{word} unit={} weapon={weapon} shot={shot_seq} target={} range_cm={range_cm} \
-                     rounds={rounds}{}{}",
+                     rounds={rounds}{}{}{}",
                     unit(id),
                     unit(target),
                     by.as_ref()
                         .map(|by| format!(" by={by}"))
                         .unwrap_or_default(),
-                    slot.map(|slot| format!(" slot={slot}")).unwrap_or_default()
+                    slot.map(|slot| format!(" slot={slot}")).unwrap_or_default(),
+                    if *unlawful { " unlawful" } else { "" }
                 )
             }
+            // Doc 17h cut M8b C5: the unlawful arming, staff only.
+            EventKind::Armed {
+                unit: id,
+                weapon,
+                slot,
+                ..
+            } => format!(
+                "{word} unit={} weapon={weapon} slot={slot} unlawful",
+                unit(id)
+            ),
             EventKind::Impact {
                 shot_seq,
                 unit: id,
@@ -1719,6 +1753,24 @@ impl Fold {
                 "{word} unit={} squad={squad} issuer={}",
                 unit(id),
                 issuer.as_ref().map_or_else(|| "-".to_owned(), unit)
+            ),
+            EventKind::DetachmentCommanded { unit: id, command } => format!(
+                "{word} unit={} detachment={} revision={} term={} authority_epoch={} sequence={} issuer={} issuer_unit={} squad={} objective={} expires_at_ms={}",
+                unit(id),
+                command.authority.detachment,
+                command.authority.revision,
+                command.authority.term,
+                command.authority_epoch,
+                command.sequence,
+                command.issuer,
+                unit(&command.issuer_unit),
+                command.squad,
+                command
+                    .directive
+                    .map_or("cancel", |directive| directive.objective.as_str()),
+                command
+                    .expires_at_ms
+                    .map_or_else(|| "standing".to_owned(), |deadline| deadline.to_string()),
             ),
             EventKind::Ordered {
                 unit: id,
@@ -3077,6 +3129,7 @@ mod tests {
             rounds,
             by: None,
             slot: None,
+            unlawful: false,
         }
     }
 
@@ -3406,6 +3459,7 @@ mod tests {
                 rounds: 1,
                 by: Some(SmolStr::new("cond")),
                 slot: Some(1),
+                unlawful: false,
             },
         );
         let report = fold(&tape.0, &roster(), Reader::Staff, RULES);
@@ -3591,7 +3645,9 @@ mod tests {
             class: CoreClass::I,
             governed: true,
             licence: SmolStr::new_static("doctrine"),
+            licence_state: Some(crate::minds::licence_state::SealLicenceState::Doctrine),
             principal,
+            admissions: Vec::new(),
         };
         let mut tape = Tape::new();
         tape.at(

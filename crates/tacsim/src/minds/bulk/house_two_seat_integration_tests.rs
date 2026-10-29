@@ -316,7 +316,7 @@ pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestRes
         mush_economy::managed_paid_resale::PaidResaleOutcome::Settled
     );
     let transferred = pointer(&w)?;
-    check_eq!(transferred.holder(), GOD);
+    check_eq!(transferred.holder(), mush_economy::Holder::Character(GOD));
     check_eq!(transferred.term(), original.term());
     check_eq!(transferred.operation(), original.operation());
     check_eq!(paid_term(&w, 1)?, term);

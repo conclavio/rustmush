@@ -11,7 +11,7 @@ use mush_core::{
     CanonicalId, DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind,
     DefinitionRef, DefinitionRegistryBuilder, ModError, OwnerId, Registrar, World,
 };
-use mush_economy::core_integration::CoreClass;
+use mush_economy::{core_integration::CoreClass, core_refit::RefitKind};
 use mush_industry::{
     RecipeRef,
     core_production::{
@@ -31,23 +31,24 @@ fn core(class: DieClass) -> CoreClass {
     CLASSES[class.index()]
 }
 
-/// The exact shipped launch catalogue and two distinct certified recipes.
+/// The exact shipped launch catalogue and its three recipes (doc 17h cut M8b
+/// added the ungoverning refit's).
 /// Constructing this object, registering its definitions or loading its pack
 /// does not publish it, create a facility, mint stock or authorize a purchase.
 #[derive(Clone, Debug)]
 pub struct PublishedHardware {
     pack: RulesPack,
     catalogue: HardwareCatalogueDef,
-    recipes: [HardwareRecipeDef; 2],
-    descriptors: [DefinitionDescriptor; 2],
-    definitions: [DefinitionRef; 2],
+    recipes: [HardwareRecipeDef; 3],
+    descriptors: [DefinitionDescriptor; 3],
+    definitions: [DefinitionRef; 3],
 }
 impl PublishedHardware {
     pub fn shipped() -> Result<Self, DefinitionError> {
         let pack = crate::pack::load_pack(SOURCE).map_err(bad)?;
         if pack.manifest().id().as_str() != PACK
             || pack.manifest().version() != VERSION
-            || pack.entries().len() != 3
+            || pack.entries().len() != 4
         {
             return Err(bad("unexpected shipped pack identity or entries"));
         }
@@ -73,6 +74,7 @@ impl PublishedHardware {
         let recipes = [
             read(HardwareProcess::Integrate)?,
             read(HardwareProcess::Refit)?,
+            read(HardwareProcess::Ungovern)?,
         ];
         let descriptor = |index: usize| -> Result<DefinitionDescriptor, DefinitionError> {
             let recipe = &recipes[index];
@@ -87,7 +89,7 @@ impl PublishedHardware {
             )
             .map_err(bad)
         };
-        let descriptors = [descriptor(0)?, descriptor(1)?];
+        let descriptors = [descriptor(0)?, descriptor(1)?, descriptor(2)?];
         let mut registry = DefinitionRegistryBuilder::new();
         let owner = OwnerId::new(crate::NS).map_err(bad)?;
         let definitions = [
@@ -95,7 +97,10 @@ impl PublishedHardware {
                 .register(owner.clone(), descriptors[0].clone())
                 .map_err(bad)?,
             registry
-                .register(owner, descriptors[1].clone())
+                .register(owner.clone(), descriptors[1].clone())
+                .map_err(bad)?,
+            registry
+                .register(owner, descriptors[2].clone())
                 .map_err(bad)?,
         ];
         Ok(Self {
@@ -169,6 +174,7 @@ fn index(process: HardwareProcess) -> usize {
     match process {
         HardwareProcess::Integrate => 0,
         HardwareProcess::Refit => 1,
+        HardwareProcess::Ungovern => 2,
     }
 }
 impl CoreRecipeAuthority for PublishedHardware {
@@ -188,7 +194,17 @@ impl CoreRecipeAuthority for PublishedHardware {
 }
 impl RefitRecipeAuthority for PublishedHardware {
     fn resolve(&self, world: &World, class: DieClass) -> Option<PublishedRefitRecipe> {
-        let process = HardwareProcess::Refit;
+        self.resolve_kind(world, RefitKind::CoreRefit, class)
+    }
+    /// Doc 17h cut M8b C2: the ungoverning refit resolves its own published
+    /// recipe, timed like a fitting.
+    fn resolve_kind(
+        &self,
+        world: &World,
+        kind: RefitKind,
+        class: DieClass,
+    ) -> Option<PublishedRefitRecipe> {
+        let process = refit_process(kind);
         PublishedRefitRecipe::new(
             self.pin(world, process)?,
             self.definition(process).clone(),
@@ -199,5 +215,12 @@ impl RefitRecipeAuthority for PublishedHardware {
     }
     fn published_digest(&self, world: &World, recipe: &RecipeRef) -> Option<DefinitionDigest> {
         self.current_recipe(world, recipe, HardwareProcess::Refit)
+            .or_else(|| self.current_recipe(world, recipe, HardwareProcess::Ungovern))
+    }
+}
+const fn refit_process(kind: RefitKind) -> HardwareProcess {
+    match kind {
+        RefitKind::CoreRefit => HardwareProcess::Refit,
+        RefitKind::CoreUngovern => HardwareProcess::Ungovern,
     }
 }

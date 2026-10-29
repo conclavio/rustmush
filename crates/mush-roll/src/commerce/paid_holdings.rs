@@ -18,21 +18,24 @@
 //!   and the service Settle (`paid_resale::writer`).
 //!
 //! The renewal writers replace the pointer with a new term and the same
-//! holder and write no row; a revocation and a lapse change no holder and no
-//! row (a revoked licence keeps its row, which C2g's `; revoked` paid row
-//! needs). There is no cap per holder, so no money path gains a refusal.
+//! holder principal and write no row (M8c F4: an organisation-held pointer
+//! is re-stamped with the renewing actor as its `acting`, so a row and its
+//! pointer agree by principal, `Holder::same_principal`, never by acting);
+//! a revocation and a lapse change no holder and no row (a revoked licence
+//! keeps its row, which C2g's `; revoked` paid row needs). There is no cap
+//! per holder, so no money path gains a refusal.
 //!
 //! The family is delegated to the market as `paid_licences` is (the market's
 //! transactions run all five writes), and mush-core's closed owner-index table
 //! admits exactly these rows in those transitions (`terminal_capacity::
 //! owner_index`, R2). `audit` (Roll's commerce boot audit) checks the whole
 //! family: exactly one row per pointer, under the pointer's current holder.
-use super::LicenceId;
 use super::command_reader::PaidHoldingView;
 use super::families::CommerceFamilies;
 use super::records::{PublicationError, Record};
+use super::{Holder, LicenceId, org_holder};
 use mush_core::read_service::{OwnerReadContext, OwnerReadError};
-use mush_core::{ActionTxn, ModuleCtx, ObjId};
+use mush_core::{ActionTxn, ModuleCtx};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -50,11 +53,11 @@ fn bad(_: impl std::fmt::Display) -> PublicationError {
 #[serde(deny_unknown_fields)]
 pub struct PaidHolding {
     pub(crate) format: u16,
-    pub(crate) holder: ObjId,
+    pub(crate) holder: Holder,
     pub(crate) licence: LicenceId,
 }
 impl PaidHolding {
-    pub(crate) fn new(holder: ObjId, licence: LicenceId) -> Result<Self, PublicationError> {
+    pub(crate) fn new(holder: Holder, licence: LicenceId) -> Result<Self, PublicationError> {
         let row = Self {
             format: 1,
             holder,
@@ -64,22 +67,24 @@ impl PaidHolding {
         Ok(row)
     }
     #[must_use]
-    pub const fn holder(&self) -> ObjId {
+    pub const fn holder(&self) -> Holder {
         self.holder
     }
     #[must_use]
     pub const fn licence(&self) -> LicenceId {
         self.licence
     }
-    /// The row key: `{holder:020}/licence/{licence:016x}`.
+    /// The row key: `{holder:020}/licence/{licence:016x}` for a character,
+    /// `org/{org:020}/licence/{licence:016x}` for an organisation (M8c B1:
+    /// `Holder::key_prefix`).
     #[must_use]
-    pub fn key_for(holder: ObjId, licence: LicenceId) -> String {
+    pub fn key_for(holder: Holder, licence: LicenceId) -> String {
         format!("{}/{}", holder_prefix(holder), licence.key())
     }
 }
-/// The holder's key prefix, `{holder:020}`.
-fn holder_prefix(holder: ObjId) -> String {
-    format!("{:020}", holder.0)
+/// The holder's key prefix (`Holder::key_prefix`).
+fn holder_prefix(holder: Holder) -> String {
+    holder.key_prefix()
 }
 impl Record for PaidHolding {
     const FAMILY: &'static str = "roll_mind_paid_holdings";
@@ -88,7 +93,7 @@ impl Record for PaidHolding {
         Self::key_for(self.holder, self.licence)
     }
     fn validate(&self) -> Result<(), PublicationError> {
-        if self.format != 1 || self.holder.0 == 0 {
+        if self.format != 1 || self.holder.is_nobody() {
             return Err(PublicationError::Invalid);
         }
         Ok(())
@@ -103,7 +108,7 @@ impl Record for PaidHolding {
 pub(crate) fn grant(
     txn: &mut ActionTxn<'_>,
     f: &CommerceFamilies,
-    holder: ObjId,
+    holder: Holder,
     licence: LicenceId,
 ) -> Result<(), PublicationError> {
     let row = PaidHolding::new(holder, licence)?;
@@ -124,14 +129,19 @@ pub(crate) fn grant(
 pub(crate) fn transfer(
     txn: &mut ActionTxn<'_>,
     f: &CommerceFamilies,
-    seller: ObjId,
-    buyer: ObjId,
+    seller: Holder,
+    buyer: Holder,
     licence: LicenceId,
 ) -> Result<(), PublicationError> {
     let old = PaidHolding::new(seller, licence)?;
     let new = PaidHolding::new(buyer, licence)?;
-    if seller == buyer
-        || txn.get(&f.paid_holdings, &old.key()).map_err(bad)? != Some(&old)
+    // M8c F4: the seller's row is found by principal (its acting may be the
+    // buying character's, the pointer's a later renewer's).
+    if seller.same_principal(buyer)
+        || !txn
+            .get(&f.paid_holdings, &old.key())
+            .map_err(bad)?
+            .is_some_and(|row| row.licence == licence && row.holder.same_principal(seller))
         || txn
             .get(&f.paid_holdings, &new.key())
             .map_err(bad)?
@@ -157,7 +167,7 @@ pub(crate) fn transfer(
 /// licence's (holder, id), `rows` every holdings row with its stored key.
 /// Exactly one row per pointer under its current holder; no orphan row.
 pub(crate) fn reconcile(
-    pointers: impl IntoIterator<Item = (ObjId, LicenceId)>,
+    pointers: impl IntoIterator<Item = (Holder, LicenceId)>,
     rows: impl IntoIterator<Item = (String, PaidHolding)>,
 ) -> Result<(), PublicationError> {
     let mut expected = BTreeMap::new();
@@ -169,7 +179,12 @@ pub(crate) fn reconcile(
     }
     for (key, row) in rows {
         row.validate()?;
-        if row.key() != key || expected.remove(&key).as_ref() != Some(&row) {
+        // M8c F4: by principal (a renewal re-stamps the pointer's acting).
+        if row.key() != key
+            || !expected.remove(&key).is_some_and(|pointer| {
+                pointer.licence == row.licence && pointer.holder.same_principal(row.holder)
+            })
+        {
             return Err(PublicationError::Mismatch);
         }
     }
@@ -226,10 +241,12 @@ impl PaidHoldingsPage {
 pub(crate) fn page(
     ctx: &OwnerReadContext<'_>,
     families: &CommerceFamilies,
-    holder: ObjId,
+    holder: Holder,
     after: Option<LicenceId>,
 ) -> Result<PaidHoldingsPage, OwnerReadError> {
-    if holder != ctx.actor() {
+    // M8c B3: a character reads its own rows; an organisation's rows are read
+    // by a character acting for it (`org_holder::acts_as`, re-asked here).
+    if org_holder::acts_as(ctx.world(), holder, ctx.actor()).is_err() {
         return Err(OwnerReadError::Refused);
     }
     let start = page_start(holder, after);
@@ -244,7 +261,7 @@ pub(crate) fn page(
         .map(|entry| (entry.encoded_key().to_owned(), entry.value().clone()))
         .collect();
     let (rows, next) = cut(&entries, holder, |row| {
-        super::command_reader::own_paid(ctx, families, row.licence)
+        super::command_reader::own_paid(ctx, families, row.licence, holder)
     })?;
     Ok(PaidHoldingsPage { rows, next })
 }
@@ -252,7 +269,7 @@ pub(crate) fn page(
 /// Where a holder's page scan starts (exclusively): the holder's bare prefix
 /// `{holder:020}/`, which sorts before every one of its rows, or the row the
 /// previous page ended on.
-pub(crate) fn page_start(holder: ObjId, after: Option<LicenceId>) -> String {
+pub(crate) fn page_start(holder: Holder, after: Option<LicenceId>) -> String {
     after.map_or_else(
         || format!("{}/", holder_prefix(holder)),
         |licence| PaidHolding::key_for(holder, licence),
@@ -265,7 +282,7 @@ pub(crate) fn page_start(holder: ObjId, after: Option<LicenceId>) -> String {
 /// row's licence when one more of the holder's rows follows.
 pub(crate) fn cut<T>(
     entries: &[(String, PaidHolding)],
-    holder: ObjId,
+    holder: Holder,
     mut row_of: impl FnMut(&PaidHolding) -> Result<T, OwnerReadError>,
 ) -> Result<(Vec<T>, Option<LicenceId>), OwnerReadError> {
     let prefix = format!("{}/", holder_prefix(holder));
@@ -273,7 +290,9 @@ pub(crate) fn cut<T>(
         .iter()
         .take_while(|(key, _)| key.starts_with(&prefix))
         .map(|(key, row)| {
-            if row.validate().is_err() || row.holder != holder || row.key() != *key {
+            // M8c F3: by principal: every granted member reads the
+            // organisation's rows, whoever bought.
+            if row.validate().is_err() || !row.holder.same_principal(holder) || row.key() != *key {
                 return Err(OwnerReadError::Integrity);
             }
             Ok(row)

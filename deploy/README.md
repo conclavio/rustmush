@@ -736,7 +736,10 @@ Every id below is the one your world printed; replace every id in the example.
    ```
    @org/grant #<operator>=Registry roll.registry.recall scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.revoke scope=#<review scope>
+   @org/grant #<operator>=Registry roll.registry.inspect scope=#<review scope>
    ```
+
+   The third grant lets the operator read a hull with `@registry/inspect #<hull>`.
 
 10. As #1, `+act roll-initialize-commerce with {}`, then the three industry
     initialize actions the same way: `initialize-core-die-stock`,
@@ -747,8 +750,9 @@ Every id below is the one your world printed; replace every id in the example.
     The last line names every operator in ascending order, in one line:
     `Registry operators: #<op> ready.`, or with two operators
     `Registry operators: #<a> ready, #<b> ready.`. An operator shown with
-    `lacks recall`, `lacks revocation` or `lacks recall and revocation` is
-    missing that step-9 grant (re-run the `@org/grant` it names), or the
+    `lacks` and one or more of `recall`, `revocation` and `inspection` (for
+    example `lacks inspection`, or `lacks recall, revocation and inspection`)
+    is missing those step-9 grants (re-run each `@org/grant` it names), or the
     Registry is suspended or its scope retired.
 
 **Also:**

@@ -193,6 +193,79 @@ pub(crate) fn current_in_txn(
     Ok(reference)
 }
 
+/// M8c B2/B4: a House charter's current ownership for an organisation holder:
+/// the birth is the organisation's House filing, no ownership head has moved
+/// it (none can), and the organisation's title is current for the acting
+/// character (`current_title_for`).
+fn house_current(
+    world: &World,
+    head: Option<&CharterOwnershipHead>,
+    birth: &InitialFilingOperation,
+    holder: crate::commerce::Holder,
+) -> Result<CharterOwnershipRef, PublicationError> {
+    let crate::commerce::Holder::Organization { org, .. } = holder else {
+        return Err(PublicationError::Mismatch);
+    };
+    let reference = CharterOwnershipRef::house_birth(birth)?;
+    if let Some(head) = head {
+        head.validate()?;
+        if head.charter != birth.charter || head.current != reference {
+            return Err(PublicationError::Mismatch);
+        }
+    }
+    if birth
+        .economic
+        .house
+        .as_ref()
+        .is_none_or(|h| h.organization() != org)
+    {
+        return Err(PublicationError::Mismatch);
+    }
+    economy(world)?
+        .filing_receipt_audit()
+        .verify(&birth.audit_subject()?)
+        .map_err(bad)?;
+    crate::commerce::owner_qualification::current_title_for(world, holder, birth.charter)?;
+    Ok(reference)
+}
+/// `current` for a typed holder (M8c): a character holder as `current`, an
+/// organisation holder through `house_current`.
+pub(crate) fn current_for(
+    ctx: &impl CommerceRead,
+    f: &CommerceFamilies,
+    birth: &InitialFilingOperation,
+    holder: crate::commerce::Holder,
+) -> Result<CharterOwnershipRef, PublicationError> {
+    match holder {
+        crate::commerce::Holder::Character(owner) => current(ctx, f, birth, owner),
+        crate::commerce::Holder::Organization { .. } => {
+            let head = ctx
+                .get(&f.charter_ownership, &birth.charter.key())
+                .map_err(bad)?;
+            house_current(ctx.world(), head, birth, holder)
+        }
+    }
+}
+/// `current_in_txn` for a typed holder (M8c).
+pub(crate) fn current_in_txn_for(
+    txn: &mut ActionTxn<'_>,
+    world: &World,
+    f: &CommerceFamilies,
+    birth: &InitialFilingOperation,
+    holder: crate::commerce::Holder,
+) -> Result<CharterOwnershipRef, PublicationError> {
+    match holder {
+        crate::commerce::Holder::Character(owner) => current_in_txn(txn, world, f, birth, owner),
+        crate::commerce::Holder::Organization { .. } => {
+            let head = txn
+                .get(&f.charter_ownership, &birth.charter.key())
+                .map_err(bad)?
+                .cloned();
+            house_current(world, head.as_ref(), birth, holder)
+        }
+    }
+}
+
 /// Absent capture is the immutable original-owner history, not an ever-owned
 /// fallback. New transferred-owner records carry a complete native-backed ref.
 pub(crate) fn require_captured(

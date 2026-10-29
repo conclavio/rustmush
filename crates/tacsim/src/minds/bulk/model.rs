@@ -27,7 +27,19 @@ pub(crate) struct BulkConfig {
     pub bench_state_bytes: u64,
     pub eval_ops: u64,
     pub eval_result_bytes: usize,
+    /// The period of the `mind-bulk-maintenance` tick (`arena_bridge`), the
+    /// pulse that moves every proving, bench, Conduct and Registry job between
+    /// its phases: a Registry lease crosses about six of them (grant, its
+    /// acknowledgement, the worker's submission, settle, its acknowledgement,
+    /// the re-queue), so the pulse is the pace of a certificate's ~1,070
+    /// leases. Production's second; the mush-server acceptance stories set it
+    /// lower (`MIND_PULSE_MS` in their harness). `MIN_MAINTENANCE_MS` to a
+    /// minute.
+    pub maintenance_ms: u64,
 }
+/// The shortest maintenance pulse: under it the world loop would spend its
+/// time draining an idle service.
+pub(crate) const MIN_MAINTENANCE_MS: u64 = 10;
 impl Default for BulkConfig {
     fn default() -> Self {
         Self {
@@ -41,11 +53,15 @@ impl Default for BulkConfig {
             bench_state_bytes: 128 * 1024 * 1024,
             eval_ops: 500,
             eval_result_bytes: 4_096,
+            maintenance_ms: 1_000,
         }
     }
 }
 impl BulkConfig {
     pub fn validate(&self) -> Result<(), BulkError> {
+        if !(MIN_MAINTENANCE_MS..=60_000).contains(&self.maintenance_ms) {
+            return Err(invalid("maintenance pulse out of range"));
+        }
         if !(1..=8).contains(&self.proving_workers)
             || !(1..=128).contains(&self.queued)
             || !(1..=100_000).contains(&self.daily_unit_minutes)

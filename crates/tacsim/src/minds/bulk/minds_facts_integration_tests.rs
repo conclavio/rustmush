@@ -13,6 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const START: u128 = 27_000_000;
 const ACTION: &str = "record_mind_term_lapse";
 const OCCURRENCES: &str = "roll_mind_lapse_occurrences";
+/// M8c B5: the seal-mark writer and its ring family.
+const SEAL_MARK: &str = "record_licence_seal_mark";
+const MARKS: &str = "roll_licence_seal_marks";
+const UNATTESTABLE: &str = "licence.unattestable";
 struct Proof(Arc<AtomicBool>);
 impl SubmissionDispositionReader for Proof {
     fn no_intent(&self) -> bool {
@@ -706,6 +710,289 @@ fn stale_service_actor(
     }
     Ok(())
 }
+/// M8c B5/F7: one seal mark on `licence`, written by `writer` through the
+/// writer: the hull an object named `hull` (made here), the sortie a
+/// `SortieId`'s canonical string form (`<hull>@<at_ic>`).
+#[allow(clippy::too_many_arguments)]
+fn mark_by(
+    w: &mut PlayerWorld,
+    writer: ObjId,
+    n: u128,
+    licence: LicenceId,
+    hull: &str,
+    at_ic: i64,
+    governed: bool,
+) -> TestResult<ObjId> {
+    let id = w
+        .engine
+        .world
+        .create(mush_core::ObjKind::Thing, hull, GOD, None)?;
+    commit(
+        w,
+        "roll",
+        SEAL_MARK,
+        1,
+        writer,
+        n,
+        json!({"licence": licence, "hull": id, "at_ic": at_ic, "governed": governed, "sortie": format!("{}@{at_ic}", id.0)}),
+    )?;
+    Ok(id)
+}
+/// `mark_by` GOD.
+fn mark(
+    w: &mut PlayerWorld,
+    n: u128,
+    licence: LicenceId,
+    hull: &str,
+    at_ic: i64,
+    governed: bool,
+) -> TestResult<ObjId> {
+    mark_by(w, GOD, n, licence, hull, at_ic, governed)
+}
+/// M8c B5: a paid contract whose one condition is the holder's own
+/// `licence.unattestable` fact on `licence`'s first generation
+/// (`paid_contract`'s shape, the kind swapped).
+fn unattestable_contract(w: &mut PlayerWorld, licence: LicenceId) -> TestResult<ContractId> {
+    let payer = acct(w, GOD)?;
+    let seller = acct(w, BUYER)?;
+    let id = draft(w, GOD, "Minds unattestable condition")?;
+    for line in [
+        format!("@contract/party {id}=#{}", BUYER.0),
+        format!("@contract/pay {id}={payer} 1"),
+        format!("@contract/split {id}={seller} 1"),
+        format!("@contract/remainder {id}={payer}"),
+        format!(
+            "@contract/condition {id}=fact minds {UNATTESTABLE} {} revision=1",
+            licence.key()
+        ),
+    ] {
+        w.say(GOD, &line)?;
+    }
+    let attached = contract(w, id)?;
+    check_eq!(
+        attached.consent.conditions.len(),
+        1,
+        "the holder attaches its own fact"
+    );
+    check!(attached.consent.fact_consent.is_some());
+    for (actor, verb) in [(GOD, "offer"), (GOD, "accept"), (BUYER, "accept")] {
+        w.say(actor, &format!("@contract/{verb} {id}"))?;
+    }
+    check_eq!(contract(w, id)?.state, ContractState::Active);
+    Ok(id)
+}
+/// M8c B5 (the brief's test 4; D-UM-42): GOD's original owner licence, due,
+/// with seeded seal marks: a mark before the term's window and a governed
+/// mark inside it leave the attestation attestable; one ungoverned mark
+/// inside the window refuses it with the one sentence naming the hull and
+/// the IC date, and publishes `licence.unattestable` on the term's
+/// generation, which the holder's own E4 condition reads through the scoped
+/// fact context (the contract settles in the Economy sweep) while the
+/// public resolve never answers it; the ring keeps the last 64 marks.
+fn unattestable(f: &PurchaseFixture, saved: &Durable) -> TestResult {
+    let mut w = branch(f, saved)?;
+    cash(&mut w)?;
+    let birth_wire = rows(&disk(&w), "roll", "roll_mind_initial_filing")
+        .into_iter()
+        .find(|v| v.get("requester") == Some(&json!(GOD)))
+        .ok_or("actual original birth")?;
+    let licence: LicenceId =
+        serde_json::from_value(birth_wire.get("licence").cloned().ok_or("owner licence")?)?;
+    let term: mush_roll::commerce::records::OwnerTerm = serde_json::from_value(
+        rows(&disk(&w), "roll", "roll_mind_owner_term")
+            .into_iter()
+            .find(|v| v.get("licence") == Some(&json!(licence)))
+            .ok_or("actual owner term")?,
+    )?;
+    let issued = term.window().issued_at().get();
+    w.engine.world.set_now(term.window().grace_end().get());
+    fire(&mut w)?;
+    drain_until(&mut w, licence, 1, START + 600)?;
+    let params = json!({"owner_licence": licence.get()});
+    let provider = w.minds_facts.clone().ok_or("actual configured facts")?;
+    check!(
+        rows(&disk(&w), "roll", MARKS).is_empty(),
+        "no production writer: the ring starts empty"
+    );
+    check!(
+        crate::test_checks::refused(prepare(
+            &mut w,
+            "roll",
+            SEAL_MARK,
+            1,
+            BUYER,
+            START + 609,
+            json!({"licence": licence, "hull": 1, "at_ic": issued, "governed": false, "sortie": "1@0"})
+        ))?,
+        "the writer is the Registry's"
+    );
+    // F7: the writer is gated on the Registry's capability word, not on
+    // staff: a character granted it on an organisation's root scope writes.
+    w.say(GOD, "@org/create Registry")?;
+    w.say(
+        GOD,
+        &format!(
+            "@org/grant #{}=Registry {}",
+            BUYER.0,
+            mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY
+        ),
+    )?;
+    // A mark before the term's window is ignored.
+    let zero = mark_by(
+        &mut w,
+        BUYER,
+        START + 610,
+        licence,
+        "Hull Zero",
+        issued - 1,
+        false,
+    )?;
+    check!(
+        rows(&disk(&w), "roll", MARKS).len() == 1,
+        "the granted writer wrote the ring"
+    );
+    check!(
+        prepare(
+            &mut w,
+            "roll",
+            "attest_owner_mind",
+            1,
+            GOD,
+            START + 611,
+            params.clone()
+        )
+        .is_ok(),
+        "a mark outside the window is ignored"
+    );
+    // A governed mark inside it attests.
+    mark(&mut w, START + 612, licence, "Hull One", issued + 10, true)?;
+    check!(
+        prepare(
+            &mut w,
+            "roll",
+            "attest_owner_mind",
+            1,
+            GOD,
+            START + 613,
+            params.clone()
+        )
+        .is_ok(),
+        "governed flights attest"
+    );
+    check!(
+        provider
+            .resolve(&w.engine.world, UNATTESTABLE, &licence.key(), Some(1))
+            .is_none(),
+        "the public resolve never answers the scoped fact"
+    );
+    let id = unattestable_contract(&mut w, licence)?;
+    for _ in 0..2 {
+        later(&mut w)?;
+    }
+    check_eq!(
+        contract(&w, id)?.state,
+        ContractState::Active,
+        "governed flights publish no fact"
+    );
+    // One ungoverned flight in the window: the sentence, and the fact.
+    let flew = issued + 20;
+    let seven = mark(&mut w, START + 620, licence, "Hull Seven", flew, false)?;
+    let error = prepare(
+        &mut w,
+        "roll",
+        "attest_owner_mind",
+        1,
+        GOD,
+        START + 621,
+        params.clone(),
+    )
+    .err()
+    .ok_or("an ungoverned flight refused the attestation")?
+    .to_string();
+    let expected = format!(
+        "{} Hull Seven flew ungoverned on {}.",
+        mush_roll::commerce::seal_marks::UNATTESTABLE,
+        mush_core::clock::CivilDate::from_ic_seconds(flew)
+    );
+    check!(
+        error.contains(&expected),
+        "{error} should carry {expected:?}"
+    );
+    check!(
+        provider
+            .resolve(&w.engine.world, UNATTESTABLE, &licence.key(), Some(1))
+            .is_none(),
+        "still scoped: no public answer"
+    );
+    for _ in 0..2 * mush_economy::SWEEP_PERIOD_SECS {
+        if matches!(contract(&w, id)?.state, ContractState::Settled { .. }) {
+            break;
+        }
+        later(&mut w)?;
+    }
+    check!(
+        matches!(contract(&w, id)?.state, ContractState::Settled { .. }),
+        "the holder's own condition reads the unattestable fact"
+    );
+    // A later governed flight does not clear it.
+    mark(&mut w, START + 630, licence, "Hull Eight", flew + 5, true)?;
+    check!(
+        prepare(
+            &mut w,
+            "roll",
+            "attest_owner_mind",
+            1,
+            GOD,
+            START + 631,
+            params.clone()
+        )
+        .is_err(),
+        "an ungoverned flight in the window is not forgiven"
+    );
+    // The ring keeps 64 marks: four so far, then 66 governed ones. F6: the
+    // six dropped are the oldest GOVERNED marks (Hull One, Hull Eight, then
+    // Hull 0..3); both ungoverned marks stay, whatever their age.
+    let mut last = ObjId(0);
+    for i in 0..66_u128 {
+        last = mark(
+            &mut w,
+            START + 700 + i,
+            licence,
+            &format!("Hull {i}"),
+            flew + 100 + i64::try_from(i)?,
+            true,
+        )?;
+    }
+    let ring = rows(&disk(&w), "roll", MARKS)
+        .into_iter()
+        .find(|v| v.get("licence") == Some(&json!(licence)))
+        .ok_or("the licence's ring")?;
+    let marks = ring.get("marks").and_then(Value::as_array).ok_or("marks")?;
+    check_eq!(marks.len(), 64);
+    check_eq!(
+        marks.first().and_then(|m| m.get("hull")),
+        Some(&json!(zero)),
+        "the oldest ungoverned mark is kept"
+    );
+    check_eq!(
+        marks.get(1).and_then(|m| m.get("hull")),
+        Some(&json!(seven)),
+        "the ungoverned flight in the window is kept"
+    );
+    check_eq!(
+        marks.get(2).and_then(|m| m.get("at_ic")),
+        Some(&json!(flew + 104)),
+        "the oldest six governed dropped"
+    );
+    check_eq!(marks.last().and_then(|m| m.get("hull")), Some(&json!(last)));
+    let cold = branch(f, &capture(&w, &disk(&w)))?;
+    check_eq!(
+        rows(&disk(&cold), "roll", MARKS),
+        rows(&disk(&w), "roll", MARKS),
+        "the ring is retained"
+    );
+    Ok(())
+}
 fn retained_after_attestation(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     let mut w = branch(f, saved)?;
     let birth: InitialFilingOperation = serde_json::from_value(
@@ -771,5 +1058,6 @@ pub(super) async fn exercise(
     stale_clock(f, saved, birth)?;
     stale_service_actor(f, saved, birth)?;
     retained_after_attestation(f, saved)?;
+    unattestable(f, saved)?;
     Ok(())
 }

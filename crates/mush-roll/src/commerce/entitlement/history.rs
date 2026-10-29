@@ -2,6 +2,7 @@
 //! never become a legacy fallback, including refunded and interrupted work.
 //! This module performs no current issuer/ancestor eligibility decision.
 
+use super::super::Holder;
 use super::super::{
     WorldIcSeconds,
     families::CommerceFamilies,
@@ -69,7 +70,7 @@ impl Birth<'_> {
             Self::House(a) => a.term(),
         }
     }
-    pub(crate) fn holder(&self) -> mush_core::ObjId {
+    pub(crate) fn holder(&self) -> Holder {
         match self {
             Self::Legacy(a) => a.holder(),
             Self::Entitlement(a) => a.holder(),
@@ -239,7 +240,7 @@ pub(crate) fn verify_legacy_history(
         || economic.quote != row.quote
         || economic.quote_digest != row.quote_digest
         || economic.product_digest != row.product_digest
-        || economic.buyer != row.holder
+        || Holder::Character(economic.buyer) != row.holder
         || economic.charter != mush_core::ObjId(row.charter.get())
         || !actual.matches_purchase(&economic, &row.funding)
     {
@@ -344,7 +345,7 @@ pub(crate) fn verify_entitlement_grant(
 #[derive(Clone, Copy)]
 pub(crate) struct Granted<'a> {
     birth: Birth<'a>,
-    accepted_holder: mush_core::ObjId,
+    accepted_holder: Holder,
     term: &'a PaidTermRecord,
     economics: Option<&'a PaidTermEconomicsV1>,
     terminal: CommitToken,
@@ -365,7 +366,7 @@ impl<'a> Granted<'a> {
     pub(crate) fn term(self) -> super::super::TermGeneration {
         self.term.generation()
     }
-    pub(crate) fn holder(self) -> mush_core::ObjId {
+    pub(crate) fn holder(self) -> Holder {
         self.accepted_holder
     }
     pub(crate) fn licence(self) -> super::super::LicenceId {
@@ -579,12 +580,14 @@ pub(crate) fn current<'a>(
     term.matches_current(licence)?;
     let grant = granted(ctx, f, ratings, licence, term)?;
     if let Some(ownership) = licence.ownership() {
-        if super::super::paid_resale::history::historical(ctx, f, ratings, licence, ownership)?
-            != licence.holder()
+        // M8c F4: by principal (a renewal re-stamps an organisation's acting).
+        if !super::super::paid_resale::history::historical(ctx, f, ratings, licence, ownership)?
+            .same_principal(licence.holder())
         {
             return Err(PublicationError::Mismatch);
         }
-    } else if licence.holder() != grant.birth().holder() {
+    } else if !licence.holder().same_principal(grant.birth().holder()) {
+        // M8c F4: by principal (a renewal re-stamps an organisation's acting).
         return Err(PublicationError::Mismatch);
     }
     let personal_head = optional(ctx, &f.renewal_heads, licence.id().key())?;

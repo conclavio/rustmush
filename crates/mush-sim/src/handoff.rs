@@ -1117,6 +1117,10 @@ pub(crate) fn register(
             descriptors.outcome.clone(),
             tick.tick_outcome.clone(),
             tick.arm_outcome.clone(),
+            crate::physical::outcome_descriptor_v1()?,
+            crate::physical::outcome_descriptor()?,
+            crate::locomotion::outcome_descriptor()?,
+            crate::locomotion_scenes::outcome_descriptor()?,
         ]),
     )?;
     reg.definition_validator(
@@ -1127,6 +1131,10 @@ pub(crate) fn register(
             descriptors.apply.clone(),
             tick.tick_action.clone(),
             tick.arm_action.clone(),
+            mush_core::physical_transition::action_descriptor_v1()?,
+            mush_core::physical_transition::action_descriptor()?,
+            mush_core::locomotion::transition::action_descriptor()?,
+            mush_core::locomotion::scene_transition::action_descriptor()?,
         ]),
     )?;
     let tick_definitions = crate::tick::TickDefinitions {
@@ -1489,7 +1497,8 @@ mod tests {
         .unwrap();
         let mut out = mush_core::Outbox::new();
         let mut effects = mush_core::Effects::new();
-        // A compatibility context cannot claim that a scan completed.
+        // A compatibility context cannot audit structural receipts without an
+        // owner lens, or claim that the control-lease scan completed.
         {
             let mut ctx = mush_core::Ctx {
                 w: &mut reboot.world,
@@ -1501,7 +1510,10 @@ mod tests {
                 module: Some(SmolStr::new(NS)),
                 typed_state: mush_core::ModuleActionState::unavailable(),
             };
-            mush_core::GameModule::on_all_loaded(&mut SimulationModule::new(), &mut ctx).unwrap();
+            assert!(
+                mush_core::GameModule::on_all_loaded(&mut SimulationModule::new(), &mut ctx)
+                    .is_err()
+            );
         }
         assert!(
             !reboot

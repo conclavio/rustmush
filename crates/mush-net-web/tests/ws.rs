@@ -752,243 +752,44 @@ fn assert_http_status(err: WsError, expected: u16) {
     }
 }
 
-/// Doc 21 cut G.3: a `picture` request turns on PNG frames as binary
-/// messages, drawn from the cockpit and map keyframes this connection's own
-/// stream carries; an unchanged picture sends nothing more, and `off` stops
-/// them. The text envelopes still go through untouched.
+/// Doc 28 P2: every web picture is rendered client-side by `mush-pixel-wasm`,
+/// and `ClientCommand::Picture` stays on the wire as a no-op so an older bundle
+/// is not closed as a protocol error.
 #[tokio::test]
-async fn a_picture_request_gets_png_frames_from_the_connections_own_feeds() {
+async fn a_picture_request_is_accepted_as_a_noop_and_sends_no_binary_frames() {
     let hooks = Arc::new(MockWebHooks::new());
     let addr = spawn_server(hooks.clone(), test_config()).await;
     let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
     expect_hello(&recv_env(&mut ws).await);
-    send_cmd(
-        &mut ws,
-        &ClientCommand::Picture {
-            on: true,
-            look_mdeg: 0,
-            kind: PictureKind::Cockpit,
-        },
-    )
-    .await;
-
-    let tx = {
-        let st = hooks.state();
-        st.conns.values().next().unwrap().clone()
-    };
-    let panel = |seq: u64, feed: &str, text: &str| {
-        Arc::new(Envelope::new(
-            seq,
-            1_756_300_000_000,
-            OutputEvent::Panel {
-                feed: feed.into(),
-                kind: mush_proto::PanelFrameKind::Keyframe,
-                data: serde_json::from_str(text).unwrap(),
-            },
-        ))
-    };
-    tx.send(panel(
-        1,
-        "arena.cockpit",
-        include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"),
-    ))
-    .await
-    .unwrap();
-    tx.send(panel(
-        2,
-        "arena.map",
-        include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json"),
-    ))
-    .await
-    .unwrap();
-
-    // The two envelopes arrive as text, and a frame as binary.
-    let mut texts = 0;
-    let png = loop {
-        let msg = tokio::time::timeout(Duration::from_secs(3), ws.next())
-            .await
-            .expect("timed out waiting for a frame")
-            .expect("stream ended")
-            .expect("ws error");
-        match msg {
-            Message::Text(_) => texts += 1,
-            Message::Binary(bytes) => break bytes,
-            Message::Close(frame) => panic!("unexpected close: {frame:?}"),
-            _ => {}
-        }
-    };
-    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "a PNG frame");
-    assert!(texts <= 2, "the envelopes are forwarded as before");
-
-    // Nothing changes: no more frames (only pings or the rest of the text).
-    let quiet = tokio::time::timeout(Duration::from_millis(400), async {
-        loop {
-            match ws.next().await {
-                Some(Ok(Message::Binary(_))) => return true,
-                Some(Ok(_)) => {}
-                _ => return false,
-            }
-        }
-    })
-    .await;
-    assert!(quiet.is_err(), "an unchanged picture sends nothing");
-
-    // A new look: one new frame. Then off: none.
-    send_cmd(
-        &mut ws,
-        &ClientCommand::Picture {
-            on: true,
-            look_mdeg: 45_000,
-            kind: PictureKind::Cockpit,
-        },
-    )
-    .await;
-    let again = loop {
-        if let Message::Binary(bytes) = tokio::time::timeout(Duration::from_secs(3), ws.next())
-            .await
-            .expect("timed out")
-            .expect("stream ended")
-            .expect("ws error")
-        {
-            break bytes;
-        }
-    };
-    assert_ne!(again, png, "the look turned the camera");
-    send_cmd(
-        &mut ws,
-        &ClientCommand::Picture {
-            on: false,
-            look_mdeg: 45_000,
-            kind: PictureKind::Cockpit,
-        },
-    )
-    .await;
-    tx.send(sys_env(3, "still here")).await.unwrap();
-    let after = tokio::time::timeout(Duration::from_millis(400), async {
-        loop {
-            match ws.next().await {
-                Some(Ok(Message::Binary(_))) => return true,
-                Some(Ok(_)) => {}
-                _ => return false,
-            }
-        }
-    })
-    .await;
-    assert!(after.is_err(), "off: no frames");
-}
-
-/// Doc 21a `X-01`: the frame clock is the picture's rate limit. Ten look
-/// changes sent as fast as a client can draw at most one frame an interval
-/// (20 Hz, the cockpit's) — before, every request reset the clock to now and
-/// each drew a frame of its own.
-#[tokio::test]
-async fn a_burst_of_look_changes_draws_one_frame_an_interval() {
-    let hooks = Arc::new(MockWebHooks::new());
-    let addr = spawn_server(hooks.clone(), test_config()).await;
-    let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
-    expect_hello(&recv_env(&mut ws).await);
-    send_cmd(
-        &mut ws,
-        &ClientCommand::Picture {
-            on: true,
-            look_mdeg: 0,
-            kind: PictureKind::Cockpit,
-        },
-    )
-    .await;
-    let tx = {
-        let st = hooks.state();
-        st.conns.values().next().unwrap().clone()
-    };
-    let panel = |seq: u64, feed: &str, text: &str| {
-        Arc::new(Envelope::new(
-            seq,
-            1_756_300_000_000,
-            OutputEvent::Panel {
-                feed: feed.into(),
-                kind: mush_proto::PanelFrameKind::Keyframe,
-                data: serde_json::from_str(text).unwrap(),
-            },
-        ))
-    };
-    tx.send(panel(
-        1,
-        "arena.cockpit",
-        include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"),
-    ))
-    .await
-    .unwrap();
-    tx.send(panel(
-        2,
-        "arena.map",
-        include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json"),
-    ))
-    .await
-    .unwrap();
-    // The first frame.
-    loop {
-        let msg = tokio::time::timeout(Duration::from_secs(3), ws.next())
-            .await
-            .expect("timed out waiting for the first frame")
-            .expect("stream ended")
-            .expect("ws error");
-        if matches!(msg, Message::Binary(_)) {
-            break;
-        }
-    }
-
-    // Ten looks a few milliseconds apart from a task of their own while
-    // this one reads, so a frame's arrival is the moment the pump sent it.
-    // The old loop reset the clock on each request and drew a frame for
-    // each the moment it was handled (ten, 32 ms apart on the owner's box);
-    // the clock ticking on at its own rate draws at most one a tick,
-    // whatever the requests (four or five, 50 ms apart). The bound is the
-    // clock's own: its deadlines sit on a fixed grid an interval apart, so
-    // `k` frames span at least `k - 1` intervals less one tick's lateness
-    // (under an interval, else the clock re-bases and the gap is whole),
-    // and `span / interval + 2 >= k` — the span measured from the first
-    // look's send to the last frame's arrival, not between the frames' own
-    // arrivals: a tick late by more than what a frame leaves of the
-    // interval has the pump draw the next frame on the trot without
-    // yielding, and this task then reads the two together, which would
-    // shorten the frames' own span by an interval and overshoot the bound.
-    // A debug build whose frame costs more than an interval cannot beat
-    // the cap either way (the old reset's ten frames at the frame's own
-    // spacing pass the bound once a frame costs 40 ms); the clock's
-    // contract is pinned in `picture.rs` as well.
-    let (mut sink, mut stream) = ws.split();
-    let sender = tokio::spawn(async move {
-        let first_look = tokio::time::Instant::now();
-        for look in 1..=10 {
-            let cmd = ClientCommand::Picture {
+    for kind in [PictureKind::Cockpit, PictureKind::Overhead] {
+        send_cmd(
+            &mut ws,
+            &ClientCommand::Picture {
                 on: true,
-                look_mdeg: look * 3_000,
-                kind: PictureKind::Cockpit,
-            };
-            sink.send(Message::Text(serde_json::to_string(&cmd).unwrap().into()))
-                .await
-                .unwrap();
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        (sink, first_look)
-    });
-    let mut arrivals: Vec<tokio::time::Instant> = Vec::new();
-    loop {
-        match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
-            Ok(Some(Ok(Message::Binary(_)))) => arrivals.push(tokio::time::Instant::now()),
-            Ok(Some(Ok(_))) => {}
-            _ => break,
-        }
+                look_mdeg: 45_000,
+                kind,
+            },
+        )
+        .await;
     }
-    let (_sink, first_look) = sender.await.unwrap();
-    let frames = arrivals.len() as u128;
-    let span = arrivals
-        .last()
-        .map_or(Duration::ZERO, |last| last.duration_since(first_look));
-    let allowed = span.as_millis() / 50 + 2;
-    assert!(frames >= 1, "the latest look is drawn");
-    assert!(
-        frames <= allowed,
-        "{frames} frames over {span:?} for ten looks: more than one a tick (at most {allowed})"
-    );
+
+    let tx = {
+        let st = hooks.state();
+        st.conns.values().next().unwrap().clone()
+    };
+    tx.send(sys_env(1, "still here")).await.unwrap();
+    let env = recv_env(&mut ws).await;
+    assert_eq!(env.seq, 1);
+
+    let binary = tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Binary(_))) => return true,
+                Some(Ok(_)) => {}
+                _ => return false,
+            }
+        }
+    })
+    .await;
+    assert!(binary.is_err(), "no server-side PNG frames are sent");
 }

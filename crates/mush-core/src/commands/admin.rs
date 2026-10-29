@@ -230,7 +230,7 @@ fn wall_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// Register `@wall` and `@ignore`.
 pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "@wall".into(),
             shape: ArgShape::Raw,

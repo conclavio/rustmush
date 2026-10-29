@@ -65,7 +65,7 @@ use std::time::Duration;
 use mush_core::{
     Audience, CanonicalId, Ctx, EventHook, Flags, GameModule, HookPoint, HookReadContext, ModError,
     ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, PanelFeedHandle, Registrar,
-    TickCadence, TickHandler, WeatherQuery, World, WorldEvent, WorldEventKind, WxSnapshot,
+    TickCadence, TickHandler, WeatherQuery, World, WorldEvent, WxSnapshot,
 };
 use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
@@ -221,13 +221,14 @@ impl GameModule for WeatherModule {
                 panel: panel.clone(),
             }),
         );
-        reg.subscribe(
-            WorldEventKind::Moved,
+        reg.subscribe_moved(
+            "movement_weather",
+            1,
             Arc::new(WeatherMove {
                 climates: Arc::clone(&self.climates),
                 panel: panel.clone(),
             }),
-        );
+        )?;
         // S6: the meteorologist's interface (doc 14 §4.6).
         reg.interface_provider(
             crate::interface::WEATHER_INTERFACE,

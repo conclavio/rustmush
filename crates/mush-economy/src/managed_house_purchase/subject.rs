@@ -1,6 +1,7 @@
 //! Exact organization and scope are the native issuing principal. There is no
 //! curator/seller placeholder and no caller-controlled permission projection.
 use super::{MAX_PAYOUTS, refused};
+use crate::Holder;
 use crate::managed_entitlement::{GrossRecipientCut, Recipient};
 use crate::managed_purchase::{FundingContext, PurchasePayout};
 use crate::record::{AccountStatus, AssetLifecycle, InstrumentStatus};
@@ -18,7 +19,8 @@ pub struct HousePurchase {
     pub quote: CommitToken,
     pub quote_digest: DefinitionDigest,
     pub product_digest: DefinitionDigest,
-    pub buyer: ObjId,
+    /// Doc 17h §3 M8c (B1): who the licence is bought for.
+    pub buyer: Holder,
     pub organization: OrgId,
     pub scope: OrgScopeId,
     pub charter: ObjId,
@@ -39,7 +41,7 @@ pub(crate) struct HouseWire {
     quote: CommitToken,
     quote_digest: DefinitionDigest,
     product_digest: DefinitionDigest,
-    buyer: ObjId,
+    buyer: Holder,
     organization: OrgId,
     scope: OrgScopeId,
     charter: ObjId,
@@ -151,7 +153,7 @@ impl HousePurchase {
         .map_err(|_| refused())
     }
     pub fn payouts(&self) -> Result<Vec<PurchasePayout>, ParticipantError> {
-        if self.buyer.0 == 0
+        if self.buyer.is_nobody()
             || self.charter.0 == 0
             || self.title_revision == 0
             || self.price.is_negative()
@@ -231,15 +233,16 @@ impl HousePurchase {
     ) -> Result<(), ParticipantError> {
         self.payouts()?;
         let world = ctx.world;
+        let acting = self.buyer.acting_character();
         if state.frozen
             || !matches_action(ctx.action, "fund")
-            || ctx.actor != self.buyer
-            || ctx.principal != &(mush_core::PrincipalId::Object { id: self.buyer })
+            || ctx.actor != acting
+            || ctx.principal != &(mush_core::PrincipalId::Object { id: acting })
             || self.quote == ctx.commit
             || world.now() < self.quoted_at_utc
             || world.now() >= self.expires_at_utc
             || world
-                .get(self.buyer)
+                .get(acting)
                 .is_none_or(|p| p.kind != ObjKind::Player || p.flags.contains(Flags::GOING))
             || world
                 .get(self.charter)
@@ -271,8 +274,8 @@ impl HousePurchase {
             return Err(refused());
         }
         let payer = snapshot.account(self.payer).ok_or_else(refused)?;
-        if payer.owner != PrincipalId::Object(self.buyer)
-            || payer.scope.is_some()
+        if payer.owner != self.buyer.principal()
+            || !crate::holder::payer_scope_fits(world, self.buyer, payer.scope)
             || payer.instrument != self.instrument
             || payer.status != AccountStatus::Active
             || payer.approval.is_some()

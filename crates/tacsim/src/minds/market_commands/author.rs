@@ -29,7 +29,7 @@ pub(crate) const SWITCHES: [&str; 6] = ["rate", "file", "update", "withdraw", "a
 /// The usage lines: exactly the `@mind` `HELP` lines that name these commands.
 pub(crate) const USAGE_RATE_FILE: &str = "@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)";
 pub(crate) const USAGE_FILED: &str =
-    "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed>";
+    "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]";
 pub(crate) const USAGE_FORK: &str =
     "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)";
 
@@ -156,6 +156,18 @@ pub(crate) fn attest_parameters(owner_licence: u64) -> serde_json::Value {
     json!({"owner_licence": owner_licence})
 }
 
+/// M8c B4: the House attestation's wire: the owner licence and the
+/// organisation; without one, exactly `attest_parameters`.
+pub(crate) fn attest_parameters_for(
+    owner_licence: u64,
+    org: Option<mush_org::OrgId>,
+) -> serde_json::Value {
+    match org {
+        None => attest_parameters(owner_licence),
+        Some(org) => json!({"owner_licence": owner_licence, "org": org.0}),
+    }
+}
+
 /// The paid fork's wire: the parent licence as a decimal string
 /// (`LicenceId`'s encoding) and the new library name.
 pub(crate) fn fork_parameters(parent_licence: u64, name: &str) -> serde_json::Value {
@@ -215,10 +227,21 @@ fn actions(ctx: &Ctx<'_>) -> Result<RollCommandActions, Refusal> {
 /// and a missing number read alike (the Roll read refuses both alike).
 /// 17g C2c: `@mind/publish` reads its filed mind through this too.
 pub(super) fn own_filed(ctx: &Ctx<'_>, filed: u64) -> Result<OwnFiledView, Refusal> {
+    own_filed_for(ctx, filed, None)
+}
+
+/// M8c B4: `own_filed` for a filed mind the organisation `org` owns, to a
+/// character acting for it (the read re-asks the grant on the title's
+/// scope); a foreign one reads `NO_FILED` exactly as before.
+pub(super) fn own_filed_for(
+    ctx: &Ctx<'_>,
+    filed: u64,
+    org: Option<mush_org::OrgId>,
+) -> Result<OwnFiledView, Refusal> {
     let refuse = || word!(NO_FILED, &[("filed", &filed.to_string())]);
     let id = FiledRevisionId::new(filed).map_err(|_| refuse())?;
     let service = super::service(ctx)?;
-    let request = OriginalReadRequest::command(RollCommandReadRequest::own_filed(id));
+    let request = OriginalReadRequest::command(RollCommandReadRequest::own_filed_for(id, org));
     ctx.read_owner(&service.roll, request)
         .ok()
         .and_then(OriginalReadResult::into_command)
@@ -354,16 +377,26 @@ pub(super) fn run_withdraw(ctx: &mut Ctx<'_>, filed: u64) -> Result<Outcome, Ref
     super::stage(ctx, "withdraw", &filed, action, parameters, line)
 }
 
-/// `@mind/attest <filed>`: renew the owner's licence of a filed mind the
-/// actor owns, once its term is due (the provider decides).
+/// `@mind/attest <filed> [org=<org>]`: renew the owner's licence of a filed
+/// mind the actor owns, once its term is due (the provider decides). M8c
+/// B4: with `org=<org>`, the House attestation of a filed mind the
+/// organisation owns, by a character acting for it (`NOT_FOR_ORG`
+/// otherwise), through the House action.
 fn attest(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    let filed = number(text.trim()).ok_or_else(|| usage(USAGE_FILED))?;
+    let (text, org) = super::org_argument(text).ok_or_else(|| usage(USAGE_FILED))?;
+    let filed = number(text).ok_or_else(|| usage(USAGE_FILED))?;
     let actions = actions(ctx)?;
-    let view = own_filed(ctx, filed)?;
-    let action = actions.attest().ok_or_else(not_open)?;
+    let org = super::org_for(ctx, org, super::OrgScope::Title)?;
+    let view = own_filed_for(ctx, filed, org)?;
+    let action = if org.is_some() {
+        actions.attest_house()
+    } else {
+        actions.attest()
+    }
+    .ok_or_else(not_open)?;
     let filed = filed.to_string();
     let line = fill(words::ATTESTING, &[("filed", &filed)]);
-    let parameters = attest_parameters(view.owner_licence().get());
+    let parameters = attest_parameters_for(view.owner_licence().get(), org);
     super::submit(ctx, "attest", &filed, action, parameters, &line)
 }
 

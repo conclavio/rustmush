@@ -98,6 +98,7 @@ pub mod core_integration;
 pub mod core_refit;
 mod engine;
 mod hash;
+pub mod holder;
 mod ids;
 pub mod managed_charter_transfer;
 pub mod managed_coverage;
@@ -108,10 +109,12 @@ pub mod managed_paid_resale;
 pub mod managed_purchase;
 pub mod managed_renewal;
 mod managed_title;
+pub use managed_title::CoreProvenanceNote;
 mod plan;
 mod record;
 pub mod registry_filing;
 mod snapshot;
+pub mod unit_authority;
 
 // E4a — clocks, holds, obligations, contracts (still pure).
 mod clock;
@@ -163,6 +166,7 @@ pub use engine::{
     plan_reversal, validate,
 };
 pub use hash::{PLAN_HASH_DOMAIN, plan_hash};
+pub use holder::Holder;
 pub use ids::{
     AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, InstrumentId,
     ObligationId, TransactionId, VaultId,

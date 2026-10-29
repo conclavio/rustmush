@@ -57,6 +57,55 @@ pub(crate) fn current_title(
     Ok(title.revision)
 }
 
+/// M8c B2/B4: `current_title` for a typed holder. A character holder is
+/// `current_title`; an organisation holder passes when the charter's current
+/// E4 title is the organisation's (any scope: a House's title is scoped to
+/// the House's own scope), the acting character is a live player and acts
+/// for the organisation on the title's scope under a live `roll.holder.org`
+/// grant (`org_holder::scoped_actor`). Staff and assignment never substitute
+/// for either.
+pub(crate) fn current_title_for(
+    world: &World,
+    holder: super::Holder,
+    charter: CharterId,
+) -> Result<u64, PublicationError> {
+    let (org, acting) = match holder {
+        super::Holder::Character(actor) => return current_title(world, actor, charter),
+        super::Holder::Organization { org, acting } => (org, acting),
+    };
+    if world
+        .get(acting)
+        .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::GOING))
+        || world
+            .get(charter.object())
+            .is_none_or(|o| o.flags.contains(Flags::GOING))
+        || world
+            .module_state_owner(std::any::TypeId::of::<mush_economy::EconomyStore>())
+            .is_none_or(|owner| owner.as_str() != "economy")
+    {
+        return Err(PublicationError::Unavailable);
+    }
+    let economy = world
+        .module_state::<mush_economy::EconomyStore>()
+        .ok_or(PublicationError::Unavailable)?;
+    let title = economy
+        .snapshot()
+        .asset(charter.object())
+        .ok_or(PublicationError::Missing)?;
+    if economy.is_frozen()
+        || title.object != charter.object()
+        || title.revision == 0
+        || title.title_owner != mush_org::PrincipalId::Organization(org)
+        || title.frozen
+        || title.stolen.is_some()
+        || title.lifecycle != mush_economy::AssetLifecycle::Active
+        || super::org_holder::scoped_actor(world, org, title.scope, acting).is_err()
+    {
+        return Err(PublicationError::Unavailable);
+    }
+    Ok(title.revision)
+}
+
 /// This private request is minted only after the actual owner reader and typed
 /// preimages agree. Serialized operation data cannot construct its authority.
 pub(crate) struct Qualification {

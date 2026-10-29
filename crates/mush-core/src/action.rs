@@ -38,6 +38,11 @@ use crate::world::World;
 
 /// Maximum caller-supplied bytes in an idempotency key.
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
+/// **The driver's one sentence for a refused submission** (E7c2): what the actor reads when
+/// a command's authoritative submission is refused before any durable intent. One constant,
+/// so a surface that must read exactly like a refusal (doc 17h cut M8a's
+/// `@registry/inspect` for a non-operator) shares it rather than copying it.
+pub const SUBMISSION_REFUSED_LINE: &str = "That did not go through. Nothing changed.";
 /// Maximum bytes in canonical line-oriented ingress.
 pub const MAX_INGRESS_LINE_BYTES: usize = 16 * 1024;
 /// Maximum canonical bytes in one structured ingress payload.
@@ -802,6 +807,24 @@ impl ActionInvocation {
     #[must_use]
     pub const fn idempotency(&self) -> &ScopedIdempotencyKey {
         &self.idempotency
+    }
+
+    /// Whether this invocation is the one a service keyed `key` when it
+    /// submitted: its idempotency key is `IdempotencyKey::Caller(key)` (an
+    /// in-process or harness submission that carries the caller key itself)
+    /// or an `IdempotencyKey::Request` (the server's command ingress keys
+    /// every observed submission by a deterministic request UID whose digest
+    /// folds the caller key in, and admits no other form). A `Deterministic`
+    /// key is never a service's own submission. 17g C2h follow-up: the clerk
+    /// services required the `Caller` form alone, which the server never
+    /// produces, so no clerk settlement could land through the real server.
+    #[must_use]
+    pub fn keyed_by(&self, key: &IdempotencyKeyText) -> bool {
+        match self.idempotency.key() {
+            IdempotencyKey::Caller(own) => own == key,
+            IdempotencyKey::Request(_) => true,
+            IdempotencyKey::Deterministic(_) => false,
+        }
     }
 
     #[must_use]
@@ -4420,6 +4443,17 @@ impl ActionProviderRegistryBuilder {
     }
 }
 
+/// Engine-owned services retained while a composed action is prepared. Hook
+/// slices are the actual registered carry and actor movement chains, in order.
+pub(crate) type ComposedPreparationServices<'a> = (
+    &'a crate::participant::ParticipantRegistry,
+    &'a crate::World,
+    &'a crate::read_service::OwnerReadRegistry,
+    &'a crate::account::observation::AccountOracleBinding,
+    &'a [crate::module::HookReg],
+    &'a [crate::module::HookReg],
+);
+
 /// Immutable exact-action provider lookup.
 pub struct ActionProviderRegistry {
     entries: BTreeMap<crate::mechanics::DefinitionLocator, ActionProviderEntry>,
@@ -4961,6 +4995,7 @@ impl ActionProviderRegistry {
             action,
             resolved.invocation(),
             Some(resolved),
+            None,
             commit_token,
             state,
             resolution_keys,
@@ -4977,13 +5012,7 @@ impl ActionProviderRegistry {
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
-        owners: (
-            &crate::participant::ParticipantRegistry,
-            &crate::World,
-            &crate::read_service::OwnerReadRegistry,
-            &crate::account::observation::AccountOracleBinding,
-            &[crate::module::HookReg],
-        ),
+        owners: ComposedPreparationServices<'_>,
     ) -> Result<
         (
             crate::composed::PreparedComposedTxn,
@@ -4995,6 +5024,7 @@ impl ActionProviderRegistry {
             action,
             resolved.invocation(),
             Some(resolved),
+            None,
             commit_token,
             state,
             resolution_keys,
@@ -5035,13 +5065,7 @@ impl ActionProviderRegistry {
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
-        owners: Option<(
-            &crate::participant::ParticipantRegistry,
-            &crate::World,
-            &crate::read_service::OwnerReadRegistry,
-            &crate::account::observation::AccountOracleBinding,
-            &[crate::module::HookReg],
-        )>,
+        owners: Option<ComposedPreparationServices<'_>>,
         seed: F,
     ) -> Result<
         (
@@ -5057,6 +5081,7 @@ impl ActionProviderRegistry {
             action,
             invocation,
             None,
+            None,
             commit_token,
             state,
             resolution_keys,
@@ -5066,21 +5091,46 @@ impl ActionProviderRegistry {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_captured_locomotion(
+        &self,
+        capture: crate::locomotion::CapturedLocomotion,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        owners: ComposedPreparationServices<'_>,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            PreparedAuthoritativeAction,
+        ),
+        ActionProviderPrepareError,
+    > {
+        self.prepare_authoritative_invocation_seeded_inner(
+            action,
+            invocation,
+            None,
+            Some(capture),
+            commit_token,
+            state,
+            resolution_keys,
+            Some(owners),
+            |_| Ok(()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn prepare_authoritative_invocation_seeded_inner<F>(
         &self,
         action: &DefinitionRef,
         invocation: &ActionInvocation,
         resolved: Option<&ResolvedActionInvocation>,
+        capture: Option<crate::locomotion::CapturedLocomotion>,
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
-        owners: Option<(
-            &crate::participant::ParticipantRegistry,
-            &crate::World,
-            &crate::read_service::OwnerReadRegistry,
-            &crate::account::observation::AccountOracleBinding,
-            &[crate::module::HookReg],
-        )>,
+        owners: Option<ComposedPreparationServices<'_>>,
         seed: F,
     ) -> Result<
         (
@@ -5111,8 +5161,13 @@ impl ActionProviderRegistry {
         );
         prepare_context =
             prepare_context.with_registered_transaction(&read_base, entry.registration_ordinal());
-        if let Some((registry, world, _, _, hooks)) = owners {
-            prepare_context = prepare_context.with_carry_hooks(hooks);
+        if let Some(capture) = &capture {
+            prepare_context = prepare_context.with_captured_locomotion(capture);
+        }
+        if let Some((registry, world, _, _, hooks, move_hooks)) = owners {
+            prepare_context = prepare_context
+                .with_carry_hooks(hooks)
+                .with_move_hooks(move_hooks);
             prepare_context =
                 prepare_context.with_participants(crate::participant::ParticipantPreparation::new(
                     registry,
@@ -5123,7 +5178,7 @@ impl ActionProviderRegistry {
                     invocation,
                 ));
         }
-        if let Some((_, world, reads, _, _)) = owners {
+        if let Some((_, world, reads, _, _, _)) = owners {
             prepare_context =
                 prepare_context.with_owner_reads(crate::read_service::PrepareReadContext::new(
                     reads,
@@ -5134,7 +5189,7 @@ impl ActionProviderRegistry {
                     &mut read_observations,
                 ));
         }
-        if let Some((_, world, _, accounts, _)) = owners {
+        if let Some((_, world, _, accounts, _, _)) = owners {
             prepare_context = prepare_context.with_account_observations(
                 crate::account::observation::AccountPrepareContext::new(
                     accounts,
@@ -5169,7 +5224,20 @@ impl ActionProviderRegistry {
         if let Some(error) = prepare_context.owner_error() {
             return Err(ActionProviderPrepareError::Participant(error.clone()));
         }
+        let captured_admission = prepare_context.take_captured_admission();
         drop(prepare_context);
+        let dispatch_observation = match capture {
+            Some(capture) => Some(
+                crate::locomotion::dispatch_observation::BoundDispatchObservation::new(
+                    capture,
+                    invocation.clone(),
+                    action.clone(),
+                    commit_token,
+                    captured_admission.ok_or(crate::participant::ParticipantError::Authority)?,
+                )?,
+            ),
+            None => None,
+        };
         charge_new_operations(&mut queue, root_before_operations, &txn)?;
         self.owner_readiness
             .require_ready(&entry.owner)
@@ -5224,8 +5292,10 @@ impl ActionProviderRegistry {
             );
             trigger_context = trigger_context
                 .with_registered_transaction(&read_base, entry.registration_ordinal());
-            if let Some((registry, world, _, _, hooks)) = owners {
-                trigger_context = trigger_context.with_carry_hooks(hooks);
+            if let Some((registry, world, _, _, hooks, move_hooks)) = owners {
+                trigger_context = trigger_context
+                    .with_carry_hooks(hooks)
+                    .with_move_hooks(move_hooks);
                 trigger_context = trigger_context.with_participants(
                     crate::participant::ParticipantPreparation::new(
                         registry,
@@ -5237,7 +5307,7 @@ impl ActionProviderRegistry {
                     ),
                 );
             }
-            if let Some((_, world, reads, _, _)) = owners {
+            if let Some((_, world, reads, _, _, _)) = owners {
                 trigger_context =
                     trigger_context.with_owner_reads(crate::read_service::PrepareReadContext::new(
                         reads,
@@ -5248,7 +5318,7 @@ impl ActionProviderRegistry {
                         &mut read_observations,
                     ));
             }
-            if let Some((_, world, _, accounts, _)) = owners {
+            if let Some((_, world, _, accounts, _, _)) = owners {
                 trigger_context = trigger_context.with_account_observations(
                     crate::account::observation::AccountPrepareContext::new(
                         accounts,
@@ -5313,7 +5383,7 @@ impl ActionProviderRegistry {
             queue.complete_trigger(work)?;
         }
         queue.finish()?;
-        if let Some((_, world, _, _, _)) = owners {
+        if let Some((_, world, _, _, _, _)) = owners {
             read_observations.recheck(world)?;
             account_observations.recheck(world)?;
         }
@@ -5326,13 +5396,16 @@ impl ActionProviderRegistry {
         eligible_witnesses.dedup();
         let durable_outbox = renumber_durable_outbox(durable_outbox)?;
         let prepared = txn.prepare().map_err(ActionProviderPrepareError::State)?;
-        let prepared = crate::composed::PreparedComposedTxn::new(
+        let mut prepared = crate::composed::PreparedComposedTxn::new(
             prepared,
             owner_images,
             shell_objects,
             read_observations,
             account_observations,
         )?;
+        if let Some(observation) = dispatch_observation {
+            prepared.retain_dispatch(observation)?;
+        }
         Ok((
             prepared,
             PreparedAuthoritativeAction {

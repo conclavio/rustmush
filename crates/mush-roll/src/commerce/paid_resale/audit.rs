@@ -53,7 +53,11 @@ pub(crate) fn binding(
     {
         return Err(PublicationError::Mismatch);
     }
-    let seller = history::historical(ctx, f, ratings, pointer, b.ownership())?;
+    // A resale's seller is a character (M8c: organisation-held licences
+    // are not resold).
+    let seller = history::historical(ctx, f, ratings, pointer, b.ownership())?
+        .character()
+        .ok_or(PublicationError::Mismatch)?;
     let economics = economics::accepted(ctx, f, ratings, pointer, term)?;
     if economics.economics_digest() != b.economics_digest()
         || economics.royalty_chain_digest() != b.royalty_chain_digest()

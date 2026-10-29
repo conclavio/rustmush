@@ -47,6 +47,55 @@
 # ---------------------------------------------------------------------------
 
 [[site]]
+path = "crates/mush-sim/src/physical_tests.rs"
+accessor = "World::module_state_insert"
+slot = "FocusState"
+owner = "sim"
+reason = "DT.2b2a pure admission tests seed the existing Sim focus owner on a bare World to verify that occupied or remotely focused affected hosts refuse preparation. The real coordinator path is separately exercised in server integration tests."
+
+[[site]]
+path = "crates/mush-sim/src/physical_tests.rs"
+accessor = "World::module_state_insert"
+slot = "JourneyBook"
+owner = "sim"
+reason = "DT.2b2a pure admission tests seed and vary Sim journey state on a bare World to prove that held and underway carriers refuse even zero-projection reanchors. The fixture creates no embarkation intervals or crew authority."
+
+[[site]]
+path = "crates/mush-server/tests/split_boundary/dt_preparation_plans.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = "DT.2b1 production-coordinator fixture supplies the host account mapping after boot, as the actual server does. The fixture then acquires focus and the real typed helm lease through Sim commands and scheduled coordinator commits; it does not seed control authority."
+
+[[site]]
+path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
+accessor = "World::module_state_insert"
+slot = "state"
+owner = ""
+reason = "Test-only physical-observation fixture seeds and varies a SpatialState on a bare World to exercise nested hulls, member rooms, cycles and stale projections. Actual Ready admission is separately tested on the production roster and coordinator."
+
+[[site]]
+path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
+accessor = "World::module_state_insert"
+slot = "focus"
+owner = ""
+reason = "Test-only observation fixture seeds a FocusState to compare direct console, remote and proxy reach. It supplies no typed Sim control lease; production Ready requires the independent lease witness."
+
+[[site]]
+path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
+accessor = "World::module_state_insert"
+slot = "units"
+owner = ""
+reason = "Test-only observation fixture seeds authored TacticalUnit data in a bare World's UnitStore, establishing the unit-kind prerequisite without constructing unrelated world content."
+
+[[site]]
+path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
+accessor = "World::module_state_insert"
+slot = "mush_tactics"
+owner = ""
+reason = "Test-only negative control replaces the bare World's UnitStore with an empty store, proving a Thing with a station alone cannot pass tactical-unit readiness."
+
+[[site]]
 path = "crates/tacsim/src/minds/workshop/commands.rs"
 accessor = "World::module_state_mut"
 slot = "RollStore"
@@ -216,28 +265,28 @@ not refused — a cadence knob must not be able to stop a world booting.
 """
 
 [[site]]
-path = "crates/mush-server/src/world_task.rs"
+path = "crates/mush-server/src/world_task/tests.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
 reason = "World-task `#[cfg(test)]` rig: seeds the sim's account oracle on a test world."
 
 [[site]]
-path = "crates/mush-server/src/world_task.rs"
+path = "crates/mush-server/src/world_task/tests.rs"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"
 owner = "economy"
 reason = "World-task `#[cfg(test)]` rig: seeds economy state a durability case then drives."
 
 [[site]]
-path = "crates/mush-server/src/world_task.rs"
+path = "crates/mush-server/src/world_task/tests.rs"
 accessor = "World::module_state_mut"
 slot = "NpcHostState"
 owner = "npc"
 reason = "World-task `#[cfg(test)]` rig: seeds NPC host state for an async-completion case."
 
 [[site]]
-path = "crates/mush-server/src/world_task.rs"
+path = "crates/mush-server/src/world_task/tests.rs"
 accessor = "World::module_state_mut"
 slot = "SpatialState"
 owner = "sim"
@@ -1504,3 +1553,17 @@ document, serves that document through the tick's StoreReadDone completion,
 and verifies that quest recognition waits for the cold receipt. It changes no
 contract, balance, transaction, payment or production ownership permission.
 """
+
+[[site]]
+path = "crates/tacsim/src/surface/hull.rs"
+accessor = "World::module_state_insert"
+slot = "store"
+owner = ""
+reason = "Doc 17h cut M8a fix round 1 (F10/F11): test-only. The `+hull/box` read's unit tests seed a TacsimStore whose black box holds crafted lines (an undecodable entry, a line short of its facts, a ledger that seals every entry) and whose dark flag is set, the shapes a booted world cannot be driven into without corrupting chunk documents. Production never seeds the slot; the boot loads it."
+
+[[site]]
+path = "crates/tacsim/tests/shard_4/ic_sortie_surface.rs"
+accessor = "World::module_state_mut"
+slot = "UnitStore"
+owner = "tactics"
+reason = "Doc 17h cut M8a fix round 1 (F2): test-only. The inspection test copies a rig's TacticalUnit onto a fresh Thing in the tactics store's RAM, an object with a unit that is no programme hull, so the typed inspection action can be shown refusing it through the provider's own known-hull read. Nothing persists; production writes units only through the tactics owner."

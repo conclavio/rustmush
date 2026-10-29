@@ -24,6 +24,8 @@ pub(crate) struct CarryCheck {
     object: ObjId,
     destination: ObjId,
     exchange: Option<Arc<crate::core_exchange::ExchangeCarryAttempt>>,
+    physical: Option<Arc<crate::physical_transition::PhysicalTransitionAttempt>>,
+    move_hooks: Arc<[HookReg]>,
 }
 impl CarryCheck {
     pub(crate) fn capture(
@@ -40,6 +42,8 @@ impl CarryCheck {
             object,
             destination,
             exchange: None,
+            physical: None,
+            move_hooks: Arc::from([]),
         };
         result.recheck(world, lens)?;
         Ok(result)
@@ -60,6 +64,31 @@ impl CarryCheck {
             object,
             destination,
             exchange: Some(exchange),
+            physical: None,
+            move_hooks: Arc::from([]),
+        };
+        result.recheck(world, lens)?;
+        Ok(result)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_physical(
+        hooks: Arc<[HookReg]>,
+        world: &World,
+        lens: TypedStateLens<'_>,
+        actor: ObjId,
+        object: ObjId,
+        destination: ObjId,
+        physical: Arc<crate::physical_transition::PhysicalTransitionAttempt>,
+        move_hooks: Arc<[HookReg]>,
+    ) -> Result<Self, ParticipantError> {
+        let result = Self {
+            hooks,
+            actor,
+            object,
+            destination,
+            exchange: None,
+            physical: Some(physical),
+            move_hooks,
         };
         result.recheck(world, lens)?;
         Ok(result)
@@ -75,6 +104,9 @@ impl CarryCheck {
         if let Some(attempt) = &self.exchange {
             attempt.require_move(self.actor, self.object, self.destination)?;
         }
+        if let Some(attempt) = &self.physical {
+            attempt.require_move(self.actor, self.object, self.destination)?;
+        }
         for hook in self.hooks.iter() {
             let context = HookReadContext::for_module(world, lens, &hook.module);
             let context = if let Some(attempt) = &self.exchange {
@@ -82,8 +114,24 @@ impl CarryCheck {
             } else {
                 context
             };
+            let context = if let Some(attempt) = &self.physical {
+                context.with_physical_transition_attempt(attempt)
+            } else {
+                context
+            };
             hook.hook
                 .carry_attempt(&context, self.actor, self.object, self.destination)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        for hook in self.move_hooks.iter() {
+            let attempt = self.physical.as_ref().ok_or(ParticipantError::Authority)?;
+            if !attempt.matches_actor_projection(self.object, self.destination) {
+                return Err(ParticipantError::Authority);
+            }
+            let context = HookReadContext::for_module(world, lens, &hook.module)
+                .with_physical_transition_attempt(attempt);
+            hook.hook
+                .move_attempt(&context, self.object, None, self.destination)
                 .map_err(|_| ParticipantError::Authority)?;
         }
         Ok(())

@@ -32,6 +32,7 @@ pub mod hydrate_cmd;
 pub mod interface;
 pub mod map_cmd;
 pub mod module;
+pub mod movement;
 pub mod physics;
 pub mod place;
 pub mod raster;

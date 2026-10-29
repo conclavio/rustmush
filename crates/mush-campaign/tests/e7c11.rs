@@ -1161,7 +1161,7 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
         "mush-propagation/src/commands.rs",
         // 16b cut K.2: the guard travelled out of `mush-sim` for the first time,
         // because the verb that carries it did — `EXIT` is the arena's.
-        "tacsim/src/match_/cockpit.rs",
+        "tacsim/src/match_/cockpit/notices.rs",
     ] {
         let text = std::fs::read_to_string(crates_dir.join(rel)).expect("a source file");
         let boundary = text.find("#[cfg(test)]").unwrap_or(text.len());
@@ -1191,7 +1191,7 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
             ("mush-propagation/src/commands.rs".to_owned(), 0),
             // `EXIT` (16b cut K.2): `ProxyAct::Abandonment`'s station-lane face,
             // back after one cut without one.
-            ("tacsim/src/match_/cockpit.rs".to_owned(), 1),
+            ("tacsim/src/match_/cockpit/notices.rs".to_owned(), 1),
         ],
         "the guard's call sites, by file — a new station-lane verb must join the \
          table above and this census in the same commit"

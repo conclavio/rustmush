@@ -97,12 +97,15 @@ pub(crate) fn require_selected_holder(
     ratings: &RatingFamilies,
     licence: &super::super::paid::PersonalPaidLicence,
     basis: Option<&super::records::ParentHolderBasis>,
-    accepted_holder: mush_core::ObjId,
+    accepted_holder: super::super::Holder,
     owner: mush_core::ObjId,
     observed: &mush_core::ClockStamp,
 ) -> Result<(), PublicationError> {
+    // M8c F1 (the lead's ruling): the selected holder is the dependent's
+    // owner as a character; an organisation-held parent never qualifies a
+    // personal filing in this cut (`owner_qualification::current`).
     let Some(basis) = basis else {
-        return if accepted_holder == owner {
+        return if accepted_holder == super::super::Holder::Character(owner) {
             Ok(())
         } else {
             Err(PublicationError::Mismatch)
@@ -110,7 +113,7 @@ pub(crate) fn require_selected_holder(
     };
     basis.validate()?;
     if super::super::paid_resale::history::historical(ctx, f, ratings, licence, &basis.ownership)?
-        != owner
+        != super::super::Holder::Character(owner)
     {
         return Err(PublicationError::Mismatch);
     }
@@ -146,7 +149,7 @@ pub(crate) fn require_captured_holder(
     ratings: &RatingFamilies,
     licence: &super::super::paid::PersonalPaidLicence,
     capture: Option<&super::records::ParentHolderCapture>,
-    accepted_holder: mush_core::ObjId,
+    accepted_holder: super::super::Holder,
     owner: mush_core::ObjId,
 ) -> Result<(), PublicationError> {
     match capture {
@@ -163,7 +166,8 @@ pub(crate) fn require_captured_holder(
                 &capture.observed_ic,
             )
         }
-        None if accepted_holder == owner => Ok(()),
+        // M8c F1: the legacy rule is the owner's own character holder.
+        None if accepted_holder == super::super::Holder::Character(owner) => Ok(()),
         None => Err(PublicationError::Mismatch),
     }
 }

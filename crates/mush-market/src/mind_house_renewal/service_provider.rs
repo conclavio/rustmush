@@ -2,8 +2,8 @@
 //! A public GOD offer or a decoded selector cannot create that intent.
 use super::{Families, RenewalConfig};
 use mush_core::action::{
-    ActionError, ActionInvocation, ActionProvider, AuthoritativeActionOutput, IdempotencyKey,
-    PerceivedRef, PrincipalId,
+    ActionError, ActionInvocation, ActionProvider, AuthoritativeActionOutput, PerceivedRef,
+    PrincipalId,
 };
 use mush_core::participant::ParticipantHandle;
 use mush_core::{ActionTxn, DefinitionRef, GOD, PrepareCtx, RulesValue};
@@ -36,7 +36,7 @@ impl Provider {
             || inv.subject() != &PerceivedRef::SelfActor
             || !inv.targets().is_empty()
             || inv.idempotency().scope().owner.as_str() != crate::NS
-            || inv.idempotency().key() != &IdempotencyKey::Caller(intent.key.clone())
+            || !inv.keyed_by(&intent.key)
             || intent.action != self.action
             || inv.parameters() != &intent.parameters()
         {
@@ -110,7 +110,7 @@ impl Provider {
             .with_eligible_witnesses(vec![
                 inv.principal().clone(),
                 PrincipalId::Object {
-                    id: before.binding().holder(),
+                    id: before.binding().holder().acting_character(),
                 },
             ]))
     }

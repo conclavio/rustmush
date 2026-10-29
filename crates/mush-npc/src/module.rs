@@ -165,7 +165,7 @@ impl GameModule for NpcModule {
         ] {
             reg.subscribe(WorldEventKind::Said { kind }, Arc::new(NpcObserver));
         }
-        reg.subscribe(WorldEventKind::Moved, Arc::new(NpcObserver));
+        reg.subscribe_moved("movement_memory", 1, Arc::new(NpcObserver))?;
         reg.subscribe(WorldEventKind::Connected, Arc::new(NpcObserver));
         reg.subscribe(WorldEventKind::Disconnected, Arc::new(NpcObserver));
         // M14 informant tie-in: a witnessed power use (already projected

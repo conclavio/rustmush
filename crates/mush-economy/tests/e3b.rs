@@ -269,6 +269,115 @@ fn title_transfer_moves_no_object_and_movement_moves_no_title() {
     );
 }
 
+#[test]
+fn dt_unit_facts_follow_live_title_and_never_assignment_custody_or_mush_owner() {
+    use mush_economy::unit_authority::EconomyUnitAuthorityWorldFacts;
+    use mush_org::unit_authority::runtime::UnitAuthorityWorldFacts;
+    use mush_org::unit_authority::{MissionBinding, UnitCapability};
+
+    let factory = EconomyUnitAuthorityWorldFacts;
+    let mut tw = boot();
+    let owner = tw.spawn_player("Titleholder");
+    let borrower = tw.spawn_player("Assignee");
+    let hall = room(&mut tw, "Storage");
+    let unit = thing(&mut tw, "Unit");
+    assert!(factory.facts(tw.world()).asset(unit).is_none());
+    assert!(!factory.facts(tw.world()).principal_exists(ObjId(u32::MAX)));
+    let output = tw.run(GOD, &format!("@asset/title #{}=#{}", unit.0, owner.0));
+    assert!(!has_error(&output), "{}", texts(&output));
+    let first = factory.facts(tw.world()).asset(unit).expect("title facts");
+    assert!(first.active);
+    assert_eq!(first.owner, mush_org::PrincipalId::Object(owner));
+    assert_eq!(tw.world().get(unit).expect("unit").owner, GOD);
+    for command in [
+        format!("@asset/assign #{}=#{} training", unit.0, borrower.0),
+        format!("@teleport #{}=#{}", unit.0, hall.0),
+        format!("@chown #{}=Assignee", unit.0),
+    ] {
+        let output = tw.run(GOD, &command);
+        assert!(!has_error(&output), "{command}: {}", texts(&output));
+    }
+    assert_eq!(factory.facts(tw.world()).asset(unit), Some(first.clone()));
+    assert!(
+        factory
+            .facts(tw.world())
+            .organization_control(
+                mush_org::OrgId(1),
+                unit,
+                UnitCapability::CommandAssignedAi,
+                0,
+            )
+            .is_none()
+    );
+    assert!(
+        factory
+            .facts(tw.world())
+            .mission(&MissionBinding {
+                mission: 1,
+                detachment: 1,
+                roster_revision: 1,
+                accepted_roster_hash: [7; 32],
+            })
+            .is_none()
+    );
+
+    let output = tw.run(GOD, &format!("@asset/transfer #{}=#{}", unit.0, borrower.0));
+    assert!(!has_error(&output), "{}", texts(&output));
+    let transferred = factory
+        .facts(tw.world())
+        .asset(unit)
+        .expect("new owner facts");
+    assert_eq!(transferred.owner, mush_org::PrincipalId::Object(borrower));
+    assert_ne!(transferred.lineage, first.lineage);
+    assert!(snap(&tw).asset(unit).expect("asset").acquisition.is_none());
+    let output = tw.run(GOD, &format!("@asset/transfer #{}=#{}", unit.0, owner.0));
+    assert!(!has_error(&output), "{}", texts(&output));
+    let returned = factory
+        .facts(tw.world())
+        .asset(unit)
+        .expect("returned title");
+    assert_eq!(returned.owner, first.owner);
+    assert_ne!(returned.lineage, first.lineage);
+    assert_ne!(returned.lineage, transferred.lineage);
+
+    tw.world_mut()
+        .set_flag(owner, mush_core::Flags::GOING, true)
+        .expect("going owner");
+    assert!(!factory.facts(tw.world()).asset(unit).expect("facts").active);
+    tw.world_mut()
+        .set_flag(owner, mush_core::Flags::GOING, false)
+        .expect("live owner");
+    tw.world_mut()
+        .set_flag(unit, mush_core::Flags::GOING, true)
+        .expect("going unit");
+    assert!(!factory.facts(tw.world()).asset(unit).expect("facts").active);
+    tw.world_mut()
+        .set_flag(unit, mush_core::Flags::GOING, false)
+        .expect("live unit");
+    assert!(factory.facts(tw.world()).asset(unit).expect("facts").active);
+
+    let mut persisted = fold_kv(&mut tw);
+    patch(&mut persisted, &mush_economy::asset_key(unit), |doc| {
+        doc["frozen"] = serde_json::json!(true);
+        doc["frozen_reason"] = serde_json::json!("recovery");
+    });
+    reboot(&mut tw, persisted);
+    let frozen = factory.facts(tw.world()).asset(unit).expect("frozen title");
+    assert!(!frozen.active);
+    assert_eq!(frozen.lineage, returned.lineage);
+    let output = tw.run(GOD, &format!("@asset/unfreeze #{}", unit.0));
+    assert!(!has_error(&output), "{}", texts(&output));
+    assert!(factory.facts(tw.world()).asset(unit).expect("facts").active);
+    let output = tw.run(GOD, &format!("@asset/writeoff #{}=scrapped", unit.0));
+    assert!(!has_error(&output), "{}", texts(&output));
+    let ended = factory
+        .facts(tw.world())
+        .asset(unit)
+        .expect("historical title");
+    assert!(!ended.active);
+    assert_eq!(ended.lineage, returned.lineage);
+}
+
 // ======================================================================
 // Scenario 19 — assignment is its own axis
 // ======================================================================

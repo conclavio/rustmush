@@ -47,6 +47,8 @@ use crate::behavior::{
 use crate::commands::movement;
 use crate::flags::{Powers, Privileges, Role};
 use crate::lock::{LockExpr, MAX_LOCK_DEPTH, eval_lock};
+use crate::locomotion::CapturedLocomotion;
+use crate::locomotion::dispatch::{GateTranscript, capture};
 use crate::matchit::MatchErr;
 use crate::module::{ContextOutcome, ModuleTables, restored_prompt};
 use crate::obj::ObjId;
@@ -516,6 +518,13 @@ pub enum LookupErr {
     Ambiguous(Vec<SmolStr>),
 }
 
+/// Stamped only by Core's movement registration, never inferred from a name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BuiltinLocomotion {
+    Goto,
+    Home,
+}
+
 struct Entry {
     spec: CommandSpec,
     handler: Arc<dyn CommandHandler>,
@@ -527,6 +536,7 @@ struct Entry {
     /// `lookup_idx` skips it. Set by [`Registry::register_exact`] alone
     /// (16b cut AP.4).
     exact: bool,
+    locomotion: Option<BuiltinLocomotion>,
 }
 
 struct AliasStageEntry {
@@ -666,6 +676,16 @@ impl Registry {
         self.register_tagged(spec, handler, None, CommandCompatibility::LegacyPostImage)
     }
 
+    /// Register a core/host command whose contract is inspection or
+    /// presentation only ([`CommandCompatibility::ReadOnly`]).
+    pub fn register_read_only(
+        &mut self,
+        spec: CommandSpec,
+        handler: Arc<dyn CommandHandler>,
+    ) -> Result<(), RegistryError> {
+        self.register_tagged(spec, handler, None, CommandCompatibility::ReadOnly)
+    }
+
     /// Register a core command that resolves only when its name is typed in
     /// full (case-folded), never as a prefix — otherwise as
     /// [`register`](Self::register) does (core, no module), with one
@@ -688,7 +708,14 @@ impl Registry {
         spec: CommandSpec,
         handler: Arc<dyn CommandHandler>,
     ) -> Result<(), RegistryError> {
-        self.insert_entry(spec, handler, None, CommandCompatibility::ReadOnly, true)
+        self.insert_entry(
+            spec,
+            handler,
+            None,
+            CommandCompatibility::ReadOnly,
+            true,
+            None,
+        )
     }
 
     /// Register a command tagged with the registering module's identity
@@ -700,7 +727,23 @@ impl Registry {
         module: Option<SmolStr>,
         compatibility: CommandCompatibility,
     ) -> Result<(), RegistryError> {
-        self.insert_entry(spec, handler, module, compatibility, false)
+        self.insert_entry(spec, handler, module, compatibility, false, None)
+    }
+
+    pub(crate) fn register_builtin_locomotion(
+        &mut self,
+        spec: CommandSpec,
+        handler: Arc<dyn CommandHandler>,
+        locomotion: BuiltinLocomotion,
+    ) -> Result<(), RegistryError> {
+        self.insert_entry(
+            spec,
+            handler,
+            None,
+            CommandCompatibility::LegacyPostImage,
+            false,
+            Some(locomotion),
+        )
     }
 
     /// The one insertion path behind [`register_tagged`](Self::register_tagged)
@@ -713,6 +756,7 @@ impl Registry {
         module: Option<SmolStr>,
         compatibility: CommandCompatibility,
         exact: bool,
+        locomotion: Option<BuiltinLocomotion>,
     ) -> Result<(), RegistryError> {
         let mut keys = vec![spec.name.to_lowercase()];
         keys.extend(spec.aliases.iter().map(|a| a.to_lowercase()));
@@ -728,6 +772,7 @@ impl Registry {
             module,
             compatibility,
             exact,
+            locomotion,
         });
         for k in keys {
             self.index.insert(k, idx);
@@ -1158,6 +1203,30 @@ impl Registry {
         let i = self.lookup_idx(verb)?;
         let e = &self.entries[i];
         Ok((&e.spec, Arc::clone(&e.handler), e.module.clone()))
+    }
+
+    /// Resolve only an actually registered Core movement entry, using the
+    /// same lookup and command-spec gate as ordinary dispatch. The caller has
+    /// already checked HOME and whole-line exit precedence.
+    pub(crate) fn locomotion_entry(
+        &self,
+        world: &World,
+        actor: ObjId,
+        line: &str,
+    ) -> Result<Option<(usize, BuiltinLocomotion, ParsedArgs)>, String> {
+        let (head, rest) = split_head(line);
+        let mut parts = head.split('/');
+        let verb = parts.next().unwrap_or("");
+        let Ok(index) = self.lookup_idx(verb) else {
+            return Ok(None);
+        };
+        let entry = &self.entries[index];
+        let Some(kind) = entry.locomotion else {
+            return Ok(None);
+        };
+        let switches: Vec<_> = parts.filter(|s| !s.is_empty()).collect();
+        let (args, _) = check_spec(world, actor, &entry.spec, &switches, rest)?;
+        Ok(Some((index, kind, args)))
     }
 
     fn lookup_idx(&self, verb: &str) -> Result<usize, LookupErr> {
@@ -1612,12 +1681,38 @@ pub fn dispatch(
     out: &mut Outbox,
     lens: crate::action_state::TypedStateLens<'_>,
 ) {
-    if w.get(actor).is_none() {
-        return;
+    let _ = dispatch_mode(reg, w, actor, line, out, lens, false);
+}
+
+/// Explicit inert capture path. Normal command dispatch never selects it.
+pub(crate) fn dispatch_capturing(
+    reg: &Registry,
+    w: &mut World,
+    actor: ObjId,
+    line: &str,
+    out: &mut Outbox,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> Option<CapturedLocomotion> {
+    dispatch_mode(reg, w, actor, line, out, lens, true)
+}
+
+fn dispatch_mode(
+    reg: &Registry,
+    w: &mut World,
+    actor: ObjId,
+    line: &str,
+    out: &mut Outbox,
+    lens: crate::action_state::TypedStateLens<'_>,
+    capturing: bool,
+) -> Option<CapturedLocomotion> {
+    if capturing && line.len() > crate::MAX_INGRESS_LINE_BYTES {
+        out.error(actor, "Locomotion command exceeds proof limits.");
+        return None;
     }
+    w.get(actor)?;
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return;
+        return None;
     }
 
     // 0. Input-context stack — BEFORE everything else (even prefix
@@ -1629,7 +1724,7 @@ pub fn dispatch(
             out.info(actor, "Aborted.");
             let spec = restored_prompt(w, actor);
             out.to_actor(actor, OutputEvent::Prompt(spec));
-            return;
+            return None;
         }
         if let Some(mut stacked) = w.pop_input_context(actor) {
             // Remember where it sat so it can go back beneath anything the
@@ -1666,10 +1761,10 @@ pub fn dispatch(
                 ContextOutcome::PopAndRun(cmd) => {
                     let spec = restored_prompt(w, actor);
                     out.to_actor(actor, OutputEvent::Prompt(spec));
-                    dispatch(reg, w, actor, &cmd, out, lens);
+                    return dispatch_mode(reg, w, actor, &cmd, out, lens, capturing);
                 }
             }
-            return;
+            return None;
         }
     }
 
@@ -1696,7 +1791,11 @@ pub fn dispatch(
     //    verb it can wave through. Skipped entirely when no gate is
     //    registered (the default) — dispatch is then byte-identical.
     if command_gates_refuse(reg, w, actor, &cur, out) {
-        return;
+        return None;
+    }
+    let mut transcript = capturing.then(GateTranscript::new);
+    if let Some(transcript) = &mut transcript {
+        transcript.record(&cur);
     }
 
     // 3. Alias stages: the kernel's macro stage first, then the modules'
@@ -1722,27 +1821,43 @@ pub fn dispatch(
         for entry in &reg.alias_stages {
             match entry.stage.try_alias(w, actor, &cur, out) {
                 AliasOutcome::NotMine => {}
-                AliasOutcome::Handled => return,
+                AliasOutcome::Handled => return None,
                 AliasOutcome::Rewrite(s) => {
                     cur = s;
                     if command_gates_refuse(reg, w, actor, &cur, out) {
-                        return;
+                        return None;
+                    }
+                    if let Some(transcript) = &mut transcript {
+                        transcript.record(&cur);
                     }
                 }
             }
         }
     }
 
-    // 4. HOME keyword.
-    if cur.trim().eq_ignore_ascii_case("home") {
-        movement::go_home(reg, w, actor, out, lens);
-        return;
-    }
+    if let Some(transcript) = transcript {
+        // The traced selector shares ordinary lookup precedence and recognizes
+        // only real Core handlers. A refused capture cannot execute movement.
+        match capture(reg, w, actor, transcript) {
+            Ok(Some(captured)) => return Some(captured),
+            Ok(None) => {}
+            Err(reason) => {
+                out.error(actor, reason.to_string());
+                return None;
+            }
+        }
+    } else {
+        // 4. HOME keyword.
+        if cur.trim().eq_ignore_ascii_case("home") {
+            movement::go_home(reg, w, actor, out, lens);
+            return None;
+        }
 
-    // 5. Exit match (room → zone → global) against the whole line.
-    if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
-        movement::traverse_exit(reg, w, actor, exit, out, lens);
-        return;
+        // 5. Exit match (room → zone → global) against the whole line.
+        if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
+            movement::traverse_exit(reg, w, actor, exit, out, lens);
+            return None;
+        }
     }
 
     // 6. Command table.
@@ -1761,11 +1876,11 @@ pub fn dispatch(
                 BehaviorResolution::One { target, index } => {
                     let Some(bspec) = reg.behavior_spec(&target.behavior) else {
                         huh(reg, actor, verb, out);
-                        return;
+                        return None;
                     };
                     let Some(cmd) = bspec.commands.get(index) else {
                         huh(reg, actor, verb, out);
-                        return;
+                        return None;
                     };
                     if let Some((args, switches)) =
                         gate_spec(w, actor, &cmd.spec, &switch_names, rest, out)
@@ -1776,7 +1891,7 @@ pub fn dispatch(
                             handler.call(ctx, &target)
                         });
                     }
-                    return;
+                    return None;
                 }
                 BehaviorResolution::Ambiguous(targets) => {
                     let names: Vec<String> = targets
@@ -1794,7 +1909,7 @@ pub fn dispatch(
                         actor,
                         format!("Ambiguous \"{verb}\": could mean {}.", names.join(" or ")),
                     );
-                    return;
+                    return None;
                 }
                 BehaviorResolution::None => {}
             }
@@ -1804,7 +1919,7 @@ pub fn dispatch(
             let line = cur.trim().to_string();
             for entry in &reg.command_fallbacks {
                 if entry.fallback.try_command(w, actor, &line, out) {
-                    return;
+                    return None;
                 }
             }
             huh(reg, actor, verb, out);
@@ -1827,6 +1942,7 @@ pub fn dispatch(
             }
         }
     }
+    None
 }
 
 /// Split off the first whitespace-delimited word.
@@ -1849,35 +1965,46 @@ fn gate_spec(
     rest: &str,
     out: &mut Outbox,
 ) -> Option<(ParsedArgs, SwitchSet)> {
+    match check_spec(w, actor, spec, switch_names, rest) {
+        Ok(parsed) => Some(parsed),
+        Err(reason) => {
+            out.error(actor, reason);
+            None
+        }
+    }
+}
+
+fn check_spec(
+    w: &World,
+    actor: ObjId,
+    spec: &CommandSpec,
+    switch_names: &[&str],
+    rest: &str,
+) -> Result<(ParsedArgs, SwitchSet), String> {
     for s in switch_names {
         if !spec.switches.iter().any(|k| k.eq_ignore_ascii_case(s)) {
-            out.error(actor, format!("Unknown switch \"/{s}\" for {}.", spec.name));
-            return None;
+            return Err(format!("Unknown switch \"/{s}\" for {}.", spec.name));
         }
     }
     if perm::role_of(w, actor) < spec.min_role {
-        out.error(actor, "Permission denied.");
-        return None;
+        return Err("Permission denied.".to_owned());
     }
     if let Some(p) = spec.power
         && !perm::has_power(w, actor, p)
     {
-        out.error(actor, "Permission denied.");
-        return None;
+        return Err("Permission denied.".to_owned());
     }
     if let Some(p) = spec.privilege
         && !perm::has_privilege(w, actor, p)
     {
-        out.error(actor, "Permission denied.");
-        return None;
+        return Err("Permission denied.".to_owned());
     }
     if let Some(lock) = &spec.lock
         && !eval_lock(w, lock, actor, MAX_LOCK_DEPTH)
     {
-        out.error(actor, "Permission denied.");
-        return None;
+        return Err("Permission denied.".to_owned());
     }
-    Some((
+    Ok((
         ParsedArgs::parse(spec.shape, rest),
         SwitchSet::from_names(switch_names.iter().copied()),
     ))
@@ -1943,19 +2070,32 @@ fn command_gates_refuse(
     line: &str,
     out: &mut Outbox,
 ) -> bool {
+    match check_command_gates(reg, w, actor, line) {
+        Ok(()) => false,
+        Err(reason) => {
+            out.error(actor, reason);
+            true
+        }
+    }
+}
+
+/// Replays only the pure gate checks, never the mutating alias pipeline.
+pub(crate) fn check_command_gates(
+    reg: &Registry,
+    w: &World,
+    actor: ObjId,
+    line: &str,
+) -> Result<(), String> {
     if reg.command_gates.is_empty() {
-        return false;
+        return Ok(());
     }
     let line = line.trim();
     let (head, _) = split_head(line);
     let verb = head.split('/').next().unwrap_or("");
     for gate in &reg.command_gates {
-        if let Err(reason) = gate.check(w, reg, actor, verb, line) {
-            out.error(actor, reason);
-            return true;
-        }
+        gate.check(w, reg, actor, verb, line)?;
     }
-    false
+    Ok(())
 }
 
 /// Queue the classic `Huh?`, with a fuzzy suggestion when one is close.

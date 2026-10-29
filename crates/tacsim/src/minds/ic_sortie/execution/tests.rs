@@ -226,3 +226,212 @@ fn retained_ic_abi_journal_capacity_refuses_before_runtime_changes() -> TestResu
     check!(events(&mut arena)?.is_empty());
     Ok(())
 }
+
+/// The black box's open line for a trip sealed with `facts` (doc 17h cut M8b G11).
+fn box_open_line(
+    facts: crate::surface::black_box::SealFacts,
+) -> Result<crate::surface::black_box::BlackBoxLine, Box<dyn std::error::Error>> {
+    let opened = crate::surface::excursion::OpenSortie {
+        id: crate::arena::mind::SortieId::ic(UNIT, 500),
+        hull: ObjId(20),
+        slot: 1,
+        site: mush_core::CanonicalId::new("ahuna")?,
+        operator: ObjId(10),
+        opened_ic: 800,
+        abandoned: false,
+        abandoned_ic: None,
+        unrecorded: false,
+        seal: Some(facts),
+    };
+    Ok(crate::surface::black_box::BlackBoxLine::mind_sealed(
+        &opened,
+        UNIT,
+        None,
+        crate::surface::black_box::Admitted {
+            class: Some(crate::definitions::UnitClass::Vehicle),
+            host: crate::surface::black_box::EpochHost::Surface,
+            count: 1,
+        },
+    ))
+}
+
+/// `unit`'s core with its governor's bit off (the capability's payload rewritten in place).
+fn ungovern(unit: &mut mush_tactics::TacticalUnit) -> TestResult {
+    let core = mush_tactics::ComponentId::new("core")?;
+    let key = mush_tactics::CapabilityKey {
+        id: mush_tactics::CapabilityId::new(crate::definitions::unit::CORE_CAPABILITY)?,
+        source: Some(core),
+    };
+    let schema = unit.capability(&key).ok_or("a core")?.schema().clone();
+    let class = crate::arena::core::read_core(unit).ok_or("a core")?.class;
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::GrantCapability {
+            key,
+            rules: mush_core::RulesValue::new(
+                schema,
+                crate::definitions::core::profile_payload(class, false),
+            )?,
+        }],
+        Some(unit.revision()),
+        None,
+    )?;
+    *unit = mush_tactics::apply(unit, &plan, 0)?.0;
+    Ok(())
+}
+
+/// **Doc 17h cut M8b C4, the gate's test 5** (`unfiled`, `unlicensed`; D-UM-41, D-UM-42):
+/// the IC execution refuses a personal draft (no filed certificate) on a governed core and
+/// admits it on an ungoverned one, sealed with `authored` the draft's definition and its
+/// source digest; the ungoverned seal's lines record `unfiled` and, under the draft's licence
+/// word, `unlicensed`. A governed seal records nothing, whatever the word.
+#[test]
+fn m8b_an_ungoverned_core_admits_an_unfiled_draft_and_records_it() -> TestResult {
+    use crate::arena::mind_seal::Admission;
+    use crate::minds::licence_state::SealLicenceState;
+    for governed in [true, false] {
+        let mut hull = tank(UNIT, Team::Red, pose(1500, 1500));
+        hull.controller = Controller::Mind;
+        if !governed {
+            ungovern(&mut hull.unit)?;
+        }
+        let mut terms = SealTerms::fixture();
+        terms.match_id = MatchId(7);
+        let definition = stock_definition(&[("Line".into(), terms.card.clone())], CoreClass::I)?;
+        let digest: [u8; 32] = Sha256::digest(SOURCE.as_bytes()).into();
+        terms.authored = Some(Arc::new(definition));
+        terms.selected_profiles = vec!["Line".into()];
+        terms.identity = MindIdentity {
+            mind: "Personal draft".into(),
+            origin: MindOrigin::Draft {
+                character: ObjId(77),
+                mind: 1,
+                revision: 1,
+                digest: DefinitionDigest::from_bytes([1; 32]),
+            },
+            source_sha256: digest,
+        };
+        terms.rated = CoreClass::I;
+        terms.engine_for_minds = SealEngine::Scripted;
+        hull.reseal(&terms)?;
+        check_eq!(hull.seal.governed, governed);
+        let execution = Execution {
+            seal: hull.seal.clone(),
+            source: SOURCE.into(),
+            arena: ArenaConfig::default(),
+            classes: terms.classes,
+        };
+        if governed {
+            check!(execution.validate().is_err(), "a governed core refuses it");
+            check!(
+                !super::super::audit::unfiled_matches(
+                    &hull.seal,
+                    &DefinitionDigest::from_bytes(digest)
+                ),
+                "the audit refuses it on a governed seal"
+            );
+            check!(hull.seal.admissions(SealLicenceState::Draft).is_empty());
+        } else {
+            execution.validate()?;
+            check_eq!(
+                hull.seal.admissions(SealLicenceState::Draft),
+                vec![Admission::Unfiled, Admission::Unlicensed]
+            );
+            // G11: the seal's own lines carry it — the arena line, the facts and the box's
+            // open line built from them.
+            let expected = vec![Admission::Unfiled, Admission::Unlicensed];
+            let line_admissions = match hull.seal.sealed_line(SealLicenceState::Draft) {
+                crate::arena::EventKind::MindSealed { admissions, .. } => admissions,
+                _ => Vec::new(),
+            };
+            check_eq!(line_admissions, expected);
+            let facts =
+                crate::surface::black_box::SealFacts::of(&hull.seal, SealLicenceState::Draft);
+            check_eq!(facts.admissions, expected);
+            let open = box_open_line(facts)?;
+            check!(open.check(UNIT).is_ok());
+            let value = serde_json::to_value(&open)?;
+            check_eq!(
+                value["admissions"],
+                serde_json::json!(["unfiled", "unlicensed"])
+            );
+            // G4: the audit admits the uncertified seal for its own source only.
+            check!(super::super::audit::unfiled_matches(
+                &hull.seal,
+                &DefinitionDigest::from_bytes(digest)
+            ));
+            check!(!super::super::audit::unfiled_matches(
+                &hull.seal,
+                &DefinitionDigest::from_bytes([9; 32])
+            ));
+            check_eq!(
+                hull.seal.admissions(SealLicenceState::Active),
+                vec![Admission::Unfiled]
+            );
+        }
+    }
+    Ok(())
+}
+
+/// **Doc 17h cut M8b C4, the floor's first point** (D-UM-17, D-UM-42; the gate's test 5,
+/// `under_floor`, and the over-class admission), on an armed Class I hull: the Line card under
+/// a floor of 200 is refused
+/// `Unlawful` at the seal on a governed core and sealed on an ungoverned one — the seal keeps
+/// the captured floor, holds its cards to none, and records `under_floor`; a mind rated over
+/// the core is refused `OverClass` on a governed core and sealed at the core's class on an
+/// ungoverned one, recording `over_class`.
+#[test]
+fn m8b_an_ungoverned_core_seals_under_the_floor_and_over_its_class() -> TestResult {
+    use crate::arena::mind_seal::Admission;
+    use crate::match_::SealError;
+    use crate::minds::licence_state::SealLicenceState;
+    for governed in [true, false] {
+        // The fixture tank's Class I core, and a cannon: a fire station, so the floor applies.
+        let mut hull = tank(UNIT, Team::Red, pose(1500, 1500));
+        hull.weapons.push(crate::arena::test_support::cannon());
+        hull.controller = Controller::Mind;
+        if !governed {
+            ungovern(&mut hull.unit)?;
+        }
+        let floored = SealTerms {
+            odds_floor_permille: 200,
+            ..SealTerms::fixture()
+        };
+        let sealed = hull.reseal(&floored);
+        if governed {
+            check_eq!(sealed, Err(SealError::Unlawful { floor: 200 }));
+        } else {
+            sealed?;
+            check!(hull.seal.lifts_floor());
+            check_eq!(hull.seal.odds_floor_permille, 200);
+            check_eq!(hull.seal.effective_floor(), 0);
+            check_eq!(
+                hull.seal.admissions(SealLicenceState::Doctrine),
+                vec![Admission::UnderFloor]
+            );
+            let facts =
+                crate::surface::black_box::SealFacts::of(&hull.seal, SealLicenceState::Doctrine);
+            check_eq!(facts.admissions, vec![Admission::UnderFloor]);
+            let value = serde_json::to_value(box_open_line(facts)?)?;
+            check_eq!(value["admissions"], serde_json::json!(["under_floor"]));
+        }
+        let over = SealTerms {
+            rated: CoreClass::II,
+            ..SealTerms::fixture()
+        };
+        let sealed = hull.reseal(&over);
+        if governed {
+            check!(
+                matches!(sealed, Err(SealError::OverClass { .. })),
+                "{sealed:?}"
+            );
+        } else {
+            sealed?;
+            check_eq!(hull.seal.class, CoreClass::I);
+            check_eq!(
+                hull.seal.admissions(SealLicenceState::Doctrine),
+                vec![Admission::OverClass]
+            );
+        }
+    }
+    Ok(())
+}

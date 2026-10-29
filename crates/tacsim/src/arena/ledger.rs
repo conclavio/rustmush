@@ -273,6 +273,29 @@ pub enum EventKind {
         /// when `by` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         slot: Option<u8>,
+        /// **The shot was unlawful** (doc 17h cut M8b C5; D-UM-17, D-UM-42): its slot's
+        /// condition under the seal's floor or on an unclassified contact, fired because the
+        /// hull's core is ungoverned. A record field: absent when false (every lawful shot,
+        /// every shot before M8b), never folded by the state hash (which folds the ledger's
+        /// sequence, not a line's bytes).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unlawful: bool,
+    },
+    /// **An unlawful arming landed** (doc 17h cut M8b C5; D-UM-17 "its unlawful arming
+    /// journalled", D-UM-42): a slot armed under the seal's floor or on an unclassified
+    /// contact, admitted because the hull's core is ungoverned. Arming is otherwise not
+    /// journalled (the slots are state, folded by the hash), so this line exists only for an
+    /// ungoverned core — never on a governed hull, never in an arena pod (D-UM-41) — and no
+    /// tape before M8b moves. The line, not a notice, is the record.
+    Armed {
+        /// The hull.
+        unit: ObjId,
+        /// The weapon the slot names.
+        weapon: SmolStr,
+        /// The slot armed.
+        slot: u8,
+        /// Always true on a written line; carried so the record says what it is.
+        unlawful: bool,
     },
     /// **A shot's flight time elapsed** (16b cut W.1; doc 16 §3.5 "Scheduled
     /// impact"). The outcome is the `hit` or `miss` line that follows it.
@@ -594,9 +617,21 @@ pub enum EventKind {
         governed: bool,
         /// The licence the core holds, or `doctrine`.
         licence: SmolStr,
+        /// **The state that licence is read under** (doc 17h cut M8a; doc 17 §10): `doctrine`,
+        /// `draft`, or a filed licence's `active` / `grace` / `pending` / `lapsed` / `revoked` /
+        /// `recalled`, derived at the site that seals and passed to the line
+        /// (`MindSeal::sealed_line`'s parameter, never a seal field). M8a re-blessed every tape
+        /// that prints this line. Every seal M8a and later writes carries `Some`; a line written
+        /// before M8a (a kept store's tape) decodes with it absent and re-encodes byte for byte.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        licence_state: Option<crate::minds::licence_state::SealLicenceState>,
         /// The warrant principal, absent on the wire where nobody chose.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<CharacterRef>,
+        /// **What an ungoverned seal admitted** (doc 17h cut M8b C4; D-UM-42): a record field,
+        /// never a notice. Absent for every governed seal, so no tape moves.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        admissions: Vec<crate::arena::mind_seal::Admission>,
     },
     /// **A sortie closed** (17b cut M3.3 defines it; doc 17 §12, §13): at the
     /// match's end (`match_end`, every open sortie, immediately before the
@@ -667,6 +702,12 @@ pub enum EventKind {
     Aborted,
     /// The match is void: nothing it derived may be committed.
     Void,
+    /// A delivered DT command, including its independent authority fence and
+    /// absolute optional deadline. Cancellation has no directive.
+    DetachmentCommanded {
+        unit: ObjId,
+        command: Box<super::detachment::DetachmentCommand>,
+    },
 }
 
 impl EventKind {
@@ -687,6 +728,7 @@ impl EventKind {
             EventKind::Emcon { .. } => "emcon",
             EventKind::Locked { .. } => "locked",
             EventKind::Fired { .. } => "fired",
+            EventKind::Armed { .. } => "armed",
             EventKind::Impact { .. } => "impact",
             EventKind::Hit { .. } => "hit",
             EventKind::Miss { .. } => "miss",
@@ -709,6 +751,7 @@ impl EventKind {
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",
             EventKind::Void => "void",
+            EventKind::DetachmentCommanded { .. } => "detachment_commanded",
         }
     }
 }
@@ -1351,6 +1394,7 @@ mod tests {
                 rounds: 1,
                 by: None,
                 slot: None,
+                unlawful: false,
             },
             // 17b cut M1b.1 (D-UM-14): a condition slot's own shot, attributed.
             EventKind::Fired {
@@ -1362,6 +1406,7 @@ mod tests {
                 rounds: 1,
                 by: Some(SmolStr::new_static("cond")),
                 slot: Some(1),
+                unlawful: false,
             },
             EventKind::Impact {
                 shot_seq: 1,
@@ -1443,7 +1488,9 @@ mod tests {
                 class: CoreClass::I,
                 governed: true,
                 licence: SmolStr::new_static("doctrine"),
+                licence_state: Some(crate::minds::licence_state::SealLicenceState::Doctrine),
                 principal: Some(CharacterRef::Character { id: ObjId(77) }),
+                admissions: Vec::new(),
             },
             EventKind::SortieClosed {
                 unit: ObjId(4),
@@ -1510,6 +1557,31 @@ mod tests {
     /// words and their exact wire shapes — `principal`, `fault` and `ops`
     /// absent on the wire when `None` — and each round-trips, the `None`s
     /// included.
+    /// **Doc 17h cut M8a fix round 1 (F8): a `mind_sealed` line written before M8a decodes**
+    /// with its licence state absent and re-encodes byte for byte, so a kept store's tapes
+    /// read and every digest over them stands.
+    #[test]
+    fn m8a_a_pre_m8a_mind_sealed_line_decodes_without_a_state() {
+        let old = serde_json::json!({
+            "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
+            "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
+            "card_digest": "a".repeat(64), "class": "I", "governed": true,
+            "licence": "doctrine",
+        });
+        let decoded: EventKind = serde_json::from_value(old.clone()).expect("an old line decodes");
+        assert!(
+            matches!(
+                &decoded,
+                EventKind::MindSealed {
+                    licence_state: None,
+                    ..
+                }
+            ),
+            "{decoded:?}"
+        );
+        assert_eq!(serde_json::to_value(&decoded).expect("it encodes"), old);
+    }
+
     #[test]
     fn m3_the_four_mind_kinds_have_their_words_and_shapes() {
         let sortie = SortieId::in_match(7, ObjId(4));
@@ -1522,7 +1594,9 @@ mod tests {
             class: CoreClass::I,
             governed: true,
             licence: SmolStr::new_static("doctrine"),
+            licence_state: Some(crate::minds::licence_state::SealLicenceState::Doctrine),
             principal,
+            admissions: Vec::new(),
         };
         let cases = [
             (
@@ -1531,7 +1605,7 @@ mod tests {
                     "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
                     "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
                     "card_digest": "a".repeat(64), "class": "I", "governed": true,
-                    "licence": "doctrine",
+                    "licence": "doctrine", "licence_state": "doctrine",
                     "principal": {"kind": "character", "id": 77},
                 }),
             ),
@@ -1541,7 +1615,7 @@ mod tests {
                     "kind": "mind_sealed", "unit": 4, "sortie": 30_064_771_076_u64,
                     "mind": "Standard Doctrine", "source": "8b3ec78c9d957865",
                     "card_digest": "a".repeat(64), "class": "I", "governed": true,
-                    "licence": "doctrine",
+                    "licence": "doctrine", "licence_state": "doctrine",
                 }),
             ),
             (
@@ -2004,6 +2078,82 @@ mod tests {
         assert_eq!(log.max_bytes(), 4_096);
     }
 
+    /// **Doc 17h cut M8b C5**: `fired`'s `unlawful` is written only when true and reads back;
+    /// a line without it (every line before M8b) decodes as lawful; the `armed` line has its
+    /// word and shape. `mind_sealed`'s `admissions` likewise appear only when an ungoverned
+    /// seal admitted something, in snake_case.
+    #[test]
+    fn m8b_unlawful_and_admissions_are_written_only_when_there_is_one() {
+        let fired = |unlawful| EventKind::Fired {
+            unit: ObjId(4),
+            weapon: SmolStr::new_static("cannon"),
+            shot_seq: 1,
+            target: ObjId(9),
+            range_cm: 4_000,
+            rounds: 1,
+            by: Some(SmolStr::new_static("mind")),
+            slot: Some(1),
+            unlawful,
+        };
+        let text = serde_json::to_string(&fired(true)).expect("serialises");
+        assert!(text.ends_with(",\"slot\":1,\"unlawful\":true}"), "{text}");
+        let back: EventKind = serde_json::from_str(&text).expect("reads back");
+        assert_eq!(back, fired(true));
+        let lawful = serde_json::to_string(&fired(false)).expect("serialises");
+        assert!(!lawful.contains("unlawful"), "{lawful}");
+        assert_eq!(
+            serde_json::from_str::<EventKind>(&lawful).expect("reads back"),
+            fired(false)
+        );
+        let armed = EventKind::Armed {
+            unit: ObjId(4),
+            weapon: SmolStr::new_static("cannon"),
+            slot: 2,
+            unlawful: true,
+        };
+        assert_eq!(armed.as_str(), "armed");
+        let text = serde_json::to_string(&armed).expect("serialises");
+        assert_eq!(
+            text,
+            "{\"kind\":\"armed\",\"unit\":4,\"weapon\":\"cannon\",\"slot\":2,\"unlawful\":true}"
+        );
+        assert_eq!(
+            serde_json::from_str::<EventKind>(&text).expect("reads"),
+            armed
+        );
+        let sealed = |admissions| EventKind::MindSealed {
+            unit: ObjId(4),
+            sortie: SortieId::in_match(7, ObjId(4)),
+            mind: SmolStr::new_static("Fixture Mind"),
+            source: SmolStr::new_static("8b3ec78c9d957865"),
+            card_digest: SmolStr::new("a".repeat(64)),
+            class: CoreClass::II,
+            governed: false,
+            licence: SmolStr::new_static("draft"),
+            licence_state: Some(crate::minds::licence_state::SealLicenceState::Draft),
+            principal: None,
+            admissions,
+        };
+        let none = serde_json::to_value(sealed(Vec::new())).expect("serialises");
+        assert!(none.get("admissions").is_none());
+        use crate::arena::mind_seal::Admission;
+        let some = sealed(vec![
+            Admission::UnderFloor,
+            Admission::Unfiled,
+            Admission::Unlicensed,
+            Admission::OverClass,
+        ]);
+        let value = serde_json::to_value(&some).expect("serialises");
+        assert_eq!(
+            value["admissions"],
+            serde_json::json!(["under_floor", "unfiled", "unlicensed", "over_class"])
+        );
+        assert_eq!(
+            serde_json::from_value::<EventKind>(value).expect("reads back"),
+            some
+        );
+    }
+
     /// **17b cut M1b.1** (D-UM-14): a `fired` line carries `by` and `slot` only
     /// when the shot was a slot's or a cited mind's; a bare line — every line
     /// before this cut — is byte for byte what it was and still decodes.
@@ -2018,6 +2168,7 @@ mod tests {
             rounds: 1,
             by: None,
             slot: None,
+            unlawful: false,
         };
         let text = serde_json::to_string(&bare).expect("serialises");
         assert_eq!(
@@ -2034,6 +2185,7 @@ mod tests {
             rounds: 1,
             by: Some(SmolStr::new_static("cond")),
             slot: Some(2),
+            unlawful: false,
         };
         let text = serde_json::to_string(&cond).expect("serialises");
         assert!(text.ends_with(",\"by\":\"cond\",\"slot\":2}"), "{text}");

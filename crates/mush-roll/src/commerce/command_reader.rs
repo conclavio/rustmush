@@ -77,6 +77,7 @@
 //! `paid_resale::reader::resale_step` only for a licence on which it found a
 //! live offer naming the actor.
 
+use super::Holder;
 use super::families::CommerceFamilies;
 use super::paid::PaidForm;
 use super::read::CommerceRead;
@@ -106,16 +107,30 @@ enum ReadKind {
     OpenShell,
     OwnFiled {
         filed: FiledRevisionId,
+        /// M8c B3: the organisation the actor reads for (`org=<org>`): the
+        /// filed mind is the organisation's House filing and the actor acts
+        /// for it on the House's scope. Absent, the actor's own filed mind.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        org: Option<mush_org::OrgId>,
     },
     OwnHoldings {
         section: HoldingSection,
         after: Option<u64>,
+        /// M8c B3: the organisation whose holdings the actor reads
+        /// (`+minds/holdings org=<org>`), under a live `roll.holder.org`
+        /// grant; absent, the actor's own.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        org: Option<mush_org::OrgId>,
     },
     CharterNames {
         charters: Vec<CharterId>,
     },
     OwnPaid {
         licence: LicenceId,
+        /// M8c B3: the organisation holding the licence, read by a character
+        /// acting for it; absent, a licence the actor holds itself.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        org: Option<mush_org::OrgId>,
     },
     CharterOffers {
         filed: FiledRevisionId,
@@ -148,8 +163,13 @@ impl RollCommandReadRequest {
     /// The actor's own filed mind selected by one of its filed revisions.
     #[must_use]
     pub const fn own_filed(filed: FiledRevisionId) -> Self {
+        Self::own_filed_for(filed, None)
+    }
+    /// M8c B3: `own_filed` for the organisation `org` (`ReadKind::OwnFiled`).
+    #[must_use]
+    pub const fn own_filed_for(filed: FiledRevisionId, org: Option<mush_org::OrgId>) -> Self {
         Self {
-            kind: ReadKind::OwnFiled { filed },
+            kind: ReadKind::OwnFiled { filed, org },
         }
     }
     /// 17g C2c: one page of the actor's own holdings in `section`, after the
@@ -157,8 +177,21 @@ impl RollCommandReadRequest {
     /// a licence number for `Paid`).
     #[must_use]
     pub const fn own_holdings(section: HoldingSection, after: Option<u64>) -> Self {
+        Self::own_holdings_for(section, after, None)
+    }
+    /// M8c B3: `own_holdings` for the organisation `org`.
+    #[must_use]
+    pub const fn own_holdings_for(
+        section: HoldingSection,
+        after: Option<u64>,
+        org: Option<mush_org::OrgId>,
+    ) -> Self {
         Self {
-            kind: ReadKind::OwnHoldings { section, after },
+            kind: ReadKind::OwnHoldings {
+                section,
+                after,
+                org,
+            },
         }
     }
     /// 17g C2c: the public names of up to `MAX_CHARTER_NAMES` charters.
@@ -171,8 +204,13 @@ impl RollCommandReadRequest {
     /// 17g C2d: a paid licence the actor holds now.
     #[must_use]
     pub const fn own_paid(licence: LicenceId) -> Self {
+        Self::own_paid_for(licence, None)
+    }
+    /// M8c B3: `own_paid` for a licence the organisation `org` holds.
+    #[must_use]
+    pub const fn own_paid_for(licence: LicenceId, org: Option<mush_org::OrgId>) -> Self {
         Self {
-            kind: ReadKind::OwnPaid { licence },
+            kind: ReadKind::OwnPaid { licence, org },
         }
     }
     /// 17g C2g: the live pending-charter offers naming the actor on the
@@ -533,31 +571,46 @@ pub(super) fn read(
     request: RollCommandReadRequest,
 ) -> Result<RollCommandReadResult, OwnerReadError> {
     let shells = shells.ok_or(OwnerReadError::Unavailable)?;
+    // M8c B3: the holder a read is for: the actor itself, or the organisation
+    // named by `org=` acting through the actor. Each own read re-asks the
+    // grant for the organisation arm; nothing about the organisation is
+    // read before it passes, so a foreign organisation reads as a missing
+    // number.
+    let holder_for = |org: Option<mush_org::OrgId>| match org {
+        None => Holder::Character(ctx.actor()),
+        Some(org) => Holder::Organization {
+            org,
+            acting: ctx.actor(),
+        },
+    };
     match request.kind {
         ReadKind::OpenShell => Ok(RollCommandReadResult::OpenShell {
             request: shells.open_request(ctx)?,
         }),
-        ReadKind::OwnFiled { filed } => own_filed(ctx, roll, families, filed)
+        ReadKind::OwnFiled { filed, org } => own_filed(ctx, roll, families, filed, holder_for(org))
             .map(RollCommandReadResult::OwnFiled)
             .map_err(|_| OwnerReadError::Refused),
         ReadKind::OwnHoldings {
             section: HoldingSection::Owner,
             after,
-        } => owner_holdings(ctx, roll, families, after).map(RollCommandReadResult::OwnerHoldings),
+            org,
+        } => owner_holdings(ctx, roll, families, after, holder_for(org))
+            .map(RollCommandReadResult::OwnerHoldings),
         ReadKind::OwnHoldings {
             section: HoldingSection::Paid,
             after,
+            org,
         } => {
             let after = after
                 .map(LicenceId::new)
                 .transpose()
                 .map_err(|_| OwnerReadError::Refused)?;
-            super::paid_holdings::page(ctx, families, ctx.actor(), after)
+            super::paid_holdings::page(ctx, families, holder_for(org), after)
                 .map(RollCommandReadResult::PaidHoldings)
         }
         ReadKind::CharterNames { charters } => charter_names(ctx, families, &charters)
             .map(|names| RollCommandReadResult::CharterNames { names }),
-        ReadKind::OwnPaid { licence } => own_paid(ctx, families, licence)
+        ReadKind::OwnPaid { licence, org } => own_paid(ctx, families, licence, holder_for(org))
             .map(RollCommandReadResult::OwnPaid)
             .map_err(|_| OwnerReadError::Refused),
         ReadKind::CharterOffers { filed } => charter_offers(ctx, families, filed)
@@ -643,12 +696,19 @@ pub(super) fn own_paid(
     ctx: &OwnerReadContext<'_>,
     f: &CommerceFamilies,
     licence: LicenceId,
+    holder: Holder,
 ) -> Result<PaidHoldingView, OwnerReadError> {
     let pointer = row(ctx, &f.paid_licences, licence.key())?;
     if pointer.id() != licence {
         return Err(OwnerReadError::Integrity);
     }
-    if pointer.holder() != ctx.actor() {
+    // M8c B3: a character reads a licence it holds; a character acting for
+    // the holding organisation (`org_holder::acts_as`, re-asked here) reads
+    // the organisation's, whoever acted when it was bought. The bare read
+    // never answers an organisation's licence, nor the reverse.
+    if !pointer.holder().same_principal(holder)
+        || super::org_holder::acts_as(ctx.world(), pointer.holder(), ctx.actor()).is_err()
+    {
         return Err(OwnerReadError::Refused);
     }
     let term = row(
@@ -748,7 +808,20 @@ fn owner_holdings(
     roll: &RollStore,
     families: &CommerceFamilies,
     after: Option<u64>,
+    holder: Holder,
 ) -> Result<OwnerHoldingsPage, OwnerReadError> {
+    // M8c B3/F5: an organisation's titles are read by a character granted on
+    // any of its scopes (a House's curator on the House's scope), asked
+    // before any title is looked at; each row is then projected on its own
+    // title's scope (`project_owner_for`, `check_title`).
+    if match holder {
+        super::Holder::Character(c) => c != ctx.actor(),
+        super::Holder::Organization { org, .. } => {
+            super::org_holder::acts_anywhere(ctx.world(), org, ctx.actor()).is_err()
+        }
+    } {
+        return Err(OwnerReadError::Refused);
+    }
     let after = after
         .map(|n| u32::try_from(n).map(mush_core::ObjId))
         .transpose()
@@ -762,11 +835,7 @@ fn owner_holdings(
     }
     let owned: Vec<mush_core::ObjId> = economy
         .snapshot()
-        .assets_of_after(
-            &mush_org::PrincipalId::Object(ctx.actor()),
-            after,
-            OWN_ASSETS_PER_READ + 1,
-        )
+        .assets_of_after(&holder.principal(), after, OWN_ASSETS_PER_READ + 1)
         .map(|asset| asset.object)
         .collect();
     let (rows, next) = page(&owned, |object| {
@@ -782,7 +851,7 @@ fn owner_holdings(
         if line.id() != charter.line || line.charter() != charter.id {
             return Err(OwnerReadError::Integrity);
         }
-        let view = match own_filed(ctx, roll, families, line.head()) {
+        let view = match own_filed(ctx, roll, families, line.head(), holder) {
             Ok(view) => view,
             Err(OwnerReadError::Refused) => return Ok(None),
             Err(error) => return Err(error),
@@ -800,6 +869,17 @@ fn owner_holdings(
             owner_phase: view.owner_phase,
         }))
     })?;
+    // M8c F14: an organisation's titles may be scoped where the reader is
+    // not granted (`check_title` skips them), so the cursor names the last
+    // VISIBLE row's title when one was shown. With none shown, the last
+    // examined asset stays the cursor: it is the organisation's own title,
+    // and without it a window of unseen titles could never be paged past.
+    let next = match (holder, rows.last(), next) {
+        (super::Holder::Organization { .. }, Some(last), Some(_)) => {
+            Some(u64::from(last.charter.object().0))
+        }
+        (_, _, next) => next,
+    };
     Ok(OwnerHoldingsPage { rows, next })
 }
 
@@ -910,8 +990,8 @@ fn own_filed(
     roll: &RollStore,
     families: &CommerceFamilies,
     filed: FiledRevisionId,
+    holder: Holder,
 ) -> Result<OwnFiledView, OwnerReadError> {
-    let actor = ctx.actor();
     let record = row(ctx, &families.filed, filed.key())?;
     let position = record.content().position();
     let charter = row(ctx, &families.charters, position.charter.key())?;
@@ -930,11 +1010,13 @@ fn own_filed(
         return Err(OwnerReadError::Integrity);
     }
     // The title check the own-holding read uses: the charter's current
-    // ownership history names this actor and E4 title is theirs now
-    // (`charter_transfer::history::current`, `current_title`). After a
-    // charter transfer the new holder passes and the old one does not; the
-    // owner licence is the charter's, so it follows the title.
-    super::charter_transfer::history::current(ctx, families, birth, actor)
+    // ownership history names this holder and E4 title is theirs now
+    // (`charter_transfer::history::current_for`, `current_title_for`). After
+    // a charter transfer the new holder passes and the old one does not; the
+    // owner licence is the charter's, so it follows the title. M8c B3: for
+    // an organisation holder the birth must be the organisation's House
+    // filing and the actor must act for it on the House's scope.
+    super::charter_transfer::history::current_for(ctx, families, birth, holder)
         .map_err(|_| OwnerReadError::Refused)?;
     let term = super::owner_attestation::history::current(ctx, roll, families, licence)
         .map_err(|_| OwnerReadError::Integrity)?;

@@ -86,6 +86,8 @@ impl HardwareCoordinates {
             issuer: issuer.clone(),
             factory: self.factory,
             output_container: self.output_container,
+            // Doc 17h cut M8b C2: the launch composes no ungoverning shop.
+            ungovern: None,
         }
     }
 }

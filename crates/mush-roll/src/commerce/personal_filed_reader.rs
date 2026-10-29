@@ -5,7 +5,9 @@ use super::families::CommerceFamilies;
 use super::owner_holdings::{
     OriginalOwnerHolding, OwnerProjectionError, project_original_owner_for,
 };
-use super::personal_paid_holdings::{PersonalPaidHolding, project_personal_paid_for};
+use super::personal_paid_holdings::{
+    PersonalPaidHolding, project_personal_paid_for, reader_holder,
+};
 use super::rating::{RatingCompatibility, RatingFamilies};
 use crate::RollStore;
 use mush_core::mechanics::{
@@ -357,16 +359,20 @@ impl OwnerReadService for PersonalFiledReader {
                 )
                 .map_err(refusal)?,
             ),
+            // M8c F1: typed by the pointer's arm (`reader_holder`).
             (false, true) => HoldingKind::Paid(
-                project_personal_paid_for(
-                    ctx,
-                    holder,
-                    &self.families,
-                    &self.ratings,
-                    licence,
-                    &self.expected,
-                )
-                .map_err(refusal)?,
+                reader_holder(ctx, &self.families, holder, licence)
+                    .and_then(|holder| {
+                        project_personal_paid_for(
+                            ctx,
+                            holder,
+                            &self.families,
+                            &self.ratings,
+                            licence,
+                            &self.expected,
+                        )
+                    })
+                    .map_err(refusal)?,
             ),
             (false, false) => return Err(OwnerReadError::Refused),
             (true, true) => return Err(OwnerReadError::Integrity),

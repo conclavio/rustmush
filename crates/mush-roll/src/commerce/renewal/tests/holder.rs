@@ -22,7 +22,7 @@ fn holder_draft(
 ) -> TestResult<RenewalOperationV1> {
     let mut row = draft(b, n, at, RenewalAttemptV1::Automatic {})?;
     row.binding.format = 2;
-    row.binding.holder = mush_core::ObjId(40 + u32::try_from(generation)?);
+    row.binding.holder = mush_core::ObjId(40 + u32::try_from(generation)?).into();
     row.binding.holder_basis = Some(basis(generation));
     row.attempt = match previous {
         None => RenewalAttemptV1::HolderAutomatic {

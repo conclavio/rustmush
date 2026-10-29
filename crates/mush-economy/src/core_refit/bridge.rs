@@ -35,7 +35,8 @@ pub(crate) fn register(
         .map_err(|_| ModError::msg("Core action count"))?;
     let mut references = vec![config.industry_owner.clone(), config.policy.recipe.clone()];
     references.extend(actions.iter().cloned());
-    references.extend(config.policy.fitted_units.iter().cloned());
+    references.extend(config.policy.ungovern.iter().map(|u| u.recipe.clone()));
+    references.extend(config.policy.roots().cloned());
     references.sort();
     let descriptor = mush_core::DefinitionDescriptor::new(
         mush_core::DefinitionKind::new("core_refit_policy")

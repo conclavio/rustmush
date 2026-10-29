@@ -122,6 +122,10 @@ pub const MAX_SAFE_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 /// fixed prefix, separators, and one decimal `u64` to this value.
 pub const MAX_LEDGER_LOG_ID_BYTES: usize = 256;
 
+/// A movement may enter one transcript and leave another. This bound is not
+/// a general multi-log transaction facility.
+pub const MAX_LEDGER_BATCH_APPENDS: usize = 2;
+
 /// Maximum number of individual integrity findings retained in a checked
 /// restore error. The total count is reported separately, so a corrupt store
 /// cannot turn diagnostics themselves into an unbounded allocation.
@@ -243,6 +247,7 @@ pub struct PreparedLedgerAppend {
     seq: u64,
     chunk: LedgerChunk,
     write: ModuleWrite,
+    resident_limit: Option<usize>,
 }
 
 impl PreparedLedgerAppend {
@@ -292,6 +297,38 @@ impl BoundLedgerAppend<'_> {
     }
 }
 
+/// At most two distinct log tails, all validated before either can change.
+/// Dropping the binding leaves every tail and sequence unchanged.
+#[must_use = "binding does not append; apply consumes every validated plan"]
+pub struct BoundLedgerBatch<'a> {
+    ledger: &'a mut Ledger,
+    tails: Vec<(SmolStr, LogTail)>,
+    outputs: Vec<(u64, ModuleWrite)>,
+}
+
+impl BoundLedgerBatch<'_> {
+    /// Publish the already validated tails and return the original writes in
+    /// caller order. All output allocation completed during binding.
+    pub fn apply(self) -> Vec<(u64, ModuleWrite)> {
+        for (id, tail) in self.tails {
+            self.ledger.logs.insert(id, tail);
+        }
+        self.outputs
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LedgerBatchError {
+    #[error("ledger batch exceeds its two-append bound")]
+    TooMany,
+    #[error("ledger batch names the same log twice")]
+    DuplicateLog,
+    #[error("ledger batch prestate exceeds its byte or nesting bound")]
+    InputLimit,
+    #[error("prepared ledger batch is stale")]
+    StalePrestate,
+}
+
 /// Why a ledger append could not be prepared. Every variant is detected
 /// before the ledger is mutated.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -339,6 +376,12 @@ pub enum LedgerAppendError {
     /// The in-memory encoded-entry byte counter cannot be advanced safely.
     #[error("ledger chunk byte counter overflow")]
     ByteCountOverflow,
+    /// The selected resident tail could not be safely inspected before clone.
+    #[error("ledger resident tail exceeds its {max}-byte or nesting bound")]
+    ResidentLimit { max: usize },
+    /// New bounded callers cannot introduce a recursively unsafe value.
+    #[error("ledger entry exceeds the bounded input shape")]
+    InputLimit,
 }
 
 /// The sole failure mode after a valid append has been prepared.
@@ -445,6 +488,69 @@ impl Ledger {
         self.chunk_target_bytes
     }
 
+    /// Bound the complete resident tail set before a caller clones its owning
+    /// state. This counts borrowed entries with a streaming encoder; it neither
+    /// clones log values nor reads sealed history from storage. The byte bound
+    /// covers serialized resident data, while `max_logs` bounds map overhead.
+    #[must_use]
+    pub fn resident_within_bounds(&self, max_logs: usize, max_bytes: usize) -> bool {
+        if self.logs.len() > max_logs {
+            return false;
+        }
+        let Ok(mut bytes) = encoded_len_bounded(&self.chunk_target_bytes, max_bytes) else {
+            return false;
+        };
+        for (id, tail) in &self.logs {
+            let Some(remaining) = max_bytes.checked_sub(bytes) else {
+                return false;
+            };
+            let resident = (
+                id,
+                tail.open_chunk,
+                &tail.open_entries,
+                tail.next_seq,
+                tail.open_bytes,
+            );
+            let Ok(size) = encoded_len_bounded(&resident, remaining) else {
+                return false;
+            };
+            bytes += size;
+        }
+        true
+    }
+
+    /// Prepare one append after bounding only its selected resident tail,
+    /// before the ordinary preparation clones it. The requested limit can
+    /// tighten, but never widen, the hard chunk ceiling. Unrelated logs are
+    /// neither read nor cloned. The same limit is retained for batch binding.
+    pub fn prepare_append_bounded(
+        &self,
+        log_id: &str,
+        value: serde_json::Value,
+        max_resident_bytes: usize,
+    ) -> Result<PreparedLedgerAppend, LedgerAppendError> {
+        if log_id.is_empty() {
+            return Err(LedgerAppendError::EmptyLogId);
+        }
+        if log_id.len() > MAX_LEDGER_LOG_ID_BYTES {
+            return Err(LedgerAppendError::LogIdTooLong {
+                bytes: log_id.len(),
+                max: MAX_LEDGER_LOG_ID_BYTES,
+            });
+        }
+        let max = max_resident_bytes.min(MAX_SAFE_CHUNK_BYTES);
+        if !bounded_tail(log_id, self.chunk_target_bytes, self.logs.get(log_id), max) {
+            return Err(LedgerAppendError::ResidentLimit { max });
+        }
+        let mut entry_budget = MAX_SAFE_CHUNK_BYTES;
+        if !bounded_value(&value, &mut entry_budget) {
+            return Err(LedgerAppendError::InputLimit);
+        }
+        let mut prepared = self.prepare_append(log_id, value)?;
+        prepared.resident_limit = Some(max);
+        Ok(prepared)
+    }
+
     /// Validate and fully construct an append without changing the ledger.
     ///
     /// Entry encoding, exact prospective chunk encoding, both hard byte
@@ -544,6 +650,7 @@ impl Ledger {
             seq,
             chunk: document,
             write,
+            resident_limit: None,
         })
     }
 
@@ -575,6 +682,60 @@ impl Ledger {
         Ok(BoundLedgerAppend {
             ledger: self,
             prepared,
+        })
+    }
+
+    /// Check every selected tail without cloning, allocating postimages, or
+    /// mutating. In particular a late malformed value is bounded before Eq.
+    pub fn check_prepared_batch(
+        &self,
+        prepared: &[PreparedLedgerAppend],
+    ) -> Result<(), LedgerBatchError> {
+        if prepared.len() > MAX_LEDGER_BATCH_APPENDS {
+            return Err(LedgerBatchError::TooMany);
+        }
+        if prepared.len() == 2 && prepared[0].log_id == prepared[1].log_id {
+            return Err(LedgerBatchError::DuplicateLog);
+        }
+        for plan in prepared {
+            let limit = plan.resident_limit.unwrap_or(MAX_SAFE_CHUNK_BYTES);
+            let live = self.logs.get(plan.log_id.as_str());
+            if !bounded_tail(&plan.log_id, self.chunk_target_bytes, live, limit)
+                || !bounded_tail(
+                    &plan.log_id,
+                    plan.chunk_target_bytes,
+                    plan.expected_tail.as_ref(),
+                    limit,
+                )
+            {
+                return Err(LedgerBatchError::InputLimit);
+            }
+            if self.chunk_target_bytes != plan.chunk_target_bytes
+                || live != plan.expected_tail.as_ref()
+            {
+                return Err(LedgerBatchError::StalePrestate);
+            }
+        }
+        Ok(())
+    }
+
+    /// Bind zero, one, or two distinct log appends. Every input is checked
+    /// before a mutable publication capability is returned; empty is inert.
+    pub fn bind_prepared_batch(
+        &mut self,
+        prepared: Vec<PreparedLedgerAppend>,
+    ) -> Result<BoundLedgerBatch<'_>, LedgerBatchError> {
+        self.check_prepared_batch(&prepared)?;
+        let mut tails = Vec::with_capacity(prepared.len());
+        let mut outputs = Vec::with_capacity(prepared.len());
+        for plan in prepared {
+            tails.push((plan.log_id, plan.next_tail));
+            outputs.push((plan.seq, plan.write));
+        }
+        Ok(BoundLedgerBatch {
+            ledger: self,
+            tails,
+            outputs,
         })
     }
 
@@ -1176,6 +1337,97 @@ fn encoded_len_bounded<T: Serialize>(value: &T, limit: usize) -> Result<usize, B
     }
 }
 
+// Bounded DFS keeps at most one iterator per JSON level. Charging nodes and
+// raw text before serialization prevents a huge frontier or deep recursive
+// clone/PartialEq from bypassing an eventual encoded-byte refusal.
+fn bounded_value(value: &serde_json::Value, remaining: &mut usize) -> bool {
+    enum Frame<'a> {
+        Value(&'a serde_json::Value, usize),
+        Array(std::slice::Iter<'a, serde_json::Value>, usize),
+        Object(serde_json::map::Iter<'a>, usize),
+    }
+    fn charge(remaining: &mut usize, amount: usize) -> bool {
+        match remaining.checked_sub(amount) {
+            Some(next) => {
+                *remaining = next;
+                true
+            }
+            None => false,
+        }
+    }
+    let mut stack = vec![Frame::Value(value, 1)];
+    while let Some(frame) = stack.pop() {
+        match frame {
+            Frame::Value(value, depth) => {
+                if !charge(remaining, 1) {
+                    return false;
+                }
+                match value {
+                    serde_json::Value::Array(items) => {
+                        if depth > crate::MAX_DOC_DEPTH - 4 {
+                            return false;
+                        }
+                        stack.push(Frame::Array(items.iter(), depth));
+                    }
+                    serde_json::Value::Object(map) => {
+                        if depth > crate::MAX_DOC_DEPTH - 4 {
+                            return false;
+                        }
+                        stack.push(Frame::Object(map.iter(), depth));
+                    }
+                    serde_json::Value::String(text) if !charge(remaining, text.len()) => {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            Frame::Array(mut items, depth) => {
+                if let Some(child) = items.next() {
+                    stack.push(Frame::Array(items, depth));
+                    stack.push(Frame::Value(child, depth + 1));
+                }
+            }
+            Frame::Object(mut items, depth) => {
+                if let Some((key, child)) = items.next() {
+                    if !charge(remaining, key.len()) {
+                        return false;
+                    }
+                    stack.push(Frame::Object(items, depth));
+                    stack.push(Frame::Value(child, depth + 1));
+                }
+            }
+        }
+    }
+    true
+}
+
+fn bounded_tail(log_id: &str, policy: usize, tail: Option<&LogTail>, limit: usize) -> bool {
+    let mut remaining = limit;
+    if log_id.len() > MAX_LEDGER_LOG_ID_BYTES {
+        return false;
+    }
+    if let Some(tail) = tail {
+        for entry in &tail.open_entries {
+            if !bounded_value(&entry.value, &mut remaining) {
+                return false;
+            }
+        }
+    }
+    let resident = (
+        log_id,
+        policy,
+        tail.map(|tail| {
+            (
+                tail.open_chunk,
+                &tail.open_entries,
+                tail.next_seq,
+                tail.open_bytes,
+            )
+        }),
+    );
+    encoded_len_bounded(&resident, limit).is_ok()
+}
+
 /// A structural break in a log's persisted chunk history — an
 /// **authoritative-ledger breach**. Checked [`Ledger::restore_from_kv`] refuses
 /// every such finding; [`scan_contiguity`] exposes the same inspection without
@@ -1692,6 +1944,56 @@ mod tests {
             .collect()
     }
     use super::*;
+
+    #[test]
+    fn resident_clone_budget_counts_every_log_and_exact_open_tail_bytes() {
+        let empty = Ledger::new();
+        assert!(empty.resident_within_bounds(0, 64));
+        assert!(!empty.resident_within_bounds(0, 0));
+        let mut ledger = Ledger::with_chunk_target(1024);
+        for id in ["first", "second"] {
+            let prepared = ledger
+                .prepare_append(id, serde_json::json!({"data":"payload"}))
+                .unwrap();
+            ledger.apply_prepared(prepared).unwrap();
+        }
+        let before = ledger.clone();
+        let exact = encoded_len_bounded(&ledger.chunk_target_bytes, usize::MAX).unwrap()
+            + ledger
+                .logs
+                .iter()
+                .map(|(id, tail)| {
+                    encoded_len_bounded(
+                        &(
+                            id,
+                            tail.open_chunk,
+                            &tail.open_entries,
+                            tail.next_seq,
+                            tail.open_bytes,
+                        ),
+                        usize::MAX,
+                    )
+                    .unwrap()
+                })
+                .sum::<usize>();
+        assert!(ledger.resident_within_bounds(2, exact));
+        assert!(!ledger.resident_within_bounds(1, exact));
+        assert!(!ledger.resident_within_bounds(2, exact - 1));
+        assert_eq!(
+            ledger, before,
+            "the clone admission check cannot mutate tails"
+        );
+        let mut sealed = Ledger::with_chunk_target(0);
+        let prepared = sealed
+            .prepare_append("sealed", serde_json::json!(1))
+            .unwrap();
+        sealed.apply_prepared(prepared).unwrap();
+        assert!(
+            !sealed.resident_within_bounds(0, 4096),
+            "sealed logs retain resident counters"
+        );
+        assert!(sealed.resident_within_bounds(1, 4096));
+    }
 
     /// Decode a chunk op's persisted doc for assertions.
     fn chunk_of(op: &ModuleWrite) -> (SmolStr, LedgerChunk) {
@@ -2482,6 +2784,185 @@ mod tests {
             assert_eq!(first, first_before);
             assert_eq!(last, last_before);
         }
+    }
+
+    #[test]
+    fn bounded_batch_preserves_original_order_and_drop_is_inert() {
+        let mut ledger = Ledger::new();
+        let prior = ledger
+            .prepare_append("source", serde_json::json!("prior"))
+            .unwrap();
+        ledger.apply_prepared(prior).unwrap();
+        let before = ledger.clone();
+        let prepare = |ledger: &Ledger| {
+            vec![
+                ledger
+                    .prepare_append_bounded("destination", serde_json::json!("joined"), 4096)
+                    .unwrap(),
+                ledger
+                    .prepare_append_bounded("source", serde_json::json!("left"), 4096)
+                    .unwrap(),
+            ]
+        };
+        let plans = prepare(&ledger);
+        assert_eq!(
+            plans
+                .iter()
+                .map(PreparedLedgerAppend::seq)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let bound = ledger.bind_prepared_batch(plans).unwrap();
+        drop(bound);
+        assert_eq!(ledger, before);
+        let plans = prepare(&ledger);
+        let expected = plans
+            .iter()
+            .map(|plan| (plan.seq, plan.write.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(ledger.bind_prepared_batch(plans).unwrap().apply(), expected);
+        assert_eq!(ledger.logs["destination"].next_seq, 1);
+        assert_eq!(ledger.logs["source"].next_seq, 2);
+    }
+
+    #[test]
+    fn stale_second_tail_or_policy_refuses_entire_batch() {
+        for changed_policy in [false, true] {
+            let mut ledger = Ledger::new();
+            let first = ledger
+                .prepare_append_bounded("first", serde_json::json!(1), 4096)
+                .unwrap();
+            let second = ledger
+                .prepare_append_bounded("second", serde_json::json!(2), 4096)
+                .unwrap();
+            if changed_policy {
+                ledger.chunk_target_bytes = 0;
+            } else {
+                let competing = ledger
+                    .prepare_append("second", serde_json::json!(3))
+                    .unwrap();
+                ledger.apply_prepared(competing).unwrap();
+            }
+            let before = ledger.clone();
+            assert!(matches!(
+                ledger.bind_prepared_batch(vec![first, second]),
+                Err(LedgerBatchError::StalePrestate)
+            ));
+            assert_eq!(ledger, before);
+            assert!(!ledger.logs.contains_key("first"));
+        }
+    }
+
+    #[test]
+    fn batch_rejects_duplicate_and_excess_logs_but_accepts_empty() {
+        let mut ledger = Ledger::new();
+        let prepare = |ledger: &Ledger, log: &str| {
+            ledger
+                .prepare_append_bounded(log, serde_json::json!(1), 4096)
+                .unwrap()
+        };
+        let duplicate = vec![prepare(&ledger, "same"), prepare(&ledger, "same")];
+        assert!(matches!(
+            ledger.bind_prepared_batch(duplicate),
+            Err(LedgerBatchError::DuplicateLog)
+        ));
+        let too_many = vec![
+            prepare(&ledger, "a"),
+            prepare(&ledger, "b"),
+            prepare(&ledger, "c"),
+        ];
+        assert!(matches!(
+            ledger.bind_prepared_batch(too_many),
+            Err(LedgerBatchError::TooMany)
+        ));
+        assert!(
+            ledger
+                .bind_prepared_batch(Vec::new())
+                .unwrap()
+                .apply()
+                .is_empty()
+        );
+        assert_eq!(ledger, Ledger::new());
+    }
+
+    #[test]
+    fn bounded_prepare_only_reads_the_selected_tail() {
+        let mut ledger = Ledger::with_chunk_target(usize::MAX);
+        let large = ledger
+            .prepare_append("large", serde_json::json!("x".repeat(8192)))
+            .unwrap();
+        ledger.apply_prepared(large).unwrap();
+        assert!(
+            ledger
+                .prepare_append_bounded("small", serde_json::json!(1), 128)
+                .is_ok()
+        );
+        assert!(matches!(
+            ledger.prepare_append_bounded("large", serde_json::json!(1), 128),
+            Err(LedgerAppendError::ResidentLimit { max: 128 })
+        ));
+        assert!(
+            ledger
+                .prepare_append_bounded("large", serde_json::json!(1), 16384)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn bounded_batch_checks_late_live_shape_before_recursive_equality() {
+        for deep in [false, true] {
+            let mut ledger = Ledger::new();
+            let initial = ledger
+                .prepare_append("selected", serde_json::json!(1))
+                .unwrap();
+            ledger.apply_prepared(initial).unwrap();
+            let plan = ledger
+                .prepare_append_bounded("selected", serde_json::json!(2), 512)
+                .unwrap();
+            let mut value = serde_json::json!("x".repeat(1024));
+            if deep {
+                value = serde_json::Value::Null;
+                for _ in 0..crate::MAX_DOC_DEPTH {
+                    value = serde_json::json!([value]);
+                }
+            }
+            let tail = ledger.logs.get_mut("selected").unwrap();
+            tail.open_entries[0].value = value;
+            let next_seq = tail.next_seq;
+            assert!(matches!(
+                ledger.bind_prepared_batch(vec![plan]),
+                Err(LedgerBatchError::InputLimit)
+            ));
+            assert_eq!(ledger.logs["selected"].next_seq, next_seq);
+            assert_eq!(ledger.logs["selected"].open_entries.len(), 1);
+        }
+    }
+
+    #[test]
+    fn bounded_prepare_refuses_deep_entry_and_resident_before_clone() {
+        let mut ledger = Ledger::new();
+        let mut value = serde_json::Value::Null;
+        for _ in 0..crate::MAX_DOC_DEPTH {
+            value = serde_json::json!([value]);
+        }
+        assert!(matches!(
+            ledger.prepare_append_bounded("s", value.clone(), 4096),
+            Err(LedgerAppendError::InputLimit)
+        ));
+        ledger.logs.insert(
+            "s".into(),
+            LogTail {
+                open_chunk: 0,
+                open_entries: vec![LedgerEntry { seq: 0, value }],
+                next_seq: 1,
+                open_bytes: 1,
+            },
+        );
+        assert!(matches!(
+            ledger.prepare_append_bounded("s", serde_json::json!(1), 4096),
+            Err(LedgerAppendError::ResidentLimit { .. })
+        ));
+        assert_eq!(ledger.logs["s"].next_seq, 1);
     }
 
     #[test]

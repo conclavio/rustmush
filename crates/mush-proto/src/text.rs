@@ -8,6 +8,7 @@
 //! [`CommandLink`] makes a span click-to-run on the web client (SSH ignores
 //! it).
 
+use crate::{NarrativeKind, ObjRef, OutputEvent, RoomView, WhoEntry};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::fmt;
@@ -325,9 +326,141 @@ impl Extend<Span> for RichText {
     }
 }
 
+/// Render one [`OutputEvent`] to plain text — spans flattened, narrative
+/// kinds given their classic MUSH shapes. This is the test/REPL renderer;
+/// `mush-ansi` owns the real one later.
+#[must_use]
+pub fn text_of(event: &OutputEvent) -> String {
+    match event {
+        OutputEvent::Room(rv) => room_text(rv),
+        OutputEvent::Narrative { kind, actor, text } => narrative_text(*kind, actor.as_ref(), text),
+        OutputEvent::Sys(text) => text.to_plain_text(),
+        OutputEvent::Channel {
+            channel,
+            actor,
+            text,
+            ..
+        } => format!("[{channel}] {}: {}", actor.name, text.to_plain_text()),
+        OutputEvent::MailNotice {
+            from,
+            subject,
+            id,
+            unread,
+        } => format!(
+            "MAIL: message {id} from {} -- {subject} ({unread} unread)",
+            from.name
+        ),
+        OutputEvent::Who(entries) => who_text(entries),
+        OutputEvent::Reply { id, event } => format!("[reply {id}] {}", text_of(event)),
+        // Author replies may carry source; keep it out of generic text logs.
+        OutputEvent::InvokeResult { id, .. } => format!("[invoke_result {id}]"),
+        OutputEvent::Ping { nonce } => format!("[ping {nonce}]"),
+        OutputEvent::Resumed { replayed } => format!("[resumed replayed={replayed}]"),
+        OutputEvent::Composing { actor, active } => {
+            format!("[composing {} active={active}]", actor.name)
+        }
+        OutputEvent::Request {
+            id, kind, prompt, ..
+        } => {
+            format!("[request {id} {kind:?} {}]", prompt.to_plain_text())
+        }
+        OutputEvent::Notice {
+            category,
+            severity,
+            text,
+            ..
+        } => format!("[notice {category} {severity:?} {}]", text.to_plain_text()),
+        OutputEvent::Panel { feed, .. } => format!("[panel {feed}]"),
+        OutputEvent::View(view) => format!("[view {}]", view.view()),
+        OutputEvent::Weather { text, .. } => text.to_plain_text(),
+        OutputEvent::Prompt(p) => p
+            .text
+            .as_ref()
+            .map(RichText::to_plain_text)
+            .unwrap_or_default(),
+        OutputEvent::Hello { server, proto, .. } => format!("{server} (protocol {proto})"),
+        OutputEvent::SessionInfo {
+            character, account, ..
+        } => format!("Connected as {} ({account})", character.name),
+        OutputEvent::Disconnect { reason } => reason.to_plain_text(),
+    }
+}
+
+/// One classic narrative line: `Alice says, "hi"` / `Alice grins.` / ….
+fn narrative_text(kind: NarrativeKind, actor: Option<&ObjRef>, text: &RichText) -> String {
+    let name = actor.map_or("Someone", |a| a.name.as_str());
+    let t = text.to_plain_text();
+    match kind {
+        NarrativeKind::Say => format!("{name} says, \"{t}\""),
+        NarrativeKind::Pose => format!("{name} {t}"),
+        NarrativeKind::SemiPose => format!("{name}{t}"),
+        NarrativeKind::Emit | NarrativeKind::Spoof => t,
+        NarrativeKind::Page => format!("{name} pages: {t}"),
+        NarrativeKind::Whisper => format!("{name} whispers, \"{t}\""),
+        NarrativeKind::Ooc => format!("<OOC> {name}: {t}"),
+    }
+}
+
+/// A multi-line classic room render: name(id), desc, contents, exits, zone.
+fn room_text(rv: &RoomView) -> String {
+    let mut s = format!("{}({})", rv.name, rv.id);
+    s.push('\n');
+    s.push_str(&rv.desc.to_plain_text());
+    if !rv.contents.is_empty() {
+        s.push_str("\nContents:");
+        for c in &rv.contents {
+            s.push_str("\n  ");
+            s.push_str(&c.name);
+        }
+    }
+    if !rv.exits.is_empty() {
+        let names: Vec<&str> = rv.exits.iter().map(|e| e.name.as_str()).collect();
+        s.push_str("\nObvious exits: ");
+        s.push_str(&names.join("  "));
+    }
+    if let Some(z) = &rv.zone {
+        s.push_str("\nZone: ");
+        s.push_str(&z.name);
+    }
+    // The weather module's conditions line rides in `ambient` (interface
+    // plan I3); the line renderer prints it as the `Weather` fact.
+    if let Some(line) = rv
+        .ambient
+        .get("weather")
+        .and_then(|v| v.get("line"))
+        .and_then(|v| v.as_str())
+    {
+        s.push_str("\nWeather: ");
+        s.push_str(line);
+    }
+    s
+}
+
+/// A simple WHO table: one line per entry, then a count line.
+fn who_text(entries: &[WhoEntry]) -> String {
+    let mut s = String::new();
+    for e in entries {
+        s.push_str(&e.name);
+        if let Some(loc) = &e.location {
+            s.push_str(&format!(" [{loc}]"));
+        }
+        if let Some(d) = &e.doing {
+            s.push_str(&format!(" -- {d}"));
+        }
+        s.push('\n');
+    }
+    s.push_str(&format!(
+        "{} player{} connected.",
+        entries.len(),
+        if entries.len() == 1 { "" } else { "s" }
+    ));
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExitRef;
 
     #[test]
     fn style_is_plain() {
@@ -385,5 +518,80 @@ mod tests {
             serde_json::to_string(&Color::Rgb(18, 52, 86)).unwrap(),
             r#"{"rgb":[18,52,86]}"#
         );
+    }
+
+    #[test]
+    fn narrative_shapes() {
+        let cases = [
+            (NarrativeKind::Say, "Alice says, \"hi\""),
+            (NarrativeKind::Pose, "Alice hi"),
+            (NarrativeKind::SemiPose, "Alicehi"),
+            (NarrativeKind::Emit, "hi"),
+            (NarrativeKind::Spoof, "hi"),
+            (NarrativeKind::Page, "Alice pages: hi"),
+            (NarrativeKind::Whisper, "Alice whispers, \"hi\""),
+            (NarrativeKind::Ooc, "<OOC> Alice: hi"),
+        ];
+        let alice = ObjRef::new("#9", "Alice");
+        for (kind, want) in cases {
+            assert_eq!(
+                narrative_text(kind, Some(&alice), &RichText::plain("hi")),
+                want
+            );
+        }
+        // Unattributed narratives fall back to "Someone".
+        assert_eq!(
+            narrative_text(NarrativeKind::Say, None, &RichText::plain("hi")),
+            "Someone says, \"hi\""
+        );
+    }
+
+    #[test]
+    fn text_of_flattens_spans() {
+        let ev = OutputEvent::Sys(
+            RichText::tag("error", "Huh?")
+                .text("  ")
+                .span(Span::tagged("system", "(hint)")),
+        );
+        assert_eq!(text_of(&ev), "Huh?  (hint)");
+    }
+
+    #[test]
+    fn room_text_renders_all_sections() {
+        let rv = RoomView {
+            name: "Hall".into(),
+            id: "#5".into(),
+            desc: RichText::plain("A big hall."),
+            contents: vec![ObjRef::new("#7", "ball")],
+            exits: vec![ExitRef {
+                name: "north".into(),
+                aliases: vec!["n".into()],
+            }],
+            zone: Some(ObjRef::new("#3", "Downtown")),
+            ambient: Default::default(),
+        };
+        let t = room_text(&rv);
+        assert_eq!(
+            t,
+            "Hall(#5)\nA big hall.\nContents:\n  ball\nObvious exits: north\nZone: Downtown"
+        );
+    }
+
+    #[test]
+    fn who_text_counts() {
+        let e = WhoEntry {
+            name: "Alice".into(),
+            alias: None,
+            idle_s: 0,
+            conn_s: 0,
+            location: Some("Limbo".into()),
+            here: false,
+            doing: Some("testing".into()),
+        };
+        assert_eq!(
+            who_text(&[e]),
+            "Alice [Limbo] -- testing\n1 player connected."
+        );
+        assert_eq!(who_text(&[]), "0 players connected.");
     }
 }

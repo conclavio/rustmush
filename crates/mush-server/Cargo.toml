@@ -63,6 +63,7 @@ mush-script.workspace = true
 mush-weather.workspace = true
 # Shared character-sheet and rules interface primitives.
 # The game sheet and simulator, composed by modules.rs.
+mush-composition.workspace = true
 tacsim.workspace = true
 # The M7 LLM layer + worldgen module.
 mush-llm.workspace = true
@@ -75,7 +76,6 @@ mush-atlas.workspace = true
 # The M8 NPC agent module.
 mush-npc.workspace = true
 mush-ruleset.workspace = true
-mush-testkit.workspace = true
 # M19: parse/normalize/fingerprint OpenSSH public keys for `@sshkey` (the
 # command validates the pasted line before it ever touches the store). Same
 # crate + version the gateway uses via russh's re-export.
@@ -100,9 +100,8 @@ mush-roll.workspace = true
 fred.workspace = true
 mush-contract-tests.workspace = true
 # 16b cut R-b: the platform tests that used the deleted game rulesets as sheet /
-# NPC / authoritative-action fixtures drive the `toy` test ruleset instead. The
-# normal dependency above stays featureless, so no release build of
-# `mush-server` pulls the toy or its dice/jobs edges.
+# NPC / authoritative-action fixtures drive the `toy` test ruleset instead. A
+# dev-dependency only: no production build of `mush-server` links `mush-testkit`.
 mush-testkit = { workspace = true, features = ["toy-ruleset"] }
 # WS01-S11D: not new crate edges — both are normal dependencies above. The test
 # build additionally turns on their `debug-checks` features, which is where the

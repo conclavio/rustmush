@@ -130,7 +130,12 @@ impl LaunchComposition {
                     venue: Some(venue),
                     offer_ic_seconds: content::OFFER_SECONDS,
                 })?
-                .with_house_mind_renewal_service()?;
+                .with_house_mind_renewal_service()?
+                // M8c F10 (the lead's ruling): the owner attestations (the
+                // House attestation among them) are composed whenever the
+                // House family is, market or not: B4 lifts C0's 365-day wall
+                // for every world.
+                .with_owner_attestations()?;
             // 17g C1c (§3 C1c, §6 risk 2): a format-2 deployment composes the
             // player market after the House chain, in the order C1a proved on
             // the production roster (C1 plan §2.2). The order is forced by the
@@ -171,10 +176,10 @@ impl LaunchComposition {
                     .with_pending_charter_transfers(p.pending)?
                     .with_paid_mind_resales(p.clerk, p.resale_offer_seconds)?
                     .with_registry_recall(p.recall)?
+                    .with_registry_inspection(p.inspection)?
                     .with_mind_renewals(p.renewal)?
                     .with_mind_renewal_service()?
                     .with_author_withdrawal()?
-                    .with_owner_attestations()?
                     .with_owner_parent_qualification()?;
             }
         }
@@ -191,10 +196,33 @@ impl LaunchComposition {
     pub fn commerce(&self) -> &crate::composition::mind_commerce::MindCommerce {
         &self.commerce
     }
-    pub(crate) fn configure_market(
+    #[must_use]
+    pub fn tactics(&self) -> mush_tactics::TacticsModule {
+        self.roster.tactics()
+    }
+    #[must_use]
+    pub fn configure_economy(
         &self,
-        module: mush_market::MarketModule,
-    ) -> mush_market::MarketModule {
+        module: mush_economy::EconomyModule,
+    ) -> mush_economy::EconomyModule {
+        self.roster.economy(module)
+    }
+    #[must_use]
+    pub fn configure_inventory(
+        &self,
+        module: mush_inventory::InventoryModule,
+    ) -> mush_inventory::InventoryModule {
+        self.roster.inventory(module)
+    }
+    #[must_use]
+    pub fn configure_industry(
+        &self,
+        module: mush_industry::IndustryModule,
+    ) -> mush_industry::IndustryModule {
+        self.roster.industry(module)
+    }
+    #[must_use]
+    pub fn configure_market(&self, module: mush_market::MarketModule) -> mush_market::MarketModule {
         module.with_venue_gate(Arc::new(venue::Gate(self.venue.clone())))
     }
     pub fn configure_tacsim(
@@ -274,20 +302,30 @@ pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket
     let items = operators
         .into_iter()
         .map(|operator| {
-            let state = match (
-                allows(
-                    operator,
+            // Doc 17h cut M8a: three capabilities; what is lacking is named in this
+            // order, joined as prose (`lacks recall, revocation and inspection`).
+            let lacking: Vec<&str> = [
+                (
                     mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
+                    "recall",
                 ),
-                allows(
-                    operator,
+                (
                     mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY,
+                    "revocation",
                 ),
-            ) {
-                (true, true) => "ready",
-                (false, true) => "lacks recall",
-                (true, false) => "lacks revocation",
-                (false, false) => "lacks recall and revocation",
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY,
+                    "inspection",
+                ),
+            ]
+            .into_iter()
+            .filter(|(capability, _)| !allows(operator, capability))
+            .map(|(_, word)| word)
+            .collect();
+            let state = match lacking.as_slice() {
+                [] => "ready".to_owned(),
+                [one] => format!("lacks {one}"),
+                [head @ .., last] => format!("lacks {} and {last}", head.join(", ")),
             };
             format!("#{} {state}", operator.0)
         })

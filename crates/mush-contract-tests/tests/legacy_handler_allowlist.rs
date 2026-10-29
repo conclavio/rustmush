@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use mush_core::{CommandCompatibility, Engine, GameModule, ModuleComposition};
+use mush_core::{CommandCompatibility, Engine, GameModule, LookupErr, ModuleComposition};
 use mush_server::config_ext;
 use mush_server::modules;
 use mush_server::staff::{StaffQueue, register_server_commands};
@@ -80,7 +80,11 @@ const CATEGORIES: [&str; 5] = [
 /// registered and nothing else did). The one game sheet registers `+sheet`,
 /// `@sheet`, `+chargen`, `+stat` and `+roll` under the same names.
 // 98 -> 97 with cut L: @siteban/lift adds an operational admission workflow.
-const PINNED_BASELINE: usize = 97;
+// 97 -> 0 with P3 (doc 28 §4 Finding 3 / §5): every remaining `baseline` entry
+// is classified under its K8.5 category (`read-only`, `legacy-post-image` with
+// `family`, `authoritative`, or `economy-carve-out`) and cross-checked against
+// the class published by the production composition.
+const PINNED_BASELINE: usize = 0;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -501,4 +505,54 @@ fn the_production_composition_carries_the_surface_the_allowlist_watches() {
             "{verb} is not registered: the production composition dropped a module"
         );
     }
+}
+
+/// DT.1b uses the ordinary command registry. Pin its prefix effects so a later
+/// alias cannot silently turn a roster acknowledgement into another command.
+#[test]
+fn practice_detachment_commands_keep_their_declared_class_and_prefixes() {
+    let composition = production_composition();
+    let registry = composition.registry();
+    for verb in ["+sortie", "wilco", "negative"] {
+        let (spec, _) = registry
+            .lookup(verb)
+            .expect("detachment command registered");
+        assert_eq!(spec.name.as_str(), verb);
+        assert!(spec.aliases.is_empty(), "{verb} adds no command aliases");
+        assert_eq!(
+            registry.compatibility_of(verb),
+            Some(CommandCompatibility::Authoritative),
+            "{verb} shares the cockpit's command lane"
+        );
+    }
+    for (prefix, expected) in [
+        ("n", "negative"),
+        ("ne", "negative"),
+        ("neg", "negative"),
+        ("nega", "negative"),
+        ("negat", "negative"),
+        ("negati", "negative"),
+        ("negativ", "negative"),
+        ("wi", "wilco"),
+        ("wil", "wilco"),
+        ("wilc", "wilco"),
+    ] {
+        let (spec, _) = registry
+            .lookup(prefix)
+            .expect("unique acknowledgement prefix");
+        assert_eq!(spec.name.as_str(), expected, "prefix {prefix}");
+    }
+    // A direction exit still resolves before this registry. Without an exit,
+    // n/ne now resolve to NEGATIVE; w remains ambiguous as it was before DT.1b.
+    match registry.lookup("w") {
+        Err(LookupErr::Ambiguous(names)) => {
+            let names: BTreeSet<&str> = names.iter().map(|name| name.as_str()).collect();
+            assert_eq!(
+                names,
+                BTreeSet::from(["WHO", "watch", "weaponstatus", "whisper", "wilco"])
+            );
+        }
+        _ => panic!("w must remain an ambiguous command prefix"),
+    }
+    assert!(matches!(registry.lookup("+sort"), Err(LookupErr::NotFound)));
 }

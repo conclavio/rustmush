@@ -3745,32 +3745,18 @@ fn bare_tactical_unit(id: mush_core::ObjId) -> mush_tactics::TacticalUnit {
 fn x6_production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
-    let llm = std::sync::Arc::new(
-        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-            .expect("a disabled LLM service composes"),
-    );
     let cfg = tacsim::TacsimConfig {
         enabled: true,
         ..tacsim::TacsimConfig::default()
     };
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
-        mush_weather::WeatherConfig::default(),
+    let mut mods = comp::domain_modules_with(
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
-        &onboarding,
         &game,
-        comp::recovery_policy(&cfg.recovery),
     );
-    mods.push(comp::worldgen_module_with(
-        std::sync::Arc::clone(&llm),
-        mush_worldgen::WorldgenConfig::default(),
-    ));
-    mods.push(comp::npc_module_with(
-        comp::npc_agent_adapter(),
-        &mush_config::config::NpcCfg::default(),
-    ));
+    mods.push(comp::npc_module(comp::npc_agent_adapter()));
     mods.extend(comp::sheet_modules(&onboarding, &game));
     mods.push(comp::tacsim_module_with(cfg, true));
     mods.push(comp::content_module_with(false, true).expect("the content module composes"));
@@ -11186,8 +11172,8 @@ fn m3_an_operator_pack_carrying_a_core_binds_a_unit_naming_it() {
     let catalog = Catalog::build_game(&packs, tacsim::NS).expect("an operator's core binds");
     assert_eq!(
         catalog.cores.len(),
-        4,
-        "the shipped three and the operator's"
+        7,
+        "the shipped three, their three ungoverned twins (doc 17h cut M8b) and the operator's"
     );
     let relay = CanonicalId::new("house.core.relay").expect("a canonical id");
     assert_eq!(

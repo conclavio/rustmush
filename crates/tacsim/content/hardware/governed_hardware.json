@@ -4,7 +4,7 @@
     "version": 1,
     "kind": "rules_definition",
     "requires": [],
-    "digest": "cf2312086dfd7a3b5c93000c97ac292ab6522f966d0d3bcc8bec1e7ee71aa7cc"
+    "digest": "a02575bd977a18d3b67938f45a46374428fd894b52c8962a9e52b6306b516e2c"
   },
   "entries": {
     "tacsim.hardware.catalogue": {
@@ -22,6 +22,7 @@
         ],
         "integration_permille": 100,
         "fitting_minor": 10000,
+        "ungovern_minor": 10000,
         "monthly_dies": [
           64,
           16,
@@ -48,6 +49,19 @@
         "format": 1,
         "label": "Governed line-tank core fitting",
         "process": "refit",
+        "work_units": [
+          1,
+          2,
+          4
+        ]
+      }
+    },
+    "core_ungovern": {
+      "kind": "hardware_recipe",
+      "def": {
+        "format": 1,
+        "label": "Core fitting without the governor",
+        "process": "ungovern",
         "work_units": [
           1,
           2,

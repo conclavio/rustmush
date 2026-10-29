@@ -1,5 +1,6 @@
 //! Source-free renewal consent data. Decoding conveys no commercial authority.
 
+use crate::Holder;
 use mush_core::participant::ParticipantError;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, Flags, ObjId, ObjKind};
 use mush_org::{OrgId, OrgScopeId, OrgStatus, OrgStore, PrincipalId, ScopeStatus};
@@ -83,7 +84,7 @@ impl RenewalBasisV1 {
 }
 
 record!(RenewalOfferTermsV1,TermsWire,{
-    format:u16, buyer:ObjId, organization:OrgId, scope:OrgScopeId,
+    format:u16, buyer:Holder, organization:OrgId, scope:OrgScopeId,
     charter:ObjId, title_revision:u64, payer:AccountId, instrument:InstrumentId,
     price:Amount,
     #[serde(deserialize_with="gross_cut")] registry:GrossRecipientCut,
@@ -108,7 +109,7 @@ impl RenewalOfferTermsV1 {
         Ok(())
     }
     pub fn payouts(&self) -> Result<Vec<PurchasePayout>, ParticipantError> {
-        if self.buyer.0 == 0
+        if self.buyer.is_nobody()
             || self.charter.0 == 0
             || self.title_revision == 0
             || self.price.is_negative()
@@ -184,7 +185,7 @@ impl RenewalOfferTermsV1 {
     ) -> Result<(), ParticipantError> {
         self.validate()?;
         if state.frozen
-            || !player(world, self.buyer)
+            || !player(world, self.buyer.acting_character())
             || world
                 .get(self.charter)
                 .is_none_or(|p| p.flags.contains(Flags::GOING))
@@ -215,8 +216,10 @@ impl RenewalOfferTermsV1 {
             return Err(refused());
         }
         let payer = snapshot.account(self.payer).ok_or_else(refused)?;
-        if payer.owner != PrincipalId::Object(self.buyer)
-            || payer.scope.is_some()
+        // M8c B3: the payer is the holder principal's account: a character's
+        // personal one, or the organisation's treasury on one of its scopes.
+        if payer.owner != self.buyer.principal()
+            || !crate::holder::payer_scope_fits(world, self.buyer, payer.scope)
             || payer.instrument != self.instrument
             || payer.status != AccountStatus::Active
             || payer.approval.is_some()

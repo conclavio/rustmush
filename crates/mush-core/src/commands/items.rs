@@ -245,7 +245,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(give_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "inventory".into(),
             aliases: vec!["i".into(), "inv".into()],

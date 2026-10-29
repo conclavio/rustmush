@@ -960,6 +960,13 @@ impl EconomyStore {
     pub fn created_count(&self, object: ObjId) -> u64 {
         self.fold.created_count.get(&object).copied().unwrap_or(0)
     }
+    /// The current title's creating/transferring journal effect, independently
+    /// of assignment, maintenance and other routine asset revisions. Missing
+    /// lineage supplies no authority; callers must not synthesize a stamp.
+    #[must_use]
+    pub fn title_lineage(&self, object: ObjId) -> Option<mush_org::unit_authority::TitleLineage> {
+        self.fold.title_lineage.get(&object).copied()
+    }
     /// The chunk of the journal that holds sequence `seq`, from the first-seq
     /// map (J2); `None` before any entry.
     #[must_use]

@@ -82,6 +82,16 @@ impl GameModule for PlayerTacsim {
                 }),
             )?;
         }
+        // M8c F11: the test admin's real Org mutation for `roll.holder.org`
+        // (`holder_grant_fixture`).
+        reg.command(
+            mush_core::CommandSpec {
+                name: "@holder-grant-fixture".into(),
+                shape: mush_core::ArgShape::Raw,
+                ..Default::default()
+            },
+            Arc::new(holder_grant_fixture),
+        )?;
         let mut shared = self.shared.lock().map_err(module_error)?;
         shared.reconformance = self.resources.reconformance();
         shared.manifest = Some(manifest);
@@ -99,6 +109,101 @@ impl GameModule for PlayerTacsim {
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
         self.real.on_all_loaded(ctx)
     }
+}
+
+/// M8c F11, the test admin: `revoke #<obj>` drops every `roll.holder.org`
+/// grant to the object; `limit #<obj> <org> <max|none>` replaces them with
+/// one on the organisation's root scope limited to `max` minor units
+/// (`none`: unlimited). A real Org mutation through `mush_org::submit`:
+/// `@org/grant` has no revoke and refuses `limit=` for this capability.
+fn holder_grant_fixture(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::CmdError> {
+    use mush_org::{
+        CapabilityGrant, CapabilityId, GrantLimit, OrgAction, OrgId, OrgMutationOp,
+        OrgMutationPlan, OrgStore, ScopeSelector,
+    };
+    let bad = || {
+        mush_core::CmdError::msg(
+            "Usage: @holder-grant-fixture revoke #<obj> | limit #<obj> <org> <max|none>",
+        )
+    };
+    if ctx.actor != GOD {
+        return Err(mush_core::CmdError::msg("fixture admin"));
+    }
+    let raw = ctx.args.raw().to_owned();
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    let obj = |w: &str| {
+        w.trim_start_matches('#')
+            .parse::<u32>()
+            .map(ObjId)
+            .map_err(|_| bad())
+    };
+    let capability = CapabilityId::new(mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY)
+        .ok_or_else(bad)?;
+    let (who, put) = match words.as_slice() {
+        ["revoke", who] => (obj(who)?, None),
+        ["limit", who, org, max] => {
+            let org = OrgId(org.parse().map_err(|_| bad())?);
+            let max = if *max == "none" {
+                None
+            } else {
+                Some(max.parse::<i64>().map_err(|_| bad())?)
+            };
+            (obj(who)?, Some((org, max)))
+        }
+        _ => return Err(bad()),
+    };
+    let store = ctx
+        .w
+        .module_state::<OrgStore>()
+        .ok_or_else(|| mush_core::CmdError::msg("Org"))?;
+    let mut ops: Vec<OrgMutationOp> = store
+        .state()
+        .orgs()
+        .flat_map(|o| store.state().grants_in(o.id))
+        .filter(|g| g.grantee == who && g.capability == capability)
+        .map(|g| OrgMutationOp::RevokeGrant { grant: g.id })
+        .collect();
+    if let Some((org, max)) = put {
+        let root = store.state().org(org).ok_or_else(bad)?.root_scope;
+        // A fresh id above the allocator's range, read without writing the
+        // org module's slot (the state-slot gate).
+        let id = mush_org::GrantId(
+            1_000_000
+                + store
+                    .state()
+                    .orgs()
+                    .flat_map(|o| store.state().grants_in(o.id))
+                    .map(|g| g.id.0)
+                    .max()
+                    .unwrap_or(0),
+        );
+        ops.push(OrgMutationOp::PutGrant {
+            grant: CapabilityGrant {
+                id,
+                org,
+                grantee: who,
+                capability,
+                scope: ScopeSelector::SubtreeLive(root),
+                limit: max.map(|m| GrantLimit {
+                    max_amount: Some(m),
+                }),
+                delegable: false,
+                valid_from: None,
+                valid_until: None,
+                revision: 1,
+            },
+        });
+    }
+    mush_org::submit(
+        ctx,
+        &OrgMutationPlan::of(ops),
+        OrgAction {
+            action: "holder-grant.test".into(),
+            org: None,
+            detail: serde_json::json!({"fixture": true}),
+        },
+    )
+    .map_err(|e| mush_core::CmdError::msg(e.to_string()))
 }
 
 pub(super) fn content() -> TestResult<Box<dyn GameModule>> {
@@ -583,7 +688,7 @@ impl PlayerWorld {
             Box::new(
                 if registry_recall.is_some() || registry_revocation.is_some() {
                     mush_org::OrgModule::new()
-                        .with_capabilities(crate::composition::org_capability_vocabulary())
+                        .with_capabilities(crate::composition::domain_org_capability_vocabulary())
                 } else {
                     mush_org::OrgModule::new()
                 },

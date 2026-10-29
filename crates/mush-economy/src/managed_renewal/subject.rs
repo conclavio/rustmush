@@ -1,5 +1,6 @@
 //! Source-free renewal consent data. Decoding conveys no commercial authority.
 
+use crate::Holder;
 use mush_core::participant::ParticipantError;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, Flags, ObjId, ObjKind};
 use mush_org::PrincipalId;
@@ -134,7 +135,7 @@ pub enum RenewalLineageV1 {
 }
 
 record!(RenewalOfferTermsV1,TermsWire,{
-    format:u16, lineage:RenewalLineageV1, buyer:ObjId, seller:ObjId,
+    format:u16, lineage:RenewalLineageV1, buyer:Holder, seller:ObjId,
     charter:ObjId, title_revision:u64, payer:AccountId, instrument:InstrumentId,
     price:Amount,
     #[serde(deserialize_with="gross_cut")] registry:GrossRecipientCut,
@@ -192,7 +193,11 @@ impl RenewalOfferTermsV1 {
         world: &mush_core::World,
     ) -> Result<(), ParticipantError> {
         self.validate()?;
-        if state.frozen || !player(world, self.buyer) || !player(world, self.seller) {
+        // M8c B3: an organisation holder renews through its acting character.
+        if state.frozen
+            || !player(world, self.buyer.acting_character())
+            || !player(world, self.seller)
+        {
             return Err(refused());
         }
         title(
@@ -214,8 +219,10 @@ impl RenewalOfferTermsV1 {
             }
         }
         let account = state.snapshot.account(self.payer).ok_or_else(refused)?;
-        if account.owner != PrincipalId::Object(self.buyer)
-            || account.scope.is_some()
+        // M8c B3: the payer is the holder principal's account: a character's
+        // personal one, or the organisation's treasury on one of its scopes.
+        if account.owner != self.buyer.principal()
+            || !crate::holder::payer_scope_fits(world, self.buyer, account.scope)
             || account.instrument != self.instrument
             || account.status != AccountStatus::Active
             || account.approval.is_some()

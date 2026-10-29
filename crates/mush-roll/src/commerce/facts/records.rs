@@ -1,4 +1,5 @@
 //! Immutable term-expiry occurrences. Decoding never creates consent or authority.
+use super::super::Holder;
 use super::super::{
     CharterId, LicenceId, LineId, RevisionIdentity, TermGeneration, TermWindow, WorldIcSeconds,
 };
@@ -23,7 +24,7 @@ pub(super) struct AcceptedTerm {
     pub(super) birth: CommitToken,
     pub(super) term_operation: CommitToken,
     pub(super) term_digest: DefinitionDigest,
-    pub(super) accepted_holder: ObjId,
+    pub(super) accepted_holder: Holder,
     pub(super) charter: CharterId,
     pub(super) line: LineId,
     pub(super) revision: RevisionIdentity,

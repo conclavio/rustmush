@@ -121,7 +121,7 @@ fn connect(w: &mut PlayerWorld, buyer: ObjId) -> TestResult {
 fn holds(w: &PlayerWorld, actor: ObjId, id: LicenceId) -> TestResult {
     check_eq!(
         pointer(w, id)?.holder(),
-        actor,
+        mush_economy::Holder::Character(actor),
         "actual current paid holder"
     );
     Ok(())
@@ -635,7 +635,7 @@ pub(super) fn exercise(
     command(&mut w, &format!("@econ/mint {faucet}={payer} 2000"))?;
     let old = pointer(&w, id)?;
     let predecessor = term(&w, id, old.term())?;
-    check_eq!(old.holder(), seller);
+    check_eq!(old.holder(), mush_economy::Holder::Character(seller));
     check_eq!(predecessor.terms().seats().get(), 1);
     let birth_family = if house {
         "roll_mind_house_purchase"
@@ -720,7 +720,7 @@ pub(super) fn exercise(
     let actual = paired(&w, accepted)?;
     check_eq!(actual.binding().term(), &predecessor);
     let transferred = pointer(&w, id)?;
-    check_eq!(transferred.holder(), buyer);
+    check_eq!(transferred.holder(), mush_economy::Holder::Character(buyer));
     check_eq!(transferred.term(), old.term());
     check_eq!(transferred.operation(), old.operation());
     check_eq!(
@@ -866,7 +866,7 @@ pub(super) fn exercise(
     )?;
     renewal(&w, house, retry)?;
     let renewed = pointer(&w, id)?;
-    check_eq!(renewed.holder(), buyer);
+    check_eq!(renewed.holder(), mush_economy::Holder::Character(buyer));
     check_eq!(renewed.ownership(), transferred.ownership());
     check_eq!(renewed.term().get(), old.term().get() + 1);
     check_eq!(renewed.operation(), old.operation());

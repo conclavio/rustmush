@@ -131,7 +131,7 @@ pub(crate) fn fixture() -> TestResult<MindRenewalOperationV1> {
         },
         terms: RenewalOfferTermsV1 {
             format: 1,
-            buyer: ObjId(5),
+            buyer: ObjId(5).into(),
             organization: mush_org::OrgId(0),
             scope: mush_org::OrgScopeId(0),
             charter: ObjId(9),
@@ -425,7 +425,7 @@ fn repaired_offer_digest_cannot_change_the_accepted_template_or_binding() -> Tes
             3 => changed.offer.basis.template_digest = digest(41),
             4 => changed.offer.basis.grant_economics_digest = digest(42),
             5 => changed.offer.terms.scope = mush_org::OrgScopeId(9),
-            6 => changed.offer.terms.buyer = ObjId(8),
+            6 => changed.offer.terms.buyer = ObjId(8).into(),
             _ => return Err("case".into()),
         }
         changed.offer_digest = changed.offer.digest()?;

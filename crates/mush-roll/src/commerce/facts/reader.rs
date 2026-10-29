@@ -28,13 +28,15 @@ pub(super) enum Reply {
 #[derive(Debug, Serialize)]
 pub(super) struct Truth {
     pub(super) at: i64,
-    pub(super) actor: mush_core::ObjId,
+    /// The actor that committed the occurrence; `None` for a truth derived
+    /// from evidence nobody committed as an act (M8c: a seal mark).
+    pub(super) actor: Option<mush_core::ObjId>,
 }
 impl Truth {
     pub(super) fn state(&self) -> mush_economy::FactState {
         mush_economy::FactState {
             satisfied: true,
-            actor: Some(self.actor),
+            actor: self.actor,
             at: self.at,
         }
     }
@@ -106,6 +108,35 @@ impl OwnerReadService for Reader {
             Query::Scoped { scope, fact } => {
                 let (licence, generation) = match protocol::FactKey::parse(&fact) {
                     Some(protocol::FactKey::Lapsed(licence, generation)) => (licence, generation),
+                    // M8c B5/B7: the term generation flew on an ungoverned
+                    // core: the latest such mark in the generation's window
+                    // (`seal_marks::ungoverned_in`), under exactly the lapse
+                    // fact's authority. Derived on read: a refused
+                    // attestation commits nothing.
+                    Some(protocol::FactKey::Unattestable(licence, generation)) => {
+                        let proof =
+                            history::resolve(ctx, &self.f, &self.ratings, licence, generation)
+                                .map_err(refuse)?;
+                        authority::authorize(ctx, &scope, &fact, &proof).map_err(refuse)?;
+                        // F10: the attestation's own window,
+                        // `[issued_at, min(now, grace_end)]`.
+                        let now =
+                            super::super::WorldIcSeconds::from_stamp(&ctx.world().world_ic_now())
+                                .map_err(|_| OwnerReadError::Integrity)?;
+                        let (from, to) = super::super::seal_marks::attestation_window(
+                            proof.accepted.window,
+                            now,
+                        );
+                        let truth = super::super::seal_marks::ungoverned_in(
+                            ctx, &self.f, licence, from, to,
+                        )
+                        .map_err(refuse)?
+                        .map(|mark| Truth {
+                            at: mark.at_utc,
+                            actor: None,
+                        });
+                        return Ok(Reply::Scoped { truth });
+                    }
                     Some(protocol::FactKey::Transferred(operation, generation)) => {
                         self.ready.check_transfer(ctx.world()).map_err(refuse)?;
                         let proof =
@@ -132,7 +163,7 @@ impl OwnerReadService for Reader {
                         roll.check_required_root(&row.root()?).map_err(invalid)?;
                         Ok::<_, PublicationError>(Truth {
                             at: row.at_utc,
-                            actor: row.actor,
+                            actor: Some(row.actor),
                         })
                     })
                     .transpose()

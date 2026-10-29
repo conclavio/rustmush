@@ -37,7 +37,7 @@ type Disk = BTreeMap<String, Value>;
 struct Handles {
     quotes: StateFamilyHandle<CommitToken, EntitlementQuoteV1>,
     operations: StateFamilyHandle<CommitToken, EntitlementPurchaseV1>,
-    actors: StateFamilyHandle<ObjId, EntitlementActorIndex>,
+    actors: StateFamilyHandle<index::BuyerKey, EntitlementActorIndex>,
 }
 impl Handles {
     fn index(&self) -> index::Index<'_> {
@@ -97,7 +97,7 @@ const BUYER: ObjId = ObjId(8);
 fn quote(id: u8, buyer: ObjId, expires: i64) -> TestResult<Box<EntitlementQuoteV1>> {
     let mut q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
     q.publication = token(id);
-    q.buyer = buyer;
+    q.buyer = buyer.into();
     q.expires_at_utc = expires;
     q.validate()?;
     Ok(Box::new(q))
@@ -167,7 +167,7 @@ fn quote_step(
     change(e, h, disk, |t, i| {
         t.insert(i.quotes, &q.publication, q.clone())
             .map_err(|e| e.to_string())?;
-        index::quoted(t, i, q.buyer, q.publication, now)
+        index::quoted(t, i, index::BuyerKey::of(q.buyer), q.publication, now)
     })
 }
 /// The Fund step: the quote consumed into its operation, and the index.
@@ -182,7 +182,13 @@ fn fund_step(
             .map_err(|e| e.to_string())?;
         t.insert(i.operations, &p.operation, p.clone())
             .map_err(|e| e.to_string())?;
-        index::funded(t, i, p.quote.buyer, p.quote.publication, p.operation)
+        index::funded(
+            t,
+            i,
+            index::BuyerKey::of(p.quote.buyer),
+            p.quote.publication,
+            p.operation,
+        )
     })
 }
 /// The Grant or Refund step: the closed operation, and the index release
@@ -196,11 +202,18 @@ fn terminal_step(
     change(e, h, disk, |t, i| {
         t.replace(i.operations, &after.operation, after.clone())
             .map_err(|e| e.to_string())?;
-        index::released(t, i, after.quote.buyer, after.operation)
+        index::released(
+            t,
+            i,
+            index::BuyerKey::of(after.quote.buyer),
+            after.operation,
+        )
     })
 }
 fn row(e: &Engine, h: &Handles, buyer: ObjId) -> TestResult<Option<EntitlementActorIndex>> {
-    Ok(e.action_state().get(&h.actors, &buyer)?.cloned())
+    Ok(e.action_state()
+        .get(&h.actors, &index::BuyerKey::Character(buyer))?
+        .cloned())
 }
 fn tokens(ids: &[u8]) -> BTreeSet<CommitToken> {
     ids.iter().map(|n| token(*n)).collect()
@@ -321,13 +334,14 @@ fn buyer_index_bounds_live_quotes_and_open_purchases() -> TestResult {
 fn entitlement_audit_refuses_a_missing_foreign_or_consumed_index_entry() -> TestResult {
     let row = |quotes: &[u8], operations: &[u8]| EntitlementActorIndex {
         format: 1,
-        actor: BUYER,
+        buyer: index::BuyerKey::Character(BUYER),
         quotes: tokens(quotes),
         operations: tokens(operations),
     };
-    let quotes = BTreeMap::from([(token(3), BUYER), (token(5), ObjId(9))]);
+    let c = index::BuyerKey::Character;
+    let quotes = BTreeMap::from([(token(3), c(BUYER)), (token(5), c(ObjId(9)))]);
     let funded_quotes = BTreeSet::from([token(6)]);
-    let operations = BTreeMap::from([(token(4), (BUYER, true)), (token(7), (BUYER, false))]);
+    let operations = BTreeMap::from([(token(4), (c(BUYER), true)), (token(7), (c(BUYER), false))]);
     let clean = vec![("8".to_owned(), row(&[3], &[4]))];
     index::check(clean, &quotes, &funded_quotes, &operations)?;
     let quote_bad = "indexed entitlement quote is missing, foreign or funded";
@@ -407,7 +421,7 @@ fn an_abandoned_quote_survives_reboot_after_it_expires() -> TestResult {
     check_eq!(
         later
             .action_state()
-            .get(&later_handles.actors, &BUYER)?
+            .get(&later_handles.actors, &index::BuyerKey::Character(BUYER))?
             .ok_or("row")?
             .quotes,
         tokens(&[3])

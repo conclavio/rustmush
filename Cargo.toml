@@ -221,9 +221,11 @@ mush-propagation = { path = "crates/mush-propagation" }
 # `FactProvider` namespace, `campaign.*` (D-E7-30's fifth crate).
 mush-campaign = { path = "crates/mush-campaign" }
 # E7 cut 1 (10b §3.1): TacSim's packs, seed latch and corridor fixture — and since
-# 16b cuts R-a/R-b the one game's crate: the production composition root, the pilot
-# sheet and `[tacsim.economy]`, the layer itself under `[tacsim].enabled`.
+# 16b cuts R-a/R-b the one game's crate: the pilot sheet and `[tacsim.economy]`,
+# and the layer itself under `[tacsim].enabled`.
 tacsim = { path = "crates/tacsim" }
+# Full server module composition root (extracted from tacsim::composition).
+mush-composition = { path = "crates/mush-composition" }
 # S1 (14-spatial-implementation-plan §3.1): content packs — the JSON pack format, its
 # digest, dependency pinning by version and digest, the entry-kind registry and the
 # once-per-pack apply latch with create/update/retire. `mush-content -> {core}` only: it

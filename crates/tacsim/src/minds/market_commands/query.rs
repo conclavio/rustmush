@@ -170,7 +170,7 @@ fn listings(ctx: &HookReadContext<'_>, after: Option<&ListingCode>) -> Result<Va
         .ok()
         .and_then(mush_market::mind_commands::MarketCommandResult::into_own_quotes)
         .ok_or_else(Refusal::not_open)?;
-    let waiting = super::holdings::waiting(ctx, market)?;
+    let waiting = super::holdings::waiting(ctx, market, None)?;
     let quotes: Vec<QuoteFacts> = quotes.iter().map(QuoteFacts::of).collect();
     let own = own_strip(&quotes, &waiting, now);
     if !here {
@@ -377,7 +377,7 @@ fn holdings(
     slot.market.as_ref().ok_or_else(Refusal::not_open)?;
     let (rows, more) = match section {
         MindHoldingsSection::Owner => {
-            let (rows, more) = super::holdings::owner_section(ctx, &slot.roll, after)?;
+            let (rows, more) = super::holdings::owner_section(ctx, &slot.roll, after, None)?;
             (
                 rows.iter()
                     .map(|view| owner_row(&OwnerFacts::of(view)))
@@ -386,7 +386,7 @@ fn holdings(
             )
         }
         MindHoldingsSection::Paid => {
-            let (rows, more) = super::holdings::paid_section(ctx, &slot.roll, after)?;
+            let (rows, more) = super::holdings::paid_section(ctx, &slot.roll, after, None)?;
             (
                 rows.iter()
                     .map(|view| paid_row(&PaidFacts::of(view)))

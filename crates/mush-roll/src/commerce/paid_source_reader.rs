@@ -5,7 +5,9 @@
 use super::families::CommerceFamilies;
 use super::owner_holdings::OwnerProjectionError;
 use super::paid::PaidForm;
-use super::personal_paid_holdings::{PersonalPaidHolding, project_personal_paid_for};
+use super::personal_paid_holdings::{
+    PersonalPaidHolding, project_personal_paid_for, reader_holder,
+};
 use super::rating::{RatingClass, RatingCompatibility, RatingFamilies};
 use super::{LicenceId, RevisionIdentity};
 use crate::{Revision, RollStore};
@@ -151,19 +153,24 @@ impl OwnerReadService for PaidSourceReader {
         // Actual paid projection proves holder, own term, complete Grant/E4
         // history, exact status/rating/source roots. It never asks whether the
         // issuer still holds title, its owner term, or an ancestor grant.
-        let holding = project_personal_paid_for(
-            ctx,
-            ctx.actor(),
-            &self.families,
-            &self.ratings,
-            request.licence,
-            &self.expected,
-        )
-        .map_err(|error| match error {
-            OwnerProjectionError::Unavailable => OwnerReadError::Unavailable,
-            OwnerProjectionError::NotHeld => OwnerReadError::Refused,
-            OwnerProjectionError::Integrity => OwnerReadError::Integrity,
-        })?;
+        // M8c F1: the source read admits any character acting for the
+        // holding organisation now (`reader_holder`).
+        let holding = reader_holder(ctx, &self.families, ctx.actor(), request.licence)
+            .and_then(|holder| {
+                project_personal_paid_for(
+                    ctx,
+                    holder,
+                    &self.families,
+                    &self.ratings,
+                    request.licence,
+                    &self.expected,
+                )
+            })
+            .map_err(|error| match error {
+                OwnerProjectionError::Unavailable => OwnerReadError::Unavailable,
+                OwnerProjectionError::NotHeld => OwnerReadError::Refused,
+                OwnerProjectionError::Integrity => OwnerReadError::Integrity,
+            })?;
         if !matches!(
             holding.terms().form(),
             PaidForm::Open {} | PaidForm::OpenResale {}

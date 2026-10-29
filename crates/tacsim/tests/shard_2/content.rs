@@ -121,7 +121,8 @@ const DIGESTS: [(&str, &str); 10] = [
     ),
     (
         "tacsim.pack.cores",
-        "3ad7f6910ec8ba53e82a93b852b3d82ef771206516b084e3238696a675233903",
+        // Doc 17h cut M8b: the three ungoverned twin cores joined the pack.
+        "a5c8d97b007d7fcec0e34d97be7d45fa6df18d99e50a5658ce72e74aa1e049f7",
     ),
     (
         "tacsim.pack.line_tank",
@@ -2131,7 +2132,7 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// `95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd` (17b
 /// cut M2.5, the helm half).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af";
+    "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):
@@ -2187,8 +2188,8 @@ fn m2_the_standard_doctrine_source_is_pinned() {
         MindManifest {
             name: "Standard Doctrine".to_owned(),
             role: "combat".to_owned(),
-            api: 5,
-            stock: 2,
+            api: 6,
+            stock: 3,
             rated_class: "I".to_owned(),
             ops_ceiling: 1_500,
         }
@@ -2201,7 +2202,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
     assert!(
         header.starts_with("// Standard Doctrine \u{2014} the combat role's stock mind")
             && header.contains(
-                "name: Standard Doctrine; role: combat; api: 5; stock: 2; rated: class I \
+                "name: Standard Doctrine; role: combat; api: 6; stock: 3; rated: class I \
                  (1,500 ops a think)"
             )
             && header.contains("T1 is the oracle (Gate A)"),
@@ -2400,8 +2401,21 @@ fn m3_every_shipped_chassis_binds_its_core() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     let id = |word: &str| mush_core::CanonicalId::new(word).expect("a canonical id");
 
-    // The three cores, minted as `core` definitions.
-    assert_eq!(fielded.cores.len(), 3, "the cores pack's three");
+    // The three cores, minted as `core` definitions — and, since doc 17h cut M8b (C2), their
+    // three ungoverned twins, which no chassis fits.
+    assert_eq!(
+        fielded.cores.len(),
+        6,
+        "the cores pack's three and their twins"
+    );
+    for (core, class) in [
+        ("tacsim.core.doctrine_ungoverned", CoreClass::I),
+        ("tacsim.core.line_ungoverned", CoreClass::II),
+        ("tacsim.core.command_ungoverned", CoreClass::III),
+    ] {
+        let def = fielded.cores.get(&id(core)).expect("the twin is loaded");
+        assert_eq!((def.class, def.governed), (class, false), "{core}");
+    }
     for (core, class) in [
         (content::CORE_DOCTRINE, CoreClass::I),
         (content::CORE_LINE, CoreClass::II),

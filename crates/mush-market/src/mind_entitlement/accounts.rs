@@ -41,6 +41,34 @@ pub(super) fn personal<'a>(
         })
         .ok_or_else(|| "personal account unavailable".into())
 }
+/// M8c B3: the organisation's treasury on `scope`: its one Active account
+/// in `instrument` owned by the organisation on that scope (the House's
+/// `mind_house::accounts::treasury` rule).
+pub(crate) fn treasury<'a>(
+    e: &'a EconomyStore,
+    instrument: &InstrumentId,
+    org: mush_org::OrgId,
+    scope: mush_org::OrgScopeId,
+) -> Result<&'a Account, String> {
+    if e.snapshot()
+        .instrument(instrument)
+        .is_none_or(|i| i.status != InstrumentStatus::Active || !i.transferable)
+    {
+        return Err("instrument unavailable".into());
+    }
+    let principal = mush_org::PrincipalId::Organization(org);
+    let mut accounts = e.snapshot().accounts_of(&principal).filter(|a| {
+        a.instrument == *instrument
+            && a.owner == principal
+            && a.scope == Some(scope)
+            && a.status == AccountStatus::Active
+    });
+    let account = accounts.next().ok_or("organisation treasury unavailable")?;
+    if accounts.next().is_some() {
+        return Err("ambiguous organisation treasury".into());
+    }
+    Ok(account)
+}
 pub(super) fn recipient(
     e: &EconomyStore,
     instrument: &InstrumentId,
