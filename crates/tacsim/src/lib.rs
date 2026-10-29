@@ -155,6 +155,8 @@ pub mod minds;
 pub mod pack;
 pub mod port;
 pub mod port_tick;
+// Doc 17h cut M8f: a House buys mind licences from the Roll.
+pub(crate) mod procurement;
 pub mod quest;
 pub mod record;
 pub mod relay_billing;
@@ -395,6 +397,12 @@ pub struct TacsimRuleset {
     /// Roll's command kinds. `None` everywhere else, a format-1 House-only
     /// launch included.
     mind_commands: Option<mush_core::DefinitionRef>,
+    /// Doc 17h §3 M8f: compose the procurement tick's two reads (the command
+    /// slot over the entitlement holdings' grant and the market's command
+    /// read) where the player-market commands are not composed: the
+    /// entitlement rig's composition. Production composes them with the
+    /// commands (`mind_commands`), and this is a no-op there.
+    procurement_reads: bool,
     original_holdings: Option<mush_core::DefinitionRef>,
     personal_filed_holdings: bool,
     personal_source_forms: bool,
@@ -539,6 +547,7 @@ impl TacsimRuleset {
             fork_material: None,
             marked_registry: None,
             mind_commands: None,
+            procurement_reads: false,
             original_holdings: None,
             personal_filed_holdings: false,
             personal_source_forms: false,
@@ -619,6 +628,14 @@ impl TacsimRuleset {
         layer
     }
     /// Select the distinct current-customer reader; no licence is created.
+    /// Doc 17h §3 M8f: compose the procurement tick's reads without the
+    /// player-market commands (`procurement_reads`).
+    #[must_use]
+    pub fn with_procurement_reads(mut self) -> Self {
+        self.procurement_reads = true;
+        self
+    }
+
     pub fn with_mind_entitlement_holdings(self, manifest: mush_core::DefinitionRef) -> Self {
         let mut layer = self.with_dependent_owner_holdings(manifest);
         layer.entitlement_holdings = true;
@@ -1015,6 +1032,16 @@ impl GameModule for TacsimRuleset {
                 "fork material requires actual Registry registration",
             ));
         }
+        // Doc 17h §3 M8f: the procurement tick's reads where the commands did
+        // not take the entitlement holdings' grant (`procurement_reads`).
+        if self.procurement_reads
+            && let (Some(reads), Some(manifest)) = (command_reads.take(), &self.original_holdings)
+        {
+            let market = Some(mush_market::mind_commands::MarketCommandReader::request(
+                reg, manifest,
+            )?);
+            minds::market_commands::register(reg, reads, market)?;
+        }
         Ok(())
     }
 
@@ -1216,6 +1243,14 @@ impl GameModule for TacsimRuleset {
     fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
         if let Some(launch) = &self.launch {
             launch.finalize(ctx)?;
+            // Doc 17h §3 M8f: the deployment's procurement policies, for the tick and the
+            // ledger's provider.
+            if let Some(state) = ctx
+                .w
+                .module_state_mut::<procurement::tick::ProcurementState>()
+            {
+                state.set_policies(launch.deployment().procurement.clone());
+            }
         }
         minds::bulk::conduct_service::finalize(ctx, self.conduct_trials.is_some())?;
         underwriting::boot::finalize(

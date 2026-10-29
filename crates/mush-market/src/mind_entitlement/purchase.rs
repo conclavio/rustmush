@@ -41,6 +41,10 @@ impl EntitlementPurchaseV1 {
     pub const fn phase(&self) -> PurchasePhase {
         self.phase
     }
+    /// Doc 17h §3 M8f: the licence this purchase reserved at the Fund.
+    pub const fn licence(&self) -> LicenceId {
+        self.licence
+    }
     /// 17g C2g: the funded quote this purchase froze (its listing, buyer and
     /// protocol), for `mind_commands`' own-purchase read.
     pub(crate) const fn quote_row(&self) -> &EntitlementQuoteV1 {

@@ -782,6 +782,27 @@ Every id below is the one your world printed; replace every id in the example.
   take `launch_path` out of the live config before a reset and bring the
   launch up again from step 1.
 
+**House procurement (doc 17h cut M8f), optional.** A named House buys mind licences from the
+player market's listings once per IC calendar month through a procurement agent. For each House
+that should buy, before booting with the policy:
+
+1. Create the agent as a character on an operator-held login account of its own (never #1's, the
+   clerk's or an operator's: the Quote refuses two characters of one account, so its account must
+   differ from every seller's). The login is NEVER played: the agent only ever sees the
+   `tacsim_procurement` offer the tick queues for it and that offer's refusals.
+2. Stand it in the venue room (the counter): the market's Quote, Fund and Grant need it there.
+3. As #1: `@org/grant #<agent>=<House org> roll.holder.org limit=<monthly budget in minor>` on the
+   House's root scope (no `scope=`), so the grant itself caps any one buy at the month's budget.
+4. With a backing faction, make the agent a member of it (the standing rules read membership).
+5. Add a `procurement` entry to `launch.json`: `{"org", "scope" (the House org's ROOT scope),
+   "agent"}`, and optionally `budget_minor_per_ic_month`, `cap_permille`, `standing` and `roles`
+   (`sealed`, `open`, `open_resale`). The boot refuses an agent that is not a live character, a
+   scope that is not the House's root and a faction that does not exist. `[tacsim.procurement]`
+   holds the budget's and the cap's defaults.
+
+A purchase whose Grant and Refund both keep failing (for example a revoked agent) pages
+`escrow held` in the server log; staff settle that escrow by hand.
+
 Registry operators recall a filed revision with `@registry/recall <filed>` and revoke a licence
 term with `@registry/revoke <licence>` (17g C2d). Anyone the deployment does not name, or whom staff
 have not granted both capabilities, gets the same refusal as for a number that does not exist; check

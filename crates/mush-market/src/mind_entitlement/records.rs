@@ -271,6 +271,16 @@ impl EntitlementListingV1 {
     pub const fn publication(&self) -> CommitToken {
         self.publication
     }
+    /// Doc 17h §3 M8f: the listed revision and its rating, for the GOD-only
+    /// procurement read (`mind_commands::procurement`); never a player's.
+    pub(crate) const fn procurement_subject(&self) -> (RevisionIdentity, RatingRef) {
+        (self.subject.revision, self.subject.rating)
+    }
+    /// Doc 17h §3 M8f: the instrument the listing prices in (the treasury
+    /// the procurement tick checks before it quotes).
+    pub(crate) const fn instrument(&self) -> &InstrumentId {
+        &self.instrument
+    }
     /// 17g C2c (C2 plan §2.8): what `+minds` may show of this listing, every
     /// field from the frozen row: the protocol, the charter (a public Roll
     /// entry), the product's class, form, transfer mark, term and Grace, the
@@ -348,6 +358,10 @@ impl EntitlementQuoteV1 {
     /// `mind_commands`' own-purchase read matches a typed code against.
     pub(crate) const fn listing(&self) -> CommitToken {
         self.listing
+    }
+    /// Doc 17h §3 M8f: the charter the quoted listing sells.
+    pub(crate) const fn charter(&self) -> CharterId {
+        self.subject.charter
     }
     /// 17g C2g: the quoting buyer (M8c B1: a character, or an organisation
     /// through the quoting character).

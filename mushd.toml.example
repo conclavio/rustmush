@@ -426,6 +426,10 @@ max_snapshot_bytes = 7340032       # (16b cut AF.2) bytes of the largest arena s
 registry_interlock = true          # the Registry interlock: phase 1's only claim enforcement (doc 20 §9.4); false is refused at boot
 black_box_max_lines = 4096         # (doc 23 cut S.1) the most lines one hull's black box holds, two per excursion; provisional
 
+[tacsim.procurement]               # (doc 17h cut M8f) a House procurement policy's defaults, provisional (Q-M8-6)
+budget_minor_per_ic_month = 200000 # minor credits a House spends on mind licences per IC calendar month (2,000cr)
+cap_permille = 400                 # D-UM-54's diversity cap: one charter's licences cover at most this share of its titled hulls
+
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as
 # before. When on, a newly created, not-yet-approved character is placed in the

@@ -161,15 +161,18 @@ impl RenewalFacts {
     pub fn sale(&self) -> &HouseSaleFacts {
         &self.sale
     }
+    /// `amount`: the renewal's price at a step that moves money (doc 17h §3
+    /// M8f P2a), a read's zero at the Draft.
     pub(crate) fn check_fresh(
         &self,
         ctx: &OwnerPrepareContext<'_>,
+        amount: Option<i64>,
     ) -> Result<(), PublicationError> {
         // M8c F4: the holder, or a character acting for its organisation
         // (`org_holder::acts_as`, live); the sale and the binding both name
         // the renewing actor, whoever bought.
         let actor = ctx.invocation().actor();
-        if org_holder::acts_as(ctx.world(), self.binding.holder(), actor).is_err()
+        if org_holder::acts_as_amount(ctx.world(), self.binding.holder(), actor, amount).is_err()
             || self.sale.requester() != actor
             || self.binding.holder().acting_character() != actor
             || ctx.world().world_ic_now().at < self.predecessor_term_end.get()
@@ -304,7 +307,7 @@ impl OwnerReadService for RenewalReader {
                 let licence =
                     history::read(ctx, &self.families.paid_licences, status_licence.key())
                         .map_err(integrity)?;
-                if org_holder::acts_as(ctx.world(), licence.holder(), ctx.actor()).is_err() {
+                if org_holder::reads_as(ctx.world(), licence.holder(), ctx.actor()).is_err() {
                     return Err(OwnerReadError::Refused);
                 }
                 let entry = self
@@ -321,7 +324,7 @@ impl OwnerReadService for RenewalReader {
             history::read(ctx, &self.families.paid_licences, licence.key()).map_err(integrity)?;
         // M8c B3: the holder itself, or a character acting for the holder's
         // organisation under a live `roll.holder.org` grant (`org_holder::acts_as`).
-        if org_holder::acts_as(ctx.world(), licence.holder(), ctx.actor()).is_err() {
+        if org_holder::reads_as(ctx.world(), licence.holder(), ctx.actor()).is_err() {
             return Err(OwnerReadError::Refused);
         }
         let term = history::read(
@@ -417,7 +420,7 @@ impl RenewalReader {
     ) -> Result<super::RenewalOperationV1, OwnerReadError> {
         let row = self.verified_operation(roll, ctx, operation)?;
         if ctx.actor() != mush_core::GOD
-            && org_holder::acts_as(ctx.world(), row.binding().holder(), ctx.actor()).is_err()
+            && org_holder::reads_as(ctx.world(), row.binding().holder(), ctx.actor()).is_err()
         {
             return Err(OwnerReadError::Refused);
         }
@@ -474,7 +477,7 @@ impl RenewalReader {
                 return Err(OwnerReadError::Integrity);
             }
             if ctx.actor() != mush_core::GOD
-                && org_holder::acts_as(ctx.world(), licence.holder(), ctx.actor()).is_err()
+                && org_holder::reads_as(ctx.world(), licence.holder(), ctx.actor()).is_err()
             {
                 continue;
             }

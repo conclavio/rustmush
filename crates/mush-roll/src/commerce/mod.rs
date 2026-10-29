@@ -533,6 +533,7 @@ pub(crate) mod participant;
 pub mod personal_filed_reader;
 pub mod personal_paid_holdings;
 pub mod proceeds;
+pub mod procurement_read;
 pub mod purchase;
 pub mod purchase_writer;
 pub mod rating;

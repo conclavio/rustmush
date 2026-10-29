@@ -789,6 +789,39 @@ fn a_limit_is_refused_on_a_non_amount_capability() {
     );
 }
 
+/// Doc 17h §3 M8f P2a: the Roll's `roll.holder.org` is amount-carrying (the
+/// organisation's buy steps that move money ask with their amount), so
+/// `@org/grant … limit=` is admitted on it and the limit limits.
+#[test]
+fn a_limit_is_admitted_on_the_roll_holder_capability() {
+    let mut tw = boot();
+    let joe = tw.spawn_player("Joe");
+    tw.run(GOD, "@org/create Camarilla");
+    let (org, root) = only_org(&tw);
+    let ev = tw.run(
+        GOD,
+        &format!(
+            "@org/grant #{}=Camarilla roll.holder.org limit=200000",
+            joe.0
+        ),
+    );
+    assert!(!has_error(&ev), "{}", texts(&ev));
+    assert_eq!(store(&tw).state().grants_in(org).count(), 1);
+    let ask = |amount: Option<i64>| {
+        authorize_in_world(
+            tw.world(),
+            &AuthRequest {
+                amount,
+                ..req(joe, "roll.holder.org", root, tw.world().now())
+            },
+        )
+        .is_allow()
+    };
+    assert!(ask(Some(200_000)), "at the limit");
+    assert!(!ask(Some(200_001)), "over the limit");
+    assert!(!ask(None), "no amount: fail closed");
+}
+
 #[test]
 fn an_unknown_capability_is_refused_when_a_vocabulary_is_wired() {
     let mut tw = boot_with_vocab(&["economy.account.post", "org.role.manage"]);

@@ -1870,6 +1870,58 @@ pub struct TacsimConfig {
     /// **Doc 23 cut S.1** — the part of `[tacsim.surface]` the game reads: the black box's
     /// line cap. **Live.**
     pub surface: SurfaceConfig,
+    /// **Doc 17h cut M8f** — `[tacsim.procurement]`: a procurement policy's defaults.
+    /// **Live** (`crate::procurement`).
+    pub procurement: ProcurementConfig,
+}
+
+/// **The largest monthly budget a procurement policy may name** (doc 17h cut M8f): a bound on
+/// an operator's typo, not a tuning value (the launch's own price ceiling).
+pub const MAX_PROCUREMENT_BUDGET_MINOR: i64 = 100_000_000;
+
+/// **`[tacsim.procurement]`** (doc 17h cut M8f; Q-M8-6, D-UM-54): the defaults a House's
+/// procurement policy takes when its deployment row names none. Provisional (the owner's
+/// economy-defaults rule).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcurementConfig {
+    /// Minor credits per IC calendar month (2,000cr).
+    pub budget_minor_per_ic_month: i64,
+    /// The diversity cap, per mille of the organisation's titled hulls (400).
+    pub cap_permille: u16,
+}
+
+impl Default for ProcurementConfig {
+    fn default() -> Self {
+        Self {
+            budget_minor_per_ic_month: 200_000,
+            cap_permille: 400,
+        }
+    }
+}
+
+impl ProcurementConfig {
+    /// **Check `[tacsim.procurement]`**: the budget 1 to [`MAX_PROCUREMENT_BUDGET_MINOR`], the
+    /// cap 1 to 1000.
+    ///
+    /// # Errors
+    ///
+    /// The sentence naming the key.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=MAX_PROCUREMENT_BUDGET_MINOR).contains(&self.budget_minor_per_ic_month) {
+            return Err(format!(
+                "[tacsim.procurement].budget_minor_per_ic_month must be 1 to \
+                 {MAX_PROCUREMENT_BUDGET_MINOR} (it is {})",
+                self.budget_minor_per_ic_month
+            ));
+        }
+        if !(1..=1000).contains(&self.cap_permille) {
+            return Err(format!(
+                "[tacsim.procurement].cap_permille must be 1 to 1000 (it is {})",
+                self.cap_permille
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// **The most lines one hull's black box holds, by default** (doc 23 cut S.1, the lead's L2):

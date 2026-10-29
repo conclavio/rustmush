@@ -1348,7 +1348,8 @@ fn the_command_service_is_composed_only_with_the_player_market() -> TestResult {
         (true, false),
         "the full player market composes the slot and no read of its own; owner reads (services, grants) = {counts:?} of {caps:?}"
     );
-    check_eq!(holdings_version(&full), Some(2), "the folded holdings read");
+    // Doc 17h §3 M8f: version 3 adds the GOD-only procurement kinds.
+    check_eq!(holdings_version(&full), Some(3), "the folded holdings read");
     check!(counts.0 <= caps.0 && counts.1 <= caps.1, "{counts:?}");
     // Initialize composes no market.
     let initialize = prepare(CommerceMode::Initialize)?;

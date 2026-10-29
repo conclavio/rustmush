@@ -222,6 +222,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             output_container: h.output_container,
         },
         market,
+        procurement: Vec::new(),
     };
     r.flush();
     Ok((r, deployment))
@@ -926,6 +927,120 @@ async fn named_launch_format_two_checks_market_identities_at_boot() -> Result {
     Ok(())
 }
 
+/// Doc 17h §3 M8f (P2; the fix round's H8): each procurement policy's
+/// identities are checked at boot, one refusal per arm: the agent must be a
+/// live Player-kind character and not GOING, the scope must be the House
+/// organisation's ROOT scope (where its treasury pays a buy from), and a
+/// named backing faction must exist. The valid policy boots, and the launch
+/// hands its policies to the procurement tick.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_checks_procurement_identities_at_boot() -> Result {
+    use crate::launch::{ProcurementPolicy, ProcurementRole};
+    let disagree = "named launch procurement identities disagree";
+    let policy = |r: &mut Rig, d: &LaunchDeployment| -> Result<ProcurementPolicy> {
+        let org = d.houses.meridiani.organization;
+        let root = r
+            .world()
+            .world()
+            .module_state::<OrgStore>()
+            .ok_or("Org")?
+            .state()
+            .org(org)
+            .ok_or("the House org")?
+            .root_scope;
+        let agent = r.world_mut().world_mut().create(
+            ObjKind::Player,
+            "Procurement agent",
+            GOD,
+            Some(d.venue.room),
+        )?;
+        Ok(ProcurementPolicy {
+            org,
+            scope: root,
+            agent,
+            budget_minor_per_ic_month: None,
+            standing: Some(d.republic),
+            cap_permille: None,
+            roles: ProcurementRole::all(),
+        })
+    };
+    let refuses =
+        |change: &dyn Fn(&mut Rig, &mut ProcurementPolicy) -> Result, case: &str| -> Result {
+            let (mut r, mut d) = setup_with(2)?;
+            let mut p = policy(&mut r, &d)?;
+            change(&mut r, &mut p)?;
+            d.procurement = vec![p];
+            match reboot(&mut r, &d) {
+                Ok(()) => Err(format!("the launch booted with {case}").into()),
+                Err(error) => {
+                    check!(
+                        error.to_string().contains(disagree),
+                        "{case}: {error} lacks {disagree:?}"
+                    );
+                    Ok(())
+                }
+            }
+        };
+    refuses(
+        &|r, p| {
+            p.agent =
+                r.world_mut()
+                    .world_mut()
+                    .create(ObjKind::Thing, "Agent stand-in", GOD, None)?;
+            Ok(())
+        },
+        "an agent that is a Thing",
+    )?;
+    refuses(
+        &|r, p| {
+            r.world_mut()
+                .world_mut()
+                .get_mut(p.agent)
+                .ok_or("the agent")?
+                .flags
+                .insert(mush_core::Flags::GOING);
+            Ok(())
+        },
+        "an agent that is GOING",
+    )?;
+    refuses(
+        &|_, p| {
+            p.agent = ObjId(u32::MAX);
+            Ok(())
+        },
+        "an agent that does not exist",
+    )?;
+    refuses(
+        &|r, p| {
+            // A real scope of another org (the Basin importer's die stock).
+            p.scope = r.deployment.stock_scope;
+            Ok(())
+        },
+        "a scope that is not the House's root",
+    )?;
+    refuses(
+        &|_, p| {
+            p.standing = Some(mush_faction::FactionId(u64::MAX));
+            Ok(())
+        },
+        "a backing faction that does not exist",
+    )?;
+    let (mut r, mut d) = setup_with(2)?;
+    let p = policy(&mut r, &d)?;
+    d.procurement = vec![p.clone()];
+    reboot(&mut r, &d)?;
+    let state = r
+        .world()
+        .world()
+        .module_state::<crate::procurement::tick::ProcurementState>()
+        .ok_or("the procurement slot")?;
+    check!(
+        state.is_agent(p.org, p.agent),
+        "the launch hands its policies to the tick"
+    );
+    Ok(())
+}
+
 /// 17g C1c: C1b's interim pin (format 2 composed no market owner) moves to
 /// format 1, where it is permanent. A format-1 deployment initializes and
 /// activates the House chain exactly as before C1: the House actions are
@@ -1398,7 +1513,7 @@ async fn author_parameters_satisfy_the_registered_providers() -> Result {
 /// 17g C2c test 6 (C2 plan §2.1, the C2c brief; on the launch rig beside C2a's
 /// test 4, for the same reason: the providers project nothing unbooted). The
 /// format-2 Active launch registers the market's command read
-/// (`mind_market_commands` v1) and, since 17g C2e, grants it to TacSim (33
+/// (`mind_market_commands` v2 since doc 17h M8f) and, since 17g C2e, grants it to TacSim (33
 /// services and 35 grants with the scoped passenger facts; the counts and the
 /// mechanics fingerprint are printed, the counts pinned). With the
 /// buyer at the counter, the parameter objects `@mind/publish` builds for
@@ -1455,7 +1570,7 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
             key.owner.as_str() == "market"
                 && key.kind.as_str() == "owner_read"
                 && key.id.as_str() == "mind_market_commands"
-                && entry.reference().version() == 1
+                && entry.reference().version() == 2
         }),
         "the market's command read is registered"
     );
