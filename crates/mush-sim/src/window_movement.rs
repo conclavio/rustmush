@@ -22,8 +22,11 @@ mod evidence;
 mod native_fence;
 #[path = "window_ordered.rs"]
 mod ordered;
+#[path = "window_record.rs"]
+mod record;
 pub use evidence::{WindowMovementEvidence, validate_evidence};
 pub use ordered::{OrderedWindowMovementCapture, capture_ordered};
+pub use record::WindowMovementRecord;
 
 pub const MAX_WINDOW_MOVEMENT_BYTES: usize = 128 * 1024;
 const RECORD_BYTES: usize = 16 * 1024;

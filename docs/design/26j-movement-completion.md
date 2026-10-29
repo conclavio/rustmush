@@ -557,6 +557,16 @@ retain their existing bounds and later restoration checks, with extra boot-only
 validation passes rather than cached authority or a reconstructed World. Sim's
 future native window journal still needs its own exact receipt/record join.
 
+The window record wire format now binds ordered Sim evidence to the original
+Core v2 header, projection, final-placement digest and a claimed native journal
+position/body digest. Its genuine-receipt constructor and matcher retain the
+actual action, participant, commit, exit, clocks and plan/capture digests. The
+decoder checks bounds before cloning and rejects missing/unknown fields or
+rebound inconsistent headers and native final images. These are passive data:
+decoding does not prove a journal append or create an installation. The native
+publisher, same-commit family append and cold original-position join remain
+required before enabling the profile.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

@@ -992,6 +992,165 @@ fn historical_window_preflight_bounds_input_before_recursive_work() {
     ));
 }
 
+fn passive_record_value(capture: &OrderedWindowMovementCapture, sequence: u64) -> Value {
+    // Definition references below are passive wire fixtures, not registered
+    // participants or evidence of native publication. Only a genuine receipt
+    // can satisfy WindowMovementRecord::matches_receipt later.
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let owner = OwnerId::new(crate::NS).unwrap();
+    let action = definitions
+        .register(
+            owner.clone(),
+            mush_core::locomotion::composed::window_action_descriptor().unwrap(),
+        )
+        .unwrap();
+    let participant = definitions
+        .register(
+            owner,
+            DefinitionDescriptor::new(
+                DefinitionKind::new("owner_participant").unwrap(),
+                DefinitionId::new(mush_core::locomotion::composed::SIM_PARTICIPANT).unwrap(),
+                2,
+                json!({"fixture":"passive_wire_data_only"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let evidence: Value = serde_json::from_slice(&capture.encode()).unwrap();
+    let native = &evidence["native"];
+    let final_digest = DefinitionDigest::for_canonical_value_with_limit(
+        "sim.window_movement.final.v1",
+        &native["after"],
+        MAX_WINDOW_MOVEMENT_BYTES,
+    )
+    .unwrap();
+    let mut value = json!({"format":1,"coverage":"uncertified_legacy_paths",
+        "commit":CommitToken::from_bytes([71;16]),"action":action,"participant":participant,
+        "actor":native["actor"],"source":native["source"],"exit":Value::Null,
+        "admitted_room":native["admitted_room"],"projected_room":native["projected_room"],
+        "prepared_at":native["prepared_at"],"at_utc":native["at_utc"],
+        "plan_digest":DefinitionDigest::from_bytes([72;32]),"capture_digest":capture.digest(),
+        "projection":{"format":1,"projected_room":native["projected_room"],
+            "atlas_capture_digest":DefinitionDigest::from_bytes([73;32]),
+            "sim_window_capture_digest":capture.digest(),"target":native["target"]},
+        "evidence":evidence,"final_placement_digest":final_digest,
+        "journal":{"sequence":sequence,"digest":DefinitionDigest::from_bytes([0;32])}});
+    rebind_record_journal(&mut value);
+    value
+}
+fn rebind_record_journal(value: &mut Value) {
+    let mut body = json!({"format":1,"op":"window_locomotion_v2"});
+    for field in [
+        "coverage",
+        "commit",
+        "action",
+        "participant",
+        "actor",
+        "source",
+        "exit",
+        "admitted_room",
+        "projected_room",
+        "prepared_at",
+        "at_utc",
+        "plan_digest",
+        "capture_digest",
+        "projection",
+        "final_placement_digest",
+    ] {
+        body[field] = value[field].clone();
+    }
+    value["journal"]["digest"] = json!(
+        DefinitionDigest::for_canonical_value_with_limit(
+            "sim.window_movement.journal.v1",
+            &body,
+            16 * 1024,
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn passive_window_record_keeps_exact_evidence_and_does_not_append_or_install() {
+    let mut rig = Rig::new();
+    let projected = rig.projected;
+    let captured = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    let value = passive_record_value(&captured, 17);
+    let record = WindowMovementRecord::decode(&value).expect("passive wire record");
+    assert_eq!(record.encode().unwrap(), value);
+    assert_eq!(record.actor(), rig.actor);
+    assert_eq!(record.commit(), CommitToken::from_bytes([71; 16]));
+    assert_eq!(record.journal_sequence(), 17);
+    assert_eq!(record.evidence().unwrap().digest(), captured.digest());
+    assert_eq!(
+        record.journal_value()["capture_digest"],
+        json!(captured.digest())
+    );
+    assert_eq!(rig.state().recovery.next_seq("window_movement"), 0);
+    assert_eq!(
+        rig.engine.world.get(rig.actor).unwrap().location,
+        Some(rig.source)
+    );
+}
+
+#[test]
+fn passive_record_refuses_rebound_header_target_final_image_and_required_fields() {
+    let mut rig = Rig::new();
+    let projected = rig.projected;
+    let captured = ordered(
+        &mut rig,
+        Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        Some(projected),
+    );
+    let original = passive_record_value(&captured, 0);
+    for field in ["source", "exit", "journal", "evidence", "projection"] {
+        let mut value = original.clone();
+        value.as_object_mut().unwrap().remove(field);
+        assert!(WindowMovementRecord::decode(&value).is_err());
+    }
+    for change in 0..14 {
+        let mut value = original.clone();
+        match change {
+            0 => value["unknown"] = json!(true),
+            1 => value["coverage"] = json!("certified"),
+            2 => value["actor"] = json!(999),
+            3 => value["admitted_room"] = json!(999),
+            4 => value["projected_room"] = json!(999),
+            5 => value["at_utc"] = json!(999),
+            6 => value["plan_digest"] = json!(DefinitionDigest::from_bytes([0; 32])),
+            7 => value["projection"]["format"] = json!(2),
+            8 => value["projection"]["target"]["x_cm"] = json!(999),
+            9 => {
+                value["projection"]["atlas_capture_digest"] =
+                    json!(DefinitionDigest::from_bytes([0; 32]))
+            }
+            10 => value["final_placement_digest"] = json!(DefinitionDigest::from_bytes([0; 32])),
+            11 => value["journal"]["sequence"] = json!(u64::MAX),
+            12 => value["participant"]["version"] = json!(1),
+            _ => value["action"]["version"] = json!(1),
+        }
+        rebind_record_journal(&mut value);
+        assert!(
+            WindowMovementRecord::decode(&value).is_err(),
+            "case {change}"
+        );
+    }
+    let mut value = original;
+    value["journal"]["digest"] = json!(DefinitionDigest::from_bytes([0; 32]));
+    assert!(WindowMovementRecord::decode(&value).is_err());
+    let mut deep = Value::Null;
+    for _ in 0..101 {
+        deep = json!([deep]);
+    }
+    assert!(matches!(
+        WindowMovementRecord::decode(&deep),
+        Err(ParticipantError::ImageLimit)
+    ));
+}
+
 #[test]
 fn real_release_and_place_phases_match_legacy_application_without_publication() {
     let mut rig = Rig::new();
