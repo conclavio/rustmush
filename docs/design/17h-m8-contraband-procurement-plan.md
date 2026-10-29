@@ -541,6 +541,15 @@ The economy cannot read the Registry's inspection records.
   - On an org-held licence the warrant principal stays the member (D-23-5), and the org is carried
     as `holder`. "Names the org principal" in §3 M8e means that `holder`.
 
+**M8d2 ruling (the lead's, 2026-10-28): the seized core is impounded in place.** A physical
+removal would need new protocol in four crates (tactics' replacement journal, mush-core's core
+exchange, an industry order kind replayed by the refit audit, and the union's root). It would also
+need a place in the world for the Registry's custody, which does not exist. So the seized core stays
+fitted. Its title is `Disputed` by the Registry, and after a forfeit the Registry owns it. Every seal
+path reads such a core as no core, so the hull flies the ROM at Class 0. Physical removal and a
+custody place move to a cut **M8d3**, after M8, with a custody design. The owner may overrule the
+fiction: a core impounded in place rather than taken.
+
 **M8e re-scoped by the owner, 2026-10-28 (option C):** "M8e: take option C, move the claim
 Open/Close and the seat to S.4b with the custody design". The M8e builder found that a four-owner
 IC claim cannot sit on a surface excursion, for three reasons:
@@ -743,6 +752,31 @@ Seizure is split to **M8d2** (§5). M8d carries:
 - `RevokedPrincipal`;
 - the cover exclusion.
 
-### M8e — the sealed mind aboard, doc 23 S.4a (building, cut from main at `8fd6476f`)
+### M8e — the sealed mind aboard, doc 23 S.4a (PR #93, merged 2026-10-29 as `913e29dd`)
+
+The cut is `f84511ae`, with fix round 1 folded in, plus a merge of main. It follows the owner's
+option C.
+
+Review: one Opus lens found no blocker. Fix round 1 then made owner licences seal, stopped a seal
+that fell to the ROM from writing a mark, and tested the filed-path refusals in a commerce world
+without poisoning the commit.
+
+**What landed:**
+- **`+tv/<n> launch mind=<filed:N|draft:name> [org=<org>]`.** The held filed mind seals with the
+  licence's real state, for both paid and owner licences.
+- **The licence state decides the seal.** Lapsed or revoked seals Doctrine and tells only the
+  operator. A funded transfer refuses with D-UM-40's sentence, which the owner approved.
+- **The seal mark** is written in the finish's bundle for a mind that flew.
+- **The ungoverned rig's unfiled draft** seals with its `admissions`.
+- **The cored-rig excursion harness**, with fitted rigs and the market together, and M8b's owed
+  real `+tv` drive and mine.
+
+**Not built (S.4b):** the claim Open/Close, the pool seat and the `abi` drop on resume.
+
+**Owed to M8g:** six world tests that need a filed, rated, licensed mind on a port world.
+
+**Known limits:**
+- No recall bit reaches the seal, so a recalled revision reads as no licence.
+- `pending` arises only from a sale.
 
 ### M8f — procurement (building)
