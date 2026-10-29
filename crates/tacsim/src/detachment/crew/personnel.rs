@@ -30,9 +30,10 @@ pub(crate) struct NpcPersonnel {
     pub(crate) commander: bool,
     pub(crate) terms: Result<HireTerms, PersonnelIssue>,
 }
-fn check(
+pub(crate) fn check(
     world: &World,
-    draft: &Draft,
+    organizer: ObjId,
+    carrier: ObjId,
     npc: ObjId,
     commander: bool,
     contract: Option<CrewContract>,
@@ -40,7 +41,7 @@ fn check(
     // A draft preference alone cannot query another person's existence or
     // whereabouts. Establish this organizer's employment relationship first.
     let contract = contract
-        .filter(|contract| contract.employer == draft.organizer)
+        .filter(|contract| contract.employer == organizer)
         .ok_or(PersonnelIssue::NotContracted)?;
     contract
         .validate()
@@ -54,7 +55,7 @@ fn check(
     {
         return Err(PersonnelIssue::Unavailable);
     }
-    if !crate::detachment::planning::projection::physically_aboard(world, npc, draft.plan.carrier) {
+    if !crate::detachment::planning::projection::physically_aboard(world, npc, carrier) {
         return Err(PersonnelIssue::NotAboard);
     }
     if commander && contract.terms.mission_scope != NpcMissionScope::DetachmentCommander {
@@ -77,7 +78,14 @@ pub(crate) fn resolve(
         };
         let commander = draft.plan.npc_commander == Some(character);
         let terms = match load(character) {
-            Ok(contract) => check(world, draft, character, commander, contract),
+            Ok(contract) => check(
+                world,
+                draft.organizer,
+                draft.plan.carrier,
+                character,
+                commander,
+                contract,
+            ),
             Err(_) => Err(PersonnelIssue::Unavailable),
         };
         rows.push(NpcPersonnel {

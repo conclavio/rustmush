@@ -158,6 +158,26 @@ mission role or certify health, equipment capability or a launch. DT.3 must
 recheck current containment and admit the real control and operational facts
 before moving the assigned units and people onto the surface.
 
+## DT.3a accepted-roster launch inspection
+
+`+sortie/preflight <draft>:<activation revision>` is an organizer-only, read-only
+inspection while aboard the selected carrier. It reads the accepted snapshot,
+not the editable draft, and checks current unit/person reservations, carrier
+site berth and ramp, clearance, current containment and accepted NPC contract
+digests/duties/scope. Unit condition derives from the actual TacticalUnit;
+power, control, movement and weapons remain separate observations. This does
+not require weapons for mining or manufacture a crew health result.
+
+Org checks the authenticated organizer's current Deploy right. Its advisory
+CrewUse read requires that Deploy right before evaluating the selected real
+operator's current OperateCrew right. It returns only a current decision, no
+grant details and no transferable permit. The caller is never impersonated as
+the operator. Without Deploy, preflight withholds unit-condition and operator
+authority details. NPC location is checked only under the organizer's existing
+contract. The report neither stores a ready flag nor certifies a complete
+launch; actual station/lease acquisition, crew capability, mind admission and
+per-unit launch/epoch reconciliation remain the next DT.3 cut.
+
 ## DT.2b1 ownership and records
 
 The neutral `mush-tactics::detachment::planning` model defines material plans,

@@ -5,7 +5,7 @@ use crate::detachment::planning::DraftRef;
 use mush_core::{CmdError, Ctx, ObjId};
 use mush_tactics::detachment::planning::{PlanId, PlannedController};
 
-pub(crate) const SWITCHES: &[&str] = &["activate", "deactivate", "active"];
+pub(crate) const SWITCHES: &[&str] = &["activate", "deactivate", "active", "preflight"];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
 }
@@ -48,6 +48,10 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(fail());
     }
     let raw = ctx.args.raw().trim().to_owned();
+    if ctx.switches.has("preflight") {
+        let (id, revision) = fence(&raw)?;
+        return super::preflight::report(ctx, id, revision).map_err(CmdError::msg);
+    }
     if ctx.switches.has("active") {
         let reference = reference(&raw, ctx.actor)?;
         let Some(record) = runtime::read(ctx, reference).map_err(|_| fail())? else {
@@ -85,6 +89,13 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             );
         }
         if record.active() && record.organizer == ctx.actor {
+            line(
+                ctx,
+                format!(
+                    "Inspect launch: +sortie/preflight {}:{}",
+                    record.draft.0, record.revision
+                ),
+            );
             line(
                 ctx,
                 format!(

@@ -51,6 +51,13 @@ pub enum UnitAuthorityRequest {
         delegate: bool,
         mission: Option<MissionCommand>,
     },
+    /// Advisory crew check for a deployment principal. The authenticated caller
+    /// must currently be allowed to deploy this unit before learning whether
+    /// the named operator may crew it. This never grants either right.
+    CrewUse {
+        unit: ObjId,
+        operator: ObjId,
+    },
     List {
         after: u64,
     },
@@ -235,6 +242,35 @@ impl OwnerReadService for UnitAuthorityReader {
                 )
                 .is_allow();
                 Ok(UnitAuthorityResponse::Authority { allowed })
+            }
+            UnitAuthorityRequest::CrewUse { unit, operator } => {
+                let facts = self.facts.facts(ctx.world());
+                let predicates = WorldPredicates {
+                    w: ctx.world(),
+                    providers: store.providers(),
+                };
+                let allowed = |actor, capability| {
+                    authorize_unit(
+                        store.state(),
+                        &registry.grants,
+                        facts.as_ref(),
+                        &predicates,
+                        &UnitAuthRequest {
+                            actor,
+                            unit,
+                            action: UnitAction::Exercise(capability),
+                            now: ctx.world().now(),
+                            mission: None,
+                        },
+                    )
+                    .is_allow()
+                };
+                if !allowed(ctx.actor(), UnitCapability::Deploy) {
+                    return Err(OwnerReadError::Authority);
+                }
+                Ok(UnitAuthorityResponse::Authority {
+                    allowed: allowed(operator, UnitCapability::OperateCrew),
+                })
             }
             UnitAuthorityRequest::List { after } => {
                 let mut rows = registry.grants.values().filter(|g| {
