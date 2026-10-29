@@ -158,9 +158,14 @@ impl Chronicle {
 }
 
 /// Whether an inspection record is an unwarranted finding: a fitted core read ungoverned.
+///
+/// `governed` is read only when a core is fitted (`facts::hull_facts`: `None` for the ROM), so
+/// it alone says so; `core` names the core component's asset object only when the component
+/// names one, and M8b's fitted rig roots name none (doc 17h cut M8g G4 found a real ungoverned
+/// rig's record reading `core: None`, which no consequence counted).
 #[must_use]
 pub fn unwarranted(record: &InspectionRecord) -> bool {
-    record.core.is_some() && record.governed == Some(false)
+    record.governed == Some(false)
 }
 
 /// **What the chronicle counts** (D6, fix round K8): an inspection that read an ungoverned

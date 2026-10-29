@@ -191,6 +191,7 @@ mod tests {
             treasury: AccountId(n),
             publisher: ObjId(2),
             source_name: name.into(),
+            attestation_agent: None,
         }
     }
     /// A format-1 deployment with illustrative ids; decode never reads a world.

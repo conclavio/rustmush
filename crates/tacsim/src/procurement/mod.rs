@@ -17,7 +17,8 @@
 //!    action, `org=`), then the ledger row's phase once the market says Granted or Refunded;
 //!    after [`MAX_GRANT_TRIES`] Grants that did not land, its Refund;
 //! 2. **record** a funded purchase of the agent's for the House that the ledger lacks (the
-//!    ledger row is written before the Grant, so a restart between them loses nothing);
+//!    ledger row is written before the Grant, so a restart between them loses nothing); while
+//!    the House's open purchases are unreadable the visit is refused, never carried on to a buy;
 //! 3. **pay** the agent's own live quote (`/buy/pay`'s Fund; never another member's, H1),
 //!    re-checked against the budget; a Fund that never lands skips the listing for the month
 //!    and pages (H2);
@@ -27,7 +28,9 @@
 //!    budget, resuming on the next fire), keep the forms in `roles` priced within the month's
 //!    remaining budget whose rating has a score (P1; [`rank`]), rank them by score per credit,
 //!    skip a charter at its cap (P6), and quote the best (`+minds/buy … org=`'s Quote). Nothing
-//!    left, or a treasury that cannot pay the best, closes the month (the ore-bid precedent).
+//!    left, or a treasury that cannot pay the best, closes the month (the ore-bid precedent); a
+//!    rating unreadable this fire keeps the month open (the best scored line may still be bought,
+//!    but "nothing left" waits until every listed rating has been read).
 //!
 //! Only listings are read, never the Roll's filings: a filed mind nobody listed is never a
 //! candidate (D-UM-54; P5). A refused step pages (a log line, never a player notice) and the

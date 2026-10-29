@@ -125,18 +125,7 @@ impl ColdFixture {
         })
     }
     fn fund(&mut self) -> TestResult<FundingOutput> {
-        let action = effect(self.purchase.protocol, "fund")?;
-        let prepared = prepare_funding_in(
-            store(&self.old.tw)?,
-            &FundingContext {
-                world: self.old.tw.world(),
-                actor: GOD,
-                principal: &mush_core::PrincipalId::Object { id: GOD },
-                action: &action,
-                commit: CommitToken::from_bytes([3; 16]),
-            },
-            PurchaseSubject::try_from(self.purchase.clone())?,
-        )?;
+        let prepared = self.prepare_fund(GOD)?;
         let (out, patch, writes) = install::finish_images(
             store(&self.old.tw)?,
             self.old.tw.world().world_ic_now().clock,
@@ -153,6 +142,21 @@ impl ColdFixture {
             .apply();
         persist(&mut self.old.disk, writes)?;
         Ok(out)
+    }
+    /// The Fund prepared as `actor` (its own principal), installing nothing.
+    fn prepare_fund(&self, actor: ObjId) -> TestResult<FundingPreparation> {
+        let action = effect(self.purchase.protocol, "fund")?;
+        Ok(prepare_funding_in(
+            store(&self.old.tw)?,
+            &FundingContext {
+                world: self.old.tw.world(),
+                actor,
+                principal: &mush_core::PrincipalId::Object { id: actor },
+                action: &action,
+                commit: CommitToken::from_bytes([3; 16]),
+            },
+            PurchaseSubject::try_from(self.purchase.clone())?,
+        )?)
     }
     fn terminal(
         &mut self,
@@ -346,5 +350,32 @@ fn new_namespace_missing_history_or_missing_contract_cannot_boot_as_legacy() -> 
     ));
     let recovered = f.restart(missing)?;
     f.check(&recovered, &funding, None)?;
+    Ok(())
+}
+
+/// Doc 17h §3 M8f (fix round 1 H1, round 2): the Fund subject funds only as
+/// the character that quoted. GOD's own purchase (`Holder::Character(GOD)`)
+/// is refused to another character, its principal its own, and the same
+/// purchase then prepares as GOD: the actor alone was refused. An
+/// organisation's purchase is the same check on its `acting` character
+/// (`Holder::acting_character`): one quoted by GOD for an organisation is
+/// refused to the other character too.
+#[test]
+fn fund_is_refused_to_any_actor_but_the_quoting_character() -> TestResult {
+    let mut f = ColdFixture::new()?;
+    let other = f
+        .old
+        .tw
+        .world_mut()
+        .create(ObjKind::Player, "Another member", GOD, None)?;
+    check!(f.prepare_fund(other).is_err(), "another character's Fund");
+    let personal = f.purchase.clone();
+    f.purchase.buyer = crate::Holder::Organization {
+        org: mush_org::OrgId(1),
+        acting: GOD,
+    };
+    check!(f.prepare_fund(other).is_err(), "another member's Fund");
+    f.purchase = personal;
+    check!(f.prepare_fund(GOD).is_ok(), "the quoting character's Fund");
     Ok(())
 }

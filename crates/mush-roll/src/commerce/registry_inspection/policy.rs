@@ -274,6 +274,55 @@ impl RegistryInspectionPolicy {
             .register(action_owner()?, outcome)
             .map_err(error)
     }
+    /// **The quirk claim's action and outcome descriptors** (doc 17h cut M8g G3), tacsim's,
+    /// the action referencing the same authority: an author files; no capability is asked.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn claim_descriptors(&self) -> Result<[DefinitionDescriptor; 2], ModError> {
+        let [authority, _, _] = self.definitions()?;
+        let authority_ref = DefinitionRegistryBuilder::new()
+            .register(owner()?, authority)
+            .map_err(error)?;
+        let action = descriptor(
+            "action",
+            "mind_quirk_claim",
+            json!({
+                "format": 1,
+                "protocol": "mind_quirk_claim_v1",
+                "reads": ["charter_title", "earned_contacts"],
+                "writes": "one_claim_record",
+                "confirms": "nothing"
+            }),
+        )?
+        .with_references(vec![authority_ref]);
+        let outcome = descriptor(
+            "outcome",
+            "mind_quirk_claimed",
+            json!({"format": 1, "fields": ["claim", "author", "seq"]}),
+        )?;
+        Ok([action, outcome])
+    }
+    /// Doc 17h cut M8g G3: the claim action's exact identity (tacsim's owner).
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn claim_action(&self) -> Result<DefinitionRef, ModError> {
+        let [action, _] = self.claim_descriptors()?;
+        DefinitionRegistryBuilder::new()
+            .register(action_owner()?, action)
+            .map_err(error)
+    }
+    /// Doc 17h cut M8g G3: the claim outcome's exact identity (tacsim's owner).
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub fn claim_outcome(&self) -> Result<DefinitionRef, ModError> {
+        let [_, outcome] = self.claim_descriptors()?;
+        DefinitionRegistryBuilder::new()
+            .register(action_owner()?, outcome)
+            .map_err(error)
+    }
     /// Doc 17h cut M8d2 S4/S5: `[seize action, seize outcome, forfeit action, forfeit
     /// outcome]`, tacsim's, each action referencing the same authority. The two action ids are
     /// the economy's closed seizure plan's (`mush_economy::registry_filing::seizure`).

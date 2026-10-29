@@ -40,7 +40,10 @@ impl mush_core::module::QueryHandler for Query {
         // `{"names": [<charter>...]}` select the C2c kinds.
         // M8c F11: `"org": <n>` reads for that organisation.
         let org = args.get("org").and_then(Value::as_u64).map(mush_org::OrgId);
-        let request = if let Some(after) = args.get("holdings") {
+        let request = if let Some(org) = args.get("procurement_holdings").and_then(Value::as_u64) {
+            // Doc 17h §3 M8f: `{"procurement_holdings": <org>}`, GOD's.
+            RollCommandReadRequest::procurement_holdings(mush_org::OrgId(org), None)
+        } else if let Some(after) = args.get("holdings") {
             let section = if args.get("paid").and_then(Value::as_bool) == Some(true) {
                 HoldingSection::Paid
             } else {
@@ -1177,12 +1180,118 @@ fn org_paid_rows_answer_every_granted_member(f: &mut Fixture, other: ObjId) -> T
         Err(OwnerReadError::Refused),
         "the bare read never answers the organisation's licence"
     );
+    procurement_holdings_leave_out_a_revoked_term(f, guild, held, (filed, &content))?;
     // An inactive organisation stops the next read.
     command(f, "@org/status Guild=suspended")?;
     check_eq!(
         page(f, other, Some(guild.0))?,
         Err(OwnerReadError::Refused),
         "an inactive organisation"
+    );
+    Ok(())
+}
+
+/// Doc 17h §3 M8f (round 2): GOD's `ProcurementHoldings` read, which the
+/// diversity cap counts, answers the Guild's current licences (46, 47) and
+/// leaves out a third, 48, whose current term the Registry revoked (its
+/// `roll_registry_revoked_terms` row, as `paid_section_pages_own_rows`
+/// writes 42's); a member is refused the GOD-only kind. A lapsed term is
+/// left out too: the composed procurement story reads it so (`holdings 0`).
+fn procurement_holdings_leave_out_a_revoked_term(
+    f: &mut Fixture,
+    guild: mush_org::OrgId,
+    held: crate::commerce::Holder,
+    (filed, content): (
+        FiledRevisionId,
+        &crate::commerce::filed::FiledRevisionContent,
+    ),
+) -> TestResult {
+    use crate::commerce::paid::{PaidForm, PaidTermRecord, PaidTerms, PersonalPaidLicence};
+    use crate::commerce::paid_holdings::PaidHolding;
+    use crate::commerce::rating::RatingClass;
+    use crate::commerce::records::RevisionPolicy;
+    use crate::commerce::{TermGeneration, TermWindow};
+    let one = TermGeneration::new(1)?;
+    let now = f.engine.world.game_now_unix();
+    let window = TermWindow::new(
+        WorldIcSeconds(now),
+        WorldIcSeconds(now),
+        WorldIcSeconds(now + 90 * DAY),
+        WorldIcSeconds(now + 93 * DAY),
+    )?;
+    let terms = PaidTerms::original_personal_form(RatingClass::I, PaidForm::OpenResale {}, true)?;
+    let licence = LicenceId::new(48)?;
+    let birth = token(48);
+    let families = f.families.clone();
+    let mut txn = f.engine.action_transaction(&families.paid_licences)?;
+    txn.insert(
+        &families.paid_licences,
+        &licence.key(),
+        PersonalPaidLicence::original(
+            licence,
+            content.position().charter,
+            content.position().line,
+            held,
+            one,
+            birth,
+        )?,
+    )?;
+    txn.insert(
+        &families.paid_terms,
+        &format!("{}/{}", licence.key(), one.key()),
+        PaidTermRecord::original(
+            licence,
+            one,
+            window,
+            terms,
+            RevisionPolicy::Pin {
+                filed,
+                revision: content.revision(),
+            },
+            birth,
+        )?,
+    )?;
+    let row = PaidHolding::new(held, licence)?;
+    txn.insert(&families.paid_holdings, &row.key(), row.clone())?;
+    let (_, install) = txn.prepare()?.into_parts();
+    f.engine.install_prepared_action(install)?;
+    let holdings = |f: &mut Fixture, actor| -> Result<_, Box<dyn std::error::Error>> {
+        Ok(
+            read(f, actor, json!({"procurement_holdings": guild.0}))?.and_then(|(answer, _)| {
+                let page = answer
+                    .into_procurement_holdings()
+                    .ok_or(OwnerReadError::Integrity)?;
+                Ok(page
+                    .rows()
+                    .iter()
+                    .map(|h| h.licence().get())
+                    .collect::<Vec<_>>())
+            }),
+        )
+    };
+    check_eq!(holdings(f, GOD)?, Ok(vec![46, 47, 48]), "48 is current");
+    let revoked = crate::commerce::registry_revocation::records::RevokedTerm {
+        format: 1,
+        licence,
+        generation: one,
+        operation: token(61),
+        term_digest: mush_core::DefinitionDigest::from_bytes([7; 32]),
+        window,
+    };
+    let mut txn = f.engine.action_transaction(&families.revoked_terms)?;
+    txn.insert(&families.revoked_terms, &revoked.key(), revoked.clone())?;
+    let (_, install) = txn.prepare()?.into_parts();
+    f.engine.install_prepared_action(install)?;
+    check_eq!(
+        holdings(f, GOD)?,
+        Ok(vec![46, 47]),
+        "a revoked term holds no seat"
+    );
+    let member = held.acting_character();
+    check_eq!(
+        holdings(f, member)?,
+        Err(OwnerReadError::Refused),
+        "the GOD-only kind"
     );
     Ok(())
 }

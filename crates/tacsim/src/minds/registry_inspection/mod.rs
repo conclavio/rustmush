@@ -21,6 +21,7 @@
 //! readiness. The named launch composes it beside recall and revocation
 //! (`crate::launch::market`).
 
+pub mod claims;
 pub mod command;
 pub mod facts;
 pub mod fine;
@@ -54,6 +55,8 @@ pub struct Composition {
     /// Doc 17h cut M8d D4: the revocation term in IC days when `@registry/revoke principal=`
     /// composes (`MindCommerce::with_registry_principal_revocation`).
     pub(crate) principals: Option<u32>,
+    /// Doc 17h cut M8g G3: whether the quirk claim composes (`MindCommerce::with_registry_claims`).
+    pub(crate) claims: bool,
     /// Doc 17h cut M8d2 S4/S5: the seizure's terms when `@registry/seize` and
     /// `@registry/forfeit` compose (`MindCommerce::with_registry_seizure`).
     pub(crate) seizures: Option<seizure::SeizureTerms>,
@@ -111,6 +114,16 @@ impl Composition {
             .transpose()
     }
 
+    /// Doc 17h cut M8g G3: the quirk claim's action and outcome descriptors, when it composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn claim_descriptors(&self) -> Result<Option<[DefinitionDescriptor; 2]>, ModError> {
+        self.claims
+            .then(|| self.policy.claim_descriptors())
+            .transpose()
+    }
+
     /// Doc 17h cut M8d D3: the fine's action and outcome descriptors, when it composes.
     pub(crate) fn fine_descriptors(&self) -> Result<Option<[DefinitionDescriptor; 2]>, ModError> {
         self.fines
@@ -122,6 +135,10 @@ impl Composition {
     ///
     /// # Errors
     /// A registrar that is not this crate's, or a reference that is not the policy's.
+    // One optional reference set per composed extension (the fine, the principal revocation,
+    // the quirk claim, the seizure): M8g G3 and M8d2 brought the count to eight; bundling them
+    // would only move the list (`port_tick::register_with_coverage`'s precedent).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn register(
         &self,
         reg: &mut Registrar<'_>,
@@ -129,6 +146,7 @@ impl Composition {
         outcome: DefinitionRef,
         fine: Option<(DefinitionRef, DefinitionRef)>,
         principal: Option<(DefinitionRef, DefinitionRef)>,
+        claim: Option<(DefinitionRef, DefinitionRef)>,
         seizure: Option<[DefinitionRef; 4]>,
     ) -> Result<(), ModError> {
         if reg.module() != crate::NS
@@ -213,6 +231,31 @@ impl Composition {
                 ));
             }
         };
+        // Doc 17h cut M8g G3: the quirk claim's provider.
+        let claims = match (claim, self.claims) {
+            (Some((action, outcome)), true) => {
+                if action != self.policy.claim_action()?
+                    || outcome != self.policy.claim_outcome()?
+                {
+                    return Err(ModError::msg(
+                        "Registry claim registration differs from its composition",
+                    ));
+                }
+                reg.action_provider(
+                    action.clone(),
+                    claims::Provider::new(action.clone(), outcome, writer.clone())?,
+                )?;
+                // The earned-contacts index the claim reads; no producer until the IC fight.
+                reg.state(crate::minds::earned_contacts::EarnedContacts::default());
+                Some(claims::ClaimHost { action })
+            }
+            (None, false) => None,
+            _ => {
+                return Err(ModError::msg(
+                    "Registry claim registration differs from its composition",
+                ));
+            }
+        };
         // Doc 17h cut M8d2 S4/S5: the seizure's two providers, each binding the economy leg.
         let seizures = match (seizure, self.seizures) {
             (Some(refs), Some(terms)) => {
@@ -236,6 +279,7 @@ impl Composition {
             pending,
             fines,
             principals,
+            claims,
             seizures,
         });
         Ok(())
@@ -256,6 +300,8 @@ pub struct InspectionHost {
     pub(crate) fines: Option<fine::FineHost>,
     /// Doc 17h cut M8d D4: the principal revocation, when it composes.
     pub(crate) principals: Option<principal::PrincipalHost>,
+    /// Doc 17h cut M8g G3: the quirk claim, when it composes.
+    pub(crate) claims: Option<claims::ClaimHost>,
     /// Doc 17h cut M8d2 S4/S5: the seizure, when it composes.
     pub(crate) seizures: Option<seizure::SeizureHost>,
 }

@@ -39,6 +39,13 @@ pub struct HouseDeployment {
     pub treasury: AccountId,
     pub publisher: ObjId,
     pub source_name: String,
+    /// Doc 17h §3 M8h (A1): the character the `tacsim.house_attestation` tick attests this
+    /// House's filings as, where the House has no procurement policy (a policy's agent wins,
+    /// and a different one named here refuses the boot). A live, non-GOING Player-kind
+    /// character on an operator-held login, granted `roll.holder.org` on `scope` (the runbook);
+    /// absent, and with no policy, the House's filings are not attested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_agent: Option<ObjId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -276,6 +283,27 @@ impl MarketTerms {
     };
 }
 impl LaunchDeployment {
+    /// Doc 17h §3 M8h (A1): each House's attesting character, by House: its procurement
+    /// policy's agent where it has one (the ruling), else its own `attestation_agent`. A House
+    /// with neither is left out (its filings are not attested).
+    #[must_use]
+    pub fn house_attestation_agents(&self) -> Vec<(OrgId, ObjId)> {
+        [
+            &self.houses.meridiani,
+            &self.houses.coprates,
+            &self.houses.tycho,
+        ]
+        .into_iter()
+        .filter_map(|house| {
+            self.procurement
+                .iter()
+                .find(|policy| policy.org == house.organization)
+                .map(|policy| policy.agent)
+                .or(house.attestation_agent)
+                .map(|agent| (house.organization, agent))
+        })
+        .collect()
+    }
     pub fn decode(bytes: &[u8]) -> Result<Self, ModError> {
         if bytes.is_empty() || bytes.len() > MAX_DEPLOYMENT_BYTES {
             return Err(ModError::msg(
@@ -321,6 +349,18 @@ impl LaunchDeployment {
         }
         if !self.procurement_holds(&houses) {
             return Err(ModError::msg("launch deployment procurement differs"));
+        }
+        // Doc 17h §3 M8h (A1): a House names at most one attesting character: its procurement
+        // policy's agent, or its own `attestation_agent`, never two different ones.
+        for house in houses {
+            if let Some(named) = house.attestation_agent
+                && self
+                    .procurement
+                    .iter()
+                    .any(|policy| policy.org == house.organization && policy.agent != named)
+            {
+                return Err(ModError::msg("launch deployment House attestation differs"));
+            }
         }
         Ok(())
     }

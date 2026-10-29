@@ -182,6 +182,8 @@ impl LaunchComposition {
                     .with_registry_principal_revocation(
                         prepared_layer.config().minds.revocation_ic_days,
                     )?
+                    // Doc 17h cut M8g G3: the quirk claim and its Registry read.
+                    .with_registry_claims()?
                     .with_registry_seizure(
                         crate::minds::registry_inspection::seizure::SeizureTerms {
                             max_age_ic_days: prepared_layer
@@ -316,8 +318,9 @@ pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket
     let items = operators
         .into_iter()
         .map(|operator| {
-            // Doc 17h cut M8a: three capabilities (M8d: four); what is lacking is named in
-            // this order, joined as prose (`lacks recall, revocation, inspection and fine`).
+            // Doc 17h cut M8a: three capabilities (M8d: four, M8g: five); what is lacking is named
+            // in this order, joined as prose (`lacks recall, revocation, inspection, fine and
+            // claims`).
             let lacking: Vec<&str> = [
                 (
                     mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
@@ -335,6 +338,11 @@ pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket
                 (
                     mush_roll::commerce::registry_inspection::REGISTRY_FINE_CAPABILITY,
                     "fine",
+                ),
+                // Doc 17h cut M8g G3: the claims read, the fifth.
+                (
+                    mush_roll::commerce::registry_inspection::REGISTRY_CLAIMS_CAPABILITY,
+                    "claims",
                 ),
                 // Doc 17h cut M8d2: the seizure and the forfeit, the fifth and sixth.
                 (

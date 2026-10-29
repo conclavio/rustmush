@@ -696,5 +696,144 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
             );
         }
     }
+    curator_attests_through_the_verb(&mut r, &d)?;
+    Ok(())
+}
+
+/// Doc 17h §3 M8h (M8f H7's rule, the lead's ruling: a read is never refused for a
+/// limit): a human curator granted `roll.holder.org` on Meridiani's House scope with
+/// `limit=1` attests the due Meridiani filing through the verb `@mind/attest <filed>
+/// org=<House>`: the verb's reads (the org pre-gate, `own_filed`) and the provider ask the
+/// grant as reads, and the attestation moves no money. The submission lands through the
+/// curator's projected offer, and the House licence's generation 2 is the 365-day term.
+fn curator_attests_through_the_verb(r: &mut Rig, d: &LaunchDeployment) -> Result {
+    let house = &d.houses.meridiani;
+    let birth = r
+        .rows("roll_mind_initial_filing")
+        .into_iter()
+        .find(|b| b["economic"]["house"]["organization"] == json!(house.organization))
+        .ok_or("the Meridiani House filing")?;
+    let licence: LicenceId = serde_json::from_value(birth["licence"].clone())?;
+    let filed: mush_roll::commerce::FiledRevisionId =
+        serde_json::from_value(birth["filed"].clone())?;
+    let org = r
+        .world()
+        .world()
+        .module_state::<OrgStore>()
+        .ok_or("Org")?
+        .state()
+        .org(house.organization)
+        .ok_or("the Meridiani org")?
+        .name
+        .to_string();
+    let first = owner_term(r, licence)?.window();
+    r.world_mut().world_mut().set_now(first.term_end().get());
+    r.flush();
+    let curator = r.buyer;
+    command(
+        r.world_mut(),
+        GOD,
+        &format!(
+            "@org/grant #{}={org} {} scope=#{} limit=1",
+            curator.0,
+            mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY,
+            house.scope.0
+        ),
+    )?;
+    r.flush();
+    let money = r.money(house.treasury)?;
+    command(
+        r.world_mut(),
+        curator,
+        &format!("@mind/attest {} org={org}", filed.get()),
+    )?;
+    let submit = r
+        .world_mut()
+        .engine_mut()
+        .take_authoritative_submit()
+        .ok_or("the verb's queued attestation")?;
+    check_eq!(submit.actor, curator);
+    check_eq!(submit.action.key().id.as_str(), "attest_house_mind");
+    // The command's own module ops land first: staging refuses while any are queued.
+    r.flush();
+    install_as(r, *submit)?;
+    let terms: Vec<OwnerTerm> = r
+        .rows("roll_mind_owner_term")
+        .into_iter()
+        .map(serde_json::from_value::<OwnerTerm>)
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|t| t.licence() == licence)
+        .collect();
+    check_eq!(terms.len(), 2, "generation 1 is kept beside generation 2");
+    let second = terms
+        .iter()
+        .map(OwnerTerm::window)
+        .max_by_key(|w| w.term_end())
+        .ok_or("generation 2")?;
+    check_eq!(
+        lengths(second),
+        (365 * 86_400, 3 * 86_400),
+        "generation 2, the House's 365-day term"
+    );
+    check!(second.term_end() > first.term_end());
+    check_eq!(r.money(house.treasury)?, money, "the attestation is free");
+    Ok(())
+}
+
+/// Land a character's queued submission through its own projected offer, as the driver
+/// does (`install_submit`'s path, for any action).
+fn install_as(r: &mut Rig, request: AuthoritativeSubmit) -> Result {
+    r.serial += 1;
+    let n = r.serial;
+    let e = r.world_mut().engine_mut();
+    e.set_offer_keys(mush_core::OfferKeyRing::new(
+        mush_core::OfferSecret::new(1, [0x47; 32])?,
+        [],
+    )?);
+    let principal = mush_core::PrincipalId::Object { id: request.actor };
+    let query = e.legal_action_query(principal.clone(), request.actor, request.subject.clone())?;
+    let offers = e.project_legal_actions(&query)?;
+    let offer = offers
+        .projected_for_action(&request.action)
+        .ok_or("the actor's offer")?;
+    let resolved = e.resolve_legal_action(
+        &offers,
+        OfferExecutionContext {
+            request: RequestUid::from_bytes(n.to_be_bytes()),
+            principal: principal.clone(),
+            actor: request.actor,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal,
+                    owner: request.action.key().owner.clone(),
+                    namespace: CanonicalId::new(request.action.key().id.as_str())?,
+                },
+                1,
+                IdempotencyKey::Caller(request.key),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        },
+        OfferSubmission {
+            offer: offer.offer(),
+            subject: request.subject,
+            targets: request.targets,
+            parameters: request.parameters,
+        },
+    )?;
+    let (action, resolved, guards) = resolved.into_authoritative_parts();
+    check_eq!(action, request.action);
+    let invocation = resolved.invocation().clone();
+    let commit = driver::token(n);
+    let prepared =
+        e.prepare_registered_composed_resolved_authoritative_action(&action, &resolved, commit)?;
+    r.install(driver::Planned {
+        action,
+        invocation,
+        guards,
+        prepared,
+        commit,
+    })?;
     Ok(())
 }

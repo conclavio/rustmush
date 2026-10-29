@@ -1367,7 +1367,7 @@ fn s3_a_ship_placed_into_a_hangar_port_is_recovered() {
 // ---------------------------------------------------------------------------
 
 /// A hull's name, as the lines print it.
-fn hull_name(rig: &crate::excursions::Rig, hull: ObjId) -> String {
+pub(crate) fn hull_name(rig: &crate::excursions::Rig, hull: ObjId) -> String {
     rig.tw
         .world()
         .get(hull)
@@ -1932,9 +1932,70 @@ fn m8d_the_unwarranted_chronicle_reads_each_inspection_once() {
     no_refused_writes(&rig.tw);
 }
 
+/// **A real ungoverned rig is a finding** (doc 17h cut M8d D6; found by M8g G4's leak battery):
+/// a leased rig bound to M8b's ungoverned Class I root, inspected on the pad, records
+/// `governed: false` with no core asset (the fitted root's component names none), and that is
+/// the unwarranted finding every consequence reads — the chronicle commits its one canon line,
+/// naming nobody. The seeded findings of the tests above carry a core asset; this one is the
+/// world's own record.
+#[test]
+fn m8d_a_real_ungoverned_rig_is_a_finding() {
+    use tacsim::definitions::core_replacement::RIG_I_UNGOVERNED;
+    use tacsim::minds::registry_inspection::unwarranted;
+
+    let mut rig = crate::excursions::stocked_fitted();
+    let operator = rig.tw.spawn_player("Registry operator");
+    let (pilot, _row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let (mut rig, _policy) = reboot_with_inspection(rig, operator, &[operator, pilot]);
+    fit(&mut rig, tv, RIG_I_UNGOVERNED);
+    let seq = inspect(&mut rig, operator, tv);
+    let records = inspections(&rig.tw);
+    let record = records
+        .iter()
+        .find(|record| record.hull == tv && record.seq == seq)
+        .expect("the record");
+    assert_eq!(record.governed, Some(false));
+    assert_eq!(
+        record.core, None,
+        "the fitted root's component names no asset"
+    );
+    assert!(
+        unwarranted::unwarranted(record),
+        "the world's own record is a finding"
+    );
+    let family = tacsim::minds::registry_inspection::InspectionHost::of(rig.tw.world())
+        .expect("the inspection is composed")
+        .writer()
+        .family()
+        .expect("the record family");
+    announce(
+        &mut rig,
+        &family,
+        vec![mush_roll::commerce::registry_inspection::inspection_key(
+            tv, seq,
+        )],
+    );
+    let (_, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    let lines: Vec<_> = rig
+        .tw
+        .world()
+        .module_state::<mush_canon::CanonState>()
+        .map(|state| state.recent())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|event| event.kind == unwarranted::KIND)
+        .collect();
+    assert_eq!(lines.len(), 1, "one unwarranted line");
+    assert_eq!(lines[0].summary, unwarranted::LINE);
+    assert!(lines[0].entities.is_empty(), "naming nobody");
+    no_refused_writes(&rig.tw);
+}
+
 /// Announce a landed typed write as the world task's commit pipeline does
 /// (`install_composed_action_announcing`); this harness installs without announcing.
-fn announce<K, V>(
+pub(crate) fn announce<K, V>(
     rig: &mut crate::excursions::Rig,
     family: &mush_core::StateFamilyHandle<K, V>,
     keys: Vec<String>,
@@ -2456,7 +2517,7 @@ fn m8d_the_registry_revokes_the_inspected_holder_for_a_term() {
 
 /// **Staff bind `tv` to the fitted root `root`** (doc 17h cut M8e E6a, the staff rebind): the
 /// leased rig's coreless unit stripped and made again from the cored root, in the bay.
-fn fit(rig: &mut crate::excursions::Rig, tv: ObjId, root: &str) {
+pub(crate) fn fit(rig: &mut crate::excursions::Rig, tv: ObjId, root: &str) {
     let removed = command(rig, GOD, &format!("@unit/remove #{}", tv.0)).0;
     assert!(
         removed.contains("is no longer a tactical unit"),
@@ -2550,7 +2611,7 @@ fn m8e_a_cored_rig_seals_its_core_and_governed_bit() {
 /// The operator saves a personal draft `name` from Standard Doctrine (the workshop's verbs),
 /// pumping the author service — its due fires, its observed submission landed — until the
 /// Roll holds the saved revision (`hardware/flow/launch/story.rs`' `certify` loop).
-fn save_draft(rig: &mut crate::excursions::Rig, who: ObjId, name: &str) {
+pub(crate) fn save_draft(rig: &mut crate::excursions::Rig, who: ObjId, name: &str) {
     for line in [
         format!("@mind/new {name} FROM Standard"),
         format!("@mind/save {name}=first"),

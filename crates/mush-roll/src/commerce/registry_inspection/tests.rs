@@ -311,6 +311,118 @@ fn m8b_a_record_carries_the_ungoverned_note_only_with_a_core() -> TestResult {
     Ok(())
 }
 
+/// One mutation of a valid claim that must make it invalid.
+type ClaimChange = Box<dyn Fn(&mut ClaimRecord)>;
+
+fn claim(policy: &RegistryInspectionPolicy) -> TestResult<ClaimRecord> {
+    Ok(ClaimRecord {
+        format: 1,
+        claim: mush_core::CommitToken::from_bytes([5; 16]),
+        action: policy.claim_action()?,
+        authority: policy.clone(),
+        author: ObjId(30),
+        seq: 1,
+        hulls: vec![ObjId(77), ObjId(91)],
+        text: SmolStr::new("It pauses on a lost contact the way mine does."),
+        at_ic: ClockStamp {
+            clock: ClockRef::WorldIc { generation: 1 },
+            at: 2_000,
+        },
+    })
+}
+
+/// **Doc 17h cut M8g G3: the claim's definitions** — the action and outcome under tacsim, the
+/// action referencing the inspection's authority; the capability and family words.
+#[test]
+fn m8g_the_claim_names_its_definitions_under_tacsim() -> TestResult {
+    let p = policy()?;
+    let action = p.claim_action()?;
+    let outcome = p.claim_outcome()?;
+    check_eq!(
+        (action.key().owner.as_str(), action.key().id.as_str()),
+        (ACTION_OWNER, "mind_quirk_claim")
+    );
+    check_eq!(
+        (outcome.key().owner.as_str(), outcome.key().id.as_str()),
+        (ACTION_OWNER, "mind_quirk_claimed")
+    );
+    let [descriptor, _] = p.claim_descriptors()?;
+    check_eq!(descriptor.references(), &[p.authority()?]);
+    check_eq!(REGISTRY_CLAIMS_CAPABILITY, "roll.registry.claims");
+    check_eq!(CLAIM_FAMILY, "roll_mind_claims");
+    Ok(())
+}
+
+/// **Doc 17h cut M8g G3: the claim record** — valid as built, keyed in the author's 32-slot
+/// ring (the 33rd claim takes the first's slot), round-trips its wire, and refuses every
+/// malformed shape: no sequence or author, a foreign action, no hull, unsorted or repeated or
+/// zero hulls, more than eight, and words that are empty, untrimmed, multi-line or too long.
+#[test]
+fn m8g_a_claim_record_is_bounded_and_strict() -> TestResult {
+    let p = policy()?;
+    let c = claim(&p)?;
+    check!(c.validate().is_ok());
+    check_eq!(c.key(), "author/0000001e/slot/01");
+    check!(super::claims::valid_key(&c.key()));
+    check!(
+        !super::claims::valid_key("author/0000001e/slot/20"),
+        "slot 32 is outside the ring"
+    );
+    check_eq!(claim_key(ObjId(30), 33), claim_key(ObjId(30), 1));
+    check_eq!(claim_slots(ObjId(30)).count(), 32);
+    check_eq!(CLAIMS_PER_AUTHOR, 32);
+    let wire = serde_json::to_value(&c)?;
+    check_eq!(serde_json::from_value::<ClaimRecord>(wire)?, c);
+    let changes: Vec<ClaimChange> = vec![
+        Box::new(|c| c.seq = 0),
+        Box::new(|c| c.author = ObjId(0)),
+        Box::new(|c| c.action = c.authority.action().unwrap_or_else(|_| c.action.clone())),
+        Box::new(|c| c.hulls.clear()),
+        Box::new(|c| c.hulls = vec![ObjId(91), ObjId(77)]),
+        Box::new(|c| c.hulls = vec![ObjId(77), ObjId(77)]),
+        Box::new(|c| c.hulls = vec![ObjId(0), ObjId(77)]),
+        Box::new(|c| c.hulls = (1..=9).map(ObjId).collect()),
+        Box::new(|c| c.text = SmolStr::new("")),
+        Box::new(|c| c.text = SmolStr::new(" padded")),
+        Box::new(|c| c.text = SmolStr::new("two\nlines")),
+        Box::new(|c| c.text = SmolStr::new("x".repeat(MAX_CLAIM_TEXT + 1))),
+    ];
+    for (n, change) in changes.iter().enumerate() {
+        let mut bad = c.clone();
+        change(&mut bad);
+        check!(bad.validate().is_err(), "change {n} still validates");
+    }
+    check_eq!(MAX_CLAIM_HULLS, 8);
+    Ok(())
+}
+
+/// **Doc 17h cut M8g G3: `minds.claimed`** — a claim produces one fact per hull named,
+/// `hull/<hull>` at the claim's sequence; the provider parses it as scoped (M8d K6's
+/// ruling), so no public contract condition resolves it.
+#[test]
+fn m8g_a_claim_produces_one_scoped_fact_per_hull() -> TestResult {
+    use mush_economy::FactProvider;
+    let c = claim(&policy()?)?;
+    let facts = c.facts();
+    check_eq!(facts.len(), 2);
+    let provider = super::super::facts::MindsFactProvider::new();
+    let world = mush_core::World::new_minimal();
+    for (fact, hull) in facts.iter().zip([77_u64, 91]) {
+        check_eq!(fact.provider.as_str(), "minds");
+        check_eq!(fact.kind.as_str(), "claimed");
+        check_eq!(fact.id.as_str(), format!("hull/{hull:016x}"));
+        check_eq!(fact.revision, Some(1));
+        check!(provider.requires_scope(fact), "scoped");
+        check!(
+            provider
+                .resolve(&world, "claimed", fact.id.as_str(), fact.revision)
+                .is_none(),
+            "no public resolve"
+        );
+    }
+    Ok(())
+}
+
 /// **Doc 17h cut M8d2 S2: the seizure's proof.** An ungoverned newest inspection naming the
 /// fitted core, within the age, proves the key `hull/<8 hex>/inspection/<seq>`, and so (M8b-2)
 /// does a grey or heirloom one on a governed core; a governed certified one, a coreless one, a

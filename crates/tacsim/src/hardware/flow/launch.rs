@@ -162,6 +162,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             treasury,
             publisher: GOD,
             source_name: source_name.into(),
+            attestation_agent: None,
         });
     }
     let [meridiani, coprates, tycho]: [HouseDeployment; 3] =
@@ -274,6 +275,8 @@ fn grant_registry(r: &mut Rig, d: &LaunchDeployment) -> Result {
             "roll.registry.inspect",
             // Doc 17h cut M8d D3: the runbook's fourth grant.
             "roll.registry.fine",
+            // Doc 17h cut M8g G3: the fifth, the claims read (no projected verb).
+            "roll.registry.claims",
             // Doc 17h cut M8d2: the fifth and sixth.
             "roll.registry.seize",
             "roll.registry.forfeit",
@@ -1059,6 +1062,129 @@ async fn named_launch_checks_procurement_identities_at_boot() -> Result {
     Ok(())
 }
 
+/// Doc 17h §3 M8h (A1): each House's attestation agent is checked at boot, one
+/// refusal per arm: a named `attestation_agent` must be a live Player-kind
+/// character and not GOING, and a House with a procurement policy names no
+/// other one (the policy's agent is its attesting character). The valid
+/// deployment boots and hands the tick each House's agent: the policy's agent
+/// for the House with a policy, the named one for a House without, none for
+/// the House with neither.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_checks_house_attestation_agents_at_boot() -> Result {
+    use crate::launch::{ProcurementPolicy, ProcurementRole};
+    let disagree = "named launch House attestation identities disagree";
+    let agent = |r: &mut Rig, d: &LaunchDeployment, name: &str| -> Result<ObjId> {
+        Ok(r.world_mut()
+            .world_mut()
+            .create(ObjKind::Player, name, GOD, Some(d.venue.room))?)
+    };
+    let refuses = |change: &dyn Fn(&mut Rig, &mut LaunchDeployment) -> Result,
+                   case: &str,
+                   expected: &str|
+     -> Result {
+        let (mut r, mut d) = setup_with(2)?;
+        change(&mut r, &mut d)?;
+        match reboot(&mut r, &d) {
+            Ok(()) => Err(format!("the launch booted with {case}").into()),
+            Err(error) => {
+                check!(
+                    error.to_string().contains(expected),
+                    "{case}: {error} lacks {expected:?}"
+                );
+                Ok(())
+            }
+        }
+    };
+    refuses(
+        &|r, d| {
+            d.houses.coprates.attestation_agent = Some(r.world_mut().world_mut().create(
+                ObjKind::Thing,
+                "Agent stand-in",
+                GOD,
+                None,
+            )?);
+            Ok(())
+        },
+        "an attestation agent that is a Thing",
+        disagree,
+    )?;
+    refuses(
+        &|r, d| {
+            let named = agent(r, d, "Attestation agent")?;
+            r.world_mut()
+                .world_mut()
+                .get_mut(named)
+                .ok_or("the agent")?
+                .flags
+                .insert(mush_core::Flags::GOING);
+            d.houses.coprates.attestation_agent = Some(named);
+            Ok(())
+        },
+        "an attestation agent that is GOING",
+        disagree,
+    )?;
+    refuses(
+        &|_, d| {
+            d.houses.coprates.attestation_agent = Some(ObjId(u32::MAX));
+            Ok(())
+        },
+        "an attestation agent that does not exist",
+        disagree,
+    )?;
+    let policy = |r: &mut Rig, d: &LaunchDeployment| -> Result<ProcurementPolicy> {
+        let org = d.houses.meridiani.organization;
+        let root = r
+            .world()
+            .world()
+            .module_state::<OrgStore>()
+            .ok_or("Org")?
+            .state()
+            .org(org)
+            .ok_or("the House org")?
+            .root_scope;
+        Ok(ProcurementPolicy {
+            org,
+            scope: root,
+            agent: agent(r, d, "Procurement agent")?,
+            budget_minor_per_ic_month: None,
+            standing: None,
+            cap_permille: None,
+            roles: ProcurementRole::all(),
+        })
+    };
+    refuses(
+        &|r, d| {
+            d.procurement = vec![policy(r, d)?];
+            d.houses.meridiani.attestation_agent = Some(agent(r, d, "Second agent")?);
+            Ok(())
+        },
+        "a House naming an agent beside its procurement agent",
+        "launch deployment House attestation differs",
+    )?;
+    let (mut r, mut d) = setup_with(2)?;
+    let p = policy(&mut r, &d)?;
+    let named = agent(&mut r, &d, "Coprates attestation agent")?;
+    d.procurement = vec![p.clone()];
+    // The policy's own agent named again is the same agent, not a second one.
+    d.houses.meridiani.attestation_agent = Some(p.agent);
+    d.houses.coprates.attestation_agent = Some(named);
+    reboot(&mut r, &d)?;
+    let state = r
+        .world()
+        .world()
+        .module_state::<crate::house_attestation::HouseAttestationState>()
+        .ok_or("the House attestation slot")?;
+    check_eq!(
+        state.agents(),
+        &[
+            (d.houses.meridiani.organization, p.agent),
+            (d.houses.coprates.organization, named),
+        ][..],
+        "the policy's agent, the named one, none for Tycho"
+    );
+    Ok(())
+}
+
 /// 17g C1c: C1b's interim pin (format 2 composed no market owner) moves to
 /// format 1, where it is permanent. A format-1 deployment initializes and
 /// activates the House chain exactly as before C1: the House actions are
@@ -1135,7 +1261,7 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
     ];
     let lacks = readiness(
         operator,
-        "lacks recall, revocation, inspection, fine, seize and forfeit",
+        "lacks recall, revocation, inspection, fine, claims, seize and forfeit",
     );
     // Before the grants: no one, and God reads what the operator lacks.
     for actor in principals {
@@ -1259,11 +1385,11 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
         Some(&line([
             (
                 first,
-                "lacks recall, revocation, inspection, fine, seize and forfeit"
+                "lacks recall, revocation, inspection, fine, claims, seize and forfeit"
             ),
             (
                 second,
-                "lacks recall, revocation, inspection, fine, seize and forfeit"
+                "lacks recall, revocation, inspection, fine, claims, seize and forfeit"
             ),
         ]))
     );
@@ -1275,9 +1401,12 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
         Some(&line([
             (
                 first,
-                "lacks revocation, inspection, fine, seize and forfeit"
+                "lacks revocation, inspection, fine, claims, seize and forfeit"
             ),
-            (second, "lacks recall, inspection, fine, seize and forfeit")
+            (
+                second,
+                "lacks recall, inspection, fine, claims, seize and forfeit"
+            )
         ]))
     );
     check_eq!(
@@ -1294,8 +1423,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks inspection, fine, seize and forfeit"),
-            (second, "lacks inspection, fine, seize and forfeit")
+            (first, "lacks inspection, fine, claims, seize and forfeit"),
+            (second, "lacks inspection, fine, claims, seize and forfeit")
         ]))
     );
     grant(&mut r, first, "roll.registry.inspect")?;
@@ -1304,12 +1433,22 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks fine, seize and forfeit"),
-            (second, "lacks fine, seize and forfeit")
+            (first, "lacks fine, claims, seize and forfeit"),
+            (second, "lacks fine, claims, seize and forfeit")
         ]))
     );
     grant(&mut r, first, "roll.registry.fine")?;
     grant(&mut r, second, "roll.registry.fine")?;
+    // Doc 17h cut M8g G3: the claims read is the fifth, with no projected verb.
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([
+            (first, "lacks claims, seize and forfeit"),
+            (second, "lacks claims, seize and forfeit")
+        ]))
+    );
+    grant(&mut r, first, "roll.registry.claims")?;
+    grant(&mut r, second, "roll.registry.claims")?;
     // Doc 17h cut M8d2: the seizure and the forfeit, a grant each.
     check_eq!(
         launch_lines(&mut r, GOD).last(),
@@ -1372,7 +1511,7 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
             line,
             readiness(
                 operator(&d)?,
-                "lacks recall, revocation, inspection, fine, seize and forfeit"
+                "lacks recall, revocation, inspection, fine, claims, seize and forfeit"
             )
         ]
     );
@@ -2057,5 +2196,118 @@ async fn m8d_the_launch_makes_the_red_dies_front_on_the_republic() -> Result {
     reboot(&mut r, &d)?;
     let (again, _) = red_dies(&r)?;
     check_eq!(again, front, "a restart makes no second front");
+    Ok(())
+}
+
+/// Every line `line` sends `actor`, in order.
+fn replies(r: &mut Rig, actor: ObjId, line: &str) -> Vec<String> {
+    r.world_mut()
+        .run(actor, line)
+        .iter()
+        .filter(|(audience, _)| *audience == mush_core::Audience::Actor(actor))
+        .map(|(_, event)| mush_testkit::text_of(event))
+        .collect()
+}
+
+/// **Doc 17h cut M8g G3, branch (B)**: no IC detection exists until the fight (16c H1), so the
+/// earned-contacts index has no producer and every hull an author names is refused with the
+/// observer rule's one sentence (`+hull/box`'s, no new wording), for a player and for staff
+/// alike, before anything else is asked; a claim naming no hull, or with no words, is its
+/// usage. Nothing is filed.
+#[tokio::test(flavor = "current_thread")]
+async fn m8g_a_claim_on_a_hull_never_earned_is_refused_with_the_observer_sentence() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, true)?;
+    let buyer = r.buyer;
+    let hull = r
+        .world_mut()
+        .world_mut()
+        .create(ObjKind::Thing, "A hull seen", GOD, None)?;
+    r.flush();
+    for actor in [buyer, GOD] {
+        check_eq!(
+            replies(
+                &mut r,
+                actor,
+                &format!(
+                    "@mind/claim #{} It pauses on a lost contact the way mine does.",
+                    hull.0
+                )
+            ),
+            vec![crate::surface::hull::NO_BOX.to_owned()],
+            "#{} names a hull it never earned",
+            actor.0
+        );
+    }
+    let usage = crate::minds::registry_inspection::claims::USAGE.to_owned();
+    for malformed in [
+        "@mind/claim It pauses the way mine does.".to_owned(),
+        format!("@mind/claim #{}", hull.0),
+        format!("@mind/claim #0 {}", "words"),
+    ] {
+        check_eq!(replies(&mut r, buyer, &malformed), vec![usage.clone()]);
+    }
+    r.flush();
+    check!(r.rows("roll_mind_claims").is_empty(), "nothing is filed");
+    Ok(())
+}
+
+/// **Doc 17h cut M8g G3**: `@registry/claims` is a line-mode read gated live by
+/// `roll.registry.claims` (the lead's ruling (a): no projected offer, no `registry_verbs`
+/// entry). A non-operator and an ungranted operator get the driver's one sentence; a granted
+/// operator reads that nothing is filed; once the grant lapses, the operator is refused again
+/// with the same sentence — across a restart.
+#[tokio::test(flavor = "current_thread")]
+async fn m8g_registry_claims_reach_only_an_operator_granted_now() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let operator = operator(&d)?;
+    let market = d.market.clone().ok_or("a format-2 market")?;
+    let refused = vec![mush_core::action::SUBMISSION_REFUSED_LINE.to_owned()];
+    for actor in [r.buyer, market.clerk, operator] {
+        check_eq!(
+            replies(&mut r, actor, "@registry/claims"),
+            refused.clone(),
+            "#{} before the grant",
+            actor.0
+        );
+    }
+    command(
+        r.world_mut(),
+        GOD,
+        &format!(
+            "@org/grant #{}=Registry roll.registry.claims scope=#{}",
+            operator.0, market.registry_authority.scope.0
+        ),
+    )?;
+    r.flush();
+    check_eq!(
+        replies(&mut r, operator, "@registry/claims"),
+        vec!["No claims are filed with the Registry.".to_owned()]
+    );
+    check!(
+        registry_verbs(&mut r, operator)?.is_empty(),
+        "the read projects no verb"
+    );
+    for actor in [r.buyer, market.clerk] {
+        check_eq!(replies(&mut r, actor, "@registry/claims"), refused.clone());
+    }
+    // The grant lapses: the operator is refused again, with the same sentence.
+    let now = r.world().world().now();
+    let org = r.boot.get_mut("org").ok_or("the org boot data")?;
+    let mut lapsed = 0;
+    for (key, value) in &mut org.kv {
+        if key.starts_with("grant:")
+            && value.get("grantee") == Some(&json!(operator.0))
+            && value.get("capability") == Some(&json!("roll.registry.claims"))
+            && let Some(grant) = value.as_object_mut()
+        {
+            grant.insert("valid_until".into(), json!(now));
+            lapsed += 1;
+        }
+    }
+    check_eq!(lapsed, 1);
+    reboot(&mut r, &d)?;
+    check_eq!(replies(&mut r, operator, "@registry/claims"), refused);
     Ok(())
 }

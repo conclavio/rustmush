@@ -469,8 +469,11 @@ pub fn domain_org_capability_vocabulary() -> std::collections::BTreeSet<mush_org
         // (`seal_marks::authorized`); M8e's black-box participant writes.
         .chain([mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY])
         // Doc 17h cut M8d D3: the Registry fine.
+        .chain([mush_roll::commerce::registry_inspection::REGISTRY_FINE_CAPABILITY])
+        // Doc 17h cut M8g G3: the Registry's read of the quirk claims.
+        .chain([mush_roll::commerce::registry_inspection::REGISTRY_CLAIMS_CAPABILITY])
+        // Doc 17h cut M8d2: the seizure and the forfeit.
         .chain([
-            mush_roll::commerce::registry_inspection::REGISTRY_FINE_CAPABILITY,
             mush_roll::commerce::registry_inspection::REGISTRY_SEIZE_CAPABILITY,
             mush_roll::commerce::registry_inspection::REGISTRY_FORFEIT_CAPABILITY,
         ])

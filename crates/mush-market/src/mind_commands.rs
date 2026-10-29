@@ -628,8 +628,10 @@ impl OwnQuoteView {
 }
 
 /// 17g C2g: the actor's own record on one listing (`OwnPurchase`): the
-/// listing's code and protocol, the NEWEST indexed quote on it (live or
-/// expired) and the earliest-quoted funded purchase on it (its operation
+/// listing's code and protocol, the NEWEST indexed quote on it the actor
+/// made itself (live or expired; on an organisation's row another member's
+/// quote is never this one: M8f round 2) and the earliest-quoted funded
+/// purchase on it (its operation
 /// token, the Grant's and Refund's `operation`). At least one of the two is
 /// present. No seller, account, digest or other buyer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1324,8 +1326,13 @@ pub(crate) fn own_purchase<'a>(
     if listings.len() > 1 {
         return Err(OwnerReadError::Refused);
     }
+    // The quote a Fund pays is the actor's OWN (M8f round 2): on an
+    // organisation's row another member's newer quote is that member's to
+    // fund, and the provider refuses the Fund of a quote the actor did not
+    // make.
     let newest = quotes
         .iter()
+        .filter(|q| q.buyer().acting_character() == actor)
         .max_by_key(|q| (q.quoted_at_utc(), q.publication()));
     let earliest = operations
         .iter()

@@ -202,6 +202,23 @@ impl Registration {
                 return Err(bad("named launch procurement identities disagree"));
             }
         }
+        // Doc 17h §3 M8h (A1): each House's own attestation agent, in the procurement check's
+        // shape: a live, non-GOING Player-kind character. Its `roll.holder.org` grant on the
+        // House's scope is a runtime fact the tick re-reads every fire (an unmet one pages and
+        // attests nothing); a policy's agent was checked above.
+        for house in [
+            &self.deployment.houses.meridiani,
+            &self.deployment.houses.coprates,
+            &self.deployment.houses.tycho,
+        ] {
+            if let Some(agent) = house.attestation_agent
+                && world
+                    .get(agent)
+                    .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::GOING))
+            {
+                return Err(bad("named launch House attestation identities disagree"));
+            }
+        }
         Ok(())
     }
     /// 17g C1b: the decoded deployment this launch registered. 17g C1c's bare

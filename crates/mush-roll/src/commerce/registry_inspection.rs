@@ -16,6 +16,7 @@
 //! write (M8a's A8).
 
 mod authority;
+pub mod claims;
 mod policy;
 pub mod principal;
 pub(crate) mod records;
@@ -34,6 +35,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub use authority::Authorization;
+pub use claims::{
+    CLAIMS_PER_AUTHOR, ClaimRecord, MAX_CLAIM_HULLS, MAX_CLAIM_TEXT, claim_key, claim_slots,
+};
 pub use policy::RegistryInspectionPolicy;
 pub use principal::{PRINCIPAL_FAMILY, RevokedPrincipal, principal_key};
 pub use records::{
@@ -56,6 +60,14 @@ pub const REGISTRY_SEIZE_CAPABILITY: &str = "roll.registry.seize";
 /// **The Org capability a Registry operator holds to forfeit a seized core** (doc 17h cut M8d2
 /// S5), observed by its own twin (`authority::observe_forfeit`).
 pub const REGISTRY_FORFEIT_CAPABILITY: &str = "roll.registry.forfeit";
+
+/// **The Org capability a Registry operator holds to read the quirk claims** (doc 17h cut
+/// M8g G3): its own on the inspection's scope, observed by its own twin
+/// (`authority::observe_claims`), never implied by another Registry grant.
+pub const REGISTRY_CLAIMS_CAPABILITY: &str = "roll.registry.claims";
+
+/// The quirk claims' record family (doc 17h cut M8g G3), keyed by the author's ring slot.
+pub const CLAIM_FAMILY: &str = "roll_mind_claims";
 
 /// The owner of the inspection action and outcome definitions and of the provider that
 /// prepares them: tacsim, which reads the hull.

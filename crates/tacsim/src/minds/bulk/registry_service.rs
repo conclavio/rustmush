@@ -74,6 +74,7 @@ pub(in crate::minds) fn register_profiles(
                     "revoke".into(),
                     "inspect".into(),
                     "fine".into(),
+                    "claims".into(),
                     "seize".into(),
                     "forfeit".into(),
                 ]
@@ -86,6 +87,7 @@ pub(in crate::minds) fn register_profiles(
                     "revoke".into(),
                     "inspect".into(),
                     "fine".into(),
+                    "claims".into(),
                     "seize".into(),
                     "forfeit".into(),
                 ]
@@ -367,7 +369,7 @@ pub(in crate::minds) fn rating_held(w: &mush_core::World, actor: ObjId) -> bool 
 /// lines inside the 120-column floor; the line break stands in for the `; `
 /// that joined `@registry/cancel` to the second clause (17g C2e hygiene; the
 /// help prose itself stays as written, the lead's ruling R5).
-pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <licence> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull> and @registry/fine <hull>[/<n>] <amount> (Registry operators)\n@registry/seize <hull> and @registry/forfeit <hull>[/<n>] (Registry operators)";
+pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <licence> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull>, @registry/fine <hull>[/<n>] <amount> and @registry/claims (Registry operators)\n@registry/seize <hull> and @registry/forfeit <hull>[/<n>] (Registry operators)";
 
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // 17g C2d: the operators' commands answer for themselves (the driver's
@@ -380,6 +382,10 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             crate::minds::market_commands::registry::RegistryCommand::Inspect,
             HELP,
         );
+    }
+    // Doc 17h cut M8g G3: `claims`, the operators' read of the quirk claims filed.
+    if ctx.switches.has("claims") {
+        return crate::minds::registry_inspection::claims::read(ctx, HELP);
     }
     // Doc 17h cut M8d D3: `fine`, the Registry's sanction on what an inspection found.
     if ctx.switches.has("fine") {

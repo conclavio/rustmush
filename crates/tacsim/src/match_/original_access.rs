@@ -31,6 +31,15 @@ struct OriginalAccessSeam {
     >,
 }
 
+/// Doc 17h §3 M8h: the original-holdings grant every composition of the original holdings
+/// requested (whichever arm), for the House attestation tick's GOD-only Roll read; `None` where
+/// no original holdings are composed.
+pub(crate) fn reader(world: &World) -> Option<OwnerReadHandle<OriginalOwnerReader>> {
+    world
+        .module_state::<OriginalAccessSeam>()
+        .map(|seam| seam.reader.clone())
+}
+
 pub(crate) fn register(reg: &mut Registrar<'_>, manifest: &DefinitionRef) -> Result<(), ModError> {
     if reg.module() != crate::NS {
         return Err(ModError::msg("original holdings belong to Tacsim"));

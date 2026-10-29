@@ -452,6 +452,9 @@ pub fn effective_section_condition(
     ) {
         return Some(stored);
     }
+    if anatomy.core_sections.contains(section_id) && stored == SectionCondition::Wreck {
+        return Some(SectionCondition::Wreck);
+    }
     if let Some(internals_id) = &anatomy.internals_cell {
         let addr = CellAddr::Section {
             section: section_id.clone(),

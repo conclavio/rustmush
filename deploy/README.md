@@ -738,6 +738,7 @@ Every id below is the one your world printed; replace every id in the example.
    @org/grant #<operator>=Registry roll.registry.revoke scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.inspect scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.fine scope=#<review scope>
+   @org/grant #<operator>=Registry roll.registry.claims scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.seize scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.forfeit scope=#<review scope>
    ```
@@ -746,11 +747,14 @@ Every id below is the one your world printed; replace every id in the example.
    lets them fine the holder of a hull an inspection found ungoverned with
    `@registry/fine #<hull> <amount>` (the amount in credits, up to
    `[tacsim.minds].fine_cap_minor`); the fine is one obligation on the holder's account, due
-   at once, paid to the Registry's levy account. The fifth lets them seize the core of a hull
+   at once, paid to the Registry's levy account. The fifth lets them read the quirk claims
+   authors have filed with `@registry/claims`; a claim is testimony, and only an inspection
+   establishes anything.
+   The sixth lets them seize the core of a hull
    whose latest inspection found it ungoverned, grey or heirloom, with `@registry/seize #<hull>`
    (the inspection at most `[tacsim.minds].seizure_inspection_max_age_ic_days` old): the core
    stays fitted, its title carries the Registry's claim and the hull flies the drive ROM. The
-   sixth lets them take the core's title for the Registry with `@registry/forfeit #<hull>`, once
+   seventh lets them take the core's title for the Registry with `@registry/forfeit #<hull>`, once
    `[tacsim.minds].seizure_hold_ic_days` have passed.
 
 10. As #1, `+act roll-initialize-commerce with {}`, then the three industry
@@ -762,9 +766,9 @@ Every id below is the one your world printed; replace every id in the example.
     The last line names every operator in ascending order, in one line:
     `Registry operators: #<op> ready.`, or with two operators
     `Registry operators: #<a> ready, #<b> ready.`. An operator shown with
-    `lacks` and one or more of `recall`, `revocation`, `inspection`, `fine`, `seize` and
-    `forfeit` (for example `lacks forfeit`, or
-    `lacks recall, revocation, inspection, fine, seize and forfeit`)
+    `lacks` and one or more of `recall`, `revocation`, `inspection`, `fine`, `claims`, `seize`
+    and `forfeit` (for example `lacks forfeit`, or
+    `lacks recall, revocation, inspection, fine, claims, seize and forfeit`)
     is missing those step-9 grants (re-run each `@org/grant` it names), or the
     Registry is suspended or its scope retired.
 
@@ -815,6 +819,28 @@ that should buy, before booting with the policy:
 
 A purchase whose Grant and Refund both keep failing (for example a revoked agent) pages
 `escrow held` in the server log; staff settle that escrow by hand.
+
+**House owner attestation (doc 17h cut M8h).** A House filing's free owner licence runs for the
+House term (365 IC days) and lapses unless it is attested within Grace after the term ends. The
+`tacsim.house_attestation` tick attests each due House filing unattended, as the House's
+attestation agent, so the term renews every 365 days. Without an agent, a House's filings lapse
+at the end of their first term. For each House:
+
+1. The agent is the House's procurement agent when the House has a `procurement` entry; nothing
+   more is needed for it but step 3. Otherwise create one as for procurement step 1 (a character
+   on an operator-held login account of its own, never played), and name it in that House's
+   `launch.json` entry as `"attestation_agent": <dbref number>`. Naming a different character
+   beside a procurement agent refuses the boot, as does an agent that is not a live character.
+2. It need not stand anywhere: the attestation is not a market step.
+3. As #1: `@org/grant #<agent>=<House org> roll.holder.org scope=#<House scope>` on the House's
+   scope (the `scope` of its `launch.json` entry, where its filings were made). The attestation
+   moves no money, so a procurement agent's `limit=` grant also attests, but only when that grant
+   covers the House's scope.
+
+An agent without the grant pages `grant` in the server log
+(`tacsim.house_attestation.refused`) and attests nothing. A House filing that flew on an
+ungoverned core during its term is never attested: it logs
+`tacsim.house_attestation.unattestable` once and lapses, which is the consequence.
 
 Registry operators recall a filed revision with `@registry/recall <filed>` and revoke a licence
 term with `@registry/revoke <licence>` (17g C2d). Anyone the deployment does not name, or whom staff
