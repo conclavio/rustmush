@@ -1547,6 +1547,12 @@ pub struct TacsimMindsCfg {
     /// per microsecond); never a throttle, never read by a match. At least
     /// `1`; stock `5`.
     pub cpu_lens_ms: u32,
+    /// **Doc 17h cut M8d D3** (Q-M8-6, provisional): the largest Registry fine, minor
+    /// units. At least 1; stock `100_000` (10× doc 17's 100cr filing fee).
+    pub fine_cap_minor: i64,
+    /// **Doc 17h cut M8d D4** (Q-M8-6, provisional): how long a revoked principal may hold
+    /// no new licence, IC days. 1 to 3650; stock `90` (one audit term).
+    pub revocation_ic_days: u32,
 }
 
 impl Default for TacsimMindsCfg {
@@ -1573,6 +1579,8 @@ impl Default for TacsimMindsCfg {
             pool_floor_ops_s: 120_000,
             workers: 2,
             cpu_lens_ms: 5,
+            fine_cap_minor: 100_000,
+            revocation_ic_days: 90,
         }
     }
 }

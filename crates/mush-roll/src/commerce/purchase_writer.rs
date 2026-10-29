@@ -113,6 +113,8 @@ impl OriginalPurchaseWriter {
         reg.delegate_state_family(&families.deployment, "market")?;
         reg.delegate_state_family(&families.paid_allocations, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
+        // Doc 17h cut M8d D4: the revoked principals, read by the bars in the market's steps.
+        reg.delegate_state_family(&families.revoked_principals, "market")?;
         // 17g C2f: the grant puts the holder's holdings row beside the pointer.
         reg.delegate_state_family(&families.paid_holdings, "market")?;
         reg.delegate_state_family(&families.paid_terms, "market")?;
@@ -360,6 +362,13 @@ impl RegisteredPurchaseWriter {
         }
         self.current(ctx, txn, facts)?;
         let families = &self.registration()?.families;
+        // Doc 17h cut M8d fix round K8: a revoked buyer is refused before money is held.
+        super::registry_inspection::principal::refuse(
+            ctx,
+            txn,
+            families,
+            Holder::Character(facts.requester()),
+        )?;
         let mut deployment = txn
             .get(&families.deployment, &"registry".into())
             .map_err(invalid)?
@@ -505,6 +514,8 @@ impl RegisteredPurchaseWriter {
                 before.operation,
             )?;
             term.matches_current(&licence)?;
+            // Doc 17h cut M8d D4: a principal the Registry revoked holds no new licence.
+            super::registry_inspection::principal::refuse(ctx, txn, families, licence.holder())?;
             txn.insert(&families.paid_licences, &licence_key, licence.clone())
                 .map_err(invalid)?;
             txn.insert(&families.paid_terms, &term_key, term.clone())

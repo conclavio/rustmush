@@ -1643,6 +1643,13 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
     let records = inspections(&rig.tw);
     assert_eq!(records.len(), 1, "{records:?}");
     let first = &records[0];
+    // Doc 17h cut M8d K1: the record carries the hull's title holder at the inspection.
+    let first_holder = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| economy.snapshot().asset(tv).map(|a| a.title_owner.clone()));
+    assert!(first_holder.is_some(), "the rig is titled");
     assert_eq!(first.operator, operator);
     assert_eq!(first.authority, policy);
     assert_eq!(
@@ -1657,6 +1664,7 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
             seal_check: SealCheck::NoSeal,
             licence_state: None,
             ungoverned_note: None,
+            holder: first_holder.clone(),
         }
     );
 
@@ -1712,6 +1720,7 @@ fn m8a_the_registry_inspects_a_rig_on_the_pad_and_in_the_field() {
             seal_check: SealCheck::Matches,
             licence_state: Some(SealLicenceState::Doctrine),
             ungoverned_note: None,
+            holder: first_holder.clone(),
         }
     );
 
@@ -1849,5 +1858,598 @@ Queued.",
         "{refusal}"
     );
     assert_eq!(inspections(&rig.tw).len(), 4, "nothing was recorded");
+    no_refused_writes(&rig.tw);
+}
+
+/// **M8d D6 wiring** (doc 17h cut M8d D6; D-UM-42): the unwarranted chronicle reads every
+/// landed inspection through the composed observer and tick. A rig with no core reads no
+/// finding: the hull's cursor moves to the inspection's sequence, no `minds.unwarranted` line
+/// reaches the chronicle, and the cursor survives a restart (the boot pass re-reads the ring
+/// and finds nothing new; K7: it adds no row for an uninspected hull). The ungoverned half runs
+/// in `m8d_the_registry_fines_the_holder_the_inspection_recorded` over a seeded finding; the
+/// fact's resolve is pinned by mush-roll's facts tests (scoped, K6).
+#[test]
+fn m8d_the_unwarranted_chronicle_reads_each_inspection_once() {
+    use tacsim::minds::registry_inspection::unwarranted;
+
+    let mut rig = stocked();
+    let operator = rig.tw.spawn_player("Registry operator");
+    let (mut rig, _policy) = reboot_with_inspection(rig, operator, &[operator]);
+    let (pilot, _row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let (_, queued) = command(&mut rig, operator, &format!("@registry/inspect #{}", tv.0));
+    assert_eq!(queued.len(), 1);
+    land_all(&mut rig, &queued);
+    // The world task's commit pipeline announces every installed family
+    // (`install_composed_action_announcing`); this harness installs without announcing, so the
+    // landed slot is announced here exactly as the pipeline would.
+    {
+        let family = tacsim::minds::registry_inspection::InspectionHost::of(rig.tw.world())
+            .expect("the inspection is composed")
+            .writer()
+            .family()
+            .expect("the record family");
+        let engine = rig.tw.engine_mut();
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        engine.emit_world_event(
+            &mush_core::WorldEvent::ActionStateChanged {
+                owner: family.owner().clone(),
+                family: family.descriptor().id().clone(),
+                keys: vec![mush_roll::commerce::registry_inspection::inspection_key(tv, 1).into()],
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    let (_, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    let chronicle = unwarranted::current(rig.tw.world())
+        .cloned()
+        .expect("the chronicle is written once an inspection is read");
+    let row = chronicle.hulls.get(&tv.0).expect("the rig's row");
+    assert_eq!(row.cursor, 1, "the first inspection was read");
+    assert!(row.finds.is_empty(), "a coreless rig is no finding");
+    let canon = rig
+        .tw
+        .world()
+        .module_state::<mush_canon::CanonState>()
+        .map(|state| state.recent())
+        .unwrap_or_default();
+    assert!(
+        !canon.iter().any(|event| event.kind == unwarranted::KIND),
+        "nothing unwarranted was chronicled"
+    );
+    let rig = reboot_with(rig, &[operator, pilot]);
+    let mut rig = rig;
+    let (_, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    assert_eq!(
+        unwarranted::current(rig.tw.world()),
+        Some(&chronicle),
+        "the cursor survives a restart and the boot pass finds nothing new"
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// Announce a landed typed write as the world task's commit pipeline does
+/// (`install_composed_action_announcing`); this harness installs without announcing.
+fn announce<K, V>(
+    rig: &mut crate::excursions::Rig,
+    family: &mush_core::StateFamilyHandle<K, V>,
+    keys: Vec<String>,
+) where
+    K: Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    let engine = rig.tw.engine_mut();
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    engine.emit_world_event(
+        &mush_core::WorldEvent::ActionStateChanged {
+            owner: family.owner().clone(),
+            family: family.descriptor().id().clone(),
+            keys: keys.into_iter().map(Into::into).collect(),
+        },
+        &mut out,
+        &mut fx,
+    );
+}
+
+/// The economy's live title holder of `hull`.
+fn title_of(rig: &crate::excursions::Rig, hull: ObjId) -> Option<mush_org::PrincipalId> {
+    rig.tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| {
+            economy
+                .snapshot()
+                .asset(hull)
+                .map(|a| a.title_owner.clone())
+        })
+}
+
+/// Staff release `hull`'s claims and title it to `to` (`#<n>`, or `org:<name> scope=<n>`).
+fn retitle(rig: &mut crate::excursions::Rig, hull: ObjId, to: &str) {
+    let claims = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| economy.snapshot().asset(hull).map(|a| a.encumbrances.len()))
+        .expect("the rig is titled");
+    for k in (1..=claims).rev() {
+        god(rig, &format!("@asset/release #{}={k}", hull.0));
+    }
+    god(rig, &format!("@asset/transfer #{}={to}", hull.0));
+}
+
+/// One real inspection of `hull` by `operator`, landed and announced; its sequence.
+fn inspect(rig: &mut crate::excursions::Rig, operator: ObjId, hull: ObjId) -> u64 {
+    let (_, queued) = command(rig, operator, &format!("@registry/inspect #{}", hull.0));
+    assert_eq!(queued.len(), 1, "the inspection stages");
+    land_all(rig, &queued);
+    inspections(&rig.tw)
+        .iter()
+        .filter(|record| record.hull == hull)
+        .map(|record| record.seq)
+        .max()
+        .expect("the inspection landed")
+}
+
+/// Seed the record an inspection of an ungoverned Class I rig writes, over the real record at
+/// `seq` (`Engine::action_transaction`, the bootstrapping seam; no rig composes M8b's back room
+/// with the inspection), keeping its recorded holder, and announce it.
+fn seed_ungoverned(rig: &mut crate::excursions::Rig, tv: ObjId, seq: u64) {
+    let host = tacsim::minds::registry_inspection::InspectionHost::of(rig.tw.world())
+        .expect("the inspection is composed");
+    let family = host.writer().family().expect("the record family");
+    let slot = mush_roll::commerce::registry_inspection::inspection_key(tv, seq);
+    let core = rig
+        .tw
+        .world_mut()
+        .create(
+            mush_core::ObjKind::Thing,
+            "Ungoverned core",
+            mush_core::GOD,
+            Some(mush_core::LIMBO),
+        )
+        .expect("a thing");
+    {
+        let engine = rig.tw.engine_mut();
+        let mut record = engine
+            .action_state()
+            .get(&family, &slot)
+            .expect("the family reads")
+            .cloned()
+            .expect("the real inspection");
+        assert_eq!(record.seq, seq);
+        record.core = Some(core);
+        record.class = tacsim::minds::registry_inspection::HullClass::I;
+        record.governed = Some(false);
+        let mut txn = engine.action_transaction(&family).expect("a transaction");
+        txn.replace(&family, &slot, record)
+            .expect("the seeded finding");
+        let (_, installation) = txn.prepare().expect("it prepares").into_parts();
+        engine
+            .install_prepared_action(installation)
+            .expect("it installs");
+    }
+    announce(rig, &family, vec![slot]);
+}
+
+/// The `Sanction` obligations the economy holds.
+fn sanctions(rig: &crate::excursions::Rig) -> Vec<mush_economy::Obligation> {
+    rig.tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("the economy")
+        .snapshot()
+        .obligations()
+        .filter(|o| matches!(o.cause, mush_economy::ObligationCause::Sanction { .. }))
+        .cloned()
+        .collect()
+}
+
+/// **M8d D3 with fix round K1, K8 and K10: the Registry fines the holder the inspection
+/// recorded** (the lead's rulings). The pilot holds the rig when it is inspected; the record
+/// carries the pilot as holder:
+/// - the fine needs its own grant; a coreless inspection is `NOTHING_TO_FINE`, an absent one
+///   `NO_SUCH_INSPECTION`, an amount over the cap `FINE_RANGE`;
+/// - the ungoverned finding is fined: `FINING`, the receipt `FINED` (K8's wording), and a second
+///   fine of it `ALREADY_FINED`;
+/// - **K1**: the title then moves to another player, and the levy still debits the pilot's own
+///   account; and a pilot with no account would carry the debt (the opened account);
+/// - **restart**: the fine is not announced before a reboot; the boot pass re-notes its slot and
+///   the levy makes exactly one `Sanction`, due once, and a further fire none;
+/// - the chronicle reads the finding: one `minds.unwarranted` line naming nobody.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn m8d_the_registry_fines_the_holder_the_inspection_recorded() {
+    use tacsim::minds::registry_inspection::unwarranted;
+
+    let mut rig = stocked();
+    let operator = rig.tw.spawn_player("Registry operator");
+    let (mut rig, policy) = reboot_with_inspection(rig, operator, &[operator]);
+    let (pilot, _row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let n = tv.0;
+    retitle(&mut rig, tv, &format!("#{}", pilot.0));
+    let first = inspect(&mut rig, operator, tv);
+    assert_eq!(
+        inspections(&rig.tw)
+            .iter()
+            .find(|r| r.hull == tv && r.seq == first)
+            .and_then(|r| r.holder.clone()),
+        Some(mush_org::PrincipalId::Object(pilot)),
+        "K1: the record carries the holder at the inspection"
+    );
+    let (out, queued) = command(&mut rig, operator, &format!("@registry/fine #{n} 10"));
+    assert_eq!(out, "That did not go through. Nothing changed.");
+    assert!(queued.is_empty());
+    god(
+        &mut rig,
+        &format!(
+            "@org/grant #{}=Registry roll.registry.fine scope=#{}",
+            operator.0,
+            policy.scope().0
+        ),
+    );
+    for (line, said) in [
+        (
+            format!("@registry/fine #{n} 10"),
+            "That inspection found nothing to fine.",
+        ),
+        (format!("@registry/fine #{n}/9 10"), "No such inspection."),
+        (
+            format!("@registry/fine #{n} 1000.01"),
+            "A fine is from 0.01cr to 1000cr.",
+        ),
+    ] {
+        let (out, queued) = command(&mut rig, operator, &line);
+        assert_eq!(out, said, "{line}");
+        assert!(queued.is_empty(), "{line}");
+    }
+    seed_ungoverned(&mut rig, tv, first);
+    let (out, queued) = command(&mut rig, operator, &format!("@registry/fine #{n} 12.50"));
+    assert_eq!(
+        out,
+        format!("Fining the holder of hull #{n} 12.50cr.\nQueued.")
+    );
+    let receipt = land_receipt(&mut rig, &queued[0]).expect("the fine lands");
+    assert_eq!(
+        receipt.as_deref(),
+        Some(
+            format!(
+                "Fined the holder of hull #{n} 12.50cr. The fine is levied when the Registry \
+                 next settles."
+            )
+            .as_str()
+        )
+    );
+    let (out, queued) = command(&mut rig, operator, &format!("@registry/fine #{n} 5"));
+    assert_eq!(out, "That inspection has already been fined.");
+    assert!(queued.is_empty());
+
+    // The chronicle reads the finding (the inspection slot was announced with the seed).
+    let (_, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    let lines: Vec<_> = rig
+        .tw
+        .world()
+        .module_state::<mush_canon::CanonState>()
+        .map(|state| state.recent())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|event| event.kind == unwarranted::KIND)
+        .collect();
+    assert_eq!(lines.len(), 1, "one unwarranted line");
+    assert_eq!(lines[0].summary, unwarranted::LINE);
+    assert!(lines[0].entities.is_empty());
+    assert!(sanctions(&rig).is_empty(), "the fine is not yet levied");
+
+    // K1: the title moves after the inspection; the fine still follows the pilot.
+    let other = rig.tw.spawn_player("Other");
+    retitle(&mut rig, tv, &format!("#{}", other.0));
+    assert_eq!(
+        title_of(&rig, tv),
+        Some(mush_org::PrincipalId::Object(other))
+    );
+
+    // A restart before the levy: the boot pass re-notes the fine's slot.
+    let mut rig = reboot_with(rig, &[operator, pilot]);
+    for _ in 0..2 {
+        let (_, queued) = fire(&mut rig);
+        land_all(&mut rig, &queued);
+    }
+    let levied = sanctions(&rig);
+    assert_eq!(levied.len(), 1, "one fine, levied once, after the restart");
+    let o = &levied[0];
+    assert_eq!(
+        o.cause,
+        mush_economy::ObligationCause::Sanction {
+            inspection: tacsim::minds::registry_inspection::fine::sanction_key(tv, first)
+        }
+    );
+    assert_eq!(o.debtor, mush_org::PrincipalId::Object(pilot), "K1");
+    assert_eq!(o.amount.minor(), 1_250);
+    assert_eq!(o.schedule.cadence, None, "due once");
+    let debit = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .account(o.debit_account)
+                .map(|a| a.owner.clone())
+        });
+    assert_eq!(debit, Some(mush_org::PrincipalId::Object(pilot)));
+    no_refused_writes(&rig.tw);
+}
+
+/// **M8d D3, the organisation arm with K1 and K8**: the rig titled to an organisation when it is
+/// inspected is fined from the organisation's treasury, the organisation the debtor; a levy
+/// refused while the Registry is suspended is retried and lands once it is active again.
+#[test]
+fn m8d_an_organisations_fine_debits_its_treasury() {
+    let mut rig = stocked();
+    let operator = rig.tw.spawn_player("Registry operator");
+    let (mut rig, policy) = reboot_with_inspection(rig, operator, &[operator]);
+    let (_pilot, _row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let n = tv.0;
+    god(
+        &mut rig,
+        &format!(
+            "@org/grant #{}=Registry roll.registry.fine scope=#{}",
+            operator.0,
+            policy.scope().0
+        ),
+    );
+    god(&mut rig, "@org/create Salvage");
+    god(&mut rig, "@account/open org:Salvage=tacsim.credit");
+    let (org, root) = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|s| {
+            s.state()
+                .orgs()
+                .find(|o| o.name.as_str() == "Salvage")
+                .map(|o| (o.id, o.root_scope))
+        })
+        .expect("the organisation");
+    retitle(&mut rig, tv, &format!("org:Salvage scope={}", root.0));
+    let seq = inspect(&mut rig, operator, tv);
+    seed_ungoverned(&mut rig, tv, seq);
+    let (out, queued) = command(&mut rig, operator, &format!("@registry/fine #{n} 3"));
+    assert_eq!(out, format!("Fining the holder of hull #{n} 3cr.\nQueued."));
+    land_all(&mut rig, &queued);
+    let fines = tacsim::minds::registry_inspection::InspectionHost::of(rig.tw.world())
+        .and_then(|host| host.fines().map(|f| f.family().clone()))
+        .expect("the fine");
+    announce(
+        &mut rig,
+        &fines,
+        vec![mush_roll::commerce::registry_inspection::inspection_key(
+            tv, seq,
+        )],
+    );
+    // K8: the Registry suspended, the levier's grant does not hold — a retryable refusal: the
+    // slot is re-noted, nothing is levied, and it is levied once the Registry is active again.
+    god(&mut rig, "@org/status Registry=suspended");
+    for _ in 0..2 {
+        let (_, queued) = fire(&mut rig);
+        land_all(&mut rig, &queued);
+    }
+    assert!(
+        sanctions(&rig).is_empty(),
+        "not levied while the grant does not hold"
+    );
+    god(&mut rig, "@org/status Registry=active");
+    let (_, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    let levied = sanctions(&rig);
+    assert_eq!(levied.len(), 1);
+    assert_eq!(levied[0].debtor, mush_org::PrincipalId::Organization(org));
+    let treasury = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| e.snapshot().account(levied[0].debit_account).cloned())
+        .expect("the debited account");
+    assert_eq!(treasury.owner, mush_org::PrincipalId::Organization(org));
+    assert_eq!(treasury.scope, Some(root));
+    assert_eq!(levied[0].amount.minor(), 300);
+    no_refused_writes(&rig.tw);
+}
+
+/// **M8d D4 with fix round K2 and K4: `@registry/revoke principal=`** over seeded ungoverned
+/// findings:
+/// - the verb needs `roll.registry.revoke`; an unknown name is `NO_SUCH_PRINCIPAL`, a coreless
+///   inspection `NOTHING_TO_REVOKE`;
+/// - **K4**: only the holder the inspection recorded may be named — anyone else is the uniform
+///   refusal;
+/// - the pilot, the recorded holder, is revoked: `REVOKING_PRINCIPAL`, the receipt, a record
+///   keyed `{:020}` barring them 90 IC days, and **K2**: the pilot hears "The Registry has barred
+///   your mind licences until <date>." once, and the operator and a bystander hear nothing;
+/// - the organisation the rig is titled to at a later inspection is revoked as `Salvage`: its
+///   granted member hears the notice, a bystander does not;
+/// - a name that is both a character and an organisation is refused;
+/// - **restart**: both records survive a reboot.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn m8d_the_registry_revokes_the_inspected_holder_for_a_term() {
+    let mut rig = stocked();
+    let operator = rig.tw.spawn_player("Registry operator");
+    let (mut rig, policy) = reboot_with_inspection(rig, operator, &[operator]);
+    let (pilot, _row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let n = tv.0;
+    let bystander = rig.tw.spawn_player("Bystander");
+    retitle(&mut rig, tv, &format!("#{}", pilot.0));
+    let first = inspect(&mut rig, operator, tv);
+    let line = format!("@registry/revoke principal=#{} #{n}", pilot.0);
+    let (out, queued) = command(&mut rig, operator, &line);
+    assert_eq!(out, "That did not go through. Nothing changed.");
+    assert!(queued.is_empty());
+    god(
+        &mut rig,
+        &format!(
+            "@org/grant #{}=Registry roll.registry.revoke scope=#{}",
+            operator.0,
+            policy.scope().0
+        ),
+    );
+    for (line, said) in [
+        (
+            format!("@registry/revoke principal=Nobody #{n}"),
+            "No such character or organisation.",
+        ),
+        (line.clone(), "That inspection found nothing to revoke for."),
+    ] {
+        let (out, queued) = command(&mut rig, operator, &line);
+        assert_eq!(out, said, "{line}");
+        assert!(queued.is_empty(), "{line}");
+    }
+    seed_ungoverned(&mut rig, tv, first);
+    // K4: a principal who did not hold the inspected hull.
+    let (out, queued) = command(
+        &mut rig,
+        operator,
+        &format!("@registry/revoke principal=#{} #{n}", bystander.0),
+    );
+    assert_eq!(out, "That did not go through. Nothing changed.");
+    assert!(queued.is_empty());
+    let pilot_name = rig
+        .tw
+        .world()
+        .get(pilot)
+        .map(|o| o.name.to_string())
+        .expect("the pilot");
+    let (out, queued) = command(&mut rig, operator, &line);
+    assert_eq!(
+        out,
+        format!("Revoking {pilot_name} for 90 IC days.\nQueued.")
+    );
+    let receipt = land_receipt(&mut rig, &queued[0]).expect("the revocation lands");
+    let family = tacsim::minds::registry_inspection::InspectionHost::of(rig.tw.world())
+        .expect("the inspection")
+        .writer()
+        .revoked_principals()
+        .expect("the family");
+    let pilot_key = format!("{:020}", pilot.0);
+    let record = rig
+        .tw
+        .engine()
+        .action_state()
+        .get(&family, &pilot_key)
+        .expect("the family reads")
+        .cloned()
+        .expect("the character's record");
+    assert_eq!(record.principal, mush_org::PrincipalId::Object(pilot));
+    assert_eq!(record.until_ic - record.from_ic, 90 * 86_400);
+    assert_eq!(record.seq, first);
+    assert!(record.bars(record.from_ic) && !record.bars(record.until_ic));
+    let until = tacsim::port::licence::ic_stamp(record.until_ic);
+    assert_eq!(
+        receipt.as_deref(),
+        Some(format!("{pilot_name} holds no new licence until {until}.").as_str())
+    );
+    // K2: the pilot is told once; nobody else.
+    announce(&mut rig, &family, vec![pilot_key.clone()]);
+    let notice = format!("The Registry has barred your mind licences until {until}.");
+    let mut heard = (0, 0, 0);
+    for _ in 0..2 {
+        let (events, queued) = fire(&mut rig);
+        heard.0 += count(&said(&rig.tw, &events, pilot), &notice);
+        heard.1 += count(&said(&rig.tw, &events, operator), &notice);
+        heard.2 += count(&said(&rig.tw, &events, bystander), &notice);
+        land_all(&mut rig, &queued);
+    }
+    assert_eq!(heard, (1, 0, 0), "the principal alone, once");
+
+    // An organisation, the holder at a later inspection.
+    god(&mut rig, "@org/create Salvage");
+    let (org, root) = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|s| {
+            s.state()
+                .orgs()
+                .find(|o| o.name.as_str() == "Salvage")
+                .map(|o| (o.id, o.root_scope))
+        })
+        .expect("the organisation");
+    let member = rig.tw.spawn_player("Member");
+    god(
+        &mut rig,
+        &format!("@org/grant #{}=Salvage roll.holder.org", member.0),
+    );
+    retitle(&mut rig, tv, &format!("org:Salvage scope={}", root.0));
+    let second = inspect(&mut rig, operator, tv);
+    seed_ungoverned(&mut rig, tv, second);
+    let (out, queued) = command(
+        &mut rig,
+        operator,
+        &format!("@registry/revoke principal=Salvage #{n}"),
+    );
+    assert_eq!(out, "Revoking Salvage for 90 IC days.\nQueued.");
+    land_all(&mut rig, &queued);
+    let org_key = format!("org/{:020}", org.0);
+    let record = rig
+        .tw
+        .engine()
+        .action_state()
+        .get(&family, &org_key)
+        .expect("the family reads")
+        .cloned()
+        .expect("the organisation's record");
+    assert_eq!(record.principal, mush_org::PrincipalId::Organization(org));
+    announce(&mut rig, &family, vec![org_key.clone()]);
+    let notice = format!(
+        "The Registry has barred your mind licences until {}.",
+        tacsim::port::licence::ic_stamp(record.until_ic)
+    );
+    let mut heard = (0, 0);
+    for _ in 0..2 {
+        let (events, queued) = fire(&mut rig);
+        heard.0 += count(&said(&rig.tw, &events, member), &notice);
+        heard.1 += count(&said(&rig.tw, &events, bystander), &notice);
+        land_all(&mut rig, &queued);
+    }
+    assert_eq!(heard, (1, 0), "the organisation's granted member, once");
+
+    // A name that is both.
+    god(&mut rig, &format!("@org/create {pilot_name}"));
+    let (out, queued) = command(
+        &mut rig,
+        operator,
+        &format!("@registry/revoke principal={pilot_name} #{n}"),
+    );
+    assert_eq!(
+        out,
+        "That name is a character and an organisation; name the character as #<n>."
+    );
+    assert!(queued.is_empty());
+
+    // Both records survive a restart.
+    let rig = reboot_with(rig, &[operator, pilot, member]);
+    let family = tacsim::minds::registry_inspection::InspectionHost::of(rig.tw.world())
+        .expect("the inspection")
+        .writer()
+        .revoked_principals()
+        .expect("the family, registered again");
+    for key in [&pilot_key, &org_key] {
+        assert!(
+            rig.tw
+                .engine()
+                .action_state()
+                .get(&family, key)
+                .expect("the family reads")
+                .is_some(),
+            "{key} survives the restart"
+        );
+    }
     no_refused_writes(&rig.tw);
 }

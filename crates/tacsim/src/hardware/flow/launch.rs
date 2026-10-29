@@ -271,6 +271,8 @@ fn grant_registry(r: &mut Rig, d: &LaunchDeployment) -> Result {
             "roll.registry.recall",
             "roll.registry.revoke",
             "roll.registry.inspect",
+            // Doc 17h cut M8d D3: the runbook's fourth grant.
+            "roll.registry.fine",
         ] {
             command(
                 r.world_mut(),
@@ -466,7 +468,10 @@ fn registry_verbs(r: &mut Rig, actor: ObjId) -> Result<Vec<String>> {
         .filter(|verb| {
             matches!(
                 verb.as_str(),
-                "roll-registry-recall" | "roll-registry-revocation" | "roll-registry-inspection"
+                "roll-registry-recall"
+                    | "roll-registry-revocation"
+                    | "roll-registry-inspection"
+                    | "roll-registry-fine"
             )
         })
         .collect())
@@ -990,13 +995,14 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
     let market = d.market.clone().ok_or("a format-2 market")?;
     let operator = operator(&d)?;
     let principals = [GOD, operator, market.clerk, r.buyer];
-    // Sorted: the three verbs `grant_registry`'s three grants open.
+    // Sorted: the four verbs `grant_registry`'s four grants open (M8d: the fine).
     let both = vec![
+        "roll-registry-fine".to_owned(),
         "roll-registry-inspection".to_owned(),
         "roll-registry-recall".to_owned(),
         "roll-registry-revocation".to_owned(),
     ];
-    let lacks = readiness(operator, "lacks recall, revocation and inspection");
+    let lacks = readiness(operator, "lacks recall, revocation, inspection and fine");
     // Before the grants: no one, and God reads what the operator lacks.
     for actor in principals {
         check!(
@@ -1117,8 +1123,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks recall, revocation and inspection"),
-            (second, "lacks recall, revocation and inspection"),
+            (first, "lacks recall, revocation, inspection and fine"),
+            (second, "lacks recall, revocation, inspection and fine"),
         ]))
     );
     // One grant each, a different one: each reads what it still lacks.
@@ -1127,8 +1133,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks revocation and inspection"),
-            (second, "lacks recall and inspection")
+            (first, "lacks revocation, inspection and fine"),
+            (second, "lacks recall, inspection and fine")
         ]))
     );
     check_eq!(
@@ -1145,12 +1151,19 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks inspection"),
-            (second, "lacks inspection")
+            (first, "lacks inspection and fine"),
+            (second, "lacks inspection and fine")
         ]))
     );
     grant(&mut r, first, "roll.registry.inspect")?;
     grant(&mut r, second, "roll.registry.inspect")?;
+    // Doc 17h cut M8d D3: the fine is the fourth, a grant of its own.
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([(first, "lacks fine"), (second, "lacks fine")]))
+    );
+    grant(&mut r, first, "roll.registry.fine")?;
+    grant(&mut r, second, "roll.registry.fine")?;
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([(first, "ready"), (second, "ready")]))
@@ -1161,11 +1174,12 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
         check_eq!(
             verbs,
             vec![
+                "roll-registry-fine".to_owned(),
                 "roll-registry-inspection".to_owned(),
                 "roll-registry-recall".to_owned(),
                 "roll-registry-revocation".to_owned(),
             ],
-            "#{} holds all three",
+            "#{} holds all four",
             op.0
         );
     }
@@ -1196,7 +1210,10 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
         vec![
             help,
             line,
-            readiness(operator(&d)?, "lacks recall, revocation and inspection")
+            readiness(
+                operator(&d)?,
+                "lacks recall, revocation, inspection and fine"
+            )
         ]
     );
     // Terms that do not divide into whole credits or days: the price renders
@@ -1819,5 +1836,66 @@ async fn trade_parameters_satisfy_the_registered_providers() -> Result {
             "the buyer is not offered {action:?}"
         );
     }
+    Ok(())
+}
+
+/// **Doc 17h cut M8d D7 (Q-M8-5).** The format-2 launch, which composes the Registry
+/// inspection, makes the Red Dies front on the Republic's board at world build: one front, one
+/// six-segment clock advancing on `minds.unwarranted`, none filled. A `minds.unwarranted` line
+/// — which names nobody — moves it one step (the event emitted here, as the faction suite
+/// does; the line's producer is the chronicle's tick); a restart makes no second front.
+#[tokio::test(flavor = "current_thread")]
+async fn m8d_the_launch_makes_the_red_dies_front_on_the_republic() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let red_dies = |r: &Rig| -> Result<(mush_faction::FrontId, mush_faction::Clock)> {
+        let sim = r
+            .world()
+            .world()
+            .module_state::<mush_faction::SimState>()
+            .ok_or("fronts")?;
+        let fronts: Vec<_> = sim
+            .fronts
+            .values()
+            .filter(|f| f.title == mush_faction::RED_DIES_TITLE)
+            .collect();
+        check_eq!(fronts.len(), 1, "one Red Dies front");
+        let front = fronts[0];
+        check_eq!(front.faction, d.republic, "on the Republic's board");
+        let clocks: Vec<_> = sim
+            .clocks
+            .values()
+            .filter(|c| c.front == front.id)
+            .collect();
+        check_eq!(clocks.len(), 1);
+        Ok((front.id, clocks[0].clone()))
+    };
+    let (front, clock) = red_dies(&r)?;
+    check_eq!(clock.segments, mush_faction::RED_DIES_SEGMENTS);
+    check_eq!(clock.filled, 0);
+    check_eq!(
+        clock.advance_on.as_deref(),
+        Some(mush_faction::RED_DIES_KIND)
+    );
+    {
+        let engine = r.world_mut().engine_mut();
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        engine.emit_world_event(
+            &mush_core::WorldEvent::CanonRecorded {
+                canon_id: 0,
+                kind: crate::minds::registry_inspection::unwarranted::KIND.into(),
+                entities: Vec::new(),
+                source: String::new(),
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    r.flush();
+    check_eq!(red_dies(&r)?.1.filled, 1, "the front's clock one step on");
+    reboot(&mut r, &d)?;
+    let (again, _) = red_dies(&r)?;
+    check_eq!(again, front, "a restart makes no second front");
     Ok(())
 }

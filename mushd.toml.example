@@ -356,6 +356,10 @@ orders_per_minute = 12             # ORDERs one commander may give in sixty seco
 # host's measured ops per microsecond); a reference figure, never a throttle, read by
 # no match. At least 1.
 # cpu_lens_ms = 5
+# (doc 17h cut M8d; provisional) the largest Registry fine, minor units (@registry/fine).
+# fine_cap_minor = 100000
+# (doc 17h cut M8d; provisional) IC days a revoked principal may hold no new licence.
+# revocation_ic_days = 90
 
 [tacsim.sensors]                   # (16b cut G) the sensor pass
 pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id

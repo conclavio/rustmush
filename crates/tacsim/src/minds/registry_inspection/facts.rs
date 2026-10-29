@@ -157,6 +157,7 @@ pub fn hull_facts(
         seal_check: seal_check(seal, hardware.as_ref()),
         licence_state: seal.and_then(|facts| facts.licence_state),
         ungoverned_note: None,
+        holder: None,
     }
 }
 
@@ -204,6 +205,22 @@ pub fn known(w: &World, hull: ObjId) -> bool {
             })
 }
 
+/// **Every hull [`known`] admits** (doc 17h cut M8d): the hull rows, the yards' hulls and every
+/// port map's rig rows, for the boot passes that re-read each hull's rings.
+#[must_use]
+pub fn known_hulls(w: &World) -> std::collections::BTreeSet<ObjId> {
+    use crate::port::vehicle::{RigRows, rig_rows};
+    let mut hulls = crate::surface::recovery::world_hulls(w);
+    if let Some(store) = w.module_state::<crate::store::TacsimStore>() {
+        for map in store.port_maps() {
+            for which in [RigRows::Pool, RigRows::Yard] {
+                hulls.extend(rig_rows(map, which).iter().map(|rig| ObjId(rig.tv)));
+            }
+        }
+    }
+    hulls
+}
+
 /// **Read `hull`** (the brief's §2.3): `None` when the programme does not know the hull
 /// ([`known`]) or it has no tactical unit (nothing to inspect; the command says
 /// `No such hull.`, the provider refuses with its one sentence).
@@ -225,6 +242,15 @@ pub(crate) fn read_unit<R: Reads>(w: &World, reader: &mut R, hull: ObjId) -> Opt
     let (seal, opened_ic) = open_trip(w, reader, hull);
     let mut facts = hull_facts(hull, unit, provenance, seal.as_ref());
     // G9: a note that cannot be read refuses the read (the provider's uniform refusal).
+    // Doc 17h cut M8d K1: the title holder now, recorded with the inspection.
+    facts.holder = w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| {
+            economy
+                .snapshot()
+                .asset(hull)
+                .map(|a| a.title_owner.clone())
+        });
     facts.ungoverned_note = match facts.core {
         Some(core) => ungoverned_note(w, core).ok()?,
         None => None,
@@ -499,6 +525,7 @@ mod tests {
             seal_check: SealCheck::Differs,
             licence_state: Some(SealLicenceState::Recalled),
             ungoverned_note: None,
+            holder: None,
         };
         let line = receipt_words(&worst, true, &"W".repeat(40));
         assert!(
@@ -526,6 +553,7 @@ mod tests {
             seal_check: SealCheck::NoSeal,
             licence_state: None,
             ungoverned_note: None,
+            holder: None,
         };
         assert_eq!(
             receipt_words(&rom, false, ""),

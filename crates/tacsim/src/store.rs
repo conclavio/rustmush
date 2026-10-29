@@ -20,6 +20,7 @@
 //! | `tacsim:tvpref:{character}` | per-character `+tv` preferences (doc 20 cut SM.4a: `crate::port::tv::TvPrefs`) — whether the character hears other rigs' soundings | **dropped loudly**: the character reads as not quiet (they hear soundings again) and the key bars nothing; the next `+tv/quiet` rewrites it |
 //! | `tacsim:licence:{account}` | per-gateway-account prospecting licence (doc 20 cut SM.5: `crate::port::licence`) — its holder, entitlement account, expiry, grace and last fee contract | **skipped loudly, and the key still bars the account**: that account's licence reads unreadable, so `+licence/buy` and every licence-gated act (`+tv/lease` now) refuse, and staff repair the document |
 //! | `tacsim:geology` | world pin (doc 20 cut SM.1; Q-20-12) — the geology key's fingerprint | **skipped loudly, and the key still bars a rewrite**: the geology layer reads disabled ("tacsim:geology cannot be read") on the readiness line; staff repair the document, after restoring the key directory |
+//! | `tacsim:registry_unwarranted` | the unwarranted chronicle (doc 17h cut M8d D6: `crate::minds::registry_inspection::unwarranted`) — per hull, the newest inspection read and the findings kept | **skipped loudly, and the key still bars the chronicle**: nothing more is chronicled (a reset cursor would chronicle old findings twice and move the Red Dies clock twice), the public fact reads none, and staff repair the document |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -183,6 +184,11 @@ pub struct TacsimStore {
     pub(crate) relay_mobile_held: bool,
     pub(crate) relay_world: Option<crate::relay_world::Story>,
     pub(crate) relay_world_held: bool,
+    /// Doc 17h cut M8d D6: the unwarranted chronicle (`tacsim:registry_unwarranted`).
+    pub(crate) registry_unwarranted:
+        Option<crate::minds::registry_inspection::unwarranted::Chronicle>,
+    /// Whether a `tacsim:registry_unwarranted` key was read, loaded or not.
+    pub(crate) registry_unwarranted_held: bool,
     pub(crate) relay_foundry: Option<crate::relay_foundry::Foundry>,
     pub(crate) relay_foundry_held: bool,
     pub(crate) relay_proposals: BTreeMap<ObjId, crate::relay_foundry::Proposal>,
@@ -2172,6 +2178,16 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             store.relay_world = serde_json::from_value::<crate::relay_world::Story>(value.clone())
                 .ok()
                 .filter(|s| s.check().is_ok());
+        } else if key == crate::minds::registry_inspection::unwarranted::KEY {
+            store.registry_unwarranted_held = true;
+            store.registry_unwarranted = serde_json::from_value::<
+                crate::minds::registry_inspection::unwarranted::Chronicle,
+            >(value.clone())
+            .ok()
+            .filter(|c| c.check().is_ok());
+            if store.registry_unwarranted.is_none() {
+                tracing::warn!(%key, "tacsim: the unwarranted chronicle is unreadable; skipped");
+            }
         } else if key == crate::relay_mobile::KEY {
             store.relay_mobile_held = true;
             store.relay_mobile =

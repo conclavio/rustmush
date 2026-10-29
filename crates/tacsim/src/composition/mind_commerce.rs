@@ -346,7 +346,22 @@ impl MindCommerce {
         let provider = mush_roll::commerce::facts::MindsFactProvider::new();
         self.state.roll = self.state.roll.with_minds_facts(provider.clone())?;
         self.state.minds_facts = Some(provider);
+        self.install_registry_findings()?;
         Ok(self)
+    }
+
+    /// Doc 17h cut M8d D6: with both the minds facts and the inspection composed (in either
+    /// order), the public findings `minds.unwarranted` and `minds.seized` read the
+    /// inspection's chronicle.
+    fn install_registry_findings(&self) -> Result<(), ModError> {
+        if let (Some(provider), Some(_)) =
+            (&self.state.minds_facts, &self.state.registry_inspection)
+        {
+            provider.with_registry_findings(std::sync::Arc::new(
+                crate::minds::registry_inspection::unwarranted::Findings,
+            ))?;
+        }
+        Ok(())
     }
 
     /// Explicit fixed-base IC custody. No host event or start transition is
@@ -856,8 +871,54 @@ impl MindCommerce {
             .state
             .roll
             .with_registry_inspection(policy.clone(), writer.clone())?;
-        self.state.registry_inspection =
-            Some(crate::minds::registry_inspection::Composition { policy, writer });
+        self.state.registry_inspection = Some(crate::minds::registry_inspection::Composition {
+            policy,
+            writer,
+            fines: None,
+            principals: None,
+        });
+        self.install_registry_findings()?;
+        Ok(self)
+    }
+
+    /// Doc 17h cut M8d D3: `@registry/fine` over the composed inspection — the inspection's
+    /// operators holding `roll.registry.fine`, the fine paid to `credit` (the deployment's
+    /// levy sink). Needs [`Self::with_registry_inspection`] first.
+    pub fn with_registry_fines(
+        mut self,
+        credit: mush_economy::AccountId,
+    ) -> Result<Self, ModError> {
+        let inspection = self
+            .state
+            .registry_inspection
+            .as_mut()
+            .ok_or_else(|| ModError::msg("Registry fines need the Registry inspection"))?;
+        if inspection.fines.is_some() {
+            return Err(ModError::msg("Registry fines already configured"));
+        }
+        inspection.fines = Some(credit);
+        Ok(self)
+    }
+
+    /// Doc 17h cut M8d D4: `@registry/revoke principal=` over the composed inspection — the
+    /// inspection's operators holding `roll.registry.revoke`, barring a principal for `days`
+    /// IC days (`[tacsim.minds].revocation_ic_days`). Needs [`Self::with_registry_inspection`].
+    pub fn with_registry_principal_revocation(mut self, days: u32) -> Result<Self, ModError> {
+        let inspection =
+            self.state.registry_inspection.as_mut().ok_or_else(|| {
+                ModError::msg("principal revocation needs the Registry inspection")
+            })?;
+        if days == 0 {
+            return Err(ModError::msg(
+                "Registry principal revocation needs a term of at least one IC day",
+            ));
+        }
+        if inspection.principals.is_some() {
+            return Err(ModError::msg(
+                "Registry principal revocation already configured",
+            ));
+        }
+        inspection.principals = Some(days);
         Ok(self)
     }
 

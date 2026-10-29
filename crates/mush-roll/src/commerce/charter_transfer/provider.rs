@@ -354,6 +354,13 @@ impl Provider {
             row.matches_offer(&offer)?;
             (offer, ownership, fence, Some(row))
         };
+        // Doc 17h cut M8d D4: a revoked principal neither offers nor accepts a charter.
+        super::super::registry_inspection::principal::refuse_parties(
+            ctx,
+            txn,
+            &self.f,
+            &[offer.seller, offer.buyer],
+        )?;
         let filed = RequiredRoot {
             anchor: crate::commerce::roots::RootAnchor::Filed(offer.filed),
             identity: offer.revision,

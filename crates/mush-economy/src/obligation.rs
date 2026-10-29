@@ -239,6 +239,12 @@ pub enum ObligationCause {
         /// The ruleset namespace.
         namespace: SmolStr,
     },
+    /// **A sanction** (doc 17h cut M8d D3): a one-period fine levied under an Org capability
+    /// ([`crate::create_sanction_obligation`]) for what a Registry inspection found.
+    Sanction {
+        /// The inspection, as its owner keys it (≤ [`crate::MAX_REASON_BYTES`]).
+        inspection: SmolStr,
+    },
 }
 
 /// Why periods were forgiven rather than charged (D-E4-14). Classified from the

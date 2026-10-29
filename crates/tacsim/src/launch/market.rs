@@ -61,6 +61,9 @@ pub(crate) struct MarketPolicies {
     /// Doc 17h cut M8a: the Registry inspection scope and operators
     /// (`with_registry_inspection`), the same authority.
     pub(crate) inspection: RegistryInspectionPolicy,
+    /// Doc 17h cut M8d D3: the levy sink a Registry fine pays (`with_registry_fines`), the
+    /// deployment's `registry` recipient.
+    pub(crate) fines: mush_economy::AccountId,
 }
 
 /// 17g C1b: `None` for a format-1 deployment (no market), the eight policies
@@ -158,6 +161,7 @@ pub(crate) fn policies(d: &LaunchDeployment) -> Result<Option<MarketPolicies>, M
         recall,
         revocation,
         inspection,
+        fines: d.registry.account,
     }))
 }
 

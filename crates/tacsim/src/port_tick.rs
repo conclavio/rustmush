@@ -226,6 +226,14 @@ pub(crate) fn register_with_coverage(
     if let Some(inspection) = inspection {
         let [_, outcome] = inspection.descriptors()?;
         outcomes.push(outcome);
+        // Doc 17h cut M8d D3: the fine's outcome, when it composes.
+        if let Some([_, outcome]) = inspection.fine_descriptors()? {
+            outcomes.push(outcome);
+        }
+        // Doc 17h cut M8d D4: the principal revocation's outcome, when it composes.
+        if let Some([_, outcome]) = inspection.principal_descriptors()? {
+            outcomes.push(outcome);
+        }
     }
     reg.definition_validator(
         kind("outcome")?,
@@ -327,6 +335,14 @@ pub(crate) fn register_with_coverage(
     if let Some(inspection) = inspection {
         let [action, _] = inspection.descriptors()?;
         actions.push(action);
+        // Doc 17h cut M8d D3: the fine's action, when it composes.
+        if let Some([action, _]) = inspection.fine_descriptors()? {
+            actions.push(action);
+        }
+        // Doc 17h cut M8d D4: the principal revocation's action, when it composes.
+        if let Some([action, _]) = inspection.principal_descriptors()? {
+            actions.push(action);
+        }
     }
     reg.definition_validator(
         kind("action")?,
@@ -338,17 +354,10 @@ pub(crate) fn register_with_coverage(
         action_refs.insert(id, reg.definition(descriptor)?);
     }
     // Doc 17h cut M8a: the Registry inspection's provider and slot over the registered
-    // action and outcome (`minds::registry_inspection`).
+    // action and outcome (`minds::registry_inspection`); doc 17h cut M8d D3 the fine's beside
+    // them, in a frame of their own.
     if let Some(inspection) = inspection {
-        let action = action_refs
-            .get(crate::minds::registry_inspection::INSPECTION_ACTION)
-            .cloned()
-            .ok_or_else(|| ModError::msg("Registry inspection action unregistered"))?;
-        let outcome = outcome_refs
-            .get(crate::minds::registry_inspection::INSPECTION_OUTCOME)
-            .cloned()
-            .ok_or_else(|| ModError::msg("Registry inspection outcome unregistered"))?;
-        inspection.register(reg, action, outcome)?;
+        register_inspection(reg, inspection, &action_refs, &outcome_refs)?;
     }
     let probe_action = action_refs.get(PROBE_ACTION).cloned();
     if let (Some(action), Some(outcome), Some(marks)) =
@@ -2980,6 +2989,49 @@ impl EventHook for ReconnectNotices {
             },
         );
     }
+}
+
+/// The Registry inspection's provider and slot (doc 17h cut M8a), and the fine's when it
+/// composes (doc 17h cut M8d D3), over the registered references. Its own frame, so
+/// `register_with_coverage` stays under the M7 memory-size bound.
+#[inline(never)]
+fn register_inspection(
+    reg: &mut Registrar<'_>,
+    inspection: &crate::minds::registry_inspection::Composition,
+    action_refs: &BTreeMap<String, DefinitionRef>,
+    outcome_refs: &BTreeMap<String, DefinitionRef>,
+) -> Result<(), ModError> {
+    let action = action_refs
+        .get(crate::minds::registry_inspection::INSPECTION_ACTION)
+        .cloned()
+        .ok_or_else(|| ModError::msg("Registry inspection action unregistered"))?;
+    let outcome = outcome_refs
+        .get(crate::minds::registry_inspection::INSPECTION_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("Registry inspection outcome unregistered"))?;
+    let fine = match (
+        action_refs
+            .get(crate::minds::registry_inspection::fine::FINE_ACTION)
+            .cloned(),
+        outcome_refs
+            .get(crate::minds::registry_inspection::fine::FINE_OUTCOME)
+            .cloned(),
+    ) {
+        (Some(action), Some(outcome)) => Some((action, outcome)),
+        _ => None,
+    };
+    let principal = match (
+        action_refs
+            .get(crate::minds::registry_inspection::principal::PRINCIPAL_ACTION)
+            .cloned(),
+        outcome_refs
+            .get(crate::minds::registry_inspection::principal::PRINCIPAL_OUTCOME)
+            .cloned(),
+    ) {
+        (Some(action), Some(outcome)) => Some((action, outcome)),
+        _ => None,
+    };
+    inspection.register(reg, action, outcome, fine, principal)
 }
 
 #[cfg(test)]

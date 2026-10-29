@@ -433,6 +433,10 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             // figure, mapped straight across and held at least 1 by
             // `validate` below; printed by the minds lane, read by no match.
             cpu_lens_ms: cfg.minds.cpu_lens_ms,
+            // Doc 17h cut M8d D3/D4 (Q-M8-6): the fine cap and the revocation term,
+            // mapped straight across and held by `validate` below.
+            fine_cap_minor: cfg.minds.fine_cap_minor,
+            revocation_ic_days: cfg.minds.revocation_ic_days,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,

@@ -891,6 +891,8 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
         ("minutes", "9999"),
         ("hours", "9999"),
         ("days", "99"),
+        ("who", player.as_str()),
+        ("until", "2350-12-31 23:59 IC"),
         ("term", "99"),
         ("grace", "99"),
     ];
@@ -928,6 +930,22 @@ fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
         ("INSPECTION_OFF", words::INSPECTION_OFF),
         ("INSPECT_REFUSED", words::INSPECT_REFUSED),
         ("NO_SUCH_HULL", words::NO_SUCH_HULL),
+        // Doc 17h cut M8d D3: the fine's sentences.
+        ("FINING", words::FINING),
+        ("FINE_OFF", words::FINE_OFF),
+        ("NO_SUCH_INSPECTION", words::NO_SUCH_INSPECTION),
+        ("NOTHING_TO_FINE", words::NOTHING_TO_FINE),
+        ("FINE_RANGE", words::FINE_RANGE),
+        ("NO_FINE_HOLDER", words::NO_FINE_HOLDER),
+        ("ALREADY_FINED", words::ALREADY_FINED),
+        ("FINED", words::FINED),
+        // Doc 17h cut M8d D4: the principal revocation's sentences.
+        ("PRINCIPALS_BARRED", words::PRINCIPALS_BARRED),
+        ("REVOKING_PRINCIPAL", words::REVOKING_PRINCIPAL),
+        ("PRINCIPAL_REVOKED", words::PRINCIPAL_REVOKED),
+        ("NO_SUCH_PRINCIPAL", words::NO_SUCH_PRINCIPAL),
+        ("AMBIGUOUS_PRINCIPAL", words::AMBIGUOUS_PRINCIPAL),
+        ("NOTHING_TO_REVOKE", words::NOTHING_TO_REVOKE),
     ] {
         let line = fill(template, &all);
         check!(!line.contains('{'), "{name} is filled: {line}");

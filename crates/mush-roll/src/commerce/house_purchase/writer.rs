@@ -478,6 +478,8 @@ impl HousePurchaseWriter {
         reg.delegate_state_family(&families.deployment, "market")?;
         reg.delegate_state_family(&families.house_allocations, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
+        // Doc 17h cut M8d D4: the revoked principals, read by the bars in the market's steps.
+        reg.delegate_state_family(&families.revoked_principals, "market")?;
         // 17g C2f: the grant puts the holder's holdings row beside the pointer.
         reg.delegate_state_family(&families.paid_holdings, "market")?;
         reg.delegate_state_family(&families.paid_terms, "market")?;
@@ -807,6 +809,13 @@ impl RegisteredHouseWriter {
         let facts = self.observed(ctx, observation)?;
         terms.matches_facts(facts)?;
         check_purchase(purchase, terms, facts)?;
+        // Doc 17h cut M8d fix round K8: a revoked buyer is refused before money is held.
+        super::super::registry_inspection::principal::refuse(
+            ctx,
+            txn,
+            &self.registration()?.families,
+            purchase.buyer,
+        )?;
         let commit = ctx.commit_token();
         let marker = output.marker();
         if output.operation() != commit
@@ -984,6 +993,8 @@ impl RegisteredHouseWriter {
                 before.operation,
             )?;
             term.matches_current(&licence)?;
+            // Doc 17h cut M8d D4: a principal the Registry revoked holds no new licence.
+            super::super::registry_inspection::principal::refuse(ctx, txn, f, licence.holder())?;
             txn.insert(&f.paid_licences, &licence_key, licence.clone())
                 .map_err(invalid)?;
             txn.insert(&f.paid_terms, &term_key, term.clone())

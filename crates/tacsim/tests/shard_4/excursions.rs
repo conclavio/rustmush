@@ -384,6 +384,12 @@ pub(crate) fn reboot_with_inspection(
                 commerce
                     .with_registry_inspection(policy.clone())
                     .expect("the inspection composes")
+                    // Doc 17h cut M8d D3: the fine, paid to the Registry's fixture account.
+                    .with_registry_fines(account)
+                    .expect("the fine composes")
+                    // Doc 17h cut M8d D4: the principal revocation, a 90-IC-day term.
+                    .with_registry_principal_revocation(90)
+                    .expect("the principal revocation composes")
             } else {
                 commerce
             }

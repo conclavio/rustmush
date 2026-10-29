@@ -127,6 +127,37 @@ pub(crate) const INSPECTION_OFF: &str = "Registry inspection is not configured h
 pub(crate) const INSPECT_REFUSED: &str = mush_core::action::SUBMISSION_REFUSED_LINE;
 /// M8a: a hull the programme does not know, or one with no unit.
 pub(crate) const NO_SUCH_HULL: &str = "No such hull.";
+/// Doc 17h cut M8d D3: `@registry/fine <inspection> <amount>` staged.
+pub(crate) const FINING: &str = "Fining the holder of hull #{hull} {amount}.";
+/// M8d D3: the fine is not composed here.
+pub(crate) const FINE_OFF: &str = "Registry fines are not configured here.";
+/// M8d D3: an inspection the hull's ring does not hold (to an operator).
+pub(crate) const NO_SUCH_INSPECTION: &str = "No such inspection.";
+/// M8d D3: the named inspection read no ungoverned core.
+pub(crate) const NOTHING_TO_FINE: &str = "That inspection found nothing to fine.";
+/// M8d D3: an amount outside 0.01cr to the configured cap.
+pub(crate) const FINE_RANGE: &str = "A fine is from 0.01cr to {amount}.";
+/// M8d D3: the inspection recorded no holder the Registry can fine (fix round K1).
+pub(crate) const NO_FINE_HOLDER: &str = "That hull has no holder this Registry can fine.";
+/// M8d D3: that inspection was already fined.
+pub(crate) const ALREADY_FINED: &str = "That inspection has already been fined.";
+/// Doc 17h cut M8d D4: `@registry/revoke principal=` staged.
+pub(crate) const REVOKING_PRINCIPAL: &str = "Revoking {who} for {days} IC days.";
+/// M8d fix round K2: the revoked principal's one notice (the lead's wording).
+pub(crate) const PRINCIPALS_BARRED: &str =
+    "The Registry has barred your mind licences until {until}.";
+/// M8d D4: the provider's receipt, rendered from the record it wrote.
+pub(crate) const PRINCIPAL_REVOKED: &str = "{who} holds no new licence until {until}.";
+/// M8d D4: `<who>` names no live character and no organisation the operator may see.
+pub(crate) const NO_SUCH_PRINCIPAL: &str = "No such character or organisation.";
+/// M8d D4: `<who>` names both a character and an organisation.
+pub(crate) const AMBIGUOUS_PRINCIPAL: &str =
+    "That name is a character and an organisation; name the character as #<n>.";
+/// M8d D4: the named inspection read no ungoverned core.
+pub(crate) const NOTHING_TO_REVOKE: &str = "That inspection found nothing to revoke for.";
+/// M8d D3: the provider's receipt, rendered from the fine it recorded.
+pub(crate) const FINED: &str =
+    "Fined the holder of hull #{hull} {amount}. The fine is levied when the Registry next settles.";
 
 /// 17g C2d: the brief's words for the named buyer's accepts, which list and
 /// select the live offers naming the actor (`trade::offer_lines`,
