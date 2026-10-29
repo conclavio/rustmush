@@ -180,7 +180,8 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Every witness asks every question; only the built channels answer
-        run: cargo test -p tacsim --test shard_4 m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
+        run: |
+          cargo test -p tacsim --test shard_4 m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
   test:
     runs-on: ubuntu-latest
     # 2026-10-20: the job had no timeout of its own, so GitHub's 360-minute
