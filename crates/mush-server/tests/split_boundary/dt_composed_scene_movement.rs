@@ -588,6 +588,10 @@ async fn boot_refuses_missing_or_changed_original_events() -> TestResult {
             })
             .await?;
         drop(rig);
+        if mode == 1 {
+            super::dt_locomotion::assert_native_refusal_before_any_boot_mutation(&store, "scenes")
+                .await?;
+        }
         assert!(
             fixture(&store, ObjKind::Player).await.is_err(),
             "boot accepted corruption mode {mode}"

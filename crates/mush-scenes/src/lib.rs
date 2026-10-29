@@ -188,6 +188,27 @@ impl ScenesModule {
             .transpose()?;
         Ok((atomic, composed))
     }
+
+    fn inspect_movement_history(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        data: &ModuleBootData,
+    ) -> Result<mush_core::LedgerHistory, ModError> {
+        if (self.atomic_movement.is_some() || self.composed_movement.is_some())
+            && !data.omitted.is_empty()
+        {
+            return Err(ModError::RetryFullFetch {
+                module: NS.into(),
+                reason: "Scenes movement audit requires the complete transcript history".into(),
+            });
+        }
+        let history = mush_core::inspect_ledger(&data.ledger, None);
+        let (atomic, composed) = self.movement_readers()?;
+        if atomic.is_some() || composed.is_some() {
+            movement_audit::audit_boot(ctx, data, &history, atomic, composed)?;
+        }
+        Ok(history)
+    }
 }
 
 impl Default for ScenesModule {
@@ -295,26 +316,25 @@ impl GameModule for ScenesModule {
             .map_err(|e| ModError::msg(format!("Scenes typed movement proof audit failed: {e}")))
     }
 
+    fn audit_boot_history(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        data: &ModuleBootData,
+    ) -> Result<(), ModError> {
+        if self.atomic_movement.is_none() && self.composed_movement.is_none() {
+            return Ok(());
+        }
+        self.inspect_movement_history(ctx, data).map(|_| ())
+    }
+
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
-        if (self.atomic_movement.is_some() || self.composed_movement.is_some())
-            && !data.omitted.is_empty()
-        {
-            return Err(ModError::RetryFullFetch {
-                module: NS.into(),
-                reason: "Scenes movement audit requires the complete transcript history".into(),
-            });
-        }
-        // J1: share one structural inspection across the movement receipt
-        // audit and live-tail restoration; it retains indices and open tails.
-        let history = mush_core::inspect_ledger(&data.ledger, None);
-        let (atomic, composed) = self.movement_readers()?;
-        if atomic.is_some() || composed.is_some() {
-            movement_audit::audit_boot(ctx, &data, &history, atomic, composed)?;
-        }
+        // This load pass shares its structural inspection with restoration;
+        // the earlier global read-only phase already checked all owners.
+        let history = self.inspect_movement_history(ctx, &data)?;
         load_boot(ctx, data, &history)
     }
 }

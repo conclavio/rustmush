@@ -3277,6 +3277,19 @@ pub trait GameModule: Send {
         Ok(())
     }
 
+    /// Read-only join of retained typed receipts to this owner's original
+    /// native boot documents, before migrations or any module load callback.
+    /// The driver normalizes ledger documents first. No loaded peer state or
+    /// callback reconstruction may substitute for original historical evidence.
+    /// A narrowed history may request one `RetryFullFetch` before mutations.
+    fn audit_boot_history(
+        &self,
+        _ctx: &ModuleCtx<'_>,
+        _data: &ModuleBootData,
+    ) -> Result<(), ModError> {
+        Ok(())
+    }
+
     /// Called once after the world is loaded, with this module's persisted
     /// data (loaded by the driver out-of-band via the store read API).
     /// Default: nothing.

@@ -360,6 +360,33 @@ impl AtlasModule {
             })
             .collect()
     }
+
+    fn inspect_movement_history(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        data: &ModuleBootData,
+        travel: &crate::travel::TravelState,
+    ) -> Result<Option<mush_core::LedgerHistory>, ModError> {
+        if self.composed_movement.is_none() && self.window_movement.is_none() {
+            return if data.ledger.is_empty() {
+                Ok(None)
+            } else {
+                Err(ModError::msg(
+                    "Atlas knowledge history requires its composed owner",
+                ))
+            };
+        }
+        if !data.omitted.is_empty() {
+            return Err(ModError::RetryFullFetch {
+                module: NS.into(),
+                reason: "Atlas movement requires complete knowledge history".into(),
+            });
+        }
+        let owner = crate::movement_history::MovementHistory::default();
+        let history = owner.ledger.inspect(&data.ledger);
+        crate::movement_audit::audit_boot(ctx, data, &history, travel, &self.movement_readers()?)?;
+        Ok(Some(history))
+    }
 }
 
 impl Default for AtlasModule {
@@ -540,6 +567,17 @@ impl GameModule for AtlasModule {
             .map_err(|e| ModError::msg(format!("Atlas typed movement proof audit failed: {e}")))
     }
 
+    fn audit_boot_history(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        data: &ModuleBootData,
+    ) -> Result<(), ModError> {
+        let Loaded { records, .. } = parse(data, ctx.w);
+        let (travel, _) = crate::travel::hydrate(&data.kv, ctx.w, &records);
+        self.inspect_movement_history(ctx, data, &travel)
+            .map(|_| ())
+    }
+
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
@@ -551,24 +589,11 @@ impl GameModule for AtlasModule {
             enabled: self.composed_movement.is_some() || self.window_movement.is_some(),
             ..Default::default()
         };
-        if movement_history.enabled {
-            if !data.omitted.is_empty() {
-                return Err(ModError::RetryFullFetch {
-                    module: NS.into(),
-                    reason: "Atlas movement requires complete knowledge history".into(),
-                });
-            }
-            let readers = self.movement_readers()?;
-            let history = movement_history.ledger.inspect(&data.ledger);
-            crate::movement_audit::audit_boot(ctx, &data, &history, &travel, &readers)?;
+        if let Some(history) = self.inspect_movement_history(ctx, &data, &travel)? {
             movement_history
                 .ledger
                 .restore_from_history(&history)
                 .map_err(|e| ModError::msg(e.to_string()))?;
-        } else if !data.ledger.is_empty() {
-            return Err(ModError::msg(
-                "Atlas knowledge history requires its composed owner",
-            ));
         }
         let (world_theme, dropped_theme) = hydrate_world_theme(&data.kv);
         let (hydration, dropped_hydration) = crate::hydrate::hydrate(&data.kv);
