@@ -139,6 +139,13 @@ impl WindowMovementEvidence {
     pub fn final_placement(&self) -> Option<&PlacementRecord> {
         self.data.native.after.as_ref()
     }
+    pub fn target(&self) -> Option<WindowTarget> {
+        self.data
+            .native
+            .target
+            .as_ref()
+            .map(|target| WindowTarget::at(target.domain, target.x_cm, target.y_cm, target.z_cm))
+    }
 }
 
 /// Check against the digest retained by a genuine owner receipt. A caller's
