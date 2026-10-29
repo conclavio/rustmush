@@ -521,6 +521,17 @@ cannot first move an unrelated object through Sim's projection repair. This is
 a Sim-local typed-history barrier; the cross-owner recovery gate and native
 window journal/receipt joins below remain required.
 
+The server now hydrates and audits the reserved typed partition before module
+schema migrations or module load callbacks. Core dispatches a read-only,
+owner-stamped typed-history audit to every actual registered module; Sim uses
+its existing receipt/crossing checks. The ordinary boot fetch must match the
+same immutable partition after migrations, so a reserved-tree rewrite or
+manifest omission refuses before loading. Direct `Engine::modules_loaded`
+also audits all modules before the first load callback. Per-module drivers must
+invoke the audit explicitly, as the server does. Native owner journals and
+foreign observer recovery still require their own pre-mutation validators;
+this typed-only phase does not certify those unfinished joins.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
