@@ -39,3 +39,22 @@ fn focus_fingerprints_bound_the_same_selected_objects() {
         Err(OwnerReadError::Limit)
     );
 }
+
+#[test]
+fn ic_fingerprints_require_loaded_owner_state_and_bound_selected_objects() {
+    let roots = BTreeSet::from([ObjId(1)]);
+    assert_eq!(
+        ic_fingerprint(&crate::ic_exclusion::IcExclusions::default(), &roots),
+        Err(OwnerReadError::Integrity)
+    );
+    let test =
+        mush_testkit::TestWorld::with_modules(vec![Box::new(crate::SimulationModule::new())]);
+    let actual = test
+        .world()
+        .module_state::<crate::ic_exclusion::IcExclusions>()
+        .expect("registered and loaded owner");
+    let mut roots: BTreeSet<_> = (0..512).map(ObjId).collect();
+    assert!(ic_fingerprint(actual, &roots).is_ok());
+    roots.insert(ObjId(512));
+    assert_eq!(ic_fingerprint(actual, &roots), Err(OwnerReadError::Limit));
+}

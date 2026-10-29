@@ -239,6 +239,34 @@ impl IcExclusions {
         }
         Ok(())
     }
+    /// Current movement exclusion preimage, without a custody capability or
+    /// copying historical records. The actual owner generation also catches a
+    /// custody open/close cycle while a movement is held by the writer.
+    pub(crate) fn movement_preimage(
+        &self,
+        roots: &BTreeSet<ObjId>,
+    ) -> Result<(u64, Vec<(ObjId, bool)>), ParticipantError> {
+        self.ready()?;
+        if roots.is_empty()
+            || roots.len() > mush_core::physical_transition::MAX_PHYSICAL_READ_DEPENDENCIES
+        {
+            return Err(error("movement exclusion scope exceeds bounds"));
+        }
+        let mut rows = Vec::with_capacity(roots.len());
+        for root in roots {
+            let identity = self.identity(*root);
+            if self.active.contains_key(root) != identity.is_some() {
+                return Err(error("movement exclusion index differs"));
+            }
+            rows.push((*root, identity.is_some()));
+        }
+        Ok((self.generation, rows))
+    }
+    fn identity(&self, unit: ObjId) -> Option<&IcIdentity> {
+        self.records
+            .get(self.active.get(&unit)?)
+            .map(|record| &record.open.identity)
+    }
     /// Read-only historical identity for the mandatory cross-owner boot audit.
     /// This is not a custody capability or a current permission.
     pub fn inventory(&self) -> Result<Vec<IcExclusionView<'_>>, ParticipantError> {
@@ -273,11 +301,7 @@ impl IcExclusionView<'_> {
 }
 #[must_use]
 pub fn identity_of(world: &World, unit: ObjId) -> Option<&IcIdentity> {
-    let state = world.module_state::<IcExclusions>()?;
-    state
-        .records
-        .get(state.active.get(&unit)?)
-        .map(|r| &r.open.identity)
+    world.module_state::<IcExclusions>()?.identity(unit)
 }
 /// Host-authored immutable base selection, not a player-supplied admission
 /// parameter. Its exact descriptor must be registered by Tacsim, and its live

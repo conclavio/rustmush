@@ -428,8 +428,16 @@ focus activity remains valid. This is an exclusion preimage, not a control
 lease, grant or proxy-seat capability. Both handles share immutable heap storage
 in providers; neither legacy slot is copied or written by the read services.
 
+The same preparations retain the actual Sim IC exclusion slot's loaded state,
+owner generation and selected identity-presence predicates. The selected lookup
+is shared with the existing exclusion helper; an inconsistent active index
+refuses. Retaining the owner's existing global generation conservatively refuses
+any intervening custody update, including an open/close cycle. This reads at most
+512 ids and does not copy historical custody records or construct a seal, Open,
+Close or four-owner admission capability.
+
 This adds no owner image, callback coverage or authority mirror. The native
-window participant still needs custody read services and the complete
+window participant still needs the separate Tactics custody read and the complete
 placement/topology fences before it can publish a window transition.
 
 ## Remaining completion protocol
