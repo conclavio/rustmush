@@ -18,6 +18,83 @@ use super::dt_unit_authority::{persist_legacy, stage, submit};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn actual_tactics_marker_refuses_structural_publication_even_without_sim_projection()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    ordinary(
+        &mut rig.world,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", rig.unit.0),
+    )?;
+    let snapshot = rig
+        .world
+        .world()
+        .module_state::<mush_tactics::UnitStore>()
+        .ok_or("Tactics")?
+        .units
+        .get(&rig.unit)
+        .cloned()
+        .ok_or("actual unit")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let submission = submit(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/space #{}=moving:#{}", rig.left.0, rig.carrier.0),
+    )?;
+    stage(&mut rig.world, &store, &submission).await?;
+    let revision = rig.world.engine().action_state().revision();
+    let records = rig.world.engine().action_state().len();
+    let before = state(&rig.world)?
+        .spaces
+        .get(&rig.left)
+        .ok_or("space")?
+        .clone();
+    let (bundle, install) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged")?
+        .into_parts();
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    // Test-only custody drift in the real Tactics owner slot. No corresponding
+    // Sim marker, spatial row, Core row or typed revision is changed.
+    rig.world
+        .world_mut()
+        .module_state_mut::<mush_tactics::UnitStore>()
+        .ok_or("Tactics")?
+        .deployed
+        .insert(
+            rig.unit,
+            mush_tactics::custody::DeployedMarker {
+                mark: mush_sim::DeployedMark::new(119, "arena"),
+                domain: None,
+                pose: None,
+                snapshot,
+            },
+        );
+    assert!(!mush_sim::deployed::is_deployed(
+        rig.world.world(),
+        rig.unit
+    ));
+    assert!(
+        rig.world
+            .engine_mut()
+            .install_composed_action(install)
+            .is_err()
+    );
+    assert_eq!(state(&rig.world)?.spaces.get(&rig.left), Some(&before));
+    assert_eq!(rig.world.engine().action_state().revision(), revision);
+    assert_eq!(rig.world.engine().action_state().len(), records);
+    assert!(rig.world.engine().action_state().reservation_lost());
+    Ok(())
+}
+
 // A thin test ingress adapter calls the production typed helper. It supplies no
 // authority, object images, participant patches or replacement planner.
 struct MovementIngress(Arc<AtomicBool>, Arc<AtomicBool>);

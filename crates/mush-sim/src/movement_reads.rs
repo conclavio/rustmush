@@ -28,6 +28,7 @@ struct ReadHandles {
     journeys: OwnerReadHandle<JourneyReader>,
     focus: OwnerReadHandle<FocusReader>,
     ic_exclusion: OwnerReadHandle<IcExclusionReader>,
+    tactics: Option<Arc<dyn crate::movement_custody::CustodyRead>>,
 }
 #[derive(Clone)]
 pub(super) struct MovementReads(Arc<ReadHandles>);
@@ -40,7 +41,10 @@ pub(super) struct MovementReadRequest {
 fn bad(error: impl std::fmt::Display) -> ModError {
     ModError::msg(error.to_string())
 }
-pub(super) fn register(reg: &mut Registrar<'_>) -> Result<MovementReads, ModError> {
+pub(super) fn register(
+    reg: &mut Registrar<'_>,
+    tactics: Option<Arc<dyn crate::movement_custody::CustodyRead>>,
+) -> Result<MovementReads, ModError> {
     let descriptor = DefinitionDescriptor::new(
         DefinitionKind::new("owner_read").map_err(bad)?,
         DefinitionId::new("movement_journey_preimage").map_err(bad)?,
@@ -120,6 +124,7 @@ pub(super) fn register(reg: &mut Registrar<'_>) -> Result<MovementReads, ModErro
         journeys,
         focus,
         ic_exclusion,
+        tactics,
     })))
 }
 
@@ -271,9 +276,12 @@ pub(super) fn retain(
         .map_err(|_| unavailable())?;
     ctx.read_owner_preimage(txn, &reads.0.focus, request.clone())
         .map_err(|_| unavailable())?;
-    ctx.read_owner_preimage(txn, &reads.0.ic_exclusion, request)
-        .map(|_| ())
-        .map_err(|_| unavailable())
+    ctx.read_owner_preimage(txn, &reads.0.ic_exclusion, request.clone())
+        .map_err(|_| unavailable())?;
+    if let Some(tactics) = &reads.0.tactics {
+        tactics.retain(ctx, txn, &request.roots)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

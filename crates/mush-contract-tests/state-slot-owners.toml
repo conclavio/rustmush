@@ -49,6 +49,20 @@
 [[site]]
 path = "crates/mush-server/tests/split_boundary/dt_composed_scene_movement.rs"
 accessor = "World::module_state_mut"
+slot = "UnitStore"
+owner = "tactics"
+reason = "Test-only post-ACK fault injection puts a marker in the actual Tactics slot while leaving Sim's projection and every spatial/Core row fixed. All three genuine locomotion profiles must refuse through the retained Tactics read; the fixture grants no deployment or movement authority."
+
+[[site]]
+path = "crates/mush-server/tests/split_boundary/dt_physical_transitions.rs"
+accessor = "World::module_state_mut"
+slot = "UnitStore"
+owner = "tactics"
+reason = "Test-only post-ACK custody drift proves a real structural reanchor retains Tactics' own marker preimage independently of Sim's projection. A unit is created by the real Tactics command before preparing, acknowledging and refusing the move; no substitute owner or participant is used."
+
+[[site]]
+path = "crates/mush-server/tests/split_boundary/dt_composed_scene_movement.rs"
+accessor = "World::module_state_mut"
 slot = "JourneyBook"
 owner = "sim"
 reason = "Test-only fault injection changes the actual registered Sim journey slot after Store ACK while leaving its incarnation and all spatial/object rows fixed. All three genuine locomotion profiles must refuse publication through the retained owner read, including Scenes and typed images. This grants no journey or personnel authority."
