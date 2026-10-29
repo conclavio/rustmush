@@ -516,6 +516,21 @@ M8d's seizure (the removal order, seize and forfeit) is split to a cut **M8d2** 
 It needs one act spanning four owners: the economy, the industry refit, tactics and the Registry.
 The economy cannot read the Registry's inspection records.
 
+**M8d review rulings (the lead's, 2026-10-28):**
+- **The fine follows the inspection.** `InspectionRecord` records the hull's holder when the
+  inspection is written. The fine debits that holder, so a title move cannot dodge it.
+- **Only that holder can be revoked.**
+- **Held terms keep themselves alive.** Renewal and attestation of an EXISTING held term pass the
+  write bar; the use bar and the move bar still hold.
+- **Filing is a licence write**, so it is barred.
+- **`minds.unwarranted` is Registry-scoped, not public** (D-UM-42). A public fact keyed by hull
+  would let anyone probe whether a hull carries an ungoverned core. The public signal is the canon
+  line, which names nobody, and the Red Dies clock. `minds.seized` stays public, because a seizure is
+  a public act.
+- **Two new player lines** are the lead's wording and await the owner's approval:
+  - the revoked principal's notice, "The Registry has barred your mind licences until <IC date>.";
+  - the fine's receipt, "The fine is levied when the Registry next settles."
+
 **M8e re-scoped by the owner, 2026-10-28 (option C):** "M8e: take option C, move the claim
 Open/Close and the seat to S.4b with the custody design". The M8e builder found that a four-owner
 IC claim cannot sit on a surface excursion, for three reasons:
