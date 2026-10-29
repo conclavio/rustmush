@@ -26,6 +26,7 @@ struct Cell<const N: u8>(u64);
 #[derive(Clone)]
 struct Control {
     empty: bool,
+    owner_version: u32,
     projection: Option<ObjId>,
     refuse: Arc<AtomicU8>,
     bind_fail: Arc<AtomicU8>,
@@ -36,6 +37,7 @@ impl Default for Control {
     fn default() -> Self {
         Self {
             empty: false,
+            owner_version: 1,
             projection: None,
             refuse: Arc::new(AtomicU8::new(255)),
             bind_fail: Arc::new(AtomicU8::new(255)),
@@ -279,10 +281,22 @@ fn ordinary_records(
     }
 }
 fn participant<const N: u8>() -> DefinitionRef {
+    participant_version::<N>(1)
+}
+fn participant_descriptor<const N: u8>(version: u32) -> DefinitionDescriptor {
+    DefinitionDescriptor::new(
+        DefinitionKind::new("owner_participant").unwrap(),
+        DefinitionId::new(format!("part{N}")).unwrap(),
+        version,
+        json!({}),
+    )
+    .unwrap()
+}
+fn participant_version<const N: u8>(version: u32) -> DefinitionRef {
     DefinitionRegistryBuilder::new()
         .register(
             OwnerId::new("observer").unwrap(),
-            descriptor("owner_participant", &format!("part{N}")),
+            participant_descriptor::<N>(version),
         )
         .unwrap()
 }
@@ -299,7 +313,17 @@ fn register_observer<const N: u8>(
     control: &Control,
 ) -> Result<(), ModError> {
     reg.state(Cell::<N>(0));
-    let part = reg.definition(descriptor("owner_participant", &format!("part{N}")))?;
+    if control.owner_version == 2 {
+        let old = reg.definition(participant_descriptor::<N>(1))?;
+        reg.definition(crate::locomotion::completion::binding_descriptor(
+            &format!("binding{N}"),
+            1,
+            selected_action(control),
+            old,
+            vec![observer_ref::<N>()],
+        )?)?;
+    }
+    let part = reg.definition(participant_descriptor::<N>(control.owner_version).as_current())?;
     reg.owner_participant(
         part.clone(),
         BTreeSet::from([selected_action(control)]),
@@ -315,7 +339,7 @@ fn register_observer<const N: u8>(
     )?;
     reg.register_moved_completion::<Observer<N>>(
         &format!("binding{N}"),
-        1,
+        control.owner_version,
         selected_action(control),
         part,
         vec![observer],
@@ -343,6 +367,7 @@ impl GameModule for ObserverModule {
 #[derive(Clone)]
 struct Handles {
     action: DefinitionRef,
+    service: ComposedLocomotion,
     reader: ComposedLocomotionReader,
     owner_reader: ComposedOwnerReader,
 }
@@ -398,15 +423,18 @@ impl GameModule for SimModule {
             ComposedLocomotionBuilder::new::<Primary>(reg, action.clone(), primary)?
         };
         macro_rules! owners { ($($n:literal),*) => { $(if self.count > $n {
-            builder = builder.owner::<Observer<$n>>(reg, participant::<$n>(), vec![observer_ref::<$n>()])?;
+            builder = builder.owner::<Observer<$n>>(reg, participant_version::<$n>(self.control.owner_version), vec![observer_ref::<$n>()])?;
         })* }; }
         owners!(0, 1, 2, 3, 4, 5, 6);
         let service = builder.finish(reg)?;
         self.handles
             .set(Handles {
                 action: action.clone(),
+                service: service.clone(),
                 reader: service.reader(),
-                owner_reader: service.owner_reader(&participant::<0>()).map_err(bad)?,
+                owner_reader: service
+                    .owner_reader(&participant_version::<0>(self.control.owner_version))
+                    .map_err(bad)?,
             })
             .map_err(|_| bad("handles reused"))?;
         reg.action_provider(
@@ -466,6 +494,9 @@ impl Rig {
         Self::configured(count, empty, None)
     }
     fn configured(count: u8, empty: bool, window: Option<bool>) -> Self {
+        Self::versioned(count, empty, window, 1)
+    }
+    fn versioned(count: u8, empty: bool, window: Option<bool>, owner_version: u32) -> Self {
         let mut world = World::new_minimal();
         world.set_now(100);
         let source = world.create(ObjKind::Room, "source", GOD, None).unwrap();
@@ -492,6 +523,7 @@ impl Rig {
         let control = Control {
             empty,
             projection,
+            owner_version,
             ..Control::default()
         };
         let handles = Arc::new(OnceLock::new());
@@ -1131,4 +1163,156 @@ fn owner_audit_reads_are_scoped_and_use_the_engine_stamp_instead_of_public_conte
             7
         );
     }
+}
+
+fn owner_context<T>(rig: &Rig, owner: &str, read: impl FnOnce(&crate::ModuleCtx<'_>) -> T) -> T {
+    let mut world = World::new_minimal();
+    let mut out = Outbox::default();
+    let ctx = crate::Ctx {
+        w: &mut world,
+        actor: GOD,
+        switches: Default::default(),
+        args: Default::default(),
+        out: &mut out,
+        reg: &rig.engine.registry,
+        module: Some("sim".into()),
+        typed_state: crate::ModuleActionState::for_module(
+            crate::TypedStateLens::Live(rig.engine.action_state()),
+            Some(owner),
+        ),
+    };
+    read(&ctx)
+}
+
+#[test]
+fn an_actual_current_owner_can_read_an_explicit_original_retained_profile() {
+    // Generic framework contract only. Cell adapters provide no physical proof.
+    let mut original = Rig::new(1, false);
+    let prepared = original.prepare().unwrap();
+    original.stage(prepared);
+    let (bundle, _) = original
+        .engine
+        .take_staged_action()
+        .unwrap()
+        .unwrap()
+        .into_parts();
+    let records: Vec<_> = bundle
+        .writes()
+        .iter()
+        .filter_map(|write| match write {
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } if namespace.as_str() == "sim"
+                && key
+                    .as_str()
+                    .starts_with("action-state/v1/composed_locomotion/") =>
+            {
+                Some(crate::ActionStateBootRecord::new(
+                    "sim",
+                    key.as_str(),
+                    value.clone(),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(records.len(), 1);
+    let mut current = Rig::versioned(1, false, None, 2);
+    current.engine.hydrate_action_state(records).unwrap();
+    let active = participant_version::<0>(2);
+    let retained = participant::<0>();
+    let definitions = current.engine.registry.definitions().unwrap();
+    assert_eq!(definitions.current(active.key()), Some(&active));
+    assert!(!definitions.get_exact(&retained).unwrap().is_current());
+    let reader = current
+        .handles
+        .service
+        .owner_reader_retaining(&active, std::slice::from_ref(&retained))
+        .unwrap();
+    owner_context(&current, "observer", |ctx| {
+        assert!(
+            current
+                .handles
+                .owner_reader
+                .read_receipt(ctx, &token())
+                .is_err()
+        );
+        let receipt = reader.read_receipt(ctx, &token()).unwrap().unwrap();
+        assert_eq!(receipt.effect().participant(), &retained);
+        assert_eq!(receipt.effect().proof(), &json!({"original":0}));
+        assert_eq!(receipt.actor(), original.actor);
+        let page = reader.scan_receipts(ctx, None, 128).unwrap();
+        assert_eq!(page.entries().len(), 1);
+        assert_eq!(page.entries()[0].effect().participant(), &retained);
+    });
+    owner_context(&current, "sim", |ctx| {
+        assert!(reader.read_receipt(ctx, &token()).is_err())
+    });
+    let unregistered = DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new("observer").unwrap(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("owner_participant").unwrap(),
+                DefinitionId::new("part0").unwrap(),
+                1,
+                json!({"unregistered":true}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let wrong = current
+        .handles
+        .service
+        .owner_reader_retaining(&active, &[unregistered])
+        .unwrap();
+    owner_context(&current, "observer", |ctx| {
+        assert!(wrong.read_receipt(ctx, &token()).is_err())
+    });
+}
+
+#[test]
+fn retention_cannot_replace_an_actual_owner_or_read_a_foreign_key_future_or_duplicate_profile() {
+    let mut current = Rig::versioned(1, false, None, 2);
+    let active = participant_version::<0>(2);
+    let retained = participant::<0>();
+    let service = &current.handles.service;
+    assert!(service.owner_reader_retaining(&retained, &[]).is_err());
+    let foreign = DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new("foreign").unwrap(),
+            participant_descriptor::<0>(1),
+        )
+        .unwrap();
+    for invalid in [
+        vec![foreign],
+        vec![participant::<1>()],
+        vec![active.clone()],
+        vec![participant_version::<0>(3)],
+        vec![retained.clone(), retained.clone()],
+        vec![retained.clone(); MAX_COMPOSED_OWNERS + 1],
+    ] {
+        assert!(service.owner_reader_retaining(&active, &invalid).is_err());
+    }
+    let reader = service
+        .owner_reader_retaining(&active, &[retained])
+        .unwrap();
+    let prepared = current.prepare().unwrap();
+    current.stage(prepared);
+    let (_, installation) = current
+        .engine
+        .take_staged_action()
+        .unwrap()
+        .unwrap()
+        .into_parts();
+    current
+        .engine
+        .install_composed_action(installation)
+        .unwrap();
+    owner_context(&current, "observer", |ctx| {
+        let receipt = reader.read_receipt(ctx, &token()).unwrap().unwrap();
+        assert_eq!(receipt.effect().participant(), &active);
+        assert_eq!(receipt.effect().proof(), &json!({"original":0}));
+    });
 }

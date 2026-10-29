@@ -654,6 +654,15 @@ capability. Tests compare a two-leg loop with the actual registered legacy
 observer. The ordered native adapter and original-history join remain required
 before the registered single-leg window profile can widen its support.
 
+An actual composition owner can now retain an explicit bounded list of older
+versions of its same participant key in its scoped receipt reader. The current
+typed owner must still be registered in the composition. Foreign keys, current
+or future versions, duplicates and excessive profiles refuse; each historical
+receipt still validates its original manifest and exact retained definitions.
+The typed owner stamp continues to govern access, and retaining a reader grants
+no execution to an old adapter. This permits a versioned ordered transcript
+adapter to keep the earlier single-leg receipts readable.
+
 V2 registers no offer or live command route. Its manifest remains partial:
 the bounded original journal refuses a 257th commit until a real checkpoint or
 archival protocol is implemented, rather than accepting an unrecoverable tail.
