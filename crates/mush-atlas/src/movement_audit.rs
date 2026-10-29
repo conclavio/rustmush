@@ -89,6 +89,11 @@ impl Audit {
             let projection = receipt
                 .window_projection()
                 .ok_or_else(|| bad("Atlas window proposal missing"))?;
+            if projection.projected_room() != receipt.destination() {
+                return Err(bad(
+                    "single-leg Atlas discovery proof cannot complete a second room leg",
+                ));
+            }
             let proof: crate::movement_window_participant::Proof =
                 serde_json::from_value(value.clone()).map_err(bad)?;
             if proof.format != 1 || serde_json::to_value(&proof).map_err(bad)? != *value {

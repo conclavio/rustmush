@@ -275,6 +275,106 @@ pub(super) async fn entering(store: &InMemoryStore, kind: ObjKind) -> TestResult
     );
     Ok(rig)
 }
+
+pub(super) async fn projected_loop(store: &InMemoryStore, kind: ObjKind) -> TestResult<Rig> {
+    use mush_atlas::record::SurfaceRef;
+    let rig = entering(store, kind).await?;
+    let atlas = rig
+        .world
+        .world()
+        .module_state::<mush_atlas::AtlasState>()
+        .ok_or("Atlas")?;
+    let plan = mush_atlas::movement_window::plan(
+        rig.world.world(),
+        rig.actor,
+        Some(rig.source),
+        rig.destination,
+        100,
+    )?;
+    let id = plan.projection_target()?.1.ok_or("target")?.domain();
+    let mut entry = atlas.windows.open.get(&id).cloned().ok_or("window")?;
+    let mut domain = sim(&rig)?
+        .domains
+        .get(&mush_sim::DomainId(id))
+        .cloned()
+        .ok_or("domain")?;
+    let mut geometry = atlas
+        .records
+        .roomgeo
+        .get(&rig.destination)
+        .cloned()
+        .ok_or("room geometry")?;
+    let structure = mush_atlas::RecordKey::new(
+        mush_core::CanonicalId::new("dt_window")?,
+        mush_core::CanonicalId::new("structure")?,
+    );
+    let floor = SurfaceRef::Floor {
+        structure: structure.clone(),
+        index: 1,
+    };
+    geometry.surface = floor.clone();
+    entry.frame.surfaces = vec![SurfaceRef::Ground, floor.clone()];
+    entry.rooms.insert(rig.source);
+    let composite = entry.composite.as_mut().ok_or("composite")?;
+    let mut ground = composite.surfaces.first().cloned().ok_or("ground")?;
+    ground.rooms = vec![rig.source];
+    let mut upstairs = ground.clone();
+    upstairs.surface = floor;
+    upstairs.rooms = vec![rig.destination];
+    composite.frame = entry.frame.clone();
+    composite.surfaces = vec![ground, upstairs];
+    domain.window.as_mut().ok_or("window record")?.surfaces = vec![
+        mush_sim::WindowSurface::Ground,
+        mush_sim::WindowSurface::Floor {
+            structure: structure.to_string().into(),
+            index: 1,
+        },
+    ];
+    // The real selector picks the destination's floor, then the actual
+    // nearest-height resolver picks the first equally high ground surface.
+    // This is authored geometry, never a substitute projection callback.
+    store
+        .write(WriteBatch {
+            serial: 992,
+            durable: true,
+            module_ops: vec![
+                ModuleOp {
+                    ns: "atlas".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: entry.key(),
+                        value: serde_json::to_value(entry)?,
+                    },
+                },
+                ModuleOp {
+                    ns: "atlas".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: format!("roomgeo:{}", rig.destination.0).into(),
+                        value: serde_json::to_value(geometry)?,
+                    },
+                },
+                ModuleOp {
+                    ns: "sim".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: format!("domain:{id}").into(),
+                        value: serde_json::to_value(domain)?,
+                    },
+                },
+            ],
+            ..Default::default()
+        })
+        .await?;
+    drop(rig);
+    let rig = base_fixture(store, kind).await?;
+    let plan = mush_atlas::movement_window::plan(
+        rig.world.world(),
+        rig.actor,
+        Some(rig.source),
+        rig.destination,
+        100,
+    )?;
+    assert_eq!(plan.projection_target()?.0, rig.source);
+    Ok(rig)
+}
 pub(super) fn record(bundle: &AuthoritativeBundle) -> TestResult<WindowMovementRecord> {
     let value = bundle
         .writes()

@@ -95,6 +95,11 @@ impl OwnerParticipant for AtlasWindowMovementParticipant {
         intent: MovementIntent,
     ) -> Result<OwnerPreparation<MovementDraft, Patch>, ParticipantError> {
         let projection = intent.window_projection().ok_or_else(refused)?;
+        // This version captures only discovery at the admitted room. A second
+        // Core leg needs its own actual discovery capture and original history.
+        if projection.projected_room() != intent.destination() {
+            return Err(refused());
+        }
         let plan = crate::movement_window::plan(
             ctx.world(),
             intent.actor(),

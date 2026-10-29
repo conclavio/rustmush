@@ -44,6 +44,7 @@ pub(crate) fn register(
                 scene_transition::scenes_participant_descriptor().map_err(|e| e.to_string())?,
                 crate::movement_composed::participant_descriptor().map_err(|e| e.to_string())?,
                 crate::movement_window::participant_descriptor().map_err(|e| e.to_string())?,
+                crate::movement_window::participant_descriptor_v1().map_err(|e| e.to_string())?,
             ];
             let descriptor = descriptors
                 .into_iter()

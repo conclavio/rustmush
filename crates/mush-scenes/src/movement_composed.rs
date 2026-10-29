@@ -88,7 +88,7 @@ pub(crate) fn appends(
     let window = DefinitionRegistryBuilder::new()
         .register(
             OwnerId::new(NS).map_err(bad)?,
-            crate::movement_window::participant_descriptor()?,
+            crate::movement_window::participant_descriptor_v1()?,
         )
         .map_err(bad)?;
     let known_profile = if receipt.effect().participant() == &expected {
