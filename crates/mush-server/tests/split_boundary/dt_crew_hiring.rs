@@ -109,6 +109,28 @@ fn text(world: &mut TestWorld, actor: ObjId, line: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+async fn commit_line(rig: &mut Rig, store: &InMemoryStore, actor: ObjId, line: &str) -> TestResult {
+    let request = submit(&mut rig.world, actor, line)?;
+    stage(&mut rig.world, store, &request)
+        .await
+        .map_err(|e| format!("{line}: {e}"))?;
+    let (bundle, installation) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged crew setup")?
+        .into_parts();
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    rig.world
+        .engine_mut()
+        .install_composed_action(installation)?;
+    Ok(())
+}
 #[tokio::test]
 async fn hiring_survives_lost_ack_and_restart_without_boarding_or_financial_writes() -> TestResult {
     let store = InMemoryStore::new();
@@ -254,6 +276,101 @@ async fn hiring_rejects_player_authored_consent_and_stale_displayed_terms() -> T
     assert!(
         stage(&mut rig.world, &store, &request).await.is_err(),
         "an NPC's port label does not turn another room into that port"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn preparation_resolves_hired_crew_from_current_hull_contents_and_keeps_contracts_private()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let employer = rig.employer;
+    let npc = rig.npc;
+    commit_line(&mut rig, &store, employer, &hire(npc, &terms()?)?).await?;
+    let carrier =
+        rig.world
+            .world_mut()
+            .create(ObjKind::Thing, "Crew carrier", GOD, Some(rig.room))?;
+    for (object, behavior) in [(carrier, "sim.participant"), (rig.away, "sim.interior")] {
+        rig.world.world_mut().attach_behavior(
+            object,
+            mush_core::BehaviorId::new(behavior)?,
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )?;
+    }
+    persist_legacy(&mut rig.world, &store).await?;
+    let author_space = format!("@spatial/space #{}=moving:#{}", rig.away.0, carrier.0);
+    commit_line(&mut rig, &store, GOD, &author_space).await?;
+    let ashore =
+        rig.world
+            .world_mut()
+            .create(ObjKind::Exit, "crew-test-ashore", GOD, Some(rig.away))?;
+    rig.world.world_mut().link_exit(ashore, Some(rig.room))?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let payload = serde_json::json!({"carrier":carrier.0,"slots":[
+        {"slot":1,"unit":null,"controller":{"kind":"npc","character":npc.0},"role":null,"mind":null},
+        {"slot":2,"unit":null,"controller":{"kind":"player","character":rig.competitor.0},"role":null,"mind":null}],
+        "npc_commander":null,"financial_terms":null});
+    commit_line(
+        &mut rig,
+        &store,
+        employer,
+        &format!("+sortie/draft {payload}"),
+    )
+    .await?;
+    let from_port = text(&mut rig.world, employer, "+sortie/plan 1");
+    assert!(
+        from_port.contains("Board the selected carrier"),
+        "{from_port}"
+    );
+    text(&mut rig.world, employer, "crew-test-board");
+    let waiting = text(&mut rig.world, employer, "+sortie/plan 1");
+    assert!(
+        waiting.contains("not currently aboard the selected carrier"),
+        "{waiting}"
+    );
+    text(&mut rig.world, npc, "crew-test-board");
+    let aboard = text(&mut rig.world, employer, "+sortie/plan 1");
+    assert!(aboard.contains("aboard now; contract recorded"), "{aboard}");
+    assert!(aboard.contains("duties: mining, recovery"));
+    assert!(!aboard.contains("last-port departure personnel proof"));
+    text(&mut rig.world, rig.competitor, "crew-test-board");
+    let invited = text(
+        &mut rig.world,
+        rig.competitor,
+        &format!("+sortie/plan {}:1", employer.0),
+    );
+    assert!(
+        !invited.contains("contract recorded"),
+        "invitations do not disclose another employer's contracts"
+    );
+    assert!(!invited.contains("duties: mining"));
+    let agreement = contract(&rig)?;
+    text(&mut rig.world, npc, "crew-test-ashore");
+    let left = text(&mut rig.world, employer, "+sortie/plan 1");
+    assert!(
+        left.contains("not currently aboard the selected carrier"),
+        "{left}"
+    );
+    text(&mut rig.world, npc, "crew-test-board");
+    let returned = text(&mut rig.world, employer, "+sortie/plan 1");
+    assert!(
+        returned.contains("aboard now; contract recorded"),
+        "{returned}"
+    );
+    assert_eq!(contract(&rig)?, agreement);
+    persist_legacy(&mut rig.world, &store).await?;
+    drop(rig);
+    let mut rig = fixture(&store).await?;
+    let recovered = text(&mut rig.world, employer, "+sortie/plan 1");
+    assert!(
+        recovered.contains("aboard now; contract recorded"),
+        "{recovered}"
     );
     Ok(())
 }

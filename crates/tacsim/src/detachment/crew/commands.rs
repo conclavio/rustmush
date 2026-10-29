@@ -25,7 +25,7 @@ fn line(ctx: &mut Ctx<'_>, text: impl Into<String>) {
     ctx.out
         .sys_to_actor(ctx.actor, "tacsim.detachment", text.into());
 }
-fn describe(terms: &HireTerms) -> String {
+pub(crate) fn describe(terms: &HireTerms) -> String {
     let scope = match terms.mission_scope {
         NpcMissionScope::SubordinateOperator => "unit operator",
         NpcMissionScope::DetachmentCommander => "detachment commander",

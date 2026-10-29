@@ -77,6 +77,13 @@ validation, not proof that a person, unit, licence or profile is available.
 
 The report checks current physical presence and your current unit permissions.
 It also identifies prerequisites that preparation cannot establish yet.
+While the organizer is aboard the selected carrier, the report resolves each
+NPC slot against current hull occupants and that organizer's crew contracts.
+It reports missing people, missing employment and commander scope that the
+agreement does not cover. Leaving the ship changes the next report immediately;
+returning through ordinary movement restores current presence. Invited players
+can inspect the plan without seeing the organizer's private employment terms.
+These observations do not reserve a unit or establish pilot capability or health.
 An accepted or ready declaration does not grant control, reserve equipment,
 hire crew or authorize a launch. Permissions and control are checked again
 when the later activation and launch steps are admitted.
