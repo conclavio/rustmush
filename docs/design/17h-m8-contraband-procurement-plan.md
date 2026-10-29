@@ -527,7 +527,8 @@ The economy cannot read the Registry's inspection records.
   would let anyone probe whether a hull carries an ungoverned core. The public signal is the canon
   line, which names nobody, and the Red Dies clock. `minds.seized` stays public, because a seizure is
   a public act.
-- **Two new player lines** are the lead's wording and await the owner's approval:
+- **Three new player lines** are the lead's wording. **The owner approved all three as written on
+  2026-10-28** ("approve the three new M8 player lines as written"):
   - the revoked principal's notice, "The Registry has barred your mind licences until <IC date>.";
   - the fine's receipt, "The fine is levied when the Registry next settles."
   - from M8e, the pending-transfer refusal: doc 17 D-UM-40's sentence with "sortie" replaced,
