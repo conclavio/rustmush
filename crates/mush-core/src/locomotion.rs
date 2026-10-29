@@ -109,6 +109,20 @@ impl std::fmt::Debug for LocomotionAdmission {
 }
 
 impl LocomotionAdmission {
+    /// Internal duplication preserves the genuine original binding and bounded
+    /// trace; callers still cannot clone or manufacture an admission.
+    pub(crate) fn preview_seed(&self) -> Self {
+        Self {
+            binding: Box::new(Binding {
+                invocation: self.binding.invocation.clone(),
+                action: self.binding.action.clone(),
+                commit: self.binding.commit,
+            }),
+            request: self.request.clone(),
+            route: self.route,
+            trace: self.trace.clone(),
+        }
+    }
     /// Read the bounded Core object state after the admitted move. This is a
     /// preview only; it grants no publication or observer-completion capability.
     pub fn preview(

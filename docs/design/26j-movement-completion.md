@@ -302,6 +302,36 @@ ledger publication, historical verifiers and the remaining owner joins still
 belong to a new versioned completion protocol. Existing v1 routing and window
 refusals are unchanged.
 
+## Versioned window composition kernel
+
+Core's separate version 2 of `sim_composed_locomotion` accepts the real Sim
+primary's immutable window proposal. Only Core can mint its captured-command
+intent and bounded read seed. The proposal names the admitted room's subsequent
+projection, passive metric target, and actual Atlas/Sim capture digests. It is
+bound into every observer intent, owner capture and proof; proposal data alone
+grants no geometry or placement authority.
+
+The kernel shares the bounded Core row builder for both steps. It retains the
+intermediate room's timestamp and the source contents ordering on a return,
+with at most four touched objects and the existing aggregate read/image bounds.
+Every actual owner and Core preimage must bind before publication. Late callback
+roster changes, stale projection rooms, owner refusal and a final bind failure
+publish no movement or earlier owner image. When both Core steps are no-ops,
+there are no object rows; an absent placement target remains explicit.
+
+The new `window_composed_locomotion` receipt family wraps its exact versioned
+movement record and proposal. Its strict canonical decoder verifies the full
+proposal binding for every owner; old v1 action definitions, digest domains and
+receipt bytes retain their meaning. Sim receives the full receipt while an
+observer receives only its own proof and the common immutable proposal.
+
+This slice supplies the Core kernel and real registered test composition only.
+Production Sim, Atlas and Scenes window adapters, original-history verifiers,
+participant attachment and durable map output still require subsequent slices.
+Window-arrival notifications remain an explicit completion requirement even
+after placement can commit. Partial manifests remain partial, crossing evidence
+remains uncertified, and no command route or offer selects version 2.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

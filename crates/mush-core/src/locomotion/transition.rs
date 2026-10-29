@@ -121,7 +121,7 @@ impl LocomotionIntent {
         super::composed::exact_action(action)?;
         Self::new_bound(world, invocation, action, commit, admission)
     }
-    fn new_bound(
+    pub(super) fn new_bound(
         world: &World,
         invocation: &ActionInvocation,
         action: &DefinitionRef,
@@ -174,7 +174,7 @@ impl LocomotionIntent {
     pub const fn action(&self) -> &DefinitionRef {
         &self.action
     }
-    fn matches_context(&self, ctx: &OwnerPrepareContext<'_>) -> bool {
+    pub(super) fn matches_context(&self, ctx: &OwnerPrepareContext<'_>) -> bool {
         ctx.invocation() == &self.invocation
             && ctx.action() == &self.action
             && ctx.commit_token() == self.commit
