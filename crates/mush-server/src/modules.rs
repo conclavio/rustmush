@@ -2372,6 +2372,8 @@ mod tests {
             mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY,
             mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY,
             mush_roll::commerce::registry_inspection::REGISTRY_FINE_CAPABILITY,
+            // M8g G3: the Registry's read of the quirk claims.
+            mush_roll::commerce::registry_inspection::REGISTRY_CLAIMS_CAPABILITY,
         ];
         // DT.2a declares all six distinct unit rights without granting them.
         let unit_capabilities = [

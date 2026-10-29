@@ -224,18 +224,10 @@ pub(crate) fn register_with_coverage(
     if let Some(coverage) = coverage {
         outcomes.push(coverage.outcome()?);
     }
-    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner.
+    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner (and the
+    // fine's, the principal revocation's and the quirk claim's when they compose).
     if let Some(inspection) = inspection {
-        let [_, outcome] = inspection.descriptors()?;
-        outcomes.push(outcome);
-        // Doc 17h cut M8d D3: the fine's outcome, when it composes.
-        if let Some([_, outcome]) = inspection.fine_descriptors()? {
-            outcomes.push(outcome);
-        }
-        // Doc 17h cut M8d D4: the principal revocation's outcome, when it composes.
-        if let Some([_, outcome]) = inspection.principal_descriptors()? {
-            outcomes.push(outcome);
-        }
+        inspection_descriptors(inspection, 1, &mut outcomes)?;
     }
     reg.definition_validator(
         kind("outcome")?,
@@ -334,18 +326,10 @@ pub(crate) fn register_with_coverage(
     if let Some(coverage) = coverage {
         actions.extend(coverage.descriptors()?);
     }
-    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner.
+    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner (and the
+    // fine's, the principal revocation's and the quirk claim's when they compose).
     if let Some(inspection) = inspection {
-        let [action, _] = inspection.descriptors()?;
-        actions.push(action);
-        // Doc 17h cut M8d D3: the fine's action, when it composes.
-        if let Some([action, _]) = inspection.fine_descriptors()? {
-            actions.push(action);
-        }
-        // Doc 17h cut M8d D4: the principal revocation's action, when it composes.
-        if let Some([action, _]) = inspection.principal_descriptors()? {
-            actions.push(action);
-        }
+        inspection_descriptors(inspection, 0, &mut actions)?;
     }
     reg.definition_validator(
         kind("action")?,
@@ -2997,6 +2981,27 @@ impl EventHook for ReconnectNotices {
     }
 }
 
+/// **The Registry inspection's descriptors of one kind** (`which`: 0 the actions, 1 the
+/// outcomes): the inspection's own, and the fine's (doc 17h cut M8d D3), the principal
+/// revocation's (D4) and the quirk claim's (cut M8g G3) when they compose. Its own frame, so
+/// `register_with_coverage` stays under the M7 memory-size bound.
+#[inline(never)]
+fn inspection_descriptors(
+    inspection: &crate::minds::registry_inspection::Composition,
+    which: usize,
+    into: &mut Vec<mush_core::DefinitionDescriptor>,
+) -> Result<(), ModError> {
+    let mut pairs = vec![inspection.descriptors()?];
+    pairs.extend(inspection.fine_descriptors()?);
+    pairs.extend(inspection.principal_descriptors()?);
+    pairs.extend(inspection.claim_descriptors()?);
+    for pair in pairs {
+        let [action, outcome] = pair;
+        into.push(if which == 0 { action } else { outcome });
+    }
+    Ok(())
+}
+
 /// The Registry inspection's provider and slot (doc 17h cut M8a), and the fine's when it
 /// composes (doc 17h cut M8d D3), over the registered references. Its own frame, so
 /// `register_with_coverage` stays under the M7 memory-size bound.
@@ -3037,7 +3042,18 @@ fn register_inspection(
         (Some(action), Some(outcome)) => Some((action, outcome)),
         _ => None,
     };
-    inspection.register(reg, action, outcome, fine, principal)
+    let claim = match (
+        action_refs
+            .get(crate::minds::registry_inspection::claims::CLAIM_ACTION)
+            .cloned(),
+        outcome_refs
+            .get(crate::minds::registry_inspection::claims::CLAIM_OUTCOME)
+            .cloned(),
+    ) {
+        (Some(action), Some(outcome)) => Some((action, outcome)),
+        _ => None,
+    };
+    inspection.register(reg, action, outcome, fine, principal, claim)
 }
 
 #[cfg(test)]

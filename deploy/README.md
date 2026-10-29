@@ -738,13 +738,16 @@ Every id below is the one your world printed; replace every id in the example.
    @org/grant #<operator>=Registry roll.registry.revoke scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.inspect scope=#<review scope>
    @org/grant #<operator>=Registry roll.registry.fine scope=#<review scope>
+   @org/grant #<operator>=Registry roll.registry.claims scope=#<review scope>
    ```
 
    The third grant lets the operator read a hull with `@registry/inspect #<hull>`. The fourth
    lets them fine the holder of a hull an inspection found ungoverned with
    `@registry/fine #<hull> <amount>` (the amount in credits, up to
    `[tacsim.minds].fine_cap_minor`); the fine is one obligation on the holder's account, due
-   at once, paid to the Registry's levy account.
+   at once, paid to the Registry's levy account. The fifth lets them read the quirk claims
+   authors have filed with `@registry/claims`; a claim is testimony, and only an inspection
+   establishes anything.
 
 10. As #1, `+act roll-initialize-commerce with {}`, then the three industry
     initialize actions the same way: `initialize-core-die-stock`,

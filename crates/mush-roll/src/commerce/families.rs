@@ -70,6 +70,9 @@ pub struct CommerceFamilies {
     /// tacsim's transaction through the inspection writer's delegation.
     pub(crate) revoked_principals:
         StateFamilyHandle<String, super::registry_inspection::principal::RevokedPrincipal>,
+    /// Doc 17h cut M8g G3: the quirk claims (`roll_mind_claims`), a 32-slot ring per author;
+    /// written from tacsim's transaction through the inspection writer's delegation.
+    pub(crate) mind_claims: StateFamilyHandle<String, super::registry_inspection::ClaimRecord>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) house_renewal_operations:
@@ -142,6 +145,7 @@ impl CommerceFamilies {
             registry_recalls: register(reg)?,
             registry_inspections: register(reg)?,
             revoked_principals: register(reg)?,
+            mind_claims: register(reg)?,
             registry_revocations: register(reg)?,
             revoked_terms: register(reg)?,
             withdrawals: register(reg)?,
@@ -331,6 +335,9 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         // M8c B1: an organisation's rows are keyed `org/{org:020}/licence/...`
         // (`Holder::key_prefix`); the two heads never collide.
         // Doc 17h cut M8d D4: `{character:020}` or `org/{org:020}`.
+        // Doc 17h cut M8g G3: an author's 32-slot claim ring,
+        // `author/<author, 8 hex>/slot/<seq mod 32, 2 hex>`.
+        "roll_mind_claims" => super::registry_inspection::claims::valid_key(key),
         "roll_registry_revoked_principals" => {
             super::registry_inspection::principal::valid_key(key, person, org_number)
         }

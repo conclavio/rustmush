@@ -274,6 +274,8 @@ fn grant_registry(r: &mut Rig, d: &LaunchDeployment) -> Result {
             "roll.registry.inspect",
             // Doc 17h cut M8d D3: the runbook's fourth grant.
             "roll.registry.fine",
+            // Doc 17h cut M8g G3: the fifth, the claims read (no projected verb).
+            "roll.registry.claims",
         ] {
             command(
                 r.world_mut(),
@@ -1125,7 +1127,10 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
         "roll-registry-recall".to_owned(),
         "roll-registry-revocation".to_owned(),
     ];
-    let lacks = readiness(operator, "lacks recall, revocation, inspection and fine");
+    let lacks = readiness(
+        operator,
+        "lacks recall, revocation, inspection, fine and claims",
+    );
     // Before the grants: no one, and God reads what the operator lacks.
     for actor in principals {
         check!(
@@ -1246,8 +1251,14 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks recall, revocation, inspection and fine"),
-            (second, "lacks recall, revocation, inspection and fine"),
+            (
+                first,
+                "lacks recall, revocation, inspection, fine and claims"
+            ),
+            (
+                second,
+                "lacks recall, revocation, inspection, fine and claims"
+            ),
         ]))
     );
     // One grant each, a different one: each reads what it still lacks.
@@ -1256,8 +1267,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks revocation, inspection and fine"),
-            (second, "lacks recall, inspection and fine")
+            (first, "lacks revocation, inspection, fine and claims"),
+            (second, "lacks recall, inspection, fine and claims")
         ]))
     );
     check_eq!(
@@ -1274,8 +1285,8 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([
-            (first, "lacks inspection and fine"),
-            (second, "lacks inspection and fine")
+            (first, "lacks inspection, fine and claims"),
+            (second, "lacks inspection, fine and claims")
         ]))
     );
     grant(&mut r, first, "roll.registry.inspect")?;
@@ -1283,10 +1294,20 @@ async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
     // Doc 17h cut M8d D3: the fine is the fourth, a grant of its own.
     check_eq!(
         launch_lines(&mut r, GOD).last(),
-        Some(&line([(first, "lacks fine"), (second, "lacks fine")]))
+        Some(&line([
+            (first, "lacks fine and claims"),
+            (second, "lacks fine and claims")
+        ]))
     );
     grant(&mut r, first, "roll.registry.fine")?;
     grant(&mut r, second, "roll.registry.fine")?;
+    // Doc 17h cut M8g G3: the claims read is the fifth, with no projected verb.
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([(first, "lacks claims"), (second, "lacks claims")]))
+    );
+    grant(&mut r, first, "roll.registry.claims")?;
+    grant(&mut r, second, "roll.registry.claims")?;
     check_eq!(
         launch_lines(&mut r, GOD).last(),
         Some(&line([(first, "ready"), (second, "ready")]))
@@ -1335,7 +1356,7 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
             line,
             readiness(
                 operator(&d)?,
-                "lacks recall, revocation, inspection and fine"
+                "lacks recall, revocation, inspection, fine and claims"
             )
         ]
     );
@@ -2020,5 +2041,118 @@ async fn m8d_the_launch_makes_the_red_dies_front_on_the_republic() -> Result {
     reboot(&mut r, &d)?;
     let (again, _) = red_dies(&r)?;
     check_eq!(again, front, "a restart makes no second front");
+    Ok(())
+}
+
+/// Every line `line` sends `actor`, in order.
+fn replies(r: &mut Rig, actor: ObjId, line: &str) -> Vec<String> {
+    r.world_mut()
+        .run(actor, line)
+        .iter()
+        .filter(|(audience, _)| *audience == mush_core::Audience::Actor(actor))
+        .map(|(_, event)| mush_testkit::text_of(event))
+        .collect()
+}
+
+/// **Doc 17h cut M8g G3, branch (B)**: no IC detection exists until the fight (16c H1), so the
+/// earned-contacts index has no producer and every hull an author names is refused with the
+/// observer rule's one sentence (`+hull/box`'s, no new wording), for a player and for staff
+/// alike, before anything else is asked; a claim naming no hull, or with no words, is its
+/// usage. Nothing is filed.
+#[tokio::test(flavor = "current_thread")]
+async fn m8g_a_claim_on_a_hull_never_earned_is_refused_with_the_observer_sentence() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, true)?;
+    let buyer = r.buyer;
+    let hull = r
+        .world_mut()
+        .world_mut()
+        .create(ObjKind::Thing, "A hull seen", GOD, None)?;
+    r.flush();
+    for actor in [buyer, GOD] {
+        check_eq!(
+            replies(
+                &mut r,
+                actor,
+                &format!(
+                    "@mind/claim #{} It pauses on a lost contact the way mine does.",
+                    hull.0
+                )
+            ),
+            vec![crate::surface::hull::NO_BOX.to_owned()],
+            "#{} names a hull it never earned",
+            actor.0
+        );
+    }
+    let usage = crate::minds::registry_inspection::claims::USAGE.to_owned();
+    for malformed in [
+        "@mind/claim It pauses the way mine does.".to_owned(),
+        format!("@mind/claim #{}", hull.0),
+        format!("@mind/claim #0 {}", "words"),
+    ] {
+        check_eq!(replies(&mut r, buyer, &malformed), vec![usage.clone()]);
+    }
+    r.flush();
+    check!(r.rows("roll_mind_claims").is_empty(), "nothing is filed");
+    Ok(())
+}
+
+/// **Doc 17h cut M8g G3**: `@registry/claims` is a line-mode read gated live by
+/// `roll.registry.claims` (the lead's ruling (a): no projected offer, no `registry_verbs`
+/// entry). A non-operator and an ungranted operator get the driver's one sentence; a granted
+/// operator reads that nothing is filed; once the grant lapses, the operator is refused again
+/// with the same sentence — across a restart.
+#[tokio::test(flavor = "current_thread")]
+async fn m8g_registry_claims_reach_only_an_operator_granted_now() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let operator = operator(&d)?;
+    let market = d.market.clone().ok_or("a format-2 market")?;
+    let refused = vec![mush_core::action::SUBMISSION_REFUSED_LINE.to_owned()];
+    for actor in [r.buyer, market.clerk, operator] {
+        check_eq!(
+            replies(&mut r, actor, "@registry/claims"),
+            refused.clone(),
+            "#{} before the grant",
+            actor.0
+        );
+    }
+    command(
+        r.world_mut(),
+        GOD,
+        &format!(
+            "@org/grant #{}=Registry roll.registry.claims scope=#{}",
+            operator.0, market.registry_authority.scope.0
+        ),
+    )?;
+    r.flush();
+    check_eq!(
+        replies(&mut r, operator, "@registry/claims"),
+        vec!["No claims are filed with the Registry.".to_owned()]
+    );
+    check!(
+        registry_verbs(&mut r, operator)?.is_empty(),
+        "the read projects no verb"
+    );
+    for actor in [r.buyer, market.clerk] {
+        check_eq!(replies(&mut r, actor, "@registry/claims"), refused.clone());
+    }
+    // The grant lapses: the operator is refused again, with the same sentence.
+    let now = r.world().world().now();
+    let org = r.boot.get_mut("org").ok_or("the org boot data")?;
+    let mut lapsed = 0;
+    for (key, value) in &mut org.kv {
+        if key.starts_with("grant:")
+            && value.get("grantee") == Some(&json!(operator.0))
+            && value.get("capability") == Some(&json!("roll.registry.claims"))
+            && let Some(grant) = value.as_object_mut()
+        {
+            grant.insert("valid_until".into(), json!(now));
+            lapsed += 1;
+        }
+    }
+    check_eq!(lapsed, 1);
+    reboot(&mut r, &d)?;
+    check_eq!(replies(&mut r, operator, "@registry/claims"), refused);
     Ok(())
 }

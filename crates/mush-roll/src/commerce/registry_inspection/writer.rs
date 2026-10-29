@@ -47,6 +47,8 @@ impl InspectionWriter {
         reg.delegate_state_family(&families.registry_inspections, ACTION_OWNER)?;
         // Doc 17h cut M8d D4: the revoked principals, written from tacsim's transaction.
         reg.delegate_state_family(&families.revoked_principals, ACTION_OWNER)?;
+        // Doc 17h cut M8g G3: the quirk claims, written from tacsim's transaction.
+        reg.delegate_state_family(&families.mind_claims, ACTION_OWNER)?;
         self.0
             .set(Registration {
                 families,
@@ -178,6 +180,98 @@ impl RegisteredInspectionWriter {
             .commerce_ready()
             .map_err(bad)?;
         authority::observe_fine(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8g G3: whether `actor` may read the quirk claims now — the inspection's
+    /// test under `roll.registry.claims`.
+    #[must_use]
+    pub fn claims_offered(&self, world: &World, actor: ObjId) -> bool {
+        self.authorize_claims(world, actor).is_ok()
+    }
+    /// Doc 17h cut M8g G3: the live claims-read authorization (`authority::observe_claims`).
+    ///
+    /// # Errors
+    /// `Unavailable` when the actor is no operator, not granted, or an owner is not ready.
+    pub fn authorize_claims(
+        &self,
+        world: &World,
+        actor: ObjId,
+    ) -> Result<(Authorization, ClockStamp), PublicationError> {
+        let r = self.registration()?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        authority::observe_claims(world, &r.readiness, &r.policy, actor)
+    }
+    /// Doc 17h cut M8g G3: the quirk claims' family, for the operators' read.
+    ///
+    /// # Errors
+    /// The Roll has not installed the writer.
+    pub fn claims_family(&self) -> Result<StateFamilyHandle<String, super::ClaimRecord>, ModError> {
+        Ok(self
+            .registration()
+            .map_err(error)?
+            .families
+            .mind_claims
+            .clone())
+    }
+    /// **Land one quirk claim** (doc 17h cut M8g G3): the claim action must be the policy's;
+    /// the record is the author's next ring slot, overwriting the oldest once 32 are held.
+    /// Who may claim and which hulls they earned are tacsim's to establish before this.
+    ///
+    /// # Errors
+    /// A foreign action, an owner not ready, a record that does not validate, or the write.
+    pub fn file_claim(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        action: &DefinitionRef,
+        author: ObjId,
+        hulls: Vec<ObjId>,
+        text: smol_str::SmolStr,
+    ) -> Result<super::ClaimRecord, PublicationError> {
+        let r = self.registration()?;
+        if action != &r.policy.claim_action().map_err(bad)? {
+            return Err(PublicationError::Mismatch);
+        }
+        r.readiness.check(&r.policy)?;
+        let world = ctx.world().map_err(bad)?;
+        world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?
+            .commerce_ready()
+            .map_err(bad)?;
+        let at_ic = world.world_ic_now();
+        let family = &r.families.mind_claims;
+        let mut newest = 0_u64;
+        for key in super::claims::claim_slots(author) {
+            if let Some(held) = txn.get(family, &key).map_err(bad)? {
+                if held.author != author {
+                    return Err(PublicationError::Mismatch);
+                }
+                newest = newest.max(held.seq);
+            }
+        }
+        let record = super::ClaimRecord {
+            format: 1,
+            claim: ctx.commit_token(),
+            action: action.clone(),
+            authority: r.policy.clone(),
+            author,
+            seq: newest.checked_add(1).ok_or(PublicationError::Invalid)?,
+            hulls,
+            text,
+            at_ic,
+        };
+        record.validate()?;
+        let key = record.key();
+        if txn.get(family, &key).map_err(bad)?.is_some() {
+            txn.replace(family, &key, record.clone()).map_err(bad)?;
+        } else {
+            txn.insert(family, &key, record.clone()).map_err(bad)?;
+        }
+        Ok(record)
     }
     /// Doc 17h cut M8d D4: whether `actor` may revoke a principal now — the inspection's test
     /// under the existing `roll.registry.revoke`.
