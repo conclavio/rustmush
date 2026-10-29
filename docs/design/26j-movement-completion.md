@@ -492,6 +492,19 @@ carried people. Both the 512-dependency and 256-crossing budgets remain shared.
 The original v1 candidate is unchanged. Compound hosts need their own real owner
 join before this scope can widen; no refused case becomes a partial publication.
 
+Ordered window evidence now has a separate, strict historical decoder. It
+checks exact required/unknown fields, original clocks, ordered dependency ids,
+linked stage ancestry and shared phase digests, the aggregate crossing budget,
+and the exact release/place revision, projection, audit and final-record chain.
+The full capture digest must match the supplied retained digest. Input depth,
+nodes, text and encoded bytes are bounded before recursive decoding or cloning.
+
+Decoded evidence remains passive: it cannot create a Core preview, native Plan,
+owner patch, installation or eligibility interval. A later recovery auditor
+must bind its actor, route, clock and commit to genuine same-commit owner receipts
+and records. It never reruns current geometry or classifies history from today's
+World. Native participant publication and recovery joins remain unfinished.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
