@@ -332,11 +332,13 @@ fn visit(
     // 2. Record a funded purchase the ledger lacks, as soon as its Fund lands and before any
     //    Grant (so no completion escapes the ledger; a restart between Fund and record too).
     //    The House's funded purchases are its buyer index row (M8c S1: every member's), read
-    //    as the agent; the tick records only its own agent's.
-    let open = own_open(ctx, handles, agent, org).unwrap_or_else(|| {
+    //    as the agent; the tick records only its own agent's. An unreadable index refuses the
+    //    visit (round 2): a funded purchase it hides would fall out of the spend and the holdings,
+    //    and the next buy could overspend.
+    let Some(open) = own_open(ctx, handles, agent, org) else {
         state.page(org, "open", "the House's open purchases are unreadable");
-        Vec::new()
-    });
+        return Step::Refused;
+    };
     for purchase in open {
         if rows.iter().any(|row| row.operation == purchase.operation()) {
             continue;
@@ -548,8 +550,10 @@ fn record(
 /// Complete a funded purchase (`+minds/buy/complete`'s Grant), or refund it after
 /// [`MAX_GRANT_TRIES`] Grants that did not land; after [`MAX_REFUND_TRIES`] Refunds too, page
 /// `escrow held` for staff and answer `None`, so the policy moves on (H3). A try is counted
-/// only when the submission was queued: a deferral (the principal's pending submission, the
-/// drain's back-pressure) never counts.
+/// when the submission was queued (`Step::Submitted`): a deferral (the principal's pending
+/// submission, the drain's back-pressure) never counts, but a queued submission the drain later
+/// drops or voids does, so a try can be spent without reaching the market, and the bound then
+/// reaches `escrow held` sooner.
 fn settle(
     ctx: &mut Ctx<'_>,
     fire: &mut Fire,
@@ -700,10 +704,10 @@ fn choose_and_quote(
         close(state, org, period, "the month's budget is spent");
         return Step::Idle;
     }
-    if !scan(ctx, state, handles, org) {
+    let Some(unread) = scan(ctx, state, handles, org) else {
         // More listings or ratings to read: on the next fire.
         return Step::Worked;
-    }
+    };
     let Some(candidates) = candidates(state, policy) else {
         return Step::Worked;
     };
@@ -724,6 +728,11 @@ fn choose_and_quote(
         .map(|run| run.skipped.clone())
         .unwrap_or_default();
     let Some(best) = rank::choose(&candidates, remaining, &held, cap, &skipped).copied() else {
+        if unread {
+            // Round 2: a rating this fire could not read may be the line it would buy; the
+            // month stays open and the next fire retries it.
+            return Step::Worked;
+        }
         close(
             state,
             org,
@@ -800,14 +809,20 @@ fn close(state: &mut ProcurementState, org: OrgId, period: Period, why: &'static
 }
 
 /// Advance the month's scan within this fire's budget: listings pages, then rating counts.
-/// `true` once every listing is read and every readable rating scored. The scan is bounded at
+/// `Some(unread)` once every listing is read and every readable rating scored, `unread` when a
+/// rating read failed this fire; `None` while there is more to read. The scan is bounded at
 /// [`SCORE_CACHE_BOUND`] listings a month (H4: `scan bound` pages when it is hit); a rating read
-/// that fails is not kept, so it is retried on the next fire, and this fire goes on without it.
-fn scan(ctx: &Ctx<'_>, state: &mut ProcurementState, handles: &Handles, org: OrgId) -> bool {
+/// that fails is not kept, so it is retried on the next fire, and this fire goes on without it:
+/// it may still buy the best line it scored, but it never closes the month as having nothing to
+/// buy (round 2).
+fn scan(
+    ctx: &Ctx<'_>,
+    state: &mut ProcurementState,
+    handles: &Handles,
+    org: OrgId,
+) -> Option<bool> {
     for _ in 0..MAX_LISTING_PAGES_PER_FIRE {
-        let Some(run) = state.runs.get(&org.0) else {
-            return false;
-        };
+        let run = state.runs.get(&org.0)?;
         if run.scan.done {
             break;
         }
@@ -821,11 +836,9 @@ fn scan(ctx: &Ctx<'_>, state: &mut ProcurementState, handles: &Handles, org: Org
             .and_then(mush_market::mind_commands::MarketCommandResult::into_procurement_listings)
         else {
             state.page(org, "listings", "the market's listings are unreadable");
-            return false;
+            return None;
         };
-        let Some(run) = state.runs.get_mut(&org.0) else {
-            return false;
-        };
+        let run = state.runs.get_mut(&org.0)?;
         let room = SCORE_CACHE_BOUND.saturating_sub(run.scan.listings.len());
         let bounded = page.rows().len() > room;
         run.scan
@@ -845,11 +858,9 @@ fn scan(ctx: &Ctx<'_>, state: &mut ProcurementState, handles: &Handles, org: Org
     let mut reads = 0;
     let mut failed: BTreeSet<String> = BTreeSet::new();
     loop {
-        let Some(run) = state.runs.get(&org.0) else {
-            return false;
-        };
+        let run = state.runs.get(&org.0)?;
         if !run.scan.done {
-            return false;
+            return None;
         }
         let pending = match run.scan.tally.clone() {
             Some(pending) => Some(pending),
@@ -860,13 +871,13 @@ fn scan(ctx: &Ctx<'_>, state: &mut ProcurementState, handles: &Handles, org: Org
             }),
         };
         let Some((key, rating, from, tally)) = pending else {
-            return true;
+            return Some(!failed.is_empty());
         };
         if reads >= MAX_TALLY_READS_PER_FIRE {
             if let Some(run) = state.runs.get_mut(&org.0) {
                 run.scan.tally = Some((key, rating, from, tally));
             }
-            return false;
+            return None;
         }
         reads += 1;
         let page = ctx
@@ -891,9 +902,7 @@ fn scan(ctx: &Ctx<'_>, state: &mut ProcurementState, handles: &Handles, org: Org
             }
             continue;
         };
-        let Some(run) = state.runs.get_mut(&org.0) else {
-            return false;
-        };
+        let run = state.runs.get_mut(&org.0)?;
         match next {
             Some(from) => run.scan.tally = Some((key, rating, from, merged)),
             None => {
