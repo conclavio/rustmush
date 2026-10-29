@@ -323,10 +323,14 @@ pub fn status_frame_held(
                     .map(|tier| tier.as_str()),
                 // **17b cut M1a.3** (doc 17 §3, D-UM-5): the FACET word the
                 // contact's plot was showing — `front`, `left`, `right` or
-                // `rear`; the row prints its side word — and, beside a held
+                // `rear`; the row prints its side word — and (doc 22 D-22-9)
+                // `facing`, the eight-way direction the picture picks a sprite
+                // facing from (`front`, `front_right`, `right`, `rear_right`,
+                // `rear`, `rear_left`, `left`, `front_left`); beside a held
                 // reading only, the chassis's fatal section words: what a
                 // reading would have to show destroyed for `reads_dead`.
                 "aspect": held.map_or("front", |held| held.aspect.as_str()),
+                "facing": held.map_or("front", |held| held.facing.as_str()),
                 "fatal": held.and_then(|held| held.fatal.as_ref()),
                 // **Doc 22 D-22-5**: the contact's unit type, its definition
                 // id, from classification on (with its team), `null` before —
