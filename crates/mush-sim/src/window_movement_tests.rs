@@ -671,6 +671,137 @@ fn native_bind_fence_rechecks_canonical_control_allocator_held_and_derived_state
 }
 
 #[test]
+fn ordered_scope_retains_ordinary_carried_things_but_refuses_additional_native_owners() {
+    for change in 0..8 {
+        let mut rig = Rig::new();
+        let cargo = rig
+            .engine
+            .world
+            .create(ObjKind::Thing, "carried", GOD, Some(rig.actor))
+            .expect("cargo");
+        let projected = rig.projected;
+        let core = rig.preview(Some(projected));
+        let source = rig.source;
+        match change {
+            0 => {}
+            1 => {
+                let mut retired = domain(3, cargo, source);
+                retired.status = DomainStatus::Retired;
+                rig.state().domains.insert(DomainId(3), retired);
+            }
+            2 => {
+                rig.state().mounts.insert(
+                    cargo,
+                    crate::HostMounts {
+                        host: cargo,
+                        mounts: Default::default(),
+                    },
+                );
+            }
+            3 => {
+                rig.state().stations.insert(
+                    cargo,
+                    crate::HostStations {
+                        host: cargo,
+                        stations: Default::default(),
+                    },
+                );
+            }
+            4 => {
+                rig.state().assignments.insert(
+                    cargo,
+                    crate::HostAssignments {
+                        host: cargo,
+                        seats: Default::default(),
+                    },
+                );
+            }
+            5 => {
+                rig.state().spaces.insert(
+                    cargo,
+                    crate::InteriorSpaceRecord {
+                        object: cargo,
+                        anchor: crate::SpaceAnchor::Unanchored,
+                        compartments: Default::default(),
+                        rooms: Default::default(),
+                        egresses: Default::default(),
+                    },
+                );
+            }
+            6 => {
+                rig.state().held_assignments.insert(
+                    cargo,
+                    crate::HeldPlacement {
+                        key: "assignment:carried".into(),
+                        reason: "held".into(),
+                    },
+                );
+            }
+            _ => {
+                let actor = rig.actor;
+                let mut placement = rig.state().placements.get(&actor).expect("actor").clone();
+                placement.object = cargo;
+                rig.state().placements.insert(cargo, placement);
+            }
+        }
+        rig.state().derived = crate::graph::rebuild(rig.state());
+        let captured = capture_ordered(
+            &rig.engine.world,
+            core,
+            Some(WindowTarget::at(DomainId(1), 30, 40, 0)),
+        );
+        if change == 0 {
+            assert!(
+                captured
+                    .expect("ordinary inventory")
+                    .read_dependencies()
+                    .contains(&cargo)
+            );
+        } else {
+            assert!(captured.is_err(), "change {change}");
+        }
+        assert_eq!(
+            rig.engine.world.get(cargo).expect("cargo").location,
+            Some(rig.actor)
+        );
+        assert_eq!(
+            rig.engine.world.get(rig.actor).expect("actor").location,
+            Some(rig.source)
+        );
+    }
+}
+
+#[test]
+fn ordered_scope_uses_actual_shared_exclusions_for_carried_people() {
+    let mut rig = Rig::new();
+    let person = rig
+        .engine
+        .world
+        .create(ObjKind::Npc, "carried person", GOD, Some(rig.actor))
+        .expect("person");
+    let projected = rig.projected;
+    let core = rig.preview(Some(projected));
+    // This is only an exclusion fault, not a genuine checkout or custody proof.
+    crate::deployed::mark(
+        &mut rig.engine.world,
+        person,
+        crate::DeployedMark::new(122, "arena"),
+    );
+    assert!(
+        capture_ordered(
+            &rig.engine.world,
+            core,
+            Some(WindowTarget::at(DomainId(1), 30, 40, 0))
+        )
+        .is_err()
+    );
+    assert_eq!(
+        rig.engine.world.get(person).expect("person").location,
+        Some(rig.actor)
+    );
+}
+
+#[test]
 fn ordered_capture_counts_both_sides_of_a_transient_carrier_visit_against_one_budget() {
     for children in [127, 128] {
         let mut rig = Rig::new();
