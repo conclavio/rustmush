@@ -496,6 +496,75 @@ Recorded in both ledgers (here and doc 23 §14). Pending the owner's Q-M8-1. Thi
 Q-M8-7 taken at their defaults. The M8a and M8c briefs were written and the cut loop started the
 same day (§7).
 
+**Two more owner rulings, 2026-10-28, raised by the M8a and M8c reviews (both at the lead's
+defaults, "for now"):** (a) a charter tenant (the Dray-P's pilot, who holds neither the hull's
+title nor its lease) does not read the hull's black box with `+hull/box`; the readers are the
+title holder, the current lessee (from their own lease's start only) and staff. (b) The licence
+seal-mark ring keeps 64 marks per licence, evicting the oldest **governed** mark first, so an
+ungoverned flight inside a term is never washed out by later governed ones; an ungoverned mark is
+evicted only when the whole ring is ungoverned.
+
+**The M8d wording, approved by the owner on 2026-10-28 as written:**
+- The canon line per finding: "A Registry inspection found an ungoverned core." It names no hull,
+  mind or person.
+- The Red Dies front's opening line: "The Red Dies: the Republic watches for ungoverned cores."
+- Its clock title: "Ungoverned cores found", six segments.
+- The line when the clock ends: "The Red Dies: the Registry has found ungoverned cores enough to
+  move the Republic."
+
+M8d's seizure (the removal order, seize and forfeit) is split to a cut **M8d2** under §6's risk.
+It needs one act spanning four owners: the economy, the industry refit, tactics and the Registry.
+The economy cannot read the Registry's inspection records.
+
+**M8d review rulings (the lead's, 2026-10-28):**
+- **The fine follows the inspection.** `InspectionRecord` records the hull's holder when the
+  inspection is written. The fine debits that holder, so a title move cannot dodge it.
+- **Only that holder can be revoked.**
+- **Held terms keep themselves alive.** Renewal and attestation of an EXISTING held term pass the
+  write bar; the use bar and the move bar still hold.
+- **Filing is a licence write**, so it is barred.
+- **`minds.unwarranted` is Registry-scoped, not public** (D-UM-42). A public fact keyed by hull
+  would let anyone probe whether a hull carries an ungoverned core. The public signal is the canon
+  line, which names nobody, and the Red Dies clock. `minds.seized` stays public, because a seizure is
+  a public act.
+- **Three new player lines** are the lead's wording. **The owner approved all three as written on
+  2026-10-28** ("approve the three new M8 player lines as written"):
+  - the revoked principal's notice, "The Registry has barred your mind licences until <IC date>.";
+  - the fine's receipt, "The fine is levied when the Registry next settles."
+  - from M8e, the pending-transfer refusal: doc 17 D-UM-40's sentence with "sortie" replaced,
+    "{mind name} is changing hands; it is not sealed aboard until the transfer settles."
+- **M8e review rulings:**
+  - Owner licences seal, through the owner projection.
+  - A seal that fell to the ROM writes no seal mark.
+  - The seal mark is also written by the surface finish, through a delegated family; this follows
+    the coverage-writer precedent.
+  - On an org-held licence the warrant principal stays the member (D-23-5), and the org is carried
+    as `holder`. "Names the org principal" in §3 M8e means that `holder`.
+
+**M8d2 ruling (the lead's, 2026-10-28): the seized core is impounded in place.** A physical
+removal would need new protocol in four crates (tactics' replacement journal, mush-core's core
+exchange, an industry order kind replayed by the refit audit, and the union's root). It would also
+need a place in the world for the Registry's custody, which does not exist. So the seized core stays
+fitted. Its title is `Disputed` by the Registry, and after a forfeit the Registry owns it. Every seal
+path reads such a core as no core, so the hull flies the ROM at Class 0. Physical removal and a
+custody place move to a cut **M8d3**, after M8, with a custody design. The owner may overrule the
+fiction: a core impounded in place rather than taken.
+
+**M8e re-scoped by the owner, 2026-10-28 (option C):** "M8e: take option C, move the claim
+Open/Close and the seat to S.4b with the custody design". The M8e builder found that a four-owner
+IC claim cannot sit on a surface excursion, for three reasons:
+- an IC base accepts only a fixed-domain anchor (`mush-sim/src/ic_exclusion.rs:317`), and a ship's
+  bay is a moving object;
+- the Open needs the hull inside the base, which the rig has already left when the finish runs;
+- an active claim freezes the hull, so the sim refuses its placement moves and tactics refuses
+  "held by an IC sortie" (`mush-tactics/src/ic_custody.rs:252`).
+
+M8e therefore ships the sealed mind's seal line with the licence's real state, Doctrine on a lapse,
+the pending-transfer refusal, the seal mark, the ungoverned draft and the cored-rig excursion
+harness. E2 (the production four-owner Open and Close) and E3 (the pool seat) move to **S.4b**,
+with a custody design for moving anchors. Q-M8-1's tier 2 now proves the seal and its evidence on
+an excursion, not a held claim.
+
 1. **Q-M8-1, the tier-2 split.** S.4a (the sealed, dormant mind aboard a rig) built as M8e now;
    the thinking mind (the drone phase) after M8; doc 23 §9's "lands inside D-UM-47's cut, not
    before" amended to say so; the claim half of 17g §4's "IC claims and hull cover in live play"
@@ -548,5 +617,166 @@ same day (§7).
 
 ## 7. Ledger
 
-Nothing landed. The first entries are M8a and M8c, each on its own branch (`claude/m8-<cut>`) off
-`main`, each a PR; M8b follows M8a.
+Each cut runs on its own branch as a PR. M8b is stacked on M8a, and M8f will stack on M8c. The
+briefs, fix rounds and lens notes are in the plan-data folder `m8-contraband/cuts/<cut>/`.
+
+### M8a — the deterministic reads (PR #67, merged 2026-10-28 as `49b95a8f`)
+
+Branch `claude/m8-a-reads-8ef2e8`, with these commits on top of `main`:
+- `9159cffa`, the cut;
+- `019e6713`, re-blessing the twin corpus's four ledger digests;
+- `75de08a7`, fix round 1;
+- `23006c94`, fix round 2;
+- merges of `main`, `67d4e796` and a second one for PRs #70–#72.
+
+Review found no blocker in three Opus lenses, a verifier on round 1, and CI on every commit
+up to `75de08a7`.
+
+**What landed:**
+- `SealLicenceState` is a parameter of `MindSeal::sealed_line`, never a seal field, and it
+  appears on `SealFacts` and on the box line.
+- On the arena `EventKind` the field is optional and skipped when empty, so lines written
+  before M8a still decode.
+- `+hull/box #<hull> [n]` reads the RAM tail. A trip shows as two lines so it fits the 120-column
+  floor. The readers are the title holder, the current lessee from their own lease's start, and
+  staff. Every non-reader gets the one sentence.
+- `@registry/inspect <hull>` needs `roll.registry.inspect`. The known-hull gate lives in the
+  provider. The record lives in family `roll_registry_inspections`, 64 per hull, oldest evicted.
+- The inspection reply is "Inspecting hull #n." plus a one-line receipt rendered at prepare from
+  the recorded facts. The driver's receipt is one line, so the record's facts cannot be printed
+  as several.
+- The seal check compares component, class and governor, as the IC audit does. No core means no
+  hardware (`governed` absent), not Class 0.
+- `provenance_of` reads the retained die certificate. A read error is `Unknown`.
+- The runbook gains the third Registry grant.
+
+**Rulings the lead took:**
+- The receipt's wording, kept as built.
+- A per-hull ring of 64 inspections.
+- The lessee reads only their own lease.
+
+**Owner rulings:** §5 (a), charter tenants do not read the box.
+
+**Re-blessed, each with its reason:**
+- the recorded `mind_sealed` tapes, one key each with no hash moved;
+- the twin corpus's ledger digests, on the merged tree;
+- the harness baseline, `ledger_bytes_streamed` +8,100 and `ledger_chunks` 103 → 104 after
+  DT.1b.
+
+**Owed:** the delegation pin for `roll_registry_inspections` (no composed-launch pin covers it).
+
+### M8c — organisations as holders (PR #77, merged 2026-10-28 as `c07823b3`)
+
+The branch is `claude/m8-c-org-holders-a04d00`. Its commits are `1474329d` (the cut with fix
+round 1), `e90007bc` (fix round 2) and two merges of main.
+
+Review: three Opus lenses found one blocker and nine must-fixes, all fixed in round 1. A verifier
+then found F1–F8 done with no blocker, and round 2 closed its three should-fixes. On the VPS the
+full M7 story passed on round 2 (1,674 s).
+
+**What landed:**
+- **The typed `Holder`.** `Holder { Character(ObjId), Organization { org, acting } }` runs through
+  every commerce family. The character arm is untagged, so no pinned digest moved.
+- **Acting for an organisation.** `roll.holder.org` is re-asked live at every act, through
+  `org_holder::{org_actor, acts_for, acts_as}`. Quote and Fund ask the grant with the price.
+- **`org=` on the buyer verbs** and on `@mind/attest`. The org treasury pays, and the hold is
+  placed by the org principal.
+- **Every member's licence.** An org-held licence answers any member granted on the org's root.
+  Fork parents and owner qualification refuse it.
+- **The buyer index is keyed by the buyer.** An org quote sits under `org/{org:020}`, so any
+  granted member can find, refund and renew it.
+- **House owner attestation** runs under the House's 365-day terms.
+- **The seal-mark ring** `roll_licence_seal_marks` keeps 64 marks per licence and evicts governed
+  marks first, per §5 (b). Its writer is GOD or a holder of `roll.registry.seal_mark`. The
+  refusal reads "The Registry cannot attest a licence that flew on an ungoverned core."
+- **Organisation 0 is an organisation**, since mush-org mints from 0.
+
+**Bugs the review's tests exposed:**
+- The House attestation was capped at the 90-day paid term.
+- The kernel's market index read the buyer as a bare character.
+- A second member could not renew.
+- One key rule refused organisation 0.
+
+**Deferred:**
+- `org=` on `/resell/accept` and `/charter/accept`, because it needs a resale wire change.
+- A limited `roll.holder.org` grant through the Grant step, moved to M8f.
+- Recall and revocation notices to an org's members.
+
+### M8b — the crime (PR #78, merged 2026-10-28 as `a249df5a`)
+
+The branch is `claude/m8-b-crime-4ef277`. Its commits are `1222c2cd` (the cut with fix round 1),
+`842dc309` (fix round 2), `ccf19503` (round 2's CI fixes) and two merges of main.
+
+Review: three Opus lenses found no blocker and seven must-fixes. A verifier found all seven done
+in code.
+
+**What landed:**
+- **Cored rigs.** The surface rig has fitted roots per class beside the line tank's, built on one
+  `CoreFamily`. By lead ruling the governed `core_refit` fits a core into a coreless stock rig. The
+  store resolves a fitted root to its base chassis, so a cored rig drives, mines and carries.
+- **The ungoverning refit, `core_ungovern`.**
+  - It has its own facility capability; a facility declaring both recipes is refused.
+  - The Org capability `industry.core.ungovern` is in the production vocabulary.
+  - The fee is the config key `ungovern_minor`.
+  - The three cores have ungoverned twins.
+  - The provenance note, derived from the refit history, fails closed.
+  - The install re-checks the operator's grant live.
+- **The ungoverned seal.**
+  - D-UM-17's floor is lifted at the seal, the arming and the cited fire, only while an
+    ungoverned core is fitted.
+  - IC execution and the audit admit an unfiled draft on an ungoverned seal.
+  - `admissions` on the seal and box lines is skipped when empty. `unlicensed` is record-only in
+    this cut.
+  - D-UM-41 is pinned.
+- **`unlawful` on `Fired` and an `Armed` line**, from one rule.
+
+**Moved:**
+- The cores and governed-hardware content digests.
+- **The production refit policy's digest, its four action descriptors' references, and the tactics
+  root set (3 → 6).** These matter for the next dev2 redeploy on its kept store.
+- Two core-count test pins (3 → 6, 4 → 7).
+
+**Split and owed:**
+- **M8b-2**: the heirloom and grey dies, meaning their issue actions, a second die input and a
+  second integration site.
+- **To M8e**, two tests: a real `+tv` drive and mine by a fitted rig, which needs a cored-rig
+  excursion harness, and the IC audit over a retained unfiled-draft record.
+- The launch composes no ungoverning shop (§4).
+
+### M8d — the consequences (building)
+
+Seizure is split to **M8d2** (§5). M8d carries:
+- the unwarranted finding, its canon line and the three fact keys;
+- the Red Dies front;
+- the sanction fine and `@registry/fine`;
+- `RevokedPrincipal`;
+- the cover exclusion.
+
+### M8e — the sealed mind aboard, doc 23 S.4a (PR #93, merged 2026-10-29 as `913e29dd`)
+
+The cut is `f84511ae`, with fix round 1 folded in, plus a merge of main. It follows the owner's
+option C.
+
+Review: one Opus lens found no blocker. Fix round 1 then made owner licences seal, stopped a seal
+that fell to the ROM from writing a mark, and tested the filed-path refusals in a commerce world
+without poisoning the commit.
+
+**What landed:**
+- **`+tv/<n> launch mind=<filed:N|draft:name> [org=<org>]`.** The held filed mind seals with the
+  licence's real state, for both paid and owner licences.
+- **The licence state decides the seal.** Lapsed or revoked seals Doctrine and tells only the
+  operator. A funded transfer refuses with D-UM-40's sentence, which the owner approved.
+- **The seal mark** is written in the finish's bundle for a mind that flew.
+- **The ungoverned rig's unfiled draft** seals with its `admissions`.
+- **The cored-rig excursion harness**, with fitted rigs and the market together, and M8b's owed
+  real `+tv` drive and mine.
+
+**Not built (S.4b):** the claim Open/Close, the pool seat and the `abi` drop on resume.
+
+**Owed to M8g:** six world tests that need a filed, rated, licensed mind on a port world.
+
+**Known limits:**
+- No recall bit reaches the seal, so a recalled revision reads as no licence.
+- `pending` arises only from a sale.
+
+### M8f — procurement (building)

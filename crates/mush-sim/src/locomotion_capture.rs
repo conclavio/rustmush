@@ -3,6 +3,7 @@
 //! A move overlays only the actor's actual Core location. It does not create a
 //! placement row or repair a canonical projection. This separate family and its
 //! digest domains leave structural personnel history byte-for-byte unchanged.
+use mush_core::locomotion::composed::{ComposedLocomotionReader, ComposedLocomotionReceipt};
 use std::collections::BTreeSet;
 
 use mush_core::locomotion::scene_transition::{
@@ -28,6 +29,7 @@ use crate::personnel_capture::CaptureFacts;
 
 const FAMILY: &str = "locomotion_crossings";
 const SCENE_FAMILY: &str = "locomotion_scene_crossings";
+const COMPOSED_FAMILY: &str = "composed_locomotion_crossings";
 const MAX_BYTES: usize = 128 * 1024;
 const MAX_CROSSINGS: usize = 256;
 const MAX_ACTORS: usize = 256;
@@ -129,6 +131,20 @@ pub(crate) fn capture_digest(
         .map_err(|_| ParticipantError::Encoding)
 }
 
+pub(super) fn composed_capture_digest(
+    prepared_at: &ClockStamp,
+    before_ancestry_digest: &DefinitionDigest,
+    after_ancestry_digest: &DefinitionDigest,
+    crossings: &[Crossing],
+) -> Result<DefinitionDigest, ParticipantError> {
+    check_material(prepared_at, crossings)?;
+    DefinitionDigest::for_canonical_value_with_limit(
+        "sim.composed_locomotion.capture.v1", &json!({"prepared_at":prepared_at,
+            "before_ancestry_digest":before_ancestry_digest,"after_ancestry_digest":after_ancestry_digest,
+            "crossings":crossings}), MAX_BYTES,
+    ).map_err(|_| ParticipantError::ImageLimit)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Coverage {
@@ -168,9 +184,24 @@ struct CrossingBatch {
 enum Protocol {
     Ordinary,
     WithScenes,
+    Composed,
+}
+impl Protocol {
+    fn capture_digest(
+        self,
+        stamp: &ClockStamp,
+        before: &DefinitionDigest,
+        after: &DefinitionDigest,
+        crossings: &[Crossing],
+    ) -> Result<DefinitionDigest, ParticipantError> {
+        match self {
+            Self::Composed => composed_capture_digest(stamp, before, after, crossings),
+            Self::Ordinary | Self::WithScenes => capture_digest(stamp, before, after, crossings),
+        }
+    }
 }
 
-/// A private adapter over the two genuine Core receipts. It cannot admit a
+/// A private adapter over genuine Core receipts. It cannot admit a
 /// caller-built route or substitute one receipt family's authority for another.
 pub(super) trait CrossingReceipt {
     fn commit(&self) -> CommitToken;
@@ -227,6 +258,7 @@ macro_rules! receipt_adapter {
 }
 receipt_adapter!(LocomotionReceipt);
 receipt_adapter!(SceneLocomotionReceipt);
+receipt_adapter!(ComposedLocomotionReceipt);
 
 fn exact_definitions(
     action: &DefinitionRef,
@@ -274,6 +306,30 @@ fn exact_scene_definitions(
     Ok(())
 }
 
+fn exact_composed_definitions(
+    action: &DefinitionRef,
+    participant: &DefinitionRef,
+) -> Result<(), ParticipantError> {
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let owner = OwnerId::new("sim").map_err(|_| refused())?;
+    let expected_action = definitions
+        .register(
+            owner.clone(),
+            mush_core::locomotion::composed::action_descriptor().map_err(|_| refused())?,
+        )
+        .map_err(|_| refused())?;
+    let expected_participant = definitions
+        .register(
+            owner,
+            crate::locomotion_composed::participant_descriptor().map_err(|_| refused())?,
+        )
+        .map_err(|_| refused())?;
+    if action != &expected_action || participant != &expected_participant {
+        return Err(refused());
+    }
+    Ok(())
+}
+
 impl CrossingBatch {
     fn validate(&self) -> Result<(), ParticipantError> {
         self.validate_with(Protocol::Ordinary)
@@ -283,12 +339,13 @@ impl CrossingBatch {
         match protocol {
             Protocol::Ordinary => exact_definitions(&self.action, &self.participant)?,
             Protocol::WithScenes => exact_scene_definitions(&self.action, &self.participant)?,
+            Protocol::Composed => exact_composed_definitions(&self.action, &self.participant)?,
         }
         if self.format != 1
             || self.actor == self.destination
             || (self.exit.is_none() && self.source == Some(self.destination))
             || self.capture_digest
-                != capture_digest(
+                != protocol.capture_digest(
                     &self.prepared_at,
                     &self.before_ancestry_digest,
                     &self.after_ancestry_digest,
@@ -409,6 +466,37 @@ impl LocomotionCrossings {
         })
     }
 
+    pub(super) fn register_composed(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
+        let id =
+            |suffix| CanonicalId::new(format!("sim.{COMPOSED_FAMILY}.{suffix}.v1")).map_err(bad);
+        let descriptor = StateFamilyDescriptor::new(
+            StateFamilyId::new(COMPOSED_FAMILY).map_err(bad)?,
+            id("key")?,
+            id("value")?,
+            1,
+            id("decode")?,
+            id("validate")?,
+            id("canonical")?,
+        )
+        .and_then(|descriptor| descriptor.with_limits(128, MAX_BYTES))
+        .map_err(bad)?;
+        let records = reg.state_family(
+            descriptor,
+            |key: &CommitToken| Ok(key.to_string()),
+            |value: &Value| decode_with(value, Protocol::Composed),
+            |batch: &CrossingBatch| {
+                batch
+                    .validate_with(Protocol::Composed)
+                    .map_err(|e| e.to_string())
+            },
+            |batch: &CrossingBatch| encoded(batch).map_err(|e| e.to_string()),
+        )?;
+        Ok(Self {
+            records,
+            protocol: Protocol::Composed,
+        })
+    }
+
     pub(crate) fn append(
         &self,
         txn: &mut ActionTxn<'_>,
@@ -416,7 +504,7 @@ impl LocomotionCrossings {
         facts: &CaptureFacts,
     ) -> Result<(), ParticipantError> {
         if facts.capture_digest
-            != capture_digest(
+            != self.protocol.capture_digest(
                 &facts.prepared_at,
                 &facts.before_ancestry_digest,
                 &facts.after_ancestry_digest,
@@ -451,6 +539,55 @@ impl LocomotionCrossings {
         txn.insert(&self.records, &receipt.commit(), batch)
             .map_err(|_| refused())?;
         Ok(())
+    }
+
+    pub(super) fn audit_composed(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        reader: &ComposedLocomotionReader,
+    ) -> Result<(), ParticipantError> {
+        let mut cursor = None;
+        let mut count = 0_usize;
+        loop {
+            let page = ctx
+                .scan_action_state(&self.records, cursor.as_deref(), 128)
+                .map_err(|_| refused())?;
+            for entry in page.entries() {
+                count = count.checked_add(1).ok_or_else(refused)?;
+                if count > mush_core::action_state::MAX_ACTION_STATE_BOOT_RECORDS
+                    || entry.encoded_key() != entry.value().commit.to_string()
+                {
+                    return Err(refused());
+                }
+                let receipt = reader
+                    .read_receipt(ctx, &entry.value().commit)?
+                    .ok_or_else(refused)?;
+                entry.value().matches_receipt(&receipt, self.protocol)?;
+            }
+            cursor = page.next_after().map(ToString::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        cursor = None;
+        count = 0;
+        loop {
+            let page = reader.scan_receipts(ctx, cursor.as_deref(), 128)?;
+            for receipt in page.entries() {
+                count = count.checked_add(1).ok_or_else(refused)?;
+                if count > mush_core::action_state::MAX_ACTION_STATE_BOOT_RECORDS {
+                    return Err(refused());
+                }
+                ctx.action_state(&self.records, &receipt.commit())
+                    .map_err(|_| refused())?
+                    .ok_or_else(refused)?
+                    .matches_receipt(receipt, self.protocol)?;
+            }
+            cursor = page.next_after().map(ToString::to_string);
+            if cursor.is_none() {
+                return Ok(());
+            }
+        }
     }
 
     /// Every current ordinary receipt requires its exact immutable capture,

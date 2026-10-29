@@ -1,11 +1,19 @@
 # 22. The unit kit — what a new unit defines
 
+**Draft 0.4 — 2026-10-28, D-22-9 format & 8-way sensor facing landed.** `mush_pixel::look` raises
+`SPRITE_MAX` to 96, expands `Facing` to all eight directions (`front`, `front_right`, `right`,
+`rear_right`, `rear`, `rear_left`, `left`, `front_left`), accepts all eight facings plus optional
+per-facing `wreck` in `Look::parse` while keeping 3/4-facing hand-drawn sheets valid with
+nearest-cardinal fallback (`Facing::cardinal`), and `tacsim` adds 8-way `facing` (`ContactFacing`)
+on `FrameContact` and `arena.cockpit` contacts alongside 4-way `aspect` (kept for armour facets and
+unit minds).
+
 **Draft 0.3 — 2026-10-28, the sheet decision (D-22-9).** A throwaway PoC baked a licensed 3D mech
 (the owner's Unity assets) into sheets and into voxel models and drew both in the raycaster
 ([22-cut-notes.md](22-cut-notes.md) "Sprite vs voxel PoC"): voxels cost ten to twenty times the
 draw time for the same bytes on the wire. The owner confirmed units stay **sprites, not models**,
 and locked the sheet at **eight facings, six poses, 96 pixels** (D-22-9, superseding D-22-4's
-numbers). The format and code changes it needs are owed (§3.2).
+numbers).
 
 **Draft 0.2 — 2026-10-22, U.1–U.3 as built.** The frame names your team and every classified
 contact's type; bodies are drawn in team colour; four looks ship with dolls (tank, scout, biped,
@@ -147,16 +155,18 @@ the form a player-designed unit is written in; a PNG importer can produce it lat
   unless the sheet gives it; for each facing one `still` frame and two to four `moving` frames
   (the tread or walk cycle, played while the contact is moving); one `wreck` frame (or one a
   facing); a muzzle point a weapon a facing, where a shot's flash is drawn.
-- **Superseded by D-22-9 (2026-10-28): eight facings, six poses, 96 pixels.** Every sheet gives
+- **Superseded by D-22-9 (2026-10-28): eight facings, six poses, 96 pixels.** Every baked sheet gives
   all eight facings — `front`, `front_right`, `right`, `rear_right`, `rear`, `rear_left`, `left`,
   `front_left` — each its own art, never a mirror (a unit's weapons are not symmetric: a mirrored
   left moves the cannon to the other arm); six poses a facing: `still`, a four-frame `moving` cycle,
-  and a `wreck`; frames 96 by 96 (`SPRITE_MAX` rises from 64), drawn for a larger picture than
+  and a `wreck` (either per-facing `facings.<dir>.wreck` or up to eight top-level `wreck` frames);
+  frames up to 96 by 96 (`SPRITE_MAX` is 96), drawn for a larger picture than
   today's 640-wide frame and for the web's canvas. Sheets are produced by the bake pipeline
-  (`scripts/unit-bake/`) from 3D models, hand-drawn sheets remain valid input. **Owed**: the format
-  and `Facing` grow the diagonals; the cockpit frame carries an eight-way aspect so the picture can
-  pick a diagonal — the sensor question this bullet's predecessor reserved, ruled by the owner on
-  2026-10-28: a viewer is told which of eight faces a contact shows. The text below is the rule as U.3 built it.
+  (`scripts/unit-bake/`) from 3D models; 3/4-facing hand-drawn sheets remain valid input and fall
+  back to their nearest cardinal facing (`Facing::cardinal`) when asked for a diagonal. The cockpit
+  frame carries an eight-way `facing` (`ContactFacing`) alongside four-way `aspect` (which stays
+  four-way for armour facets and unit minds) so `cockpit::contacts_as_sprites` picks the exact
+  diagonal when present. The text below is the rule as U.3 built it.
 - **Four facings now, room for eight** (D-22-4): the sim tells a viewer only which face a contact
   was showing — `aspect`, front/left/right/rear off the plot, by design — so four is what a sheet
   can be chosen by. The format names facings by word; `front_left` and the other diagonals are

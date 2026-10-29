@@ -63,10 +63,10 @@ use crate::arena::mind::SORTIE_MATCH_END;
 use crate::arena::motion::integrate;
 use crate::arena::motor::MotorCounters;
 use crate::arena::perception::{
-    Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, FrameOrder, Named, Notice,
-    NoticeKind, PerceptionCounters, RefusalDetail,
+    Aspect, ContactFacing, FrameCondition, FrameContact, FrameNotice, FrameOdds, FrameOrder, Named,
+    Notice, NoticeKind, PerceptionCounters, RefusalDetail,
 };
-use crate::arena::resolution::facet_band_seen;
+use crate::arena::resolution::{facet_band_seen, facing_band_seen};
 use crate::arena::state::{
     ActionHash, Arena, Classification, ContactId, Controller, DueEvent, DueKind, EndReason,
     MatchEnd, Power, SPENT_NOTICE_MS, StopReason, Team,

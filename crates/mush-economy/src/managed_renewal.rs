@@ -447,6 +447,8 @@ fn contract(record: &history::OfferRecord) -> Result<EconomicContract, Participa
         pending: None,
         roles: ContractRoles::default(),
         revision: if record.closure.is_some() { 2 } else { 1 },
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     })
 }
 

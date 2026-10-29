@@ -84,6 +84,25 @@ type CommerceFactory =
 #[derive(Clone, Default)]
 struct Roster {
     commerce: Option<CommerceFactory>,
+    /// **Doc 17h cut M8e E6a, the hardware-configured roster**: the tactics module over the
+    /// whole fitted catalog (the fielded units, the line and the rig roots) and the layer
+    /// registering it (`with_fitted_catalog`), so staff may bind a leased rig to a cored root
+    /// (`fit`). No refit machinery is composed. Under a mind commerce too (fix round 1, J1):
+    /// the commerce's layer and its prepared catalog are the fitted ones
+    /// (`reboot_with_inspection`).
+    fitted: bool,
+}
+
+/// **The whole fitted catalog's tactics module** (doc 17h cut M8e E6a): the rig family over
+/// the line family over the fielded catalog, with the production sensor policy.
+fn fitted_tactics() -> mush_tactics::TacticsModule {
+    use tacsim::definitions::Catalog;
+    use tacsim::definitions::core_replacement::{GovernedLineCores, SurfaceRigCores};
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded catalog builds");
+    let line = GovernedLineCores::build(fielded).expect("the line family builds");
+    let rig = SurfaceRigCores::build(line.catalog().clone()).expect("the rig family builds");
+    mush_tactics::TacticsModule::with_catalog(rig.catalog().units.clone())
+        .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy))
 }
 
 impl Roster {
@@ -115,19 +134,52 @@ impl Roster {
                 &game,
             ),
         };
+        if self.fitted {
+            // Doc 17h cut M8e fix round 1 (J1): under a commerce too, through its IC physical
+            // configuration as the composition root's own tactics module goes.
+            let tactics = match &commerce {
+                Some(commerce) => {
+                    commerce
+                        .configure_ic_physical(fitted_tactics(), mush_sim::SimulationModule::new())
+                        .0
+                }
+                None => fitted_tactics(),
+            };
+            let mut tactics = Some(tactics);
+            for module in &mut mods {
+                if module.name() == "tactics"
+                    && let Some(tactics) = tactics.take()
+                {
+                    *module = Box::new(tactics);
+                }
+            }
+        }
         mods.push(comp::npc_module(comp::npc_agent_adapter()));
         match &commerce {
             Some(commerce) => {
-                let layer = tacsim::TacsimRuleset::with_game_content(cfg, true)
+                let mut layer = tacsim::TacsimRuleset::with_game_content(cfg, true)
                     .with_inventory(inventory)
                     .with_unit_authority()
                     .with_test_world(true);
+                if self.fitted {
+                    layer = layer
+                        .with_fitted_catalog()
+                        .expect("a test world takes the fitted catalog");
+                }
                 mods.push(Box::new(
                     commerce
                         .configure_tacsim(layer)
                         .expect("the commerce configures the test-world layer"),
                 ));
             }
+            None if self.fitted => mods.push(Box::new(
+                tacsim::TacsimRuleset::with_game_content(cfg, true)
+                    .with_inventory(inventory)
+                    .with_unit_authority()
+                    .with_test_world(true)
+                    .with_fitted_catalog()
+                    .expect("a test world takes the fitted catalog"),
+            )),
             None => mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory)),
         }
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
@@ -153,6 +205,8 @@ pub(crate) struct Rig {
     typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
     /// Doc 17h cut M8a: how the next reboot prepares its mind commerce, if any.
     commerce: Option<CommerceFactory>,
+    /// Doc 17h cut M8e E6a: whether every boot composes the fitted roster.
+    fitted: bool,
 }
 
 pub(crate) fn no_refused_writes(tw: &TestWorld) {
@@ -178,7 +232,20 @@ fn with_offer_keys(tw: &mut TestWorld) {
 
 /// Boot, settle and stock every port, at world rate 1 (every IC instant exact).
 pub(crate) fn stocked() -> Rig {
-    let mut tw = TestWorld::with_modules(Roster::default().modules());
+    stocked_with(false)
+}
+
+/// [`stocked`] on the hardware-configured roster (doc 17h cut M8e E6a): the fitted catalog.
+pub(crate) fn stocked_fitted() -> Rig {
+    stocked_with(true)
+}
+
+fn stocked_with(fitted: bool) -> Rig {
+    let roster = Roster {
+        commerce: None,
+        fitted,
+    };
+    let mut tw = TestWorld::with_modules(roster.modules());
     no_refused_writes(&tw);
     with_offer_keys(&mut tw);
     let oracle = Arc::new(MapOracle::default());
@@ -189,6 +256,7 @@ pub(crate) fn stocked() -> Rig {
         store: HashMap::new(),
         typed: BTreeMap::new(),
         commerce: None,
+        fitted,
     };
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
@@ -204,10 +272,12 @@ fn reboot(rig: Rig) -> Rig {
         mut store,
         typed,
         commerce,
+        fitted,
     } = rig;
     fold_module_ops_into(&mut store, tw.take_module_ops());
     let roster = Roster {
         commerce: commerce.clone(),
+        fitted,
     };
     let records = || {
         typed
@@ -261,6 +331,7 @@ fn reboot(rig: Rig) -> Rig {
         store,
         typed,
         commerce,
+        fitted,
     }
 }
 
@@ -310,6 +381,7 @@ pub(crate) fn reboot_with_inspection(
     use tacsim::composition::mind_commerce::MindCommerce;
 
     let mut rig = rig;
+    let fitted = rig.fitted;
     for line in [
         "@org/create Registry",
         "@org/scope create Registry=review",
@@ -356,7 +428,7 @@ pub(crate) fn reboot_with_inspection(
         let issuer = issuer.clone();
         let policy = policy.clone();
         move |mode: CommerceMode| -> MindCommerce {
-            let layer = tacsim::TacsimRuleset::with_game_content(
+            let mut layer = tacsim::TacsimRuleset::with_game_content(
                 TacsimConfig {
                     enabled: true,
                     ..TacsimConfig::default()
@@ -364,6 +436,12 @@ pub(crate) fn reboot_with_inspection(
                 true,
             )
             .with_test_world(true);
+            // Fix round 1 (J1): a fitted roster's commerce is prepared over the fitted catalog.
+            if fitted {
+                layer = layer
+                    .with_fitted_catalog()
+                    .expect("a test world takes the fitted catalog");
+            }
             let commerce = MindCommerce::prepare(
                 &layer,
                 mode,
@@ -2044,6 +2122,7 @@ fn stocked_keyed() -> Rig {
         store: HashMap::new(),
         typed: BTreeMap::new(),
         commerce: None,
+        fitted: false,
     };
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
@@ -2696,6 +2775,7 @@ fn sm3b_a_rig_on_the_ground_holds_the_revoke() {
         reserved_cu: 0,
         params: ActParams::None {},
         by: None,
+        seal: None,
     });
     let held = format!(
         "{}{}",

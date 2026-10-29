@@ -993,6 +993,8 @@ impl MindCommerce {
         }
         let catalog = layer.definition_catalog()?;
         self.state.registry.check(layer.config(), &catalog)?;
+        // Doc 17h cut M8e E4: the seal-mark ring's writer, the Roll's cell, for the finish.
+        layer.seal_marks = Some(self.state.roll.seal_mark_writer());
         if self.state.mode == CommerceMode::Active {
             layer = if self.state.entitlements.is_some() {
                 layer.with_mind_entitlement_holdings(self.manifest().clone())

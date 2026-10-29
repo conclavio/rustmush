@@ -592,6 +592,12 @@ pub struct Act {
     /// Skipped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<ActBy>,
+    /// **The mind sealed aboard at the dispatch** (doc 17h cut M8e E4; doc 23 S.4a): a launch's
+    /// `mind=` seal over a cored rig, taken at the start, which the finish's open line prints
+    /// in place of the ROM seal. Boxed: the record rides many a tick's frame (the M7 stack-size
+    /// lint). Skipped when `None` (schema 1 stands: pre-launch, no migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seal: Option<Box<crate::surface::dispatch::DispatchSeal>>,
 }
 
 /// **The sortie identity** (§4.3; D-UM-45): `(tv, launch_ic)` — the bay is the hangar.
@@ -2508,6 +2514,7 @@ mod tests {
             reserved_cu: 0,
             params,
             by: None,
+            seal: None,
         }
     }
 

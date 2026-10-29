@@ -50,6 +50,7 @@ mod commands;
 mod data;
 pub mod movement;
 mod movement_audit;
+pub mod movement_composed;
 pub mod movement_participant;
 mod panel;
 
@@ -115,6 +116,7 @@ pub type SealerGate = Arc<dyn Fn(&World, u64, ObjId) -> bool + Send + Sync>;
 pub struct ScenesModule {
     sealer_gate: Option<SealerGate>,
     atomic_movement: Option<Arc<OnceLock<SceneLocomotionReader>>>,
+    composed_movement: Option<Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>>,
 }
 
 impl ScenesModule {
@@ -124,6 +126,7 @@ impl ScenesModule {
         ScenesModule {
             sealer_gate: None,
             atomic_movement: None,
+            composed_movement: None,
         }
     }
 
@@ -148,6 +151,17 @@ impl ScenesModule {
         reader: Arc<OnceLock<SceneLocomotionReader>>,
     ) -> ScenesModule {
         self.atomic_movement = Some(reader);
+        self
+    }
+
+    /// Register the real transcript owner for the composition-bound protocol.
+    /// Sim's composition supplies this owner's scoped receipt reader.
+    #[must_use]
+    pub fn with_composed_movement(
+        mut self,
+        reader: Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>,
+    ) -> Self {
+        self.composed_movement = Some(reader);
         self
     }
 }
@@ -216,8 +230,12 @@ impl GameModule for ScenesModule {
             reg.subscribe(WorldEventKind::Said { kind }, Arc::new(on_said));
         }
         reg.subscribe_moved("scene_movement_transcript", 1, Arc::new(on_moved))?;
-        if self.atomic_movement.is_some() {
-            movement_participant::register(reg)?;
+        if self.atomic_movement.is_some() || self.composed_movement.is_some() {
+            movement_participant::register(
+                reg,
+                self.atomic_movement.is_some(),
+                self.composed_movement.is_some(),
+            )?;
         }
         // Mechanical resolutions (dice rolls) recorded into the scene log.
         reg.subscribe(WorldEventKind::Rolled, Arc::new(on_rolled));
@@ -252,7 +270,9 @@ impl GameModule for ScenesModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
-        if self.atomic_movement.is_some() && !data.omitted.is_empty() {
+        if (self.atomic_movement.is_some() || self.composed_movement.is_some())
+            && !data.omitted.is_empty()
+        {
             return Err(ModError::RetryFullFetch {
                 module: NS.into(),
                 reason: "Scenes movement audit requires the complete transcript history".into(),
@@ -261,13 +281,28 @@ impl GameModule for ScenesModule {
         // J1: share one structural inspection across the movement receipt
         // audit and live-tail restoration; it retains indices and open tails.
         let history = mush_core::inspect_ledger(&data.ledger, None);
-        if let Some(reader) = &self.atomic_movement {
-            let reader = reader.get().ok_or_else(|| {
-                ModError::msg(
-                    "Scenes atomic movement reader was not supplied by the Sim composition",
-                )
-            })?;
-            movement_audit::audit_boot(ctx, &data, &history, reader)?;
+        let atomic = self
+            .atomic_movement
+            .as_ref()
+            .map(|reader| {
+                reader.get().ok_or_else(|| {
+                    ModError::msg(
+                        "Scenes atomic movement reader was not supplied by the Sim composition",
+                    )
+                })
+            })
+            .transpose()?;
+        let composed =
+            self.composed_movement
+                .as_ref()
+                .map(|reader| {
+                    reader.get().ok_or_else(|| {
+            ModError::msg("Scenes composed movement reader was not supplied by the Sim composition")
+        })
+                })
+                .transpose()?;
+        if atomic.is_some() || composed.is_some() {
+            movement_audit::audit_boot(ctx, &data, &history, atomic, composed)?;
         }
         load_boot(ctx, data, &history)
     }

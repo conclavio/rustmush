@@ -279,6 +279,11 @@ pub struct TacsimStore {
     /// never be one. It relaxes the readiness report's world-rate line and
     /// registers the port tick's probe (doc 18 cut IC5), and nothing else.
     pub(crate) test_world: bool,
+    /// **Doc 17h cut M8e E4**: the Roll's seal-mark ring writer, the cell a mind commerce
+    /// composes ([`mush_roll::commerce::module::CommerceConfig::seal_mark_writer`]); the surface
+    /// finish appends a launch's mark through it in its own bundle. RAM only; `None` with no
+    /// commerce, when nothing is marked.
+    pub(crate) seal_marks: Option<mush_roll::commerce::seal_marks::SealMarkWriter>,
     /// **Doc 18 cut IC5** (§4.4 "Failure handling"; lead ruling L10) —
     /// `tacsim:notice:{obj}`: each player's queued reconnect notices
     /// ([`crate::port_tick::NoticeQueue`]), rendered once on `Connected` and then

@@ -387,6 +387,8 @@ fn contract(
         pending: None,
         roles: ContractRoles::default(),
         revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     })
 }
 

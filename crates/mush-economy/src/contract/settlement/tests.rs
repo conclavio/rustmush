@@ -161,6 +161,8 @@ fn fixture() -> Result<(EconomySnapshot, EconomicContract), Box<dyn std::error::
         pending: None,
         roles: ContractRoles::default(),
         revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
     };
     reoffer(&mut contract);
     snapshot.put_contract(contract.clone());

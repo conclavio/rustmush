@@ -541,6 +541,20 @@ impl ParticipantRegistry {
                 })
         })
     }
+
+    /// Completion coverage must resolve the declared concrete adapter, not just
+    /// another adapter publishing the same-shaped metadata.
+    pub(crate) fn grants_exact_type(
+        &self,
+        adapter_type: TypeId,
+        definition: &DefinitionRef,
+        requester: &OwnerId,
+        action: &DefinitionRef,
+    ) -> bool {
+        self.registrations.iter().any(|registration| {
+            registration.adapter_type == adapter_type && registration.definition == *definition
+        }) && self.grants_exact(definition, requester, action)
+    }
 }
 
 pub(crate) struct ParticipantPreparation<'a> {
@@ -550,6 +564,13 @@ pub(crate) struct ParticipantPreparation<'a> {
     images: &'a mut OwnerImages,
     shell: &'a mut Option<crate::core_output::image::BuiltinObjects>,
     invocation: &'a ActionInvocation,
+}
+
+#[derive(Clone, Copy)]
+enum ImagePermit<'a> {
+    Ordinary,
+    Scenes(&'a DefinitionRef),
+    Composed(&'a crate::locomotion::composed::ComposedMovementPermit),
 }
 impl<'a> ParticipantPreparation<'a> {
     pub(crate) fn matches_preparation(
@@ -638,6 +659,73 @@ impl<'a> ParticipantPreparation<'a> {
         };
         self.registry
             .prepare(handle, self.provider, &context, self.images, request)
+    }
+
+    pub(crate) fn prepare_composed_participant<P: OwnerParticipant>(
+        &mut self,
+        handle: &ParticipantHandle<P>,
+        commit: CommitToken,
+        request: P::Request,
+        permit: &crate::locomotion::composed::ComposedMovementPermit,
+    ) -> Result<P::Output, ParticipantError> {
+        let context = OwnerPrepareContext {
+            world: self.world,
+            invocation: self.invocation,
+            action: self.provider.action(),
+            commit_token: commit,
+        };
+        self.registry.prepare_inner(
+            handle,
+            self.provider,
+            &context,
+            self.images,
+            request,
+            ImagePermit::Composed(permit),
+        )
+    }
+    pub(crate) fn composed_writes(
+        &self,
+        participant: &DefinitionRef,
+    ) -> Result<&[ReplayWrite], ParticipantError> {
+        self.images
+            .0
+            .iter()
+            .find(|image| &image.definition == participant)
+            .map(|image| image.writes.as_slice())
+            .ok_or(ParticipantError::Authority)
+    }
+    pub(crate) fn require_composed_images(
+        &self,
+        permit: &crate::locomotion::composed::ComposedMovementPermit,
+        action: &DefinitionRef,
+        commit: CommitToken,
+    ) -> Result<(), ParticipantError> {
+        permit.check(action)?;
+        self.images
+            .require_exact_composed(&permit.participants, action, commit)
+    }
+    pub(crate) fn prepare_composed_locomotion(
+        &mut self,
+        service: &crate::locomotion::composed::ComposedLocomotion,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        admission: &crate::locomotion::LocomotionAdmission,
+        base: &crate::action_state::ActionReadBase,
+        provider: &crate::action::ProviderRegistrationOrdinal,
+    ) -> Result<crate::locomotion::composed::ComposedLocomotionReceipt, ParticipantError> {
+        if self.shell.is_some() || !self.images.is_empty() {
+            return Err(ParticipantError::Authority);
+        }
+        let world = self.world;
+        let invocation = self.invocation;
+        let action = self.provider.action().clone();
+        let (receipt, image) = service.prepare(
+            self, world, invocation, &action, commit, txn, admission, base, provider,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Locomotion(
+            Box::new(image),
+        ));
+        Ok(receipt)
     }
 
     pub(crate) fn initialize_core_outputs<P: crate::core_output::CoreOutputPolicy>(
@@ -964,7 +1052,7 @@ impl<'a> ParticipantPreparation<'a> {
             &context,
             self.images,
             scenes_intent,
-            Some(&service.scenes_participant),
+            ImagePermit::Scenes(&service.scenes_participant),
         )?;
         if !self.matches_preparation(&sim.binding, commit)
             || !self.matches_preparation(&scenes.binding, commit)
@@ -1106,7 +1194,14 @@ impl ParticipantRegistry {
         images: &mut OwnerImages,
         request: P::Request,
     ) -> Result<P::Output, ParticipantError> {
-        self.prepare_inner(handle, provider, context, images, request, None)
+        self.prepare_inner(
+            handle,
+            provider,
+            context,
+            images,
+            request,
+            ImagePermit::Ordinary,
+        )
     }
 
     fn prepare_inner<P: OwnerParticipant>(
@@ -1116,7 +1211,7 @@ impl ParticipantRegistry {
         context: &OwnerPrepareContext<'_>,
         images: &mut OwnerImages,
         request: P::Request,
-        empty_scenes: Option<&DefinitionRef>,
+        permit: ImagePermit<'_>,
     ) -> Result<P::Output, ParticipantError> {
         if !Arc::ptr_eq(&handle.composition, &self.composition)
             || handle.action != *provider.action()
@@ -1148,6 +1243,22 @@ impl ParticipantRegistry {
             .ic_claim
             .as_ref()
             .filter(|(actions, _)| actions.contains(provider.action()));
+        let composed = if let ImagePermit::Composed(composed) = permit {
+            composed.check(context.action)?;
+            if !composed.participants.contains(&r.definition)
+                || images.0.iter().any(|image| {
+                    !composed.participants.contains(&image.definition)
+                        || image.action != *context.action
+                        || image.commit_token != context.commit_token
+                        || image.invocation != *context.invocation
+                })
+            {
+                return Err(ParticipantError::Authority);
+            }
+            Some(composed)
+        } else {
+            None
+        };
         if let Some((_, participants)) = ic
             && (!participants.contains(&r.definition)
                 || images.0.iter().any(|image| {
@@ -1156,7 +1267,12 @@ impl ParticipantRegistry {
         {
             return Err(ParticipantError::Authority);
         }
-        let (max_images, max_modules) = if ic.is_some() {
+        let (max_images, max_modules) = if composed.is_some() {
+            (
+                crate::locomotion::composed::MAX_COMPOSED_OWNERS,
+                crate::locomotion::composed::MAX_COMPOSED_OWNERS,
+            )
+        } else if ic.is_some() {
             (4, 4)
         } else {
             (MAX_OWNER_PARTICIPANT_IMAGES, MAX_OWNER_PARTICIPANT_MODULES)
@@ -1184,13 +1300,17 @@ impl ParticipantRegistry {
             .participant_slot(r.state_type)
             .ok_or(ParticipantError::Slot)?;
         let prepared = r.adapter.prepare(state, context, Box::new(request))?;
-        let allow_empty = empty_scenes.is_some_and(|allowed| {
-            allowed == &r.definition
-                && allowed.key().owner.as_str() == "scenes"
-                && allowed.key().id.as_str()
-                    == crate::locomotion::scene_transition::SCENES_PARTICIPANT
-                && crate::locomotion::scene_transition::exact_action(context.action).is_ok()
-        });
+        let allow_empty = match permit {
+            ImagePermit::Ordinary => false,
+            ImagePermit::Composed(composed) => composed.permits_empty(&r.definition),
+            ImagePermit::Scenes(allowed) => {
+                allowed == &r.definition
+                    && allowed.key().owner.as_str() == "scenes"
+                    && allowed.key().id.as_str()
+                        == crate::locomotion::scene_transition::SCENES_PARTICIPANT
+                    && crate::locomotion::scene_transition::exact_action(context.action).is_ok()
+            }
+        };
         if (prepared.writes.is_empty() && !allow_empty)
             || prepared.writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES
         {
@@ -1269,6 +1389,32 @@ impl fmt::Debug for OwnerImages {
 }
 
 impl OwnerImages {
+    pub(crate) fn require_exact_composed(
+        &self,
+        participants: &[DefinitionRef],
+        action: &DefinitionRef,
+        commit: CommitToken,
+    ) -> Result<(), ParticipantError> {
+        if participants.is_empty()
+            || participants.len() > crate::locomotion::composed::MAX_COMPOSED_OWNERS
+            || self.0.len() != participants.len()
+            || participants.iter().collect::<BTreeSet<_>>().len() != participants.len()
+            || self
+                .0
+                .iter()
+                .any(|image| image.action != *action || image.commit_token != commit)
+            || participants.iter().any(|reference| {
+                self.0
+                    .iter()
+                    .filter(|image| &image.definition == reference)
+                    .count()
+                    != 1
+            })
+        {
+            return Err(ParticipantError::Authority);
+        }
+        Ok(())
+    }
     pub(crate) fn require_exact_physical(
         &self,
         participant: &DefinitionRef,
@@ -1423,6 +1569,21 @@ impl OwnerImages {
             Ok::<(), ParticipantError>(())
         };
         require_ready()?;
+        if self.0.len() > 4 {
+            if self.0.len() > crate::locomotion::composed::MAX_COMPOSED_OWNERS {
+                return Err(ParticipantError::ImageLimit);
+            }
+            let captures: Vec<_> = self.0.iter().map(|image| &image.capture).collect();
+            let states = slots
+                .get_erased_movement_mut(&captures)
+                .map_err(|_| ParticipantError::Slot)?;
+            let mut bound = Vec::with_capacity(self.0.len());
+            for (image, state) in self.0.into_iter().zip(states) {
+                bound.push(image.adapter.bind(state, image.patch)?);
+            }
+            require_ready()?;
+            return Ok(BoundOwners::Many(bound));
+        }
         let mut rows = self.0.into_iter();
         let first = rows.next();
         let second = rows.next();
@@ -1491,6 +1652,7 @@ impl OwnerImages {
 }
 
 pub(crate) enum BoundOwners<'a> {
+    Many(Vec<Box<dyn ErasedBound + 'a>>),
     Four(
         Box<dyn ErasedBound + 'a>,
         Box<dyn ErasedBound + 'a>,
@@ -1509,6 +1671,11 @@ pub(crate) enum BoundOwners<'a> {
 impl BoundOwners<'_> {
     pub(crate) fn apply(self) {
         match self {
+            Self::Many(rows) => {
+                for row in rows {
+                    row.apply();
+                }
+            }
             Self::Four(a, b, c, d) => {
                 a.apply();
                 b.apply();
@@ -1893,7 +2060,7 @@ mod tests {
                     after: 11,
                     refuse: false
                 },
-                Some(&definition)
+                ImagePermit::Scenes(&definition)
             ),
             Err(ParticipantError::ImageLimit)
         ));

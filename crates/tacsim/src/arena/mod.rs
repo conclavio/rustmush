@@ -404,12 +404,13 @@ pub use motor::{
 pub use observer::{Observer, ObserverUnit};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
-    Aspect, DriveOutcome, FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact, FrameOdds,
-    FrameOrder, MindObjective, Named, PerceptionCounters, SensorProfile, SignatureFactor,
-    ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
+    Aspect, ContactFacing, DriveOutcome, FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact,
+    FrameOdds, FrameOrder, MindObjective, Named, PerceptionCounters, SensorProfile,
+    SignatureFactor, ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
 };
 pub use resolution::{
-    BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,
+    BandProfile, Consequence, DIRECT_BANDS, FACING_BANDS, Resolution, SectionProfile, UnitProfile,
+    facet_band, facing_band_seen,
 };
 pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
 pub use slope::{

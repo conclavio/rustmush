@@ -2,18 +2,25 @@
 //! spike of 2026-10-21.
 //!
 //! One [`Frame`], drawn by a [`picture::Picture`] from the per-observer
-//! feeds a renderer already holds, and encoded for what the client proved it
-//! can show. Today: a first-person view of the arena streamed to a terminal
-//! that speaks the kitty graphics protocol or draws sixel. The pieces, each pure and
-//! testable on its own:
+//! feeds a renderer already holds, and shown where the client runs: streamed
+//! to an SSH terminal over the kitty graphics protocol or as DEC sixel, sent
+//! as a PNG over the web gateway's socket fallback (G.3a/G.3c), or drawn
+//! locally into an HTML canvas by the browser's WebAssembly module
+//! (`mush-pixel-wasm`, G.3b). Both bucket-A cameras (first-person cockpit and
+//! overhead) and bucket-B diagrams (orbital chart, armour doll, match replay)
+//! share the same [`picture`] seam. The pieces, each pure and testable on its
+//! own:
 //!
 //! - [`picture`]: the seam a renderer drives — a producer with its
 //!   instruments and its clock, reading feeds by name.
 //! - [`caps`]: what the terminal proved (the DA1 attributes, the graphics
 //!   record) and the encoder that follows from it.
-//! - [`raycast`]: a Wolfenstein-style software raycaster over the arena's
-//!   2D cell grid (open / wall / woods / water / road), with the other units
-//!   as distance-scaled billboard sprites, drawing into an RGB [`Frame`].
+//! - [`heightfield`]: the voxel-space producer for ground with relief
+//!   (G.7a/G.7b, the cockpit's default where the map carries heights), with
+//!   the other units as distance-scaled billboard sprites.
+//! - [`raycast`]: a Wolfenstein-style software raycaster over a flat 2D
+//!   arena grid (open / wall / woods / water / road) and the shared billboard
+//!   sprite renderer, drawing into an RGB [`Frame`].
 //! - [`png`]: a minimal PNG encoder (palette when the frame has at most 256
 //!   colours, which the raycaster guarantees by construction; truecolor
 //!   otherwise). IDAT is zlib via `flate2`.

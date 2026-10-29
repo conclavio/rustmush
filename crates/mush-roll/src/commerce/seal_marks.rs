@@ -18,14 +18,15 @@
 //! `minds.licence.unattestable` (`facts::reader`), which an E4 contract
 //! condition may read exactly as it reads `licence.lapsed`.
 //!
-//! **Writer.** The one writer is the action `record_licence_seal_mark`,
-//! never wrapped by a player command. It is gated on the Registry's own
-//! capability word [`SEAL_MARK_CAPABILITY`] (M8c F7): GOD passes, as
-//! everywhere, and so does a live character granted the word on the root
-//! scope of an organisation that granted it (a LIVE `mush_org` ask, no
-//! amount). M8c ships no production writer: M8e's black-box participant
-//! records marks on the surface finish (submitted as the operator); until
-//! then the ring is written only by tests. The refusal that quotes a mark
+//! **Writers.** Two, both through the one `push_mark`: the action
+//! `record_licence_seal_mark`, never wrapped by a player command, gated on
+//! the Registry's own capability word [`SEAL_MARK_CAPABILITY`] (M8c F7: GOD
+//! passes, as everywhere, and so does a live character granted the word on
+//! the root scope of an organisation that granted it, a LIVE `mush_org` ask
+//! with no amount); and (doc 17h cut M8e) the surface finish
+//! `tacsim_surface_done`, submitted as the operator, which appends the mark of
+//! a launch whose licence's mind flies in its own bundle through
+//! [`SealMarkWriter`], the ring family delegated to tacsim. The refusal that quotes a mark
 //! resolves the hull's name when it is written ("a hull" when the object is
 //! gone), never a sixteen-hex-digit word, so it can reach a player surface.
 use super::families::CommerceFamilies;
@@ -392,6 +393,119 @@ impl Request {
         }
     }
 }
+/// **Append `mark` to `licence`'s ring inside `txn`** (the action's write, and since doc 17h
+/// cut M8e the surface finish's through [`SealMarkWriter`]): the ring read, checked, pushed
+/// (the F6 eviction) and written back, then read back equal.
+fn push_mark(
+    txn: &mut ActionTxn<'_>,
+    f: &CommerceFamilies,
+    licence: LicenceId,
+    mark: SealMark,
+) -> Result<SealMarkRing, PublicationError> {
+    let key = SealMarkRing::key_for(licence);
+    let existing = txn.get(&f.seal_marks, &key).map_err(invalid)?.cloned();
+    let present = existing.is_some();
+    let ring = match existing {
+        Some(ring) => {
+            ring.validate()?;
+            if ring.licence != licence {
+                return Err(PublicationError::Mismatch);
+            }
+            ring.pushed(mark)?
+        }
+        None => SealMarkRing::empty(licence).pushed(mark)?,
+    };
+    if present {
+        txn.replace(&f.seal_marks, &key, ring.clone())
+            .map_err(invalid)?;
+    } else {
+        txn.insert(&f.seal_marks, &key, ring.clone())
+            .map_err(invalid)?;
+    }
+    if txn.get(&f.seal_marks, &key).map_err(invalid)? != Some(&ring) {
+        return Err(PublicationError::Mismatch);
+    }
+    Ok(ring)
+}
+
+/// **The seal mark written inside the surface finish's own act** (doc 17h cut M8e E4; doc 23
+/// S.4a): the ring family delegated to tacsim at the Roll's registration, where the ring is
+/// composed (with the owner attestation that consults it), so the launch's finish appends the
+/// mark in the bundle that writes its black box line. A cell, installed once; unset where the
+/// ring is not composed, when [`SealMarkWriter::push`] answers `Unavailable` and the finish
+/// records nothing (no consumer of the ring is composed either).
+#[derive(Clone, Default)]
+pub struct SealMarkWriter(std::sync::Arc<std::sync::OnceLock<CommerceFamilies>>);
+
+impl std::fmt::Debug for SealMarkWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SealMarkWriter")
+            .field("installed", &self.0.get().is_some())
+            .finish()
+    }
+}
+
+impl SealMarkWriter {
+    /// An uninstalled cell.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the Roll installed the ring's delegation.
+    #[must_use]
+    pub fn installed(&self) -> bool {
+        self.0.get().is_some()
+    }
+
+    /// The Roll's registration of the ring: the family delegated to tacsim, the cell set.
+    pub(crate) fn install(
+        &self,
+        reg: &mut Registrar<'_>,
+        families: &CommerceFamilies,
+    ) -> Result<(), ModError> {
+        if reg.module() != crate::NS {
+            return Err(error("the seal-mark writer requires the Roll registration"));
+        }
+        reg.delegate_state_family(&families.seal_marks, "tacsim")?;
+        self.0
+            .set(families.clone())
+            .map_err(|_| error("the seal-mark writer is already installed"))
+    }
+
+    /// **Append one flight's mark to `licence`'s ring in `txn`**: `hull` (its object
+    /// number), the IC second it flew from, the UTC second written, whether its core was
+    /// governed and the flight's `SortieId` string.
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when the ring is not composed; the ring's own refusals (a bad mark, a row
+    /// that fails its checks, a ring over its byte bound).
+    pub fn push(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        licence: LicenceId,
+        (hull, at_ic, at_utc): (ObjId, WorldIcSeconds, i64),
+        governed: bool,
+        sortie: String,
+    ) -> Result<(), PublicationError> {
+        let families = self.0.get().ok_or(PublicationError::Unavailable)?;
+        push_mark(
+            txn,
+            families,
+            licence,
+            SealMark {
+                hull,
+                at_ic,
+                at_utc,
+                governed,
+                sortie,
+            },
+        )
+        .map(|_| ())
+    }
+}
+
 struct Provider {
     action: DefinitionRef,
     outcome: DefinitionRef,
@@ -416,32 +530,7 @@ impl Provider {
             .commerce_ready()
             .map_err(|_| PublicationError::Unavailable)?;
         let licence = request.licence;
-        let key = SealMarkRing::key_for(licence);
-        let existing = txn.get(&self.f.seal_marks, &key).map_err(invalid)?.cloned();
-        let ring = match existing {
-            Some(ring) => {
-                ring.validate()?;
-                if ring.licence != licence {
-                    return Err(PublicationError::Mismatch);
-                }
-                ring.pushed(request.mark(world.now()))?
-            }
-            None => SealMarkRing::empty(licence).pushed(request.mark(world.now()))?,
-        };
-        let present = txn
-            .get(&self.f.seal_marks, &key)
-            .map_err(invalid)?
-            .is_some();
-        if present {
-            txn.replace(&self.f.seal_marks, &key, ring.clone())
-                .map_err(invalid)?;
-        } else {
-            txn.insert(&self.f.seal_marks, &key, ring.clone())
-                .map_err(invalid)?;
-        }
-        if txn.get(&self.f.seal_marks, &key).map_err(invalid)? != Some(&ring) {
-            return Err(PublicationError::Mismatch);
-        }
+        let ring = push_mark(txn, &self.f, licence, request.mark(world.now()))?;
         Ok(AuthoritativeActionOutput::new(
             RulesValue::new(
                 self.outcome.clone(),
@@ -547,11 +636,14 @@ pub(crate) fn register(
     reg: &mut Registrar<'_>,
     f: CommerceFamilies,
     definitions: [DefinitionRef; 2],
+    writer: &SealMarkWriter,
 ) -> Result<(), ModError> {
     let [action, outcome] = definitions;
     if reg.module() != crate::NS || action != self::action()? {
         return Err(error("licence seal mark registration differs"));
     }
+    // Doc 17h cut M8e E4: the surface finish's writer, delegated beside the action.
+    writer.install(reg, &f)?;
     reg.action_provider(
         action.clone(),
         Provider {

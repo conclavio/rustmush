@@ -11614,3 +11614,145 @@ async fn custom_async_effect_runner_dispatches_and_reenters_world_loop() {
     assert_eq!(correlation, 42);
     assert_eq!(payload, "42:ping");
 }
+
+#[test]
+fn w_clock_outage_countdown_broadcasts_5_2_1_minutes_and_unfreezes_without_catch_up() {
+    let mut world = World::new_minimal();
+    let clock = mush_core::GameClock {
+        ic_ratio: 4,
+        epoch_offset: 1_000,
+    };
+    let mut timeline = mush_core::WorldTimeline::from_game_clock(clock);
+    // Freeze at real = 100 (IC = 1_400), boot at real = 200 with 300s countdown -> unfreeze at 500.
+    timeline.freeze_for_outage(100, 1_400, 200, 500);
+    world.set_world_timeline(timeline);
+    world.set_now(200);
+    world.set_connected(GOD, true);
+
+    let mut engine = Engine::new(world, base_registry());
+    let recorder = Arc::new(RecordingGateway::default());
+    let gateway: Gateway = recorder.clone();
+    let mut state = OutageCountdownState::default();
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+
+    // At t = 200 (300s remaining): immediate wake for 5-minute broadcast.
+    assert_eq!(
+        next_outage_wake_unix_ms(&engine.world, &state, 200),
+        Some(200_000)
+    );
+    assert!(!step_outage_countdown(
+        &mut engine,
+        &gateway,
+        &mut state,
+        200,
+        &mut out,
+        &mut fx
+    ));
+    assert!(wizard_heard(&recorder, "5 minutes remaining"));
+    assert!(engine.world.world_timeline().is_frozen());
+    // Next wake is at 2 minutes remaining (t = 380).
+    assert_eq!(
+        next_outage_wake_unix_ms(&engine.world, &state, 200),
+        Some(380_000)
+    );
+
+    // At t = 380 (120s remaining): 2-minute broadcast.
+    assert!(!step_outage_countdown(
+        &mut engine,
+        &gateway,
+        &mut state,
+        380,
+        &mut out,
+        &mut fx
+    ));
+    assert!(wizard_heard(&recorder, "2 minutes remaining"));
+    assert_eq!(
+        next_outage_wake_unix_ms(&engine.world, &state, 380),
+        Some(440_000)
+    );
+
+    // At t = 440 (60s remaining): 1-minute broadcast.
+    assert!(!step_outage_countdown(
+        &mut engine,
+        &gateway,
+        &mut state,
+        440,
+        &mut out,
+        &mut fx
+    ));
+    assert!(wizard_heard(&recorder, "1 minute remaining"));
+    assert_eq!(
+        next_outage_wake_unix_ms(&engine.world, &state, 440),
+        Some(500_000)
+    );
+
+    // At t = 500 (0s remaining): unfreeze!
+    assert!(step_outage_countdown(
+        &mut engine,
+        &gateway,
+        &mut state,
+        500,
+        &mut out,
+        &mut fx
+    ));
+    assert!(wizard_heard(
+        &recorder,
+        "Outage recovery countdown complete"
+    ));
+    assert!(!engine.world.world_timeline().is_frozen());
+    // IC clock resumes at 1_400 with zero unseen catch-up for the 400s outage+countdown.
+    assert_eq!(engine.world.world_ic_now().at, 1_400);
+    assert_eq!(engine.world.game_now_unix(), 1_400);
+    // 10 real seconds after unfreeze (t = 510), IC advances normally by 40s -> 1_440.
+    engine.set_now(510);
+    assert_eq!(engine.world.world_ic_now().at, 1_440);
+    assert_eq!(engine.world.game_now_unix(), 1_440);
+}
+
+#[test]
+fn w_clock_outage_countdown_admits_inspection_and_ooc_while_refusing_movement_and_mutations() {
+    let mut world = World::new_minimal();
+    let _exit = world
+        .create(ObjKind::Exit, "North;n", GOD, Some(LIMBO))
+        .unwrap();
+
+    let mut timeline = world.world_timeline().clone();
+    timeline.freeze_for_outage(100, 1_000, 200, 500);
+    world.set_world_timeline(timeline);
+
+    // Inspection, OOC communication, and @tacsim/time are allowed during the countdown.
+    for allowed in [
+        "look",
+        "examine here",
+        "WHO",
+        "ooc Back online!",
+        "+ooc status?",
+        "page God=Ready",
+        "=public Checking in",
+        "@tacsim/time",
+        "@tacsim/time resume",
+    ] {
+        assert_eq!(
+            admit_outage_countdown_msg(&world, &WorldMsg::Inbound(cmd(allowed))),
+            Admission::Allow,
+            "expected {allowed:?} to be allowed during outage countdown"
+        );
+    }
+
+    // Room exits and world mutations are refused during the countdown.
+    for refused in [
+        "north",
+        "n",
+        "go north",
+        "@dig Pit",
+        "get box",
+        "attack target",
+    ] {
+        assert_eq!(
+            admit_outage_countdown_msg(&world, &WorldMsg::Inbound(cmd(refused))),
+            Admission::Refuse(RefusalReason::OutageCountdown),
+            "expected {refused:?} to be refused during outage countdown"
+        );
+    }
+}

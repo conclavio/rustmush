@@ -25,19 +25,19 @@ Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the 
 
 ## Engine (crates/mush-pixel) (21)
 
-- **W-01** [open, S, recorded-debt, cut G.1a] PNG encoder still looks up a hash map for every pixel (the next millisecond to take)
+- **W-01** [closed, S, recorded-debt, cut G.1a] PNG encoder still looks up a hash map for every pixel (the next millisecond to take)
   - After G.1a sped up the raycaster, the PNG encode (about 1.2 ms of a 640x480 frame) became the larger half of a frame's cost. Its colour counting still builds a HashMap<[u8;3],u8> index and looks up every pixel (crates/mush-pixel/src/png.rs:63). The work: build the palette faster, for example from the producers' closed colour set or a direct-mapped table. It…
   - verifier's note: The encoder's palette index is a `HashMap<[u8;3],u8>` consulted on each colour change (a last-colour cache skips runs), not a HashSet looked up for every pixel; the cut note's wording is imprecise but the debt stands: no faster palette build (producers' close…
-  - waits on: nothing; wanted only if a frame's cost matters again (recorded as such)
+  - **CLOSED 2026-10-28**: `png::index_rows` now uses a stack-allocated 1,024-slot open-addressed `[u16; 1024]` table instead of a heap `HashMap<[u8; 3], u8>` + SipHash on every colour transition.
   - source: docs/design/21-cut-notes.md:32 "Also left: the PNG encode (its colour count is a `HashSet` a pixel) is the next millisecond to take if a frame's cost matters again."
 - **W-02** [open, S, stale-claim, cut G.1] PNG truecolor fallback (and sixel's 3-3-2 cut past 256 colours) is not logged, contrary to §3.2
   - png::encode silently switches to colour type 2, and sixel silently quantises. mush-pixel has no logging dependency, and neither caller (tui/pixel.rs:1007, mush-net-web picture.rs:119) checks for it. The work: log or count it, or amend the doc.
   - waits on: nothing (either add a counter/log in the callers or amend §3.2)
   - source: docs/design/21-graphics-engine.md:272-273 "The encoder's truecolor fallback stays as a safety net and is logged when it fires."
-- **W-03** [partly, S, unbuilt-cut, cut none] §9: the fixture example has no --scene flag for bucket-B pictures
+- **W-03** [closed, S, unbuilt-cut, cut none] §9: the fixture example has no --scene flag for bucket-B pictures
   - §9 says the fixture example 'grows a --scene flag for bucket B'. crates/mush-pixel/examples/fixture.rs only reads argv[1] as the output directory and renders the cockpit and the G.7a relief. Nothing renders the chart, replay or doll pictures (ChartPicture, ReplayPicture, DollPicture) without a terminal. The work: add the flag with chart, replay and doll fix…
   - disposition: doc stale, not unbuilt: the fixture example already writes chart, doll and replay PNGs; only the literal --scene selector is missing.
-  - waits on: nothing; either add the flag or amend §9 to say every scene is written each run
+  - **CLOSED 2026-10-28**: `crates/mush-pixel/examples/fixture.rs` now accepts `--scene <all|cockpit|relief|sprites|chart|doll|replay>` (defaulting to `all`).
   - source: docs/design/21-graphics-engine.md:458-459 "The example `cargo run -p mush-pixel --example fixture` stays the way to look at a frame without a terminal, and grows a `--scene` flag for bucket B."
 - **W-04** [open, S, recorded-debt, cut G.2] G.2 acceptance: the MW2 comparison frame is not in the tree and was never re-run
   - G.2's acceptance names the MW2 fixture frame, with the cockpit frame, compared byte for byte. The cut notes still list 'the MW2 comparison frame' as owed. The frame is not in the tree and was not re-run. The work: commit the MW2 frame as a fixture and round-trip or compare it, or formally drop it from the acceptance.
@@ -68,9 +68,10 @@ Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the 
   - verifier's note: The G.7b.2 showcase relief is rounded to 10 cm with smoothstep blends (21-cut-notes.md:420-421), so the sim's cells are themselves closer to a continuous surface now; the half-cell crest offset against the sim's flat-cell sight remains as recorded. Rendering …
   - waits on: a lead decision that the bracket rule is not enough (it is the recorded guarantee); otherwise stays a recorded, accepted misalignment
   - source: docs/design/21-cut-notes.md:178 "**Not aligned, recorded**: the heightfield producer still smooths heights between cell centres where the sim holds each cell flat"
-- **W-10** [partly, S, recorded-debt, cut G.7b] Raycaster path still uses the stock 1.5 m eye, not the unit's own sensor_height_cm
+- **W-10** [closed, S, recorded-debt, cut G.7b] Raycaster path still uses the stock 1.5 m eye, not the unit's own sensor_height_cm
   - G.7b.1 mostly closed this. The frame now carries sensor_height_cm, and the heightfield path uses z_cm plus that height (crates/mush-pixel/src/cockpit.rs:149). The raycaster, used for maps without heights, still sets `eye: EYE_HEIGHT_CM as f32 / cell` (crates/mush-pixel/src/raycast.rs:653), so on a flat map a unit with a non-stock sensor sees from the wrong …
   - disposition: open, tiny: only a map without elev (fixtures, an older server) still uses the stock 1.5 m eye in the raycaster.
+  - **CLOSED 2026-10-28**: `raycast::render_from` and `raycast::project_from` take `eye_cm: Option<i64>` (falling back to `EYE_HEIGHT_CM`), and `CockpitPicture::draw` and `cockpit::hud` pass the frame's `sensor_height_cm` on flat maps as well as relief maps.
   - source: docs/design/21-cut-notes.md:178 (## Sight alignment) "The eye is the stock sensor height, not the unit's own (the cockpit frame does not carry `sensor_height_cm`; a field for after the mining train, …
 - **W-11** [open, L, unbuilt-cut, cut G.9] G.9: the player annotation store (prerequisite of both boards) does not exist
   - G.9 depends on a durable player annotation store that the strategic and investigation boards share, where players place pins that other players see. Nothing like it exists anywhere in crates/. It needs a design and a build before either board. No commit in the train touches G.9.
@@ -94,22 +95,24 @@ Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the 
   - verifier's note: U.5 is two pieces: the importer tool (an offline binary or example outside mush-pixel's wasm build, mapping pixels onto the six materials of look.rs's palette) and the real art it imports; the item covers only the first.
   - waits on: real art to import (the owner owes the paint-vs-IFF-tint call per the pixel-cockpit memory); the importer itself is unblocked
   - source: docs/design/22-unit-kit.md:119 "the form a player-designed unit is written in; a PNG importer can produce it later."
-- **W-16** [open, M, deferred-by-design, cut none] Eight facings (diagonals) reserved in the sheet format, waiting on an owner ruling that a sensor may report more than `aspect`
+- **W-16** [closed, M, deferred-by-design, cut none] Eight facings (diagonals) reserved in the sheet format, waiting on an owner ruling that a sensor may report more than `aspect`
   - Sheets are picked by four facings because the sim reveals only front, left, right and rear. The diagonals (front_left and the rest) are reserved, not built. Building them needs an owner ruling, a finer aspect on the wire, parser support for the diagonal facings, and art for them.
   - verifier's note: 'Reserved in the sheet format' overstates it: the parser rejects `front_left` and the other diagonals today (look.rs:631-635), so they are reserved in the design only. Building them needs: the owner's ruling, a finer `aspect` (or a bearing) on the contact row…
-  - waits on: an owner ruling that a sensor may report a finer aspect than front/left/right/rear (D-22-4)
+  - **CLOSED 2026-10-28 (D-22-9)**: `SPRITE_MAX` raised to 96; `Facing` and `Look::parse` support all eight facings and per-facing `wreck` (with nearest-cardinal fallback for 3/4-facing hand-drawn sheets); `tacsim` emits 8-way `facing` (`ContactFacing`) on `FrameContact` and `arena.cockpit` contacts while keeping 4-way `aspect` for armour facets and unit minds; `cockpit::contact_sprite` reads `facing` with fallback to `aspect`.
   - source: docs/design/22-unit-kit.md:145-146 "`front_left` and the other diagonals are reserved for the day the owner lets a sensor say more."; D-22-4 "four facings now from `aspect`, eight reserved."
 - **W-17** [open, L, deferred-by-design, cut none] Player-designed units: a builder, its economy and who may field what are left to their own design
   - Doc 22 (U.0) only makes sure the template (rules pack plus look) is complete and can be checked alone and against the unit. The builder UI or flow, the economy around designed units and the permission to field them are undesigned and unbuilt. No cut builds the path beyond the format and the checks.
   - waits on: its own design conversation; the ownership-and-permissions layer (future-ownership-permissions) for 'who may field what'; the economy (E8 service market) for '…
   - source: docs/design/22-unit-kit.md:203 (§7) "A builder, its economy and who may field what are their own design; this"
-- **W-18** [open, S, stale-claim, cut G.3b] picture.rs seam doc says the WebAssembly render (G.3b) comes 'later'; it has landed
+- **W-18** [closed, S, stale-claim, cut G.3b] picture.rs seam doc says the WebAssembly render (G.3b) comes 'later'; it has landed
   - mush-pixel-wasm builds CockpitPicture for wasm32, and the web cockpit tab draws it locally with the gateway picture (G.3c) as the fallback. The seam's module doc still lists the wasm render as future.
   - verifier's note: The G.3 socket frame (G.3a/G.3c) landed too, so both 'later' items in that sentence are stale; the seam now has three live callers (crates/mush-net-ssh/src/tui/pixel.rs, crates/mush-net-web/src/picture.rs, crates/mush-pixel-wasm/src/lib.rs).
+  - **CLOSED 2026-10-28**: Updated `crates/mush-pixel/src/picture.rs` module docs to name all three live callers (`mush-net-ssh`, `mush-net-web`, `mush-pixel-wasm`).
   - source: crates/mush-pixel/src/picture.rs:1-3 "the SSH TUI today, the web client's socket frame (G.3) and its WebAssembly render (G.3b) later"
-- **W-19** [open, S, stale-claim, cut none] mush-pixel crate doc 'Today: a first-person view ... streamed to a terminal' undersells what the engine now draws
+- **W-19** [closed, S, stale-claim, cut none] mush-pixel crate doc 'Today: a first-person view ... streamed to a terminal' undersells what the engine now draws
   - The crate also draws bucket-B pages (chart G.5b, doll G.6a, replay G.8). The web gateway renders it (G.3a/c), and the browser runs it via wasm (G.3b). The 'Today' sentence predates all of these.
   - verifier's note: Also stale in the same header: lib.rs:15-17 describes [`raycast`] as the picture with no mention that the heightfield is the default producer since G.7b.1, and the Cargo.toml description (line 7) has the same 'raycaster, kitty or sixel' scope; one doc pass sh…
+  - **CLOSED 2026-10-28**: Updated `crates/mush-pixel/src/lib.rs` and `crates/mush-pixel/Cargo.toml` to describe both bucket-A and bucket-B pictures, heightfield default, and wasm + terminal/socket rendering.
   - source: crates/mush-pixel/src/lib.rs:6 "Today: a first-person view of the arena streamed to a terminal that speaks the kitty graphics protocol or draws sixel."
 - **A-01** [open, M, unbuilt-cut, cut U.3] Muzzle flashes are never drawn: sheets' muzzle points are parsed and checked but no renderer reads them
   - Doc 22 §3.2 promises a muzzle point per weapon per facing 'where a shot's flash is drawn'. In the tree `muzzles` is parsed and bounds-checked in crates/mush-pixel/src/look.rs (lines 129, 657-681) and held to weapon components by the contract test, but no producer (raycast, heightfield) or overlay reads a sheet's muzzles; nothing draws a flash when a contact…
@@ -134,8 +137,9 @@ Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the 
   - verifier's note: The pixel size is ignored in both `pty_request` and `window_change_request`. Cut notes:45 also records that whether Windows Terminal answers `CSI 16 t` is still unverified, so the pty-req fallback's value is unknown.
   - waits on: a hand-typed Windows Terminal session to see whether CSI 16 t is answered (if it is, the fallback is moot)
   - source: docs/design/21-cut-notes.md:45 (## G.2, The cell size) "The SSH `pty-req` pixel size is still not read: it is a real-pixel size, which is the wrong unit for WT."
-- **W-22** [open, S, recorded-debt, cut G.2b] SIXEL_MAX_SCALE was meant for [pixel] in G.1b but is still a hard-coded const
+- **W-22** [closed, S, recorded-debt, cut G.2b] SIXEL_MAX_SCALE was meant for [pixel] in G.1b but is still a hard-coded const
   - G.2b set the sixel upscale cap of 3 (1920x1440 at most) aside for the [pixel] config block in G.1b. G.1b's PixelCfg has only frame_interval_ms, low_interval_ms, step_down_after, step_up_after_s and diagnostics (mushd.toml.example lines 54-59). The cap is still `pub const SIXEL_MAX_SCALE: usize = 3` at crates/mush-net-ssh/src/tui/pixel.rs:1232.
+  - **CLOSED 2026-10-28**: `[pixel].sixel_max_scale` added to `mush_config::config::PixelCfg` (default `3`), `mushd.toml.example`, `mush_net_ssh::PixelConfig` (`with_sixel_max_scale`, clamped `1..=8`), and wired through `SshBridge::with_pixel` and `sixel_box_scaled`.
   - source: docs/design/21-cut-notes.md:72 (## G.2b) "`SIXEL_MAX_SCALE` is 3 (1920x1440 at most; for `[pixel]` in G.1b)"
 - **W-23** [open, ?, recorded-debt, cut G.2] Sixel without `ssh -C` costs ~410 KB/s against kitty's 190 KB/s; only help advice and the step-down mitigate it
   - The gateway offers zlib, but OpenSSH (ssh.exe included) defaults to Compression no. Windows Terminal sixel viewers therefore use about twice kitty's bandwidth unless the player passes -C. The only mitigations are the help's advice and G.1b's step-down; there is no server-side fix.
@@ -216,9 +220,10 @@ Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the 
   - verifier's note: 'The key log' is not in this tree (it is presumably w11term's client-side log); investigating needs either that log or a new server-side key trace around `chat_opened`.
   - waits on: reproduction; a key trace (client or server) to read it with
   - source: docs/design/21-cut-notes.md:373 "**Unexplained**: in w11term, a line sent a moment after Enter ... arrived as flying keys once and as a line once; not reproduced"
-- **W-40** [open, S, stale-claim, cut G.4] pixel.rs module doc still describes the spike's camera: toggle-turn on a local offset, sim not told
+- **W-40** [closed, S, stale-claim, cut G.4] pixel.rs module doc still describes the spike's camera: toggle-turn on a local offset, sim not told
   - The header says the camera is a local offset turned with toggle keys and that 'the sim is not told'. G.4 made turns HEADING orders, held where the terminal reports releases; the same file says so at :798, and helm.rs implements it. The header also names only cuts G.1 and G.2, though the file now hosts the chart, doll and replay pictures.
   - verifier's note: Stale header confirmed; it also omits the kitty keyboard protocol push (G.4), the text cockpit's chart/replay/doll kinds and `@pixel/encoder`'s `EncoderChoice` as the file now stands (the header's text-cockpit paragraph at :30-37 is current).
+  - **CLOSED 2026-10-28**: Updated `crates/mush-net-ssh/src/tui/pixel.rs` module doc header to describe G.4's helm `HEADING` orders and kitty keyboard protocol push, `EncoderChoice`, `[pixel].sixel_max_scale`, and the bucket-B chart/doll/replay pictures.
   - source: crates/mush-net-ssh/src/tui/pixel.rs:23-26 "a LOCAL heading offset the pilot turns with toggle-turn keys ... The sim is not told; this spike proves the picture and the pacing, not the order."
 - **W-41** [open, S, owner-decision-pending, cut G.8] Owner review of G.8's implementer rulings (whole field, interpolation, 1x/4x/16x, client cursor, no live picture)
   - The builder took G.8's rulings and marked each 'cheap to unwind'. Doc 21 records none of them as an owner decision (no D-21-n). They are: the whole field rather than a window, interpolation between keyframes, f cycling 1x/4x/16x, the client-local replay.cursor, and the live picture left out.

@@ -91,6 +91,108 @@ pub const WORLD_TIMELINE_HEAD_KEY: &str = "world_ic/head";
 /// Prefix for immutable per-generation world-IC epoch documents.
 pub const WORLD_TIMELINE_EPOCH_PREFIX: &str = "world_ic/epoch/";
 
+/// Persistence key containing mutable world-IC checkpoint, re-anchor, and freeze state (`W-clock`).
+pub const WORLD_TIMELINE_STATE_KEY: &str = "world_ic/state";
+
+/// A durable checkpoint of the world IC clock at a specific wall-clock instant (`W-clock`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldClockCheckpoint {
+    /// Wall-clock Unix second when the checkpoint was recorded.
+    pub real_unix: i64,
+    /// World-IC second at `real_unix`.
+    pub ic_unix: i64,
+    /// Timeline generation active at `real_unix`.
+    pub generation: u64,
+}
+
+/// Re-anchored `(real_anchor, ic_anchor)` for a specific timeline generation after a
+/// freeze/resume or sub-threshold restart re-anchor (`W-clock`, `Q-R4`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldClockReanchor {
+    /// Generation whose anchor was re-anchored.
+    pub generation: u64,
+    /// Re-anchored wall-clock Unix second.
+    pub real_anchor: i64,
+    /// Re-anchored world-IC second.
+    pub ic_anchor: i64,
+}
+
+/// Why the world IC clock is currently frozen (`W-clock`, `FO-11`, `Q-R4`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WorldClockFreezeKind {
+    /// Deliberate staff/campaign freeze (`@tacsim/time freeze`).
+    Deliberate,
+    /// Automatic outage recovery countdown (`FO-11`, `Q-R4`).
+    OutageCountdown {
+        /// Wall-clock Unix second when the current recovery countdown started.
+        countdown_started_real_unix: i64,
+        /// Wall-clock Unix second when the world IC clock will unfreeze.
+        unfreeze_at_real_unix: i64,
+    },
+}
+
+/// Active freeze state on the shared world IC clock (`W-clock`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldClockFreeze {
+    /// Wall-clock Unix second when the world became unavailable / frozen (checkpoint time
+    /// for an outage freeze, or command time for a deliberate freeze).
+    pub frozen_real_unix: i64,
+    /// Frozen world-IC second held constant until resume.
+    pub frozen_ic_unix: i64,
+    /// Timeline generation held while frozen.
+    pub generation: u64,
+    /// Cause and countdown metadata for the freeze.
+    pub kind: WorldClockFreezeKind,
+}
+
+const fn default_timeline_state_schema() -> u16 {
+    WorldTimelineState::SCHEMA_VERSION
+}
+
+/// Persisted mutable state paired with the world-IC epoch log under [`WORLD_TIMELINE_STATE_KEY`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldTimelineState {
+    /// Persistence schema version.
+    #[serde(default = "default_timeline_state_schema")]
+    pub schema_version: u16,
+    /// Per-generation re-anchors, ordered by generation.
+    #[serde(default)]
+    pub reanchors: Vec<WorldClockReanchor>,
+    /// Most recent durable checkpoint of `(real_unix, ic_unix, generation)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<WorldClockCheckpoint>,
+    /// Active freeze state, if the world clock is currently frozen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeze: Option<WorldClockFreeze>,
+}
+
+impl Default for WorldTimelineState {
+    fn default() -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            reanchors: Vec::new(),
+            checkpoint: None,
+            freeze: None,
+        }
+    }
+}
+
+impl WorldTimelineState {
+    /// Current persistence schema for [`WORLD_TIMELINE_STATE_KEY`].
+    pub const SCHEMA_VERSION: u16 = 1;
+
+    /// Whether this state carries no re-anchors, checkpoint, or freeze.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.reanchors.is_empty() && self.checkpoint.is_none() && self.freeze.is_none()
+    }
+}
+
 /// Identity of a clock.  A generation is part of every mutable clock's
 /// identity, so an old deadline can never silently be interpreted under a
 /// later rate, scene, domain, or provider definition.
@@ -218,9 +320,14 @@ impl WorldTimelineEpoch {
     }
 }
 
-/// The append-only world-IC epoch log held in RAM.
+/// The append-only world-IC epoch log and mutable checkpoint/freeze state held in RAM.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorldTimeline(Vec<WorldTimelineEpoch>);
+pub struct WorldTimeline {
+    epochs: Vec<WorldTimelineEpoch>,
+    reanchors: std::collections::BTreeMap<u64, WorldClockReanchor>,
+    checkpoint: Option<WorldClockCheckpoint>,
+    freeze: Option<WorldClockFreeze>,
+}
 
 impl Default for WorldTimeline {
     fn default() -> Self {
@@ -233,16 +340,30 @@ impl WorldTimeline {
     /// changing its `ic = offset + real * ratio` behavior.
     #[must_use]
     pub fn from_game_clock(clock: GameClock) -> Self {
-        Self(vec![WorldTimelineEpoch {
-            real_anchor: 0,
-            ic_anchor: clock.epoch_offset,
-            rate: clock.ic_ratio.max(1),
-            generation: 1,
-        }])
+        Self {
+            epochs: vec![WorldTimelineEpoch {
+                real_anchor: 0,
+                ic_anchor: clock.epoch_offset,
+                rate: clock.ic_ratio.max(1),
+                generation: 1,
+            }],
+            reanchors: std::collections::BTreeMap::new(),
+            checkpoint: None,
+            freeze: None,
+        }
     }
 
     /// Validate and construct a persisted contiguous epoch log.
     pub fn from_epochs(epochs: Vec<WorldTimelineEpoch>) -> Result<Self, WorldTimelineError> {
+        Self::from_epochs_and_state(epochs, WorldTimelineState::default())
+    }
+
+    /// Validate and construct a persisted contiguous epoch log paired with mutable
+    /// checkpoint, re-anchor, and freeze state (`W-clock`).
+    pub fn from_epochs_and_state(
+        epochs: Vec<WorldTimelineEpoch>,
+        state: WorldTimelineState,
+    ) -> Result<Self, WorldTimelineError> {
         if epochs.is_empty() {
             return Err(WorldTimelineError::Empty);
         }
@@ -252,6 +373,37 @@ impl WorldTimeline {
                 max: MAX_WORLD_TIMELINE_EPOCHS,
             });
         }
+        if state.schema_version != WorldTimelineState::SCHEMA_VERSION {
+            return Err(WorldTimelineError::UnsupportedStateSchema(
+                state.schema_version,
+            ));
+        }
+        let max_gen = u64::try_from(epochs.len()).unwrap_or(u64::MAX);
+        let mut reanchors = std::collections::BTreeMap::new();
+        for reanchor in state.reanchors {
+            if reanchor.generation == 0 || reanchor.generation > max_gen {
+                return Err(WorldTimelineError::NonContiguousGeneration {
+                    expected: max_gen,
+                    actual: reanchor.generation,
+                });
+            }
+            if reanchors.insert(reanchor.generation, reanchor).is_some() {
+                return Err(WorldTimelineError::DuplicateReanchorGeneration(
+                    reanchor.generation,
+                ));
+            }
+        }
+        let effective = |epoch: WorldTimelineEpoch| -> WorldTimelineEpoch {
+            match reanchors.get(&epoch.generation) {
+                Some(reanchor) => WorldTimelineEpoch {
+                    real_anchor: reanchor.real_anchor,
+                    ic_anchor: reanchor.ic_anchor,
+                    rate: epoch.rate,
+                    generation: epoch.generation,
+                },
+                None => epoch,
+            }
+        };
         for (index, epoch) in epochs.iter().copied().enumerate() {
             let expected_generation = u64::try_from(index)
                 .ok()
@@ -263,35 +415,263 @@ impl WorldTimeline {
                     actual: epoch.generation,
                 });
             }
-            if let Some(previous) = index.checked_sub(1).map(|i| epochs[i]) {
-                validate_epoch_transition(previous, epoch)?;
+            if let Some(reanchor) = reanchors.get(&epoch.generation)
+                && reanchor.real_anchor < epoch.real_anchor
+            {
+                return Err(WorldTimelineError::AnchorMovedBackward {
+                    previous: epoch.real_anchor,
+                    proposed: reanchor.real_anchor,
+                });
+            }
+            if let Some(previous) = index.checked_sub(1).and_then(|i| epochs.get(i).copied()) {
+                validate_epoch_transition(effective(previous), epoch)?;
             }
         }
-        Ok(Self(epochs))
+        if let Some(cp) = state.checkpoint
+            && (cp.generation == 0 || cp.generation > max_gen)
+        {
+            return Err(WorldTimelineError::NonContiguousGeneration {
+                expected: max_gen,
+                actual: cp.generation,
+            });
+        }
+        if let Some(freeze) = state.freeze
+            && freeze.generation != max_gen
+        {
+            return Err(WorldTimelineError::NonContiguousGeneration {
+                expected: max_gen,
+                actual: freeze.generation,
+            });
+        }
+        Ok(Self {
+            epochs,
+            reanchors,
+            checkpoint: state.checkpoint,
+            freeze: state.freeze,
+        })
     }
 
     /// All immutable epochs, oldest first.
     #[must_use]
     pub fn epochs(&self) -> &[WorldTimelineEpoch] {
-        &self.0
+        &self.epochs
     }
 
-    /// Current epoch.  A timeline is structurally non-empty.
+    /// Current epoch (including any checkpoint/unfreeze re-anchor on the head generation).
+    /// A timeline is structurally non-empty.
     #[must_use]
     pub fn current(&self) -> WorldTimelineEpoch {
-        *self.0.last().expect("validated timeline is non-empty")
+        let base = match self.epochs.last().copied() {
+            Some(epoch) => epoch,
+            None => WorldTimelineEpoch {
+                real_anchor: 0,
+                ic_anchor: 0,
+                rate: 1,
+                generation: 1,
+            },
+        };
+        match self.reanchors.get(&base.generation) {
+            Some(reanchor) => WorldTimelineEpoch {
+                real_anchor: reanchor.real_anchor,
+                ic_anchor: reanchor.ic_anchor,
+                rate: base.rate,
+                generation: base.generation,
+            },
+            None => base,
+        }
+    }
+
+    /// Whether the world IC clock is currently frozen (`W-clock`).
+    #[must_use]
+    pub fn is_frozen(&self) -> bool {
+        self.freeze.is_some()
+    }
+
+    /// Active freeze state, if the world IC clock is frozen.
+    #[must_use]
+    pub fn freeze(&self) -> Option<WorldClockFreeze> {
+        self.freeze
+    }
+
+    /// Most recent durable checkpoint on the timeline.
+    #[must_use]
+    pub fn checkpoint(&self) -> Option<WorldClockCheckpoint> {
+        self.checkpoint
+    }
+
+    /// Snapshot of the mutable state persisted at [`WORLD_TIMELINE_STATE_KEY`].
+    #[must_use]
+    pub fn state(&self) -> WorldTimelineState {
+        WorldTimelineState {
+            schema_version: WorldTimelineState::SCHEMA_VERSION,
+            reanchors: self.reanchors.values().copied().collect(),
+            checkpoint: self.checkpoint,
+            freeze: self.freeze,
+        }
     }
 
     /// Current world-IC value and generation at `real_unix`.
+    ///
+    /// While frozen (`W-clock`), every evaluation returns the exact frozen IC
+    /// timestamp on the current generation without advancing.
     #[must_use]
     pub fn stamp_at(&self, real_unix: i64) -> ClockStamp {
         let current = self.current();
+        let at = match self.freeze {
+            Some(freeze) => freeze.frozen_ic_unix,
+            None => current.ic_at(real_unix),
+        };
         ClockStamp {
             clock: ClockRef::WorldIc {
                 generation: current.generation,
             },
-            at: current.ic_at(real_unix),
+            at,
         }
+    }
+
+    /// Record a durable checkpoint at `real_unix`.
+    pub fn record_checkpoint(&mut self, real_unix: i64) -> WorldClockCheckpoint {
+        let stamp = self.stamp_at(real_unix);
+        let current = self.current();
+        let checkpoint = WorldClockCheckpoint {
+            real_unix,
+            ic_unix: stamp.at,
+            generation: current.generation,
+        };
+        self.checkpoint = Some(checkpoint);
+        checkpoint
+    }
+
+    /// Deliberately freeze the shared world IC clock at `real_unix` (`W-clock`).
+    pub fn freeze_deliberate(
+        &mut self,
+        real_unix: i64,
+    ) -> Result<WorldClockFreeze, WorldTimelineError> {
+        if self.freeze.is_some() {
+            return Err(WorldTimelineError::AlreadyFrozen);
+        }
+        let current = self.current();
+        if real_unix < current.real_anchor {
+            return Err(WorldTimelineError::AnchorMovedBackward {
+                previous: current.real_anchor,
+                proposed: real_unix,
+            });
+        }
+        let frozen_ic_unix = current.ic_at(real_unix);
+        let freeze = WorldClockFreeze {
+            frozen_real_unix: real_unix,
+            frozen_ic_unix,
+            generation: current.generation,
+            kind: WorldClockFreezeKind::Deliberate,
+        };
+        self.freeze = Some(freeze);
+        self.checkpoint = Some(WorldClockCheckpoint {
+            real_unix,
+            ic_unix: frozen_ic_unix,
+            generation: current.generation,
+        });
+        Ok(freeze)
+    }
+
+    /// Enter or refresh an unplanned-outage recovery countdown freeze (`FO-11`, `Q-R4`),
+    /// holding the IC clock at `(frozen_real_unix, frozen_ic_unix)` until `unfreeze_at_real_unix`.
+    pub fn freeze_for_outage(
+        &mut self,
+        frozen_real_unix: i64,
+        frozen_ic_unix: i64,
+        countdown_started_real_unix: i64,
+        unfreeze_at_real_unix: i64,
+    ) -> WorldClockFreeze {
+        let generation = self.current().generation;
+        let freeze = WorldClockFreeze {
+            frozen_real_unix,
+            frozen_ic_unix,
+            generation,
+            kind: WorldClockFreezeKind::OutageCountdown {
+                countdown_started_real_unix,
+                unfreeze_at_real_unix,
+            },
+        };
+        self.freeze = Some(freeze);
+        self.checkpoint = Some(WorldClockCheckpoint {
+            real_unix: frozen_real_unix,
+            ic_unix: frozen_ic_unix,
+            generation,
+        });
+        freeze
+    }
+
+    /// Resume the frozen world IC clock at `real_unix`, re-anchoring the current
+    /// generation so `world_ic_now` continues smoothly from `frozen_ic_unix` with
+    /// zero unseen catch-up (`W-clock`).
+    pub fn resume_at(
+        &mut self,
+        real_unix: i64,
+    ) -> Result<(WorldClockFreeze, WorldTimelineEpoch), WorldTimelineError> {
+        let Some(freeze) = self.freeze else {
+            return Err(WorldTimelineError::NotFrozen);
+        };
+        if real_unix < freeze.frozen_real_unix {
+            return Err(WorldTimelineError::AnchorMovedBackward {
+                previous: freeze.frozen_real_unix,
+                proposed: real_unix,
+            });
+        }
+        self.freeze = None;
+        self.reanchors.insert(
+            freeze.generation,
+            WorldClockReanchor {
+                generation: freeze.generation,
+                real_anchor: real_unix,
+                ic_anchor: freeze.frozen_ic_unix,
+            },
+        );
+        self.checkpoint = Some(WorldClockCheckpoint {
+            real_unix,
+            ic_unix: freeze.frozen_ic_unix,
+            generation: freeze.generation,
+        });
+        Ok((freeze, self.current()))
+    }
+
+    /// Silently re-anchor the world IC clock from its last durable checkpoint at
+    /// `real_unix` without a countdown and without catch-up (`Q-R4`).
+    ///
+    /// Returns the elapsed wall-clock seconds excluded (`Some(lost_secs)`) when a
+    /// prior checkpoint existed, or `None` when seeding the initial checkpoint.
+    pub fn reanchor_from_checkpoint(
+        &mut self,
+        real_unix: i64,
+    ) -> Result<Option<i64>, WorldTimelineError> {
+        if self.freeze.is_some() {
+            return Err(WorldTimelineError::AlreadyFrozen);
+        }
+        let Some(cp) = self.checkpoint else {
+            self.record_checkpoint(real_unix);
+            return Ok(None);
+        };
+        if real_unix < cp.real_unix {
+            return Err(WorldTimelineError::AnchorMovedBackward {
+                previous: cp.real_unix,
+                proposed: real_unix,
+            });
+        }
+        let lost_secs = real_unix.saturating_sub(cp.real_unix);
+        let generation = self.current().generation;
+        self.reanchors.insert(
+            generation,
+            WorldClockReanchor {
+                generation,
+                real_anchor: real_unix,
+                ic_anchor: cp.ic_unix,
+            },
+        );
+        self.checkpoint = Some(WorldClockCheckpoint {
+            real_unix,
+            ic_unix: cp.ic_unix,
+            generation,
+        });
+        Ok(Some(lost_secs))
     }
 
     /// Prepare a continuous rate change without mutating the log.
@@ -300,6 +680,9 @@ impl WorldTimeline {
         real_anchor: i64,
         rate: u32,
     ) -> Result<WorldTimelineEpoch, WorldTimelineError> {
+        if self.freeze.is_some() {
+            return Err(WorldTimelineError::ClockFrozen);
+        }
         let current = self.current();
         // **The band, in the kernel** (independent verify fold, C9/B10; owner decision
         // F9(a)): the verb was not the only caller, and a rate is not something a
@@ -324,9 +707,9 @@ impl WorldTimeline {
             .generation
             .checked_add(1)
             .ok_or(WorldTimelineError::GenerationExhausted)?;
-        if self.0.len() >= MAX_WORLD_TIMELINE_EPOCHS {
+        if self.epochs.len() >= MAX_WORLD_TIMELINE_EPOCHS {
             return Err(WorldTimelineError::TooMany {
-                actual: self.0.len() + 1,
+                actual: self.epochs.len() + 1,
                 max: MAX_WORLD_TIMELINE_EPOCHS,
             });
         }
@@ -341,14 +724,24 @@ impl WorldTimeline {
     /// Append one exact prepared epoch.  Re-validating the transition keeps
     /// persisted hydration and live mutation on the same invariant path.
     pub fn append(&mut self, epoch: WorldTimelineEpoch) -> Result<(), WorldTimelineError> {
-        if self.0.len() >= MAX_WORLD_TIMELINE_EPOCHS {
+        if self.freeze.is_some() {
+            return Err(WorldTimelineError::ClockFrozen);
+        }
+        if self.epochs.len() >= MAX_WORLD_TIMELINE_EPOCHS {
             return Err(WorldTimelineError::TooMany {
-                actual: self.0.len() + 1,
+                actual: self.epochs.len() + 1,
                 max: MAX_WORLD_TIMELINE_EPOCHS,
             });
         }
         validate_epoch_transition(self.current(), epoch)?;
-        self.0.push(epoch);
+        self.epochs.push(epoch);
+        if self.checkpoint.is_some() {
+            self.checkpoint = Some(WorldClockCheckpoint {
+                real_unix: epoch.real_anchor,
+                ic_unix: epoch.ic_anchor,
+                generation: epoch.generation,
+            });
+        }
         Ok(())
     }
 }
@@ -444,6 +837,21 @@ pub enum WorldTimelineError {
         /// The fastest legal rate.
         max: u32,
     },
+    /// The world IC clock is already frozen (`W-clock`).
+    #[error("world timeline is already frozen")]
+    AlreadyFrozen,
+    /// The world IC clock is not frozen (`W-clock`).
+    #[error("world timeline is not frozen")]
+    NotFrozen,
+    /// Rate changes are refused while the world IC clock is frozen (`W-clock`).
+    #[error("world timeline is frozen; resume the clock before changing its rate")]
+    ClockFrozen,
+    /// Persisted state schema version is unsupported.
+    #[error("unsupported world timeline state schema {0}")]
+    UnsupportedStateSchema(u16),
+    /// Persisted state contained duplicate re-anchor entries for one generation.
+    #[error("duplicate world timeline re-anchor for generation {0}")]
+    DuplicateReanchorGeneration(u64),
 }
 
 /// Small materialized pointer paired atomically with every immutable epoch
@@ -518,6 +926,21 @@ pub fn world_timeline_persistence_ops(
     ])
 }
 
+/// Persistence operation for the mutable checkpoint, re-anchor, and freeze state
+/// under [`WORLD_TIMELINE_STATE_KEY`] (`W-clock`).
+pub fn world_timeline_state_op(
+    timeline: &WorldTimeline,
+) -> Result<ModuleOp, WorldTimelinePersistenceError> {
+    let value = serde_json::to_value(timeline.state())?;
+    Ok(ModuleOp {
+        ns: SmolStr::new_static(WORLD_TIMELINE_NAMESPACE),
+        op: ModuleWrite::JsonSet {
+            key: SmolStr::new_static(WORLD_TIMELINE_STATE_KEY),
+            value,
+        },
+    })
+}
+
 /// Corrupt or unrepresentable timeline persistence metadata.
 #[derive(Debug, thiserror::Error)]
 pub enum WorldTimelinePersistenceError {
@@ -562,7 +985,72 @@ impl crate::cmd::Ctx<'_> {
         }
         self.gate_on_durable_ack_strict();
         self.w.append_world_timeline_epoch(epoch)?;
+        if !self.w.world_timeline().state().is_empty() {
+            let state_op = world_timeline_state_op(self.w.world_timeline())?;
+            self.persist_engine_owned(state_op);
+        }
         Ok(epoch)
+    }
+
+    /// Deliberately freeze the shared world-IC clock at the current wall-clock
+    /// second (`W-clock`).
+    ///
+    /// Holds both `world_ic_now` and the compatibility `GameClock` readers at the
+    /// frozen IC timestamp until [`Self::resume_world_time`] is invoked, and emits
+    /// [`crate::module::WorldEvent::WorldClockFrozen`] so real-time deadline owners
+    /// pause their windows (`Q-F3`, `P-4`).
+    pub fn freeze_world_time(&mut self) -> Result<WorldClockFreeze, WorldTimelineChangeError> {
+        let mut next = self.w.world_timeline().clone();
+        let freeze = next.freeze_deliberate(self.w.now())?;
+        let state_op = world_timeline_state_op(&next)?;
+        self.persist_engine_owned(state_op);
+        self.gate_on_durable_ack_strict();
+        self.w.set_world_timeline(next);
+        self.emit_world_event(&crate::module::WorldEvent::WorldClockFrozen {
+            real_unix: freeze.frozen_real_unix,
+            ic_unix: freeze.frozen_ic_unix,
+        });
+        Ok(freeze)
+    }
+
+    /// Resume the shared world-IC clock from its frozen checkpoint at the current
+    /// wall-clock second (`W-clock`).
+    ///
+    /// Re-anchors the current timeline generation so `world_ic_now` and `GameClock`
+    /// resume smoothly from the frozen IC timestamp with zero unseen catch-up, and
+    /// emits [`crate::module::WorldEvent::WorldClockResumed`] so real-time deadline
+    /// owners extend their deadlines by the unavailable duration (`Q-F3`, `P-4`).
+    pub fn resume_world_time(
+        &mut self,
+    ) -> Result<(WorldClockFreeze, WorldTimelineEpoch), WorldTimelineChangeError> {
+        let mut next = self.w.world_timeline().clone();
+        let now = self.w.now();
+        let (freeze, epoch) = next.resume_at(now)?;
+        let state_op = world_timeline_state_op(&next)?;
+        self.persist_engine_owned(state_op);
+        self.gate_on_durable_ack_strict();
+        self.w.set_world_timeline(next);
+        let unavailable_secs = now.saturating_sub(freeze.frozen_real_unix);
+        self.emit_world_event(&crate::module::WorldEvent::WorldClockResumed {
+            frozen_real_unix: freeze.frozen_real_unix,
+            resumed_real_unix: now,
+            unavailable_secs,
+            ic_unix: epoch.ic_anchor,
+        });
+        Ok((freeze, epoch))
+    }
+
+    /// Record and persist a durable world-IC clock checkpoint at the current
+    /// wall-clock second (`W-clock` / `Q-R4`).
+    pub fn checkpoint_world_time(
+        &mut self,
+    ) -> Result<WorldClockCheckpoint, WorldTimelineChangeError> {
+        let mut next = self.w.world_timeline().clone();
+        let cp = next.record_checkpoint(self.w.now());
+        let state_op = world_timeline_state_op(&next)?;
+        self.persist_engine_owned(state_op);
+        self.w.set_world_timeline(next);
+        Ok(cp)
     }
 }
 
@@ -1225,5 +1713,76 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn w_clock_freeze_and_resume_hold_ic_time_and_reanchor_within_same_generation() {
+        let mut timeline = WorldTimeline::from_game_clock(GameClock {
+            ic_ratio: 4,
+            epoch_offset: 1_000,
+        });
+        assert_eq!(
+            timeline.stamp_at(50),
+            ClockStamp {
+                clock: ClockRef::WorldIc { generation: 1 },
+                at: 1_200,
+            }
+        );
+
+        let freeze = timeline.freeze_deliberate(50).unwrap();
+        assert_eq!(freeze.frozen_real_unix, 50);
+        assert_eq!(freeze.frozen_ic_unix, 1_200);
+        assert_eq!(freeze.generation, 1);
+        assert!(timeline.is_frozen());
+        assert_eq!(
+            timeline.freeze_deliberate(60),
+            Err(WorldTimelineError::AlreadyFrozen)
+        );
+        assert_eq!(
+            timeline.next_rate_epoch(60, 2),
+            Err(WorldTimelineError::ClockFrozen)
+        );
+
+        // While frozen, real time advancing does not advance IC time.
+        assert_eq!(timeline.stamp_at(50).at, 1_200);
+        assert_eq!(timeline.stamp_at(500).at, 1_200);
+
+        // Resume at real=500 re-anchors generation 1 to (real=500, ic=1_200).
+        let (resumed_freeze, current) = timeline.resume_at(500).unwrap();
+        assert_eq!(resumed_freeze, freeze);
+        assert!(!timeline.is_frozen());
+        assert_eq!(current.generation, 1);
+        assert_eq!(current.real_anchor, 500);
+        assert_eq!(current.ic_anchor, 1_200);
+        assert_eq!(current.rate, 4);
+        assert_eq!(timeline.stamp_at(500).at, 1_200);
+        assert_eq!(timeline.stamp_at(510).at, 1_240);
+
+        // A later rate change opens generation 2 continuously from the re-anchored generation 1,
+        // and round-trips through `from_epochs_and_state`.
+        let gen2 = timeline.next_rate_epoch(510, 2).unwrap();
+        assert_eq!(gen2.ic_anchor, 1_240);
+        timeline.append(gen2).unwrap();
+        let hydrated =
+            WorldTimeline::from_epochs_and_state(timeline.epochs().to_vec(), timeline.state())
+                .unwrap();
+        assert_eq!(hydrated, timeline);
+        assert_eq!(hydrated.stamp_at(520).at, 1_260);
+    }
+
+    #[test]
+    fn w_clock_reanchor_from_checkpoint_excludes_lost_wall_time_without_catch_up() {
+        let mut timeline = WorldTimeline::from_game_clock(GameClock {
+            ic_ratio: 24,
+            epoch_offset: 10_000,
+        });
+        let cp = timeline.record_checkpoint(100);
+        assert_eq!(cp.ic_unix, 12_400);
+
+        // Restart 15 real seconds later (at real=115): re-anchors silently to cp.ic_unix.
+        let lost = timeline.reanchor_from_checkpoint(115).unwrap();
+        assert_eq!(lost, Some(15));
+        assert_eq!(timeline.stamp_at(115).at, 12_400);
+        assert_eq!(timeline.stamp_at(116).at, 12_424);
     }
 }

@@ -2879,10 +2879,23 @@ fn completion_line(
     let site = site_name(w, &last.site);
     match last.result {
         ActResult::Done => match last.kind {
-            ActKind::Launch => tv::LAUNCHED
-                .replace("{n}", &n)
-                .replace("{ramp}", &ramp)
-                .replace("{site}", &site),
+            ActKind::Launch => {
+                let launched = tv::LAUNCHED
+                    .replace("{n}", &n)
+                    .replace("{ramp}", &ramp)
+                    .replace("{site}", &site);
+                // Doc 17h cut M8e E4: a licence that fell the rig to doctrine at its dispatch is
+                // said here, in the operator's own completion line and nowhere else.
+                match record
+                    .sortie
+                    .as_ref()
+                    .and_then(|open| open.seal.as_ref())
+                    .and_then(|facts| crate::surface::dispatch::doctrine_clause(facts, &n))
+                {
+                    Some(clause) => format!("{launched} {clause}"),
+                    None => launched,
+                }
+            }
             // Doc 20 cut SM.11 (lead ruling 6): the idle return, with its unload clause.
             ActKind::Recover if last.by == Some(crate::surface::plan::ActBy::Idle) => {
                 let then = record
@@ -3177,6 +3190,7 @@ mod tests {
                 reserved_cu: 0,
                 params: ActParams::None {},
                 by: None,
+                seal: None,
             }),
             excursion: None,
             last: None,
@@ -3235,6 +3249,7 @@ mod tests {
                 reserved_cu: 0,
                 params: ActParams::None {},
                 by: None,
+                seal: None,
             }),
             excursion: None,
             last: None,
@@ -3402,6 +3417,7 @@ mod tests {
                 reserved_cu: 2_700,
                 params,
                 by: None,
+                seal: None,
             }),
             excursion: None,
             last: None,
@@ -3487,6 +3503,7 @@ mod tests {
                     hidden: Vec::new(),
                 },
                 by: None,
+                seal: None,
             }),
             excursion: None,
             last: None,

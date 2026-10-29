@@ -25,6 +25,7 @@
         "table": 0
       },
       "designator": "BA",
+      "facing": "left",
       "fatal": [
         "hull"
       ],
@@ -63,6 +64,7 @@
       "class": "red",
       "condition": null,
       "designator": "RB",
+      "facing": "front",
       "fatal": null,
       "friendly": true,
       "health": null,
@@ -88,6 +90,7 @@
       "class": "unknown",
       "condition": null,
       "designator": "X3",
+      "facing": "front",
       "fatal": null,
       "friendly": false,
       "health": null,
@@ -113,6 +116,7 @@
       "class": "unknown",
       "condition": null,
       "designator": "X4",
+      "facing": "rear",
       "fatal": null,
       "friendly": false,
       "health": null,
