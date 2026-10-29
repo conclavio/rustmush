@@ -13,9 +13,36 @@ use serde_json::json;
 
 use super::dt_atomic_scene_movement::{entries, scenes, start_scenes};
 use super::dt_locomotion::{fixture as restart, location};
-use super::dt_window_movement::{commit, commit_line, entering, fixture, record, stage};
+use super::dt_window_movement::{
+    commit, commit_line, entering, fixture, projected_loop, record, stage,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+#[tokio::test]
+async fn actual_two_leg_window_geometry_stays_refused_until_atlas_discovery_joins_both_legs()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = projected_loop(&store, ObjKind::Player).await?;
+    let (source, destination, _) = start_scenes(&mut rig, &store).await?;
+    let before = [entries(&rig, source)?, entries(&rig, destination)?];
+    let rows = rig.world.engine().action_state().len();
+    assert!(stage(&mut rig, 0xb6).is_err());
+    assert!(rig.world.engine_mut().take_staged_action()?.is_none());
+    assert_eq!(location(&rig), Some(rig.source));
+    assert_eq!(entries(&rig, source)?, before[0]);
+    assert_eq!(entries(&rig, destination)?, before[1]);
+    let native = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("Sim")?;
+    assert!(!native.placements.contains_key(&rig.actor));
+    assert_eq!(native.recovery.next_seq(WINDOW_MOVEMENT_LOG), 0);
+    assert_eq!(rig.world.engine().action_state().len(), rows);
+    assert_eq!(rig.moved.load(Ordering::SeqCst), 0);
+    Ok(())
+}
 
 #[tokio::test]
 async fn actual_window_entry_and_original_scene_events_commit_and_recover_together() -> TestResult {

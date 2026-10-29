@@ -178,9 +178,9 @@ pub(in crate::world_task::submission_disposition::tests) async fn open_wallet(
         .filter_map(|(_, tail)| tail.split_whitespace().next())
         .map(str::parse::<u64>)
         .collect::<Result<Vec<_>, _>>()?;
-    let [id]: [u64; 1] = ids
-        .try_into()
-        .map_err(|_| "one acknowledged wallet creation")?;
+    let [id]: [u64; 1] = ids.try_into().map_err(|ids: Vec<u64>| {
+        format!("one acknowledged wallet creation for {owner:?}, got {ids:?}: {lines:?}")
+    })?;
     let row = wallet(store, WalletId(id)).await?;
     assert_eq!(row.owner, owner);
     assert_eq!(

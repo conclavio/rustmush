@@ -12,6 +12,96 @@ fn route() -> Route {
     }
 }
 
+#[test]
+fn ordered_loop_joins_original_positions_and_refuses_a_missing_second_leg_or_changed_native_event()
+{
+    // Passive historical data only. The production collector obtains its
+    // route/digest/claims from the actual owner's scoped Core receipt.
+    let mut events = events();
+    events.extend([
+        (1,json!({"kind":"joined","actor":99,"ic_time":512,"at":1234,"witnesses":[22],"detail":{}})),
+        (2,json!({"kind":"left","actor":99,"ic_time":700,"at":1234,"witnesses":[20,21,20],"detail":{}})),
+    ]);
+    let rows: Vec<_> = events
+        .iter()
+        .map(|(scene, event)| json!({"scene":scene,"event":event}))
+        .collect();
+    let value = json!({"format":1,"actor":99,"source":10,"admitted_room":11,"projected_room":10,"at":1234,
+        "legs":[{"format":1,"actor":99,"from":10,"to":11,"at":1234,"events":&rows[..2]},
+                {"format":1,"actor":99,"from":11,"to":10,"at":1234,"events":&rows[2..]}]});
+    let bytes = mush_core::canonical_json_bytes_with_limit(
+        &value,
+        crate::movement_window_capture::MAX_WINDOW_SCENE_CAPTURE_BYTES,
+    )
+    .expect("ordered bytes");
+    let digest = crate::movement_window_capture::WindowSceneCapture::decode(&bytes)
+        .expect("ordered data")
+        .digest()
+        .expect("digest");
+    let mut chunks = BTreeMap::<u64, Vec<LedgerEntry>>::new();
+    let mut references = Vec::new();
+    for (scene, event) in events {
+        let entries = chunks.entry(scene).or_default();
+        let sequence = entries.len() as u64;
+        references.push(SceneLedgerAppendRef {
+            scene,
+            sequence,
+            event_digest: scene_transition::scene_event_digest(&event).expect("event digest"),
+        });
+        entries.push(LedgerEntry {
+            seq: sequence,
+            value: event,
+        });
+    }
+    let docs: Vec<LedgerDoc> = chunks
+        .into_iter()
+        .map(|(scene, entries)| {
+            (
+                mush_core::chunk_key(&scene.to_string(), 0),
+                serde_json::to_string(&LedgerChunk {
+                    chunk: 0,
+                    sealed: false,
+                    entries,
+                })
+                .expect("chunk"),
+            )
+        })
+        .collect();
+    for fault in 0..5 {
+        let mut claims = references.clone();
+        let counts = if fault == 3 {
+            claims.truncate(2);
+            vec![2, 0]
+        } else {
+            vec![2, 2]
+        };
+        let projected = if fault == 4 { ObjId(12) } else { ObjId(10) };
+        let mut audit = Audit::new();
+        audit
+            .add_window(route(), projected, counts, digest, &claims)
+            .expect("original claims");
+        let mut original = docs.clone();
+        if fault == 1 || fault == 2 {
+            let mut chunk: LedgerChunk = serde_json::from_str(&original[0].1).expect("chunk");
+            if fault == 1 {
+                chunk.entries.pop();
+            } else {
+                chunk.entries.last_mut().expect("entry").value["at"] = json!(999);
+            }
+            original[0].1 = serde_json::to_string(&chunk).expect("chunk");
+            assert!(audit.read_history(&original).is_err());
+        } else {
+            original.reverse();
+            audit.read_history(&original).expect("original native rows");
+            if fault == 0 {
+                audit.finish().expect("exact original ordered capture");
+            } else {
+                assert!(audit.finish().is_err());
+            }
+        }
+    }
+}
+
 fn events() -> Vec<(u64, Value)> {
     vec![
         (

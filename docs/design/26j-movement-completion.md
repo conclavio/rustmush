@@ -629,16 +629,17 @@ receives no exemption from this profile.
 The production window composition also joins the actual Scenes transcript owner
 through a separate exact participant and scoped reader. Original source-departure
 and destination-entry events, including scene clock stamps and witnesses, use
-the same bounded prepared ledger batches as the existing transcript adapter.
+bounded prepared ledger tails.
 Empty captures retain a genuine owner observation. All configured movement
 profiles share one cold transcript-position census, so two receipts cannot claim
-the same original event across profiles. The window adapter currently requires
-the final projected room to equal the admitted room; a second Core room leg
-refuses until ordered transcript capture is implemented. Older window manifests
-without a Scenes group retain their original partial coverage.
+the same original event across profiles. Its actual version 2 adapter captures
+both Core room legs and binds up to four original events, including repeated
+appends to one transcript. Version 1's exact participant and completion binding
+remain retained metadata for original single-leg receipts. Older window
+manifests without a Scenes group retain their original partial coverage.
 
 The ledger now supplies a separate bounded four-entry ordered preparation for
-the future two-leg transcript adapter. It copies only selected tails, retains
+the two-leg transcript adapter. It copies only selected tails, retains
 original per-event sequence numbers even when a log repeats, and emits one final
 write per touched chunk, including sealed rollover chunks. Every selected
 original tail and seal policy is checked before a binding can publish any final
@@ -651,8 +652,10 @@ events, local clock stamps and witness order, including a return to the source
 and explicit no-op legs. Its strict canonical decoder validates route continuity
 and per-leg grammar; decoded observations never become an append or movement
 capability. Tests compare a two-leg loop with the actual registered legacy
-observer. The ordered native adapter and original-history join remain required
-before the registered single-leg window profile can widen its support.
+observer. The actual adapter consumes this capture, and its original-history
+audit reconstructs each leg only from the genuine Core header, exact original
+positions and native event bodies. Missing second-leg claims, changed events,
+repeated positions and nonconsecutive appends refuse before migration or load.
 
 An actual composition owner can now retain an explicit bounded list of older
 versions of its same participant key in its scoped receipt reader. The current
@@ -660,8 +663,14 @@ typed owner must still be registered in the composition. Foreign keys, current
 or future versions, duplicates and excessive profiles refuse; each historical
 receipt still validates its original manifest and exact retained definitions.
 The typed owner stamp continues to govern access, and retaining a reader grants
-no execution to an old adapter. This permits a versioned ordered transcript
-adapter to keep the earlier single-leg receipts readable.
+no execution to an old adapter. The ordered transcript adapter uses this scope
+to keep the earlier single-leg receipts readable.
+
+Atlas's current discovery adapter still captures only the admitted-room leg.
+It now refuses a different final projected room during both preparation and
+historical audit, so the closed root cannot publish that route until actual
+second-leg discovery and its knowledge journal join are implemented. Completing
+Scenes does not complete Atlas discovery for the second Core leg.
 
 V2 registers no offer or live command route. Its manifest remains partial:
 the bounded original journal refuses a 257th commit until a real checkpoint or

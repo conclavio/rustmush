@@ -56,6 +56,12 @@ pub(crate) fn window_factory(
         let scene_observer = definitions
             .register(scene_owner, scene_transition::observer_descriptor()?)
             .map_err(bad)?;
+        let old_scene_participant = definitions
+            .register(
+                OwnerId::new("scenes").map_err(bad)?,
+                mush_scenes::movement_window::participant_descriptor_v1()?,
+            )
+            .map_err(bad)?;
         let service = builder
             .owner::<mush_scenes::movement_window::WindowScenesMovementParticipant>(
                 reg,
@@ -69,7 +75,11 @@ pub(crate) fn window_factory(
             )?
             .finish(reg)?;
         scene_reader
-            .set(service.owner_reader(&scene_participant).map_err(bad)?)
+            .set(
+                service
+                    .owner_reader_retaining(&scene_participant, &[old_scene_participant])
+                    .map_err(bad)?,
+            )
             .map_err(|_| bad("window Scenes reader already belongs to a composition"))?;
         reader
             .set(service.owner_reader(&participant).map_err(bad)?)

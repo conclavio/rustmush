@@ -174,8 +174,8 @@ impl ScenesModule {
         self
     }
 
-    /// Join the actual transcript owner to closed window movement. A second
-    /// projected room is refused until ordered transcript capture is supported.
+    /// Join the actual ordered transcript owner to closed window movement,
+    /// retaining the original single-leg profile for historical reads.
     #[must_use]
     pub fn with_window_composed_movement(
         mut self,

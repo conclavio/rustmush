@@ -25,6 +25,7 @@ struct Route {
 }
 struct Proof {
     route: Route,
+    window: Option<(ObjId, Vec<u8>)>,
     digest: DefinitionDigest,
     events: Vec<(u64, Option<Vec<u8>>)>,
 }
@@ -59,7 +60,35 @@ impl Audit {
         digest: DefinitionDigest,
         appends: &[SceneLedgerAppendRef],
     ) -> Result<(), ModError> {
-        if self.proofs.len() >= MAX_ACTION_STATE_BOOT_RECORDS || appends.len() > 2 {
+        if appends.len() > 2 {
+            return Err(bad("Scenes movement boot proof exceeds its record bound"));
+        }
+        self.add_profile(route, None, digest, appends)
+    }
+    fn add_window(
+        &mut self,
+        route: Route,
+        projected: ObjId,
+        counts: Vec<u8>,
+        digest: DefinitionDigest,
+        appends: &[SceneLedgerAppendRef],
+    ) -> Result<(), ModError> {
+        if counts.len() > 2
+            || counts.iter().any(|n| *n > 2)
+            || counts.iter().map(|n| usize::from(*n)).sum::<usize>() != appends.len()
+        {
+            return Err(bad("Scenes ordered leg counts exceed their bound"));
+        }
+        self.add_profile(route, Some((projected, counts)), digest, appends)
+    }
+    fn add_profile(
+        &mut self,
+        route: Route,
+        window: Option<(ObjId, Vec<u8>)>,
+        digest: DefinitionDigest,
+        appends: &[SceneLedgerAppendRef],
+    ) -> Result<(), ModError> {
+        if self.proofs.len() >= MAX_ACTION_STATE_BOOT_RECORDS || appends.len() > 4 {
             return Err(bad("Scenes movement boot proof exceeds its record bound"));
         }
         // Conservative per-row/index accounting includes Vec growth and tree
@@ -88,6 +117,7 @@ impl Audit {
         }
         self.proofs.push(Proof {
             route,
+            window,
             digest,
             events,
         });
@@ -154,46 +184,82 @@ impl Audit {
 
     fn finish(self) -> Result<(), ModError> {
         for proof in self.proofs {
-            let mut events = Vec::with_capacity(proof.events.len());
-            for (scene, bytes) in proof.events {
+            let Proof {
+                route,
+                window,
+                digest,
+                events: original,
+            } = proof;
+            let mut events = Vec::with_capacity(original.len());
+            for (scene, bytes) in original {
                 let bytes = bytes.ok_or_else(|| bad("Scenes movement event is missing"))?;
                 let event: Value = serde_json::from_slice(&bytes)
                     .map_err(|_| bad("Scenes movement event cannot decode"))?;
                 events.push(json!({"scene":scene,"event":event}));
             }
-            let capture = json!({"format":1,"actor":proof.route.actor,"from":proof.route.from,
-                "to":proof.route.to,"at":proof.route.at,"events":events});
-            let bytes =
-                mush_core::canonical_json_bytes_with_limit(&capture, MAX_MOVEMENT_CAPTURE_BYTES)
-                    .map_err(|_| bad("Scenes movement capture exceeds its bound"))?;
-            MovementCapture::decode(&bytes)
-                .map_err(|_| bad("Scenes movement capture is not canonical"))?;
-            if scene_transition::scene_capture_digest(&capture)
-                .map_err(|_| bad("Scenes movement capture cannot be hashed"))?
-                != proof.digest
-            {
-                return Err(bad(
-                    "Scenes movement capture differs from its committed receipt",
-                ));
-            }
+            verify_capture(&route, window.as_ref(), events, digest)?;
         }
         Ok(())
     }
     fn check_empty_captures(&self) -> Result<(), ModError> {
         for proof in self.proofs.iter().filter(|proof| proof.events.is_empty()) {
-            let capture = json!({"format":1,"actor":proof.route.actor,"from":proof.route.from,
-                "to":proof.route.to,"at":proof.route.at,"events":[]});
-            if scene_transition::scene_capture_digest(&capture)
-                .map_err(|_| bad("Scenes empty movement capture cannot be hashed"))?
-                != proof.digest
-            {
-                return Err(bad(
-                    "Scenes empty movement capture differs from its receipt",
-                ));
-            }
+            verify_capture(&proof.route, proof.window.as_ref(), vec![], proof.digest)?;
         }
         Ok(())
     }
+}
+
+fn verify_capture(
+    route: &Route,
+    window: Option<&(ObjId, Vec<u8>)>,
+    events: Vec<Value>,
+    expected: DefinitionDigest,
+) -> Result<(), ModError> {
+    let digest = if let Some((projected, counts)) = window {
+        let mut remaining = events.into_iter();
+        let mut legs = Vec::with_capacity(counts.len());
+        for (index, count) in counts.iter().enumerate() {
+            let events: Vec<_> = remaining.by_ref().take(usize::from(*count)).collect();
+            if events.len() != usize::from(*count) {
+                return Err(bad("Scenes ordered leg is missing events"));
+            }
+            let (from, to) = if index == 0 {
+                (route.from, route.to)
+            } else {
+                (Some(route.to), *projected)
+            };
+            legs.push(json!({"format":1,"actor":route.actor,"from":from,"to":to,"at":route.at,"events":events}));
+        }
+        if remaining.next().is_some() {
+            return Err(bad("Scenes ordered proof has extra events"));
+        }
+        let capture = json!({"format":1,"actor":route.actor,"source":route.from,"admitted_room":route.to,
+            "projected_room":projected,"at":route.at,"legs":legs});
+        let bytes = mush_core::canonical_json_bytes_with_limit(
+            &capture,
+            crate::movement_window_capture::MAX_WINDOW_SCENE_CAPTURE_BYTES,
+        )
+        .map_err(|_| bad("Scenes ordered capture exceeds its bound"))?;
+        crate::movement_window_capture::WindowSceneCapture::decode(&bytes)
+            .map_err(|_| bad("Scenes ordered capture is not canonical"))?
+            .digest()
+            .map_err(|_| bad("Scenes ordered capture cannot be hashed"))?
+    } else {
+        let capture = json!({"format":1,"actor":route.actor,"from":route.from,"to":route.to,"at":route.at,"events":events});
+        let bytes =
+            mush_core::canonical_json_bytes_with_limit(&capture, MAX_MOVEMENT_CAPTURE_BYTES)
+                .map_err(|_| bad("Scenes movement capture exceeds its bound"))?;
+        MovementCapture::decode(&bytes)
+            .map_err(|_| bad("Scenes movement capture is not canonical"))?;
+        scene_transition::scene_capture_digest(&capture)
+            .map_err(|_| bad("Scenes movement capture cannot be hashed"))?
+    };
+    if digest != expected {
+        return Err(bad(
+            "Scenes movement capture differs from its committed receipt",
+        ));
+    }
+    Ok(())
 }
 
 fn collect_receipts<'a>(
@@ -233,17 +299,28 @@ fn collect_receipts<'a>(
                 .scan_receipts(ctx, after.as_deref(), 128)
                 .map_err(|_| bad("Scenes composed movement receipts are unavailable or invalid"))?;
             for receipt in page.entries() {
-                let appends = crate::movement_composed::appends(receipt)?;
-                audit.add(
-                    Route {
-                        actor: receipt.actor(),
-                        from: receipt.source(),
-                        to: receipt.destination(),
-                        at: receipt.at_utc(),
-                    },
-                    *receipt.effect().owner_capture_digest(),
-                    &appends,
-                )?;
+                let route = Route {
+                    actor: receipt.actor(),
+                    from: receipt.source(),
+                    to: receipt.destination(),
+                    at: receipt.at_utc(),
+                };
+                let digest = *receipt.effect().owner_capture_digest();
+                if let Some(claims) = crate::movement_window::ordered_claims(receipt)? {
+                    let projected = receipt
+                        .window_projection()
+                        .ok_or_else(|| bad("Scenes window header is missing"))?
+                        .projected_room();
+                    audit.add_window(
+                        route,
+                        projected,
+                        claims.leg_counts,
+                        digest,
+                        &claims.appends,
+                    )?;
+                } else {
+                    audit.add(route, digest, &crate::movement_composed::appends(receipt)?)?;
+                }
             }
             after = page.next_after().map(ToString::to_string);
             if after.is_none() {
