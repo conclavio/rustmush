@@ -1,11 +1,14 @@
-# Doc 27 (`H1-A` / `H2-A`) — Field-Unit Component Survival & Universal Towing Foundation
+# Doc 27 (`H1`–`H3`) — IC Field Combat, Component Survival, Universal Towing, Salvage Title & Workshop Restoration
 
-The accepted design rules live in [doc 27](27-ic-field-operations-design-and-survey.md) (`FO-1`–`FO-3`, `FO-10`, `FO-13`, `Q-H7`–`Q-H9`, `Q-S5`–`Q-S9`, `Q-S11`, §4.1, §4.4, §5). This brief records the neutral `mush-tactics` foundation (`mush_tactics::field_ops`) and the `tacsim` ruleset integration (`tacsim::field_ops`) for `H1-A` and `H2-A`.
+The accepted design rules live in [doc 27](27-ic-field-operations-design-and-survey.md) (`FO-1`–`FO-4`, `FO-10`, `FO-12`–`FO-14`, `Q-H1`–`Q-H12`, `Q-S1`–`Q-S15`, `Q-F3`–`Q-F6`, `Q-R1`, `Q-R3`, `P-2`–`P-5`). This brief records the neutral `mush-tactics` foundation (`mush_tactics::field_ops`) and the `tacsim` ruleset integration (`tacsim::field_ops`) across `H1-A`, `H1-B`, `H1-C`, `H2-A`, `H2-B`, `H2-C`, and `H3`.
 
-| Milestone | Deliverable | Scope boundary |
+| Milestone | Deliverable | Module |
 |---|---|---|
-| `H1-A` | Section-localized component survival, derived operational states (`operational`, `immobile`, `unarmed`, `disabled`, `wreck`, `irrecoverable`), IC-custody-legal condition mutation plans, hull-epoch close gating (`Q-H9`), and versioned authority handoff (`§4.4`, `FO-10`) | Preserves surviving component/section/cell state across defeat; component stripping, scrapping, and workshop repair remain `H3` (`FO-14`, `Q-S11`, `Q-S12`) |
-| `H2-A` | Universal tow coupling (`<= 2×` tug mass cap), tonnage-differential speed scaling, recovery-optimized rig curve (`FO-13`, `Q-S6`), field inspection, exclusive physical attachment (`Q-S9`), coupled movement, carrier bay capacity checks (`Q-S8`), and unhealed bay recovery (`FO-1`, `FO-3`) | Carrier bay load preserves damaged `TacticalUnit` state and retained cargo without automatic repair |
+| `H1-A` | Section-localized component survival, derived operational states (`operational`, `immobile`, `unarmed`, `disabled`, `wreck`, `irrecoverable`), IC-custody-legal condition mutation plans, hull-epoch close gating (`Q-H9`), and versioned authority handoff (`§4.4`, `FO-10`) | `mush_tactics::field_ops::condition` |
+| `H1-B` / `H1-C` | Frontier site engagement promotion/demotion, motion-clock handoff (`rate 24` surface <-> `1:1` combat, `Q-R3`), reinforcement, withdrawal, carrier leave-behind confirmation (`Q-H10`), re-attacking disabled units (`Q-H8`), link-loss safe posture (`Q-H5`, `P-2`), crew survival / guaranteed NPC extraction (`FO-12`, `Q-H12`, `Q-F4`, `P-5`), and observer-bounded post-battle digests (`Q-H6`) | `mush_tactics::field_ops::engagement` |
+| `H2-A` | Universal tow coupling (`<= 2×` tug mass cap), tonnage-differential speed scaling (`Standard` & `RecoveryOptimized` curves per `FO-13`, `Q-S6`), field inspection, exclusive physical attachment (`Q-S9`), coupled movement, carrier bay capacity checks (`Q-S8`), and unhealed bay recovery (`FO-1`, `FO-3`) | `mush_tactics::field_ops::recovery` |
+| `H2-B` / `H2-C` | Ground tenure pinned at attach (`Q-S3`), lawful/unlawful recovery entitlement (`FO-4`, `Q-S1`), private authoritative recovery records, evidence-gated unlawful salvage actions (`Q-S4`), post-close black-box access rules (`P-3`), public salvage claims with a 48-available-real-hour contest window (`Q-S2`, `Q-S13`–`Q-S15`, `Q-F3`), `Q-R1` bare-prior-title rejection, and pending-title custody gates (`Q-S14`, `Q-F5`) | `mush_tactics::field_ops::salvage` |
+| `H3` | Component stripping with parent-hull provenance & double-strip/double-claim prevention (`Q-S11`, `Q-F5`, `Q-F6`), hull scrapping, in-place section/component repair (including pending-custody repair-at-risk per `Q-S14`), section reconstruction, and destroyed/stripped component replacement (`FO-2`, `Q-S12`) | `mush_tactics::field_ops::workshop` |
 
 ---
 
@@ -68,3 +71,60 @@ The accepted design rules live in [doc 27](27-ic-field-operations-design-and-sur
 - **Carrier Bay Load (`RecoveryBook::load_into_bay`)**:
   - Checks `BayCapacitySpec` (`max_units`, `max_width_cm`, `max_height_cm`, `max_mass_kg` including retained cargo mass, and `max_volume_l` including retained cargo volume, per `Q-S8`).
   - Verifies the casualty's `TacticalUnit::revision()` matches `casualty_unit_revision` (refusing any silent healing/reset) and returns `LoadedCasualtyOutcome` with `FieldCloseOutcome::RecoveredToBase { base: carrier }` (`IcCloseKind::RecoveredToBase`).
+
+---
+
+## 3. `H1-B` & `H1-C` — Field Combat Entry, Motion-Clock Handoff, Crew Survival & Observer Projection (`mush_tactics::field_ops::engagement`)
+
+### 3.1 Promotion, Demotion & Motion-Clock Discontinuity (`Q-H1`–`Q-H4`, `Q-R3`, `Q-S9`, `Q-S10`)
+- **Clock Rates (`Q-R3`)**: Unengaged frontier site surface operations advance on `IC_SURFACE_CLOCK_RATE = 24` (`24` IC seconds per real second); active combat (`FieldSiteEngagementBook::is_engaged()`) runs on `COMBAT_WALL_CLOCK_RATE = 1` (`1:1` wall time).
+- **Promotion (`promote_to_engagement`)**: Triggered by `FieldPromotionTrigger::{ExplicitHostileAction, ArmedPerimeterCrossing, MutualEngagementOrder, RecoveryInterdiction}`. Hands off every unit on the site from `FieldAuthorityKind::FieldSurface` to `FieldAuthorityKind::CombatInstance` at its exact current `FieldPose` (`MotionClockHandoff`) without rewinding or duplicating cumulative distance.
+- **Reinforcement & Withdrawal (`reinforce_engagement`, `withdraw_unit`, `Q-H3`)**: Reinforcements enter at a validated site entry pose; mobile units (or towed casualties) withdraw to `WithdrawalDestination::{PerimeterSurface, CarrierBay, Hangar}`.
+- **Demotion Settlement (`demote_engagement`, `Q-H4`, `Q-S10`)**: Blocked (`EngagementError::DemotionBlocked`) while `DemotionSettlementGate` has any non-zero `pending_impacts`, `active_hostile_contacts`, or `pending_boundary_handoffs`. Once settled, transitions remaining units back to `FieldAuthorityKind::FieldSurface`, leaving `Immobile`, `Disabled`, and `Wreck` units as persistent field casualties with `FieldEpochDisposition::RemainOpen`.
+- **Carrier Leave-Behind Confirmation (`depart_carrier`, `Q-H10`)**: Refuses carrier departure when sortie units remain outside the carrier bay unless `confirm_leave_behind == true`; when confirmed, leaves those units in the field without deleting them, releasing title, or closing their hull epochs.
+
+### 3.2 Link-Loss Posture, Crew Survival & Observer Digest (`Q-H5`, `Q-H6`, `Q-H12`, `Q-F4`, `P-2`, `P-5`, `FO-12`)
+- **Link-Loss Handover (`resolve_link_loss_posture`)**: Remains `PlayerControlled` while `disconnected_elapsed_ms < linkdead_grace_ms + reclaim_min_ms`; thereafter switches to `SealedMindFallback` if a mind is sealed on the hull, or `SafeHoldPosture` (no fire, no motion, `P-2`) when no mind is sealed.
+- **Crew Survival & Guaranteed NPC Extraction (`CrewSurvivalBook`)**:
+  - Enforces **zero player permadeath** (`FO-12`, `Q-H12`): unit defeat transitions occupants to `AboardUnit { injured }` or `StrandedInField`, never death.
+  - `request_npc_extraction` (`Q-F4`, `P-5`): triggered strictly on the stranded character's explicit request (never an automatic timeout extracting an unwilling pilot), refused **only** while an unexpired `FriendlyRescueUnderway` is active (`EngagementError::FriendlyRescueActive`), paused/extended across world outage freezes (`pause_extractions_for_outage` / `resume_extractions_after_outage`), and delivers the character to the nearest eligible known safe port (or fallback `"phobos"`) while leaving the hull, equipment, and cargo in the field with an open epoch.
+- **Observer-Bounded Post-Battle Digest (`FieldObservationBook`, `Q-H6`)**: Scopes `ObservedCombatFact` entries strictly to the `observer` (`DirectLineOfSight`, `DeliveredReport`, `FieldInspection`, `RecoveredBlackBox`), preventing any omniscient public battle replay or hidden component leak.
+
+---
+
+## 4. `H2-B` & `H2-C` — Recovery Entitlement, Unlawful Salvage Evidence & 48-Hour Salvage Claims (`mush_tactics::field_ops::salvage`)
+
+### 4.1 Ground Tenure & Lawful vs Unlawful Entitlement (`FO-4`, `Q-S1`, `Q-S3`, `Q-S4`)
+- **Pinned Tenure (`GroundTenure`, `Q-S3`)**: Captured at the casualty's position when physical attachment begins (`Unclaimed` or `Owned { landholder, claim_id }`) and persisted across continuous recovery.
+- **Independent Entitlements (`evaluate_recovery_entitlement`, `Q-S1`)**:
+  - `LawfulSelfOrAgent`: unit title holder or authorized agent (lawful on both unclaimed and owned ground without needing landholder permission).
+  - `LawfulLandholderOrAgent`: recognized landholder or authorized agent on `Owned` ground (lawful without needing unit-owner permission).
+  - `LawfulOpenGround`: any capable recoverer on `Unclaimed` ground.
+  - `UnlawfulOnOwnedGround`: third party on `Owned` ground lacking both owner and landholder authority (`FO-4`, `Q-S4`). Physically permitted to attach, tow, and load (`Q-S5`), recorded privately in `AuthoritativeRecoveryRecord`.
+- **Evidence Gate & Post-Close Black-Box Access (`Q-S4`, `P-3`)**:
+  - Inspecting a third party's `AuthoritativeRecoveryRecord` or contesting an unlawful recovery requires a matching `SalvageEvidenceRecord` (`DirectWitness`, `SensorLog`, `CustodyInspection`, or `RecoveredBlackBox`).
+  - `read_recovered_black_box` (`P-3`): requires physical/custody access to the bay holding the recovered hull (`has_physical_bay_access == true`); a distant prior owner cannot telepathically read the black box upon epoch close.
+
+### 4.2 Salvage Title Claims, Outage Pause & Contest Adjudication (`Q-S2`, `Q-S13`–`Q-S15`, `Q-F3`, `Q-F5`, `Q-F6`, `Q-R1`)
+- **Self-Recovery (`resolve_hull_recovery_custody`)**: Immediately returns `CustodyTitleStatus::ResolvedTitle { owner }` with no claim or contest window (`Q-S1`, `Q-S14`).
+- **Non-Owner Recovery**: Opens a `SalvageClaim` with `CONTEST_WINDOW_AVAILABLE_REAL_SECS = 172_800` (`48` available real hours, `Q-S15`), paused and extended across global world outage freezes via `pause_claims_for_outage` and `resume_claims_after_outage` (`Q-F3`, `P-4`).
+- **Contest Grounds (`submit_contest`, `adjudicate_claim`, `Q-S13`, `Q-R1`)**:
+  - `ContestGround::BarePriorTitle`: deterministically rejected (`valid_to_vacate = None`) per explicit owner ruling `Q-R1` — bare prior title alone never defeats a lawful salvage claim.
+  - `ContestGround::UnlawfulRecovery { evidence }`, `DefectiveProcedure`, and `SuperiorSpecificRight`: vacate the claim (`SalvageClaimState::Vacated`) and restore title to the winning challenger without reimbursing `documented_repairs_at_risk` (`Q-S14`).
+  - Uncontested claims (or claims with only rejected contests) settle at `now_real_s >= deadline_real_s` as `SalvageClaimState::AwardedToClaimant`, transferring clean legal title to the claimant.
+- **Pending-Title Custody Gate (`check_custody_action_allowed`, `Q-S14`, `Q-F5`)**: Permits `Stabilize` and `DocumentedRepairAtRisk` while title is pending, and refuses `DeploySortie`, `SellOrTransfer`, `IssueUseGrant`, `StripComponent`, and `ScrapHull` unless explicit owner permission is present.
+
+---
+
+## 5. `H3` — Component Stripping, Scrapping & Workshop Restoration (`mush_tactics::field_ops::workshop`)
+
+- **Component Stripping (`WorkshopBook::strip_component`, `Q-S11`, `Q-F5`, `Q-F6`)**:
+  - Enforces `StripAuthorization::{BayOrWorkshop, Field}` (refusing pending-claim stripping without owner permission per `Q-F5` and unlawful field stripping on owned ground per `Q-F6`).
+  - Detaches surviving (`Intact`, `Damaged`, or `Jammed`) components into a `StrippedComponentRecord` preserving component definition, condition, cells (such as remaining ammo), asset pointer, and `ComponentProvenance { parent_hull, parent_schema, host_section, stripped_by, stripped_at_ic, field_stripped }`.
+  - Marks the hull slot `"stripped"`, zeroes its cells to `min`, clears its asset pointer, and registers the stripped component on `SalvageClaimBook` so the remaining chassis cannot double-strip or double-claim the removed part (`Q-F6`).
+- **Hull Scrapping (`WorkshopBook::scrap_hull`, `Q-S11`, `Q-F5`)**:
+  - Requires resolved title or explicit owner permission (`Q-F5`), computes deterministic `ScrapYieldReport` (`structural_scrap_kg` + `dismantled_salvageable_components`), and transitions the hull to `OperationalState::Irrecoverable`.
+- **Workshop Repair, Section Reconstruction & Component Replacement (`FO-2`, `Q-S12`, `Q-S14`)**:
+  - `repair_section` & `repair_component`: repair `Damaged`/`Jammed` sections or components in place without resetting untouched sections, components, or ammo (`Q-S12`), logging an `AtRiskRepairEntry` when performed under `PendingSalvageClaim` (`Q-S14`).
+  - `reconstruct_section`: rebuilds a `Destroyed` or `Wreck` section shell to `Intact` while keeping components slagged when that section was destroyed explicitly `"destroyed"` until replaced (`FO-2`, `Q-S12`).
+  - `replace_component_in_slot`: installs a compatible `ReplacementPartSpec` (manufactured or built via `ReplacementPartSpec::from_stripped_record`) into a `"destroyed"` or `"stripped"` slot whose host section is functional, recomputing `FieldUnitAssessment` (e.g. restoring a headshot `Disabled` biped or disarmed `Unarmed` unit back to `Operational`).
