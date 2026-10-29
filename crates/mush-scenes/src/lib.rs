@@ -48,6 +48,7 @@
 
 mod commands;
 mod data;
+pub mod movement;
 mod panel;
 
 use std::sync::Arc;
@@ -195,7 +196,7 @@ impl GameModule for ScenesModule {
         ] {
             reg.subscribe(WorldEventKind::Said { kind }, Arc::new(on_said));
         }
-        reg.subscribe(WorldEventKind::Moved, Arc::new(on_moved));
+        reg.subscribe_moved("scene_movement_transcript", 1, Arc::new(on_moved))?;
         // Mechanical resolutions (dice rolls) recorded into the scene log.
         reg.subscribe(WorldEventKind::Rolled, Arc::new(on_rolled));
         // Turn-gating: a mechanical command runs only on the actor's turn.
@@ -875,34 +876,14 @@ fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::Moved { who, from, to } = ev else {
         return;
     };
-    // A no-op move (e.g. `@teleport X=<the room X is already in>`) still emits
-    // Moved with from == to; skip it so the anchor doesn't log a bogus
-    // arrival-and-departure for the same actor.
-    if *from == Some(*to) {
-        return;
-    }
-    let now = ctx.w.now();
-    if let Some(s) = active_scene_at(ctx.w, *to) {
-        let event = SceneEvent::new(
-            &s,
-            now,
-            SceneEventKind::Joined,
-            Some(*who),
-            serde_json::json!({}),
-        );
-        record_scene_event(ctx, s.id, event);
-    }
-    if let Some(from) = *from
-        && let Some(s) = active_scene_at(ctx.w, from)
-    {
-        let event = SceneEvent::new(
-            &s,
-            now,
-            SceneEventKind::Left,
-            Some(*who),
-            serde_json::json!({}),
-        );
-        record_scene_event(ctx, s.id, event);
+    let events = ctx
+        .w
+        .module_state::<ScenesState>()
+        .map(|state| movement::legacy_events(state, *who, *from, *to, ctx.w.now()))
+        .unwrap_or_default();
+    for planned in events {
+        let (scene, event) = planned.into_parts();
+        record_scene_event(ctx, scene, event);
     }
 }
 

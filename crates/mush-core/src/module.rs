@@ -2298,6 +2298,7 @@ struct ObserverReg {
     kind: WorldEventKind,
     module: SmolStr,
     observer: Arc<dyn WorldObserver>,
+    moved_definition: Option<crate::mechanics::DefinitionRef>,
 }
 
 /// One declared cross-namespace write delegation (WS03-A1): module `writer`
@@ -2338,6 +2339,8 @@ pub struct ModuleTables {
     detail_prefixes: Vec<SmolStr>,
     hooks: HashMap<HookPoint, Vec<HookReg>>,
     observers: Vec<ObserverReg>,
+    /// Owners whose exact Moved descriptor validator was installed by Core.
+    moved_observer_factories: BTreeSet<SmolStr>,
     ticks: Vec<TickReg>,
     panel_feeds: Vec<(SmolStr, SmolStr)>,
     query_handlers: HashMap<SmolStr, (SmolStr, Arc<dyn QueryHandler>)>,
@@ -2804,6 +2807,22 @@ impl Registry {
             .filter(|o| o.kind == kind)
             .map(|o| (o.module.clone(), Arc::clone(&o.observer)))
             .collect()
+    }
+
+    /// Inspect the actual ordered Moved callback roster without invoking it.
+    /// Anonymous legacy subscriptions are explicit blockers; excess entries
+    /// refuse the whole inspection instead of returning a truncated roster.
+    pub fn moved_observer_roster(
+        &self,
+    ) -> Result<crate::moved_observer::MovedObserverRoster, ModError> {
+        crate::moved_observer::roster(
+            self.mods
+                .observers
+                .iter()
+                .filter(|entry| entry.kind == WorldEventKind::Moved)
+                .map(|entry| (entry.module.as_str(), entry.moved_definition.as_ref())),
+            self.definitions.as_ref(),
+        )
     }
 
     /// The tick registered by `module` under `tag`, if any.
@@ -4790,7 +4809,85 @@ impl<'a> Registrar<'a> {
             kind,
             module: self.module.clone(),
             observer,
+            moved_definition: None,
         });
+    }
+
+    /// Subscribe the actual legacy Moved callback with a stable owner-stamped
+    /// identity. The identity supplies no prepared completion capability.
+    /// Duplicate/current identities and rosters above the bounded limit refuse.
+    pub fn subscribe_moved(
+        &mut self,
+        id: &str,
+        version: u32,
+        observer: Arc<dyn WorldObserver>,
+    ) -> Result<crate::mechanics::DefinitionRef, ModError> {
+        self.require_mechanics_registration_authority()?;
+        let descriptor = crate::moved_observer::descriptor(id, version)?.as_current();
+        let mut count = 0usize;
+        for entry in &self.reg.mods.observers {
+            if entry.kind != WorldEventKind::Moved {
+                continue;
+            }
+            count += 1;
+            if count >= crate::moved_observer::MAX_MOVED_OBSERVERS {
+                return Err(ModError::msg("Moved observer roster is full"));
+            }
+            if entry.module == self.module
+                && entry
+                    .moved_definition
+                    .as_ref()
+                    .is_some_and(|definition| definition.key().id == *descriptor.id())
+            {
+                return Err(ModError::msg(
+                    "Moved observer already has a current callback",
+                ));
+            }
+        }
+        self.ensure_moved_observer_factory()?;
+        let definition = self.definition(descriptor)?;
+        self.reg.tables_mut().observers.push(ObserverReg {
+            kind: WorldEventKind::Moved,
+            module: self.module.clone(),
+            observer,
+            moved_definition: Some(definition.clone()),
+        });
+        Ok(definition)
+    }
+
+    /// Retain an exact historical legacy descriptor without registering a
+    /// callback or making that historical version current or runnable.
+    pub fn retain_moved_observer(
+        &mut self,
+        id: &str,
+        version: u32,
+    ) -> Result<crate::mechanics::DefinitionRef, ModError> {
+        self.require_mechanics_registration_authority()?;
+        let descriptor = crate::moved_observer::descriptor(id, version)?;
+        self.ensure_moved_observer_factory()?;
+        self.definition(descriptor)
+    }
+
+    fn ensure_moved_observer_factory(&mut self) -> Result<(), ModError> {
+        if self
+            .reg
+            .mods
+            .moved_observer_factories
+            .contains(&self.module)
+        {
+            return Ok(());
+        }
+        // This fails if the module preinstalled any validator for the kind.
+        // A permissive external validator can never replace the Core factory.
+        self.definition_validator(
+            crate::moved_observer::kind()?,
+            crate::moved_observer::validate_definition,
+        )?;
+        self.reg
+            .tables_mut()
+            .moved_observer_factories
+            .insert(self.module.clone());
+        Ok(())
     }
 
     /// Declare a typed state slot, installed on the world at engine

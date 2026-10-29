@@ -71,7 +71,7 @@ use std::sync::Arc;
 use mush_core::module::{ModError, Registrar};
 use mush_core::{
     AccountId, ArgShape, CmdError, CommandSpec, Ctx, ObjId, ObjKind, World, WorldEvent,
-    WorldEventKind, WorldObserver,
+    WorldObserver,
 };
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -513,7 +513,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(tutorial_command),
     )?;
-    reg.subscribe(WorldEventKind::Moved, Arc::new(LobbyEntry));
+    reg.subscribe_moved("tutorial_lobby_entry", 1, Arc::new(LobbyEntry))?;
     Ok(())
 }
 

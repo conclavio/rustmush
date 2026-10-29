@@ -43,7 +43,7 @@ use std::sync::Arc;
 use mush_core::module::{ModError, Registrar};
 use mush_core::{
     ArgShape, CanonicalId, CmdError, CommandSpec, Ctx, EventHook, HookPoint, HookReadContext,
-    ObjId, ObjKind, World, WorldError, WorldEvent, WorldEventKind, WorldObserver, name_span,
+    ObjId, ObjKind, World, WorldError, WorldEvent, WorldObserver, name_span,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 
@@ -409,7 +409,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(ic_command),
     )?;
     reg.hook(HookPoint::MoveAttempt, Arc::new(IcDoorHook));
-    reg.subscribe(WorldEventKind::Moved, Arc::new(IcReturnStamp));
+    reg.subscribe_moved("ic_return_stamp", 1, Arc::new(IcReturnStamp))?;
     Ok(())
 }
 
