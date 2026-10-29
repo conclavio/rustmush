@@ -1182,6 +1182,10 @@ impl GameModule for SimulationModule {
         Ok(())
     }
 
+    fn audit_typed_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
+        self.audit_movement_history(ctx)
+    }
+
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,

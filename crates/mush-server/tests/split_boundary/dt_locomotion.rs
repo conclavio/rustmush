@@ -547,6 +547,15 @@ pub(super) fn audit_before_projection_repair(
     )?);
     engine.hydrate_action_state(records)?;
     let _ = engine.world.take_dirty();
+    let preflight = engine.audit_typed_history();
+    if refused {
+        assert!(
+            preflight.is_err(),
+            "global typed-history phase must reject the real Sim pair"
+        );
+    } else {
+        preflight?;
+    }
     let mut out = Outbox::new();
     let result = engine.module_loaded("sim", data, &mut out, &mut Effects::new());
     if refused {

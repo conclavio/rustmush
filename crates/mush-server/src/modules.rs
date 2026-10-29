@@ -191,6 +191,86 @@ async fn load_module_boot(
     Ok((boot, action_state))
 }
 
+/// Read only coordinator-reserved primary documents before module migrations.
+/// The production backends list keys without decoding ordinary docs or cold
+/// ledger chunks. Atomic typed hydration performs the actual family validation.
+async fn load_typed_history(
+    store: &dyn ObjectStore,
+    modules: &[Box<dyn GameModule>],
+) -> Result<Vec<ActionStateBootRecord>, String> {
+    let mut records = Vec::new();
+    let mut bytes = 0_usize;
+    for module in modules {
+        let ns = module.name();
+        let keys = store
+            .module_keys(ns)
+            .await
+            .map_err(|e| format!("listing {ns} typed history: {e}"))?;
+        for key in keys
+            .into_iter()
+            .filter(|key| is_action_state_persistence_key(key))
+        {
+            if records.len() >= mush_core::action_state::MAX_ACTION_STATE_BOOT_RECORDS {
+                return Err("typed history exceeds boot record limit".into());
+            }
+            let value = store
+                .module_json_get(ns, &key)
+                .await
+                .map_err(|e| format!("reading {ns}:{key} typed history: {e}"))?
+                .ok_or_else(|| format!("typed history disappeared at {ns}:{key}"))?;
+            let encoded = mush_core::canonical_json_bytes_with_limit(
+                &value,
+                mush_core::action_state::MAX_ACTION_STATE_RECORD_BYTES,
+            )
+            .map_err(|e| format!("unbounded typed history at {ns}:{key}: {e}"))?;
+            bytes = bytes
+                .checked_add(encoded.len())
+                .ok_or("typed history byte overflow")?;
+            if bytes > mush_core::action_state::MAX_ACTION_STATE_BOOT_BYTES {
+                return Err("typed history exceeds boot byte limit".into());
+            }
+            records.push(ActionStateBootRecord::new(ns, key, value));
+        }
+    }
+    Ok(records)
+}
+
+/// Ephemeral comparison of the immutable partition across migrations. This is
+/// not an authority digest or a runtime state mirror. Sort in place and encode
+/// one bounded record at a time rather than cloning the complete partition.
+fn typed_history_fingerprint(records: &mut [ActionStateBootRecord]) -> Result<[u8; 32], String> {
+    use sha2::{Digest as _, Sha256};
+    if records.len() > mush_core::action_state::MAX_ACTION_STATE_BOOT_RECORDS {
+        return Err("typed history exceeds boot record limit".into());
+    }
+    records.sort_by(|a, b| (&a.namespace, &a.key).cmp(&(&b.namespace, &b.key)));
+    let mut hash = Sha256::new();
+    hash.update(b"rustmush.boot.typed_history.v1\0");
+    let mut total = 0_usize;
+    for record in records {
+        let encoded = mush_core::canonical_json_bytes_with_limit(
+            &record.value,
+            mush_core::action_state::MAX_ACTION_STATE_RECORD_BYTES,
+        )
+        .map_err(|e| format!("invalid typed history fingerprint: {e}"))?;
+        total = total
+            .checked_add(encoded.len())
+            .ok_or("typed history byte overflow")?;
+        if total > mush_core::action_state::MAX_ACTION_STATE_BOOT_BYTES {
+            return Err("typed history exceeds boot byte limit".into());
+        }
+        for bytes in [
+            record.namespace.as_bytes(),
+            record.key.as_bytes(),
+            encoded.as_slice(),
+        ] {
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        }
+    }
+    Ok(hash.finalize().into())
+}
+
 /// The schema version a namespace's [`SCHEMA_KEY`] doc claims, if any.
 async fn ns_version(store: &dyn ObjectStore, ns: &str) -> Result<Option<u32>, String> {
     let doc = store
@@ -346,17 +426,26 @@ pub async fn run_module_migrations(
 }
 
 /// The full module boot sequence over an already-constructed engine (see
-/// the module docs): migrations → boot data → `module_loaded` per module →
+/// the module docs): typed history hydration/audit → migrations → boot data → `module_loaded` per module →
 /// `all_modules_loaded` (every `on_all_loaded`, then the census) → durable
 /// write-through of whatever boot persisted. Call between
 /// [`Engine::from_composition`] (or the compatibility
 /// [`Engine::with_modules`] wrapper) and spawning the world task.
 pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Result<(), String> {
-    run_module_migrations(store, engine.registry.migrations()).await?;
-    let (mut boot, action_state) = load_module_boot(store, engine.modules()).await?;
+    let mut history = load_typed_history(store, engine.modules()).await?;
+    let history_fingerprint = typed_history_fingerprint(&mut history)?;
     engine
-        .hydrate_action_state(action_state)
+        .hydrate_action_state(history)
         .map_err(|error| format!("action-state boot failed: {error}"))?;
+    engine
+        .audit_typed_history()
+        .map_err(|error| format!("typed history audit failed: {error}"))?;
+    run_module_migrations(store, engine.registry.migrations()).await?;
+    let (mut boot, mut action_state) = load_module_boot(store, engine.modules()).await?;
+    if typed_history_fingerprint(&mut action_state)? != history_fingerprint {
+        return Err("coordinator-reserved typed history changed during module migrations".into());
+    }
+    drop(action_state);
     load_requested_streams(store, engine.modules(), &mut boot).await?;
     let mut out = Outbox::new();
     let mut fx = Effects::new();
@@ -627,6 +716,23 @@ mod tests {
             Ok(Vec::new())
         }
 
+        fn audit_typed_history(&self, ctx: &mush_core::ModuleCtx<'_>) -> Result<(), ModError> {
+            let captured = self
+                .handle
+                .lock()
+                .map_err(|e| ModError::msg(e.to_string()))?;
+            let handle = captured
+                .as_ref()
+                .ok_or_else(|| ModError::msg("missing test handle"))?;
+            let row = ctx
+                .action_state(handle, &7)
+                .map_err(|e| ModError::msg(e.to_string()))?;
+            if row.is_some_and(|value| value.amount == 9) {
+                return Err(ModError::msg("framework history audit refused"));
+            }
+            Ok(())
+        }
+
         fn on_world_loaded(
             &mut self,
             _ctx: &mut mush_core::ModuleCtx<'_>,
@@ -838,6 +944,120 @@ mod tests {
             engine.action_state().get(&handle, &7).unwrap(),
             Some(&BootState { amount: 3 })
         );
+    }
+
+    #[tokio::test]
+    async fn typed_history_refusal_precedes_other_modules_migrations_and_callbacks() {
+        let store = InMemoryStore::new();
+        seed_authoritative_op(&store, boot_state_op("7", 9)).await;
+        write_ops(
+            &store,
+            vec![
+                stamp("toy", 1),
+                ModuleOp {
+                    ns: "toy".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "doc:one".into(),
+                        value: serde_json::json!({"a":1}),
+                    },
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let captured = Arc::new(Mutex::new(None));
+        let streams = Arc::new(AtomicBool::new(false));
+        let loaded = Arc::new(AtomicBool::new(false));
+        let mut engine = Box::new(
+            Engine::with_modules(
+                World::new_minimal(),
+                mush_core::Registry::new(),
+                vec![
+                    // This earlier module has an actual pending schema migration.
+                    Box::new(ToyMod { loaded: Vec::new() }),
+                    Box::new(StateBootMod {
+                        handle: captured,
+                        streams_requested: streams.clone(),
+                        loaded: loaded.clone(),
+                    }),
+                ],
+            )
+            .unwrap(),
+        );
+        let _ = engine.world.take_dirty();
+        let error = boot_modules(&mut engine, &store).await.unwrap_err();
+        assert!(error.contains("typed history audit failed"), "{error}");
+        assert_eq!(
+            store.module_json_get("toy", SCHEMA_KEY).await.unwrap(),
+            Some(serde_json::json!({"version":1}))
+        );
+        assert_eq!(
+            store.module_json_get("toy", "doc:one").await.unwrap(),
+            Some(serde_json::json!({"a":1}))
+        );
+        assert!(!streams.load(Ordering::SeqCst));
+        assert!(!loaded.load(Ordering::SeqCst));
+        assert!(engine.world.take_dirty().is_empty());
+        assert!(engine.take_module_ops().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manifest_cannot_hide_previously_audited_typed_history() {
+        let store = InMemoryStore::new();
+        seed_authoritative_op(&store, boot_state_op("7", 3)).await;
+        write_ops(
+            &store,
+            vec![ModuleOp {
+                ns: "state_boot_test".into(),
+                op: ModuleWrite::JsonSet {
+                    key: BOOT_MANIFEST_KEY.into(),
+                    value: serde_json::to_value(BootManifest {
+                        format: mush_core::BOOT_MANIFEST_FORMAT,
+                        skip_log_chunks_below: Default::default(),
+                        skip_key_prefixes: vec!["action-state/".into()],
+                    })
+                    .unwrap(),
+                },
+            }],
+        )
+        .await
+        .unwrap();
+        let (mut engine, _, streams, loaded) = state_boot_engine();
+        let error = boot_modules(&mut engine, &store).await.unwrap_err();
+        assert!(error.contains("typed history changed"), "{error}");
+        assert!(!streams.load(Ordering::SeqCst));
+        assert!(!loaded.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn typed_partition_comparison_is_order_independent_and_binds_all_fields() {
+        let first = ActionStateBootRecord::new(
+            "owner",
+            "action-state/v1/family/1",
+            serde_json::json!({"a":1}),
+        );
+        let second = ActionStateBootRecord::new(
+            "owner",
+            "action-state/v1/family/2",
+            serde_json::json!({"b":2}),
+        );
+        let expected = typed_history_fingerprint(&mut [first.clone(), second.clone()]).unwrap();
+        assert_eq!(
+            expected,
+            typed_history_fingerprint(&mut [second.clone(), first.clone()]).unwrap()
+        );
+        for change in 0..3 {
+            let mut changed = first.clone();
+            match change {
+                0 => changed.namespace = "other".into(),
+                1 => changed.key = "action-state/v1/family/9".into(),
+                _ => changed.value = serde_json::json!({"a":9}),
+            }
+            assert_ne!(
+                expected,
+                typed_history_fingerprint(&mut [changed, second.clone()]).unwrap()
+            );
+        }
     }
 
     #[tokio::test]

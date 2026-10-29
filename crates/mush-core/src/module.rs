@@ -3264,6 +3264,19 @@ pub trait GameModule: Send {
     /// engine construction, before any command dispatches.
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError>;
 
+    /// Read-only audit of coordinator-hydrated typed history, before any
+    /// module load callback or module schema migration. Only registration-time
+    /// handles, retained definitions and typed records are available here;
+    /// another module's loaded state must not be required. This grants no
+    /// recovery installation, native-history certification or live capability.
+    ///
+    /// The host calls [`crate::Engine::audit_typed_history`] after atomic typed
+    /// hydration. The immutable context permits no World, output or persistence
+    /// mutation. Default: nothing.
+    fn audit_typed_history(&self, _ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
+        Ok(())
+    }
+
     /// Called once after the world is loaded, with this module's persisted
     /// data (loaded by the driver out-of-band via the store read API).
     /// Default: nothing.
