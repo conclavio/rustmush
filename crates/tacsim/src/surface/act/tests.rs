@@ -434,6 +434,7 @@ fn sm4a_spent_after_launch_credits_the_bay_only_for_the_launch_half() {
         reserved_cu: 1_000,
         params: ActParams::None {},
         by: None,
+        seal: None,
     };
     let settled = spent_after_launch(&charge, &act, &battery).unwrap_or_else(|e| panic!("{e:?}"));
     let launched = charge_at(&charge, 1_300, &battery);
@@ -487,6 +488,7 @@ fn sm4a_a_moved_implied_launch_leaves_the_bay_at_the_launch_half() {
         reserved_cu: 2_000,
         params: ActParams::None {},
         by: None,
+        seal: None,
     };
     let left = left_after_launch(&charge, &act, Some(&battery));
     assert_eq!(

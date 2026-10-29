@@ -365,6 +365,7 @@ mod tests {
             core: (class != CoreClass::Zero).then(|| "core".into()),
             core_class: (class != CoreClass::Zero).then_some(class),
             admissions: Vec::new(),
+            holder: None,
         }
     }
 

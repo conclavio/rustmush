@@ -349,6 +349,24 @@ impl ActionProvider for SurfaceActProvider {
                     maximum: i64::try_from(MAX_PLAN_STEPS).unwrap_or(64),
                 },
             )?,
+            // Doc 17h cut M8e E4 (doc 23 S.4a): a launch's mind sealed aboard a cored rig — the
+            // operator's `mind=` word (`filed:<n>` or a draft) and, for an organisation's
+            // licence, the organisation the operator acts for (M8c B3).
+            parameter(
+                "mind",
+                false,
+                ProjectedParameterKind::Text {
+                    maximum_bytes: crate::surface::dispatch::MAX_MIND_WORD_BYTES,
+                },
+            )?,
+            parameter(
+                "org",
+                false,
+                ProjectedParameterKind::Integer {
+                    minimum: 0,
+                    maximum: i64::MAX,
+                },
+            )?,
         ];
         offer_draft(
             action,
@@ -365,11 +383,34 @@ impl ActionProvider for SurfaceActProvider {
         .map(Some)
     }
 
-    #[allow(clippy::too_many_lines)] // one ordered refusal list, then one bundle
     fn prepare_authoritative(
         &self,
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.prepare_start(invocation, txn, None)
+    }
+
+    /// **Doc 17h cut M8e E4**: the start takes its preparation context, through which a
+    /// launch's `mind=` reads the Roll's holdings and seals over the rig's unit
+    /// (`crate::surface::dispatch`); every other start ignores it.
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut mush_core::PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.prepare_start(invocation, txn, Some(context))
+    }
+}
+
+impl SurfaceActProvider {
+    #[allow(clippy::too_many_lines)] // one ordered refusal list, then one bundle
+    fn prepare_start(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: Option<&mut mush_core::PrepareCtx<'_>>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.validate_invocation(invocation)?;
         let parameters = parameters_of(invocation)?;
@@ -388,6 +429,19 @@ impl ActionProvider for SurfaceActProvider {
                 ActionErrorCode::ProviderRejected,
                 "staff recovery is pending; wait for the rig to reach its bay",
             ));
+        }
+        // Doc 17h cut M8e E4: `mind` and `org` belong to a launch's start alone, and `org` to a
+        // `mind`.
+        let mind = mind_param(parameters)?;
+        let launching = matches!(
+            word,
+            StartWord::Act {
+                kind: ActKind::Launch,
+                ..
+            }
+        );
+        if mind.is_some() && (!launching || by_word_of(parameters).is_some()) {
+            return Err(invalid("a mind is named by a launch's own start"));
         }
         // Doc 20 cut SM.8 (decision R15): `how` and `qty` belong to an unload's start alone.
         let unloading = matches!(
@@ -584,8 +638,39 @@ impl ActionProvider for SurfaceActProvider {
             &plan,
             &world,
             &stamp,
+            (mind.as_ref().map(|(word, org)| (word, *org)), context),
         )
     }
+}
+
+/// **A launch's `mind` and `org` parameters** (doc 17h cut M8e E4): the word parsed
+/// ([`crate::surface::dispatch::MindWord::parse`]) and the organisation; `org` without
+/// `mind`, or a word that does not parse, is invalid.
+fn mind_param(
+    parameters: &Map<String, Value>,
+) -> Result<Option<(crate::surface::dispatch::MindWord, Option<mush_org::OrgId>)>, ActionError> {
+    let org = match parameters.get("org") {
+        None => None,
+        Some(value) => Some(mush_org::OrgId(
+            value
+                .as_u64()
+                .ok_or_else(|| invalid("an organisation is its number"))?,
+        )),
+    };
+    match parameters.get("mind") {
+        None if org.is_some() => Err(invalid("an organisation names a mind's licence")),
+        None => Ok(None),
+        Some(value) => value
+            .as_str()
+            .and_then(crate::surface::dispatch::MindWord::parse)
+            .map(|word| Some((word, org)))
+            .ok_or_else(|| invalid("a mind is filed:<n> or a draft's name")),
+    }
+}
+
+/// Whether the start names a `by` (a plan's step or the idle return): never a hand's `mind`.
+fn by_word_of(parameters: &Map<String, Value>) -> Option<&Value> {
+    parameters.get("by")
 }
 
 impl SurfaceActProvider {
@@ -603,6 +688,10 @@ impl SurfaceActProvider {
         plan: &FixedPlan,
         world: &[u32],
         stamp: &Stamp,
+        (mind, context): (
+            Option<(&crate::surface::dispatch::MindWord, Option<mush_org::OrgId>)>,
+            Option<&mut mush_core::PrepareCtx<'_>>,
+        ),
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters = parameters_of(invocation)?;
         let site = plan
@@ -841,6 +930,22 @@ impl SurfaceActProvider {
                 "the act's due instant overflows",
             )
         })?;
+        // 9. Doc 17h cut M8e E4 (doc 23 S.4a; D-UM-45): the mind sealed aboard at the dispatch,
+        // on the composed path alone (a typed-only start has no holding reads, and refuses a
+        // named mind rather than sealing the ROM in its place).
+        let seal = match (mind, context) {
+            (None, _) => None,
+            (Some(_), None) => {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    crate::surface::dispatch::MIND_UNAVAILABLE,
+                ));
+            }
+            (Some(word), Some(context)) => {
+                crate::surface::dispatch::dispatch(context, txn, (actor, tv, now), Some(word))?
+                    .map(Box::new)
+            }
+        };
         record.ordinal = ordinal;
         record.act = Some(Act {
             ordinal,
@@ -854,6 +959,7 @@ impl SurfaceActProvider {
             reserved_cu: plan.cost_cu,
             params,
             by: stamp.by,
+            seal,
         });
         // Doc 20 cut SM.8 (lead ruling 1): any start that lands supersedes a queued unload.
         record.queued = None;
@@ -1418,6 +1524,7 @@ impl SurfaceActProvider {
                 excursion,
             },
             by: None,
+            seal: None,
         });
         record.queued = None;
         write_record(txn, &self.excursions, record, existed)?;
@@ -2071,6 +2178,55 @@ pub(super) fn spent(
         at_ic: act.due_ic,
         in_bay,
     })
+}
+
+/// **Append a launch's seal mark** (doc 17h cut M8e E4; M8c B5) to `licence`'s ring through
+/// the Roll's writer in the finish's own transaction: no writer composed (no ring, no consumer)
+/// writes nothing; a ring that refuses is paged and the finish still completes — the mark alone
+/// is lost, as a black box line is.
+fn seal_mark(
+    context: &mut mush_core::PrepareCtx<'_>,
+    txn: &mut ActionTxn<'_>,
+    (tv, licence): (ObjId, u64),
+    open: &crate::surface::excursion::OpenSortie,
+    governed: bool,
+) {
+    let Ok(world) = context.world() else {
+        return;
+    };
+    let Some(writer) = world
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.seal_marks.clone())
+        .filter(mush_roll::commerce::seal_marks::SealMarkWriter::installed)
+    else {
+        return;
+    };
+    let at_utc = world.now();
+    // The flight's IC second on the world's own IC clock (the epoch opened at the launch's due).
+    let stamp = mush_core::ClockStamp {
+        at: open.opened_ic,
+        ..world.world_ic_now()
+    };
+    let (Ok(licence), Ok(at_ic)) = (
+        mush_roll::commerce::LicenceId::new(licence),
+        mush_roll::commerce::WorldIcSeconds::from_stamp(&stamp),
+    ) else {
+        return;
+    };
+    if let Err(error) = writer.push(
+        txn,
+        licence,
+        (tv, at_ic, at_utc),
+        governed,
+        open.id.to_string(),
+    ) {
+        tracing::error!(
+            tv = tv.0,
+            ?error,
+            "tacsim: rig #{}'s seal mark was refused; the launch completes without it",
+            tv.0
+        );
+    }
 }
 
 /// **The seal epoch's move at an act's finish** (doc 23 cut S.1; §6 "What the host does at each
@@ -2804,6 +2960,16 @@ impl ActionProvider for SurfaceDoneProvider {
                 && let Some(open) = record.sortie.as_mut()
             {
                 open.unrecorded = true;
+            }
+            // Doc 17h cut M8e E4 (M8c B5): a launch whose licence's mind flies marks the
+            // licence's ring in this same bundle — the flight, its hull and whether its core was
+            // governed. A seal that fell to the ROM (a lapsed or revoked licence) flew no mind
+            // under it and marks nothing (fix round 1, J3).
+            if opens
+                && let (Some(sealed), Some(open)) = (act.seal.as_ref(), record.sortie.as_ref())
+                && let Some(licence) = sealed.mark_licence()
+            {
+                seal_mark(context, txn, (tv, licence), open, sealed.facts.governed);
             }
         }
         // 3. The act clears; the outcome is stamped at the act's own due instant.
