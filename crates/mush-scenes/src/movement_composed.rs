@@ -85,7 +85,22 @@ pub(crate) fn appends(
     let expected = DefinitionRegistryBuilder::new()
         .register(OwnerId::new(NS).map_err(bad)?, participant_descriptor()?)
         .map_err(bad)?;
-    if receipt.effect().participant() != &expected {
+    let window = DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new(NS).map_err(bad)?,
+            crate::movement_window::participant_descriptor()?,
+        )
+        .map_err(bad)?;
+    let known_profile = if receipt.effect().participant() == &expected {
+        receipt.window_projection().is_none()
+    } else if receipt.effect().participant() == &window {
+        receipt
+            .window_projection()
+            .is_some_and(|projection| projection.projected_room() == receipt.destination())
+    } else {
+        false
+    };
+    if !known_profile {
         return Err(bad("unknown composed Scenes proof profile"));
     }
     let value = receipt.effect().proof();
