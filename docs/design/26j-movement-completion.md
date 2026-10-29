@@ -302,6 +302,119 @@ ledger publication, historical verifiers and the remaining owner joins still
 belong to a new versioned completion protocol. Existing v1 routing and window
 refusals are unchanged.
 
+## Versioned window composition kernel
+
+Core's separate version 2 of `sim_composed_locomotion` accepts the real Sim
+primary's immutable window proposal. Only Core can mint its captured-command
+intent and bounded read seed. The proposal names the admitted room's subsequent
+projection, passive metric target, and actual Atlas/Sim capture digests. It is
+bound into every observer intent, owner capture and proof; proposal data alone
+grants no geometry or placement authority.
+
+The kernel shares the bounded Core row builder for both steps. It retains the
+intermediate room's timestamp and the source contents ordering on a return,
+with at most four touched objects and the existing aggregate read/image bounds.
+Every actual owner and Core preimage must bind before publication. Late callback
+roster changes, stale projection rooms, owner refusal and a final bind failure
+publish no movement or earlier owner image. When both Core steps are no-ops,
+there are no object rows; an absent placement target remains explicit.
+
+The new `window_composed_locomotion` receipt family wraps its exact versioned
+movement record and proposal. Its strict canonical decoder verifies the full
+proposal binding for every owner; old v1 action definitions, digest domains and
+receipt bytes retain their meaning. Sim receives the full receipt while an
+observer receives only its own proof and the common immutable proposal.
+
+This slice supplies the Core kernel and real registered test composition only.
+Production Sim, Atlas and Scenes window adapters, original-history verifiers,
+participant attachment and durable map output still require subsequent slices.
+Window-arrival notifications remain an explicit completion requirement even
+after placement can commit. Partial manifests remain partial, crossing evidence
+remains uncertified, and no command route or offer selects version 2.
+
+## Atlas window selector attestation
+
+An optional Atlas adapter now joins version 2 through its real `AtlasState`
+participant. It verifies the primary's exact metric target and projected room
+against the original bounded Atlas plan, including the resolver's admitted-room
+fallback. The complete plan digest joins the common Core proposal. Failed
+selected placement attempts refuse this profile; they cannot be relabeled as a
+successful release-only arrival while their output is still unimplemented.
+
+Discovery uses the same real known-document and knowledge-journal preparation
+as v1. Its new proof retains the original window plan and exact journal boundary.
+Final binding recomputes Atlas's actual geometry, portal prefix/lookup, footprint
+and resolver inputs without trusting revisions or a cached composite digest.
+The Sim owner must independently retain occupancy and physical topology. The
+Atlas slot check cannot substitute for that joint native fence.
+
+Historical decoding preflights 32 levels and 65,536 nodes before recursive
+encoding or cloning, then accepts bounded, strict evidence data without
+manufacturing an executable window plan. Boot audits both configured profiles against
+one original knowledge history, so duplicate position claims across profiles
+also refuse recovery. It does not re-run old selectors over current geometry.
+Existing v1 proof and journal bytes retain their meaning.
+
+The new group covers only `travel_discovery`. The actual `window_arrival`
+callback remains an explicit blocker until durable map delivery joins. Current
+production composition still selects the earlier v1 adapters; the real Sim
+window primary, v2 Scenes join and end-to-end physical recovery follow. The
+registration test uses an execution-refusing primary and establishes no Sim
+placement evidence. Live routing and personnel eligibility remain disabled.
+
+## Ordered window movement observations
+
+Sim now has a distinct v2 candidate capture for the admitted Core step followed
+by each selected native release/place phase. Each stage retains its actual
+before/after ancestry digests and ordered crossing facts at the original IC
+stamp. Adjacent ancestry digests must agree. A return to the original room
+keeps the intermediate step, and a brief carrier visit retains both entry and
+exit instead of collapsing to an empty net result.
+
+One aggregate 256-crossing and 512-dependency bound covers all stages. The
+128 KiB capture limit remains. Tests exercise a genuine Core preview with 128
+people entering and leaving (256 crossings); one additional person refuses the
+whole capture. No Core object, native placement, audit or module marker is
+published. Rechecking preserves original UTC while requiring nondecreasing IC
+time in the same clock generation.
+
+Native phase plans stay typed and private. The original v1 candidate and its
+digest domain retain their exact bytes; v2 wraps that evidence with the ordered
+observations and an explicit uncertified coverage label. These are still
+hypothetical candidates. The actual Sim participant, same-commit recovery and
+crossing records, historical verifier, joint Scenes adapter and durable map
+output remain required before a window movement can be installed or routed.
+
+## Native owner read preimages
+
+The ordered window candidate also retains a selected-domain metric occupancy
+fingerprint. Atlas selection and Sim's callback-free occupancy recheck now share
+the same bounded scalar collector: map key, stored object id, revision and XY.
+Coordinate changes without revision bumps, insertion/removal and domain changes
+invalidate it. Z, heading and opaque posture are not occupancy inputs. The
+collector retains the 4096-placement scan bound and the existing coordinate
+limits; Atlas keeps its original six-field evidence and custody exclusion bit.
+
+The fingerprint is only the native placement portion. Actual custody exclusion
+preimages, topology, Core rows, Atlas selectors and owner readiness still need
+their own checks. It grants no admission, receipt, personnel interval or route.
+
+The existing owner-read service can now retain one pure, bounded fingerprint of
+selected fields in its actual legacy state slot. Core checks those fields after
+the service returns, at final writer custody and before post-acknowledgement
+publication. The actual service runs once. Slot identity, requester/owner
+readiness and typed-family read guards keep their existing checks and limits.
+
+This closes the gap where a slot's contents could change while its incarnation
+remained the same. Unrelated fields may change when the selected projection is
+unchanged. Failed, repeated or incorrectly typed guards poison the read even
+when service/provider code catches the error. A stale field snapshot refuses
+all prepared typed and owner images before any apply.
+
+This adds no owner image, callback coverage or authority mirror. The native
+window participant still needs real journey/deployment read services and the
+placement/occupancy fences before it can publish a window transition.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared

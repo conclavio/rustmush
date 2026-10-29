@@ -212,32 +212,7 @@ pub(crate) fn register_with_coverage(
     } else {
         None
     };
-    // One `outcome` validator for the whole crate, over the very descriptors
-    // registered next (built once, so the two cannot drift).
-    let mut outcomes = outcome_descriptors(test_world)?;
-    outcomes.push(crate::detachment::planning::outcome_descriptor()?);
-    // Doc 17h cut M8f: the procurement ledger's record.
-    outcomes.push(crate::procurement::outcome_descriptor()?);
-    if let Some(ic) = ic {
-        outcomes.push(ic.outcome()?);
-    }
-    if let Some(coverage) = coverage {
-        outcomes.push(coverage.outcome()?);
-    }
-    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner (M8d's
-    // fine and principal revocation, M8d2's seizure and forfeit beside it).
-    if let Some(inspection) = inspection {
-        inspection_descriptors(inspection, &mut outcomes, false)?;
-    }
-    reg.definition_validator(
-        kind("outcome")?,
-        crate::definitions::exact_validator(outcomes.clone()),
-    )?;
-    let mut outcome_refs: BTreeMap<String, DefinitionRef> = BTreeMap::new();
-    for descriptor in outcomes {
-        let id = descriptor.id().as_str().to_owned();
-        outcome_refs.insert(id, reg.definition(descriptor)?);
-    }
+    let outcome_refs = register_outcomes(reg, test_world, ic, coverage, inspection)?;
     let probe_outcome = outcome_refs.get(PROBE_OUTCOME).cloned();
     let stock_outcome = outcome_refs
         .get(crate::port::stock::STOCK_OUTCOME)
@@ -539,6 +514,41 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots.
     crate::surface::tick::register(reg)?;
     Ok(())
+}
+
+/// Build each outcome once for validation and registration, keeping descriptor
+/// construction temporaries out of the main port registration's stack frame.
+fn register_outcomes(
+    reg: &mut Registrar<'_>,
+    test_world: bool,
+    ic: Option<&crate::minds::ic_sortie::registration::Registration>,
+    coverage: Option<&crate::underwriting::registration::Registration>,
+    inspection: Option<&crate::minds::registry_inspection::Composition>,
+) -> Result<BTreeMap<String, DefinitionRef>, ModError> {
+    let mut outcomes = outcome_descriptors(test_world)?;
+    outcomes.push(crate::detachment::planning::outcome_descriptor()?);
+    outcomes.push(crate::procurement::outcome_descriptor()?);
+    if let Some(ic) = ic {
+        outcomes.push(ic.outcome()?);
+    }
+    if let Some(coverage) = coverage {
+        outcomes.push(coverage.outcome()?);
+    }
+    // Doc 17h cut M8a: the Registry inspection's outcome (M8d's fine and principal
+    // revocation, M8d2's seizure and forfeit beside it).
+    if let Some(inspection) = inspection {
+        inspection_descriptors(inspection, &mut outcomes, false)?;
+    }
+    reg.definition_validator(
+        kind("outcome")?,
+        crate::definitions::exact_validator(outcomes.clone()),
+    )?;
+    let mut outcome_refs = BTreeMap::new();
+    for descriptor in outcomes {
+        let id = descriptor.id().as_str().to_owned();
+        outcome_refs.insert(id, reg.definition(descriptor)?);
+    }
+    Ok(outcome_refs)
 }
 
 /// Keep descriptor construction temporaries out of the main registration frame.
@@ -2983,8 +2993,8 @@ impl EventHook for ReconnectNotices {
 
 /// **The Registry inspection's descriptors** (doc 17h cut M8a), the actions or the outcomes:
 /// the inspection's, M8d's fine and principal revocation and M8d2's seizure and forfeit, each
-/// when it composes. Its own frame (doc 17h cut M8d2: `register_with_coverage` measured 67,174
-/// bytes at main `c04e6fd2` under CI's `CARGO_INCREMENTAL=0`, over the M7 bound).
+/// when it composes. Its own frame, so the registration's frames stay under the M7 memory-size
+/// bound (doc 17h cut M8d2).
 #[inline(never)]
 fn inspection_descriptors(
     inspection: &crate::minds::registry_inspection::Composition,

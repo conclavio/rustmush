@@ -5,8 +5,8 @@ use super::super::completion::MovementManifestSnapshot;
 use super::super::transition::LocomotionObjectDigest;
 use super::owner;
 use super::{
-    FAMILY, MAX_COMPOSED_OWNERS, MAX_MOVEMENT_PROOF_BYTES, RECORD_BYTES, SIM_PARTICIPANT, bad,
-    bounded, exact_action, refused,
+    FAMILY, MAX_COMPOSED_OWNERS, MAX_MOVEMENT_PROOF_BYTES, RECORD_BYTES, SIM_PARTICIPANT,
+    WINDOW_FAMILY, WindowProjection, bad, bounded, exact_action, exact_window_action, refused,
 };
 use crate::participant::ParticipantError;
 use crate::{
@@ -92,12 +92,23 @@ pub(super) struct Record {
 }
 impl Record {
     pub(super) fn validate(&self) -> Result<MovementManifestSnapshot, ParticipantError> {
-        exact_action(&self.action)?;
+        self.validate_for(None)
+    }
+    pub(super) fn validate_for(
+        &self,
+        window: Option<&WindowProjection>,
+    ) -> Result<MovementManifestSnapshot, ParticipantError> {
+        if let Some(window) = window {
+            exact_window_action(&self.action)?;
+            window.validate(self.actor, self.destination)?;
+        } else {
+            exact_action(&self.action)?;
+        }
         if self.format != 1
             || self.participant.key().owner.as_str() != "sim"
             || self.participant.key().kind.as_str() != "owner_participant"
             || self.participant.key().id.as_str() != SIM_PARTICIPANT
-            || self.participant.version() != 1
+            || self.participant.version() != if window.is_some() { 2 } else { 1 }
             || self.actor == self.destination
             || self.source == Some(self.actor)
             || self.exit.is_some_and(|exit| {
@@ -109,16 +120,16 @@ impl Record {
             || !matches!(self.prepared_at.clock, ClockRef::WorldIc { generation } if generation > 0)
             || self.effects.len() >= MAX_COMPOSED_OWNERS
             || self.effects.is_empty()
-            || self.objects.len() > 3
+            || self.objects.len() > if window.is_some() { 4 } else { 3 }
             || self
                 .objects
                 .windows(2)
                 .any(|pair| pair[0].object >= pair[1].object)
-            || self.objects.iter().any(|row| row.before == row.after)
+            || (window.is_none() && self.objects.iter().any(|row| row.before == row.after))
         {
             return Err(refused());
         }
-        let expected: BTreeSet<_> = if self.source == Some(self.destination) {
+        let mut expected: BTreeSet<_> = if self.source == Some(self.destination) {
             if self.exit.is_none() {
                 return Err(refused());
             }
@@ -129,6 +140,11 @@ impl Record {
                 .flatten()
                 .collect()
         };
+        if let Some(window) = window
+            && window.projected_room() != self.destination
+        {
+            expected.extend([self.actor, self.destination, window.projected_room()]);
+        }
         if self
             .objects
             .iter()
@@ -147,7 +163,7 @@ impl Record {
             return Err(refused());
         }
         for (index, (effect, group)) in self.effects.iter().zip(manifest.groups()).enumerate() {
-            let intent = owner::intent_digest(
+            let intent = owner::intent_digest_for(
                 &self.action,
                 self.commit,
                 self.actor,
@@ -157,6 +173,7 @@ impl Record {
                 &self.prepared_at,
                 self.at_utc,
                 group.binding(),
+                window,
             )?;
             if usize::from(effect.group) != index
                 || &effect.binding != group.binding()
@@ -176,12 +193,83 @@ impl Record {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WindowRecord {
+    format: u16,
+    movement: Record,
+    projection: WindowProjection,
+}
+impl WindowRecord {
+    fn validate(&self) -> Result<MovementManifestSnapshot, ParticipantError> {
+        if self.format != 1 {
+            return Err(refused());
+        }
+        let manifest = self.movement.validate_for(Some(&self.projection))?;
+        bounded(self, RECORD_BYTES)?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Clone)]
+pub(super) enum Records {
+    Ordinary(StateFamilyHandle<CommitToken, Record>),
+    Window(StateFamilyHandle<CommitToken, WindowRecord>),
+}
+impl Records {
+    pub(super) fn contains(
+        &self,
+        txn: &mut crate::ActionTxn<'_>,
+        commit: &CommitToken,
+    ) -> Result<bool, ParticipantError> {
+        match self {
+            Self::Ordinary(handle) => txn
+                .get(handle, commit)
+                .map(|row| row.is_some())
+                .map_err(|_| refused()),
+            Self::Window(handle) => txn
+                .get(handle, commit)
+                .map(|row| row.is_some())
+                .map_err(|_| refused()),
+        }
+    }
+    pub(super) fn insert(
+        &self,
+        txn: &mut crate::ActionTxn<'_>,
+        commit: &CommitToken,
+        row: &Record,
+        window: Option<&WindowProjection>,
+    ) -> Result<(), ParticipantError> {
+        match (self, window) {
+            (Self::Ordinary(handle), None) => txn
+                .insert(handle, commit, row.clone())
+                .map_err(|_| refused()),
+            (Self::Window(handle), Some(projection)) => txn
+                .insert(
+                    handle,
+                    commit,
+                    WindowRecord {
+                        format: 1,
+                        movement: row.clone(),
+                        projection: projection.clone(),
+                    },
+                )
+                .map_err(|_| refused()),
+            _ => Err(refused()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ComposedLocomotionReceipt {
     pub(super) row: Record,
     pub(super) manifest: MovementManifestSnapshot,
+    pub(super) window: Option<Box<WindowProjection>>,
 }
 impl ComposedLocomotionReceipt {
+    pub fn window_projection(&self) -> Option<&WindowProjection> {
+        self.window.as_deref()
+    }
     pub const fn commit(&self) -> CommitToken {
         self.row.commit
     }
@@ -242,7 +330,7 @@ impl ComposedLocomotionReceiptPage {
 pub struct ComposedLocomotionReader {
     pub(super) action: DefinitionRef,
     pub(super) participant: DefinitionRef,
-    pub(super) records: StateFamilyHandle<CommitToken, Record>,
+    pub(super) records: Records,
 }
 impl ComposedLocomotionReader {
     fn validate_record(
@@ -250,8 +338,9 @@ impl ComposedLocomotionReader {
         ctx: &ModuleCtx<'_>,
         key: &str,
         row: &Record,
+        window: Option<&WindowProjection>,
     ) -> Result<ComposedLocomotionReceipt, ParticipantError> {
-        let manifest = row.validate()?;
+        let manifest = row.validate_for(window)?;
         let definitions = ctx.reg.definitions().ok_or_else(refused)?;
         if key != row.commit.to_string()
             || row.action != self.action
@@ -270,6 +359,7 @@ impl ComposedLocomotionReader {
         Ok(ComposedLocomotionReceipt {
             row: row.clone(),
             manifest,
+            window: window.cloned().map(Box::new),
         })
     }
     pub fn read_receipt(
@@ -287,14 +377,25 @@ impl ComposedLocomotionReader {
         ctx: &ModuleCtx<'_>,
         commit: &CommitToken,
     ) -> Result<Option<ComposedLocomotionReceipt>, ParticipantError> {
-        let Some(row) = ctx
-            .action_state(&self.records, commit)
-            .map_err(|_| refused())?
-        else {
-            return Ok(None);
-        };
-        self.validate_record(ctx, &commit.to_string(), row)
-            .map(Some)
+        match &self.records {
+            Records::Ordinary(handle) => ctx
+                .action_state(handle, commit)
+                .map_err(|_| refused())?
+                .map(|row| self.validate_record(ctx, &commit.to_string(), row, None))
+                .transpose(),
+            Records::Window(handle) => ctx
+                .action_state(handle, commit)
+                .map_err(|_| refused())?
+                .map(|row| {
+                    self.validate_record(
+                        ctx,
+                        &commit.to_string(),
+                        &row.movement,
+                        Some(&row.projection),
+                    )
+                })
+                .transpose(),
+        }
     }
     pub fn scan_receipts(
         &self,
@@ -316,16 +417,41 @@ impl ComposedLocomotionReader {
         if limit == 0 || limit > 128 {
             return Err(refused());
         }
-        let page = ctx
-            .scan_action_state(&self.records, after, limit)
-            .map_err(|_| refused())?;
-        let mut entries = Vec::with_capacity(page.entries().len());
-        for entry in page.entries() {
-            entries.push(self.validate_record(ctx, entry.encoded_key(), entry.value())?);
-        }
+        let mut entries = Vec::new();
+        let next_after = match &self.records {
+            Records::Ordinary(handle) => {
+                let page = ctx
+                    .scan_action_state(handle, after, limit)
+                    .map_err(|_| refused())?;
+                for entry in page.entries() {
+                    entries.push(self.validate_record(
+                        ctx,
+                        entry.encoded_key(),
+                        entry.value(),
+                        None,
+                    )?);
+                }
+                page.next_after().map(ToString::to_string)
+            }
+            Records::Window(handle) => {
+                let page = ctx
+                    .scan_action_state(handle, after, limit)
+                    .map_err(|_| refused())?;
+                for entry in page.entries() {
+                    let row = entry.value();
+                    entries.push(self.validate_record(
+                        ctx,
+                        entry.encoded_key(),
+                        &row.movement,
+                        Some(&row.projection),
+                    )?);
+                }
+                page.next_after().map(ToString::to_string)
+            }
+        };
         Ok(ComposedLocomotionReceiptPage {
             entries,
-            next_after: page.next_after().map(ToString::to_string),
+            next_after,
         })
     }
     pub fn audit(&self, ctx: &ModuleCtx<'_>) -> Result<(), ParticipantError> {
@@ -349,7 +475,11 @@ impl ComposedLocomotionReader {
 pub(super) fn register_records(
     reg: &mut Registrar<'_>,
     readers: &BTreeSet<OwnerId>,
-) -> Result<StateFamilyHandle<CommitToken, Record>, ModError> {
+    window: bool,
+) -> Result<Records, ModError> {
+    if window {
+        return register_window_records(reg, readers).map(Records::Window);
+    }
     let identifier = |suffix| CanonicalId::new(format!("sim.{FAMILY}.{suffix}.v1")).map_err(bad);
     let descriptor = StateFamilyDescriptor::new(
         StateFamilyId::new(FAMILY).map_err(bad)?,
@@ -374,9 +504,50 @@ pub(super) fn register_records(
             reg.grant_state_family_read(&records, owner.as_str())?;
         }
     }
+    Ok(Records::Ordinary(records))
+}
+
+fn register_window_records(
+    reg: &mut Registrar<'_>,
+    readers: &BTreeSet<OwnerId>,
+) -> Result<StateFamilyHandle<CommitToken, WindowRecord>, ModError> {
+    let identifier =
+        |suffix| CanonicalId::new(format!("sim.{WINDOW_FAMILY}.{suffix}.v1")).map_err(bad);
+    let descriptor = StateFamilyDescriptor::new(
+        StateFamilyId::new(WINDOW_FAMILY).map_err(bad)?,
+        identifier("key")?,
+        identifier("value")?,
+        1,
+        identifier("decode")?,
+        identifier("validate")?,
+        identifier("canonical")?,
+    )
+    .and_then(|descriptor| descriptor.with_limits(128, RECORD_BYTES))
+    .map_err(bad)?;
+    let records = reg.state_family(
+        descriptor,
+        |key: &CommitToken| Ok(key.to_string()),
+        decode_window,
+        |row: &WindowRecord| row.validate().map(|_| ()).map_err(|e| e.to_string()),
+        |row: &WindowRecord| bounded(row, RECORD_BYTES).map_err(|e| e.to_string()),
+    )?;
+    for owner in readers {
+        if owner.as_str() != "sim" {
+            reg.grant_state_family_read(&records, owner.as_str())?;
+        }
+    }
     Ok(records)
 }
-fn decode(value: &Value) -> Result<Record, String> {
+pub(super) fn decode_window(value: &Value) -> Result<WindowRecord, String> {
+    crate::canonical_json_bytes_with_limit(value, RECORD_BYTES).map_err(|e| e.to_string())?;
+    let row: WindowRecord = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    row.validate().map_err(|e| e.to_string())?;
+    if serde_json::to_value(&row).map_err(|e| e.to_string())? != *value {
+        return Err("noncanonical window locomotion receipt".into());
+    }
+    Ok(row)
+}
+pub(super) fn decode(value: &Value) -> Result<Record, String> {
     crate::canonical_json_bytes_with_limit(value, RECORD_BYTES).map_err(|e| e.to_string())?;
     let row: Record = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
     row.validate().map_err(|e| e.to_string())?;
@@ -404,8 +575,12 @@ pub struct ComposedOwnerReceipt {
     at_utc: i64,
     manifest_digest: DefinitionDigest,
     effect: MovementEffectReceipt,
+    window: Option<Box<WindowProjection>>,
 }
 impl ComposedOwnerReceipt {
+    pub fn window_projection(&self) -> Option<&WindowProjection> {
+        self.window.as_deref()
+    }
     pub const fn commit(&self) -> CommitToken {
         self.commit
     }
@@ -493,6 +668,7 @@ impl ComposedOwnerReader {
             at_utc: receipt.at_utc(),
             manifest_digest: receipt.manifest_digest(),
             effect: effect.clone(),
+            window: receipt.window,
         }))
     }
     pub fn read_receipt(

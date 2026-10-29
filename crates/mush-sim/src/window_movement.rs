@@ -16,6 +16,10 @@ use serde_json::{Value, json};
 use crate::data::{DomainId, SpatialParent, SpatialState};
 use crate::transition::{Plan, Transition};
 
+#[path = "window_ordered.rs"]
+mod ordered;
+pub use ordered::{OrderedWindowMovementCapture, capture_ordered};
+
 pub const MAX_WINDOW_MOVEMENT_BYTES: usize = 128 * 1024;
 const RECORD_BYTES: usize = 16 * 1024;
 
@@ -105,6 +109,31 @@ fn derive(
     target: Option<WindowTarget>,
     stamp: &ClockStamp,
 ) -> Result<Vec<u8>, ParticipantError> {
+    Ok(derive_phases(world, core, target, stamp)?.bytes)
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PhaseKind {
+    Release,
+    Place,
+}
+struct NativePhase {
+    kind: PhaseKind,
+    plan: Plan,
+}
+struct DerivedPhases {
+    bytes: Vec<u8>,
+    phases: Vec<NativePhase>,
+    dependencies: BTreeSet<ObjId>,
+}
+
+fn derive_phases(
+    world: &World,
+    core: &LocomotionPreview,
+    target: Option<WindowTarget>,
+    stamp: &ClockStamp,
+) -> Result<DerivedPhases, ParticipantError> {
     core.recheck(world)?;
     let now = world.world_ic_now();
     if !matches!(stamp.clock, ClockRef::WorldIc { generation } if generation > 0)
@@ -173,7 +202,7 @@ fn derive(
             core.at_utc(),
         )
         .map_err(|_| refused())?;
-        push_phase(world, &mut post, release, &mut phases)?;
+        push_phase(world, &mut post, release, PhaseKind::Release, &mut phases)?;
     }
     if let Some(target) = target {
         let pose = crate::Pose::at(
@@ -192,39 +221,47 @@ fn derive(
             core,
         )
         .map_err(|_| refused())?;
-        push_phase(world, &mut post, placement, &mut phases)?;
+        push_phase(world, &mut post, placement, PhaseKind::Place, &mut phases)?;
     }
     let domain_records: Vec<_> = domains
         .iter()
         .map(|id| (id, state.domains.get(id)))
         .collect();
+    let phase_values:Vec<_> = phases.iter().map(|phase| {
+        let plan = &phase.plan;
+        json!({"placements":plan.set_placements,"projections":plan.projections,"audit":plan.audit})
+    }).collect();
     let value = json!({"format":1,"authority":"hypothetical_requires_joint_owners",
         "actor":actor,"source":core.source(),"admitted_room":core.admitted_room(),
         "projected_room":core.destination(),"at_utc":core.at_utc(),"prepared_at":stamp,
         "target":target,"before":before,"domains":domain_records,"local_fence":fence,
-        "phases":phases,"after":post.placements.get(&actor)});
-    mush_core::canonical_json_bytes_with_limit(&value, MAX_WINDOW_MOVEMENT_BYTES)
-        .map_err(|_| ParticipantError::ImageLimit)
+        "phases":phase_values,"after":post.placements.get(&actor)});
+    let bytes = mush_core::canonical_json_bytes_with_limit(&value, MAX_WINDOW_MOVEMENT_BYTES)
+        .map_err(|_| ParticipantError::ImageLimit)?;
+    Ok(DerivedPhases {
+        bytes,
+        phases,
+        dependencies: nodes,
+    })
 }
 
 fn push_phase(
     world: &World,
     state: &mut SpatialState,
     plan: Plan,
-    phases: &mut Vec<Value>,
+    kind: PhaseKind,
+    phases: &mut Vec<NativePhase>,
 ) -> Result<(), ParticipantError> {
     if !plan.set_spaces.is_empty() || !plan.retire.is_empty() {
         return Err(refused());
     }
     crate::ic_exclusion::check_plan(world, &plan).map_err(|_| refused())?;
-    phases.push(
-        json!({"placements":plan.set_placements,"projections":plan.projections,"audit":plan.audit}),
-    );
-    for record in plan.set_placements {
-        state.placements.insert(record.object, record);
+    for record in &plan.set_placements {
+        state.placements.insert(record.object, record.clone());
     }
     state.derived = crate::graph::rebuild(state);
     crate::physical::resident_bound(state)?;
+    phases.push(NativePhase { kind, plan });
     Ok(())
 }
 
