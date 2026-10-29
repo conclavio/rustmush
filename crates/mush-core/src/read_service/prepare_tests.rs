@@ -228,7 +228,11 @@ impl ActionProvider for Provider {
             txn.replace(&self.truth, &1, 99).map_err(|_| failed())?;
         }
         let request = || Request {
-            mode: if mode >= 20 { 0 } else { mode as u8 },
+            mode: if (20..30).contains(&mode) {
+                0
+            } else {
+                mode as u8
+            },
             pretend_actor: ObjId(999),
             text: if mode == 6 {
                 "x".repeat(MAX_OWNER_READ_REQUEST_BYTES)
@@ -271,7 +275,7 @@ impl ActionProvider for Provider {
                 self.answers.lock().unwrap().push(result);
             }
         }
-        if [23, 24].contains(&mode) {
+        if [23, 24, 30].contains(&mode) {
             ctx.prepare_owner(&self.effect, ()).map_err(|_| failed())?;
         }
         txn.insert(&self.own, &1, 42).map_err(|_| failed())?;
@@ -515,7 +519,7 @@ fn captured_readiness_and_slot_replacement_refuse_before_installing_any_typed_im
         } else {
             let mut registry = Registry::new();
             let mut registrar = Registrar::new(&mut registry, "owner");
-            registrar.state(Slot(9));
+            registrar.state(Slot(9, 0));
             for init in registry.take_state_inits() {
                 r.engine.world.module_state_apply(init);
             }
@@ -628,5 +632,68 @@ fn actual_stage_and_take_custody_recheck_retained_read_observations() {
             "known pre-custody refusal aborts exactly"
         );
         assert!(!r.engine.action_state().has_prepared());
+    }
+}
+
+#[test]
+fn legacy_state_guard_allows_unrelated_fields_and_never_replays_the_service() {
+    let mut r = rig();
+    let (prepared, _) = r.prepare(30).unwrap();
+    assert_eq!(r.calls.load(Ordering::SeqCst), 1);
+    r.engine.world.module_state_mut::<Slot>().unwrap().1 = 77;
+    prepared.recheck(&r.engine.world).unwrap();
+    let (_, install) = prepared.into_parts();
+    r.engine.install_composed_action(install).unwrap();
+    assert_eq!(r.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(r.engine.world.module_state::<Slot>().unwrap().1, 77);
+    assert_eq!(r.engine.world.module_state::<EffectState>().unwrap().0, 11);
+    assert_eq!(
+        r.engine.action_state().get(&r.handles.own, &1).unwrap(),
+        Some(&42)
+    );
+}
+
+#[test]
+fn same_slot_legacy_field_drift_refuses_custody_and_post_ack_install_before_any_apply() {
+    for after_custody in [false, true] {
+        let mut r = rig();
+        let (prepared, output) = r.prepare(30).unwrap();
+        let bundle = bundle(&r, &prepared, output);
+        let guards = crate::action::ServerGuardSetBuilder::new(
+            crate::action::RevisionSet::default(),
+            r.readiness.lock().unwrap().as_ref().unwrap().clone(),
+        )
+        .finish()
+        .unwrap();
+        r.engine.world.take_dirty();
+        r.engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .unwrap();
+        let held = if after_custody {
+            Some(r.engine.take_staged_action().unwrap().unwrap())
+        } else {
+            None
+        };
+        r.engine.world.module_state_mut::<Slot>().unwrap().0 = 10;
+        if let Some(held) = held {
+            let (_, install) = held.into_parts();
+            assert!(r.engine.install_composed_action(install).is_err());
+            assert!(r.engine.action_state().reservation_lost());
+        } else {
+            assert!(r.engine.take_staged_action().is_err());
+            assert!(!r.engine.action_state().reservation_lost());
+        }
+        r.unchanged();
+        assert_eq!(r.calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn caught_guard_errors_and_fingerprint_readiness_changes_poison_the_whole_action() {
+    for mode in 31..=34 {
+        let mut r = rig();
+        assert!(r.prepare(mode).is_err(), "mode {mode}");
+        assert_eq!(r.calls.load(Ordering::SeqCst), 1);
+        r.unchanged();
     }
 }

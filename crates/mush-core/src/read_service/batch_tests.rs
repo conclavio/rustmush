@@ -154,6 +154,8 @@ fn exact_batch_cannot_reuse_a_foreign_handle_owner_or_detached_lens() {
     ] {
         let ctx = OwnerReadContext {
             world: &f.engine.world,
+            state: None,
+            state_guard: RefCell::new(None),
             typed: ModuleActionState::for_module(lens, Some(owner)),
             caller: &caller,
             reads: Cell::new(0),

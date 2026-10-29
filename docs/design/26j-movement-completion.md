@@ -385,6 +385,24 @@ hypothetical candidates. The actual Sim participant, same-commit recovery and
 crossing records, historical verifier, joint Scenes adapter and durable map
 output remain required before a window movement can be installed or routed.
 
+## Native owner read preimages
+
+The existing owner-read service can now retain one pure, bounded fingerprint of
+selected fields in its actual legacy state slot. Core checks those fields after
+the service returns, at final writer custody and before post-acknowledgement
+publication. The actual service runs once. Slot identity, requester/owner
+readiness and typed-family read guards keep their existing checks and limits.
+
+This closes the gap where a slot's contents could change while its incarnation
+remained the same. Unrelated fields may change when the selected projection is
+unchanged. Failed, repeated or incorrectly typed guards poison the read even
+when service/provider code catches the error. A stale field snapshot refuses
+all prepared typed and owner images before any apply.
+
+This adds no owner image, callback coverage or authority mirror. The native
+window participant still needs real journey/deployment read services and the
+placement/occupancy fences before it can publish a window transition.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
