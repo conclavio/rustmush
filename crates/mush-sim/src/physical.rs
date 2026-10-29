@@ -234,7 +234,7 @@ pub(crate) fn participant_descriptor() -> Result<DefinitionDescriptor, ModError>
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     ic_custody: bool,
-    journey_read: crate::movement_reads::JourneyRead,
+    movement_reads: crate::movement_reads::MovementReads,
 ) -> Result<(), ModError> {
     let descriptor = participant_descriptor()?;
     let historical = participant_descriptor_v1()?;
@@ -293,7 +293,7 @@ pub(crate) fn register(
             outcome,
             service: service.clone(),
             personnel: personnel.clone(),
-            journey_read,
+            movement_reads,
         },
     )?;
     reg.state(Handles {
@@ -1060,7 +1060,7 @@ struct Provider {
     outcome: DefinitionRef,
     service: CorePhysicalTransitions<SpatialParticipant>,
     personnel: crate::personnel::PersonnelCrossings,
-    journey_read: crate::movement_reads::JourneyRead,
+    movement_reads: crate::movement_reads::MovementReads,
 }
 impl Provider {
     fn input(&self, invocation: &ActionInvocation) -> Result<Intent, ActionError> {
@@ -1190,7 +1190,7 @@ impl ActionProvider for Provider {
             )
             .map_err(|_| error("personnel capture unavailable"))?
         };
-        crate::movement_reads::retain_journeys(context, txn, &self.journey_read, &captured.nodes)?;
+        crate::movement_reads::retain(context, txn, &self.movement_reads, &captured.nodes)?;
         let request = PreparedCrossingIntent {
             intent: input,
             prepared_at: captured.capture.prepared_at.clone(),
