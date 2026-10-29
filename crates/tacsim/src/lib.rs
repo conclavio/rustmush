@@ -412,6 +412,14 @@ pub struct TacsimRuleset {
     /// readiness report's world rate and registers the port tick's probe (doc 18
     /// cut IC5).
     test_world: bool,
+    /// **The fitted catalog on a test world** (doc 17h cut M8e E6a): the line and rig roots
+    /// registered beside the fielded units, as governed hardware registers them, without the
+    /// hardware's deployment or its refit — so a harness may bind a rig to a cored root by
+    /// staff `@unit/create`. RAM only, test worlds only ([`TacsimRuleset::with_fitted_catalog`]).
+    fitted_catalog: bool,
+    /// **Doc 17h cut M8e E4**: the Roll's seal-mark writer cell, set by a mind commerce's
+    /// `configure_tacsim` and handed to the store slot (`TacsimStore::seal_marks`).
+    pub(crate) seal_marks: Option<mush_roll::commerce::seal_marks::SealMarkWriter>,
     /// Composition pairs this layer with Org's live unit-authority reader.
     /// Bare fixture layers leave it off and report authority as unavailable.
     unit_authority: bool,
@@ -548,6 +556,8 @@ impl TacsimRuleset {
             cfg,
             loaded,
             test_world: false,
+            fitted_catalog: false,
+            seal_marks: None,
             unit_authority: false,
             inventory: None,
             goods,
@@ -562,6 +572,26 @@ impl TacsimRuleset {
     pub fn with_test_world(mut self, on: bool) -> TacsimRuleset {
         self.test_world = on;
         self
+    }
+
+    /// **Register the whole fitted catalog on a test world** (doc 17h cut M8e E6a, the
+    /// hardware-configured excursion roster): the fielded units, the line roots and the rig
+    /// roots ([`definitions::core_replacement::SurfaceRigCores`]' catalog, the one governed
+    /// hardware registers), so staff may bind a rig to a cored root; the caller composes the
+    /// tactics module over the same catalog. No hardware deployment, refit or recipe is composed.
+    ///
+    /// # Errors
+    ///
+    /// Not a test world, or governed hardware is already composed (it registers the same
+    /// catalog itself).
+    pub fn with_fitted_catalog(mut self) -> Result<TacsimRuleset, ModError> {
+        if !self.test_world || self.governed_hardware.is_some() {
+            return Err(ModError::msg(
+                "the fitted catalog alone is a test world's, and never beside governed hardware",
+            ));
+        }
+        self.fitted_catalog = true;
+        Ok(self)
     }
 
     /// **The inventory handle cell** (doc 18 cut IC5; lead ruling L2).
@@ -649,8 +679,20 @@ impl TacsimRuleset {
     pub(crate) fn definition_catalog(&self) -> Result<definitions::Catalog, ModError> {
         match &self.governed_hardware {
             Some(hardware) => Ok(hardware.catalog().clone()),
-            None => definitions::Catalog::build_fielded(&self.loaded_packs()?, NS)
-                .map_err(|e| ModError::msg(e.to_string())),
+            None => {
+                let fielded = definitions::Catalog::build_fielded(&self.loaded_packs()?, NS)
+                    .map_err(|e| ModError::msg(e.to_string()))?;
+                if !self.fitted_catalog {
+                    return Ok(fielded);
+                }
+                // Doc 17h cut M8e E6a: the rig family over the line family, as
+                // `hardware::composition`'s `families` builds them.
+                let line = definitions::core_replacement::GovernedLineCores::build(fielded)
+                    .map_err(|e| ModError::msg(e.to_string()))?;
+                definitions::core_replacement::SurfaceRigCores::build(line.catalog().clone())
+                    .map(|rig| rig.catalog().clone())
+                    .map_err(|e| ModError::msg(e.to_string()))
+            }
         }
     }
 
@@ -730,6 +772,7 @@ impl GameModule for TacsimRuleset {
         let mut slot = TacsimStore {
             cfg: self.cfg.clone(),
             test_world: self.test_world,
+            seal_marks: self.seal_marks.clone(),
             goods: self.goods.clone(),
             ..TacsimStore::default()
         };

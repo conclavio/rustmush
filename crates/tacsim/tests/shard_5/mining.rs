@@ -89,9 +89,28 @@ fn cid(word: &str) -> CanonicalId {
 // ---------------------------------------------------------------------------
 
 /// The composition: `commerce.rs`'s bare roster (no sheet, the test world's layer, the
-/// shipped game content).
+/// shipped game content). **Doc 17h cut M8e E6a, the hardware-configured roster**: `fitted`
+/// swaps the tactics module's builtin catalog for the whole fitted one (the fielded units, the
+/// line roots and the rig roots, `SurfaceRigCores`' catalog, as the launch's hardware composes
+/// it) and registers the same catalog on the layer (`with_fitted_catalog`), so staff may bind
+/// a leased rig to a cored root (`fit`); nothing else in the roster moves, and no refit
+/// machinery is composed (the scenario needs the hull cored, not the fitting).
 #[derive(Clone, Copy, Default)]
-struct Roster;
+struct Roster {
+    fitted: bool,
+}
+
+/// **The whole fitted catalog's tactics module** (doc 17h cut M8e E6a): the rig family over
+/// the line family over the fielded catalog, with the production sensor policy.
+fn fitted_tactics() -> mush_tactics::TacticsModule {
+    use tacsim::definitions::Catalog;
+    use tacsim::definitions::core_replacement::{GovernedLineCores, SurfaceRigCores};
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded catalog builds");
+    let line = GovernedLineCores::build(fielded).expect("the line family builds");
+    let rig = SurfaceRigCores::build(line.catalog().clone()).expect("the rig family builds");
+    mush_tactics::TacticsModule::with_catalog(rig.catalog().units.clone())
+        .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy))
+}
 
 impl Roster {
     fn modules(self) -> Vec<Box<dyn mush_core::GameModule>> {
@@ -107,8 +126,27 @@ impl Roster {
             mush_atlas::AtlasConfig::default(),
             &game,
         );
+        if self.fitted {
+            for module in &mut mods {
+                if module.name() == "tactics" {
+                    *module = Box::new(fitted_tactics());
+                }
+            }
+        }
         mods.push(comp::npc_module(comp::npc_agent_adapter()));
-        mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
+        if self.fitted {
+            // `tacsim_test_world_module_wired`'s layer, the fitted catalog registered.
+            mods.push(Box::new(
+                tacsim::TacsimRuleset::with_game_content(cfg, true)
+                    .with_inventory(inventory)
+                    .with_unit_authority()
+                    .with_test_world(true)
+                    .with_fitted_catalog()
+                    .expect("a test world takes the fitted catalog"),
+            ));
+        } else {
+            mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
+        }
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         mods
     }
@@ -137,6 +175,8 @@ struct Rig {
     /// the world task's HIT — answered from the record, never prepared ([`land`] returns [`HIT`]).
     /// It survives a restart, as the store's ledger does.
     ledger: std::collections::BTreeSet<String>,
+    /// The roster every boot of this world composes (doc 17h cut M8e E6a).
+    roster: Roster,
 }
 
 fn no_refused_writes(tw: &TestWorld) {
@@ -162,9 +202,13 @@ fn with_offer_keys(tw: &mut TestWorld) {
 
 /// **Compose over `world`, hand the key in, then run the boot pass over `store`**
 /// (`build_engine`'s order).
-fn boot_over(world: World, store: HashMap<SmolStr, mush_core::ModuleBootData>) -> TestWorld {
+fn boot_over(
+    roster: Roster,
+    world: World,
+    store: HashMap<SmolStr, mush_core::ModuleBootData>,
+) -> TestWorld {
     let (_, registry) = mush_testkit::boot_world();
-    let mut engine = mush_core::Engine::with_modules(world, registry, Roster.modules())
+    let mut engine = mush_core::Engine::with_modules(world, registry, roster.modules())
         .expect("the roster composes");
     assert!(tacsim::surface::install_geology(
         &mut engine.world,
@@ -181,8 +225,13 @@ fn boot_over(world: World, store: HashMap<SmolStr, mush_core::ModuleBootData>) -
 
 /// Boot keyed, settle and stock every port, at world rate 1.
 fn stocked() -> Rig {
+    stocked_with(Roster::default())
+}
+
+/// [`stocked`] over `roster` (doc 17h cut M8e E6a: the fitted roster).
+fn stocked_with(roster: Roster) -> Rig {
     let (world, _) = mush_testkit::boot_world();
-    let mut tw = boot_over(world, HashMap::new());
+    let mut tw = boot_over(roster, world, HashMap::new());
     with_offer_keys(&mut tw);
     let oracle = Arc::new(MapOracle::default());
     install_oracle(&mut tw, &oracle);
@@ -192,6 +241,7 @@ fn stocked() -> Rig {
         store: HashMap::new(),
         typed: BTreeMap::new(),
         ledger: std::collections::BTreeSet::new(),
+        roster,
     };
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
@@ -208,6 +258,7 @@ fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {
         mut store,
         typed,
         ledger,
+        roster,
     } = rig;
     fold_module_ops_into(&mut store, tw.take_module_ops());
     let mut world = tw.into_engine().world;
@@ -219,7 +270,7 @@ fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {
     for id in connected {
         world.set_connected(id, false);
     }
-    let mut tw = boot_over(world, store.clone());
+    let mut tw = boot_over(roster, world, store.clone());
     tw.engine_mut()
         .hydrate_action_state(
             typed
@@ -241,6 +292,7 @@ fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {
         store,
         typed,
         ledger,
+        roster,
     }
 }
 
@@ -4366,4 +4418,74 @@ fn sm7_a_dark_registry_ends_the_run_with_the_dark_line() {
     assert_eq!(pool(&mut rig.tw, vault, "metal_ore"), left);
     assert_eq!(cursor_of(&mut rig.tw, deposit), cursor);
     no_refused_writes(&rig.tw);
+}
+
+/// **Staff bind `tv` to the fitted root `root`** (doc 17h cut M8e E6a, the staff rebind): the
+/// leased rig's coreless unit stripped and the unit made again from the cored root, in the bay,
+/// through the baseline `@unit` verb on the fitted roster.
+fn fit(rig: &mut Rig, tv: ObjId, root: &str) {
+    for line in [
+        format!("@unit/remove #{}", tv.0),
+        format!("@unit/create #{}={root}", tv.0),
+    ] {
+        let out = run(&mut rig.tw, GOD, &line);
+        assert!(
+            !out.contains("No ") && !out.contains("not "),
+            "{line}: {out}"
+        );
+    }
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+}
+
+/// **Doc 17h cut M8e E6a — M8b's owed command-path test** (doc 17h §3 M8b G1; D-UM-41): a
+/// leased rig bound to the governed rig root and to its ungoverned twin is launched, driven to a
+/// fair pocket's stand, sounds it and mines it through the real `+tv` verbs, as a stock rig
+/// does: the core rides the unit throughout (its governed bit as fitted), the cycle writes one
+/// mined fact for the pocket the drive reached, the hopper takes the ore, and a reboot keeps the
+/// core.
+#[test]
+fn m8e_a_cored_rig_drives_and_mines_through_the_command_path() {
+    use tacsim::definitions::core_replacement::{RIG_I, RIG_I_UNGOVERNED};
+    for (root, governed) in [(RIG_I, true), (RIG_I_UNGOVERNED, false)] {
+        let mut rig = stocked_with(Roster { fitted: true });
+        let (pilot, _, tvs) = on_pad(&mut rig, 1);
+        let tv = tvs[0];
+        fit(&mut rig, tv, root);
+        let core = |tw: &TestWorld| {
+            mush_tactics::module::unit_of(tw.world(), tv).and_then(tacsim::arena::core::read_core)
+        };
+        assert_eq!(core(&rig.tw).map(|c| c.governed), Some(governed), "{root}");
+        let all = picks(&mut rig.tw, AHUNA);
+        let fair = fair7(&all);
+        launched(&mut rig, pilot, 1, tv);
+        let drive = format!("+tv/1 drive {},{} go", fair.stand.0, fair.stand.1);
+        let out = act_go(&mut rig, pilot, &drive);
+        assert!(out.contains("Rig 1"), "{root}: {out}");
+        let _ = finish(&mut rig, tv, pilot);
+        let _ = act_go(&mut rig, pilot, "+tv/1 sound quiet go");
+        let _ = finish(&mut rig, tv, pilot);
+        let _ = act_go(&mut rig, pilot, "+tv/1 mine go");
+        assert!(run_of(&mut rig.tw, tv).is_some(), "{root}: the run starts");
+        let _ = cycle(&mut rig, tv, pilot);
+        let facts = ring(&rig.tw);
+        assert_eq!(facts.len(), 1, "{root}: {facts:?}");
+        assert_eq!(
+            (facts[0].tv, facts[0].pocket.as_str()),
+            (tv, fair.addr.as_str()),
+            "{root}: the pocket the drive reached"
+        );
+        let vault = hopper(&rig.tw, tv);
+        assert!(
+            pool(&mut rig.tw, vault, "metal_ore") > 0,
+            "{root}: the hopper took the ore"
+        );
+        assert_eq!(core(&rig.tw).map(|c| c.governed), Some(governed));
+        let rig = reboot(rig, &[pilot]);
+        assert_eq!(
+            core(&rig.tw).map(|c| c.governed),
+            Some(governed),
+            "{root}: kept"
+        );
+        no_refused_writes(&rig.tw);
+    }
 }
