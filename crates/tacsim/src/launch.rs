@@ -12,7 +12,7 @@ pub use content::LaunchRecipe;
 pub use deployment::{
     HardwareCoordinates, HouseDeployment, LaunchDeployment, LaunchMode, LaunchVenue,
     MAX_DEPLOYMENT_BYTES, MarketTerms, NamedHouses, PlayerMarket, ProcurementPolicy,
-    ProcurementRole, RegistryAuthority,
+    ProcurementRole, RegistryAuthority, UngoverningCoordinates,
 };
 pub(crate) use registration::Registration;
 

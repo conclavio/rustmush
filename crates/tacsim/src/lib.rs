@@ -1136,6 +1136,9 @@ impl GameModule for TacsimRuleset {
         // Doc 18 cut IC6: the goods table is RAM only, like the test-world
         // flag; the loaded slot takes it from the layer.
         loaded.goods = self.goods.clone();
+        // Doc 17h cut M8g (the M8e seal mark): the Roll's seal-mark writer cell is RAM only,
+        // like the goods table; without it the surface finish marks no licence's ring.
+        loaded.seal_marks = self.seal_marks.clone();
         let Some(slot) = ctx.w.module_state_mut::<TacsimStore>() else {
             return Err(ModError::msg("tacsim: no module state"));
         };

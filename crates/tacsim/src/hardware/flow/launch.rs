@@ -221,6 +221,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             integrator: h.integrator.clone(),
             factory: h.factory,
             output_container: h.output_container,
+            ungovern: None,
         },
         market,
         procurement: Vec::new(),
@@ -849,6 +850,70 @@ async fn named_launch_format_two_is_strict_and_format_one_identity_is_unchanged(
     let decoded = LaunchDeployment::decode(&bytes)?;
     check_eq!(serde_json::to_vec(&decoded)?, bytes);
     check_eq!(decoded.market, two.market);
+    Ok(())
+}
+
+/// Doc 17h cut M8g (ruling (a)): the optional ungovern site moves no shipped identity.
+/// Absent, `hardware` serializes to exactly its nine pre-M8g keys, so the
+/// `launch_deployment` descriptor (the deployment minus `mode`) of every shipped format,
+/// and its digest, are byte-for-byte as before; named, the site round-trips and is closed.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_ungovern_site_is_optional_and_moves_no_identity() -> Result {
+    for format in [1, 2] {
+        let (_, deployment) = setup_with(format)?;
+        check!(deployment.hardware.ungovern.is_none());
+        let value = serde_json::to_value(&deployment)?;
+        let mut keys: Vec<&str> = value["hardware"]
+            .as_object()
+            .ok_or("a hardware object")?
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        check_eq!(
+            keys,
+            [
+                "agents",
+                "depot",
+                "factory",
+                "grades",
+                "importer",
+                "integrator",
+                "output_container",
+                "stock_scope",
+                "supplier_account"
+            ]
+        );
+        let bytes = serde_json::to_vec(&deployment)?;
+        let decoded = LaunchDeployment::decode(&bytes)?;
+        check_eq!(serde_json::to_vec(&decoded)?, bytes);
+        // The `launch_deployment` descriptor is this value minus `mode`: unchanged bytes, an
+        // unchanged descriptor and digest.
+        check_eq!(serde_json::to_value(&decoded)?, value);
+    }
+    let (_, mut named) = setup_with(2)?;
+    named.hardware.ungovern = Some(crate::launch::UngoverningCoordinates {
+        provider: named.hardware.integrator.clone(),
+        factory: named.hardware.factory,
+        output_container: named.hardware.output_container,
+        fee_minor: Some(25_000),
+    });
+    let bytes = serde_json::to_vec(&named)?;
+    let decoded = LaunchDeployment::decode(&bytes)?;
+    check_eq!(serde_json::to_vec(&decoded)?, bytes);
+    check_eq!(decoded.hardware.ungovern, named.hardware.ungovern);
+    let site = named.hardware.deployment(&named.registry_issuer);
+    check_eq!(
+        site.ungovern.as_ref().map(|u| (u.factory, u.fee_minor)),
+        Some((named.hardware.factory, Some(25_000)))
+    );
+    let mut case = serde_json::to_value(&named)?;
+    case["hardware"]["ungovern"]["eligible"] = json!(true);
+    decode_refuses(
+        &case,
+        "invalid launch deployment document",
+        "an unknown key inside ungovern",
+    )?;
     Ok(())
 }
 

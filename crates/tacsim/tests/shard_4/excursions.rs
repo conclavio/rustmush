@@ -76,6 +76,12 @@ fn cid(word: &str) -> CanonicalId {
 type CommerceFactory =
     Arc<dyn Fn() -> tacsim::composition::mind_commerce::MindCommerce + Send + Sync>;
 
+/// **A launch composition prepared afresh for each boot** (doc 17h cut M8g G1, the combined M8
+/// world): the production `LaunchComposition` — the House chain and the player market, the
+/// Registry, the governed hardware and its fitted catalog — over the test world's layer with
+/// the shipped game content, so the port world and the launch compose as one roster.
+pub(crate) type LaunchFactory = Arc<dyn Fn() -> tacsim::launch::LaunchComposition + Send + Sync>;
+
 /// The composition: `commerce.rs`'s bare roster (no sheet, the test world's layer, the
 /// shipped game content). Doc 17h cut M8a: with an optional mind commerce (the Registry inspection's
 /// composition, `reboot_with_inspection`), composed through
@@ -84,6 +90,10 @@ type CommerceFactory =
 #[derive(Clone, Default)]
 struct Roster {
     commerce: Option<CommerceFactory>,
+    /// Doc 17h cut M8g G1: the launch's composition, when the world is the combined M8 world
+    /// (`m8_world.rs`); it composes its own commerce and fitted tactics, so `commerce` and
+    /// `fitted` are unused beside it.
+    launch: Option<LaunchFactory>,
     /// **Doc 17h cut M8e E6a, the hardware-configured roster**: the tactics module over the
     /// whole fitted catalog (the fielded units, the line and the rig roots) and the layer
     /// registering it (`with_fitted_catalog`), so staff may bind a leased rig to a cored root
@@ -105,10 +115,60 @@ fn fitted_tactics() -> mush_tactics::TacticsModule {
         .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy))
 }
 
+/// **The test world's layer the launch composes over** (doc 17h cut M8g G1): enabled, the
+/// shipped game content, a test world, the conduct carrier — what the launch prepares its catalog from and then
+/// configures (with the inventory and the unit authority).
+pub(crate) fn launch_layer() -> tacsim::TacsimRuleset {
+    // The named launch story's layer: a proving budget that admits the three Houses' full
+    // Registry trials in one UTC day, and the unarmed proving carrier before any catalogue
+    // capture (`hardware/flow/launch.rs`' `modules`).
+    let mut cfg = TacsimConfig {
+        enabled: true,
+        ..TacsimConfig::default()
+    };
+    cfg.minds.proving_daily_unit_minutes = 100_000;
+    tacsim::TacsimRuleset::with_game_content(cfg, true)
+        .with_test_world(true)
+        .with_conduct_carrier()
+        .expect("the conduct carrier composes")
+}
+
 impl Roster {
+    /// **The combined M8 world's roster** (doc 17h cut M8g G1): main's launch twin of the domain
+    /// roster (`domain_modules_with_launch`, the hardware's economy, inventory and industry, the
+    /// launch's fitted tactics) and the launch's `configure_tacsim` over [`launch_layer`].
+    fn launch_modules(
+        launch: &tacsim::launch::LaunchComposition,
+    ) -> Vec<Box<dyn mush_core::GameModule>> {
+        use tacsim::composition as comp;
+        let game = tacsim::GameEconomyConfig::default();
+        let (mut mods, inventory) = comp::domain_modules_with_launch(
+            EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &game,
+            launch,
+        )
+        .expect("the launch roster composes");
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        mods.push(Box::new(
+            launch
+                .configure_tacsim(
+                    launch_layer()
+                        .with_inventory(inventory)
+                        .with_unit_authority(),
+                )
+                .expect("the launch configures the test-world layer"),
+        ));
+        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        mods
+    }
+
     fn modules(&self) -> Vec<Box<dyn mush_core::GameModule>> {
         use tacsim::composition as comp;
 
+        if let Some(prepare) = &self.launch {
+            return Self::launch_modules(&prepare());
+        }
         let game = tacsim::GameEconomyConfig::default();
         let cfg = TacsimConfig {
             enabled: true,
@@ -187,14 +247,53 @@ impl Roster {
     }
 }
 
-/// A fixed gateway-account oracle (`match_lifecycle.rs`'s precedent).
+/// A fixed gateway-account oracle (`match_lifecycle.rs`'s precedent). **Doc 17h cut M8g G1**:
+/// with `captures` on (the combined M8 world, [`enable_account_captures`]) it also answers the
+/// retained personal-account captures a commerce preparation observes, under its epoch, as the
+/// named launch's `Logins` does; off (every other world here) it refuses them, as before.
 #[derive(Default)]
-struct MapOracle(Mutex<BTreeMap<ObjId, AccountId>>);
+struct MapOracle(
+    Mutex<BTreeMap<ObjId, AccountId>>,
+    std::sync::atomic::AtomicBool,
+    mush_core::account::AccountIdentityEpoch,
+);
 
 impl AccountIdentity for MapOracle {
     fn account_of(&self, character: ObjId) -> Option<AccountId> {
         self.0.lock().ok()?.get(&character).copied()
     }
+    fn capture_personal_account(
+        &self,
+        character: ObjId,
+    ) -> Option<mush_core::account::PersonalAccountSnapshot> {
+        if !self.1.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        self.2
+            .personal_account(character, self.account_of(character)?)
+    }
+    fn observe_distinct_accounts(
+        &self,
+        requester: ObjId,
+        other: ObjId,
+    ) -> Option<mush_core::account::AccountPairSnapshot> {
+        if !self.1.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        self.2.distinct_pair(
+            requester,
+            self.account_of(requester)?,
+            other,
+            self.account_of(other)?,
+        )
+    }
+}
+
+/// **Turn on the oracle's personal-account captures** (doc 17h cut M8g G1: the combined world).
+pub(crate) fn enable_account_captures(rig: &Rig) {
+    rig.oracle
+        .1
+        .store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// A booted world, its oracle and the cumulative store.
@@ -202,11 +301,14 @@ pub(crate) struct Rig {
     pub(crate) tw: TestWorld,
     oracle: Arc<MapOracle>,
     pub(crate) store: HashMap<SmolStr, mush_core::ModuleBootData>,
-    typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
+    pub(crate) typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
     /// Doc 17h cut M8a: how the next reboot prepares its mind commerce, if any.
-    commerce: Option<CommerceFactory>,
+    pub(crate) commerce: Option<CommerceFactory>,
     /// Doc 17h cut M8e E6a: whether every boot composes the fitted roster.
-    fitted: bool,
+    pub(crate) fitted: bool,
+    /// Doc 17h cut M8g G1: how the next reboot prepares the launch, if the world is the
+    /// combined M8 world.
+    pub(crate) launch: Option<LaunchFactory>,
 }
 
 pub(crate) fn no_refused_writes(tw: &TestWorld) {
@@ -244,6 +346,7 @@ fn stocked_with(fitted: bool) -> Rig {
     let roster = Roster {
         commerce: None,
         fitted,
+        launch: None,
     };
     let mut tw = TestWorld::with_modules(roster.modules());
     no_refused_writes(&tw);
@@ -257,6 +360,7 @@ fn stocked_with(fitted: bool) -> Rig {
         typed: BTreeMap::new(),
         commerce: None,
         fitted,
+        launch: None,
     };
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
@@ -273,11 +377,13 @@ fn reboot(rig: Rig) -> Rig {
         typed,
         commerce,
         fitted,
+        launch,
     } = rig;
     fold_module_ops_into(&mut store, tw.take_module_ops());
     let roster = Roster {
         commerce: commerce.clone(),
         fitted,
+        launch: launch.clone(),
     };
     let records = || {
         typed
@@ -287,7 +393,7 @@ fn reboot(rig: Rig) -> Rig {
             })
             .collect::<Vec<_>>()
     };
-    let mut tw = if commerce.is_some() {
+    let mut tw = if commerce.is_some() || launch.is_some() {
         // Doc 17h cut M8a: the Roll's boot audit under an Active commerce reads the typed
         // records (the setup receipt), so the commerce roster boots in the production
         // loader's order — typed state hydrated before the owner hooks run, as
@@ -325,6 +431,11 @@ fn reboot(rig: Rig) -> Rig {
     };
     with_offer_keys(&mut tw);
     install_oracle(&mut tw, &oracle);
+    if launch.is_some() {
+        // Doc 17h cut M8g G1: the engine's own account identity too, as the named launch's
+        // `logins` installs it (a preparation's personal-account observation reads it).
+        tw.engine_mut().set_account_identity(oracle.clone());
+    }
     Rig {
         tw,
         oracle,
@@ -332,6 +443,7 @@ fn reboot(rig: Rig) -> Rig {
         typed,
         commerce,
         fitted,
+        launch,
     }
 }
 
@@ -554,7 +666,7 @@ pub(crate) fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjI
     tw.seen_by(events, who).join("\n")
 }
 
-fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
+pub(crate) fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
     let events = tw.run(who, line);
     said(tw, &events, who)
 }
@@ -565,7 +677,7 @@ pub(crate) fn store(tw: &TestWorld) -> &TacsimStore {
         .expect("tacsim state")
 }
 
-fn economy(tw: &TestWorld) -> &EconomyStore {
+pub(crate) fn economy(tw: &TestWorld) -> &EconomyStore {
     tw.world().module_state::<EconomyStore>().expect("economy")
 }
 
@@ -598,7 +710,7 @@ pub(crate) fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
 }
 
 /// A fresh request/commit token per landing, across the process.
-fn next_token() -> [u8; 16] {
+pub(crate) fn next_token() -> [u8; 16] {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut bytes = [0x5b_u8; 16];
@@ -642,7 +754,46 @@ pub(crate) fn land_receipt(
     rig: &mut Rig,
     submit: &AuthoritativeSubmit,
 ) -> Result<Option<String>, String> {
+    land_both(rig, submit).map(|(receipt, _, _)| receipt)
+}
+
+/// **[`land_receipt`]'s outcome, with the act's commit token** (doc 17h cut M8g G1): what names a
+/// listing, a quote or a funded purchase to the step after it.
+pub(crate) fn land_commit(
+    rig: &mut Rig,
+    submit: &AuthoritativeSubmit,
+) -> Result<(CommitToken, serde_json::Value), String> {
+    land_both(rig, submit).map(|(_, outcome, commit)| (commit, outcome))
+}
+
+/// **A service's own submission landed under its own key** (doc 17h cut M8g G1: the Registry's
+/// rating steps, the author service's save — the launch story's `install_submit`): the
+/// idempotency key is the caller's, as the world task lands an observed submission.
+pub(crate) fn land_service(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+    land_keyed(rig, submit, IdempotencyKey::Caller(submit.key.clone())).map(|_| ())
+}
+
+fn land_both(
+    rig: &mut Rig,
+    submit: &AuthoritativeSubmit,
+) -> Result<(Option<String>, serde_json::Value, CommitToken), String> {
     let token = next_token();
+    land_keyed(
+        rig,
+        submit,
+        IdempotencyKey::Request(RequestUid::from_bytes(token)),
+    )
+}
+
+fn land_keyed(
+    rig: &mut Rig,
+    submit: &AuthoritativeSubmit,
+    key: IdempotencyKey,
+) -> Result<(Option<String>, serde_json::Value, CommitToken), String> {
+    let token = match &key {
+        IdempotencyKey::Request(request) => *request.as_bytes(),
+        IdempotencyKey::Caller(_) | IdempotencyKey::Deterministic(_) => next_token(),
+    };
     let tw = &mut rig.tw;
     let (action, resolved) = {
         let engine = tw.engine();
@@ -677,7 +828,7 @@ pub(crate) fn land_receipt(
                         .map_err(|_| "namespace".to_owned())?,
                 },
                 1,
-                IdempotencyKey::Request(RequestUid::from_bytes(token)),
+                key,
             ),
             viewer_scope: query.viewer_scope(),
             now: None,
@@ -714,14 +865,39 @@ pub(crate) fn land_receipt(
                 .ok()
         })
         .and_then(|projected| projected.map(|result| result.summary().to_owned()));
+    let outcome = output.outcome().data().clone();
     let (writes, install) = prepared.into_parts();
     tw.engine_mut()
         .install_composed_action(install)
         .map_err(|error| format!("{error:?}"))?;
+    keep_composed(rig, writes);
+    Ok((receipt, outcome, CommitToken::from_bytes(token)))
+}
+
+/// **Keep a composed act's writes** (doc 17h cut M8g G1): the module writes split into the
+/// store the reboot boots from, the typed post-images kept.
+pub(crate) fn keep_composed(rig: &mut Rig, writes: Vec<mush_core::authoritative::ReplayWrite>) {
+    // Doc 17h cut M8g G1: in the combined world an act may allocate an object (the Roll's
+    // reserved charter shell); the composed install applied it to the World, which the reboot
+    // keeps, so only the module writes are split (the hardware flow driver's `retain_writes`).
+    let writes: Vec<_> = if rig.launch.is_some() {
+        writes
+            .into_iter()
+            .filter(|write| {
+                !matches!(
+                    write,
+                    mush_core::authoritative::ReplayWrite::ObjectSet { .. }
+                        | mush_core::authoritative::ReplayWrite::ObjectDelete { .. }
+                        | mush_core::authoritative::ReplayWrite::ObjectAllocatorSet { .. }
+                )
+            })
+            .collect()
+    } else {
+        writes
+    };
     let (ops, ledger) = support::composed::split(&writes);
     keep(rig, ops);
     fold_module_ops_into(&mut rig.store, ledger);
-    Ok(receipt)
 }
 
 /// Every queued submission of the port's lanes, dropping other modules'; asserts none kept of
@@ -822,6 +998,17 @@ where
 }
 
 /// A pilot on a gateway account of their own, standing at the Registry desk.
+/// **Give `who` a gateway account in the harness's oracle** (doc 17h cut M8g G1: GOD, the named
+/// launch's configured publisher, authors as a player with an account, as a pilot does).
+pub(crate) fn with_account(rig: &mut Rig, who: ObjId, name: &str, seed: i64) {
+    if let Ok(mut map) = rig.oracle.0.lock() {
+        map.insert(
+            who,
+            AccountId::mint(&format!("{name}Acct"), seed).expect("an account id"),
+        );
+    }
+}
+
 fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
     let pilot = rig.tw.spawn_player(who);
     if let Ok(mut map) = rig.oracle.0.lock() {
@@ -2127,6 +2314,7 @@ fn stocked_keyed() -> Rig {
         typed: BTreeMap::new(),
         commerce: None,
         fitted: false,
+        launch: None,
     };
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
