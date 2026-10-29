@@ -571,7 +571,7 @@ The economy cannot read the Registry's inspection records.
 Each cut runs on its own branch as a PR. M8b is stacked on M8a, and M8f will stack on M8c. The
 briefs, fix rounds and lens notes are in the plan-data folder `m8-contraband/cuts/<cut>/`.
 
-### M8a — the deterministic reads (PR #67, built 2026-10-28; merge pending)
+### M8a — the deterministic reads (PR #67, merged 2026-10-28 as `49b95a8f`)
 
 Branch `claude/m8-a-reads-8ef2e8`, with these commits on top of `main`:
 - `9159cffa`, the cut;
@@ -616,13 +616,93 @@ up to `75de08a7`.
 
 **Owed:** the delegation pin for `roll_registry_inspections` (no composed-launch pin covers it).
 
-### M8c — organisations as holders (built; fix round 1 in progress, not committed)
+### M8c — organisations as holders (PR #77, merged 2026-10-28 as `c07823b3`)
 
-### M8b — the crime (built, stacked on PR #67; fix round 1 in progress, not committed)
+The branch is `claude/m8-c-org-holders-a04d00`. Its commits are `1474329d` (the cut with fix
+round 1), `e90007bc` (fix round 2) and two merges of main.
 
-C3, the heirloom and grey dies, is split out to a cut **M8b-2**. Those dies need a second die
-input through industry and a second integration site through the economy. M8d and M8g do not
-need them, because the ungoverning refit already makes ungoverned cores. Lead ruling: the
-governed `core_refit` fits a core into a coreless rig, so a stock surface rig can be cored.
-M8b moves the production refit policy's digest and its four action descriptors' references.
-That is flagged for the next dev2 redeploy decision.
+Review: three Opus lenses found one blocker and nine must-fixes, all fixed in round 1. A verifier
+then found F1–F8 done with no blocker, and round 2 closed its three should-fixes. On the VPS the
+full M7 story passed on round 2 (1,674 s).
+
+**What landed:**
+- **The typed `Holder`.** `Holder { Character(ObjId), Organization { org, acting } }` runs through
+  every commerce family. The character arm is untagged, so no pinned digest moved.
+- **Acting for an organisation.** `roll.holder.org` is re-asked live at every act, through
+  `org_holder::{org_actor, acts_for, acts_as}`. Quote and Fund ask the grant with the price.
+- **`org=` on the buyer verbs** and on `@mind/attest`. The org treasury pays, and the hold is
+  placed by the org principal.
+- **Every member's licence.** An org-held licence answers any member granted on the org's root.
+  Fork parents and owner qualification refuse it.
+- **The buyer index is keyed by the buyer.** An org quote sits under `org/{org:020}`, so any
+  granted member can find, refund and renew it.
+- **House owner attestation** runs under the House's 365-day terms.
+- **The seal-mark ring** `roll_licence_seal_marks` keeps 64 marks per licence and evicts governed
+  marks first, per §5 (b). Its writer is GOD or a holder of `roll.registry.seal_mark`. The
+  refusal reads "The Registry cannot attest a licence that flew on an ungoverned core."
+- **Organisation 0 is an organisation**, since mush-org mints from 0.
+
+**Bugs the review's tests exposed:**
+- The House attestation was capped at the 90-day paid term.
+- The kernel's market index read the buyer as a bare character.
+- A second member could not renew.
+- One key rule refused organisation 0.
+
+**Deferred:**
+- `org=` on `/resell/accept` and `/charter/accept`, because it needs a resale wire change.
+- A limited `roll.holder.org` grant through the Grant step, moved to M8f.
+- Recall and revocation notices to an org's members.
+
+### M8b — the crime (PR #78, merged 2026-10-28 as `a249df5a`)
+
+The branch is `claude/m8-b-crime-4ef277`. Its commits are `1222c2cd` (the cut with fix round 1),
+`842dc309` (fix round 2), `ccf19503` (round 2's CI fixes) and two merges of main.
+
+Review: three Opus lenses found no blocker and seven must-fixes. A verifier found all seven done
+in code.
+
+**What landed:**
+- **Cored rigs.** The surface rig has fitted roots per class beside the line tank's, built on one
+  `CoreFamily`. By lead ruling the governed `core_refit` fits a core into a coreless stock rig. The
+  store resolves a fitted root to its base chassis, so a cored rig drives, mines and carries.
+- **The ungoverning refit, `core_ungovern`.**
+  - It has its own facility capability; a facility declaring both recipes is refused.
+  - The Org capability `industry.core.ungovern` is in the production vocabulary.
+  - The fee is the config key `ungovern_minor`.
+  - The three cores have ungoverned twins.
+  - The provenance note, derived from the refit history, fails closed.
+  - The install re-checks the operator's grant live.
+- **The ungoverned seal.**
+  - D-UM-17's floor is lifted at the seal, the arming and the cited fire, only while an
+    ungoverned core is fitted.
+  - IC execution and the audit admit an unfiled draft on an ungoverned seal.
+  - `admissions` on the seal and box lines is skipped when empty. `unlicensed` is record-only in
+    this cut.
+  - D-UM-41 is pinned.
+- **`unlawful` on `Fired` and an `Armed` line**, from one rule.
+
+**Moved:**
+- The cores and governed-hardware content digests.
+- **The production refit policy's digest, its four action descriptors' references, and the tactics
+  root set (3 → 6).** These matter for the next dev2 redeploy on its kept store.
+- Two core-count test pins (3 → 6, 4 → 7).
+
+**Split and owed:**
+- **M8b-2**: the heirloom and grey dies, meaning their issue actions, a second die input and a
+  second integration site.
+- **To M8e**, two tests: a real `+tv` drive and mine by a fitted rig, which needs a cored-rig
+  excursion harness, and the IC audit over a retained unfiled-draft record.
+- The launch composes no ungoverning shop (§4).
+
+### M8d — the consequences (building)
+
+Seizure is split to **M8d2** (§5). M8d carries:
+- the unwarranted finding, its canon line and the three fact keys;
+- the Red Dies front;
+- the sanction fine and `@registry/fine`;
+- `RevokedPrincipal`;
+- the cover exclusion.
+
+### M8e — the sealed mind aboard, doc 23 S.4a (building, cut from main at `8fd6476f`)
+
+### M8f — procurement (building)
