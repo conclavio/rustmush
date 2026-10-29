@@ -1,4 +1,4 @@
-//! Real owner-read preimages for movement's separate journey and focus slots.
+//! Real owner-read preimages for movement's journey, focus and IC custody slots.
 //!
 //! The existing movement capture decides admission. This read retains exactly
 //! its owner predicates through final publication, without copying routes,
@@ -23,9 +23,11 @@ const MAX_ROOTS: usize = crate::personnel_capture::MAX_DEPENDENCIES;
 const MAX_SNAPSHOT_BYTES: usize = 64 * 1024;
 pub(super) struct JourneyReader;
 struct FocusReader;
+struct IcExclusionReader;
 struct ReadHandles {
     journeys: OwnerReadHandle<JourneyReader>,
     focus: OwnerReadHandle<FocusReader>,
+    ic_exclusion: OwnerReadHandle<IcExclusionReader>,
 }
 #[derive(Clone)]
 pub(super) struct MovementReads(Arc<ReadHandles>);
@@ -58,17 +60,30 @@ pub(super) fn register(reg: &mut Registrar<'_>) -> Result<MovementReads, ModErro
     )
     .map_err(bad)?;
     let owner = OwnerId::new(NS).map_err(bad)?;
+    let ic_descriptor = DefinitionDescriptor::new(
+        DefinitionKind::new("owner_read").map_err(bad)?,
+        DefinitionId::new("movement_ic_exclusion_preimage").map_err(bad)?,
+        1,
+        json!({"state":"IcExclusions","purpose":"movement_preimage_only",
+            "fields":["loaded","generation","unit","identity_present"],
+            "max_roots":MAX_ROOTS,"max_snapshot_bytes":MAX_SNAPSHOT_BYTES}),
+    )
+    .map_err(bad)?;
     let expected = DefinitionRegistryBuilder::new()
         .register(owner.clone(), descriptor.clone())
         .map_err(bad)?;
     let expected_focus = DefinitionRegistryBuilder::new()
         .register(owner.clone(), focus_descriptor.clone())
         .map_err(bad)?;
+    let expected_ic = DefinitionRegistryBuilder::new()
+        .register(owner.clone(), ic_descriptor.clone())
+        .map_err(bad)?;
     reg.definition_validator(
         descriptor.kind().clone(),
         move |ctx: &mush_core::DefinitionValidationContext<'_>| {
             if (ctx.definition().reference() == &expected
-                || ctx.definition().reference() == &expected_focus)
+                || ctx.definition().reference() == &expected_focus
+                || ctx.definition().reference() == &expected_ic)
                 && !ctx.definition().is_current()
             {
                 Ok(())
@@ -79,6 +94,7 @@ pub(super) fn register(reg: &mut Registrar<'_>) -> Result<MovementReads, ModErro
     )?;
     let definition = reg.definition(descriptor)?;
     let focus_definition = reg.definition(focus_descriptor)?;
+    let ic_definition = reg.definition(ic_descriptor)?;
     reg.owner_read_service(
         definition.clone(),
         BTreeSet::from([owner.clone()]),
@@ -87,13 +103,24 @@ pub(super) fn register(reg: &mut Registrar<'_>) -> Result<MovementReads, ModErro
     )?;
     reg.owner_read_service(
         focus_definition.clone(),
-        BTreeSet::from([owner]),
+        BTreeSet::from([owner.clone()]),
         BTreeSet::new(),
         FocusReader,
     )?;
+    reg.owner_read_service(
+        ic_definition.clone(),
+        BTreeSet::from([owner]),
+        BTreeSet::new(),
+        IcExclusionReader,
+    )?;
     let journeys = reg.request_owner_read::<JourneyReader>(definition)?;
     let focus = reg.request_owner_read::<FocusReader>(focus_definition)?;
-    Ok(MovementReads(Arc::new(ReadHandles { journeys, focus })))
+    let ic_exclusion = reg.request_owner_read::<IcExclusionReader>(ic_definition)?;
+    Ok(MovementReads(Arc::new(ReadHandles {
+        journeys,
+        focus,
+        ic_exclusion,
+    })))
 }
 
 fn fingerprint(
@@ -177,6 +204,41 @@ impl OwnerReadService for FocusReader {
     }
 }
 
+fn ic_fingerprint(
+    state: &crate::ic_exclusion::IcExclusions,
+    roots: &BTreeSet<ObjId>,
+) -> Result<DefinitionDigest, OwnerReadError> {
+    if roots.is_empty() || roots.len() > MAX_ROOTS {
+        return Err(OwnerReadError::Limit);
+    }
+    let image = state
+        .movement_preimage(roots)
+        .map_err(|_| OwnerReadError::Integrity)?;
+    DefinitionDigest::for_canonical_value_with_limit(
+        "sim.movement.ic_exclusion_preimage.v1",
+        &json!(image),
+        MAX_SNAPSHOT_BYTES,
+    )
+    .map_err(|_| OwnerReadError::Limit)
+}
+impl OwnerReadService for IcExclusionReader {
+    type State = crate::ic_exclusion::IcExclusions;
+    type Request = MovementReadRequest;
+    type Output = DefinitionDigest;
+
+    fn read(
+        &self,
+        _: &Self::State,
+        ctx: &OwnerReadContext<'_>,
+        request: MovementReadRequest,
+    ) -> Result<Self::Output, OwnerReadError> {
+        if ctx.requester().as_str() != NS {
+            return Err(OwnerReadError::Authority);
+        }
+        ctx.guard_state::<Self::State, _>(move |state| ic_fingerprint(state, &request.roots))
+    }
+}
+
 pub(super) fn retain(
     ctx: &mut PrepareCtx<'_>,
     txn: &mut ActionTxn<'_>,
@@ -207,7 +269,9 @@ pub(super) fn retain(
     let request = MovementReadRequest { roots };
     ctx.read_owner_preimage(txn, &reads.0.journeys, request.clone())
         .map_err(|_| unavailable())?;
-    ctx.read_owner_preimage(txn, &reads.0.focus, request)
+    ctx.read_owner_preimage(txn, &reads.0.focus, request.clone())
+        .map_err(|_| unavailable())?;
+    ctx.read_owner_preimage(txn, &reads.0.ic_exclusion, request)
         .map(|_| ())
         .map_err(|_| unavailable())
 }
