@@ -13,6 +13,7 @@ pub struct OrderedWindowMovementCapture {
     dependencies: BTreeSet<ObjId>,
     native_phases: Vec<NativePhase>,
     occupancy: Option<crate::window_occupancy::OccupancyFence>,
+    native_fence: native_fence::NativeFence,
 }
 impl OrderedWindowMovementCapture {
     #[must_use]
@@ -55,6 +56,13 @@ impl OrderedWindowMovementCapture {
         }
         Ok(())
     }
+    /// Validate the actual native slot's complete canonical graph, placement,
+    /// control and allocator preimage without World or external callbacks.
+    /// This grants no install. Core, foreign reads, Atlas and the recovery
+    /// append retain their own required bindings.
+    pub fn recheck_native(&self, state: &SpatialState) -> Result<(), ParticipantError> {
+        self.native_fence.recheck(state)
+    }
     pub fn recheck(&self, world: &World) -> Result<(), ParticipantError> {
         if derive_ordered(world, &self.core, self.target, &self.stamp)?.bytes != self.bytes {
             return Err(refused());
@@ -89,6 +97,7 @@ pub fn capture_ordered(
         dependencies: derived.dependencies,
         native_phases: derived.native_phases,
         occupancy: derived.occupancy,
+        native_fence: derived.native_fence,
     })
 }
 struct Ordered {
@@ -96,6 +105,7 @@ struct Ordered {
     dependencies: BTreeSet<ObjId>,
     native_phases: Vec<NativePhase>,
     occupancy: Option<crate::window_occupancy::OccupancyFence>,
+    native_fence: native_fence::NativeFence,
 }
 fn derive_ordered(
     world: &World,
@@ -117,6 +127,7 @@ fn derive_ordered(
         .module_state::<SpatialState>()
         .ok_or_else(refused)?
         .clone();
+    let native_fence = native_fence::NativeFence::capture(&post)?;
     let occupancy = target
         .map(|target| crate::window_occupancy::OccupancyFence::capture(&post, target.domain))
         .transpose()
@@ -182,7 +193,7 @@ fn derive_ordered(
         serde_json::from_slice(&native.bytes).map_err(|_| ParticipantError::Encoding)?;
     let value = json!({"format":2,"authority":"hypothetical_requires_joint_owners",
         "coverage":"uncertified_legacy_paths","native":native_value,"stages":stages,"read_dependencies":dependencies,
-        "occupancy":occupancy});
+        "occupancy":occupancy,"native_preimage":native_fence});
     let bytes = mush_core::canonical_json_bytes_with_limit(&value, MAX_WINDOW_MOVEMENT_BYTES)
         .map_err(|_| ParticipantError::ImageLimit)?;
     Ok(Ordered {
@@ -190,6 +201,7 @@ fn derive_ordered(
         dependencies,
         native_phases: native.phases,
         occupancy,
+        native_fence,
     })
 }
 fn stage(kind: &str, facts: &CaptureFacts) -> Value {
