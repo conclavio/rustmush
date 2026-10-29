@@ -177,6 +177,82 @@ pub enum WorkshopOperationKind {
         /// Optional salvaged component record consumed by this replacement.
         source_stripped_record_id: Option<u64>,
     },
+    /// Rearmed or replenished a component-scoped consumable cell (such as weapon ammunition)
+    /// without altering other sections or components (`Q-S12`, `Q-A4`).
+    RearmComponent {
+        /// Target component slot/instance id.
+        component: ComponentId,
+        /// Target consumable cell id (e.g. `"ammo"`).
+        cell: CellId,
+        /// Number of rounds/units added.
+        rounds_added: i64,
+    },
+}
+
+/// Deterministic tariff schedule for a bay or settlement workshop (`Q-S12`, `Q-A4`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkshopFacilityTariff {
+    /// Resource cost per structural point repaired on a `Damaged` section.
+    pub cost_per_structural_point_repair: u64,
+    /// Work time in IC seconds per structural point repaired on a `Damaged` section.
+    pub duration_ic_per_structural_point_repair: i64,
+    /// Base resource cost to reconstruct a `Destroyed` or `Wreck` section shell.
+    pub base_cost_reconstruct_section: u64,
+    /// Work time in IC seconds to reconstruct a `Destroyed` or `Wreck` section shell.
+    pub base_duration_ic_reconstruct_section: i64,
+    /// Resource cost to repair an extant `Damaged` or `Jammed` component in place.
+    pub cost_repair_component: u64,
+    /// Work time in IC seconds to repair an extant `Damaged` or `Jammed` component.
+    pub duration_ic_repair_component: i64,
+    /// Labor/facility resource cost to install a replacement component into a slot.
+    pub labor_cost_replace_component: u64,
+    /// Work time in IC seconds to install a replacement component into a slot.
+    pub duration_ic_replace_component: i64,
+    /// Resource cost per round/unit of ammunition replenished.
+    pub cost_per_ammo_round: u64,
+    /// Work time in IC seconds per rearm operation.
+    pub duration_ic_rearm_component: i64,
+}
+
+impl Default for WorkshopFacilityTariff {
+    fn default() -> Self {
+        Self {
+            cost_per_structural_point_repair: 25,
+            duration_ic_per_structural_point_repair: 10,
+            base_cost_reconstruct_section: 1_500,
+            base_duration_ic_reconstruct_section: 240,
+            cost_repair_component: 400,
+            duration_ic_repair_component: 90,
+            labor_cost_replace_component: 600,
+            duration_ic_replace_component: 120,
+            cost_per_ammo_round: 10,
+            duration_ic_rearm_component: 30,
+        }
+    }
+}
+
+/// Deterministic cost and duration quote to restore a unit's damaged/destroyed sections,
+/// components, and depleted ammunition (`Q-S12`, `Q-A4`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkshopCostQuote {
+    /// Target unit object id.
+    pub unit: ObjId,
+    /// Sections that can be repaired in place (`Damaged`).
+    pub sections_to_repair: Vec<SectionId>,
+    /// Sections that require structural shell reconstruction (`Destroyed` or `Wreck`).
+    pub sections_to_reconstruct: Vec<SectionId>,
+    /// Extant components that can be repaired in place (`Damaged` or `Jammed`).
+    pub components_to_repair: Vec<ComponentId>,
+    /// Component slots that are `Destroyed` or `"stripped"` and require a replacement part.
+    pub components_to_replace: Vec<ComponentId>,
+    /// Weapon components with depleted ammo and the missing round count for each.
+    pub components_to_rearm: BTreeMap<ComponentId, i64>,
+    /// Total estimated resource/credit cost (excluding replacement component purchase price).
+    pub total_resource_cost: u64,
+    /// Total estimated workshop duration in IC seconds.
+    pub total_work_duration_ic: i64,
 }
 
 /// Completed workshop work-order record (`FO-2`, `Q-S12`, `Q-S14`).
@@ -1045,6 +1121,252 @@ impl WorkshopBook {
         Ok((updated_unit, post_assessment, record))
     }
 
+    /// Rearm or replenish a component-scoped consumable cell (such as weapon ammunition) on a
+    /// surviving component without touching other sections or components (`Q-S12`, `Q-A4`).
+    ///
+    /// Restoring ammunition on an `Unarmed` unit whose weapon component is otherwise functional
+    /// transitions its [`FieldUnitAssessment`] back to [`OperationalState::Operational`] (or
+    /// `Impaired` / `Immobilized` / `Disabled` according to its structural state).
+    ///
+    /// # Errors
+    /// Returns [`WorkshopError`] if the component or cell is unknown, the host section is not
+    /// functional, the component is `Destroyed` or `"stripped"`, or `rounds_to_add <= 0`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rearm_component(
+        &mut self,
+        unit: &TacticalUnit,
+        anatomy: &UnitAnatomyProfile,
+        component_id: &ComponentId,
+        ammo_cell_id: &CellId,
+        rounds_to_add: i64,
+        actor: ObjId,
+        custody: &CustodyTitleStatus,
+        has_explicit_owner_permission: bool,
+        resource_cost: u64,
+        work_duration_ic: i64,
+        salvage_book: Option<&mut SalvageClaimBook>,
+        at_ic: i64,
+    ) -> Result<(TacticalUnit, FieldUnitAssessment, WorkshopWorkOrderRecord), WorkshopError> {
+        self.validate_work_inputs(
+            actor,
+            custody,
+            has_explicit_owner_permission,
+            work_duration_ic,
+        )?;
+        if rounds_to_add <= 0 {
+            return Err(WorkshopError::InvalidRearmAmount(rounds_to_add));
+        }
+
+        let installed = unit
+            .component(component_id)
+            .ok_or_else(|| WorkshopError::UnknownComponent(component_id.clone()))?;
+
+        let pre_assessment = assess_tactical_unit(unit, anatomy);
+        if let Some(host_sec) = install_point_section(&installed.install)
+            && let Some(sec_cond) = pre_assessment.section_conditions.get(host_sec)
+            && !sec_cond.is_functional()
+        {
+            return Err(WorkshopError::HostSectionNotFunctional {
+                hull: unit.object(),
+                section: host_sec.clone(),
+                condition: *sec_cond,
+            });
+        }
+
+        let eff_comp = effective_component_condition(
+            unit,
+            component_id,
+            &pre_assessment.section_conditions,
+            anatomy,
+        )
+        .unwrap_or(ComponentCondition::Destroyed);
+
+        if !eff_comp.is_salvageable() || installed.condition.as_str() == "stripped" {
+            return Err(WorkshopError::ComponentRequiresReplacement {
+                hull: unit.object(),
+                component: component_id.clone(),
+            });
+        }
+
+        let addr = CellAddr::Component {
+            component: component_id.clone(),
+            cell: ammo_cell_id.clone(),
+        };
+        let cell = unit
+            .cell(&addr)
+            .ok_or_else(|| WorkshopError::UnknownComponentCell {
+                component: component_id.clone(),
+                cell: ammo_cell_id.clone(),
+            })?;
+
+        let target_val = cell
+            .current
+            .saturating_add(rounds_to_add)
+            .clamp(cell.min, cell.max);
+        let actual_added = target_val.saturating_sub(cell.current);
+        let updated_unit = if actual_added == 0 {
+            unit.clone()
+        } else {
+            let plan = UnitMutationPlan::new(
+                vec![UnitMutationOp::SetCell {
+                    addr,
+                    value: target_val,
+                }],
+                Some(unit.revision()),
+                Some(SmolStr::new("field_ops.rearm_component")),
+            )
+            .map_err(WorkshopError::Unit)?;
+            apply(unit, &plan, at_ic).map_err(WorkshopError::Unit)?.0
+        };
+        let post_assessment = assess_tactical_unit(&updated_unit, anatomy);
+
+        let record = self.record_work_order(
+            unit.object(),
+            actor,
+            WorkshopOperationKind::RearmComponent {
+                component: component_id.clone(),
+                cell: ammo_cell_id.clone(),
+                rounds_added: actual_added,
+            },
+            custody,
+            resource_cost,
+            work_duration_ic,
+            pre_assessment.state,
+            post_assessment.state,
+            salvage_book,
+            at_ic,
+        )?;
+
+        Ok((updated_unit, post_assessment, record))
+    }
+
+    /// Compute a deterministic [`WorkshopCostQuote`] for restoring `unit`'s damaged/destroyed
+    /// sections, components, and depleted weapon ammunition under `tariff` (`Q-S12`, `Q-A4`).
+    ///
+    /// # Errors
+    /// Returns [`WorkshopError::HullAlreadyIrrecoverable`] if the hull is `Irrecoverable`.
+    pub fn quote_full_restoration(
+        &self,
+        unit: &TacticalUnit,
+        anatomy: &UnitAnatomyProfile,
+        tariff: &WorkshopFacilityTariff,
+    ) -> Result<WorkshopCostQuote, WorkshopError> {
+        let assessment = assess_tactical_unit(unit, anatomy);
+        if !assessment.state.retains_salvageable_hull() {
+            return Err(WorkshopError::HullAlreadyIrrecoverable(unit.object()));
+        }
+
+        let mut sections_to_repair = Vec::new();
+        let mut sections_to_reconstruct = Vec::new();
+        let mut total_resource_cost: u64 = 0;
+        let mut total_work_duration_ic: i64 = 0;
+
+        for (sec_id, cond) in &assessment.section_conditions {
+            match cond {
+                SectionCondition::Intact => {
+                    let missing_pts = missing_section_points(unit, sec_id);
+                    if missing_pts > 0 {
+                        sections_to_repair.push(sec_id.clone());
+                        total_resource_cost = total_resource_cost.saturating_add(
+                            missing_pts.saturating_mul(tariff.cost_per_structural_point_repair),
+                        );
+                        total_work_duration_ic = total_work_duration_ic.saturating_add(
+                            i64::try_from(missing_pts)
+                                .unwrap_or(i64::MAX)
+                                .saturating_mul(tariff.duration_ic_per_structural_point_repair)
+                                .max(1),
+                        );
+                    }
+                }
+                SectionCondition::Damaged => {
+                    sections_to_repair.push(sec_id.clone());
+                    let missing_pts = missing_section_points(unit, sec_id).max(1);
+                    total_resource_cost = total_resource_cost.saturating_add(
+                        missing_pts.saturating_mul(tariff.cost_per_structural_point_repair),
+                    );
+                    total_work_duration_ic = total_work_duration_ic.saturating_add(
+                        i64::try_from(missing_pts)
+                            .unwrap_or(i64::MAX)
+                            .saturating_mul(tariff.duration_ic_per_structural_point_repair)
+                            .max(1),
+                    );
+                }
+                SectionCondition::Destroyed | SectionCondition::Wreck => {
+                    sections_to_reconstruct.push(sec_id.clone());
+                    let missing_pts = missing_section_points(unit, sec_id);
+                    let pt_cost =
+                        missing_pts.saturating_mul(tariff.cost_per_structural_point_repair);
+                    total_resource_cost = total_resource_cost.saturating_add(
+                        tariff.base_cost_reconstruct_section.saturating_add(pt_cost),
+                    );
+                    total_work_duration_ic = total_work_duration_ic
+                        .saturating_add(tariff.base_duration_ic_reconstruct_section.max(1));
+                }
+                SectionCondition::Irrecoverable => {}
+            }
+        }
+
+        let mut components_to_repair = Vec::new();
+        let mut components_to_replace = Vec::new();
+        let mut components_to_rearm = BTreeMap::new();
+
+        for (comp_id, cond) in &assessment.component_conditions {
+            let is_stripped = unit
+                .component(comp_id)
+                .is_some_and(|c| c.condition.as_str() == "stripped");
+            if is_stripped || *cond == ComponentCondition::Destroyed {
+                components_to_replace.push(comp_id.clone());
+                total_resource_cost =
+                    total_resource_cost.saturating_add(tariff.labor_cost_replace_component);
+                total_work_duration_ic = total_work_duration_ic
+                    .saturating_add(tariff.duration_ic_replace_component.max(1));
+            } else if matches!(
+                cond,
+                ComponentCondition::Damaged | ComponentCondition::Jammed
+            ) {
+                components_to_repair.push(comp_id.clone());
+                total_resource_cost =
+                    total_resource_cost.saturating_add(tariff.cost_repair_component);
+                total_work_duration_ic = total_work_duration_ic
+                    .saturating_add(tariff.duration_ic_repair_component.max(1));
+            }
+        }
+
+        if let Some(ammo_cell) = &anatomy.weapon_ammo_cell {
+            for weapon_id in &anatomy.weapon_components {
+                if components_to_replace.contains(weapon_id) {
+                    continue;
+                }
+                let addr = CellAddr::Component {
+                    component: weapon_id.clone(),
+                    cell: ammo_cell.clone(),
+                };
+                if let Some(cell) = unit.cell(&addr)
+                    && cell.current < cell.max
+                {
+                    let missing_rounds = cell.max.saturating_sub(cell.current);
+                    components_to_rearm.insert(weapon_id.clone(), missing_rounds);
+                    let rounds_u64 = u64::try_from(missing_rounds).unwrap_or(0);
+                    total_resource_cost = total_resource_cost
+                        .saturating_add(rounds_u64.saturating_mul(tariff.cost_per_ammo_round));
+                    total_work_duration_ic = total_work_duration_ic
+                        .saturating_add(tariff.duration_ic_rearm_component.max(1));
+                }
+            }
+        }
+
+        Ok(WorkshopCostQuote {
+            unit: unit.object(),
+            sections_to_repair,
+            sections_to_reconstruct,
+            components_to_repair,
+            components_to_replace,
+            components_to_rearm,
+            total_resource_cost,
+            total_work_duration_ic,
+        })
+    }
+
     fn validate_work_inputs(
         &self,
         actor: ObjId,
@@ -1121,6 +1443,23 @@ impl WorkshopBook {
     }
 }
 
+fn missing_section_points(unit: &TacticalUnit, section_id: &SectionId) -> u64 {
+    let mut missing: u64 = 0;
+    for (addr, cell) in unit.cells() {
+        let belongs_to_sec = match addr {
+            CellAddr::Section { section, .. } | CellAddr::Facet { section, .. } => {
+                section == section_id
+            }
+            _ => false,
+        };
+        if belongs_to_sec && cell.current < cell.max {
+            let diff = u64::try_from(cell.max.saturating_sub(cell.current)).unwrap_or(0);
+            missing = missing.saturating_add(diff);
+        }
+    }
+    missing
+}
+
 /// Errors produced by `H3` component stripping, hull scrapping, and workshop restoration.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkshopError {
@@ -1130,10 +1469,19 @@ pub enum WorkshopError {
     IdOverflow,
     /// Work duration was `<= 0`.
     InvalidWorkDuration(i64),
+    /// Rearm amount was `<= 0`.
+    InvalidRearmAmount(i64),
     /// Unknown structural section on the unit.
     UnknownSection(SectionId),
     /// Unknown component on the unit.
     UnknownComponent(ComponentId),
+    /// Unknown cell on the target component.
+    UnknownComponentCell {
+        /// Component id.
+        component: ComponentId,
+        /// Cell id.
+        cell: CellId,
+    },
     /// Field stripping on owned ground lacked owner or landholder authority (`Q-F6`).
     UnlawfulFieldStrip {
         /// Hull object id.
@@ -1237,8 +1585,12 @@ impl fmt::Display for WorkshopError {
             Self::InvalidObjectId(field) => write!(f, "{field} object id must be non-zero"),
             Self::IdOverflow => f.write_str("workshop id counter overflow"),
             Self::InvalidWorkDuration(d) => write!(f, "work duration must be positive, got {d}"),
+            Self::InvalidRearmAmount(n) => write!(f, "rearm amount must be positive, got {n}"),
             Self::UnknownSection(s) => write!(f, "unknown section {s}"),
             Self::UnknownComponent(c) => write!(f, "unknown component {c}"),
+            Self::UnknownComponentCell { component, cell } => {
+                write!(f, "unknown cell {cell} on component {component}")
+            }
             Self::UnlawfulFieldStrip { hull, component } => write!(
                 f,
                 "unlawful field strip of {component} from {hull} on owned ground is prohibited"
@@ -1923,6 +2275,68 @@ mod tests {
         } else {
             return Err("expected PendingSalvageClaim for hull".into());
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn quote_restoration_and_rearm_depleted_weapon_restores_unarmed_unit() -> TestResult {
+        let owner = ObjId(10);
+        let fix = build_workshop_test_biped(ObjId(112))?;
+        let before = fix.unit;
+        let anatomy = fix.anatomy;
+        let autocannon = ComponentId::new("autocannon")?;
+        let ammo = CellId::new("ammo")?;
+
+        let deplete = UnitMutationPlan::new(
+            vec![UnitMutationOp::SetCell {
+                addr: CellAddr::Component {
+                    component: autocannon.clone(),
+                    cell: ammo.clone(),
+                },
+                value: 0,
+            }],
+            Some(before.revision()),
+            None,
+        )?;
+        let (unarmed_unit, _) = apply(&before, &deplete, 100)?;
+        let unarmed_assess = assess_tactical_unit(&unarmed_unit, &anatomy);
+        check_eq!(unarmed_assess.state, OperationalState::Unarmed);
+
+        let mut workshop = WorkshopBook::new();
+        let tariff = WorkshopFacilityTariff::default();
+        let quote = workshop.quote_full_restoration(&unarmed_unit, &anatomy, &tariff)?;
+        check_eq!(quote.components_to_rearm.get(&autocannon), Some(&20));
+        check_eq!(quote.total_resource_cost, 200);
+        check_eq!(quote.total_work_duration_ic, 30);
+
+        let custody = CustodyTitleStatus::ResolvedTitle { owner };
+        let (rearmed_unit, rearmed_assess, order) = workshop.rearm_component(
+            &unarmed_unit,
+            &anatomy,
+            &autocannon,
+            &ammo,
+            20,
+            owner,
+            &custody,
+            false,
+            quote.total_resource_cost,
+            quote.total_work_duration_ic,
+            None,
+            130,
+        )?;
+        check_eq!(order.state_before, OperationalState::Unarmed);
+        check_eq!(order.state_after, OperationalState::Operational);
+        check_eq!(rearmed_assess.state, OperationalState::Operational);
+        check_eq!(
+            rearmed_unit
+                .cell(&CellAddr::Component {
+                    component: autocannon,
+                    cell: ammo,
+                })
+                .map(|c| c.current),
+            Some(20)
+        );
 
         Ok(())
     }

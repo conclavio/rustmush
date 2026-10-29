@@ -14,12 +14,17 @@
 //!   48-available-real-hour contest workflow.
 //! - [`workshop`] (`H3`): component stripping with parent-hull provenance, hull
 //!   scrapping, in-place repair (including pending-custody repair-at-risk), section
-//!   reconstruction, and destroyed/stripped component replacement.
+//!   reconstruction, destroyed/stripped component replacement, rearming, and cost quoting.
+//! - [`sortie`] (`FO-6`–`FO-9`, `FO-15`, `FO-16`, `Q-D3`–`Q-D6`, `Q-A4`, `Q-F1`, `Q-F2`,
+//!   `Q-R2`, `Q-R5`, `P-1`): detachment sortie staging, partial-launch persistence,
+//!   carrier personnel embarkation manifests, NPC crew contracts/wages, unit expense
+//!   policies, bounded mission-leader succession, and field-to-roster availability sync.
 
 pub mod condition;
 pub mod engagement;
 pub mod recovery;
 pub mod salvage;
+pub mod sortie;
 pub mod workshop;
 
 pub use condition::{
@@ -53,11 +58,18 @@ pub use salvage::{
     SalvageClaimState, SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord,
     SalvageSubject, check_custody_action_allowed, evaluate_recovery_entitlement,
 };
+pub use sortie::{
+    ActiveFieldSortie, CarrierPersonnelManifest, CrewMemberKind, EmbarkationOrigin,
+    EmbarkedPersonRecord, IC_DAY_SECONDS, MAX_CREW_POOL_CONTRACTS, MAX_MANIFEST_PERSONNEL,
+    MissionLeaderRoleGrant, NpcCrewContract, NpcMissionScope, PortCrewPool, SortieError,
+    SortieLaunchBlockReason, SortieSlotLaunchState, UnitExpenseCategory, UnitExpensePolicy,
+    is_occupant_fit_for_duty, sync_detachment_availability_from_field,
+};
 pub use workshop::{
     ComponentProvenance, FALLBACK_SECTION_SCRAP_KG, MAX_STRIPPED_COMPONENTS, MAX_WORKSHOP_ORDERS,
     ReplacementPartSpec, SCRAP_KG_PER_STRUCTURAL_POINT, ScrapYieldReport, StripAuthorization,
-    StrippedComponentRecord, WorkshopBook, WorkshopError, WorkshopOperationKind,
-    WorkshopWorkOrderRecord,
+    StrippedComponentRecord, WorkshopBook, WorkshopCostQuote, WorkshopError,
+    WorkshopFacilityTariff, WorkshopOperationKind, WorkshopWorkOrderRecord,
 };
 
 #[cfg(test)]
