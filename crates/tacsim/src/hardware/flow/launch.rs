@@ -1583,9 +1583,9 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     );
     check_eq!(
         counts,
-        (35, 38),
-        "35 services and 38 grants: the DT.2b1 planning reader and its own requester, plus \
-         Tacsim's unit-authority request, join DT.2a's 34 services and 36 grants; \
+        (39, 42),
+        "39 services and 42 grants: Sim's journey, focus, IC exclusion and deployment \
+         movement readers each add a service and grant to the 35/38 DT.2b1 composition; \
          the caps are 64/64"
     );
     let definitions = e.registry.definitions().ok_or("definitions")?;
