@@ -218,6 +218,60 @@ impl Reads for mush_core::module::HookReadContext<'_> {
     }
 }
 
+/// M8c B3: a command's optional trailing `org=<org>`: the argument text
+/// before it (trimmed) and the organisation as typed, `None` without one;
+/// `None` for a bare `org=` (the command's usage). The organisation is the
+/// rest of the line, so a name with spaces is typed as `@org` prints it.
+fn org_argument(text: &str) -> Option<(&str, Option<&str>)> {
+    let text = text.trim();
+    let found = if text.starts_with("org=") {
+        Some(0)
+    } else {
+        text.find(" org=")
+    };
+    let Some(at) = found else {
+        return Some((text, None));
+    };
+    let org = text[at..].trim_start().trim_start_matches("org=").trim();
+    (!org.is_empty()).then(|| (text[..at].trim_end(), Some(org)))
+}
+
+/// Which scope `org_for` asks (M8c F5): the scope the act itself will ask.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OrgScope {
+    /// The paid/entitlement family (unscoped): the organisation's root
+    /// scope (`org_holder::acts_for`): buy, pay, complete, refund, renew,
+    /// and the paid section of the holdings.
+    Root,
+    /// A title-bearing act or read: any Active scope of the organisation
+    /// (`org_holder::acts_anywhere`), each title then re-asked on its own
+    /// scope: the House attestation and the owner section of the holdings.
+    Title,
+}
+
+/// M8c B3: the organisation `org=<org>` names, when the actor acts for it on
+/// the scope the act will ask (`OrgScope`; the read or the provider then
+/// re-asks it). An organisation the actor may not see
+/// (`resolve_org_visible`), an unknown one and one the actor is not granted
+/// for all read `NOT_FOR_ORG`, the observer rule; `None` without `org=`.
+fn org_for(
+    ctx: &Ctx<'_>,
+    org: Option<&str>,
+    scope: OrgScope,
+) -> Result<Option<mush_org::OrgId>, Refusal> {
+    let Some(text) = org else {
+        return Ok(None);
+    };
+    let refuse = || words::word!(NOT_FOR_ORG);
+    let org = mush_economy::resolve_org_visible(ctx, text).ok_or_else(refuse)?;
+    match scope {
+        OrgScope::Root => mush_roll::commerce::org_holder::acts_for(ctx.w, org, ctx.actor),
+        OrgScope::Title => mush_roll::commerce::org_holder::acts_anywhere(ctx.w, org, ctx.actor),
+    }
+    .map_err(|_| refuse())?;
+    Ok(Some(org))
+}
+
 /// The actor, when it is a live, connected, non-GOING player with an account.
 fn principal(ctx: &Ctx<'_>) -> Option<ObjId> {
     let actor = ctx.actor;

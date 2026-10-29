@@ -44,7 +44,7 @@ pub(super) fn authorize(
             }
             // A genuine current title is separate from the immutable owner who
             // accepted this generation; it never rewrites the lapse attribution.
-            *holder
+            PrincipalId::Object(*holder)
         }
     };
     participants(ctx, scope, fact, &[subject])
@@ -60,7 +60,12 @@ pub(super) fn transfer(
     buyer: ObjId,
 ) -> Result<(), PublicationError> {
     common(ctx, scope, fact)?;
-    participants(ctx, scope, fact, &[seller, buyer])
+    participants(
+        ctx,
+        scope,
+        fact,
+        &[PrincipalId::Object(seller), PrincipalId::Object(buyer)],
+    )
 }
 fn common(
     ctx: &OwnerReadContext<'_>,
@@ -76,11 +81,15 @@ fn common(
     }
     Ok(())
 }
+/// M8c F1: a subject is a principal. A character subject is the authorizer
+/// itself; an organisation subject is any character acting for it NOW
+/// (`org_holder::acts_for`), and the organisation itself must be a party
+/// of the scope.
 fn participants(
     ctx: &OwnerReadContext<'_>,
     scope: &ContractFactScope,
     fact: &ExternalRef,
-    subjects: &[ObjId],
+    subjects: &[PrincipalId],
 ) -> Result<(), PublicationError> {
     let authorizer = match scope.purpose() {
         FactPurpose::Attach => scope.actor(),
@@ -89,9 +98,17 @@ fn participants(
             .ok_or(PublicationError::Unavailable)?,
     };
     live(ctx, authorizer)?;
-    if !subjects.contains(&authorizer)
-        || !scope.parties().contains(&PrincipalId::Object(authorizer))
-    {
+    let fits = subjects.iter().any(|subject| {
+        let acts = match subject {
+            PrincipalId::Object(c) => *c == authorizer,
+            PrincipalId::Organization(org) => {
+                super::super::org_holder::acts_for(ctx.world(), *org, authorizer).is_ok()
+            }
+            _ => false,
+        };
+        acts && scope.parties().contains(subject)
+    });
+    if !fits {
         return Err(PublicationError::Unavailable);
     }
     if scope.purpose() == FactPurpose::Read {

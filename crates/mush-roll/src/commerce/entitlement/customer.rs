@@ -21,7 +21,7 @@ use super::super::owner_holdings::{OwnerProjectionError, project_owner_with_pare
 use super::super::paid::PaidForm;
 use super::super::paid_source_reader::PaidSourceAccess;
 use super::super::personal_filed_reader::PersonalFiledHolding;
-use super::super::personal_paid_holdings::project_entitlement_paid_for;
+use super::super::personal_paid_holdings::{project_entitlement_paid_for, reader_holder};
 use super::super::rating::{RatingCompatibility, RatingFamilies};
 use crate::RollStore;
 
@@ -206,16 +206,22 @@ impl OwnerReadService for EntitlementHoldingReader {
             )
             .map(PersonalFiledHolding::original)
             .map_err(refused),
-            (false, true) => project_entitlement_paid_for(
-                ctx,
-                holder,
-                &f.families,
-                &f.ratings,
-                licence,
-                &f.expected,
-            )
-            .map(PersonalFiledHolding::paid)
-            .map_err(refused),
+            // M8c F1: the admission's pilot or the own read's actor, typed
+            // by the pointer's arm (`reader_holder`): an organisation's
+            // licence admits any character acting for it now.
+            (false, true) => reader_holder(ctx, &f.families, holder, licence)
+                .and_then(|holder| {
+                    project_entitlement_paid_for(
+                        ctx,
+                        holder,
+                        &f.families,
+                        &f.ratings,
+                        licence,
+                        &f.expected,
+                    )
+                })
+                .map(PersonalFiledHolding::paid)
+                .map_err(refused),
             (false, false) => Err(OwnerReadError::Refused),
             (true, true) => Err(OwnerReadError::Integrity),
         }
@@ -239,15 +245,20 @@ impl OwnerReadService for EntitlementSourceReader {
         {
             return Err(OwnerReadError::Refused);
         }
-        let holding = project_entitlement_paid_for(
-            ctx,
-            ctx.actor(),
-            &f.families,
-            &f.ratings,
-            request.licence,
-            &f.expected,
-        )
-        .map_err(refused)?;
+        // M8c F1: the source read admits any character acting for the
+        // holding organisation now (`reader_holder`).
+        let holding = reader_holder(ctx, &f.families, ctx.actor(), request.licence)
+            .and_then(|holder| {
+                project_entitlement_paid_for(
+                    ctx,
+                    holder,
+                    &f.families,
+                    &f.ratings,
+                    request.licence,
+                    &f.expected,
+                )
+            })
+            .map_err(refused)?;
         if !matches!(
             holding.terms().form(),
             PaidForm::Open {} | PaidForm::OpenResale {}

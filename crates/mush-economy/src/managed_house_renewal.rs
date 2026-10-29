@@ -14,7 +14,6 @@ use crate::contract::{
 use crate::module::EconomyStore;
 use crate::record::EconomicVisibility;
 use crate::{ContractId, EconomicClock, EconomicDeadline};
-use mush_org::PrincipalId;
 
 mod subject;
 pub use subject::{RenewalBasisV1, RenewalOffer, RenewalOfferTermsV1};
@@ -383,7 +382,7 @@ fn contract(record: &history::OfferRecord) -> Result<EconomicContract, Participa
     let offer = &record.offer;
     offer.validate()?;
     let marker = RenewalMarkerV1::new(record.operation, record.action.clone(), offer)?;
-    let buyer = PrincipalId::Object(offer.terms.buyer);
+    let buyer = offer.terms.buyer.principal();
     // The buyer issues their own renewal, as a plain renewal and an original
     // purchase do: the contract checker requires the issuer to be a party and
     // only the buyer consents. The House is paid through the split.

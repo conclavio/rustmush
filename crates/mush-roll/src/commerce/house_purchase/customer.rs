@@ -19,7 +19,7 @@ use super::super::LicenceId;
 use super::super::families::CommerceFamilies;
 use super::super::owner_holdings::OwnerProjectionError;
 use super::super::personal_filed_reader::PersonalFiledHolding;
-use super::super::personal_paid_holdings::project_house_paid_for;
+use super::super::personal_paid_holdings::{project_house_paid_for, reader_holder};
 use super::super::rating::{RatingCompatibility, RatingFamilies};
 use crate::RollStore;
 
@@ -170,7 +170,11 @@ impl OwnerReadService for HouseHoldingReader {
         if house.is_none() {
             return Ok(HouseHoldingResult::Other);
         }
-        project_house_paid_for(ctx, holder, &f.families, &f.ratings, licence, &f.expected)
+        // M8c F1: typed by the pointer's arm (`reader_holder`).
+        reader_holder(ctx, &f.families, holder, licence)
+            .and_then(|holder| {
+                project_house_paid_for(ctx, holder, &f.families, &f.ratings, licence, &f.expected)
+            })
             .map(|p| HouseHoldingResult::Holding(Box::new(PersonalFiledHolding::paid(p))))
             .map_err(refused)
     }

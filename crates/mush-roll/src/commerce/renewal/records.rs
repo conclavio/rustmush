@@ -2,6 +2,7 @@
 //! All constructors are structural; actual E4 output and current rights are
 //! checked separately before any owner image or typed row may be published.
 
+use super::super::Holder;
 use super::super::{
     CharterId, FiledRevisionId, LicenceId, LineId, MAX_GRACE_SECONDS, MAX_TERM_SECONDS,
     RevisionIdentity, TermGeneration, TermWindow, WorldIcSeconds,
@@ -9,7 +10,7 @@ use super::super::{
     paid::{PaidTermRecord, PaidTerms, PersonalPaidLicence},
     records::{PublicationError, Record, RevisionPolicy},
 };
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef};
 use mush_economy::managed_paid_resale::RenewalHolderBasisV1;
 use mush_economy::{
     ContractId,
@@ -94,7 +95,7 @@ fn present_holder<'de, D: serde::Deserializer<'de>>(
     RenewalHolderBasisV1::deserialize(d).map(Some)
 }
 checked!(RenewalBindingV1,BindingWire,{
-    format:u16,licence:LicenceId,holder:ObjId,charter:CharterId,line:LineId,
+    format:u16,licence:LicenceId,holder:Holder,charter:CharterId,line:LineId,
     birth_operation:CommitToken,predecessor:TermGeneration,next:TermGeneration,
     predecessor_operation:CommitToken,predecessor_term:DefinitionDigest,
     predecessor_economics:DefinitionDigest,filed:FiledRevisionId,revision:RevisionIdentity,
@@ -111,7 +112,7 @@ impl RenewalBindingV1 {
             basis.validate().map_err(invalid)?;
         }
         if !matches!((self.format, self.holder_basis), (1, None) | (2, Some(_)))
-            || self.holder.0 == 0
+            || self.holder.is_nobody()
             || self.terms.seats().get() != 1
             || self.predecessor.get().checked_add(1) != Some(self.next.get())
             || !(1..=MAX_TERM_SECONDS).contains(&self.term_seconds)
@@ -131,16 +132,24 @@ impl RenewalBindingV1 {
         term: &PaidTermRecord,
         economics: &PaidTermEconomicsV1,
     ) -> Result<Self, PublicationError> {
-        Self::capture_holder(licence, term, economics, None)
+        Self::capture_holder(licence, term, economics, None, licence.holder())
     }
+    /// M8c F4: `holder` is the pointer's holder as THIS renewal records it:
+    /// a character unchanged, an organisation re-stamped with the renewing
+    /// actor as its acting character (`org_holder::acting_as`); a different
+    /// principal is `Mismatch`.
     pub(crate) fn capture_holder(
         licence: &PersonalPaidLicence,
         term: &PaidTermRecord,
         economics: &PaidTermEconomicsV1,
         holder_basis: Option<RenewalHolderBasisV1>,
+        holder: Holder,
     ) -> Result<Self, PublicationError> {
         term.matches_current(licence)?;
         economics.validate()?;
+        if !holder.same_principal(licence.holder()) {
+            return Err(PublicationError::Mismatch);
+        }
         let RevisionPolicy::Pin { filed, revision } = term.policy() else {
             return Err(PublicationError::Mismatch);
         };
@@ -149,7 +158,7 @@ impl RenewalBindingV1 {
             format: if holder_basis.is_some() { 2 } else { 1 },
             holder_basis,
             licence: licence.id(),
-            holder: licence.holder(),
+            holder,
             charter: licence.charter(),
             line: licence.line(),
             birth_operation: licence.operation(),
@@ -215,7 +224,8 @@ impl RenewalBindingV1 {
     }
     pub(crate) fn matches_birth(&self, licence: &PersonalPaidLicence) -> bool {
         licence.id() == self.licence
-            && licence.holder() == self.holder
+            // M8c F4: by principal (the binding names the renewing actor).
+            && licence.holder().same_principal(self.holder)
             && licence.charter() == self.charter
             && licence.line() == self.line
             && licence.operation() == self.birth_operation
@@ -269,7 +279,7 @@ impl RenewalBindingV1 {
     pub const fn licence(&self) -> LicenceId {
         self.licence
     }
-    pub const fn holder(&self) -> ObjId {
+    pub const fn holder(&self) -> Holder {
         self.holder
     }
     pub const fn predecessor(&self) -> TermGeneration {
@@ -678,7 +688,7 @@ impl Record for RenewalOperationV1 {
 pub struct RenewalHeadV1 {
     pub(crate) format: u16,
     pub(crate) licence: LicenceId,
-    pub(crate) holder: ObjId,
+    pub(crate) holder: Holder,
     pub(crate) birth_operation: CommitToken,
     pub(crate) current: TermGeneration,
     pub(crate) attempted_predecessor: TermGeneration,
@@ -690,7 +700,7 @@ pub struct RenewalHeadV1 {
 struct HeadWire {
     format: u16,
     licence: LicenceId,
-    holder: ObjId,
+    holder: Holder,
     birth_operation: CommitToken,
     current: TermGeneration,
     attempted_predecessor: TermGeneration,
@@ -763,7 +773,7 @@ impl Record for RenewalHeadV1 {
     }
     fn validate(&self) -> Result<(), PublicationError> {
         if self.format != 1
-            || self.holder.0 == 0
+            || self.holder.is_nobody()
             || self.last_operation == self.birth_operation
             || (self.current != self.attempted_predecessor
                 && self.attempted_predecessor.get().checked_add(1) != Some(self.current.get()))

@@ -73,9 +73,11 @@ impl TermProof {
             row.term.expired(&row.at_ic)
         }
     }
-    pub(super) fn paid_current_holder(&self) -> Option<mush_core::ObjId> {
+    /// M8c F1: the scoped-fact subject is the holder's principal: the
+    /// character, or the organisation itself (never its purchaser).
+    pub(super) fn paid_current_holder(&self) -> Option<mush_org::PrincipalId> {
         match &self.rows {
-            Rows::Paid { licence, .. } => Some(licence.holder()),
+            Rows::Paid { licence, .. } => Some(licence.holder().principal()),
             Rows::Owner { .. } => None,
         }
     }
@@ -279,7 +281,7 @@ fn owner_term(
         birth: birth.commit,
         term_operation: term.operation,
         term_digest: term_digest(PersonalKind::Owner, &term)?,
-        accepted_holder,
+        accepted_holder: super::super::Holder::Character(accepted_holder),
         charter: licence.charter,
         line: licence.line,
         revision,

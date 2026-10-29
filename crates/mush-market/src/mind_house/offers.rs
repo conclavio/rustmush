@@ -10,6 +10,7 @@ use mush_core::action::{
     ActionError, ActionErrorCode, ActionInvocation, ActionProvider, AuthoritativeActionOutput,
 };
 use mush_core::{ActionTxn, CommitToken, DefinitionRef, PrepareCtx, RulesValue};
+use mush_economy::Holder;
 use mush_economy::managed_entitlement::Recipient;
 use mush_roll::commerce::LicenceId;
 use mush_roll::commerce::house_catalogue::{HouseSaleFacts, HouseSaleRequest};
@@ -164,7 +165,7 @@ impl Provider {
                     publication: commit,
                     listing: request.listing,
                     listing_digest: listing.digest()?,
-                    buyer: inv.actor(),
+                    buyer: Holder::Character(inv.actor()),
                     subject: listing.subject.clone(),
                     product_digest: listing.product.digest()?,
                     product: listing.product.clone(),

@@ -130,7 +130,12 @@ impl LaunchComposition {
                     venue: Some(venue),
                     offer_ic_seconds: content::OFFER_SECONDS,
                 })?
-                .with_house_mind_renewal_service()?;
+                .with_house_mind_renewal_service()?
+                // M8c F10 (the lead's ruling): the owner attestations (the
+                // House attestation among them) are composed whenever the
+                // House family is, market or not: B4 lifts C0's 365-day wall
+                // for every world.
+                .with_owner_attestations()?;
             // 17g C1c (§3 C1c, §6 risk 2): a format-2 deployment composes the
             // player market after the House chain, in the order C1a proved on
             // the production roster (C1 plan §2.2). The order is forced by the
@@ -175,7 +180,6 @@ impl LaunchComposition {
                     .with_mind_renewals(p.renewal)?
                     .with_mind_renewal_service()?
                     .with_author_withdrawal()?
-                    .with_owner_attestations()?
                     .with_owner_parent_qualification()?;
             }
         }

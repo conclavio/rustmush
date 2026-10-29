@@ -103,6 +103,8 @@ pub struct CommerceFamilies {
     /// 17g C2f: one row per held paid licence (`roll_mind_paid_holdings`,
     /// the C2b brief §2), delegated to the market as `paid_licences` is.
     pub(crate) paid_holdings: StateFamilyHandle<String, super::paid_holdings::PaidHolding>,
+    /// M8c B5: one ring of seal marks per licence (`roll_licence_seal_marks`).
+    pub(crate) seal_marks: StateFamilyHandle<String, super::seal_marks::SealMarkRing>,
 }
 
 impl CommerceFamilies {
@@ -144,6 +146,7 @@ impl CommerceFamilies {
             authored_retirements: register(reg)?,
             retired_draft_parents: register(reg)?,
             filed_royalties: register(reg)?,
+            seal_marks: register(reg)?,
             term_economics: register(reg)?,
             entitlement_allocations: register(reg)?,
             house_allocations: register(reg)?,
@@ -223,6 +226,13 @@ fn person(text: &str) -> bool {
             .is_ok_and(|n| n != 0 && u32::try_from(n).is_ok())
 }
 
+/// M8c B1: an organisation's id under the `org/` head of the holdings index:
+/// exactly twenty decimal digits, nonzero (an `OrgId` is a `u64`).
+/// M8c F8: any organisation number, 0 included (mush-org mints from 0).
+fn org_number(text: &str) -> bool {
+    text.len() == 20 && text.bytes().all(|c| c.is_ascii_digit()) && text.parse::<u64>().is_ok()
+}
+
 pub(crate) fn valid_key(family: &str, key: &str) -> bool {
     let mut parts = key.split('/');
     let head = parts.next().unwrap_or("");
@@ -265,6 +275,12 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         "roll_registry_reconformance_heads" | "roll_mind_filed_identity" => {
             hex(head, 64, false) && parts.next().is_none()
         }
+        // M8c B5: one ring per licence, keyed by the licence alone.
+        "roll_licence_seal_marks" => {
+            head == "licence"
+                && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_none()
+        }
         "roll_registry_revoked_terms"
         | "roll_mind_lapse_occurrences"
         | "roll_mind_owner_term"
@@ -306,8 +322,10 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         }
         // 17g C2f: the two owner indexes keyed by a zero-padded decimal
         // person first, so one person's rows are contiguous.
+        // M8c B1: an organisation's rows are keyed `org/{org:020}/licence/...`
+        // (`Holder::key_prefix`); the two heads never collide.
         "roll_mind_paid_holdings" => {
-            person(head)
+            (person(head) || (head == "org" && parts.next().is_some_and(org_number)))
                 && parts.next() == Some("licence")
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next().is_none()

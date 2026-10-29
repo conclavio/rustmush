@@ -207,7 +207,7 @@ impl EntitlementRoots {
 
 fn matches_facts(row: &EntitlementAllocationV1, facts: &EntitlementSaleFacts) -> bool {
     row.protocol == facts.protocol()
-        && row.holder == facts.requester()
+        && row.holder.acting_character() == facts.requester()
         && row.charter == facts.charter()
         && row.line == facts.line()
         && row.filed == facts.filed()

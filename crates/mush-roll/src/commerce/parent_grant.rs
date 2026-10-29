@@ -182,12 +182,23 @@ pub(crate) fn resolve(
     {
         return Err(OwnerReadError::Integrity);
     }
-    let holding = project_personal_paid_for(ctx, ctx.actor(), families, ratings, licence, expected)
-        .map_err(|e| match e {
-            OwnerProjectionError::Unavailable => OwnerReadError::Unavailable,
-            OwnerProjectionError::NotHeld => OwnerReadError::Refused,
-            OwnerProjectionError::Integrity => OwnerReadError::Integrity,
-        })?;
+    // M8c F1 (the lead's ruling): the fork parent is the actor's OWN licence
+    // only. An organisation-held licence refuses the organisation arm here
+    // (`NotHeld`): organisation intellectual property does not move into
+    // personal hands in this cut; M8f or later may open it.
+    let holding = project_personal_paid_for(
+        ctx,
+        super::Holder::Character(ctx.actor()),
+        families,
+        ratings,
+        licence,
+        expected,
+    )
+    .map_err(|e| match e {
+        OwnerProjectionError::Unavailable => OwnerReadError::Unavailable,
+        OwnerProjectionError::NotHeld => OwnerReadError::Refused,
+        OwnerProjectionError::Integrity => OwnerReadError::Integrity,
+    })?;
     // These private fork/source/working-edit readers never turn Open into a
     // NewSale/PaidRenewal permission; those future resolvers need OpenResale.
     if !matches!(

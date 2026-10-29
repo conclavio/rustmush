@@ -27,10 +27,15 @@ use super::super::{CharterId, LicenceId, LineId, TermGeneration};
 use super::*;
 use mush_core::{
     ActionStateBootRecord, CommitToken, DefinitionDigest, Engine, GameModule, ModError,
-    ModuleBootData, ModuleWrite, Outbox, Registrar, Registry, World,
+    ModuleBootData, ModuleWrite, ObjId, Outbox, Registrar, Registry, World,
 };
 use mush_economy::managed_paid_resale::PaidHolderRefV1;
 use std::sync::{Arc, Mutex};
+
+/// The character holder `n`.
+fn h(n: u32) -> Holder {
+    Holder::Character(ObjId(n))
+}
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 /// The exact persisted documents, by namespace and key.
@@ -87,7 +92,7 @@ fn pointer(id: u64, holder: u32) -> TestResult<PersonalPaidLicence> {
         licence(id)?,
         CharterId::new(9)?,
         LineId::new(2)?,
-        ObjId(holder),
+        h(holder),
         TermGeneration::new(1)?,
         token(u8::try_from(id)?),
     )?)
@@ -205,7 +210,7 @@ fn held(e: &Engine, f: &CommerceFamilies, holder: u32, id: u64) -> TestResult<bo
     Ok(e.action_state()
         .get(
             &f.paid_holdings,
-            &PaidHolding::key_for(ObjId(holder), licence(id)?),
+            &PaidHolding::key_for(h(holder), licence(id)?),
         )?
         .is_some())
 }
@@ -218,7 +223,7 @@ fn page_of(
     after: Option<u64>,
 ) -> TestResult<(Vec<u64>, Option<u64>)> {
     let after = after.map(licence).transpose()?;
-    let start = page_start(ObjId(holder), after);
+    let start = page_start(h(holder), after);
     let scanned = e.action_state().scan_family(
         &f.paid_holdings,
         Some(start.as_str()),
@@ -229,8 +234,8 @@ fn page_of(
         .iter()
         .map(|entry| (entry.encoded_key().to_owned(), entry.value().clone()))
         .collect::<Vec<_>>();
-    let (rows, next) = cut(&entries, ObjId(holder), |row| Ok(row.licence().get()))
-        .map_err(|e| format!("{e:?}"))?;
+    let (rows, next) =
+        cut(&entries, h(holder), |row| Ok(row.licence().get())).map_err(|e| format!("{e:?}"))?;
     Ok((rows, next.map(LicenceId::get)))
 }
 
@@ -258,7 +263,7 @@ fn paid_holdings_follow_every_holder_write() -> TestResult {
     }
     let three = licence(3)?;
     check!(
-        change(&mut e, &f, &mut disk, |t| grant(t, &f, ObjId(8), three)).is_err(),
+        change(&mut e, &f, &mut disk, |t| grant(t, &f, h(8), three)).is_err(),
         "a grant over an existing row refuses"
     );
     // A resold (format-2) pointer cannot be hydrated here: mush-core refuses
@@ -292,16 +297,7 @@ fn paid_holdings_follow_every_holder_write() -> TestResult {
     // A transfer from a seller who holds no row refuses.
     let revision = e.action_state().revision();
     let six = licence(6)?;
-    check!(
-        change(&mut e, &f, &mut disk, |t| transfer(
-            t,
-            &f,
-            ObjId(7),
-            ObjId(8),
-            six
-        ))
-        .is_err()
-    );
+    check!(change(&mut e, &f, &mut disk, |t| transfer(t, &f, h(7), h(8), six)).is_err());
     check_eq!(e.action_state().revision(), revision);
     // Holder 8 holds licences 1, 3, 5, 6 and 7: two pages of three.
     check_eq!(page_of(&e, &f, 8, None)?, (vec![1, 3, 5], Some(5)));
@@ -332,9 +328,9 @@ fn paid_holdings_audit_requires_exactly_one_row_per_pointer() -> TestResult {
     granted(&mut e, &f, &mut disk, 2, 8)?;
     live_boot(&mut e)?;
     let one = licence(1)?;
-    let mine = PaidHolding::new(ObjId(7), one)?;
-    let theirs = PaidHolding::new(ObjId(8), one)?;
-    let orphan = PaidHolding::new(ObjId(8), licence(3)?)?;
+    let mine = PaidHolding::new(h(7), one)?;
+    let theirs = PaidHolding::new(h(8), one)?;
+    let orphan = PaidHolding::new(h(8), licence(3)?)?;
     let mut scratch = disk.clone();
     let audit_reason = "paid holdings audit: Mismatch";
     for (case, broken, repaired) in [
@@ -369,14 +365,14 @@ fn paid_holdings_audit_requires_exactly_one_row_per_pointer() -> TestResult {
     check!(boot(&omitted).is_err(), "a hydrated missing row refuses");
     boot(&disk)?;
     let row = |holder: u32, id: u64| -> TestResult<(String, PaidHolding)> {
-        let r = PaidHolding::new(ObjId(holder), licence(id)?)?;
+        let r = PaidHolding::new(h(holder), licence(id)?)?;
         Ok((r.key(), r))
     };
-    let pointers = vec![(ObjId(7), licence(1)?), (ObjId(8), licence(2)?)];
+    let pointers = vec![(h(7), licence(1)?), (h(8), licence(2)?)];
     reconcile(pointers.clone(), vec![row(7, 1)?, row(8, 2)?])?;
     let crossed = {
         let (_, r) = row(7, 2)?;
-        (PaidHolding::key_for(ObjId(8), licence(2)?), r)
+        (PaidHolding::key_for(h(8), licence(2)?), r)
     };
     for (case, rows) in [
         ("missing", vec![row(7, 1)?]),
@@ -388,14 +384,14 @@ fn paid_holdings_audit_requires_exactly_one_row_per_pointer() -> TestResult {
     }
     check!(
         reconcile(
-            vec![(ObjId(7), licence(1)?), (ObjId(7), licence(1)?)],
+            vec![(h(7), licence(1)?), (h(7), licence(1)?)],
             vec![row(7, 1)?]
         )
         .is_err(),
         "one pointer per licence"
     );
     check_eq!(
-        PaidHolding::key_for(ObjId(8), licence(2)?),
+        PaidHolding::key_for(h(8), licence(2)?),
         "00000000000000000008/licence/0000000000000002"
     );
     check!(super::super::families::valid_key(

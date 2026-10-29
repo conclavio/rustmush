@@ -145,7 +145,7 @@ fn fixture() -> TestResult<HouseQuoteV1> {
         publication: token(3),
         listing: listing.publication,
         listing_digest: listing.digest()?,
-        buyer: ObjId(8),
+        buyer: ObjId(8).into(),
         subject: listing.subject,
         product_digest: listing.product.digest()?,
         product: listing.product,

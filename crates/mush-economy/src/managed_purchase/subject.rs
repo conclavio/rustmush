@@ -1,6 +1,7 @@
 //! Closed native recipe dispatch. The shared monetary projection contains no
 //! seller identity; the actual immutable recipe independently proves its issuer.
 use super::*;
+use crate::Holder;
 use crate::managed_entitlement::{EntitlementPurchase, EntitlementTerminal};
 use crate::managed_house_purchase::{HousePurchase, HouseTerminal};
 
@@ -9,7 +10,7 @@ pub(super) struct MonetaryPurchase {
     pub quote: CommitToken,
     pub quote_digest: DefinitionDigest,
     pub product_digest: DefinitionDigest,
-    pub buyer: ObjId,
+    pub buyer: Holder,
     pub charter: ObjId,
     pub title_revision: u64,
     pub payer: AccountId,
@@ -25,7 +26,7 @@ impl From<&OriginalPurchase> for MonetaryPurchase {
             quote: p.quote,
             quote_digest: p.quote_digest,
             product_digest: p.product_digest,
-            buyer: p.buyer,
+            buyer: Holder::Character(p.buyer),
             charter: p.charter,
             title_revision: p.title_revision,
             payer: p.payer,
@@ -40,7 +41,7 @@ impl From<&OriginalPurchase> for MonetaryPurchase {
 impl MonetaryPurchase {
     fn check_contract_capacity(&self, state: &EconomyStore) -> Result<(), ParticipantError> {
         let snapshot = &state.snapshot;
-        let buyer = PrincipalId::Object(self.buyer);
+        let buyer = self.buyer.principal();
         if snapshot
             .contracts()
             .filter(|c| c.issuer == buyer && !c.state.is_terminal())

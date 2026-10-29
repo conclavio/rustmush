@@ -14,7 +14,6 @@ use crate::registry_filing::{MetaFence, json_write};
 use mush_core::authoritative::ReplayWrite;
 use mush_core::participant::{BoundParticipant, OwnerPrepareContext, ParticipantError};
 use mush_core::{CommitToken, DefinitionRef, ObjId};
-use mush_org::PrincipalId;
 
 pub(super) struct OfferContext<'a> {
     pub world: &'a mush_core::World,
@@ -34,7 +33,10 @@ impl<'a> From<&'a OwnerPrepareContext<'_>> for OfferContext<'a> {
         }
     }
 }
-fn actor(context: &OfferContext<'_>, buyer: ObjId) -> Result<(), ParticipantError> {
+fn actor(context: &OfferContext<'_>, buyer: crate::Holder) -> Result<(), ParticipantError> {
+    // M8c B3: the acting character is the invocation's actor; the
+    // organisation is the principal the contract is issued by.
+    let buyer = buyer.acting_character();
     if context.actor != buyer
         || context.principal != &(mush_core::PrincipalId::Object { id: buyer })
         || !super::subject::player(context.world, buyer)
@@ -44,7 +46,7 @@ fn actor(context: &OfferContext<'_>, buyer: ObjId) -> Result<(), ParticipantErro
     Ok(())
 }
 fn open_counts(state: &EconomyStore, terms: &super::RenewalOfferTermsV1) -> (usize, usize) {
-    let buyer = PrincipalId::Object(terms.buyer);
+    let buyer = terms.buyer.principal();
     // The buyer is the renewal's issuer (`managed_house_renewal::contract`).
     let issuer = buyer.clone();
     state

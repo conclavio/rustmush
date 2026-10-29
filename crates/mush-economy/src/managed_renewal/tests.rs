@@ -17,6 +17,7 @@ use mush_core::mechanics::{
 };
 use mush_core::participant::BoundParticipant;
 use mush_core::{GOD, ObjId, ObjKind, World};
+use mush_org::PrincipalId;
 use serde_json::json;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -127,7 +128,7 @@ impl Rig {
             terms: RenewalOfferTermsV1 {
                 format: 1,
                 lineage: RenewalLineageV1::Original,
-                buyer,
+                buyer: buyer.into(),
                 seller,
                 charter,
                 title_revision: 1,
@@ -166,7 +167,7 @@ impl Rig {
     fn context(&self, closing: bool, commit: CommitToken) -> OfferContext<'_> {
         OfferContext {
             world: &self.world,
-            actor: self.offer.terms.buyer,
+            actor: self.offer.terms.buyer.acting_character(),
             principal: &self.principal,
             action: if closing { &self.close } else { &self.draft },
             commit,
@@ -542,7 +543,7 @@ fn actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funde
             "consent" => changed.consent_hash[0] ^= 1,
             "state" => changed.state = ContractState::Draft,
             "acceptance" => changed.acceptances.push(crate::contract::Acceptance {
-                party: PrincipalId::Object(f.offer.terms.buyer),
+                party: PrincipalId::Object(f.offer.terms.buyer.acting_character()),
                 at: f.world.now(),
                 consent_hash: changed.consent_hash,
             }),
@@ -574,7 +575,7 @@ fn actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funde
         purpose: crate::record::HoldPurpose::Escrow {
             contract: out.contract(),
         },
-        placed_by: PrincipalId::Object(f.offer.terms.buyer),
+        placed_by: PrincipalId::Object(f.offer.terms.buyer.acting_character()),
         holder: crate::record::IdempotencyKey::new("test", "unexpected"),
         expires: None,
         status: crate::record::HoldStatus::Released,
@@ -742,7 +743,7 @@ fn complete_near_limit_record_and_contract_reserve_both_closures_before_custody(
     f.offer.terms.price = Amount::from_minor(i64::MAX);
     // Largest numeric widths and six roles, plus a variable canonical
     // instrument that approaches the finite serialized admission boundary.
-    f.offer.terms.buyer = ObjId(u32::MAX);
+    f.offer.terms.buyer = ObjId(u32::MAX).into();
     f.offer.terms.seller = ObjId(u32::MAX - 1);
     f.offer.terms.charter = ObjId(u32::MAX - 2);
     f.offer.terms.title_revision = u64::MAX;
@@ -917,7 +918,7 @@ fn actual_legacy_plan_and_boot_continue_refusing_the_new_managed_kind() -> TestR
     ));
     let mut plan = crate::EconomyPlan::new(
         crate::record::IdempotencyKey::new("unrelated", "fresh"),
-        PrincipalId::Object(f.offer.terms.buyer),
+        PrincipalId::Object(f.offer.terms.buyer.acting_character()),
         crate::record::EconomicCause::Command { serial: 1 },
         Vec::new(),
     );

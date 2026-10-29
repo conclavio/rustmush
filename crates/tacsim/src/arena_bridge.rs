@@ -6296,7 +6296,7 @@ mod tests {
             help.lines().skip(localcopy + 1).take(3).collect::<Vec<_>>(),
             [
                 "@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)",
-                "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed>",
+                "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]",
                 "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)",
             ],
             "{help}"

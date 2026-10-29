@@ -1,6 +1,7 @@
 //! Exact immutable consent data, separate from the legacy original products.
 use super::codec::{self, Bounded, Row};
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_economy::Holder;
 use mush_economy::managed_entitlement::{
     EntitlementProtocol, EntitlementPurchase, GrossRecipientCut, Recipient, RoyaltyRecipientCut,
     RoyaltyTitleRecipient,
@@ -320,7 +321,7 @@ impl Row for EntitlementListingV1 {
 }
 data!(EntitlementQuoteV1,QuoteWire,{
     format:u16,publication:CommitToken,listing:CommitToken,listing_digest:DefinitionDigest,
-    buyer:ObjId,subject:EntitlementSubjectV1,product:EntitlementProductV1,product_digest:DefinitionDigest,
+    buyer:Holder,subject:EntitlementSubjectV1,product:EntitlementProductV1,product_digest:DefinitionDigest,
     royalty:FiledRoyaltyTermsV1,price:Amount,instrument:InstrumentId,registry:Cut,venue:Venue,
     parents:Bounded<ParentCut,3>,remainder:Recipient,payer:AccountId,payouts:Bounded<Payout,6>,
     policy:DefinitionRef,quoted_at_utc:i64,expires_at_utc:i64,
@@ -348,8 +349,9 @@ impl EntitlementQuoteV1 {
     pub(crate) const fn listing(&self) -> CommitToken {
         self.listing
     }
-    /// 17g C2g: the quoting buyer.
-    pub(crate) const fn buyer(&self) -> ObjId {
+    /// 17g C2g: the quoting buyer (M8c B1: a character, or an organisation
+    /// through the quoting character).
+    pub(crate) const fn buyer(&self) -> Holder {
         self.buyer
     }
     /// 17g C2g: the frozen price, in minor units.

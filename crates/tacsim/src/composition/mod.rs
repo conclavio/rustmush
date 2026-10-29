@@ -459,6 +459,12 @@ pub fn domain_org_capability_vocabulary() -> std::collections::BTreeSet<mush_org
         .chain([mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY])
         // Doc 17h cut M8a: the Registry inspection, the third twin.
         .chain([mush_roll::commerce::registry_inspection::REGISTRY_INSPECTION_CAPABILITY])
+        // Doc 17h §3 M8c (B2): a character acting for an organisation that holds
+        // a mind licence (`org_holder::org_actor`).
+        .chain([mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY])
+        // Doc 17h §3 M8c (F7): the Registry's seal-mark writer
+        // (`seal_marks::authorized`); M8e's black-box participant writes.
+        .chain([mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY])
         .chain(NAMED_LAUNCH_HARDWARE_CAPABILITIES)
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()

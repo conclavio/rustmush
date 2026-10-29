@@ -78,23 +78,49 @@ pub(crate) fn holdings_arguments(text: &str) -> Option<Holdings> {
     words.next().is_none().then_some(parsed)
 }
 
-/// `+minds/holdings [owner|paid <cursor>]`.
+/// M8c B3: `holdings_arguments` after an optional trailing `org=<org>`
+/// (`org_argument`), the organisation as typed.
+pub(crate) fn parse_holdings(text: &str) -> Option<(Holdings, Option<&str>)> {
+    let (text, org) = super::org_argument(text)?;
+    Some((holdings_arguments(text)?, org))
+}
+
+/// `+minds/holdings [owner|paid <cursor>] [org=<org>]`. M8c B3: with
+/// `org=<org>`, the organisation's holdings (its titles and its paid
+/// licences, through the same own-only reads for `Holder::Organization`) and
+/// its waiting purchases, to a character acting for it; `NOT_FOR_ORG` to
+/// anyone else, and the character's own `+minds/holdings` never shows them.
 pub(crate) fn holdings(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
-    let which = holdings_arguments(text).ok_or_else(|| CmdError::msg(super::market::HELP))?;
+    let (which, org) = parse_holdings(text).ok_or_else(|| CmdError::msg(super::market::HELP))?;
     let (market, roll) = handles(ctx)?;
+    // M8c F5: the paid section asks the organisation's root scope, the
+    // owner section any of its scopes (each title then on its own scope).
+    let scope = match which {
+        Holdings::Paid(_) => super::OrgScope::Root,
+        Holdings::Owner(_) | Holdings::All => super::OrgScope::Title,
+    };
+    let org = super::org_for(ctx, org, scope)?;
+    // The whole view shows the paid section only to a character granted on
+    // the root: a curator granted on a House's scope sees its titles.
+    let paid_too =
+        org.is_none_or(|o| mush_roll::commerce::org_holder::acts_for(ctx.w, o, ctx.actor).is_ok());
     let lines = match which {
         Holdings::Owner(cursor) => {
-            let (rows, more) = owner_section(ctx, &roll, Some(cursor))?;
+            let (rows, more) = owner_section(ctx, &roll, Some(cursor), org)?;
             owner_lines(&rows, more)
         }
         Holdings::Paid(cursor) => {
-            let (rows, more) = paid_section(ctx, &roll, Some(cursor))?;
+            let (rows, more) = paid_section(ctx, &roll, Some(cursor), org)?;
             section_lines(rows.iter().map(paid_line).collect(), "paid", more)
         }
         Holdings::All => {
-            let (owner, owner_more) = owner_section(ctx, &roll, None)?;
-            let (paid, paid_more) = paid_section(ctx, &roll, None)?;
-            let waiting = waiting(ctx, &market)?;
+            let (owner, owner_more) = owner_section(ctx, &roll, None, org)?;
+            let (paid, paid_more) = if paid_too {
+                paid_section(ctx, &roll, None, org)?
+            } else {
+                (Vec::new(), None)
+            };
+            let waiting = waiting(ctx, &market, org)?;
             all_lines(
                 (owner.iter().map(owner_line).collect(), owner_more),
                 (paid.iter().map(paid_line).collect(), paid_more),
@@ -194,11 +220,12 @@ pub(super) fn owner_section(
     reads: &impl super::Reads,
     roll: &OwnerReadHandle<OriginalOwnerReader>,
     after: Option<u64>,
+    org: Option<mush_org::OrgId>,
 ) -> Result<(Vec<OwnerHoldingView>, Option<u64>), Refusal> {
     let mut rows: Vec<OwnerHoldingView> = Vec::new();
     let mut cursor = after;
     for _ in 0..MAX_READS {
-        let request = RollCommandReadRequest::own_holdings(HoldingSection::Owner, cursor);
+        let request = RollCommandReadRequest::own_holdings_for(HoldingSection::Owner, cursor, org);
         let page = command(reads, roll, request)?
             .into_owner_holdings()
             .ok_or_else(not_open)?;
@@ -224,11 +251,12 @@ pub(super) fn paid_section(
     reads: &impl super::Reads,
     roll: &OwnerReadHandle<OriginalOwnerReader>,
     after: Option<u64>,
+    org: Option<mush_org::OrgId>,
 ) -> Result<(Vec<PaidHoldingView>, Option<u64>), Refusal> {
     let mut rows: Vec<PaidHoldingView> = Vec::new();
     let mut cursor = after;
     for _ in 0..MAX_READS {
-        let request = RollCommandReadRequest::own_holdings(HoldingSection::Paid, cursor);
+        let request = RollCommandReadRequest::own_holdings_for(HoldingSection::Paid, cursor, org);
         let page = command(reads, roll, request)?
             .into_paid_holdings()
             .ok_or_else(not_open)?;
@@ -252,9 +280,10 @@ pub(super) fn paid_section(
 pub(super) fn waiting(
     reads: &impl super::Reads,
     market: &OwnerReadHandle<MarketCommandReader>,
+    org: Option<mush_org::OrgId>,
 ) -> Result<Vec<String>, Refusal> {
     let open = reads
-        .owner_read(market, MarketCommandRequest::own_open())
+        .owner_read(market, MarketCommandRequest::own_open_for(org))
         .ok()
         .and_then(mush_market::mind_commands::MarketCommandResult::into_own_open)
         .ok_or_else(not_open)?;

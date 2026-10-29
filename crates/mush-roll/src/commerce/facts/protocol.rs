@@ -14,12 +14,16 @@ pub(super) const PROVIDER: &str = "minds";
 pub(super) const FILED: &str = "filed";
 pub(super) const LAPSED: &str = "licence.lapsed";
 pub(super) const TRANSFERRED: &str = "licence.transferred";
+/// M8c B5/B7: the term generation flew on an ungoverned core
+/// (`seal_marks`), scoped exactly as `licence.lapsed` is.
+pub(super) const UNATTESTABLE: &str = "licence.unattestable";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FactKey {
     Filed(FiledRevisionId),
     Lapsed(LicenceId, TermGeneration),
     Transferred(CommitToken, u64),
+    Unattestable(LicenceId, TermGeneration),
 }
 impl FactKey {
     pub(super) fn parse(reference: &ExternalRef) -> Option<Self> {
@@ -35,6 +39,11 @@ impl FactKey {
                 let id = LicenceId::new(number(reference.id.as_str(), "licence")?).ok()?;
                 let generation = TermGeneration::new(reference.revision?).ok()?;
                 (id.key() == reference.id.as_str()).then_some(Self::Lapsed(id, generation))
+            }
+            UNATTESTABLE => {
+                let id = LicenceId::new(number(reference.id.as_str(), "licence")?).ok()?;
+                let generation = TermGeneration::new(reference.revision?).ok()?;
+                (id.key() == reference.id.as_str()).then_some(Self::Unattestable(id, generation))
             }
             TRANSFERRED => {
                 let operation = CommitToken::from_hex(reference.id.as_str()).ok()?;
@@ -52,6 +61,7 @@ impl FactKey {
         let (kind, id, revision) = match self {
             Self::Filed(id) => (FILED, id.key(), 1),
             Self::Lapsed(id, generation) => (LAPSED, id.key(), generation.get()),
+            Self::Unattestable(id, generation) => (UNATTESTABLE, id.key(), generation.get()),
             Self::Transferred(operation, generation) => {
                 (TRANSFERRED, operation.to_hex(), generation)
             }
@@ -134,13 +144,26 @@ mod tests {
             CommitToken::from_bytes([0x19; 16]),
             mush_economy::managed_paid_resale::MAX_HOLDER_GENERATION,
         );
+        // M8c B7: `licence.unattestable` parses, scoped like the lapse.
+        let unattestable =
+            FactKey::Unattestable(LicenceId::new(9).unwrap(), TermGeneration::new(3).unwrap());
         for key in [
             filed,
             lapse,
             transfer,
+            unattestable,
             FactKey::Transferred(CommitToken::from_bytes([0; 16]), 2),
         ] {
             assert_eq!(FactKey::parse(&key.reference()), Some(key));
+        }
+        assert_eq!(
+            unattestable.reference().kind.as_str(),
+            "licence.unattestable"
+        );
+        for revision in [None, Some(0)] {
+            let mut bad = unattestable.reference();
+            bad.revision = revision;
+            assert!(FactKey::parse(&bad).is_none());
         }
         for id in [
             "filed/7",
@@ -157,6 +180,8 @@ mod tests {
             bad.revision = revision;
             assert!(FactKey::parse(&bad).is_none());
         }
+        // D-UM-42: detection is evidence only; no seizure, warrant or claim
+        // fact exists (M8c B7 keeps them unparsed).
         for kind in ["seized", "unwarranted", "claimed", ""] {
             let mut bad = lapse.reference();
             bad.kind = kind.into();

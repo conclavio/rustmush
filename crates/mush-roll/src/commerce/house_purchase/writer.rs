@@ -842,7 +842,8 @@ impl RegisteredHouseWriter {
             quote: purchase.quote,
             quote_digest: purchase.quote_digest,
             product_digest: purchase.product_digest,
-            holder: facts.requester(),
+            // A House sells to characters (M8c: the quote's buyer).
+            holder: purchase.buyer,
             issuer: facts.issuer(),
             charter: facts.charter(),
             line: facts.line(),
@@ -1020,7 +1021,7 @@ fn check_purchase(
     terms: &HousePurchaseTerms,
     facts: &HouseSaleFacts,
 ) -> Result<(), PublicationError> {
-    if p.buyer != facts.requester()
+    if p.buyer.acting_character() != facts.requester()
         || p.organization != facts.issuer().organization()
         || p.scope != facts.issuer().scope()
         || p.charter != facts.charter().object()

@@ -9,8 +9,8 @@ use super::read::CommerceRead;
 use super::records::{Record, RevisionPolicy, canonical_duplicate_digest, schema_line_digest};
 use super::roots::{RequiredRoot, RootAnchor};
 use super::{
-    CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration, TermPhase,
-    TermWindow, WorldIcSeconds,
+    CharterId, FiledRevisionId, Holder, LicenceId, LineId, RevisionIdentity, TermGeneration,
+    TermPhase, TermWindow, WorldIcSeconds, org_holder,
 };
 use crate::{Revision, RollStore};
 use mush_core::{DefinitionDigest, ObjId, ObjKind, StateFamilyHandle, flags::Flags};
@@ -107,9 +107,30 @@ impl PersonalPaidHolding {
     }
 }
 
+/// M8c F1: the typed holder a paid projection is for. The pointer's holder
+/// arm decides: a character's licence projects for that character; an
+/// organisation's for the reader as its acting character (the projection
+/// then asks the organisation's grant for the reader, live).
+pub(crate) fn reader_holder(
+    ctx: &impl CommerceRead,
+    families: &CommerceFamilies,
+    reader: ObjId,
+    licence_id: LicenceId,
+) -> Result<Holder, OwnerProjectionError> {
+    Ok(
+        match read(ctx, &families.paid_licences, licence_id.key())?.holder() {
+            Holder::Character(_) => Holder::Character(reader),
+            Holder::Organization { org, .. } => Holder::Organization {
+                org,
+                acting: reader,
+            },
+        },
+    )
+}
+
 pub(crate) fn project_personal_paid_for(
     ctx: &impl CommerceRead,
-    holder: ObjId,
+    holder: Holder,
     families: &CommerceFamilies,
     ratings: &RatingFamilies,
     licence_id: LicenceId,
@@ -130,7 +151,7 @@ pub(crate) fn project_personal_paid_for(
 /// original-only source, fork-parent and holding descriptors keep their scope.
 pub(crate) fn project_entitlement_paid_for(
     ctx: &impl CommerceRead,
-    holder: ObjId,
+    holder: Holder,
     families: &CommerceFamilies,
     ratings: &RatingFamilies,
     licence_id: LicenceId,
@@ -155,7 +176,7 @@ enum Scope {
 }
 pub(crate) fn project_house_paid_for(
     ctx: &impl CommerceRead,
-    holder: ObjId,
+    holder: Holder,
     families: &CommerceFamilies,
     ratings: &RatingFamilies,
     licence_id: LicenceId,
@@ -174,7 +195,7 @@ pub(crate) fn project_house_paid_for(
 
 fn project_paid_for(
     ctx: &impl CommerceRead,
-    holder: ObjId,
+    holder: Holder,
     families: &CommerceFamilies,
     ratings: &RatingFamilies,
     licence_id: LicenceId,
@@ -187,9 +208,12 @@ fn project_paid_for(
         .ok_or(OwnerProjectionError::Unavailable)?;
     roll.commerce_ready()
         .map_err(|_| OwnerProjectionError::Unavailable)?;
+    // M8c F1: the reading character (the holder itself, or the acting
+    // character of the organisation arm) is a live player.
+    let reader = holder.acting_character();
     if ctx
         .world()
-        .get(holder)
+        .get(reader)
         .is_none_or(|object| object.kind != ObjKind::Player || object.flags.contains(Flags::GOING))
     {
         return Err(OwnerProjectionError::NotHeld);
@@ -206,8 +230,26 @@ fn project_paid_for(
         .require_complete()
         .map_err(|_| OwnerProjectionError::Unavailable)?;
     let licence = read(ctx, &families.paid_licences, licence_id.key())?;
-    if licence.holder() != holder {
-        return Err(OwnerProjectionError::NotHeld);
+    // M8c F1: the projection is for the typed holder. A character's licence
+    // projects for that character alone. An organisation's projects for any
+    // character acting for it NOW (`org_holder::acts_for`, the organisation's
+    // root scope, F5), compared by principal, never by the stored `acting`:
+    // a revoked grant stops the next read, and every granted member reads.
+    match holder {
+        Holder::Character(c) => {
+            if licence.holder() != Holder::Character(c) {
+                return Err(OwnerProjectionError::NotHeld);
+            }
+        }
+        Holder::Organization { org, acting } => {
+            if !licence.holder().same_principal(holder) {
+                return Err(OwnerProjectionError::NotHeld);
+            }
+            org_holder::acts_for(ctx.world(), org, acting).map_err(|e| match e {
+                org_holder::OrgActorError::Unavailable => OwnerProjectionError::Unavailable,
+                org_holder::OrgActorError::NotForOrg => OwnerProjectionError::NotHeld,
+            })?;
+        }
     }
     let term = read(
         ctx,
@@ -372,7 +414,7 @@ fn project_paid_for(
                 .map_err(|_| OwnerProjectionError::Integrity)?
                 != *ownership
                 || row.licence() != licence.id()
-                || row.holder() != holder
+                || !row.holder().same_principal(holder)
             {
                 return Err(OwnerProjectionError::Integrity);
             }
@@ -395,7 +437,7 @@ fn project_paid_for(
         }
     };
     Ok(PersonalPaidHolding {
-        actor: holder,
+        actor: reader,
         charter: charter.id,
         operation: allocation.operation(),
         terminal,

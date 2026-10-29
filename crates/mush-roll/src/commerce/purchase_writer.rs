@@ -2,6 +2,7 @@
 //! family handles, and only Market registration receives action-bound methods.
 //! No caller can obtain a raw family or retention participant handle here.
 
+use super::Holder;
 use std::sync::{Arc, OnceLock};
 
 use mush_core::action_state::ActionTxn;
@@ -380,7 +381,9 @@ impl RegisteredPurchaseWriter {
             quote: quote.quote,
             quote_digest: quote.quote_digest,
             product_digest: quote.product_digest,
-            holder: facts.requester(),
+            // The legacy route sells to characters only (M8c: the org buyer
+            // is the entitlement route's).
+            holder: Holder::Character(facts.requester()),
             charter: facts.charter(),
             line: facts.line(),
             filed: facts.filed(),
@@ -439,7 +442,7 @@ impl RegisteredPurchaseWriter {
                 }
                 let facts = facts.ok_or(PublicationError::Unavailable)?;
                 self.current(ctx, txn, facts)?;
-                if facts.requester() != before.holder
+                if Holder::Character(facts.requester()) != before.holder
                     || facts.charter() != before.charter
                     || facts.line() != before.line
                     || facts.filed() != before.filed

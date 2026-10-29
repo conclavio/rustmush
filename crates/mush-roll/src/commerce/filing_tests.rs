@@ -347,6 +347,11 @@ fn try_engine(
     if requester {
         modules.push(Box::new(sale_reads::Market));
     }
+    // M8c F11: the command kinds' fixture composes the real org module, so
+    // an organisation's holdings read asks a real grant.
+    if commands {
+        modules.push(Box::new(mush_org::OrgModule::new()));
+    }
     let engine = boxed_test_engine(world, Registry::new(), modules)?;
     let handles = handles.lock().unwrap().clone().unwrap();
     Ok((engine, handles))

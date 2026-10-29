@@ -1,7 +1,7 @@
 //! Separate permanent births for the exact six-target entitlement protocol.
 //! Decoding is not funding, a grant or proof of an economic journal entry.
 
-use mush_core::{CommitToken, DefinitionDigest, ObjId};
+use mush_core::{CommitToken, DefinitionDigest};
 use mush_economy::managed_entitlement::EntitlementProtocol;
 use mush_economy::managed_purchase::FundingReceipt;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use super::super::purchase::{PurchaseParticipants, PurchasePhase};
 use super::super::rating::RatingRef;
 use super::super::records::{PublicationError, Record, RevisionPolicy};
 use super::super::{
-    CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration,
+    CharterId, FiledRevisionId, Holder, LicenceId, LineId, RevisionIdentity, TermGeneration,
 };
 use super::PaidTermEconomicsV1;
 
@@ -27,7 +27,7 @@ pub struct EntitlementAllocationV1 {
     pub(crate) quote: CommitToken,
     pub(crate) quote_digest: DefinitionDigest,
     pub(crate) product_digest: DefinitionDigest,
-    pub(crate) holder: ObjId,
+    pub(crate) holder: Holder,
     pub(crate) charter: CharterId,
     pub(crate) line: LineId,
     pub(crate) filed: FiledRevisionId,
@@ -52,7 +52,7 @@ struct AllocationWire {
     quote: CommitToken,
     quote_digest: DefinitionDigest,
     product_digest: DefinitionDigest,
-    holder: ObjId,
+    holder: Holder,
     charter: CharterId,
     line: LineId,
     filed: FiledRevisionId,
@@ -124,7 +124,7 @@ impl EntitlementAllocationV1 {
     pub const fn product_digest(&self) -> DefinitionDigest {
         self.product_digest
     }
-    pub const fn holder(&self) -> ObjId {
+    pub const fn holder(&self) -> Holder {
         self.holder
     }
     pub const fn charter(&self) -> CharterId {
@@ -170,7 +170,7 @@ impl Record for EntitlementAllocationV1 {
         self.economics.validate()?;
         let economics = &self.economics;
         if self.format != 1
-            || self.holder.0 == 0
+            || self.holder.is_nobody()
             || self.term.get() != 1
             || self.quote == self.operation
             || self.terms.seats().get() != 1

@@ -346,7 +346,7 @@ fn exercise_later_holder(
     offer(w, N + 10, GOD, later, 0)?;
     buy(w, N + 11, N + 10, ACCEPT, later, payer.0)?;
     check_eq!(pointer(w)?.ownership().ok_or("ownership")?.generation, 3);
-    check_eq!(pointer(w)?.holder(), later);
+    check_eq!(pointer(w)?.holder(), mush_economy::Holder::Character(later));
     check_eq!(pointer(w)?.term(), original.term());
     check_eq!(read(w, BUYER, id, fact(N + 2, 2))?, Some(expected.clone()));
     check_eq!(read(w, later, id, fact(N + 2, 2))?, None);
@@ -492,7 +492,7 @@ pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable)
         "wrong exact holder generation"
     );
     settle_contract(&mut w, id)?;
-    check_eq!(pointer(&w)?.holder(), GOD);
+    check_eq!(pointer(&w)?.holder(), mush_economy::Holder::Character(GOD));
     let mut w = w.reboot(f, &w.snapshot())?;
     check_eq!(
         read(&mut w, BUYER, id, fact(N + 2, 2))?,

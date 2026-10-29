@@ -363,7 +363,7 @@ fn immediate(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRe
     retain_writes(&mut crash.disk, bundle.writes())?;
     let mut cold = w.reboot(f, &crash)?;
     let changed = pointer(&cold)?;
-    check_eq!(changed.holder(), GOD);
+    check_eq!(changed.holder(), mush_economy::Holder::Character(GOD));
     check_eq!(changed.id(), before.id());
     check_eq!(changed.term(), before.term());
     check_eq!(changed.operation(), before.operation());
@@ -572,7 +572,7 @@ fn pending(f: &PurchaseFixture, template: &IcWorld, saved: &Durable, mode: u8) -
             mush_economy::managed_paid_resale::PaidResaleOutcome::Refunded
         );
     } else {
-        check_eq!(pointer(&w)?.holder(), GOD);
+        check_eq!(pointer(&w)?.holder(), mush_economy::Holder::Character(GOD));
         check_eq!(
             history(&w, n + 3)?.outcome(),
             mush_economy::managed_paid_resale::PaidResaleOutcome::Settled
@@ -610,7 +610,7 @@ fn lapsed(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestResul
     );
     offer(&mut w, START + 500, BUYER, GOD, 2)?;
     buy(&mut w, START + 501, START + 500, ACCEPT, GOD, 0)?;
-    check_eq!(pointer(&w)?.holder(), GOD);
+    check_eq!(pointer(&w)?.holder(), mush_economy::Holder::Character(GOD));
     check_eq!(pointer(&w)?.term(), original.term());
     check_eq!(
         one(rows(&w.disk, "roll", "roll_mind_paid_term"))?,

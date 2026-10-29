@@ -38,6 +38,9 @@ pub enum OwnerProjectionError {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct OriginalOwnerHolding {
     actor: ObjId,
+    /// M8c B2: whom the title is held for: the actor itself, or the
+    /// organisation the actor acts for (`check_title`'s organisation arm).
+    holder: super::Holder,
     ownership: super::charter_transfer::records::CharterOwnershipRef,
     charter: CharterId,
     title_revision: u64,
@@ -66,6 +69,10 @@ impl OriginalOwnerHolding {
     }
     pub(crate) fn ownership(&self) -> &super::charter_transfer::records::CharterOwnershipRef {
         &self.ownership
+    }
+    /// M8c B2: the holder the title projects as (`check_title`).
+    pub const fn holder(&self) -> super::Holder {
+        self.holder
     }
     pub const fn actor(&self) -> ObjId {
         self.actor
@@ -122,9 +129,12 @@ impl OriginalOwnerHolding {
 
 /// `expected` must come from the registered game's current manifest, not a
 /// transport field. This stays crate-private behind the registered reader and
-/// the closed measured Registry completion producer. Organization
-/// title is deliberately refused until its actual scoped use/source capability
-/// is supplied; staff and assignment never substitute for title ownership.
+/// the closed measured Registry completion producer. M8c B2: an organisation's
+/// title is admitted for a character acting for the organisation on the
+/// title's scope under a live `roll.holder.org` grant
+/// (`org_holder::scoped_actor`), and the holding then projects as
+/// `Holder::Organization { org, acting }`; staff and assignment never
+/// substitute for title ownership, nor for the grant.
 /// Admission may inspect another real selected pilot/lead. The holder is a
 /// separate subject, never a substituted requester identity or owner lens.
 pub(crate) fn project_original_owner_for(
@@ -182,9 +192,11 @@ fn project_owner_for(
         .snapshot()
         .asset(ObjId(charter.id.get()))
         .ok_or(OwnerProjectionError::NotHeld)?;
-    check_title(holder, charter.id, title)?;
+    let held_as = check_title(holder, charter.id, title, |org, scope| {
+        super::org_holder::scoped_actor(ctx.world(), org, scope, holder).is_ok()
+    })?;
     let birth = read(ctx, &families.operations, licence.operation.to_hex())?;
-    let ownership = super::charter_transfer::history::current(ctx, families, birth, holder)
+    let ownership = super::charter_transfer::history::current_for(ctx, families, birth, held_as)
         .map_err(|_| OwnerProjectionError::NotHeld)?;
     check_term(term.window, WorldIcSeconds(ctx.world().game_now_unix()))?;
     super::registry_revocation::current::require(ctx, families, licence.id, term.generation, None)
@@ -335,6 +347,7 @@ fn project_owner_for(
     }
     Ok(OriginalOwnerHolding {
         actor: holder,
+        holder: held_as,
         ownership,
         charter: charter.id,
         title_revision: title.revision,
@@ -374,21 +387,33 @@ fn read<'a, R: Record>(
     }
     Ok(row)
 }
+/// The title check, pure: the charter's current E4 title is the actor's own
+/// (`Holder::Character`), or (M8c B2) an organisation's for which
+/// `org_actor(org, title.scope)` answers true, the live `roll.holder.org`
+/// grant asked by the caller (`Holder::Organization { org, acting: actor }`).
+/// A frozen or inactive title is refused on either arm; staff and assignment
+/// never substitute for title.
 fn check_title(
     actor: ObjId,
     charter: CharterId,
     title: &EconomicAsset,
-) -> Result<(), OwnerProjectionError> {
+    org_actor: impl Fn(mush_org::OrgId, Option<mush_org::OrgScopeId>) -> bool,
+) -> Result<super::Holder, OwnerProjectionError> {
     if actor == ObjId(0)
         || title.object != ObjId(charter.get())
         || title.revision == 0
-        || title.title_owner != PrincipalId::Object(actor)
         || title.frozen
         || title.lifecycle != AssetLifecycle::Active
     {
         return Err(OwnerProjectionError::NotHeld);
     }
-    Ok(())
+    match title.title_owner {
+        PrincipalId::Object(owner) if owner == actor => Ok(super::Holder::Character(actor)),
+        PrincipalId::Organization(org) if org_actor(org, title.scope) => {
+            Ok(super::Holder::Organization { org, acting: actor })
+        }
+        _ => Err(OwnerProjectionError::NotHeld),
+    }
 }
 fn check_term(window: TermWindow, now: WorldIcSeconds) -> Result<(), OwnerProjectionError> {
     match window.phase_at(now) {
@@ -425,18 +450,75 @@ mod tests {
             frozen_reason: None,
         }
     }
+    /// A character's own title never asks the organisation predicate.
+    fn never(_: mush_org::OrgId, _: Option<mush_org::OrgScopeId>) -> bool {
+        panic!("a character title asked the organisation predicate")
+    }
     #[test]
     fn title_is_current_e4_title_not_source_author_or_staff_or_assignment() {
         let charter = CharterId::new(21).unwrap();
         let mut row = title(ObjId(7));
-        assert!(check_title(ObjId(7), charter, &row).is_ok());
-        assert!(check_title(ObjId(8), charter, &row).is_err());
+        assert_eq!(
+            check_title(ObjId(7), charter, &row, never).ok(),
+            Some(super::super::Holder::Character(ObjId(7)))
+        );
+        assert!(check_title(ObjId(8), charter, &row, never).is_err());
         row.title_owner = PrincipalId::Object(ObjId(8));
         row.revision += 1;
-        assert!(check_title(ObjId(7), charter, &row).is_err());
-        assert!(check_title(ObjId(8), charter, &row).is_ok());
+        assert!(check_title(ObjId(7), charter, &row, never).is_err());
+        assert!(check_title(ObjId(8), charter, &row, never).is_ok());
+        // M8c B2: an organisation's title is refused without the grant...
         row.title_owner = PrincipalId::Organization(mush_org::OrgId(1));
-        assert!(check_title(ObjId(8), charter, &row).is_err());
+        assert!(check_title(ObjId(8), charter, &row, |_, _| false).is_err());
+    }
+    /// M8c B2 (the brief's test 5): the organisation arm admits exactly the
+    /// character the live grant answers for, on the title's own scope, and
+    /// projects the holding as the organisation acting through that
+    /// character; the title's integrity checks still refuse first.
+    #[test]
+    fn organisation_title_admits_a_granted_actor_on_the_titles_scope() {
+        use mush_org::{OrgId, OrgScopeId};
+        let charter = CharterId::new(21).unwrap();
+        let mut row = title(ObjId(7));
+        row.title_owner = PrincipalId::Organization(OrgId(1));
+        row.scope = Some(OrgScopeId(5));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let granted = |org: OrgId, scope: Option<OrgScopeId>| {
+            asked.borrow_mut().push((org, scope));
+            org == OrgId(1) && scope == Some(OrgScopeId(5))
+        };
+        assert_eq!(
+            check_title(ObjId(8), charter, &row, granted).ok(),
+            Some(super::super::Holder::Organization {
+                org: OrgId(1),
+                acting: ObjId(8),
+            })
+        );
+        assert_eq!(
+            asked.borrow().as_slice(),
+            &[(OrgId(1), Some(OrgScopeId(5)))]
+        );
+        // The predicate's refusal is the title's refusal: no other arm.
+        assert!(check_title(ObjId(8), charter, &row, |_, _| false).is_err());
+        // An unscoped organisation title asks for the root scope.
+        row.scope = None;
+        assert_eq!(
+            check_title(ObjId(9), charter, &row, |org, scope| org == OrgId(1)
+                && scope.is_none())
+            .ok(),
+            Some(super::super::Holder::Organization {
+                org: OrgId(1),
+                acting: ObjId(9),
+            })
+        );
+        // Integrity and lifecycle refuse before the grant is asked.
+        row.frozen = true;
+        assert!(check_title(ObjId(8), charter, &row, never).is_err());
+        row.frozen = false;
+        row.lifecycle = AssetLifecycle::Abandoned;
+        assert!(check_title(ObjId(8), charter, &row, never).is_err());
+        row.lifecycle = AssetLifecycle::Active;
+        assert!(check_title(ObjId(0), charter, &row, never).is_err());
     }
     #[test]
     fn title_integrity_and_lifecycle_do_not_silently_fall_back_to_the_author() {
@@ -444,14 +526,14 @@ mod tests {
         let mut row = title(ObjId(7));
         for lifecycle in [AssetLifecycle::WrittenOff, AssetLifecycle::Abandoned] {
             row.lifecycle = lifecycle;
-            assert!(check_title(ObjId(7), charter, &row).is_err());
+            assert!(check_title(ObjId(7), charter, &row, never).is_err());
         }
         row.lifecycle = AssetLifecycle::Active;
         row.frozen = true;
-        assert!(check_title(ObjId(7), charter, &row).is_err());
+        assert!(check_title(ObjId(7), charter, &row, never).is_err());
         row.frozen = false;
         row.object = ObjId(22);
-        assert!(check_title(ObjId(7), charter, &row).is_err());
+        assert!(check_title(ObjId(7), charter, &row, never).is_err());
     }
     #[test]
     fn term_uses_world_ic_and_never_extends_at_grace_or_lapse_boundary() {

@@ -674,7 +674,8 @@ impl RegisteredPaidResaleWriter {
             || pointer.charter() != b.charter()
             || pointer.line() != b.line()
             || pointer.operation() != b.birth().operation
-            || pointer.holder() != before.economic().consent().terms.seller
+            || pointer.holder()
+                != super::super::Holder::Character(before.economic().consent().terms.seller)
             || pointer.term() != b.term().generation()
             || pointer.ownership()
                 != if b.ownership().generation == 1 {

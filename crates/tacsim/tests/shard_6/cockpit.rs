@@ -16922,7 +16922,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     // adds `@mind/publish`.
     for line in [
         "@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)",
-        "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed>",
+        "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]",
         "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)",
         "@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)",
     ] {

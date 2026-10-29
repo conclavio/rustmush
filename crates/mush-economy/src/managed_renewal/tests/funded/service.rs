@@ -130,7 +130,7 @@ fn service_both_causes_preserve_origin_bytes_and_all_money_through_cold_replay()
 fn service_cleans_unavailable_buyer_but_never_borrows_buyer_or_funded_authority() -> TestResult {
     let mut r = ready()?;
     r.world
-        .get_mut(r.offer.terms.buyer)
+        .get_mut(r.offer.terms.buyer.acting_character())
         .ok_or("buyer")?
         .flags
         .insert(mush_core::Flags::GOING);
@@ -138,7 +138,7 @@ fn service_cleans_unavailable_buyer_but_never_borrows_buyer_or_funded_authority(
     let action = action(SERVICE_CLOSE_ACTION, 1)?;
     let principal = mush_core::PrincipalId::Object { id: GOD };
     let mut context = service_context(&r, &action, &principal, 4);
-    context.actor = r.offer.terms.buyer;
+    context.actor = r.offer.terms.buyer.acting_character();
     check!(install::service_close(&r.state, &context, token(3), Reason::DeadlineReached).is_err());
     context.actor = GOD;
     context.principal = &r.principal;

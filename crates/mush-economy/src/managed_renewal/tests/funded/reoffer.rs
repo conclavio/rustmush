@@ -181,7 +181,7 @@ fn retry_refuses_crossed_principal_basis_clock_and_stale_terminal_before_custody
         match case {
             0 => r.offer.basis.product_digest = DefinitionDigest::from_bytes([33; 32]),
             1 => r.offer.basis.predecessor_generation = 2,
-            2 => r.offer.terms.buyer = r.offer.terms.seller,
+            2 => r.offer.terms.buyer = r.offer.terms.seller.into(),
             3 => r.state.fold.renewal_receipts = receipt::RenewalReceiptAudit::default(),
             4 => {
                 let mut c = r
@@ -351,7 +351,7 @@ fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links() -
                 });
             }
             2 => second.offer.basis.product_digest = DefinitionDigest::from_bytes([91; 32]),
-            3 => second.offer.terms.buyer = ObjId(u32::MAX),
+            3 => second.offer.terms.buyer = ObjId(u32::MAX).into(),
             4 => second.created_at_utc = 999,
             5 => second.closure = None,
             6 => {
@@ -448,7 +448,7 @@ fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap() -> 
     original.offer.basis.predecessor_generation = u64::MAX - 1;
     original.offer.basis.next_generation = u64::MAX;
     original.offer.terms.price = Amount::from_minor(i64::MAX);
-    original.offer.terms.buyer = ObjId(u32::MAX);
+    original.offer.terms.buyer = ObjId(u32::MAX).into();
     original.offer.terms.seller = ObjId(u32::MAX - 1);
     original.offer.terms.charter = ObjId(u32::MAX - 2);
     original.offer.terms.title_revision = u64::MAX;

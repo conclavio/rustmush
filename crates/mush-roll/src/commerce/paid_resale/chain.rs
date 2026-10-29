@@ -1,20 +1,21 @@
 //! Complete bounded structural reconstruction. The caller separately proves
 //! every actual native history, offer, accepted term and retained root. There is
 //! no current eligibility check here and no insertion-order history fallback.
+use super::super::Holder;
 use super::records::*;
 use crate::commerce::{
     TermGeneration,
     paid::{PaidTermRecord, PersonalPaidLicence},
     records::{PublicationError, Record},
 };
-use mush_core::{CommitToken, ObjId};
+use mush_core::CommitToken;
 use mush_economy::managed_paid_resale::{PaidBirthRefV1, PaidHolderRefV1};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn verify(
     licence: &PersonalPaidLicence,
     birth: &PaidBirthRefV1,
-    birth_holder: ObjId,
+    birth_holder: Holder,
     head: Option<&PaidResaleHead>,
     operations: &[&PaidResaleRecord],
     holders: &BTreeMap<u64, &PaidHolderRecord>,
@@ -25,7 +26,7 @@ pub(crate) fn verify(
     if operations.len() > MAX_OPERATIONS
         || holders.len() > MAX_OPERATIONS
         || birth.operation != licence.operation()
-        || birth_holder.0 == 0
+        || birth_holder.is_nobody()
     {
         return Err(PublicationError::Mismatch);
     }
@@ -65,7 +66,7 @@ pub(crate) fn verify(
             || row.previous().cloned() != last.map(|p| p.reference()).transpose()?
             || last.is_some_and(|p| matches!(p.state(), PaidResaleState::Funded {}))
             || row.binding().ownership() != &current
-            || row.economic().consent().terms.seller != holder
+            || Holder::Character(row.economic().consent().terms.seller) != holder
             || row.binding().term().generation() < prior_term
             || row.binding().term().generation() > licence.term()
             || terms.get(&row.binding().term().generation()).copied() != Some(row.binding().term())

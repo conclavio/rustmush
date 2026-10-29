@@ -98,6 +98,7 @@ pub mod core_integration;
 pub mod core_refit;
 mod engine;
 mod hash;
+pub mod holder;
 mod ids;
 pub mod managed_charter_transfer;
 pub mod managed_coverage;
@@ -164,6 +165,7 @@ pub use engine::{
     plan_reversal, validate,
 };
 pub use hash::{PLAN_HASH_DOMAIN, plan_hash};
+pub use holder::Holder;
 pub use ids::{
     AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, InstrumentId,
     ObligationId, TransactionId, VaultId,

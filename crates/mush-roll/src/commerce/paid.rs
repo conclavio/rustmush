@@ -5,10 +5,12 @@
 //! actual filed line/rating, economic receipt, current authority and retained
 //! roots before publishing either record. Registry revocation/recall, pending
 //! transfer and claims are separate required state, not omitted admission tests.
-//! Organisation holders require their real scoped warrant path; this personal
-//! schema cannot silently stand in for that path.
+//! M8c B1: the holder is typed (`Holder`): a character, or an organisation
+//! acting through a character granted `roll.holder.org` on its scope
+//! (`org_holder`), the grant re-asked at every act and read.
 
-use mush_core::{CommitToken, ObjId};
+use super::Holder;
+use mush_core::CommitToken;
 use mush_economy::managed_paid_resale::{PaidBirthRefV1, PaidHolderRefV1};
 use serde::{Deserialize, Serialize};
 
@@ -105,7 +107,7 @@ pub struct PersonalPaidLicence {
     id: LicenceId,
     charter: CharterId,
     line: LineId,
-    holder: ObjId,
+    holder: Holder,
     term: TermGeneration,
     operation: CommitToken,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -119,7 +121,7 @@ struct PersonalPaidLicenceWire {
     id: LicenceId,
     charter: CharterId,
     line: LineId,
-    holder: ObjId,
+    holder: Holder,
     term: TermGeneration,
     operation: CommitToken,
     #[serde(default, deserialize_with = "present_paid_ownership")]
@@ -157,7 +159,7 @@ impl PersonalPaidLicence {
         id: LicenceId,
         charter: CharterId,
         line: LineId,
-        holder: ObjId,
+        holder: Holder,
         term: TermGeneration,
         operation: CommitToken,
     ) -> Result<Self, PublicationError> {
@@ -194,6 +196,21 @@ impl PersonalPaidLicence {
         }
         let next = Self {
             term,
+            ..self.clone()
+        };
+        next.validate()?;
+        Ok(next)
+    }
+    /// M8c F4: the pointer with `holder` as its holder, the same principal:
+    /// a renewal re-stamps an organisation-held pointer with the renewing
+    /// actor as its acting character; a different principal is `Mismatch`.
+    pub(crate) fn re_stamped(&self, holder: Holder) -> Result<Self, PublicationError> {
+        self.validate()?;
+        if !holder.same_principal(self.holder) {
+            return Err(PublicationError::Mismatch);
+        }
+        let next = Self {
+            holder,
             ..self.clone()
         };
         next.validate()?;
@@ -256,7 +273,7 @@ impl PersonalPaidLicence {
         self.line
     }
     #[must_use]
-    pub const fn holder(&self) -> ObjId {
+    pub const fn holder(&self) -> Holder {
         self.holder
     }
     #[must_use]
@@ -275,7 +292,8 @@ impl Record for PersonalPaidLicence {
         self.id.key()
     }
     fn validate(&self) -> Result<(), PublicationError> {
-        if self.holder.0 == 0 || !matches!((self.format, &self.ownership), (1, None) | (2, Some(_)))
+        if self.holder.is_nobody()
+            || !matches!((self.format, &self.ownership), (1, None) | (2, Some(_)))
         {
             return Err(PublicationError::Invalid);
         }

@@ -97,7 +97,7 @@ pub(crate) const SWITCHES: [&str; 11] = [
 ];
 /// `+minds`'s `CommandSpec.help`, and the reply to any other switch set.
 /// 17g C2d adds its last three lines.
-pub(crate) const HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code>\n+minds/renew <licence> (then /pay or /decline with the same licence)\n+minds/resell <licence>=<player> price=<credits>; +minds/resell/accept <licence> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
+pub(crate) const HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>] [org=<org>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code> (each [org=<org>])\n+minds/renew <licence> [org=<org>] (then /pay or /decline with the same licence)\n+minds/resell <licence>=<player> price=<credits>; +minds/resell/accept <licence> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
 /// `@mind/publish`'s usage: exactly its `@mind` `HELP` line.
 pub(crate) const USAGE_PUBLISH: &str = "@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)";
 
@@ -402,7 +402,7 @@ fn detail(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
         return Err(not_open().into());
     }
     let found = found.map_err(CmdError::from);
-    let own = own_purchase(ctx, &market, code)?;
+    let own = own_purchase(ctx, &market, code, None)?;
     let now = ctx.w.now();
     let own = own.and_then(|view| {
         own_line(
@@ -489,8 +489,9 @@ fn own_purchase(
     ctx: &Ctx<'_>,
     market: &OwnerReadHandle<MarketCommandReader>,
     code: &str,
+    org: Option<mush_org::OrgId>,
 ) -> Result<Option<OwnPurchaseView>, Refusal> {
-    match ctx.read_owner(market, MarketCommandRequest::own_purchase(code)) {
+    match ctx.read_owner(market, MarketCommandRequest::own_purchase_for(code, org)) {
         Ok(result) => result.into_own_purchase().ok_or_else(not_open),
         // Two of the actor's own listings sharing the code (the read's doc):
         // as no record.
@@ -512,11 +513,13 @@ pub(super) fn run_quote(ctx: &mut Ctx<'_>, selection: &BuySelection) -> Result<O
     let code = selection.code.as_str();
     let (market, _) = handles(ctx)?;
     at_counter(ctx, &market)?;
+    // M8c B3: `org=<org>` is checked before the listing is named.
+    let org = super::org_for(ctx, selection.org.as_deref(), super::OrgScope::Root)?;
     let view = listing(ctx, &market, code)?;
     let action = actions(ctx)?
         .entitlement(view.protocol(), Step::Quote)
         .ok_or_else(not_open)?;
-    let latest = own_purchase(ctx, &market, code)?.map(|own| own.latest());
+    let latest = own_purchase(ctx, &market, code, org)?.map(|own| own.latest());
     let line = fill(words::QUOTING, &[("code", code)]);
     let (verb, subject) = buy_key(view.publication(), latest);
     super::stage(
@@ -524,23 +527,29 @@ pub(super) fn run_quote(ctx: &mut Ctx<'_>, selection: &BuySelection) -> Result<O
         verb,
         &subject,
         action,
-        quote_parameters(view.publication()),
+        quote_parameters_for(view.publication(), org),
         line,
     )
 }
 
 /// 17g C3a: what the four buy steps select, a listing code as `+minds`
-/// prints it (`parse_buy`; the typed `ListingCode`, `typed`).
+/// prints it (`parse_buy`; the typed `ListingCode`, `typed`). M8c B3: and
+/// the organisation of a trailing `org=<org>`, as typed (`org_for` resolves
+/// it when the step runs); the typed steps act for the character alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BuySelection {
     pub(super) code: String,
+    pub(super) org: Option<String>,
 }
 
 /// 17g C3a: `+minds/buy <code>`'s and its three steps' argument: one
-/// listing code (`is_code`), else the `+minds` help (`REFUSED`).
+/// listing code (`is_code`), M8c B3: then an optional `org=<org>`, else the
+/// `+minds` help (`REFUSED`).
 pub(super) fn parse_buy(text: &str) -> Result<BuySelection, Refusal> {
+    let (text, org) = super::org_argument(text).ok_or_else(help)?;
     Ok(BuySelection {
         code: code(text)?.to_owned(),
+        org: org.map(str::to_owned),
     })
 }
 
@@ -599,9 +608,14 @@ pub(super) fn run_pay(ctx: &mut Ctx<'_>, selection: &BuySelection) -> Result<Out
     let code = selection.code.as_str();
     let (market, _) = handles(ctx)?;
     at_counter(ctx, &market)?;
-    super::personal_account(ctx)?;
+    // M8c B3: an organisation's quote was frozen on its treasury by the
+    // Quote's provider; the `ACCOUNT` rule is the character payer's alone.
+    let org = super::org_for(ctx, selection.org.as_deref(), super::OrgScope::Root)?;
+    if org.is_none() {
+        super::personal_account(ctx)?;
+    }
     let no_quote = || word!(NO_QUOTE, &[("code", code)]);
-    let own = own_purchase(ctx, &market, code)?.ok_or_else(no_quote)?;
+    let own = own_purchase(ctx, &market, code, org)?.ok_or_else(no_quote)?;
     let now = ctx.w.now();
     let quote = own
         .quote()
@@ -645,8 +659,9 @@ pub(super) fn run_settle(
     if which == Settle::Complete {
         at_counter(ctx, &market)?;
     }
+    let org = super::org_for(ctx, selection.org.as_deref(), super::OrgScope::Root)?;
     let none = || word!(NO_PURCHASE, &[("code", code)]);
-    let own = own_purchase(ctx, &market, code)?.ok_or_else(none)?;
+    let own = own_purchase(ctx, &market, code, org)?.ok_or_else(none)?;
     let operation = own.funded().ok_or_else(none)?;
     let (step, request) = match which {
         Settle::Complete => (Step::Grant, words::COMPLETING),
@@ -670,6 +685,19 @@ pub(super) fn run_settle(
 /// The Quote offer's wire: the listing's publication token.
 pub(crate) fn quote_parameters(listing: mush_core::CommitToken) -> serde_json::Value {
     json!({"listing": listing})
+}
+
+/// M8c B3: the Quote offer's wire for an organisation's buy: the listing and
+/// the organisation (`mind_entitlement::offers`' `Quote { listing, org }`);
+/// without one, exactly `quote_parameters`.
+pub(crate) fn quote_parameters_for(
+    listing: mush_core::CommitToken,
+    org: Option<mush_org::OrgId>,
+) -> serde_json::Value {
+    match org {
+        None => quote_parameters(listing),
+        Some(org) => json!({"listing": listing, "org": org.0}),
+    }
 }
 
 /// 17g C2g: the Fund's wire (`mind_entitlement::provider`'s `Fund`): the

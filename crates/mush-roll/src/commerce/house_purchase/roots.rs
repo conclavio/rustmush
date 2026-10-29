@@ -216,7 +216,7 @@ impl HouseRoots {
 
 fn matches_facts(row: &HouseAllocationV1, facts: &HouseSaleFacts) -> bool {
     row.validate().is_ok()
-        && row.holder == facts.requester()
+        && row.holder.acting_character() == facts.requester()
         && row.issuer == facts.issuer()
         && row.charter == facts.charter()
         && row.line == facts.line()

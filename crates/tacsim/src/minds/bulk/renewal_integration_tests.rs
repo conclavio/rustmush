@@ -949,7 +949,7 @@ async fn customer(
         source_answer(&mut world,BUYER,a.licence(),None)?;
         source_answer(&mut world,BUYER,owner,None)?;
         assert!(rows(&disk(&world),"roll","roll_mind_personal_paid_licence").iter().filter_map(|r|serde_json::from_value::<PersonalPaidLicence>(r.clone()).ok())
-            .all(|licence|licence.holder()!=GOD || licence.id()==a.licence()),"customer bought no ancestor licence");
+            .all(|licence|licence.holder()!=mush_economy::Holder::Character(GOD) || licence.id()==a.licence()),"customer bought no ancestor licence");
         // New sortie under the customer's own Grace still works after the
         // issuer's selected parent has ended; no ancestor is re-resolved.
         world.say(GOD,"SIM TEAM red")?;world.say(GOD,"SIM AI 1")?;world.say(GOD,"SIM UNIT heavy_mk1")?;

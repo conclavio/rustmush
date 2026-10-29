@@ -84,7 +84,7 @@ impl ColdFixture {
             quote: p.quote,
             quote_digest: p.quote_digest,
             product_digest: p.product_digest,
-            buyer: p.buyer,
+            buyer: p.buyer.into(),
             seller: p.seller,
             charter: p.charter,
             title_revision: p.title_revision,

@@ -3,6 +3,7 @@
 use super::*;
 use mush_market::mind_house_renewal::{MindRenewalOperationV1, MindRenewalReceiptV1};
 use mush_roll::commerce::house_renewal::{RenewalAttemptV1, RenewalHeadV1, RenewalStateV1};
+use mush_roll::commerce::records::OwnerTerm;
 use mush_roll::commerce::{TermGeneration, TermPhase, WorldIcSeconds};
 #[path = "house_renewal_service_integration_tests.rs"]
 mod service;
@@ -59,6 +60,260 @@ fn step(w: &mut PlayerWorld, id: &str, n: u128, params: Value) -> TestResult<Vec
 }
 fn boot(registry: &Fixture, snapshot: &Durable) -> TestResult<Box<PlayerWorld>> {
     Ok(Box::new(super::boot_options(registry, snapshot, true)?))
+}
+
+/// M8c B4: the House attestation's action and its operation family.
+const HOUSE_ATTEST: &str = "attest_house_mind";
+const PERSONAL_ATTEST: &str = "attest_owner_mind";
+const ATTEST_OPS: &str = "roll_mind_owner_attestation_operation";
+/// A Roll action by id (`house_purchase`'s `action` finds the market's).
+fn roll_action(w: &PlayerWorld, id: &str) -> TestResult<DefinitionRef> {
+    w.engine
+        .registry
+        .definitions()
+        .ok_or("definitions")?
+        .iter()
+        .map(|e| e.reference())
+        .find(|r| {
+            r.key().owner.as_str() == "roll"
+                && r.key().kind.as_str() == "action"
+                && r.key().id.as_str() == id
+                && r.version() == 1
+        })
+        .cloned()
+        .ok_or_else(|| format!("roll action {id}").into())
+}
+/// One direct preparation of a Roll attestation (no offer: the fence and the
+/// provider are what is under test).
+fn attest(
+    w: &mut PlayerWorld,
+    id: &str,
+    actor: ObjId,
+    n: u128,
+    params: Value,
+) -> TestResult<(
+    PreparedComposedTxn,
+    mush_core::action::PreparedAuthoritativeAction,
+)> {
+    let a = roll_action(w, id)?;
+    Ok(w.engine.prepare_registered_composed_authoritative_action(
+        &a,
+        &request(n, actor, "roll", params)?,
+        token(n),
+    )?)
+}
+fn owner_generation(w: &PlayerWorld, owner: LicenceId, generation: u64) -> TestResult<OwnerTerm> {
+    Ok(serde_json::from_value(
+        rows(&disk(w), "roll", "roll_mind_owner_term")
+            .into_iter()
+            .find(|v| {
+                v.get("licence") == Some(&json!(owner))
+                    && v.get("generation") == Some(&json!(generation.to_string()))
+            })
+            .ok_or("actual House owner generation")?,
+    )?)
+}
+fn current_generation(w: &PlayerWorld, owner: LicenceId) -> TestResult<Value> {
+    Ok(rows(&disk(w), "roll", "roll_mind_owner_licence")
+        .into_iter()
+        .find(|v| v.get("id") == Some(&json!(owner)))
+        .and_then(|v| v.get("term").cloned())
+        .ok_or("actual House owner licence")?)
+}
+
+/// M8c B4 (the brief's test 2, here rather than in the personal attestation
+/// story because the House filing lives in this world): the House filing's
+/// owner licence, due at its term end, attested by its curator holding
+/// `roll.holder.org` on the House's scope through the House action, writing
+/// generation 2 under the House terms (M8c F10: the rig composes
+/// `with_house_owner_terms` at 365 days, as the launch does, so the new
+/// window is told from the personal term) with the curator recorded as the
+/// acting character; refused before the term is due, refused for the
+/// curator without the grant and for a second character of the curator's
+/// login without it, refused by the personal action with and without the
+/// organisation, refused (by its sentence) for another organisation the
+/// curator is granted on and for generation 2 before it is due; the
+/// retained generation survives a restart and needs the attestation
+/// composed. The House is organisation 0 (F8).
+pub(super) fn attest_house(
+    registry: &Fixture,
+    snapshot: &Durable,
+    organization: OrgId,
+    scope: OrgScopeId,
+) -> TestResult {
+    let birth = one(rows(&snapshot.disk, "roll", "roll_mind_initial_filing"))?;
+    let owner: LicenceId =
+        serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
+    let params = json!({"owner_licence": owner.get(), "org": organization.0});
+    let personal = json!({"owner_licence": owner.get()});
+    let plain = boot(registry, snapshot)?;
+    check!(
+        roll_action(&plain, HOUSE_ATTEST).is_err(),
+        "the House attestation is composed with the owner attestations alone"
+    );
+    drop(plain);
+    let mut w = boot_attestations(registry, snapshot)?;
+    check_eq!(organization, OrgId(0), "F8: organisation 0 attests");
+    check_ne!(
+        roll_action(&w, HOUSE_ATTEST)?,
+        roll_action(&w, PERSONAL_ATTEST)?,
+        "the House action's definition is its own"
+    );
+    let uniform =
+        "The owner licence is unavailable, not due, or no longer eligible for attestation.";
+    let refusal = |r: TestResult<(
+        PreparedComposedTxn,
+        mush_core::action::PreparedAuthoritativeAction,
+    )>|
+     -> TestResult<String> { Ok(r.err().ok_or("refused")?.to_string()) };
+    let first = owner_generation(&w, owner, 1)?;
+    check_eq!(current_generation(&w, owner)?, json!("1"));
+    check!(
+        attest(&mut w, HOUSE_ATTEST, GOD, START + 200, params.clone()).is_err(),
+        "refused before the term is due"
+    );
+    set_ic(&mut w, first.window().term_end().get())?;
+    check!(
+        attest(&mut w, HOUSE_ATTEST, GOD, START + 201, params.clone()).is_err(),
+        "the curator's publication grant is not the holder grant"
+    );
+    for (n, p) in [(202, &personal), (203, &params)] {
+        check!(
+            attest(&mut w, PERSONAL_ATTEST, GOD, START + n, p.clone()).is_err(),
+            "the personal action never attests a House filing"
+        );
+    }
+    // A second character of the curator's login, without the grant.
+    let alt = w
+        .engine
+        .world
+        .create(ObjKind::Player, "Curator alt", GOD, Some(ROOM))?;
+    {
+        let mut accounts = registry.accounts.values.lock().map_err(module_error)?;
+        let curator = *accounts.get(&GOD).ok_or("the curator's login")?;
+        registry.accounts.epoch.invalidate();
+        accounts.insert(alt, curator);
+    }
+    check!(
+        attest(&mut w, HOUSE_ATTEST, alt, START + 204, params.clone()).is_err(),
+        "the curator's alt holds no grant of its own"
+    );
+    command(
+        &mut w,
+        &format!(
+            "@org/grant #{}=House {} scope=#{}",
+            GOD.0,
+            mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY,
+            scope.0
+        ),
+    )?;
+    check!(
+        attest(&mut w, HOUSE_ATTEST, alt, START + 205, params.clone()).is_err(),
+        "the grant is the curator's, not its login's"
+    );
+    // F11: another organisation, the curator granted on its root, does not
+    // hold the title: the uniform sentence, never a grant refusal.
+    command(&mut w, "@org/create Rival")?;
+    let other = w
+        .engine
+        .world
+        .module_state::<OrgStore>()
+        .ok_or("Org")?
+        .state()
+        .orgs()
+        .find(|o| o.name.as_str() == "Rival")
+        .ok_or("the other organisation")?
+        .id;
+    command(
+        &mut w,
+        &format!(
+            "@org/grant #{}=Rival {}",
+            GOD.0,
+            mush_roll::commerce::org_holder::HOLDER_ORG_CAPABILITY
+        ),
+    )?;
+    let error = refusal(attest(
+        &mut w,
+        HOUSE_ATTEST,
+        GOD,
+        START + 206,
+        json!({"owner_licence": owner.get(), "org": other.0}),
+    ))?;
+    check!(
+        error.contains(uniform),
+        "another organisation does not hold the title: {error}"
+    );
+    let before = balance(
+        &w,
+        wallet(&w, EconomicOwner::Organization(organization), Some(scope))?,
+    )?;
+    let (prepared, _) = attest(&mut w, HOUSE_ATTEST, GOD, START + 210, params.clone())?;
+    let writes = apply(&mut w, prepared)?;
+    let families = typed_families(&writes);
+    for family in [
+        ATTEST_OPS,
+        "roll_mind_owner_term",
+        "roll_mind_owner_licence",
+    ] {
+        check!(families.contains(family), "{family} in {families:?}");
+    }
+    check_eq!(
+        balance(
+            &w,
+            wallet(&w, EconomicOwner::Organization(organization), Some(scope))?
+        )?,
+        before,
+        "the attestation is free"
+    );
+    check_eq!(current_generation(&w, owner)?, json!("2"));
+    let second = owner_generation(&w, owner, 2)?;
+    check_eq!(
+        second.window().term_end().get() - second.window().issued_at().get(),
+        HOUSE_OWNER_TERM_SECONDS,
+        "the House terms (365 days), not the personal term"
+    );
+    check_ne!(HOUSE_OWNER_TERM_SECONDS, TERM_SECONDS);
+    check!(second.window().term_end() > first.window().term_end());
+    check_eq!(
+        owner_generation(&w, owner, 1)?,
+        first,
+        "the first generation is retained"
+    );
+    let operation = rows(&disk(&w), "roll", ATTEST_OPS)
+        .into_iter()
+        .find(|v| v.get("licence") == Some(&json!(owner)))
+        .ok_or("the House attestation operation")?;
+    check_eq!(
+        operation.get("owner"),
+        Some(&json!(GOD)),
+        "the acting character"
+    );
+    check_eq!(operation.get("format"), Some(&json!(1)));
+    check_eq!(
+        operation.get("house"),
+        Some(&json!({"organization": organization, "scope": scope}))
+    );
+    let error = refusal(attest(
+        &mut w,
+        HOUSE_ATTEST,
+        GOD,
+        START + 211,
+        params.clone(),
+    ))?;
+    check!(
+        error.contains(uniform),
+        "generation 2 is not due, after the grant: {error}"
+    );
+    let attested = saved(&w);
+    let cold = boot_attestations(registry, &attested)?;
+    check_eq!(current_generation(&cold, owner)?, json!("2"));
+    check_eq!(owner_generation(&cold, owner, 2)?, second);
+    drop(cold);
+    check!(
+        crate::test_checks::refused(boot(registry, &attested))?,
+        "a retained House generation needs the attestation composed"
+    );
+    Ok(())
 }
 fn current_same(w: &PlayerWorld, old: &PersonalPaidLicence, term: &PaidTermRecord) -> TestResult {
     check_eq!(licence(w, old.id())?, *old);
@@ -171,9 +426,9 @@ pub(super) fn exercise(
     // The buyer issues their own renewal (the House is paid through the split).
     check_eq!(
         contract_value.get("issuer"),
-        Some(&serde_json::to_value(mush_org::PrincipalId::Object(
-            draft.offer().terms.buyer
-        ))?)
+        Some(&serde_json::to_value(
+            draft.offer().terms.buyer.principal()
+        )?)
     );
     check_eq!(
         contract.acceptances.len(),

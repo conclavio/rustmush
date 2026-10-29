@@ -14,6 +14,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{Revision, RevisionRef};
 
+/// Doc 17h §3 M8c (B1): the typed holder of a mind licence, a character or an
+/// organisation through its acting character. Defined in the economy (the
+/// lowest crate naming an organisation principal) and re-exported here.
+pub use mush_economy::Holder;
+
 pub(crate) mod follow;
 /// Version of these source-free value envelopes, independent of M6 workflow JSON.
 pub(crate) mod line_update;
@@ -27,7 +32,8 @@ pub const MAX_PAID_SEATS: u16 = 1_024;
 pub const MAX_TERM_SECONDS: i64 = 90 * 24 * 60 * 60;
 /// The owner-term bound, in world-IC seconds (365 days). 17g C0: a House-filed
 /// mind's free owner licence runs 365 IC days until House owner attestation
-/// exists. Only owner filing terms and [`TermWindow`] itself use it; a paid
+/// exists. Only owner filing terms, the attested owner terms (M8c: the House
+/// attestation's 365 days) and [`TermWindow`] itself use it; a paid
 /// record still holds its window to [`MAX_TERM_SECONDS`].
 pub const MAX_OWNER_TERM_SECONDS: i64 = 365 * 24 * 60 * 60;
 /// Compact Grace bound, in world-IC seconds (3 days).
@@ -514,6 +520,7 @@ pub mod house_catalogue;
 pub mod ic_claims;
 pub mod marked_rating;
 pub mod module;
+pub mod org_holder;
 pub mod owner_holdings;
 pub mod paid;
 mod paid_audit;
@@ -536,6 +543,7 @@ pub mod renewal;
 pub mod rights;
 pub(crate) mod roots;
 pub mod sale_reader;
+pub mod seal_marks;
 pub mod usage;
 
 #[cfg(test)]
