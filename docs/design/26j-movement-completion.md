@@ -637,6 +637,14 @@ the final projected room to equal the admitted room; a second Core room leg
 refuses until ordered transcript capture is implemented. Older window manifests
 without a Scenes group retain their original partial coverage.
 
+The ledger now supplies a separate bounded four-entry ordered preparation for
+the future two-leg transcript adapter. It copies only selected tails, retains
+original per-event sequence numbers even when a log repeats, and emits one final
+write per touched chunk, including sealed rollover chunks. Every selected
+original tail and seal policy is checked before a binding can publish any final
+tail; discarding the binding is inert. This primitive supplies no owner identity
+or movement completion, and the existing two-distinct-log batch is unchanged.
+
 V2 registers no offer or live command route. Its manifest remains partial:
 the bounded original journal refuses a 257th commit until a real checkpoint or
 archival protocol is implemented, rather than accepting an unrecoverable tail.

@@ -97,6 +97,12 @@ use smol_str::SmolStr;
 
 use crate::module::ModuleWrite;
 
+#[path = "ledger_sequence.rs"]
+mod sequence;
+pub use sequence::{
+    BoundLedgerSequence, LedgerSequenceError, MAX_LEDGER_SEQUENCE_APPENDS, PreparedLedgerSequence,
+};
+
 /// The reserved key prefix (within a module namespace) under which ledger
 /// chunk documents live: `log:{log_id}:{chunk_seq}`. Consumers must not use
 /// this prefix for ordinary documents — a later boot optimization skips it in
