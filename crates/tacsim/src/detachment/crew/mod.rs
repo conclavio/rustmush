@@ -1,4 +1,5 @@
 //! Port hiring records for real NPCs. Boarding remains ordinary movement.
+mod boarding;
 mod commands;
 pub(crate) mod personnel;
 mod runtime;

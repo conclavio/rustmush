@@ -576,7 +576,7 @@ async fn activation_is_atomic_recovers_lost_ack_and_releases_original_assignment
     text(
         &mut rig.world,
         GOD,
-        &format!("@asset/title #{}=#{}", unit.0, rig.competitor.0),
+        &format!("@asset/transfer #{}=#{}", unit.0, rig.competitor.0),
     );
     persist_legacy(&mut rig.world, &store).await?;
     commit_line(&mut rig, &store, employer, "+sortie/deactivate 1:1").await?;
@@ -593,7 +593,7 @@ async fn activation_is_atomic_recovers_lost_ack_and_releases_original_assignment
     text(
         &mut rig.world,
         GOD,
-        &format!("@asset/title #{}=#{}", unit.0, employer.0),
+        &format!("@asset/transfer #{}=#{}", unit.0, employer.0),
     );
     persist_legacy(&mut rig.world, &store).await?;
     commit_line(
@@ -711,5 +711,258 @@ async fn activation_cannot_use_an_offer_resolved_before_real_unit_grant_revocati
     }
     assert!(active(&rig, 1)?.is_none());
     assert!(!reserved(&rig, unit)?);
+    Ok(())
+}
+
+async fn berthed_crew_carrier(
+    rig: &mut Rig,
+    store: &InMemoryStore,
+) -> TestResult<(ObjId, ObjId, ObjId)> {
+    let (hull, domain, gallery, crew) = {
+        let port =
+            tacsim::port::coop::programme_port(rig.world.world()).ok_or("real programme port")?;
+        assert_eq!(port.def.venue.as_str(), "ceres");
+        let row = port.map.hulls.first().ok_or("real programme hull")?;
+        (
+            ObjId(row.hull),
+            port.map.domain.ok_or("port domain")?,
+            ObjId(port.map.presentation.ok_or("berth gallery")?),
+            ObjId(
+                *row.rooms
+                    .get(&CanonicalId::new("crew")?)
+                    .ok_or("crew compartment")?,
+            ),
+        )
+    };
+    let transferred = text(
+        &mut rig.world,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", hull.0, rig.employer.0),
+    );
+    assert!(transferred.contains("Title transferred"), "{transferred}");
+    let docked = text(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/domain #{}={domain}", hull.0),
+    );
+    assert!(
+        matches!(tacsim::port::ship::berth_of(rig.world.world(),hull),tacsim::port::ship::Berth::Docked {def,..} if def.venue.as_str()=="ceres"),
+        "{docked}"
+    );
+    assert_eq!(
+        tacsim::port::coop::helm_of(rig.world.world(), rig.employer)
+            .ok_or("real captain")?
+            .hull,
+        hull
+    );
+    persist_legacy(&mut rig.world, store).await?;
+    Ok((hull, gallery, crew))
+}
+
+#[tokio::test]
+async fn hired_crew_board_through_the_passenger_path_and_retain_current_presence_after_restart()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let employer = rig.employer;
+    let npc = rig.npc;
+    commit_line(&mut rig, &store, employer, &hire(npc, &terms()?)?).await?;
+    let agreement = contract(&rig)?;
+    let (hull, gallery, crew) = berthed_crew_carrier(&mut rig, &store).await?;
+    let boarded = text(
+        &mut rig.world,
+        employer,
+        "+sortie/board Crew mining operator",
+    );
+    assert!(boarded.contains("has come aboard"), "{boarded}");
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(crew)
+    );
+    assert_eq!(
+        rig.world.world().get(employer).and_then(|o| o.location),
+        Some(rig.room),
+        "arranging boarding does not move the captain"
+    );
+    assert_eq!(
+        contract(&rig)?,
+        agreement,
+        "boarding changes no contract or aboard ledger"
+    );
+    assert!(rig.world.engine_mut().take_authoritative_submit().is_none());
+    // The captain's existing boarding command uses the remaining real berth.
+    rig.world.world_mut().move_to(employer, gallery)?;
+    let captain = text(&mut rig.world, employer, "+ship/board");
+    assert!(captain.contains("You cycle the lock into"), "{captain}");
+    let placement = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial state")?
+        .placements
+        .get(&npc)
+        .cloned();
+    let repeated = text(
+        &mut rig.world,
+        employer,
+        &format!("+sortie/board #{npc_id}", npc_id = npc.0),
+    );
+    assert!(repeated.contains("already aboard"), "{repeated}");
+    assert_eq!(
+        rig.world
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .ok_or("spatial state")?
+            .placements
+            .get(&npc),
+        placement.as_ref()
+    );
+    persist_legacy(&mut rig.world, &store).await?;
+    let payload = serde_json::json!({"carrier":hull.0,"slots":[{"slot":1,"unit":null,"controller":{"kind":"npc","character":npc.0},"role":null,"mind":null}],"npc_commander":null,"financial_terms":null});
+    commit_line(
+        &mut rig,
+        &store,
+        employer,
+        &format!("+sortie/draft {payload}"),
+    )
+    .await?;
+    let prepared = text(&mut rig.world, employer, "+sortie/plan 1");
+    assert!(
+        prepared.contains("aboard now; contract recorded"),
+        "{prepared}"
+    );
+    drop(rig);
+    let mut rig = fixture(&store).await?;
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(crew)
+    );
+    assert_eq!(contract(&rig)?, agreement);
+    let prepared = text(&mut rig.world, employer, "+sortie/plan 1");
+    assert!(
+        prepared.contains("aboard now; contract recorded"),
+        "{prepared}"
+    );
+    let repeated = text(
+        &mut rig.world,
+        employer,
+        &format!("+sortie/board #{}", npc.0),
+    );
+    assert!(repeated.contains("already aboard"), "{repeated}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn crew_boarding_requires_own_contract_and_present_captain_and_obeys_station_exit_locks()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let employer = rig.employer;
+    let npc = rig.npc;
+    let _ = berthed_crew_carrier(&mut rig, &store).await?;
+    let command = format!("+sortie/board #{}", npc.0);
+    let missing = text(&mut rig.world, employer, &command);
+    assert!(missing.contains("contract unavailable"), "{missing}");
+    commit_line(&mut rig, &store, employer, &hire(npc, &terms()?)?).await?;
+    let other = text(&mut rig.world, rig.competitor, &command);
+    let absent = text(&mut rig.world, rig.competitor, "+sortie/board #4294967295");
+    assert_eq!(other, absent);
+    rig.world.world_mut().move_to(employer, rig.away)?;
+    let away = text(&mut rig.world, employer, &command);
+    assert!(away.contains("from this port or aboard"), "{away}");
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(rig.room)
+    );
+    rig.world.world_mut().move_to(employer, rig.room)?;
+    let exits = rig.world.world().exits_of(rig.room).to_vec();
+    for exit in &exits {
+        text(&mut rig.world, GOD, &format!("@lock #{}=#FALSE", exit.0));
+    }
+    let locked = text(&mut rig.world, employer, &command);
+    assert!(locked.contains("stopped on the way"), "{locked}");
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(rig.room)
+    );
+    for exit in &exits {
+        text(&mut rig.world, GOD, &format!("@lock #{}=#TRUE", exit.0));
+    }
+    let retried = text(&mut rig.world, employer, &command);
+    assert!(retried.contains("has come aboard"), "{retried}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn crew_boarding_from_aboard_obeys_real_berth_capacity_and_retries_from_the_gallery()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let employer = rig.employer;
+    let npc = rig.npc;
+    commit_line(&mut rig, &store, employer, &hire(npc, &terms()?)?).await?;
+    let agreement = contract(&rig)?;
+    let (_, gallery, crew) = berthed_crew_carrier(&mut rig, &store).await?;
+    rig.world.world_mut().move_to(employer, gallery)?;
+    let captain = text(&mut rig.world, employer, "+ship/board");
+    assert!(captain.contains("You cycle the lock into"), "{captain}");
+    let mush_sim::SpatialParent::Interior { space, slot } = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial state")?
+        .parent_of(employer)
+    else {
+        return Err("captain's berth".into());
+    };
+    let slot = slot.ok_or("actual berth slot")?;
+    let guest =
+        rig.world
+            .world_mut()
+            .create(ObjKind::Npc, "Existing crew guest", GOD, Some(space))?;
+    rig.world.world_mut().attach_behavior(
+        guest,
+        mush_core::BehaviorId::new("sim.participant")?,
+        mush_core::BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    let seated = text(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/interior #{}=#{},{}", guest.0, space.0, slot),
+    );
+    assert!(
+        matches!(rig.world.world().module_state::<mush_sim::SpatialState>().ok_or("spatial state")?.parent_of(guest),mush_sim::SpatialParent::Interior {slot:Some(ref used),..} if used==&slot),
+        "{seated}"
+    );
+    let command = format!("+sortie/board #{}", npc.0);
+    let full = text(&mut rig.world, employer, &command);
+    assert!(full.contains("no available passenger berth"), "{full}");
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(gallery),
+        "the real walk to the berth is retained"
+    );
+    assert_eq!(contract(&rig)?, agreement);
+    text(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/unplace #{}", guest.0),
+    );
+    text(
+        &mut rig.world,
+        GOD,
+        &format!("@teleport #{}=#{}", guest.0, gallery.0),
+    );
+    let retried = text(&mut rig.world, employer, &command);
+    assert!(retried.contains("has come aboard"), "{retried}");
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(crew)
+    );
+    assert_eq!(contract(&rig)?, agreement);
     Ok(())
 }

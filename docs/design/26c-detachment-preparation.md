@@ -28,8 +28,10 @@ cleanup cut may delete the v2 provider if nothing adopts it.
 1. **DT.2b3 — hire:** at port, record the accepted contract referencing a real NPC.
    Hiring does not create a synthetic pilot or teleport the character. Contract
    terms define any future wage accrual; wage settlement can follow later.
-2. **Ordinary boarding:** the NPC walks into the ship's interior through existing
-   movement and accompanies the ship. No new movement slice or boarding-history
+2. **Board:** `+sortie/board <npc>` checks the caller's recorded crew contract and
+   reuses the existing `+passage/board` movement path: real station exits to the
+   berth, the ship's airlock and available berth, then the crew compartment. The
+   person accompanies the ship through existing containment. No boarding-history
    record is needed.
 3. **DT.2b4 — activate:** resolve the plan's six slots against real units and NPCs
    currently contained in the selected carrier. Read current room/interior
@@ -84,10 +86,21 @@ contract, and restart restores it; retry uses the common coordinator receipt.
 an offer never changes an existing contract. Release, renegotiation and wage
 settlement are later contract operations, not implied by leaving the vessel.
 
-Boarding uses ordinary movement. This slice does not add an automatic follow
-driver, teleport a hired NPC, activate a roster or adopt the deferred movement
-provider. DT.2b4 will read the actual contract and current containment when
-resolving the six slots.
+`+sortie/board <npc>` supplies the explicit boarding action, using the paying
+passenger service's existing physical helper. It first checks the caller's own
+crew contract, then their current ship, port presence and unfrozen boarding window.
+The person must actually be at that departure station, and walks its authored
+route with ordinary lock and movement-hook checks. The existing Sim airlock
+placement consumes a real berth; the person then walks into the crew compartment
+when reachable. The captain may arrange this while ashore at that port or aboard
+the ship. Repeating it for someone already aboard is a no-op.
+
+Boarding writes no new agreement, manifest, wage evidence or embarkation interval.
+It uses normal physical persistence and does not adopt the deferred movement
+provider. A failed route can leave the NPC partway to the berth, as passenger
+boarding already does; retry starts from the person's actual room. This is not a
+persistent follow order. DT.2b4 reads the contract and current containment when
+resolving the six slots, including after boarding and restart.
 
 ## DT.2b4 current personnel resolution
 

@@ -3,7 +3,7 @@ use super::{CrewDuty, CrewHandles, HireTerms, NpcMissionScope, offers, runtime::
 use mush_core::{CanonicalHash, CmdError, Ctx, IdempotencyKeyText, ObjId, PerceivedRef};
 use serde_json::json;
 
-pub(crate) const SWITCHES: &[&str] = &["crew", "hire", "contract"];
+pub(crate) const SWITCHES: &[&str] = &["crew", "hire", "contract", "board"];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
 }
@@ -52,6 +52,15 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .cloned()
         .ok_or_else(unavailable)?;
     let raw = ctx.args.raw().trim().to_owned();
+    if ctx.switches.has("board") {
+        let npc = npc(&raw).or_else(|_| {
+            mush_core::match_object(ctx.w, ctx.actor, &raw)
+                .map_err(|_| CmdError::msg("Crew or contract unavailable."))
+        })?;
+        let message = super::boarding::board(ctx, npc, &handles).map_err(CmdError::msg)?;
+        line(ctx, message);
+        return Ok(());
+    }
     if ctx.switches.has("crew") {
         if !raw.is_empty() {
             return Err(unavailable());
@@ -115,6 +124,9 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx,
             "Contract recorded. Physical presence is checked separately at preparation and launch.",
         );
+        if contract.employer == ctx.actor {
+            line(ctx, format!("Board: +sortie/board #{}", npc.0));
+        }
         return Ok(());
     }
     let (object, terms) = raw.split_once('=').ok_or_else(unavailable)?;
