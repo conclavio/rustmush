@@ -141,6 +141,19 @@ fn actual_atlas_registration_covers_discovery_and_keeps_window_arrival_as_a_bloc
         .movement_completion_manifest(action.get().unwrap())
         .unwrap()
         .snapshot();
+    let versions: Vec<_> = engine
+        .registry
+        .definitions()
+        .expect("definitions")
+        .iter()
+        .filter(|entry| {
+            entry.reference().key().owner.as_str() == NS
+                && entry.reference().key().kind.as_str() == "owner_participant"
+                && entry.reference().key().id.as_str() == PARTICIPANT
+        })
+        .map(|entry| (entry.reference().version(), entry.is_current()))
+        .collect();
+    assert_eq!(versions, vec![(1, false), (2, true)]);
     assert_eq!(manifest.entries().len(), 2);
     assert_eq!(manifest.groups().len(), 1);
     assert_eq!(

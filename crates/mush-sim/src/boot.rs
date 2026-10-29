@@ -607,6 +607,17 @@ pub(crate) fn load_boot(
     // Reconcile projections (idempotent, record-driven).
     let ids: Vec<ObjId> = st.placements.keys().copied().collect();
     for obj in ids {
+        // Atlas hydrates its resolver after Sim in the production roster. A
+        // window's fallback room is not evidence that its saved Core location
+        // is stale. Defer these projections until every owner has loaded.
+        if window_projection(&st, obj)
+            && ctx
+                .w
+                .module_state::<crate::data::RoomResolver>()
+                .is_none_or(|resolver| resolver.resolve.is_none())
+        {
+            continue;
+        }
         let Some(dest) = project(&st, ctx.w, obj) else {
             continue;
         };
@@ -770,6 +781,44 @@ pub(crate) fn load_boot(
         crate::links::refresh_actor_links(ctx.w, actor);
     }
     Ok(quarantined)
+}
+
+fn window_projection(state: &SpatialState, object: ObjId) -> bool {
+    crate::graph::effective_domain(state, object)
+        .and_then(|domain| state.domains.get(&domain))
+        .is_some_and(|domain| domain.window.is_some())
+}
+
+/// Reconcile current native window projections after the actual geometry
+/// owner has hydrated. This is ordinary boot repair, not historical evidence.
+pub(crate) fn reconcile_window_projections(ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+    let corrections: Vec<_> = {
+        let state = ctx
+            .state::<SpatialState>()
+            .ok_or_else(|| ModError::msg("sim: state slot missing"))?;
+        state
+            .placements
+            .keys()
+            .filter_map(|object| {
+                if !window_projection(state, *object) {
+                    return None;
+                }
+                let target = project(state, ctx.w, *object)?;
+                ctx.w
+                    .get(*object)
+                    .filter(|row| row.location != Some(target))
+                    .map(|_| (*object, target))
+            })
+            .collect()
+    };
+    for (object, target) in corrections {
+        ctx.w.move_to(object, target).map_err(|error| {
+            ModError::msg(format!(
+                "sim: window projection reconcile failed for {object}: {error}"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// Why a live placement is invalid, if it is.
@@ -945,6 +994,125 @@ fn drop_invalid_members(st: &mut SpatialState, w: &mush_core::World) {
 mod tests {
     use super::*;
     use crate::graph::rebuild;
+
+    #[test]
+    fn window_boot_without_an_atlas_owner_uses_fallback_only_after_all_loads() {
+        use crate::data::{
+            DomainClock, DomainId, Pose, WindowBox, WindowOpener, WindowRec, WindowSurface,
+        };
+        use mush_core::{BehaviorBinding, BehaviorId, Effects, GOD, Outbox};
+        let mut world =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::SimulationModule::new())]);
+        let fallback = world
+            .world_mut()
+            .create(ObjKind::Room, "fallback", GOD, None)
+            .expect("fallback");
+        let saved = world
+            .world_mut()
+            .create(ObjKind::Room, "saved room", GOD, None)
+            .expect("saved");
+        let actor = world
+            .world_mut()
+            .create(ObjKind::Player, "actor", GOD, Some(saved))
+            .expect("actor");
+        for (object, behavior) in [(fallback, "sim.domain"), (actor, "sim.participant")] {
+            world
+                .world_mut()
+                .attach_behavior(
+                    object,
+                    BehaviorId::new(behavior).expect("behavior"),
+                    BehaviorBinding {
+                        schema_version: 1,
+                        attached_by: GOD,
+                        attached_at: 100,
+                    },
+                )
+                .expect("attach");
+        }
+        let domain = DomainRecord {
+            id: DomainId(1),
+            host: fallback,
+            driver: passive_definition_ref(),
+            status: DomainStatus::Active,
+            clock: DomainClock::Passive,
+            presentation_location: fallback,
+            revision: 1,
+            window: Some(WindowRec {
+                region: "boot:region".into(),
+                surfaces: vec![WindowSurface::Ground],
+                bbox: WindowBox {
+                    x0: 0,
+                    y0: 0,
+                    x1: 300,
+                    y1: 300,
+                },
+                cell_cm: 100,
+                composited_from: vec![],
+                features_seen: 0,
+                opened_by: WindowOpener::Staff { by: GOD },
+                revision: 1,
+            }),
+        };
+        let placement = PlacementRecord {
+            object: actor,
+            parent: SpatialParent::Direct {
+                domain: domain.id,
+                pose: Pose::at(
+                    50,
+                    50,
+                    0,
+                    passive_rules_value(serde_json::json!({})).expect("pose"),
+                ),
+            },
+            revision: 1,
+            unplaced: None,
+        };
+        let data = ModuleBootData {
+            kv: vec![
+                (
+                    crate::data::domain_key(domain.id),
+                    serde_json::to_value(domain).expect("domain"),
+                ),
+                (
+                    placement_key(actor),
+                    serde_json::to_value(&placement).expect("placement"),
+                ),
+            ],
+            ..Default::default()
+        };
+        world
+            .engine_mut()
+            .module_loaded("sim", data, &mut Outbox::default(), &mut Effects::default())
+            .expect("actual Sim load");
+        assert_eq!(
+            world.world().get(actor).expect("actor").location,
+            Some(saved)
+        );
+        world
+            .engine_mut()
+            .all_modules_loaded(&mut Outbox::default(), &mut Effects::default())
+            .expect("all owners loaded");
+        assert_eq!(
+            world.world().get(actor).expect("actor").location,
+            Some(fallback)
+        );
+        assert_eq!(
+            world
+                .world()
+                .module_state::<SpatialState>()
+                .expect("Sim")
+                .placements
+                .get(&actor),
+            Some(&placement)
+        );
+        assert!(
+            crate::graph::verify_projections(
+                world.world().module_state::<SpatialState>().expect("Sim"),
+                world.world()
+            )
+            .is_empty()
+        );
+    }
     use mush_core::{ObjKind, World};
 
     fn space(object: ObjId, rooms: &[ObjId]) -> InteriorSpaceRecord {

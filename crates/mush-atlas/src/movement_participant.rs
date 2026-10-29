@@ -59,8 +59,16 @@ pub(crate) fn register_validator(reg: &mut Registrar<'_>) -> Result<(), ModError
                         .map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?;
+            let old_window = DefinitionRegistryBuilder::new()
+                .register(
+                    OwnerId::new(NS).map_err(|e| e.to_string())?,
+                    crate::movement_window_participant::participant_descriptor_v1()
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
             if (ctx.definition().reference() != &expected
-                && ctx.definition().reference() != &window)
+                && ctx.definition().reference() != &window
+                && ctx.definition().reference() != &old_window)
                 || !ctx.definition().references().is_empty()
             {
                 return Err("unknown Atlas participant definition".into());

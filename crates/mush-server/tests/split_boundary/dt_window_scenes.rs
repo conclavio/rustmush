@@ -20,18 +20,298 @@ use super::dt_window_movement::{
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[tokio::test]
-async fn actual_two_leg_window_geometry_stays_refused_until_atlas_discovery_joins_both_legs()
+async fn actual_two_leg_window_geometry_joins_both_discoveries_and_four_scene_events() -> TestResult
+{
+    for (kind, lost_ack) in [
+        (ObjKind::Player, false),
+        (ObjKind::Player, true),
+        (ObjKind::Npc, false),
+    ] {
+        let store = InMemoryStore::new();
+        let mut rig = projected_loop(&store, kind).await?;
+        let (source, destination, _) = start_scenes(&mut rig, &store).await?;
+        let before = [entries(&rig, source)?, entries(&rig, destination)?];
+        let expected_events = mush_scenes::movement_window_capture::capture(
+            scenes(&rig)?,
+            rig.actor,
+            Some(rig.source),
+            rig.destination,
+            rig.source,
+            100,
+        )?;
+        assert_eq!(expected_events.events().count(), 4);
+        let discovery = mush_atlas::movement_window_discovery::capture(
+            rig.world.world(),
+            rig.actor,
+            Some(rig.source),
+            rig.destination,
+            rig.source,
+            100,
+        )?;
+        let known = discovery.planned_known().map(|doc| doc.places);
+        let mutations = discovery
+            .legs()
+            .iter()
+            .filter(|leg| leg.planned_known().is_some())
+            .count();
+        assert_eq!(mutations, if kind == ObjKind::Player { 2 } else { 0 });
+        let rows = rig.world.engine().action_state().len();
+        stage(&mut rig, 0xb6)?;
+        let (bundle, installation) = rig
+            .world
+            .engine_mut()
+            .take_staged_action()?
+            .ok_or("staged")?
+            .into_parts();
+        assert_eq!(
+            record(&bundle)?.journal_value()["projected_room"],
+            json!(rig.source),
+            "actual projected return"
+        );
+        assert_eq!(
+            bundle.writes().iter().find_map(|write| match write {
+                ReplayWrite::ObjectSet { object } if object.id == rig.actor =>
+                    Some(object.location),
+                _ => None,
+            }),
+            Some(Some(rig.source)),
+            "durable Core return image"
+        );
+        let writes: Vec<_> = bundle
+            .writes()
+            .iter()
+            .filter_map(|write| match write {
+                ReplayWrite::LedgerChunkSet { write } if write.namespace().as_str() == "atlas" => {
+                    Some(write)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(writes.len(), usize::from(mutations > 0));
+        if let Some(write) = writes.first() {
+            assert_eq!(write.chunk().entries.len(), mutations);
+            for (index, entry) in write.chunk().entries.iter().enumerate() {
+                assert_eq!(entry.seq, index as u64);
+                assert_eq!(
+                    entry.value["source"]["commit"],
+                    serde_json::to_value(bundle.token())?
+                );
+                assert_eq!(
+                    entry.value["source"]["capture_digest"],
+                    serde_json::to_value(discovery.digest()?)?
+                );
+            }
+        }
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await?;
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await?;
+        // Acknowledgement alone publishes none of the live owner images.
+        assert_eq!(location(&rig), Some(rig.source));
+        assert_eq!(entries(&rig, source)?, before[0]);
+        assert_eq!(entries(&rig, destination)?, before[1]);
+        let native = rig
+            .world
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .ok_or("Sim")?;
+        assert!(!native.placements.contains_key(&rig.actor));
+        assert_eq!(native.recovery.next_seq(WINDOW_MOVEMENT_LOG), 0);
+        assert!(atlas_known(&rig)?.is_none());
+        assert_eq!(rig.world.engine().action_state().len(), rows);
+        assert_eq!(rig.moved.load(Ordering::SeqCst), 0);
+        let final_placement = record(&bundle)?
+            .evidence()?
+            .final_placement()
+            .cloned()
+            .ok_or("placement")?;
+        if lost_ack {
+            drop(installation);
+        } else {
+            rig.world
+                .engine_mut()
+                .install_composed_action(installation)?;
+            assert_eq!(atlas_known(&rig)?, known);
+            assert_eq!(location(&rig), Some(rig.source));
+        }
+        drop(rig);
+        for _ in 0..2 {
+            let restarted = restart(&store, kind).await?;
+            assert_eq!(location(&restarted), Some(restarted.source));
+            assert_eq!(atlas_known(&restarted)?, known);
+            assert_eq!(
+                restarted
+                    .world
+                    .world()
+                    .module_state::<mush_sim::SpatialState>()
+                    .ok_or("Sim")?
+                    .placements
+                    .get(&restarted.actor),
+                Some(&final_placement)
+            );
+            assert_eq!(restarted.moved.load(Ordering::SeqCst), 0);
+            for (scene, original) in [(source, &before[0]), (destination, &before[1])] {
+                let events = entries(&restarted, scene)?;
+                let expected: Vec<_> = expected_events
+                    .events()
+                    .filter(|event| event.scene() == scene)
+                    .map(|event| event.event().clone())
+                    .collect();
+                assert_eq!(events.len(), original.len() + 2);
+                assert_eq!(&events[original.len()..], expected.as_slice());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn atlas_known(rig: &super::dt_locomotion::Rig) -> TestResult<Option<Vec<mush_atlas::RecordKey>>> {
+    Ok(rig
+        .world
+        .world()
+        .module_state::<mush_atlas::AtlasState>()
+        .ok_or("Atlas")?
+        .travel
+        .known
+        .get(&rig.actor)
+        .cloned())
+}
+
+#[tokio::test]
+async fn ordered_atlas_typed_audit_refuses_missing_disconnected_and_changed_second_leg_claims()
 -> TestResult {
+    async fn preflight(
+        rows: Vec<mush_core::ActionStateBootRecord>,
+    ) -> TestResult<Result<(), mush_core::ModError>> {
+        let store = InMemoryStore::new();
+        let mut rig = restart(&store, ObjKind::Player).await?;
+        rig.world.engine_mut().hydrate_action_state(rows)?;
+        Ok(rig.world.engine_mut().audit_typed_history())
+    }
+    let store = InMemoryStore::new();
+    let mut rig = projected_loop(&store, ObjKind::Player).await?;
+    let bundle = commit(&mut rig, &store, 0xb9).await?;
+    let rows: Vec<_> = bundle
+        .writes()
+        .iter()
+        .filter_map(|write| match write {
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } if namespace.as_str() == "sim" && key.as_str().starts_with("action-state/") => Some(
+                mush_core::ActionStateBootRecord::new("sim", key.as_str(), value.clone()),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows.len(), 2);
+    preflight(rows.clone()).await??;
+    for fault in 0..8 {
+        let mut changed = rows.clone();
+        let row = changed
+            .iter_mut()
+            .find(|row| row.key.contains("/window_composed_locomotion/"))
+            .ok_or("movement")?;
+        let effect = row.value["value"]["movement"]["effects"]
+            .as_array_mut()
+            .ok_or("effects")?
+            .iter_mut()
+            .find(|effect| effect["participant"]["key"]["owner"] == "atlas")
+            .ok_or("Atlas")?;
+        match fault {
+            0 => {
+                effect["proof"]["legs"].as_array_mut().ok_or("legs")?.pop();
+            }
+            1 => effect["proof"]["legs"][1]["history_next"] = json!(0),
+            2 => effect["proof"]["legs"][1]["event"] = serde_json::Value::Null,
+            3 => effect["proof"]["legs"][1]["event"]["sequence"] = json!(0),
+            4 => {
+                effect["proof"]["legs"][1]
+                    .as_object_mut()
+                    .ok_or("leg")?
+                    .remove("event");
+            }
+            5 => effect["proof"]["discovery"]["legs"][1]["to"] = json!(99999),
+            6 => effect["proof"]["window"]["capture"]["at"] = json!(999),
+            _ => effect["proof"]["extra"] = json!(true),
+        }
+        // Rebind only the generic proof hash so the actual Atlas grammar,
+        // rather than a generic Core checksum, must reject the corruption.
+        let digest = mush_core::DefinitionDigest::for_canonical_value_with_limit(
+            "core.composed_locomotion.owner_proof.v1",
+            &json!({"binding":effect["binding"],"capture_digest":effect["capture_digest"],"proof":effect["proof"]}),
+            mush_core::locomotion::composed::MAX_MOVEMENT_PROOF_BYTES + 4096,
+        )?;
+        effect["proof_digest"] = serde_json::to_value(digest)?;
+        let error = preflight(changed)
+            .await?
+            .err()
+            .ok_or("malformed second leg accepted")?;
+        assert!(
+            error.to_string().contains("Atlas typed movement proof"),
+            "{error}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn late_second_room_discovery_drift_refuses_all_prepared_window_owner_images() -> TestResult {
     let store = InMemoryStore::new();
     let mut rig = projected_loop(&store, ObjKind::Player).await?;
     let (source, destination, _) = start_scenes(&mut rig, &store).await?;
     let before = [entries(&rig, source)?, entries(&rig, destination)?];
     let rows = rig.world.engine().action_state().len();
-    assert!(stage(&mut rig, 0xb6).is_err());
-    assert!(rig.world.engine_mut().take_staged_action()?.is_none());
+    let mut data = mush_core::ModuleBootData {
+        kv: store
+            .module_json_list("atlas")
+            .await?
+            .into_iter()
+            .map(|(key, value)| (key.into(), value))
+            .collect(),
+        ..Default::default()
+    };
+    let (_, geo) = data
+        .kv
+        .iter_mut()
+        .find(|(key, _)| key.as_str() == format!("roomgeo:{}", rig.source.0))
+        .ok_or("source geometry")?;
+    geo["neighborhood"] = json!({"pack":"dt_movement","entry":"late_second_room"});
+    stage(&mut rig, 0xba)?;
+    let (bundle, installation) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged")?
+        .into_parts();
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    // Deliberate forbidden drift through the actual owner loader, preserving
+    // the owner slot and every Core image. Only the second neighborhood moves.
+    rig.world.engine_mut().module_loaded(
+        "atlas",
+        data,
+        &mut Outbox::default(),
+        &mut Effects::default(),
+    )?;
+    assert!(
+        rig.world
+            .engine_mut()
+            .install_composed_action(installation)
+            .is_err()
+    );
     assert_eq!(location(&rig), Some(rig.source));
+    assert!(atlas_known(&rig)?.is_none());
     assert_eq!(entries(&rig, source)?, before[0]);
     assert_eq!(entries(&rig, destination)?, before[1]);
+    assert_eq!(rig.world.engine().action_state().len(), rows);
     let native = rig
         .world
         .world()
@@ -39,8 +319,147 @@ async fn actual_two_leg_window_geometry_stays_refused_until_atlas_discovery_join
         .ok_or("Sim")?;
     assert!(!native.placements.contains_key(&rig.actor));
     assert_eq!(native.recovery.next_seq(WINDOW_MOVEMENT_LOG), 0);
-    assert_eq!(rig.world.engine().action_state().len(), rows);
-    assert_eq!(rig.moved.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordered_window_discovery_recovers_fifo_and_duplicate_no_op_boundaries() -> TestResult {
+    for mode in 0..4 {
+        let store = InMemoryStore::new();
+        let rig = projected_loop(&store, ObjKind::Player).await?;
+        let atlas = rig
+            .world
+            .world()
+            .module_state::<mush_atlas::AtlasState>()
+            .ok_or("Atlas")?;
+        let source = atlas
+            .records
+            .roomgeo
+            .get(&rig.source)
+            .ok_or("source")?
+            .neighborhood
+            .clone();
+        let destination = atlas
+            .records
+            .roomgeo
+            .get(&rig.destination)
+            .ok_or("destination")?
+            .neighborhood
+            .clone();
+        let before = match mode {
+            0 => std::iter::once(source.clone())
+                .chain(
+                    (0..511)
+                        .map(|index| {
+                            Ok(mush_atlas::RecordKey::new(
+                                mush_core::CanonicalId::new("dt_fifo")?,
+                                mush_core::CanonicalId::new(format!("old_{index}"))?,
+                            ))
+                        })
+                        .collect::<TestResult<Vec<_>>>()?,
+                )
+                .collect(),
+            1 => vec![source.clone()],
+            2 => vec![source, destination],
+            _ => vec![destination],
+        };
+        let actor = rig.actor;
+        store
+            .write(WriteBatch {
+                serial: 999,
+                durable: true,
+                module_ops: vec![ModuleOp {
+                    ns: "atlas".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: format!("known:{}", actor.0).into(),
+                        value: serde_json::to_value(mush_atlas::travel::KnownDoc {
+                            places: before.clone(),
+                        })?,
+                    },
+                }],
+                ..Default::default()
+            })
+            .await?;
+        drop(rig);
+        let mut rig = restart(&store, ObjKind::Player).await?;
+        let capture = mush_atlas::movement_window_discovery::capture(
+            rig.world.world(),
+            actor,
+            Some(rig.source),
+            rig.destination,
+            rig.source,
+            100,
+        )?;
+        let changes = capture
+            .legs()
+            .iter()
+            .filter(|leg| leg.planned_known().is_some())
+            .count();
+        assert_eq!(
+            changes,
+            match mode {
+                0 => 2,
+                2 => 0,
+                _ => 1,
+            }
+        );
+        let expected = capture.planned_known().map_or(before, |doc| doc.places);
+        let bundle = commit(&mut rig, &store, 0xb7).await?;
+        assert_eq!(bundle.writes().iter().filter(|write| matches!(write, ReplayWrite::ModuleJsonSet {namespace, key, ..} if namespace.as_str()=="atlas" && key.as_str().starts_with("known:"))).count(), usize::from(changes > 0));
+        assert_eq!(atlas_known(&rig)?, Some(expected.clone()));
+        drop(rig);
+        for _ in 0..2 {
+            assert_eq!(
+                atlas_known(&restart(&store, ObjKind::Player).await?)?,
+                Some(expected.clone())
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordered_window_history_requires_each_original_discovery_mutation() -> TestResult {
+    for missing in [false, true] {
+        let store = InMemoryStore::new();
+        let mut rig = projected_loop(&store, ObjKind::Player).await?;
+        start_scenes(&mut rig, &store).await?;
+        let bundle = commit(&mut rig, &store, 0xb8).await?;
+        let write = bundle
+            .writes()
+            .iter()
+            .find_map(|write| match write {
+                ReplayWrite::LedgerChunkSet { write } if write.namespace().as_str() == "atlas" => {
+                    Some(write)
+                }
+                _ => None,
+            })
+            .ok_or("knowledge journal")?;
+        assert_eq!(write.chunk().entries.len(), 2);
+        let mut value = serde_json::to_value(write.chunk())?;
+        if missing {
+            value["entries"].as_array_mut().ok_or("entries")?.pop();
+        } else {
+            value["entries"][1]["value"]["at_utc"] = json!(999);
+        }
+        store
+            .write(WriteBatch {
+                serial: 999,
+                durable: true,
+                module_ops: vec![ModuleOp {
+                    ns: "atlas".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: mush_core::chunk_key(write.log_id(), write.chunk().chunk),
+                        value,
+                    },
+                }],
+                ..Default::default()
+            })
+            .await?;
+        drop(rig);
+        super::dt_locomotion::assert_native_refusal_before_any_boot_mutation(&store, "atlas")
+            .await?;
+    }
     Ok(())
 }
 

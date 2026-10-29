@@ -42,6 +42,12 @@ pub(crate) fn window_factory(
                 mush_atlas::movement_window_participant::participant_descriptor()?,
             )
             .map_err(bad)?;
+        let old_participant = definitions
+            .register(
+                owner.clone(),
+                mush_atlas::movement_window_participant::participant_descriptor_v1()?,
+            )
+            .map_err(bad)?;
         let observers = mush_atlas::movement_window_participant::observer_descriptors()?
             .into_iter()
             .map(|descriptor| definitions.register(owner.clone(), descriptor).map_err(bad))
@@ -82,7 +88,11 @@ pub(crate) fn window_factory(
             )
             .map_err(|_| bad("window Scenes reader already belongs to a composition"))?;
         reader
-            .set(service.owner_reader(&participant).map_err(bad)?)
+            .set(
+                service
+                    .owner_reader_retaining(&participant, &[old_participant])
+                    .map_err(bad)?,
+            )
             .map_err(|_| bad("window Atlas reader already belongs to a composition"))?;
         Ok(service)
     })
