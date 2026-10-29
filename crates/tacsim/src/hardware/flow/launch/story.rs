@@ -700,6 +700,73 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     Ok(())
 }
 
+/// The rating's own result pages (matched by digest against its receipt's
+/// page refs) folded into procurement's score (doc 17h §3 M8f).
+fn score(r: &Rig, rating: &RatingRef) -> Result<mush_roll::commerce::rating::RatingScore> {
+    use mush_roll::commerce::rating::RatingPage;
+    let mut receipt = None;
+    for wire in r.rows("rating_receipts") {
+        let read: RatingReceipt = serde_json::from_value(wire)?;
+        if read.reference()? == *rating {
+            receipt = Some(read);
+        }
+    }
+    let receipt = receipt.ok_or("the rating's receipt")?;
+    let refs = receipt.result().pages();
+    let mut pages = Vec::new();
+    for wire in r.rows("rating_pages") {
+        let page: RatingPage = serde_json::from_value(wire)?;
+        let digest = page.content().digest()?;
+        if refs.iter().any(|p| p.digest() == digest) {
+            pages.push(page.content().clone());
+        }
+    }
+    check_eq!(pages.len(), refs.len(), "every result page of the rating");
+    Ok(mush_roll::commerce::rating::rating_score(&pages).ok_or("a score")?)
+}
+
+/// Doc 17h M8 (the zero-PC story's precondition): the launch's House combat
+/// doctrines, rated for real by the Registry, win SOME of its trials against
+/// Standard (not all), so a procuring House scores them above 0 per mille.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "two genuine Registry ratings of the shipped House doctrines; dispatch only"]
+async fn launch_house_doctrines_win_some_registry_trials() -> Result {
+    let (mut r, mut d) = setup()?;
+    reboot(&mut r, &d)?;
+    r.initialize_roll()?;
+    for action in [
+        "initialize_core_origin",
+        "initialize_core_production",
+        "initialize_core_refit",
+    ] {
+        r.perform("industry", action, GOD, json!({}))?;
+    }
+    grant_registry(&mut r, &d)?;
+    d.mode = LaunchMode::Active;
+    reboot(&mut r, &d)?;
+    connected(&mut r)?;
+    for (selector, house, ordinal) in [
+        ("meridiani", d.houses.meridiani.clone(), 2),
+        ("coprates", d.houses.coprates.clone(), 1),
+    ] {
+        command(
+            r.world_mut(),
+            GOD,
+            &format!("@mind/launch {selector}={}", house.source_name),
+        )?;
+        let (_, rating) = certify(&mut r, &house.source_name, ordinal).await?;
+        let score = score(&r, &rating)?;
+        eprintln!("M8_HOUSE_SCORE {selector} {score:?}");
+        check!(score.wins >= 1, "{selector} wins some trials: {score:?}");
+        check!(
+            score.wins < score.cases,
+            "{selector} does not win all: {score:?}"
+        );
+        check!(score.permille > 0, "{selector} scores: {score:?}");
+    }
+    Ok(())
+}
+
 /// Doc 17h §3 M8h (M8f H7's rule, the lead's ruling: a read is never refused for a
 /// limit): a human curator granted `roll.holder.org` on Meridiani's House scope with
 /// `limit=1` attests the due Meridiani filing through the verb `@mind/attest <filed>

@@ -32,6 +32,9 @@ struct Harness {
 }
 impl Harness {
     fn new(role: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_source(role, SOURCE)
+    }
+    fn with_source(role: &str, source: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let envelope: Envelope = serde_json::from_str(ENVELOPE)?;
         let checked = crate::arena::schema::validate_envelope(
             &envelope.schema,
@@ -77,8 +80,8 @@ impl Harness {
                 super::register_api,
             )),
             &ArenaConfig::default(),
-            SOURCE,
-            fixture::digest(SOURCE),
+            source,
+            fixture::digest(source),
         )
         .map_err(|error| format!("source compile: {error:?}"))?
         .recording();
@@ -355,7 +358,7 @@ fn engage_requires_its_exact_fresh_earned_hostile_without_substitution() -> Test
 }
 
 #[test]
-fn no_order_expiry_or_hold_fire_cannot_reuse_previous_arming() -> TestResult {
+fn no_order_expiry_or_hold_fire_never_reuse_previous_arming() -> TestResult {
     let old = fixture::view()
         .weapons
         .into_iter()
@@ -372,7 +375,17 @@ fn no_order_expiry_or_hold_fire_cannot_reuse_previous_arming() -> TestResult {
                 _ => view.order.as_mut().ok_or("order")?.hold_fire = true,
             }
             let result = harness.think(view, &[], mode)?;
-            check!(!arms(&result));
+            // Hold-fire never arms. With no current order (modes 0 and 1) the
+            // standing doctrine may arm afresh on the card's own terms, but
+            // never carries the old condition over.
+            if mode == 2 {
+                check!(!arms(&result));
+            }
+            check!(
+                conditions(&result)
+                    .iter()
+                    .all(|c| c.target != old.target || c.min_permille != old.min_permille)
+            );
             check!(
                 result
                     .intents
@@ -380,6 +393,42 @@ fn no_order_expiry_or_hold_fire_cannot_reuse_previous_arming() -> TestResult {
             );
             check!(has_goal(&result, MotorGoal::Hold));
         }
+    }
+    Ok(())
+}
+
+/// Doc 17h M8: with no current order the Field Series keeps its standing
+/// doctrine. It stands and fights a fresh hostile in reach on its card's
+/// odds, takes the match objective when nothing hostile is in reach, and
+/// holds when there is neither.
+#[test]
+fn no_current_order_stands_fights_in_reach_or_takes_the_objective() -> TestResult {
+    for (name, odds, kept) in [("Field", 400, 1), ("Reserve", 650, 3)] {
+        let harness = Harness::new(name)?;
+        let mut view = engaged();
+        view.order = None;
+        let fighting = harness.think(view.clone(), &[], 0)?;
+        check!(has_goal(&fighting, MotorGoal::Hold));
+        check!(!conditions(&fighting).is_empty());
+        for arm in conditions(&fighting) {
+            check_eq!(
+                arm.target,
+                SlotTarget::Contact {
+                    id: fixture::HOSTILE
+                }
+            );
+            check_eq!(arm.min_permille, odds);
+            check_eq!(arm.min_rounds_left, kept);
+        }
+        let mut clear = view.clone();
+        clear.contacts.retain(|row| row.id == fixture::FRIEND);
+        let taking = harness.think(clear.clone(), &[], 1)?;
+        check!(has_goal(&taking, MotorGoal::Cell { x: 6, y: 4 }));
+        check!(!arms(&taking));
+        clear.objective = None;
+        let holding = harness.think(clear, &[], 2)?;
+        check!(has_goal(&holding, MotorGoal::Hold));
+        check!(!arms(&holding));
     }
     Ok(())
 }
@@ -743,11 +792,71 @@ fn explicit_withdraw_and_ordered_startup_never_create_a_combat_fallback() -> Tes
         let result = harness.think(cold.clone(), &[], 1)?;
         check!(result.intents.contains(&IntentKind::Startup));
         check!(!arms(&result));
+        // Doc 17h M8: a cold hull with no current order starts up for its
+        // standing doctrine, and still arms nothing on that think.
         cold.order = None;
         let result = harness.think(cold, &[], 2)?;
-        check!(has_goal(&result, MotorGoal::Hold));
-        check!(!result.intents.contains(&IntentKind::Startup));
+        check!(result.intents.contains(&IntentKind::Startup));
         check!(!arms(&result));
+    }
+    Ok(())
+}
+
+/// Doc 17h M8: the unordered doctrine changes nothing under a current order.
+/// The shipped-before source (content version 3 as first pinned, rebuilt here
+/// by taking the new `standing` out and restoring the old prologue, and proved
+/// by its old digest) and the current source emit the same intents and memory
+/// for every order objective, power state and hold-fire flag.
+#[test]
+fn under_a_current_order_the_doctrine_is_unchanged() -> TestResult {
+    let start = SOURCE
+        .find("// With no current order")
+        .ok_or("new doctrine")?;
+    let end = SOURCE.find("fn think(view, card)").ok_or("think")?;
+    let new_prologue = "    if view.power != \"online\" { startup(); return; }\n    let order = view.order;\n    if order == () || order.expires_ms <= t_ms() { this.standing(view, card); return; }\n";
+    let old_prologue = "    let order = view.order;\n    if order == () || order.expires_ms <= t_ms() { hold(); return; }\n    if view.power != \"online\" { startup(); return; }\n";
+    check!(SOURCE.contains(new_prologue));
+    let before =
+        format!("{}{}", &SOURCE[..start], &SOURCE[end..]).replace(new_prologue, old_prologue);
+    check_eq!(
+        crate::arena::digest_text(&Sha256::digest(before.as_bytes()).into()),
+        "6c906d59c182632a4227d589fe9d60887c04af97975ebead865316c4270505d5"
+    );
+    let objectives = [
+        MindObjective::Hold,
+        MindObjective::Advance { to: (6, 4) },
+        MindObjective::Engage {
+            target: Some(fixture::HOSTILE),
+        },
+        MindObjective::Engage { target: None },
+        MindObjective::Withdraw,
+        MindObjective::Screen {
+            facing_mdeg: 90_000,
+        },
+        MindObjective::Support {
+            of: Some(fixture::FRIEND),
+        },
+    ];
+    for name in ["Field", "Reserve"] {
+        let (old, new) = (Harness::with_source(name, &before)?, Harness::new(name)?);
+        let mut sequence = 0;
+        for objective in &objectives {
+            for power in [Power::Online, Power::Off] {
+                for hold_fire in [false, true] {
+                    for locked in [false, true] {
+                        let mut view = healthy(*objective);
+                        view.power = power;
+                        view.order.as_mut().ok_or("order")?.hold_fire = hold_fire;
+                        view.lock = locked.then_some(fixture::HOSTILE);
+                        let was = old.think(view.clone(), &[], sequence)?;
+                        let is = new.think(view, &[], sequence)?;
+                        check_eq!(was.intents, is.intents, "{name} {objective:?} {power:?}");
+                        check_eq!(was.memory, is.memory);
+                        sequence += 1;
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

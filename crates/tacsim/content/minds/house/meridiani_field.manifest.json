@@ -8,8 +8,8 @@
   "declared_class": "II",
   "ops_ceiling": 3000,
   "mind_abi": "rhai=1.26.0;api=6;stock=3",
-  "source_sha256": "6c906d59c182632a4227d589fe9d60887c04af97975ebead865316c4270505d5",
-  "source_bytes": 4678,
+  "source_sha256": "37944daed8457b782c48ab949e92a38451b6ee0406d2ec0fc7a302374804bea5",
+  "source_bytes": 5441,
   "envelope_sha256": "be96ea83e7f567282f440c5fc2456fadf4aaaefa2d59a7b39d6cc5f1d9d2e73f",
   "profiles": [
     {
@@ -33,9 +33,10 @@
     "closest",
     "route",
     "engage",
+    "standing",
     "think"
   ],
-  "authoring_choices": "Profile names, parameters and tactics are provisional content choices. No current order or Hold means hold and disarm; no substitute hostile for an unusable Engage target. Advance defends without changing its route, Support defends only inside the charge leash, and Screen fires only inside its public arc. Discretion names the intended legal category, not a separate authority or measured class.",
+  "authoring_choices": "Profile names, parameters and tactics are provisional content choices. Hold means hold and disarm; without a current order it starts up and holds its ground (or takes the match objective), fighting on its own terms; no substitute hostile for an unusable Engage target. Advance defends without changing its route, Support defends only inside the charge leash, and Screen fires only inside its public arc. Discretion names the intended legal category, not a separate authority or measured class.",
   "authority": "Source/envelope/probes only. No real Meridiani organization, title, filing, Registry certificate, listing, licence, dispatch or activation.",
   "integration_required": [
     "real scoped house publisher and paid filing",
