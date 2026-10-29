@@ -12,8 +12,17 @@ If the terms change or the NPC leaves, inspect the current list again.
 `+sortie/contract #<NPC>` shows your accepted agreement, even after leaving port.
 Only the employer and the hired character can inspect that contract.
 
-Hiring does not move the person or assign them a vehicle. They board through
-ordinary movement. Preparation and launch will check who is currently inside
+Hiring does not move the person or assign them a vehicle. Use `+sortie/board <npc>`
+to arrange boarding under your recorded crew contract. Give their local name or
+a # followed by their numeric ID; the contract display prints the boarding command. As with passenger
+boarding, you may arrange this from the ship's current port or aboard your ship,
+while it is alongside and before filing departure clearance. The crew member
+walks through real station exits to the berth, uses the airlock and settles into
+the crew compartment. Locked routes and full berths can stop boarding; clear the
+problem and invite them again. This is an explicit boarding action, not an ongoing
+follow order.
+
+Preparation and launch will check who is currently inside
 the carrier. Hiring currently records employment and scope without charging or
 accruing wages; future pay will follow contract terms rather than time aboard.
 
@@ -26,6 +35,7 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/crew` | Inspect NPCs currently available for hire in this port room |
 | `+sortie/hire #<NPC>=<printed terms>` | Accept the displayed employment terms |
 | `+sortie/contract #<NPC>` | Inspect your recorded crew agreement |
+| `+sortie/board <npc>` | Arrange boarding for an NPC you hired, using the ship's real berth |
 | `+sortie/preset <name>=<plan JSON>` | Create a private preset |
 | `+sortie/copy <preset>:<revision>=<name>` | Copy one of your presets |
 | `+sortie/load <preset>:<revision>` | Create a draft from a preset |

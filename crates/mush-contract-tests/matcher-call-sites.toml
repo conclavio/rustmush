@@ -796,6 +796,12 @@ note = "@llm/kill and /revive; the verb is Wizard."
 # ---------------------------------------------------------------------------
 
 [[site]]
+file = "tacsim/src/detachment/crew/commands.rs"
+function = "command"
+guard = "none"
+note = "+sortie/board accepts a name or explicit ID, then requires the authenticated actor's own committed employment contract before checking character state or whereabouts. Missing and unowned contracts share the same refusal. This is an employment authority gate, not a perception check; remote selection of one's own contracted crew is intentional."
+
+[[site]]
 file = "tacsim/src/port/passenger/commands.rs"
 function = "resolve"
 guard = "perceive"

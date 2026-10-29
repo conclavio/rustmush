@@ -73,5 +73,6 @@ pub(crate) fn traveller(w: &World, npc: ObjId) -> Option<TravellerDef> {
 
 pub(crate) use commands::register;
 pub(crate) use movement::at_station;
+pub(crate) use movement::board_person;
 pub(crate) use movement::{agents, step, tick, transition_allowed};
 pub(crate) use movement::{departure_refusal, voyage_event};

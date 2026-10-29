@@ -36,6 +36,9 @@ ship. The passenger walks through real station exits to its berth, boards throug
 the airlock and settles into the crew compartment when one is available. Arrange
 this before filing the ship's departure clearance.
 
+Hired crew use the same physical boarding path through `+sortie/board <npc>`,
+checked against their employment contract. See [detachment help](detachments.md).
+
 A passenger is a person aboard the real ship. Plan the passage with enough
 reaction mass and voyage provisions for everyone aboard (`help trade` and
 `help orders`). The fare is held under the passage agreement and paid on its

@@ -231,11 +231,33 @@ pub(crate) fn board(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<String, String> {
         store::stage_transition(ctx, &row, Phase::Aboard, None)?;
         return Ok("The passenger is already aboard; the manifest is being confirmed.".into());
     }
+    board_person(ctx, npc, row.hull, &row.origin)?;
+    mush_npc::notify_role_event(
+        ctx,
+        npc,
+        "You have boarded the agreed ship. Settle into the crew compartment; if someone is with you, you may thank them or make a little conversation about the trip.",
+    );
+    store::stage_transition(ctx, &row, Phase::Aboard, None)?;
+    Ok(format!(
+        "{} has come aboard {}. The passenger occupies a real berth and is included in the voyage's provisions.",
+        crate::port::coop::name_of(ctx.w, npc),
+        crate::port::coop::name_of(ctx.w, row.hull)
+    ))
+}
+
+/// Shared physical boarding for an agreed passenger or hired crew member.
+/// Callers establish their own agreement, captain and current-port checks.
+/// This writes ordinary movement only, never a booking or crew manifest.
+pub(crate) fn board_person(
+    ctx: &mut Ctx<'_>,
+    npc: ObjId,
+    hull: ObjId,
+    port: &str,
+) -> Result<(), String> {
     let (gallery, airlock, slot, crew, rooms) = {
-        let view = crate::port::ship::hull_view(ctx.w, row.hull)
-            .ok_or("The ship's berth is unavailable.")?;
-        let crate::port::ship::Berth::Docked { map, .. } =
-            crate::port::ship::berth_of(ctx.w, row.hull)
+        let view =
+            crate::port::ship::hull_view(ctx.w, hull).ok_or("The ship's berth is unavailable.")?;
+        let crate::port::ship::Berth::Docked { map, .. } = crate::port::ship::berth_of(ctx.w, hull)
         else {
             return Err("The ship is not alongside.".into());
         };
@@ -250,7 +272,7 @@ pub(crate) fn board(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<String, String> {
         let rooms: BTreeSet<_> = view.row.rooms.values().copied().map(ObjId).collect();
         (gallery, airlock, slot, crew, rooms)
     };
-    walk(ctx, npc, gallery, &station_rooms(ctx.w, &row.origin))?;
+    walk(ctx, npc, gallery, &station_rooms(ctx.w, port))?;
     mush_sim::place_interior(ctx, npc, airlock, Some(slot))
         .map_err(|_| "The ship has no available passenger berth.")?;
     ctx.out.pin_deferred();
@@ -262,17 +284,7 @@ pub(crate) fn board(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<String, String> {
     if let Some(crew) = crew {
         let _ = walk(ctx, npc, crew, &rooms);
     }
-    mush_npc::notify_role_event(
-        ctx,
-        npc,
-        "You have boarded the agreed ship. Settle into the crew compartment; if someone is with you, you may thank them or make a little conversation about the trip.",
-    );
-    store::stage_transition(ctx, &row, Phase::Aboard, None)?;
-    Ok(format!(
-        "{} has come aboard {}. The passenger occupies a real berth and is included in the voyage's provisions.",
-        crate::port::coop::name_of(ctx.w, npc),
-        crate::port::coop::name_of(ctx.w, row.hull)
-    ))
+    Ok(())
 }
 
 fn ashore(ctx: &mut Ctx<'_>, row: &Booking, port: &str) -> Result<(), String> {
