@@ -26,6 +26,9 @@ use smol_str::SmolStr;
 
 const FEED: &str = "tactics.unit";
 
+#[path = "module/movement_custody.rs"]
+mod movement_custody;
+
 fn register_ref(
     builder: &mut DefinitionRegistryBuilder,
     owner: &str,

@@ -164,6 +164,31 @@ impl IcCustodies {
     pub(crate) fn holds(&self, unit: ObjId) -> bool {
         self.active.contains_key(&unit)
     }
+    pub(crate) fn movement_preimage(
+        &self,
+        objects: &BTreeSet<ObjId>,
+    ) -> Result<(u64, Vec<(ObjId, bool)>), ParticipantError> {
+        self.ready()?;
+        if objects.is_empty()
+            || objects.len() > mush_sim::movement_custody::MAX_MOVEMENT_CUSTODY_OBJECTS
+        {
+            return Err(refused("movement scope"));
+        }
+        let mut rows = Vec::with_capacity(objects.len());
+        for object in objects {
+            if let Some(token) = self.active.get(object) {
+                let row = self
+                    .rows
+                    .get(token)
+                    .ok_or_else(|| refused("movement custody index"))?;
+                if row.open.unit != *object || row.closed.is_some() {
+                    return Err(refused("movement custody identity"));
+                }
+            }
+            rows.push((*object, self.holds(*object)));
+        }
+        Ok((self.generation, rows))
+    }
 }
 /// Read-only facts for the mandatory full four-owner final audit.
 pub struct IcCustodyView<'a> {

@@ -49,6 +49,7 @@ mod locomotion;
 mod locomotion_capture;
 mod locomotion_composed;
 mod locomotion_scenes;
+pub mod movement_custody;
 mod movement_reads;
 pub use locomotion_composed::ComposedMovementFactory;
 mod personnel;
