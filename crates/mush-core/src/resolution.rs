@@ -180,6 +180,8 @@ pub struct PrepareCtx<'a> {
     owner_error: Option<crate::participant::ParticipantError>,
     carry_hooks: Option<&'a [crate::module::HookReg]>,
     move_hooks: Option<&'a [crate::module::HookReg]>,
+    captured_locomotion: Option<&'a crate::locomotion::CapturedLocomotion>,
+    captured_admission: Option<crate::locomotion::LocomotionAdmission>,
     owner_reads: Option<crate::read_service::PrepareReadContext<'a>>,
     accounts: Option<crate::account::observation::AccountPrepareContext<'a>>,
     registered_transaction: Option<(
@@ -218,6 +220,8 @@ impl<'a> PrepareCtx<'a> {
             owner_error: None,
             carry_hooks: None,
             move_hooks: None,
+            captured_locomotion: None,
+            captured_admission: None,
             owner_reads: None,
             accounts: None,
             registered_transaction: None,
@@ -231,6 +235,53 @@ impl<'a> PrepareCtx<'a> {
     ) -> Self {
         self.registered_transaction = Some((base, provider));
         self
+    }
+
+    pub(crate) fn with_captured_locomotion(
+        mut self,
+        capture: &'a crate::locomotion::CapturedLocomotion,
+    ) -> Self {
+        self.captured_locomotion = Some(capture);
+        self
+    }
+
+    pub(crate) fn take_captured_admission(
+        &mut self,
+    ) -> Option<crate::locomotion::LocomotionAdmission> {
+        self.captured_admission.take()
+    }
+
+    /// Admit only the locomotion selected by the actual captured command.
+    /// The Engine retains this admission through staging and final writer
+    /// handoff even if the provider ignores the returned reference. This is
+    /// an inert proof, not a physical image or movement completion capability.
+    /// AlreadyHome has no moving admission and refuses this preparation.
+    pub fn admit_captured_locomotion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<&crate::locomotion::LocomotionAdmission, crate::participant::ParticipantError> {
+        let result = (|| {
+            let capture = self
+                .captured_locomotion
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            if self.captured_admission.is_some() {
+                return Err(crate::participant::ParticipantError::Authority);
+            }
+            match self.admit_locomotion(txn, capture.request())? {
+                crate::locomotion::LocomotionDecision::Admitted(admission) => Ok(admission),
+                crate::locomotion::LocomotionDecision::AlreadyHome => Err(
+                    crate::participant::ParticipantError::refused("actor is already home"),
+                ),
+            }
+        })();
+        match result {
+            Ok(admission) => Ok(self.captured_admission.insert(admission)),
+            Err(error) => {
+                txn.poison_owner_read();
+                self.owner_error.get_or_insert(error.clone());
+                Err(error)
+            }
+        }
     }
 
     /// Reserve the closed Registry job's exact future completion keys. The job

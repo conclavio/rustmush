@@ -11,7 +11,8 @@ economic facts needed to activate a mission.
 | DT.2b2b.1 | Immutable personnel crossing capture | Same-commit physical evidence is explicitly uncertified while legacy paths remain; no intervals or eligibility |
 | DT.2b2b.2 | Prepared staff interior authoring | `@spatial/space` commits its real topology and crossing capture together; no synchronous fallback |
 | DT.2b2b.3a | Bounded ordinary movement admission | Inert Core proof of actual route, locks and hooks; no relocation or publication capability |
-| DT.2b2b.3b+ | Movement coverage, certified intervals and departure manifests | Every membership-changing path records or refuses the transition, including nested occupied hulls; no inferred historical embarkation |
+| DT.2b2b.3b | Captured ordinary command admission | Actual dispatch provenance and retained final gate checks; no production routing or relocation |
+| DT.2b2b.3c+ | Movement coverage, certified intervals and departure manifests | Every membership-changing path records or refuses the transition, including nested occupied hulls; no inferred historical embarkation |
 | DT.2b3 | Contracted NPC crew and wages | Existing characters, accepted terms, actual aboard time and atomic settlement |
 | DT.2b4 | Preparation and activation | Live authority, consent, personnel, licences, exclusive reservations and accepted mission-role grants |
 | DT.3 | Per-unit launch and operation history | Durable actual departures, partial failure/retry, hull epochs, custody and returns |
@@ -91,6 +92,8 @@ Uncertified crossing capture and its compatibility boundary are specified in
 The first migrated command is specified in [26f](26f-prepared-interior-command.md).
 Ordinary movement admission and the remaining command migration are specified
 in [26g](26g-locomotion-admission.md).
+Captured command provenance and final admission are specified in
+[26h](26h-locomotion-dispatch.md).
 
 ## DT.2b1 verification
 

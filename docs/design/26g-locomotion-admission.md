@@ -56,9 +56,9 @@ negation cannot turn capacity exhaustion into permission.
 
 ## Remaining command migration
 
-This admission grants no publication capability. A later consumer must bind the
-canonical command ingress and revalidate the existing CommandGate checks before
-using it. The final prepared image must retain these route and hook checks
+This admission grants no publication capability. [26h](26h-locomotion-dispatch.md)
+adds canonical command capture and retained CommandGate checks through final
+writer admission. The eventual prepared physical image must retain these route and hook checks
 through the single writer's custody and installation; arbitrary module facts
 read by hooks are not represented by the object trace alone.
 
