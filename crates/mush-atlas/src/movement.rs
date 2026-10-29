@@ -228,14 +228,7 @@ impl MovementCapture {
     /// This value grants no authority to install or persist it.
     #[must_use]
     pub fn planned_known(&self) -> Option<KnownDoc> {
-        match &self.discovery {
-            Discovery::Mapped {
-                neighborhood,
-                known_before,
-                ..
-            } => plan_learn(known_before.as_deref().unwrap_or_default(), neighborhood),
-            _ => None,
-        }
+        planned_discovery(&self.discovery)
     }
 
     #[must_use]
@@ -297,30 +290,7 @@ impl MovementCapture {
         if self.format != 1 {
             return Err(CaptureError::Invalid);
         }
-        match &self.discovery {
-            Discovery::NotPlayer if self.actor_kind != Some(ObjKind::Player) => {}
-            Discovery::AtlasAbsent
-                if self.actor_kind == Some(ObjKind::Player)
-                    && self.atlas_slot == SlotPresence::Absent => {}
-            Discovery::Unmapped
-                if self.actor_kind == Some(ObjKind::Player)
-                    && self.atlas_slot == SlotPresence::Present => {}
-            Discovery::Mapped {
-                neighborhood,
-                known_before,
-                change,
-            } if self.actor_kind == Some(ObjKind::Player)
-                && self.atlas_slot == SlotPresence::Present =>
-            {
-                check_knowledge(neighborhood, known_before.as_deref())?;
-                if *change
-                    != learn_change(known_before.as_deref().unwrap_or_default(), neighborhood)
-                {
-                    return Err(CaptureError::Invalid);
-                }
-            }
-            _ => return Err(CaptureError::Invalid),
-        }
+        validate_discovery(&self.discovery, self.actor_kind, self.atlas_slot)?;
         let actor = self.actor_kind.is_some_and(ObjKind::is_actor);
         match &self.window {
             WindowObservation::NotActor if !actor => {}
@@ -404,26 +374,10 @@ fn capture_observed(
     to: ObjId,
     at: i64,
 ) -> Result<MovementCapture, CaptureError> {
-    let discovery = if actor_kind != Some(ObjKind::Player) {
-        Discovery::NotPlayer
-    } else if let Some(state) = state {
-        if let Some(geo) = state.records.roomgeo.get(&to) {
-            let before = state.travel.known.get(&actor);
-            check_knowledge(&geo.neighborhood, before.map(Vec::as_slice))?;
-            Discovery::Mapped {
-                neighborhood: geo.neighborhood.clone(),
-                change: learn_change(
-                    before.map(Vec::as_slice).unwrap_or_default(),
-                    &geo.neighborhood,
-                ),
-                known_before: before.cloned(),
-            }
-        } else {
-            Discovery::Unmapped
-        }
-    } else {
-        Discovery::AtlasAbsent
-    };
+    let before = state
+        .and_then(|state| state.travel.known.get(&actor))
+        .map(Vec::as_slice);
+    let discovery = observe_discovery(state, actor_kind, to, before)?;
     let window = if actor_kind.is_some_and(ObjKind::is_actor) {
         let selection = if let Some(state) = state {
             check_windows(
@@ -476,6 +430,67 @@ fn capture_observed(
     };
     let _ = capture.encode()?;
     Ok(capture)
+}
+
+pub(crate) fn observe_discovery(
+    state: Option<&AtlasState>,
+    actor_kind: Option<ObjKind>,
+    to: ObjId,
+    before: Option<&[RecordKey]>,
+) -> Result<Discovery, CaptureError> {
+    Ok(if actor_kind != Some(ObjKind::Player) {
+        Discovery::NotPlayer
+    } else if let Some(state) = state {
+        if let Some(geo) = state.records.roomgeo.get(&to) {
+            check_knowledge(&geo.neighborhood, before)?;
+            Discovery::Mapped {
+                neighborhood: geo.neighborhood.clone(),
+                change: learn_change(before.unwrap_or_default(), &geo.neighborhood),
+                known_before: before.map(<[RecordKey]>::to_vec),
+            }
+        } else {
+            Discovery::Unmapped
+        }
+    } else {
+        Discovery::AtlasAbsent
+    })
+}
+
+pub(crate) fn planned_discovery(discovery: &Discovery) -> Option<KnownDoc> {
+    match discovery {
+        Discovery::Mapped {
+            neighborhood,
+            known_before,
+            ..
+        } => plan_learn(known_before.as_deref().unwrap_or_default(), neighborhood),
+        _ => None,
+    }
+}
+
+pub(crate) fn validate_discovery(
+    discovery: &Discovery,
+    actor_kind: Option<ObjKind>,
+    slot: SlotPresence,
+) -> Result<(), CaptureError> {
+    match discovery {
+        Discovery::NotPlayer if actor_kind != Some(ObjKind::Player) => {}
+        Discovery::AtlasAbsent
+            if actor_kind == Some(ObjKind::Player) && slot == SlotPresence::Absent => {}
+        Discovery::Unmapped
+            if actor_kind == Some(ObjKind::Player) && slot == SlotPresence::Present => {}
+        Discovery::Mapped {
+            neighborhood,
+            known_before,
+            change,
+        } if actor_kind == Some(ObjKind::Player) && slot == SlotPresence::Present => {
+            check_knowledge(neighborhood, known_before.as_deref())?;
+            if *change != learn_change(known_before.as_deref().unwrap_or_default(), neighborhood) {
+                return Err(CaptureError::Invalid);
+            }
+        }
+        _ => return Err(CaptureError::Invalid),
+    }
+    Ok(())
 }
 
 fn observe_placement(record: Option<&PlacementRecord>) -> SimPlacementObservation {

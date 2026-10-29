@@ -672,6 +672,17 @@ historical audit, so the closed root cannot publish that route until actual
 second-leg discovery and its knowledge journal join are implemented. Completing
 Scenes does not complete Atlas discovery for the second Core leg.
 
+Atlas now supplies a separate bounded passive discovery capture for both legs.
+The projected-room observation uses the admitted leg's proposed knowledge
+postimage, so a FIFO eviction can require learning the source again on a return
+loop. Duplicate visits retain their existing order and produce no new document.
+The capture shares the single-leg discovery policy, checks exact route continuity
+and original known-book preimages, and distinguishes missing from empty books.
+Its canonical decoder grants no movement, window selection or publication
+authority. Tests compare both observations with the actual registered legacy
+observer; the native publisher and historical knowledge join still need to
+consume this capture before the closed root can admit a second room leg.
+
 V2 registers no offer or live command route. Its manifest remains partial:
 the bounded original journal refuses a 257th commit until a real checkpoint or
 archival protocol is implemented, rather than accepting an unrecoverable tail.
