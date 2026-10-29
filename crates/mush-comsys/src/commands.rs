@@ -989,6 +989,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(delcom_cmd),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "comlist".into(),
@@ -1000,6 +1001,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(comlist_cmd),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: "comtitle".into(),
@@ -1012,6 +1014,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(comtitle_cmd),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "clist".into(),
@@ -1025,6 +1028,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(clist_cmd),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: "@channel".into(),

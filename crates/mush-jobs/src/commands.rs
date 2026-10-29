@@ -42,6 +42,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_request),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "+jobs".into(),
@@ -54,6 +55,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_jobs),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: "+job".into(),
@@ -103,6 +105,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_note),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "+notes".into(),
@@ -114,6 +117,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_notes),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }
 

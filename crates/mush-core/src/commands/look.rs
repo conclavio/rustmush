@@ -305,7 +305,7 @@ fn fmt_ref(w: &World, id: Option<ObjId>) -> String {
 
 /// Register `look` and `examine`.
 pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "look".into(),
             aliases: vec!["l".into()],
@@ -319,7 +319,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         },
         Arc::new(look_cmd),
     )?;
-    reg.register(
+    reg.register_read_only(
         CommandSpec {
             name: "examine".into(),
             aliases: vec!["ex".into()],

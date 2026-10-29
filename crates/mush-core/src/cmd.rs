@@ -676,6 +676,16 @@ impl Registry {
         self.register_tagged(spec, handler, None, CommandCompatibility::LegacyPostImage)
     }
 
+    /// Register a core/host command whose contract is inspection or
+    /// presentation only ([`CommandCompatibility::ReadOnly`]).
+    pub fn register_read_only(
+        &mut self,
+        spec: CommandSpec,
+        handler: Arc<dyn CommandHandler>,
+    ) -> Result<(), RegistryError> {
+        self.register_tagged(spec, handler, None, CommandCompatibility::ReadOnly)
+    }
+
     /// Register a core command that resolves only when its name is typed in
     /// full (case-folded), never as a prefix — otherwise as
     /// [`register`](Self::register) does (core, no module), with one

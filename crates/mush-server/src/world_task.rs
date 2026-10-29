@@ -1408,10 +1408,9 @@ pub fn base_registry() -> Registry {
 /// [`StepOutcome::Shutdown`] or when every [`WorldHandle`] (and internal effect
 /// sender) is dropped; the writer drains its queue and exits after that.
 /// The durable-outbox registry every spawn path uses: the production adapters
-/// (`production_durable_outbox` — E7 cut 8's tactics boundary outbox) plus the
-/// deployment's own (`ServerDeps::outbox_adapters` — programme D5's on-call
-/// Discord DM adapter among them). A duplicate `(owner, adapter)` is logged
-/// and skipped.
+/// (`production_durable_outbox`) plus the deployment's own
+/// (`ServerDeps::outbox_adapters` — programme D5's on-call Discord DM adapter
+/// among them). A duplicate `(owner, adapter)` is logged and skipped.
 fn outbox_registry(deps: &ServerDeps) -> DurableOutboxRegistry {
     let mut registry = production_durable_outbox();
     for adapter in &deps.outbox_adapters {
@@ -1433,28 +1432,13 @@ pub fn spawn_persist_with_gateway(
 
 /// The production durable-outbox registry.
 ///
-/// E7 cut 8 (10b §3.8 OPEN 4): `durable_outbox.rs` had the trait and no
-/// production implementation, and every spawn path wired an **empty** registry.
-/// The tactical pulse's typed boundary facts (T2, D-E7-17) are the first thing
-/// that has to cross it, so the tactics adapter is registered here, on the one
-/// path every spawn shares.
-///
-/// A registration that will not build is logged and skipped rather than
-/// panicking a boot: an unroutable outbox item is retained by the store and
-/// retried when the adapter appears, which is strictly better than refusing to
-/// start.
+/// The placeholder tactics boundary-fact outbox (`TacticsBoundaryOutbox`) was
+/// retired alongside the cut-T combat pulse resolution (`tacsim::arena` owns
+/// combat facts). Deployment-specific adapters (such as Discord DM paging) are
+/// registered through [`ServerDeps::outbox_adapters`].
 #[must_use]
 pub fn production_durable_outbox() -> DurableOutboxRegistry {
-    let mut registry = DurableOutboxRegistry::new();
-    match crate::tactics_outbox::TacticsBoundaryOutbox::new() {
-        Some(outbox) => {
-            if let Err(error) = registry.register(Arc::new(outbox)) {
-                tracing::error!(%error, "the tactics boundary outbox adapter was not registered");
-            }
-        }
-        None => tracing::error!("the tactics boundary outbox adapter could not be constructed"),
-    }
-    registry
+    DurableOutboxRegistry::new()
 }
 
 struct DecisionRuntime {
