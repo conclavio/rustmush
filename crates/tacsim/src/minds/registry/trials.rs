@@ -754,4 +754,6 @@ mod tests {
 }
 
 #[cfg(test)]
+mod house_tests;
+#[cfg(test)]
 mod physical_tests;

@@ -182,6 +182,25 @@ jobs:
       - name: Every witness asks every question; only the built channels answer
         run: |
           cargo test -p tacsim --test shard_4 m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
+  # Doc 17h M8 (the zero-PC story's precondition), dispatch-only: the launch's House
+  # combat doctrines (Meridiani, Coprates) win some, not all, of the Registry's trials
+  # against Standard. The first runs every Trial case of the three House minds (about
+  # five minutes); the second takes the two genuine Registry ratings through the named
+  # launch and folds each one's result pages into procurement's score.
+  m8-house-doctrines:
+    name: M8 House doctrines win Registry trials
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Every Trial case of the House minds
+        run: cargo test --locked -p tacsim --lib minds::registry::trials::house_tests::house_minds_over_every_trial_case -j 2 -- --ignored --exact --test-threads=1 --nocapture
+      - name: Two genuine Registry ratings score above zero
+        run: cargo test --locked -p tacsim --lib hardware::flow::launch::story::launch_house_doctrines_win_some_registry_trials -j 2 -- --ignored --exact --test-threads=1 --nocapture
   test:
     runs-on: ubuntu-latest
     # 2026-10-20: the job had no timeout of its own, so GitHub's 360-minute

@@ -70,12 +70,28 @@ fn fire_drill(view, card, target, ceiling) {
     }
 }
 
+// With no current order the drill stands guard: march to the match's
+// objective while no fresh hostile is inside the drill range, otherwise halt
+// and run the same fire drill on the closest one (lock, stopped, then fire).
+fn stand_guard(view, card) {
+    let ranges_now = ranges(view, card.get("band_permille"), false);
+    let ceiling = min(card.get("max_target_m"), ranges_now.release_cm / 100);
+    let target = screen_row(view, card.get("fresh_ms"), ceiling, 0, 180000);
+    let objective = view.objective;
+    if target == () && objective != () {
+        this.march(view, objective.cell, card.get("retry_ms"));
+        return;
+    }
+    hold();
+    fire_drill(view, card, target, ceiling);
+}
+
 fn think(view, card) {
     if view.wreck { return; }
     clear_fire(view);
-    let order = view.order;
-    if order == () || order.expires_ms <= t_ms() { hold(); return; }
     if view.power != "online" { startup(); return; }
+    let order = view.order;
+    if order == () || order.expires_ms <= t_ms() { this.stand_guard(view, card); return; }
     let retry = card.get("retry_ms");
     if order.objective == "withdraw" || health_permille(view) < card.get("withdraw_permille") {
         this.march(view, entry_cell(view), retry);

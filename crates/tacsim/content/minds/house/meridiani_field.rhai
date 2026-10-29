@@ -71,14 +71,29 @@ fn engage(view, card, target, ceiling) {
     if count > 0 { lock(target.id); }
 }
 
+// With no current order the Field Series keeps its standing doctrine: take
+// the match's objective while nothing hostile is in reach, otherwise stand and
+// fight the closest fresh hostile inside its own band and pursuit range on the
+// card's odds and kept rounds. It never chases and never breaks off.
+fn standing(view, card) {
+    let range = ranges(view, card.get("band_permille"), false);
+    let ceiling = min(card.get("pursuit_m"), range.release_cm / 100);
+    let target = closest(view, card.get("fresh_ms"), ceiling, (), 0);
+    let objective = view.objective;
+    if target == () && objective != () {
+        this.route(view, objective.cell, card.get("retry_ms"));
+    } else { hold(); }
+    engage(view, card, target, ceiling);
+}
+
 fn think(view, card) {
     if view.wreck { return; }
     // Old standing conditions never carry a target or permission into this
     // order's decision. On an unarmed hull this emits no fire-channel verb.
     cease(view);
-    let order = view.order;
-    if order == () || order.expires_ms <= t_ms() { hold(); return; }
     if view.power != "online" { startup(); return; }
+    let order = view.order;
+    if order == () || order.expires_ms <= t_ms() { this.standing(view, card); return; }
     let retry = card.get("retry_ms");
     if order.objective == "withdraw" || health_permille(view) < card.get("withdraw_permille") {
         this.route(view, entry_cell(view), retry);

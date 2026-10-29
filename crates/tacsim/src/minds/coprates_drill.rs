@@ -32,6 +32,9 @@ struct Harness {
 }
 impl Harness {
     fn new(role: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_source(role, SOURCE)
+    }
+    fn with_source(role: &str, source: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let envelope: Envelope = serde_json::from_str(ENVELOPE)?;
         let checked = crate::arena::schema::validate_envelope(
             &envelope.schema,
@@ -77,8 +80,8 @@ impl Harness {
                 super::register_api,
             )),
             &ArenaConfig::default(),
-            SOURCE,
-            fixture::digest(SOURCE),
+            source,
+            fixture::digest(source),
         )
         .map_err(|error| format!("source compile: {error:?}"))?
         .recording();
@@ -466,12 +469,68 @@ fn missing_expired_or_hold_fire_order_clears_prior_conditions() -> TestResult {
         }
         let result = Harness::new("Drill")?.think(view, &[], mode)?;
         check!(has_goal(&result, MotorGoal::Hold));
-        check!(!arms(&result));
+        // Hold-fire never arms. With no current order (modes 0 and 1) the
+        // standing guard may run its drill afresh, never on the old condition.
+        if mode == 2 {
+            check!(!arms(&result));
+        }
+        check!(
+            conditions(&result)
+                .iter()
+                .all(|c| c.target != previous.target || c.min_permille != previous.min_permille)
+        );
         check!(
             result
                 .intents
                 .contains(&IntentKind::Condition(Arming::Disarm { weapon: None }))
         );
+    }
+    Ok(())
+}
+
+/// Doc 17h M8: with no current order the drill stands guard. It halts and
+/// runs the same stationary fire drill on a fresh hostile in range (lock
+/// first, then fire only once stopped), marches to the match objective when
+/// nothing hostile is in range, and holds when there is neither.
+#[test]
+fn no_current_order_stands_guard_and_drills_or_marches_to_the_objective() -> TestResult {
+    for (name, odds, kept) in [("Drill", 500, 2), ("Guard", 700, 4)] {
+        let harness = Harness::new(name)?;
+        let mut view = ready_target();
+        view.order = None;
+        let drilling = harness.think(view.clone(), &[], 0)?;
+        check!(has_goal(&drilling, MotorGoal::Hold));
+        check!(!conditions(&drilling).is_empty());
+        for rule in conditions(&drilling) {
+            check_eq!(
+                rule.target,
+                SlotTarget::Contact {
+                    id: fixture::HOSTILE
+                }
+            );
+            check_eq!(rule.min_permille, odds);
+            check_eq!(rule.min_rounds_left, kept);
+        }
+        let mut unlocked = view.clone();
+        unlocked.lock = None;
+        let locking = harness.think(unlocked, &[], 1)?;
+        check!(locking.intents.contains(&IntentKind::Lock {
+            contact: fixture::HOSTILE
+        }));
+        check!(!arms(&locking));
+        let mut moving = view.clone();
+        moving.speed_cms = 100;
+        check!(!arms(&harness.think(moving, &[], 2)?));
+        let mut clear = view.clone();
+        clear.lock = None;
+        clear.contacts.retain(|row| row.id == fixture::FRIEND);
+        let marching = harness.think(clear.clone(), &[], 3)?;
+        check!(has_goal(&marching, MotorGoal::Cell { x: 6, y: 4 }));
+        check!(!arms(&marching));
+        clear.objective = None;
+        let holding = harness.think(clear, &[], 4)?;
+        check!(has_goal(&holding, MotorGoal::Hold));
+        check!(!arms(&holding));
     }
     Ok(())
 }
@@ -770,7 +829,7 @@ fn drill_actual_native_arrival_holds_without_firing() -> TestResult {
 }
 
 #[test]
-fn guard_withdraws_earlier_and_startup_requires_a_current_order() -> TestResult {
+fn guard_withdraws_earlier_and_a_cold_hull_starts_up_without_arming() -> TestResult {
     let mut hurt = ready_target();
     hurt.cell = Some((3, 4));
     hurt.x_cm = 3500;
@@ -794,11 +853,71 @@ fn guard_withdraws_earlier_and_startup_requires_a_current_order() -> TestResult 
         let commanded = harness.think(cold.clone(), &[], 0)?;
         check!(commanded.intents.contains(&IntentKind::Startup));
         check!(!arms(&commanded));
+        // Doc 17h M8: with no current order a cold hull starts up for its
+        // standing guard, and still arms nothing on that think.
         cold.order = None;
         let idle = harness.think(cold, &[], 1)?;
-        check!(has_goal(&idle, MotorGoal::Hold));
-        check!(!idle.intents.contains(&IntentKind::Startup));
+        check!(idle.intents.contains(&IntentKind::Startup));
         check!(!arms(&idle));
+    }
+    Ok(())
+}
+
+/// Doc 17h M8: the unordered doctrine changes nothing under a current order.
+/// The shipped-before source (content version 3 as first pinned, rebuilt here
+/// by taking the new `stand_guard` out and restoring the old prologue, and proved
+/// by its old digest) and the current source emit the same intents and memory
+/// for every order objective, power state and hold-fire flag.
+#[test]
+fn under_a_current_order_the_doctrine_is_unchanged() -> TestResult {
+    let start = SOURCE
+        .find("// With no current order")
+        .ok_or("new doctrine")?;
+    let end = SOURCE.find("fn think(view, card)").ok_or("think")?;
+    let new_prologue = "    if view.power != \"online\" { startup(); return; }\n    let order = view.order;\n    if order == () || order.expires_ms <= t_ms() { this.stand_guard(view, card); return; }\n";
+    let old_prologue = "    let order = view.order;\n    if order == () || order.expires_ms <= t_ms() { hold(); return; }\n    if view.power != \"online\" { startup(); return; }\n";
+    check!(SOURCE.contains(new_prologue));
+    let before =
+        format!("{}{}", &SOURCE[..start], &SOURCE[end..]).replace(new_prologue, old_prologue);
+    check_eq!(
+        crate::arena::digest_text(&Sha256::digest(before.as_bytes()).into()),
+        "36fd55d2c6494a56be77d483f70239f5926346f1b7e4723e67fd753ca86c9320"
+    );
+    let objectives = [
+        MindObjective::Hold,
+        MindObjective::Advance { to: (6, 4) },
+        MindObjective::Engage {
+            target: Some(fixture::HOSTILE),
+        },
+        MindObjective::Engage { target: None },
+        MindObjective::Withdraw,
+        MindObjective::Screen {
+            facing_mdeg: 90_000,
+        },
+        MindObjective::Support {
+            of: Some(fixture::FRIEND),
+        },
+    ];
+    for name in ["Drill", "Guard"] {
+        let (old, new) = (Harness::with_source(name, &before)?, Harness::new(name)?);
+        let mut sequence = 0;
+        for objective in &objectives {
+            for power in [Power::Online, Power::Off] {
+                for hold_fire in [false, true] {
+                    for locked in [false, true] {
+                        let mut view = healthy(*objective);
+                        view.power = power;
+                        view.order.as_mut().ok_or("order")?.hold_fire = hold_fire;
+                        view.lock = locked.then_some(fixture::HOSTILE);
+                        let was = old.think(view.clone(), &[], sequence)?;
+                        let is = new.think(view, &[], sequence)?;
+                        check_eq!(was.intents, is.intents, "{name} {objective:?} {power:?}");
+                        check_eq!(was.memory, is.memory);
+                        sequence += 1;
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

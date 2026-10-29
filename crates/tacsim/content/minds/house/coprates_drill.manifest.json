@@ -6,8 +6,8 @@
   "declared_class": "II",
   "ops_ceiling": 3000,
   "mind_abi": "rhai=1.26.0;api=6;stock=3",
-  "source_sha256": "36fd55d2c6494a56be77d483f70239f5926346f1b7e4723e67fd753ca86c9320",
-  "source_bytes": 4262,
+  "source_sha256": "023fb6af43b0c49a216760b10755dadda2ed0de28e1c4ade2c7bd0a1026e6870",
+  "source_bytes": 4986,
   "envelope_sha256": "28e6a4744216112f9d01588e14963a9287d2f708199b723b1d76708f25d056d3",
   "profiles": [
     {
@@ -31,9 +31,10 @@
     "screen_row",
     "march",
     "fire_drill",
+    "stand_guard",
     "think"
   ],
-  "authoring_choices": "Drill/Guard names, values and stationary firing policy are provisional content defaults, not faction policy. No order or Hold clears and stops; Advance and Support never fire. Disabling motion or requesting a lock is not evidence of an already stopped/locked view.",
+  "authoring_choices": "Drill/Guard names, values and stationary firing policy are provisional content defaults, not faction policy. Hold clears and stops; without an order it starts up and holds its ground (or marches to the match objective), fighting by the same drill; Advance and Support never fire. Disabling motion or requesting a lock is not evidence of an already stopped/locked view.",
   "authority": "No Territorial Force organization, Republic identity, standing rule, availability check, account, title, filing, listing, licence, certificate or activation.",
   "integration_required": [
     "actual scoped house publisher and paid filing",
