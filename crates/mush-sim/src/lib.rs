@@ -321,6 +321,25 @@ impl SimulationModule {
         }
         Ok(())
     }
+
+    fn audit_native_movement_history(&self, data: &ModuleBootData) -> Result<(), ModError> {
+        // Registration of passive history handles alone does not configure a
+        // publisher or its recovery join. Never restore this journal through
+        // the generic legacy recovery loader while that profile is unavailable.
+        let log = window_movement::WINDOW_MOVEMENT_LOG;
+        let key = format!("log:{log}");
+        let prefix = format!("{key}:");
+        let belongs = |candidate: &str| candidate == key || candidate.starts_with(&prefix);
+        if data.ledger.iter().any(|(key, _)| belongs(key))
+            || data.kv.iter().any(|(key, _)| belongs(key))
+            || data.omitted.get(log).is_some_and(|floor| *floor > 0)
+        {
+            return Err(ModError::msg(
+                "window movement journal requires a configured native publisher and recovery audit",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn bid(s: &str) -> BehaviorId {
@@ -1186,6 +1205,10 @@ impl GameModule for SimulationModule {
         self.audit_movement_history(ctx)
     }
 
+    fn audit_boot_history(&self, _: &ModuleCtx<'_>, data: &ModuleBootData) -> Result<(), ModError> {
+        self.audit_native_movement_history(data)
+    }
+
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
@@ -1195,6 +1218,7 @@ impl GameModule for SimulationModule {
         // loaders can quarantine, reconcile projections, or advance journeys.
         // The server hydrates the typed-state partition before any load hook.
         self.audit_movement_history(ctx)?;
+        self.audit_native_movement_history(&data)?;
         ic_exclusion::load(ctx, &mut data, self.ic_custody.is_some())?;
         if let Some(config) = &self.ic_custody {
             config.loaded(ctx)?;
