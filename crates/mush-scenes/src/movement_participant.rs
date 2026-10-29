@@ -51,7 +51,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             Ok(())
         },
     )?;
-    let participant = reg.definition(descriptor)?;
+    let participant = reg.definition(descriptor.as_current())?;
     let action = DefinitionRegistryBuilder::new()
         .register(
             OwnerId::new("sim").map_err(bad)?,
@@ -59,10 +59,24 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         )
         .map_err(bad)?;
     reg.owner_participant(
-        participant,
-        BTreeSet::from([action]),
+        participant.clone(),
+        BTreeSet::from([action.clone()]),
         ScenesMovementParticipant,
-    )
+    )?;
+    let observer = DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new(NS).map_err(bad)?,
+            scene_transition::observer_descriptor()?,
+        )
+        .map_err(bad)?;
+    reg.register_moved_completion::<ScenesMovementParticipant>(
+        "scene_movement_completion",
+        1,
+        action,
+        participant,
+        vec![observer],
+    )?;
+    Ok(())
 }
 
 /// The adapter type is public only so the actual Sim provider can request its

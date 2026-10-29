@@ -7,6 +7,7 @@
 //! without installing a production movement path. Future movement composition
 //! must preserve the existing post-movement narrative and observer contract.
 
+pub mod completion;
 pub(crate) mod dispatch;
 pub(crate) mod dispatch_observation;
 pub(crate) mod image;

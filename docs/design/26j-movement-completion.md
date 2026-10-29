@@ -86,6 +86,32 @@ selection behavior only. An atomic adapter still needs the actual owner slots,
 exact observer references, final read fences, and one coordinated Sim placement
 patch. Atlas remains a live-migration blocker.
 
+## Composition-bound completion manifest
+
+Each covered action now has a frozen manifest of the complete actual Moved
+callback roster. Every original callback ordinal remains represented as either
+a registered prepared owner group or an explicit legacy blocker; anonymous
+callbacks cannot acquire prepared coverage. Registration resolves the concrete
+adapter type, actual owned state slot, current participant and callback
+definitions, and the action provider's exact request and owner grant.
+
+The existing Sim+Scenes service requires the real Scenes completion group.
+Production inspection identifies that one group and all seven remaining callback
+blockers. Several contiguous callbacks may share one owner image; reordered,
+overlapping or interleaved groups refuse composition. Binding registration order
+does not affect the manifest, while actual callback order and added coverage
+change its digest. Generic transaction limits remain unchanged.
+Inspection rechecks the actual roster digest; a late legacy subscription makes
+the frozen coverage unavailable instead of hiding the new callback.
+
+The bounded canonical snapshot retains exact bindings and observer identities.
+Historical decoding checks its retained definitions rather than today's roster,
+so an older partial snapshot remains partial when another adapter is added.
+Snapshots are inspection data, not executable capabilities. The existing v1
+movement receipt formats retain their meaning; a future generic completion
+consumer must include the snapshot and each owner's actual effect proof in its
+own commit. Registry coverage alone never enables an offer or command route.
+
 ## Remaining completion protocol
 
 A new locomotion version must commit each covered owner's actual prepared
