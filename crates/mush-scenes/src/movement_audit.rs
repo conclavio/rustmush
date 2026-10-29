@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use mush_core::action_state::{MAX_ACTION_STATE_BOOT_BYTES, MAX_ACTION_STATE_BOOT_RECORDS};
 use mush_core::ledger::{LedgerDoc, parse_chunk, parse_chunk_key};
+use mush_core::locomotion::composed::ComposedOwnerReader;
 use mush_core::locomotion::scene_transition::{self, SceneLedgerAppendRef, SceneLocomotionReader};
 use mush_core::{DefinitionDigest, ModError, ModuleBootData, ModuleCtx, ObjId};
 use serde_json::{Value, json};
@@ -184,7 +185,8 @@ pub(crate) fn audit_boot(
     ctx: &ModuleCtx<'_>,
     data: &ModuleBootData,
     history: &mush_core::LedgerHistory,
-    reader: &SceneLocomotionReader,
+    reader: Option<&SceneLocomotionReader>,
+    composed: Option<&ComposedOwnerReader>,
 ) -> Result<(), ModError> {
     if !data.omitted.is_empty() {
         return Err(ModError::RetryFullFetch {
@@ -198,26 +200,53 @@ pub(crate) fn audit_boot(
         return Err(bad("Scenes movement history validation failed"));
     }
     let mut audit = Audit::new();
-    let mut after = None;
-    loop {
-        let page = reader
-            .scan_receipts(ctx, after.as_deref(), 128)
-            .map_err(|_| bad("Scenes movement receipts are unavailable or invalid"))?;
-        for receipt in page.entries() {
-            audit.add(
-                Route {
-                    actor: receipt.actor(),
-                    from: receipt.source(),
-                    to: receipt.destination(),
-                    at: receipt.at_utc(),
-                },
-                *receipt.scenes_capture_digest(),
-                receipt.appends(),
-            )?;
+    if let Some(reader) = reader {
+        let mut after = None;
+        loop {
+            let page = reader
+                .scan_receipts(ctx, after.as_deref(), 128)
+                .map_err(|_| bad("Scenes movement receipts are unavailable or invalid"))?;
+            for receipt in page.entries() {
+                audit.add(
+                    Route {
+                        actor: receipt.actor(),
+                        from: receipt.source(),
+                        to: receipt.destination(),
+                        at: receipt.at_utc(),
+                    },
+                    *receipt.scenes_capture_digest(),
+                    receipt.appends(),
+                )?;
+            }
+            after = page.next_after().map(ToString::to_string);
+            if after.is_none() {
+                break;
+            }
         }
-        after = page.next_after().map(ToString::to_string);
-        if after.is_none() {
-            break;
+    }
+    if let Some(reader) = composed {
+        let mut after = None;
+        loop {
+            let page = reader
+                .scan_receipts(ctx, after.as_deref(), 128)
+                .map_err(|_| bad("Scenes composed movement receipts are unavailable or invalid"))?;
+            for receipt in page.entries() {
+                let appends = crate::movement_composed::appends(receipt)?;
+                audit.add(
+                    Route {
+                        actor: receipt.actor(),
+                        from: receipt.source(),
+                        to: receipt.destination(),
+                        at: receipt.at_utc(),
+                    },
+                    *receipt.effect().owner_capture_digest(),
+                    &appends,
+                )?;
+            }
+            after = page.next_after().map(ToString::to_string);
+            if after.is_none() {
+                break;
+            }
         }
     }
     audit.read_history(&data.ledger)?;

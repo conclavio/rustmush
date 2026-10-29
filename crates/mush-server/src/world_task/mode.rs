@@ -431,6 +431,7 @@ pub(super) enum RefusalReason {
     CommitTimedOut,
     StoreUnavailable,
     IntegrityFrozen,
+    OutageCountdown,
 }
 
 impl RefusalReason {
@@ -450,6 +451,9 @@ impl RefusalReason {
             }
             Self::IntegrityFrozen => {
                 "The world is integrity-frozen; mutating actions are paused while recovery runs."
+            }
+            Self::OutageCountdown => {
+                "The world is in a post-outage recovery countdown; reconnects, inspection, and OOC communication are open while world actions and ticks remain paused."
             }
         }
     }
@@ -642,11 +646,92 @@ pub(super) const fn admission_for(mode: WorldMode, class: IngressClass) -> Admis
 }
 
 pub(super) fn admit_world_msg(mode: WorldMode, world: &World, msg: &WorldMsg) -> Admission {
-    let admission = admission_for(mode, classify_world_msg(msg));
-    if admission != Admission::CheckStoreReadOnlyCommand {
+    let admission = match admission_for(mode, classify_world_msg(msg)) {
+        Admission::CheckStoreReadOnlyCommand => resolve_store_read_only_command(world, msg),
+        other => other,
+    };
+    if admission != Admission::Allow {
         return admission;
     }
-    resolve_store_read_only_command(world, msg)
+    if let Some(freeze) = world.world_timeline().freeze()
+        && let mush_core::WorldClockFreezeKind::OutageCountdown {
+            unfreeze_at_real_unix,
+            ..
+        } = freeze.kind
+        && world.now() < unfreeze_at_real_unix
+    {
+        return admit_outage_countdown_msg(world, msg);
+    }
+    Admission::Allow
+}
+
+const OUTAGE_COUNTDOWN_EXTRA_ALLOWED: &[&str] = &[
+    "ooc", "+ooc", "page", "p", "+channel", "+com", "comlist", "comtitle", "addcom", "delcom",
+    "time", "@time", "when", "@when", "score", "+sheet", "+status", "@stats", "@ps",
+];
+
+pub(super) fn admit_outage_countdown_msg(world: &World, msg: &WorldMsg) -> Admission {
+    match msg {
+        WorldMsg::Inbound(Inbound::Cmd { actor, line, .. }) => {
+            if is_allowed_during_outage_countdown(world, *actor, line) {
+                Admission::Allow
+            } else {
+                Admission::Refuse(RefusalReason::OutageCountdown)
+            }
+        }
+        WorldMsg::Inbound(
+            Inbound::ConnUp { .. }
+            | Inbound::ConnDown { .. }
+            | Inbound::SessionGone { .. }
+            | Inbound::Query { .. }
+            | Inbound::Composing { .. }
+            | Inbound::Control(_),
+        )
+        | WorldMsg::ReAttach { .. }
+        | WorldMsg::UnlinkPlayer { .. }
+        | WorldMsg::NameFree { .. }
+        | WorldMsg::InInputContext { .. }
+        | WorldMsg::ConnectionReady { .. }
+        | WorldMsg::LegalActions { .. }
+        | WorldMsg::StaffBarrier { .. }
+        | WorldMsg::Barrier { .. }
+        | WorldMsg::RecheckPrivilege { .. }
+        | WorldMsg::RelaySpeak { .. } => Admission::Allow,
+        WorldMsg::Inbound(Inbound::Respond { .. } | Inbound::Invoke { .. } | Inbound::Apply(_))
+        | WorldMsg::CreatePlayer { .. }
+        | WorldMsg::AuthoritativeAction(_)
+        | WorldMsg::DiscordInteraction { .. } => Admission::Refuse(RefusalReason::OutageCountdown),
+    }
+}
+
+fn is_allowed_during_outage_countdown(world: &World, actor: ObjId, line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() || world.input_depth(actor) > 0 {
+        return true;
+    }
+    if find_exit(world, actor, t).is_some() {
+        return false;
+    }
+    if matches!(t.chars().next(), Some('"' | ':' | ';' | '\\' | '=')) {
+        return true;
+    }
+    let head = t.split_whitespace().next().unwrap_or("").to_lowercase();
+    let (verb, switch) = match head.split_once('/') {
+        Some((v, s)) => (v, Some(s)),
+        None => (head.as_str(), None),
+    };
+    if STORE_READ_ONLY_ALLOWED.contains(&verb) || OUTAGE_COUNTDOWN_EXTRA_ALLOWED.contains(&verb) {
+        return true;
+    }
+    if verb == "@tacsim" && matches!(switch, Some("time")) {
+        return true;
+    }
+    if matches!(verb, "@contract" | "@econ" | "@hold" | "@vault" | "@asset")
+        && matches!(switch, None | Some("show" | "list" | "history" | "status"))
+    {
+        return true;
+    }
+    false
 }
 
 /// The one admission that needs the message body: a command line typed while
@@ -1211,6 +1296,15 @@ pub(crate) fn connected_wizards(world: &World) -> Vec<ObjId> {
 pub(super) fn broadcast_wizards(world: &World, gateway: &Gateway, text: &str) {
     let ev = Arc::new(OutputEvent::Sys(RichText::tag("system", text)));
     for actor in connected_wizards(world) {
+        gateway.deliver(SendTarget::Char(u64::from(actor.0)), Arc::clone(&ev));
+    }
+}
+
+/// Send a Sys line to every connected player (`W-clock` / `FO-11` outage
+/// countdown and unfreeze broadcasts).
+pub(super) fn broadcast_connected(world: &World, gateway: &Gateway, text: &str) {
+    let ev = Arc::new(OutputEvent::Sys(RichText::tag("system", text)));
+    for actor in world.connected() {
         gateway.deliver(SendTarget::Char(u64::from(actor.0)), Arc::clone(&ev));
     }
 }

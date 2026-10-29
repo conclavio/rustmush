@@ -292,6 +292,29 @@ fn qualification_requires_explicit_active_dependent_composition() -> TestResult 
     Ok(())
 }
 
+// Keep the real installation fixture in its own frame, separate from the
+// versioned codec probes and their corruption cases.
+fn install_captured_operation(operation: QualificationOperation) -> TestResult {
+    let shared = Arc::new(Mutex::new(None));
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Rows(shared.clone()))],
+    )?;
+    let (operations, _) = shared
+        .lock()
+        .map_err(|_| "handles")?
+        .clone()
+        .ok_or("handles")?;
+    let document = json!({"family":{"owner":operations.owner(),"id":operations.descriptor().id()},"key":operation.key(),"schema":{"id":operations.descriptor().value_schema(),"version":1},"value":operation});
+    mush_core::canonical_json_bytes_with_limit(&document, QualificationOperation::MAX_BYTES)?;
+    let mut txn = engine.action_transaction(&operations)?;
+    txn.insert(&operations, &operation.key(), operation)?;
+    let (_, install) = txn.prepare()?.into_parts();
+    engine.install_prepared_action(install)?;
+    Ok(())
+}
+
 /// These are strict data/size probes only; historical transfer authority comes
 /// from the real native receipt and complete paired owner audit.
 #[test]
@@ -321,23 +344,7 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     let new: QualificationOperation = serde_json::from_value(value.clone())?;
     new.validate()?;
     check_eq!(serde_json::to_value(&new)?, value);
-    let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
-        World::new_minimal(),
-        Registry::new(),
-        vec![Box::new(Rows(shared.clone()))],
-    )?;
-    let (operations, _) = shared
-        .lock()
-        .map_err(|_| "handles")?
-        .clone()
-        .ok_or("handles")?;
-    let document = json!({"family":{"owner":operations.owner(),"id":operations.descriptor().id()},"key":new.key(),"schema":{"id":operations.descriptor().value_schema(),"version":1},"value":new});
-    mush_core::canonical_json_bytes_with_limit(&document, QualificationOperation::MAX_BYTES)?;
-    let mut txn = engine.action_transaction(&operations)?;
-    txn.insert(&operations, &new.key(), new.clone())?;
-    let (_, install) = txn.prepare()?.into_parts();
-    engine.install_prepared_action(install)?;
+    install_captured_operation(new)?;
     for corrupt in [
         serde_json::Value::Null,
         serde_json::json!({"generation":1,"operation":mush_core::CommitToken::from_bytes([249;16]),"digest":mush_core::DefinitionDigest::from_bytes([255;32])}),
@@ -386,23 +393,7 @@ fn parent_holder_capture_is_closed_and_legacy_qualification_bytes_stay_exact() -
         captured.digest()?,
         "the actual cause covers ownership attribution"
     );
-    let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
-        World::new_minimal(),
-        Registry::new(),
-        vec![Box::new(Rows(shared.clone()))],
-    )?;
-    let (operations, _) = shared
-        .lock()
-        .map_err(|_| "handles")?
-        .clone()
-        .ok_or("handles")?;
-    let document = json!({"family":{"owner":operations.owner(),"id":operations.descriptor().id()},"key":captured.key(),"schema":{"id":operations.descriptor().value_schema(),"version":1},"value":captured});
-    mush_core::canonical_json_bytes_with_limit(&document, QualificationOperation::MAX_BYTES)?;
-    let mut txn = engine.action_transaction(&operations)?;
-    txn.insert(&operations, &captured.key(), captured)?;
-    let (_, install) = txn.prepare()?.into_parts();
-    engine.install_prepared_action(install)?;
+    install_captured_operation(captured)?;
     let mut corruptions = vec![Value::Null];
     for (path, value) in [
         ("/format", json!(2)),

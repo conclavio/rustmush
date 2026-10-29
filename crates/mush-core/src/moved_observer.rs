@@ -56,8 +56,8 @@ impl MovedObserverRoster {
     pub const fn digest(&self) -> DefinitionDigest {
         self.digest
     }
-    /// Every present callback currently blocks prepared movement completion;
-    /// none has an implemented durable completion adapter in this slice.
+    /// Every entry uses legacy callback delivery. Protocol-specific prepared
+    /// coverage is inspected separately through the completion manifest.
     pub fn has_blockers(&self) -> bool {
         !self.entries.is_empty()
     }
@@ -67,7 +67,9 @@ pub(crate) fn kind() -> Result<DefinitionKind, ModError> {
     DefinitionKind::new(KIND).map_err(bad)
 }
 
-pub(crate) fn descriptor(id: &str, version: u32) -> Result<DefinitionDescriptor, ModError> {
+/// Exact passive metadata for a named legacy callback. This neither subscribes
+/// an observer nor grants prepared completion or movement authority.
+pub fn descriptor(id: &str, version: u32) -> Result<DefinitionDescriptor, ModError> {
     DefinitionDescriptor::new(
         kind()?,
         DefinitionId::new(id).map_err(bad)?,

@@ -26,7 +26,7 @@ use crate::overlay::{
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::raycast::{
-    Camera, EYE_HEIGHT_CM, Ground, Map, Sprite, SpriteKind, SpritePose, project, render,
+    Camera, EYE_HEIGHT_CM, Ground, Map, Sprite, SpriteKind, SpritePose, project_from, render_from,
 };
 
 /// The pilot's own frame: pose, contacts, hull, weapons, heat.
@@ -152,12 +152,14 @@ impl Picture for CockpitPicture {
         self.ensure_map(map);
         let arena = &self.arena;
         // G.7b: relief where the feed carries it, seen from the sim's own eye
-        // for the unit.
+        // for the unit; on a flat map, seen from the unit's own sensor height
+        // above the ground (doc 21a `W-10`).
         let terrain = self.terrain.as_ref();
         let eye = eye_cm(cockpit);
+        let sensor_eye = sensor_height_cm(cockpit);
         match terrain {
             Some(terrain) => heightfield::render(frame, terrain, &cam, eye, &sprites),
-            None => render(frame, arena, &cam, &sprites),
+            None => render_from(frame, arena, &cam, sensor_eye, &sprites),
         }
         match overlay {
             // The inset first, the HUD over it (G.13): the tape, the lock's
@@ -178,17 +180,22 @@ impl Picture for CockpitPicture {
     }
 }
 
+/// The unit's sensor height above the ground, centimetres (doc 21a `W-10`),
+/// or `None` when the frame does not name it (which the raycaster takes as
+/// the stock [`EYE_HEIGHT_CM`]).
+fn sensor_height_cm(cockpit: &Value) -> Option<i64> {
+    cockpit.get("sensor_height_cm").and_then(Value::as_i64)
+}
+
 /// The eye the relief is seen from (doc 21 cut G.7b): the unit's elevation
 /// plus its sensor height (the stock 1.5 m where the frame names none), as
 /// the sim traces its sight; `None` for a frame with no `z_cm`, which the
 /// heightfield takes as the stock eye over the ground under the camera.
 fn eye_cm(cockpit: &Value) -> Option<i64> {
-    cockpit.get("z_cm").and_then(Value::as_i64).map(|z| {
-        z + cockpit
-            .get("sensor_height_cm")
-            .and_then(Value::as_i64)
-            .unwrap_or(i64::from(EYE_HEIGHT_CM))
-    })
+    cockpit
+        .get("z_cm")
+        .and_then(Value::as_i64)
+        .map(|z| z + sensor_height_cm(cockpit).unwrap_or(i64::from(EYE_HEIGHT_CM)))
 }
 
 /// The camera: the sim's own pose from the cockpit frame, turned by the
@@ -389,11 +396,16 @@ fn contact_sprite(c: &Value, cam: &Camera, step: usize) -> Sprite {
         None if kind == SpriteKind::Unknown => look::unknown(),
         None => None,
     };
+    let facing_word = c
+        .get("facing")
+        .or_else(|| c.get("aspect"))
+        .and_then(Value::as_str)
+        .unwrap_or("front");
     let pose = look
         .and_then(|l| l.sprites.as_ref())
         .map(|sheet| SpritePose {
             sheet,
-            facing: Facing::from_aspect(c.get("aspect").and_then(Value::as_str).unwrap_or("front")),
+            facing: Facing::from_aspect(facing_word),
             moving: c.get("moving").and_then(Value::as_bool) == Some(true),
             step,
         });
@@ -471,11 +483,12 @@ pub fn hud(
     // size; the step picks the moving cycle's frame, never the size — by
     // whichever of the heightfield and the raycaster drew the view, so the
     // lock's box and a health gauge land on the drawn sprite.
+    let sensor_eye = sensor_height_cm(cockpit);
     let place = |c: &Value| {
         let sprite = contact_sprite(c, cam, 0);
         match terrain {
             Some(terrain) => heightfield::project(terrain, cam, eye_cm, w, h, &sprite),
-            None => project(arena, cam, w, h, &sprite),
+            None => project_from(arena, cam, sensor_eye, w, h, &sprite),
         }
     };
     // G.14: a gauge over each contact in the view's columns with any of its
@@ -723,6 +736,7 @@ pub fn draw_instruments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::raycast::{project, render};
 
     const COCKPIT: &str = include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json");
     const MAP: &str = include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json");
@@ -1291,6 +1305,78 @@ mod tests {
         assert!(
             gauge.iter().max() < lock.iter().min(),
             "the gauge over the readout: gauge {gauge:?}, lock {lock:?}"
+        );
+    }
+
+    /// Doc 22 D-22-9 and doc 21a `W-10`: `contacts_as_sprites` reads the
+    /// eight-way `facing` field (falling back to four-way `aspect` when
+    /// absent), and on a flat map (`terrain = None`) both `CockpitPicture`
+    /// and `hud` use the unit's own `sensor_height_cm`.
+    #[test]
+    fn d22_9_and_w10_contacts_read_facing_and_flat_maps_use_sensor_height() {
+        let mut cockpit = parsed(COCKPIT);
+        let arena = map_from_feed(&parsed(MAP));
+        let look = Look::default();
+        let cam = camera(&cockpit, &look);
+
+        cockpit["contacts"][0]["facing"] = serde_json::json!("front_right");
+        cockpit["contacts"][0]["aspect"] = serde_json::json!("right");
+        let sprites = contacts_as_sprites(&cockpit, &cam, 0);
+        assert_eq!(
+            sprites[0].pose.map(|p| p.facing),
+            Some(Facing::FrontRight),
+            "8-way facing takes precedence over 4-way aspect"
+        );
+        if let Some(obj) = cockpit["contacts"][0].as_object_mut() {
+            obj.remove("facing");
+        }
+        let sprites = contacts_as_sprites(&cockpit, &cam, 0);
+        assert_eq!(
+            sprites[0].pose.map(|p| p.facing),
+            Some(Facing::Right),
+            "4-way aspect remains the fallback when facing is absent"
+        );
+
+        // W-10: on a flat map (`terrain = None`), a taller `sensor_height_cm`
+        // moves the projected lock box down in the frame and changes the
+        // rendered picture.
+        let frame = Frame::new(640, 480);
+        cockpit["sensor_height_cm"] = serde_json::json!(150);
+        let low_hud = hud(&frame, &arena, None, None, &cockpit, &look, &cam);
+        let mut low_frame = Frame::new(320, 160);
+        let low_feeds: std::collections::HashMap<String, Value> = [
+            (COCKPIT_FEED.to_string(), cockpit.clone()),
+            (ARENA_MAP_FEED.to_string(), parsed(MAP)),
+        ]
+        .into_iter()
+        .collect();
+        CockpitPicture::new().draw(&mut low_frame, &low_feeds, &look);
+
+        cockpit["sensor_height_cm"] = serde_json::json!(600);
+        let high_hud = hud(&frame, &arena, None, None, &cockpit, &look, &cam);
+        let mut high_frame = Frame::new(320, 160);
+        let high_feeds: std::collections::HashMap<String, Value> = [
+            (COCKPIT_FEED.to_string(), cockpit.clone()),
+            (ARENA_MAP_FEED.to_string(), parsed(MAP)),
+        ]
+        .into_iter()
+        .collect();
+        CockpitPicture::new().draw(&mut high_frame, &high_feeds, &look);
+
+        let Some(LockAt::Box(_, low_y, _, _)) = low_hud.lock.as_ref().map(|l| l.at) else {
+            panic!("BA is boxed at 150 cm eye");
+        };
+        let Some(LockAt::Box(_, high_y, _, _)) = high_hud.lock.as_ref().map(|l| l.at) else {
+            panic!("BA is boxed at 600 cm eye");
+        };
+        assert!(
+            high_y > low_y,
+            "a higher sensor eye projects a flat-ground target lower in the frame: {high_y} vs {low_y}"
+        );
+        assert_ne!(
+            low_frame.hash(),
+            high_frame.hash(),
+            "flat-map CockpitPicture renders from the unit's sensor_height_cm"
         );
     }
 }

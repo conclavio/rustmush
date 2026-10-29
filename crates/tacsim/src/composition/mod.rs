@@ -562,6 +562,13 @@ pub fn tactics_catalog() -> mush_tactics::UnitCatalog {
 
 #[must_use]
 pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
+    Box::new(atlas_module_builder(cfg))
+}
+
+/// The real configured Atlas module before boxing, so the outer composition
+/// can add owner capabilities without duplicating the authored pack shelf.
+#[must_use]
+pub fn atlas_module_builder(cfg: mush_atlas::AtlasConfig) -> mush_atlas::AtlasModule {
     let mut shelf = mush_atlas::starter::packs().unwrap_or_else(|error| {
         tracing::error!(%error, "atlas: the shipped starter packs did not load");
         Vec::new()
@@ -590,7 +597,7 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
         Ok(packs) => shelf.extend(packs),
         Err(error) => tracing::error!(%error, "starter quest shelf packs refused"),
     }
-    Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf))
+    mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf)
 }
 
 pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String> {

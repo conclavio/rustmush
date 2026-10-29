@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "The graphics engine (doc 21): one Frame drawn from the per-observer feeds by a picture (a software raycaster over the arena grid with its instruments), encoded as a palette PNG in the kitty graphics framing or as a sixel stream"
+description = "The graphics engine (doc 21): one Frame drawn from the per-observer feeds by a Picture (heightfield and raycast cockpit, overhead, orbital chart, armour doll, match replay), rendered locally in wasm or encoded as palette PNG (kitty / web socket) or DEC sixel"
 
 [dependencies]
 # PNG's IDAT is a zlib stream; the workspace already carries flate2 (pure-Rust

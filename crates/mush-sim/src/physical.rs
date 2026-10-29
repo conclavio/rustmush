@@ -236,6 +236,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>, ic_custody: bool) -> Result<(), 
         historical.clone(),
         crate::locomotion::participant_descriptor()?,
         crate::locomotion_scenes::participant_descriptor()?,
+        crate::locomotion_composed::participant_descriptor()?,
     ];
     // A configured IC custody owner installs the one exact participant
     // validator for the physical and locomotion descriptors, retaining its

@@ -427,7 +427,11 @@ fn boot_every_option(
         }),
         content()?,
     ];
-    let mut engine = Engine::with_modules(saved.world()?, Registry::new(), modules)?;
+    let mut engine = Box::new(Engine::with_modules(
+        saved.world()?,
+        Registry::new(),
+        modules,
+    )?);
     engine.set_account_identity(registry.accounts.clone());
     load(&mut engine, &saved.disk)?;
     check_eq!(
@@ -464,7 +468,7 @@ fn boot_every_option(
         .ok_or("Registry factory")?;
     let mut w = PlayerWorld {
         minds_facts: None,
-        engine: Box::new(engine),
+        engine,
         tasks,
         egress,
         image,
