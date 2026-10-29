@@ -338,6 +338,31 @@ impl ComposedLocomotion {
             records: self.inner.records.clone(),
         }
     }
+    /// Read explicitly retained older versions of this actual owner's same
+    /// participant key. Retained definitions and the original manifest still
+    /// validate each receipt; this grants no historical adapter execution.
+    /// The existing owner bound also bounds the total known profile list.
+    pub fn owner_reader_retaining(
+        &self,
+        participant: &DefinitionRef,
+        retained: &[DefinitionRef],
+    ) -> Result<super::ComposedOwnerReader, ParticipantError> {
+        let mut reader = self.owner_reader(participant)?;
+        if retained.len() > MAX_COMPOSED_OWNERS {
+            return Err(refused());
+        }
+        for profile in retained {
+            if profile.key() != participant.key()
+                || profile.version() >= participant.version()
+                || reader.known_participants.contains(profile)
+                || reader.known_participants.len() >= MAX_COMPOSED_OWNERS
+            {
+                return Err(refused());
+            }
+            reader.known_participants.push(profile.clone());
+        }
+        Ok(reader)
+    }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         &self,

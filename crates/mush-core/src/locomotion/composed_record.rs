@@ -654,7 +654,9 @@ impl ComposedOwnerReader {
         else {
             return Ok(None);
         };
-        if effect.participant != self.participant {
+        // This exact key may include explicitly retained older profiles. Every
+        // profile remains an exact reference checked against retained metadata.
+        if !self.known_participants.contains(&effect.participant) {
             return Err(refused());
         }
         Ok(Some(ComposedOwnerReceipt {
