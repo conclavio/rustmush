@@ -101,7 +101,11 @@ impl Serialize for Answer {
     }
 }
 #[derive(Clone)]
-struct Slot(u32);
+struct Slot(u32, u32);
+fn state_snapshot(state: &Slot) -> Result<DefinitionDigest, OwnerReadError> {
+    DefinitionDigest::for_canonical_value("read_state_test.v1", &json!(state.0))
+        .map_err(|_| OwnerReadError::Integrity)
+}
 struct Service {
     family: StateFamilyHandle<u32, u32>,
     calls: Arc<AtomicUsize>,
@@ -118,7 +122,40 @@ impl OwnerReadService for Service {
         request: Request,
     ) -> Result<Answer, OwnerReadError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        if request.mode >= 20 {
+        if (30..=34).contains(&request.mode) {
+            match request.mode {
+                31 => {
+                    let _ =
+                        ctx.guard_state::<u32, _>(|_| Ok(DefinitionDigest::from_bytes([1; 32])));
+                }
+                32 => {
+                    ctx.guard_state::<Slot, _>(state_snapshot)?;
+                    let _ = ctx.guard_state::<Slot, _>(state_snapshot);
+                }
+                33 => {
+                    let _ = ctx.guard_state::<Slot, _>(|_| Err(OwnerReadError::Refused));
+                }
+                34 => {
+                    let count = AtomicUsize::new(0);
+                    let readiness = self.readiness.clone();
+                    ctx.guard_state::<Slot, _>(move |state| {
+                        if count.fetch_add(1, Ordering::SeqCst) > 0 {
+                            freeze(&readiness, "owner");
+                        }
+                        state_snapshot(state)
+                    })?;
+                }
+                _ => {
+                    ctx.guard_state::<Slot, _>(state_snapshot)?;
+                }
+            }
+            if (31..=33).contains(&request.mode) {
+                return Ok(Answer {
+                    value: json!("caught state guard refusal"),
+                    on_serialize: None,
+                });
+            }
+        } else if request.mode >= 20 {
             return batch::read(ctx, &self.family, request.mode);
         }
         let value = ctx
@@ -212,7 +249,7 @@ impl GameModule for Owner {
                 }
             },
         )?;
-        r.state(Slot(9));
+        r.state(Slot(9, 0));
         let name = |n: &str| CanonicalId::new(n).unwrap();
         let family = r.state_family(
             StateFamilyDescriptor::new(
