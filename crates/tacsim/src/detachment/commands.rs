@@ -225,6 +225,9 @@ fn roster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +sortie operation."));
     }
+    if super::crew::handles(ctx) {
+        return super::crew::command(ctx);
+    }
     if super::planning::commands::handles(ctx) {
         return super::planning::commands::command(ctx);
     }
@@ -280,11 +283,12 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     let switches = ["practice", "roster"]
         .into_iter()
         .chain(super::planning::commands::SWITCHES.iter().copied())
+        .chain(super::crew::SWITCHES.iter().copied())
         .map(Into::into)
         .collect();
     reg.command(CommandSpec {
         name: "+sortie".into(), switches, shape: ArgShape::Raw,
-        help: "+sortie/plans manages private presets and mission drafts; +sortie/invitations lists your assigned plans. Use +sortie/plan for current accept/ready commands. +sortie/practice and +sortie/roster manage the OOC practice group. IC activation and launch follow preparation.".into(),
+        help: "+sortie/crew lists NPC hiring terms in your port room; +sortie/hire accepts them and +sortie/contract shows your agreement. +sortie/plans manages private presets and mission drafts; +sortie/invitations lists assigned plans. Use +sortie/plan for accept/ready commands. +sortie/practice and +sortie/roster manage the OOC group. IC activation and launch follow preparation.".into(),
         ..CommandSpec::default()
     }, Arc::new(roster))?;
     for (name, response) in [("wilco", Response::Wilco), ("negative", Response::Negative)] {

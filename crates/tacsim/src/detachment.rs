@@ -7,6 +7,7 @@
 //! admission. In particular, a contact hint never becomes a known target.
 
 pub mod commands;
+pub mod crew;
 pub mod live;
 pub mod planning;
 

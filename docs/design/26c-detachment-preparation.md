@@ -49,6 +49,46 @@ a separate later cut, not an activation prerequisite.
 Preserve the completed movement work for reconsideration once the core surface
 and mining flow is playable; it is deferred engineering, not rejected as incorrect.
 
+## DT.2b3 hiring contract
+
+Tacsim owns `tacsim.crew_contracts`, keyed by the existing NPC object's ID. A
+contract records that NPC, the authenticated employer, the world-IC hiring stamp,
+the port, agreed duties (mining, combat and/or recovery), operator/commander scope
+and the accepted terms hash. The record is strictly decoded and bounded to 4 KiB.
+It is an employment agreement, not an economy settlement or a personnel-location
+record. No wages, escrow, account debit, embarkation evidence or unit reservation
+are written by hiring. A later financial integration must use the economy owner.
+
+`+sortie/crew` lists standing offers from real, visible NPCs in the player's
+current authored port room. The NPC's GOD-owned JSON `crew:offer` attribute is
+their authored consent to those terms; a player cannot negotiate arbitrary terms
+or accept on another employer's behalf. The first authoring interface is this
+attribute on existing NPCs, not an automatically replenished character pool:
+
+```json
+{"schema":1,"port":"ceres","mission_scope":"subordinate_operator","duties":["mining","recovery"]}
+```
+
+Use `detachment_commander` for a commander-capable offer. The port must resolve
+to the NPC's current station port, rather than a field landing site or a ship
+interior. The pool read admits at most 256 room contents and 32 available offers;
+overflow refuses rather than silently omitting crew. NPC movement and injury
+remain ordinary character state, with deployment eligibility checked by DT.2b4.
+
+The hire command accepts the exact displayed terms. Its ordinary coordinator
+offer fixes the actual NPC and terms; a revision check re-reads current presence,
+authored consent and existing contracts through final admission. A unique NPC
+key prevents two employers from hiring one person. Acknowledgement installs the
+contract, and restart restores it; retry uses the common coordinator receipt.
+`+sortie/contract #<NPC>` discloses it only to its employer or that NPC. Reauthoring
+an offer never changes an existing contract. Release, renegotiation and wage
+settlement are later contract operations, not implied by leaving the vessel.
+
+Boarding uses ordinary movement. This slice does not add an automatic follow
+driver, teleport a hired NPC, activate a roster or adopt the deferred movement
+provider. DT.2b4 will read the actual contract and current containment when
+resolving the six slots.
+
 ## DT.2b1 ownership and records
 
 The neutral `mush-tactics::detachment::planning` model defines material plans,
@@ -110,13 +150,13 @@ names or another principal's authority. Other principals' permissions remain
 unresolved until their own owner-attributed admission. A physical station
 observation is labelled separately from the actual lease check on Ready.
 
-DT.2b1's existing reports identify unresolved crew employment, applicable
-mind/licence admission and reservation/activation work. Any legacy report that
-requires embarkation history must be corrected during DT.2b4 integration: current
-containment establishes physical eligibility. There is no synthetic personnel
-record, automatic NPC creation, teleport, fabricated contract or launch operation
-in DT.2b1. This requirements correction does not claim those runtime reports have
-already changed.
+Preparation reports distinguish current carrier containment from NPC employment,
+applicable mind/licence admission and reservation/activation work. The old report
+requirement for last-port proof and embarkation intervals is removed with DT.2b3;
+current containment establishes physical eligibility. Crew contracts are inspectable
+through `+sortie/contract`, and DT.2b4 must read them during activation. There is no
+automatic NPC creation, teleport, fabricated contract or launch operation in a plan
+or report.
 
 Player commands are documented in [detachment preparation help](../help/detachments.md).
 The retained physical transaction foundation is specified
