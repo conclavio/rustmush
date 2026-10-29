@@ -344,8 +344,33 @@ pub(crate) fn act_cmd(
     kind: ActKind,
     quiet: bool,
     go: bool,
+    mind: Option<&(String, Option<String>)>,
 ) -> Result<(), CmdError> {
     let actor = ctx.actor;
+    // Doc 17h cut M8e E4: a launch's `mind=` (the parser admits it on a launch alone), its
+    // `org=` resolved here as `+minds` resolves it (an organisation the operator may see and acts
+    // for on its root scope, M8c F5), else the family's one sentence.
+    let mind = match mind {
+        None => None,
+        Some((word, org)) => {
+            let org = match org {
+                None => None,
+                Some(text) => {
+                    let refuse = || CmdError::msg(crate::surface::dispatch::MIND_NOT_FOR_ORG);
+                    let org = mush_economy::resolve_org_visible(ctx, text).ok_or_else(refuse)?;
+                    mush_roll::commerce::org_holder::acts_for(ctx.w, org, actor)
+                        .map_err(|_| refuse())?;
+                    Some(org)
+                }
+            };
+            if word.len() > crate::surface::dispatch::MAX_MIND_WORD_BYTES
+                || crate::surface::dispatch::MindWord::parse(word).is_none()
+            {
+                return Err(CmdError::msg(tv::TV_USAGE));
+            }
+            Some((word.clone(), org))
+        }
+    };
     let handles = ctx
         .w
         .module_state::<PortHandles>()
@@ -623,17 +648,18 @@ pub(crate) fn act_cmd(
     };
     let due = now_ic.saturating_add(i64::from(plan.secs));
     let when = tv::due_words(ctx.w, due);
-    ctx.submit_authoritative(
-        action,
-        PerceivedRef::SelfActor,
-        Vec::new(),
-        json!({
-            "tv": rig.tv.0.to_string(),
-            "act": wire_word(kind, quiet),
-            "ordinal": ordinal,
-        }),
-        key,
-    );
+    let mut parameters = json!({
+        "tv": rig.tv.0.to_string(),
+        "act": wire_word(kind, quiet),
+        "ordinal": ordinal,
+    });
+    if let (Some((word, org)), Some(object)) = (&mind, parameters.as_object_mut()) {
+        object.insert("mind".into(), json!(word));
+        if let Some(org) = org {
+            object.insert("org".into(), json!(org.0));
+        }
+    }
+    ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
     let line = match kind {
         ActKind::Launch => tv::LAUNCH_FILED
             .replace("{n}", &n)

@@ -199,6 +199,13 @@ pub struct SealFacts {
     /// field, evidence only. Absent for every governed seal, so no record before M8b moves.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admissions: Vec<Admission>,
+    /// **The licence's holder** (doc 17h cut M8e E4; M8c B1): the operator, or the
+    /// organisation that holds the licence with the operator acting for it, for a seal taken
+    /// under a filed licence at the dispatch (`crate::surface::dispatch`). The warrant
+    /// principal stays the operator (D-23-5). Absent for the ROM, a draft and every record
+    /// before M8e. Skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<mush_economy::Holder>,
 }
 
 impl SealFacts {
@@ -257,6 +264,7 @@ impl SealFacts {
             core: seal.core.clone(),
             core_class: seal.core.as_ref().map(|_| seal.core_class),
             admissions,
+            holder: None,
         }
     }
 }
@@ -325,6 +333,11 @@ pub enum BlackBoxLine {
         /// governed seal and with no seal.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         admissions: Vec<Admission>,
+        /// **The licence's holder** (doc 17h cut M8e E4): the seal's
+        /// [`SealFacts::holder`] — an organisation and its acting member for an org-held
+        /// licence. Absent for the ROM, a draft and every line before M8e.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holder: Option<mush_economy::Holder>,
     },
     /// **An epoch closed** (doc 23 §6 "At the close"; D-23-1): the hull arrived in a hangar or
     /// was recovered.
@@ -665,6 +678,7 @@ fn sealed_line(
         fallback: seal.and_then(|s| s.fallback.clone()),
         admitted,
         admissions: seal.map(|s| s.admissions.clone()).unwrap_or_default(),
+        holder: seal.and_then(|s| s.holder),
     }
 }
 
@@ -805,33 +819,38 @@ pub(crate) fn epoch_facts(
     let tv = record.tv;
     let store = w.module_state::<TacsimStore>()?;
     let unit = mush_tactics::module::unit_of(w, tv);
-    let seal = unit.and_then(|unit| {
-        let sealed = crate::match_::seal::seal_rom_for(
-            tv,
-            unit,
-            &[],
-            SortieId::ic(tv, excursion.id.launch_ic),
-            &crate::match_::seal::IcSealConfig {
-                minds: &store.cfg.minds,
-                reflex: &store.cfg.arena.reflex,
-                principal: Some(CharacterRef::Character {
-                    id: excursion.operator,
-                }),
-            },
-        );
-        match sealed {
-            // Doc 17h cut M8a: a ROM seal is read under `doctrine`.
-            Ok(seal) => Some(SealFacts::of(&seal, SealLicenceState::Doctrine)),
-            Err(error) => {
-                tracing::error!(
-                    tv = tv.0,
-                    %error,
-                    "tacsim: rig #{}'s ROM seal refused; its epoch opens with the seal absent",
-                    tv.0
-                );
-                None
+    // Doc 17h cut M8e E4 (doc 23 S.4a): a launch that named a mind sealed it at its dispatch;
+    // the open line prints that seal, never a second one.
+    let dispatched = act.seal.as_ref().map(|sealed| sealed.facts.clone());
+    let seal = dispatched.or_else(|| {
+        unit.and_then(|unit| {
+            let sealed = crate::match_::seal::seal_rom_for(
+                tv,
+                unit,
+                &[],
+                SortieId::ic(tv, excursion.id.launch_ic),
+                &crate::match_::seal::IcSealConfig {
+                    minds: &store.cfg.minds,
+                    reflex: &store.cfg.arena.reflex,
+                    principal: Some(CharacterRef::Character {
+                        id: excursion.operator,
+                    }),
+                },
+            );
+            match sealed {
+                // Doc 17h cut M8a: a ROM seal is read under `doctrine`.
+                Ok(seal) => Some(SealFacts::of(&seal, SealLicenceState::Doctrine)),
+                Err(error) => {
+                    tracing::error!(
+                        tv = tv.0,
+                        %error,
+                        "tacsim: rig #{}'s ROM seal refused; its epoch opens with the seal absent",
+                        tv.0
+                    );
+                    None
+                }
             }
-        }
+        })
     });
     let class = unit.map(UnitClass::read).or_else(|| {
         let id = crate::port::tv::pool_unit(w)?;
@@ -1177,6 +1196,7 @@ mod tests {
             core: None,
             core_class: None,
             admissions: Vec::new(),
+            holder: None,
         }
     }
 

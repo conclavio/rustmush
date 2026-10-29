@@ -75,6 +75,10 @@ pub struct CommerceConfig {
     house_renewals: Option<Box<HouseRenewalRegistration>>,
     coverage: Option<Box<CoverageRegistration>>,
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
+    /// **Doc 17h cut M8e E4**: the seal-mark ring's writer cell, installed (the ring family
+    /// delegated to tacsim) where the ring is registered with the owner attestation; the tacsim
+    /// layer holds the same cell for the surface finish ([`CommerceConfig::seal_mark_writer`]).
+    seal_marks: super::seal_marks::SealMarkWriter,
 }
 #[derive(Clone, Debug)]
 struct CoverageRegistration {
@@ -178,7 +182,15 @@ impl CommerceConfig {
             coverage: None,
             ic: None,
             conduct: None,
+            seal_marks: super::seal_marks::SealMarkWriter::new(),
         })
+    }
+
+    /// **The seal-mark ring's writer cell** (doc 17h cut M8e E4): the one the Roll installs at
+    /// registration where the ring is composed, for the tacsim layer's surface finish.
+    #[must_use]
+    pub fn seal_mark_writer(&self) -> super::seal_marks::SealMarkWriter {
+        self.seal_marks.clone()
     }
 
     /// The actual native quota/artifact types are selected by trusted host
@@ -2078,7 +2090,7 @@ fn register_owner_paths(
         )?;
         // M8c B5: the seal-mark writer, beside the attestation that consults
         // the ring.
-        super::seal_marks::register(reg, families.clone(), seal_marks)?;
+        super::seal_marks::register(reg, families.clone(), seal_marks, &config.seal_marks)?;
         // M8c B4: the House attestation shares the personal one's readiness
         // latch.
         if let Some(definitions) = house {
