@@ -613,11 +613,18 @@ read-only preview of an already retained captured admission to the producer.
 Production tests prove unplaced entry, empty native phases, original journal
 matching, lost acknowledgements, cold typed/native refusals, and failure before
 any owner image is installed when Core preimages drift after acknowledgement.
-Departure from a non-window domain still receives the actual Core movement-hook
-veto and receives no exemption from this profile. Sim's existing gate permits
-ordinary exits from window domains; production lifecycle tests for that route
-follow this initial entry join. Native binding tests exercise release mechanics
-separately without claiming that vetoed departure has become executable.
+Production lifecycle tests now follow actual Player and NPC actors through entry,
+same-room re-positioning, departure and return, joining all four original native
+journal positions after restart. A same-room move keeps Core rows unchanged while
+the native placement revision and journal advance. Departure retains the previous
+placement in its genuine release record; lost acknowledgement restores that
+release exactly once across repeated boots. Store acknowledgement alone installs
+none of the participating owners.
+
+Sim's existing movement gate already permits ordinary exits from window domains,
+so these routes use the actual hooks without a new admission exemption. Departure
+from a non-window domain still receives the actual Core movement-hook veto and
+receives no exemption from this profile.
 
 V2 registers no offer or live command route. Its manifest remains partial:
 the bounded original journal refuses a 257th commit until a real checkpoint or
