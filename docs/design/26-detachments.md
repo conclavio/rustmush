@@ -1,6 +1,7 @@
 # 26. Detachments — plans, units, pilots and orders
 
-**Draft 0.4, 2026-10-28.** Rewritten against `origin/main` at `2cbe9f7c` after the owner's
+**Draft 0.5, 2026-10-29.** Personnel eligibility corrected by the owner below.
+Draft 0.4 was rewritten against `origin/main` at `2cbe9f7c` after the owner's
 2026-10-28 rulings. Draft 0.1 remains in Git history; implementation status is tracked below.
 Rechecked against `origin/main` at `62d093c2` before this update.
 
@@ -8,12 +9,18 @@ Read [27 — IC field operations: shared design and owner survey](27-ic-field-op
 with this document. It aligns DT.1–DT.3, H1 field combat and H2 salvage around one lifecycle.
 The [implementation brief](26a-detachment-implementation-plan.md) tracks DT.1a's
 neutral command foundation and DT.1b's opt-in OOC host/client integration.
-FO-1–FO-16 and all 45 survey decisions are accepted, including the human-NPC commander and
-last-port NPC embarkation rulings in doc 27 §9. Doc 27 Draft 0.4 §10 adds five review rulings,
-accepted at their defaults on 2026-10-28 (Q-R1–Q-R5): for DT.2, anyone aboard with a recorded
-embarkation counts as embarked, field boarders included (Q-R2), and NPC crew come from a
-per-port pool with a wage, injury risk and a contracted scope (Q-R5, numbers provisional); DT.1
-inherits P-1 (disconnect is the linkdead grace; a returning slot resumes after a hysteresis).
+FO-1–FO-16 and the survey decisions remain accepted subject to the owner's
+2026-10-29 correction in doc 27: NPC eligibility is current containment in the
+carrier, checked at preparation and launch. No last-port manifest, embarkation
+event or interval is required. Hire real NPCs at port under contract records;
+any later wages accrue from the contract, not evidence of time aboard. Injury
+risk and contracted scope remain relevant. DT.1 inherits P-1 (disconnect is the
+linkdead grace; a returning slot resumes after a hysteresis).
+
+Docs 26g–26j are superseded and must not be extended. Retain merged code for now;
+the closed movement path is inert on the live route. A later cleanup cut may
+delete the v2 provider if nothing adopts it. The next delivery sequence is
+[DT.2b3 hire, ordinary boarding, DT.2b4 activate, DT.3 launch](26c-detachment-preparation.md#current-delivery-sequence).
 
 ## 1. Goal and IC authority
 
@@ -27,8 +34,9 @@ and NPC/software controllers attempt orders through their actual capabilities an
 
 The carrier's charter holder, organizer, leader, unit owner, operator and payer may be different
 people. The charter holder need not accompany the sortie. Any player aboard may form a
-detachment using units they have permission to use. Physical units and real NPC crew must have
-embarked: any NPC assigned a unit or eligible to lead was aboard at the ship's last-port departure.
+detachment using units they have permission to use. Physical units and real NPC crew must
+currently be contained in the carrier at preparation and launch. No historical boarding proof
+is required for NPC assignment or leadership eligibility.
 Unit assignments, software profiles and squad groupings remain dynamic mission preparation;
 the grouping itself need not have been declared at the port.
 
@@ -42,12 +50,12 @@ IC rules. DT.1 may exercise the common roster contract there; the lobby is only 
 |---|---|
 | Preset | Reusable named, revisioned private plan; multiple per player, explicit load/copy/save (Q-D2). |
 | Mission draft | Editable instance of a preset or fresh plan; references candidate hulls, pilots and AI profiles. |
-| Embarked NPC personnel | Real character identities aboard at the carrier's last-port departure; resolved before unit/command assignment, never generated from a software profile. |
+| Aboard NPC personnel | Real character identities currently contained in the carrier at preparation and launch; resolved before unit/command assignment, never generated from a software profile. |
 | Active detachment | Resolved numbered roster of six command units; tank/biped individually, future battle armor/infantry as groups (Q-D1). |
 | Player sortie | The operation's identity/history, potentially containing multiple hull launches and returns. `+sortie` is approved vocabulary. |
 | Hull epoch | Doc 23's seal interval / `SortieId`, separate from the operation or roster. |
 | Organizer | An embarked player managing the plan; need not become leader. |
-| Leader | First active player in ascending slot order; otherwise an assigned, available, authorized human NPC commander who was aboard when the ship departed its last port. Without either, no leader (Q-D4/Q-F1). |
+| Leader | First active player in ascending slot order; otherwise an assigned, available, authorized human NPC commander who met current-containment eligibility at preparation and launch. Without either, no leader (Q-D4/Q-F1). |
 | Operator | The character holding actual station/control authority; membership does not confer a control lease. |
 
 Presets do not create units, grants, reservations or consent. Activation resolves stable
@@ -99,11 +107,11 @@ Proposed player flow (verb arguments remain for the implementation brief):
 |---|---|---|
 | Choose | list/load/save/copy presets | Multiple reusable plans; missing units remain visibly unresolved |
 | Form | `+sortie/form`, optionally from preset | Embarked organizer creates a draft without necessarily occupying slot 1 |
-| Assign | invite/accept/decline; choose hull/NPC/profile; arrange slots | Physically embarked units and actual last-port NPC personnel, effective grants, player acceptance |
+| Assign | invite/accept/decline; choose hull/NPC/profile; arrange slots | Units and real NPC personnel currently contained in the carrier at preparation; effective grants, player acceptance |
 | Review | roster/plan | Distinguish planned, accepted, reserved, ready, out, disabled, recovered and unresolved |
 | Prepare | activate/ready | Reserve actual units once; readiness belongs to a plan revision and includes automatic succession |
 | Lead | automatic first-active-player selection; assigned NPC if no player active | Stable slots; separate leadership term; player resumes priority; NPC is a real embarked human |
-| Launch | `+sortie/disembark` / `+sortie/launch` | Preflight ready units; record each actual launch; expose partial failure |
+| Launch | `+sortie/disembark` / `+sortie/launch` | Recheck current containment and readiness; launch assigned people and units; record each actual launch; expose partial failure |
 | End | return/recover or explicitly end operation | Ending the group record does not recall or repair physical units |
 
 **D-26-3 is superseded:** hulls and real NPC people embark, not fixed AI squads. Before launch,
@@ -151,9 +159,10 @@ player becoming active again automatically regains command. This is combat unava
 permadeath. Ordinary keyboard inactivity is not disconnect. With no active players, an assigned,
 available and authorized human NPC commander may lead; returning players resume priority. If
 neither is available, there is no leader and units continue their last orders or available doctrine.
-The NPC must be a real character embarked at the ship's last-port departure, retaining actual
-location, perception and injury. A disconnect never generates a person, and a unit mind never
-becomes a character principal. Doc 17 D-UM-52/53 and doc 10 T9 already make this legal distinction.
+The NPC must be a real character who met current-containment eligibility at preparation and
+launch, retaining actual location, perception and injury. A disconnect never generates a person,
+and a unit mind never becomes a character principal. Doc 17 D-UM-52/53 and doc 10 T9 already
+make this legal distinction.
 Leadership notices use available communications and do not reveal hidden casualty details.
 
 Player order delivery/acknowledgement changes command history, not physical unit state. NPC and
@@ -188,7 +197,7 @@ the casualty stays in the field for a later physical recovery expedition.
 |---|---|---|
 | DT.0 | This rewrite and doc 27 shared design/decision record | All 45 questions answered; NPC-human/embarkation qualifications explicit; old assumptions dispositioned |
 | DT.1 | Common numbered roster and command authority; player/NPC/automated orders; automatic succession; client projection; OOC adapter | Player in any slot; first active player commands and resumes priority; assigned available human NPC can lead without active players; neither means no leader; stable slots; player orders do not actuate controls; NPC acts from own view; stale/unauthorized orders handled |
-| DT.2 | Presets/drafts; shared unit authority and bounded mission-role grants; last-port NPC personnel; consent/readiness; reservation; aboard editing | Charter holder absent; organizer differs from leader; personal/org grants; reject invented or non-embarked NPCs; dynamic assignment of embarked personnel; no double reservation; revoked grants/stale acceptances handled |
+| DT.2 | Presets/drafts; shared unit authority and bounded mission-role grants; NPC hiring contracts and current-containment eligibility; consent/readiness; reservation; aboard editing | Charter holder absent; organizer differs from leader; personal/org grants; reject invented or absent NPCs; resolve six slots against current hull occupants; no double reservation; revoked grants/stale acceptances handled |
 | DT.3 | Physical group/individual launch; epoch linkage; partial progress/restart; returns and casualty history | Units launch once; no rollback teleport; recover/relaunch; disband leaves field units out; same history feeds H1/H2 |
 | DT.4 | Optional attachments/subset command delegation | Bounded authority; no forced human controls |
 | DT.5 | Dedicated detachment communications surface | Real availability and observer-safe delivered knowledge |
@@ -220,6 +229,11 @@ See the [complete owner survey](27-ic-field-operations-design-and-survey.md#7-ow
 
 ## 9. Ledger
 
+- **2026-10-29:** Draft 0.5 replaces last-port/recorded-embarkation eligibility
+  with current containment at preparation and launch. Any later wages accrue
+  from contracts, not aboard-time evidence. Docs 26g–26j are superseded and must
+  not be extended; retain merged code pending a separate cleanup decision.
+  Resume with hiring contracts, ordinary boarding, DT.2b4 activation and DT.3 launch.
 - **2026-10-28:** Draft 0.2 and doc 27 drafted from the owner's directions; documentation only.
   No DT.1–DT.3, H1 or H2 gameplay implementation is claimed.
 - **2026-10-28:** Draft 0.3 records all survey decisions and the owner's amended slot/leadership,

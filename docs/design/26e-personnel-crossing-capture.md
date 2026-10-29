@@ -1,9 +1,11 @@
 # DT.2b2b.1 — Personnel crossing capture
 
-This slice adds immutable personnel crossing records to the prepared physical
-commit from [26d](26d-prepared-physical-transitions.md). It advances the recorded
-embarkation requirement in [doc 27](27-ic-field-operations-design-and-survey.md)
-without treating the remaining legacy movement paths as covered.
+This slice records the merged immutable personnel crossing format for prepared
+physical commits from [26d](26d-prepared-physical-transitions.md).
+**Owner correction, 2026-10-29:** [doc 27](27-ic-field-operations-design-and-survey.md)
+requires current containment at preparation and launch, not recorded embarkation.
+Retain the existing code and record compatibility for now; crossing certification
+is not a prerequisite for NPC hiring, activation or launch.
 
 ## Evidence and limits
 
@@ -17,13 +19,12 @@ membership. It is still paired with its exact physical receipt.
 Every batch requires `coverage: uncertified_legacy_paths`. There is no certified
 variant, mutable trust flag, current-aboard interval cache, eligibility answer or
 payable duration. An uncovered departure and return cannot restore or extend an
-old interval because this slice creates no intervals. The existing preparation
-report continues to identify personnel history and employment as unresolved.
+old interval because this slice creates no intervals. Legacy preparation reports
+that require personnel history must be corrected during activation integration.
 
-Future certification requires completed movement coverage, a new coverage epoch
-and a new real boarding under that coverage. Current location cannot promote an
-old uncertified capture into authoritative personnel history. Existing crew do
-not acquire historical boarding records during startup.
+The former future-certification programme is withdrawn. Current location supplies
+eligibility directly; it need not promote these captures into historical evidence.
+Existing crew do not acquire historical boarding records during startup.
 
 ## Derivation and transaction
 
@@ -80,14 +81,14 @@ key, operator, root, descriptor pair and record format. Unknown fields, missing
 coverage, duplicate or unordered character/carrier pairs, orphan captures and
 missing version 2 captures refuse boot.
 
-## Remaining DT.2b2b work
+## Withdrawn follow-up work (2026-10-29)
 
-The [movement coverage gates in 26d](26d-prepared-physical-transitions.md#gate-before-personnel-history-becomes-authority)
-remain prerequisites for certified intervals. Ordinary movement, raw structural
-World writes, Sim topology changes, journeys, custody and boot repair must record
-or refuse relevant changes. Departure manifests additionally need the actual
-journey owner in the same commit. NPC contracts, wages and activation may consume
-only the later certified records, never these uncertified captures alone.
+The [former movement-coverage gate in 26d](26d-prepared-physical-transitions.md#withdrawn-personnel-history-gate-2026-10-29)
+is withdrawn. Docs 26g–26j are superseded and must not be extended. Ordinary
+movement remains on its existing live path. NPC hiring records a contract;
+activation and launch check current containment. Any later wages accrue from
+that contract, not certified intervals or these crossing captures. Retain merged
+code for now, with possible deletion of the unused v2 provider in a later cut.
 
 ## Verification
 
