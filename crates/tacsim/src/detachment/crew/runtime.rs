@@ -63,7 +63,7 @@ pub fn register(
     reg: &mut Registrar<'_>,
     actions: &BTreeMap<String, DefinitionRef>,
     outcomes: &BTreeMap<String, DefinitionRef>,
-) -> Result<(), ModError> {
+) -> Result<CrewHandles, ModError> {
     let family = crate::port::families::family_descriptor(
         FAMILY,
         "tacsim.crew_contracts.key.v1",
@@ -100,8 +100,9 @@ pub fn register(
             contracts: contracts.clone(),
         },
     )?;
-    reg.state(CrewHandles { contracts, action });
-    Ok(())
+    let handles = CrewHandles { contracts, action };
+    reg.state(handles.clone());
+    Ok(handles)
 }
 pub(super) fn check_contract(npc: ObjId, contract: Option<&CrewContract>) -> Result<bool, String> {
     if let Some(contract) = contract {

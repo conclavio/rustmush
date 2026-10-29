@@ -153,7 +153,7 @@ pub fn register(
     actions: &BTreeMap<String, DefinitionRef>,
     outcomes: &BTreeMap<String, DefinitionRef>,
     unit_authority: bool,
-) -> Result<(), ModError> {
+) -> Result<PlanningHandles, ModError> {
     let unit_authority_reader = if unit_authority {
         let definition = mush_core::DefinitionRegistryBuilder::new()
             .register(
@@ -200,13 +200,14 @@ pub fn register(
         },
     )?;
     reg.state(PlanningPending::default());
-    reg.state(PlanningHandles {
+    let handles = PlanningHandles {
         families,
         action,
         reader,
         unit_authority_reader,
-    });
-    Ok(())
+    };
+    reg.state(handles.clone());
+    Ok(handles)
 }
 
 fn book_or_new(book: Option<PlanningBook>, owner: ObjId) -> Result<PlanningBook, String> {

@@ -225,6 +225,9 @@ fn roster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +sortie operation."));
     }
+    if super::activation::handles(ctx) {
+        return super::activation::command(ctx);
+    }
     if super::crew::handles(ctx) {
         return super::crew::command(ctx);
     }
@@ -284,11 +287,12 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         .into_iter()
         .chain(super::planning::commands::SWITCHES.iter().copied())
         .chain(super::crew::SWITCHES.iter().copied())
+        .chain(super::activation::SWITCHES.iter().copied())
         .map(Into::into)
         .collect();
     reg.command(CommandSpec {
         name: "+sortie".into(), switches, shape: ArgShape::Raw,
-        help: "+sortie/crew lists NPC hiring terms in your port room; +sortie/hire accepts them and +sortie/contract shows your agreement. +sortie/plans manages private presets and mission drafts; +sortie/invitations lists assigned plans. Use +sortie/plan for accept/ready commands. +sortie/practice and +sortie/roster manage the OOC group. IC activation and launch follow preparation.".into(),
+        help: "+sortie/crew lists NPC hiring terms in your port room; +sortie/hire accepts them and +sortie/contract shows your agreement. +sortie/plans manages private presets and mission drafts; +sortie/invitations lists assigned plans. Use +sortie/plan for accept/ready commands. +sortie/activate <draft>:<revision>=mining|combat|recovery reserves complete assignments; +sortie/active shows them and +sortie/deactivate releases them. +sortie/practice and +sortie/roster manage the OOC group. Physical launch follows separately.".into(),
         ..CommandSpec::default()
     }, Arc::new(roster))?;
     for (name, response) in [("wilco", Response::Wilco), ("negative", Response::Negative)] {

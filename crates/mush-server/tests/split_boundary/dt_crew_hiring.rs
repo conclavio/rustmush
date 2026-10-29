@@ -374,3 +374,342 @@ async fn preparation_resolves_hired_crew_from_current_hull_contents_and_keeps_co
     );
     Ok(())
 }
+
+async fn activation_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId, ObjId)> {
+    let mut rig = fixture(store).await?;
+    let employer = rig.employer;
+    let npc = rig.npc;
+    commit_line(&mut rig, store, employer, &hire(npc, &terms()?)?).await?;
+    let carrier =
+        rig.world
+            .world_mut()
+            .create(ObjKind::Thing, "Activation carrier", GOD, Some(rig.room))?;
+    let unit =
+        rig.world
+            .world_mut()
+            .create(ObjKind::Thing, "Activation unit", GOD, Some(rig.away))?;
+    for (object, behavior) in [
+        (carrier, "sim.participant"),
+        (unit, "sim.participant"),
+        (rig.away, "sim.interior"),
+    ] {
+        rig.world.world_mut().attach_behavior(
+            object,
+            mush_core::BehaviorId::new(behavior)?,
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )?;
+    }
+    let created = text(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", unit.0),
+    );
+    assert!(
+        mush_tactics::module::unit_of(rig.world.world(), unit).is_some(),
+        "{created}"
+    );
+    persist_legacy(&mut rig.world, store).await?;
+    let bay = rig.away;
+    commit_line(
+        &mut rig,
+        store,
+        GOD,
+        &format!("@spatial/space #{}=moving:#{}", bay.0, carrier.0),
+    )
+    .await?;
+    text(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/interior #{}=#{}", unit.0, bay.0),
+    );
+    text(
+        &mut rig.world,
+        GOD,
+        &format!("@asset/title #{}=#{}", unit.0, employer.0),
+    );
+    let ashore =
+        rig.world
+            .world_mut()
+            .create(ObjKind::Exit, "activation-ashore", GOD, Some(bay))?;
+    rig.world.world_mut().link_exit(ashore, Some(rig.room))?;
+    persist_legacy(&mut rig.world, store).await?;
+    commit_line(
+        &mut rig,
+        store,
+        employer,
+        &format!(
+            "@unitgrant/issue #{}=#{} operate_crew until=101",
+            unit.0, npc.0
+        ),
+    )
+    .await?;
+    text(&mut rig.world, employer, "crew-test-board");
+    text(&mut rig.world, npc, "crew-test-board");
+    persist_legacy(&mut rig.world, store).await?;
+    let plan = activation_plan(carrier, unit, npc);
+    commit_line(&mut rig, store, employer, &format!("+sortie/draft {plan}")).await?;
+    Ok((rig, carrier, unit))
+}
+fn activation_plan(carrier: ObjId, unit: ObjId, npc: ObjId) -> serde_json::Value {
+    serde_json::json!({"carrier":carrier.0,"slots":[{"slot":1,"unit":unit.0,
+        "controller":{"kind":"npc","character":npc.0},"role":null,"mind":null}],
+        "npc_commander":null,"financial_terms":null})
+}
+fn active(
+    rig: &Rig,
+    id: u64,
+) -> TestResult<Option<tacsim::detachment::activation::ActiveDetachment>> {
+    let handles = rig
+        .world
+        .world()
+        .module_state::<tacsim::detachment::activation::ActivationHandles>()
+        .ok_or("activation handles")?;
+    Ok(rig
+        .world
+        .engine()
+        .action_state()
+        .get(
+            &handles.records,
+            &tacsim::detachment::planning::DraftRef {
+                organizer: rig.employer,
+                id: mush_tactics::detachment::planning::PlanId(id),
+            },
+        )?
+        .cloned())
+}
+fn reserved(rig: &Rig, entity: ObjId) -> TestResult<bool> {
+    let handles = rig
+        .world
+        .world()
+        .module_state::<tacsim::detachment::activation::ActivationHandles>()
+        .ok_or("activation handles")?;
+    Ok(rig
+        .world
+        .engine()
+        .action_state()
+        .get(&handles.reservations, &entity)?
+        .is_some())
+}
+#[tokio::test]
+async fn activation_is_atomic_recovers_lost_ack_and_releases_original_assignments() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, carrier, unit) = activation_fixture(&store).await?;
+    let employer = rig.employer;
+    let npc = rig.npc;
+    let agreement = contract(&rig)?;
+    let request = submit(&mut rig.world, employer, "+sortie/activate 1:1=mining")?;
+    let ingress = stage(&mut rig.world, &store, &request).await?;
+    let (bundle, installation) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("activation bundle")?
+        .into_parts();
+    assert_eq!(
+        bundle.writes().len(),
+        3,
+        "only accepted roster and unit/person reservations"
+    );
+    assert!(active(&rig, 1)?.is_none());
+    assert!(!reserved(&rig, unit)?);
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    let receipt = store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    assert!(active(&rig, 1)?.is_none());
+    drop(installation);
+    drop(rig);
+    let mut rig = fixture(&store).await?;
+    let accepted = active(&rig, 1)?.ok_or("recovered activation")?;
+    assert!(accepted.active());
+    assert!(reserved(&rig, unit)? && reserved(&rig, npc)?);
+    assert_eq!(contract(&rig)?, agreement);
+    let ActionPreflight::Finalized(retry) = ActionCoordinator::preflight(&store, ingress).await?
+    else {
+        return Err("activation retry not finalized".into());
+    };
+    assert_eq!(retry.outcome(), receipt.outcome());
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(rig.away)
+    );
+    let hidden = text(
+        &mut rig.world,
+        rig.competitor,
+        &format!("+sortie/active {}:1", employer.0),
+    );
+    let missing = text(
+        &mut rig.world,
+        rig.competitor,
+        &format!("+sortie/active {}:99", employer.0),
+    );
+    assert_eq!(
+        hidden, missing,
+        "other employers cannot probe accepted plans"
+    );
+    let plan = activation_plan(carrier, unit, npc);
+    commit_line(&mut rig, &store, employer, &format!("+sortie/draft {plan}")).await?;
+    let duplicate = submit(&mut rig.world, employer, "+sortie/activate 2:1=mining")?;
+    assert!(stage(&mut rig.world, &store, &duplicate).await.is_err());
+    assert!(active(&rig, 2)?.is_none());
+    // Editing the draft neither releases nor mutates the accepted snapshot.
+    let empty = serde_json::json!({"carrier":carrier.0,"slots":[],"npc_commander":null,"financial_terms":null});
+    commit_line(
+        &mut rig,
+        &store,
+        employer,
+        &format!("+sortie/edit 1:1={empty}"),
+    )
+    .await?;
+    assert_eq!(active(&rig, 1)?, Some(accepted));
+    text(&mut rig.world, npc, "activation-ashore");
+    assert!(
+        reserved(&rig, npc)?,
+        "walking is ordinary movement even while reserved"
+    );
+    text(
+        &mut rig.world,
+        GOD,
+        &format!("@asset/title #{}=#{}", unit.0, rig.competitor.0),
+    );
+    persist_legacy(&mut rig.world, &store).await?;
+    commit_line(&mut rig, &store, employer, "+sortie/deactivate 1:1").await?;
+    assert!(!reserved(&rig, unit)? && !reserved(&rig, npc)?);
+    assert!(!active(&rig, 1)?.ok_or("closed activation")?.active());
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(rig.room)
+    );
+    assert_eq!(contract(&rig)?, agreement);
+    // A fresh activation has its own generation; stale release commands must
+    // not release the replacement roster even when its assignments are equal.
+    text(&mut rig.world, npc, "crew-test-board");
+    text(
+        &mut rig.world,
+        GOD,
+        &format!("@asset/title #{}=#{}", unit.0, employer.0),
+    );
+    persist_legacy(&mut rig.world, &store).await?;
+    commit_line(
+        &mut rig,
+        &store,
+        employer,
+        &format!("@unitgrant/issue #{}=#{} operate_crew", unit.0, npc.0),
+    )
+    .await?;
+    commit_line(
+        &mut rig,
+        &store,
+        employer,
+        &format!("+sortie/edit 1:2={plan}"),
+    )
+    .await?;
+    commit_line(&mut rig, &store, employer, "+sortie/activate 1:3=mining").await?;
+    let replacement = active(&rig, 1)?.ok_or("replacement activation")?;
+    assert_eq!(replacement.revision, 2);
+    assert_eq!(replacement.source_revision, 3);
+    let stale = submit(&mut rig.world, employer, "+sortie/deactivate 1:1")?;
+    assert!(stage(&mut rig.world, &store, &stale).await.is_err());
+    assert!(reserved(&rig, unit)? && reserved(&rig, npc)?);
+    commit_line(&mut rig, &store, employer, "+sortie/deactivate 1:2").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn activation_rechecks_current_presence_and_unit_rights_at_final_take() -> TestResult {
+    for change in ["departure", "returned", "expiry", "duty"] {
+        let store = InMemoryStore::new();
+        let (mut rig, _, unit) = activation_fixture(&store).await?;
+        let employer = rig.employer;
+        let command = if change == "duty" {
+            "+sortie/activate 1:1=combat"
+        } else {
+            "+sortie/activate 1:1=mining"
+        };
+        let request = submit(&mut rig.world, employer, command)?;
+        if change == "duty" {
+            assert!(stage(&mut rig.world, &store, &request).await.is_err());
+            continue;
+        }
+        stage(&mut rig.world, &store, &request).await?;
+        if change == "expiry" {
+            rig.world.world_mut().set_now(102);
+        } else {
+            text(&mut rig.world, rig.npc, "activation-ashore");
+            if change == "returned" {
+                text(&mut rig.world, rig.npc, "crew-test-board");
+            }
+        }
+        let taken = rig.world.engine_mut().take_staged_action();
+        if change == "returned" {
+            assert!(
+                taken?.is_some(),
+                "current containment qualifies without an interval or movement history"
+            );
+        } else {
+            assert!(taken.is_err(), "stale {change} reached the writer");
+        }
+        assert!(active(&rig, 1)?.is_none());
+        assert!(!reserved(&rig, unit)?);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn activation_cannot_use_an_offer_resolved_before_real_unit_grant_revocation() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _, unit) = activation_fixture(&store).await?;
+    let employer = rig.employer;
+    let request = submit(&mut rig.world, employer, "+sortie/activate 1:1=mining")?;
+    let ingress = ActionCoordinator::command_ingress(&request, 1)?;
+    let ActionPreflight::Vacant(permit) =
+        ActionCoordinator::preflight(&store, ingress.clone()).await?
+    else {
+        return Err("activation not vacant".into());
+    };
+    let principal = mush_core::PrincipalId::Object { id: employer };
+    let query = rig.world.engine().legal_action_query(
+        principal.clone(),
+        employer,
+        request.subject.clone(),
+    )?;
+    let offers = rig.world.engine().project_legal_actions(&query)?;
+    let projected = offers
+        .projected_for_action(&request.action)
+        .ok_or("activation offer")?;
+    let resolved = rig.world.engine().resolve_legal_action(
+        &offers,
+        mush_core::OfferExecutionContext {
+            request: ingress.request(),
+            principal,
+            actor: employer,
+            idempotency: ingress.idempotency().clone(),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        },
+        mush_core::OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: request.targets.clone(),
+            parameters: request.parameters.clone(),
+        },
+    )?;
+    commit_line(&mut rig, &store, employer, "@unitgrant/revoke 1").await?;
+    if ActionCoordinator::prepare_and_stage_resolved(permit, rig.world.engine_mut(), resolved)
+        .is_ok()
+    {
+        assert!(
+            rig.world.engine_mut().take_staged_action().is_err(),
+            "a revoked right reached the writer"
+        );
+    }
+    assert!(active(&rig, 1)?.is_none());
+    assert!(!reserved(&rig, unit)?);
+    Ok(())
+}

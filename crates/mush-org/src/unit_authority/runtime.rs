@@ -199,6 +199,13 @@ pub fn register(
     reg.state(Pending::default());
     reg.state(handles.clone());
     reg.revision_validator(
+        super::operation::kind()?,
+        super::operation::Validator {
+            registry: registry.clone(),
+            facts: facts.clone(),
+        },
+    )?;
+    reg.revision_validator(
         RevisionKind::new(CanonicalId::new(REVISION).map_err(mod_error)?),
         Validator { registry, facts },
     )?;
