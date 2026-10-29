@@ -25,7 +25,8 @@ pub(super) const SEIZED: &str = "seized";
 /// hull for an ungoverned core, so it resolves for no contract condition, as `claimed`; the
 /// world's signal is the canon line, which names nobody, and the Red Dies clock.
 pub(super) const UNWARRANTED: &str = "unwarranted";
-/// Doc 17h cut M8d D6: reserved for M8g's claim (scoped). Parsed, never produced here.
+/// Doc 17h cut M8d D6: M8g's claim (scoped). Produced by a filed claim
+/// ([`claimed_reference`]); no public condition resolves it.
 pub(super) const CLAIMED: &str = "claimed";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +111,16 @@ impl FactKey {
 }
 /// A hull's fact id: `hull/` and its number as sixteen lower-case hex digits, the other
 /// subjects' spelling. A fact reference is a contract's record, never a player surface.
+/// **One `minds.claimed` reference** (doc 17h cut M8g G3): the claim's fact for `hull` at the
+/// claim's sequence `seq` — the producer M8d reserved this kind for.
+pub(crate) fn claimed_reference(hull: ObjId, seq: u64) -> ExternalRef {
+    ExternalRef {
+        provider: PROVIDER.into(),
+        kind: CLAIMED.into(),
+        id: hull_key(hull).into(),
+        revision: Some(seq),
+    }
+}
 pub(super) fn hull_key(hull: ObjId) -> String {
     format!("hull/{:016x}", hull.0)
 }

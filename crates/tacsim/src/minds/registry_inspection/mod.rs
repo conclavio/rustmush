@@ -21,6 +21,7 @@
 //! readiness. The named launch composes it beside recall and revocation
 //! (`crate::launch::market`).
 
+pub mod claims;
 pub mod command;
 pub mod facts;
 pub mod fine;
@@ -53,6 +54,8 @@ pub struct Composition {
     /// Doc 17h cut M8d D4: the revocation term in IC days when `@registry/revoke principal=`
     /// composes (`MindCommerce::with_registry_principal_revocation`).
     pub(crate) principals: Option<u32>,
+    /// Doc 17h cut M8g G3: whether the quirk claim composes (`MindCommerce::with_registry_claims`).
+    pub(crate) claims: bool,
 }
 
 impl Composition {
@@ -76,6 +79,16 @@ impl Composition {
             .transpose()
     }
 
+    /// Doc 17h cut M8g G3: the quirk claim's action and outcome descriptors, when it composes.
+    ///
+    /// # Errors
+    /// A policy that does not validate.
+    pub(crate) fn claim_descriptors(&self) -> Result<Option<[DefinitionDescriptor; 2]>, ModError> {
+        self.claims
+            .then(|| self.policy.claim_descriptors())
+            .transpose()
+    }
+
     /// Doc 17h cut M8d D3: the fine's action and outcome descriptors, when it composes.
     pub(crate) fn fine_descriptors(&self) -> Result<Option<[DefinitionDescriptor; 2]>, ModError> {
         self.fines
@@ -94,6 +107,7 @@ impl Composition {
         outcome: DefinitionRef,
         fine: Option<(DefinitionRef, DefinitionRef)>,
         principal: Option<(DefinitionRef, DefinitionRef)>,
+        claim: Option<(DefinitionRef, DefinitionRef)>,
     ) -> Result<(), ModError> {
         if reg.module() != crate::NS
             || action != self.policy.action()?
@@ -177,12 +191,38 @@ impl Composition {
                 ));
             }
         };
+        // Doc 17h cut M8g G3: the quirk claim's provider.
+        let claims = match (claim, self.claims) {
+            (Some((action, outcome)), true) => {
+                if action != self.policy.claim_action()?
+                    || outcome != self.policy.claim_outcome()?
+                {
+                    return Err(ModError::msg(
+                        "Registry claim registration differs from its composition",
+                    ));
+                }
+                reg.action_provider(
+                    action.clone(),
+                    claims::Provider::new(action.clone(), outcome, writer.clone())?,
+                )?;
+                // The earned-contacts index the claim reads; no producer until the IC fight.
+                reg.state(crate::minds::earned_contacts::EarnedContacts::default());
+                Some(claims::ClaimHost { action })
+            }
+            (None, false) => None,
+            _ => {
+                return Err(ModError::msg(
+                    "Registry claim registration differs from its composition",
+                ));
+            }
+        };
         reg.state(InspectionHost {
             writer,
             attempts: Arc::new(Mutex::new((i64::MIN, 0))),
             pending,
             fines,
             principals,
+            claims,
         });
         Ok(())
     }
@@ -202,6 +242,8 @@ pub struct InspectionHost {
     pub(crate) fines: Option<fine::FineHost>,
     /// Doc 17h cut M8d D4: the principal revocation, when it composes.
     pub(crate) principals: Option<principal::PrincipalHost>,
+    /// Doc 17h cut M8g G3: the quirk claim, when it composes.
+    pub(crate) claims: Option<claims::ClaimHost>,
 }
 
 impl InspectionHost {

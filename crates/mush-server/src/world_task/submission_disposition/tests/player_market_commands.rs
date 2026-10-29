@@ -1734,7 +1734,7 @@ const NO_OFFER_999: &str = "You have no offer for licence 999.";
 const NO_CHARTER_OFFER_999: &str = "You have no offer for filed mind 999.";
 
 /// `@registry`'s help (17g C2d; doc 17h cut M8a adds the inspection line).
-const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <licence> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull> and @registry/fine <hull>[/<n>] <amount> (Registry operators)";
+const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <licence> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull>, @registry/fine <hull>[/<n>] <amount> and @registry/claims (Registry operators)";
 /// The Registry commands' refusal without the player market.
 const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
 

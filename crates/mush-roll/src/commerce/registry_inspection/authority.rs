@@ -99,6 +99,16 @@ pub(crate) fn observe_fine(
 ) -> Result<(Authorization, ClockStamp), PublicationError> {
     observe_capability(world, readiness, p, actor, REGISTRY_FINE_CAPABILITY)
 }
+/// **The claims read's twin** (doc 17h cut M8g G3): the same live observation for
+/// [`REGISTRY_CLAIMS_CAPABILITY`].
+pub(crate) fn observe_claims(
+    world: &World,
+    readiness: &Readiness,
+    p: &RegistryInspectionPolicy,
+    actor: ObjId,
+) -> Result<(Authorization, ClockStamp), PublicationError> {
+    observe_capability(world, readiness, p, actor, REGISTRY_CLAIMS_CAPABILITY)
+}
 /// **The principal revocation's twin** (doc 17h cut M8d D4): the same live observation for
 /// the existing `roll.registry.revoke` capability.
 pub(crate) fn observe_revoke(

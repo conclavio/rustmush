@@ -155,6 +155,19 @@ pub(crate) const AMBIGUOUS_PRINCIPAL: &str =
     "That name is a character and an organisation; name the character as #<n>.";
 /// M8d D4: the named inspection read no ungoverned core.
 pub(crate) const NOTHING_TO_REVOKE: &str = "That inspection found nothing to revoke for.";
+/// Doc 17h cut M8g G3: the author's receipt for a filed quirk claim (the lead's wording; one
+/// line, confirming nothing).
+pub(crate) const CLAIM_FILED: &str = "Your claim is filed.";
+/// M8g G3: the claim is not composed here.
+pub(crate) const CLAIMS_OFF: &str = "Registry claims are not configured here.";
+/// M8g G3: `@registry/claims` with nothing filed.
+pub(crate) const NO_CLAIMS: &str = "No claims are filed with the Registry.";
+/// M8g G3: one claim's header line for an operator.
+pub(crate) const CLAIM_LINE: &str = "{author} (#{number}) claim {seq}, {at}: hulls {hulls}.";
+/// M8g G3: the author's own words, framed as theirs.
+pub(crate) const CLAIM_WORDS: &str = "  In their words: {text}";
+/// M8g G3: claims past the read's page.
+pub(crate) const MORE_CLAIMS: &str = "{count} older claims are not shown.";
 /// M8d D3: the provider's receipt, rendered from the fine it recorded.
 pub(crate) const FINED: &str =
     "Fined the holder of hull #{hull} {amount}. The fine is levied when the Registry next settles.";

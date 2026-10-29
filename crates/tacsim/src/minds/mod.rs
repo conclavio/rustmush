@@ -143,6 +143,8 @@ pub mod context;
 #[cfg(test)]
 mod coprates_drill;
 mod doctrine_library;
+/// Doc 17h cut M8g G3: what an author's own sensors earned (no producer until the IC fight).
+pub mod earned_contacts;
 pub mod fees;
 pub(crate) mod ic_sortie;
 pub mod kernels;

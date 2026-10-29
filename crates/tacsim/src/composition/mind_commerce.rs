@@ -876,6 +876,7 @@ impl MindCommerce {
             writer,
             fines: None,
             principals: None,
+            claims: false,
         });
         self.install_registry_findings()?;
         Ok(self)
@@ -897,6 +898,23 @@ impl MindCommerce {
             return Err(ModError::msg("Registry fines already configured"));
         }
         inspection.fines = Some(credit);
+        Ok(self)
+    }
+
+    /// **Doc 17h cut M8g G3: the quirk claim** over the composed inspection — `@mind/claim`
+    /// for a charter title holder naming hulls they earned, filed with the inspection's
+    /// Registry, and `@registry/claims` for its operators holding `roll.registry.claims`.
+    /// Needs [`Self::with_registry_inspection`] first.
+    pub fn with_registry_claims(mut self) -> Result<Self, ModError> {
+        let inspection = self
+            .state
+            .registry_inspection
+            .as_mut()
+            .ok_or_else(|| ModError::msg("Registry claims need the Registry inspection"))?;
+        if inspection.claims {
+            return Err(ModError::msg("Registry claims already configured"));
+        }
+        inspection.claims = true;
         Ok(self)
     }
 

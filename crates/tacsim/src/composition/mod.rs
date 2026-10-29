@@ -470,6 +470,8 @@ pub fn domain_org_capability_vocabulary() -> std::collections::BTreeSet<mush_org
         .chain([mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY])
         // Doc 17h cut M8d D3: the Registry fine.
         .chain([mush_roll::commerce::registry_inspection::REGISTRY_FINE_CAPABILITY])
+        // Doc 17h cut M8g G3: the Registry's read of the quirk claims.
+        .chain([mush_roll::commerce::registry_inspection::REGISTRY_CLAIMS_CAPABILITY])
         .chain(NAMED_LAUNCH_HARDWARE_CAPABILITIES)
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()
