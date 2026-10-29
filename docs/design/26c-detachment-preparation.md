@@ -89,6 +89,23 @@ driver, teleport a hired NPC, activate a roster or adopt the deferred movement
 provider. DT.2b4 will read the actual contract and current containment when
 resolving the six slots.
 
+## DT.2b4 current personnel resolution
+
+The DT.2b4 personnel resolution used by `+sortie/plan` reads current physical
+containment and the real contracts for the draft's NPC slots. The organizer must
+be aboard the selected carrier to resolve their crew. A nominated NPC commander
+must occupy an NPC slot and have commander scope in their contract. Missing or
+wrong-kind people, missing/mismatched contracts and absent crew remain unresolved;
+a saved preference cannot supply them. At most six slot rows plus an unresolved
+unassigned-commander notice are produced. Invited players do not receive another
+employer's contract terms.
+
+Resolution is ephemeral and is recomputed after ordinary walking and restart.
+It creates no aboard ledger, reservation or cached authority. Activation and
+launch must call the resolver again and also admit actual unit permissions,
+player consent, control, capability/health, licences and mission-role grants.
+The current report is not a claim that those remaining activation checks are built.
+
 ## DT.2b1 ownership and records
 
 The neutral `mush-tactics::detachment::planning` model defines material plans,

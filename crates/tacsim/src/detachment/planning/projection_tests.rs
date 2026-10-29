@@ -12,8 +12,31 @@ use mush_tactics::detachment::Slot;
 use mush_tactics::detachment::planning::{Consent, Plan, PlanId, SlotPlan};
 
 use super::*;
+use crate::detachment::crew::personnel::{self, PersonnelIssue};
+use crate::detachment::crew::{CrewContract, CrewDuty, HireTerms, NpcMissionScope};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn employment(
+    fixture: &Fixture,
+    npc: ObjId,
+    scope: NpcMissionScope,
+) -> Result<CrewContract, String> {
+    let terms = HireTerms {
+        schema: 1,
+        port: mush_core::CanonicalId::new("ceres").map_err(|e| e.to_string())?,
+        mission_scope: scope,
+        duties: BTreeSet::from([CrewDuty::Mining]),
+    };
+    Ok(CrewContract {
+        schema: 1,
+        npc,
+        employer: fixture.draft.organizer,
+        hired_at: fixture.world.world_ic_now(),
+        terms_hash: terms.digest()?,
+        terms,
+    })
+}
 
 struct Fixture {
     world: Box<World>,
@@ -504,5 +527,178 @@ fn dt_preparation_missing_and_inaccessible_references_have_the_same_observation(
     );
     check!(distant.contains(UNOBSERVED));
     check!(!distant.contains("physically aboard"));
+    Ok(())
+}
+
+#[test]
+fn six_npc_slots_resolve_current_nested_containment_without_boarding_records() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.draft.plan.slots.clear();
+    let mut contracts = BTreeMap::new();
+    for ordinal in 1..=6 {
+        let npc = fixture.world.create(
+            ObjKind::Npc,
+            &format!("Crew {ordinal}"),
+            GOD,
+            Some(fixture.side_room),
+        )?;
+        contracts.insert(
+            npc,
+            employment(&fixture, npc, NpcMissionScope::SubordinateOperator)?,
+        );
+        fixture.draft.plan.slots.push(SlotPlan {
+            slot: Slot::new(ordinal)?,
+            unit: None,
+            controller: PlannedController::Npc { character: npc },
+            role: None,
+            mind: None,
+        });
+    }
+    fixture.draft.plan_hash = fixture.draft.plan.material_hash()?;
+    let rows = personnel::resolve(&fixture.world, &fixture.draft, |npc| {
+        Ok(contracts.get(&npc).cloned())
+    })?;
+    check_eq!(rows.len(), 6);
+    check!(rows.iter().all(|row| row.terms.is_ok()));
+    let walker = rows.first().ok_or("first NPC")?.character;
+    fixture.world.move_to(walker, LIMBO)?;
+    let away = personnel::resolve(&fixture.world, &fixture.draft, |npc| {
+        Ok(contracts.get(&npc).cloned())
+    })?;
+    check_eq!(
+        away.first().ok_or("away NPC")?.terms,
+        Err(PersonnelIssue::NotAboard)
+    );
+    fixture.world.move_to(walker, fixture.console)?;
+    fixture.world.set_now(1_000_000);
+    let returned = personnel::resolve(&fixture.world, &fixture.draft, |npc| {
+        Ok(contracts.get(&npc).cloned())
+    })?;
+    check!(returned.iter().all(|row| row.terms.is_ok()));
+    check_eq!(
+        rows,
+        returned,
+        "ordinary departure/return and time passage need no crossing or wage evidence"
+    );
+    Ok(())
+}
+
+#[test]
+fn npc_personnel_distinguishes_employment_command_scope_and_missing_assignment() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let npc = fixture
+        .world
+        .create(ObjKind::Npc, "Crew", GOD, Some(fixture.bay))?;
+    fixture
+        .draft
+        .plan
+        .slots
+        .first_mut()
+        .ok_or("slot")?
+        .controller = PlannedController::Npc { character: npc };
+    fixture.draft.plan.npc_commander = Some(npc);
+    fixture.draft.plan_hash = fixture.draft.plan.material_hash()?;
+    let mut contract = employment(&fixture, npc, NpcMissionScope::SubordinateOperator)?;
+    let rows = personnel::resolve(&fixture.world, &fixture.draft, |_| {
+        Ok(Some(contract.clone()))
+    })?;
+    check_eq!(
+        rows.first().ok_or("commander")?.terms,
+        Err(PersonnelIssue::CommandOutsideContract)
+    );
+    contract.terms.mission_scope = NpcMissionScope::DetachmentCommander;
+    contract.terms_hash = contract.terms.digest()?;
+    let allowed = personnel::resolve(&fixture.world, &fixture.draft, |_| {
+        Ok(Some(contract.clone()))
+    })?;
+    check!(allowed.first().ok_or("commander")?.terms.is_ok());
+    contract.employer = fixture.actor;
+    let other = personnel::resolve(&fixture.world, &fixture.draft, |_| {
+        Ok(Some(contract.clone()))
+    })?;
+    check_eq!(
+        other.first().ok_or("other employer")?.terms,
+        Err(PersonnelIssue::NotContracted)
+    );
+    let missing = personnel::resolve(&fixture.world, &fixture.draft, |_| Ok(None))?;
+    check_eq!(
+        other,
+        missing,
+        "another employer's private contract is not disclosed"
+    );
+    fixture.draft.plan.slots.clear();
+    fixture.draft.plan_hash = fixture.draft.plan.material_hash()?;
+    let unassigned = personnel::resolve(&fixture.world, &fixture.draft, |_| {
+        Err("must not read an unassigned commander's contract".into())
+    })?;
+    check_eq!(
+        unassigned.first().ok_or("unassigned commander")?.terms,
+        Err(PersonnelIssue::CommanderUnassigned)
+    );
+    Ok(())
+}
+
+#[test]
+fn npc_personnel_refuses_wrong_character_kind_and_corrupt_contract() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture
+        .draft
+        .plan
+        .slots
+        .first_mut()
+        .ok_or("slot")?
+        .controller = PlannedController::Npc {
+        character: fixture.actor,
+    };
+    fixture.draft.plan_hash = fixture.draft.plan.material_hash()?;
+    let wrong_kind = employment(
+        &fixture,
+        fixture.actor,
+        NpcMissionScope::SubordinateOperator,
+    )?;
+    let rows = personnel::resolve(&fixture.world, &fixture.draft, |_| {
+        Ok(Some(wrong_kind.clone()))
+    })?;
+    check_eq!(
+        rows.first().ok_or("wrong kind")?.terms,
+        Err(PersonnelIssue::Unavailable)
+    );
+    let npc = fixture
+        .world
+        .create(ObjKind::Npc, "Crew", GOD, Some(fixture.bay))?;
+    fixture
+        .draft
+        .plan
+        .slots
+        .first_mut()
+        .ok_or("slot")?
+        .controller = PlannedController::Npc { character: npc };
+    fixture.draft.plan_hash = fixture.draft.plan.material_hash()?;
+    let mut contract = employment(&fixture, npc, NpcMissionScope::SubordinateOperator)?;
+    contract.npc = fixture.actor;
+    let rows = personnel::resolve(&fixture.world, &fixture.draft, |_| {
+        Ok(Some(contract.clone()))
+    })?;
+    check_eq!(
+        rows.first().ok_or("wrong contract identity")?.terms,
+        Err(PersonnelIssue::Unavailable)
+    );
+    let absent = ObjId(u32::MAX);
+    for person in [npc, absent] {
+        fixture
+            .draft
+            .plan
+            .slots
+            .first_mut()
+            .ok_or("slot")?
+            .controller = PlannedController::Npc { character: person };
+        fixture.draft.plan_hash = fixture.draft.plan.material_hash()?;
+        let rows = personnel::resolve(&fixture.world, &fixture.draft, |_| Ok(None))?;
+        check_eq!(
+            rows.first().ok_or("uncontracted person")?.terms,
+            Err(PersonnelIssue::NotContracted),
+            "an uncontracted ID is not an existence or location oracle"
+        );
+    }
     Ok(())
 }

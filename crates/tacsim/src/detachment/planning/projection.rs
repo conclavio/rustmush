@@ -424,6 +424,60 @@ pub fn report(ctx: &mut Ctx<'_>, draft: &Draft) -> Result<(), String> {
     for line in lines {
         ctx.out.sys_to_actor(ctx.actor, "tacsim.detachment", line);
     }
+    // An invitation exposes the plan, not another employer's private contracts.
+    // The organizer resolves their crew only while actually aboard this hull.
+    if ctx.actor != draft.organizer {
+        return Ok(());
+    }
+    let has_npcs = draft.plan.npc_commander.is_some()
+        || draft
+            .plan
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.controller, PlannedController::Npc { .. }));
+    if !has_npcs {
+        return Ok(());
+    }
+    if !physically_aboard(ctx.w, ctx.actor, draft.plan.carrier) {
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.detachment",
+            "Board the selected carrier to resolve its current NPC crew.",
+        );
+        return Ok(());
+    }
+    let handles = ctx
+        .w
+        .module_state::<crate::detachment::crew::CrewHandles>()
+        .ok_or("Crew contracts unavailable.")?;
+    let personnel = crate::detachment::crew::personnel::resolve(ctx.w, draft, |npc| {
+        ctx.action_state(&handles.contracts, &npc)
+            .map(|row| row.cloned())
+            .map_err(|e| e.to_string())
+    })?;
+    for row in personnel {
+        let role = row.slot.map_or_else(
+            || "Commander".to_owned(),
+            |slot| format!("Slot {} NPC", slot.get()),
+        );
+        let status = match row.terms {
+            Ok(terms) => format!(
+                "aboard now; contract recorded; {}{}",
+                crate::detachment::crew::describe_terms(&terms),
+                if row.commander {
+                    "; nominated commander covered"
+                } else {
+                    ""
+                }
+            ),
+            Err(issue) => issue.label().to_owned(),
+        };
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.detachment",
+            format!("{role} #{} — {status}.", row.character.0),
+        );
+    }
     Ok(())
 }
 

@@ -1,7 +1,9 @@
 //! Port hiring records for real NPCs. Boarding remains ordinary movement.
 mod commands;
+pub(crate) mod personnel;
 mod runtime;
 
+pub(crate) use commands::describe as describe_terms;
 pub(crate) use commands::{SWITCHES, command, handles};
 use mush_core::{
     CanonicalHash, CanonicalId, ClockRef, ClockStamp, Flags, GOD, ObjId, ObjKind, World,
