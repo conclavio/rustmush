@@ -212,40 +212,10 @@ pub(crate) fn register_with_coverage(
     } else {
         None
     };
-    // One `outcome` validator for the whole crate, over the very descriptors
-    // registered next (built once, so the two cannot drift).
-    let mut outcomes = outcome_descriptors(test_world)?;
-    outcomes.push(crate::detachment::planning::outcome_descriptor()?);
-    // Doc 17h cut M8f: the procurement ledger's record.
-    outcomes.push(crate::procurement::outcome_descriptor()?);
-    if let Some(ic) = ic {
-        outcomes.push(ic.outcome()?);
-    }
-    if let Some(coverage) = coverage {
-        outcomes.push(coverage.outcome()?);
-    }
-    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner.
-    if let Some(inspection) = inspection {
-        let [_, outcome] = inspection.descriptors()?;
-        outcomes.push(outcome);
-        // Doc 17h cut M8d D3: the fine's outcome, when it composes.
-        if let Some([_, outcome]) = inspection.fine_descriptors()? {
-            outcomes.push(outcome);
-        }
-        // Doc 17h cut M8d D4: the principal revocation's outcome, when it composes.
-        if let Some([_, outcome]) = inspection.principal_descriptors()? {
-            outcomes.push(outcome);
-        }
-    }
-    reg.definition_validator(
-        kind("outcome")?,
-        crate::definitions::exact_validator(outcomes.clone()),
-    )?;
-    let mut outcome_refs: BTreeMap<String, DefinitionRef> = BTreeMap::new();
-    for descriptor in outcomes {
-        let id = descriptor.id().as_str().to_owned();
-        outcome_refs.insert(id, reg.definition(descriptor)?);
-    }
+    // One `outcome` validator for the whole crate, then one `action` validator, each over
+    // the very descriptors registered (built once, so the two cannot drift), in a frame of
+    // their own (the M7 memory-size gate: the descriptors are large).
+    let outcome_refs = register_outcomes(reg, test_world, (ic, coverage, inspection))?;
     let probe_outcome = outcome_refs.get(PROBE_OUTCOME).cloned();
     let stock_outcome = outcome_refs
         .get(crate::port::stock::STOCK_OUTCOME)
@@ -307,55 +277,27 @@ pub(crate) fn register_with_coverage(
         .get(crate::port::passenger::store::OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("passenger outcome missing"))?;
-    let mut actions = action_descriptors(
-        (&stock_outcome, &mill_outcome),
-        &relay_outcome,
-        &burn_outcome,
-        (&surface_act_outcome, &surface_done_outcome),
-        &chart_forget_outcome,
-        (&site_work_outcome, &dispatch_outcome),
-        probe_outcome.as_ref(),
-    )?;
-    append_receipt_actions(
-        &mut actions,
-        &recovery_outcome,
-        &survey_outcome,
-        &survey_cancel_outcome,
-        (&passenger_outcome, &epoch_outcome),
-    )?;
-    actions.push(crate::quest::registration::action(&outcome_refs)?);
-    actions.push(crate::detachment::planning::action_descriptor(
+    let action_refs = register_actions(
+        reg,
         &outcome_refs,
-    )?);
-    actions.push(crate::procurement::action_descriptor(&outcome_refs)?);
-    if let Some(ic) = ic {
-        actions.extend(ic.actions()?);
-    }
-    if let Some(coverage) = coverage {
-        actions.extend(coverage.descriptors()?);
-    }
-    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner.
-    if let Some(inspection) = inspection {
-        let [action, _] = inspection.descriptors()?;
-        actions.push(action);
-        // Doc 17h cut M8d D3: the fine's action, when it composes.
-        if let Some([action, _]) = inspection.fine_descriptors()? {
-            actions.push(action);
-        }
-        // Doc 17h cut M8d D4: the principal revocation's action, when it composes.
-        if let Some([action, _]) = inspection.principal_descriptors()? {
-            actions.push(action);
-        }
-    }
-    reg.definition_validator(
-        kind("action")?,
-        crate::definitions::exact_validator(actions.clone()),
+        ActionOutcomes {
+            stock: &stock_outcome,
+            mill: &mill_outcome,
+            relay: &relay_outcome,
+            burn: &burn_outcome,
+            surface: (&surface_act_outcome, &surface_done_outcome),
+            chart_forget: &chart_forget_outcome,
+            site: (&site_work_outcome, &dispatch_outcome),
+            probe: probe_outcome.as_ref(),
+            receipts: (
+                &recovery_outcome,
+                &survey_outcome,
+                &survey_cancel_outcome,
+                (&passenger_outcome, &epoch_outcome),
+            ),
+        },
+        (ic, coverage, inspection),
     )?;
-    let mut action_refs: BTreeMap<String, DefinitionRef> = BTreeMap::new();
-    for descriptor in actions {
-        let id = descriptor.id().as_str().to_owned();
-        action_refs.insert(id, reg.definition(descriptor)?);
-    }
     // Doc 17h cut M8a: the Registry inspection's provider and slot over the registered
     // action and outcome (`minds::registry_inspection`); doc 17h cut M8d D3 the fine's beside
     // them, in a frame of their own.
@@ -516,12 +458,12 @@ pub(crate) fn register_with_coverage(
         &port_families,
         inventory_families.as_ref(),
     )?;
-    let quest =
-        crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
-    crate::detachment::planning::register(reg, &action_refs, &outcome_refs, unit_authority)?;
-    // Doc 17h cut M8f: the procurement ledger, its record action and the `tacsim.procurement`
-    // tick, unconditionally (no policy, no visit).
-    crate::procurement::register(reg, &action_refs, &outcome_refs)?;
+    let quest = register_services(
+        reg,
+        (&action_refs, &outcome_refs),
+        &port_families,
+        unit_authority,
+    )?;
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,
@@ -555,6 +497,156 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots.
     crate::surface::tick::register(reg)?;
     Ok(())
+}
+
+/// The optional compositions whose definitions the crate's validators list.
+type Optional<'a> = (
+    Option<&'a crate::minds::ic_sortie::registration::Registration>,
+    Option<&'a crate::underwriting::registration::Registration>,
+    Option<&'a crate::minds::registry_inspection::Composition>,
+);
+
+/// The crate's one `outcome` validator over every outcome descriptor, and the registered
+/// outcomes by id (`register_with_coverage`'s first half, in its own frame).
+#[inline(never)]
+fn register_outcomes(
+    reg: &mut Registrar<'_>,
+    test_world: bool,
+    (ic, coverage, inspection): Optional<'_>,
+) -> Result<BTreeMap<String, DefinitionRef>, ModError> {
+    let mut outcomes = outcome_descriptors(test_world)?;
+    outcomes.push(crate::detachment::planning::outcome_descriptor()?);
+    // Doc 17h cut M8f: the procurement ledger's record.
+    outcomes.push(crate::procurement::outcome_descriptor()?);
+    if let Some(ic) = ic {
+        outcomes.push(ic.outcome()?);
+    }
+    if let Some(coverage) = coverage {
+        outcomes.push(coverage.outcome()?);
+    }
+    // Doc 17h cut M8a: the Registry inspection's outcome, under this crate's owner.
+    if let Some(inspection) = inspection {
+        let [_, outcome] = inspection.descriptors()?;
+        outcomes.push(outcome);
+        // Doc 17h cut M8d D3: the fine's outcome, when it composes.
+        if let Some([_, outcome]) = inspection.fine_descriptors()? {
+            outcomes.push(outcome);
+        }
+        // Doc 17h cut M8d D4: the principal revocation's outcome, when it composes.
+        if let Some([_, outcome]) = inspection.principal_descriptors()? {
+            outcomes.push(outcome);
+        }
+    }
+    reg.definition_validator(
+        kind("outcome")?,
+        crate::definitions::exact_validator(outcomes.clone()),
+    )?;
+    let mut outcome_refs: BTreeMap<String, DefinitionRef> = BTreeMap::new();
+    for descriptor in outcomes {
+        let id = descriptor.id().as_str().to_owned();
+        outcome_refs.insert(id, reg.definition(descriptor)?);
+    }
+    Ok(outcome_refs)
+}
+
+/// The outcomes the crate's own action descriptors reference.
+struct ActionOutcomes<'a> {
+    stock: &'a DefinitionRef,
+    mill: &'a DefinitionRef,
+    relay: &'a DefinitionRef,
+    burn: &'a DefinitionRef,
+    surface: (&'a DefinitionRef, &'a DefinitionRef),
+    chart_forget: &'a DefinitionRef,
+    site: (&'a DefinitionRef, &'a DefinitionRef),
+    probe: Option<&'a DefinitionRef>,
+    receipts: (
+        &'a DefinitionRef,
+        &'a DefinitionRef,
+        &'a DefinitionRef,
+        (&'a DefinitionRef, &'a DefinitionRef),
+    ),
+}
+
+/// The crate's one `action` validator over every action descriptor, and the registered
+/// actions by id (in its own frame, as `register_outcomes`).
+#[inline(never)]
+fn register_actions(
+    reg: &mut Registrar<'_>,
+    outcome_refs: &BTreeMap<String, DefinitionRef>,
+    outcomes: ActionOutcomes<'_>,
+    (ic, coverage, inspection): Optional<'_>,
+) -> Result<BTreeMap<String, DefinitionRef>, ModError> {
+    let mut actions = action_descriptors(
+        (outcomes.stock, outcomes.mill),
+        outcomes.relay,
+        outcomes.burn,
+        outcomes.surface,
+        outcomes.chart_forget,
+        outcomes.site,
+        outcomes.probe,
+    )?;
+    let (recovery, survey, survey_cancel, passenger_epoch) = outcomes.receipts;
+    append_receipt_actions(
+        &mut actions,
+        recovery,
+        survey,
+        survey_cancel,
+        passenger_epoch,
+    )?;
+    actions.push(crate::quest::registration::action(outcome_refs)?);
+    actions.push(crate::detachment::planning::action_descriptor(
+        outcome_refs,
+    )?);
+    actions.push(crate::procurement::action_descriptor(outcome_refs)?);
+    if let Some(ic) = ic {
+        actions.extend(ic.actions()?);
+    }
+    if let Some(coverage) = coverage {
+        actions.extend(coverage.descriptors()?);
+    }
+    // Doc 17h cut M8a: the Registry inspection's action, under this crate's owner.
+    if let Some(inspection) = inspection {
+        let [action, _] = inspection.descriptors()?;
+        actions.push(action);
+        // Doc 17h cut M8d D3: the fine's action, when it composes.
+        if let Some([action, _]) = inspection.fine_descriptors()? {
+            actions.push(action);
+        }
+        // Doc 17h cut M8d D4: the principal revocation's action, when it composes.
+        if let Some([action, _]) = inspection.principal_descriptors()? {
+            actions.push(action);
+        }
+    }
+    reg.definition_validator(
+        kind("action")?,
+        crate::definitions::exact_validator(actions.clone()),
+    )?;
+    let mut action_refs: BTreeMap<String, DefinitionRef> = BTreeMap::new();
+    for descriptor in actions {
+        let id = descriptor.id().as_str().to_owned();
+        action_refs.insert(id, reg.definition(descriptor)?);
+    }
+    Ok(action_refs)
+}
+
+/// The quest provider, the detachment planning and (doc 17h cut M8f) the procurement ledger,
+/// its record action and the `tacsim.procurement` tick, unconditionally (no policy, no visit),
+/// in a frame of their own.
+#[inline(never)]
+fn register_services(
+    reg: &mut Registrar<'_>,
+    (action_refs, outcome_refs): (
+        &BTreeMap<String, DefinitionRef>,
+        &BTreeMap<String, DefinitionRef>,
+    ),
+    port_families: &families::PortFamilies,
+    unit_authority: bool,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let quest =
+        crate::quest::registration::provider(reg, action_refs, outcome_refs, port_families)?;
+    crate::detachment::planning::register(reg, action_refs, outcome_refs, unit_authority)?;
+    crate::procurement::register(reg, action_refs, outcome_refs)?;
+    Ok(quest)
 }
 
 /// Keep descriptor construction temporaries out of the main registration frame.
