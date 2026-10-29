@@ -163,6 +163,24 @@ pub fn scoped_actor(
     }
 }
 
+/// `scoped_actor`, the grant asked with `amount` (doc 17h §3 M8h: the House attestation's
+/// title check asks as a read, [`READ_AMOUNT`], so a limited grant attests, M8f H7).
+///
+/// # Errors
+/// As `org_actor_amount`.
+pub fn scoped_actor_amount(
+    world: &World,
+    org: OrgId,
+    scope: Option<OrgScopeId>,
+    actor: ObjId,
+    amount: Option<i64>,
+) -> Result<(), OrgActorError> {
+    match scope {
+        Some(scope) => org_actor_amount(world, org, scope, actor, amount),
+        None => acts_for_amount(world, org, actor, amount),
+    }
+}
+
 /// `org_actor` on the organisation's root scope.
 ///
 /// # Errors

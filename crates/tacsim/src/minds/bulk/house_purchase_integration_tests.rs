@@ -17,6 +17,8 @@ use mush_roll::commerce::house_purchase::{
 use mush_roll::commerce::{LicenceId, purchase::PurchasePhase};
 use std::collections::BTreeSet;
 
+#[path = "house_attestation_tick_tests.rs"]
+mod attestation_tick;
 #[path = "house_renewal_integration_tests.rs"]
 mod renewal;
 #[path = "house_resale_integration_tests.rs"]
@@ -357,7 +359,7 @@ fn boot_options(registry: &Fixture, saved: &Durable, renewals: bool) -> TestResu
 /// M8c B4: the House world with the owner attestations composed (the House
 /// attestation among them), nothing else changed.
 fn boot_attestations(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    boot_every_option(registry, saved, false, false, None, true)
+    boot_every_option(registry, saved, false, false, None, true, false)
 }
 fn boot_resale_options(
     registry: &Fixture,
@@ -366,8 +368,19 @@ fn boot_resale_options(
     paid_resales: bool,
     admission: Admission,
 ) -> TestResult<PlayerWorld> {
-    boot_every_option(registry, saved, renewals, paid_resales, admission, false)
+    boot_every_option(
+        registry,
+        saved,
+        renewals,
+        paid_resales,
+        admission,
+        false,
+        false,
+    )
 }
+/// `original`: doc 17h §3 M8h, the original-holdings read composed too (the
+/// House attestation tick walks the owner licences through it).
+#[allow(clippy::fn_params_excessive_bools)]
 fn boot_every_option(
     registry: &Fixture,
     saved: &Durable,
@@ -375,6 +388,7 @@ fn boot_every_option(
     paid_resales: bool,
     admission: Admission,
     attestations: bool,
+    original: bool,
 ) -> TestResult<PlayerWorld> {
     let shared: Shared = Arc::new(Mutex::new(Registered::default()));
     let house: HouseShared = Arc::new(Mutex::new(None));
@@ -384,7 +398,13 @@ fn boot_every_option(
     let mut cfg = registry.resources.config();
     cfg.enabled = true;
     cfg.match_.ai_fill = true;
-    let real = crate::TacsimRuleset::with_config(cfg).with_house_mind_holdings(manifest.clone());
+    let real = crate::TacsimRuleset::with_config(cfg);
+    let real = if original {
+        real.with_original_holdings(manifest.clone())
+    } else {
+        real
+    }
+    .with_house_mind_holdings(manifest.clone());
     let modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(mush_org::OrgModule::new()),
         Box::new(mush_comsys::ComsysModule::new()),
@@ -1260,6 +1280,8 @@ pub(super) fn exercise(
         .build()?;
     runtime.block_on(async {
         renewal::attest_house(registry, saved, organization, scope)?;
+        // Doc 17h §3 M8h: the House attestation tick, from the same filing.
+        attestation_tick::exercise(registry, saved, organization, scope)?;
         ic_tests::exercise_house_two_seats(registry, saved)?;
         resale::exercise(registry, saved)?;
         let (granted, licence, renewed) = flow(registry, saved, organization, scope)?;

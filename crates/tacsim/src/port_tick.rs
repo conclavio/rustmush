@@ -489,6 +489,9 @@ pub(crate) fn register_with_coverage(
     // Doc 17h cut M8f: the procurement ledger, its record action and the `tacsim.procurement`
     // tick, unconditionally (no policy, no visit).
     crate::procurement::register(reg, &action_refs, &outcome_refs)?;
+    // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
+    // (no agent, no visit).
+    crate::house_attestation::register(reg)?;
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,

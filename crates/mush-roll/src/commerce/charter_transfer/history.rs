@@ -201,7 +201,7 @@ fn house_current(
     world: &World,
     head: Option<&CharterOwnershipHead>,
     birth: &InitialFilingOperation,
-    holder: crate::commerce::Holder,
+    (holder, amount): (crate::commerce::Holder, Option<i64>),
 ) -> Result<CharterOwnershipRef, PublicationError> {
     let crate::commerce::Holder::Organization { org, .. } = holder else {
         return Err(PublicationError::Mismatch);
@@ -225,7 +225,7 @@ fn house_current(
         .filing_receipt_audit()
         .verify(&birth.audit_subject()?)
         .map_err(bad)?;
-    crate::commerce::owner_qualification::current_title_for(world, holder, birth.charter)?;
+    crate::commerce::owner_qualification::current_title_for(world, holder, birth.charter, amount)?;
     Ok(reference)
 }
 /// `current` for a typed holder (M8c): a character holder as `current`, an
@@ -242,17 +242,26 @@ pub(crate) fn current_for(
             let head = ctx
                 .get(&f.charter_ownership, &birth.charter.key())
                 .map_err(bad)?;
-            house_current(ctx.world(), head, birth, holder)
+            // Doc 17h §3 M8h (M8f H7's rule: a read is never refused for a limit): every caller
+            // of `current_for` reads (`own_filed`, the owner holdings), so an organisation's
+            // grant is asked as a read and a limited grant reaches `@mind/attest … org=`.
+            house_current(
+                ctx.world(),
+                head,
+                birth,
+                (holder, crate::commerce::org_holder::READ_AMOUNT),
+            )
         }
     }
 }
-/// `current_in_txn` for a typed holder (M8c).
+/// `current_in_txn` for a typed holder (M8c); an organisation's grant asked with `amount`
+/// (doc 17h §3 M8h: the House attestation asks as a read; `current_title_for`).
 pub(crate) fn current_in_txn_for(
     txn: &mut ActionTxn<'_>,
     world: &World,
     f: &CommerceFamilies,
     birth: &InitialFilingOperation,
-    holder: crate::commerce::Holder,
+    (holder, amount): (crate::commerce::Holder, Option<i64>),
 ) -> Result<CharterOwnershipRef, PublicationError> {
     match holder {
         crate::commerce::Holder::Character(owner) => current_in_txn(txn, world, f, birth, owner),
@@ -261,7 +270,7 @@ pub(crate) fn current_in_txn_for(
                 .get(&f.charter_ownership, &birth.charter.key())
                 .map_err(bad)?
                 .cloned();
-            house_current(world, head.as_ref(), birth, holder)
+            house_current(world, head.as_ref(), birth, (holder, amount))
         }
     }
 }

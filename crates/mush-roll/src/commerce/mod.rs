@@ -516,6 +516,7 @@ pub mod filed;
 pub mod filing;
 pub mod fork_protocol;
 pub mod holding_reader;
+pub mod house_attestation_read;
 pub mod house_catalogue;
 pub mod ic_claims;
 pub mod marked_rating;

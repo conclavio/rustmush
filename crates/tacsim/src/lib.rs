@@ -131,6 +131,8 @@ pub mod ephemeris;
 pub mod field_ops;
 pub mod fixture;
 pub mod hardware;
+// Doc 17h cut M8h: House owner attestation in live play.
+pub(crate) mod house_attestation;
 pub mod ic_return;
 /// Doc 19 cut A.1: **the Kepler propagation** behind the moving sky — element
 /// tables, the calendar's Julian Day, the two-body solver (D-19-2 … D-19-4).
@@ -1296,6 +1298,13 @@ impl GameModule for TacsimRuleset {
                 .module_state_mut::<procurement::tick::ProcurementState>()
             {
                 state.set_policies(launch.deployment().procurement.clone());
+            }
+            // Doc 17h §3 M8h (A1): each House's attesting character, for the tick.
+            if let Some(state) = ctx
+                .w
+                .module_state_mut::<house_attestation::HouseAttestationState>()
+            {
+                state.set_agents(launch.deployment().house_attestation_agents());
             }
         }
         minds::bulk::conduct_service::finalize(ctx, self.conduct_trials.is_some())?;

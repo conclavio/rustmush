@@ -162,6 +162,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             treasury,
             publisher: GOD,
             source_name: source_name.into(),
+            attestation_agent: None,
         });
     }
     let [meridiani, coprates, tycho]: [HouseDeployment; 3] =
@@ -1050,6 +1051,129 @@ async fn named_launch_checks_procurement_identities_at_boot() -> Result {
     check!(
         state.is_agent(p.org, p.agent),
         "the launch hands its policies to the tick"
+    );
+    Ok(())
+}
+
+/// Doc 17h §3 M8h (A1): each House's attestation agent is checked at boot, one
+/// refusal per arm: a named `attestation_agent` must be a live Player-kind
+/// character and not GOING, and a House with a procurement policy names no
+/// other one (the policy's agent is its attesting character). The valid
+/// deployment boots and hands the tick each House's agent: the policy's agent
+/// for the House with a policy, the named one for a House without, none for
+/// the House with neither.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_checks_house_attestation_agents_at_boot() -> Result {
+    use crate::launch::{ProcurementPolicy, ProcurementRole};
+    let disagree = "named launch House attestation identities disagree";
+    let agent = |r: &mut Rig, d: &LaunchDeployment, name: &str| -> Result<ObjId> {
+        Ok(r.world_mut()
+            .world_mut()
+            .create(ObjKind::Player, name, GOD, Some(d.venue.room))?)
+    };
+    let refuses = |change: &dyn Fn(&mut Rig, &mut LaunchDeployment) -> Result,
+                   case: &str,
+                   expected: &str|
+     -> Result {
+        let (mut r, mut d) = setup_with(2)?;
+        change(&mut r, &mut d)?;
+        match reboot(&mut r, &d) {
+            Ok(()) => Err(format!("the launch booted with {case}").into()),
+            Err(error) => {
+                check!(
+                    error.to_string().contains(expected),
+                    "{case}: {error} lacks {expected:?}"
+                );
+                Ok(())
+            }
+        }
+    };
+    refuses(
+        &|r, d| {
+            d.houses.coprates.attestation_agent = Some(r.world_mut().world_mut().create(
+                ObjKind::Thing,
+                "Agent stand-in",
+                GOD,
+                None,
+            )?);
+            Ok(())
+        },
+        "an attestation agent that is a Thing",
+        disagree,
+    )?;
+    refuses(
+        &|r, d| {
+            let named = agent(r, d, "Attestation agent")?;
+            r.world_mut()
+                .world_mut()
+                .get_mut(named)
+                .ok_or("the agent")?
+                .flags
+                .insert(mush_core::Flags::GOING);
+            d.houses.coprates.attestation_agent = Some(named);
+            Ok(())
+        },
+        "an attestation agent that is GOING",
+        disagree,
+    )?;
+    refuses(
+        &|_, d| {
+            d.houses.coprates.attestation_agent = Some(ObjId(u32::MAX));
+            Ok(())
+        },
+        "an attestation agent that does not exist",
+        disagree,
+    )?;
+    let policy = |r: &mut Rig, d: &LaunchDeployment| -> Result<ProcurementPolicy> {
+        let org = d.houses.meridiani.organization;
+        let root = r
+            .world()
+            .world()
+            .module_state::<OrgStore>()
+            .ok_or("Org")?
+            .state()
+            .org(org)
+            .ok_or("the House org")?
+            .root_scope;
+        Ok(ProcurementPolicy {
+            org,
+            scope: root,
+            agent: agent(r, d, "Procurement agent")?,
+            budget_minor_per_ic_month: None,
+            standing: None,
+            cap_permille: None,
+            roles: ProcurementRole::all(),
+        })
+    };
+    refuses(
+        &|r, d| {
+            d.procurement = vec![policy(r, d)?];
+            d.houses.meridiani.attestation_agent = Some(agent(r, d, "Second agent")?);
+            Ok(())
+        },
+        "a House naming an agent beside its procurement agent",
+        "launch deployment House attestation differs",
+    )?;
+    let (mut r, mut d) = setup_with(2)?;
+    let p = policy(&mut r, &d)?;
+    let named = agent(&mut r, &d, "Coprates attestation agent")?;
+    d.procurement = vec![p.clone()];
+    // The policy's own agent named again is the same agent, not a second one.
+    d.houses.meridiani.attestation_agent = Some(p.agent);
+    d.houses.coprates.attestation_agent = Some(named);
+    reboot(&mut r, &d)?;
+    let state = r
+        .world()
+        .world()
+        .module_state::<crate::house_attestation::HouseAttestationState>()
+        .ok_or("the House attestation slot")?;
+    check_eq!(
+        state.agents(),
+        &[
+            (d.houses.meridiani.organization, p.agent),
+            (d.houses.coprates.organization, named),
+        ][..],
+        "the policy's agent, the named one, none for Tycho"
     );
     Ok(())
 }
