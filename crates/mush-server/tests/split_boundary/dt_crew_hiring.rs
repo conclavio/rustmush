@@ -966,3 +966,139 @@ async fn crew_boarding_from_aboard_obeys_real_berth_capacity_and_retries_from_th
     assert_eq!(contract(&rig)?, agreement);
     Ok(())
 }
+
+#[tokio::test]
+async fn launch_inspection_reads_accepted_assignments_and_current_presence_without_writing()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, carrier, unit) = activation_fixture(&store).await?;
+    let employer = rig.employer;
+    let npc = rig.npc;
+    commit_line(&mut rig, &store, employer, "+sortie/activate 1:1=mining").await?;
+    let accepted = active(&rig, 1)?.ok_or("accepted roster")?;
+    let agreement = contract(&rig)?;
+    // An edited draft cannot redirect this inspection to another unit/person.
+    let changed = activation_plan(carrier, unit, rig.competitor);
+    commit_line(
+        &mut rig,
+        &store,
+        employer,
+        &format!("+sortie/edit 1:1={changed}"),
+    )
+    .await?;
+    let inspection = text(&mut rig.world, employer, "+sortie/preflight 1:1");
+    assert!(
+        inspection.contains("accepted draft revision 1"),
+        "{inspection}"
+    );
+    assert!(
+        inspection.contains(&format!("operator #{}.", npc.0)),
+        "{inspection}"
+    );
+    assert!(
+        inspection.contains("reservations intact: yes"),
+        "{inspection}"
+    );
+    assert!(
+        inspection.contains("Operator OperateCrew authority: allowed now"),
+        "{inspection}"
+    );
+    assert!(
+        inspection.contains("accepted contract and duty still match"),
+        "{inspection}"
+    );
+    assert!(inspection.contains("Unit condition:"), "{inspection}");
+    assert!(
+        inspection.contains("Carrier surface berth unavailable"),
+        "{inspection}"
+    );
+    assert!(inspection.contains("Observations only"), "{inspection}");
+    assert!(rig.world.engine_mut().take_authoritative_submit().is_none());
+    assert!(!rig.world.engine().has_legacy_persistence_work());
+    text(&mut rig.world, npc, "activation-ashore");
+    let left = text(&mut rig.world, employer, "+sortie/preflight 1:1");
+    assert!(
+        left.contains("not currently aboard the selected carrier"),
+        "{left}"
+    );
+    text(&mut rig.world, npc, "crew-test-board");
+    let returned = text(&mut rig.world, employer, "+sortie/preflight 1:1");
+    assert!(
+        returned.contains("accepted contract and duty still match"),
+        "{returned}"
+    );
+    assert_eq!(active(&rig, 1)?.as_ref(), Some(&accepted));
+    assert_eq!(contract(&rig)?, agreement);
+    assert!(reserved(&rig, unit)?);
+    assert!(reserved(&rig, npc)?);
+    let damage = serde_json::json!({"ops":[{"SetComponentCondition":{"component":"power","condition":"destroyed"}}]});
+    let damaged = text(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/damage #{}={damage}", unit.0),
+    );
+    let after_damage = text(&mut rig.world, employer, "+sortie/preflight 1:1");
+    assert!(
+        after_damage.contains("power no; control no"),
+        "{damaged}\n{after_damage}"
+    );
+    persist_legacy(&mut rig.world, &store).await?;
+    drop(rig);
+    let mut rig = fixture(&store).await?;
+    let rebooted = text(&mut rig.world, employer, "+sortie/preflight 1:1");
+    assert!(
+        rebooted.contains("accepted contract and duty still match"),
+        "{rebooted}"
+    );
+    let stale = text(&mut rig.world, employer, "+sortie/preflight 1:2");
+    assert!(stale.contains("Accepted roster unavailable"), "{stale}");
+    let other = text(&mut rig.world, rig.competitor, "+sortie/preflight 1:1");
+    assert!(!other.contains("NPC personnel"), "{other}");
+    text(&mut rig.world, employer, "activation-ashore");
+    let ashore = text(&mut rig.world, employer, "+sortie/preflight 1:1");
+    assert!(ashore.contains("Board the selected carrier"), "{ashore}");
+    assert!(!ashore.contains("NPC personnel"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn launch_inspection_rechecks_real_crew_grants_and_withholds_details_after_deploy_loss()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _, unit) = activation_fixture(&store).await?;
+    let employer = rig.employer;
+    commit_line(&mut rig, &store, employer, "+sortie/activate 1:1=mining").await?;
+    commit_line(&mut rig, &store, employer, "@unitgrant/revoke 1").await?;
+    let revoked = text(&mut rig.world, employer, "+sortie/preflight 1:1");
+    assert!(
+        revoked.contains("Your Deploy authority: allowed now"),
+        "{revoked}"
+    );
+    assert!(
+        revoked.contains("Operator OperateCrew authority: denied now"),
+        "{revoked}"
+    );
+    assert!(
+        revoked.contains("accepted contract and duty still match"),
+        "{revoked}"
+    );
+    let transferred = text(
+        &mut rig.world,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", unit.0, rig.competitor.0),
+    );
+    assert!(transferred.contains("Title transferred"), "{transferred}");
+    let denied = text(&mut rig.world, employer, "+sortie/preflight 1:1");
+    assert!(
+        denied.contains("Your Deploy authority: denied now"),
+        "{denied}"
+    );
+    assert!(!denied.contains("Unit condition:"), "{denied}");
+    assert!(
+        !denied.contains("Operator OperateCrew authority:"),
+        "{denied}"
+    );
+    assert!(reserved(&rig, unit)?);
+    assert!(active(&rig, 1)?.is_some_and(|r| r.active()));
+    Ok(())
+}

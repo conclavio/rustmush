@@ -158,7 +158,11 @@ pub(crate) fn ready_station(
     physical_station(world, actor, unit)
 }
 
-fn physical_station(world: &World, actor: ObjId, unit: ObjId) -> Option<ReadyStationProof> {
+pub(crate) fn physical_station(
+    world: &World,
+    actor: ObjId,
+    unit: ObjId,
+) -> Option<ReadyStationProof> {
     if !live(world, actor) || !live(world, unit) {
         return None;
     }

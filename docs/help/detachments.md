@@ -50,6 +50,18 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/active <draft>` | Inspect your accepted roster and release command |
 | `+sortie/active <organizer>:<draft>` | Inspect an accepted roster that assigns you a player slot |
 | `+sortie/deactivate <draft>:<activation revision>` | Release the accepted assignments |
+| `+sortie/preflight <draft>:<activation revision>` | Inspect current launch facts for your accepted roster while aboard its carrier |
+
+`+sortie/active` prints the preflight command for the accepted activation. Preflight
+uses those accepted assignments even if you subsequently edit the draft. It
+checks current containment, reservations, NPC agreements, unit condition, your
+Deploy right and the assigned operator's OperateCrew right. It also checks for
+a bay-equipped carrier settled at a field site and a filed departure clearance.
+Unit power, control, movement and weapons are reported separately; an unarmed
+mining vehicle is not treated as an armed combat vehicle. This is an inspection,
+not launch permission. Actual station control, crew capability and any selected
+mind still require admission at launch. Preflight moves nobody and stores no
+readiness flag.
 
 `+sortie/plan` prints the current accept, ready and decline commands for your
 assignment. Use the complete printed command. Accept first, then mark ready
