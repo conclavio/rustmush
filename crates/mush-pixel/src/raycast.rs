@@ -62,7 +62,7 @@ pub enum Ground {
     /// Heavy woods (canopy and undergrowth, 8 m): block the eye, drawn
     /// darker and taller.
     WoodsHeavy,
-    /// A wall, a building, rock (3 m): blocks the eye.
+    /// A wall (3 m): blocks the eye.
     Wall,
 }
 
@@ -82,29 +82,16 @@ pub enum Biome {
 }
 
 impl Biome {
-    /// Parse an explicit biome identifier or surface keyword.
+    /// Parse an explicit biome identifier (`temperate | mars | lunar | ice`,
+    /// doc 30 §6, D-30-5).
     #[must_use]
     pub fn from_name(name: &str) -> Option<Biome> {
-        let s = name.trim().to_ascii_lowercase();
-        if s.contains("mars") || s.contains("canyon") || s.contains("red_planet") {
-            Some(Biome::Mars)
-        } else if s.contains("lunar")
-            || s.contains("moon")
-            || s.contains("asteroid")
-            || s.contains("crater")
-            || s.contains("regolith")
-        {
-            Some(Biome::Lunar)
-        } else if s.contains("ice")
-            || s.contains("glacier")
-            || s.contains("europa")
-            || s.contains("arctic")
-        {
-            Some(Biome::Ice)
-        } else if s.contains("temperate") || s.contains("earth") || s.contains("proving_ground") {
-            Some(Biome::Temperate)
-        } else {
-            None
+        match name.trim() {
+            "temperate" => Some(Biome::Temperate),
+            "mars" => Some(Biome::Mars),
+            "lunar" => Some(Biome::Lunar),
+            "ice" => Some(Biome::Ice),
+            _ => None,
         }
     }
 
@@ -133,13 +120,16 @@ impl Biome {
 
 impl Ground {
     /// The `arena.map` legend word for a glyph, mapped to a ground.
+    ///
+    /// Per doc 30 D-30-10, `rock` is a surface material with zero height
+    /// extrusion (`Ground::Open`), not an opaque `Wall` block.
     #[must_use]
     pub fn from_legend_name(name: &str) -> Ground {
         match name {
             "grass" | "sand" | "regolith" | "snow" => Ground::Grass,
             "water" | "water_deep" | "ice" => Ground::Water,
             "road" | "paved" => Ground::Road,
-            "wall" | "rock" | "building" | "cliff" => Ground::Wall,
+            "wall" => Ground::Wall,
             "woods_heavy" => Ground::WoodsHeavy,
             n if n.starts_with("forest") => Ground::WoodsHeavy,
             n if n.starts_with("woods") => Ground::Woods,
@@ -1265,9 +1255,19 @@ mod tests {
     #[test]
     fn legend_words_and_blocking() {
         assert_eq!(Ground::from_legend_name("woods_light"), Ground::Woods);
+        assert_eq!(Ground::from_legend_name("rock"), Ground::Open);
         assert_eq!(Ground::from_legend_name("anything"), Ground::Open);
         assert!(Ground::Wall.blocks());
+        assert!(!Ground::from_legend_name("rock").blocks());
+        assert_eq!(Ground::from_legend_name("rock").height_cm(), 0);
         assert!(!Ground::Water.blocks());
+        assert_eq!(Biome::from_name("temperate"), Some(Biome::Temperate));
+        assert_eq!(Biome::from_name("mars"), Some(Biome::Mars));
+        assert_eq!(Biome::from_name("lunar"), Some(Biome::Lunar));
+        assert_eq!(Biome::from_name("ice"), Some(Biome::Ice));
+        assert_eq!(Biome::from_name("sector_mars"), None);
+        assert_eq!(Biome::from_name("luna"), None);
+        assert_eq!(Biome::from_name("proving_ground"), None);
         let map = yard();
         assert_eq!(map.get(-1, 0), Ground::Wall, "outside is wall");
         assert_eq!(map.get(5, 6), Ground::Water);
