@@ -489,6 +489,12 @@ pub struct OwnFiledView {
     dependent: bool,
     name: String,
     owner_phase: OwnerPhase,
+    /// Whether the owner projection's status rule holds for this revision
+    /// (`owner_holdings::check_status`: not recalled, and not withdrawn
+    /// unless the term pins it). In-process only: the answer's encoding is
+    /// unchanged.
+    #[serde(skip)]
+    held: bool,
 }
 impl OwnFiledView {
     #[must_use]
@@ -520,6 +526,18 @@ impl OwnFiledView {
     #[must_use]
     pub const fn owner_phase(&self) -> OwnerPhase {
         self.owner_phase
+    }
+    /// **Whether the owner licence is held for flying and attesting** (the
+    /// owner's ruling over 17g C2h story part 3): `false` for a recalled
+    /// revision, or a withdrawn one the term does not pin, which the
+    /// dispatch's admission refuses. The holdings' owner rows, the
+    /// dispatch's owner read and `@mind/attest` leave such a revision out;
+    /// the title-holder's commands (`+minds/charter`, `@mind/withdraw`,
+    /// `@mind/update`, `@mind/publish`) still find it, because the charter
+    /// is still theirs.
+    #[must_use]
+    pub const fn held(&self) -> bool {
+        self.held
     }
 }
 
@@ -957,6 +975,9 @@ fn owner_holdings(
             return Err(OwnerReadError::Integrity);
         }
         let view = match own_filed(ctx, roll, families, line.head(), holder) {
+            // The owner's ruling: a revision the status rule does not hold
+            // leaves the holdings (and so the dispatch's owner read).
+            Ok(view) if !view.held => return Ok(None),
             Ok(view) => view,
             Err(OwnerReadError::Refused) => return Ok(None),
             Err(error) => return Err(error),
@@ -1129,16 +1150,16 @@ fn own_filed(
         return Err(OwnerReadError::Integrity);
     }
     // The owner projection's status rule (`owner_holdings::check_status`): a recalled revision,
-    // or a withdrawn one the term does not pin, is not held. Without it the holdings listed as
-    // `Active` an owner licence the dispatch's admission refuses (doc 17h cut M8g's finding over
-    // story part 3, 17g C2h).
+    // or a withdrawn one the term does not pin, is not held. It is reported, not refused: the
+    // holdings and the attestation leave such a revision out (`OwnFiledView::held`), while the
+    // title-holder's commands still find the charter they own (17g C2h story part 3).
     let status = row(ctx, &families.status, filed.key())?;
-    super::owner_holdings::check_status(
+    let held = super::owner_holdings::check_status(
         matches!(term.revision, super::records::RevisionPolicy::Pin { .. }),
         status.withdrawn_by.is_some(),
         status.recalled_by.is_some(),
     )
-    .map_err(|_| OwnerReadError::Refused)?;
+    .is_ok();
     Ok(OwnFiledView {
         filed,
         charter: charter.id,
@@ -1147,6 +1168,7 @@ fn own_filed(
         dependent: birth.parent.is_some(),
         name: charter.name.clone(),
         owner_phase: phase(term.window, WorldIcSeconds(ctx.world().game_now_unix())),
+        held,
     })
 }
 

@@ -388,6 +388,11 @@ fn attest(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let actions = actions(ctx)?;
     let org = super::org_for(ctx, org, super::OrgScope::Title)?;
     let view = own_filed_for(ctx, filed, org)?;
+    // The owner's ruling (17g C2h story part 3): a recalled revision, or a withdrawn one the term
+    // does not pin, is not attested; it reads as no filed mind, as before the ruling's fix.
+    if !view.held() {
+        return Err(word!(NO_FILED, &[("filed", &filed.to_string())]).into());
+    }
     let action = if org.is_some() {
         actions.attest_house()
     } else {
