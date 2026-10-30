@@ -2340,6 +2340,16 @@ gone from the tree.
     Hiding (or closing) a withdrawn or recalled revision's listings needs the market read to
     see the Registry's status: a C4 ledger item; the C3 typed story's `mind.market` panel
     expectation after `Withdraw` moves with it.
+  - **Holdings listed a withdrawn owner licence as Active** (found 2026-10-30 at the command
+    story's withdrawn-transfer step, which had never passed since C2h wrote it). Roll's
+    `own_filed` checked the title, the ownership and the term phase, never the revision's
+    status. Admission (`project_owner_for` → `check_status`) refuses a withdrawn, unpinned or a
+    recalled owner row, so `+minds/holdings` promised a licence the launch refused. **Owner
+    ruling, 2026-10-30: `own_filed` applies `check_status`'s rule**, so such a row leaves
+    holdings, `@mind/attest` and the surface dispatch's owner read alike (PR #179). The story
+    then stops one phase later, at renewal: the holder's retry `+minds/renew 2` prints no
+    payment prompt. That failure was already on main, unseen because no run reached it; it is
+    diagnosed on its own branch.
   - No clerk settlement could land through the server** (found by the command story's fourth and
     fifth runs of part 3, dispatches 40667921671 and 40694980205, 2026-10-28; fixed on its own
     branch after PR #58). The six clerk services (Roll's pending charters, paid resale, facts and
