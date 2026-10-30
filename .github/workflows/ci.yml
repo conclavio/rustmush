@@ -122,6 +122,36 @@ jobs:
         # failure shows them (run 40707221516's typed story).
         run: cargo test --locked -p ${{ matrix.package }} --lib ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
 
+  m8-gate-stories:
+    name: M8 ${{ matrix.name }}
+    # Doc 17h cut M8g G5 (doc 23 S.5 folded in): the M8 gate's stories over the combined M8
+    # world (`crates/tacsim/tests/shard_4/m8_world.rs`: the production launch composition over
+    # the test world's game content, the three named Houses' sources genuinely rated). Each
+    # takes the three Registry ratings, so it is dispatch- or schedule-only, as the M7 stories
+    # are; the owner's rule: never run locally.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: combined world rated, filed, listed and sold
+            test: m8_world::m8g_story_the_combined_world_rates_files_lists_and_sells
+          - name: tier 2, held minds sealed aboard
+            test: m8_world::m8g_story_tier2_held_minds_seal_aboard
+          - name: zero-PC procurement
+            test: m8_world::m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: m8-gate-stories
+      - name: Execute the exact M8 story
+        run: cargo test --locked -p tacsim --test shard_4 ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
+
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
     if: github.event_name == 'workflow_dispatch'
@@ -168,12 +198,14 @@ jobs:
   # Doc 17h cut M8g G4 (D-UM-42), dispatch-only (G5): the leak battery. An ungoverned core
   # sealing an unfiled draft aboard is learned by no witness and only through the built
   # channels; every test of the `m8_leaks` module is `#[ignore]`d, so this module filter is
-  # the one place it runs (the gated-test inventory reads it).
+  # the one place it runs (the gated-test inventory reads it). Doc 17h cut M8g G5: the
+  # attestation channel's positive control is a case of the module too, over the combined
+  # world's three genuine Registry ratings (about 45 minutes), so the bound is 180.
   m8-leak-battery:
     name: M8 leak battery
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain

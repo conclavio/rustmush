@@ -76,9 +76,33 @@ pub struct HardwareCoordinates {
     pub integrator: ScopedCoreAccount,
     pub factory: ObjId,
     pub output_container: ObjId,
+    /// **An ungoverning shop** (doc 17h cut M8g, the lead's ruling (a)): a facility holding
+    /// `core_ungovern` and the provider it pays, composed as the hardware's
+    /// `UngoverningSite` (doc 17h cut M8b C2). Skipped when absent, so every shipped
+    /// deployment, its `launch_deployment` identity and its digest are as before: the launch
+    /// composes no ungoverning shop (doc 17h §4) unless a deployment names one, as the combined
+    /// M8 test world does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ungovern: Option<UngoverningCoordinates>,
+}
+
+/// **The ungoverning shop's coordinates** (doc 17h cut M8g, ruling (a)): the deployment's
+/// serializable twin of `crate::hardware::UngoverningSite`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UngoverningCoordinates {
+    /// The shop's organisation, scope and treasury, which the fee pays.
+    pub provider: ScopedCoreAccount,
+    /// The facility holding `core_ungovern` (and not `core_refit`).
+    pub factory: ObjId,
+    /// The shop's own completed-work container.
+    pub output_container: ObjId,
+    /// The shop's fee in centicredits; absent, the catalogue's `ungovern_minor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_minor: Option<i64>,
 }
 impl HardwareCoordinates {
-    pub(super) fn deployment(
+    pub(crate) fn deployment(
         &self,
         issuer: &SystemPrincipalId,
     ) -> crate::hardware::HardwareDeployment {
@@ -93,8 +117,17 @@ impl HardwareCoordinates {
             issuer: issuer.clone(),
             factory: self.factory,
             output_container: self.output_container,
-            // Doc 17h cut M8b C2: the launch composes no ungoverning shop.
-            ungovern: None,
+            // Doc 17h cut M8b C2: the launch composes no ungoverning shop unless the deployment
+            // names one (doc 17h cut M8g, ruling (a)).
+            ungovern: self
+                .ungovern
+                .as_ref()
+                .map(|u| crate::hardware::UngoverningSite {
+                    provider: u.provider.clone(),
+                    factory: u.factory,
+                    output_container: u.output_container,
+                    fee_minor: u.fee_minor,
+                }),
         }
     }
 }

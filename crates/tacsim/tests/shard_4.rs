@@ -48,6 +48,8 @@ mod ic_sortie_surface;
 mod lane;
 #[path = "shard_4/m8_leaks.rs"]
 mod m8_leaks;
+#[path = "shard_4/m8_world.rs"]
+mod m8_world;
 #[path = "shard_4/match_lifecycle.rs"]
 mod match_lifecycle;
 #[path = "shard_4/resolution.rs"]
