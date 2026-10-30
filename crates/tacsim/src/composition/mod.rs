@@ -600,6 +600,10 @@ pub fn atlas_module_builder(cfg: mush_atlas::AtlasConfig) -> mush_atlas::AtlasMo
         Ok(game) => shelf.extend(game),
         Err(error) => tracing::error!(%error, "atlas: the game's boot packs did not load"),
     }
+    match crate::definitions::content::winter_valley_packs() {
+        Ok(wv) => shelf.extend(wv),
+        Err(error) => tracing::error!(%error, "atlas: the winter_valley packs did not load"),
+    }
     match crate::definitions::content::station_packs() {
         Ok(stations) => shelf.extend(stations),
         Err(error) => tracing::error!(%error, "atlas: the station packs did not load"),
