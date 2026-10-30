@@ -75,6 +75,7 @@ pub const TV_VERB: &str = "+tv";
 pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain vehicle, its lease from Occator and its hopper, anywhere.
 +tv/<n>  the same for rig n.
 +tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting licence in force or in its grace (+licence). Without go it shows the terms and signs nothing.
++tv/<n>/permissions [go]  at Occator's counter: inspect or request an explicit operational loan for the actual rental. Operate/crew and command may be delegated within this lease; deploy and recover/load may not. No title or refit right, and no additional charge.
 +tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released.
 A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
 +tv/<n> launch [mind=<mind>] [org=<org>] [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s). A rig with a core flies the mind you name sealed aboard, filed:<licence> for a licence you hold (org=<org> for one your organisation holds) or, on an ungoverned core, draft:<name>; without one it flies Standard Doctrine.
@@ -2003,6 +2004,9 @@ fn slots_words(slots: &[u8]) -> String {
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    if ctx.switches.has("permissions") {
+        return super::equipment::command(ctx).map_err(CmdError::msg);
+    }
     if programme_port(ctx.w).is_none() {
         return Err(CmdError::msg(NOT_OPEN_HERE));
     }

@@ -259,8 +259,23 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .iter()
                 .copied()
                 .chain([
-                    "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget",
-                    "quiet", "drive", "map", "mine", "drill", "unload", "plan", "show",
+                    "lease",
+                    "launch",
+                    "recover",
+                    "dump",
+                    "scan",
+                    "survey",
+                    "sound",
+                    "forget",
+                    "quiet",
+                    "drive",
+                    "map",
+                    "mine",
+                    "drill",
+                    "unload",
+                    "plan",
+                    "show",
+                    "permissions",
                 ])
                 .map(SmolStr::new)
                 .collect(),

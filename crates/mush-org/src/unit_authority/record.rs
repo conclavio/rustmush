@@ -239,6 +239,15 @@ impl UnitScope {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct UnitLeaseBinding {
+    pub contract: u64,
+    pub unit: ObjId,
+    pub tenant: ObjId,
+    pub consent_hash: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum UnitGrantParent {
     PersonalTitle {
         unit: ObjId,
@@ -248,6 +257,13 @@ pub enum UnitGrantParent {
     OrganizationGrant {
         organization: OrgId,
         grant: GrantId,
+    },
+    /// The owner explicitly lends a capability, conditionally on this exact
+    /// accepted lease. The generic economic lease conveys no capability itself.
+    LeasedOrganizationGrant {
+        organization: OrgId,
+        grant: GrantId,
+        lease: UnitLeaseBinding,
     },
     OrganizationRoleTemplate {
         organization: OrgId,
@@ -326,6 +342,17 @@ impl UnitGrant {
             return Err(UnitGrantError::Malformed("zero grant identity"));
         }
         self.scope.validate()?;
+        if let UnitGrantParent::LeasedOrganizationGrant { lease, .. } = &self.parent
+            && (lease.contract == 0
+                || lease.unit.0 == 0
+                || lease.tenant.0 == 0
+                || self.grantee != UnitGrantee::Character(lease.tenant)
+                || !matches!(&self.scope, UnitScope::Units { units } if units.len()==1 && units.contains(&lease.unit)))
+        {
+            return Err(UnitGrantError::Malformed(
+                "lease loan must name its exact tenant and unit",
+            ));
+        }
         if self
             .valid_from
             .zip(self.valid_until)
@@ -476,6 +503,11 @@ pub struct MissionFacts {
 pub trait UnitAuthorityFacts {
     fn principal_exists(&self, actor: ObjId) -> bool;
     fn asset(&self, unit: ObjId) -> Option<UnitAssetFacts>;
+    /// Economic condition only. Permission still requires the owner's actual
+    /// grant/delegation lineage and the explicit unit-loan record.
+    fn equipment_lease(&self, _organization: OrgId, _lease: &UnitLeaseBinding) -> bool {
+        false
+    }
     fn organization_control(
         &self,
         _organization: OrgId,

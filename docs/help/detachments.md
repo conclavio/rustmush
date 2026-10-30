@@ -26,6 +26,13 @@ Preparation and launch will check who is currently inside
 the carrier. Hiring currently records employment and scope without charging or
 accruing wages; future pay will follow contract terms rather than time aboard.
 
+Renting a unit does not supply its operating rights. For Occator's actual rental,
+request the separate four-right equipment agreement at the counter with
+`+tv/<n>/permissions go`, then inspect its committed loans. Lend the hired NPC
+OperateCrew through the printed operating loan ID using
+`@unitgrant/issue #unit=#npc operate_crew parent=<loan>`. See
+[unit permissions](unit-grants.md) for delegation and revocation.
+
 A plan has up to six numbered command slots. Loading a preset creates an
 independent draft, so editing a mission does not rewrite your saved preset.
 Several plans may refer to the same unit without reserving it.

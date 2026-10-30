@@ -161,6 +161,24 @@ impl<'a> Resolver<'a> {
             .capability_id()
             .ok_or(UnitGrantError::NoAuthority)?;
         let proof = match parent {
+            UnitGrantParent::LeasedOrganizationGrant {
+                organization,
+                grant,
+                lease,
+            } => {
+                if !self.facts.equipment_lease(*organization, lease) {
+                    return Err(UnitGrantError::Stale);
+                }
+                return self.root(
+                    &UnitGrantParent::OrganizationGrant {
+                        organization: *organization,
+                        grant: *grant,
+                    },
+                    actor,
+                    capability,
+                    delegate,
+                );
+            }
             UnitGrantParent::OrganizationGrant {
                 organization,
                 grant,

@@ -310,6 +310,19 @@ stories, all 31 DT stories, 24 station tests, 27 source policies, strict Clippy 
 the unchanged M7 gate passed. Normal rental equipment still needs an explicit
 owner-issued operating/deployment/command loan; a rental record alone grants none.
 
+DT.3j supplies the normal rental counter's separate operational lending agreement.
+The real lessor NPC issues all four unit grants in one ordinary Org source action,
+conditional on the exact accepted economic lease. The lessee can lend crew use
+onward to their hired NPC through that actual source grant. Preview grants nothing;
+lease termination or loss of any lending root before final take rejects the whole
+agreement. Revoked loans stay revoked on retry. No new source family, movement
+ledger or NPC account is introduced. The mining stories now use shipped Ilya
+Mendes and actual counter loans instead of staff-authored offers or staff
+operational grants. Normal player station boarding and disembarkation remain
+the next usability cut. Validation: 35 production DT stories, 24 Org tests,
+2 Economy authority tests, 49 rental/refit stories and 27 source-policy checks
+passed, together with strict Clippy, formatting and the unchanged M7 memory gate.
+
 ## DT.1a verification
 
 Validated locally on 2026-10-28:

@@ -12,7 +12,7 @@
 //! absent until the registered mission owner supplies them in a later cut.
 
 use mush_core::{Flags, ObjId, World};
-use mush_org::unit_authority::{UnitAssetFacts, UnitAuthorityFacts};
+use mush_org::unit_authority::{UnitAssetFacts, UnitAuthorityFacts, UnitLeaseBinding};
 use mush_org::{OrgStatus, PrincipalId};
 
 use crate::{AssetLifecycle, EconomyStore};
@@ -50,6 +50,29 @@ impl<'w> EconomyUnitAuthorityFacts<'w> {
 }
 
 impl UnitAuthorityFacts for EconomyUnitAuthorityFacts<'_> {
+    fn equipment_lease(&self, organization: mush_org::OrgId, lease: &UnitLeaseBinding) -> bool {
+        let Some(asset) = self
+            .asset(lease.unit)
+            .filter(|a| a.active && a.owner == PrincipalId::Organization(organization))
+        else {
+            return false;
+        };
+        let Some(store) = self.world.module_state::<EconomyStore>() else {
+            return false;
+        };
+        let id = crate::ContractId(lease.contract);
+        let Some(contract) = store.snapshot().contract(id) else {
+            return false;
+        };
+        let lessor = PrincipalId::Organization(organization);
+        asset.unit == lease.unit && self.principal_exists(lease.tenant)
+            && contract.state == crate::ContractState::Active
+            && contract.issuer == lessor
+            && contract.consent_hash == lease.consent_hash
+            && contract.consent_hash == crate::contract::consent_hash(&contract.issuer, &contract.consent)
+            && contract.consent.parties.contains(&PrincipalId::Object(lease.tenant))
+            && store.snapshot().asset(lease.unit).is_some_and(|a| a.encumbrances.iter().any(|e| matches!(e, crate::Encumbrance::Lease { lessor: owner, contract } if *owner==lessor && *contract==id)))
+    }
     fn principal_exists(&self, object: ObjId) -> bool {
         self.world
             .get(object)

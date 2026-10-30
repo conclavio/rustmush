@@ -166,3 +166,29 @@ title and expiry at final admission. The production command compatibility test,
 help/handler contracts, state ownership and typed-reader checks also passed.
 Clippy passed for Org and Economy across all targets, and for the affected Tacsim
 and server targets; workspace formatting and whitespace checks passed.
+
+## Conditional equipment lending at Occator
+
+The actual lessor's existing NPC signatory has four explicit delegable Org
+capability roots in the lessor's title scope. A normal lessee can separately
+request the equipment agreement at the counter with `+tv/<n>/permissions go`.
+The signatory submits one bounded four-grant Org issue action, whose sole
+registry post-image records all four loans or none. OperateCrew and
+CommandAssignedAi permit onward delegation; Deploy and RecoverLoad do not.
+The offer costs nothing extra and conveys neither title nor MaintainRefit.
+
+Each root names its real organization grant and the exact economic contract,
+tenant, unit and accepted consent hash. Economy checks the current journal-backed
+organization title, active accepted contract and its real lease encumbrance.
+That is a condition on an explicit operational loan, never permission inferred
+from a generic rental. Resolver children and mission-role proofs retain the same
+condition. Final action validation rechecks the whole agreement, including a
+later capability losing its lending root. New loans never revive an existing
+revoked agreement. Existing merged v2 movement providers remain unused.
+
+The public owner reader may inspect a proposal for a named lender. This is an
+advisory subject selection, not a change to its immutable authenticated caller or
+authority. The actual NPC's ordinary authoritative submission and Org's private
+Prepare path re-resolve its source rights before any grant commits. The source
+provider still owns the single durable registry write; no new family or movement
+observer is introduced.

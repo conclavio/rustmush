@@ -25,9 +25,15 @@ struct Facts {
     assets: BTreeMap<ObjId, UnitAssetFacts>,
     missions: BTreeMap<MissionBinding, MissionFacts>,
     custody: Option<RecoveryCustodyFacts>,
+    lease: Option<(OrgId, UnitLeaseBinding)>,
 }
 
 impl UnitAuthorityFacts for Facts {
+    fn equipment_lease(&self, org: OrgId, lease: &UnitLeaseBinding) -> bool {
+        self.lease
+            .as_ref()
+            .is_some_and(|(o, l)| *o == org && l == lease)
+    }
     fn principal_exists(&self, actor: ObjId) -> bool {
         self.people.contains(&actor)
     }
@@ -904,4 +910,67 @@ fn retained_recovery_needs_real_exact_custody_and_never_comes_from_a_grant() {
             ..req
         }
     ));
+}
+
+#[test]
+fn conditional_owner_loan_and_its_child_require_the_current_exact_lease() {
+    let mut orgs = orgs();
+    orgs.put_grant(org_grant(1, CAP, true));
+    let mut facts = facts();
+    org_owned(&mut facts, UNIT, 11);
+    let lease = UnitLeaseBinding {
+        contract: 41,
+        unit: UNIT,
+        tenant: LENDER,
+        consent_hash: [7; 32],
+    };
+    facts.lease = Some((OrgId(1), lease.clone()));
+    let root = UnitGrant {
+        parent: UnitGrantParent::LeasedOrganizationGrant {
+            organization: OrgId(1),
+            grant: GrantId(1),
+            lease,
+        },
+        recovery: RecoveryPolicy::None,
+        ..loan(1, LENDER)
+    };
+    let descendant = UnitGrant {
+        recovery: RecoveryPolicy::None,
+        ..child(2, LENDER, PILOT, 1)
+    };
+    let grants = book([root.clone(), descendant]);
+    assert!(allowed(&orgs, &grants, &facts, &request(LENDER, UNIT)));
+    assert!(allowed(&orgs, &grants, &facts, &request(PILOT, UNIT)));
+    assert!(!allowed(&orgs, &grants, &facts, &request(PILOT, OTHER)));
+    assert!(
+        UnitGrant {
+            grantee: UnitGrantee::Character(PILOT),
+            ..root.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        UnitGrant {
+            scope: finite(OTHER),
+            ..root.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    let actual = facts.lease.take();
+    assert!(!allowed(&orgs, &grants, &facts, &request(LENDER, UNIT)));
+    assert!(!allowed(&orgs, &grants, &facts, &request(PILOT, UNIT)));
+    facts.lease = actual;
+    facts.lease.as_mut().unwrap().1.consent_hash = [8; 32];
+    assert!(
+        !allowed(&orgs, &grants, &facts, &request(PILOT, UNIT)),
+        "an amended agreement cannot reuse the old permission loan"
+    );
+    facts.lease.as_mut().unwrap().1.consent_hash = [7; 32];
+    orgs.put_grant(org_grant(1, CAP, false));
+    assert!(
+        !allowed(&orgs, &grants, &facts, &request(PILOT, UNIT)),
+        "economic eligibility never replaces the owner's current delegation"
+    );
 }

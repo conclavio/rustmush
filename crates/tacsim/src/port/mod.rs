@@ -146,6 +146,7 @@ pub mod def;
 /// Doc 23 cut S.2: the ship's seal epoch on the port voyage — the `tacsim.port` tick's epoch
 /// arm and the `tacsim_voyage_epoch` action (doc 23 §6, §7).
 pub mod epoch;
+pub(crate) mod equipment;
 pub mod executor;
 pub mod families;
 pub mod gauges;
