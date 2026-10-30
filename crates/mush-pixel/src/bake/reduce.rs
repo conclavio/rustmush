@@ -1,7 +1,7 @@
-//! **The reducer** (doc 22 D-22-10, rules 1 and 2): one look's bake — the
+//! **The reducer** (doc 22 D-22-10, rules 1 and 2): one model's bake — the
 //! 384 px colour-ID and normal renders `Bake.cs` writes for both views, eight
-//! facings and six poses, and its `meta.json` — reduced to the look's pack
-//! entry. It is the only resampler: every size of both chains is reduced from
+//! facings and six poses, and its `meta.json` — reduced to the model's pack
+//! entry (doc 31 D-31-1). It is the only resampler: every size of both chains is reduced from
 //! the large render, never from a smaller size, as masses (a cell is filled
 //! when 30 % of its render pixels are, so thin parts survive; its material is
 //! the most common among them).
@@ -18,7 +18,9 @@
 
 use serde_json::Value;
 
-use super::{BakedFrame, Chain, FRAMES, LookBake, POSES, Provenance, RENDER_PX, SizedFrames, View};
+use super::{
+    BakedFrame, Chain, FRAMES, ModelBake, POSES, Provenance, RENDER_PX, SizedFrames, View,
+};
 use crate::look::Facing;
 
 /// A part of the model, as its colour-ID pass names it.
@@ -169,11 +171,12 @@ pub struct MetaView {
     pub frames: Vec<MetaFrame>,
 }
 
-/// A bake's `meta.json` (format 2, written by `Bake.cs`).
+/// A bake's `meta.json` (format 3, written by `Bake.cs`: format 2 named a
+/// look, format 3 the model, doc 31 D-31-1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BakeMeta {
-    /// The look baked, by id.
-    pub look: String,
+    /// The model baked, by id.
+    pub model: String,
     /// The render's side, pixels.
     pub res: usize,
     /// The baked model's `(width, height)`, centimetres.
@@ -190,17 +193,17 @@ pub struct BakeMeta {
 ///
 /// # Errors
 ///
-/// What does not hold: not format 2, a render under 384 px (rule 1), a view
+/// What does not hold: not format 3, a render under 384 px (rule 1), a view
 /// missing or at the wrong pitch, a frame missing, a mark that is not a pair.
 pub fn parse_meta(text: &str) -> Result<BakeMeta, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("meta.json: {e}"))?;
-    if v.get("format").and_then(Value::as_u64) != Some(2) {
-        return Err("meta.json: not format 2 (re-run the bake with this tree's Bake.cs)".into());
+    if v.get("format").and_then(Value::as_u64) != Some(3) {
+        return Err("meta.json: not format 3 (re-run the bake with this tree's Bake.cs)".into());
     }
     let s = |o: &Value, k: &str| o.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let look = s(&v, "look");
-    if look.is_empty() {
-        return Err("meta.json: no look".into());
+    let model = s(&v, "model");
+    if model.is_empty() {
+        return Err("meta.json: no model".into());
     }
     let res = v
         .get("res")
@@ -329,7 +332,7 @@ pub fn parse_meta(text: &str) -> Result<BakeMeta, String> {
         });
     }
     Ok(BakeMeta {
-        look,
+        model,
         res,
         size_cm,
         provenance,
@@ -372,7 +375,7 @@ pub fn reduce_bake(
     meta: &BakeMeta,
     reduce_commit: &str,
     load: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>,
-) -> Result<LookBake, String> {
+) -> Result<ModelBake, String> {
     let res = meta.res;
     let mut chains = Vec::new();
     for mv in &meta.views {
@@ -429,8 +432,8 @@ pub fn reduce_bake(
             sizes,
         });
     }
-    Ok(LookBake {
-        look: meta.look.clone(),
+    Ok(ModelBake {
+        model: meta.model.clone(),
         provenance: Provenance {
             reduce_commit: reduce_commit.to_string(),
             ..meta.provenance.clone()
@@ -443,7 +446,7 @@ pub fn reduce_bake(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bake::{FP_SIZES, ISO_SIZES, Pack, check_matrix};
+    use crate::bake::{FP_SIZES, ISO_SIZES, Pack, check_model};
 
     const RES: usize = 384;
 
@@ -513,8 +516,8 @@ mod tests {
                 .collect()
         };
         serde_json::json!({
-            "format": 2,
-            "look": "tracked_tank",
+            "format": 3,
+            "model": "mc.st.tank_lvl2",
             "res": RES,
             "size_cm": [700, 250],
             "provenance": {
@@ -533,12 +536,12 @@ mod tests {
     }
 
     /// The synthetic bake reduced once for the tests that read it.
-    fn reduced() -> LookBake {
-        static REDUCED: std::sync::OnceLock<LookBake> = std::sync::OnceLock::new();
+    fn reduced() -> ModelBake {
+        static REDUCED: std::sync::OnceLock<ModelBake> = std::sync::OnceLock::new();
         REDUCED.get_or_init(reduce_synthetic).clone()
     }
 
-    fn reduce_synthetic() -> LookBake {
+    fn reduce_synthetic() -> ModelBake {
         let meta = parse_meta(&meta_json()).expect("the synthetic meta parses");
         let mut load = |name: &str| -> Result<Vec<u8>, String> {
             let mut parts = name.trim_end_matches(".png").split('_');
@@ -616,7 +619,7 @@ mod tests {
     #[test]
     fn a_bake_reduces_to_both_chains_from_the_large_render() {
         let e = reduced();
-        assert_eq!(e.look, "tracked_tank");
+        assert_eq!(e.model, "mc.st.tank_lvl2");
         assert_eq!(e.provenance.reduce_commit, "reducecommit");
         assert_eq!(e.provenance.asset_pack, "Synthetic Test Tank");
         let fp = e.chain(View::Fp).unwrap();
@@ -653,16 +656,13 @@ mod tests {
         assert_eq!(Pack::decode(&pack.encode()).unwrap().entries, vec![e]);
     }
 
-    /// The synthetic entry holds the matrix check's frame rules (the roster
-    /// rule aside: it is one look of six).
+    /// The synthetic entry holds the matrix check against the tracked
+    /// tank's look, which names its model.
     #[test]
     fn the_synthetic_entry_holds_the_frame_rules() {
-        let mut pack = Pack::default();
-        pack.put(reduced());
-        let bad = check_matrix(&pack, crate::look::shipped());
-        assert!(
-            bad.iter().all(|b| b.contains("no bake (rule 4")),
-            "only the other looks are missing: {bad:?}"
+        assert_eq!(
+            check_model(&reduced(), crate::look::shipped()),
+            Vec::<String>::new()
         );
     }
 
@@ -676,7 +676,7 @@ mod tests {
                 .contains("rule 1")
         );
         assert!(parse_meta(&ok.replace("\"pitch_deg\":3.0", "\"pitch_deg\":8.0")).is_err());
-        assert!(parse_meta(&ok.replace("\"format\":2", "\"format\":1")).is_err());
+        assert!(parse_meta(&ok.replace("\"format\":3", "\"format\":2")).is_err());
         let one_short = ok.replacen("\"pose\":\"wreck\"", "\"pose\":\"still\"", 1);
         assert!(parse_meta(&one_short).unwrap_err().contains("wreck"));
     }

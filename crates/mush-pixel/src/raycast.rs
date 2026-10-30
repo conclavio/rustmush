@@ -42,7 +42,7 @@
 use crate::Frame;
 use crate::bake;
 use crate::frame::Rgb;
-use crate::look::{Facing, Material, Sheet};
+use crate::look::{Facing, Look, Material, Sheet};
 use crate::math::Det as _;
 
 /// What a cell is.
@@ -309,11 +309,18 @@ pub struct Sprite {
 }
 
 /// How a unit with a sprite sheet stands (doc 22 cut U.3): which face it
-/// shows, whether it is moving, and the animation step.
+/// shows, whether it is moving, and the animation step — with what it is
+/// drawn from: its model's bake when installed (doc 31 D-31-1), else the
+/// sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpritePose {
-    /// The sheet.
+    /// The text sheet: the fallback, and the whole art of a hand-drawn look.
     pub sheet: &'static Sheet,
+    /// How big the unit stands in the world, `(width, height)` centimetres:
+    /// its look's.
+    pub size_cm: (u32, u32),
+    /// The model its look names, drawn from its bake when installed.
+    pub model: Option<&'static str>,
     /// The face it shows the eye.
     pub facing: Facing,
     /// Whether it plays its moving cycle.
@@ -321,6 +328,23 @@ pub struct SpritePose {
     /// The animation step (the moving cycle's frame is `step` modulo its
     /// length).
     pub step: usize,
+}
+
+impl SpritePose {
+    /// **A unit of look `look` standing so**: its sheet ([`Look::sheet`]: its
+    /// own, else its model's), its look's size and model; `None` for a look
+    /// with no sheet at all (the silhouette draws).
+    #[must_use]
+    pub fn of_look(look: &'static Look, facing: Facing, moving: bool, step: usize) -> Option<Self> {
+        Some(SpritePose {
+            sheet: look.sheet()?,
+            size_cm: look.size_cm,
+            model: look.model.as_deref(),
+            facing,
+            moving,
+            step,
+        })
+    }
 }
 
 impl Sprite {
@@ -340,11 +364,11 @@ impl Sprite {
     }
 
     /// How big it stands in the world, `(width, height)` centimetres: its
-    /// sheet's `size_cm`, or the silhouette's.
+    /// look's `size_cm`, or the silhouette's.
     pub(crate) fn size_cm(&self) -> (f32, f32) {
         self.pose
             .map_or((SPRITE_WIDTH_CM as f32, SPRITE_HEIGHT_CM as f32), |pose| {
-                (pose.sheet.size_cm.0 as f32, pose.sheet.size_cm.1 as f32)
+                (pose.size_cm.0 as f32, pose.size_cm.1 as f32)
             })
     }
 }
@@ -1016,7 +1040,7 @@ pub(crate) fn draw_sprite(
     if at.height >= 2.0 && at.width >= 1.0 {
         let step = fog_step(at.fog_depth);
         drawn = match at.pose {
-            Some(pose) => match bake::bake_of_sheet(pose.sheet).and_then(|b| {
+            Some(pose) => match pose.model.and_then(bake::model).and_then(|b| {
                 b.chain(bake::View::for_depression(at.depression_deg))
                     .map(|c| (b, c))
             }) {
@@ -1610,14 +1634,11 @@ mod tests {
     /// one the picture covers is still bracketed.
     #[test]
     fn a_sheet_sprite_draws_in_team_colour_mirrored_with_a_shadow() {
-        // A copy of the tank's text sheet, which no bake owns, so this is the
-        // text-sheet draw (doc 22 rule 3's fallback); the shipped look draws
-        // from its baked chain, every facing its own art.
-        let shipped = crate::look::for_unit("tacsim.unit.line_tank")
-            .and_then(|l| l.sprites.as_ref())
-            .expect("the tank's sheet");
-        let sheet: &'static Sheet = Box::leak(Box::new(shipped.clone()));
-        assert!(bake::bake_of_sheet(sheet).is_none(), "no bake owns a copy");
+        // The tank's text sheet with no model, so this is the text-sheet draw
+        // (doc 22 rule 3's fallback); the shipped look draws from its model's
+        // baked chain, every facing its own art.
+        let look = crate::look::for_unit("tacsim.unit.line_tank").expect("the tank's look");
+        let shipped = SpritePose::of_look(look, Facing::Right, false, 0).expect("a sheet");
         let mut map = Map::new(64, 64, 1000);
         for y in 0..64 {
             for x in 0..64 {
@@ -1633,10 +1654,9 @@ mod tests {
         let draw = |kind, facing| {
             let tank = Sprite {
                 pose: Some(SpritePose {
-                    sheet,
                     facing,
-                    moving: false,
-                    step: 0,
+                    model: None,
+                    ..shipped
                 }),
                 ..Sprite::at_bearing(&cam, 0.0, 30.0, kind)
             };
@@ -1692,15 +1712,10 @@ mod tests {
         assert_eq!(count(&wreck, red), 0);
         // The shipped look, where it is baked, draws from its `fp` chain:
         // not the text sheet's pixels, still in team colour.
-        if bake::bake_of_sheet(shipped).is_some() {
+        if shipped.model.and_then(bake::model).is_some() {
             let baked = {
                 let tank = Sprite {
-                    pose: Some(SpritePose {
-                        sheet: shipped,
-                        facing: Facing::Right,
-                        moving: false,
-                        step: 0,
-                    }),
+                    pose: Some(shipped),
                     ..Sprite::at_bearing(&cam, 0.0, 30.0, SpriteKind::Red)
                 };
                 let mut f = Frame::new(320, 128);

@@ -2700,6 +2700,7 @@ dependencies = [
  "flate2",
  "libm",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

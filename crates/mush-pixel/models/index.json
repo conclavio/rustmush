@@ -1,0 +1,82 @@
+{
+  "models": [
+    {
+      "asset_pack": "Mech Constructor: Light and Medium Robots (Slava Z)",
+      "bytes": 218899,
+      "file": "mc.lt.fox_biped.9bc9f3fe31f7.mupk",
+      "id": "mc.lt.fox_biped",
+      "prefab": "Prefabs/Legs_Lt.prefab + Prefabs/Cockpit_fox on Mount_top + Prefabs/Weapon_cannon_lvl3 on Mount_Weapon_R + Prefabs/Weapon_machinegun_lvl3 on Mount_Weapon_L + Prefabs/Weapon_rockets_shoulder_lvl1 on Mount_Weapon_top",
+      "sha256": "9bc9f3fe31f7e0b21e71235fcac9808aa5548e784806cc6f0b998e3591487afc",
+      "sheet": "mc.lt.fox_biped.sheet.json",
+      "size_cm": [
+        963,
+        1100
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 186474,
+      "file": "mc.st.buggy_lvl1.ea78da1f4fc7.mupk",
+      "id": "mc.st.buggy_lvl1",
+      "prefab": "Prefabs/Buggies/Buggy_Chassis_Lvl1.prefab + Prefabs/Buggies/Buggy_Wheel_Front on Mount_Wheel_FL + Prefabs/Buggies/Buggy_Wheel_Front on Mount_Wheel_FR + Prefabs/Buggies/Buggy_Wheel_Rear on Mount_Wheel_RL + Prefabs/Buggies/Buggy_Wheel_Rear on Mount_Wheel_RR + Prefabs/Cockpit_Gun_Flat_Part on Mount_Cockpit + Prefabs/Weapon_DoubleGun_lvl2 on Mount_Weapon_Main + Prefabs/Weapon_DoubleGun_lvl1 on Mount_HalfShoulder_R",
+      "sha256": "ea78da1f4fc761e90efc0a764840bb346af4074dc102b1d307d9066e76a5365f",
+      "sheet": "mc.st.buggy_lvl1.sheet.json",
+      "size_cm": [
+        428,
+        220
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 170057,
+      "file": "mc.st.spider_flybot.a0cce2cb5f66.mupk",
+      "id": "mc.st.spider_flybot",
+      "prefab": "Prefabs/Legs_Spider_Lt.prefab + Prefabs/Cockpit_Flybot on Mount_Top",
+      "sha256": "a0cce2cb5f66fb8d26567826dde12f38227fb9b1d96af1fada7d2fa24d744381",
+      "sheet": "mc.st.spider_flybot.sheet.json",
+      "size_cm": [
+        136,
+        100
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 204977,
+      "file": "mc.st.tank_lvl2.a81cac5b9c56.mupk",
+      "id": "mc.st.tank_lvl2",
+      "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab + Prefabs/Tanks/Chassis_Tank_Lvl2 on Mount_Chassis + Prefabs/Cockpit_Gun_Flat_Part on Mount_Top + Prefabs/Weapon_Sniper_lvl3 on Mount_Weapon_Main + Prefabs/Weapon_DoubleGun_lvl1 on Mount_HalfShoulder_R",
+      "sha256": "a81cac5b9c5687642d1b6f624f7a581925d90d7d7e7fa69867a5f7aa2b249ad4",
+      "sheet": "mc.st.tank_lvl2.sheet.json",
+      "size_cm": [
+        410,
+        250
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 185767,
+      "file": "mc.st.tank_lvl3.6a3efff27e7d.mupk",
+      "id": "mc.st.tank_lvl3",
+      "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab + Prefabs/Tanks/Chassis_Tank_Lvl3 on Mount_Chassis + Prefabs/Cockpit_Gun_Flat_Full on Mount_Top + Prefabs/Weapon_Sniper_lvl5 on Mount_Weapon_Main + Prefabs/HalfShoulder_Tank on Mount_HalfShoulder_L + Prefabs/Weapon_GLauncher_lvl3 on Mount_Weapon + Prefabs/Weapon_DoubleGun_lvl2 on Mount_HalfShoulder_R",
+      "sha256": "6a3efff27e7d4b78a7facf8acf2e7e77c1437d96a8d99f1a55c7e0e53777c7c7",
+      "sheet": "mc.st.tank_lvl3.sheet.json",
+      "size_cm": [
+        440,
+        280
+      ]
+    },
+    {
+      "asset_pack": "Unity built-in primitives",
+      "bytes": 77381,
+      "file": "prim.sphere_hump.d9769c5b968b.mupk",
+      "id": "prim.sphere_hump",
+      "prefab": "primitive Sphere",
+      "sha256": "d9769c5b968bf96f9db7ff5479179cce55616d15619238695362f0f46767f965",
+      "sheet": "prim.sphere_hump.sheet.json",
+      "size_cm": [
+        700,
+        350
+      ]
+    }
+  ]
+}

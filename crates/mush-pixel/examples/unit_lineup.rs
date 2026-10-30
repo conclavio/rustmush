@@ -1,6 +1,6 @@
 //! **The U.6 line-ups** (doc 22 D-22-10, cut U.6): every shipped look drawn
 //! the way the two pictures draw a contact, from whatever this build draws it
-//! from — its baked chains when `looks/units.bin` holds them, its text sheet
+//! from — its model's baked chains when `models/` holds them, its text sheet
 //! nearest-sampled when it does not — written as PNGs into the directory
 //! given (`docs/design/images/22-u6/` once the owner's bake lands):
 //!
@@ -43,12 +43,11 @@ fn main() {
         eprintln!("unit_lineup: {}: {e}", out.display());
         std::process::exit(1);
     }
-    let baked: Vec<&str> = mush_pixel::bake::pack()
-        .entries
+    let baked: Vec<&str> = mush_pixel::bake::models()
         .iter()
-        .map(|e| e.look.as_str())
+        .map(|e| e.model.as_str())
         .collect();
-    println!("baked looks: {baked:?} (the rest draw their text sheets)");
+    println!("baked models: {baked:?} (the rest draw their text sheets)");
 
     // The first person over level grass, 256 cells square.
     let mut map = Map::new(256, 256, 1000);
@@ -69,16 +68,12 @@ fn main() {
             .iter()
             .enumerate()
             .filter_map(|(i, unit)| {
-                let sheet = look::for_unit(unit).and_then(|l| l.sprites.as_ref())?;
+                let pose =
+                    SpritePose::of_look(look::for_unit(unit)?, Facing::FrontRight, false, 0)?;
                 // Spread across the view, a sixth of the field apart.
                 let bearing = -25.0 + 10.0 * i as f64;
                 Some(Sprite {
-                    pose: Some(SpritePose {
-                        sheet,
-                        facing: Facing::FrontRight,
-                        moving: false,
-                        step: 0,
-                    }),
+                    pose: Some(pose),
                     ..Sprite::at_bearing(&cam, bearing, range, SpriteKind::Red)
                 })
             })

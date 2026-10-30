@@ -1,5 +1,5 @@
 {
-  "look": "heavy",
+  "model": "mc.st.tank_lvl2",
   "asset_version": "",
   "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
   "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
@@ -8,34 +8,24 @@
   "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab",
   "attach": [
     {
-      "prefab": "Prefabs/Tanks/Chassis_Tank_Lvl3",
+      "prefab": "Prefabs/Tanks/Chassis_Tank_Lvl2",
       "mount": "Mount_Chassis",
       "parent": ""
     },
     {
-      "prefab": "Prefabs/Cockpit_Gun_Flat_Full",
+      "prefab": "Prefabs/Cockpit_Gun_Flat_Part",
       "mount": "Mount_Top",
-      "parent": "Chassis_Tank_Lvl3"
+      "parent": "Chassis_Tank_Lvl2"
     },
     {
-      "prefab": "Prefabs/Weapon_Sniper_lvl5",
+      "prefab": "Prefabs/Weapon_Sniper_lvl3",
       "mount": "Mount_Weapon_Main",
-      "parent": "Cockpit_Gun_Flat_Full"
+      "parent": "Cockpit_Gun_Flat_Part"
     },
     {
-      "prefab": "Prefabs/HalfShoulder_Tank",
-      "mount": "Mount_HalfShoulder_L",
-      "parent": "Cockpit_Gun_Flat_Full"
-    },
-    {
-      "prefab": "Prefabs/Weapon_GLauncher_lvl3",
-      "mount": "Mount_Weapon",
-      "parent": "HalfShoulder_Tank"
-    },
-    {
-      "prefab": "Prefabs/Weapon_DoubleGun_lvl2",
+      "prefab": "Prefabs/Weapon_DoubleGun_lvl1",
       "mount": "Mount_HalfShoulder_R",
-      "parent": "Cockpit_Gun_Flat_Full"
+      "parent": "Cockpit_Gun_Flat_Part"
     }
   ],
   "still": {
@@ -48,20 +38,16 @@
   },
   "muzzles": [
     {
-      "locator": "Weapon_Sniper_lvl5/Barrel_end",
+      "locator": "Weapon_Sniper_lvl3/Barrel_end",
       "weapon": "cannon"
     },
     {
-      "locator": "Weapon_GLauncher_lvl3/Barrel_end_1",
-      "weapon": "missiles"
-    },
-    {
-      "locator": "Weapon_DoubleGun_lvl2/Barrel_End_1",
+      "locator": "Weapon_DoubleGun_lvl1/Barrel_End_1",
       "weapon": "machine_gun"
     }
   ],
   "size_cm": [
-    780,
-    280
+    700,
+    250
   ]
 }

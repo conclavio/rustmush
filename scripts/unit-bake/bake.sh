@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# The unit bake, one command (doc 22 D-22-10, cut U.6): for each look, render
+# The unit bake, one command (doc 22 D-22-10, cut U.6; doc 31 cut UD.1): for each model, render
 # its bake matrix in Unity's batch mode from its config
-# (scripts/unit-bake/looks/<look>.json) and reduce it into the unit pack
-# (crates/mush-pixel/looks/units.bin), printing the pack's size, its digest
+# (scripts/unit-bake/models/<model>.json) and reduce it into the model catalogue
+# (crates/mush-pixel/models/: its content-named file and index.json), printing the file's size, its SHA-256
 # and the matrix check.
 #
-#   UNITY_PACKAGES=/c/Users/you/3d_assets scripts/unit-bake/bake.sh <unity-project> [look ...]
+#   UNITY_PACKAGES=/c/Users/you/3d_assets scripts/unit-bake/bake.sh <unity-project> [model ...]
 #
 # <unity-project> is a scratch Unity project OUTSIDE the repo (created if it
 # does not exist); UNITY_PACKAGES is the folder the configs' `package` paths
-# are relative to (each look's .unitypackage is imported once, when its root
-# folder is not in the project yet). With no looks named, every look is
-# baked. UNITY overrides the editor's path; UNIT_PACK the pack written (a
-# trial bake into a scratch pack leaves the tree's alone).
+# are relative to (each model's .unitypackage is imported once, when its root
+# folder is not in the project yet). With no models named, every model with a
+# config is baked. UNITY overrides the editor's path; UNIT_MODELS the catalogue
+# written (a trial bake into a scratch folder leaves the tree's alone).
 #
 # Never commit the packages, the Unity project or the renders (the licensing
 # ruling of 2026-10-29): only the configs, this script, Bake.cs and the
-# reduced pack ship. The pack records the asset pack, its version (the
+# reduced model files ship. Each file records the asset pack, its version (the
 # config's, else the package file's SHA-256), the prefab and clips, and the
 # bake and reduce commits.
 set -euo pipefail
@@ -24,7 +24,7 @@ set -euo pipefail
 UNITY="${UNITY:-/c/Program Files/Unity/Hub/Editor/6000.6.7f1/Editor/Unity.exe}"
 ROOT="$(git rev-parse --show-toplevel)"
 HERE="$ROOT/scripts/unit-bake"
-PACK="${UNIT_PACK:-$ROOT/crates/mush-pixel/looks/units.bin}"
+MODELS="${UNIT_MODELS:-$ROOT/crates/mush-pixel/models}"
 
 if [ $# -lt 1 ]; then
   sed -n '2,20p' "$0"
@@ -37,7 +37,8 @@ case "$(cd "$(dirname "$PROJ")" 2>/dev/null && pwd)/" in
 esac
 LOOKS=("$@")
 if [ ${#LOOKS[@]} -eq 0 ]; then
-  LOOKS=(biped tracked_tank wheeled_scout drone heavy unknown)
+  LOOKS=()
+  for c in "$HERE"/models/*.json; do LOOKS+=("$(basename "$c" .json)"); done
 fi
 
 COMMIT="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
@@ -67,7 +68,7 @@ cp "$HERE/unity/Editor/Bake.cs" "$PROJ/Assets/Editor/"
 cp "$HERE"/unity/BakeShaders/*.shader "$PROJ/Assets/BakeShaders/"
 
 for look in "${LOOKS[@]}"; do
-  cfg="$HERE/looks/$look.json"
+  cfg="$HERE/models/$look.json"
   [ -f "$cfg" ] || { echo "bake.sh: no config $cfg" >&2; exit 2; }
   package="$(field "$cfg" package)"
   root="$(field "$cfg" root)"
@@ -91,8 +92,8 @@ for look in "${LOOKS[@]}"; do
     -bakeConfig "$cfg" -bakeOut "$out" -bakeCommit "$COMMIT" -bakeAssetVersion "$version"
   echo "== reducing $look"
   (cd "$ROOT" && cargo run -q --release -j 8 -p mush-pixel --example unit_reduce -- \
-    "$out" --pack "$PACK" --reduce-commit "$COMMIT" --preview "$PROJ/bake_out/preview_$look.png")
+    "$out" --models "$MODELS" --reduce-commit "$COMMIT" --preview "$PROJ/bake_out/preview_$look.png")
 done
 
-echo "== done: $PACK; pin the digest the reducer printed in crates/mush-pixel/src/bake.rs (PACK_DIGEST),"
+echo "== done: $MODELS (each model's file is named by its SHA-256; the catalogue test checks it),"
 echo "   then render the line-ups: cargo run -p mush-pixel --example unit_lineup -- docs/design/images/22-u6"

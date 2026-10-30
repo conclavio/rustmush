@@ -300,21 +300,16 @@ fn main() {
             y_cm: 20_000,
             heading_mdeg: 0,
         };
-        let tank = look::for_unit("tacsim.unit.line_tank").and_then(|l| l.sprites.as_ref());
-        let biped = look::for_unit("tacsim.unit.biped_mk1").and_then(|l| l.sprites.as_ref());
-        let unknown = look::unknown().and_then(|l| l.sprites.as_ref());
+        let tank = look::for_unit("tacsim.unit.line_tank");
+        let biped = look::for_unit("tacsim.unit.biped_mk1");
+        let unknown = look::unknown();
         let at = |bearing: f64,
                   range: f64,
                   kind: SpriteKind,
-                  sheet: Option<&'static look::Sheet>,
+                  look: Option<&'static look::Look>,
                   facing: Facing,
                   moving: bool| Sprite {
-            pose: sheet.map(|sheet| SpritePose {
-                sheet,
-                facing,
-                moving,
-                step: 1,
-            }),
+            pose: look.and_then(|l| SpritePose::of_look(l, facing, moving, 1)),
             ..Sprite::at_bearing(&cam, bearing, range, kind)
         };
         let lineup = [

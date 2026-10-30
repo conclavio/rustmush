@@ -6,4 +6,6 @@
 *.wav binary
 # Doc 22 cut U.6: the unit pack (crates/mush-pixel/looks/units.bin) is bytes.
 *.bin binary
+# Doc 31 cut UD.1: a model's file is bytes, and named by its own SHA-256.
+*.mupk binary
 .source-commit export-subst

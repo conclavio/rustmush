@@ -96,24 +96,13 @@ fn picture_rows(berm_m: u16, contact_m: u16) -> usize {
         y_cm: centre(EYE_CELL.1),
         heading_mdeg: 0,
     };
-    let sheet = look::for_unit("tacsim.unit.line_tank")
-        .and_then(|l| l.sprites.as_ref())
-        .expect("the line tank's sheet");
-    assert_eq!(
-        sheet.size_cm.1,
-        CONTACT_CM.unsigned_abs(),
-        "a 2.5 m contact"
-    );
+    let tank = look::for_unit("tacsim.unit.line_tank").expect("the line tank's look");
+    assert_eq!(tank.size_cm.1, CONTACT_CM.unsigned_abs(), "a 2.5 m contact");
     let contact = Sprite {
         x_cm: centre(EYE_CELL.0),
         y_cm: centre(EYE_CELL.1 + contact_m / 10),
         kind: SpriteKind::Red,
-        pose: Some(SpritePose {
-            sheet,
-            facing: Facing::Front,
-            moving: false,
-            step: 0,
-        }),
+        pose: SpritePose::of_look(tank, Facing::Front, false, 0),
     };
     heightfield::visible_rows(&terrain, &cam, Some(i64::from(EYE_CM)), FRAME, &contact)
 }

@@ -178,13 +178,14 @@ fn look_index(unit_type: Option<&str>) -> usize {
 }
 
 /// Key uniquely identifying one uploaded sprite sheet in terminal storage.
-/// All units sharing `(look, paint, size)` reference this single image via
-/// distinct `placement_id`s (`p=100`, `p=101`, …).
+/// All units sharing `(art, paint, size)` reference this single image via
+/// distinct `placement_id`s (`p=100`, `p=101`, …). Keyed by the art, not the
+/// look (doc 31 D-31-1): the looks on one model upload one sheet.
 #[cfg(feature = "encode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct SheetKey {
-    /// The look's index in [`crate::look::shipped`].
-    look: u8,
+    /// What the unit is drawn from: a model's bake or a look's sheet.
+    art: bake::Art,
     paint: PaintKey,
     /// The index of the size in the look's `iso` chain.
     size: u8,
@@ -222,9 +223,13 @@ impl PaintKey {
 
 #[cfg(feature = "encode")]
 impl SheetKey {
-    /// Deterministic Kitty image ID (`>= 200`) for this `(look, paint, size)`.
+    /// Deterministic Kitty image ID (`>= 200`) for this `(art, paint, size)`:
+    /// a model's slot below 128, a look's sheet 128 up.
     fn image_id(self) -> u32 {
-        let l = u32::from(self.look);
+        let l = match self.art {
+            bake::Art::Model(slot) => u32::try_from(slot.min(127)).unwrap_or(127),
+            bake::Art::Sheet(look) => 128 + u32::try_from(look.min(127)).unwrap_or(127),
+        };
         let p = self.paint as u32;
         let size = u32::from(self.size);
         IMAGE_ID_SHEET_BASE + (l * 32) + (p * 8) + size
@@ -254,7 +259,7 @@ fn iso_size(look: usize, size: u8) -> Option<&'static bake::SizedFrames> {
     bake::iso_chain(look).and_then(|(chain, _)| chain.sizes.get(usize::from(size)))
 }
 
-/// Render an RGBA sprite sheet for `(look, paint, size)` with a shared
+/// Render an RGBA sprite sheet for `(art, paint, size)` with a shared
 /// `(SHEET_PAD_X, SHEET_PAD_Y)` transparent margin around each of the `6 × 8`
 /// frames, a soft ground shadow under the anchor, and a 1-px dark silhouette rim.
 ///
@@ -264,7 +269,9 @@ fn iso_size(look: usize, size: u8) -> Option<&'static bake::SizedFrames> {
 /// `X/Y` padding bug).
 #[cfg(feature = "encode")]
 fn render_sheet_rgba(key: SheetKey) -> (usize, usize, Vec<u8>) {
-    let Some(sized) = iso_size(usize::from(key.look), key.size) else {
+    let Some(sized) =
+        bake::art_chain(key.art).and_then(|(chain, _)| chain.sizes.get(usize::from(key.size)))
+    else {
         return (1, 1, vec![0, 0, 0, 0]);
     };
     let n = usize::from(sized.size);
@@ -2323,8 +2330,11 @@ impl Iso25DPicture {
 
         for u in &units {
             let paint = PaintKey::from_kind(u.kind);
+            let Some(art) = bake::iso_art(u.look) else {
+                continue;
+            };
             let key = SheetKey {
-                look: u8::try_from(u.look).unwrap_or(u8::MAX),
+                art,
                 paint,
                 size: u.size_idx,
             };

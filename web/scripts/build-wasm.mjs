@@ -1,13 +1,13 @@
 // Doc 21 cut G.3b: build the cockpit picture's WebAssembly module
 // (`crates/mush-pixel-wasm`, plain exports, no wasm-bindgen) and copy it to
 // `web/src/lib/pixel/mush_pixel.wasm`, where Vite fingerprints it into the
-// bundle and the parity test reads it. Doc 22 cut U.6: the unit pack
-// (`crates/mush-pixel/looks/units.bin`, which the module does not embed —
-// rule 7's budget) goes beside it as `units.bin`, fetched by the page. Run before `vite build` and before
+// bundle and the parity test reads it. Doc 31 cut UD.1: the model files
+// (`crates/mush-pixel/models/*.mupk`, which the module does not embed) go
+// beside it under `models/`, each fetched by the page when first needed. Run before `vite build` and before
 // the tests; it needs the Rust toolchain and its `wasm32-unknown-unknown`
 // target (`rustup target add wasm32-unknown-unknown`), never wasm-bindgen.
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +26,17 @@ const out = join(root, 'web', 'src', 'lib', 'pixel', 'mush_pixel.wasm');
 mkdirSync(dirname(out), { recursive: true });
 copyFileSync(built, out);
 console.log(`Picture module: ${out} (${statSync(out).size} bytes)`);
-const units = join(root, 'web', 'src', 'lib', 'pixel', 'units.bin');
-copyFileSync(join(root, 'crates', 'mush-pixel', 'looks', 'units.bin'), units);
-console.log(`Unit pack: ${units} (${statSync(units).size} bytes)`);
+// Doc 31 cut UD.1 (D-31-2, D-31-11): each model's file goes into `models/`
+// beside the module, where Vite fingerprints it into `assets/` and the page
+// fetches it only when a unit drawn from it is in a feed.
+const modelsOut = join(root, 'web', 'src', 'lib', 'pixel', 'models');
+rmSync(modelsOut, { recursive: true, force: true });
+mkdirSync(modelsOut, { recursive: true });
+const modelsIn = join(root, 'crates', 'mush-pixel', 'models');
+let total = 0;
+const files = readdirSync(modelsIn).filter((f) => f.endsWith('.mupk'));
+for (const f of files) {
+  copyFileSync(join(modelsIn, f), join(modelsOut, f));
+  total += statSync(join(modelsOut, f)).size;
+}
+console.log(`Unit models: ${files.length} files in ${modelsOut} (${total} bytes)`);

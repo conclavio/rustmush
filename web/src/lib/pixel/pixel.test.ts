@@ -4,7 +4,7 @@
 // bucket-B pictures (`ChartPicture`, `DollPicture`, `ReplayPicture`) at the
 // goldens' sizes and looks, and each frame hashes what the native renderer
 // pinned.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import golden from "../fixtures/pixel/cockpit_hashes.json";
@@ -26,7 +26,7 @@ import {
 } from "./wasm";
 
 const WASM = new URL("./mush_pixel.wasm", import.meta.url);
-const UNITS = new URL("./units.bin", import.meta.url);
+const MODELS = new URL("../../../../crates/mush-pixel/models/", import.meta.url);
 const fixture = (name: string) => readFileSync(new URL(`../fixtures/cockpit/${name}`, import.meta.url), "utf8");
 
 async function load(): Promise<PixelModule> {
@@ -35,16 +35,30 @@ async function load(): Promise<PixelModule> {
   }
   const { instance } = await WebAssembly.instantiate(readFileSync(WASM), {});
   const m = new PixelModule(instance);
-  // The unit pack the page fetches (doc 22 D-22-10), as the native goldens
-  // draw with it embedded.
-  if (!existsSync(UNITS)) {
-    throw new Error("web/src/lib/pixel/units.bin is missing: run `npm run wasm`");
-  }
-  expect(m.loadUnits(new Uint8Array(readFileSync(UNITS)))).toBe(true);
+  // Every model file the page fetches (doc 31 D-31-2), as the native goldens
+  // draw with them embedded.
+  const files = readdirSync(MODELS).filter((f) => f.endsWith(".mupk"));
+  expect(files.length).toBeGreaterThan(0);
+  for (const f of files) m.loadUnits(new Uint8Array(readFileSync(new URL(f, MODELS))));
   return m;
 }
 
 describe("the picture module", () => {
+  it("names the model files a feed needs, and none once they are in (doc 31 D-31-11)", async () => {
+    const { instance } = await WebAssembly.instantiate(readFileSync(WASM), {});
+    const m = new PixelModule(instance);
+    expect(m.wantedModels()).toEqual([]);
+    expect(m.feed(FEED_COCKPIT, fixture("cockpit_frame.json"))).toBe(true);
+    const wanted = m.wantedModels();
+    expect(wanted.length).toBeGreaterThan(0);
+    const files = readdirSync(MODELS);
+    for (const f of wanted) {
+      expect(files).toContain(f);
+      expect(m.loadUnits(new Uint8Array(readFileSync(new URL(f, MODELS))))).toBe(true);
+    }
+    expect(m.wantedModels()).toEqual([]);
+  });
+
   it("draws the native renderer's frames, hash for hash", async () => {
     const m = await load();
     expect(m.setKind(KIND_COCKPIT)).toBe(true);
