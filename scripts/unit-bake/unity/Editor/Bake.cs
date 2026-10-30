@@ -151,9 +151,11 @@ public static class Bake {
     // with no fall clip), lifts the unit by `lift` so the still pose stands on
     // the ground (a wreck is set on the ground by its own bounds, and a wreck
     // from a clip recentred over the origin, since a fall moves the hips off
-    // the spot), and turns it to `yaw`.
+    // the spot), holds a moving frame's middle over `hold` (a drive or walk
+    // clip's root motion would carry the unit out of the frame), and turns it
+    // to `yaw`.
     static void Pose(GameObject unit, Renderer[] rs, AnimationClip clip, float t, float yaw, float lift,
-                     bool wreck, bool recentre, WreckPose tilt) {
+                     bool wreck, bool recentre, WreckPose tilt, Vector3? hold = null) {
         unit.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
         if (clip != null) clip.SampleAnimation(unit, t);
         if (tilt != null)
@@ -163,6 +165,10 @@ public static class Bake {
             unit.transform.position = off;
             var b = Measure(rs);
             off += new Vector3(recentre ? -b.center.x : 0, -b.min.y, recentre ? -b.center.z : 0);
+        } else if (hold.HasValue) {
+            unit.transform.position = off;
+            var b = Measure(rs);
+            off += new Vector3(hold.Value.x - b.center.x, 0, hold.Value.z - b.center.z);
         }
         var rot = Quaternion.Euler(0, yaw, 0);
         unit.transform.SetPositionAndRotation(rot * off, rot * unit.transform.rotation);
@@ -282,6 +288,8 @@ public static class Bake {
         unit.transform.localScale = unit.transform.localScale * (cfg.size_cm[1] / 100f / b0.size.y);
         Pose(unit, rs, still, 0, 0, 0, false, false, null);
         float lift = -Measure(rs).min.y;
+        Pose(unit, rs, still, 0, 0, lift, false, false, null);
+        var middle = Measure(rs).center;
         Pose(unit, rs, still, 0, cfg.yaw_offset_deg, lift, false, false, null);
         var b = Measure(rs);
         float H = b.max.y;
@@ -314,7 +322,8 @@ public static class Bake {
             foreach (var (fname, yaw) in Facings) {
                 for (int k = 0; k < Poses.Length; k++) {
                     var (clip, t, wreck, tilted) = PoseOf(k);
-                    Pose(unit, rs, clip, t, yaw + cfg.yaw_offset_deg, lift, wreck, wreck && !tilted, tilted ? cfg.wreck_pose : null);
+                    Pose(unit, rs, clip, t, yaw + cfg.yaw_offset_deg, lift, wreck, wreck && !tilted,
+                         tilted ? cfg.wreck_pose : null, k >= 1 && k <= 4 ? middle : (Vector3?)null);
                     foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats) }) {
                         for (int i = 0; i < rs.Length; i++) rs[i].sharedMaterials = mats[i];
                         cam.Render();

@@ -13,29 +13,29 @@
       "parent": ""
     },
     {
-      "prefab": "Prefabs/Shoulders_Med_Tank",
+      "prefab": "Prefabs/Cockpit_Gun_Flat_Full",
       "mount": "Mount_Top",
       "parent": "Chassis_Tank_Lvl3"
     },
     {
-      "prefab": "Prefabs/Cockpit_Gunbot",
-      "mount": "Mount_cockpit",
-      "parent": "Shoulders_Med_Tank"
+      "prefab": "Prefabs/Weapon_Sniper_lvl5",
+      "mount": "Mount_Weapon_Main",
+      "parent": "Cockpit_Gun_Flat_Full"
     },
     {
-      "prefab": "Prefabs/Weapon_Sniper_lvl5",
-      "mount": "Mount_Weapon_R",
-      "parent": "Shoulders_Med_Tank"
+      "prefab": "Prefabs/HalfShoulder_Tank",
+      "mount": "Mount_HalfShoulder_L",
+      "parent": "Cockpit_Gun_Flat_Full"
     },
     {
       "prefab": "Prefabs/Weapon_GLauncher_lvl3",
-      "mount": "Mount_Weapon_L",
-      "parent": "Shoulders_Med_Tank"
+      "mount": "Mount_Weapon",
+      "parent": "HalfShoulder_Tank"
     },
     {
       "prefab": "Prefabs/Weapon_DoubleGun_lvl2",
-      "mount": "Mount_Weapon_top",
-      "parent": "Cockpit_Gunbot"
+      "mount": "Mount_HalfShoulder_R",
+      "parent": "Cockpit_Gun_Flat_Full"
     }
   ],
   "still": {

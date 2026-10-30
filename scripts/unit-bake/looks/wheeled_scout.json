@@ -28,19 +28,19 @@
       "parent": ""
     },
     {
-      "prefab": "Prefabs/Cockpit_Gunbot",
+      "prefab": "Prefabs/Cockpit_Gun_Flat_Part",
       "mount": "Mount_Cockpit",
       "parent": ""
     },
     {
       "prefab": "Prefabs/Weapon_DoubleGun_lvl2",
-      "mount": "Mount_Weapon_top",
-      "parent": "Cockpit_Gunbot"
+      "mount": "Mount_Weapon_Main",
+      "parent": "Cockpit_Gun_Flat_Part"
     },
     {
       "prefab": "Prefabs/Weapon_DoubleGun_lvl1",
-      "mount": "Mount_Weapon_R",
-      "parent": "Cockpit_Gunbot"
+      "mount": "Mount_HalfShoulder_R",
+      "parent": "Cockpit_Gun_Flat_Part"
     }
   ],
   "still": {

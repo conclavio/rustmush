@@ -22,7 +22,7 @@ use mush_pixel::raycast::{Camera, Ground, Map, Sprite, SpriteKind, SpritePose};
 use tacsim::arena::state::{ArenaTerrain, TerrainCell};
 
 /// Ten-metre cells, the arena's.
-const CELL_CM: u32 = 1000;
+const CELL_CM: u16 = 1000;
 /// The eye's height, the stock sensor's (`mush_atlas::trace::EYE_HEIGHT_CM`).
 const EYE_CM: i32 = 150;
 /// The berm's height.
@@ -78,7 +78,7 @@ fn sim_sees(berm_m: u16, contact_m: u16) -> bool {
 /// What the picture draws: the rows of the contact's body it shows.
 fn picture_rows(berm_m: u16, contact_m: u16) -> usize {
     let elev = berm(berm_m);
-    let mut map = Map::new(usize::from(W), usize::from(H), CELL_CM);
+    let mut map = Map::new(usize::from(W), usize::from(H), u32::from(CELL_CM));
     for y in 0..usize::from(H) {
         for x in 0..usize::from(W) {
             map.set(x, y, Ground::Grass);
