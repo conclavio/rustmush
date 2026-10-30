@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | the owner's box read, `+hull/box` (M8a) | the hull's owner (and staff, M8a's readers) | positive control, then every absence |
 //! | the Registry's inspection, `@registry/inspect` (M8a) | the Registry's operator | positive control, then every absence |
-//! | the attestation refusal (M8c) | the licence's holder, at renewal | the absence only: an unfiled draft has no licence, so its flight writes no seal mark; the positive control needs a filed, rated, licensed mind on a port world (G1's combined world) and is owed there |
+//! | the attestation refusal (M8c) | the licence's holder, at renewal | the absence: an unfiled draft has no licence, so its flight writes no seal mark; the positive control, a filed, rated, licensed mind flown on a really-ungoverned core in G1's combined world, is [`g4_the_attestation_channel_learns_an_ungoverned_flight_of_a_filed_mind`] |
 //! | the claim's inspection (`@mind/claim`, G3) | the Registry's operator (`@registry/claims`) | the lead's branch (B): no IC detection until the fight, so every hull an author names is refused with `+hull/box`'s one sentence; [`g4_the_claim_channel_refuses_every_hull_until_the_ic_fight`] proves it and that nobody learns anything, before and after a restart. The positive control (a filed claim the operator reads) is owed to the fight's producer |
 //! | testimony | — | owed to the fight (Q-M8-2, H1) |
 //!
@@ -686,4 +686,135 @@ fn g4_the_claim_channel_refuses_every_hull_until_the_ic_fight() {
         leaks.join("\n\n")
     );
     no_refused_writes(&rig.tw);
+}
+
+/// **Doc 17h cut M8g G4's owed positive control: the attestation channel** (doc 17h §2.6,
+/// D-UM-42; M8c B5). The leak battery's channel 6 proves the absence (an unfiled draft writes
+/// no seal mark); this is the presence it is measured against. A filed, genuinely rated,
+/// House-filed mind — the Coprates House's OWNER licence — flies the pilot's leased rig after
+/// a real back-room refit ungoverned its core (ruling (a)), the pilot acting for the House
+/// (`org=Coprates`):
+/// 1. the open epoch seals the filed mind ungoverned and the licence's ring takes one
+///    ungoverned mark naming the rig;
+/// 2. once the owner term is due, the member's `@mind/attest <filed> org=Coprates` is refused
+///    with the one sentence of its own, naming the rig and the flight's IC date — the channel
+///    through which the Registry learns it, and the only one;
+///
+/// Built in M8g G1's combined world (`m8_world`), the one world with a filed, rated, licensed
+/// mind on a port world and a real ungoverning shop.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "dispatch-only (doc 17h M8g G5): the CI `m8-leak-battery` job runs it; three genuine Registry ratings"]
+async fn g4_the_attestation_channel_learns_an_ungoverned_flight_of_a_filed_mind() {
+    let mut world = crate::m8_world::m8_world();
+    let listed = crate::m8_world::rate_and_list(&mut world).await;
+    let (coprates, owner_licence, _listing) = listed[0].clone();
+    let (pilot, tv) = (world.pilot, world.tvs[0]);
+    // The named lines rate Class II, and a mind's certified execution needs its class: a
+    // Class II core, ungoverned.
+    let core = crate::m8_world::ungovern_leased_rig(
+        &mut world,
+        mush_industry::core_production::DieClass::II,
+    );
+    eprintln!("M8G_STORY phase=attest.setup event=complete");
+
+    // 1. The owner licence, flown ungoverned by the House's granted member: one ungoverned mark.
+    crate::excursions::god(
+        &mut world.rig,
+        &format!("@org/grant #{}=Coprates roll.holder.org", pilot.0),
+    );
+    // The owner licence's row is projected on its charter title's scope, the House's
+    // publication scope, so the acting member is granted there as well as on the root.
+    crate::excursions::god(
+        &mut world.rig,
+        &format!(
+            "@org/grant #{}=Coprates roll.holder.org scope=#{}",
+            pilot.0, coprates.scope.0
+        ),
+    );
+    let _ = crate::m8_world::launch(
+        &mut world,
+        &format!(
+            "+tv/1 launch mind=filed:{} org=Coprates go",
+            owner_licence.get()
+        ),
+    );
+    let facts = crate::m8_world::open_seal(&mut world, tv);
+    assert_eq!(facts.licence.as_str(), owner_licence.get().to_string());
+    assert!(!facts.governed, "sealed ungoverned");
+    let ring = crate::m8_world::marks(&world, owner_licence);
+    assert_eq!(ring.len(), 1, "one mark for the flight: {ring:?}");
+    assert_eq!(ring[0]["governed"], json!(false));
+    assert_eq!(ring[0]["hull"], json!(tv.0));
+    let at_ic = ring[0]["at_ic"].as_i64().expect("the mark's IC second");
+    crate::m8_world::recover(&mut world);
+    // No restart here: tier 2 (`m8g_story_tier2_held_minds_seal_aboard`) proves the ring
+    // survives one, and a reboot after the back-room refit trips the harness's economy journal
+    // (see the M8g report).
+    eprintln!("M8G_STORY phase=attest.flight event=complete");
+
+    // 2. The owner term due: the House's attestation is refused by the mark, by name and date.
+    let term = world
+        .rows("roll_mind_owner_term")
+        .into_iter()
+        .filter(|row| row.get("licence") == Some(&json!(owner_licence)))
+        .max_by_key(|row| row["generation"].as_u64())
+        .expect("the owner term");
+    let term_end = term["window"]["term_end"].as_i64().expect("its term end");
+    let grace_end = term["window"]["grace_end"].as_i64().expect("its grace end");
+    while world.rig.tw.world().world_ic_now().at <= term_end {
+        let next = world.rig.tw.world().now() + 3_600;
+        world.rig.tw.set_now(next);
+    }
+    assert!(
+        world.rig.tw.world().world_ic_now().at <= grace_end,
+        "inside the grace"
+    );
+    let room = world.deployment.venue.room;
+    // The House's granted member attests for it at the counter: staff never stand in for a
+    // holder grant (M8c), so GOD would be told it does not act for the organisation.
+    world
+        .rig
+        .tw
+        .world_mut()
+        .move_to(pilot, room)
+        .expect("the member at the counter");
+    let filed = crate::m8_world::filed_of(&world, owner_licence);
+    // The Roll's own submission (`excursions::drain` keeps only the port's lanes).
+    let out = crate::excursions::run(
+        &mut world.rig.tw,
+        pilot,
+        &format!("@mind/attest {filed} org=Coprates"),
+    );
+    eprintln!("M8G_STORY attest -> {out}");
+    let mut staged = Vec::new();
+    while let Some(submit) = world.rig.tw.engine_mut().take_authoritative_submit() {
+        staged.push(*submit);
+    }
+    assert_eq!(staged.len(), 1, "the attestation stages: {out}");
+    let refused = land_receipt(&mut world.rig, &staged[0]);
+    let hull_name = world
+        .rig
+        .tw
+        .world()
+        .get(tv)
+        .map(|o| o.name.to_string())
+        .expect("the rig");
+    let sentence = mush_roll::commerce::seal_marks::unattestable_line(
+        &hull_name,
+        mush_roll::commerce::WorldIcSeconds::from_stamp(&mush_core::ClockStamp {
+            at: at_ic,
+            ..world.rig.tw.world().world_ic_now()
+        })
+        .expect("an IC second"),
+    );
+    match &refused {
+        Err(error) => assert!(
+            error.contains(&sentence),
+            "the refusal names the rig and the date: {error}"
+        ),
+        Ok(receipt) => panic!("the attestation went through: {receipt:?}"),
+    }
+    assert!(world.rig.tw.world().get(core).is_some());
+    eprintln!("M8G_STORY phase=attest event=complete");
+    no_refused_writes(&world.rig.tw);
 }

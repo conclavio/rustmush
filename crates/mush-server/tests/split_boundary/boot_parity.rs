@@ -1466,6 +1466,7 @@ fn format_two_launch() -> tacsim::launch::LaunchDeployment {
             },
             factory: ObjId(32),
             output_container: ObjId(33),
+            ungovern: None,
         },
         market: Some(PlayerMarket {
             clerk: ObjId(40),

@@ -38,7 +38,7 @@ use crate::excursions::{
 
 /// A hull's black box lines, decoded (the store's open tail); every entry decodes (the fix
 /// round's F4: nothing is dropped silently).
-fn lines(rig: &crate::excursions::Rig, hull: ObjId) -> Vec<BlackBoxLine> {
+pub(crate) fn lines(rig: &crate::excursions::Rig, hull: ObjId) -> Vec<BlackBoxLine> {
     let (lines, skipped) = store(&rig.tw).black_box_lines(hull);
     assert_eq!(skipped, 0, "every black box entry decodes");
     lines.into_iter().map(|(_, line)| line).collect()
@@ -2648,7 +2648,11 @@ pub(crate) fn save_draft(rig: &mut crate::excursions::Rig, who: ObjId, name: &st
 
 /// `line`'s one start, prepared on the composed path; its refusal message, or `None` when it
 /// landed.
-fn start_refusal(rig: &mut crate::excursions::Rig, who: ObjId, line: &str) -> Option<String> {
+pub(crate) fn start_refusal(
+    rig: &mut crate::excursions::Rig,
+    who: ObjId,
+    line: &str,
+) -> Option<String> {
     let (out, queued) = command(rig, who, line);
     assert_eq!(queued.len(), 1, "{line}: one start: {out}");
     land(rig, &queued[0]).err()
