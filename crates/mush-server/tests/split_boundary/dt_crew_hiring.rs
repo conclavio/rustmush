@@ -1102,3 +1102,89 @@ async fn launch_inspection_rechecks_real_crew_grants_and_withholds_details_after
     assert!(active(&rig, 1)?.is_some_and(|r| r.active()));
     Ok(())
 }
+
+#[tokio::test]
+async fn shipped_port_crew_can_be_hired_without_staff_offers_and_keep_identity_after_boot()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let person = |world: &TestWorld| -> TestResult<ObjId> {
+        world
+            .world()
+            .module_state::<mush_content::ContentState>()
+            .and_then(|s| {
+                s.latches
+                    .applied(&CanonicalId::new(tacsim::detachment::crew::content::PACK).ok()?)
+            })
+            .and_then(|l| l.entries().get(&CanonicalId::new("crew.ilya_mendes").ok()?))
+            .and_then(mush_content::AppliedEntry::object)
+            .ok_or_else(|| "authored crew latch".into())
+    };
+    rig.npc = person(&rig.world)?;
+    let npc = rig.npc;
+    let employer = rig.employer;
+    let offer = rig
+        .world
+        .world()
+        .attr(npc, OFFER_ATTR)
+        .ok_or("authored consent")?;
+    assert_eq!(offer.owner, GOD);
+    assert!(offer.flags.contains(
+        mush_core::AttrFlags::WIZARD_ONLY
+            | mush_core::AttrFlags::HIDDEN
+            | mush_core::AttrFlags::NO_INHERIT
+    ));
+    let terms: HireTerms = serde_json::from_value(offer.as_json().ok_or("terms")?.clone())?;
+    let listed = text(&mut rig.world, employer, "+sortie/crew");
+    assert!(
+        listed.contains("Ilya Mendes") && listed.contains("Sana Okonkwo"),
+        "{listed}"
+    );
+    assert!(listed.contains(&hire(npc, &terms)?));
+    commit_line(&mut rig, &store, employer, &hire(npc, &terms)?).await?;
+    let saved = contract(&rig)?.ok_or("actual accepted contract")?;
+    // Ordinary movement changes current contents; boot must not restock a crew.
+    text(&mut rig.world, npc, "crew-test-board");
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(rig.away)
+    );
+    rig.world.world_mut().set_attr(
+        npc,
+        mush_npc::SUMMARY_ATTR,
+        Attr::text("My first mining contract.", GOD),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let away = rig.away;
+    drop(rig);
+    let mut rig = fixture(&store).await?;
+    assert_eq!(person(&rig.world)?, npc);
+    rig.npc = npc;
+    assert_eq!(contract(&rig)?.as_ref(), Some(&saved));
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(away)
+    );
+    assert_eq!(
+        rig.world
+            .world()
+            .attr(npc, mush_npc::SUMMARY_ATTR)
+            .and_then(Attr::as_text),
+        Some("My first mining contract.")
+    );
+    assert_eq!(
+        rig.world
+            .world()
+            .iter()
+            .filter(|o| o.name == "Ilya Mendes")
+            .count(),
+        1
+    );
+    let listed = text(&mut rig.world, employer, "+sortie/crew");
+    assert!(
+        !listed.contains("Ilya Mendes"),
+        "a hired absent person is unavailable: {listed}"
+    );
+    assert!(listed.contains("Sana Okonkwo"));
+    Ok(())
+}

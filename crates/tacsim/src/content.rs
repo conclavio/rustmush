@@ -89,6 +89,7 @@ pub fn register_appliers(appliers: &mut Appliers) -> Result<(), PackError> {
     appliers.register(crate::NS, Arc::new(DefinitionApplier))?;
     appliers.register(crate::NS, Arc::new(crate::port::apply::PortApplier))?;
     crate::port::passenger::content::register_appliers(appliers)?;
+    crate::detachment::crew::content::register_appliers(appliers)?;
     crate::quest::content::register_appliers(appliers)
 }
 

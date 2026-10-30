@@ -486,6 +486,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             "neighborhood.mercury_relay",
             "tacsim.relay.luna_ceres",
             "tacsim.passengers.stickney",
+            "tacsim.crew.ceres",
             "tacsim.passengers.ceres",
             "tacsim.quests.first_steps",
             "tacsim.quests.leila_followup",
@@ -499,9 +500,9 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        42,
+        43,
         "three starter, two proving ground, ten stations, the twelve site packs (doc 20 cut \
-         SM.2), the lane, seven R10 relay/geography packs, two passenger packs and the optional quests"
+         SM.2), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
     );
     let site_regions: Vec<&str> = SITE_SOURCES
         .iter()
@@ -577,6 +578,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     (STICKNEY_PACK.into(), 4),
                 ]
             ),
+            "tacsim.crew.ceres" => assert_eq!(requires, vec![(CERES_PACK.into(), 4)]),
             "tacsim.quests.port_connections" => assert_eq!(requires, vec![(CERES_PACK.into(), 4)]),
             "tacsim.quests.safe_passage" => assert_eq!(
                 requires,
@@ -614,6 +616,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     for name in [
         "tacsim.passengers.stickney",
         "tacsim.passengers.ceres",
+        "tacsim.crew.ceres",
         "tacsim.quests.first_steps",
         "tacsim.quests.leila_followup",
         "tacsim.quests.port_connections",
@@ -1258,8 +1261,8 @@ fn ic1_a_fresh_world_boots_the_stations() {
     // Doc 19 cut A.8: the moon stations' 30 (cast and principals) joined the 22.
     assert_eq!(
         npcs.len(),
-        54,
-        "the station cast and two independent travellers"
+        56,
+        "the station cast, two independent travellers and two permanent crew"
     );
     let leila = obj(&tw, "tacsim.passengers.stickney", "npc.leila_mensah_kovacs");
     assert_eq!(
@@ -1388,8 +1391,8 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     }
     assert_eq!(
         after.len(),
-        42,
-        "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography packs, two passenger packs and the optional quests"
+        43,
+        "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
@@ -1401,6 +1404,7 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     );
     for name in [
         "tacsim.passengers.ceres",
+        "tacsim.crew.ceres",
         "tacsim.quests.first_steps",
         "tacsim.quests.leila_followup",
         "tacsim.quests.port_connections",
@@ -2266,6 +2270,7 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
             "tacsim.relay.luna_ceres"
                 | "tacsim.passengers.stickney"
                 | "tacsim.passengers.ceres"
+                | "tacsim.crew.ceres"
                 | "tacsim.quests.first_steps"
                 | "tacsim.quests.leila_followup"
                 | "tacsim.quests.port_connections"
@@ -2337,6 +2342,7 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
     for name in [
         "tacsim.passengers.stickney",
         "tacsim.passengers.ceres",
+        "tacsim.crew.ceres",
         "tacsim.quests.first_steps",
         "tacsim.quests.leila_followup",
         "tacsim.quests.port_connections",

@@ -183,6 +183,12 @@ epochs unresolved; it does not recall them. Returned units may launch again.
 Assigned operators can use `<organizer>:<draft>:<activation revision>` to identify
 their operation when recovering a unit or reading its history.
 
+At the Slack Line in Ceres, `+sortie/crew` lists Ilya Mendes, a mining/recovery
+operator, and Sana Okonkwo, available under commander-capable mining/recovery
+terms. They are permanent people. Once hired or away, they are not replaced by
+another copy at boot. Use the printed acceptance command, then `+sortie/board`.
+Hiring supplies the contract only; unit rights and actual control remain separate.
+
 After a mining deployment, the physical operator of a leased stock rig can use
 its individual `+tv/<n> drive`, `scan`, `sound`, `mine`, `recover`, `dump` and
 `unload` controls. They must remain at the rig's real console with control and
