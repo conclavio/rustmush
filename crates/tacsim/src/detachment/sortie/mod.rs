@@ -5,11 +5,13 @@ mod field;
 mod field_commands;
 mod field_orders;
 mod model;
+pub(crate) mod npc;
 mod prepare;
 mod runtime;
 mod seating;
 pub(crate) mod surface;
 mod tick;
+pub(crate) mod work;
 
 pub(crate) use commands::{SWITCHES, command, handles};
 pub use field::mission_binding;
@@ -23,3 +25,4 @@ pub(crate) use runtime::{
 };
 pub(crate) use runtime::{availability_key, offer_available, require_available};
 pub use surface::SurfaceCrew;
+pub use work::{FieldStep, FieldWork};

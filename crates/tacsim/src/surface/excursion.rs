@@ -1028,6 +1028,9 @@ pub struct RigRecord {
     /// The flight owns its hull epoch; this record owns only surface work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_crew: Option<Box<crate::detachment::sortie::SurfaceCrew>>,
+    /// Latest real action/receipt for a delivered NPC task, bounded to one link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_work: Option<Box<crate::detachment::sortie::FieldWork>>,
     /// [`EXCURSION_SCHEMA`].
     pub schema: u16,
     /// The terrain vehicle: the key.
@@ -1185,6 +1188,7 @@ impl RigRecord {
             recovery: None,
             sortie: None,
             field_crew: None,
+            field_work: None,
         }
     }
 
@@ -1214,6 +1218,7 @@ impl RigRecord {
             recovery: None,
             sortie: None,
             field_crew: None,
+            field_work: None,
         }
     }
 
@@ -1233,6 +1238,14 @@ impl RigRecord {
     ///
     /// The first invariant broken, as a sentence.
     pub fn check(&self) -> Result<(), String> {
+        if let Some(work) = self.field_work.as_deref() {
+            work.check(
+                self.field_crew
+                    .as_deref()
+                    .ok_or("Field work needs its physical crew link.")?,
+                self.ordinal,
+            )?;
+        }
         if let Some(crew) = self.field_crew.as_deref() {
             crew.operation.key()?;
             if crew.flight.unit != self.tv
@@ -2592,6 +2605,7 @@ mod tests {
             recovery: None,
             sortie: None,
             field_crew: None,
+            field_work: None,
         }
     }
 

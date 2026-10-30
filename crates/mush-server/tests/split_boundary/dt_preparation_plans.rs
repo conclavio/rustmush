@@ -48,6 +48,10 @@ async fn fixture_keyed(store: &InMemoryStore, geology: bool) -> TestResult<Rig> 
     let stranger = ensure("Planning outsider", ObjKind::Player)?;
     let carrier = ensure("Planning carrier", ObjKind::Thing)?;
     let unit = ensure("Hidden preferred unit name", ObjKind::Thing)?;
+    // Production boot hydrates/seeds the immutable timeline before modules.
+    // A rate-change action alone writes generation two, not its genesis.
+    let configured = world.game_clock();
+    mush_server::timeline::hydrate_world_timeline(&mut world, store, configured).await?;
     // Arm real periodic ticks on the same deterministic wall clock used below.
     world.set_now(100);
     let mut engine =
@@ -1020,6 +1024,9 @@ async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore, commander: bo
 }
 
 async fn mining_crew_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
+    mining_field_fixture(store, false).await
+}
+async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(Rig, ObjId)> {
     let mut rig = fixture_keyed(store, true).await?;
     ordinary(&mut rig.world, GOD, "@tacsim/time rate=24")?;
     for _ in 0..40 {
@@ -1159,9 +1166,96 @@ async fn mining_crew_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> 
         )
     };
     rig.world.world_mut().move_to(rig.organizer, crew_room)?;
+    let leader = if pair {
+        let unit = rig
+            .world
+            .world()
+            .iter()
+            .find(|o| o.name == "Hidden preferred unit name")
+            .ok_or("leader unit")?
+            .id;
+        let cab = rig
+            .world
+            .world_mut()
+            .create(ObjKind::Room, "Leader field cab", GOD, None)?;
+        for (id, behavior) in [(unit, "sim.participant"), (cab, "sim.interior")] {
+            rig.world.world_mut().attach_behavior(
+                id,
+                BehaviorId::new(behavior)?,
+                BehaviorBinding {
+                    schema_version: 1,
+                    attached_by: GOD,
+                    attached_at: 0,
+                },
+            )?;
+        }
+        ordinary(
+            &mut rig.world,
+            GOD,
+            &format!("@unit/create #{}=tacsim.unit.line_tank", unit.0),
+        )?;
+        persist_legacy(&mut rig.world, store).await?;
+        commit(
+            &mut rig.world,
+            store,
+            GOD,
+            &format!("@spatial/space #{}=moving:#{}", cab.0, unit.0),
+        )
+        .await?;
+        let (bay, slot) = {
+            let view =
+                tacsim::port::ship::hull_view(rig.world.world(), rig.carrier).ok_or("hull")?;
+            let (b, r) = view.bay().ok_or("bay")?;
+            (r, b.slot.id.to_string())
+        };
+        for cmd in [
+            format!("@spatial/slot #{}=berths,1", cab.0),
+            format!("@spatial/place/interior #{}=#{},{}", unit.0, bay.0, slot),
+            format!(
+                "@spatial/station #{}=pilot,pilot,channels:helm,space:#{}",
+                unit.0, cab.0
+            ),
+            format!("@spatial/assign #{}=pilot,#{}", unit.0, rig.organizer.0),
+            format!("@asset/title #{}=#{}", unit.0, rig.organizer.0),
+        ] {
+            ordinary(&mut rig.world, GOD, &cmd)?;
+        }
+        rig.world.world_mut().move_to(rig.organizer, cab)?;
+        rig.world.connect(rig.organizer);
+        ordinary(
+            &mut rig.world,
+            rig.organizer,
+            &format!("+focus #{}/pilot", unit.0),
+        )?;
+        persist_legacy(&mut rig.world, store).await?;
+        for cap in ["operate_crew", "command_assigned_ai"] {
+            commit(
+                &mut rig.world,
+                store,
+                rig.organizer,
+                &format!("@unitgrant/issue #{}=#{} {cap}", unit.0, rig.organizer.0),
+            )
+            .await?;
+        }
+        ordinary(
+            &mut rig.world,
+            GOD,
+            &format!(
+                "@org/grant #{}={} unit.command_assigned_ai scope={scope}",
+                rig.organizer.0, org
+            ),
+        )?;
+        Some(unit)
+    } else {
+        None
+    };
     persist_legacy(&mut rig.world, store).await?;
     let mut payload = plan(&rig);
     payload["slots"][0]["controller"]["kind"] = json!("npc");
+    if let Some(unit) = leader {
+        payload["slots"].as_array_mut().ok_or("slots")?.push(json!({"slot":2,"unit":unit.0,"controller":{"kind":"player","character":rig.organizer.0},"role":"scout","mind":null}));
+    }
+
     commit(
         &mut rig.world,
         store,
@@ -1169,6 +1263,31 @@ async fn mining_crew_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> 
         &format!("+sortie/draft {payload}"),
     )
     .await?;
+    if let Some(unit) = leader {
+        let selected = draft(&rig.world, rig.organizer, 1)?;
+        commit(
+            &mut rig.world,
+            store,
+            rig.organizer,
+            &declaration("accept", &selected),
+        )
+        .await?;
+        commit(
+            &mut rig.world,
+            store,
+            rig.organizer,
+            &format!("@station/handoff #{}/pilot", unit.0),
+        )
+        .await?;
+        install_due_handoff(&mut rig.world, store).await?;
+        commit(
+            &mut rig.world,
+            store,
+            rig.organizer,
+            &declaration("ready", &selected),
+        )
+        .await?;
+    }
     commit(
         &mut rig.world,
         store,
@@ -1184,6 +1303,24 @@ async fn mining_crew_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> 
     let departure = flight(&rig.world, rig.unit, 1)?;
     let finish = fire_flight(&mut rig.world, store, departure.due.at).await?;
     land_request(&mut rig.world, store, &finish).await?;
+    if let Some(unit) = leader {
+        commit(&mut rig.world, store, rig.organizer, "+sortie/launch 1:1=2").await?;
+        let due = flight(&rig.world, unit, 1)?.due.at;
+        for _ in 0..5 {
+            if flight(&rig.world, unit, 1)?.phase == tacsim::detachment::sortie::Phase::Field {
+                break;
+            }
+            let finish = fire_flight(&mut rig.world, store, due).await?;
+            land_request(&mut rig.world, store, &finish).await?;
+        }
+        commit(&mut rig.world, store, rig.organizer, "+sortie/refresh 1:1").await?;
+        assert_eq!(
+            field_roster(&rig.world, rig.organizer)?
+                .leader()
+                .map(|l| l.character),
+            Some(rig.organizer)
+        );
+    }
     Ok((rig, cab))
 }
 
@@ -2947,4 +3084,259 @@ async fn ic_field_npc_commander_needs_current_contract_nomination_and_org_author
         "disbanding does not recover the actual unit"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn ic_field_npc_mines_and_returns_from_a_real_player_leaders_packet() -> TestResult {
+    use mush_tactics::detachment::{OrderBook, Slot};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_field_fixture(&store, true).await?;
+    let roster = field_roster(&rig.world, rig.organizer)?;
+    let command = format!(
+        "ORDER DT:{}:{}:{} 1 MINE",
+        roster.id().0,
+        roster.revision(),
+        roster.term()
+    );
+    commit(&mut rig.world, &store, rig.organizer, &command).await?;
+    let slot = Slot::new(1)?;
+    let orders = field_orders(&rig.world, rig.organizer)?;
+    assert!(
+        OrderBook::restore(&orders.book, &roster)?
+            .delivered(slot)
+            .is_none()
+    );
+    let mut premature = submit(&mut rig.world, rig.invitee, "+tv/1 scan go")?;
+    premature.parameters["field_order"] = json!("1");
+    assert!(
+        stage(&mut rig.world, &store, &premature).await.is_err(),
+        "a queued message cannot authorize an attempt"
+    );
+    assert!(surface_record(&rig.world, rig.unit)?.is_none());
+    let mut restarted = false;
+    for _ in 0..300 {
+        pulse(&mut rig.world, &store, 1).await?;
+        if !restarted && surface_record(&rig.world, rig.unit)?.is_some_and(|r| r.run.is_some()) {
+            persist_legacy(&mut rig.world, &store).await?;
+            let now = rig.world.world().now();
+            let loaded = fixture_keyed(&store, true).await?;
+            rig.world = loaded.world;
+            rig.world.set_now(now);
+            assert_eq!(rig.world.world().world_timeline().current().rate, 24);
+            *rig.world
+                .world_mut()
+                .module_state_mut::<mush_sim::AccountOracle>()
+                .ok_or("oracle")? = mush_sim::AccountOracle::new(Arc::new(PilotAccount {
+                actor: rig.organizer,
+                account: AccountId::mint("MiningCaptain", 1)?,
+            }));
+            restarted = true;
+        }
+        let orders = field_orders(&rig.world, rig.organizer)?;
+        let roster = field_roster(&rig.world, rig.organizer)?;
+        let book = OrderBook::restore(&orders.book, &roster)?;
+        if let Some(d) = book.delivered(slot) {
+            assert!(
+                !d.acknowledgement
+                    .is_some_and(|a| a.response == mush_tactics::detachment::Response::Negative),
+                "task refused: {:?}; record {:?}",
+                d,
+                surface_record(&rig.world, rig.unit)?
+            );
+            if d.completed_at_ms.is_some() {
+                let record = surface_record(&rig.world, rig.unit)?.ok_or("actual surface work")?;
+                let last = record.last.ok_or("actual unload")?;
+                assert_eq!(last.kind, tacsim::surface::excursion::ActKind::Unload);
+                assert!(last.moved.values().any(|n| *n > 0));
+                assert!(d.attempted_at_ms.is_some());
+                assert_eq!(
+                    flight(&rig.world, rig.unit, 1)?.phase,
+                    tacsim::detachment::sortie::Phase::Returned
+                );
+                assert!(restarted, "the actual mining cycle must cross a boot");
+                let report = text(&mut rig.world, rig.organizer, "+sortie/orders 1:1");
+                assert!(report.contains("Execution unconfirmed."), "{report}");
+                assert!(
+                    !report.contains("completed at"),
+                    "private work must not become instantaneous issuer telemetry"
+                );
+                return Ok(());
+            }
+        }
+    }
+    Err(format!(
+        "NPC did not finish: {:?}; record {:?}",
+        field_orders(&rig.world, rig.organizer)?,
+        surface_record(&rig.world, rig.unit)?
+    )
+    .into())
+}
+
+async fn issue_npc_task(rig: &mut Rig, store: &InMemoryStore, words: &str) -> TestResult {
+    let roster = field_roster(&rig.world, rig.organizer)?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        &format!(
+            "ORDER DT:{}:{}:{} 1 {words}",
+            roster.id().0,
+            roster.revision(),
+            roster.term()
+        ),
+    )
+    .await
+}
+#[tokio::test]
+async fn ic_field_npc_hold_replacement_stops_old_mining_without_completing_hold() -> TestResult {
+    use mush_tactics::detachment::{OrderBook, Slot};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_field_fixture(&store, true).await?;
+    issue_npc_task(&mut rig, &store, "MINE").await?;
+    let mut running = false;
+    for _ in 0..200 {
+        pulse(&mut rig.world, &store, 1).await?;
+        if surface_record(&rig.world, rig.unit)?.is_some_and(|r| r.run.is_some()) {
+            running = true;
+            break;
+        }
+    }
+    assert!(running, "actual source run must start");
+    let old = surface_record(&rig.world, rig.unit)?
+        .ok_or("record")?
+        .field_work
+        .ok_or("work")?
+        .sequence;
+    issue_npc_task(&mut rig, &store, "HOLD").await?;
+    let mut holding = false;
+    for _ in 0..100 {
+        pulse(&mut rig.world, &store, 1).await?;
+        let orders = field_orders(&rig.world, rig.organizer)?;
+        let roster = field_roster(&rig.world, rig.organizer)?;
+        let book = OrderBook::restore(&orders.book, &roster)?;
+        let d = book.delivered(Slot::new(1)?).ok_or("delivered")?;
+        if d.order.sequence > old
+            && surface_record(&rig.world, rig.unit)?
+                .is_some_and(|r| r.run.is_none() && r.act.is_none())
+        {
+            assert!(
+                matches!(&d.order.directive,mush_tactics::detachment::Directive::Objective(p) if p.objective==tacsim::detachment::sortie::FieldObjective::Hold)
+            );
+            assert!(
+                d.completed_at_ms.is_none(),
+                "old extraction never completes HOLD"
+            );
+            holding = true;
+            break;
+        }
+    }
+    assert!(holding, "replacement must stop the old run");
+    let before = surface_record(&rig.world, rig.unit)?.ok_or("record")?;
+    pulse(&mut rig.world, &store, 12).await?;
+    assert_eq!(
+        surface_record(&rig.world, rig.unit)?
+            .ok_or("record")?
+            .ordinal,
+        before.ordinal,
+        "HOLD cannot restart mining or recall the rig"
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn ic_field_npc_unsupported_and_expired_orders_cannot_start_work() -> TestResult {
+    use mush_tactics::detachment::{OrderBook, Response, Slot};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_field_fixture(&store, true).await?;
+    issue_npc_task(&mut rig, &store, "SCREEN 90").await?;
+    let slot = Slot::new(1)?;
+    let mut refused = false;
+    for _ in 0..15 {
+        pulse(&mut rig.world, &store, 1).await?;
+        let orders = field_orders(&rig.world, rig.organizer)?;
+        let roster = field_roster(&rig.world, rig.organizer)?;
+        let book = OrderBook::restore(&orders.book, &roster)?;
+        if let Some(d) = book.delivered(slot) {
+            assert!(d.attempted_at_ms.is_none() && d.completed_at_ms.is_none());
+            if d.acknowledgement
+                .is_some_and(|a| a.response == Response::Negative)
+            {
+                refused = true;
+                break;
+            }
+        }
+    }
+    assert!(refused, "unsupported work must send a real NEGATIVE");
+    issue_npc_task(&mut rig, &store, "MINE EXPIRES 1").await?;
+    pulse(&mut rig.world, &store, 12).await?;
+    assert!(surface_record(&rig.world, rig.unit)?.is_none());
+    let orders = field_orders(&rig.world, rig.organizer)?;
+    let roster = field_roster(&rig.world, rig.organizer)?;
+    let book = OrderBook::restore(&orders.book, &roster)?;
+    assert!(book.pending(slot).is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn ic_field_npc_advance_and_withdraw_complete_only_from_actual_movement() -> TestResult {
+    use mush_tactics::detachment::{OrderBook, Slot};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_field_fixture(&store, true).await?;
+    // Ask the existing route planner for a legal adjacent cell; discard the
+    // unadmitted hand command. Only the subsequently delivered task may move it.
+    let planned = adjacent_drive(&mut rig, &store).await?;
+    let number = planned.parameters["to"].as_u64().ok_or("actual target")?;
+    let target = [i64::try_from(number % 256)?, i64::try_from(number / 256)?];
+    issue_npc_task(
+        &mut rig,
+        &store,
+        &format!("ADVANCE {},{}", target[0], target[1]),
+    )
+    .await?;
+    let slot = Slot::new(1)?;
+    let mut arrived = false;
+    for _ in 0..70 {
+        pulse(&mut rig.world, &store, 1).await?;
+        let orders = field_orders(&rig.world, rig.organizer)?;
+        let roster = field_roster(&rig.world, rig.organizer)?;
+        let book = OrderBook::restore(&orders.book, &roster)?;
+        if let Some(d) = book.delivered(slot)
+            && d.completed_at_ms.is_some()
+        {
+            assert!(d.attempted_at_ms.is_some());
+            assert_eq!(
+                surface_record(&rig.world, rig.unit)?
+                    .ok_or("record")?
+                    .last
+                    .ok_or("actual arrival")?
+                    .arrived,
+                Some(target)
+            );
+            arrived = true;
+            break;
+        }
+    }
+    assert!(arrived, "ADVANCE must finish the real drive");
+    issue_npc_task(&mut rig, &store, "WITHDRAW").await?;
+    for _ in 0..70 {
+        pulse(&mut rig.world, &store, 1).await?;
+        let orders = field_orders(&rig.world, rig.organizer)?;
+        let roster = field_roster(&rig.world, rig.organizer)?;
+        let book = OrderBook::restore(&orders.book, &roster)?;
+        if book
+            .delivered(slot)
+            .is_some_and(|d| d.order.sequence == 2 && d.completed_at_ms.is_some())
+            && flight(&rig.world, rig.unit, 1)?.phase == tacsim::detachment::sortie::Phase::Returned
+        {
+            assert_eq!(
+                surface_record(&rig.world, rig.unit)?
+                    .ok_or("record")?
+                    .last
+                    .ok_or("actual recover")?
+                    .kind,
+                tacsim::surface::excursion::ActKind::Recover
+            );
+            return Ok(());
+        }
+    }
+    Err("WITHDRAW must physically return before completion".into())
 }

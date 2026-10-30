@@ -71,6 +71,48 @@ fn issue(
     } else {
         (text, None)
     };
+    let mut mining = text.split_whitespace();
+    if let (Some(target), Some(verb)) = (mining.next(), mining.next())
+        && verb.eq_ignore_ascii_case("MINE")
+    {
+        let target = if target.eq_ignore_ascii_case("ALL") {
+            OrderTarget::All
+        } else {
+            OrderTarget::Slot(
+                Slot::new(
+                    target
+                        .parse()
+                        .map_err(|_| "Use a numbered field slot or ALL.")?,
+                )
+                .map_err(|e| e.to_string())?,
+            )
+        };
+        let family = mining
+            .next()
+            .map(|word| {
+                crate::surface::geology::family_of_word(word)
+                    .ok_or("MINE needs a known ore family.")
+            })
+            .transpose()?;
+        if mining.next().is_some() {
+            return Err("Use MINE [family].".into());
+        }
+        return submit(
+            ctx,
+            h,
+            op,
+            Act::Issue {
+                revision,
+                term,
+                target,
+                directive: Directive::Objective(FieldPayload {
+                    objective: FieldObjective::Mine { family },
+                    hold_fire: false,
+                }),
+                expires_at_ms,
+            },
+        );
+    }
     let words = parse_order(text).map_err(|e| e.to_string())?;
     let target = match words.squad {
         SquadWord::All => OrderTarget::All,
@@ -206,6 +248,9 @@ fn directive_text(directive: &Directive<FieldPayload>) -> String {
         FieldObjective::Withdraw => "WITHDRAW".into(),
         FieldObjective::Screen { bearing_mdeg } => format!("SCREEN {}", bearing_mdeg / 1000),
         FieldObjective::Support { slot } => format!("SUPPORT {}", slot.get()),
+        FieldObjective::Mine { family } => {
+            family.map_or_else(|| "MINE".into(), |family| format!("MINE {}", family.id()))
+        }
     };
     if payload.hold_fire {
         text.push_str(" HOLD FIRE");

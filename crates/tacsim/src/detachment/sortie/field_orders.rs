@@ -174,11 +174,23 @@ pub(super) fn verify(
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FieldObjective {
     Hold,
-    Advance { to: (u16, u16) },
-    Engage { contact: Option<ContactId> },
+    Advance {
+        to: (u16, u16),
+    },
+    Engage {
+        contact: Option<ContactId>,
+    },
     Withdraw,
-    Screen { bearing_mdeg: u32 },
-    Support { slot: Slot },
+    Screen {
+        bearing_mdeg: u32,
+    },
+    Support {
+        slot: Slot,
+    },
+    /// One bounded run, followed by physical recovery and unload.
+    Mine {
+        family: Option<crate::surface::geology::OreFamily>,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -211,6 +223,23 @@ pub struct ReplyReceipt {
     pub sequence: u64,
     pub envelope: u64,
 }
+
+/// Causal coordinates of a message, never an execution permit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldOrderFlight {
+    pub sequence: u64,
+    pub flight: super::model::FlightKey,
+    pub site: mush_core::CanonicalId,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldOrderFlights {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<FieldOrderFlight>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<FieldOrderFlight>,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldOrders {
@@ -220,6 +249,10 @@ pub struct FieldOrders {
     pub outbound: BTreeMap<Slot, u64>,
     pub received: BTreeMap<Slot, u64>,
     pub replies: BTreeMap<Slot, ReplyReceipt>,
+    /// Old messages without these coordinates remain advisory. A coordinate
+    /// is never silently rebound to a subsequent departure at the same site.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub flights: BTreeMap<Slot, FieldOrderFlights>,
 }
 pub(super) fn message_key(id: OperationId, sequence: u64, slot: Slot) -> String {
     format!(
@@ -245,6 +278,7 @@ impl FieldOrders {
             outbound: BTreeMap::new(),
             received: BTreeMap::new(),
             replies: BTreeMap::new(),
+            flights: BTreeMap::new(),
         }
     }
     pub fn validate(&self, roster: &DetachmentRoster) -> Result<(), String> {
@@ -253,6 +287,7 @@ impl FieldOrders {
             || self.outbound.len() > 6
             || self.received.len() > 6
             || self.replies.len() > 6
+            || self.flights.len() > 6
         {
             return Err("Invalid field message history.".into());
         }
@@ -284,7 +319,32 @@ impl FieldOrders {
         {
             return Err("Field transport reference differs from its source history.".into());
         }
+        for (slot, flights) in &self.flights {
+            let member = roster
+                .member(*slot)
+                .ok_or("Field flight has no accepted slot.")?;
+            for (context, order) in [
+                (&flights.pending, book.pending(*slot)),
+                (&flights.standing, book.delivered(*slot).map(|d| &d.order)),
+            ] {
+                if let Some(context) = context
+                    && (context.sequence == 0
+                        || context.flight.ordinal == 0
+                        || context.flight.unit != member.unit
+                        || order.is_none_or(|o| o.sequence != context.sequence))
+                {
+                    return Err("Field message flight differs from its source order.".into());
+                }
+            }
+        }
         Ok(())
+    }
+    pub(super) fn forget_pending_flight(&mut self, slot: Slot) {
+        if let Some(context) = self.flights.get_mut(&slot) {
+            context.pending = None;
+        }
+        self.flights
+            .retain(|_, c| c.pending.is_some() || c.standing.is_some());
     }
     pub(super) fn attach(
         &mut self,

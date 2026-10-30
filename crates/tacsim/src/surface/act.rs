@@ -370,6 +370,9 @@ pub struct RigAt {
     /// An actual accepted physical-crew selection. The source re-reads it and
     /// fences current control/permission before admission; this is no permit.
     pub crew: Option<Box<crate::detachment::sortie::SurfaceCrew>>,
+    /// Expected delivered sequence for an NPC's queued action. The source
+    /// re-reads the order; this number conveys no permission by itself.
+    pub field_order: Option<u64>,
     /// The terrain vehicle.
     pub tv: ObjId,
     /// Its bay slot.
@@ -394,6 +397,7 @@ pub(crate) fn operator_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
             .into_iter()
             .map(|record| RigAt {
                 crew: None,
+                field_order: None,
                 tv: record.tv,
                 slot: record.slot,
                 mark: record.mark.clone(),
@@ -410,6 +414,7 @@ pub(crate) fn operator_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
         .filter(|record| record.live() && record.hull == helm.hull)
         .map(|record| RigAt {
             crew: None,
+            field_order: None,
             tv: record.tv,
             slot: record.slot,
             mark: record.mark.clone(),
@@ -434,6 +439,7 @@ pub(crate) fn leased_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
         .filter(|record| record.live())
         .map(|record| RigAt {
             crew: None,
+            field_order: None,
             tv: record.tv,
             slot: record.slot,
             mark: record.mark.clone(),

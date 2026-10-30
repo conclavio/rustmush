@@ -176,8 +176,10 @@ the operator. Without Deploy, preflight withholds unit-condition and operator
 authority details. NPC location is checked only under the organizer's existing
 contract. The report neither stores a ready flag nor certifies a complete
 launch. DT.3b supplies physical deployment for operators already at real consoles
-with current leases. DT.3c adds NPC seating and existing control-handoff admission;
-crew capability, mind admission and field command integration remain subsequent work.
+with current leases. DT.3c adds NPC seating and existing control-handoff admission.
+DT.3d–DT.3h now supply field command, mission-role grants and the physical NPC
+mining driver, as recorded in [the implementation brief](26a-detachment-implementation-plan.md).
+Licensed autonomous-mind field admission remains separate work.
 
 ## DT.3b physical deployment and operation history
 
@@ -202,10 +204,11 @@ Current containment and physical condition are rechecked before the move. Rights
 are checked through admission's final take; later revocation does not erase an
 already admitted act or a completed physical step.
 
-An existing surface excursion and a detachment flight cannot operate the same
-unit concurrently. The ordinary surface-act provider checks the shared unit
-reservation and flight head, including a final owner revision guard. This is an
-action admission check, not interception of walking or other ordinary movement.
+Carrier-dispatched surface work cannot overlap an unrelated detachment flight.
+The surface-act provider checks the shared unit reservation and flight head,
+including a final owner revision guard. DT.3g admits an accepted physical mining
+crew through that same host with its exact DT flight and existing epoch; it opens
+no second epoch. This is action admission, not interception of ordinary walking.
 
 The host reuses S.1's IC epoch identity, ROM seal and open/close records, links
 the carrier's existing epoch, and writes the existing black box through its
@@ -221,7 +224,7 @@ was actually aboard at confirmation. `+sortie/end` cancels only departures still
 aboard; it never recalls field units or closes their epochs. Returned units may
 relaunch under the same operation with a new flight ordinal and epoch. History
 retains unresolved field units and missing crew. DT.3c supplies NPC seating/control
-acquisition; the IC field command/observer driver remains subsequent integration.
+acquisition; DT.3d–DT.3h add the IC command and physical mining execution paths.
 Admitted durations follow continuous world IC time across rate generations.
 An explicit world-time freeze suspends physical steps until time resumes.
 

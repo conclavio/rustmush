@@ -1026,9 +1026,23 @@ fn message(
             let mut messages = Vec::new();
             for slot in issued.recipients {
                 let order = book.pending(slot).ok_or("Admitted message unavailable.")?;
-                let bytes =
-                    u32::try_from(serde_json::to_vec(order).map_err(|e| e.to_string())?.len())
-                        .map_err(|_| "Field message too large.")?;
+                let (_, flight) = current(read, h, order.recipient.unit)?;
+                membership(&old, &flight)?;
+                if flight.phase != Phase::Field || !facts::on_site(world, &flight) {
+                    return Err("Recipient is not on its current field flight.".into());
+                }
+                let context = field_orders::FieldOrderFlight {
+                    sequence: order.sequence,
+                    flight: flight.key,
+                    site: flight.site,
+                };
+                let bytes = u32::try_from(
+                    serde_json::to_vec(&(order, &context))
+                        .map_err(|e| e.to_string())?
+                        .len(),
+                )
+                .map_err(|_| "Field message too large.")?;
+                orders.flights.entry(slot).or_default().pending = Some(context);
                 messages.push(Message {
                     recipient: order
                         .recipient
@@ -1062,6 +1076,7 @@ fn message(
                     book.discard_pending(member.slot, pending.sequence, now)
                         .map_err(|e| e.to_string())?;
                     orders.outbound.remove(&member.slot);
+                    orders.forget_pending_flight(member.slot);
                     continue;
                 }
                 let envelope = orders.outbound.get(&member.slot).and_then(|id| {
@@ -1078,6 +1093,7 @@ fn message(
                     book.discard_pending(member.slot, pending.sequence, now)
                         .map_err(|e| e.to_string())?;
                     orders.outbound.remove(&member.slot);
+                    orders.forget_pending_flight(member.slot);
                     continue;
                 };
                 if envelope.kind() != DispatchKind::Detachment
@@ -1096,6 +1112,7 @@ fn message(
                     book.discard_pending(member.slot, pending.sequence, now)
                         .map_err(|e| e.to_string())?;
                     orders.outbound.remove(&member.slot);
+                    orders.forget_pending_flight(member.slot);
                     continue;
                 }
                 if !matches!(
@@ -1108,7 +1125,26 @@ fn message(
                     book.discard_pending(member.slot, pending.sequence, now)
                         .map_err(|e| e.to_string())?;
                     orders.outbound.remove(&member.slot);
+                    orders.forget_pending_flight(member.slot);
                     continue;
+                }
+                if let Some(context) = orders
+                    .flights
+                    .get(&member.slot)
+                    .and_then(|f| f.pending.as_ref())
+                {
+                    let (_, actual) = current(read, h, member.unit)?;
+                    if actual.key != context.flight
+                        || actual.site != context.site
+                        || actual.phase != Phase::Field
+                        || !facts::on_site(world, &actual)
+                    {
+                        book.discard_pending(member.slot, pending.sequence, now)
+                            .map_err(|e| e.to_string())?;
+                        orders.outbound.remove(&member.slot);
+                        orders.forget_pending_flight(member.slot);
+                        continue;
+                    }
                 }
                 book.deliver(&roster, member.slot, pending.sequence, now, |m| {
                     allowed(pending.issuer, m.unit)
@@ -1117,6 +1153,8 @@ fn message(
                 orders.received.insert(member.slot, envelope.id());
                 orders.outbound.remove(&member.slot);
                 orders.replies.remove(&member.slot);
+                let context = orders.flights.entry(member.slot).or_default();
+                context.standing = context.pending.take();
             }
         }
         Act::Respond {
