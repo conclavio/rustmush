@@ -812,7 +812,7 @@ pub(crate) fn bay_rooms(w: &World, view: &HullView<'_>) -> Vec<ObjId> {
     rooms
 }
 
-/// **The rigs placed in `view`'s bay** (doc 20 cut SM.3a): every placement
+/// **The rigs placed in `view`'s bay** (doc 20 cut SM.3a): every non-actor placement
 /// `Interior` in one of `bay_rooms`, by slot number — the numbered first, an
 /// unlisted rig (slot `0`) after them.
 #[must_use]
@@ -823,6 +823,11 @@ pub fn rigs_in_bay(w: &World, view: &HullView<'_>) -> Vec<RigInBay> {
     let mut out: Vec<RigInBay> = Vec::new();
     for room in bay_rooms(w, view) {
         for obj in st.children_of(room) {
+            // Crew may stand in the bay after leaving a console. They count
+            // as people aboard, never as unlisted vehicles with hoppers.
+            if w.get(*obj).is_some_and(|o| o.kind.is_actor()) {
+                continue;
+            }
             let SpatialParent::Interior { space, .. } = st.parent_of(*obj) else {
                 continue;
             };

@@ -43,8 +43,7 @@
 use std::collections::BTreeMap;
 
 use mush_core::{
-    CanonicalId, CmdError, Ctx, DefinitionDigest, IdempotencyKeyText, ObjId, ObjKind, PerceivedRef,
-    World,
+    CanonicalId, CmdError, Ctx, DefinitionDigest, IdempotencyKeyText, ObjId, PerceivedRef, World,
 };
 use mush_economy::{EconomyStore, VaultId};
 use mush_inventory::record::EndpointRef;
@@ -1270,43 +1269,58 @@ pub(crate) fn occupants(w: &World, airlock: ObjId) -> u32 {
     u32::try_from(souls_aboard(w, airlock).len()).unwrap_or(u32::MAX)
 }
 
-/// **Who is aboard**: the persons (players and NPCs) `Interior`-placed in `airlock`,
-/// in the placement index's order — the souls [`occupants`] counts, and (doc 18 cut
-/// IC11, lead ruling L11) a queued depart's listed passengers at filing.
+/// Current people in this carrier's bounded subtree, including operators in
+/// rigs in its bay. Employment and boarding history do not supply presence.
 pub(crate) fn souls_aboard(w: &World, airlock: ObjId) -> Vec<ObjId> {
     let Some(st) = w.module_state::<SpatialState>() else {
         return Vec::new();
     };
-    st.derived.children.get(&airlock).map_or_else(Vec::new, |children| {
-        children
-            .iter()
-            .copied()
-            .filter(|obj| {
-                w.get(*obj)
-                    .is_some_and(|o| matches!(o.kind, ObjKind::Player | ObjKind::Npc))
-                    && matches!(st.parent_of(*obj), SpatialParent::Interior { space, .. } if space == airlock)
-            })
-            .collect()
-    })
+    let root = match st.spaces.get(&airlock).map(|s| &s.anchor) {
+        Some(mush_sim::SpaceAnchor::MovingObject { host }) => *host,
+        _ => airlock,
+    };
+    let mut people = std::collections::BTreeSet::new();
+    for node in st.subtree_truncated(root, mush_sim::journey::MAX_CARRIER_SUBTREE) {
+        if w.get(node).is_some_and(|o| o.kind.is_actor()) {
+            people.insert(node);
+        }
+        // Ordinary walkers need no placement record. Their current room
+        // contents count just as a seated operator's placement does.
+        if let Some(space) = st.spaces.get(&node) {
+            for room in std::iter::once(&space.object).chain(space.rooms.iter()) {
+                if let Some(room) = w.get(*room) {
+                    people.extend(
+                        room.contents
+                            .iter()
+                            .copied()
+                            .filter(|o| w.get(*o).is_some_and(|o| o.kind.is_actor())),
+                    );
+                }
+            }
+        }
+    }
+    people
+        .into_iter()
+        .filter(|obj| {
+            if root == airlock {
+                matches!(st.parent_of(*obj),SpatialParent::Interior{space,..} if space==airlock)
+            } else {
+                crate::detachment::planning::projection::physically_aboard(w, *obj, root)
+            }
+        })
+        .collect()
 }
 
-/// **`person` is aboard `hull`**: `Interior`-placed in the hull's airlock space
-/// (any member room). The one predicate `+ship/undock`, the burn's offer and the
-/// launch share (lead rulings L12, L14: a burned hull never launches with its
-/// pilot ashore, whatever moved them). **Doc 20 cut SM.12b** (D2): a yard's dispatcher is aboard
-/// its own yard hull wherever it stands, and nowhere else (`crate::port::yard::is_dispatcher_of`);
-/// every ship, burn and executor reader of this gates on `helm_of` first, so the dispatcher's
-/// `aboard` reaches no ship verb.
+/// Current physical containment, including nested unit consoles. Yard dispatchers
+/// retain their existing special case; callers still establish the actual helm.
 pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
     if crate::port::yard::is_dispatcher_of(w, hull, person) {
         return true;
     }
-    let Some(airlock) = hull_view(w, hull).and_then(|view| view.airlock()) else {
+    if hull_view(w, hull).and_then(|view| view.airlock()).is_none() {
         return false;
-    };
-    w.module_state::<SpatialState>().is_some_and(|st| {
-        matches!(st.parent_of(person), SpatialParent::Interior { space, .. } if space == airlock)
-    })
+    }
+    crate::detachment::planning::projection::physically_aboard(w, person, hull)
 }
 
 /// What a passage is planned on: everything read from the world at the berth.
@@ -1983,11 +1997,12 @@ pub(crate) fn plan_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
             None => dests.iter().collect(),
         };
-        // The pilot flies with the plan: a plan read ashore counts them aboard.
+        // Include the captain planning ashore in addition to any crew already
+        // aboard. Seated operators are counted by the same current containment.
         let souls = view
             .airlock()
             .map_or(0, |airlock| occupants(w, airlock))
-            .max(1);
+            .saturating_add(u32::from(!aboard(w, view.hull(), actor)));
         let basis = match basis(ctx, &view, souls) {
             Ok(basis) => apply_options(basis, &options),
             Err(error) => {

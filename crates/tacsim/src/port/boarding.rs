@@ -353,3 +353,59 @@ pub(crate) fn occupied(w: &World, unit: ObjId) -> bool {
     }
     false
 }
+
+/// Cross the carrier's internal cargo-hold/bay access, never its external ramp.
+pub(crate) fn bay_access(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    if ctx.authoritative_commit_pending() || ctx.switches.iter().count() != 1 {
+        return Err("Vehicle bay access unavailable.".into());
+    }
+    let here = ctx
+        .w
+        .get(ctx.actor)
+        .and_then(|o| o.location)
+        .ok_or("Board your carrier first.")?;
+    let (view, _) = super::ship::hull_of_room(ctx.w, here).ok_or("Board your carrier first.")?;
+    let hull = view.hull();
+    let (_, bay) = view.bay().ok_or("Carrier has no vehicle bay.")?;
+    let hold = view
+        .row
+        .rooms
+        .get(&mush_core::CanonicalId::new("hold").map_err(|e| e.to_string())?)
+        .copied()
+        .map(ObjId)
+        .ok_or("Carrier cargo hold unavailable.")?;
+    let airlock = view.airlock().ok_or("Carrier airlock unavailable.")?;
+    let rooms = view.row.rooms.values().copied().map(ObjId).collect();
+    let to = match ctx.args.raw().trim() {
+        "in" if here == hold => bay,
+        "out" if here == bay => hold,
+        _ => {
+            return Err(
+                "Use +tv/bay in from the cargo hold or +tv/bay out from the vehicle bay.".into(),
+            );
+        }
+    };
+    let actor = ctx.actor;
+    if to == hold {
+        // A walkable room is a member of the ship's airlock space, not a
+        // separate Sim space. Re-enter that space and use its real exits.
+        move_person(ctx, actor, airlock)?;
+        super::passenger::walk(ctx, actor, hold, &rooms)?;
+    } else {
+        move_person(ctx, actor, to)?;
+    }
+    super::coop::say(
+        ctx,
+        format!(
+            "Carrier #{} internal bay access: {}.",
+            hull.0,
+            if to == bay {
+                "entered vehicle bay"
+            } else {
+                "returned to cargo hold"
+            }
+        ),
+    );
+    ctx.show_room(ctx.actor, to);
+    Ok(())
+}
