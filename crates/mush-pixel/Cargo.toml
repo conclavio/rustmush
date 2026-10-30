@@ -31,3 +31,13 @@ encode = ["dep:flate2"]
 name = "fixture"
 required-features = ["encode"]
 
+# Doc 22 cut U.6: the reducer (`scripts/unit-bake/bake.sh` runs it) reads the
+# bake's PNG renders, so it needs the PNG codec.
+[[example]]
+name = "unit_reduce"
+required-features = ["encode"]
+
+[[example]]
+name = "unit_lineup"
+required-features = ["encode"]
+

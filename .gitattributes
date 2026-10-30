@@ -4,4 +4,6 @@
 *.ico binary
 *.woff2 binary
 *.wav binary
+# Doc 22 cut U.6: the unit pack (crates/mush-pixel/looks/units.bin) is bytes.
+*.bin binary
 .source-commit export-subst

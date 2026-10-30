@@ -37,7 +37,7 @@ fn number(raw: &str) -> Result<u64, CmdError> {
     }
     raw.parse().ok().filter(|n| *n > 0).ok_or_else(error)
 }
-pub(super) fn id(raw: &str, actor: ObjId) -> Result<OperationId, CmdError> {
+pub(crate) fn id(raw: &str, actor: ObjId) -> Result<OperationId, CmdError> {
     let fields = raw.trim().split(':').collect::<Vec<_>>();
     let (organizer, draft, activation) = match fields.as_slice() {
         [draft, revision] => (actor, *draft, *revision),

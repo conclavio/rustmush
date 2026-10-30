@@ -41,8 +41,8 @@ use crate::support;
 // generator's output (version 2, with The Bluff), byte for byte.
 use support::ground::{
     BLUFF_RAMP, BLUFF_TOP, BLUFF_TOP_CM, BUILDINGS, FORD, RIVER, ROAD_EW, ROAD_NS, SIDE, UNSIGNED,
-    V3_BLUFF_KEEP, V3_CORRIDOR, V3_SIGNAL_HILL, atlas_pack_at, atlas_pack_v3, class_at, elev_at,
-    elev_v3, sign, within,
+    V3_BLUFF_KEEP, V3_CORRIDOR, V3_SIGNAL_HILL, atlas_pack_at, class_at, elev_at, elev_v3, sign,
+    within,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,9 +147,33 @@ const DIGESTS: [(&str, &str); 10] = [
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_shipped_atlas_pack_is_this_generators_output() {
-    // Doc 21 cut G.7b: version 3, the showcase landscape.
-    pin_file("atlas/proving_ground.json", &atlas_pack_v3());
+fn the_shipped_draft_is_this_generators_output() {
+    // Doc 30 §4 & cut WG.1 (half 2, preset -> draft): `ground-pack gen proving_ground`
+    // reproduces the checked-in draft byte for byte.
+    let draft = tacsim::ground::generate("proving_ground", 2350, None)
+        .expect("the proving_ground preset generates");
+    let json = draft.to_json_pretty().expect("the draft serializes");
+    pin_file("ground/proving_ground.draft.json", &json);
+}
+
+#[test]
+fn every_shipped_ground_pack_is_the_writers_output_over_its_draft() {
+    // Doc 30 §4 & cut WG.1 (half 1, draft -> packs): `ground-pack build` over the
+    // checked-in draft reproduces both shipped packs byte for byte.
+    let draft_rel = "ground/proving_ground.draft.json";
+    let draft_path = content_dir().join(draft_rel);
+    if writing() && !draft_path.exists() {
+        let generated = tacsim::ground::generate("proving_ground", 2350, None)
+            .expect("the proving_ground preset generates")
+            .to_json_pretty()
+            .expect("the draft serializes");
+        pin_file(draft_rel, &generated);
+    }
+    let raw = std::fs::read_to_string(&draft_path).expect("the checked-in draft exists");
+    let draft = tacsim::ground::GroundDraft::from_json(&raw).expect("the checked-in draft parses");
+    let built = tacsim::ground::build(&draft).expect("the writer builds the draft");
+    pin_file("atlas/proving_ground.json", &built.atlas_json);
+    pin_file("arenas/proving_ground.json", &built.arena_json);
 }
 
 #[test]

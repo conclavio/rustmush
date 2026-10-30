@@ -1506,14 +1506,15 @@ fn resale_step_on_a_granted_transferable_licence() -> TestResult {
     Ok(())
 }
 
-/// **`OwnFiled` applies the owner projection's status rule** (doc 17h cut M8g's finding over
-/// 17g C2h story part 3; `owner_holdings::check_status`): the author's own filed revision, held
-/// under the filing's Follow term, answers while clear; withdrawn (and not pinned) it is
-/// `Refused`, as the dispatch's admission reads it; recalled it is `Refused` too. Every caller
-/// (`+minds/holdings`' owner section, `@mind/attest`'s `own_filed_for`, the dispatch's owner
-/// read) skips a `Refused` row, so a licence holdings calls `Active` is one a launch admits.
+/// **The owner projection's status rule in the command reads** (the owner's ruling over 17g
+/// C2h story part 3; `owner_holdings::check_status`). The author's own filed revision, held
+/// under the filing's Follow term: while clear, `OwnFiled` answers `held` and the holdings'
+/// owner page lists it. Withdrawn (and not pinned), or recalled, `OwnFiled` still answers (the
+/// charter is the author's, so `+minds/charter` and the other title commands find it) but not
+/// `held`, and the owner page leaves it out, as the dispatch's owner read and `@mind/attest`
+/// do; clear again, both read it as before.
 #[test]
-fn own_filed_hides_a_withdrawn_unpinned_or_recalled_revision() -> TestResult {
+fn own_filed_reports_a_withdrawn_unpinned_or_recalled_revision_not_held() -> TestResult {
     let mut f = Fixture::new_with_reads(true, tacsim_reads, true);
     let request = f.request();
     let (prepared, _) = f.engine.prepare_registered_composed_authoritative_action(
@@ -1524,10 +1525,6 @@ fn own_filed_hides_a_withdrawn_unpinned_or_recalled_revision() -> TestResult {
     let (_, install) = prepared.into_parts();
     f.engine.install_composed_action(install)?;
     let filed = FiledRevisionId::new(1)?;
-    check!(
-        read(&mut f, GOD, json!(1))?.is_ok(),
-        "a clear revision is held"
-    );
     let status_family = f.families.status.clone();
     let set = |f: &mut Fixture, withdrawn: bool, recalled: bool| -> TestResult {
         let mut status = f
@@ -1544,20 +1541,42 @@ fn own_filed_hides_a_withdrawn_unpinned_or_recalled_revision() -> TestResult {
         f.engine.install_prepared_action(install)?;
         Ok(())
     };
+    // (`OwnFiled`'s held bit, the owner page's filed numbers.)
+    let reads = |f: &mut Fixture| -> Result<(bool, Vec<u64>), Box<dyn std::error::Error>> {
+        let (own, _) = read(f, GOD, json!(1))??;
+        let held = own.into_own_filed().ok_or("an own filed view")?.held();
+        let (page, _) = read(f, GOD, json!({"holdings": null}))??;
+        let rows = page
+            .into_owner_holdings()
+            .ok_or("an owner page")?
+            .rows()
+            .iter()
+            .map(|row| row.filed().get())
+            .collect();
+        Ok((held, rows))
+    };
+    check_eq!(
+        reads(&mut f)?,
+        (true, vec![1]),
+        "a clear revision is held and listed"
+    );
     set(&mut f, true, false)?;
-    check!(
-        matches!(read(&mut f, GOD, json!(1))?, Err(OwnerReadError::Refused)),
-        "a withdrawn revision the Follow term does not pin is not held"
+    check_eq!(
+        reads(&mut f)?,
+        (false, vec![]),
+        "a withdrawn revision the Follow term does not pin: found, not held, not listed"
     );
     set(&mut f, false, true)?;
-    check!(
-        matches!(read(&mut f, GOD, json!(1))?, Err(OwnerReadError::Refused)),
-        "a recalled revision is not held"
+    check_eq!(
+        reads(&mut f)?,
+        (false, vec![]),
+        "a recalled revision: not held"
     );
     set(&mut f, false, false)?;
-    check!(
-        read(&mut f, GOD, json!(1))?.is_ok(),
-        "clear again, held again"
+    check_eq!(
+        reads(&mut f)?,
+        (true, vec![1]),
+        "clear again, held and listed"
     );
     Ok(())
 }

@@ -41,6 +41,10 @@
 //!   placement, wrapped in synchronized output.
 //! - [`look`]: a unit type's look (doc 22): its name, its doll grid, its
 //!   sprite sheet, kept apart from its rules.
+//! - [`bake`]: the bake matrix (doc 22 D-22-10): each shipped look's `fp`
+//!   and `iso` size chains, reduced from one 384 px render, in a named-entry
+//!   pack with its provenance; the size and chain picks; the text-sheet
+//!   fallback.
 //! - [`overlay`]: the instruments drawn into the frame over the picture —
 //!   minimap, heat gauge, weapons, the armour doll, the status strip — from
 //!   a small fixed palette so the PNG stays indexed.
@@ -64,6 +68,7 @@
     clippy::panic_in_result_fn
 )]
 
+pub mod bake;
 #[cfg(feature = "encode")]
 pub mod caps;
 pub mod chart;

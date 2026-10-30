@@ -8,11 +8,17 @@
 //! protocol as a **retained hardware sprite and layer compositor**:
 //!
 //! - **Upload once (`a=t,i=<id>,q=1`)**: unit sprite sheets (8 facings × 6
-//!   poses: still, four moving frames, wreck) baked from the 3D models at six
-//!   geometric mipmap scales (`96, 86, 78, 70, 64, 56` px, ~10 % steps) are
-//!   uploaded lazily once per `(UnitModel, PaintKey, mip)`. Any number of units
-//!   sharing a sheet are placed simultaneously under distinct `placement_id`s
-//!   (`p=100`, `p=101`, …).
+//!   poses: still, four moving frames, wreck) from each look's `iso` chain
+//!   (doc 22 D-22-10: `96, 80, 64, 56, 48, 40, 32, 24` px, baked at this
+//!   view's 28°, or the look's text sheet nearest-sampled until it is baked)
+//!   are uploaded lazily once per `(look, PaintKey, size)`. A unit draws from
+//!   the size nearest above its projected height — its look's height through
+//!   the projection and the zoom, the row a depth cue on it — so a drone and
+//!   a heavy on one row stand in the ratio of their heights, and 0.5× zoom
+//!   halves a unit as it halves the ground wherever the chain has the room
+//!   (to its step; the unit scale's note says where it has not). Any number of units sharing a
+//!   sheet are placed simultaneously under distinct `placement_id`s (`p=100`,
+//!   `p=101`, …).
 //! - **Place and move (`a=p,i=<id>,p=<pid>,x=…,y=…,w=…,h=…,X=0,Y=0,z=…,C=1,q=1`)**:
 //!   each tick updates every visible unit's position, facing, animation frame,
 //!   and depth `z` in a single short escape sequence using padded source-rect
@@ -29,7 +35,7 @@
 //!
 //! In the web client (`mush-pixel-wasm` / `<canvas>`) and Sixel fallback,
 //! [`Iso25DPicture::render_frame`] composites the same `2.5×` cached terrain
-//! canvas, 3D-baked mipmapped unit models, ground shadows, silhouette rims,
+//! canvas, the units from their looks' `iso` chains, ground shadows, silhouette rims,
 //! per-pixel tree and building occlusion (`occluder_base_y`), hull/look heading
 //! vectors, and target-lock brackets directly into an RGB [`Frame`].
 
@@ -39,13 +45,14 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
+use crate::bake::{self, material_from_code};
 #[cfg(feature = "encode")]
 use crate::caps::CellSize;
 use crate::cockpit::{
     ARENA_MAP_FEED, COCKPIT_FEED, contact_health, contact_kind, map_from_feed, terrain_from_feed,
 };
 use crate::frame::{Frame, Rgb};
-use crate::heightfield::{Terrain, material_from_code, mip_pack};
+use crate::heightfield::Terrain;
 #[cfg(feature = "encode")]
 use crate::kitty::{self, Placement};
 use crate::look::{Facing, Material};
@@ -58,9 +65,22 @@ use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::png;
 use crate::raycast::{Base, Biome, Ground, Map, SpriteKind};
 
-/// Geometric mipmap frame sizes in pixels (~10 % steps: 1.00, 0.90, 0.81,
-/// 0.73, 0.66, 0.58).
-pub const MIP_SIZES: [usize; 6] = [96, 86, 78, 70, 64, 56];
+/// A unit's pixels a metre over the ground's vertical scale (the
+/// projection's `z`): units stand larger than the ground they stand on, as on
+/// any tactical map, by one factor for every unit, so their heights keep
+/// their ratio. At `1.0×` on a 640 px viewport a unit is drawn nine pixels a
+/// metre, about the size the 2.5D drew units before U.6. The chain spans 4:1
+/// (96 to 24 px) and the baked frames 8:1 (the drone's 2.2 m to the walker's
+/// 17.8 m, its arms' turning circle), so no one scale keeps every unit inside
+/// the chain at every zoom: at this one the drone draws on the 24 px floor
+/// within a chain step of its ratio to the heavy, the tank, heavy and scout
+/// halve at 0.5×, and the walker stands on the 96 px ceiling at 1× and steps
+/// down to 80 at 0.5×.
+const UNIT_SCALE: f32 = 7.2;
+
+/// The depth cue on a unit's size: a unit on the viewport's top row stands at
+/// this fraction of one on the bottom row.
+const FAR_ROW_CUE: f32 = 0.85;
 
 /// Default cell pixel width when neither SSH `pty-req` nor `CSI 16 t` has
 /// reported the terminal's cell size yet.
@@ -107,8 +127,8 @@ const IMAGE_ID_LOCK: u32 = 131;
 /// Image ID for transient combat FX (weapon tracers, muzzle flash, impact burst, `z = -1`).
 #[cfg(feature = "encode")]
 const IMAGE_ID_FX: u32 = 132;
-/// Base image ID (`200..`) for lazily uploaded `(UnitModel, PaintKey, mip)`
-/// sprite sheets (one image per `(model, paint, mip)` shared by all units via
+/// Base image ID (`200..`) for lazily uploaded `(look, PaintKey, size)`
+/// sprite sheets (one image per `(look, paint, size)` shared by all units via
 /// distinct `placement_id`s).
 #[cfg(feature = "encode")]
 const IMAGE_ID_SHEET_BASE: u32 = 200;
@@ -145,54 +165,29 @@ const Z_HUD: i32 = -1;
 /// Off-map void colour.
 const OFF_MAP_RGB: Rgb = [10, 12, 16];
 
-/// Which baked 2.5D unit sheet set a unit uses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum UnitModel {
-    /// Walker (`biped_mk1`, `biped_mk2`) — baked from the 3D Fox light mech.
-    Biped = 0,
-    /// Standard tracked main battle tank (`line_tank` family, `target_mk1`) —
-    /// baked from the 3D Tracked Tank.
-    Tank = 1,
-    /// Unclassified contact or drone/other — reduced from `look::unknown()`.
-    Unknown = 2,
-    /// Wheeled reconnaissance vehicle (`scout_mk1`) — 6-wheeled sloped hull with
-    /// autocannon turret and rear sensor mast.
-    Scout = 3,
-    /// Heavy assault / artillery carrier (`heavy_mk1`) — wide twin-tread hull with
-    /// dual main cannon barrels and dorsal LRM missile pod rack.
-    Heavy = 4,
+/// The shipped look (its index in [`crate::look::shipped`]) a 2.5D unit is
+/// drawn with: its classified `unit_type`'s, else the `unknown` look's (an
+/// unclassified contact, or a type with no look).
+fn look_index(unit_type: Option<&str>) -> usize {
+    let looks = crate::look::shipped();
+    let find = |unit: &str| looks.iter().position(|l| l.units.iter().any(|u| u == unit));
+    unit_type
+        .and_then(find)
+        .or_else(|| find(crate::look::UNKNOWN))
+        .unwrap_or(0)
 }
 
-impl UnitModel {
-    /// Choose the 2.5D model family for a classified `unit_type`.
-    #[must_use]
-    pub fn from_unit_type(unit_type: Option<&str>) -> Self {
-        let Some(ut) = unit_type else {
-            return Self::Unknown;
-        };
-        if ut.contains("biped") {
-            Self::Biped
-        } else if ut.contains("scout") || ut.contains("recon") {
-            Self::Scout
-        } else if ut.contains("heavy") || ut.contains("artillery") {
-            Self::Heavy
-        } else if ut.contains("tank") || ut.contains("target") {
-            Self::Tank
-        } else {
-            Self::Unknown
-        }
-    }
-}
-
-/// Key uniquely identifying one pre-baked mipmap sprite sheet in terminal
-/// storage. All units sharing `(model, paint, mip)` reference this single
-/// image via distinct `placement_id`s (`p=100`, `p=101`, …).
+/// Key uniquely identifying one uploaded sprite sheet in terminal storage.
+/// All units sharing `(look, paint, size)` reference this single image via
+/// distinct `placement_id`s (`p=100`, `p=101`, …).
 #[cfg(feature = "encode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct SheetKey {
-    model: UnitModel,
+    /// The look's index in [`crate::look::shipped`].
+    look: u8,
     paint: PaintKey,
-    mip: u8,
+    /// The index of the size in the look's `iso` chain.
+    size: u8,
 }
 
 #[cfg(feature = "encode")]
@@ -227,12 +222,12 @@ impl PaintKey {
 
 #[cfg(feature = "encode")]
 impl SheetKey {
-    /// Deterministic Kitty image ID (`>= 200`) for this `(model, paint, mip)`.
+    /// Deterministic Kitty image ID (`>= 200`) for this `(look, paint, size)`.
     fn image_id(self) -> u32 {
-        let m = self.model as u32;
+        let l = u32::from(self.look);
         let p = self.paint as u32;
-        let mip = u32::from(self.mip);
-        IMAGE_ID_SHEET_BASE + (m * 24) + (p * 6) + mip
+        let size = u32::from(self.size);
+        IMAGE_ID_SHEET_BASE + (l * 32) + (p * 8) + size
     }
 }
 
@@ -254,7 +249,12 @@ fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
     }
 }
 
-/// Render an RGBA sprite sheet for `(model, paint, mip)` with a shared
+/// The size of shipped look `look`'s `iso` chain at index `size`.
+fn iso_size(look: usize, size: u8) -> Option<&'static bake::SizedFrames> {
+    bake::iso_chain(look).and_then(|(chain, _)| chain.sizes.get(usize::from(size)))
+}
+
+/// Render an RGBA sprite sheet for `(look, paint, size)` with a shared
 /// `(SHEET_PAD_X, SHEET_PAD_Y)` transparent margin around each of the `6 × 8`
 /// frames, a soft ground shadow under the anchor, and a 1-px dark silhouette rim.
 ///
@@ -264,14 +264,10 @@ fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
 /// `X/Y` padding bug).
 #[cfg(feature = "encode")]
 fn render_sheet_rgba(key: SheetKey) -> (usize, usize, Vec<u8>) {
-    let pack = mip_pack();
-    let model_idx = key.model as usize;
-    let mip_idx = usize::from(key.mip).min(5);
-    let Some(mip) = pack.models.get(model_idx).and_then(|m| m.get(mip_idx)) else {
+    let Some(sized) = iso_size(usize::from(key.look), key.size) else {
         return (1, 1, vec![0, 0, 0, 0]);
     };
-    let n = mip.size;
-    let raw_w = 6 * n;
+    let n = usize::from(sized.size);
     let stride_x = n + SHEET_PAD_X;
     let stride_y = n + SHEET_PAD_Y;
     let sheet_w = 6 * stride_x + SHEET_PAD_X;
@@ -282,15 +278,22 @@ fn render_sheet_rgba(key: SheetKey) -> (usize, usize, Vec<u8>) {
     let rx = (n as i32 * 3 / 10).max(4);
     let ry = (n as i32 / 8).max(2);
 
-    for fi in 0..8usize {
+    for (fi, &facing) in Facing::ALL.iter().enumerate() {
         let dst_y0 = SHEET_PAD_Y + fi * stride_y;
-        for pi in 0..6usize {
+        for pi in 0..bake::POSES.len() {
             let dst_x0 = SHEET_PAD_X + pi * stride_x;
-            let col_kind = if pi == 5 { SpriteKind::Wreck } else { kind };
+            let col_kind = if pi == bake::POSE_WRECK {
+                SpriteKind::Wreck
+            } else {
+                kind
+            };
+            let Some(f) = sized.frame(facing, pi) else {
+                continue;
+            };
 
             // 1. Soft dark ground shadow ellipse around each cell's anchor.
-            let cx = mip.anchor_x as i32;
-            let cy = mip.anchor_y as i32;
+            let cx = i32::from(f.anchor.0);
+            let cy = i32::from(f.anchor.1);
             for dy in -ry..=ry {
                 let ly = cy + dy;
                 if ly < 0 || ly >= n as i32 {
@@ -313,12 +316,10 @@ fn render_sheet_rgba(key: SheetKey) -> (usize, usize, Vec<u8>) {
 
             // 2. Opaque sprite pixels + 1px dark silhouette rim on immediate neighbors.
             for lr in 0..n {
-                let src_r = fi * n + lr;
                 let dst_r = dst_y0 + lr;
                 for lc in 0..n {
-                    let src_c = pi * n + lc;
                     let dst_c = dst_x0 + lc;
-                    let code = mip.pixels.get(src_r * raw_w + src_c).copied().unwrap_or(0);
+                    let code = f.code(lc as i64, lr as i64);
                     if let Some(mat) = material_from_code(code) {
                         let [rr, gg, bb] = material_rgb(mat, col_kind);
                         let off = (dst_r * sheet_w + dst_c) * 4;
@@ -326,25 +327,9 @@ fn render_sheet_rgba(key: SheetKey) -> (usize, usize, Vec<u8>) {
                             dst.copy_from_slice(&[rr, gg, bb, 255]);
                         }
                     } else {
-                        let mut adj = false;
-                        for (dr, dc) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
-                            let nr = lr as isize + dr;
-                            let nc = lc as isize + dc;
-                            if nr >= 0
-                                && nr < n as isize
-                                && nc >= 0
-                                && nc < n as isize
-                                && mip
-                                    .pixels
-                                    .get((fi * n + nr as usize) * raw_w + (pi * n + nc as usize))
-                                    .copied()
-                                    .unwrap_or(0)
-                                    != 0
-                            {
-                                adj = true;
-                                break;
-                            }
-                        }
+                        let adj = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)]
+                            .iter()
+                            .any(|&(dr, dc)| f.code(lc as i64 + dc, lr as i64 + dr) != 0);
                         if adj {
                             let off = (dst_r * sheet_w + dst_c) * 4;
                             if let Some(dst) = rgba.get_mut(off..off + 4) {
@@ -476,6 +461,12 @@ impl IsoProj {
             px_per_m_y: 0.78 * s,
             px_per_m_z: 1.25 * s,
         }
+    }
+
+    /// A unit's pixels a metre at this projection and zoom, before the row's
+    /// depth cue ([`UNIT_SCALE`]).
+    fn unit_px_per_m(self) -> f32 {
+        self.px_per_m_z * UNIT_SCALE
     }
 
     /// Map a world position `(wx_cm, wy_cm)` and elevation delta `dz_m` relative
@@ -1160,11 +1151,13 @@ struct Unit25D {
     health: Option<Health>,
     range_m: i64,
     percent: Option<i64>,
-    model: UnitModel,
+    /// The look's index in [`crate::look::shipped`].
+    look: usize,
     kind: SpriteKind,
     facing: Facing,
     pose_col: usize,
-    mip_idx: u8,
+    /// The index of the size it draws in its look's `iso` chain.
+    size_idx: u8,
     /// Anchor screen pixel `(x, y)` relative to the viewport top-left.
     screen_x: i32,
     screen_y: i32,
@@ -1213,14 +1206,21 @@ fn heading_to_facing_25d(heading_mdeg: u32) -> Facing {
     Facing::ALL.get(sector).copied().unwrap_or(Facing::Front)
 }
 
-/// Pick the geometric mipmap index (`0..=5`, corresponding to `96, 86, 78, 70, 64, 56` px)
-/// from the unit's vertical screen position `screen_y` inside `vp_h` and the
-/// viewport width `vp_w`.
-fn pick_mip_level(screen_y: i32, vp_w: usize, vp_h: usize) -> u8 {
-    let y_clamped = screen_y.clamp(0, vp_h as i32) as usize;
-    let depth_step = ((vp_h.saturating_sub(y_clamped)) * 3) / vp_h.max(1);
-    let res_bias = if vp_w >= 1080 { 2 } else { 3 };
-    u8::try_from((depth_step + res_bias).min(5)).unwrap_or(5)
+/// **The size pick** (doc 22 §5): the index of the size, in shipped look
+/// `look`'s `iso` chain, nearest above the unit's projected height — its
+/// look's pixels a metre through the projection and the zoom
+/// ([`IsoProj::unit_px_per_m`]), times the row's depth cue (a unit on the
+/// top row of a `vp_h` viewport at [`FAR_ROW_CUE`] of one on the bottom row).
+fn pick_iso_size(look: usize, proj: IsoProj, screen_y: i32, vp_h: usize) -> u8 {
+    let Some((chain, _)) = bake::iso_chain(look) else {
+        return 0;
+    };
+    let row = (screen_y as f32 / vp_h.max(1) as f32).clamp(0.0, 1.0);
+    let cue = FAR_ROW_CUE + (1.0 - FAR_ROW_CUE) * row;
+    chain
+        .pick(proj.unit_px_per_m() * cue)
+        .and_then(|(i, _)| u8::try_from(i).ok())
+        .unwrap_or(0)
 }
 
 // ---- Retained Kitty & Software/WASM 2.5D Picture Producer ------------------
@@ -1572,7 +1572,7 @@ impl Iso25DPicture {
                 _ => SpriteKind::Blue,
             }
         };
-        let own_model = UnitModel::from_unit_type(frame.get("unit_type").and_then(Value::as_str));
+        let own_look = look_index(frame.get("unit_type").and_then(Value::as_str));
         let own_heading = (i64::from(pose.body_heading_mdeg) + i64::from(hull_offset_mdeg))
             .rem_euclid(360_000) as u32;
         let own_facing = heading_to_facing_25d(own_heading);
@@ -1593,11 +1593,11 @@ impl Iso25DPicture {
             health: None,
             range_m: 0,
             percent: None,
-            model: own_model,
+            look: own_look,
             kind: own_kind,
             facing: own_facing,
             pose_col: own_pose_col,
-            mip_idx: pick_mip_level(own_sy, vp_w, vp_h),
+            size_idx: pick_iso_size(own_look, proj, own_sy, vp_h),
             screen_x: own_sx,
             screen_y: own_sy,
             locked: false,
@@ -1639,16 +1639,7 @@ impl Iso25DPicture {
             };
 
             let kind = contact_kind(c);
-            let model = if kind == SpriteKind::Wreck {
-                let m = UnitModel::from_unit_type(c.get("unit_type").and_then(Value::as_str));
-                if m == UnitModel::Unknown {
-                    UnitModel::Tank
-                } else {
-                    m
-                }
-            } else {
-                UnitModel::from_unit_type(c.get("unit_type").and_then(Value::as_str))
-            };
+            let look = look_index(c.get("unit_type").and_then(Value::as_str));
 
             let rad = (bearing_deg as f32).to_radians();
             let (sin_b, cos_b) = rad.det_sin_cos();
@@ -1703,11 +1694,11 @@ impl Iso25DPicture {
                 health: contact_health(c),
                 range_m: disp_range_m,
                 percent: if locked { lock_pct } else { None },
-                model,
+                look,
                 kind,
                 facing,
                 pose_col,
-                mip_idx: pick_mip_level(sy, vp_w, vp_h),
+                size_idx: pick_iso_size(look, proj, sy, vp_h),
                 screen_x: sx,
                 screen_y: sy,
                 locked,
@@ -2302,8 +2293,8 @@ impl Iso25DPicture {
             self.last_terrain_placement = Some(terrain_p);
         }
 
-        // 2. Collect visible units, lazily upload needed mipmap sprite sheets
-        //    (one image per `(UnitModel, PaintKey, mip)`), and emit retained
+        // 2. Collect visible units, lazily upload needed sprite sheets
+        //    (one image per `(look, PaintKey, size)`), and emit retained
         //    `a=p,i=<img_id>,p=<pid>` placements using padded source-rect shifts.
         let units = self.collect_units(
             frame,
@@ -2313,7 +2304,6 @@ impl Iso25DPicture {
             vp.height_px,
             step,
         );
-        let pack = mip_pack();
         let mut next_placements = BTreeMap::new();
         let cw_i32 = i32::from(vp.cell_w.max(1));
         let ch_i32 = i32::from(vp.cell_h.max(1));
@@ -2321,9 +2311,9 @@ impl Iso25DPicture {
         for u in &units {
             let paint = PaintKey::from_kind(u.kind);
             let key = SheetKey {
-                model: u.model,
+                look: u8::try_from(u.look).unwrap_or(u8::MAX),
                 paint,
-                mip: u.mip_idx,
+                size: u.size_idx,
             };
             let img_id = key.image_id();
             if !self.uploaded_sheets.contains(&img_id) {
@@ -2333,16 +2323,14 @@ impl Iso25DPicture {
                 self.uploaded_sheets.insert(img_id);
             }
 
-            let Some(mip) = pack
-                .models
-                .get(u.model as usize)
-                .and_then(|m| m.get(usize::from(u.mip_idx)))
+            let Some((sized, f)) = iso_size(u.look, u.size_idx)
+                .and_then(|sized| sized.frame(u.facing, u.pose_col).map(|f| (sized, f)))
             else {
                 continue;
             };
-            let n = mip.size as i32;
-            let top_left_x = u.screen_x - (mip.anchor_x as i32);
-            let top_left_y = u.screen_y - (mip.anchor_y as i32);
+            let n = i32::from(sized.size);
+            let top_left_x = u.screen_x - i32::from(f.anchor.0);
+            let top_left_y = u.screen_y - i32::from(f.anchor.1);
 
             let dc = top_left_x.div_euclid(cw_i32);
             let dr = top_left_y.div_euclid(ch_i32);
@@ -2647,19 +2635,15 @@ impl Iso25DPicture {
             }
         }
 
-        let pack = mip_pack();
         for u in &units {
-            let Some(mip) = pack
-                .models
-                .get(u.model as usize)
-                .and_then(|m| m.get(usize::from(u.mip_idx)))
+            let Some((sized, f)) = iso_size(u.look, u.size_idx)
+                .and_then(|sized| sized.frame(u.facing, u.pose_col).map(|f| (sized, f)))
             else {
                 continue;
             };
-            let n = mip.size;
-            let raw_w = 6 * n;
-            let top_left_x = u.screen_x - (mip.anchor_x as i32);
-            let top_left_y = u.screen_y - (mip.anchor_y as i32);
+            let n = usize::from(sized.size);
+            let top_left_x = u.screen_x - i32::from(f.anchor.0);
+            let top_left_y = u.screen_y - i32::from(f.anchor.1);
             let unit_canvas_y =
                 u16::try_from((cy0 as i32 + u.screen_y).clamp(0, u16::MAX as i32)).unwrap_or(0);
 
@@ -2707,20 +2691,17 @@ impl Iso25DPicture {
 
             // 2. Opaque sprite pixels + 1px dark silhouette rim, occluded by
             //    any nearer 3D trees or building walls (`occluder_base_y > unit_canvas_y`).
-            let col_kind = if u.pose_col == 5 {
+            let col_kind = if u.pose_col == bake::POSE_WRECK {
                 SpriteKind::Wreck
             } else {
                 u.kind
             };
-            let fi = u.facing as usize;
-            let pi = u.pose_col;
             for r in 0..n {
                 let sy_i = top_left_y + r as i32;
                 if sy_i < 0 || sy_i >= height as i32 {
                     continue;
                 }
                 let sy = sy_i as usize;
-                let src_row = (fi * n + r) * raw_w + pi * n;
                 for c in 0..n {
                     let sx_i = top_left_x + c as i32;
                     if sx_i < 0 || sx_i >= width as i32 {
@@ -2730,29 +2711,13 @@ impl Iso25DPicture {
                     if is_occluded(sx, sy) {
                         continue;
                     }
-                    let code = mip.pixels.get(src_row + c).copied().unwrap_or(0);
+                    let code = f.code(c as i64, r as i64);
                     if let Some(mat) = material_from_code(code) {
                         out.put(sx, sy, material_rgb(mat, col_kind));
                     } else {
-                        let mut adj = false;
-                        for (dr, dc) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
-                            let nr = r as isize + dr;
-                            let nc = c as isize + dc;
-                            if nr >= 0
-                                && nr < n as isize
-                                && nc >= 0
-                                && nc < n as isize
-                                && mip
-                                    .pixels
-                                    .get((fi * n + nr as usize) * raw_w + (pi * n + nc as usize))
-                                    .copied()
-                                    .unwrap_or(0)
-                                    != 0
-                            {
-                                adj = true;
-                                break;
-                            }
-                        }
+                        let adj = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)]
+                            .iter()
+                            .any(|&(dr, dc)| f.code(c as i64 + dc, r as i64 + dr) != 0);
                         if adj {
                             out.put(sx, sy, [12, 14, 18]);
                         }
@@ -2975,19 +2940,94 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The unit a cockpit frame's own `unit_type` names, drawn alone at the
+    /// viewport's centre: its look's chain size and the height its still
+    /// front frame stands at, pixels.
+    fn own_unit(unit_type: &str, zoom_permille: u16, vp: (usize, usize)) -> (u16, f32) {
+        let mut pic = Iso25DPicture::new();
+        pic.set_zoom_permille(zoom_permille);
+        let frame = json!({ "seated": true, "team": "blue", "unit_type": unit_type });
+        let pose = read_pose_25d(&frame);
+        let units = pic.collect_units(&frame, &pose, 0, vp.0, vp.1, 0);
+        let u = units.first().expect("the own unit");
+        let (chain, height_cm) = bake::iso_chain(u.look).expect("a chain");
+        let sized = chain.sizes.get(usize::from(u.size_idx)).expect("the size");
+        // Drawn at its native size: the unit's metres in this frame's pixels.
+        let px_per_m = f32::from(sized.size) / (chain.span_cm as f32 / 100.0);
+        (sized.size, height_cm as f32 / 100.0 * px_per_m)
+    }
+
+    /// **The 2.5D's size check** (doc 22 §6): a drone and a heavy on one row
+    /// draw in the ratio of their heights — within one chain step (the
+    /// largest, 32 to 24), the sizes being a chain — and 0.5× zoom halves a
+    /// unit as it halves the ground wherever the chain has the room: not a
+    /// unit on the 96 px ceiling at 1× (the walker), nor one on the 24 px
+    /// floor at 0.5× (the drone).
     #[test]
-    fn embedded_3d_mip_pack_loads_all_six_scales_for_all_models() {
-        let pack = mip_pack();
-        for model in &pack.models {
-            for (mi, &expected_n) in MIP_SIZES.iter().enumerate() {
-                let Some(mip) = model.get(mi) else {
-                    return;
-                };
-                assert_eq!(mip.size, expected_n);
-                assert_eq!(mip.pixels.len(), 6 * expected_n * 8 * expected_n);
-                assert!(mip.pixels.iter().any(|&p| p != 0));
+    fn a_drone_and_a_heavy_stand_in_the_ratio_of_their_heights_and_half_zoom_halves() {
+        let vp = (640, 360);
+        let (_, heavy) = own_unit("tacsim.unit.heavy_mk1", 1000, vp);
+        let (_, drone) = own_unit("tacsim.unit.drone_mk1", 1000, vp);
+        let truth = 280.0 / 100.0;
+        let step = 32.0 / 24.0;
+        let ratio = heavy / drone;
+        assert!(
+            ratio > truth / step && ratio < truth * step,
+            "heavy {heavy:.1} px, drone {drone:.1} px: {ratio:.2}, not {truth}"
+        );
+        // Every unit whose frame is inside the chain at both zooms — not on
+        // the 96 px ceiling at 1x, not on the 24 px floor at 0.5x — halves.
+        let proj = |zoom| IsoProj::for_viewport_zoomed(vp.0, zoom).unit_px_per_m() * 0.925;
+        let mut halved = 0;
+        for unit in [
+            "tacsim.unit.heavy_mk1",
+            "tacsim.unit.line_tank",
+            "tacsim.unit.scout_mk1",
+            "tacsim.unit.biped_mk1",
+            "tacsim.unit.drone_mk1",
+        ] {
+            let (chain, _) = bake::iso_chain(look_index(Some(unit))).expect("a chain");
+            if chain.needed_px(proj(1000)) > 96.0 || chain.needed_px(proj(500)) < 24.0 {
+                continue;
             }
+            let (full, at_full) = own_unit(unit, 1000, vp);
+            let (half, at_half) = own_unit(unit, 500, vp);
+            // Half, to the chain's step (56 has no half in the chain: 32).
+            let ratio = at_half / at_full;
+            assert!(
+                (0.4..=0.6).contains(&ratio),
+                "{unit}: {full} px at 1x, {half} px at 0.5x ({ratio:.2})"
+            );
+            halved += 1;
         }
+        assert!(
+            halved >= 1,
+            "some unit has the room (the baked tank, heavy and scout do)"
+        );
+        // The old pick read neither: every unit drew 70..56 px at 1x.
+        let (big, _) = own_unit("tacsim.unit.biped_mk1", 1000, vp);
+        let (small, _) = own_unit("tacsim.unit.drone_mk1", 1000, vp);
+        assert!(
+            big >= small * 2,
+            "the walker's frame {big}, the drone's {small}"
+        );
+    }
+
+    /// The far row draws a unit smaller than the near row, by the depth cue.
+    #[test]
+    fn the_row_is_a_depth_cue_on_the_size() {
+        let proj = IsoProj::for_viewport_zoomed(640, 1000);
+        let tank = look_index(Some("tacsim.unit.line_tank"));
+        let size = |i: u8| iso_size(tank, i).map_or(0, |s| s.size);
+        assert!(
+            size(pick_iso_size(tank, proj, 0, 360)) <= size(pick_iso_size(tank, proj, 360, 360))
+        );
+        assert_eq!(look_index(None), look_index(Some(crate::look::UNKNOWN)));
+        assert_eq!(
+            look_index(Some("tacsim.unit.dray")),
+            look_index(None),
+            "no look: unknown"
+        );
     }
 
     #[test]
@@ -3472,22 +3512,18 @@ mod tests {
             }
         }
 
-        assert_eq!(
-            UnitModel::from_unit_type(Some("tacsim.unit.biped_mk1")),
-            UnitModel::Biped
-        );
-        assert_eq!(
-            UnitModel::from_unit_type(Some("tacsim.unit.line_tank")),
-            UnitModel::Tank
-        );
-        assert_eq!(
-            UnitModel::from_unit_type(Some("tacsim.unit.scout_mk1")),
-            UnitModel::Scout
-        );
-        assert_eq!(
-            UnitModel::from_unit_type(Some("tacsim.unit.heavy_mk1")),
-            UnitModel::Heavy
-        );
+        let looks: Vec<usize> = [
+            "tacsim.unit.biped_mk1",
+            "tacsim.unit.line_tank",
+            "tacsim.unit.scout_mk1",
+            "tacsim.unit.heavy_mk1",
+        ]
+        .iter()
+        .map(|u| look_index(Some(u)))
+        .collect();
+        for (i, a) in looks.iter().enumerate() {
+            assert!(!looks.iter().skip(i + 1).any(|b| b == a), "four looks");
+        }
 
         let map_json = json!({
             "surface": "tacsim.arena.mars_canyon",
