@@ -357,3 +357,24 @@ Validated locally on 2026-10-28:
 - The complete Tacsim library suite passes: 1,917 tests passed, four ignored.
   Thirty-two server composition tests, two market privacy regressions and 26
   help/registration/typed-state/restriction contract tests also pass.
+
+## DT.3k normal physical boarding and return
+
+`+tv/<n> board` lets the actual lessee take an authored physical helm billet
+from the carrier's real bay after a current OperateCrew check. It supplies no
+focus or lease. The player personally uses `+focus` and `@station/handoff`
+before readiness. Existing NPC seating uses the same physical console checks.
+
+`+tv/<n> leave` and `+sortie/unseat <npc>` first observe the actual K6 holder.
+An existing holder requests voluntary release through Sim's ordinary coordinator
+and safe-boundary apply. The source checks the real holder and targets vacant;
+it cannot lend or acquire anyone else's control. Until that release commits,
+crew and billet remain in place. Repeating exit then uses ordinary interior
+placement and billet give-back. An open flight blocks this exit path until its
+ramp work is confirmed or its still-aboard departure is explicitly cancelled.
+This is a narrow action admission, not a veto on every ordinary movement path.
+
+Return/repossess inspect the actual stock rig rooms and their current contents,
+including nested containers, before ending the lease or moving the rig. An
+unreadable or oversized local contents tree holds the return. No embarkation
+interval, locomotion v2 provider or character ancestry journal is involved.

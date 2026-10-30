@@ -349,10 +349,16 @@ pub(crate) fn actor_grant_epoch(
         .map(|grant| grant.epoch)
 }
 
-/// The primary `@station` verbs. `handoff`/`cancel` are the authoritative
+/// The primary `@station` verbs. `handoff`/`release`/`cancel` are the authoritative
 /// ingress; `show` is read-only; `fallback` writes the exempt record.
 pub(crate) fn cmd_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    if ctx.switches.has("handoff") {
+    if ctx.switches.has("release") {
+        if ctx.args.rhs().is_some() {
+            return Err(CmdError::msg(NO_SUCH_STATION));
+        }
+        let (unit, station) = parse_unit_station(ctx, ctx.args.lhs())?;
+        request_control_release(ctx, unit, &station, ctx.actor)
+    } else if ctx.switches.has("handoff") {
         station_handoff(ctx, false)
     } else if ctx.switches.has("cancel") {
         station_handoff(ctx, true)
@@ -362,7 +368,7 @@ pub(crate) fn cmd_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         station_show(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @station/handoff <unit>/<station>   @station/cancel <unit>/<station>\n\
+            "Usage: @station/handoff <unit>/<station>   @station/release <unit>/<station>   @station/cancel <unit>/<station>\n\
              @station/fallback <unit>/<station>=<who>   @station/show [<unit>/<station>]",
         ))
     }
@@ -435,6 +441,53 @@ fn submit_station_action(
         json!({}),
         key,
     );
+}
+
+/// Voluntarily release the actual holder's K6 lease through its existing
+/// request/apply state machine. Leave the person and billet in place until ACK.
+/// The source provider proves the real holder and rechecks the station epoch.
+pub fn request_control_release(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    station: &StationId,
+    actor: ObjId,
+) -> Result<(), CmdError> {
+    if ctx.authoritative_pending(actor)
+        || ctx.authoritative_commit_pending()
+        || ctx.authoritative_queue_full()
+    {
+        return Err(CmdError::msg("A control request is already pending."));
+    }
+    if !holds_billet(ctx, actor, unit, station)
+        || (focused_station(ctx, actor) != Some((unit, station.clone()))
+            && crate::handoff::physical_npc_station(ctx.w, actor, unit) != Some(station.clone()))
+    {
+        return Err(CmdError::msg(NO_SUCH_STATION));
+    }
+    let revision = actor_grant_epoch(ctx, actor, unit, station.as_str())
+        .ok_or_else(|| CmdError::msg(NO_SUCH_STATION))?;
+    let action = crate::handoff::release_action_ref(ctx.reg)
+        .ok_or_else(|| CmdError::msg("Station control unavailable."))?;
+    let key = IdempotencyKeyText::parse_canonical(format!(
+        "station.release.{}.{}.{}.{}",
+        unit.0,
+        actor.0,
+        revision,
+        ctx.w.world_ic_now().at
+    ))
+    .map_err(|_| CmdError::msg("Station control unavailable."))?;
+    ctx.out
+        .defer(mush_core::Deferred::AuthoritativeSubmit(Box::new(
+            mush_core::AuthoritativeSubmit {
+                actor,
+                action,
+                subject: PerceivedRef::KnownObject { id: unit, revision },
+                targets: Vec::new(),
+                parameters: json!({}),
+                key,
+            },
+        )));
+    Ok(())
 }
 
 /// Request the existing K6 handoff as a physically seated NPC. The campaign

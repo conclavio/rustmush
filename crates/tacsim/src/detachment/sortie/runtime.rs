@@ -33,7 +33,7 @@ pub struct SortieHandles {
     pub(super) ports: Box<PortFamilies>,
     pub(super) action: DefinitionRef,
     pub(super) enabled: bool,
-    pub(super) controls:
+    pub(crate) controls:
         Option<mush_core::read_service::OwnerReadHandle<mush_sim::crew_control::CrewControlReader>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

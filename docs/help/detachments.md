@@ -33,6 +33,12 @@ OperateCrew through the printed operating loan ID using
 `@unitgrant/issue #unit=#npc operate_crew parent=<loan>`. See
 [unit permissions](unit-grants.md) for delegation and revocation.
 
+A player can take their own rental's physical helm with `+tv/<n> board` while
+standing in the carrier's vehicle bay. This requires current OperateCrew permission
+and a vacant billet. It prints the real unit ID and the `+focus` and
+`@station/handoff` commands to choose and request control personally. Boarding
+itself grants no control lease. Take the station before marking the draft ready.
+
 A plan has up to six numbered command slots. Loading a preset creates an
 independent draft, so editing a mission does not rewrite your saved preset.
 Several plans may refer to the same unit without reserving it.
@@ -58,6 +64,9 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/active <organizer>:<draft>` | Inspect an accepted roster that assigns you a player slot |
 | `+sortie/deactivate <draft>:<activation revision>` | Release the accepted assignments |
 | `+sortie/preflight <draft>:<activation revision>` | Inspect current launch facts for your accepted roster while aboard its carrier |
+| `+tv/<n> board` | Take your own rental's physical helm billet from the carrier's bay |
+| `+tv/<n> leave` | Release your own control, then step into the bay and give back your billet |
+| `+sortie/unseat <npc>` | Invite your contracted operator out of a returned unit |
 | `+sortie/seat <draft>:<activation revision>=<slot>` | Arrange an accepted NPC operator's physical unit console and control request |
 | `+sortie/launch <draft>:<activation revision>=all` | Admit the unlaunched members of your accepted roster |
 | `+sortie/launch <draft>:<activation revision>=<slot>` | Admit or retry one unlaunched member |
@@ -96,6 +105,21 @@ stays pending. Restore the prerequisites and retry, or cancel that member while
 it is still aboard. Already departed members are reported and never launched
 twice. Recovery requires RecoverLoad and a unit actually beside the carrier's
 ramp; it does not drive or teleport a distant unit home or repair damage.
+After a confirmed return, use `+tv/<n> leave` for yourself and
+`+sortie/unseat #<NPC>` for your hired operator. If the operator still holds K6
+control, the first call requests their own release through the normal handoff
+state machine. Once that release settles, repeat the command to step into the
+bay and give back the billet. A player may also use `@station/release #unit/pilot`
+explicitly while still at the console. Nobody is moved before control release
+commits. Exit cannot race an open ramp transit; cancel a departure first or wait
+for return confirmation. Field units must physically recover before anyone can
+step into the carrier.
+
+The rental counter and charter repossession inspect the rig's current room
+contents and refuse to take it to the shed while anyone is inside, including
+people inside carried containers. NPC unseating needs the employer aboard the
+actual carrier and the recorded crew contract. No boarding history is required.
+
 Ending an operation leaves field units and their epochs unresolved until a real
 return. Saved progress describes confirmed events, not a remote casualty sensor.
 

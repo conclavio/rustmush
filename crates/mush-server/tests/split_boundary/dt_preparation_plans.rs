@@ -1096,6 +1096,23 @@ async fn rented_mining_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)
 async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(Rig, ObjId)> {
     let (mut rig, cab) = rented_mining_fixture(store).await?;
     commit(&mut rig.world, store, rig.organizer, "+tv/1/permissions go").await?;
+    let rented_leader = if pair {
+        ordinary(&mut rig.world, rig.organizer, "+tv/lease go")?;
+        persist_legacy(&mut rig.world, store).await?;
+        commit(&mut rig.world, store, rig.organizer, "+tv/2/permissions go").await?;
+        Some(
+            rig.world
+                .world()
+                .module_state::<tacsim::TacsimStore>()
+                .ok_or("rentals")?
+                .tv_leases_of(rig.organizer)
+                .find(|r| r.live() && r.slot == 2)
+                .ok_or("second rig")?
+                .tv,
+        )
+    } else {
+        None
+    };
     // Hire the actual shipped person, then lend through the owner's real loan.
     rig.invitee = rig
         .world
@@ -1218,77 +1235,18 @@ async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(
         )
     };
     rig.world.world_mut().move_to(rig.organizer, crew_room)?;
-    let leader = if pair {
-        let unit = rig
-            .world
-            .world()
-            .iter()
-            .find(|o| o.name == "Hidden preferred unit name")
-            .ok_or("leader unit")?
-            .id;
-        let cab = rig
-            .world
-            .world_mut()
-            .create(ObjKind::Room, "Leader field cab", GOD, None)?;
-        for (id, behavior) in [(unit, "sim.participant"), (cab, "sim.interior")] {
-            rig.world.world_mut().attach_behavior(
-                id,
-                BehaviorId::new(behavior)?,
-                BehaviorBinding {
-                    schema_version: 1,
-                    attached_by: GOD,
-                    attached_at: 0,
-                },
-            )?;
-        }
-        ordinary(
-            &mut rig.world,
-            GOD,
-            &format!("@unit/create #{}=tacsim.unit.line_tank", unit.0),
-        )?;
-        persist_legacy(&mut rig.world, store).await?;
-        commit(
-            &mut rig.world,
-            store,
-            GOD,
-            &format!("@spatial/space #{}=moving:#{}", cab.0, unit.0),
-        )
-        .await?;
-        let (bay, slot) = {
-            let view =
-                tacsim::port::ship::hull_view(rig.world.world(), rig.carrier).ok_or("hull")?;
-            let (b, r) = view.bay().ok_or("bay")?;
-            (r, b.slot.id.to_string())
-        };
-        for cmd in [
-            format!("@spatial/slot #{}=berths,1", cab.0),
-            format!("@spatial/place/interior #{}=#{},{}", unit.0, bay.0, slot),
-            format!(
-                "@spatial/station #{}=pilot,pilot,channels:helm,space:#{}",
-                unit.0, cab.0
-            ),
-            format!("@spatial/assign #{}=pilot,#{}", unit.0, rig.organizer.0),
-            format!("@asset/title #{}=#{}", unit.0, rig.organizer.0),
-        ] {
-            ordinary(&mut rig.world, GOD, &cmd)?;
-        }
-        rig.world.world_mut().move_to(rig.organizer, cab)?;
+    let leader = if let Some(unit) = rented_leader {
+        let view =
+            tacsim::port::ship::hull_view(rig.world.world(), rig.carrier).ok_or("carrier")?;
+        let (_, bay) = view.bay().ok_or("bay")?;
+        rig.world.world_mut().move_to(rig.organizer, bay)?;
+        ordinary(&mut rig.world, rig.organizer, "+tv/2 board")?;
         rig.world.connect(rig.organizer);
         ordinary(
             &mut rig.world,
             rig.organizer,
             &format!("+focus #{}/pilot", unit.0),
         )?;
-        persist_legacy(&mut rig.world, store).await?;
-        for cap in ["operate_crew", "command_assigned_ai"] {
-            commit(
-                &mut rig.world,
-                store,
-                rig.organizer,
-                &format!("@unitgrant/issue #{}=#{} {cap}", unit.0, rig.organizer.0),
-            )
-            .await?;
-        }
         Some(unit)
     } else {
         None
@@ -1357,6 +1315,11 @@ async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(
             let finish = fire_flight(&mut rig.world, store, due).await?;
             land_request(&mut rig.world, store, &finish).await?;
         }
+        commit(&mut rig.world, store, rig.organizer, "+sortie/refresh 1:1").await?;
+        // A newly field-eligible player settles under the existing succession
+        // policy before taking priority. At this fixture's 24x IC rate, one
+        // real second is longer than that three-IC-second interval.
+        pulse(&mut rig.world, store, 1).await?;
         commit(&mut rig.world, store, rig.organizer, "+sortie/refresh 1:1").await?;
         assert_eq!(
             field_roster(&rig.world, rig.organizer)?
@@ -3135,6 +3098,20 @@ async fn ic_field_npc_mines_and_returns_from_a_real_player_leaders_packet() -> T
     use mush_tactics::detachment::{OrderBook, Slot};
     let store = InMemoryStore::new();
     let (mut rig, _) = mining_field_fixture(&store, true).await?;
+    let position = rig.world.world().get(rig.invitee).and_then(|o| o.location);
+    let denied = text(
+        &mut rig.world,
+        rig.organizer,
+        &format!("+sortie/unseat #{}", rig.invitee.0),
+    );
+    assert!(denied.contains("return to the carrier's bay"), "{denied}");
+    let denied = text(&mut rig.world, rig.organizer, "+tv/2 leave");
+    assert!(denied.contains("actual vehicle bay"), "{denied}");
+    assert_eq!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        position,
+        "field unseating cannot teleport a person home"
+    );
     let roster = field_roster(&rig.world, rig.organizer)?;
     let command = format!(
         "ORDER DT:{}:{}:{} 1 MINE",
@@ -3204,6 +3181,77 @@ async fn ic_field_npc_mines_and_returns_from_a_real_player_leaders_packet() -> T
                     !report.contains("completed at"),
                     "private work must not become instantaneous issuer telemetry"
                 );
+                let leader = rig
+                    .world
+                    .world()
+                    .module_state::<tacsim::TacsimStore>()
+                    .ok_or("rentals")?
+                    .tv_leases_of(rig.organizer)
+                    .find(|r| r.live() && r.slot == 2)
+                    .ok_or("leader rig")?
+                    .tv;
+                // Reconnect and personally choose the retained real console
+                // again after the earlier restart; no proxy focus is restored.
+                rig.world.connect(rig.organizer);
+                ordinary(
+                    &mut rig.world,
+                    rig.organizer,
+                    &format!("+focus #{}/pilot", leader.0),
+                )?;
+                persist_legacy(&mut rig.world, &store).await?;
+                commit(
+                    &mut rig.world,
+                    &store,
+                    rig.organizer,
+                    "+sortie/recover 1:1=2",
+                )
+                .await?;
+                let due = flight(&rig.world, leader, 1)?.due.at;
+                let finish = fire_flight(&mut rig.world, &store, due).await?;
+                land_request(&mut rig.world, &store, &finish).await?;
+                assert_eq!(
+                    flight(&rig.world, leader, 1)?.phase,
+                    tacsim::detachment::sortie::Phase::Returned
+                );
+                exit_after_release(&mut rig.world, &store, rig.organizer, "+tv/2 leave").await?;
+                let refused = text(
+                    &mut rig.world,
+                    rig.stranger,
+                    &format!("+sortie/unseat #{}", rig.invitee.0),
+                );
+                assert!(refused.contains("contract unavailable"), "{refused}");
+                exit_after_release(
+                    &mut rig.world,
+                    &store,
+                    rig.organizer,
+                    &format!("+sortie/unseat #{}", rig.invitee.0),
+                )
+                .await?;
+                let view = tacsim::port::ship::hull_view(rig.world.world(), rig.carrier)
+                    .ok_or("carrier")?;
+                let (_, bay) = view.bay().ok_or("bay")?;
+                assert_eq!(
+                    rig.world.world().get(rig.invitee).and_then(|o| o.location),
+                    Some(bay)
+                );
+                assert_eq!(
+                    rig.world
+                        .world()
+                        .get(rig.organizer)
+                        .and_then(|o| o.location),
+                    Some(bay)
+                );
+                assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
+                assert!(!actual_helm(&rig.world, leader, rig.organizer)?);
+                persist_legacy(&mut rig.world, &store).await?;
+                commit(&mut rig.world, &store, rig.organizer, "+sortie/end 1:1").await?;
+                commit(
+                    &mut rig.world,
+                    &store,
+                    rig.organizer,
+                    "+sortie/deactivate 1:1",
+                )
+                .await?;
                 return Ok(());
             }
         }
@@ -3624,6 +3672,277 @@ async fn a_rental_permission_proposal_cannot_be_committed_as_the_lessee() -> Tes
     assert!(
         stage(&mut rig.world, &store, &request).await.is_err(),
         "the advisory named lender never replaces the actual source actor"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_player_can_board_their_real_rental_choose_focus_and_leave_without_staff_billets()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = rented_mining_fixture(&store).await?;
+    let counter = rig
+        .world
+        .world()
+        .get(rig.organizer)
+        .and_then(|o| o.location)
+        .ok_or("counter")?;
+    let view = tacsim::port::ship::hull_view(rig.world.world(), rig.carrier).ok_or("hull")?;
+    let (_, bay) = view.bay().ok_or("bay")?;
+    rig.world.world_mut().move_to(rig.organizer, bay)?;
+    let denied = text(&mut rig.world, rig.organizer, "+tv/1 board");
+    assert!(denied.contains("OperateCrew permission"), "{denied}");
+    assert_eq!(
+        rig.world
+            .world()
+            .get(rig.organizer)
+            .and_then(|o| o.location),
+        Some(bay)
+    );
+    rig.world.world_mut().move_to(rig.organizer, counter)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+tv/1/permissions go",
+    )
+    .await?;
+    rig.world.world_mut().move_to(rig.organizer, bay)?;
+    ordinary(&mut rig.world, rig.organizer, "+tv/1 board")?;
+    assert_eq!(
+        rig.world
+            .world()
+            .get(rig.organizer)
+            .and_then(|o| o.location),
+        Some(cab)
+    );
+    assert!(
+        !actual_helm(&rig.world, rig.unit, rig.organizer)?,
+        "boarding is not a K6 lease"
+    );
+    let generation = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("sim")?
+        .control_generation(rig.unit);
+    ordinary(&mut rig.world, rig.organizer, "+tv/1/board")?;
+    assert_eq!(
+        rig.world
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .ok_or("sim")?
+            .control_generation(rig.unit),
+        generation,
+        "repeated boarding cannot invalidate an in-flight handoff"
+    );
+    rig.world.connect(rig.organizer);
+    ordinary(
+        &mut rig.world,
+        rig.organizer,
+        &format!("+focus #{}/pilot", rig.unit.0),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        &format!("@station/handoff #{}/pilot", rig.unit.0),
+    )
+    .await?;
+    install_due_handoff(&mut rig.world, &store).await?;
+    assert!(actual_helm(&rig.world, rig.unit, rig.organizer)?);
+    let release = submit(&mut rig.world, rig.organizer, "+tv/1 leave")?;
+    assert_eq!(
+        rig.world
+            .world()
+            .get(rig.organizer)
+            .and_then(|o| o.location),
+        Some(cab),
+        "the person stays at the controls before release ACK"
+    );
+    assert!(actual_helm(&rig.world, rig.unit, rig.organizer)?);
+    let mut forged = release.clone();
+    forged.actor = rig.stranger;
+    assert!(
+        stage(&mut rig.world, &store, &forged).await.is_err(),
+        "another actor cannot release this station"
+    );
+    land_request(&mut rig.world, &store, &release).await?;
+    install_due_handoff(&mut rig.world, &store).await?;
+    assert!(!actual_helm(&rig.world, rig.unit, rig.organizer)?);
+    ordinary(&mut rig.world, rig.organizer, "+tv/1 leave")?;
+    assert_eq!(
+        rig.world
+            .world()
+            .get(rig.organizer)
+            .and_then(|o| o.location),
+        Some(bay)
+    );
+    assert!(!actual_helm(&rig.world, rig.unit, rig.organizer)?);
+    assert!(
+        rig.world
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .ok_or("sim")?
+            .assignments
+            .get(&rig.unit)
+            .is_none_or(|a| a.seats.values().all(|s| s.actor != rig.organizer))
+    );
+    // The lease is actually vacant, so the ordinary acquisition works again.
+    ordinary(&mut rig.world, rig.organizer, "+tv/1 board")?;
+    ordinary(
+        &mut rig.world,
+        rig.organizer,
+        &format!("+focus #{}/pilot", rig.unit.0),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        &format!("@station/handoff #{}/pilot", rig.unit.0),
+    )
+    .await?;
+    install_due_handoff(&mut rig.world, &store).await?;
+    assert!(actual_helm(&rig.world, rig.unit, rig.organizer)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn returning_a_rental_checks_current_room_contents_including_carried_people() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = rented_mining_fixture(&store).await?;
+    let bag = rig
+        .world
+        .world_mut()
+        .create(ObjKind::Thing, "Crew carrier", GOD, Some(cab))?;
+    let npc = rig
+        .world
+        .world_mut()
+        .create(ObjKind::Npc, "Carried visitor", GOD, Some(bag))?;
+    let denied = text(&mut rig.world, rig.organizer, "+tv/1 lease return go");
+    assert!(denied.contains("Crew are still inside"), "{denied}");
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(bag)
+    );
+    let denied = text(
+        &mut rig.world,
+        GOD,
+        &format!("@coop/revoke #{}=occupied rig", rig.organizer.0),
+    );
+    assert!(
+        denied.contains(tacsim::port::recall::NOT_REVOKED),
+        "{denied}"
+    );
+    let rental = rig
+        .world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("rentals")?
+        .tv_leases_of(rig.organizer)
+        .find(|r| r.live())
+        .cloned()
+        .ok_or("lease must remain live")?;
+    let contract = rig
+        .world
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .ok_or("economy")?
+        .snapshot()
+        .contract(mush_economy::ContractId(rental.lease))
+        .ok_or("actual contract")?;
+    assert_eq!(contract.state, mush_economy::ContractState::Active);
+    let view = tacsim::port::ship::hull_view(rig.world.world(), rig.carrier).ok_or("hull")?;
+    let (_, bay) = view.bay().ok_or("bay")?;
+    rig.world.world_mut().move_to(npc, bay)?;
+    ordinary(&mut rig.world, rig.organizer, "+tv/1 lease return go")?;
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(bay),
+        "the actual room contents determine safety, without movement history"
+    );
+    assert!(
+        rig.world
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .ok_or("rentals")?
+            .tv_leases_of(rig.organizer)
+            .all(|r| !r.live())
+    );
+    Ok(())
+}
+
+async fn exit_after_release(
+    world: &mut TestWorld,
+    store: &InMemoryStore,
+    actor: ObjId,
+    command: &str,
+) -> TestResult {
+    let release = submit(world, actor, command)?;
+    persist_legacy(world, store).await?;
+    land_request(world, store, &release).await?;
+    install_due_handoff(world, store).await?;
+    ordinary(world, actor, command)?;
+    persist_legacy(world, store).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn crew_exit_waits_for_admitted_ramp_work_and_works_after_explicit_cancellation() -> TestResult
+{
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = field_operator_fixture(&store, true).await?;
+    let seating = submit(&mut rig.world, rig.organizer, "+sortie/seat 1:1=1")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    land_request(&mut rig.world, &store, &seating).await?;
+    install_due_handoff(&mut rig.world, &store).await?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/launch 1:1=1",
+    )
+    .await?;
+    assert_eq!(
+        flight(&rig.world, rig.unit, 1)?.phase,
+        tacsim::detachment::sortie::Phase::Departing
+    );
+    let denied = text(
+        &mut rig.world,
+        rig.organizer,
+        &format!("+sortie/unseat #{}", rig.invitee.0),
+    );
+    assert!(denied.contains("open flight"), "{denied}");
+    assert_eq!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        Some(cab)
+    );
+    assert!(actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    assert!(
+        rig.world.engine_mut().take_authoritative_submit().is_none(),
+        "no control release races the admitted departure"
+    );
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/cancel-launch 1:1=1",
+    )
+    .await?;
+    exit_after_release(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        &format!("+sortie/unseat #{}", rig.invitee.0),
+    )
+    .await?;
+    assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    assert_ne!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        Some(cab)
     );
     Ok(())
 }

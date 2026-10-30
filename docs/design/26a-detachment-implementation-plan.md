@@ -323,6 +323,35 @@ the next usability cut. Validation: 35 production DT stories, 24 Org tests,
 2 Economy authority tests, 49 rental/refit stories and 27 source-policy checks
 passed, together with strict Clippy, formatting and the unchanged M7 memory gate.
 
+DT.3k completes the normal physical player/hired-NPC mining flow. A captain
+boards their own rented rig with `+tv/<n> board`, personally chooses focus and
+requests its actual K6 control lease. Returned crews leave through `+tv/<n> leave`
+and `+sortie/unseat <npc>`. These use the ordinary Sim interior and billet writers.
+Voluntary control release uses the existing handoff state machine's vacant target
+through an owner-only source action; physical exit waits for that committed
+release. An open ramp flight must settle or be explicitly cancelled first.
+Rental return and charter repossession check current local room contents before
+moving a rig to the shed. There is no new personnel history or movement provider.
+
+The production mining story now uses two actual stock rentals, real lessor loans,
+shipped Ilya Mendes, ordinary player boarding/focus/handoff, and an accepted Mining
+roster. Actual radio delivery starts NPC mining; a restart preserves the running
+job, the real unload completes it, both rigs physically return, both operators
+release control and exit, and coordination closes. Staff-created leader units,
+staff-issued operational grants and staff-authored NPC offers are absent from
+that story. Site/time/geology boot fixtures still supply the deterministic test
+world; the established voyage host owns sailing to and from the site.
+
+Validation on current `origin/main` at `a1ddefaa`: 38 production DT stories,
+55 station/proxy integration tests, 49 rental/refit stories and 27 source-policy
+checks passed. Strict Clippy, formatting and the unchanged six-crate M7 all-target
+memory gate passed as well.
+
+This closes the DT.1–DT.3 physical player/hired-NPC mining milestone. Licensed
+autonomous-mind field hosting, optional DT.4 attachments, DT.5 dedicated chat,
+and H1/H2/H3 retain their separate briefs. No deferred locomotion work is a
+prerequisite for taking these crews mining.
+
 ## DT.1a verification
 
 Validated locally on 2026-10-28:

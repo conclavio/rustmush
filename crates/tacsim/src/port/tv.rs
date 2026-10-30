@@ -74,6 +74,8 @@ pub const TV_VERB: &str = "+tv";
 /// `+tv`'s help (doc 20 §4.3).
 pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain vehicle, its lease from Occator and its hopper, anywhere.
 +tv/<n>  the same for rig n.
++tv/<n> board  in the carrier's bay, take the rig's physical helm billet with current OperateCrew permission; then use +focus and @station/handoff yourself.
++tv/<n> leave  step from a rig in the bay into the carrier and give back your billet. Field units must return first.
 +tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting licence in force or in its grace (+licence). Without go it shows the terms and signs nothing.
 +tv/<n>/permissions [go]  at Occator's counter: inspect or request an explicit operational loan for the actual rental. Operate/crew and command may be delegated within this lease; deploy and recover/load may not. No title or refit right, and no additional charge.
 +tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released.
@@ -2004,6 +2006,12 @@ fn slots_words(slots: &[u8]) -> String {
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    if ctx.switches.has("board")
+        || ctx.switches.has("leave")
+        || matches!(ctx.args.raw().trim(), "board" | "leave")
+    {
+        return super::boarding::player(ctx).map_err(CmdError::msg);
+    }
     if ctx.switches.has("permissions") {
         return super::equipment::command(ctx).map_err(CmdError::msg);
     }
@@ -3807,6 +3815,11 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
     if !in_bay {
         return Err(RIG_OUT.replace("{n}", &slot).replace("{name}", &name));
     }
+    if super::boarding::occupied(w, record.tv) {
+        return Err(
+            "Crew are still inside this rig; have them step into the vehicle bay first.".into(),
+        );
+    }
     // 6. The hopper is empty.
     match hopper_load(ctx, record.tv, Some(&lessor.pool.unit)) {
         Ok((0, _)) => {}
@@ -4113,6 +4126,9 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
         }
     }
     for record in &records {
+        if super::boarding::occupied(w, record.tv) {
+            return Err(format!("rig {} still contains crew", record.mark));
+        }
         // Doc 20 cut SM.3b (decision 13): a rig out on a site or mid-act holds the hull
         // (`BAY_PAGE`) rather than being pulled off the ground under a live record.
         if rig_out_or_busy(ctx, record.tv) {
