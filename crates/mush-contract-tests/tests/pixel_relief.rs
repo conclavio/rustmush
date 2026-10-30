@@ -369,3 +369,91 @@ fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
     assert_ne!(ov_rock.hash(), ov_open.hash(), "overhead: rock != open");
     assert_ne!(ov_rock.hash(), ov_wall.hash(), "overhead: rock != wall");
 }
+
+/// **Doc 30 cut WG.4**: The Bluff `(141, 100)` facing west (`270°`) on the
+/// shipped `proving_ground` rendered through `tacsim::match_::cockpit::map_frame`
+/// and `mush_pixel::cockpit::CockpitPicture` at `640x480` is pinned to the exact
+/// 16-hex-digit FNV-1a frame hash asserted by the Studio preview in
+/// `web/src/lib/map-editor.test.ts`.
+#[test]
+fn proving_ground_bluff_cockpit_frame_hash_is_pinned_to_the_studio_preview() {
+    use std::collections::HashMap;
+
+    use mush_pixel::{
+        Frame,
+        cockpit::CockpitPicture,
+        picture::{Look, Picture},
+    };
+
+    let draft = tacsim::ground::proving_ground_draft().expect("shipped proving_ground draft");
+    let classes =
+        tacsim::ground::decode_classes("proving_ground", draft.cols, draft.rows, &draft.classes)
+            .expect("decode classes");
+    let elev = tacsim::ground::decode_elev("proving_ground", draft.cols, draft.rows, &draft.elev)
+        .expect("decode elev");
+    let cells: Vec<TerrainCell> = classes
+        .into_iter()
+        .zip(elev)
+        .map(|(class, elev_cm)| TerrainCell {
+            class,
+            elev_cm,
+            move_cost: 1,
+        })
+        .collect();
+    let terrain =
+        ArenaTerrain::new(draft.cols, draft.rows, draft.cell_cm, cells).expect("arena terrain");
+    let spots: Vec<KeySpot> = draft
+        .key_spots
+        .iter()
+        .map(|s| KeySpot {
+            name: s.name.clone().into(),
+            x: s.x,
+            y: s.y,
+        })
+        .collect();
+
+    let mut map_val = tacsim::match_::cockpit::map_frame(
+        MatchId(1),
+        "tacsim.arena.proving_ground",
+        &terrain,
+        &spots,
+    );
+    map_val["biome"] = serde_json::json!(draft.biome);
+
+    let bluff_elev = terrain.get(144, 111).expect("The Bluff (144, 111)").elev_cm;
+    assert_eq!(bluff_elev, 500);
+    let cockpit_val = serde_json::json!({
+        "schema": {
+            "id": "arena.cockpit",
+            "version": 8,
+            "retain": "latest"
+        },
+        "seated": true,
+        "match": -1,
+        "unit": 1,
+        "callsign": "PREVIEW",
+        "cell": [144, 111],
+        "x_cm": 144_500,
+        "y_cm": 111_500,
+        "z_cm": bluff_elev,
+        "heading_mdeg": 270_000,
+        "heading_deg": 270,
+        "speed_cms": 0,
+        "speed_kph": 0,
+        "power": "online",
+        "sight_m": 600,
+        "contacts": [],
+        "weapons": [],
+        "sections": []
+    });
+
+    let mut feeds = HashMap::new();
+    feeds.insert("arena.map".to_owned(), map_val);
+    feeds.insert("arena.cockpit".to_owned(), cockpit_val);
+
+    let mut pic = CockpitPicture::new();
+    let mut frame = Frame::new(640, 480);
+    assert!(pic.draw(&mut frame, &feeds, &Look::default()));
+    let hash_hex = format!("{:016x}", frame.hash());
+    assert_eq!(hash_hex, "bdce88aa2e6d6ece");
+}

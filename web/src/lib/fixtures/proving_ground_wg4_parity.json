@@ -1,0 +1,483 @@
+{
+  "bluff_viewshed_144_111_300_rle_b64": "AAEAAW0AAAEAAisAAdQAAAIAAioAAdQAAAIAAikAAdYAAAIAAigAAdYAAAIAAigAAdYAAAIAAigAAdcAAAEAAigAAdcAAAEAAigAAdcAAAIAAicAAdcAAAIAAicAAdcAAAIAAicAAdcAAAIAAicAAdgAAAIAAiYAAdgAAAIAAiYAAdgAAAIAAiYAAdgAAAIAAiYAAdgAAAIAAiUAAdgAAAMAAiUAAdgAAAMAAiUAAdgAAAMAAiUAAcsAAAEAAgEAAAIAAggAAAQAAiUAAcsAAAQAAgcAAAQAAiYAAYUAAAEAAkcAAAQAAgEAAAEAAgEAAAYAAiYAAYUAAAIAAkYAAAsAAigAAYYAAAIAAkcAAAUAAgEAAQIAAikAAYcAAAIAAgEAAUUAAAIAAi8AAYcAAAIAAgIAAUUAAAEAAi8AAYgAAAEAAgMAAQEAAkQAAC8AAYgAAAEAAgUAAQEAAkIAAAEAAi4AAYkAAAEAAgUAAQEAAkIAAC4AAYkAAAEAAgYAAQIAAkAAAC0AAYoAAAIAAgYAAQIAAj8AAAEAAiwAAYsAAAEAAggAAQEAAj4AAAEAAiwAAYsAAAEAAgkAAQEAAj4AACwAAYsAAAEAAgoAAQEAAj0AACwAAYsAAAEAAgwAATwAACwAAYsAAAEAAgwAAQEAAjsAACwAAYsAAAEAAg0AAQEAAjoAACwAAYsAAAEAAg4AAQEAAjkAACwAAYsAAAEAAg8AAQEAAjcAAAEAAiwAAYsAAAIAAg8AAQEAAjYAAAEAAiwAAYsAAAIAAhAAAQEAAjUAAC0AAYoAAAMAAhEAAQEAAjQAAC0AAYoAAAQAAhEAATMAAAEAAi0AAYcAAAQAAgIAAQEAAhIAATIAAC4AAYcAAAQAAhUAAQEAAjAAAAEAAi4AAYcAAAIAAhgAAQEAAi4AAAEAAi8AAYcAAAIAAhkAAQEAAi0AADAAAYYAAAMAAhoAAQEAAisAADEAAYYAAAIAAhsAAQEAAioAADIAAYUAAAMAAhsAAQIAAicAAAEAAjMAAYUAAAIAAhwAAQMAAhAAAAMAAhIAAAEAAjQAAYUAAAIAAhwAAQMAAg0AAAQAAgMAAQEAAg4AAAEAAkAAAQEAA3kAAAIAAh4AAQEAAgwAAAcAAgYAAQEAAgYAAAIAAkMAAQEAA3gAAAIAAh8AAQEAAg0AAAUAAlMAAQEAA3gAAAIAAh8AAQEAAgsAAAYAAlQAAQEAA3cAAAIAAiAAAQEAAgwAAAUAAlQAAQEAA3cAAAIAAiAAAQEAAgoAAAQAAlcAAQEAA3cAAAEAAiAAAQIAAgoAAAUAAlYAAQEAA3YAAAIAAiAAAQIAAgsAAAIAAlgAAQEAA3YAAAIAAiAAAQIAAgwAAAIAAlcAAQEAA3YAAAEAAiEAAQIAAg0AAAEAAlcAAQEAA3UAAAIAAiEAAQEAAg8AAAIAAlUAAQEAA3UAAAIAAiEAAQEAAhEAAAEAAlQAAQEAA10AAAIAAhUAAAIAAiIAAQEAAhIAAAEAAlMAAQEAA1sAAAIAAgIAARUAAAEAAiIAAQIAAhIAAAIAAlIAAQEAA1oAAAEAAgQAARYAAAEAAiEAAQIAAhMAAAIAAlEAAQIAA1gAAAEAAgUAARYAAAEAAiAAAQEAAhYAAAIAAlAAAQIAA1UAAAMAAgYAARUAAAIAAiAAAQEAAhYAAAMAAk8AAQIAA1MAAAMAAggAARUAAAIAAiAAAQEAAhcAAAIAAk8AAQIAA0UAAAEAAwIAAgkAAAIAAgsAARQAAAQAAh4AAQIAAhcAAAMAAk4AAQIAA0MAAAQAAwQAAgMAAAMAAg0AAREAAAEAAgEAAAUAAh4AAQEAAhkAAAMAAk0AAQIAA0EAAAQAAwQAAQcAAg4AARAAAAQAAgEAAQEAAiAAAQEAAhkAAAMAAk0AAQIAAz8AAAQAAwoAAQEAAhAAAQwAAAYAAgYAAQEAAhwAAQIAAhkAAAQAAkwAAQIAAz0AAAQAAx0AAQkAAAcAAiUAAQEAAhoAAAQAAkwAAQIAAzsAAAQAAx8AAQYAAAYAAikAAQEAAhkAAAQAAk0AAQIAAzkAAAMAAyIAAQYAAi8AAQEAAhkAAAQAAk0AAQIAAzcAAAMAAyQAAQcAAi4AAQIAAhcAAAQAAk4AARcAAyAAAAMAAyYAAQcAAi4AAQIAAhYAAAQAAk8AASUAAxAAAAMAA10AAQQAAhIAAAUAAlAAATYAA2AAAQUAAg0AAAcAAn8AAQYAA2QAAQYAAgUAAAkAAvAAAQIAAgUAAAUAAvYAAQUAAPsAAQUAAlgAAQUAAp4AAQUAAlcAAQYAAp4AAQUAAlYAAQYAAp8AAQUAAlUAAQYAAqAAAQUAAkQAARoAAp0AAQUAAkMAARoAAp4AAQUAAkIAAREAAgcAAAIAAp8AAQUAAkIAARAAAgcAAAIAAqAAAQUAAkEAAREAAgcAAAIAAqAAAQUAAkEAARAAAgkAAAMAAqEAAQIAAkIAAQIAAhUAAAMAAuYAAQIAAhUAAAIAAqIAAQMAAkAAAQUAAhMAAAMAAqAAAQUAAkEAAQMAAhYAAKEAAQUAAkIAAQIAAhUAAAIAAqAAAQUAAkMAAQIAAhMAAAMAAqAAAQUAAkIAAQIAAhMAAAQAAqAAAQUAAkIAAQMAAhMAAAMAAqAAAQUAAkIAAQQAAhIAAAMAAqAAAQUAAkIAAQMAAhMAAAMAAqAAAQUAAkIAAQMAAhMAAAMAAgEAAQEAAp4AAQUAAkIAAQMAAgUAAAcAAQcAAAUAAp4AAQUAAkIAAQMAAgUAAAcAAQcAAAUAAp4AAQUAAkIAAQMAAgUAAAcAAQcAAAEAAgEAAAMAAp4AAQUAAkIAAQMAAgUAAAcAAQcAAAEAAgEAAAMAAp4AAQUAAkIAAQMAAgUAAAcAAQkAAAMAAp4AAQUAAkIAAQMAAgUAAAcAAQkAAAMAAp4AAQUAAkIAAQMAAgUAAAcAAQkAAAMAAp4AAQUAAkIAAQIAAgYAAAcAAQkAAAMAAp4AAQUAAkIAAQIAAgYAAAcAAQkAAAMAAkMAAQMAAlgAAQUAAEIAAQEAAgcAAAcAAQkAAAMAAjkAARAAAlMAAQIAAgUAAAYAAjwAAQEAAgcAAAcAAQkAAAMAAjcAAQMAAhEAABEAAj4AAQQAAgcAAAYAAgIAAQIAAjYAAQEAAgcAAAcAAQkAAAMAAjYAAQMAAh0AAAgAAjoAAQQAAg0AAAgAAjMAAQIAAgcAAAcAAQkAAAMAAjUAAQMAAigAADcAAQMAAhQAAAMAAjMAAQIAAgcAAAcAAQkAAAMAAjIAAQYAAigAADYAAQMAAhUAAAQAAjEAAQMAAgcAAAYAAgoAAAMAAjEAAQMAAgEAAAIAAikAADYAAQIAAhcAAAMAAjEAAQMAAhcAAAMAAjEAAQUAAioAADYAAQIAAhcAAAMAAjEAAQMAAhcAAAMAAjAAAQQAAiwAADYAAQIAAhcAAAMAAjEAAQQAAhYAAAMAAjEAAQIAAi0AADYAAQIAAhYAAAQAAjEAAQMAAhcAAAMAAjEAAQIAAi0AADcAAQIAAhUAAAQAAjEAAQIAAhcAAAMAAjIAAQIAAi0AADcAAQIAAhQAAAQAAjMAARkAAAIAAjIAAQEAAi4AADgAARUAAAQAAjIAAQMAAhgAADMAAQEAAi4AADcAAQIAAhQAAAMAAjIAAQMAAhgAAAEAAjIAAQIAAi4AADcAAQIAAhMAAAQAAjIAAQMAAhcAAAMAAjEAAQIAAi4AADcAAQIAAhMAAAQAAjEAAQUAAhcAAAMAAjAAAQIAAi4AADcAAQMAAhIAAAQAAjMAAQIAAhgAAAEAAjIAAQIAAi4AADcAAQMAAhIAAAQAAjIAAQMAAhcAAAIAAjIAAQIAAi4AADgAAQIAAhEAAAQAAjMAAQIAAgEAAAEAAgEAAAYAAg4AAAQAAjEAAQIAAi4AADgAAQIAAhEAAAQAAjIAAQQAAgEAABcAAjIAAQIAAi8AADgAAQIAAhEAAAQAAjEAAQUAAgEAAAQAAgIAARAAAjMAAQIAAi8AADgAAQIAAhEAAAQAAjMAAQIAAgEAAAQAAkUAAQIAAjAAADgAAQIAAhEAAAQAAjMAAQYAAkUAAQMAAjAAADcAAQMAAhEAAAQAAjIAAQYAAkUAAQMAAjEAADcAAQMAAhEAAAUAAjEAAQYAAkQAAQQAAjEAADcAAQIAAhIAAAMAAjQAAQQAAkQAAQUAAjEAADYAAQMAAhIAAAMAAjQAAQMAAkUAATYAADYAAQIAAhQAAAIAAjMAAQQAAkQAATcAADUAAQIAAhQAAAMAAjMAAQMAAkUAATcAADQAAQMAAhQAAAMAAjIAAQQAAkUAATcAADQAAQIAAhUAAAMAAnsAATcAADMAAQMAAhUAAAIAAgIAAQEAAnkAATcAADMAAQIAAhUAAAcAAngAATcAADIAAQIAAhgAAAEAAgEAAAQAAncAATcAADEAAQMAAhsAAAMAAncAATcAADAAAQMAAhwAAAUAAnUAATcAABMAARwAAwMAAh4AAAQAAnUAATcAABAAAQMAAxMAAAkAAwIAAiAAAAQAAnQAATcAAAwAAQQAA0IAAAQAAnMAATcAAAkAAQQAA0YAAAQAAnIAATcAAAYAAQMAA0sAAAQAAnEAATcAAAMAAQMAA08AAAUAAm8AATcAAAMAA1QAAAYAAmwAAZAAAAQAAmwAAZIAAAIAAgIAAQIAAmkAAZIAAAIAAgEAAQUAAmUAAQMAApAAAAIAAgIAAAgAAl8AAQQAApkAAAYAAgEAAQEAAlkAAQQAAp0AAAkAAlUAAQIAAqQAAAUAAlUAAQEAAqgAAAIAAgEAAQEAAhUAAQEAAj0AAQIAAqcAAAIAAgEAAQEAAhQAAQEAAgEAAQEAAjkAAQUAAqgAAAQAAhIAAQMAAjoAAQUAAqgAAAEAAgEAAAIAAhIAAQMAAjkAAQcAAqkAAAIAAhEAAQYAAjgAAQUAAgEAAAEAAqgAAAIAAhEAAQYAAjcAAQYAAqoAAAIAAhEAAQYAAjgAAQYAAqoAAAEAAhEAAQYAAjgAAQYAAqkAAAIAAhEAAQIAAgEAAAMAAjkAAQYAAqkAAAEAAhAAAQIAAgIAAAQAAjkAAQcAAhAAAAMAApQAAAEAAhAAAQEAAgQAAAMAAjoAAQsAAgkAAAMAAgMAAZMAAAEAAhAAAQIAAgQAAAIAAjsAAQwAAgIAAAEAAgEAAAQAAgYAAZIAAAEAAhAAAQEAAgUAAAIAAjwAAQEAAgEAAQcAAgMAAQIAAgEAAQEAAgsAAZAAAAEAAhAAAQEAAgUAAAMAAlcAAY8AAAEAAhAAAQEAAgUAAAMAAlgAAY4AAAIAAg8AAQEAAgYAAAIAAlkAAY4AAAIAAg4AAQEAAgYAAAMAAlkAAY4AAAMAAgsAAQEAAgcAAAMAAlsAAY4AAAMAAgkAAQEAAgcAAAMAAlwAAY0AAAEAAgEAAAEAAgkAAQEAAggAAAIAAl0AAY0AAAIAAgkAAQEAAggAAAIAAl4AAYsAAAIAAgoAAQEAAgkAAAEAAl8AAQEAAogAAAMAAgoAAQEAAgkAAAIAAl0AAQIAAgEAAYgAAAEAAgoAAQEAAgsAAAEAAl0AAQEAAgEAAQIAAocAAAwAAQsAAAEAAlwAAQQAAogAAAsAAQEAAgsAAAEAAlsAAQQAAokAAAsAAQEAAgwAAFsAAQMAAooAAAsAAQEAAgwAAAEAAlgAAQMAAowAAAsAAQEAAgwAAAEAAlcAAQMAAo0AAAsAAQEAAg0AAFYAAQMAAo4AAAsAAQ4AAAIAAlMAAQMAAo8AAAsAAQEAAg0AAAQAAlAAAQMAApAAAAsAAQEAAg0AAAYAAk0AAQMAApEAAAsAAQEAAg0AAAcAAksAAQMAApIAAAsAARIAAAQAAkgAAQQAApMAAAsAARMAAAMAAkYAAQMAApYAAAsAARUAAAIAAkQAAQQAApYAAAoAAQEAAhYAAAEAAkMAAQQAApcAAAoAAQEAAhYAAAIAAkAAAQQAApkAAAoAAQEAAhcAAAEAAj8AAQQAApkAAAsAAQEAAhcAAAIAAgIAAQEAAjkAAQQAApsAAAsAARkAAAIAAjoAAQMAAp0AAAsAARoAAAIAAgEAAQEAAjYAAQMAAp0AAAwAARsAAAIAAgEAAQEAAjMAAQMAAp8AAAwAARwAAAIAAgEAAQIAAi8AAQQAAqAAAAwAAR0AAAIAAgEAAQIAAi0AAQIAAl4AAAEAAkQAAAwAAR4AAAIAAgEAAQEAAicAAQEAAgMAAQMAAl4AAAIAAwEAAkIAAAwAAQEAAh8AAAIAAgEAAQEAAiMAAQIAAgMAAQUAAl0AAAMAAwEAAQEAAkEAAAwAAQEAAiAAAAIAAgEAAQEAAiAAAQMAAgIAAQMAAmAAAAQAAwEAAQEAAkEAAAwAAQEAAiEAAAYAAgEAAQEAAhsAAQcAAmAAAAQAAwMAAQEAAj8AAA0AAQEAAiMAAAgAAhYAAQMAAgEAAQMAAmIAAAQAAwQAAQEAAj8AAA0AASUAAAgAAhIAAQgAAmMAAAQAAwYAAQEAAj4AAA0AASYAAAwAAgUAAQMAAgEAAQYAAgEAAAIAAmUAAAQAAwcAAQEAAj0AAA4AASkAAAIAAgIAABEAAgIAAAEAAmcAAAQAAwgAAQEAAj0AAA4AAS0AAAEAAgUAAAQAAgYAAAEAAmkAAAQAAwoAAQEAAjwAAA4AAaYAAAQAAwsAAQEAAjwAAA4AAaUAAAIAAgIAAwwAAQEAAjsAAA4AAQEAAqYAAAIAAg0AAQEAAjsAAA4AAQEAAqYAAAMAAgwAAQEAAjsAAA4AAQEAAqcAAAIAAgsAAQIAAjoAAA8AAQEAAqgAAAIAAgoAAQEAAjsAAA8AAaoAAAIAAgkAAQEAAjsAAA8AAasAAAIAAgcAAQIAAjoAABAAAawAAAIAAgYAAQEAAjsAABAAAa0AAAIAAgQAAQEAAjwAABAAAa4AAAUAAj0AABAAAa8AAAMAAj0AABAAAQEAAu8AABAAAQEAAu8AABAAAQEAAu4AABEAAQEAAu4AABIAAe4AABEAAQEAAu0AABIAAQEAAu0AABIAAQEAAu0AABIAAQEAAu0AABIAAQEAAuwAABMAAe0AABMAAe0AABMAAewAAAQAAQEAAg8AAewAAAUAAQEAAg4AAewAAAIAAgQAAQIAAgwAAesAAAUAAgMAAQIAAgsAAesAAAYAAgIAAQIAAgsAAe0AAAYAAgEAAQEAAgoAAQEAAu8AAAUAAgEAAQEAAgkAAQEAAvAAAAQAAgsAAQEAAvEAAAQAAgoAAQEAAvIAAAMAAgoAAQEAAvMAAAIAAgoAAfUAAAEAAgoAAYUAAA==",
+  "routed_waypoints": {
+    "edges": [
+      [
+        "muster_red",
+        "wp_001"
+      ],
+      [
+        "wp_001",
+        "wp_002"
+      ],
+      [
+        "wp_002",
+        "spot_0"
+      ],
+      [
+        "spot_0",
+        "wp_008"
+      ],
+      [
+        "wp_008",
+        "wp_009"
+      ],
+      [
+        "wp_009",
+        "wp_010"
+      ],
+      [
+        "wp_010",
+        "spot_1"
+      ],
+      [
+        "wp_002",
+        "wp_015"
+      ],
+      [
+        "wp_015",
+        "wp_016"
+      ],
+      [
+        "wp_016",
+        "wp_017"
+      ],
+      [
+        "wp_017",
+        "wp_018"
+      ],
+      [
+        "wp_018",
+        "wp_019"
+      ],
+      [
+        "wp_019",
+        "spot_2"
+      ],
+      [
+        "wp_010",
+        "wp_028"
+      ],
+      [
+        "wp_028",
+        "wp_029"
+      ],
+      [
+        "wp_029",
+        "wp_030"
+      ],
+      [
+        "wp_030",
+        "wp_031"
+      ],
+      [
+        "wp_031",
+        "spot_3"
+      ],
+      [
+        "wp_009",
+        "wp_039"
+      ],
+      [
+        "wp_039",
+        "wp_040"
+      ],
+      [
+        "wp_040",
+        "spot_4"
+      ],
+      [
+        "muster_blue",
+        "wp_043"
+      ],
+      [
+        "wp_043",
+        "wp_044"
+      ],
+      [
+        "wp_044",
+        "wp_045"
+      ],
+      [
+        "wp_045",
+        "wp_046"
+      ],
+      [
+        "wp_046",
+        "wp_047"
+      ],
+      [
+        "wp_047",
+        "spot_1"
+      ],
+      [
+        "spot_1",
+        "wp_049"
+      ],
+      [
+        "wp_049",
+        "wp_050"
+      ],
+      [
+        "wp_050",
+        "wp_051"
+      ],
+      [
+        "wp_051",
+        "spot_0"
+      ],
+      [
+        "wp_044",
+        "wp_063"
+      ],
+      [
+        "wp_063",
+        "wp_064"
+      ],
+      [
+        "wp_064",
+        "wp_065"
+      ],
+      [
+        "wp_065",
+        "wp_066"
+      ],
+      [
+        "wp_066",
+        "wp_067"
+      ],
+      [
+        "wp_067",
+        "spot_2"
+      ],
+      [
+        "muster_blue",
+        "wp_070"
+      ],
+      [
+        "wp_070",
+        "wp_071"
+      ],
+      [
+        "wp_071",
+        "spot_3"
+      ],
+      [
+        "wp_046",
+        "wp_078"
+      ],
+      [
+        "wp_078",
+        "spot_4"
+      ],
+      [
+        "spot_1",
+        "wp_086"
+      ],
+      [
+        "wp_086",
+        "wp_087"
+      ],
+      [
+        "wp_087",
+        "wp_088"
+      ],
+      [
+        "wp_088",
+        "wp_089"
+      ],
+      [
+        "wp_089",
+        "spot_2"
+      ],
+      [
+        "spot_2",
+        "wp_092"
+      ],
+      [
+        "wp_092",
+        "wp_093"
+      ],
+      [
+        "wp_093",
+        "wp_094"
+      ],
+      [
+        "wp_094",
+        "wp_095"
+      ],
+      [
+        "wp_095",
+        "wp_096"
+      ],
+      [
+        "wp_096",
+        "spot_3"
+      ],
+      [
+        "wp_096",
+        "wp_100"
+      ],
+      [
+        "wp_100",
+        "wp_101"
+      ],
+      [
+        "wp_101",
+        "spot_4"
+      ]
+    ],
+    "nodes": [
+      {
+        "id": "muster_red",
+        "x": 6,
+        "y": 97
+      },
+      {
+        "id": "muster_blue",
+        "x": 249,
+        "y": 97
+      },
+      {
+        "id": "spot_0",
+        "x": 64,
+        "y": 97
+      },
+      {
+        "id": "spot_1",
+        "x": 129,
+        "y": 97
+      },
+      {
+        "id": "spot_2",
+        "x": 106,
+        "y": 194
+      },
+      {
+        "id": "spot_3",
+        "x": 208,
+        "y": 148
+      },
+      {
+        "id": "spot_4",
+        "x": 144,
+        "y": 111
+      },
+      {
+        "id": "wp_001",
+        "x": 26,
+        "y": 97
+      },
+      {
+        "id": "wp_002",
+        "x": 46,
+        "y": 97
+      },
+      {
+        "id": "wp_008",
+        "x": 86,
+        "y": 97
+      },
+      {
+        "id": "wp_009",
+        "x": 106,
+        "y": 97
+      },
+      {
+        "id": "wp_010",
+        "x": 126,
+        "y": 97
+      },
+      {
+        "id": "wp_015",
+        "x": 66,
+        "y": 102
+      },
+      {
+        "id": "wp_016",
+        "x": 85,
+        "y": 122
+      },
+      {
+        "id": "wp_017",
+        "x": 99,
+        "y": 142
+      },
+      {
+        "id": "wp_018",
+        "x": 106,
+        "y": 162
+      },
+      {
+        "id": "wp_019",
+        "x": 106,
+        "y": 182
+      },
+      {
+        "id": "wp_028",
+        "x": 146,
+        "y": 98
+      },
+      {
+        "id": "wp_029",
+        "x": 166,
+        "y": 98
+      },
+      {
+        "id": "wp_030",
+        "x": 186,
+        "y": 118
+      },
+      {
+        "id": "wp_031",
+        "x": 206,
+        "y": 138
+      },
+      {
+        "id": "wp_039",
+        "x": 126,
+        "y": 106
+      },
+      {
+        "id": "wp_040",
+        "x": 141,
+        "y": 115
+      },
+      {
+        "id": "wp_043",
+        "x": 229,
+        "y": 97
+      },
+      {
+        "id": "wp_044",
+        "x": 209,
+        "y": 97
+      },
+      {
+        "id": "wp_045",
+        "x": 189,
+        "y": 97
+      },
+      {
+        "id": "wp_046",
+        "x": 169,
+        "y": 97
+      },
+      {
+        "id": "wp_047",
+        "x": 149,
+        "y": 97
+      },
+      {
+        "id": "wp_049",
+        "x": 109,
+        "y": 97
+      },
+      {
+        "id": "wp_050",
+        "x": 89,
+        "y": 97
+      },
+      {
+        "id": "wp_051",
+        "x": 69,
+        "y": 97
+      },
+      {
+        "id": "wp_063",
+        "x": 189,
+        "y": 103
+      },
+      {
+        "id": "wp_064",
+        "x": 169,
+        "y": 123
+      },
+      {
+        "id": "wp_065",
+        "x": 149,
+        "y": 143
+      },
+      {
+        "id": "wp_066",
+        "x": 129,
+        "y": 163
+      },
+      {
+        "id": "wp_067",
+        "x": 109,
+        "y": 183
+      },
+      {
+        "id": "wp_070",
+        "x": 230,
+        "y": 117
+      },
+      {
+        "id": "wp_071",
+        "x": 210,
+        "y": 137
+      },
+      {
+        "id": "wp_078",
+        "x": 149,
+        "y": 118
+      },
+      {
+        "id": "wp_086",
+        "x": 128,
+        "y": 117
+      },
+      {
+        "id": "wp_087",
+        "x": 128,
+        "y": 137
+      },
+      {
+        "id": "wp_088",
+        "x": 128,
+        "y": 157
+      },
+      {
+        "id": "wp_089",
+        "x": 115,
+        "y": 177
+      },
+      {
+        "id": "wp_092",
+        "x": 118,
+        "y": 182
+      },
+      {
+        "id": "wp_093",
+        "x": 138,
+        "y": 162
+      },
+      {
+        "id": "wp_094",
+        "x": 158,
+        "y": 158
+      },
+      {
+        "id": "wp_095",
+        "x": 178,
+        "y": 158
+      },
+      {
+        "id": "wp_096",
+        "x": 198,
+        "y": 141
+      },
+      {
+        "id": "wp_100",
+        "x": 176,
+        "y": 139
+      },
+      {
+        "id": "wp_101",
+        "x": 156,
+        "y": 123
+      }
+    ]
+  }
+}

@@ -2296,6 +2296,263 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
     Ok(draft)
 }
 
+/// **Viewshed from `(ox, oy)`** (doc 30 §8 & §11 WG.4): classify every cell of
+/// `draft` from the sim's 1.5 m eye (`mush_atlas::trace::EYE_HEIGHT_CM`) against
+/// a target of height `size_cm` (e.g. `300` cm for a stock tank) using the
+/// terrain's real [`crate::arena::horizon::Horizon`] index:
+/// - `0` = dead ground (even the turret top at `size_cm` is blocked)
+/// - `1` = seen (clear line of sight to both hull at `EYE_HEIGHT_CM` and turret)
+/// - `2` = hull-down (turret at `size_cm` is seen or partial, hull at `EYE_HEIGHT_CM` is blocked)
+/// - `3` = partial (woods cover the line partially, 25 % / 60 %)
+///
+/// # Errors
+///
+/// [`GroundError`] if the draft fails validation or `(ox, oy)` is off the window.
+pub fn viewshed(
+    draft: &GroundDraft,
+    ox: u16,
+    oy: u16,
+    size_cm: i32,
+) -> Result<Vec<u8>, GroundError> {
+    if ox >= draft.cols || oy >= draft.rows {
+        return Err(GroundError::Invalid {
+            id: draft.id.clone(),
+            detail: format!(
+                "viewshed origin ({ox}, {oy}) is off {}×{} window",
+                draft.cols, draft.rows
+            ),
+        });
+    }
+    let (classes, elev) = draft.validate()?;
+    let terrain = build_priced_terrain(draft, &classes, &elev)?;
+    let eye_cm = mush_atlas::trace::EYE_HEIGHT_CM;
+    let from = mush_atlas::trace::Eye {
+        cell: (ox, oy),
+        height_cm: eye_cm,
+    };
+    let total = usize::from(draft.cols) * usize::from(draft.rows);
+    let mut out = Vec::with_capacity(total);
+    for y in 0..draft.rows {
+        for x in 0..draft.cols {
+            if x == ox && y == oy {
+                out.push(1);
+                continue;
+            }
+            let turret = terrain
+                .sight(
+                    from,
+                    mush_atlas::trace::Eye {
+                        cell: (x, y),
+                        height_cm: size_cm,
+                    },
+                )
+                .sight;
+            if matches!(turret, mush_atlas::trace::Sight::BlockedBy(_)) {
+                out.push(0);
+                continue;
+            }
+            let hull = terrain
+                .sight(
+                    from,
+                    mush_atlas::trace::Eye {
+                        cell: (x, y),
+                        height_cm: eye_cm,
+                    },
+                )
+                .sight;
+            if matches!(hull, mush_atlas::trace::Sight::BlockedBy(_)) {
+                out.push(2);
+            } else if matches!(turret, mush_atlas::trace::Sight::Partial(_))
+                || matches!(hull, mush_atlas::trace::Sight::Partial(_))
+            {
+                out.push(3);
+            } else {
+                out.push(1);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// **Serve an arena draft from a running world** (doc 30 §8 & §11 WG.4):
+/// reconstructs the [`GroundDraft`] from the world's [`crate::store::TacsimStore`]
+/// and [`mush_atlas::AtlasState`] when the arena is loaded there (preserving the
+/// checked-in `proving_ground.draft.json` metadata when the cells and furniture
+/// match it), or serves the checked-in `proving_ground.draft.json` directly when
+/// the world has not composed its content store yet.
+///
+/// # Errors
+///
+/// [`GroundError`] if the arena `id` is unknown or its tiles are missing.
+pub fn draft_from_world(w: &mush_core::World, id: &str) -> Result<GroundDraft, GroundError> {
+    let short_id = id.strip_prefix("tacsim.arena.").unwrap_or(id);
+    let entry_str = format!("tacsim.arena.{short_id}");
+    let shipped_pg =
+        || GroundDraft::from_json(include_str!("../content/ground/proving_ground.draft.json"));
+    let Some(arena_def) = w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|slot| {
+            CanonicalId::new(&entry_str)
+                .ok()
+                .and_then(|entry| slot.definitions().arenas.get(&entry).cloned())
+        })
+    else {
+        if short_id == "proving_ground" {
+            return shipped_pg();
+        }
+        return Err(GroundError::Invalid {
+            id: short_id.to_owned(),
+            detail: format!("arena `{entry_str}` is not loaded on this world"),
+        });
+    };
+    let Some(records) = w
+        .module_state::<mush_atlas::AtlasState>()
+        .map(|state| &state.records)
+    else {
+        if short_id == "proving_ground" {
+            return shipped_pg();
+        }
+        return Err(GroundError::Invalid {
+            id: short_id.to_owned(),
+            detail: "atlas state is not composed on this world".to_owned(),
+        });
+    };
+    draft_from_records(short_id, &arena_def, records)
+}
+
+/// Reassemble a [`GroundDraft`] from an [`ArenaDef`] and loaded atlas [`mush_atlas::record::Records`].
+///
+/// # Errors
+///
+/// - [`GroundError::ArenaBuild`] if the region or any quadrant tile is missing or uncovered.
+/// - [`GroundError::Pack`] if tile bounding-box coordinates cannot be converted to grid offsets.
+pub fn draft_from_records(
+    short_id: &str,
+    arena_def: &ArenaDef,
+    records: &mush_atlas::record::Records,
+) -> Result<GroundDraft, GroundError> {
+    let short_id = short_id.strip_prefix("tacsim.arena.").unwrap_or(short_id);
+    let entry_str = format!("tacsim.arena.{short_id}");
+    let shipped_pg =
+        || GroundDraft::from_json(include_str!("../content/ground/proving_ground.draft.json"));
+    let region_key = arena_def.region_key();
+    let region_rec = records.regions.get(&region_key).ok_or_else(|| {
+        GroundError::ArenaBuild(ArenaBuildError::NoRegion {
+            arena: entry_str.clone(),
+            region: region_key.to_string(),
+        })
+    })?;
+    let total = usize::from(arena_def.cols) * usize::from(arena_def.rows);
+    let mut classes = vec![TerrainClass::Grass; total];
+    let mut elev = vec![0_i16; total];
+    let mut covered = vec![false; total];
+    let cell_cm = i64::from(arena_def.cell_cm).max(1);
+    let origin_cm = (
+        arena_def.origin_m[0].saturating_mul(100),
+        arena_def.origin_m[1].saturating_mul(100),
+    );
+    let keys = arena_def
+        .tile_keys(&entry_str)
+        .map_err(|e| GroundError::ArenaCheck {
+            id: short_id.to_owned(),
+            detail: e.to_string(),
+        })?;
+    for key in keys {
+        let tile = records.tiles.get(&key).ok_or_else(|| {
+            GroundError::ArenaBuild(ArenaBuildError::NoTile {
+                arena: entry_str.clone(),
+                tile: key.to_string(),
+            })
+        })?;
+        let tx_cm = mush_atlas::geom::cm(tile.bbox.0.0)
+            .map_err(|e| GroundError::Pack(format!("{key} bbox east: {e}")))?;
+        let ty_cm = mush_atlas::geom::cm(tile.bbox.0.1)
+            .map_err(|e| GroundError::Pack(format!("{key} bbox north: {e}")))?;
+        let ox = u16::try_from((tx_cm - origin_cm.0) / cell_cm)
+            .map_err(|_| GroundError::Pack(format!("{key} origin east offset out of range")))?;
+        let oy = u16::try_from((ty_cm - origin_cm.1) / cell_cm)
+            .map_err(|_| GroundError::Pack(format!("{key} origin north offset out of range")))?;
+        for y in 0..tile.cells.height() {
+            for x in 0..tile.cells.width() {
+                let Some(cell) = tile.cells.get(x, y) else {
+                    continue;
+                };
+                let wx = ox.saturating_add(x);
+                let wy = oy.saturating_add(y);
+                if wx >= arena_def.cols || wy >= arena_def.rows {
+                    continue;
+                }
+                let dst_idx = usize::from(wy) * usize::from(arena_def.cols) + usize::from(wx);
+                if let Some(slot) = classes.get_mut(dst_idx) {
+                    *slot = cell.class;
+                }
+                if let Some(slot) = elev.get_mut(dst_idx) {
+                    *slot = cell.elev_cm;
+                }
+                if let Some(slot) = covered.get_mut(dst_idx) {
+                    *slot = true;
+                }
+            }
+        }
+    }
+    let missing = covered.iter().filter(|&&c| !c).count();
+    if missing > 0 {
+        return Err(GroundError::ArenaBuild(ArenaBuildError::NotCovered {
+            arena: entry_str,
+            missing,
+            total,
+        }));
+    }
+    let classes_b64 = encode_classes(arena_def.cols, arena_def.rows, &classes);
+    let elev_b64 = encode_elev(&elev);
+    if short_id == "proving_ground"
+        && let Ok(shipped) = shipped_pg()
+        && shipped.classes == classes_b64
+        && shipped.elev == elev_b64
+        && shipped.key_spots == arena_def.key_spots
+        && shipped.waypoints == arena_def.waypoints
+        && shipped.entry_zones == arena_def.entry_zones
+        && shipped.biome == region_rec.biome_str()
+    {
+        return Ok(shipped);
+    }
+    let body = match &region_rec.kind {
+        mush_atlas::record::RegionKind::Surface { body }
+        | mush_atlas::record::RegionKind::Orbital { body } => body.clone(),
+        _ => "luna".to_owned(),
+    };
+    Ok(GroundDraft {
+        schema: DRAFT_SCHEMA.to_owned(),
+        id: short_id.to_owned(),
+        label: arena_def.label.clone(),
+        biome: region_rec.biome_str().to_owned(),
+        body,
+        origin_m: arena_def.origin_m,
+        cell_cm: arena_def.cell_cm,
+        cols: arena_def.cols,
+        rows: arena_def.rows,
+        classes: classes_b64,
+        elev: elev_b64,
+        entry_zones: arena_def.entry_zones.clone(),
+        key_spots: arena_def.key_spots.clone(),
+        waypoints: arena_def.waypoints.clone(),
+        modes: arena_def.modes.clone(),
+        tanks: arena_def.tanks.clone(),
+        atlas_version: u32::try_from(region_rec.revision).unwrap_or(1),
+        arena_version: 1,
+        provenance: GroundProvenance {
+            source: GroundSource::Pack,
+            version: format!("v{}", region_rec.revision),
+            seed: Some(region_rec.background.seed),
+            inputs: vec![
+                format!("{}:{}", region_key.pack, region_key.entry),
+                format!("{}:{entry_str}", arena_def.pack),
+            ],
+        },
+        note: arena_def.note.clone(),
+    })
+}
+
 /// Build the canonical [`GroundDraft`] for the shipped `proving_ground` arena
 /// (version 3 atlas relief, version 5 arena entry).
 ///
@@ -2802,6 +3059,196 @@ mod tests {
             after_classes.get(50 * w + 55).copied(),
             Some(TerrainClass::Grass)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn wg4_open_draft_move_spot_build_load_and_range_plus_viewshed() -> Result<(), Box<dyn Error>> {
+        // 1. Open the shipped proving ground draft through `draft_from_world`.
+        let world = mush_core::World::default();
+        let mut draft = draft_from_world(&world, "proving_ground")?;
+        check_eq!(draft.id, "proving_ground");
+        check_eq!(
+            draft.key_spots.first().map(|s| (s.name.as_str(), s.x, s.y)),
+            Some(("The Ford", 64, 97))
+        );
+
+        // 2. Move "The Ford" to (80, 97) (on the east road), save to JSON, re-open, and `build`.
+        if let Some(ford) = draft.key_spots.first_mut() {
+            ford.x = 80;
+            ford.y = 97;
+        }
+        let saved_json = draft.to_json_pretty()?;
+        let reopened = GroundDraft::from_json(&saved_json)?;
+        let built = build(&reopened)?;
+
+        // 3. Load the rebuilt atlas and arena packs into `Records` and `ArenaDefinition`
+        //    and run `RANGE` (`resolve_spot` + `spot_range_cm` + `spot_range_line`) from (30, 97).
+        let atlas_pack = mush_content::parse_pack(&built.atlas_json)?;
+        let arena_pack = mush_content::parse_pack(&built.arena_json)?;
+        let mut records = mush_atlas::record::Records::default();
+        let pack_id = CanonicalId::new("tacsim.proving_ground")?;
+        let region_id = CanonicalId::new("region.proving_ground")?;
+        let region_raw = atlas_pack
+            .entries()
+            .get(&region_id)
+            .ok_or("missing region")?;
+        let region_def: RegionDef =
+            serde_json::from_value(serde_json::Value::Object(region_raw.def().clone()))?;
+        let region_key = mush_atlas::RecordKey::new(pack_id.clone(), region_id);
+        let region_rec = mush_atlas::RegionRec {
+            key: region_key.clone(),
+            name: region_def.name.clone(),
+            kind: region_def.region_kind()?,
+            frame: None,
+            parent: None,
+            extent: region_def.extent,
+            datum_cm: 0,
+            background: region_def.background,
+            ground: Vec::new(),
+            ground_resolution_cm: region_def.ground_resolution_cm,
+            theme: None,
+            biome: region_def.biome,
+            revision: 1,
+        };
+        records.regions.insert(region_key.clone(), region_rec);
+        for (entry_id, raw) in atlas_pack.entries() {
+            if raw.kind().as_str() == "heightfield" {
+                let hf: HeightfieldDef =
+                    serde_json::from_value(serde_json::Value::Object(raw.def().clone()))?;
+                let samples = hf.samples()?;
+                let authored = hf.class_grid()?;
+                let mut cells = mush_atlas::Cells::filled(
+                    hf.cols,
+                    hf.rows,
+                    mush_atlas::Cell::default(),
+                    mush_atlas::MAX_TILE_CELLS,
+                )?;
+                for y in 0..hf.rows {
+                    for x in 0..hf.cols {
+                        let at = usize::from(y) * usize::from(hf.cols) + usize::from(x);
+                        let elev_cm = samples.get(at).copied().unwrap_or(0);
+                        let class = authored
+                            .as_ref()
+                            .and_then(|g| g.get(at).copied().flatten())
+                            .unwrap_or(TerrainClass::Ground);
+                        cells.set(
+                            x,
+                            y,
+                            mush_atlas::Cell {
+                                class,
+                                elev_cm,
+                                cover: 0,
+                                room: 0,
+                            },
+                        );
+                    }
+                }
+                let tile_id = CanonicalId::new(format!("{entry_id}.tile.0"))?;
+                let tile_key = mush_atlas::RecordKey::new(pack_id.clone(), tile_id);
+                let step_m = f64::from(hf.resolution_cm) / 100.0;
+                let bbox = mush_atlas::Rect2(
+                    mush_atlas::Point2(hf.origin.0, hf.origin.1),
+                    mush_atlas::Point2(
+                        hf.origin.0 + f64::from(hf.cols) * step_m,
+                        hf.origin.1 + f64::from(hf.rows) * step_m,
+                    ),
+                );
+                records.tiles.insert(
+                    tile_key.clone(),
+                    mush_atlas::TileRec {
+                        key: tile_key,
+                        region: region_key.clone(),
+                        surface: mush_atlas::SurfaceRef::Ground,
+                        owner: mush_atlas::record::TileOwner::Heightfield,
+                        bbox,
+                        resolution_cm: hf.resolution_cm,
+                        cells,
+                        rooms: Vec::new(),
+                        revision: 1,
+                    },
+                );
+            }
+        }
+        let arena_id = CanonicalId::new("tacsim.arena.proving_ground")?;
+        let arena_raw = arena_pack.entries().get(&arena_id).ok_or("missing arena")?;
+        let arena_def: ArenaDef =
+            serde_json::from_value(serde_json::Value::Object(arena_raw.def().clone()))?;
+        let loaded = crate::definitions::arena::from_pack(
+            "tacsim.arena.proving_ground",
+            &arena_def,
+            &records,
+        )?;
+        let reassembled = draft_from_records("proving_ground", &arena_def, &records)?;
+        check_eq!(reassembled.provenance.source, GroundSource::Pack);
+        check_eq!(
+            reassembled.provenance.inputs,
+            vec![
+                "tacsim.proving_ground:region.proving_ground".to_owned(),
+                "tacsim.proving_ground:tacsim.arena.proving_ground".to_owned()
+            ]
+        );
+        let reassembled_ford = reassembled
+            .key_spots
+            .iter()
+            .find(|s| s.name == "The Ford")
+            .ok_or("missing The Ford in reassembled draft")?;
+        check_eq!((reassembled_ford.x, reassembled_ford.y), (80, 97));
+
+        let (idx, ford) = crate::match_::cockpit::resolve_spot(&loaded.key_spots, "the ford")
+            .ok_or("The Ford not resolved")?;
+        check_eq!((ford.x, ford.y), (80, 97));
+        let pilot_pose = mush_sim::data::Pose {
+            x_cm: 30 * 1_000 + 500,
+            y_cm: 97 * 1_000 + 500,
+            z_cm: 0,
+            heading_mdeg: 90_000,
+            posture: mush_sim::data::passive_rules_value(serde_json::Value::Null)?,
+        };
+        let dist_cm =
+            crate::match_::cockpit::spot_range_cm(&pilot_pose, ford, loaded.terrain.cell_cm());
+        let metres = (dist_cm + crate::match_::cockpit::SPOT_RANGE_STEP_M * 100 / 2)
+            / (crate::match_::cockpit::SPOT_RANGE_STEP_M * 100)
+            * crate::match_::cockpit::SPOT_RANGE_STEP_M;
+        let letter = crate::match_::cockpit::spot_letter(idx).ok_or("missing spot letter")?;
+        let line = crate::match_::cockpit::spot_range_line(ford, letter, metres);
+        // From (30, 97) to (80, 97) is 50 cells = 500 m (was 340 m at (64, 97)).
+        check_eq!(line, "Range to The Ford (A): 500 m.");
+
+        // 4. Viewshed from The Bluff (144, 111) over the shipped proving ground.
+        let pg = proving_ground_draft()?;
+        let vs = viewshed(&pg, 144, 111, 300)?;
+        check_eq!(vs.len(), 256 * 256);
+        check_eq!(vs.get(111 * 256 + 144).copied(), Some(1));
+        let seen_count = vs.iter().filter(|&&v| v == 1).count();
+        let hull_down_count = vs.iter().filter(|&&v| v == 2).count();
+        let partial_count = vs.iter().filter(|&&v| v == 3).count();
+        let dead_count = vs.iter().filter(|&&v| v == 0).count();
+        check!(seen_count > 1000);
+        check!(hull_down_count > 100);
+        check!(partial_count > 100);
+        check!(dead_count > 1000);
+
+        let vs_classes: Vec<TerrainClass> = vs
+            .iter()
+            .map(|&v| TerrainClass::from_code(v).unwrap_or(TerrainClass::Void))
+            .collect();
+        let vs_rle_b64 = encode_classes(256, 256, &vs_classes);
+        let mut pg_routed = proving_ground_draft()?;
+        pg_routed.waypoints = WaypointGraph::default();
+        route(&mut pg_routed)?;
+        let parity_doc = serde_json::json!({
+            "bluff_viewshed_144_111_300_rle_b64": vs_rle_b64,
+            "routed_waypoints": pg_routed.waypoints,
+        });
+        let parity_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../web/src/lib/fixtures/proving_ground_wg4_parity.json");
+        if !parity_path.exists() {
+            std::fs::write(&parity_path, serde_json::to_string_pretty(&parity_doc)?)?;
+        }
+        let disk_parity: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&parity_path)?)?;
+        check_eq!(disk_parity, parity_doc);
         Ok(())
     }
 }
