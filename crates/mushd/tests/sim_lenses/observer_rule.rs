@@ -4509,6 +4509,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
     tacsim::arena::step::Frame {
         unit: mush_core::ObjId(101),
         unit_type: "tacsim.unit.line_tank".into(),
+        side_unit_types: vec!["tacsim.unit.line_tank".into()],
         sensor_height_cm: 150,
         callsign: tacsim::arena::state::Designator::Slot {
             team: tacsim::arena::state::Team::Red,

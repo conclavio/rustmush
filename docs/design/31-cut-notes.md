@@ -46,6 +46,13 @@ same; only the key's meaning and the version changed), so every picture draws ex
   module and Vite fingerprints them into `assets/`, which the server already serves
   `immutable`. The page no longer fetches `units.bin`. `vite build`: six files, 77–219 kB, beside a
   750 kB module that embeds none.
+- **The own-side roster** (D-31-11, ruled by the owner on PR #196: own side at muster, the other
+  side on first sight, *"avoids the info leak"*): the cockpit frame carries `side_unit_types`, the
+  distinct sorted unit types of the pilot's own team (`Frame::side_unit_types`, built in
+  `frame_for` from the unit table and its chassis words), and the model walker reads it beside
+  every `unit_type`. A few dozen bytes on each keyframe; `arena.map` stays a fact about the ground
+  with no unit in it. The cockpit fixtures (`cockpit_frame.json`, `view_frame.json`) are re-blessed
+  with the key.
 - **The bake**: configs moved to `scripts/unit-bake/models/<model id>.json` (`look` → `model`);
   `Bake.cs` writes `meta.json` format 3 with `model`; `unit_reduce` writes through
   `model::write_model` (`--models`, removing the model's older file, rewriting `index.json`);
@@ -54,13 +61,6 @@ same; only the key's meaning and the version changed), so every picture draws ex
 
 **Not done here, and why.**
 
-- **The roster prefetch** (D-31-11's "at muster"). No feed carries the match's whole roster
-  today: the cockpit frame names the pilot's own type and each *classified* contact's. A roster
-  field listing every type in the match would tell a client what the other side fielded before its
-  sensors did — an epistemic question (the Epistemic Engine's per-observer knowledge) for the
-  owner, not a delivery detail. Until it is ruled, the client fetches on first sight: its own
-  model with the first frame, a contact's when it is first classified, the `unknown` hump with the
-  first unclassified contact; the text sheet draws meanwhile.
 - **D-31-5's mounts in the index** (the parts in their mounts and the muzzle locators by weapon,
   for the designer's fit check): the index carries the prefab line; the structured mounts come with
   UD.2, which reads them.

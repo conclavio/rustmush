@@ -634,6 +634,19 @@ pub fn status_frame_held(
         // doll from the right look.
         object.insert("team".into(), frame.team.as_str().into());
         object.insert("unit_type".into(), frame.unit_type.as_str().into());
+        // **Doc 31 D-31-11**: every unit type on the pilot's own side, so a
+        // client fetches their models before the first contact; the other
+        // side's arrive with each classified contact (the owner's ruling of
+        // 2026-10-30: no roster of the other side).
+        object.insert(
+            "side_unit_types".into(),
+            frame
+                .side_unit_types
+                .iter()
+                .map(|t| serde_json::Value::from(t.as_str()))
+                .collect::<Vec<_>>()
+                .into(),
+        );
         // Doc 21 cut G.7b: the eye the pilot's own sight is traced from.
         object.insert("sensor_height_cm".into(), frame.sensor_height_cm.into());
         // **Doc 21 cut G.12a** (§7.3): the seat's master gate, and the two

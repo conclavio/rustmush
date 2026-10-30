@@ -47,6 +47,12 @@ pub struct Frame {
     /// **Its own unit type** (doc 22): its definition id, which names the look
     /// its pilot's doll is drawn from. Never a secret from its pilot.
     pub unit_type: SmolStr,
+    /// **Every unit type on its own side**, distinct and sorted (doc 31
+    /// D-31-11, the owner's ruling of 2026-10-30): what a client fetches the
+    /// models of before the first contact, so its own side draws baked from
+    /// the start. Its own side only — the other side's types reach a client
+    /// as each contact is classified, never from a roster.
+    pub side_unit_types: Vec<SmolStr>,
     /// **How high its eye sits above its cell, centimetres** (doc 21 cut G.7b):
     /// the height its own sight is traced from, so the pilot's picture is drawn
     /// from the same eye — a biped's nine metres, a tank's one and a half.
@@ -843,6 +849,18 @@ impl Arena {
             unit: unit.id,
             team: unit.team,
             unit_type: SmolStr::new(unit.unit.schema().key().id.as_str()),
+            side_unit_types: {
+                let mut types: Vec<SmolStr> = self
+                    .units
+                    .iter()
+                    .zip(self.chassis.iter())
+                    .filter(|(other, _)| other.team == unit.team)
+                    .map(|(_, words)| words.unit_type.clone())
+                    .collect();
+                types.sort_unstable();
+                types.dedup();
+                types
+            },
             sensor_height_cm: unit.sensor_height_cm,
             // 16b cut Q.1: the platform's own public name, and the cell
             // it is standing in.

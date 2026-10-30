@@ -247,10 +247,12 @@ pays for the models it draws and nothing else.
 `units.bin`. Each frame's contacts carry a `unit_type`; the client maps type → look → model id →
 file name (the look table and the model index ship with the module, a few kilobytes) and fetches
 `/units/<model id>.<digest>.mupk` the first time it needs that model, handing it to `mp_units` to
-install beside the others. Two triggers: at muster, the match's roster (every type in the match,
-known before the first frame) is prefetched, so a fight normally draws baked from its first frame;
-and lazily, any type that first appears in a frame (a late join, a spectator, a type introduced
-mid-match) is fetched then. Until a model arrives the contact draws its look's text sheet — the
+install beside the others. Two triggers: at muster, the pilot's **own side's** types (the cockpit
+frame's `side_unit_types`) are prefetched, so the pilot's own side draws baked from the first
+frame; and lazily, any type that first appears in a frame (a contact as it is classified, a late
+join, a spectator) is fetched then. **Ruled 2026-10-30 (UD.1):** the owner chose own side only —
+*"i think its okay to send on first sight for bad guys, avoids the info leak"*: a roster of the
+other side would tell a client what was fielded against it before its sensors did. Until a model arrives the contact draws its look's text sheet — the
 fallback every picture already has — so a slow fetch costs crispness for a second, never a blank.
 The files are immutable and content-named, so they carry a year's `Cache-Control` and a client
 fetches each model once per bake, ever. A design published in the instance has no new art (its
@@ -468,7 +470,8 @@ neither, and could go first once IC hulls return damaged, doc 27 H2).
   fielded one (Draft 0.3).
 - **D-31-10** The match hash folds the fielded catalogue as today; the registry is append-only, a
   match records its generation as a count, and the input tape rebuilds from it (Draft 0.3).
-- **D-31-11** The web fetches a model by roster at muster and on first sight, text sheet until it
+- **D-31-11** The web fetches a model by its own side's roster at muster (ruled 2026-10-30: never
+  the other side's) and on first sight, text sheet until it
   arrives; nothing else crosses to a player.
 - **D-31-12** The editor fetches models on demand; rule 7 becomes a per-model web ceiling.
 - **D-31-13** Repair is work orders over doc 27's workshop and doc 08's driver on IC hulls, quoted,

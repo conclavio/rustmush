@@ -177,8 +177,11 @@ pub fn wanted_files<'a>(
 }
 
 /// Every `unit_type` a feed names, anywhere in it (a string a type, `null`
-/// an unclassified contact): what [`wanted_files`] reads from the feeds a
-/// client holds.
+/// an unclassified contact), and every type in a `side_unit_types` list —
+/// the cockpit frame's own side, sent so a client fetches those models
+/// before the first contact (doc 31 D-31-11; the other side's types arrive
+/// only with each classified contact): what [`wanted_files`] reads from the
+/// feeds a client holds.
 pub fn unit_types_in<'a>(feed: &'a Value, out: &mut Vec<Option<&'a str>>) {
     match feed {
         Value::Object(map) => {
@@ -189,6 +192,15 @@ pub fn unit_types_in<'a>(feed: &'a Value, out: &mut Vec<Option<&'a str>>) {
                         Value::Null => out.push(None),
                         _ => {}
                     }
+                } else if key == "side_unit_types" {
+                    out.extend(
+                        value
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(Some),
+                    );
                 } else {
                     unit_types_in(value, out);
                 }
@@ -396,6 +408,7 @@ mod tests {
         // A feed naming the tank twice, the walker, and an unclassified contact.
         let feed = serde_json::json!({
             "unit_type": "tacsim.unit.line_tank",
+            "side_unit_types": ["tacsim.unit.line_tank", "tacsim.unit.drone_mk1"],
             "contacts": [
                 { "unit_type": "tacsim.unit.biped_mk1" },
                 { "unit_type": null },
@@ -404,12 +417,12 @@ mod tests {
         });
         let mut types = Vec::new();
         unit_types_in(&feed, &mut types);
-        assert_eq!(types.len(), 4);
+        assert_eq!(types.len(), 6);
         let wanted = wanted_files(types);
         // Natively every model is embedded, so nothing is wanted; the
         // WebAssembly build wants each model once.
         if embedded_files().is_empty() {
-            assert_eq!(wanted.len(), 3, "{wanted:?}");
+            assert_eq!(wanted.len(), 4, "{wanted:?}");
         } else {
             assert!(wanted.is_empty(), "{wanted:?}");
         }
