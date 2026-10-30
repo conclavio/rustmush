@@ -1,5 +1,17 @@
 # 30. World generator v2 — the ground as content, one pipeline from authoring to the three views
 
+**Draft 0.2 — 2026-10-30, the review folded.** The author of PR #178 reviewed Draft 0.1 on PR
+#183 and raised six points, all taken (the owner, the same day: *"fold all six points into doc 30
+as Draft 0.2 … and rule Q-30-8 as the reviewer suggests pending my confirmation"*): the writer's
+repair passes no longer touch a studio draft by default and never a built class (§5); the draft's
+`classes` encoding is spelled out — the atlas's three-byte class runs, not PR #178's eight-byte
+cells (§4); the waypoint graph is authored in the studio or routed by the writer (§4, §5, §8); the
+studio gains a viewshed overlay and runs the §5 report live, with a fixture test holding its
+TypeScript to the Rust check (§8, §11, §14); and `rock` is ruled a surface, not a block —
+**D-30-10** in §7, at the reviewer's default and pending the owner's confirmation — because the
+sim's sight table makes only `wall` opaque and the woods partial, while the picture had been
+raising a wall out of it. The cut rows WG.2–WG.4 carry the work.
+
 **Draft 0.1 — 2026-10-30.** Based on `origin/main` at `a1ddefaa`. The owner's ask, verbatim:
 *"since the feedback is more general, rather than comment on the PR let's write a world generator
 v2 design document ... this sort of just grew organically one commit into the next without any
@@ -89,7 +101,7 @@ Standing, not re-decided here:
   schedules it.
 
 Decided here: the principle (§3), the pipeline and the draft format (§4), relief and passability
-(§5), biomes (§6), the wire and the pictures (§7), the studio (§8), the generator and the extractor
+(§5), biomes (§6), the wire and the pictures (§7, with D-30-10 on `rock`), the studio (§8), the generator and the extractor
 (§9), the disposition of the spike's PRs (§10), cuts (§11), amendments (§12), questions (§13).
 
 ## 3. The principle: the ground is content — D-30-1
@@ -129,6 +141,7 @@ the same repair and check passes for all of them. The writer is `tacsim::ground`
 ground-pack build  <draft.json> --out <dir>      the two signed packs (+ the pin's digests)
 ground-pack check  <draft.json>                  size, grade, passability, speckle: the report, §5
 ground-pack render <draft.json> --out <png>      the overhead and the three views at the key spots
+ground-pack route  <draft.json>                  a waypoint graph over the cost grid when the draft's is empty (§5)
 ground-pack gen    <preset> --seed N --biome B   the generator (§9) → a draft
 ```
 
@@ -149,11 +162,11 @@ byte-neutral by construction, and that test is its acceptance. The extractor (§
   "origin_m": [20000, 20000],
   "cell_cm": 1000,
   "cols": 256, "rows": 256,
-  "classes": "<base64>",               // Cells run-length, class only — HeightfieldDef.classes
+  "classes": "<base64>",               // the atlas's class runs: [cols u16][rows u16] + [count u16][class u8], LE — below
   "elev": "<base64>",                  // le16, scale_cm 1, datum_cm 0 — HeightfieldDef.data
   "entry_zones": [ { "team": "red", "x0": 0, "y0": 0, "x1": 15, "y1": 255 }, … ],
   "key_spots":   [ { "name": "The Ford", "x": 64, "y": 97 }, … ],
-  "waypoints":   { "nodes": [ … ], "edges": [ … ] },
+  "waypoints":   { "nodes": [ … ], "edges": [ … ] },   // may be empty: `ground-pack route` fills it (§5)
   "tanks": [ … ],                      // optional; the shipped roster by default
   "provenance": { "source": "generator|extractor|studio", "version": "…", "seed": 42,
                   "inputs": [ "Winter Pack 1 demo valley 2049²", "…" ] },
@@ -168,6 +181,18 @@ most 512 × 512 at 128-cell quadrants — Q-30-6). `provenance` is the licensing
 mechanical: a draft from the extractor names the pack and version it read; the writer refuses a
 draft with none. `classes` and `elev` reuse the two encodings the atlas already has — the draft
 introduces no third.
+
+**The `classes` bytes, exactly** (Draft 0.2, the reviewer's fourth point). The atlas has two
+run-length forms, and the draft uses the *second*. `Cells::encode` (`cells.rs`) writes eight-byte
+runs — `count u16, class u8, elev_cm i16, cover u8, room u16` — and is what PR #178's TypeScript
+codec implements. `HeightfieldDef.classes` (`def.rs:840`) writes a four-byte prefix
+`[cols u16][rows u16]` and then **three-byte runs `[count u16][class u8]`**, all little-endian, the
+southern row first, base64 over the whole. The draft's `classes` is the latter — what the writer
+re-runs per quadrant into each heightfield entry's `classes` key — and `cover` and `room` do not
+exist in an arena heightfield. Code `0` (`Void`) means *not authored* (the region's background
+recipe fills it), so a draft that means open ground writes `ground`, never `0`. The `elev` bytes
+are `HeightfieldDef.data`'s `le16`: `cols × rows` little-endian `i16` samples in the same row order,
+`scale_cm` 1, `datum_cm` 0. WG.4 replaces the studio's eight-byte codec with these two.
 
 **The draft is the source; the pack is the build (D-30-3's pin).** Every shipped arena checks its
 draft in beside its packs — `crates/tacsim/content/ground/<id>.draft.json` — and the content pin
@@ -221,12 +246,27 @@ authored ≤ 20 %), and every cell of every entry zone within ± 50 cm of its ne
 as #173 wanted). A draft that fails is a draft, not content; `build` refuses it unless `--force`,
 and the report goes in the pack's `note`.
 
-**The repair pass**, in the writer so every source gets it: the extractor's slope relaxation
-(iterated, pulling the higher cell down toward the limit, roads to 20 %, never touching an entry
-zone's flatness) and a **speckle filter** (a class region under *n* cells — default 3 — takes its
-majority neighbour, water and woods included, so a sim cell is never an island of one). Both are
-options on `build`, both default on for extractor and studio drafts and off for the generator (which
-authors clean grids by construction).
+**The repair passes** live in the writer so every source can have them, and (Draft 0.2, the
+reviewer's first point) they run **by default on extractor drafts only**. A studio draft is what
+the builder sculpted: `build` does not alter it unless `--repair` is passed, because a cliff over
+70 % that channels movement or a one-cell `wall` pillar for cover is a decision, not a defect
+(D-30-1's third corollary); the generator authors clean grids by construction and needs neither.
+The two passes: the extractor's **slope relaxation** (iterated, pulling the higher cell down toward
+the drive limit, roads to 20 %, never touching an entry zone's flatness) and the **speckle filter**
+(a class region under *n* cells — default 3 — takes its majority neighbour, water and woods
+included, so a sim cell is never an island of one). The speckle filter **never removes a built
+class** — `paved`, `road`, `floor`, `door`, `platform`, the atlas's `is_built` — nor `wall`, nor a
+key spot's cell: a gate or a small building is small on purpose. The studio offers both passes as
+tools that show the changed cells on the canvas and in the preview before a save (§8), which is
+how a studio draft gets them.
+
+**The route step** (Draft 0.2, the reviewer's second point). `ArenaDef::check` allows an empty
+waypoint graph (at most 256 nodes and 1 024 edges), and the stock mind patrols whatever graph there
+is, so an arena with none is legal and poor. `ground-pack route` — run by `build` when a draft's
+graph is empty — places a node at each entry zone's centre and at each key spot, connects them by
+A* over the tracked cost grid under the sim's slope rule with a node every 20 cells along each
+path, and writes the graph into the draft, so it is reviewed like the rest. A draft that carries
+its own graph is left alone; the report above still checks every node's reachability.
 
 ## 6. Biomes — D-30-5
 
@@ -250,8 +290,8 @@ generator's vocabulary per biome is
 | ice | ice, ground (moraine), road | rock, rubble, wall | water_deep (leads) |
 
 Woods on Mars or the Moon are not authored; PR #169's "rock spire" drawing of the woods classes
-there is retired with the remap (the `rock` class already draws as a block — Q-30-8 asks whether
-`rock` is a ridge or a wall). The pricing is the locomotion table's, per class, unchanged: `ice`
+there is retired with the remap (and `rock` is a surface with a cost, not a block — D-30-10). The
+pricing is the locomotion table's, per class, unchanged: `ice`
 and `regolith` cost what `locomotion.json` says, so a biome changes what is on the ground, never what
 the ground costs.
 
@@ -271,6 +311,20 @@ across the whole grid, the frame carries the `window` the G.7b comment anticipat
 the pilot of the same shape, rebaked by the pictures when it moves — and PR #154's terrain tiles are
 the same mechanism on the picture side. The window is its own cut (WG.6), scheduled with the tiling;
 until then the cap is a check, and the proving ground (65 536 cells, V3 relief) passes it today.
+
+**D-30-10 — `rock` is a surface, not a block** (Draft 0.2; Q-30-8 ruled at the reviewer's
+default, pending the owner's confirmation). The sim's sight table
+(`crates/mush-atlas/src/physics.rs:153`) makes `void` and `wall` opaque and the woods partial
+(25 % light, 60 % heavy); every other class, `rock` included, is clear and has no height — a ridge
+is `elev_cm`. `rock` is priced as costly passable ground (biped 200, legged 150, tracked 300, hover
+300; wheeled impassable). The picture, though, maps the legend words `rock`, `cliff` and `building`
+to its `Wall` ground (`raycast.rs::from_legend_name`) and raises an opaque block of
+`WALL_HEIGHT_CM` on it — geometry the sim does not have, which is what D-30-1 forbids. Ruled:
+`rock` is a **surface material** on the real heightfield — its cost, its shading, zero extrusion —
+and vertical geometry and sight blocking come from `elev_cm` and `wall` alone; the picture raises
+only the classes the sim's sight table raises (`wall`; the woods, partially). This also retires PR
+#169's rock-spire drawing of the woods classes on Mars and the Moon (§6). The former alternative, a
+`rock`/`cliff` split, is not needed: a cliff is a steep `elev_cm` edge or a `wall`. WG.2 carries it.
 
 ## 8. The studio — D-30-8
 
@@ -299,6 +353,27 @@ the preset's output) and keeps the *draft → packs* half; the draft's `provenan
 and seed it started from. Unshipped work stays in the drafts tab; an operator's own arena goes out
 through the pack route with no pin at all.
 
+**The studio's tools, after the review (Draft 0.2).** Four additions, each one of the reviewer's
+points made concrete:
+
+- **A waypoint layer** beside the key spots: place and drag nodes and draw edges on the canvas; an
+  *Auto-route* button runs the §5 route rule in TypeScript over the same cost grid for the
+  preview, and `build` runs the Rust one when the saved draft's graph is empty.
+- **A viewshed overlay** from the camera pin: the sim's 1.5 m eye (`EYE_HEIGHT_CM`) against a hull
+  of the look's height (`size_cm`; 250–300 cm for the shipped units), shading each cell *seen*,
+  *hull-down* (the hull hidden, a turret seen) or *dead ground*, with a fourth shade where woods
+  cover the line partially (25 % / 60 %). It is a TypeScript walk of the ray `horizon.rs` walks;
+  `ground-pack render --viewshed <x>,<y>` draws the same picture from the real index, and the two
+  agree on the fixture drafts (§11).
+- **The §5 report, live**: reachability per drive from each entry zone, the two zones' mutual
+  reachability, every key spot's and node's, the longest road grade, and the `arena.map` frame's
+  exact byte count against the 256 KiB cap (free: the studio already builds the exact wire feed
+  for its preview) — in the sidebar, green or red, before a download. `ground-pack check` stays
+  the verdict; the TypeScript report is held to it by a fixture test (§14).
+- **Relax slope** and **Despeckle** as tools: the §5 passes run in the browser on demand, the
+  changed cells highlighted on the canvas and visible in the three-view preview, undoable — never
+  silently at build.
+
 ## 9. The generator and the extractor — D-30-9
 
 **The generator** (`tacsim::ground::generate`, `ground-pack gen`) is the shipped authoring source
@@ -323,9 +398,9 @@ terrain.
 | PR | Keep | Remove or replace | Cut |
 |---|---|---|---|
 | #154 (merged) | the compositor, the padded-sheet sub-cell trick, the viewport-over-canvas idea | `p=` addressing (w11term `074a20c1` lands the terminal fix), one sheet per model, tiles for the terrain, the doc 21 D-21-10 amendment, a bake script for the mip blob | WG.6 |
-| #169 (merged) | `rgb_for_biome`, `zenith_rgb`/`horizon_rgb`, the fog/sky/paint tables, the 4-biome × 3-view test | `Terrain::synthesize_relief`, the `all_flat` branch, `procedural_wanted`, the substring `from_name`; biome read from the wire word only | WG.2 |
+| #169 (merged) | `rgb_for_biome`, `zenith_rgb`/`horizon_rgb`, the fog/sky/paint tables, the 4-biome × 3-view test | `Terrain::synthesize_relief`, the `all_flat` branch, `procedural_wanted`, the substring `from_name`; biome read from the wire word only; the `rock`-as-`Wall` legend mapping and the rock-spire drawing (D-30-10) | WG.2 |
 | #173 (merged) | the four-word `BIOMES` vocabulary (moves to `RegionDef`), the *shape* of its relief rule (flat musters, scaled roads, bounded, seeded) as generator presets | `ArenaDef.biome`, `ArenaDef.procedural_relief`, `biome_variant`, `apply_biome_and_relief`, the SIN64 relief and the class remap; the 45 cm rule | WG.3 |
-| #178 (merged) | `map-editor.ts`'s brush engine, Bresenham, flood fill, undo, the Cells codec, the Svelte shell, the three-view preview | export/import → the draft; `elev_field` → `elev`; the pose keys; the 45 cm clamp → the passability overlay; the height band; the 256 preset; the `@atlas/window` pre-fill | WG.4 |
+| #178 (merged) | `map-editor.ts`'s brush engine, Bresenham, flood fill, undo, the Cells codec, the Svelte shell, the three-view preview | export/import → the draft; `elev_field` → `elev`; the pose keys; the 45 cm clamp → the passability overlay; the height band; the 256 preset; the `@atlas/window` pre-fill; the eight-byte `Cells` codec → the three-byte class runs and `le16` | WG.4 |
 | The extractor (outside the tree) | the heightmap and splat reading, the stitching | the pack writing, the relaxation, the speckle handling → `ground-pack` | WG.5 |
 
 ## 11. Cuts
@@ -334,9 +409,9 @@ terrain.
 |---|---|---|---|
 | **WG.0** | this document; the README row | merged | — |
 | **WG.1** | `tacsim::ground`: the draft type and its validation; `generate` moved from `tests/support/ground.rs`; the writer (`build`: quadranting, the two packs, signing); `ground-pack` with `build`, `gen`, `check` (size only); the inverse pack → draft; the proving ground's draft checked in and §4's two-half pin replacing `the_shipped_atlas_pack_is_this_generators_output` | `gen proving_ground` reproduces the checked-in draft and `build` over it reproduces the shipped packs byte for byte; the content pin's digests unchanged | — |
-| **WG.2** | picture hygiene: remove `synthesize_relief` and the fallback; exact `Biome` parse; "a flat field draws flat" in `pixel_relief.rs`; palettes untouched | the 4 × 3 distinctness test still passes with `elev` supplied; no mush-pixel path writes an `elev_cm` the feed did not carry | — |
-| **WG.3** | the sim side: `RegionDef.biome` + validation; `arena.map.biome` from the region; `ArenaDef.biome`/`procedural_relief` and the load-time passes removed; `check`'s grade and passability report over `slope.rs`/`path.rs`; the repair pass (relaxation, speckle) in `build` | the proving ground's report: tracked ≥ 90 %, zones mutually reachable, every key spot wheeled-reachable; a hand-made 45 % ridge draft passes `check` and a 50 % one is reported | WG.1 |
-| **WG.4** | the studio on the draft: open/save `ground.draft.v1`, the server's draft endpoint, the real preview feed, the passability overlay, 256 cells, the height band, the export route | open the shipped proving ground, move a key spot, save, `ground-pack build`, load through `pack_paths`, `RANGE` to the moved spot in a match; the preview at The Bluff matches the first-person frame hash of the same pose on the server | WG.1, WG.2, WG.3 |
+| **WG.2** | picture hygiene: remove `synthesize_relief` and the fallback; exact `Biome` parse; "a flat field draws flat" in `pixel_relief.rs`; `rock` drawn as a surface (D-30-10); palettes untouched | the 4 × 3 distinctness test still passes with `elev` supplied; no mush-pixel path writes an `elev_cm` the feed did not carry; a `rock` cell at `elev_cm` 0 blocks no sight line in any picture | — |
+| **WG.3** | the sim side: `RegionDef.biome` + validation; `arena.map.biome` from the region; `ArenaDef.biome`/`procedural_relief` and the load-time passes removed; `check`'s grade and passability report over `slope.rs`/`path.rs`; the repair passes (relaxation, speckle) in `build` with §5's defaults and the built-class exemption; `route` | the proving ground's report: tracked ≥ 90 %, zones mutually reachable, every key spot wheeled-reachable; a hand-made 45 % ridge draft passes `check` and a 50 % one is reported; `route` over the proving ground with its graph emptied reaches every key spot; a one-cell `wall` and a studio draft's 70 % cliff survive `build` | WG.1 |
+| **WG.4** | the studio on the draft: open/save `ground.draft.v1`, the server's draft endpoint, the real preview feed, the three-byte class codec and `le16`, the passability overlay, the waypoint layer, the viewshed overlay, the live §5 report, the relax/despeckle tools, 256 cells, the height band, the export route; the fixture test holding the TS report, route and viewshed to `ground-pack`'s | open the shipped proving ground, move a key spot, save, `ground-pack build`, load through `pack_paths`, `RANGE` to the moved spot in a match; the preview at The Bluff matches the first-person frame hash of the same pose on the server; on the fixture drafts the studio's report, route and viewshed equal `ground-pack`'s | WG.1, WG.2, WG.3 |
 | **WG.5** | the extractor in the tree; the v4 draft regenerated through `build`; the second shipped arena (Q-30-7) with its pin | the v4 arena boots from the tree's packs; its report meets §5; the pack's `provenance` names the Unity packs and versions | WG.3 |
 | **WG.6** | the window on `arena.map` and PR #154's tiles; `p=` addressing on the fixed w11term; one sheet per model; the D-21-10 amendment | a 512 × 512 draft plays over SSH within doc 21 §5's budget; eight tanks in a row all draw | WG.3, w11term `074a20c1` |
 
@@ -346,7 +421,8 @@ each other after WG.3. Each cut records itself in `30-cut-notes.md` in doc 20's 
 ## 12. Amendments owed
 
 - **Doc 16 §3.2** "Terrain": the ground is content (D-30-1); biome as a region property (D-30-5);
-  §4: the draft and `ground-pack` as the authoring route beside the pin. **§11** the window.
+  `rock` a surface with no height of its own (D-30-10); §4: the draft and `ground-pack` as the
+  authoring route beside the pin. **§11** the window.
 - **Doc 21 §7** D-21-14 reaffirmed against the picture (D-30-6); **§8** the heightfield: the one
   encoding, the flat-field rule, the window and the tiles (D-30-7); **D-21-10** amended by WG.6;
   **21a** the inventory row for the 2.5D view.
@@ -375,9 +451,10 @@ each other after WG.3. Each cut records itself in `30-cut-notes.md` in doc 20's 
 - **Q-30-7 — the second shipped arena.** Default: the extractor's Winter Pack valley (a real
   temperate heightfield, no new vocabulary), then the generator's `mars_canyon` as the first
   biome arena. Alternative: Mars first, to exercise the biome end to end sooner.
-- **Q-30-8 — the `rock` class.** Default: a ridge — passable at a high cost, drawn as a block by
-  the pictures as today. Alternative: split into `rock` (ridge) and `cliff` (wall), a doc 16 §3.2
-  change.
+- **Q-30-8 — the `rock` class.** **Ruled provisionally 2026-10-30 (D-30-10, §7)**: a surface —
+  its cost and shading on the real heightfield, no height of its own; the picture raises only what
+  the sim's sight table raises. The owner's confirmation is owed; the former default (a block, as
+  drawn today) and the alternative (a `rock`/`cliff` split) are both retired by it.
 - **Q-30-9 — the extractor's artifacts as tree content.** Default: yes, per the 2026-10-29 ruling,
   with `provenance` naming the pack and version; the script ships, the `.unitypackage` never does.
 
@@ -391,7 +468,8 @@ each other after WG.3. Each cut records itself in `30-cut-notes.md` in doc 20's 
   regeneration one command.
 - **Three sources, one writer:** the studio and the generator drift only if the TS codec drifts
   from the Rust one; the round-trip test (draft → TS encode → Rust decode → compare) in WG.4 is the
-  guard.
+  guard, and the same fixture drafts hold the studio's report, route and viewshed to
+  `ground-pack`'s (§8): a disagreement is a failing test, never a builder's surprise.
 - **The cap:** real relief over a 256-cell grid sits near 256 KiB; WG.3's size check keeps a draft
   from shipping a frame the client refuses, and WG.6 is the real answer. Until then a steep biome
   arena may have to be smaller than 256 cells.
