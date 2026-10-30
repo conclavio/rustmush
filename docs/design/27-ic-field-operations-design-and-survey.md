@@ -264,6 +264,12 @@ preserves its remaining duration and publishes the adjusted deadline on unfreeze
 
 ## 5. Delivery boundaries and dependency order
 
+The live detachment combat delivery is planned in
+[27b](27b-detachment-field-combat-implementation-plan.md): a seven-step frontier
+skirmish, bounded FC.1–FC.5 integration cuts, and follow-on recovery/restoration.
+It reuses the [27a foundations](27a-field-unit-survival-and-towing.md) without
+claiming their helper APIs already provide the complete player-facing host.
+
 **All surveyed policy decisions are recorded.** Pin the records above with their existing owners,
 including NPC personnel/command identity and the accepted §9 rules, then write implementation briefs for all three streams.
 The original survey was documentation only. The subsequent
