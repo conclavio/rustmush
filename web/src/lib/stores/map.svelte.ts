@@ -44,6 +44,53 @@ export const TERRAIN_COLOURS: Readonly<Record<string, string>> = {
   r: "#6f6558",
 };
 
+/** Mars surface palette for `atlas.map` and `arena.map` canvases. */
+export const MARS_TERRAIN_COLOURS: Readonly<Record<string, string>> = {
+  ...TERRAIN_COLOURS,
+  ".": "#854c37",
+  ",": "#9e472a",
+  '"': "#b05634",
+  ":": "#b85d38",
+  "^": "#6b3222",
+  x: "#944229",
+  r: "#7a3b26",
+};
+
+/** Lunar surface palette for `atlas.map` and `arena.map` canvases. */
+export const LUNAR_TERRAIN_COLOURS: Readonly<Record<string, string>> = {
+  ...TERRAIN_COLOURS,
+  ".": "#52555a",
+  ",": "#63666c",
+  '"': "#72757c",
+  ":": "#858890",
+  "^": "#8e9299",
+  x: "#484a4f",
+  r: "#7c7f85",
+};
+
+/** Ice / glacier surface palette for `atlas.map` and `arena.map` canvases. */
+export const ICE_TERRAIN_COLOURS: Readonly<Record<string, string>> = {
+  ...TERRAIN_COLOURS,
+  ".": "#6f8d9e",
+  ",": "#8abfd4",
+  '"': "#ccebf5",
+  "~": "#387ca3",
+  W: "#1f5578",
+  ":": "#b8deed",
+  "^": "#7b9eb0",
+  i: "#b8e2f2",
+};
+
+/** Select the biome terrain palette for a given `surface` identifier,
+ * defaulting to `TERRAIN_COLOURS` for temperate/standard surfaces. */
+export function biomeTerrainColours(surface?: string | null): Readonly<Record<string, string>> {
+  const s = (surface ?? "").toLowerCase();
+  if (s.includes("mars")) return MARS_TERRAIN_COLOURS;
+  if (s.includes("lunar") || s.includes("moon")) return LUNAR_TERRAIN_COLOURS;
+  if (s.includes("ice") || s.includes("glacier")) return ICE_TERRAIN_COLOURS;
+  return TERRAIN_COLOURS;
+}
+
 /** The most notes kept. */
 export const MAP_NOTES = 20;
 

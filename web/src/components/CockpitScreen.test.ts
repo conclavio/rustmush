@@ -234,6 +234,24 @@ describe("CockpitScreen mounted", () => {
     expect(focusComposer).toHaveBeenCalledTimes(2);
   });
 
+  it("prefills `lock <designator>` when a contact marker is clicked on the arena window canvas", async () => {
+    const { focusComposer, cockpit } = await seated();
+    const canvas = document.querySelector("canvas")!;
+    // At 5 px a cell on the 96x64 window, BA at (36, 14) sits at (182.5, 247.5).
+    await fireEvent.click(canvas, { clientX: 182, clientY: 247 });
+    expect(focusComposer).toHaveBeenLastCalledWith("lock BA");
+    // Clicking `@` at (6, 4) -> (32.5, 297.5) or spot `A` at (25, 3) -> (127.5, 302.5)
+    // does not lock self or surveyed ground.
+    await fireEvent.click(canvas, { clientX: 32, clientY: 297 });
+    await fireEvent.click(canvas, { clientX: 127, clientY: 302 });
+    expect(focusComposer).toHaveBeenCalledTimes(1);
+    // Mars surface map uses the Mars biome palette on the offscreen terrain cache.
+    resetLog();
+    cockpit.applyMap({ ...json("arena_map.json"), surface: "proving_ground_mars" });
+    await tick();
+    expect(calls("fillRect")[0]?.fillStyle).toBe("#b05634");
+  });
+
   it("bands BA's chips from its reading", async () => {
     await seated();
     // BA is the one contact with a close look on it (`ggyrd` over the one table).

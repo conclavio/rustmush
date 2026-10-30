@@ -5,7 +5,7 @@
   // the picture and the text can never disagree for one viewer at one
   // instant. Nothing here knows a rule: the glyph is the fact.
   import type { GameApp } from "$lib/game.svelte";
-  import { expandRows, TERRAIN_COLOURS } from "$lib/stores/map.svelte";
+  import { biomeTerrainColours, expandRows } from "$lib/stores/map.svelte";
 
   let { app }: { app: GameApp } = $props();
 
@@ -13,8 +13,8 @@
   const notes = $derived(app.map.notes);
 
   /** Colours by glyph; an unknown glyph is the void. One table for both map
-   * canvases since 16b cut Q.5 — see `TERRAIN_COLOURS`. */
-  const COLOURS = TERRAIN_COLOURS;
+   * canvases since 16b cut Q.5 — see `TERRAIN_COLOURS` / `biomeTerrainColours`. */
+  const COLOURS = $derived(biomeTerrainColours(frame?.surface));
 
   let canvas: HTMLCanvasElement | undefined = $state();
 
