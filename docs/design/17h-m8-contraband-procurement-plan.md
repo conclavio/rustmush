@@ -896,7 +896,7 @@ Added at the owner's word.
 
 This closes **17g §4's first deferral**.
 
-### M8g — the gate (G3 #111 `4844e847`, G4 #106 `79892b2f`, the claim channel #132 `ec9e87cb`; G1/G2/G5 building)
+### M8g — the gate (G3 #111 `4844e847`, G4 #106 `79892b2f`, the claim channel #132 `ec9e87cb`, G1/G2/G5 #156 `5cb16a65`)
 
 - **G3, `@mind/claim`.** Lead's ruling (B): every arena mode is a sim, so `EarnedContacts` has no
   producer and every hull is refused until the IC fight. G3 also built `ClaimRecord`
@@ -905,6 +905,32 @@ This closes **17g §4's first deferral**.
 - **G4, the leak battery** (D-UM-42), which is dispatch-only. It found M8d's real-rig finding bug.
   `@unit/*` is a named exemption (§5). The claim channel's case replaced the tripwire (#132). The
   dispatch passed (run 40880419607).
-- **G1, G2 and G5.** The combined world is the production `LaunchComposition` over the game
-  content, with an optional ungovern site (§5). The owed composed tests and the dispatch-only
-  stories are building.
+- **G1, G2 and G5 (#156).** The combined world is the production `LaunchComposition` over the
+  game content, ported into the excursions harness. It has an optional ungovern site (§5), so the
+  Tether's back room ungoverns a real managed core. These owed stories pass on it:
+  - the back-room refit;
+  - a real ungoverned core found, chronicled and revoked;
+  - seizure, impounding and forfeit;
+  - a grey core read as Grey and seizable;
+  - tier 2: the held line across a restart, the seal mark, an org owner licence, the resold
+    refusal and the lapse;
+  - G4's attestation channel.
+
+  The world found four defects, each fixed and merged:
+  - the seal-mark wiring;
+  - the surface dispatch reading the paid view before the owner row, which poisoned the prepare
+    (#143);
+  - M8d's real-rig finding (in #106);
+  - **the House minds never starting without an order** (#152). Meridiani went from 0‰ to 104‰
+    and Coprates from 0‰ to 83‰ at Class II.
+- **The zero-PC story.** With the House minds winning, it still bought nothing. The tick closed IC
+  month 1 as "nothing affordable listed" at its first fire, before any line was listed. The story
+  now steps into the next IC month after listing (a follow-up PR).
+  **Lead's default (the owner's provisional economy rule): a month closed for "nothing listed"
+  stays closed.** A House shops once per IC month and sees a new listing the next month.
+- **Still owed:**
+  - **To S.4b:** the pending-transfer refusal and the IC audit over a draft claim.
+  - **Blocked:** the heirloom over the launch world, because the launch composes no core3
+    entitlement. Its test stays in the hardware rig.
+  - **Not built:** tier 1 as one story, and the M8a delegation pin.
+  - **A harness gap:** a reboot after a back-room refit (`UnsealedNonTail`).
