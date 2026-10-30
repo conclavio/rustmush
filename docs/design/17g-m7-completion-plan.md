@@ -2349,7 +2349,20 @@ gone from the tree.
     holdings, `@mind/attest` and the surface dispatch's owner read alike (PR #179). The story
     then stops one phase later, at renewal: the holder's retry `+minds/renew 2` prints no
     payment prompt. That failure was already on main, unseen because no run reached it; it is
-    diagnosed on its own branch.
+    diagnosed on its own branch. Two follow-ups came out of it. The holdings rule had first been
+    put inside `own_filed`, the read every title-holder command uses, so an author could not
+    charter a withdrawn revision; #190 moved the rule to the holdings page. The renewal stop
+    was the story's order, not a defect: the story renewed after the withdrawal and the
+    charter transfer. Each blocks a paid renewal: the entitlement reader refuses a withdrawn
+    revision, and the charter's new owner, Cy, would be both the payer and the seller
+    (`distinct_personal_accounts`; doc 17f M7.7: the new owner holds a free owner licence).
+    The story now renews before both.
+  - **A renewal draft that can never land is retried forever** (C4 item, found 2026-10-30 in
+    the same diagnosis). Once a draft's observation refuses for good, the renewal service
+    resubmits it about every 24 IC seconds (165 `NoIntent` retries in one run). Meanwhile the
+    holder's `+minds/renew` only ever answers "Renewal is unavailable or has changed." The
+    service should stop on a lasting refusal, and the holder's line should say why; the
+    wording is the owner's to approve.
   - No clerk settlement could land through the server** (found by the command story's fourth and
     fifth runs of part 3, dispatches 40667921671 and 40694980205, 2026-10-28; fixed on its own
     branch after PR #58). The six clerk services (Roll's pending charters, paid resale, facts and
