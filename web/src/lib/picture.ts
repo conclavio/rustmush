@@ -35,6 +35,27 @@ export const HELM_LEAD_DEG = 30;
 /** How often a held turn's order is extended, milliseconds. */
 export const HELM_REPEAT_MS = 700;
 
+/** Default hull turn rate in millidegrees per second (30°/s, matching TUI `Helm`). */
+export const DEFAULT_TURN_RATE_MDEG_S = 30_000;
+
+/** Minimum heading nudge for a quick real-time tap of `a`/`d`, millidegrees (5°). */
+export const MIN_TAP_TURN_MDEG = 5_000;
+
+/** One full turn in millidegrees. */
+export const FULL_MDEG = 360_000;
+
+/** Wrap millidegrees into `0..360_000`. */
+export function wrap360Mdeg(mdeg: number): number {
+  const m = Math.round(mdeg);
+  return ((m % FULL_MDEG) + FULL_MDEG) % FULL_MDEG;
+}
+
+/** Shortest signed arc `to - from` in `-180_000..=180_000` millidegrees (`helm::arc`). */
+export function arcMdeg(from: number, to: number): number {
+  const d = wrap360Mdeg(to - from);
+  return d > FULL_MDEG / 2 ? d - FULL_MDEG : d;
+}
+
 /** Whether this viewer last wanted the picture (a per-viewer convenience). */
 export const PICTURE_PREF_KEY = "rustmush.picture";
 

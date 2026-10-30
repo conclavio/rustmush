@@ -60,6 +60,8 @@ export class LocalPicture {
     map: unknown,
     lookMdeg: number,
     kind: PictureKind = "cockpit",
+    hullOffsetMdeg = 0,
+    orderedMdeg: number | null = null,
   ): boolean {
     if (kind !== this.#kind) {
       const wasmKind =
@@ -75,7 +77,13 @@ export class LocalPicture {
       this.#m.feed(FEED_MAP, map == null ? null : JSON.stringify(map));
       this.#map = map;
     }
-    if (!this.#m.render(FRAME_W, FRAME_H, { offsetMdeg: lookMdeg })) {
+    if (
+      !this.#m.render(FRAME_W, FRAME_H, {
+        offsetMdeg: hullOffsetMdeg + lookMdeg,
+        hullOffsetMdeg,
+        orderedMdeg,
+      })
+    ) {
       this.#shown = null;
       return false;
     }

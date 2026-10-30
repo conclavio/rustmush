@@ -1549,6 +1549,9 @@ export class GameApp {
   /** A switch that landed on the quarry pulls its frames (doc 20 cut SM.9); one that landed
    * on the market asks its two pages (17g cut C3c). */
   #entered(switched: boolean): boolean {
+    if (switched && this.screens.active === "cockpit") {
+      this.composer?.blur();
+    }
     if (switched && this.screens.active === QUARRY_SCREEN.def.id) {
       this.refreshQuarry();
     }

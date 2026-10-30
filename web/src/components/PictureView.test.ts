@@ -542,4 +542,50 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     expect(paints.get(c)).toBe(4);
     unmount();
   });
+
+  it("handles cockpit flight keys on document.body without requiring .frame focus, while ignoring text inputs", async () => {
+    const { helm, prefill, unmount } = mount(fixtureFrame({ max_speed_kph: 60, reverse_kph: 20 }));
+    await tick();
+    // Key pressed on document.body (not .frame) still works and calls preventDefault.
+    expect(await fireEvent.keyDown(document.body, { key: "w" })).toBe(false);
+    vi.advanceTimersByTime(SPEED_COALESCE_MS);
+    expect(helm.mock.calls).toEqual([["SPEED 6 QUIET"]]);
+
+    // Typing inside an input/textarea is left to the text field (except F1–F6).
+    const input = document.createElement("textarea");
+    document.body.appendChild(input);
+    expect(await fireEvent.keyDown(input, { key: "w" })).toBe(true);
+    expect(await fireEvent.keyDown(input, { key: "F2" })).toBe(false);
+    expect(prefill.mock.calls).toEqual([["ORDER 2 "]]);
+    document.body.removeChild(input);
+    unmount();
+  });
+
+  it("predicts hull rotation smoothly during a held turn and orders the predicted heading on release", async () => {
+    const renderSpy = vi.spyOn(fake.module, "render");
+    const { helm, frame, unmount } = mount(fixtureFrame({ heading_deg: 45, power: "online" }));
+    await settle();
+    await frameTime();
+    await fireEvent.keyDown(frame, { key: "d" });
+    expect(helm.mock.calls).toEqual([["HEADING 75 QUIET"]]);
+
+    // After 500 ms at 30°/s, the 16 ms rAF tick at 462 ms rendered +13_860 mdeg hull offset,
+    // and releasing at 500 ms orders the predicted 60° heading (45° + 15°).
+    vi.advanceTimersByTime(500);
+    await tick();
+    expect(renderSpy).toHaveBeenLastCalledWith(
+      640,
+      480,
+      expect.objectContaining({
+        offsetMdeg: 13_860,
+        hullOffsetMdeg: 13_860,
+        orderedMdeg: 75_000,
+      }),
+    );
+
+    // Releasing the key orders the predicted 60° heading, not the stale 45° keyframe heading.
+    await fireEvent.keyUp(frame, { key: "d" });
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 60 QUIET"]);
+    unmount();
+  });
 });

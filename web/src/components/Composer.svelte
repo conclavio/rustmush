@@ -119,6 +119,9 @@
         return;
       }
       send();
+      if (app.screens.active === "cockpit" && app.picture.on) {
+        blur();
+      }
       return;
     }
     if (ev.key === "Escape") {
