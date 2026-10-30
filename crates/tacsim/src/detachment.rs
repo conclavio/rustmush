@@ -11,16 +11,30 @@ pub mod commands;
 pub mod crew;
 pub mod live;
 pub mod planning;
+pub mod sortie;
 
 pub(crate) fn register_preparation(
     reg: &mut mush_core::Registrar<'_>,
     actions: &std::collections::BTreeMap<String, mush_core::DefinitionRef>,
     outcomes: &std::collections::BTreeMap<String, mush_core::DefinitionRef>,
     unit_authority: bool,
+    ports: &crate::port::families::PortFamilies,
+    black_box: Option<
+        mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>,
+    >,
 ) -> Result<(), mush_core::ModError> {
     let planning = planning::register(reg, actions, outcomes, unit_authority)?;
     let crew = crew::register(reg, actions, outcomes)?;
-    activation::register(reg, actions, outcomes, &planning, &crew, unit_authority)
+    let active = activation::register(reg, actions, outcomes, &planning, &crew, unit_authority)?;
+    sortie::register(
+        reg,
+        actions,
+        outcomes,
+        &active,
+        &crew,
+        ports,
+        (unit_authority, black_box),
+    )
 }
 
 use mush_core::ObjId;

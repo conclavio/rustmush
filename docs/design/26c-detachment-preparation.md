@@ -175,8 +175,55 @@ grant details and no transferable permit. The caller is never impersonated as
 the operator. Without Deploy, preflight withholds unit-condition and operator
 authority details. NPC location is checked only under the organizer's existing
 contract. The report neither stores a ready flag nor certifies a complete
-launch; actual station/lease acquisition, crew capability, mind admission and
-per-unit launch/epoch reconciliation remain the next DT.3 cut.
+launch. DT.3b supplies physical deployment for operators already at real consoles
+with current leases. Automatic NPC seating, crew capability, mind admission and
+field command integration remain subsequent work.
+
+## DT.3b physical deployment and operation history
+
+The physical DT.3 host extends preparation with operation and flight records:
+`tacsim.detachment_operations` freezes the accepted roster per activation;
+`tacsim.detachment_unit_heads` names a unit's current flight;
+`tacsim.detachment_flights` retains every flight under its monotone unit ordinal.
+`tacsim.detachment_flight_index` bounds the outstanding acts visited by the host
+to 1,024 units; closed flights leave that index but retain their history. Each
+operation retains up to 256 flight references, including repeat deployments.
+These are records of actual deployment acts, not a second character-location
+system. The closed v2 movement provider remains unused.
+
+`+sortie/launch` admits a selected set together through the coordinator, with
+current Deploy/OperateCrew guards and real Sim helm witnesses. Every operator
+must be physically inside their unit at its declared console; NPC contracts and
+actual billets remain distinct. The admitted ramp act uses the existing launch
+duration. The bounded host applies each due placement through ordinary Sim APIs,
+then confirms that unit through the coordinator. A lost acknowledgement or restart
+reconciles the same intent against actual placement, without replaying a move.
+Current containment and physical condition are rechecked before the move. Rights
+are checked through admission's final take; later revocation does not erase an
+already admitted act or a completed physical step.
+
+An existing surface excursion and a detachment flight cannot operate the same
+unit concurrently. The ordinary surface-act provider checks the shared unit
+reservation and flight head, including a final owner revision guard. This is an
+action admission check, not interception of walking or other ordinary movement.
+
+The host reuses S.1's IC epoch identity, ROM seal and open/close records, links
+the carrier's existing epoch, and writes the existing black box through its
+owner participant. Detachment context records operation, slot, roster revision,
+launcher and operator. Generic units name their actual bay compartment rather
+than inventing a numbered lease berth. Optional population telemetry is bounded;
+if it cannot be established, the epoch is retained with `unrecorded`, following
+S.1's failure rule, rather than losing a real departure or inventing a count.
+
+`+sortie/recover` admits only a unit already at the ramp and uses the real bay's
+capacity when returning. It preserves damage and records whether its operator
+was actually aboard at confirmation. `+sortie/end` cancels only departures still
+aboard; it never recalls field units or closes their epochs. Returned units may
+relaunch under the same operation with a new flight ordinal and epoch. History
+retains unresolved field units and missing crew. Automatic NPC seating/control
+acquisition and the IC field command/observer driver remain subsequent integration.
+Admitted durations follow continuous world IC time across rate generations.
+An explicit world-time freeze suspends physical steps until time resumes.
 
 ## DT.2b1 ownership and records
 

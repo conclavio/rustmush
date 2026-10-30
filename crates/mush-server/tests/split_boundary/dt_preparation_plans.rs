@@ -45,6 +45,8 @@ async fn fixture(store: &InMemoryStore) -> TestResult<Rig> {
     let stranger = ensure("Planning outsider", ObjKind::Player)?;
     let carrier = ensure("Planning carrier", ObjKind::Thing)?;
     let unit = ensure("Hidden preferred unit name", ObjKind::Thing)?;
+    // Arm real periodic ticks on the same deterministic wall clock used below.
+    world.set_now(100);
     let mut engine =
         Engine::with_modules(world, mush_server::world_task::base_registry(), modules)?;
     mush_server::modules::boot_modules(&mut engine, store).await?;
@@ -114,7 +116,7 @@ async fn commit(
     actor: ObjId,
     line: &str,
 ) -> TestResult {
-    let submission = submit(world, actor, line)?;
+    let submission = submit(world, actor, line).map_err(|error| format!("{line}: {error}"))?;
     stage(world, store, &submission)
         .await
         .map_err(|error| format!("{line}: {error}"))?;
@@ -700,5 +702,498 @@ async fn activation_requires_current_player_readiness_station_and_helm_lease() -
     );
     assert!(accepted.contains("Prepared detachment"), "{accepted}");
     assert!(accepted.contains(&format!("player #{}", rig.invitee.0)));
+    Ok(())
+}
+
+async fn field_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
+    let mut rig = fixture(store).await?;
+    let cab = rig
+        .world
+        .world_mut()
+        .create(ObjKind::Room, "Field unit cockpit", GOD, None)?;
+    rig.world.world_mut().attach_behavior(
+        cab,
+        BehaviorId::new("sim.interior")?,
+        BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    rig.world.world_mut().attach_behavior(
+        rig.unit,
+        BehaviorId::new("sim.participant")?,
+        BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    persist_legacy(&mut rig.world, store).await?;
+    commit(
+        &mut rig.world,
+        store,
+        GOD,
+        &format!("@spatial/space #{}=moving:#{}", cab.0, rig.unit.0),
+    )
+    .await?;
+    seated_fixture(&mut rig, store).await?;
+    ordinary(&mut rig.world, rig.invitee, "+focus/release")?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/unassign #{}=pilot", rig.unit.0),
+    )?;
+    let (hull, ceres, crew, site) = {
+        let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("programme port")?;
+        let row = port.map.hulls.first().ok_or("programme hull")?;
+        let site = rig
+            .world
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .ok_or("tacsim")?
+            .port_maps()
+            .find(|m| m.entry.as_str() == "ahuna_port")
+            .and_then(|m| m.domain)
+            .ok_or("field site domain")?;
+        (
+            ObjId(row.hull),
+            port.map.domain.ok_or("Ceres domain")?,
+            ObjId(
+                *row.rooms
+                    .get(&mush_core::CanonicalId::new("crew")?)
+                    .ok_or("crew room")?,
+            ),
+            site,
+        )
+    };
+    for command in [
+        format!("@asset/transfer #{}=#{}", hull.0, rig.organizer.0),
+        format!("@spatial/place/domain #{}={ceres}", hull.0),
+        // Staff constructs the real bay-equipped variant; no fake HullView or
+        // placement/lease mirror substitutes for its authored port interior.
+        format!("@unit/remove #{}", hull.0),
+        format!("@unit/create #{}=tacsim.unit.dray_p", hull.0),
+    ] {
+        ordinary(&mut rig.world, GOD, &command)?;
+    }
+    rig.carrier = hull;
+    let (bay, slot) = {
+        let view =
+            tacsim::port::ship::hull_view(rig.world.world(), hull).ok_or("real hull view")?;
+        let (bay, room) = view.bay().ok_or("authored physical bay")?;
+        (room, bay.slot.id.to_string())
+    };
+    for command in [
+        format!("@spatial/slot #{}=berths,1", cab.0),
+        format!(
+            "@spatial/place/interior #{}=#{},{}",
+            rig.unit.0, bay.0, slot
+        ),
+        format!(
+            "@spatial/station #{}=pilot,pilot,channels:helm,space:#{}",
+            rig.unit.0, cab.0
+        ),
+        format!("@spatial/assign #{}=pilot,#{}", rig.unit.0, rig.invitee.0),
+        format!("@asset/title #{}=#{}", rig.unit.0, rig.organizer.0),
+        format!("@spatial/place/domain #{}={site}", hull.0),
+    ] {
+        ordinary(&mut rig.world, GOD, &command)?;
+    }
+    rig.world.world_mut().move_to(rig.organizer, crew)?;
+    rig.world.world_mut().move_to(rig.invitee, cab)?;
+    ordinary(
+        &mut rig.world,
+        rig.invitee,
+        &format!("+focus #{}/pilot", rig.unit.0),
+    )?;
+    persist_legacy(&mut rig.world, store).await?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} operate_crew",
+            rig.unit.0, rig.invitee.0
+        ),
+    )
+    .await?;
+    let payload = plan(&rig);
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        &format!("+sortie/draft {payload}"),
+    )
+    .await?;
+    let selected = draft(&rig.world, rig.organizer, 1)?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.invitee,
+        &declaration("accept", &selected),
+    )
+    .await?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.invitee,
+        &format!("@station/handoff #{}/pilot", rig.unit.0),
+    )
+    .await?;
+    install_due_handoff(&mut rig.world, store).await?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.invitee,
+        &declaration("ready", &selected),
+    )
+    .await?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        "+sortie/activate 1:1=combat",
+    )
+    .await?;
+    Ok((rig, cab))
+}
+fn flight(
+    world: &TestWorld,
+    unit: ObjId,
+    ordinal: u64,
+) -> TestResult<tacsim::detachment::sortie::Flight> {
+    let h = world
+        .world()
+        .module_state::<tacsim::detachment::sortie::SortieHandles>()
+        .ok_or("flight handles")?;
+    world
+        .engine()
+        .action_state()
+        .get(
+            &h.flights,
+            &tacsim::detachment::sortie::FlightKey { unit, ordinal },
+        )?
+        .cloned()
+        .ok_or_else(|| "flight missing".into())
+}
+async fn fire_flight(
+    world: &mut TestWorld,
+    store: &InMemoryStore,
+    due: i64,
+) -> TestResult<Box<mush_core::AuthoritativeSubmit>> {
+    let rate = i64::from(world.world().world_timeline().current().rate.max(1));
+    let ahead = due.saturating_sub(world.world().world_ic_now().at).max(0);
+    let real = ((ahead + rate - 1) / rate).max(5);
+    let now = world.world().now().saturating_add(real);
+    world.set_now(now);
+    world.fire_due(now.saturating_mul(1000));
+    persist_legacy(world, store).await?;
+    let mut wanted = None;
+    while let Some(request) = world.engine_mut().take_authoritative_submit() {
+        if request.action.key().id.as_str() == "tacsim_detachment_flight" {
+            wanted = Some(request);
+        }
+    }
+    wanted.ok_or_else(|| "no flight completion queued".into())
+}
+async fn land_request(
+    world: &mut TestWorld,
+    store: &InMemoryStore,
+    request: &mush_core::AuthoritativeSubmit,
+) -> TestResult {
+    stage(world, store, request).await?;
+    let (bundle, installation) = world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("flight bundle")?
+        .into_parts();
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    world.engine_mut().install_composed_action(installation)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_detachment_launch_return_relaunch_and_end_preserve_real_unit_and_epochs()
+-> TestResult {
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = field_fixture(&store).await?;
+    let organizer = rig.organizer;
+    let before = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial")?
+        .parent_of(rig.unit);
+    let request = submit(&mut rig.world, organizer, "+sortie/launch 1:1=all")?;
+    stage(&mut rig.world, &store, &request).await?;
+    assert_eq!(
+        rig.world
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .ok_or("spatial")?
+            .parent_of(rig.unit),
+        before,
+        "prepare cannot move a unit"
+    );
+    let (bundle, installation) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("launch bundle")?
+        .into_parts();
+    assert!(flight(&rig.world, rig.unit, 1).is_err());
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    rig.world
+        .engine_mut()
+        .install_composed_action(installation)?;
+    let departure = flight(&rig.world, rig.unit, 1)?;
+    assert_eq!(departure.phase, Phase::Departing);
+    assert!(departure.epoch.is_none());
+    let finish = fire_flight(&mut rig.world, &store, departure.due.at).await?;
+    assert!(
+        matches!(rig.world.world().module_state::<mush_sim::SpatialState>().ok_or("spatial")?.parent_of(rig.unit),mush_sim::SpatialParent::Direct{domain,..} if domain==departure.domain)
+    );
+    assert_eq!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        Some(cab),
+        "operator travels inside the real unit"
+    );
+    assert_eq!(
+        flight(&rig.world, rig.unit, 1)?.phase,
+        Phase::Departing,
+        "placement alone is not a confirmed history row"
+    );
+    land_request(&mut rig.world, &store, &finish).await?;
+    let field = flight(&rig.world, rig.unit, 1)?;
+    let epoch = field.epoch.as_ref().ok_or("actual hull epoch")?.id;
+    assert_eq!(field.phase, Phase::Field);
+    assert!(
+        !field.epoch.as_ref().ok_or("epoch")?.unrecorded,
+        "actual black box participant must append the opening"
+    );
+    let duplicate = text(&mut rig.world, organizer, "+sortie/launch 1:1=all");
+    assert!(duplicate.contains("already departed"), "{duplicate}");
+    assert!(rig.world.engine_mut().take_authoritative_submit().is_none());
+    commit(&mut rig.world, &store, organizer, "+sortie/recover 1:1=1").await?;
+    let recovering = flight(&rig.world, rig.unit, 1)?;
+    let done = fire_flight(&mut rig.world, &store, recovering.due.at).await?;
+    land_request(&mut rig.world, &store, &done).await?;
+    let returned = flight(&rig.world, rig.unit, 1)?;
+    assert_eq!(returned.phase, Phase::Returned);
+    assert_eq!(returned.epoch.as_ref().ok_or("retained epoch")?.id, epoch);
+    assert!(returned.closed.as_ref().ok_or("return")?.operator_aboard);
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let again = flight(&rig.world, rig.unit, 2)?;
+    let done = fire_flight(&mut rig.world, &store, again.due.at).await?;
+    land_request(&mut rig.world, &store, &done).await?;
+    let again = flight(&rig.world, rig.unit, 2)?;
+    assert_ne!(again.epoch.as_ref().ok_or("next epoch")?.id, epoch);
+    commit(&mut rig.world, &store, organizer, "+sortie/end 1:1").await?;
+    assert_eq!(flight(&rig.world, rig.unit, 2)?.phase, Phase::Field);
+    let report = text(&mut rig.world, organizer, "+sortie/operation 1:1");
+    assert!(
+        report.contains("unresolved, physical epoch remains open"),
+        "{report}"
+    );
+    let hidden = text(
+        &mut rig.world,
+        rig.stranger,
+        &format!("+sortie/history #{}:2", rig.unit.0),
+    );
+    assert!(!hidden.contains("Hull epoch"), "{hidden}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_departure_confirmation_survives_lost_ack_and_restart() -> TestResult {
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = field_fixture(&store).await?;
+    let organizer = rig.organizer;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let departure = flight(&rig.world, rig.unit, 1)?;
+    let request = fire_flight(&mut rig.world, &store, departure.due.at).await?;
+    let ingress = stage(&mut rig.world, &store, &request).await?;
+    let (bundle, installation) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("confirmation bundle")?
+        .into_parts();
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    let receipt = store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    assert_eq!(flight(&rig.world, rig.unit, 1)?.phase, Phase::Departing);
+    drop(installation);
+    drop(rig);
+    let rig = fixture(&store).await?;
+    let restored = flight(&rig.world, rig.unit, 1)?;
+    assert_eq!(restored.phase, Phase::Field);
+    assert!(!restored.epoch.as_ref().ok_or("restored epoch")?.unrecorded);
+    assert_eq!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        Some(cab)
+    );
+    assert!(
+        matches!(rig.world.world().module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial")?.parent_of(rig.unit), mush_sim::SpatialParent::Direct{domain,..}
+        if domain == restored.domain)
+    );
+    let ActionPreflight::Finalized(retry) = ActionCoordinator::preflight(&store, ingress).await?
+    else {
+        return Err("confirmation retry lost its durable receipt".into());
+    };
+    assert_eq!(retry.token(), bundle.token());
+    assert_eq!(retry.outcome(), receipt.outcome());
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_launch_rechecks_presence_and_cancel_retains_history_without_an_epoch()
+-> TestResult {
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = field_fixture(&store).await?;
+    let organizer = rig.organizer;
+    let request = submit(&mut rig.world, organizer, "+sortie/launch 1:1=1")?;
+    stage(&mut rig.world, &store, &request).await?;
+    rig.world
+        .world_mut()
+        .move_to(rig.invitee, mush_core::LIMBO)?;
+    assert!(rig.world.engine_mut().take_staged_action().is_err());
+    assert!(flight(&rig.world, rig.unit, 1).is_err());
+    rig.world.world_mut().move_to(rig.invitee, cab)?;
+    rig.world.set_now(rig.world.world().now() + 1);
+    persist_legacy(&mut rig.world, &store).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        "+sortie/cancel-launch 1:1=1",
+    )
+    .await?;
+    let cancelled = flight(&rig.world, rig.unit, 1)?;
+    assert_eq!(cancelled.phase, Phase::Cancelled);
+    assert!(cancelled.epoch.is_none());
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    assert_eq!(flight(&rig.world, rig.unit, 2)?.phase, Phase::Departing);
+    assert_eq!(flight(&rig.world, rig.unit, 1)?, cancelled);
+    Ok(())
+}
+
+#[tokio::test]
+async fn admitted_physical_launch_survives_rate_change_and_waits_during_freeze() -> TestResult {
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_fixture(&store).await?;
+    let organizer = rig.organizer;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let departure = flight(&rig.world, rig.unit, 1)?;
+    ordinary(&mut rig.world, GOD, "@tacsim/time rate=24")?;
+    ordinary(&mut rig.world, GOD, "@tacsim/time freeze")?;
+    let before = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial")?
+        .parent_of(rig.unit);
+    let now = rig.world.world().now() + 600;
+    rig.world.set_now(now);
+    rig.world.fire_due(now * 1000);
+    while let Some(request) = rig.world.engine_mut().take_authoritative_submit() {
+        assert_ne!(request.action.key().id.as_str(), "tacsim_detachment_flight");
+    }
+    assert_eq!(
+        rig.world
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .ok_or("spatial")?
+            .parent_of(rig.unit),
+        before
+    );
+    ordinary(&mut rig.world, GOD, "@tacsim/time resume")?;
+    let request = fire_flight(&mut rig.world, &store, departure.due.at).await?;
+    land_request(&mut rig.world, &store, &request).await?;
+    assert_eq!(flight(&rig.world, rig.unit, 1)?.phase, Phase::Field);
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_launch_final_take_refuses_a_revoked_deploy_right() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_fixture(&store).await?;
+    let organizer = rig.organizer;
+    let request = submit(&mut rig.world, organizer, "+sortie/launch 1:1=1")?;
+    stage(&mut rig.world, &store, &request).await?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", rig.unit.0, rig.stranger.0),
+    )?;
+    assert!(rig.world.engine_mut().take_staged_action().is_err());
+    assert!(flight(&rig.world, rig.unit, 1).is_err());
+    let handles = rig
+        .world
+        .world()
+        .module_state::<tacsim::detachment::sortie::SortieHandles>()
+        .ok_or("flight handles")?;
+    assert!(
+        rig.world
+            .engine()
+            .action_state()
+            .get(&handles.index, &())?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_departure_before_confirmation_reconciles_after_restart() -> TestResult {
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_fixture(&store).await?;
+    let organizer = rig.organizer;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let departure = flight(&rig.world, rig.unit, 1)?;
+    let _lost_request = fire_flight(&mut rig.world, &store, departure.due.at).await?;
+    let now = rig.world.world().now();
+    assert_eq!(flight(&rig.world, rig.unit, 1)?.phase, Phase::Departing);
+    drop(rig);
+    let mut rig = fixture(&store).await?;
+    rig.world.set_now(now);
+    assert_eq!(flight(&rig.world, rig.unit, 1)?.phase, Phase::Departing);
+    let before = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial")?
+        .parent_of(rig.unit);
+    let request = fire_flight(&mut rig.world, &store, departure.due.at).await?;
+    land_request(&mut rig.world, &store, &request).await?;
+    assert_eq!(flight(&rig.world, rig.unit, 1)?.phase, Phase::Field);
+    assert_eq!(
+        rig.world
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .ok_or("spatial")?
+            .parent_of(rig.unit),
+        before
+    );
     Ok(())
 }

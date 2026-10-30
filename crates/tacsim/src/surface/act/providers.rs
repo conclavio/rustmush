@@ -43,6 +43,14 @@ pub(super) fn reading_fixed(
 }
 
 impl ActionProvider for SurfaceActProvider {
+    fn resolved_revision_keys(
+        &self,
+        resolved: &mush_core::ResolvedActionInvocation,
+    ) -> Result<Vec<mush_core::RevisionKey>, ActionError> {
+        Ok(vec![crate::detachment::sortie::availability_key(tv_of(
+            parameters_of(resolved.invocation())?,
+        )?)?])
+    }
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         let parameters = parameters_of(invocation)?;
         tv_of(parameters)?;
@@ -62,13 +70,15 @@ impl ActionProvider for SurfaceActProvider {
         }
         let w: &World = &engine.world;
         let actor = query.actor();
-        let rigs = operator_rigs(w, actor);
+        let mut rigs = operator_rigs(w, actor);
         // The lead's pre-commit round, item 3: the actor's leased rigs off the helm, offered only
         // their plan's variants below.
-        let off_helm: Vec<RigAt> = leased_rigs(w, actor)
+        let mut off_helm: Vec<RigAt> = leased_rigs(w, actor)
             .into_iter()
             .filter(|rig| rigs.iter().all(|at| at.tv != rig.tv))
             .collect();
+        rigs.retain(|rig| crate::detachment::sortie::offer_available(engine, rig.tv));
+        off_helm.retain(|rig| crate::detachment::sortie::offer_available(engine, rig.tv));
         if rigs.is_empty() && off_helm.is_empty() {
             return Ok(None);
         }
@@ -416,6 +426,18 @@ impl SurfaceActProvider {
         let parameters = parameters_of(invocation)?;
         let actor = invocation.actor();
         let tv = tv_of(parameters)?;
+        if let Some(context) = context.as_ref() {
+            crate::detachment::sortie::require_available(
+                context.world().map_err(|_| {
+                    port_error(
+                        ActionErrorCode::ProviderRejected,
+                        "Surface world unavailable.",
+                    )
+                })?,
+                txn,
+                tv,
+            )?;
+        }
         let ordinal = ordinal_of(parameters)?;
         let now = now_of(parameters)?;
         let word = act_param(parameters)?;

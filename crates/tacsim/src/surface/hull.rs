@@ -307,7 +307,9 @@ const fn host_word(host: EpochHost) -> &'static str {
 /// `the bay of <carrier>` or the port's name.
 fn hangar_words(w: &World, hangar: &Hangar) -> String {
     match hangar {
-        Hangar::Bay { hull, .. } => format!("the bay of {}", crate::port::coop::name_of(w, *hull)),
+        Hangar::Bay { hull, .. } | Hangar::Compartment { hull, .. } => {
+            format!("the bay of {}", crate::port::coop::name_of(w, *hull))
+        }
         Hangar::Port { entry, base } => crate::port::voyage::lane_ports(w)
             .into_iter()
             .find_map(|(def, map)| {
