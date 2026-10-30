@@ -342,7 +342,6 @@ fn custody(seed: u64) -> CustodyOut {
         mode: tacsim::arena::MatchMode::Skirmish,
         host: tacsim::arena::FieldHost::all_hostile(),
     }
-    host: tacsim::arena::FieldHost::all_hostile(),
 }
 
 /// A fast, chatty arena, so a test sees several pulses and several **closed**

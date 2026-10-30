@@ -1891,12 +1891,12 @@ mod tests {
             // 16b cut D.3 (`B-33`): an end with a winner, and an end with none —
             // neither of them an abort and neither of them a void.
             (
-                EndReason::Conceded { winner: PartyId::RED },
+                EndReason::Conceded { winner: Some(PartyId::RED) },
                 MatchState::Ended,
                 MatchOutcome::Red,
             ),
             (
-                EndReason::Conceded { winner: PartyId::BLUE },
+                EndReason::Conceded { winner: Some(PartyId::BLUE) },
                 MatchState::Ended,
                 MatchOutcome::Blue,
             ),
@@ -1939,7 +1939,10 @@ mod tests {
     /// A running record of a 2 v 1: red 101 (pilot 5, `RA`) and 102 (a machine,
     /// `RB`), blue 201 (pilot 6, `BA`).
     fn v2_record() -> MatchRecord {
-        let slot = |team: PartyId, slot: u16| Designator::Slot { team, slot };
+        let slot = |team: PartyId, slot: u16| Designator::Unit {
+            party: team,
+            letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
+        };
         MatchRecord {
             id: MatchId(12),
             state: MatchState::Running,
@@ -2381,7 +2384,7 @@ mod tests {
             EndReason::Spent,
             // 16b cut O.1.
             EndReason::Hold { winner: PartyId::RED },
-            EndReason::Conceded { winner: PartyId::BLUE },
+            EndReason::Conceded { winner: Some(PartyId::BLUE) },
             EndReason::Unattended,
             EndReason::Timeout,
             EndReason::Abort,

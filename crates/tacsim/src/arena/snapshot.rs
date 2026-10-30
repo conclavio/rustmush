@@ -1654,10 +1654,7 @@ mod tests {
                 (ObjId(4), ContactId(u64::MAX)),
                 (
                     9_000_i64,
-                    Designator::Slot {
-                        team: PartyId::BLUE,
-                        slot: 1,
-                    },
+                    Designator::Unit { party: PartyId::BLUE, letter: 'A' },
                 ),
             )]),
         });

@@ -261,7 +261,6 @@ fn custody() -> CustodyOut {
         mode: tacsim::arena::MatchMode::Skirmish,
         host: tacsim::arena::FieldHost::all_hostile(),
     }
-    host: tacsim::arena::FieldHost::all_hostile(),
 }
 
 /// How many unacknowledged chunks the arena tolerates before it voids the match

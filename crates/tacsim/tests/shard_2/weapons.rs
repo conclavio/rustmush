@@ -2223,10 +2223,7 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
     let renamed = cockpit::lock_designator(&named_frame).expect("the lock is still on a held row");
     assert_eq!(
         renamed,
-        Designator::Slot {
-            team: PartyId::BLUE,
-            slot: 1
-        },
+        Designator::Unit { party: PartyId::BLUE, letter: 'A' },
         "the lock now renders as the target's own callsign"
     );
     assert_eq!(renamed.to_string(), "BA");

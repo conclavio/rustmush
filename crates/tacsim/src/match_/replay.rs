@@ -1887,7 +1887,10 @@ mod tests {
     const BB: ObjId = ObjId(202);
 
     fn slot(team: PartyId, slot: u16) -> Designator {
-        Designator::Slot { team, slot }
+        Designator::Unit {
+            party: team,
+            letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
+        }
     }
 
     /// A pose at a cell's centre on 1,000 cm cells.

@@ -396,10 +396,7 @@ pub(crate) mod fixture {
 
     /// The hostile's designator, `BB`.
     pub(crate) const fn hostile_designator() -> Designator {
-        Designator::Slot {
-            team: PartyId::BLUE,
-            slot: 2,
-        }
+        Designator::Unit { party: PartyId::BLUE, letter: 'B' }
     }
 
     /// **The full view**: a red hull at cell (1, 4) of the test window,
@@ -413,11 +410,8 @@ pub(crate) mod fixture {
         let hostile = named(HOSTILE, hostile_designator());
         MindView {
             unit: UNIT.0,
-            callsign: Designator::Slot {
-                team: PartyId::RED,
-                slot: 1,
-            },
-            team: PartyId::RED,
+            callsign: Designator::Unit { party: PartyId::RED, letter: 'A' },
+            party: PartyId::RED,
             cell: Some((1, 4)),
             mode: crate::arena::state::MatchMode::Hold,
             objective: Some(crate::arena::state::HoldObjective {
@@ -631,6 +625,7 @@ pub(crate) mod fixture {
                     designator: hostile_designator(),
                     alias: Some(3),
                     class: Classification::Classified { party: PartyId::BLUE },
+                    relation: crate::arena::party::Relation::Hostile,
                     friendly: false,
                     moving: false,
                     bearing_deg: 90,
@@ -654,12 +649,10 @@ pub(crate) mod fixture {
                 },
                 ViewContact {
                     id: FRIEND,
-                    designator: Designator::Slot {
-                        team: PartyId::RED,
-                        slot: 2,
-                    },
+                    designator: Designator::Unit { party: PartyId::RED, letter: 'B' },
                     alias: None,
                     class: Classification::Classified { party: PartyId::RED },
+                    relation: crate::arena::party::Relation::Friend,
                     friendly: true,
                     moving: false,
                     bearing_deg: 0,
@@ -679,6 +672,7 @@ pub(crate) mod fixture {
                     designator: Designator::Provisional(5),
                     alias: None,
                     class: Classification::Unknown,
+                    relation: crate::arena::party::Relation::Unknown,
                     friendly: false,
                     moving: false,
                     bearing_deg: 135,

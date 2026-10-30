@@ -74,7 +74,6 @@ fn blue() -> [Muster; 2] {
 /// The custody of the mixed field at `seed`.
 fn custody(world: &mush_testkit::TestWorld, seed: u64) -> CustodyOut {
     shipped_custody_seeded(world, &[&red(), &blue()], seed)
-    host: tacsim::arena::FieldHost::all_hostile(),
 }
 
 /// **The match rules every run here plays under**: the shipped rules with

@@ -3027,8 +3027,8 @@ fn l2_running_match(
     let mut seated = Vec::new();
     for (pilot, team) in pilots.iter().zip(sides) {
         let entry = match team {
-            PartyId::RED => tacsim::match_::RED_ROOM_ENTRY,
-            PartyId::BLUE => tacsim::match_::BLUE_ROOM_ENTRY,
+            &PartyId::RED => tacsim::match_::RED_ROOM_ENTRY,
+            _ => tacsim::match_::BLUE_ROOM_ENTRY,
         };
         let room = tacsim::match_::centre_object(tw.world(), entry).expect("a centre room");
         tw.world_mut()

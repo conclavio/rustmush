@@ -1891,10 +1891,7 @@ mod tests {
         // The callsign is a fact about the check-out, not about the match.
         let mut renamed = two_tanks();
         if let Some(unit) = renamed.unit_mut(ObjId(9)) {
-            unit.callsign = crate::arena::state::Designator::Slot {
-                team: PartyId::BLUE,
-                slot: 9,
-            };
+            unit.callsign = crate::arena::state::Designator::Unit { party: PartyId::BLUE, letter: 'I' };
         }
         assert_eq!(state_hash(&renamed), base);
     }

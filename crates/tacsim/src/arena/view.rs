@@ -594,6 +594,7 @@ mod tests {
             designator,
             alias,
             class: SmolStr::new_static("blue"),
+            relation: crate::arena::party::Relation::Hostile,
             bearing_deg: 87,
             relative_deg: 32,
             band: SmolStr::new_static("effective"),
@@ -612,10 +613,7 @@ mod tests {
     /// **17b cut M1a.3**: with the aspect and the odds after the age.
     #[test]
     fn a_contact_row_renders_its_designator_in_a_column_of_four() {
-        let slot = Designator::Slot {
-            team: crate::arena::state::PartyId::BLUE,
-            slot: 1,
-        };
+        let slot = Designator::Unit { party: crate::arena::state::PartyId::BLUE, letter: 'A' };
         assert_eq!(
             row(ContactId(7), slot, Some(2)).render(),
             "BA  blue  bearing 087° (rel 032°)  effective  450 m  2 s  side  cannon 62%"
@@ -634,10 +632,7 @@ mod tests {
     /// at the aspect.
     #[test]
     fn m1a3_the_row_ends_in_the_aspect_and_the_main_guns_odds() {
-        let slot = Designator::Slot {
-            team: crate::arena::state::PartyId::BLUE,
-            slot: 1,
-        };
+        let slot = Designator::Unit { party: crate::arena::state::PartyId::BLUE, letter: 'A' };
         let mut far = row(ContactId(7), slot, None);
         far.band = SmolStr::new_static("far");
         assert_eq!(

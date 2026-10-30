@@ -510,9 +510,9 @@ mod tests {
     }
 
     fn slot(slot: u16) -> Designator {
-        Designator::Slot {
-            team: PartyId::BLUE,
-            slot,
+        Designator::Unit {
+            party: PartyId::BLUE,
+            letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
         }
     }
 
@@ -993,10 +993,7 @@ mod tests {
             Some("unknown"),
             "the wire's word is unchanged"
         );
-        let red = Designator::Slot {
-            team: PartyId::RED,
-            slot: 1,
-        };
+        let red = Designator::Unit { party: PartyId::RED, letter: 'A' };
         let lines = crate::match_::cockpit::catchup_lines(red, report);
         assert_eq!(
             lines.get(1).map(String::as_str),

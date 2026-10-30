@@ -43,7 +43,7 @@ use smol_str::SmolStr;
 
 use crate::arena::CardChange;
 use crate::arena::intents::IntentKind;
-use crate::arena::state::{Controller, Designator, StopReason, PartyId};
+use crate::arena::state::{Controller, PartyId, StopReason};
 use crate::arena_bridge::{ArenaRegistry, CardSource};
 use crate::arena_task::{ArenaMsg, MatchId};
 

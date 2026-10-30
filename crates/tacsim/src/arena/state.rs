@@ -5766,49 +5766,38 @@ mod tests {
         }
     }
 
-    /// The spelling of a designator, at each of the three shapes that matter: the
-    /// provisional number, a slot inside the alphabet, and the first slot past it.
+    /// The spelling of a designator (doc 32 Q-CF-11): the provisional number,
+    /// and the two letters — party, then unit — whatever the party.
     #[test]
-    fn a_designator_spells_a_number_a_letter_and_the_roll_past_z() {
+    fn a_designator_spells_a_number_or_two_letters() {
         assert_eq!(Designator::Provisional(1).to_string(), "X1");
         assert_eq!(Designator::Provisional(12).to_string(), "X12");
-        for (slot, spelling) in [
-            (1_u16, "RA"),
-            (2, "RB"),
-            (12, "RL"),
-            (26, "RZ"),
-            (27, "RAA"),
-            (28, "RAB"),
-            (52, "RAZ"),
-            (53, "RBA"),
-        ] {
-            assert_eq!(
-                Designator::Slot {
-                    team: PartyId::RED,
-                    slot,
-                }
-                .to_string(),
-                spelling
-            );
-        }
         assert_eq!(
-            Designator::Slot {
-                team: PartyId::BLUE,
-                slot: 3,
+            Designator::Unit {
+                party: PartyId::BLUE,
+                letter: 'C'
             }
             .to_string(),
             "BC"
         );
-        // A slot of zero is a name nothing resolves, not a panic: `Arena::new`
-        // never produces one.
+        let third = PartyId::nth(6).expect("the seventh letter");
         assert_eq!(
-            Designator::Slot {
-                team: PartyId::BLUE,
-                slot: 0,
+            Designator::Unit {
+                party: third,
+                letter: 'K'
             }
             .to_string(),
-            "B"
+            "GK"
         );
+        assert_eq!(
+            Designator::Unit {
+                party: third,
+                letter: 'K'
+            }
+            .party(),
+            Some(third)
+        );
+        assert_eq!(Designator::Provisional(3).party(), None);
     }
 
     /// **16b cut Q.1**: a number is the viewer's own, issued in first-seen order,
@@ -6367,7 +6356,7 @@ mod tests {
         }
         assert!(Channel::parse("helms").is_none());
         assert!(Channel::parse("HELM").is_none());
-        assert_eq!(PartyId::RED.other(), PartyId::BLUE);
+        assert_eq!(PartyId::RED.ooc_other(), PartyId::BLUE);
         assert_eq!(Side::Left.as_str(), "left");
         assert_eq!(Power::Online.code(), 2);
         assert_eq!(ContactId(0x1234).to_string(), "0000000000001234");

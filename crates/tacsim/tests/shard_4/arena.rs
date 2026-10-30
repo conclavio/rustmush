@@ -3419,11 +3419,11 @@ fn a_concede_and_an_unattended_match_end_with_their_own_reason() {
     for (stop, reason) in [
         (
             StopReason::Concede { by: PartyId::RED },
-            EndReason::Conceded { winner: PartyId::BLUE },
+            EndReason::Conceded { winner: Some(PartyId::BLUE) },
         ),
         (
             StopReason::Concede { by: PartyId::BLUE },
-            EndReason::Conceded { winner: PartyId::RED },
+            EndReason::Conceded { winner: Some(PartyId::RED) },
         ),
         (StopReason::Unattended, EndReason::Unattended),
         (StopReason::Abort, EndReason::Abort),
@@ -3502,7 +3502,9 @@ fn one_scripted_stop_at_three_cadences_is_one_end_one_event_list_and_one_hash_se
             assert_eq!(
                 arena.ended.map(|end| end.reason),
                 Some(match stop {
-                    StopReason::Concede { by } => EndReason::Conceded { winner: by.other() },
+                    StopReason::Concede { by } => EndReason::Conceded {
+                        winner: Some(by.ooc_other()),
+                    },
                     _ => EndReason::Unattended,
                 }),
                 "{stop:?} at {cadence} ms did not end the match"

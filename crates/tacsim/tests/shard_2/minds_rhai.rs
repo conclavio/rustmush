@@ -2773,13 +2773,13 @@ fn kernels_by_hand(view: &MindView, def: &ArenaDefinition) -> Memory {
     );
     put(
         "entry",
-        cell_value(motor::entry_cell(def, view.team, CostRow::Tracked, here)),
+        cell_value(motor::entry_cell(def, view.party, CostRow::Tracked, here)),
     );
     put(
         "far",
         cell_value(motor::far_entry_cell(
             def,
-            view.team,
+            view.party,
             CostRow::Tracked,
             here,
             &[],

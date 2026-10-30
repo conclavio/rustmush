@@ -519,9 +519,9 @@ mod tests {
         );
         contact.seen_condition = Some(reading);
         contact.own_seen.as_mut().unwrap().condition = Some(reading);
-        let designator = Designator::Slot {
-            team: PartyId::BLUE,
-            slot: u16::MAX,
+        let designator = Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'Z',
         };
         let loss = DueEvent {
             t_ms: i64::MIN,

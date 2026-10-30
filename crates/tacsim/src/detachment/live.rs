@@ -1045,9 +1045,9 @@ mod tests {
             .map(|unit| {
                 (
                     *unit,
-                    Designator::Slot {
-                        team: PartyId::RED,
-                        slot: unit.0 as u16,
+                    Designator::Unit {
+                        party: PartyId::RED,
+                        letter: char::from(b'A'.saturating_add(unit.0 as u8 % 23)),
                     },
                 )
             })

@@ -114,7 +114,7 @@ use crate::arena::motor::{
 };
 use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
 use crate::arena::state::{
-    ArenaDefinition, Classification, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldObjective,
+    ArenaDefinition, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldObjective,
     Power,
 };
 use crate::arena::weapons::{
@@ -1981,6 +1981,7 @@ mod tests {
     use mush_core::ObjId;
 
     use super::*;
+    use crate::arena::state::Classification;
     /// Class I's slots (17b cut M3.2: the row's figure, read off the class
     /// table — the constant is left to its definition and its row-I pin).
     const CLASS_I_SLOTS: usize = crate::arena::core::ClassTable::STOCK
@@ -2013,6 +2014,7 @@ mod tests {
                 resolution: resolution(),
                 seed: 2_350,
                 mode: MatchMode::Skirmish,
+                host: crate::arena::FieldHost::all_hostile(),
             },
             &ArenaConfig::default(),
             &MatchConfig::default(),

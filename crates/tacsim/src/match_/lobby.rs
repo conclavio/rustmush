@@ -52,7 +52,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::core::CoreClass;
-use crate::arena::state::{Designator, EndReason, MatchMode, StopReason, PartyId};
+use crate::arena::state::{EndReason, MatchMode, PartyId, StopReason};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::config::{ArenaConfig, CommandConfig, MatchConfig, MindsConfig, SensorsConfig};

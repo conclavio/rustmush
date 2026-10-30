@@ -665,7 +665,7 @@ mod tests {
             kind: NoticeKind::Classified,
             contact: Named {
                 id: ContactId(1),
-                designator: Designator::Slot { team, slot: 1 },
+                designator: Designator::Unit { party: team, letter: 'A' },
             },
             class: Classification::Classified { party: team },
             was: None,

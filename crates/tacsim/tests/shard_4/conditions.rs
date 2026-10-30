@@ -2843,10 +2843,7 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     // a refusal carrying the floor.
     let named = tacsim::arena::perception::Named {
         id: contact_of(BLUE, RED),
-        designator: tacsim::arena::state::Designator::Slot {
-            team: PartyId::RED,
-            slot: 1,
-        },
+        designator: tacsim::arena::state::Designator::Unit { party: PartyId::RED, letter: 'A' },
     };
     let mut carried = vec![
         FrameNotice::SlotFired {

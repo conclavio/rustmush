@@ -5788,7 +5788,10 @@ mod tests {
     /// a lance-leader persona and `BC` (`XA`) sealed with no principal.
     fn dropped_record(ada: ObjId, bo: ObjId) -> crate::match_::MatchRecord {
         use crate::arena::state::Designator;
-        let slot = |team: PartyId, slot: u16| Designator::Slot { team, slot };
+        let slot = |team: PartyId, slot: u16| Designator::Unit {
+            party: team,
+            letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
+        };
         let sealed = |unit: ObjId, principal: Option<CharacterRef>| {
             (
                 unit,

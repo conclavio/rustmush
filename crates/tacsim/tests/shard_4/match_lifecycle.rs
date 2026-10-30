@@ -692,7 +692,9 @@ async fn aa2_the_deadline_drops_a_lead_and_the_heir_can_concede() {
     );
     assert_eq!(
         rig.centre().outcome_reason,
-        Some(tacsim::arena::EndReason::Conceded { winner: PartyId::BLUE })
+        Some(tacsim::arena::EndReason::Conceded {
+            winner: Some(PartyId::BLUE),
+        })
     );
     let board = staff_board(&rig);
     assert!(
@@ -1063,7 +1065,7 @@ async fn every_pod_resolves_to_its_own_tank_by_id_and_never_by_name() {
                 "{} Tank {index}",
                 match team {
                     PartyId::RED => "Red",
-                    PartyId::BLUE => "Blue",
+                    _ => "Blue",
                 }
             );
             assert_eq!(name, expected);
@@ -3113,7 +3115,9 @@ async fn d3_a_lead_concedes_and_the_other_side_wins() {
     // the egress driven by hand, carrying the cells the loser's tank came back
     // with.
     rig.end_match_returning(
-        tacsim::arena::EndReason::Conceded { winner: PartyId::BLUE },
+        tacsim::arena::EndReason::Conceded {
+            winner: Some(PartyId::BLUE),
+        },
         &[damaged],
     );
     assert_eq!(rig.state(), MatchState::Ended, "a concede is not an abort");
@@ -3123,7 +3127,9 @@ async fn d3_a_lead_concedes_and_the_other_side_wins() {
     );
     assert_eq!(
         rig.centre().outcome_reason,
-        Some(tacsim::arena::EndReason::Conceded { winner: PartyId::BLUE })
+        Some(tacsim::arena::EndReason::Conceded {
+            winner: Some(PartyId::BLUE),
+        })
     );
     // **The tanks stand as evidence**: a concede is a result and not a void, so
     // the check-in **committed** the arena's cells rather than restoring the
@@ -3161,7 +3167,9 @@ async fn d3_the_board_names_the_winner_of_a_concede_either_way() {
         ),
         "{said}"
     );
-    rig.end_match(tacsim::arena::EndReason::Conceded { winner: PartyId::RED });
+    rig.end_match(tacsim::arena::EndReason::Conceded {
+            winner: Some(PartyId::RED),
+        });
     assert_eq!(
         rig.centre().outcome,
         Some(tacsim::match_::MatchOutcome::Red)
@@ -4064,7 +4072,6 @@ fn replacement_custody(rig: &Rig) -> tacsim::arena::state::CustodyOut {
         mode: tacsim::arena::MatchMode::Skirmish,
         host: tacsim::arena::FieldHost::all_hostile(),
     }
-    host: tacsim::arena::FieldHost::all_hostile(),
 }
 
 /// **A busy arena is told to try again, and nothing changes** (16b cut M.1,

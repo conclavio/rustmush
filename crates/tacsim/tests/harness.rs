@@ -7554,7 +7554,7 @@ const BLUE_LEAD: ObjId = ObjId(2_001);
 const fn lead_of(team: tacsim::arena::state::PartyId) -> ObjId {
     match team {
         tacsim::arena::state::PartyId::RED => RED_LEAD,
-        tacsim::arena::state::PartyId::BLUE => BLUE_LEAD,
+        _ => BLUE_LEAD,
     }
 }
 
@@ -8398,6 +8398,7 @@ fn lance_field_arena(units: u32) -> tacsim::arena::state::Arena {
             resolution: tacsim::match_::resolution_for(catalog),
             seed: DEFAULT_SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &tacsim::config::ArenaConfig {
             squad_size: 4,

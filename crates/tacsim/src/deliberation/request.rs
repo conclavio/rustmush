@@ -46,7 +46,7 @@ use mush_llm::{
 
 pub use crate::arena::command::BriefObjective;
 use crate::arena::command::{SignalReason, SquadSignal};
-use crate::arena::state::{Classification, ContactId};
+use crate::arena::state::ContactId;
 use crate::deliberation::order::{
     CharacterRef, Constraints, MAX_HORIZON_MS, MAX_TTL_MS, MIN_TTL_MS, Objective, Order, RangeBand,
 };
@@ -703,6 +703,7 @@ pub fn reason_of(brief: &SquadBrief) -> SignalReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arena::state::Classification;
     use crate::arena::command::{SignalContact, SignalMember, SquadDigest};
     use crate::arena::doctrine::MachineState;
     use crate::arena::state::PartyId;
@@ -727,12 +728,14 @@ mod tests {
                 SignalContact {
                     id: ContactId(0x2a),
                     class: Classification::Classified { party: PartyId::BLUE },
+                    relation: crate::arena::party::Relation::Hostile,
                     bearing_mdeg: 90_000,
                     range_cm: 1_000,
                 },
                 SignalContact {
                     id: ContactId(0x2b),
                     class: Classification::Unknown,
+                    relation: crate::arena::party::Relation::Unknown,
                     bearing_mdeg: 180_000,
                     range_cm: 9_000,
                 },
@@ -861,6 +864,7 @@ mod tests {
         stock.contacts = vec![SignalContact {
             id: ContactId(0x2a),
             class: Classification::Classified { party: PartyId::BLUE },
+            relation: crate::arena::party::Relation::Hostile,
             bearing_mdeg: 90_000,
             range_cm: 45_000,
         }];

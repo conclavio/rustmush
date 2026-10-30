@@ -170,7 +170,10 @@ mod tests {
     fn row(unit: u32, team: PartyId, slot: u16, cell: Option<(u16, u16)>) -> ObserverUnit {
         ObserverUnit {
             unit: ObjId(unit),
-            callsign: Designator::Slot { team, slot },
+            callsign: Designator::Unit {
+                party: team,
+                letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
+            },
             team,
             cell,
             heading_mdeg: 90_400,

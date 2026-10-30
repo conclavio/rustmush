@@ -155,18 +155,12 @@ const X2_ID: ContactId = ContactId(0x2222_2222_2222_2222);
 const RB_ID: ContactId = ContactId(0x3333_3333_3333_3333);
 
 fn ba() -> Designator {
-    Designator::Slot {
-        team: PartyId::BLUE,
-        slot: 1,
-    }
+    Designator::Unit { party: PartyId::BLUE, letter: 'A' }
 }
 
 /// The own side's second tank: a friend on a red frame.
 fn rb() -> Designator {
-    Designator::Slot {
-        team: PartyId::RED,
-        slot: 2,
-    }
+    Designator::Unit { party: PartyId::RED, letter: 'B' }
 }
 
 /// [`frame`] with a friend `RB` beside the two contacts, and the lock on it: the
@@ -178,6 +172,7 @@ fn friendly_frame() -> Frame {
         designator: rb(),
         alias: Some(2),
         class: Classification::Classified { party: PartyId::RED },
+        relation: tacsim::arena::Relation::Hostile,
         bearing_mdeg: 180_000,
         range_cm: 12_000,
         age_ms: 0,
@@ -234,10 +229,7 @@ fn frame() -> Frame {
         unit_type: "tacsim.unit.line_tank".into(),
         side_unit_types: vec!["tacsim.unit.line_tank".into()],
         sensor_height_cm: 150,
-        callsign: Designator::Slot {
-            team: PartyId::RED,
-            slot: 1,
-        },
+        callsign: Designator::Unit { party: PartyId::RED, letter: 'A' },
         cell: Some((100, 97)),
         mode: tacsim::arena::state::MatchMode::Skirmish,
         objective: None,
@@ -264,6 +256,7 @@ fn frame() -> Frame {
                 designator: ba(),
                 alias: Some(1),
                 class: Classification::Classified { party: PartyId::BLUE },
+                relation: tacsim::arena::Relation::Hostile,
                 bearing_mdeg: 87_000,
                 range_cm: 45_000,
                 age_ms: 1_200,
@@ -282,6 +275,7 @@ fn frame() -> Frame {
                 designator: Designator::Provisional(2),
                 alias: None,
                 class: Classification::Unknown,
+                relation: tacsim::arena::Relation::Unknown,
                 bearing_mdeg: 315_000,
                 range_cm: 25_300,
                 age_ms: 3_500,
@@ -1500,10 +1494,7 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
         }),
     };
     let block = cockpit::catchup_lines(
-        Designator::Slot {
-            team: PartyId::RED,
-            slot: 1,
-        },
+        Designator::Unit { party: PartyId::RED, letter: 'A' },
         &catchup,
     );
     let lines = reader.say(&block.join("\n"));
@@ -3151,10 +3142,7 @@ fn m5_3_the_release_words_read_as_the_bot_reads_them() {
         }),
     };
     let block = cockpit::catchup_lines(
-        Designator::Slot {
-            team: PartyId::RED,
-            slot: 1,
-        },
+        Designator::Unit { party: PartyId::RED, letter: 'A' },
         &catchup,
     );
     let d14 = "  The machine was flying on its own mind under no order.";

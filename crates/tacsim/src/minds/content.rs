@@ -229,6 +229,7 @@ mod tests {
                 resolution: resolution(),
                 seed: 2_350,
                 mode: MatchMode::Skirmish,
+                host: crate::arena::FieldHost::all_hostile(),
             },
             &ArenaConfig::default(),
             &MatchConfig::default(),

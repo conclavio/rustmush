@@ -2532,16 +2532,13 @@ mod fixture {
             unit_type: "tacsim.unit.line_tank".into(),
             side_unit_types: vec!["tacsim.unit.line_tank".into()],
             sensor_height_cm: 150,
-            callsign: Designator::Slot {
-                team: PartyId::RED,
-                slot: 1,
-            },
+            callsign: Designator::Unit { party: PartyId::RED, letter: 'A' },
             cell: Some(YOU),
             mode: tacsim::arena::state::MatchMode::Skirmish,
             objective: None,
             motor: None,
             own_last_hit_ms: None,
-            team: PartyId::RED,
+            party: PartyId::RED,
             pose: Pose {
                 x_cm: i64::from(YOU.0) * 1_000 + 500,
                 y_cm: i64::from(YOU.1) * 1_000 + 500,
@@ -2576,12 +2573,10 @@ mod fixture {
                 // Classified hostile, read two seconds ago, and the lock.
                 FrameContact {
                     id: HOSTILE,
-                    designator: Designator::Slot {
-                        team: PartyId::BLUE,
-                        slot: 1,
-                    },
+                    designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
                     alias: Some(1),
                     class: Classification::Classified { party: PartyId::BLUE },
+                    relation: tacsim::arena::Relation::Hostile,
                     moving: false,
                     bearing_mdeg: 45_000,
                     range_cm: 43_000,
@@ -2605,12 +2600,10 @@ mod fixture {
                 // what keeps its chassis out of `scan_tables`.
                 FrameContact {
                     id: FRIEND,
-                    designator: Designator::Slot {
-                        team: PartyId::RED,
-                        slot: 2,
-                    },
+                    designator: Designator::Unit { party: PartyId::RED, letter: 'B' },
                     alias: None,
                     class: Classification::Classified { party: PartyId::RED },
+                    relation: tacsim::arena::Relation::Hostile,
                     moving: false,
                     bearing_mdeg: 270_000,
                     range_cm: 12_000,
@@ -2631,6 +2624,7 @@ mod fixture {
                     designator: Designator::Provisional(3),
                     alias: None,
                     class: Classification::Unknown,
+                    relation: tacsim::arena::Relation::Unknown,
                     moving: false,
                     bearing_mdeg: 315_000,
                     range_cm: 22_000,
@@ -2652,6 +2646,7 @@ mod fixture {
                     designator: Designator::Provisional(4),
                     alias: None,
                     class: Classification::Unknown,
+                    relation: tacsim::arena::Relation::Unknown,
                     moving: false,
                     bearing_mdeg: 30_000,
                     range_cm: 58_000,
@@ -2685,10 +2680,7 @@ mod fixture {
                 FrameNotice::TargetSectionLost {
                     contact: Named {
                         id: HOSTILE,
-                        designator: Designator::Slot {
-                            team: PartyId::BLUE,
-                            slot: 1,
-                        },
+                        designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
                     },
                     section: SmolStr::new_static("turret"),
                 },
@@ -4420,7 +4412,7 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
     // an unidentified blip, so one frame carries all three answers.
     let mut seen = rig.held_frame(0);
     seen.notices.clear();
-    let other = if seen.team == PartyId::RED {
+    let other = if seen.party == PartyId::RED {
         PartyId::BLUE
     } else {
         PartyId::RED
@@ -4430,6 +4422,13 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
         designator,
         alias: None,
         class,
+        relation: match class {
+            Classification::Unknown => tacsim::arena::Relation::Unknown,
+            Classification::Classified { party } if party == seen.party => {
+                tacsim::arena::Relation::Own
+            }
+            Classification::Classified { .. } => tacsim::arena::Relation::Hostile,
+        },
         moving: false,
         bearing_mdeg: 45_000,
         range_cm: 12_000,
@@ -4444,18 +4443,12 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
     };
     let friend = row(
         0xa1a1_a1a1_a1a1_a1a1,
-        Designator::Slot {
-            team: seen.team,
-            slot: 2,
-        },
-        Classification::Classified { party: seen.team },
+        Designator::Unit { party: seen.party, letter: 'B' },
+        Classification::Classified { party: seen.party },
     );
     let hostile = row(
         0xb2b2_b2b2_b2b2_b2b2,
-        Designator::Slot {
-            team: other,
-            slot: 1,
-        },
+        Designator::Unit { party: other, letter: 'A' },
         Classification::Classified { party: other },
     );
     let blip = row(
@@ -4941,10 +4934,7 @@ async fn d3_status_brackets_a_refitted_chassis_and_nothing_else() {
     // frame carrying **blue 1's** slot: without the second question the line would
     // bracket its chassis against the authored type of a pod it was never in.
     let mut stray = rig.held_frame(0);
-    stray.callsign = tacsim::arena::state::Designator::Slot {
-        team: PartyId::BLUE,
-        slot: 1,
-    };
+    stray.callsign = tacsim::arena::state::Designator::Unit { party: PartyId::BLUE, letter: 'A' };
     rig.push_frame(0, stray);
     let said = rig.say(0, "status");
     assert!(
@@ -5224,10 +5214,7 @@ fn d4_the_new_sentences_are_these_sentences() {
             designator: Designator::Provisional(2),
         },
         class: Classification::Unknown,
-        was: Some(Designator::Slot {
-            team: PartyId::BLUE,
-            slot: 1,
-        }),
+        was: Some(Designator::Unit { party: PartyId::BLUE, letter: 'A' }),
     };
     assert_eq!(
         cockpit::notice_line(&frame, &regressed, &rows),
@@ -5371,10 +5358,7 @@ fn b1_the_victims_section_and_the_old_name_are_published() {
             .unwrap_or_else(|| panic!("one notice"))
     };
     let key = |value: &serde_json::Value, name: &str| value.get(name).cloned().unwrap_or_default();
-    let blue_one = Designator::Slot {
-        team: PartyId::BLUE,
-        slot: 1,
-    };
+    let blue_one = Designator::Unit { party: PartyId::BLUE, letter: 'A' };
     let hostile = ContactId(0x1111_1111_1111_1111);
 
     // `X2 identified: BA` — the provisional number it was told apart from.
@@ -8463,10 +8447,11 @@ fn y4_designator(word: &str) -> tacsim::arena::state::Designator {
         Some('B') => PartyId::BLUE,
         other => panic!("no side is lettered {other:?}"),
     };
-    let slot = letters.fold(0_u16, |slot, letter| {
-        slot * 26 + (u16::from(u8::try_from(letter).expect("ASCII")) - u16::from(b'A') + 1)
-    });
-    Designator::Slot { team, slot }
+    let letter = letters.next().expect("a unit letter");
+    Designator::Unit {
+        party: team,
+        letter,
+    }
 }
 
 /// The fixture's wire object, decoded into the arena's report.
@@ -13136,7 +13121,7 @@ fn ah1_classified(team: PartyId) -> tacsim::arena::perception::FrameNotice {
         kind: NoticeKind::Classified,
         contact: Named {
             id: ContactId(0x5555_5555_5555_5555),
-            designator: Designator::Slot { team, slot: 1 },
+            designator: Designator::Unit { party: team, letter: 'A' },
         },
         class: Classification::Classified { party: team },
         was: None,
@@ -13237,11 +13222,8 @@ async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_h
     // From here on nothing is pumped: every frame on_frames reads is staged.
     let held = rig.held_frame(0);
     assert!(!held.weapons.is_empty(), "the stock tank carries its guns");
-    let own = held.team;
-    let other = match own {
-        PartyId::RED => PartyId::BLUE,
-        PartyId::BLUE => PartyId::RED,
-    };
+    let own = held.party;
+    let other = own.ooc_other();
     let frame = |power: Power, gun: bool, notices: Vec<tacsim::arena::perception::FrameNotice>| {
         let mut frame = held.clone();
         frame.power = power;
@@ -13355,7 +13337,7 @@ fn ah1_the_fixture_frame_yields_the_points_its_own_fields_earn() {
 
     let scene = fixture::frame();
     assert_eq!(scene.power, Power::Online);
-    assert_eq!(scene.team, PartyId::RED);
+    assert_eq!(scene.party, PartyId::RED);
     assert_eq!(scene.weapons.len(), 2);
     assert_eq!(scene.notices.len(), 2);
     assert_eq!(frame_points(false, &scene), Vec::<HintPoint>::new());

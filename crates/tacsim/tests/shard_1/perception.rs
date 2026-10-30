@@ -1467,10 +1467,7 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     // classification is still there to be read off the contact's class.
     let named = tacsim::arena::perception::Named {
         id,
-        designator: Designator::Slot {
-            team: PartyId::BLUE,
-            slot: 1,
-        },
+        designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
     };
     let silent = FrameNotice::Contact {
         kind: NoticeKind::Classified,
@@ -1519,10 +1516,7 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     // accepts, so a panel that offered `1` would be offering something the verb
     // refuses.
     for contact in &mut carrying.contacts {
-        contact.designator = Designator::Slot {
-            team: PartyId::BLUE,
-            slot: 1,
-        };
+        contact.designator = Designator::Unit { party: PartyId::BLUE, letter: 'A' };
         contact.alias = Some(1);
     }
     let payload = cockpit::status_frame(tacsim::arena_task::MatchId(1), &carrying);
@@ -2323,64 +2317,63 @@ fn a_mesh_arrival_carries_the_slot_name_and_consumes_no_number() {
 }
 
 #[test]
-fn a_slot_is_taken_explicitly_then_by_unit_id_and_a_duplicate_is_refused() {
-    // Explicit slots win, and the slot-0 units take the lowest free ones in
-    // unit-id order. `RELAY` (#21) is fielded from pod 1, so `MARK` (#9) — which
-    // sorts first — has to take pod 2.
-    let mut units = vec![
-        tank(MARK, PartyId::BLUE, centre(40, 10), None),
-        tank(RELAY, PartyId::BLUE, centre(41, 10), None),
-        tank(BLIND, PartyId::BLUE, centre(42, 10), None),
-        tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
-    ];
-    if let Some(unit) = units.get_mut(1) {
-        unit.slot = 1;
-    }
-    let arena = arena_of(units, &[]);
-    let named = |id: ObjId| {
+fn a_callsign_is_the_party_letter_and_a_drawn_unit_letter_that_leaks_no_slot() {
+    // Doc 32 Q-CF-11: the party first, then a letter drawn per unit per field
+    // from the 23-letter alphabet — distinct within the party, stable for the
+    // field, and the same whatever pod the unit was fielded from.
+    let units = || {
+        vec![
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
+            tank(RELAY, PartyId::BLUE, centre(41, 10), None),
+            tank(BLIND, PartyId::BLUE, centre(42, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+        ]
+    };
+    let arena = arena_of(units(), &[]);
+    let named = |arena: &Arena, id: ObjId| {
         arena
             .unit(id)
             .map(|state| state.callsign.to_string())
             .unwrap_or_default()
     };
-    assert_eq!(named(RELAY), "BA", "the explicit slot");
-    assert_eq!(named(MARK), "BB");
-    assert_eq!(named(BLIND), "BC");
-    assert_eq!(named(EYE), "RA", "a side counts its own slots");
-
-    // Twenty-seven a side rolls into two letters.
-    let mut wide: Vec<CustodyUnit> = Vec::new();
-    for n in 0..27_u32 {
-        let mut unit = tank(
-            ObjId(100 + n),
-            PartyId::RED,
-            centre(u16::try_from(n).unwrap_or(0), 40),
-            None,
-        );
-        unit.slot = u8::try_from(n + 1).unwrap_or(0);
-        wide.push(unit);
+    let blues: Vec<String> = [MARK, RELAY, BLIND].iter().map(|id| named(&arena, *id)).collect();
+    for name in &blues {
+        assert_eq!(name.len(), 2, "{name}");
+        assert!(name.starts_with('B'), "{name}");
+        let letter = name.as_bytes()[1];
+        assert!(tacsim::arena::PARTY_LETTERS.contains(&letter), "{name}");
     }
-    let wide = arena_of(wide, &[]);
-    assert_eq!(
-        wide.unit(ObjId(126))
-            .map(|state| state.callsign.to_string()),
-        Some("RAA".to_owned()),
-        "slot 27 rolls past Z"
-    );
+    let mut distinct = blues.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(distinct.len(), 3, "distinct within the party: {blues:?}");
+    assert!(named(&arena, EYE).starts_with('R'));
 
-    // Two units of one side in one pod would answer to one name, and that is a
-    // refusal and not a rename.
-    let mut clash = vec![
-        tank(MARK, PartyId::BLUE, centre(40, 10), None),
-        tank(RELAY, PartyId::BLUE, centre(41, 10), None),
-    ];
-    for unit in &mut clash {
-        unit.slot = 2;
+    // The pod a unit came from changes nothing: the slot is not in the name.
+    let mut slotted = units();
+    for (n, unit) in slotted.iter_mut().enumerate() {
+        unit.slot = u8::try_from(9 - n).unwrap_or(1);
     }
+    let slotted = arena_of(slotted, &[]);
+    for id in [MARK, RELAY, BLIND, EYE] {
+        assert_eq!(named(&slotted, id), named(&arena, id), "{id:?}");
+    }
+
+    // Twenty-four in one party is one more than there are letters: a refusal.
+    let full: Vec<CustodyUnit> = (0..24_u32)
+        .map(|n| {
+            tank(
+                ObjId(100 + n),
+                PartyId::RED,
+                centre(u16::try_from(n).unwrap_or(0), 40),
+                None,
+            )
+        })
+        .collect();
     let refused = Arena::new(
         CustodyOut {
             definition: (*arena.definition).clone(),
-            units: clash,
+            units: full,
             pilots: Vec::new(),
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
@@ -2394,12 +2387,9 @@ fn a_slot_is_taken_explicitly_then_by_unit_id_and_a_duplicate_is_refused() {
     assert!(
         matches!(
             refused,
-            Err(tacsim::arena::state::ArenaError::DuplicateSlot {
-                team: "blue",
-                slot: 2
-            })
+            Err(tacsim::arena::state::ArenaError::PartyFull { party: "red" })
         ),
-        "two units in one pod: {refused:?}"
+        "twenty-four in one party: {refused:?}"
     );
 }
 
@@ -4334,10 +4324,7 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
             kind: NoticeKind::Classified,
             contact: tacsim::arena::perception::Named {
                 id: draw_contact_id(arena.seed, EYE, MARK),
-                designator: Designator::Slot {
-                    team: PartyId::BLUE,
-                    slot: 1,
-                },
+                designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
             },
             class: Classification::Classified { party: PartyId::BLUE },
             was: Some(Designator::Provisional(1)),
