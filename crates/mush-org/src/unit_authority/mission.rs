@@ -23,6 +23,9 @@ impl UnitAuthorityFacts for Facts<'_> {
     fn asset(&self, u: ObjId) -> Option<UnitAssetFacts> {
         self.base.asset(u)
     }
+    fn equipment_lease(&self, o: crate::OrgId, lease: &UnitLeaseBinding) -> bool {
+        self.base.equipment_lease(o, lease)
+    }
     fn organization_control(
         &self,
         o: crate::OrgId,

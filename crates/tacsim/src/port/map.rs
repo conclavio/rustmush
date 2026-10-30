@@ -117,6 +117,9 @@ pub struct PortMap {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VehiclesRow {
+    /// References to the lessor's actual Org grants, never authority answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loan_roots: Option<Box<super::equipment::LoanRoots>>,
     /// The shed room, `ObjId.0`, once made.
     pub shed: Option<u32>,
     /// The rigs made so far, in pool order.

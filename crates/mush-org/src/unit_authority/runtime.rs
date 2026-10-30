@@ -29,7 +29,7 @@ const OUTCOME: &str = "unitgrant_result";
 const REVISION: &str = "unitgrant_authority";
 const MAX_PENDING: usize = 256;
 const INTENT_LIFETIME: i64 = 300;
-const MAX_INTENT_BYTES: usize = 12 * 1024;
+pub(super) const MAX_INTENT_BYTES: usize = 12 * 1024;
 
 /// Frozen composition seam. Implementations borrow actual owner state; they
 /// must not replace durable mission/asset records with a permissive cache.
@@ -292,8 +292,10 @@ impl Provider {
     fn matches(&self, intent: &PendingIntent) -> bool {
         matches!(
             (&intent.mutation, self.action.key().id.as_str()),
-            (UnitGrantMutation::Issue(_), ISSUE_ACTION)
-                | (UnitGrantMutation::Revoke { .. }, REVOKE_ACTION)
+            (
+                UnitGrantMutation::Issue(_) | UnitGrantMutation::IssueMany(_),
+                ISSUE_ACTION
+            ) | (UnitGrantMutation::Revoke { .. }, REVOKE_ACTION)
         )
     }
     fn intent(&self, i: &ActionInvocation) -> Result<PendingIntent, ActionError> {
@@ -408,7 +410,11 @@ impl ActionProvider for Provider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let intent = self.intent(i)?;
         let answer = context
-            .read_owner_preimage(txn, &self.reader, UnitAuthorityRequest::Prepare(intent))
+            .read_owner_preimage(
+                txn,
+                &self.reader,
+                UnitAuthorityRequest::Prepare(intent.clone()),
+            )
             .map_err(|_| error("unit-grant request refused"))?;
         let UnitAuthorityResponse::Prepared {
             registry_revision,
@@ -425,9 +431,25 @@ impl ActionProvider for Provider {
         if registry.revision != registry_revision {
             return Err(error("unit-grant request changed"));
         }
-        let next = registry
-            .with_grant(grant.clone())
-            .map_err(|_| error("unit-grant registry capacity reached"))?;
+        let grants = reader::evaluate_all(
+            context
+                .world()
+                .map_err(|_| error("unit authority unavailable"))?,
+            self.facts.as_ref(),
+            &registry,
+            i.actor(),
+            &intent,
+        )
+        .map_err(|_| error("unit-grant agreement refused"))?;
+        if grants.first() != Some(&grant) {
+            return Err(error("unit-grant agreement changed"));
+        }
+        let mut next = registry;
+        for row in grants {
+            next = next
+                .with_grant(row)
+                .map_err(|_| error("unit-grant registry capacity reached"))?;
+        }
         if before.is_some() {
             txn.replace(&self.registry, &(), next)
         } else {
@@ -456,6 +478,23 @@ impl ActionProvider for Provider {
 /// Thin ingress: only bounded input is staged, then submitted to the ordinary
 /// offer/coordinator path. It emits no success before durable acknowledgement.
 pub(crate) fn submit(ctx: &mut Ctx<'_>, mutation: UnitGrantMutation) -> Result<(), String> {
+    let reader = ctx
+        .w
+        .module_state::<UnitAuthorityHandles>()
+        .map(|h| h.reader.clone())
+        .ok_or("Unit authority unavailable.")?;
+    submit_from(ctx, &reader, mutation)
+}
+
+/// Submit as the actual `ctx.actor` through the caller's registered Org reader.
+/// Stages only bounded RAM input; the ordinary Org action still owns all durable
+/// writes and rechecks source authority through final take. The advisory Plan's
+/// lender subject is not caller attribution or a portable authority token.
+pub fn submit_from(
+    ctx: &mut Ctx<'_>,
+    reader: &OwnerReadHandle<UnitAuthorityReader>,
+    mutation: UnitGrantMutation,
+) -> Result<(), String> {
     if ctx.authoritative_pending(ctx.actor)
         || ctx.authoritative_commit_pending()
         || ctx.authoritative_queue_full()
@@ -467,16 +506,22 @@ pub(crate) fn submit(ctx: &mut Ctx<'_>, mutation: UnitGrantMutation) -> Result<(
         .module_state::<UnitAuthorityHandles>()
         .cloned()
         .ok_or("Unit authority unavailable.")?;
-    let registry = ctx
-        .action_state(&h.registry, &())
-        .map_err(|_| "Unit authority unavailable.")?
-        .cloned()
-        .unwrap_or_default();
-    registry.validate()?;
-    let intent = PendingIntent {
-        created_at: ctx.w.now(),
-        registry_revision: registry.revision,
-        mutation,
+    // Replacing a command's pending input disarms its previous uncommitted
+    // offer, even when the new proposal is subsequently refused.
+    if let Some(requests) = ctx.w.module_state_mut::<Pending>() {
+        requests.0.remove(&ctx.actor);
+    }
+    let UnitAuthorityResponse::Planned(intent) = ctx
+        .read_owner(
+            reader,
+            UnitAuthorityRequest::Plan {
+                grantor: ctx.actor,
+                mutation,
+            },
+        )
+        .map_err(|_| "Unit-grant request refused.")?
+    else {
+        return Err("Unit authority unavailable.".into());
     };
     if serde_json::to_vec(&intent)
         .map_err(|_| "Invalid unit-grant request.")?
@@ -486,7 +531,7 @@ pub(crate) fn submit(ctx: &mut Ctx<'_>, mutation: UnitGrantMutation) -> Result<(
         return Err("Unit-grant request is too large.".into());
     }
     let action = match intent.mutation {
-        UnitGrantMutation::Issue(_) => h.issue,
+        UnitGrantMutation::Issue(_) | UnitGrantMutation::IssueMany(_) => h.issue,
         UnitGrantMutation::Revoke { .. } => h.revoke,
     };
     let now = ctx.w.now();
@@ -499,17 +544,6 @@ pub(crate) fn submit(ctx: &mut Ctx<'_>, mutation: UnitGrantMutation) -> Result<(
         return Err("Unit-grant requests are busy.".into());
     }
     requests.0.insert(ctx.actor, intent.clone());
-    if ctx
-        .read_owner(&h.reader, UnitAuthorityRequest::Prepare(intent.clone()))
-        .is_err()
-    {
-        if let Some(requests) = ctx.w.module_state_mut::<Pending>()
-            && requests.0.get(&ctx.actor) == Some(&intent)
-        {
-            requests.0.remove(&ctx.actor);
-        }
-        return Err("Unit-grant request refused.".into());
-    }
     let key = intent_hash(ctx.actor, &intent).map_err(|_| "Invalid unit-grant request.")?;
     let idempotency = IdempotencyKeyText::parse_canonical(format!("unitgrant/{}", key.to_hex()))
         .map_err(|_| "Invalid unit-grant request.")?;

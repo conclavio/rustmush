@@ -1026,7 +1026,7 @@ async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore, commander: bo
 async fn mining_crew_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
     mining_field_fixture(store, false).await
 }
-async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(Rig, ObjId)> {
+async fn rented_mining_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
     let mut rig = fixture_keyed(store, true).await?;
     ordinary(&mut rig.world, GOD, "@tacsim/time rate=24")?;
     for _ in 0..40 {
@@ -1090,37 +1090,89 @@ async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(
                 .ok_or("cab")?,
         )
     };
-    hire_field_operator(&mut rig, store, false).await?;
+    persist_legacy(&mut rig.world, store).await?;
+    Ok((rig, cab))
+}
+async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(Rig, ObjId)> {
+    let (mut rig, cab) = rented_mining_fixture(store).await?;
+    commit(&mut rig.world, store, rig.organizer, "+tv/1/permissions go").await?;
+    // Hire the actual shipped person, then lend through the owner's real loan.
+    rig.invitee = rig
+        .world
+        .world()
+        .module_state::<mush_content::ContentState>()
+        .and_then(|s| {
+            s.latches.applied(
+                &mush_core::CanonicalId::new(tacsim::detachment::crew::content::PACK).ok()?,
+            )
+        })
+        .and_then(|l| {
+            l.entries()
+                .get(&mush_core::CanonicalId::new("crew.ilya_mendes").ok()?)
+        })
+        .and_then(mush_content::AppliedEntry::object)
+        .ok_or("shipped mining crew")?;
+    let terms: tacsim::detachment::crew::HireTerms = serde_json::from_value(
+        rig.world
+            .world()
+            .attr(rig.invitee, tacsim::detachment::crew::OFFER_ATTR)
+            .and_then(|a| a.as_json())
+            .ok_or("authored crew terms")?
+            .clone(),
+    )?;
+    let room = rig
+        .world
+        .world()
+        .get(rig.invitee)
+        .and_then(|o| o.location)
+        .ok_or("crew bar")?;
+    rig.world.world_mut().move_to(rig.organizer, room)?;
+    persist_legacy(&mut rig.world, store).await?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        &format!(
+            "+sortie/hire #{}={}",
+            rig.invitee.0,
+            terms.digest()?.to_hex()
+        ),
+    )
+    .await?;
     ordinary(
         &mut rig.world,
         rig.organizer,
         &format!("+sortie/board #{}", rig.invitee.0),
     )?;
-    // The real lessor grants explicit operational rights. Renting alone is not permission.
-    let (org, scope) = {
-        let asset = rig
+    persist_legacy(&mut rig.world, store).await?;
+    let loan = {
+        let h = rig
             .world
             .world()
-            .module_state::<mush_economy::EconomyStore>()
-            .ok_or("economy")?
-            .snapshot()
-            .asset(rig.unit)
-            .ok_or("actual title")?;
-        let mush_org::PrincipalId::Organization(org) = asset.title_owner else {
-            return Err("stock lessor title".into());
-        };
-        (org, asset.scope.ok_or("asset scope")?)
+            .module_state::<mush_org::unit_authority::runtime::UnitAuthorityHandles>()
+            .ok_or("grants")?;
+        rig.world
+            .engine()
+            .action_state()
+            .get(&h.registry, &())?
+            .ok_or("owner loans")?
+            .grants
+            .values()
+            .find(|g| g.capability == mush_org::unit_authority::UnitCapability::OperateCrew)
+            .ok_or("operate loan")?
+            .id
+            .0
     };
-    for (actor, cap) in [
-        (rig.organizer, "unit.deploy"),
-        (rig.invitee, "unit.operate_crew"),
-    ] {
-        ordinary(
-            &mut rig.world,
-            GOD,
-            &format!("@org/grant #{}={} {cap} scope={scope}", actor.0, org),
-        )?;
-    }
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} operate_crew parent={loan}",
+            rig.unit.0, rig.invitee.0
+        ),
+    )
+    .await?;
     let site = rig
         .world
         .world()
@@ -1237,14 +1289,6 @@ async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(
             )
             .await?;
         }
-        ordinary(
-            &mut rig.world,
-            GOD,
-            &format!(
-                "@org/grant #{}={} unit.command_assigned_ai scope={scope}",
-                rig.organizer.0, org
-            ),
-        )?;
         Some(unit)
     } else {
         None
@@ -3339,4 +3383,247 @@ async fn ic_field_npc_advance_and_withdraw_complete_only_from_actual_movement() 
         }
     }
     Err("WITHDRAW must physically return before completion".into())
+}
+
+#[tokio::test]
+async fn rental_operational_rights_are_four_real_owner_loans_in_one_coordinator_commit()
+-> TestResult {
+    use mush_org::unit_authority::runtime::UnitAuthorityHandles;
+    use mush_org::unit_authority::{UnitCapability, UnitGrantParent, UnitGrantee};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = rented_mining_fixture(&store).await?;
+    let h = rig
+        .world
+        .world()
+        .module_state::<UnitAuthorityHandles>()
+        .ok_or("unit grants")?
+        .clone();
+    assert!(
+        rig.world
+            .engine()
+            .action_state()
+            .get(&h.registry, &())?
+            .is_none()
+    );
+    let preview = text(&mut rig.world, rig.organizer, "+tv/1/permissions");
+    assert!(preview.contains("operate/crew and command"), "{preview}");
+    assert!(rig.world.engine_mut().take_authoritative_submit().is_none());
+    let agent = tacsim::port::coop::programme_port(rig.world.world())
+        .and_then(|p| p.map.vehicles.as_ref())
+        .and_then(|v| v.loan_roots.as_ref())
+        .ok_or("lender roots")?
+        .agent;
+    for cap in [
+        "operate_crew",
+        "deploy",
+        "command_assigned_ai",
+        "recover_load",
+    ] {
+        let line = text(
+            &mut rig.world,
+            agent,
+            &format!("@unitgrant/check #{}={cap} delegate", rig.unit.0),
+        );
+        assert!(line.contains("allowed"), "lessor authority: {line}");
+    }
+    let request = submit(&mut rig.world, rig.organizer, "+tv/1/permissions go")?;
+    assert_ne!(
+        request.actor, rig.organizer,
+        "the real lessor NPC issues the loans"
+    );
+    assert_eq!(
+        rig.world.world().get(request.actor).map(|o| o.kind),
+        Some(ObjKind::Npc)
+    );
+    stage(&mut rig.world, &store, &request).await?;
+    assert!(
+        rig.world
+            .engine()
+            .action_state()
+            .get(&h.registry, &())?
+            .is_none()
+    );
+    let (bundle, installation) = rig
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("agreement")?
+        .into_parts();
+    assert_eq!(
+        bundle.writes().len(),
+        1,
+        "one authoritative Org registry write, with no personnel ledger"
+    );
+    store
+        .reserve_authoritative_intent((*bundle).clone())
+        .await?;
+    store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await?;
+    rig.world
+        .engine_mut()
+        .install_composed_action(installation)?;
+    let registry = rig
+        .world
+        .engine()
+        .action_state()
+        .get(&h.registry, &())?
+        .ok_or("committed loans")?;
+    assert_eq!(registry.grants.len(), 4);
+    for grant in registry.grants.values() {
+        assert_eq!(grant.grantor, request.actor);
+        assert_eq!(grant.grantee, UnitGrantee::Character(rig.organizer));
+        assert_eq!(
+            grant.delegable,
+            matches!(
+                grant.capability,
+                UnitCapability::OperateCrew | UnitCapability::CommandAssignedAi
+            )
+        );
+        assert!(
+            matches!(&grant.parent,UnitGrantParent::LeasedOrganizationGrant{lease,..} if lease.unit==rig.unit && lease.tenant==rig.organizer)
+        );
+    }
+    let report = text(&mut rig.world, rig.organizer, "+tv/1/permissions");
+    assert_eq!(report.matches("allowed now").count(), 4, "{report}");
+    ordinary(&mut rig.world, rig.organizer, "+tv/1/permissions go")?;
+    assert!(
+        rig.world.engine_mut().take_authoritative_submit().is_none(),
+        "retries never duplicate the agreement"
+    );
+    persist_legacy(&mut rig.world, &store).await?;
+    let captain = rig.organizer;
+    let now = rig.world.world().now();
+    drop(rig);
+    let mut loaded = fixture_keyed(&store, true).await?;
+    loaded.world.set_now(now);
+    let report = text(&mut loaded.world, captain, "+tv/1/permissions");
+    assert_eq!(report.matches("allowed now").count(), 4, "{report}");
+    commit(&mut loaded.world, &store, agent, "@unitgrant/revoke 4").await?;
+    let report = text(&mut loaded.world, captain, "+tv/1/permissions go");
+    assert_eq!(report.matches("allowed now").count(), 3, "{report}");
+    assert!(
+        loaded
+            .world
+            .engine_mut()
+            .take_authoritative_submit()
+            .is_none(),
+        "retry must not revive a revoked loan"
+    );
+    assert_eq!(
+        loaded
+            .world
+            .engine()
+            .action_state()
+            .get(
+                &loaded
+                    .world
+                    .world()
+                    .module_state::<UnitAuthorityHandles>()
+                    .ok_or("reloaded grants")?
+                    .registry,
+                &()
+            )?
+            .ok_or("loans")?
+            .grants
+            .len(),
+        4
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn returning_the_actual_rental_before_final_take_refuses_the_entire_permission_agreement()
+-> TestResult {
+    use mush_org::unit_authority::runtime::UnitAuthorityHandles;
+    let store = InMemoryStore::new();
+    let (mut rig, _) = rented_mining_fixture(&store).await?;
+    let request = submit(&mut rig.world, rig.organizer, "+tv/1/permissions go")?;
+    stage(&mut rig.world, &store, &request).await?;
+    ordinary(&mut rig.world, rig.organizer, "+tv/1 lease return go")?;
+    assert!(
+        rig.world.engine_mut().take_staged_action().is_err(),
+        "the ended real lease invalidates the final owner check"
+    );
+    let h = rig
+        .world
+        .world()
+        .module_state::<UnitAuthorityHandles>()
+        .ok_or("unit grants")?;
+    assert!(
+        rig.world
+            .engine()
+            .action_state()
+            .get(&h.registry, &())?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn changing_the_last_lending_root_refuses_the_whole_rental_permission_agreement() -> TestResult
+{
+    use mush_org::unit_authority::{UnitCapability, runtime::UnitAuthorityHandles};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = rented_mining_fixture(&store).await?;
+    let root = *tacsim::port::coop::programme_port(rig.world.world())
+        .and_then(|p| p.map.vehicles.as_ref())
+        .and_then(|v| v.loan_roots.as_ref())
+        .and_then(|r| r.grants.get(&UnitCapability::RecoverLoad))
+        .ok_or("last lender root")?;
+    let request = submit(&mut rig.world, rig.organizer, "+tv/1/permissions go")?;
+    stage(&mut rig.world, &store, &request).await?;
+    // Existing Org owner mutation, between preparation and final take. The
+    // first proposed loan still has its root; the fourth one no longer does.
+    let mut out = mush_core::Outbox::new();
+    {
+        let e = rig.world.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut e.world,
+            actor: GOD,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &e.registry,
+            module: Some("org".into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_org::submit(
+            &mut ctx,
+            &mush_org::OrgMutationPlan::of(vec![mush_org::OrgMutationOp::RevokeGrant {
+                grant: root,
+            }]),
+            mush_org::OrgAction {
+                action: "test.lender_revoke".into(),
+                org: None,
+                detail: json!({"grant":root}),
+            },
+        )?;
+    }
+    assert!(rig.world.engine_mut().take_staged_action().is_err());
+    let h = rig
+        .world
+        .world()
+        .module_state::<UnitAuthorityHandles>()
+        .ok_or("grants")?;
+    assert!(
+        rig.world
+            .engine()
+            .action_state()
+            .get(&h.registry, &())?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_rental_permission_proposal_cannot_be_committed_as_the_lessee() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = rented_mining_fixture(&store).await?;
+    let mut request = submit(&mut rig.world, rig.organizer, "+tv/1/permissions go")?;
+    request.actor = rig.organizer;
+    assert!(
+        stage(&mut rig.world, &store, &request).await.is_err(),
+        "the advisory named lender never replaces the actual source actor"
+    );
+    Ok(())
 }

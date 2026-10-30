@@ -40,7 +40,11 @@ fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[serde(deny_unknown_fields)]
 pub enum UnitGrantMutation {
     Issue(UnitGrantDraft),
-    Revoke { grant: UnitGrantId },
+    /// One bounded lending agreement, committed wholly in the same registry.
+    IssueMany(Vec<UnitGrantDraft>),
+    Revoke {
+        grant: UnitGrantId,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -73,6 +77,14 @@ pub enum UnitAuthorityRequest {
     List {
         after: u64,
     },
+    /// Advisory proposal for a named lender, as opposed to caller authority.
+    /// Registered hosts may inspect their actual NPC's proposed loan. This read
+    /// writes nothing and confers no permit. Private Prepare and source admission
+    /// still re-evaluate as the actual authoritative submission actor.
+    Plan {
+        grantor: ObjId,
+        mutation: UnitGrantMutation,
+    },
     /// Used only by Org's own mutation provider and checked against its current
     /// pending input. The result is a proposal, not a portable authority token.
     Prepare(PendingIntent),
@@ -80,6 +92,7 @@ pub enum UnitAuthorityRequest {
 
 #[derive(Clone, Debug, Serialize)]
 pub enum UnitAuthorityResponse {
+    Planned(PendingIntent),
     Authority {
         allowed: bool,
     },
@@ -134,6 +147,10 @@ pub(crate) fn evaluate(
         providers: store.providers(),
     };
     match &intent.mutation {
+        UnitGrantMutation::IssueMany(_) => evaluate_all(world, factory, registry, actor, intent)?
+            .into_iter()
+            .next()
+            .ok_or(OwnerReadError::Refused),
         UnitGrantMutation::Issue(draft) => {
             let parent = match &draft.parent {
                 Some(parent) => parent.clone(),
@@ -217,6 +234,40 @@ pub(crate) fn evaluate(
     }
 }
 
+pub(crate) fn evaluate_all(
+    world: &World,
+    factory: &dyn UnitAuthorityWorldFacts,
+    registry: &UnitGrantRegistry,
+    actor: ObjId,
+    intent: &PendingIntent,
+) -> Result<Vec<UnitGrant>, OwnerReadError> {
+    let UnitGrantMutation::IssueMany(drafts) = &intent.mutation else {
+        return evaluate(world, factory, registry, actor, intent).map(|g| vec![g]);
+    };
+    if drafts.is_empty()
+        || drafts.len() > 6
+        || intent.registry_revision != registry.revision
+        || !intent.is_current(world.now())
+    {
+        return Err(OwnerReadError::Refused);
+    }
+    let mut working = registry.clone();
+    let mut grants = Vec::with_capacity(drafts.len());
+    for draft in drafts {
+        let next = PendingIntent {
+            created_at: intent.created_at,
+            registry_revision: working.revision,
+            mutation: UnitGrantMutation::Issue(draft.clone()),
+        };
+        let grant = evaluate(world, factory, &working, actor, &next)?;
+        working = working
+            .with_grant(grant.clone())
+            .map_err(|_| OwnerReadError::Limit)?;
+        grants.push(grant);
+    }
+    Ok(grants)
+}
+
 impl OwnerReadService for UnitAuthorityReader {
     type State = OrgStore;
     type Request = UnitAuthorityRequest;
@@ -233,6 +284,28 @@ impl OwnerReadService for UnitAuthorityReader {
             .unwrap_or_default();
         registry.validate().map_err(|_| OwnerReadError::Integrity)?;
         match request {
+            UnitAuthorityRequest::Plan { grantor, mutation } => {
+                let intent = PendingIntent {
+                    created_at: ctx.world().now(),
+                    registry_revision: registry.revision,
+                    mutation,
+                };
+                if serde_json::to_vec(&intent)
+                    .map_err(|_| OwnerReadError::Refused)?
+                    .len()
+                    > super::runtime::MAX_INTENT_BYTES
+                {
+                    return Err(OwnerReadError::Limit);
+                }
+                evaluate(
+                    ctx.world(),
+                    self.facts.as_ref(),
+                    &registry,
+                    grantor,
+                    &intent,
+                )?;
+                Ok(UnitAuthorityResponse::Planned(intent))
+            }
             UnitAuthorityRequest::Authorize {
                 unit,
                 capability,

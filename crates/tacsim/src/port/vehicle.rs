@@ -430,6 +430,7 @@ pub(crate) fn lay_up(
             .ok_or_else(|| format!("{id}: rig {n} has no map row"))?;
         place_and_title(ctx, id, tv, &RigPlace::Shed(shed), &issuer, &lessor)?;
     }
+    super::equipment::bootstrap(ctx, map, def)?;
     Ok(())
 }
 

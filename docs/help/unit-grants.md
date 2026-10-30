@@ -31,3 +31,16 @@ mission owner; the practice simulator does not provide that authority.
 These commands record permissions. Seating, deployment, preparation and mission
 orders use their own admission checks. Wait for the acknowledged action result
 before treating a new grant or revocation as committed.
+
+For an Occator rental, visit the actual counter and use
+`+tv/<n>/permissions` to inspect the separate equipment agreement, then add `go`
+to request it. The lessor records four explicit loans together: operate/crew and
+command with onward delegation, deploy and recover/load without it. There is no
+extra charge or title/refit permission. Inspect the committed grant IDs with the
+same command before using them. To lend the crew permission to your hired NPC,
+use `@unitgrant/issue #unit=#npc operate_crew parent=<operate-loan-id>`.
+
+These loans and their children depend on the exact active economic lease and the
+owner's current lending authority. Ending or changing that agreement disables
+new admissions. Revoked loans are not restored by repeating the counter request;
+a rental record by itself still supplies no unit permission.
