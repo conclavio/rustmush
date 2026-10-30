@@ -41,7 +41,8 @@ use mush_sim::{DomainId, SpatialState};
 
 use crate::context::{PropagationContext, domain_of_place, resolve_delivery, resolve_detection};
 use crate::record::{
-    ENVELOPE_TTL_SECS, Envelope, EnvelopeState, MAX_ENVELOPE_HOPS, PropagationStore, Sighting,
+    DispatchKind, ENVELOPE_TTL_SECS, Envelope, EnvelopeState, MAX_ENVELOPE_HOPS, PropagationStore,
+    Sighting,
 };
 
 /// Envelopes visited in one delivery pass (D-LBK-5).
@@ -379,13 +380,19 @@ fn reap(
     now: &ClockStamp,
     report: &mut DeliveryReport,
 ) {
-    // Terminal envelopes past their TTL. An envelope whose stamp is incomparable
-    // can never reach the TTL by arithmetic, so a terminal one is reaped anyway.
+    // Terminal envelopes past their TTL. External source handoffs retain their
+    // own consumption protocol; field receipts have finite transport retention
+    // even after delivery (their source keeps its own standing-order history).
+    // An incomparable stamp cannot reach TTL, so finished records reap anyway.
     let dead: Vec<u64> = store
         .envelopes()
         .filter(|envelope| {
-            envelope.state().is_terminal()
-                && envelope.dispatch_ref().is_none()
+            (envelope.state().is_terminal() && envelope.dispatch_ref().is_none()
+                || matches!(
+                    envelope.kind(),
+                    DispatchKind::Detachment | DispatchKind::DetachmentReply
+                ) && (envelope.state().is_terminal()
+                    || envelope.state() == EnvelopeState::Delivered))
                 && envelope
                     .checked_age(now)
                     .is_none_or(|age| age >= ENVELOPE_TTL_SECS)

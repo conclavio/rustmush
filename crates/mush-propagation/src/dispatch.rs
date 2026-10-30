@@ -23,6 +23,16 @@ pub struct DispatchRef {
     pub fallback: Option<ObjId>,
 }
 impl DispatchRef {
+    pub(crate) fn valid_for(&self, kind: DispatchKind) -> bool {
+        self.valid()
+            && match kind {
+                DispatchKind::Mail | DispatchKind::Channel => true,
+                DispatchKind::Detachment | DispatchKind::DetachmentReply => {
+                    self.key.starts_with("dt:") && self.origin.is_none() && self.fallback.is_none()
+                }
+                _ => false,
+            }
+    }
     pub fn valid(&self) -> bool {
         self.version == 1
             && !self.key.is_empty()
@@ -89,6 +99,7 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
     // Withdrawal is the source's durable acknowledgement, including cancellation.
     let released: Vec<_> = book
         .envelopes()
+        .filter(|e| matches!(e.kind(), DispatchKind::Mail | DispatchKind::Channel))
         .filter(|e| {
             e.dispatch_ref()
                 .is_some_and(|d| !wanted.contains(d.key.as_str()))
@@ -121,7 +132,10 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
         }
         if book
             .envelopes()
-            .filter(|e| e.dispatch_ref().is_some())
+            .filter(|e| {
+                matches!(e.kind(), DispatchKind::Mail | DispatchKind::Channel)
+                    && e.dispatch_ref().is_some()
+            })
             .count()
             >= MAX_DISPATCHES
             || crate::routing::admission(&book, None, None).is_err()

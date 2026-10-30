@@ -1349,6 +1349,95 @@ fn e7c7_o10_an_over_size_payload_is_refused_at_issue() {
     assert_eq!(book(&tw).envelopes().count(), 0, "nothing was written");
 }
 
+#[test]
+fn field_references_use_real_local_delivery_and_bounded_receipt_retention() {
+    use mush_propagation::{ENVELOPE_TTL_SECS, dispatch::DispatchRef, record::DispatchKind};
+    let (mut tw, fx) = scene();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/place/interior #{}=#{}", fx.bob.0, fx.hull.0),
+    );
+    let at = stamp(&tw);
+    let state = state(&tw);
+    let mut store = book(&tw);
+    let reference = DispatchRef {
+        version: 1,
+        key: "dt:1:1:1:1:1".into(),
+        bytes: 128,
+        origin: None,
+        fallback: None,
+    };
+    let local = Envelope::dispatch(
+        1,
+        fx.ann,
+        fx.ann,
+        DispatchKind::Detachment,
+        reference.clone(),
+        at.clone(),
+    )
+    .unwrap();
+    let remote = Envelope::dispatch(
+        2,
+        fx.ann,
+        fx.bob,
+        DispatchKind::Detachment,
+        reference.clone(),
+        at.clone(),
+    )
+    .unwrap();
+    store.put_envelope(local).unwrap();
+    store.put_envelope(remote).unwrap();
+    let report = delivery_pass(
+        &mut store,
+        &state,
+        tw.world(),
+        &ContactLedgerState::default(),
+        &at,
+        None,
+    );
+    assert!(report.delivered.contains(&1));
+    assert_eq!(
+        store.envelope(2).unwrap().state(),
+        EnvelopeState::Queued,
+        "without the strategic adapter a different physical endpoint must wait"
+    );
+    let mut malformed = serde_json::to_value(store.envelope(1).unwrap()).unwrap();
+    malformed["dispatch"]["origin"] = serde_json::json!(fx.ann.0);
+    assert!(serde_json::from_value::<Envelope>(malformed).is_err());
+    let later = ClockStamp {
+        clock: at.clock.clone(),
+        at: at.at + ENVELOPE_TTL_SECS + 1,
+    };
+    let mail = Envelope::dispatch(3, fx.ann, fx.ann, DispatchKind::Mail, reference, at.clone())
+        .unwrap()
+        .in_state(EnvelopeState::Delivered, at);
+    store.put_envelope(mail).unwrap();
+    let report = delivery_pass(
+        &mut store,
+        &state,
+        tw.world(),
+        &ContactLedgerState::default(),
+        &later,
+        None,
+    );
+    assert!(report.reaped.envelopes.contains(&1));
+    assert_eq!(store.envelope(2).unwrap().state(), EnvelopeState::Expired);
+    assert!(
+        store.envelope(3).is_some(),
+        "external handoffs still belong to their actual source"
+    );
+    let report = delivery_pass(
+        &mut store,
+        &state,
+        tw.world(),
+        &ContactLedgerState::default(),
+        &later,
+        None,
+    );
+    assert!(report.reaped.envelopes.contains(&2));
+}
+
 // ======================================================================
 // B — restart and bounds
 // ======================================================================

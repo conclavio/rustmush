@@ -311,6 +311,12 @@ fn compose_server_modules<E>(
         Box::new(tactics),
         Box::new(
             mush_propagation::PropagationModule::new()
+                .with_field_transport(
+                    tacsim::detachment::sortie::transport_action_ref()
+                        .into_iter()
+                        .filter(|_| tacsim_delegate)
+                        .collect(),
+                )
                 .with_dispatch_sources(Arc::new(mail_transport::MailTransport))
                 .with_metric(Arc::new(tacsim::relay_metric::RelayMetric))
                 .with_service(Arc::new(

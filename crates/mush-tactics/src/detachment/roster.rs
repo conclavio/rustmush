@@ -244,6 +244,12 @@ pub enum RosterError {
 }
 
 impl DetachmentRoster {
+    /// Availability in the host's last complete reconciliation. Callers must
+    /// refresh before admission; this observation grants no unit capability.
+    #[must_use]
+    pub fn member_available(&self, slot: Slot) -> bool {
+        self.availability.get(&slot).is_some_and(|a| a.available)
+    }
     /// Build a resolved roster. Membership alone never authorizes physical use.
     pub fn new(
         id: DetachmentId,

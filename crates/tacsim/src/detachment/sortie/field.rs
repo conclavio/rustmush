@@ -65,7 +65,7 @@ fn queries(op: &OperationRecord) -> Result<Vec<mush_sim::crew_control::CrewContr
         })
         .collect()
 }
-fn rights(
+pub(super) fn rights(
     world: &World,
 ) -> Result<
     &mush_core::read_service::OwnerReadHandle<

@@ -1458,6 +1458,378 @@ fn field_roster(
     )?)
 }
 
+fn field_orders(
+    world: &TestWorld,
+    organizer: ObjId,
+) -> TestResult<tacsim::detachment::sortie::FieldOrders> {
+    let h = world
+        .world()
+        .module_state::<tacsim::detachment::sortie::SortieHandles>()
+        .ok_or("flight handles")?;
+    Ok(world
+        .engine()
+        .action_state()
+        .get(
+            &h.operations,
+            &tacsim::detachment::sortie::OperationId {
+                organizer,
+                draft: PlanId(1),
+                activation: 1,
+            },
+        )?
+        .and_then(|o| o.orders.as_deref())
+        .cloned()
+        .ok_or("field orders")?)
+}
+
+#[tokio::test]
+async fn ic_field_orders_use_real_transport_and_advisory_responses() -> TestResult {
+    use mush_propagation::{EnvelopeState, PropagationStore};
+    use mush_tactics::detachment::{OrderBook, Slot};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_fixture(&store).await?;
+    let (organizer, player, unit) = (rig.organizer, rig.invitee, rig.unit);
+    rig.world.connect(player);
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} command_assigned_ai",
+            unit.0, player.0
+        ),
+    )
+    .await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let due = flight(&rig.world, unit, 1)?.due.at;
+    let finish = fire_flight(&mut rig.world, &store, due).await?;
+    land_request(&mut rig.world, &store, &finish).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let fence = format!(
+        "DT:{}:{}:{}",
+        roster.id().0,
+        roster.revision(),
+        roster.term()
+    );
+    let before = mush_sim::pose_of(rig.world.world(), unit).ok_or("field pose")?;
+    commit(
+        &mut rig.world,
+        &store,
+        player,
+        &format!("ORDER {fence} 1 HOLD"),
+    )
+    .await?;
+    let orders = field_orders(&rig.world, organizer)?;
+    let slot = Slot::new(1)?;
+    let outgoing = *orders
+        .outbound
+        .get(&slot)
+        .ok_or("actual outbound reference")?;
+    assert_eq!(
+        rig.world
+            .world()
+            .module_state::<PropagationStore>()
+            .and_then(|s| s.envelope(outgoing))
+            .ok_or("actual envelope")?
+            .state(),
+        EnvelopeState::Queued
+    );
+    assert!(
+        OrderBook::restore(&orders.book, &field_roster(&rig.world, organizer)?)?
+            .delivered(slot)
+            .is_none(),
+        "queued is not delivered"
+    );
+    let now = rig.world.world().world_ic_now().at;
+    let poll = fire_flight(&mut rig.world, &store, now).await?;
+    land_request(&mut rig.world, &store, &poll).await?;
+    let orders = field_orders(&rig.world, organizer)?;
+    let book = OrderBook::restore(&orders.book, &field_roster(&rig.world, organizer)?)?;
+    let delivered = book.delivered(slot).ok_or("actual delivery")?;
+    assert!(delivered.acknowledgement.is_none());
+    assert!(delivered.attempted_at_ms.is_none() && delivered.completed_at_ms.is_none());
+    let sequence = delivered.order.sequence;
+    commit(
+        &mut rig.world,
+        &store,
+        player,
+        &format!(
+            "WILCO DT:{}:{} {}",
+            roster.id().0,
+            roster.revision(),
+            sequence
+        ),
+    )
+    .await?;
+    let report = text(
+        &mut rig.world,
+        player,
+        &format!("+sortie/orders {}:1:1", organizer.0),
+    );
+    assert!(report.contains("no reply confirmed"), "{report}");
+    assert!(
+        !report.contains("WILCO received"),
+        "a pending return packet must reveal no acknowledgement"
+    );
+    let now = rig.world.world().world_ic_now().at;
+    let _ = fire_flight(&mut rig.world, &store, now).await;
+    let report = text(
+        &mut rig.world,
+        player,
+        &format!("+sortie/orders {}:1:1", organizer.0),
+    );
+    assert!(report.contains("WILCO received"), "{report}");
+    assert_eq!(
+        mush_sim::pose_of(rig.world.world(), unit),
+        Some(before),
+        "orders and WILCO never drive a player's unit"
+    );
+    let orders = field_orders(&rig.world, organizer)?;
+    let book = OrderBook::restore(&orders.book, &field_roster(&rig.world, organizer)?)?;
+    assert!(
+        book.delivered(slot)
+            .ok_or("delivered")?
+            .attempted_at_ms
+            .is_none()
+    );
+    assert!(
+        book.delivered(slot)
+            .ok_or("delivered")?
+            .completed_at_ms
+            .is_none()
+    );
+    // Repeat replies are distinct actual packets. Neither boot nor the generic
+    // mail/channel reconciler may discard them as duplicate external handoffs.
+    commit(
+        &mut rig.world,
+        &store,
+        player,
+        &format!(
+            "WILCO DT:{}:{} {}",
+            roster.id().0,
+            roster.revision(),
+            sequence
+        ),
+    )
+    .await?;
+    let repeated = field_orders(&rig.world, organizer)?
+        .replies
+        .get(&slot)
+        .ok_or("reply")?
+        .envelope;
+    commit(
+        &mut rig.world,
+        &store,
+        player,
+        &format!("ORDER {fence} 1 ADVANCE 4,5"),
+    )
+    .await?;
+    let pending = *field_orders(&rig.world, organizer)?
+        .outbound
+        .get(&slot)
+        .ok_or("pending")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let now = rig.world.world().now();
+    drop(rig);
+    let mut restarted = fixture(&store).await?;
+    restarted.world.set_now(now);
+    let orders = field_orders(&restarted.world, organizer)?;
+    let roster = field_roster(&restarted.world, organizer)?;
+    let book = OrderBook::restore(&orders.book, &roster)?;
+    assert!(book.pending(slot).is_some());
+    assert_eq!(
+        book.delivered(slot).ok_or("standing")?.order.sequence,
+        sequence
+    );
+    for id in [outgoing, repeated, pending] {
+        assert!(
+            restarted
+                .world
+                .world()
+                .module_state::<PropagationStore>()
+                .and_then(|s| s.envelope(id))
+                .is_some(),
+            "actual packet {id} survives boot"
+        );
+    }
+    // Restarted session/control facts are unavailable. A saved term cannot
+    // activate the pending replacement; its older delivered history survives.
+    let now = restarted.world.world().world_ic_now().at;
+    let poll = fire_flight(&mut restarted.world, &store, now).await?;
+    land_request(&mut restarted.world, &store, &poll).await?;
+    let orders = field_orders(&restarted.world, organizer)?;
+    let book = OrderBook::restore(&orders.book, &field_roster(&restarted.world, organizer)?)?;
+    assert!(book.pending(slot).is_none());
+    assert_eq!(
+        book.delivered(slot).ok_or("standing")?.order.sequence,
+        sequence
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ic_field_order_refusal_at_final_take_publishes_neither_source_nor_packet() -> TestResult {
+    use mush_propagation::PropagationStore;
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_fixture(&store).await?;
+    let (organizer, player, unit) = (rig.organizer, rig.invitee, rig.unit);
+    rig.world.connect(player);
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} command_assigned_ai",
+            unit.0, player.0
+        ),
+    )
+    .await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let due = flight(&rig.world, unit, 1)?.due.at;
+    let finish = fire_flight(&mut rig.world, &store, due).await?;
+    land_request(&mut rig.world, &store, &finish).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let count = rig
+        .world
+        .world()
+        .module_state::<PropagationStore>()
+        .ok_or("transport")?
+        .envelopes()
+        .count();
+    let request = submit(
+        &mut rig.world,
+        player,
+        &format!(
+            "ORDER DT:{}:{}:{} 1 HOLD",
+            roster.id().0,
+            roster.revision(),
+            roster.term()
+        ),
+    )?;
+    stage(&mut rig.world, &store, &request).await?;
+    // Invalidate an actual physical console fact after owner preparation.
+    rig.world.world_mut().move_to(player, mush_core::LIMBO)?;
+    assert!(rig.world.engine_mut().take_staged_action().is_err());
+    assert!(field_orders(&rig.world, organizer).is_err());
+    assert_eq!(
+        rig.world
+            .world()
+            .module_state::<PropagationStore>()
+            .ok_or("transport")?
+            .envelopes()
+            .count(),
+        count
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ic_field_revocation_and_expiry_leave_the_confirmed_standing_order_intact() -> TestResult {
+    use mush_tactics::detachment::{OrderBook, Slot};
+    use tacsim::detachment::sortie::FieldObjective;
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_fixture(&store).await?;
+    let (organizer, player, unit) = (rig.organizer, rig.invitee, rig.unit);
+    rig.world.connect(player);
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} command_assigned_ai",
+            unit.0, player.0
+        ),
+    )
+    .await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let due = flight(&rig.world, unit, 1)?.due.at;
+    let finish = fire_flight(&mut rig.world, &store, due).await?;
+    land_request(&mut rig.world, &store, &finish).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let fence = format!(
+        "DT:{}:{}:{}",
+        roster.id().0,
+        roster.revision(),
+        roster.term()
+    );
+    commit(
+        &mut rig.world,
+        &store,
+        player,
+        &format!("ORDER {fence} 1 HOLD"),
+    )
+    .await?;
+    let now = rig.world.world().world_ic_now().at;
+    let poll = fire_flight(&mut rig.world, &store, now).await?;
+    land_request(&mut rig.world, &store, &poll).await?;
+    let slot = Slot::new(1)?;
+    let saved = field_orders(&rig.world, organizer)?;
+    let original = OrderBook::restore(&saved.book, &field_roster(&rig.world, organizer)?)?
+        .delivered(slot)
+        .ok_or("standing")?
+        .order
+        .sequence;
+    commit(
+        &mut rig.world,
+        &store,
+        player,
+        &format!("ORDER {fence} 1 ADVANCE 4,5"),
+    )
+    .await?;
+    commit(&mut rig.world, &store, organizer, "@unitgrant/revoke 2").await?;
+    let now = rig.world.world().world_ic_now().at;
+    let poll = fire_flight(&mut rig.world, &store, now).await?;
+    land_request(&mut rig.world, &store, &poll).await?;
+    let saved = field_orders(&rig.world, organizer)?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let book = OrderBook::restore(&saved.book, &roster)?;
+    assert!(
+        book.pending(slot).is_none(),
+        "transport arrival cannot restore revoked command rights"
+    );
+    assert_eq!(
+        book.delivered(slot).ok_or("standing")?.order.sequence,
+        original
+    );
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} command_assigned_ai",
+            unit.0, player.0
+        ),
+    )
+    .await?;
+    commit(
+        &mut rig.world,
+        &store,
+        player,
+        &format!("ORDER {fence} 1 ADVANCE 4,5 EXPIRES 1"),
+    )
+    .await?;
+    let now = rig.world.world().world_ic_now().at;
+    let poll = fire_flight(&mut rig.world, &store, now).await?;
+    land_request(&mut rig.world, &store, &poll).await?;
+    let saved = field_orders(&rig.world, organizer)?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let book = OrderBook::restore(&saved.book, &roster)?;
+    assert!(book.pending(slot).is_none());
+    assert_eq!(
+        book.standing(
+            &roster,
+            slot,
+            u64::try_from(rig.world.world().world_ic_now().at)? * 1000
+        )
+        .map(|p| &p.objective),
+        Some(&FieldObjective::Hold)
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn ic_field_leadership_uses_real_player_control_sessions_and_restart() -> TestResult {
     let store = InMemoryStore::new();

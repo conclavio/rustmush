@@ -14,7 +14,7 @@ use crate::match_::cockpit::{self, ObjectiveWords, Seat, SquadWord};
 const USAGE: &str =
     "Use the current roster's ORDER DT:<id>:<revision>:<term> <slot|ALL> <objective> prefill.";
 
-fn numbers<const N: usize>(word: &str) -> Result<[u64; N], String> {
+pub(super) fn numbers<const N: usize>(word: &str) -> Result<[u64; N], String> {
     let mut fields = word.strip_prefix("DT:").ok_or(USAGE)?.split(':');
     let mut result = [0; N];
     for value in &mut result {
@@ -159,6 +159,10 @@ pub fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), String> {
 }
 
 fn respond(ctx: &mut Ctx<'_>, response: Response) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_owned();
+    if let Some(result) = super::sortie::field_response(ctx, &raw, response) {
+        return result.map_err(CmdError::msg);
+    }
     if cockpit::flying(ctx.w, ctx.actor).is_none() {
         return Err(CmdError::msg(
             "You must be at your assigned cockpit to respond.",

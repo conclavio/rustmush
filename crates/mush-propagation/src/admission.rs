@@ -23,7 +23,7 @@ impl Producer {
 }
 pub fn producer(kind: DispatchKind, key: Option<&str>) -> Producer {
     match kind {
-        DispatchKind::Acknowledgement => Producer::Control,
+        DispatchKind::Acknowledgement | DispatchKind::DetachmentReply => Producer::Control,
         DispatchKind::Mail if key.is_some_and(|k| k.ends_with(":return")) => Producer::Control,
         DispatchKind::Mail => Producer::Mail,
         DispatchKind::Channel => Producer::Channel,
@@ -106,7 +106,10 @@ pub fn check(
         || (pool.external()
             && book
                 .envelopes()
-                .filter(|e| e.dispatch_ref().is_some())
+                .filter(|e| {
+                    matches!(e.kind(), DispatchKind::Mail | DispatchKind::Channel)
+                        && e.dispatch_ref().is_some()
+                })
                 .count()
                 .saturating_add(reserved.len())
                 .saturating_add(additional)

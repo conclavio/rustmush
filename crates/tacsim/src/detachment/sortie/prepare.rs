@@ -24,6 +24,8 @@ pub(super) struct Snapshot {
     flights: Vec<Write<Flight>>,
     observations: Vec<Value>,
     lines: Vec<(ObjId, crate::surface::black_box::BlackBoxLine)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport: Option<Box<mush_propagation::field_transport::Request>>,
 }
 impl Snapshot {
     pub(super) fn new(operation: OperationId) -> Result<Self, String> {
@@ -37,6 +39,7 @@ impl Snapshot {
             flights: Vec::new(),
             observations: Vec::new(),
             lines: Vec::new(),
+            transport: None,
         })
     }
     pub fn generation(&self) -> u64 {
@@ -45,7 +48,7 @@ impl Snapshot {
         u64::from_be_bytes(bytes).max(1)
     }
     pub fn apply(
-        self,
+        mut self,
         txn: &mut mush_core::ActionTxn<'_>,
         ctx: &mut mush_core::PrepareCtx<'_>,
         handles: &SortieHandles,
@@ -53,6 +56,39 @@ impl Snapshot {
     ) -> Result<Value, mush_core::ActionError> {
         // Log failure never invents a missing physical departure. S.1's
         // unrecorded flag survives in the authoritative flight history.
+        if let Some(request) = self.transport.take() {
+            let queued = ctx
+                .prepare_owner(
+                    handles
+                        .transport
+                        .as_ref()
+                        .ok_or_else(|| runtime::error("Field transport unavailable."))?,
+                    *request,
+                )
+                .map_err(runtime::error)?;
+            ctx.require_owner_preparation_binding(txn, queued.binding())
+                .map_err(runtime::error)?;
+            let write = self
+                .record
+                .as_mut()
+                .ok_or_else(|| runtime::error("Field source history unavailable."))?;
+            let roster = mush_tactics::detachment::roster::DetachmentRoster::restore(
+                write
+                    .after
+                    .command
+                    .as_deref()
+                    .ok_or_else(|| runtime::error("Field command unavailable."))?,
+            )
+            .map_err(runtime::error)?;
+            write
+                .after
+                .orders
+                .as_mut()
+                .ok_or_else(|| runtime::error("Field source history unavailable."))?
+                .attach(write.after.id, &roster, queued.envelopes())
+                .map_err(runtime::error)?;
+            write.after.validate().map_err(runtime::error)?;
+        }
         let mut flights = self.flights;
         for (unit, line) in self.lines {
             let appended = crate::surface::black_box::append(ctx, black_box, unit, line)?;
@@ -378,6 +414,7 @@ pub(super) fn snapshot(
             }));
             patch
         }
+        Command::Message(request) => message(world, read, h, actor, request)?,
     };
     for write in &patch.flights {
         if write.after.phase.open() {
@@ -455,6 +492,7 @@ fn launch(
                 ended: None,
                 flights: Vec::new(),
                 command: None,
+                orders: None,
             },
         }))
     }
@@ -834,7 +872,255 @@ pub(super) fn authority_keys(
                 }
             }
         }
+        Command::Message(request) => {
+            for row in &request.facts.crew {
+                if row.operate {
+                    keys.insert(revision_key(
+                        row.operator,
+                        row.unit,
+                        UnitCapability::OperateCrew,
+                    )?);
+                }
+                if row.command_authorized {
+                    keys.insert(revision_key(
+                        row.operator,
+                        row.unit,
+                        UnitCapability::CommandAssignedAi,
+                    )?);
+                }
+            }
+            for right in &request.rights {
+                if right.allowed {
+                    keys.insert(revision_key(
+                        right.issuer,
+                        right.unit,
+                        UnitCapability::CommandAssignedAi,
+                    )?);
+                }
+            }
+        }
         _ => {}
     }
     Ok(keys.into_iter().collect())
+}
+
+fn message(
+    world: &World,
+    read: &mut impl Read,
+    h: &SortieHandles,
+    actor: ObjId,
+    request: &super::field_orders::Request,
+) -> Result<Snapshot, String> {
+    use super::field_orders::{self, Act, FieldOrders};
+    use mush_propagation::{
+        EnvelopeState,
+        dispatch::DispatchRef,
+        field_transport::{Message, Request as Transport},
+        record::DispatchKind,
+    };
+    use mush_tactics::detachment::{Directive, OrderBook, OrderRequest};
+    let old = operation(read, h, request.operation)?;
+    if actor != old.id.organizer
+        && !old
+            .roster
+            .plan
+            .slots
+            .iter()
+            .any(|s| s.controller.character() == Some(actor))
+    {
+        return Err("Operation unavailable.".into());
+    }
+    let coords = field_orders::coordinates(&old, &request.act, actor)?;
+    if coords.len() != request.rights.len()
+        || coords
+            .iter()
+            .zip(&request.rights)
+            .any(|((unit, issuer), r)| *unit != r.unit || *issuer != r.issuer)
+    {
+        return Err("Command targets changed.".into());
+    }
+    let (roster, observations) = super::field::reconcile(world, read, h, &old, &request.facts)?;
+    let now = u64::try_from(world.world_ic_now().at)
+        .map_err(|_| "Field clock unavailable.")?
+        .checked_mul(1000)
+        .ok_or("Field clock exhausted.")?;
+    let mut orders = old
+        .orders
+        .as_deref()
+        .cloned()
+        .unwrap_or_else(|| FieldOrders::new(&roster));
+    let mut book = OrderBook::restore(&orders.book, &roster).map_err(|e| e.to_string())?;
+    let mut patch = Snapshot::new(old.id)?;
+    patch.observations = observations;
+    let allowed = |issuer, unit| {
+        request
+            .rights
+            .iter()
+            .any(|r| r.issuer == issuer && r.unit == unit && r.allowed)
+    };
+    match &request.act {
+        Act::Issue {
+            revision,
+            term,
+            target,
+            directive,
+            expires_at_ms,
+        } => {
+            if let Directive::Objective(payload) = directive {
+                payload.validate(&roster)?;
+            }
+            let issued = book
+                .issue(
+                    &roster,
+                    now,
+                    OrderRequest {
+                        issuer: actor,
+                        roster_revision: *revision,
+                        command_term: *term,
+                        target: *target,
+                        directive: directive.clone(),
+                        expires_at_ms: *expires_at_ms,
+                    },
+                    |m| allowed(actor, m.unit) && roster.member_available(m.slot),
+                )
+                .map_err(|e| e.to_string())?;
+            let mut messages = Vec::new();
+            for slot in issued.recipients {
+                let order = book.pending(slot).ok_or("Admitted message unavailable.")?;
+                let bytes =
+                    u32::try_from(serde_json::to_vec(order).map_err(|e| e.to_string())?.len())
+                        .map_err(|_| "Field message too large.")?;
+                messages.push(Message {
+                    recipient: order
+                        .recipient
+                        .controller
+                        .character()
+                        .ok_or("Recipient unavailable.")?,
+                    reference: DispatchRef {
+                        version: 1,
+                        key: field_orders::message_key(old.id, order.sequence, slot),
+                        bytes,
+                        origin: None,
+                        fallback: None,
+                    },
+                });
+                orders.outbound.remove(&slot);
+            }
+            patch.transport = Some(Box::new(Transport::Send(messages)));
+        }
+        Act::Poll => {
+            for member in roster.members() {
+                let Some(pending) = book.pending(member.slot).cloned() else {
+                    continue;
+                };
+                let obsolete = pending.command_term != roster.term()
+                    || pending.roster_revision != roster.revision()
+                    || roster
+                        .leader()
+                        .is_none_or(|l| l.character != pending.issuer)
+                    || pending.expires_at_ms.is_some_and(|end| now >= end);
+                if obsolete {
+                    book.discard_pending(member.slot, pending.sequence, now)
+                        .map_err(|e| e.to_string())?;
+                    orders.outbound.remove(&member.slot);
+                    continue;
+                }
+                let envelope = orders.outbound.get(&member.slot).and_then(|id| {
+                    world
+                        .module_state::<mush_propagation::PropagationStore>()?
+                        .envelope(*id)
+                });
+                patch
+                    .observations
+                    .push(json!({"slot":member.slot,"transport":envelope}));
+                let Some(envelope) = envelope else {
+                    // Retention or a held transport document is never evidence
+                    // of delivery. Keep the last confirmed standing objective.
+                    book.discard_pending(member.slot, pending.sequence, now)
+                        .map_err(|e| e.to_string())?;
+                    orders.outbound.remove(&member.slot);
+                    continue;
+                };
+                if envelope.kind() != DispatchKind::Detachment
+                    || envelope.issuer() != pending.issuer
+                    || Some(envelope.recipient()) != pending.recipient.controller.character()
+                    || envelope.dispatch_ref().is_none_or(|r| {
+                        r.key != field_orders::message_key(old.id, pending.sequence, member.slot)
+                    })
+                {
+                    return Err("Field transport differs from its source message.".into());
+                }
+                if matches!(
+                    envelope.state(),
+                    EnvelopeState::Expired | EnvelopeState::Superseded
+                ) {
+                    book.discard_pending(member.slot, pending.sequence, now)
+                        .map_err(|e| e.to_string())?;
+                    orders.outbound.remove(&member.slot);
+                    continue;
+                }
+                if !matches!(
+                    envelope.state(),
+                    EnvelopeState::Delivered | EnvelopeState::Acknowledged
+                ) {
+                    continue;
+                }
+                if !roster.member_available(member.slot) || !allowed(pending.issuer, member.unit) {
+                    book.discard_pending(member.slot, pending.sequence, now)
+                        .map_err(|e| e.to_string())?;
+                    orders.outbound.remove(&member.slot);
+                    continue;
+                }
+                book.deliver(&roster, member.slot, pending.sequence, now, |m| {
+                    allowed(pending.issuer, m.unit)
+                })
+                .map_err(|e| e.to_string())?;
+                orders.received.insert(member.slot, envelope.id());
+                orders.outbound.remove(&member.slot);
+                orders.replies.remove(&member.slot);
+            }
+        }
+        Act::Respond {
+            slot,
+            sequence,
+            response,
+        } => {
+            book.respond(*slot, *sequence, actor, *response, now)
+                .map_err(|e| e.to_string())?;
+            let original = *orders
+                .received
+                .get(slot)
+                .ok_or("Delivered transport unavailable.")?;
+            let bytes = u32::try_from(
+                serde_json::to_vec(&book.delivered(*slot).and_then(|d| d.acknowledgement))
+                    .map_err(|e| e.to_string())?
+                    .len(),
+            )
+            .map_err(|_| "Field reply too large.")?;
+            orders.replies.remove(slot);
+            patch.transport = Some(Box::new(Transport::Reply {
+                original,
+                reference: DispatchRef {
+                    version: 1,
+                    key: format!(
+                        "{}:reply:{}",
+                        field_orders::message_key(old.id, *sequence, *slot),
+                        field_orders::response_word(*response)
+                    ),
+                    bytes,
+                    origin: None,
+                    fallback: None,
+                },
+            }));
+        }
+    }
+    orders.book = book.checkpoint();
+    let mut next = old.clone();
+    next.command = Some(Box::new(roster.checkpoint()));
+    next.orders = Some(Box::new(orders));
+    patch.record = Some(Box::new(Write {
+        before: Some(old),
+        after: next,
+    }));
+    Ok(patch)
 }

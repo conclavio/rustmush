@@ -20,6 +20,7 @@ pub(crate) const SWITCHES: &[&str] = &[
     "end",
     "refresh",
     "field",
+    "orders",
 ];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
@@ -70,7 +71,7 @@ fn readable(ctx: &Ctx<'_>, op: &OperationRecord) -> bool {
             |s| matches!(s.controller,PlannedController::Player{character} if character==ctx.actor),
         )
 }
-fn read(ctx: &Ctx<'_>, id: OperationId) -> Result<OperationRecord, CmdError> {
+pub(super) fn read(ctx: &Ctx<'_>, id: OperationId) -> Result<OperationRecord, CmdError> {
     let h = ctx
         .w
         .module_state::<runtime::SortieHandles>()
@@ -96,6 +97,13 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .split_once('=')
         .map_or((raw.as_str(), None), |(left, right)| (left, Some(right)));
     let id = id(selector, ctx.actor)?;
+    if ctx.switches.has("orders") {
+        if selection.is_some() {
+            return Err(error());
+        }
+        let op = read(ctx, id)?;
+        return super::field_commands::report(ctx, &op).map_err(CmdError::msg);
+    }
     if ctx.switches.has("refresh") || ctx.switches.has("field") {
         if selection.is_some() {
             return Err(error());
