@@ -1610,9 +1610,14 @@ mod tests {
     /// one the picture covers is still bracketed.
     #[test]
     fn a_sheet_sprite_draws_in_team_colour_mirrored_with_a_shadow() {
-        let sheet = crate::look::for_unit("tacsim.unit.line_tank")
+        // A copy of the tank's text sheet, which no bake owns, so this is the
+        // text-sheet draw (doc 22 rule 3's fallback); the shipped look draws
+        // from its baked chain, every facing its own art.
+        let shipped = crate::look::for_unit("tacsim.unit.line_tank")
             .and_then(|l| l.sprites.as_ref())
             .expect("the tank's sheet");
+        let sheet: &'static Sheet = Box::leak(Box::new(shipped.clone()));
+        assert!(bake::bake_of_sheet(sheet).is_none(), "no bake owns a copy");
         let mut map = Map::new(64, 64, 1000);
         for y in 0..64 {
             for x in 0..64 {
@@ -1685,5 +1690,27 @@ mod tests {
         // A wreck has no team colour.
         let wreck = draw(SpriteKind::Wreck, Facing::Right);
         assert_eq!(count(&wreck, red), 0);
+        // The shipped look, where it is baked, draws from its `fp` chain:
+        // not the text sheet's pixels, still in team colour.
+        if bake::bake_of_sheet(shipped).is_some() {
+            let baked = {
+                let tank = Sprite {
+                    pose: Some(SpritePose {
+                        sheet: shipped,
+                        facing: Facing::Right,
+                        moving: false,
+                        step: 0,
+                    }),
+                    ..Sprite::at_bearing(&cam, 0.0, 30.0, SpriteKind::Red)
+                };
+                let mut f = Frame::new(320, 128);
+                render(&mut f, &map, &cam, &[tank]);
+                f
+            };
+            assert_ne!(baked.hash(), right.hash(), "the chain, not the sheet");
+            let team = [Material::TeamDark, Material::Team, Material::TeamLight]
+                .map(|m| count(&baked, sprite_colour(&shades, SpriteKind::Red, m, step)));
+            assert!(team.iter().sum::<usize>() > 20, "red-team body: {team:?}");
+        }
     }
 }

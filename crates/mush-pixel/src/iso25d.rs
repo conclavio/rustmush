@@ -14,8 +14,9 @@
 //!   are uploaded lazily once per `(look, PaintKey, size)`. A unit draws from
 //!   the size nearest above its projected height — its look's height through
 //!   the projection and the zoom, the row a depth cue on it — so a drone and
-//!   a heavy on one row stand in the ratio of their heights and 0.5× zoom
-//!   halves a unit as it halves the ground. Any number of units sharing a
+//!   a heavy on one row stand in the ratio of their heights, and 0.5× zoom
+//!   halves a unit as it halves the ground wherever the chain has the room
+//!   (to its step; see [`UNIT_SCALE`]). Any number of units sharing a
 //!   sheet are placed simultaneously under distinct `placement_id`s (`p=100`,
 //!   `p=101`, …).
 //! - **Place and move (`a=p,i=<id>,p=<pid>,x=…,y=…,w=…,h=…,X=0,Y=0,z=…,C=1,q=1`)**:
@@ -67,9 +68,15 @@ use crate::raycast::{Base, Biome, Ground, Map, SpriteKind};
 /// A unit's pixels a metre over the ground's vertical scale (the
 /// projection's `z`): units stand larger than the ground they stand on, as on
 /// any tactical map, by one factor for every unit, so their heights keep
-/// their ratio. At `1.0×` on a 640 px viewport a unit is drawn eight pixels a
-/// metre — the 7 m tank in a 64 px frame, the 11 m walker in the 96.
-const UNIT_SCALE: f32 = 6.4;
+/// their ratio. At `1.0×` on a 640 px viewport a unit is drawn nine pixels a
+/// metre, about the size the 2.5D drew units before U.6. The chain spans 4:1
+/// (96 to 24 px) and the baked frames 8:1 (the drone's 2.2 m to the walker's
+/// 17.8 m, its arms' turning circle), so no one scale keeps every unit inside
+/// the chain at every zoom: at this one the drone draws on the 24 px floor
+/// within a chain step of its ratio to the heavy, the tank, heavy and scout
+/// halve at 0.5×, and the walker stands on the 96 px ceiling at 1× and steps
+/// down to 80 at 0.5×.
+const UNIT_SCALE: f32 = 7.2;
 
 /// The depth cue on a unit's size: a unit on the viewport's top row stands at
 /// this fraction of one on the bottom row.
@@ -2966,9 +2973,9 @@ mod tests {
     /// **The 2.5D's size check** (doc 22 §6): a drone and a heavy on one row
     /// draw in the ratio of their heights — within one chain step (the
     /// largest, 32 to 24), the sizes being a chain — and 0.5× zoom halves a
-    /// unit as it halves the ground wherever the chain has the room: not the
-    /// walker at 1× (it stands on the 96 px ceiling), not the drone at 0.5×
-    /// (on the 24 px floor).
+    /// unit as it halves the ground wherever the chain has the room: not a
+    /// unit on the 96 px ceiling at 1× (the walker), nor one on the 24 px
+    /// floor at 0.5× (the drone).
     #[test]
     fn a_drone_and_a_heavy_stand_in_the_ratio_of_their_heights_and_half_zoom_halves() {
         let vp = (640, 360);
@@ -2981,12 +2988,35 @@ mod tests {
             ratio > truth / step && ratio < truth * step,
             "heavy {heavy:.1} px, drone {drone:.1} px: {ratio:.2}, not {truth}"
         );
-        for unit in ["tacsim.unit.heavy_mk1", "tacsim.unit.line_tank"] {
+        // Every unit whose frame is inside the chain at both zooms — not on
+        // the 96 px ceiling at 1x, not on the 24 px floor at 0.5x — halves.
+        let proj = |zoom| IsoProj::for_viewport_zoomed(vp.0, zoom).unit_px_per_m() * 0.925;
+        let mut halved = 0;
+        for unit in [
+            "tacsim.unit.heavy_mk1",
+            "tacsim.unit.line_tank",
+            "tacsim.unit.scout_mk1",
+            "tacsim.unit.biped_mk1",
+            "tacsim.unit.drone_mk1",
+        ] {
+            let (chain, _) = bake::iso_chain(look_index(Some(unit))).expect("a chain");
+            if chain.needed_px(proj(1000)) > 96.0 || chain.needed_px(proj(500)) < 24.0 {
+                continue;
+            }
             let (full, at_full) = own_unit(unit, 1000, vp);
             let (half, at_half) = own_unit(unit, 500, vp);
-            assert_eq!(half * 2, full, "{unit}: 0.5x draws the size an octave down");
-            assert!((at_half / at_full - 0.5).abs() < 0.01, "{unit}");
+            // Half, to the chain's step (56 has no half in the chain: 32).
+            let ratio = at_half / at_full;
+            assert!(
+                (0.4..=0.6).contains(&ratio),
+                "{unit}: {full} px at 1x, {half} px at 0.5x ({ratio:.2})"
+            );
+            halved += 1;
         }
+        assert!(
+            halved >= 1,
+            "some unit has the room (the baked tank, heavy and scout do)"
+        );
         // The old pick read neither: every unit drew 70..56 px at 1x.
         let (big, _) = own_unit("tacsim.unit.biped_mk1", 1000, vp);
         let (small, _) = own_unit("tacsim.unit.drone_mk1", 1000, vp);

@@ -12,8 +12,7 @@
   "weapons": {
     "cannon": "105",
     "laser": "LASER",
-    "machine_gun": "MG",
-    "missiles": "LRM"
+    "machine_gun": "MG"
   },
   "doll": {
     "view": "top",
@@ -168,10 +167,6 @@
           "laser": [
             27,
             6
-          ],
-          "missiles": [
-            23,
-            5
           ]
         }
       },
@@ -322,10 +317,6 @@
           "laser": [
             55,
             5
-          ],
-          "missiles": [
-            36,
-            3
           ]
         }
       }
