@@ -136,8 +136,8 @@ impl Ground {
     #[must_use]
     pub fn from_legend_name(name: &str) -> Ground {
         match name {
-            "grass" => Ground::Grass,
-            "water" | "water_deep" => Ground::Water,
+            "grass" | "sand" | "regolith" | "snow" => Ground::Grass,
+            "water" | "water_deep" | "ice" => Ground::Water,
             "road" | "paved" => Ground::Road,
             "wall" | "rock" | "building" | "cliff" => Ground::Wall,
             "woods_heavy" => Ground::WoodsHeavy,

@@ -292,7 +292,6 @@ pub fn map_from_feed(map: &Value) -> Map {
             let mut has_ice = false;
             let mut has_regolith = false;
             let mut has_sand = false;
-            let mut has_rock = false;
             for pair in map
                 .get("legend")
                 .and_then(Value::as_array)
@@ -304,7 +303,6 @@ pub fn map_from_feed(map: &Value) -> Map {
                         "ice" => has_ice = true,
                         "regolith" => has_regolith = true,
                         "sand" => has_sand = true,
-                        "rock" => has_rock = true,
                         _ => {}
                     }
                 }
@@ -313,7 +311,7 @@ pub fn map_from_feed(map: &Value) -> Map {
                 Biome::Ice
             } else if has_regolith {
                 Biome::Lunar
-            } else if has_sand && has_rock {
+            } else if has_sand {
                 Biome::Mars
             } else {
                 Biome::Temperate
@@ -373,18 +371,19 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
         .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
             (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
         });
+    let cells = map_from_feed(map);
+    if cells.width() == 0 || cells.height() == 0 {
+        return None;
+    }
     let procedural_wanted = map
         .get("procedural_relief")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-        || map.get("biome").is_some();
+        || map.get("biome").is_some()
+        || cells.biome() != Biome::Temperate;
 
     let Some(elev) = map.get("elev") else {
         if !procedural_wanted {
-            return None;
-        }
-        let cells = map_from_feed(map);
-        if cells.width() == 0 || cells.height() == 0 {
             return None;
         }
         let mut terrain = Terrain::new(cells);
@@ -397,7 +396,6 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
     }
     let unit = elev.get("unit_cm").and_then(Value::as_i64).unwrap_or(1);
     let bytes = base64_decode(elev.get("data")?.as_str()?)?;
-    let cells = map_from_feed(map);
     let (w, h) = (cells.width(), cells.height());
     let mut heights = Vec::with_capacity(w * h);
     let (mut at, mut last) = (0usize, 0i64);
