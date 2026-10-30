@@ -1,5 +1,16 @@
 # 22. The unit kit — what a new unit defines
 
+**Draft 0.5 — 2026-10-30, the bake matrix (D-22-10) and cut U.6.** The week's pictures — the
+heightfield's first person (doc 21 §8), PR #154's fixed-angle 2.5D (merged `4e2f52a9`) and the
+Unity extractor's trial — showed that D-22-9's one sheet is not what a unit needs: the two pictures
+look at a unit from different pitches, the first-person view needs a size chain down to 8 px, and
+the one bake in the tree (`looks/iso25d_mips.bin`) is oblique, positional, two models of five, and
+has no script behind it. §3.3 decides the matrix (views × facings × poses × sizes, every size
+reduced from the large render, one script, one named asset, provenance in the pack), §5–§6 its
+drawing and checks, §8 cut U.6; five questions (Q-22-1..5) take the lead's defaults until the owner
+rules. [Doc 30](30-world-generator-v2.md) owns the ground and the biome palettes; this document owns
+the unit.
+
 **Draft 0.4 — 2026-10-28, D-22-9 format & 8-way sensor facing landed.** `mush_pixel::look` raises
 `SPRITE_MAX` to 96, expands `Facing` to all eight directions (`front`, `front_right`, `right`,
 `rear_right`, `rear`, `rear_left`, `left`, `front_left`), accepts all eight facings plus optional
@@ -181,6 +192,80 @@ the form a player-designed unit is written in; a PNG importer can produce it lat
   scales the frame to it at the contact's range), `anchor` the pixel that stands on the ground.
   A dark ground shadow is drawn under every unit at its anchor, by the renderer, not the sheet.
 
+### 3.3 The bakes — D-22-10 (Draft 0.5)
+
+D-22-9 fixed the sheet. The week after it, the pictures multiplied: the heightfield's first person
+(doc 21 §8) looks at a unit from a 1.5 m eye, PR #154's 2.5D from a fixed 28° above, and both
+draw it from a few pixels to 96. One sheet at one pitch is not what a unit needs; a unit needs a
+**bake matrix** — views × facings × poses × sizes — made by one script from one named asset. The
+tree does not have it yet.
+
+**As it stands (2026-10-30).**
+
+- The raycaster (flat ground) draws a contact from its look's text sheet (U.5's art: the tank
+  56x20, the biped 24x50, `unknown` 32x16), nearest-sampled to `size_cm` at range.
+- The heightfield picture (G.7, the default over relief) and the 2.5D both draw from
+  `looks/iso25d_mips.bin` (PR #154): per model six mips of 96, 86, 78, 70, 64 and 56 px
+  (`MIP_SIZES`), each eight facings by six poses, baked at the 2.5D's pitch. The pack is positional
+  (`M25D`, version 1, a count): two models — the biped from the Fox light mech, the tracked tank;
+  `unknown` is re-rendered from its text sheet (`fallback_mip_from_sheet`); `wheeled_scout` and
+  `heavy_mk1` are `synthesize_3d_mip`, a procedural placeholder; the drone has no slot. No script
+  in the tree produced the pack.
+- So the first-person view draws an oblique bake at a near-level eye (top surfaces showing,
+  silhouettes wrong), stops at 56 px and nearest-samples below it — a tank at 300 m in the 640
+  frame is 11 x 4 px, U.5's whole lesson — and two of the shipped looks are synthesised. The
+  owner's observation of 2026-10-29: the mips are less crisp than U.5's render-large-then-reduce
+  sheets, because they were baked at target size.
+- `scripts/unit-bake/`: `Bake.cs` renders orthographic at 384 px at one pitch (`Elev` 8°), eight
+  facings, six poses, a colour-ID pass and a normal pass, anchors and muzzles in `meta.json`, and
+  the PoC's voxel grids; `reduce.py` reduces to the six materials at 48 and 96.
+
+**D-22-10 — the bake matrix.** For every shipped look, one bake produces:
+
+| Axis | Values | Why |
+|---|---|---|
+| View | `fp` — a 1.5 m eye, pitch 8° as `Bake.cs` has it (Q-22-3); `iso` — the 2.5D's fixed 28°; `top` reserved (Q-22-2) | the two pictures look from different heights; one bake cannot serve both |
+| Facing | eight at 45°, each its own art (D-22-9); Q-22-1 on sixteen for `iso` | |
+| Pose | `still`, `moving` × 4, `wreck` (D-22-9) | |
+| Size | `fp`: 96, 64, 48, 32, 24, 16, 12, 8 px; `iso`: 96, 86, 78, 70, 64, 56 | a contact draws from the size nearest above its on-screen height, never resampled from a smaller one; `fp`'s chain reaches 1 km in the 640 frame (Q-22-4 on the floor) |
+| Material | the six materials through the colour-ID pass, team slots recoloured at draw (D-22-3, D-22-7); at most 16 colours a sheet | the frame's 256 colours by construction |
+| Marks | anchor, height (the 2.5D's depth sort, the lock box) and a muzzle a weapon — per view, per facing, per size | the pitch moves them |
+
+The rules:
+
+1. **Every size is reduced from the large render** — the 384 px pass or larger — never from a
+   smaller size. Masses, not lines (U.5); the reducer is the only resampler, and the owner's
+   crispness observation is this rule's reason.
+2. **One script, one named asset.** `Bake.cs` grows the per-view pitch and emits both views in one
+   run; the reducer (`reduce.py`, or a Rust reducer under `mush-pixel`'s examples — the builder's
+   call) emits the chains. The pack records its provenance — the asset pack's name and version,
+   the prefab and clip names, the bake and reduce commits — which is the 2026-10-29 licensing
+   ruling's corollary; the assets and the raw renders never ship (`scripts/unit-bake/README.md`).
+3. **The look JSON stays the player's source** (D-22-7): one hand-drawable 96 px text sheet,
+   `size_cm`, anchor, muzzles. The baked chains are a binary pack generated from the bake, keyed
+   by **look id** — named entries and a version, replacing `M25D`'s positional header — and a
+   chain must agree with its look's `size_cm` and anchor. A look with no chain draws its text sheet
+   nearest-sampled in every picture, as today: the path a player-designed unit takes.
+4. **The roster rule.** Every look under `looks/` (the biped, the tracked tank, the wheeled scout,
+   the drone, `unknown`) has both chains at every size; `synthesize_3d_mip` goes, and the
+   sheet-to-chain fallback stays for unshipped looks only. `heavy_mk1` has a 2.5D slot and no look
+   (Q-22-5).
+5. **Which picture reads which chain** (§5): the raycaster and the heightfield the `fp` chain; the
+   2.5D the `iso` chain; the web's canvas the `fp` chain at its own scale.
+6. The voxel grids leave the bake: D-22-9 chose sprites.
+
+**Questions, with the lead's defaults until the owner rules.**
+
+- **Q-22-1** Sixteen facings for `iso`? Default eight: the 2.5D turns a unit in 45° steps today,
+  and sixteen doubles every `iso` sheet.
+- **Q-22-2** A `top` view for the overhead? Default no: the overhead keeps its scene markers (doc
+  21 §7.4); an icon is a later cut if the overhead ever zooms past a few pixels a unit.
+- **Q-22-3** The `fp` pitch. Default 8°, `Bake.cs` as it is and the heightfield's slight
+  down-look; 0° is the alternative if the level raycaster is the view that matters.
+- **Q-22-4** The `fp` floor. Default 8 px; under it the bracket alone, which is the bracket rule.
+- **Q-22-5** `heavy_mk1`. Default: a look and a bake with the rest, so the 2.5D slot stops being
+  a synthesised shape.
+
 ## 4. Teams and colours — D-22-3, D-22-5
 
 In the arena, **bodies are drawn in their team's colour** — red-team red, blue-team blue,
@@ -211,6 +296,10 @@ Neither is a frame version: fields added for the person in the seat are not one 
   `unknown`); a type whose look has no sheet is the old silhouette, in team colour. Fog dims a
   sprite as it dims the ground.
 - **Web**: the cockpit tab's doll and the picture's sprites read the same looks (a later cut).
+- **As built (PR #154), and under D-22-10**: the heightfield picture and the 2.5D draw a contact
+  from the baked chains — today from `looks/iso25d_mips.bin`, the one oblique bake, at both
+  pitches, which is the defect U.6 fixes; the raycaster from the look's text sheet. A look with no
+  chain draws its sheet nearest-sampled in every picture.
 
 ## 6. Checks — D-22-6
 
@@ -222,6 +311,10 @@ Neither is a frame version: fields added for the person in the seat are not one 
   every muzzle names one.
 - A unit type with no look draws as the `unknown` look and its pilot gets the section lines with
   no doll — never a failure.
+- **The matrix check** (D-22-10, U.6): the baked pack's header names each look and its
+  provenance; every shipped look has both chains at every size; every frame's anchor, height and
+  muzzles lie inside it; a chain's `size_cm` and anchor agree with its look's; the pack's digest
+  is pinned, and regenerated on purpose.
 
 ## 7. Player-designed units — D-22-7
 
@@ -241,6 +334,7 @@ player can write.
 | **U.3** | the sprite sheets: facings from `aspect`, the moving cycle, team slots, scale from `size_cm`, the shadow; placeholder art for the tank and the biped | a walker and a tank read differently at 300 m, turn their faces as they turn, and roll or walk while moving |
 | U.4 | the web client's doll and sprites from the same looks | — |
 | **U.5** | the art: the tank, the biped and `unknown` redrawn for what the picture makes of a sheet at 100 m, 300 m and 1 km; the shipped sheets held to standing on their anchor, muzzles on the weapon, a cycle that moves, a wreck that is not the still; `examples/sheets.rs` | a tank reads as a tank and a biped as a biped at 300 m; the PNG importer deferred |
+| **U.6** | the bake matrix (D-22-10): `Bake.cs` with both views, the reducer emitting the `fp` and `iso` chains from the large render, the named-entry pack format with provenance, `synthesize_3d_mip` deleted, every shipped look baked (`heavy_mk1` per Q-22-5), the look check extended to the matrix, the pack's digest pinned; the line-ups at 100 m, 300 m and 1 km under [images/22-u6/](images/22-u6/) as U.5 did | both pictures draw every shipped unit from its own view's chain at every range; a tank at 300 m in the first-person frame reads as a tank from the 12 px size, not from a resampled 56; no synthesised sprite in a shipped build |
 
 ## 9. Decisions
 
@@ -268,3 +362,8 @@ player can write.
   D-22-4's facing and frame counts; muzzle points stay. The owner confirmed the same day that it
   carries the sensor ruling D-22-4 reserved: a contact's aspect reaches the viewer in eight
   directions, not four (the armour facets the sim hits stay four).
+- **D-22-10** (Draft 0.5, 2026-10-30, after the week's pictures) A shipped unit's art is a **bake
+  matrix** — two views (`fp`, `iso`) × eight facings × six poses × a size chain each — produced by
+  one script from one named asset, every size reduced from the large render, keyed by look id in a
+  named-entry pack with provenance; the look's text sheet stays the player's source and the
+  fallback. Cut U.6 builds it; Q-22-1..5 (§3.3) take the lead's defaults until ruled.
