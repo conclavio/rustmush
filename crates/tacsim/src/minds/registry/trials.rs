@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     arena::{
-        Arena, ArenaMode, Channel, Controller, CustodyOut, EndReason, MatchMode, Team,
+        Arena, ArenaMode, Channel, Controller, CustodyOut, EndReason, MatchMode, PartyId,
         author_trace::{Fault, Outcome, TraceStore},
         core::CoreClass,
         intents::{Intent, IntentKind, IntentOutcome, IntentSource, apply_intent},
@@ -442,10 +442,10 @@ fn opening(
     let mut roms = BTreeMap::new();
     let mut opponents = Vec::new();
     let per_side: u8 = if name == "duel" { 1 } else { 2 };
-    for team in [Team::Red, Team::Blue] {
-        let candidate = (team == Team::Red) != swapped;
+    for team in [PartyId::RED, PartyId::BLUE] {
+        let candidate = (team == PartyId::RED) != swapped;
         let terms = terms(policy, candidate);
-        let positions = if team == Team::Red {
+        let positions = if team == PartyId::RED {
             &layout.red
         } else {
             &layout.blue
@@ -456,7 +456,7 @@ fn opening(
             .filter(|u| u.team == team)
             .collect::<Vec<_>>();
         for n in 0..per_side {
-            let object = ObjId((if team == Team::Red { 100 } else { 200 }) + u32::from(n));
+            let object = ObjId((if team == PartyId::RED { 100 } else { 200 }) + u32::from(n));
             let [x, y] = if positions.is_empty() {
                 let slot = authored_slots
                     .get(usize::from(n))
@@ -476,7 +476,7 @@ fn opening(
                 0,
                 posture,
             );
-            proposed.heading_mdeg = if team == Team::Red { 90_000 } else { 270_000 };
+            proposed.heading_mdeg = if team == PartyId::RED { 90_000 } else { 270_000 };
             let pose = crate::match_::opening_pose(
                 &policy.ground,
                 team,
@@ -515,6 +515,7 @@ fn opening(
             resolution,
             seed: u64::from(seed),
             mode,
+            host: crate::arena::FieldHost::all_hostile(),
         },
         &policy.cfg.arena,
         &policy.cfg.match_,
@@ -593,10 +594,11 @@ pub(super) fn drain(
     Ok(())
 }
 fn outcome(reason: EndReason, swapped: bool) -> Result<TrialOutcome, RatingError> {
-    let focus = if swapped { Team::Blue } else { Team::Red };
+    let focus = if swapped { PartyId::BLUE } else { PartyId::RED };
     let winner = match reason {
         EndReason::Elimination { winner } => winner,
-        EndReason::Hold { winner } | EndReason::Conceded { winner } => Some(winner),
+        EndReason::Hold { winner } => Some(winner),
+        EndReason::Conceded { winner } => winner,
         EndReason::Spent => None,
         EndReason::Timeout | EndReason::Unattended => return Ok(TrialOutcome::Timeout),
         EndReason::Abort | EndReason::Void | EndReason::LedgerOverflow => {

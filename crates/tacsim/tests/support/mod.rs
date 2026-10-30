@@ -92,7 +92,7 @@ use smol_str::SmolStr;
 use tacsim::arena::intents::IntentKind;
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{MindRunner, ThinkJob, ThinkResult, decode_memory};
-use tacsim::arena::state::{Arena, Controller, CustodyOut, CustodyUnit, MatchEnd, Team};
+use tacsim::arena::state::{Arena, Controller, CustodyOut, CustodyUnit, MatchEnd, PartyId};
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::stock_mind::{NativeStockMind, StockMemory};
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -112,7 +112,7 @@ pub const CELL_CM: u16 = tacsim::match_::ARENA_CELL_CM;
 #[derive(Clone, Copy, Debug)]
 pub struct Muster {
     /// Which side.
-    pub team: Team,
+    pub team: PartyId,
     /// The slot, 1 to 4.
     pub slot: u8,
     /// Who flies it. The rig's default is a unit mind ([`Muster::mind`]),
@@ -177,7 +177,7 @@ impl Muster {
     /// armed, sealed under the fixture terms — the defaults every fixture's
     /// seal digest was taken with, so re-basing a constructor on it moves no
     /// digest.
-    fn base(team: Team, slot: u8, controller: Controller) -> Muster {
+    fn base(team: PartyId, slot: u8, controller: Controller) -> Muster {
         Muster {
             team,
             slot,
@@ -203,7 +203,7 @@ impl Muster {
     /// gives it nothing; it stays the one name for the production shape
     /// whatever the constant reads.
     #[must_use]
-    pub fn fill(team: Team, slot: u8) -> Muster {
+    pub fn fill(team: PartyId, slot: u8) -> Muster {
         Muster {
             production: true,
             ..Muster::base(team, slot, Controller::Mind)
@@ -213,7 +213,7 @@ impl Muster {
     /// The same tank with a pilot in it — no machine thinks for it (the arena
     /// schedules it no think) and the test drives it with intents.
     #[must_use]
-    pub fn piloted(team: Team, slot: u8) -> Muster {
+    pub fn piloted(team: PartyId, slot: u8) -> Muster {
         Muster::base(team, slot, Controller::Pilot)
     }
 
@@ -223,7 +223,7 @@ impl Muster {
     /// (`Arena::mind_runner`) — the default runner, the native stock mind
     /// (17b cut M1a.6), until it does.
     #[must_use]
-    pub fn mind(team: Team, slot: u8) -> Muster {
+    pub fn mind(team: PartyId, slot: u8) -> Muster {
         Muster::base(team, slot, Controller::Mind)
     }
 
@@ -237,7 +237,7 @@ impl Muster {
     /// is unarmed (`armed_at_checkout` false), never dry, and its view carries
     /// no weapon row.
     #[must_use]
-    pub fn mind_unarmed(team: Team, slot: u8) -> Muster {
+    pub fn mind_unarmed(team: PartyId, slot: u8) -> Muster {
         Muster {
             unarmed: true,
             ..Muster::mind(team, slot)
@@ -252,7 +252,7 @@ impl Muster {
     /// [`Arena::new`] — never by `with_rhai`, and never the arena-wide
     /// fallback, which stays the native stock mind for every other hull.
     #[must_use]
-    pub fn scripted(team: Team, slot: u8) -> Muster {
+    pub fn scripted(team: PartyId, slot: u8) -> Muster {
         Muster {
             scripted: true,
             ..Muster::mind(team, slot)
@@ -1154,12 +1154,13 @@ pub fn shipped_custody_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64)
         resolution: tacsim::match_::resolution_for(&catalog),
         seed,
         mode: tacsim::arena::MatchMode::Skirmish,
+        host: tacsim::arena::FieldHost::all_hostile(),
     }
 }
 
 /// The object a side's slot fields, the way [`shipped_arena`] resolves it.
 #[must_use]
-pub fn tank(world: &TestWorld, team: Team, slot: u8) -> ObjId {
+pub fn tank(world: &TestWorld, team: PartyId, slot: u8) -> ObjId {
     tacsim::match_::tank_for_slot(world.world(), team, slot)
         .unwrap_or_else(|| panic!("{team:?} slot {slot} is fielded"))
 }
@@ -2178,7 +2179,7 @@ pub fn lance_arena(world: &TestWorld, seed: u64) -> Arena {
     let mut units: Vec<CustodyUnit> = Vec::new();
     for n in 0..2 * LANCE_PER_SIDE {
         let id = ObjId(100_000 + n);
-        let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+        let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
         let entry = LANCE_COHORT
             .get(usize::try_from(n / 2).unwrap_or(0) % LANCE_COHORT.len())
             .copied()
@@ -2196,7 +2197,7 @@ pub fn lance_arena(world: &TestWorld, seed: u64) -> Arena {
             .expect("the cohort entry builds a unit");
         let slot = i64::from(n / 2);
         let row = LANCE_ROW + if slot % 2 == 1 { -1 } else { 1 } * 2 * ((slot + 1) / 2);
-        let (column, heading_mdeg) = if team == Team::Red {
+        let (column, heading_mdeg) = if team == PartyId::RED {
             (LANCE_RED_COLUMN, 90_000)
         } else {
             (LANCE_BLUE_COLUMN, 270_000)
@@ -2232,6 +2233,7 @@ pub fn lance_arena(world: &TestWorld, seed: u64) -> Arena {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig {
             squad_size: 4,
@@ -2287,13 +2289,13 @@ pub fn lance_orders(
     u32,
 )> {
     use tacsim::deliberation::Objective;
-    let per_side = |team: Team| {
+    let per_side = |team: PartyId| {
         squads
             .iter()
             .filter(|roster| roster.id.team == team)
             .count()
     };
-    let squads_per_side = per_side(Team::Red).max(per_side(Team::Blue)).max(1);
+    let squads_per_side = per_side(PartyId::RED).max(per_side(PartyId::BLUE)).max(1);
     let stagger = (LANCE_MINUTE_MS / i64::try_from(squads_per_side).unwrap_or(1)) / LANCE_WINDOW_MS
         * LANCE_WINDOW_MS;
     let arm = |minute: i64, roster: &tacsim::deliberation::SquadRoster| -> Objective {
@@ -2304,7 +2306,7 @@ pub fn lance_orders(
             },
             2 => Objective::Withdraw,
             3 => Objective::Screen {
-                facing_mdeg: if roster.id.team == Team::Red {
+                facing_mdeg: if roster.id.team == PartyId::RED {
                     90_000
                 } else {
                     270_000

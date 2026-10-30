@@ -17,7 +17,7 @@ use mush_tactics::detachment::roster::{
 use serde_json::{Value, json};
 
 use super::PracticeObjective;
-use crate::arena::state::{Designator, Team};
+use crate::arena::state::{Designator, PartyId};
 use crate::arena_bridge::ArenaRegistry;
 use crate::arena_task::MatchId;
 use crate::deliberation::SquadId;
@@ -30,13 +30,13 @@ const NOTICE: &str = "sortie";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct GroupKey {
     match_id: MatchId,
-    team: Team,
+    team: PartyId,
     index: u16,
 }
 
 impl GroupKey {
     fn id(self) -> Result<DetachmentId, LiveError> {
-        let side = if self.team == Team::Blue { 65_536 } else { 0 };
+        let side = if self.team == PartyId::BLUE { 65_536 } else { 0 };
         self.match_id
             .0
             .checked_mul(131_072)
@@ -209,8 +209,8 @@ fn team_member_rows(
     let mut units = team.units.clone();
     units.sort_by_key(|unit| {
         let slot = match callsigns.get(unit) {
-            Some(Designator::Slot { slot, .. }) => *slot,
-            _ => u16::MAX,
+            Some(Designator::Unit { letter, .. }) => u32::from(*letter),
+            _ => u32::MAX,
         };
         (slot, *unit)
     });
@@ -953,7 +953,7 @@ mod tests {
     fn snapshot() -> Result<Snapshot, LiveError> {
         let key = GroupKey {
             match_id: MatchId(8),
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         };
         let members = vec![
@@ -989,7 +989,7 @@ mod tests {
                     (
                         member.unit,
                         SquadId {
-                            team: Team::Red,
+                            team: PartyId::RED,
                             index: 1,
                         },
                     )
@@ -1046,14 +1046,14 @@ mod tests {
                 (
                     *unit,
                     Designator::Slot {
-                        team: Team::Red,
+                        team: PartyId::RED,
                         slot: unit.0 as u16,
                     },
                 )
             })
             .collect();
         let team = crate::match_::TeamRoster {
-            team: Team::Red,
+            team: PartyId::RED,
             units: units.clone(),
             pilots: vec![(ObjId(70), ObjId(7))],
         };

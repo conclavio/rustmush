@@ -43,7 +43,7 @@ use mush_core::{CanonicalId, Ctx, ModuleWrite, ObjId, World};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::arena::state::Team;
+use crate::arena::state::PartyId;
 use crate::store::TacsimStore;
 
 /// The atlas pack the centre's rooms and pods live in (C.1).
@@ -77,19 +77,19 @@ pub const PODS_PER_SIDE: u8 = 6;
 /// order within a side is load-bearing** — [`pod_slot`], the cockpit's pod pair,
 /// the lobby's fill loop and the callsign all read the slot index — so 16b cut
 /// Z.3 appended slots 5 and 6 after slot 4 of each side and moved nothing.
-pub const POD_ENTRIES: [(Team, u8, &str); 12] = [
-    (Team::Red, 1, "item.red_pod_1"),
-    (Team::Red, 2, "item.red_pod_2"),
-    (Team::Red, 3, "item.red_pod_3"),
-    (Team::Red, 4, "item.red_pod_4"),
-    (Team::Red, 5, "item.red_pod_5"),
-    (Team::Red, 6, "item.red_pod_6"),
-    (Team::Blue, 1, "item.blue_pod_1"),
-    (Team::Blue, 2, "item.blue_pod_2"),
-    (Team::Blue, 3, "item.blue_pod_3"),
-    (Team::Blue, 4, "item.blue_pod_4"),
-    (Team::Blue, 5, "item.blue_pod_5"),
-    (Team::Blue, 6, "item.blue_pod_6"),
+pub const POD_ENTRIES: [(PartyId, u8, &str); 12] = [
+    (PartyId::RED, 1, "item.red_pod_1"),
+    (PartyId::RED, 2, "item.red_pod_2"),
+    (PartyId::RED, 3, "item.red_pod_3"),
+    (PartyId::RED, 4, "item.red_pod_4"),
+    (PartyId::RED, 5, "item.red_pod_5"),
+    (PartyId::RED, 6, "item.red_pod_6"),
+    (PartyId::BLUE, 1, "item.blue_pod_1"),
+    (PartyId::BLUE, 2, "item.blue_pod_2"),
+    (PartyId::BLUE, 3, "item.blue_pod_3"),
+    (PartyId::BLUE, 4, "item.blue_pod_4"),
+    (PartyId::BLUE, 5, "item.blue_pod_5"),
+    (PartyId::BLUE, 6, "item.blue_pod_6"),
 ];
 
 /// Which of the centre's three rooms an object is.
@@ -98,7 +98,7 @@ pub enum CentreRoom {
     /// The lobby, where the selector stands.
     Lobby,
     /// A team room and its pods.
-    Team(Team),
+    Team(PartyId),
 }
 
 impl CentreRoom {
@@ -107,8 +107,8 @@ impl CentreRoom {
     pub const fn as_str(&self) -> &'static str {
         match self {
             CentreRoom::Lobby => "lobby",
-            CentreRoom::Team(Team::Red) => "red room",
-            CentreRoom::Team(Team::Blue) => "blue room",
+            CentreRoom::Team(PartyId::RED) => "red room",
+            CentreRoom::Team(_) => "blue room",
         }
     }
 }
@@ -146,10 +146,10 @@ pub fn room_role(w: &World, room: ObjId) -> Option<CentreRoom> {
         return Some(CentreRoom::Lobby);
     }
     if centre_object(w, RED_ROOM_ENTRY) == Some(room) {
-        return Some(CentreRoom::Team(Team::Red));
+        return Some(CentreRoom::Team(PartyId::RED));
     }
     if centre_object(w, BLUE_ROOM_ENTRY) == Some(room) {
-        return Some(CentreRoom::Team(Team::Blue));
+        return Some(CentreRoom::Team(PartyId::BLUE));
     }
     None
 }
@@ -174,7 +174,7 @@ pub fn where_in_centre(w: &World, actor: ObjId) -> Option<CentreRoom> {
 
 /// The pod object for one side's slot `index` (1-based).
 #[must_use]
-pub fn pod_object(w: &World, team: Team, index: u8) -> Option<ObjId> {
+pub fn pod_object(w: &World, team: PartyId, index: u8) -> Option<ObjId> {
     let entry = POD_ENTRIES
         .iter()
         .find(|(side, slot, _)| *side == team && *slot == index)
@@ -184,7 +184,7 @@ pub fn pod_object(w: &World, team: Team, index: u8) -> Option<ObjId> {
 
 /// Which side and slot a pod is, if it is one of the twelve.
 #[must_use]
-pub fn pod_slot(w: &World, pod: ObjId) -> Option<(Team, u8)> {
+pub fn pod_slot(w: &World, pod: ObjId) -> Option<(PartyId, u8)> {
     POD_ENTRIES
         .iter()
         .find(|(_, _, entry)| centre_object(w, entry) == Some(pod))
@@ -297,7 +297,7 @@ pub fn slot_object(w: &World, arena: &str, slot: &str) -> Option<ObjId> {
 /// arena's own `tanks` list, filtered by side and taken in authored order, which
 /// is the order doc 16 §3.8 means by "slot n of a side".
 #[must_use]
-pub fn slot_id(w: &World, arena: &str, team: Team, index: u8) -> Option<SmolStr> {
+pub fn slot_id(w: &World, arena: &str, team: PartyId, index: u8) -> Option<SmolStr> {
     let arena = CanonicalId::new(arena).ok()?;
     let definitions = w.module_state::<TacsimStore>()?.definitions();
     let def = definitions.arenas.get(&arena)?;
@@ -325,7 +325,7 @@ pub fn tank_of(w: &World, pod: ObjId) -> Option<ObjId> {
 
 /// The tank behind one side's slot, without a pod in hand.
 #[must_use]
-pub fn tank_for_slot(w: &World, team: Team, index: u8) -> Option<ObjId> {
+pub fn tank_for_slot(w: &World, team: PartyId, index: u8) -> Option<ObjId> {
     let slot = slot_id(w, CENTRE_ARENA, team, index)?;
     slot_object(w, CENTRE_ARENA, &slot)
 }
@@ -357,7 +357,7 @@ pub fn tank_for_slot(w: &World, team: Team, index: u8) -> Option<ObjId> {
 #[must_use]
 pub fn fieldable_per_side(w: &World) -> u8 {
     let whole = |index: u8| {
-        Team::ALL.iter().all(|team| {
+        PartyId::OOC.iter().all(|team| {
             pod_object(w, *team, index).is_some() && tank_for_slot(w, *team, index).is_some()
         })
     };
@@ -453,7 +453,7 @@ pub fn readiness(w: &World) -> Readiness {
         .iter()
         .filter(|(team, index, _)| pod_object(w, *team, *index).is_some())
         .count();
-    let tanks = Team::ALL
+    let tanks = PartyId::OOC
         .into_iter()
         .flat_map(|team| (1..=PODS_PER_SIDE).map(move |index| (team, index)))
         .filter(|(team, index)| tank_for_slot(w, *team, *index).is_some())
@@ -523,12 +523,12 @@ pub(crate) mod tests {
         assert_eq!(POD_ENTRIES.len(), 12);
         assert_eq!(usize::from(PODS_PER_SIDE) * 2, POD_ENTRIES.len());
         let mut want = Vec::new();
-        for (team, word) in [(Team::Red, "red"), (Team::Blue, "blue")] {
+        for (team, word) in [(PartyId::RED, "red"), (PartyId::BLUE, "blue")] {
             for index in 1..=PODS_PER_SIDE {
                 want.push((team, index, format!("item.{word}_pod_{index}")));
             }
         }
-        let have: Vec<(Team, u8, String)> = POD_ENTRIES
+        let have: Vec<(PartyId, u8, String)> = POD_ENTRIES
             .iter()
             .map(|(team, index, entry)| (*team, *index, (*entry).to_owned()))
             .collect();
@@ -581,7 +581,7 @@ pub(crate) mod tests {
         let mut roster = store.arena_roster(&arena).cloned().expect("applied");
         roster.units.remove("red_5");
         store.put_arena_roster(arena, roster);
-        assert!(tank_for_slot(holed.world(), Team::Red, 6).is_some());
+        assert!(tank_for_slot(holed.world(), PartyId::RED, 6).is_some());
         assert_eq!(
             fieldable_per_side(holed.world()),
             4,
@@ -591,12 +591,12 @@ pub(crate) mod tests {
         // The pods count as the tanks do: a pod that is gone ends the prefix
         // at the slot before it, with every tank standing.
         let mut podless = whole_centre();
-        let pod = pod_object(podless.world(), Team::Blue, 3).expect("blue pod 3");
+        let pod = pod_object(podless.world(), PartyId::BLUE, 3).expect("blue pod 3");
         podless
             .world_mut()
             .set_flag(pod, mush_core::Flags::GOING, true)
             .expect("the pod is going");
-        assert_eq!(pod_object(podless.world(), Team::Blue, 3), None);
+        assert_eq!(pod_object(podless.world(), PartyId::BLUE, 3), None);
         assert_eq!(
             fieldable_per_side(podless.world()),
             2,
@@ -717,7 +717,7 @@ pub(crate) mod tests {
 
     #[test]
     fn every_pod_slot_is_declared_once_per_side() {
-        for team in Team::ALL {
+        for team in PartyId::OOC {
             for index in 1..=PODS_PER_SIDE {
                 assert_eq!(
                     POD_ENTRIES

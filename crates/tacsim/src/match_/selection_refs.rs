@@ -363,7 +363,7 @@ mod tests {
             &catalog,
             cells,
             ObjId(7),
-            crate::arena::state::Team::Red,
+            crate::arena::state::PartyId::RED,
             mush_sim::data::Pose::at(1_500, 1_500, 0, posture),
             0,
             crate::arena::state::Controller::Mind,

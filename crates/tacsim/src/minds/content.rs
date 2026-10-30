@@ -201,7 +201,7 @@ mod tests {
     use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
     use crate::arena::state::{
         Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, Controller, CustodyOut,
-        CustodyUnit, MatchMode, Power, SeenPose, ShadowContact, Team,
+        CustodyUnit, MatchMode, Power, SeenPose, ShadowContact, PartyId,
     };
     use crate::arena::stock_mind::{NativeStockMind, StockMemory, health_permille, view_ranges};
     use crate::arena::test_support::{definition, ground, line_tank, pose, resolution, scout};
@@ -238,7 +238,7 @@ mod tests {
     }
 
     /// A line tank flown by a mind.
-    fn minded(id: ObjId, team: Team, x: i64, y: i64) -> CustodyUnit {
+    fn minded(id: ObjId, team: PartyId, x: i64, y: i64) -> CustodyUnit {
         let mut unit = line_tank(id, team, pose(x, y));
         unit.controller = Controller::Mind;
         unit.reseal(&crate::match_::SealTerms::fixture())
@@ -251,7 +251,7 @@ mod tests {
         let Some(state) = arena.unit(target) else {
             panic!("a fielded target");
         };
-        let class = Classification::Classified { team: state.team };
+        let class = Classification::Classified { party: state.team };
         let plot = SeenPose::of(state);
         arena
             .contacts
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn dt_distinct_order_identity_replaces_an_ignored_equal_deadline_in_both_runners() {
         for deadline in [60_000, i64::MAX] {
-            let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
+            let mut arena = field(vec![minded(RED, PartyId::RED, 3_500, 4_500)]);
             online(&mut arena, RED);
             let failed = (6, 4);
             let mut view = view_of(&arena, RED);
@@ -428,7 +428,7 @@ mod tests {
     /// Mirror of `m1a6_a_drive_no_route_notice_performs_the_give_ups_and_the_fallback`.
     #[test]
     fn m2_mirror_a_drive_no_route_notice_performs_the_give_ups_and_the_fallback() {
-        let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 3_500, 4_500)]);
         online(&mut arena, RED);
         let failed = (6, 4);
         let mut view = view_of(&arena, RED);
@@ -491,7 +491,7 @@ mod tests {
     /// Mirror of `m1a6_a_drive_arrived_notice_is_arrival_wherever_the_fan_landed`.
     #[test]
     fn m2_mirror_a_drive_arrived_notice_is_arrival_wherever_the_fan_landed() {
-        let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 3_500, 4_500)]);
         online(&mut arena, RED);
         let named = (50, 40);
         let start = StockMemory {
@@ -554,15 +554,15 @@ mod tests {
     /// scripted minute with both runners on every think.
     #[test]
     fn m2_mirror_an_unarmed_hull_emits_no_lock_and_no_fire() {
-        let mut red = scout(RED, Team::Red, pose(20_500, 20_500));
+        let mut red = scout(RED, PartyId::RED, pose(20_500, 20_500));
         red.weapons.clear();
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
         let mut arena = field(vec![
             red,
-            line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),
-            line_tank(BLUE2, Team::Blue, pose(30_500, 20_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 30_500)),
+            line_tank(BLUE2, PartyId::BLUE, pose(30_500, 20_500)),
         ]);
         let both = Arc::new(Both {
             native: NativeStockMind::with(&arena.arena_cfg.reflex),
@@ -589,7 +589,7 @@ mod tests {
         assert!(answers.iter().any(|(view, _)| {
             view.contacts
                 .iter()
-                .any(|row| matches!(row.class, Classification::Classified { team: Team::Blue }))
+                .any(|row| matches!(row.class, Classification::Classified { party: PartyId::BLUE }))
         }));
         assert!(
             answers.iter().any(|(_, result)| result
@@ -617,7 +617,7 @@ mod tests {
     /// Mirror of `m1a6_a_healthy_withdraw_with_no_order_returns_to_patrol`.
     #[test]
     fn m2_mirror_a_healthy_withdraw_with_no_order_returns_to_patrol() {
-        let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 20_500, 20_500)]);
         online(&mut arena, RED);
         let view = view_of(&arena, RED);
         let withdrawing = StockMemory {
@@ -656,9 +656,9 @@ mod tests {
     #[test]
     fn m2_mirror_a_supporter_stands_blind_rejoins_off_the_leash_and_keeps_station() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),
-            line_tank(MATE, Team::Red, pose(20_500, 50_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 30_500)),
+            line_tank(MATE, PartyId::RED, pose(20_500, 50_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x11));
@@ -700,8 +700,8 @@ mod tests {
         assert_eq!(leashed.state, MachineState::Patrol);
         assert_eq!(leashed.target, None);
         let mut close = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(MATE, Team::Red, pose(20_500, 23_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(MATE, PartyId::RED, pose(20_500, 23_500)),
         ]);
         online(&mut close, RED);
         hold(&mut close, RED, MATE, ContactId(0x99));
@@ -763,11 +763,11 @@ mod tests {
         /// as `ContactId(0x20 + k)`.
         fn crowded(hostiles: &[(i64, i64)], charge_at: (i64, i64)) -> Arena {
             let mut units = vec![
-                minded(RED, Team::Red, 20_500, 20_500),
-                line_tank(MATE, Team::Red, pose(charge_at.0, charge_at.1)),
+                minded(RED, PartyId::RED, 20_500, 20_500),
+                line_tank(MATE, PartyId::RED, pose(charge_at.0, charge_at.1)),
             ];
             for (k, (x, y)) in (0_u32..).zip(hostiles) {
-                units.push(line_tank(ObjId(20 + k), Team::Blue, pose(*x, *y)));
+                units.push(line_tank(ObjId(20 + k), PartyId::BLUE, pose(*x, *y)));
             }
             let mut arena = field(units);
             online(&mut arena, RED);
@@ -901,9 +901,9 @@ mod tests {
     #[test]
     fn m2_mirror_a_screen_stands_on_a_row_inside_its_arc_and_not_outside() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),
-            line_tank(BLUE2, Team::Blue, pose(30_500, 20_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 30_500)),
+            line_tank(BLUE2, PartyId::BLUE, pose(30_500, 20_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE2, ContactId(0x22));
@@ -945,9 +945,9 @@ mod tests {
     /// Two hostile rows a view holds, tied (`stock_mind.rs`' `tied`).
     fn tied() -> (Arena, MindView) {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),
-            line_tank(BLUE2, Team::Blue, pose(30_500, 20_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 30_500)),
+            line_tank(BLUE2, PartyId::BLUE, pose(30_500, 20_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x30));
@@ -988,8 +988,8 @@ mod tests {
     #[test]
     fn m2_mirror_a_blocked_miss_notice_turns_engage_into_approach() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -1043,9 +1043,9 @@ mod tests {
     #[test]
     fn m2_mirror_an_ignored_or_ended_order_does_not_cap_the_ranges() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 50_500)),
-            line_tank(MATE, Team::Red, pose(30_500, 20_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 50_500)),
+            line_tank(MATE, PartyId::RED, pose(30_500, 20_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -1130,8 +1130,8 @@ mod tests {
     #[test]
     fn m2_mirror_the_withdraw_dwell_and_the_rally() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 25_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 25_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x11));
@@ -1223,8 +1223,8 @@ mod tests {
     #[test]
     fn m2_mirror_the_disabled_edge_rewrites_the_fourteen_keys() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 25_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 25_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x11));
@@ -1327,7 +1327,7 @@ mod tests {
         assert!(parted, "nearest and exposed never parted on the grid");
 
         // The search and the hunt, alone on the field.
-        let mut alone = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        let mut alone = field(vec![minded(RED, PartyId::RED, 20_500, 20_500)]);
         online(&mut alone, RED);
         let view = view_of(&alone, RED);
         let line_card = line(&cfg);
@@ -1376,8 +1376,8 @@ mod tests {
     #[test]
     fn m2_mirror_where_t1_saturates_t2_clamps() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -1394,7 +1394,7 @@ mod tests {
             let _ = think(&arena, &far, &mut memory, 1_000);
             assert_eq!(memory.state, MachineState::Approach);
         }
-        let mut alone = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        let mut alone = field(vec![minded(RED, PartyId::RED, 20_500, 20_500)]);
         online(&mut alone, RED);
         let view = view_of(&alone, RED);
         let mut plotted = StockMemory {
@@ -1546,7 +1546,7 @@ mod tests {
         use crate::arena::conditions::{ASPECTS_ANY, FireCondition, SlotTarget};
         use crate::arena::stock_mind::would_overheat;
         use crate::arena::weapons::FrameArming;
-        let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 20_500, 20_500)]);
         online(&mut arena, RED);
         let mut view = view_of(&arena, RED);
         let Some(like) = view.weapons.first().cloned() else {
@@ -1637,8 +1637,8 @@ mod tests {
         use crate::arena::conditions::SlotTarget;
         use crate::arena::weapons::FrameArming;
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -1845,8 +1845,8 @@ mod tests {
     fn m2_mirror_the_cited_shot_is_the_first_ready_armed_weapon_numbered_as_the_arena_does() {
         use crate::arena::weapons::FrameWeapon;
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -1927,14 +1927,14 @@ mod tests {
         use crate::arena::conditions::FireCondition;
         use crate::arena::resolution::Consequence;
         use crate::arena::weapons::FiredBy;
-        let mut red = minded(RED, Team::Red, 20_500, 20_500);
+        let mut red = minded(RED, PartyId::RED, 20_500, 20_500);
         let mut mg = crate::arena::test_support::cannon();
         mg.id = SmolStr::new("machine_gun");
         mg.mount_section = SmolStr::new("hull");
         red.weapons.push(mg);
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("seal the complete initial weapon rack");
-        let mut arena = field(vec![red, line_tank(BLUE, Team::Blue, pose(20_500, 40_500))]);
+        let mut arena = field(vec![red, line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500))]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
         let card = line(&arena.arena_cfg.reflex);

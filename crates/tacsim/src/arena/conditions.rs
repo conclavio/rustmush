@@ -1045,7 +1045,7 @@ impl Arena {
             (SlotTarget::Contact { id }, Classification::Classified { .. }) => {
                 id == lock && !self.contact_reads_dead(held)
             }
-            (SlotTarget::BestHostile, Classification::Classified { team }) => {
+            (SlotTarget::BestHostile, Classification::Classified { party: team }) => {
                 team != state.team && !self.contact_reads_dead(held)
             }
         };
@@ -1445,7 +1445,7 @@ impl Arena {
         self.frame_contacts(unit)
             .into_iter()
             .filter(|row| {
-                row.class.team().is_some_and(|team| team != own.team)
+                row.class.party().is_some_and(|team| team != own.team)
                     && row.reads_dead != Some(true)
                     && self.rule_predicates_hold(unit, rule, Some(row.id), at_ms)
             })
@@ -2383,7 +2383,7 @@ impl Arming {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{Controller, Power, SeenPose, ShadowContact, Team};
+    use crate::arena::state::{Controller, Power, SeenPose, ShadowContact, PartyId};
     use crate::arena::test_support::{arena_of, cannon, line_tank, pose};
     use crate::arena::weapons::FiredBy;
 
@@ -2413,18 +2413,18 @@ mod tests {
     /// at 500 per mille.
     fn locked() -> Arena {
         let mut arena = arena_of(vec![
-            line_tank(RED, Team::Red, pose(1_500, 3_500)),
-            line_tank(BLUE, Team::Blue, pose(5_500, 3_500)),
-            line_tank(FRIEND, Team::Red, pose(1_500, 5_500)),
+            line_tank(RED, PartyId::RED, pose(1_500, 3_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(5_500, 3_500)),
+            line_tank(FRIEND, PartyId::RED, pose(1_500, 5_500)),
         ]);
         arena.resolution.p_min = 500;
         arena.resolution.p_max = 500;
-        for (target, team) in [(BLUE, Team::Blue), (FRIEND, Team::Red)] {
+        for (target, team) in [(BLUE, PartyId::BLUE), (FRIEND, PartyId::RED)] {
             let plot = arena.unit(target).map(SeenPose::of).unwrap_or_default();
             arena.contacts.insert(
                 RED,
                 id_of(RED, target),
-                ShadowContact::sighted(target, Classification::Classified { team }, 0, plot),
+                ShadowContact::sighted(target, Classification::Classified { party: team }, 0, plot),
             );
         }
         if let Some(state) = arena.unit_mut(RED) {
@@ -2887,7 +2887,7 @@ mod tests {
                 .contacts
                 .get_mut(RED, id_of(RED, target))
                 .expect("plot");
-            held.class = Classification::Classified { team: Team::Blue };
+            held.class = Classification::Classified { party: PartyId::BLUE };
             held.seen_at.x_cm = x_cm;
             held.seen_at.y_cm = 3_500;
             held.seen_at.heading_mdeg = 0;
@@ -3203,7 +3203,7 @@ mod tests {
         assert!(!locked().rule_predicates_hold(RED, &rule(0), None, 0));
         let mut arena = arena_of(vec![crate::arena::test_support::laser_tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             pose(1_500, 3_500),
         )]);
         let max = arena
@@ -3347,7 +3347,7 @@ mod tests {
         arena.contacts.get_mut(RED, target).expect("plot").class = Classification::Unknown;
         assert!(!arena.rule_predicates_hold(RED, &rule(RuleBand::Close), Some(target), 0));
         arena.contacts.get_mut(RED, target).expect("plot").class =
-            Classification::Classified { team: Team::Blue };
+            Classification::Classified { party: PartyId::BLUE };
         arena.unit_mut(RED).expect("own hull").weapons.clear();
         assert!(!arena.rule_predicates_hold(RED, &rule(RuleBand::Close), Some(target), 0));
     }
@@ -3533,11 +3533,11 @@ mod tests {
         };
         let bare = crate::arena::state::CustodyUnit {
             unit: tactical_unit(BLUE),
-            ..two_guns(scout(BLUE, Team::Blue, pose(6_500, 4_500)))
+            ..two_guns(scout(BLUE, PartyId::BLUE, pose(6_500, 4_500)))
         }
         .sealed();
         let mut arena = arena_of(vec![
-            two_guns(scout(RED, Team::Red, pose(1_500, 4_500))),
+            two_guns(scout(RED, PartyId::RED, pose(1_500, 4_500))),
             bare,
         ]);
         assert_eq!(
@@ -3920,7 +3920,7 @@ mod tests {
             CharacterRef, Constraints, Objective, Order, StandingOrder,
         };
         let squad = crate::deliberation::squad::SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         };
         let cond = FiredBy::Cond { slot: 1 };
@@ -4118,8 +4118,8 @@ mod tests {
         let mut units = Vec::new();
         for i in 0..150_u16 {
             for (team, x, id) in [
-                (Team::Red, 100_u16, 10_000 + u32::from(i)),
-                (Team::Blue, 110, 20_000 + u32::from(i)),
+                (PartyId::RED, 100_u16, 10_000 + u32::from(i)),
+                (PartyId::BLUE, 110, 20_000 + u32::from(i)),
             ] {
                 let mut unit = line_tank(
                     ObjId(id),
@@ -4142,6 +4142,7 @@ mod tests {
                 resolution: crate::arena::test_support::resolution(),
                 seed: 2_350,
                 mode: crate::arena::MatchMode::Skirmish,
+                host: crate::arena::FieldHost::all_hostile(),
             },
             &crate::config::ArenaConfig::default(),
             &crate::config::MatchConfig::default(),
@@ -4156,14 +4157,14 @@ mod tests {
             let red = id.0 < 20_000;
             let target = if red { blue0 } else { ObjId(id.0 - 10_000) };
             let plot = arena.unit(target).map(SeenPose::of).unwrap_or_default();
-            let team = if red { Team::Blue } else { Team::Red };
+            let team = if red { PartyId::BLUE } else { PartyId::RED };
             // The reds' own sightings of blue 0 stamped in id order, so every
             // share in id order is newer than its mates' rows.
             let stamp = if red { i64::from(id.0 - 10_000) + 1 } else { 0 };
             arena.contacts.insert(
                 *id,
                 id_of(*id, target),
-                ShadowContact::sighted(target, Classification::Classified { team }, stamp, plot),
+                ShadowContact::sighted(target, Classification::Classified { party: team }, stamp, plot),
             );
             if let Some(state) = arena.unit_mut(*id) {
                 state.power = Power::Online;

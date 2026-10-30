@@ -3,14 +3,14 @@
 use super::*;
 use crate::arena::intents::{Control, ControlState};
 use crate::arena::ledger::LedgerEvent;
-use crate::arena::state::{Channel, Team};
+use crate::arena::state::{Channel, PartyId};
 use crate::arena::test_support::{arena_at_epoch, pose, tank};
 use crate::config::{ArenaConfig, MatchConfig};
 
 const A: ObjId = ObjId(4);
 
 fn arena() -> Arena {
-    arena_at_epoch(vec![tank(A, Team::Red, pose(3_500, 3_500))], 1)
+    arena_at_epoch(vec![tank(A, PartyId::RED, pose(3_500, 3_500))], 1)
 }
 
 fn startup() -> Intent {
@@ -57,7 +57,7 @@ fn parallel_pilot_frames_match_serial_bytes_and_consumption() {
             .map(|i| {
                 tank(
                     ObjId(10 + i),
-                    Team::Red,
+                    PartyId::RED,
                     pose(
                         1_500 + i64::from(i % 6) * 1_000,
                         1_500 + i64::from(i / 6) * 1_000,
@@ -285,7 +285,7 @@ fn a_stop_ends_the_match_at_phase_one_and_a_further_step_does_nothing() {
 fn the_duration_bound_ends_the_match_with_a_timeout() {
     let mut arena = Arena::new(
         crate::arena::test_support::custody(
-            vec![tank(A, Team::Red, pose(3_500, 3_500))],
+            vec![tank(A, PartyId::RED, pose(3_500, 3_500))],
             Vec::new(),
         ),
         &ArenaConfig::default(),
@@ -477,8 +477,8 @@ fn a_sensor_pass_runs_in_the_pulse_and_its_contact_reaches_the_frame_and_the_tem
     // well inside it.
     let mut arena = crate::arena::test_support::arena_at_epoch(
         vec![
-            scout(A, Team::Red, pose(500, 500)),
-            scout(B, Team::Blue, pose(4_500, 500)),
+            scout(A, PartyId::RED, pose(500, 500)),
+            scout(B, PartyId::BLUE, pose(4_500, 500)),
         ],
         1,
     );
@@ -866,7 +866,7 @@ fn d2_phase_two_is_silent_where_there_is_nobody_to_tell() {
         issuer: None,
         by: crate::deliberation::order::CharacterRef::Persona {
             squad: crate::deliberation::squad::SquadId {
-                team: crate::arena::state::Team::Red,
+                team: crate::arena::state::PartyId::RED,
                 index: 1,
             },
         },
@@ -952,8 +952,8 @@ fn d2_the_frame_carries_the_wreck_and_the_motion_limit() {
 /// written whether or not anybody is there to read it.
 fn spent_rig() -> Arena {
     crate::arena::test_support::arena_of(vec![
-        tank(A, Team::Red, pose(1_500, 1_500)),
-        tank(ObjId(9), Team::Blue, pose(1_500, 5_500)),
+        tank(A, PartyId::RED, pose(1_500, 1_500)),
+        tank(ObjId(9), PartyId::BLUE, pose(1_500, 5_500)),
     ])
 }
 
@@ -1235,7 +1235,7 @@ fn watching_gunner() -> Arena {
             }),
             ..crate::arena::state::ShadowContact::sighted(
                 ObjId(9),
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified { party: PartyId::BLUE },
                 0,
                 plot,
             )
@@ -1507,7 +1507,7 @@ fn m2_pair(max_duration_ms: u32) -> Arena {
     use crate::arena::test_support::scout;
     m2_pair_with(
         max_duration_ms,
-        scout(ObjId(9), Team::Blue, pose(4_500, 500)),
+        scout(ObjId(9), PartyId::BLUE, pose(4_500, 500)),
     )
 }
 
@@ -1517,7 +1517,7 @@ fn m2_pair_with(max_duration_ms: u32, blue: crate::arena::state::CustodyUnit) ->
     use crate::arena::test_support::scout;
     Arena::new(
         crate::arena::test_support::custody(
-            vec![scout(A, Team::Red, pose(500, 500)), blue],
+            vec![scout(A, PartyId::RED, pose(500, 500)), blue],
             Vec::new(),
         ),
         &ArenaConfig::default(),
@@ -1775,7 +1775,7 @@ fn m2_a_kill_on_the_deadlines_own_millisecond_wins() {
     use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
     use crate::arena::test_support::scout;
     let glass = || {
-        let mut blue = scout(ObjId(9), Team::Blue, pose(4_500, 500));
+        let mut blue = scout(ObjId(9), PartyId::BLUE, pose(4_500, 500));
         // Facing west, down the line of fire, so the round meets the one
         // facet `tactical_unit` has: `hull/front`, ten armour over eight
         // internals against the cannon's 120.
@@ -1817,7 +1817,7 @@ fn m2_a_kill_on_the_deadlines_own_millisecond_wins() {
     assert_eq!(
         out.ended.map(|end| end.reason),
         Some(EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         }),
         "the kill on the whistle is an elimination"
     );
@@ -1828,7 +1828,7 @@ fn m2_a_kill_on_the_deadlines_own_millisecond_wins() {
             .collect::<Vec<_>>(),
         vec![EventKind::MatchEnded {
             reason: EndReason::Elimination {
-                winner: Some(Team::Red)
+                winner: Some(PartyId::RED)
             }
         }],
         "exactly one end, the elimination, and no timeout beside it: {ends:?}"
@@ -1862,7 +1862,7 @@ fn m2_an_elimination_in_the_deadlines_own_substep_wins() {
     assert_eq!(
         out.ended.map(|end| end.reason),
         Some(EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         })
     );
     // The elimination is stamped at the end of the substep it was settled
@@ -1877,7 +1877,7 @@ fn m2_an_elimination_in_the_deadlines_own_substep_wins() {
             3_250,
             EventKind::MatchEnded {
                 reason: EndReason::Elimination {
-                    winner: Some(Team::Red)
+                    winner: Some(PartyId::RED)
                 }
             }
         )],
@@ -1921,7 +1921,7 @@ fn ap2_a_side_disarmed_on_a_dry_substep_is_eliminated_not_spent() {
     assert_eq!(
         out.ended.map(|end| end.reason),
         Some(EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         }),
         "the side with no gun left is out, settled before Spent"
     );
@@ -1933,7 +1933,7 @@ fn ap2_a_side_disarmed_on_a_dry_substep_is_eliminated_not_spent() {
             1_250,
             EventKind::MatchEnded {
                 reason: EndReason::Elimination {
-                    winner: Some(Team::Red)
+                    winner: Some(PartyId::RED)
                 }
             }
         )],
@@ -1972,8 +1972,8 @@ fn m2_the_opening_pulse_drains_nothing_and_a_pass_at_zero_runs_next_pulse() {
     const EARLY: ObjId = ObjId(2_355);
     let mut arena = crate::arena::test_support::arena_at_epoch(
         vec![
-            scout(EARLY, Team::Red, pose(500, 500)),
-            scout(ObjId(9), Team::Blue, pose(4_500, 500)),
+            scout(EARLY, PartyId::RED, pose(500, 500)),
+            scout(ObjId(9), PartyId::BLUE, pose(4_500, 500)),
         ],
         1,
     );
@@ -2101,7 +2101,7 @@ fn m2_a_renamed_cancel_is_said_once_and_only_for_a_mesh_insert_told_apart() {
         viewer: A,
         contact,
         target: B,
-        team: Team::Blue,
+        team: PartyId::BLUE,
     };
     // The identifications staged for `A` by one `detected` then one
     // `classified`, with the held loss and the row set up by `shape`.
@@ -2132,7 +2132,7 @@ fn m2_a_renamed_cancel_is_said_once_and_only_for_a_mesh_insert_told_apart() {
     let mesh = run(&|arena: &mut Arena| {
         if let Some(held) = arena.contacts.get_mut(A, contact) {
             held.numbered = false;
-            held.class = Classification::Classified { team: Team::Blue };
+            held.class = Classification::Classified { party: PartyId::BLUE };
         }
     });
     let mesh_said = said(&mesh);
@@ -2153,7 +2153,7 @@ fn m2_a_renamed_cancel_is_said_once_and_only_for_a_mesh_insert_told_apart() {
     let own = run(&|arena: &mut Arena| {
         if let Some(held) = arena.contacts.get_mut(A, contact) {
             held.numbered = true;
-            held.class = Classification::Classified { team: Team::Blue };
+            held.class = Classification::Classified { party: PartyId::BLUE };
         }
     });
     assert_eq!(
@@ -2742,7 +2742,7 @@ fn i3_no_tempo_floor_line_is_journalled_on_an_ended_match() {
 
     let mut timed = Arena::new(
         crate::arena::test_support::custody(
-            vec![tank(A, Team::Red, pose(3_500, 3_500))],
+            vec![tank(A, PartyId::RED, pose(3_500, 3_500))],
             Vec::new(),
         ),
         &ArenaConfig::default(),
@@ -2775,8 +2775,8 @@ fn i3_pair() -> Arena {
     use crate::arena::state::{ArenaTerrain, TerrainCell};
     let mut arena = arena_at_epoch(
         vec![
-            tank(A, Team::Red, pose(3_500, 3_500)),
-            tank(I3_B, Team::Blue, pose(5_500, 5_500)),
+            tank(A, PartyId::RED, pose(3_500, 3_500)),
+            tank(I3_B, PartyId::BLUE, pose(5_500, 5_500)),
         ],
         1,
     );
@@ -2839,7 +2839,7 @@ fn i3_a_place_moves_the_unit_and_journals_placed_under_the_phase_four_hash() {
         contact,
         crate::arena::state::ShadowContact::sighted(
             A,
-            Classification::Classified { team: Team::Red },
+            Classification::Classified { party: PartyId::RED },
             0,
             crate::arena::state::SeenPose::default(),
         ),
@@ -3145,7 +3145,7 @@ fn i3_a_place_in_the_stopping_pulse_is_refused_stopped_before_the_stop_line() {
 fn o1_holder(glass: bool) -> crate::arena::state::CustodyUnit {
     use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
     use crate::arena::test_support::scout;
-    let mut blue = scout(ObjId(9), Team::Blue, pose(4_500, 500));
+    let mut blue = scout(ObjId(9), PartyId::BLUE, pose(4_500, 500));
     if glass {
         blue.pose.heading_mdeg = 270_000;
         blue.profile = UnitProfile {
@@ -3193,9 +3193,9 @@ fn o1_hold_field(
             mode: MatchMode::Hold,
             ..custody(
                 vec![
-                    scout(A, Team::Red, pose(500, 500)),
+                    scout(A, PartyId::RED, pose(500, 500)),
                     blue,
-                    tank(ObjId(20), Team::Blue, pose(7_500, 7_500)),
+                    tank(ObjId(20), PartyId::BLUE, pose(7_500, 7_500)),
                 ],
                 Vec::new(),
             )
@@ -3211,7 +3211,7 @@ fn o1_hold_field(
 }
 
 /// The `HoldSettles` events on the heap, as `(t_ms, team, since_ms)`.
-fn o1_holds(arena: &Arena) -> Vec<(i64, Team, i64)> {
+fn o1_holds(arena: &Arena) -> Vec<(i64, PartyId, i64)> {
     arena
         .due
         .iter()
@@ -3239,9 +3239,9 @@ fn o1_a_hold_is_won_at_its_own_millisecond_and_nothing_after_it_lands() {
     journal.absorb(&arena.step(1_000, &[], &[]));
     assert_eq!(
         arena.hold.and_then(|hold| hold.held_by),
-        Some((Team::Blue, 250))
+        Some((PartyId::BLUE, 250))
     );
-    assert_eq!(o1_holds(&arena), vec![(10_350, Team::Blue, 250)]);
+    assert_eq!(o1_holds(&arena), vec![(10_350, PartyId::BLUE, 250)]);
     let mut ended = None;
     for wall in (2_000..=11_000).step_by(1_000) {
         let out = arena.step(wall, &[], &[]);
@@ -3254,7 +3254,7 @@ fn o1_a_hold_is_won_at_its_own_millisecond_and_nothing_after_it_lands() {
     assert_eq!(
         ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: Team::Blue },
+            reason: EndReason::Hold { winner: PartyId::BLUE },
             t_ms: 10_350
         })
     );
@@ -3265,7 +3265,7 @@ fn o1_a_hold_is_won_at_its_own_millisecond_and_nothing_after_it_lands() {
         Some((
             10_350,
             EventKind::MatchEnded {
-                reason: EndReason::Hold { winner: Team::Blue }
+                reason: EndReason::Hold { winner: PartyId::BLUE }
             }
         ))
     );
@@ -3297,7 +3297,7 @@ fn o1_a_contest_drops_the_clock_and_its_stale_event_fires_into_nothing() {
     arena.step(1_000, &[], &[]);
     assert_eq!(
         arena.hold.and_then(|hold| hold.held_by),
-        Some((Team::Blue, 250))
+        Some((PartyId::BLUE, 250))
     );
     // Red drives in (placed, between two pulses): contested at 1,250.
     if let Some(red) = arena.unit_mut(A) {
@@ -3312,24 +3312,24 @@ fn o1_a_contest_drops_the_clock_and_its_stale_event_fires_into_nothing() {
     arena.step(3_000, &[], &[]);
     assert_eq!(
         arena.hold.and_then(|hold| hold.held_by),
-        Some((Team::Blue, 2_250))
+        Some((PartyId::BLUE, 2_250))
     );
     assert_eq!(
         o1_holds(&arena),
-        vec![(10_250, Team::Blue, 250), (12_250, Team::Blue, 2_250)]
+        vec![(10_250, PartyId::BLUE, 250), (12_250, PartyId::BLUE, 2_250)]
     );
     // The stale event pops at 10,250 and ends nothing.
     for wall in (4_000..=11_000).step_by(1_000) {
         assert_eq!(arena.step(wall, &[], &[]).ended, None, "at {wall}");
     }
-    assert_eq!(o1_holds(&arena), vec![(12_250, Team::Blue, 2_250)]);
+    assert_eq!(o1_holds(&arena), vec![(12_250, PartyId::BLUE, 2_250)]);
     let out = arena.step(12_000, &[], &[]);
     assert_eq!(out.ended, None);
     let out = arena.step(13_000, &[], &[]);
     assert_eq!(
         out.ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: Team::Blue },
+            reason: EndReason::Hold { winner: PartyId::BLUE },
             t_ms: 12_250
         })
     );
@@ -3358,7 +3358,7 @@ fn o1_tie_1_a_holder_wrecked_earlier_in_the_last_substep_voids_the_win() {
     let mut arena = o1_hold_field(hold_ms, o1_holder(true), 60_000);
     let (mut journal, _, landed_at) = o1_fire(&mut arena);
     assert_eq!(landed_at, impact_at, "the probe and the run agree");
-    assert_eq!(o1_holds(&arena), vec![(impact_at + 1, Team::Blue, 250)]);
+    assert_eq!(o1_holds(&arena), vec![(impact_at + 1, PartyId::BLUE, 250)]);
     let out = arena.step(4_000, &[], &[]);
     journal.absorb(&out);
     assert!(
@@ -3407,7 +3407,7 @@ fn o1_tie_2_a_holder_wrecked_at_the_holds_own_millisecond_still_wins() {
     assert_eq!(
         out.ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: Team::Blue },
+            reason: EndReason::Hold { winner: PartyId::BLUE },
             t_ms: impact_at
         })
     );
@@ -3429,7 +3429,7 @@ fn o1_tie_2_a_holder_wrecked_at_the_holds_own_millisecond_still_wins() {
     assert_eq!(
         log.last().map(|event| event.kind.clone()),
         Some(EventKind::MatchEnded {
-            reason: EndReason::Hold { winner: Team::Blue }
+            reason: EndReason::Hold { winner: PartyId::BLUE }
         })
     );
 }
@@ -3453,13 +3453,13 @@ fn o1_a_round_due_after_the_holds_millisecond_in_its_substep_is_never_applied() 
     let mut arena = o1_hold_field(hold_ms, o1_holder(true), 60_000);
     let (mut journal, seq, landed_at) = o1_fire(&mut arena);
     assert_eq!(landed_at, impact_at, "the probe and the run agree");
-    assert_eq!(o1_holds(&arena), vec![(won_at, Team::Blue, 250)]);
+    assert_eq!(o1_holds(&arena), vec![(won_at, PartyId::BLUE, 250)]);
     let out = arena.step(4_000, &[], &[]);
     journal.absorb(&out);
     assert_eq!(
         out.ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: Team::Blue },
+            reason: EndReason::Hold { winner: PartyId::BLUE },
             t_ms: won_at
         })
     );
@@ -3485,7 +3485,7 @@ fn o1_a_round_due_after_the_holds_millisecond_in_its_substep_is_never_applied() 
         Some((
             won_at,
             EventKind::MatchEnded {
-                reason: EndReason::Hold { winner: Team::Blue }
+                reason: EndReason::Hold { winner: PartyId::BLUE }
             }
         ))
     );
@@ -3508,9 +3508,9 @@ fn o1_an_enemy_driving_into_the_square_in_the_last_substep_voids_the_win() {
         assert_eq!(arena.now_ms, 10_000);
         assert_eq!(
             arena.hold.and_then(|hold| hold.held_by),
-            Some((Team::Blue, 250))
+            Some((PartyId::BLUE, 250))
         );
-        assert_eq!(o1_holds(arena), vec![(10_250, Team::Blue, 250)]);
+        assert_eq!(o1_holds(arena), vec![(10_250, PartyId::BLUE, 250)]);
     };
     // The control: nobody comes, and blue wins at its own millisecond.
     let mut control = o1_hold_field(10_000, o1_holder(false), 60_000);
@@ -3518,7 +3518,7 @@ fn o1_an_enemy_driving_into_the_square_in_the_last_substep_voids_the_win() {
     assert_eq!(
         control.step(11_000, &[], &[]).ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: Team::Blue },
+            reason: EndReason::Hold { winner: PartyId::BLUE },
             t_ms: 10_250
         })
     );
@@ -3575,7 +3575,7 @@ fn o1_tie_3_a_hold_at_the_deadlines_own_millisecond_beats_the_timeout() {
     assert_eq!(
         ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: Team::Blue },
+            reason: EndReason::Hold { winner: PartyId::BLUE },
             t_ms: 3_000
         })
     );
@@ -3586,7 +3586,7 @@ fn o1_tie_3_a_hold_at_the_deadlines_own_millisecond_beats_the_timeout() {
         vec![(
             3_000,
             EventKind::MatchEnded {
-                reason: EndReason::Hold { winner: Team::Blue }
+                reason: EndReason::Hold { winner: PartyId::BLUE }
             }
         )],
         "one end, the hold, and no timeout beside it"
@@ -3604,7 +3604,7 @@ mod m1a3 {
     use super::super::*;
     use crate::arena::condition::{Condition, ConditionBand, Reading};
     use crate::arena::perception::{Notice, PerceptionCounters};
-    use crate::arena::state::{SeenPose, ShadowContact, Team, WeaponSummary};
+    use crate::arena::state::{SeenPose, ShadowContact, PartyId, WeaponSummary};
     use crate::arena::test_support::{arena_of, cannon, line_tank, pose};
 
     pub(super) const RED: ObjId = ObjId(4);
@@ -3635,23 +3635,23 @@ mod m1a3 {
     /// on BLUE.
     pub(super) fn field() -> Arena {
         let mut arena = arena_of(vec![
-            line_tank(RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(BLUE, Team::Blue, pose(1_500, 5_400)),
-            line_tank(MATE, Team::Red, pose(5_500, 1_500)),
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(1_500, 5_400)),
+            line_tank(MATE, PartyId::RED, pose(5_500, 1_500)),
             // (2,400, 3,200) from RED: exactly 4,000 cm, as BLUE and MATE.
-            line_tank(TIE, Team::Blue, pose(3_900, 4_700)),
-            line_tank(FAR, Team::Blue, pose(6_500, 6_500)),
-            line_tank(NEAR, Team::Blue, pose(3_500, 2_500)),
+            line_tank(TIE, PartyId::BLUE, pose(3_900, 4_700)),
+            line_tank(FAR, PartyId::BLUE, pose(6_500, 6_500)),
+            line_tank(NEAR, PartyId::BLUE, pose(3_500, 2_500)),
         ]);
         if let Some(red) = arena.unit_mut(RED) {
             red.power = Power::Online;
         }
-        let classified = |team: Team| Classification::Classified { team };
+        let classified = |team: PartyId| Classification::Classified { party: team };
         for (id, target, class) in [
-            (blue_id(&arena), BLUE, classified(Team::Blue)),
-            (MATE_ID, MATE, classified(Team::Red)),
-            (TIE_ID, TIE, classified(Team::Blue)),
-            (FAR_ID, FAR, classified(Team::Blue)),
+            (blue_id(&arena), BLUE, classified(PartyId::BLUE)),
+            (MATE_ID, MATE, classified(PartyId::RED)),
+            (TIE_ID, TIE, classified(PartyId::BLUE)),
+            (FAR_ID, FAR, classified(PartyId::BLUE)),
             (NEAR_ID, NEAR, Classification::Unknown),
         ] {
             let seen = SeenPose::of(arena.unit(target).unwrap_or_else(|| panic!("{target}")));
@@ -3687,8 +3687,8 @@ mod m1a3 {
                     ..definition()
                 },
                 units: vec![
-                    line_tank(RED, Team::Red, pose(1_500, 1_500)),
-                    line_tank(BLUE, Team::Blue, pose(1_500, 31_500)),
+                    line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+                    line_tank(BLUE, PartyId::BLUE, pose(1_500, 31_500)),
                 ],
                 pilots: Vec::new(),
                 resolution: resolution(),
@@ -3710,7 +3710,7 @@ mod m1a3 {
             id,
             ShadowContact::sighted(
                 BLUE,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified { party: PartyId::BLUE },
                 0,
                 seen,
             ),
@@ -4276,7 +4276,7 @@ fn m5_sealed(
 fn m5_a_switch_alone_changes_the_frame() {
     use crate::arena::core::CoreClass;
     let unit = m5_sealed(
-        tank(A, Team::Red, pose(3_500, 3_500)),
+        tank(A, PartyId::RED, pose(3_500, 3_500)),
         &["Sniper", "Line"],
         crate::match_::SealTerms::fixture(),
     );
@@ -4352,7 +4352,7 @@ fn m5_the_frames_mind_reads_the_core_class_now() {
     use crate::arena::test_support::tactical_unit_cored;
     let heavy = crate::arena::state::CustodyUnit {
         unit: tactical_unit_cored(A, CoreClass::III),
-        ..tank(A, Team::Red, pose(3_500, 3_500))
+        ..tank(A, PartyId::RED, pose(3_500, 3_500))
     };
     let terms = crate::match_::SealTerms::fixture().rated(CoreClass::III);
     assert_eq!(terms.class_cap, CoreClass::III, "the raised cap");
@@ -5033,8 +5033,8 @@ fn t110a_the_stock_chassis_at_its_floors_walks_the_same() {
     };
     let mut arena = arena_at_epoch(
         vec![
-            line_tank(A, Team::Red, pose(1_500, 1_500)),
-            line_tank(B, Team::Blue, pose(1_500, 2_500)),
+            line_tank(A, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(B, PartyId::BLUE, pose(1_500, 2_500)),
         ],
         1,
     );
@@ -5221,7 +5221,7 @@ fn m6_owned_pulse_matches_live_zero_one_many_phases_and_profile_change() {
     let make = || {
         arena_at_epoch(
             vec![m5_sealed(
-                tank(A, Team::Red, pose(3_500, 3_500)),
+                tank(A, PartyId::RED, pose(3_500, 3_500)),
                 &["Sniper", "Line"],
                 crate::match_::SealTerms::fixture(),
             )],
@@ -5262,7 +5262,7 @@ fn m6_owned_pulse_matches_live_zero_one_many_phases_and_profile_change() {
 fn m6_owned_pulse_matches_delayed_think_settlement_and_early_end() {
     use crate::arena::test_support::{arena_of, cannon};
     let make = || {
-        let units = [(A, Team::Red, 1500), (ObjId(5), Team::Blue, 6500)]
+        let units = [(A, PartyId::RED, 1500), (ObjId(5), PartyId::BLUE, 6500)]
             .into_iter()
             .map(|(id, team, x)| {
                 let mut unit = tank(id, team, pose(x, 3500));
@@ -5310,7 +5310,7 @@ fn m6_owned_pulse_matches_ledger_full_termination() {
         let mut cfg = ArenaConfig::default();
         cfg.ledger.max_bytes = 1;
         Arena::new(
-            custody(vec![tank(A, Team::Red, pose(3500, 3500))], vec![]),
+            custody(vec![tank(A, PartyId::RED, pose(3500, 3500))], vec![]),
             &cfg,
             &MatchConfig::default(),
             &SensorsConfig::default(),
@@ -5338,7 +5338,7 @@ fn m6_owned_pulse_stops_at_the_original_midpulse_deadline() {
     use crate::config::SensorsConfig;
     let make = || {
         Arena::new(
-            custody(vec![tank(A, Team::Red, pose(3500, 3500))], vec![]),
+            custody(vec![tank(A, PartyId::RED, pose(3500, 3500))], vec![]),
             &ArenaConfig::default(),
             &MatchConfig {
                 max_duration_ms: 1500,

@@ -67,7 +67,7 @@ use tacsim::arena::perception::{NoticeKind, SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    Designator, EntryZone, Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
+    Designator, EntryZone, Pilot, Power, SeenPose, ShadowContact, PartyId, TerrainCell, TrackedRules,
     WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
@@ -205,14 +205,14 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 2,
                 y0: 0,
                 x1: SIDE - 1,
@@ -286,7 +286,7 @@ fn cannon() -> WeaponSummary {
 }
 
 /// A tank that sees and shoots, with `weapons` for what it shoots with.
-fn scout(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> CustodyUnit {
+fn scout(id: ObjId, team: PartyId, pose: Pose, weapons: Vec<WeaponSummary>) -> CustodyUnit {
     CustodyUnit {
         id,
         team,
@@ -345,6 +345,7 @@ fn arena_of(
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         match_cfg,
@@ -357,8 +358,8 @@ fn arena_of(
 fn duel() -> Arena {
     arena_of(
         vec![
-            scout(RED, Team::Red, centre(5, 8), vec![cannon()]),
-            scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            scout(RED, PartyId::RED, centre(5, 8), vec![cannon()]),
+            scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
         ],
         &[],
         &match_cfg(),
@@ -725,8 +726,8 @@ fn a_beam_is_scheduled_at_now() {
     };
     let mut arena = arena_of(
         vec![
-            scout(RED, Team::Red, centre(5, 8), vec![beam]),
-            scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            scout(RED, PartyId::RED, centre(5, 8), vec![beam]),
+            scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
         ],
         &[],
         &match_cfg(),
@@ -790,8 +791,8 @@ fn a_blocked_shot_is_accepted_and_costs_its_round() {
     // tanks never see each other.
     let mut arena = arena_of(
         vec![
-            scout(RED, Team::Red, centre(5, 8), vec![cannon()]),
-            scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            scout(RED, PartyId::RED, centre(5, 8), vec![cannon()]),
+            scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
         ],
         &[(7, 8, wall())],
         &match_cfg(),
@@ -819,7 +820,7 @@ fn a_blocked_shot_is_accepted_and_costs_its_round() {
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             arena.now_ms,
             plot_of(&arena, BLUE),
         ),
@@ -939,7 +940,7 @@ fn the_engaged_tempo_is_entered_on_a_shot_and_held() {
     // wins. So the gun's record goes too (`ammo`, which is what
     // `UnitState::armed_at_checkout` reads): red is then a side that never had
     // a gun, which the clause leaves standing.
-    assert_eq!(arena.eliminated(), Some(Some(Team::Blue)));
+    assert_eq!(arena.eliminated(), Some(Some(PartyId::BLUE)));
     if let Some(state) = arena.unit_mut(RED) {
         state.ammo.clear();
     }
@@ -1303,8 +1304,8 @@ fn script() -> Vec<Beat> {
 fn scripted_arena() -> Arena {
     arena_of(
         vec![
-            scout(RED, Team::Red, centre(5, 8), vec![cannon()]),
-            scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            scout(RED, PartyId::RED, centre(5, 8), vec![cannon()]),
+            scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
         ],
         &[],
         &MatchConfig::default(),
@@ -2053,8 +2054,8 @@ fn i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it() {
     for (no_time, sliced) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut arena = arena_of(
             vec![
-                scout(RED, Team::Red, centre(5, 8), vec![beam.clone()]),
-                scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+                scout(RED, PartyId::RED, centre(5, 8), vec![beam.clone()]),
+                scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
             ],
             &[],
             &match_cfg(),
@@ -2210,7 +2211,7 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
     );
     assert_eq!(
         arena.contacts.get(RED, contact).map(|held| held.class),
-        Some(Classification::Classified { team: Team::Blue }),
+        Some(Classification::Classified { party: PartyId::BLUE }),
         "the return was never told apart"
     );
     let named_frame = frames
@@ -2223,7 +2224,7 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
     assert_eq!(
         renamed,
         Designator::Slot {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             slot: 1
         },
         "the lock now renders as the target's own callsign"
@@ -2337,7 +2338,7 @@ fn fielded_unit(
     catalog: &tacsim::definitions::Catalog,
     entry: &str,
     id: ObjId,
-    team: Team,
+    team: PartyId,
     pose: Pose,
     controller: tacsim::arena::state::Controller,
     slot: u8,
@@ -2410,7 +2411,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             &catalog,
             line_tank,
             RED,
-            Team::Red,
+            PartyId::RED,
             facing(6, 4, 90_000),
             Controller::Pilot,
             1,
@@ -2419,7 +2420,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             &catalog,
             line_tank,
             RED2,
-            Team::Red,
+            PartyId::RED,
             facing(6, 10, 90_000),
             Controller::Pilot,
             2,
@@ -2428,7 +2429,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             &catalog,
             target,
             TARGET_FRONT,
-            Team::Blue,
+            PartyId::BLUE,
             facing(10, 4, 270_000),
             controller,
             1,
@@ -2437,7 +2438,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             &catalog,
             target,
             TARGET_REAR,
-            Team::Blue,
+            PartyId::BLUE,
             facing(10, 10, 90_000),
             controller,
             2,
@@ -2461,6 +2462,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Range,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -2729,7 +2731,7 @@ fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
         arena
             .units
             .iter()
-            .filter(|unit| unit.team == Team::Red)
+            .filter(|unit| unit.team == PartyId::RED)
             .all(|unit| unit.armed_at_checkout() && !unit.ammo.is_empty()),
         "the shooters came in armed"
     );
@@ -2785,7 +2787,7 @@ fn ap2_duel() -> Arena {
         &catalog,
         line_tank,
         RED,
-        Team::Red,
+        PartyId::RED,
         facing(6, 4, 90_000),
         Controller::Pilot,
         1,
@@ -2794,7 +2796,7 @@ fn ap2_duel() -> Arena {
         &catalog,
         line_tank,
         BLUE,
-        Team::Blue,
+        PartyId::BLUE,
         facing(10, 4, 270_000),
         Controller::Pilot,
         1,
@@ -2825,6 +2827,7 @@ fn ap2_duel() -> Arena {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -2903,7 +2906,7 @@ fn ap2_a_disarming_hit_ends_the_match_at_its_own_substep_at_every_tempo() {
         assert_eq!(
             arena.ended.map(|end| end.reason),
             Some(tacsim::arena::EndReason::Elimination {
-                winner: Some(Team::Red)
+                winner: Some(PartyId::RED)
             }),
             "cadence {cadence}: the disarmed side is out by {}",
             arena.now_ms
@@ -3007,14 +3010,14 @@ fn ae2_field(walled: bool) -> ArenaDefinition {
         terrain: ArenaTerrain::new(SIDE_AE2, SIDE_AE2, CELL_CM, cells).expect("the field"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE_AE2 - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE_AE2 - 2,
                 y0: 0,
                 x1: SIDE_AE2 - 1,
@@ -3059,7 +3062,7 @@ fn ae2_arena_on(
             &catalog,
             shooter,
             RED,
-            Team::Red,
+            PartyId::RED,
             facing(red.0, red.1, red.2),
             Controller::Pilot,
             1,
@@ -3068,7 +3071,7 @@ fn ae2_arena_on(
             &catalog,
             tacsim::definitions::content::LINE_TANK,
             BLUE,
-            Team::Blue,
+            PartyId::BLUE,
             facing(blue.0, blue.1, blue.2),
             Controller::Pilot,
             1,
@@ -3092,6 +3095,7 @@ fn ae2_arena_on(
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),

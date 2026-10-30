@@ -36,7 +36,7 @@ use mush_core::{
 use mush_proto::OutputEvent;
 use mush_testkit::TestWorld;
 use tacsim::TacsimConfig;
-use tacsim::arena::state::Team;
+use tacsim::arena::state::PartyId;
 use tacsim::match_::{self, MatchState};
 
 use crate::support;
@@ -374,14 +374,14 @@ impl Rig {
     /// **Which pods the running match actually fielded** (16b cut Q.7), as
     /// `(team, pod index)` — the AI fill's units never enter `centre.slots`, so
     /// the board cannot answer this and the registry's own unit binding can.
-    fn match_units(&self) -> Vec<(Team, u8)> {
+    fn match_units(&self) -> Vec<(PartyId, u8)> {
         let w = self.tw.world();
         let Some(id) = match_::centre_of(w).and_then(|centre| centre.match_id) else {
             return Vec::new();
         };
         let registry = w.module_state::<tacsim::arena_bridge::ArenaRegistry>();
         let mut out = Vec::new();
-        for team in Team::ALL {
+        for team in PartyId::OOC {
             for slot in 1..=match_::PODS_PER_SIDE {
                 if let Some(tank) = match_::tank_for_slot(w, team, slot)
                     && registry.and_then(|registry| registry.match_of_unit(tank)) == Some(id)
@@ -427,8 +427,8 @@ async fn two_pilots_walk_the_whole_machine_twice_in_a_row() {
         let said = rig.say(0, "sim start");
         assert!(said.contains("boarding"), "run {run}: {said}");
         assert_eq!(rig.state(), MatchState::Boarding);
-        let red_pod = match_::pod_object(rig.tw.world(), Team::Red, 1).expect("red pod 1");
-        let blue_pod = match_::pod_object(rig.tw.world(), Team::Blue, 1).expect("blue pod 1");
+        let red_pod = match_::pod_object(rig.tw.world(), PartyId::RED, 1).expect("red pod 1");
+        let blue_pod = match_::pod_object(rig.tw.world(), PartyId::BLUE, 1).expect("blue pod 1");
         assert_eq!(rig.pod(0), Some(red_pod), "run {run}");
         assert_eq!(rig.pod(1), Some(blue_pod), "run {run}");
         assert_eq!(
@@ -496,7 +496,7 @@ async fn one_account_takes_one_slot_and_a_taken_slot_is_not_taken_twice() {
     rig.say(1, "sim team red");
     rig.say(2, "sim team red");
     let centre = rig.centre();
-    assert_eq!(centre.side_len(Team::Red), 3, "three accounts, three slots");
+    assert_eq!(centre.side_len(PartyId::RED), 3, "three accounts, three slots");
     let indices: Vec<u8> = centre.slots.iter().map(|slot| slot.index).collect();
     assert_eq!(indices, vec![1, 2, 3], "the lowest free slot each time");
 
@@ -514,7 +514,7 @@ async fn one_account_takes_one_slot_and_a_taken_slot_is_not_taken_twice() {
     let said = rig.say(6, "sim team red");
     assert!(said.contains("red side is full"), "{said}");
     assert!(said.contains("6 pilot(s)"), "{said}");
-    assert_eq!(rig.centre().side_len(Team::Red), 6);
+    assert_eq!(rig.centre().side_len(PartyId::RED), 6);
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +580,7 @@ async fn a_boarding_that_times_out_drops_the_unseated_and_aborts_when_a_side_emp
     rig.tick_to(10);
     assert_eq!(rig.state(), MatchState::Aborted);
     assert!(rig.centre().slots.is_empty(), "the pods are free again");
-    let red_tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let red_tank = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     assert!(
         mush_sim::deployed::mark_of(rig.tw.world(), red_tank).is_none(),
         "nothing was ever checked out, so nothing is deployed"
@@ -613,11 +613,11 @@ async fn a_boarding_that_times_out_with_both_sides_seated_runs_with_who_is_in() 
     );
     // 16b cut AA.2 (`B-78`): a dropped NON-lead moves neither lead.
     assert!(
-        rig.centre().leads_side(Team::Red, account(0)),
+        rig.centre().leads_side(PartyId::RED, account(0)),
         "red's lead is still its first claimant"
     );
     assert!(
-        rig.centre().leads_side(Team::Blue, account(1)),
+        rig.centre().leads_side(PartyId::BLUE, account(1)),
         "blue's lead is still its first claimant"
     );
 }
@@ -653,15 +653,15 @@ async fn aa2_the_deadline_drops_a_lead_and_the_heir_can_concede() {
     let centre = rig.centre();
     assert_eq!(centre.slots.len(), 2, "red's lead's slot is dropped");
     assert!(
-        centre.leads_side(Team::Red, account(1)),
+        centre.leads_side(PartyId::RED, account(1)),
         "red's next claimant leads it"
     );
     assert!(
-        !centre.leads_side(Team::Red, account(0)),
+        !centre.leads_side(PartyId::RED, account(0)),
         "the dropped lead leads nothing"
     );
     assert!(
-        centre.leads_side(Team::Blue, account(2)),
+        centre.leads_side(PartyId::BLUE, account(2)),
         "blue is untouched"
     );
 
@@ -692,7 +692,7 @@ async fn aa2_the_deadline_drops_a_lead_and_the_heir_can_concede() {
     );
     assert_eq!(
         rig.centre().outcome_reason,
-        Some(tacsim::arena::EndReason::Conceded { winner: Team::Blue })
+        Some(tacsim::arena::EndReason::Conceded { winner: PartyId::BLUE })
     );
     let board = staff_board(&rig);
     assert!(
@@ -719,8 +719,8 @@ async fn aa2_a_double_drop_leaves_each_side_its_first_seated_pilot() {
     let centre = rig.centre();
     assert_eq!(centre.slots.len(), 2, "both leads' slots are dropped");
     assert_eq!(centre.leads.len(), 2, "and both sides still have a lead");
-    assert!(centre.leads_side(Team::Red, account(1)), "red's heir");
-    assert!(centre.leads_side(Team::Blue, account(3)), "blue's heir");
+    assert!(centre.leads_side(PartyId::RED, account(1)), "red's heir");
+    assert!(centre.leads_side(PartyId::BLUE, account(3)), "blue's heir");
 }
 
 /// **With the fill on, a side the deadline empties carries no lead** (16b cut
@@ -741,10 +741,10 @@ async fn aa2_with_the_fill_on_an_emptied_side_carries_no_lead() {
     let centre = rig.centre();
     assert_eq!(centre.slots.len(), 1);
     assert!(
-        !centre.leads.iter().any(|(side, _)| *side == Team::Blue),
+        !centre.leads.iter().any(|(side, _)| *side == PartyId::BLUE),
         "an emptied side has no lead"
     );
-    assert!(centre.leads_side(Team::Red, account(0)));
+    assert!(centre.leads_side(PartyId::RED, account(0)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -849,7 +849,7 @@ async fn abort_from_boarding_releases_the_slots_and_the_pods() {
         None,
         "the pod is free"
     );
-    let red_tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let red_tank = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     assert!(
         mush_sim::deployed::mark_of(rig.tw.world(), red_tank).is_none(),
         "doc 16 §3.8: an abort before Running has no custody to return"
@@ -938,7 +938,7 @@ async fn sim_outside_the_centre_is_refused_with_one_line() {
     // A pilot **inside a pod** is in that pod's team room as far as the check is
     // concerned — which is the seat cut K.2's `BOARD` leaves them in, and the
     // one place `SIM ABORT` most needs to work from.
-    let pod = match_::pod_object(rig.tw.world(), Team::Blue, 2).expect("blue pod 2");
+    let pod = match_::pod_object(rig.tw.world(), PartyId::BLUE, 2).expect("blue pod 2");
     let pilot = rig.pilot(0);
     rig.tw
         .world_mut()
@@ -946,7 +946,7 @@ async fn sim_outside_the_centre_is_refused_with_one_line() {
         .expect("a pilot climbs into a pod");
     assert_eq!(
         match_::where_in_centre(rig.tw.world(), pilot),
-        Some(match_::CentreRoom::Team(Team::Blue))
+        Some(match_::CentreRoom::Team(PartyId::BLUE))
     );
     let said = rig.say(0, "sim status");
     assert!(!said.contains(match_::OUTSIDE_CENTRE), "{said}");
@@ -995,8 +995,8 @@ async fn a_reset_after_an_end_is_idempotent_and_says_so() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_staff_shortcut_and_the_lobby_read_one_state() {
     let mut rig = Rig::boot(1);
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
-    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, 1).expect("blue 1's tank");
     let said = rig.staff(&format!(
         "@arena/start {}=#{}/#{}",
         match_::CENTRE_ARENA,
@@ -1042,7 +1042,7 @@ async fn the_staff_shortcut_and_the_lobby_read_one_state() {
 async fn every_pod_resolves_to_its_own_tank_by_id_and_never_by_name() {
     let rig = Rig::boot(0);
     let mut seen: Vec<ObjId> = Vec::new();
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         for index in 1..=match_::PODS_PER_SIDE {
             let pod = match_::pod_object(rig.tw.world(), team, index)
                 .unwrap_or_else(|| panic!("{} pod {index}", team.as_str()));
@@ -1062,8 +1062,8 @@ async fn every_pod_resolves_to_its_own_tank_by_id_and_never_by_name() {
             let expected = format!(
                 "{} Tank {index}",
                 match team {
-                    Team::Red => "Red",
-                    Team::Blue => "Blue",
+                    PartyId::RED => "Red",
+                    PartyId::BLUE => "Blue",
                 }
             );
             assert_eq!(name, expected);
@@ -1075,7 +1075,7 @@ async fn every_pod_resolves_to_its_own_tank_by_id_and_never_by_name() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_renamed_tank_is_still_its_slots_tank() {
     let mut rig = Rig::boot(0);
-    let pod = match_::pod_object(rig.tw.world(), Team::Red, 3).expect("red pod 3");
+    let pod = match_::pod_object(rig.tw.world(), PartyId::RED, 3).expect("red pod 3");
     let tank = match_::tank_of(rig.tw.world(), pod).expect("red 3's tank");
     rig.tw
         .world_mut()
@@ -1297,7 +1297,7 @@ async fn q7_a_claim_after_sim_ai_raises_the_fill_rather_than_splitting_the_sides
     let units = rig.match_units();
     assert_eq!(units.len(), 6, "three a side: {units:?}");
     assert_eq!(
-        units.iter().filter(|(team, _)| *team == Team::Blue).count(),
+        units.iter().filter(|(team, _)| *team == PartyId::BLUE).count(),
         3,
         "blue was filled to the size red brought: {units:?}"
     );
@@ -1361,7 +1361,7 @@ async fn ap2_an_elimination_end_prints_the_boards_and_the_historys_words() {
     rig.say(0, "sim start");
     assert!(rig.seat(0), "the one pilot boards and the match runs");
     rig.end_match(tacsim::arena::EndReason::Elimination {
-        winner: Some(Team::Red),
+        winner: Some(PartyId::RED),
     });
     assert_eq!(rig.state(), MatchState::Ended);
     let said = rig.say(0, "sim status");
@@ -1455,7 +1455,7 @@ async fn q7_a_solo_match_fields_one_machine_and_its_pod_keeps_its_designator() {
     assert!(
         units
             .iter()
-            .any(|(team, slot)| *team == Team::Blue && *slot == 1),
+            .any(|(team, slot)| *team == PartyId::BLUE && *slot == 1),
         "the fill takes the lowest unclaimed pod: {units:?}"
     );
     let said = rig.say(0, "sim status");
@@ -1500,7 +1500,7 @@ async fn q7_the_boarding_deadline_runs_with_one_seated_pilot_and_aborts_with_non
 /// The canonical id of the unit definition one pod's tank is CURRENTLY built
 /// from, resolved through the loaded catalog's own bindings — the same
 /// comparison `reset_one` makes.
-fn tank_schema(rig: &Rig, team: Team, index: u8) -> String {
+fn tank_schema(rig: &Rig, team: PartyId, index: u8) -> String {
     let w = rig.tw.world();
     let tank = match_::tank_for_slot(w, team, index).expect("the pod's tank is in the world");
     let held = mush_tactics::module::unit_of(w, tank).expect("the tank is a tactical unit");
@@ -1517,7 +1517,7 @@ fn tank_schema(rig: &Rig, team: Team, index: u8) -> String {
 }
 
 /// One pod's tank's pose, for the "back at muster" half.
-fn tank_pose(rig: &Rig, team: Team, index: u8) -> Option<(mush_sim::DomainId, mush_sim::Pose)> {
+fn tank_pose(rig: &Rig, team: PartyId, index: u8) -> Option<(mush_sim::DomainId, mush_sim::Pose)> {
     let w = rig.tw.world();
     let tank = match_::tank_for_slot(w, team, index).expect("the pod's tank is in the world");
     mush_sim::pose_of(w, tank)
@@ -1699,7 +1699,7 @@ async fn q8_a_refit_refusal_at_start_refuses_the_start_and_takes_no_lock() {
     rig.say(1, "sim team blue");
     rig.say(0, "sim unit biped_mk1");
 
-    let tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let tank = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     mush_sim::deployed::mark(
         rig.tw.world_mut(),
         tank,
@@ -1733,7 +1733,7 @@ async fn q8_a_refit_refusal_at_start_refuses_the_start_and_takes_no_lock() {
         "no partial lock was taken"
     );
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "and nothing was written to the tank"
     );
@@ -1744,16 +1744,16 @@ async fn q8_a_refit_refusal_at_start_refuses_the_start_and_takes_no_lock() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn q8_the_return_to_idle_puts_the_pods_own_tank_back() {
     let mut rig = Rig::boot(2);
-    let authored = tank_pose(&rig, Team::Red, 1).expect("red 1's tank is placed");
+    let authored = tank_pose(&rig, PartyId::RED, 1).expect("red 1's tank is placed");
     rig.say(0, "sim team red");
     rig.say(1, "sim team blue");
     rig.say(0, "sim unit biped_mk1");
     rig.say(0, "sim start");
 
     // The refit happened at `SIM START`, before the pods locked.
-    assert_eq!(tank_schema(&rig, Team::Red, 1), "tacsim.unit.biped_mk1");
+    assert_eq!(tank_schema(&rig, PartyId::RED, 1), "tacsim.unit.biped_mk1");
     assert_eq!(
-        tank_schema(&rig, Team::Blue, 1),
+        tank_schema(&rig, PartyId::BLUE, 1),
         "tacsim.unit.line_tank",
         "a slot that chose nothing is untouched"
     );
@@ -1779,11 +1779,11 @@ async fn q8_the_return_to_idle_puts_the_pods_own_tank_back() {
     );
     assert_eq!(rig.state(), MatchState::Idle);
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the pod's own tank is back"
     );
-    let now = tank_pose(&rig, Team::Red, 1).expect("and it is still placed");
+    let now = tank_pose(&rig, PartyId::RED, 1).expect("and it is still placed");
     assert_eq!(now.0, authored.0, "in its own domain");
     assert_eq!(
         (now.1.x_cm, now.1.y_cm, now.1.heading_mdeg),
@@ -1869,7 +1869,7 @@ async fn q8_the_last_leave_puts_a_half_refitted_lobbys_tanks_back() {
 
     // Red 2's tank cannot be refitted, so the start refuses — after red 1's has
     // already been written.
-    let second = match_::tank_for_slot(rig.tw.world(), Team::Red, 2).expect("red 2's tank");
+    let second = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 2).expect("red 2's tank");
     mush_sim::deployed::mark(
         rig.tw.world_mut(),
         second,
@@ -1882,7 +1882,7 @@ async fn q8_the_last_leave_puts_a_half_refitted_lobbys_tanks_back() {
     );
     assert_eq!(rig.state(), MatchState::Selection);
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.biped_mk1",
         "the refit that landed before the refusal stands"
     );
@@ -1895,7 +1895,7 @@ async fn q8_the_last_leave_puts_a_half_refitted_lobbys_tanks_back() {
     assert_eq!(rig.state(), MatchState::Idle);
     assert!(rig.centre().slots.is_empty());
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the next pair does not inherit last lobby's biped"
     );
@@ -1920,7 +1920,7 @@ async fn q8_the_last_leave_puts_a_half_refitted_lobbys_tanks_back() {
 
 /// A stale `deployed` marker on one pod's tank: the one refusal `refit_unit`
 /// makes that a test can arrange without breaking the world.
-fn wedge(rig: &mut Rig, team: Team, index: u8) -> ObjId {
+fn wedge(rig: &mut Rig, team: PartyId, index: u8) -> ObjId {
     let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("the pod's tank");
     mush_sim::deployed::mark(
         rig.tw.world_mut(),
@@ -1949,10 +1949,10 @@ async fn q8_sim_start_puts_a_pod_with_no_choice_back_to_its_authored_type() {
     rig.say(1, "sim unit biped_mk1");
 
     // Red 2 refuses, after red 1 has already been written.
-    let second = wedge(&mut rig, Team::Red, 2);
+    let second = wedge(&mut rig, PartyId::RED, 2);
     rig.say(0, "sim start");
     assert_eq!(rig.state(), MatchState::Selection);
-    assert_eq!(tank_schema(&rig, Team::Red, 1), "tacsim.unit.biped_mk1");
+    assert_eq!(tank_schema(&rig, PartyId::RED, 1), "tacsim.unit.biped_mk1");
 
     // Both of them change their minds. The board now says nothing about either
     // slot, and red 1's tank is still a biped.
@@ -1966,7 +1966,7 @@ async fn q8_sim_start_puts_a_pod_with_no_choice_back_to_its_authored_type() {
         "no slot carries a choice any more"
     );
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.biped_mk1",
         "and clearing a choice writes nothing to the tank"
     );
@@ -1975,12 +1975,12 @@ async fn q8_sim_start_puts_a_pod_with_no_choice_back_to_its_authored_type() {
     let said = rig.say(0, "sim start");
     assert_eq!(rig.state(), MatchState::Boarding, "{said}");
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the start put the pod with no choice on it back to its own machine"
     );
-    assert_eq!(tank_schema(&rig, Team::Red, 2), "tacsim.unit.line_tank");
-    assert_eq!(tank_schema(&rig, Team::Blue, 1), "tacsim.unit.line_tank");
+    assert_eq!(tank_schema(&rig, PartyId::RED, 2), "tacsim.unit.line_tank");
+    assert_eq!(tank_schema(&rig, PartyId::BLUE, 1), "tacsim.unit.line_tank");
 }
 
 /// **A leaver's refit does not reach the next claimant of their slot** (16b cut
@@ -1999,17 +1999,17 @@ async fn q8_a_leavers_refit_does_not_reach_the_next_claimant() {
     rig.say(0, "sim unit biped_mk1");
     rig.say(1, "sim unit biped_mk1");
 
-    let second = wedge(&mut rig, Team::Red, 2);
+    let second = wedge(&mut rig, PartyId::RED, 2);
     rig.say(0, "sim start");
     assert_eq!(rig.state(), MatchState::Selection);
-    assert_eq!(tank_schema(&rig, Team::Red, 1), "tacsim.unit.biped_mk1");
+    assert_eq!(tank_schema(&rig, PartyId::RED, 1), "tacsim.unit.biped_mk1");
 
     // Pilot 0 gives up. It is NOT the last slot, so the centre stays in
     // `Selection` and the whole-roster reset the last leave runs does not.
     rig.say(0, "sim leave");
     assert_eq!(rig.state(), MatchState::Selection, "the lobby is still up");
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the choice went with the pilot who made it"
     );
@@ -2028,14 +2028,14 @@ async fn q8_a_leavers_refit_does_not_reach_the_next_claimant() {
         .expect("the re-claim took a slot");
     assert_eq!(
         mine,
-        (Team::Red, 1, None),
+        (PartyId::RED, 1, None),
         "the lowest free red slot, with no choice on it"
     );
     // Pilot 1 inherited the side's lead when pilot 0 left.
     let said = rig.say(1, "sim start");
     assert_eq!(rig.state(), MatchState::Boarding, "{said}");
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the new claimant boards the pod's own machine"
     );
@@ -2061,14 +2061,14 @@ async fn q8_an_ai_filled_pod_flies_the_authored_type_after_a_chooser_left() {
 
     let said = rig.say(0, "sim start");
     assert_eq!(rig.state(), MatchState::Boarding, "{said}");
-    assert_eq!(tank_schema(&rig, Team::Red, 1), "tacsim.unit.biped_mk1");
+    assert_eq!(tank_schema(&rig, PartyId::RED, 1), "tacsim.unit.biped_mk1");
 
     // The chooser gives up before boarding. Their pod is now one of the
     // unclaimed ones the fill takes.
     rig.say(0, "sim leave");
     assert_eq!(rig.state(), MatchState::Boarding, "the match is still on");
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the abandoned pod is back at its authored type before the check-out"
     );
@@ -2076,12 +2076,12 @@ async fn q8_an_ai_filled_pod_flies_the_authored_type_after_a_chooser_left() {
     assert!(rig.seat(1), "the last seat fires the check-out");
     assert_eq!(rig.state(), MatchState::Running);
     assert!(
-        rig.match_units().contains(&(Team::Red, 1)),
+        rig.match_units().contains(&(PartyId::RED, 1)),
         "the fill really took the vacated pod: {:?}",
         rig.match_units()
     );
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "and the machine flies the pod's own tank"
     );
@@ -2162,7 +2162,7 @@ async fn q8_sim_unit_advises_sim_team_only_where_sim_team_is_accepted() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn q8_a_refit_under_the_tacsim_identity_queues_the_tactics_document() {
     let mut rig = Rig::boot(1);
-    let tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let tank = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     let spec = {
         let id = mush_core::CanonicalId::new("tacsim.unit.biped_mk1").expect("a canonical id");
         rig.tw
@@ -2548,7 +2548,7 @@ fn unattended_config(ms: u32) -> TacsimConfig {
 
 impl Rig {
     /// **The schema one pod's tank is fitted with**, as the board spells it.
-    fn schema_of(&self, team: Team, index: u8) -> String {
+    fn schema_of(&self, team: PartyId, index: u8) -> String {
         let tank = match_::tank_for_slot(self.tw.world(), team, index).expect("the pod's tank");
         mush_tactics::module::unit_of(self.tw.world(), tank)
             .expect("a tactical unit")
@@ -2727,14 +2727,14 @@ async fn d3_a_refused_check_out_calls_the_lobby_off_and_frees_the_pods() {
     rig.say(0, "sim start");
     assert_eq!(rig.state(), MatchState::Boarding);
     assert_eq!(
-        rig.schema_of(Team::Red, 1),
+        rig.schema_of(PartyId::RED, 1),
         "tacsim.unit.biped_mk1",
         "the start fitted the chosen chassis"
     );
     assert!(!rig.seat(0), "red is in and blue is not");
 
     // The blue tank is out on loan to somebody else, so the check-out refuses.
-    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, 1).expect("blue 1's tank");
     mush_sim::deployed::mark(
         rig.tw.world_mut(),
         blue,
@@ -2774,7 +2774,7 @@ async fn d3_a_refused_check_out_calls_the_lobby_off_and_frees_the_pods() {
     );
     assert_eq!(rig.state(), MatchState::Aborted, "the lobby was left stuck");
     assert!(rig.centre().slots.is_empty(), "the slots are given back");
-    let red_pod = match_::pod_object(rig.tw.world(), Team::Red, 1).expect("red pod 1");
+    let red_pod = match_::pod_object(rig.tw.world(), PartyId::RED, 1).expect("red pod 1");
     assert_eq!(match_::pilot_of(rig.tw.world(), red_pod), None);
     assert!(
         !tacsim::match_::cockpit::in_a_pod(rig.tw.world(), rig.pilot(0)),
@@ -2785,7 +2785,7 @@ async fn d3_a_refused_check_out_calls_the_lobby_off_and_frees_the_pods() {
         "the boarded pilot kept the tank's billet"
     );
     assert_eq!(
-        rig.schema_of(Team::Red, 1),
+        rig.schema_of(PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the called-off lobby left its biped standing in the pod"
     );
@@ -2831,7 +2831,7 @@ async fn d3_an_early_refusal_of_run_calls_the_lobby_off() {
     // Blue's roster tanks leave the world between the lock and the seat, so the
     // fill finds nothing to field for that side and `ready` refuses.
     for index in 1..=match_::PODS_PER_SIDE {
-        if let Some(tank) = match_::tank_for_slot(rig.tw.world(), Team::Blue, index) {
+        if let Some(tank) = match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, index) {
             rig.tw
                 .world_mut()
                 .destroy(tank)
@@ -2840,7 +2840,7 @@ async fn d3_an_early_refusal_of_run_calls_the_lobby_off() {
     }
     rig.tw.world_mut().sweep();
     assert_eq!(
-        match_::tank_for_slot(rig.tw.world(), Team::Blue, 1),
+        match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, 1),
         None,
         "the blue side still has a tank to field"
     );
@@ -2887,7 +2887,7 @@ async fn d3_an_early_refusal_of_run_calls_the_lobby_off() {
     // the pilot's billet and the red pod's refit.
     assert_eq!(rig.state(), MatchState::Aborted, "the lobby was left stuck");
     assert!(rig.centre().slots.is_empty(), "the slots are given back");
-    let red_pod = match_::pod_object(rig.tw.world(), Team::Red, 1).expect("red pod 1");
+    let red_pod = match_::pod_object(rig.tw.world(), PartyId::RED, 1).expect("red pod 1");
     assert_eq!(match_::pilot_of(rig.tw.world(), red_pod), None);
     assert!(
         !tacsim::match_::cockpit::in_a_pod(rig.tw.world(), pilot),
@@ -2898,7 +2898,7 @@ async fn d3_an_early_refusal_of_run_calls_the_lobby_off() {
         "the boarded pilot kept the tank's billet"
     );
     assert_eq!(
-        rig.schema_of(Team::Red, 1),
+        rig.schema_of(PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the called-off lobby left its biped standing in the pod"
     );
@@ -2926,7 +2926,7 @@ async fn d3_a_pre_running_end_puts_a_refitted_pod_back() {
     rig.say(1, "sim team blue");
     rig.say(0, "sim unit biped_mk1");
     assert_eq!(
-        rig.schema_of(Team::Red, 1),
+        rig.schema_of(PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "`SIM UNIT` fitted a chassis in `Selection`"
     );
@@ -2937,7 +2937,7 @@ async fn d3_a_pre_running_end_puts_a_refitted_pod_back() {
         .expect("staff walk in");
     rig.staff("sim abort");
     assert_eq!(rig.state(), MatchState::Aborted);
-    assert_eq!(rig.schema_of(Team::Red, 1), "tacsim.unit.line_tank");
+    assert_eq!(rig.schema_of(PartyId::RED, 1), "tacsim.unit.line_tank");
     rig.staff("@arena/reset");
 
     // (b) The case: chosen, fitted by `SIM START`, and called off from
@@ -2948,7 +2948,7 @@ async fn d3_a_pre_running_end_puts_a_refitted_pod_back() {
     rig.say(0, "sim start");
     assert_eq!(rig.state(), MatchState::Boarding);
     assert_eq!(
-        rig.schema_of(Team::Red, 1),
+        rig.schema_of(PartyId::RED, 1),
         "tacsim.unit.biped_mk1",
         "the start never fitted the chosen chassis"
     );
@@ -2956,7 +2956,7 @@ async fn d3_a_pre_running_end_puts_a_refitted_pod_back() {
     assert!(said.contains("calls the match off"), "{said}");
     assert_eq!(rig.state(), MatchState::Aborted);
     assert_eq!(
-        rig.schema_of(Team::Red, 1),
+        rig.schema_of(PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the called-off lobby left its biped standing in the pod"
     );
@@ -2985,7 +2985,7 @@ async fn d3_the_last_leave_returns_the_centre_to_its_default() {
         tacsim::match_::Centre::default(),
         "the last leave left something on the centre"
     );
-    assert_eq!(rig.schema_of(Team::Red, 1), "tacsim.unit.line_tank");
+    assert_eq!(rig.schema_of(PartyId::RED, 1), "tacsim.unit.line_tank");
     // And a reset over it has nothing at all to say, which is only true of a
     // centre that really is default.
     let said = rig.staff("@arena/reset");
@@ -3003,7 +3003,7 @@ async fn d3_the_ai_floor_is_clamped_to_the_pods_a_side_has() {
     let cfg = tacsim::config::MatchConfig::default();
     for n in 0..12_u8 {
         centre.slots.push(tacsim::match_::Slot {
-            team: Team::Red,
+            team: PartyId::RED,
             index: n.saturating_add(1),
             account: mush_core::AccountId::mint("floor", i64::from(n)).expect("an account id"),
             pilot: ObjId(u32::from(n) + 1),
@@ -3094,7 +3094,7 @@ fn damaged_return(
 async fn d3_a_lead_concedes_and_the_other_side_wins() {
     let mut rig = Rig::boot(2);
     duel(&mut rig);
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     let (damaged, addr, hurt) = damaged_return(&rig, red);
     let before = mush_tactics::module::unit_of(rig.tw.world(), red)
         .expect("a unit")
@@ -3113,7 +3113,7 @@ async fn d3_a_lead_concedes_and_the_other_side_wins() {
     // the egress driven by hand, carrying the cells the loser's tank came back
     // with.
     rig.end_match_returning(
-        tacsim::arena::EndReason::Conceded { winner: Team::Blue },
+        tacsim::arena::EndReason::Conceded { winner: PartyId::BLUE },
         &[damaged],
     );
     assert_eq!(rig.state(), MatchState::Ended, "a concede is not an abort");
@@ -3123,7 +3123,7 @@ async fn d3_a_lead_concedes_and_the_other_side_wins() {
     );
     assert_eq!(
         rig.centre().outcome_reason,
-        Some(tacsim::arena::EndReason::Conceded { winner: Team::Blue })
+        Some(tacsim::arena::EndReason::Conceded { winner: PartyId::BLUE })
     );
     // **The tanks stand as evidence**: a concede is a result and not a void, so
     // the check-in **committed** the arena's cells rather than restoring the
@@ -3161,7 +3161,7 @@ async fn d3_the_board_names_the_winner_of_a_concede_either_way() {
         ),
         "{said}"
     );
-    rig.end_match(tacsim::arena::EndReason::Conceded { winner: Team::Red });
+    rig.end_match(tacsim::arena::EndReason::Conceded { winner: PartyId::RED });
     assert_eq!(
         rig.centre().outcome,
         Some(tacsim::match_::MatchOutcome::Red)
@@ -3347,8 +3347,8 @@ async fn d3_the_unattended_clock_is_off_at_zero_and_never_stamps_a_slotless_matc
 
     // A staff `@arena/start` match has no slots at all, so nothing can leave it.
     let mut rig = Rig::boot_on(1, roster_with(unattended_config(10_000)));
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
-    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, 1).expect("blue 1's tank");
     let said = rig.staff(&format!(
         "@arena/start tacsim.arena.proving_ground=#{}/#{}",
         red.0, blue.0
@@ -3551,8 +3551,8 @@ async fn d3_a_refused_check_in_releases_the_seat_and_restores_the_snapshot() {
     let mut rig = Rig::boot(2);
     duel(&mut rig);
     let match_id = rig.centre().match_id.expect("a running match");
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
-    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, 1).expect("blue 1's tank");
     let before = mush_tactics::module::unit_of(rig.tw.world(), red)
         .expect("a unit")
         .clone();
@@ -3638,7 +3638,7 @@ async fn d3_arena_release_clears_a_stranded_marker_and_frees_the_pod() {
     let mut rig = Rig::boot(2);
     duel(&mut rig);
     let match_id = rig.centre().match_id.expect("a running match");
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
 
     // (a) While the match is live, the verb refuses and names the match.
     let said = rig.staff(&format!("@arena/release #{}", red.0));
@@ -3750,7 +3750,7 @@ async fn d3_the_reset_has_a_headline_for_a_centre_that_is_idle_but_not_clean() {
 
     // (c) Idle, and not clean: a roster tank carrying a stale marker is skipped,
     // so the pass writes nothing and has a great deal to say.
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     mush_sim::deployed::mark(
         rig.tw.world_mut(),
         red,
@@ -3912,12 +3912,12 @@ async fn b4_slot_left_promotes_the_next_pilot_in_the_tank() {
     assert!(!rig.seat(2));
     assert!(rig.seat(3));
     assert_eq!(rig.state(), MatchState::Running);
-    assert!(rig.centre().leads_side(Team::Red, account(0)));
+    assert!(rig.centre().leads_side(PartyId::RED, account(0)));
 
     // The second claimant leaves first: a non-lead leaving moves nothing.
     rig.release(1);
     assert!(
-        rig.centre().leads_side(Team::Red, account(0)),
+        rig.centre().leads_side(PartyId::RED, account(0)),
         "a non-lead leaving moves nothing"
     );
 
@@ -3930,19 +3930,19 @@ async fn b4_slot_left_promotes_the_next_pilot_in_the_tank() {
         "the lead's slot is marked left and stays on the board"
     );
     assert!(
-        centre.leads_side(Team::Red, account(2)),
+        centre.leads_side(PartyId::RED, account(2)),
         "red's next pilot still in a tank leads it: {:?}",
         centre.leads
     );
     assert!(
-        !centre.leads_side(Team::Red, account(1)),
+        !centre.leads_side(PartyId::RED, account(1)),
         "the earlier claimant who left is skipped"
     );
     assert!(
-        !centre.leads_side(Team::Red, account(0)),
+        !centre.leads_side(PartyId::RED, account(0)),
         "the lead who left leads nothing"
     );
-    assert!(centre.leads_side(Team::Blue, account(3)), "blue untouched");
+    assert!(centre.leads_side(PartyId::BLUE, account(3)), "blue untouched");
 
     // The pilots who left are refused in the lead's words; the heir concedes.
     for n in [0, 1] {
@@ -3974,17 +3974,17 @@ async fn b4_a_side_whose_pilots_all_left_has_no_lead() {
 
     rig.release(1);
     assert!(
-        rig.centre().leads_side(Team::Red, account(0)),
+        rig.centre().leads_side(PartyId::RED, account(0)),
         "a non-lead leaving moves nothing"
     );
     rig.release(0);
     let centre = rig.centre();
     assert!(
-        !centre.leads.iter().any(|(side, _)| *side == Team::Red),
+        !centre.leads.iter().any(|(side, _)| *side == PartyId::RED),
         "red has no lead once every red pilot has left: {:?}",
         centre.leads
     );
-    assert!(centre.leads_side(Team::Blue, account(2)));
+    assert!(centre.leads_side(PartyId::BLUE, account(2)));
     assert_eq!(centre.slots.len(), 3, "every slot stays on the board");
     for n in [0, 1] {
         let said = rig.say(n, "sim concede");
@@ -4062,7 +4062,9 @@ fn replacement_custody(rig: &Rig) -> tacsim::arena::state::CustodyOut {
         resolution: resolution_for(&catalog),
         seed: 2_396,
         mode: tacsim::arena::MatchMode::Skirmish,
+        host: tacsim::arena::FieldHost::all_hostile(),
     }
+    host: tacsim::arena::FieldHost::all_hostile(),
 }
 
 /// **A busy arena is told to try again, and nothing changes** (16b cut M.1,
@@ -4292,7 +4294,7 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     let mut rig = Rig::boot(2);
     // The control-lease mirror, read once before anybody boards.
     rig.tick_to(1);
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     let authored = mush_sim::pose_of(rig.tw.world(), red)
         .expect("the applier placed it")
         .1;
@@ -4548,7 +4550,7 @@ async fn ae1_a_scout_car_posed_on_rubble_opens_in_its_zone_and_the_match_starts(
         "the arena refused the check-out"
     );
     assert_eq!(
-        tank_schema(&rig, Team::Red, 1),
+        tank_schema(&rig, PartyId::RED, 1),
         "tacsim.unit.scout_mk1",
         "red 1 fields the car"
     );
@@ -4558,7 +4560,7 @@ async fn ae1_a_scout_car_posed_on_rubble_opens_in_its_zone_and_the_match_starts(
     let zone = definition
         .entry_zones
         .iter()
-        .find(|zone| zone.team == Team::Red)
+        .find(|zone| zone.team == PartyId::RED)
         .expect("red's entry zone");
     let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
         panic!("the car opened off the window: ({x}, {y})");
@@ -5227,8 +5229,8 @@ async fn z3_twelve_pilots_claim_six_a_side_start_and_board() {
         "{said}"
     );
     let centre = rig.centre();
-    assert_eq!(centre.side_len(Team::Red), 6);
-    assert_eq!(centre.side_len(Team::Blue), 6);
+    assert_eq!(centre.side_len(PartyId::RED), 6);
+    assert_eq!(centre.side_len(PartyId::BLUE), 6);
     let board = rig.say(0, "sim status");
     for needle in [
         "5 (RE): Pilot4",
@@ -5272,7 +5274,7 @@ async fn z3_twelve_pilots_claim_six_a_side_start_and_board() {
 async fn z3_the_reset_walks_twelve_tanks() {
     let mut rig = Rig::boot(0);
     let mut tanks: Vec<ObjId> = Vec::new();
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         for index in 1..=match_::PODS_PER_SIDE {
             let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("a slot tank");
             mush_sim::deployed::mark(
@@ -5342,7 +5344,7 @@ async fn z3_a_version_two_arena_is_four_a_side_until_it_takes_version_three() {
     rig.say(0, "sim leave");
     assert_eq!(rig.state(), MatchState::Idle);
 
-    let before: Vec<(Team, u8, ObjId)> = Team::ALL
+    let before: Vec<(PartyId, u8, ObjId)> = PartyId::OOC
         .into_iter()
         .flat_map(|team| (1..=4_u8).map(move |index| (team, index)))
         .map(|(team, index)| {
@@ -5388,7 +5390,7 @@ async fn z3_a_version_two_arena_is_four_a_side_until_it_takes_version_three() {
         .expect("the roster is written");
     assert_eq!(roster.units.len(), 12, "{:?}", roster.units);
     let mut made: Vec<ObjId> = Vec::new();
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         for index in 1..=match_::PODS_PER_SIDE {
             let slot = format!("{}_{index}", team.as_str());
             let tank = match_::tank_for_slot(rig.tw.world(), team, index)
@@ -5404,10 +5406,10 @@ async fn z3_a_version_two_arena_is_four_a_side_until_it_takes_version_three() {
         }
     }
     for (name, team, index) in [
-        ("Red Tank 5", Team::Red, 5),
-        ("Red Tank 6", Team::Red, 6),
-        ("Blue Tank 5", Team::Blue, 5),
-        ("Blue Tank 6", Team::Blue, 6),
+        ("Red Tank 5", PartyId::RED, 5),
+        ("Red Tank 6", PartyId::RED, 6),
+        ("Blue Tank 5", PartyId::BLUE, 5),
+        ("Blue Tank 6", PartyId::BLUE, 6),
     ] {
         let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("made");
         assert_eq!(
@@ -5480,7 +5482,7 @@ async fn z3_eight_pods_field_four_a_side_even_beside_twelve_tanks() {
     for n in 0..4 {
         let pod = rig.pod(n).expect("every claimed slot locks its pod");
         let (team, index) = match_::pod_slot(rig.tw.world(), pod).expect("a centre pod");
-        assert!(team == Team::Red && index <= 4, "{team:?} {index}");
+        assert!(team == PartyId::RED && index <= 4, "{team:?} {index}");
         assert!(match_::tank_of(rig.tw.world(), pod).is_some());
     }
     rig.staff("@arena/abort");
@@ -5567,8 +5569,8 @@ async fn o1_a_version_three_world_reads_hold_at_once_and_takes_version_five() {
     assert_eq!(rig.state(), MatchState::Idle);
 
     // A slot, its tank, and the tank's `(x_cm, y_cm, heading_mdeg)`.
-    type Standing = (Team, u8, ObjId, (i64, i64, u32));
-    let before: Vec<Standing> = Team::ALL
+    type Standing = (PartyId, u8, ObjId, (i64, i64, u32));
+    let before: Vec<Standing> = PartyId::OOC
         .into_iter()
         .flat_map(|team| (1..=match_::PODS_PER_SIDE).map(move |index| (team, index)))
         .map(|(team, index)| {
@@ -5716,7 +5718,7 @@ async fn o3_a_range_survives_a_leave_and_an_exit_during_boarding_with_the_fill_o
     let units = rig.match_units();
     assert_eq!(
         units,
-        vec![(Team::Red, 1), (Team::Blue, 1)],
+        vec![(PartyId::RED, 1), (PartyId::BLUE, 1)],
         "the boarded shooter against the one target"
     );
 }
@@ -5741,7 +5743,7 @@ async fn o3_the_boarding_deadline_on_a_range_asks_the_shooters_alone() {
     assert!(!heard.contains("aborted"), "{heard}");
     assert_eq!(rig.state(), MatchState::Running, "it ran with who was in");
     assert_eq!(rig.centre().slots.len(), 1);
-    assert_eq!(rig.match_units(), vec![(Team::Red, 1), (Team::Blue, 1)]);
+    assert_eq!(rig.match_units(), vec![(PartyId::RED, 1), (PartyId::BLUE, 1)]);
 
     // Nobody boards at all: that is an abort, in the centre's words and not in
     // a side's.
@@ -5922,8 +5924,8 @@ async fn ae1_a_version_four_world_takes_the_bluff_from_the_shelf() {
     );
 
     // A slot, its tank, and the tank's `(x_cm, y_cm, heading_mdeg)`.
-    type Standing = (Team, u8, ObjId, (i64, i64, u32));
-    let standing: Vec<Standing> = Team::ALL
+    type Standing = (PartyId, u8, ObjId, (i64, i64, u32));
+    let standing: Vec<Standing> = PartyId::OOC
         .into_iter()
         .flat_map(|team| (1..=match_::PODS_PER_SIDE).map(move |index| (team, index)))
         .map(|(team, index)| {
@@ -6049,7 +6051,7 @@ async fn ae3_a_boarding_drop_that_leaves_a_lone_drone_calls_the_match_off() {
         "red fields a tank beside its drone, so the courtesy passes: {said}"
     );
     assert_eq!(
-        rig.schema_of(Team::Red, 1),
+        rig.schema_of(PartyId::RED, 1),
         "tacsim.unit.drone_mk1",
         "the refit put the drone in red pod 1"
     );
@@ -6060,13 +6062,13 @@ async fn ae3_a_boarding_drop_that_leaves_a_lone_drone_calls_the_match_off() {
     assert!(heard.contains(AE3_RED_NO_GUN), "{heard}");
     assert_eq!(rig.state(), MatchState::Aborted, "the lobby is called off");
     assert!(rig.centre().slots.is_empty(), "the pods are free again");
-    let red_pod = match_::pod_object(rig.tw.world(), Team::Red, 1).expect("red pod 1");
+    let red_pod = match_::pod_object(rig.tw.world(), PartyId::RED, 1).expect("red pod 1");
     assert_eq!(match_::pilot_of(rig.tw.world(), red_pod), None);
     assert!(
         !tacsim::match_::cockpit::in_a_pod(rig.tw.world(), rig.pilot(0)),
         "the drone's pilot was left shut in the pod"
     );
-    let drone = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let drone = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     assert!(
         mush_sim::deployed::mark_of(rig.tw.world(), drone).is_none(),
         "nothing was checked out"
@@ -6098,7 +6100,7 @@ async fn ae3_with_the_fill_on_a_lone_drone_starts_beside_the_fills_tank() {
     // Before the first write means before the refit too: red pod 1's tank is
     // still the pod's own, not the drone the slot chose.
     assert_eq!(
-        rig.schema_of(Team::Red, 1),
+        rig.schema_of(PartyId::RED, 1),
         "tacsim.unit.line_tank",
         "the refused start refitted red pod 1"
     );
@@ -6112,15 +6114,15 @@ async fn ae3_with_the_fill_on_a_lone_drone_starts_beside_the_fills_tank() {
     assert_eq!(
         rig.match_units(),
         vec![
-            (Team::Red, 1),
-            (Team::Red, 2),
-            (Team::Blue, 1),
-            (Team::Blue, 2)
+            (PartyId::RED, 1),
+            (PartyId::RED, 2),
+            (PartyId::BLUE, 1),
+            (PartyId::BLUE, 2)
         ],
         "the drone, the fill's tank beside it, and two machines a side"
     );
-    assert_eq!(rig.schema_of(Team::Red, 1), "tacsim.unit.drone_mk1");
-    assert_eq!(rig.schema_of(Team::Red, 2), "tacsim.unit.line_tank");
+    assert_eq!(rig.schema_of(PartyId::RED, 1), "tacsim.unit.drone_mk1");
+    assert_eq!(rig.schema_of(PartyId::RED, 2), "tacsim.unit.line_tank");
 }
 
 /// A centre whose `[tacsim.arena].max_units_by_class` is `caps` (16b cut
@@ -7321,7 +7323,7 @@ async fn af3_match(chunks: u64, moved: bool) -> Af3Match {
     rig.say(1, "sim team blue");
     rig.say(0, "sim start");
     let moved = if moved {
-        let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red's tank");
+        let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red's tank");
         let (domain, pose) = mush_sim::pose_of(rig.tw.world(), red).expect("placed");
         let said = rig.staff(&format!(
             "@spatial/place/domain #{}={},{{\"x_cm\":{},\"y_cm\":{},\"heading_mdeg\":{}}}",
@@ -7723,7 +7725,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     // A marker on a unit the record does not field: red's second pod's tank,
     // marked as the match's with its own cells as the snapshot.
     let mut m = af3_match_boxed(0, true).await;
-    let stray = match_::tank_for_slot(m.rig.tw.world(), Team::Red, 2).expect("red's second tank");
+    let stray = match_::tank_for_slot(m.rig.tw.world(), PartyId::RED, 2).expect("red's second tank");
     let (id, arena) = (m.match_id.0, m.head.arena.clone());
     af3_void(
         &mut m,
@@ -8537,7 +8539,7 @@ async fn ah1_a_hint_waits_for_a_live_connection() {
 async fn m3_a_roster_tank_without_a_core_is_refitted_with_one_at_the_reset() {
     use tacsim::arena::core::{CoreClass, CoreHardware, read_core};
     let mut rig = Rig::boot(1);
-    let tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let tank = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     let binding = rig
         .tw
         .world()
@@ -8687,7 +8689,7 @@ async fn m3_start_writes_one_seal_per_unit_and_the_live_record_carries_them() {
             assert_eq!(seal.class, CoreClass::I);
             assert!(seal.channels.contains(&Channel::Fire));
             let principal = match side.team {
-                Team::Red => Some(CharacterRef::Character { id: pilot }),
+                PartyId::RED => Some(CharacterRef::Character { id: pilot }),
                 _ => None,
             };
             assert_eq!(
@@ -8711,8 +8713,8 @@ async fn m3_start_writes_one_seal_per_unit_and_the_live_record_carries_them() {
 
     // A staff `@arena/start`: nobody chose the unseated hulls' mind.
     let mut rig = Rig::boot(1);
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
-    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, 1).expect("blue 1's tank");
     let said = rig.staff(&format!(
         "@arena/start {}=#{}/#{}",
         match_::CENTRE_ARENA,
@@ -8802,7 +8804,7 @@ async fn m3_a_second_pilots_hull_names_its_own_pilot_and_the_fill_names_the_lead
             }
             fills += 1;
             let expected = match side.team {
-                Team::Red => Some(CharacterRef::Character { id: lead }),
+                PartyId::RED => Some(CharacterRef::Character { id: lead }),
                 _ => None,
             };
             assert_eq!(
@@ -8952,7 +8954,7 @@ async fn m3_a_card_under_the_floor_refuses_the_check_out_by_name_before_any_writ
     // The call-off left the centre `Aborted` with every slot and pod free.
     assert_eq!(rig.state(), MatchState::Aborted);
     assert!(rig.centre().slots.is_empty(), "the slots are given back");
-    for (n, team) in [(0, Team::Red), (1, Team::Blue)] {
+    for (n, team) in [(0, PartyId::RED), (1, PartyId::BLUE)] {
         let pod = match_::pod_object(rig.tw.world(), team, 1).expect("pod 1");
         assert_eq!(
             match_::pilot_of(rig.tw.world(), pod),
@@ -8970,7 +8972,7 @@ async fn m3_a_card_under_the_floor_refuses_the_check_out_by_name_before_any_writ
         "no live record: {:?}",
         keys_of(&writes)
     );
-    for team in [Team::Red, Team::Blue] {
+    for team in [PartyId::RED, PartyId::BLUE] {
         let tank = match_::tank_for_slot(rig.tw.world(), team, 1).expect("a tank");
         assert!(mush_tactics::custody::marker_of(rig.tw.world(), tank).is_none());
         assert!(!mush_sim::deployed::is_deployed(rig.tw.world(), tank));
@@ -9024,8 +9026,8 @@ async fn m3_a_card_under_the_floor_refuses_the_check_out_by_name_before_any_writ
 
     // The staff shortcut, on a fresh centre under the same floor.
     let mut rig = Rig::boot_on(1, roster_with(cfg));
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
-    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, 1).expect("blue 1's tank");
     let name = mush_core::output::display_name(rig.tw.world(), red);
     let said = rig.staff(&format!(
         "@arena/start {}=#{}/#{}",
@@ -9585,7 +9587,7 @@ async fn m3_an_unchanged_record_resumes_with_the_seal_it_was_checked_out_under()
 /// pose — `match_::start` relocates every unit into its side's entry zone
 /// (`opening_pose`), so the shared pose is never where one opens.
 fn spare_hulls(rig: &mut Rig, n: usize) -> Vec<ObjId> {
-    let anchor = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let anchor = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     let (domain, pose) = mush_sim::pose_of(rig.tw.world(), anchor).expect("the tank is placed");
     let mut hulls = Vec::new();
     for k in 0..n {
@@ -9635,8 +9637,8 @@ fn twelve_a_side(
 ) -> Vec<match_::Side> {
     let mut sides = Vec::new();
     for (team, extra) in [
-        (Team::Red, spares.get(..6).unwrap_or_default()),
-        (Team::Blue, spares.get(6..12).unwrap_or_default()),
+        (PartyId::RED, spares.get(..6).unwrap_or_default()),
+        (PartyId::BLUE, spares.get(6..12).unwrap_or_default()),
     ] {
         let mut units: Vec<ObjId> = (1..=6)
             .map(|slot| match_::tank_for_slot(rig.tw.world(), team, slot).expect("a shipped tank"))
@@ -9646,7 +9648,7 @@ fn twelve_a_side(
             .into_iter()
             .enumerate()
             .map(|(at, unit)| match_::Fielded {
-                mind_class: (team == Team::Red && at < classed).then_some(class),
+                mind_class: (team == PartyId::RED && at < classed).then_some(class),
                 ..match_::Fielded::unslotted(unit)
             })
             .collect();
@@ -10001,7 +10003,7 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
     let spares = spare_hulls(&mut rig, 12);
     let sides = twelve_a_side(&rig, &spares, 0, CoreClass::III);
     let refused = start_as_staff(&mut rig, &both, 98, &sides);
-    let red_first = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let red_first = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("red 1's tank");
     assert!(
         matches!(
             refused,
@@ -10072,7 +10074,7 @@ impl Rig {
 }
 
 /// Side `team` of what [`Rig::ready_sides`] answered.
-fn side_of(sides: &[match_::Side], team: Team) -> &match_::Side {
+fn side_of(sides: &[match_::Side], team: PartyId) -> &match_::Side {
     sides
         .iter()
         .find(|side| side.team == team)
@@ -10349,7 +10351,7 @@ async fn m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic() 
         before,
         "a refused chassis keeps its mind and coreless type"
     );
-    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::Zero);
+    assert_eq!(preview_class(&rig, PartyId::RED, 1), CoreClass::Zero);
 
     // The same exact ROM charge holds for an explicitly chosen Standard and
     // for the unchosen default. Clearing is allowed and does not invent I.
@@ -10361,7 +10363,7 @@ async fn m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic() 
         rig.say(0, "sim mind none"),
         tacsim::match_::lobby::MIND_CLEARED
     );
-    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::Zero);
+    assert_eq!(preview_class(&rig, PartyId::RED, 1), CoreClass::Zero);
     assert!(
         rig.centre()
             .slots
@@ -10801,7 +10803,7 @@ async fn m5_a_change_of_lead_clears_the_sides_fill_choice() {
     assert_eq!(rig.centre().fill_minds.len(), 2);
     rig.say(0, "sim leave");
     assert!(
-        rig.centre().leads_side(Team::Red, account(1)),
+        rig.centre().leads_side(PartyId::RED, account(1)),
         "red's next claimant leads"
     );
     assert_eq!(
@@ -10814,7 +10816,7 @@ async fn m5_a_change_of_lead_clears_the_sides_fill_choice() {
     assert!(
         fills
             .iter()
-            .all(|fill| fill.team == Team::Blue && fill.by == match_::lobby::FillSetter::Staff),
+            .all(|fill| fill.team == PartyId::BLUE && fill.by == match_::lobby::FillSetter::Staff),
         "the staff choice stays: {fills:?}"
     );
     rig.say(1, "sim ai 2");
@@ -10823,7 +10825,7 @@ async fn m5_a_change_of_lead_clears_the_sides_fill_choice() {
     assert!(!rig.seat(1), "blue's pilot is not seated yet");
 
     let sides = rig.ready_sides().expect("the check-out would run");
-    let red = side_of(&sides, Team::Red);
+    let red = side_of(&sides, PartyId::RED);
     assert_eq!(red.units.len(), 2, "the new lead's hull and one fill hull");
     assert_eq!(
         red.minds.keys().copied().collect::<Vec<ObjId>>(),
@@ -10847,7 +10849,7 @@ async fn m5_a_change_of_lead_clears_the_sides_fill_choice() {
             fielded.slot
         );
     }
-    let blue = side_of(&sides, Team::Blue);
+    let blue = side_of(&sides, PartyId::BLUE);
     assert_eq!(blue.units.len(), 2, "blue's pilot's hull and one fill hull");
     let pilot_tank = match_::tank_of(rig.tw.world(), rig.pod(2).expect("blue's locked pod"))
         .expect("the pod's tank");
@@ -10925,8 +10927,8 @@ async fn m5_the_check_out_reads_each_hulls_choice() {
     // Standard Doctrine on Line — with humans on both sides.
     assert!(rig.centre().doctrine_only, "humans on both sides");
     for (team, pilot, chosen) in [
-        (Team::Red, tank_of(&rig, ada), Some(HeldMind::doctrine())),
-        (Team::Blue, tank_of(&rig, bo), None),
+        (PartyId::RED, tank_of(&rig, ada), Some(HeldMind::doctrine())),
+        (PartyId::BLUE, tank_of(&rig, bo), None),
     ] {
         let side = side_of(&sides, team);
         assert_eq!(
@@ -10952,7 +10954,7 @@ async fn m5_the_check_out_reads_each_hulls_choice() {
                         substituted: true,
                     },
                 ),
-                (false, _, Team::Red) => (
+                (false, _, PartyId::RED) => (
                     Some(CoreClass::I),
                     SealChoice {
                         held: HeldMind::doctrine(),
@@ -10961,7 +10963,7 @@ async fn m5_the_check_out_reads_each_hulls_choice() {
                         substituted: false,
                     },
                 ),
-                (false, _, Team::Blue) => (Some(CoreClass::I), SealChoice::unchosen()),
+                (false, _, PartyId::BLUE) => (Some(CoreClass::I), SealChoice::unchosen()),
                 _ => (None, SealChoice::unchosen()),
             };
             assert_eq!(
@@ -11013,7 +11015,7 @@ async fn m5_the_check_out_admits_a_chosen_hull_at_the_class_its_mind_seals_at() 
         }
         let said = rig.say(ada, "sim ai 2");
         assert!(!said.contains("would think"), "{said}");
-        for team in Team::ALL {
+        for team in PartyId::OOC {
             assert_eq!(preview_class(&rig, team, 1), CoreClass::Zero);
             assert_eq!(preview_class(&rig, team, 2), CoreClass::I);
         }
@@ -11022,7 +11024,7 @@ async fn m5_the_check_out_admits_a_chosen_hull_at_the_class_its_mind_seals_at() 
         assert!(!rig.seat(ada), "Cy is not seated yet");
         let sides = rig.ready_sides().expect("the exact roster fits");
         assert_eq!(
-            side_of(&sides, Team::Red)
+            side_of(&sides, PartyId::RED)
                 .units
                 .iter()
                 .map(|fielded| (fielded.slot, fielded.mind_class))
@@ -11245,7 +11247,7 @@ async fn m5_every_sim_mind_line_is_under_120_columns_on_every_fieldable_type() {
             .to_string(),
         );
     }
-    for team in [Team::Red, Team::Blue] {
+    for team in [PartyId::RED, PartyId::BLUE] {
         measured.push(lobby::pool_line(team, 999_999, 999_999));
     }
     measured.extend([
@@ -11558,7 +11560,7 @@ fn sealed_stock_cards(seal: &tacsim::arena::MindSeal) -> Vec<(String, tacsim::ar
 }
 
 /// The units of `team` in the running match's record.
-fn units_of(rig: &Rig, team: Team) -> Vec<ObjId> {
+fn units_of(rig: &Rig, team: PartyId) -> Vec<ObjId> {
     let match_id = rig.centre().match_id.expect("a match id");
     rig.book()
         .get(match_id)
@@ -11662,7 +11664,7 @@ async fn m5_check_out_seals_the_slots_choice_and_the_leads_fill() {
         "its source found"
     );
 
-    let red = units_of(&rig, Team::Red);
+    let red = units_of(&rig, PartyId::RED);
     let fill: Vec<ObjId> = red
         .iter()
         .copied()
@@ -11702,7 +11704,7 @@ async fn m5_check_out_seals_the_slots_choice_and_the_leads_fill() {
         mirror_card(&rig, bo_tank),
         (preset("Sniper"), 0, CardSource::CheckOut)
     );
-    let blue = units_of(&rig, Team::Blue);
+    let blue = units_of(&rig, PartyId::BLUE);
     assert_eq!(blue.len(), 3);
     for unit in blue {
         let seal = sealed_of(&rig, unit);
@@ -11898,7 +11900,7 @@ async fn m5_a_range_check_out_seals_its_coreless_target() {
     assert!(!rig.seat(0));
     assert!(rig.seat(1));
     assert_eq!(rig.state(), MatchState::Running, "never over-class");
-    let targets = units_of(&rig, Team::Blue);
+    let targets = units_of(&rig, PartyId::BLUE);
     assert_eq!(targets.len(), 1);
     let seal = sealed_of(&rig, targets[0]);
     assert_eq!(seal.core, None, "target_mk1 has no core");
@@ -11922,16 +11924,16 @@ fn one_a_side_choosing(
     rig: &Rig,
     choice: match_::holdings::SealChoice,
 ) -> (Vec<match_::Side>, ObjId) {
-    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("a shipped tank");
-    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("a shipped tank");
+    let red = match_::tank_for_slot(rig.tw.world(), PartyId::RED, 1).expect("a shipped tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), PartyId::BLUE, 1).expect("a shipped tank");
     let sides = vec![
         match_::Side {
-            team: Team::Red,
+            team: PartyId::RED,
             units: vec![match_::Fielded::unslotted(red)],
             minds: BTreeMap::from([(red, choice)]),
         },
         match_::Side {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             units: vec![match_::Fielded::unslotted(blue)],
             minds: BTreeMap::new(),
         },
@@ -12217,7 +12219,7 @@ async fn m5_humans_on_both_sides_substitute_a_non_doctrine_choice_and_say_so_onc
         seal.fallback.as_deref(),
         Some(tacsim::match_::HUMANS_FALLBACK)
     );
-    let fill: Vec<ObjId> = units_of(&rig, Team::Red)
+    let fill: Vec<ObjId> = units_of(&rig, PartyId::RED)
         .into_iter()
         .filter(|unit| *unit != ada_tank)
         .collect();
@@ -12237,7 +12239,7 @@ async fn m5_humans_on_both_sides_substitute_a_non_doctrine_choice_and_say_so_onc
         seal.fallback.as_deref(),
         Some(tacsim::match_::HUMANS_FALLBACK)
     );
-    for unit in units_of(&rig, Team::Blue) {
+    for unit in units_of(&rig, PartyId::BLUE) {
         let seal = sealed_of(&rig, unit);
         assert_eq!(seal.fallback, None);
         assert_eq!(
@@ -12354,7 +12356,7 @@ fn class_two_provider(rig: &mut Rig) {
     tacsim::match_::holdings::install_holdings(rig.tw.world_mut(), Arc::new(ClassTwoHoldings));
 }
 
-fn preview_class(rig: &Rig, team: Team, index: u8) -> tacsim::arena::core::CoreClass {
+fn preview_class(rig: &Rig, team: PartyId, index: u8) -> tacsim::arena::core::CoreClass {
     tacsim::match_::lobby::class_preview_for_tests(rig.tw.world())
         .expect("the complete roster fits")
         .into_iter()
@@ -12379,29 +12381,29 @@ async fn m6_pilot_and_fill_caps_are_independent_and_do_not_raise_a_minds_rating(
     );
     rig.say(0, "sim ai 2");
     assert_eq!(
-        preview_class(&rig, Team::Red, 1),
+        preview_class(&rig, PartyId::RED, 1),
         CoreClass::II,
         "pilot is independent of fill default I"
     );
     assert_eq!(
-        preview_class(&rig, Team::Red, 2),
+        preview_class(&rig, PartyId::RED, 2),
         CoreClass::I,
         "default Standard is rated I"
     );
     rig.say(0, "sim ai class III");
     assert_eq!(
-        preview_class(&rig, Team::Red, 2),
+        preview_class(&rig, PartyId::RED, 2),
         CoreClass::I,
         "raising a cap cannot raise Standard's rating"
     );
     rig.say(0, "sim ai class I");
     assert!(rig.say(0, "sim ai mind Fixture II").contains("Fixture II"));
-    assert_eq!(preview_class(&rig, Team::Red, 2), CoreClass::I);
+    assert_eq!(preview_class(&rig, PartyId::RED, 2), CoreClass::I);
     rig.say(0, "sim ai class II");
-    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::II);
-    assert_eq!(preview_class(&rig, Team::Red, 2), CoreClass::II);
+    assert_eq!(preview_class(&rig, PartyId::RED, 1), CoreClass::II);
+    assert_eq!(preview_class(&rig, PartyId::RED, 2), CoreClass::II);
     assert_eq!(
-        preview_class(&rig, Team::Blue, 1),
+        preview_class(&rig, PartyId::BLUE, 1),
         CoreClass::I,
         "other side keeps its own default"
     );
@@ -12444,13 +12446,13 @@ async fn m6_operator_cap_cannot_hide_over_class_and_the_rom_exception_remains() 
         "{refused}"
     );
     rig.say(0, "sim mind Fixture II");
-    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::I);
+    assert_eq!(preview_class(&rig, PartyId::RED, 1), CoreClass::I);
     rig.say(0, "sim unit target_mk1");
     assert!(
         rig.say(0, "sim mind Load III")
             .starts_with("Your slot will carry")
     );
-    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::Zero);
+    assert_eq!(preview_class(&rig, PartyId::RED, 1), CoreClass::Zero);
     assert!(
         rig.say(0, "sim unit line_tank")
             .contains("core is Class II")
@@ -12482,7 +12484,7 @@ async fn m6_class_and_roster_changes_refuse_before_publishing_an_oversized_pool(
         before,
         "refused cap does not mutate the centre"
     );
-    assert_eq!(preview_class(&rig, Team::Red, 2), CoreClass::I);
+    assert_eq!(preview_class(&rig, PartyId::RED, 2), CoreClass::I);
     rig.say(1, "sim team red");
     let before = rig.centre();
     let refused = rig.say(2, "sim team red");
@@ -12513,7 +12515,7 @@ async fn m6_a_lead_may_leave_when_losing_their_cap_makes_the_roster_too_large() 
     rig.say(1, "sim mind Fixture II");
     rig.say(0, "sim ai 3");
     rig.say(0, "sim ai class 0");
-    assert_eq!(preview_class(&rig, Team::Red, 3), CoreClass::Zero);
+    assert_eq!(preview_class(&rig, PartyId::RED, 3), CoreClass::Zero);
     let leaver = rig.pilot(0);
     let (left, lead_heard) = rig.say_heard(0, "sim leave", 1);
     assert!(left.contains("gives up red slot 1"), "{left}");
@@ -12523,7 +12525,7 @@ async fn m6_a_lead_may_leave_when_losing_their_cap_makes_the_roster_too_large() 
         lead_heard.contains("admission needs review"),
         "{lead_heard}"
     );
-    assert_eq!(preview_class(&rig, Team::Red, 3), CoreClass::I);
+    assert_eq!(preview_class(&rig, PartyId::RED, 3), CoreClass::I);
     let refused = rig.say(1, "sim start");
     assert!(
         refused.contains("8,000"),
@@ -12582,9 +12584,9 @@ async fn m6_range_targets_preview_the_refitted_rom_class_and_checkout_uses_it() 
         !said.contains("would think"),
         "target ROM loads fit: {said}"
     );
-    assert_eq!(preview_class(&rig, Team::Red, 1), CoreClass::I);
-    assert_eq!(preview_class(&rig, Team::Blue, 1), CoreClass::Zero);
-    assert_eq!(preview_class(&rig, Team::Blue, 2), CoreClass::Zero);
+    assert_eq!(preview_class(&rig, PartyId::RED, 1), CoreClass::I);
+    assert_eq!(preview_class(&rig, PartyId::BLUE, 1), CoreClass::Zero);
+    assert_eq!(preview_class(&rig, PartyId::BLUE, 2), CoreClass::Zero);
     rig.say(0, "sim start");
     assert!(
         rig.seat(0),
@@ -12595,7 +12597,7 @@ async fn m6_range_targets_preview_the_refitted_rom_class_and_checkout_uses_it() 
     let targets = record
         .teams
         .iter()
-        .find(|side| side.team == Team::Blue)
+        .find(|side| side.team == PartyId::BLUE)
         .expect("target side");
     assert_eq!(targets.units.len(), 2);
     for unit in &targets.units {

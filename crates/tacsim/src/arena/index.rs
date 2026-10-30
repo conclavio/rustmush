@@ -940,7 +940,7 @@ impl SpatialIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_of, pose, tank};
 
     const A: ObjId = ObjId(4);
@@ -972,8 +972,8 @@ mod tests {
     #[test]
     fn a_rebuild_places_every_unit_and_clears_the_last_one() {
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(1_500, 1_500)),
-            tank(B, Team::Blue, pose(6_500, 2_500)),
+            tank(A, PartyId::RED, pose(1_500, 1_500)),
+            tank(B, PartyId::BLUE, pose(6_500, 2_500)),
         ]);
         let mut index = SpatialIndex::new(&arena.definition.terrain);
         assert!(index.is_empty());
@@ -991,8 +991,8 @@ mod tests {
 
         // A second rebuild from moved poses leaves no ghost behind.
         let moved = arena_of(vec![
-            tank(A, Team::Red, pose(3_500, 3_500)),
-            tank(B, Team::Blue, pose(6_500, 2_500)),
+            tank(A, PartyId::RED, pose(3_500, 3_500)),
+            tank(B, PartyId::BLUE, pose(6_500, 2_500)),
         ]);
         index.rebuild(&moved.definition.terrain, &moved.units);
         assert_eq!(index.len(), 2);
@@ -1010,8 +1010,8 @@ mod tests {
         // moving a pose after the fact, which is the only way in. The rule is
         // asserted because a grid with one slot per cell has to answer something.
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(2_100, 2_900)),
-            tank(B, Team::Blue, pose(6_500, 6_500)),
+            tank(A, PartyId::RED, pose(2_100, 2_900)),
+            tank(B, PartyId::BLUE, pose(6_500, 6_500)),
         ]);
         let mut units = arena.units.clone();
         if let Some(unit) = units.iter_mut().find(|unit| unit.id == B) {
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[test]
     fn a_unit_off_the_window_occupies_nothing() {
-        let arena = arena_of(vec![tank(A, Team::Red, pose(1_500, 1_500))]);
+        let arena = arena_of(vec![tank(A, PartyId::RED, pose(1_500, 1_500))]);
         let mut index = SpatialIndex::new(&arena.definition.terrain);
         let mut units = arena.units.clone();
         if let Some(unit) = units.first_mut() {
@@ -1047,8 +1047,8 @@ mod tests {
     #[test]
     fn move_unit_releases_the_old_cell_and_takes_the_new_one() {
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(1_500, 1_500)),
-            tank(B, Team::Blue, pose(6_500, 2_500)),
+            tank(A, PartyId::RED, pose(1_500, 1_500)),
+            tank(B, PartyId::BLUE, pose(6_500, 2_500)),
         ]);
         let mut index = SpatialIndex::new(&arena.definition.terrain);
         index.rebuild(&arena.definition.terrain, &arena.units);
@@ -1068,9 +1068,9 @@ mod tests {
     #[test]
     fn in_range_answers_the_same_set_by_either_cull() {
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(500, 500)),
-            tank(B, Team::Blue, pose(2_500, 500)),
-            tank(C, Team::Blue, pose(7_500, 7_500)),
+            tank(A, PartyId::RED, pose(500, 500)),
+            tank(B, PartyId::BLUE, pose(2_500, 500)),
+            tank(C, PartyId::BLUE, pose(7_500, 7_500)),
         ]);
         let mut index = SpatialIndex::new(&arena.definition.terrain);
         index.rebuild(&arena.definition.terrain, &arena.units);
@@ -1203,9 +1203,9 @@ mod tests {
     /// `T-107b` so the rows sweep exactly the states the set does.
     fn over_the_sweep_states(check: impl Fn(&SpatialIndex, &[UnitState], &str)) {
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(500, 500)),
-            tank(B, Team::Blue, pose(2_500, 500)),
-            tank(C, Team::Blue, pose(7_500, 7_500)),
+            tank(A, PartyId::RED, pose(500, 500)),
+            tank(B, PartyId::BLUE, pose(2_500, 500)),
+            tank(C, PartyId::BLUE, pose(7_500, 7_500)),
         ]);
         let terrain = &arena.definition.terrain;
         let mut index = SpatialIndex::new(terrain);
@@ -1324,9 +1324,9 @@ mod tests {
         });
         // Not vacuous: count what one lawful rebuild hands back across the grid.
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(500, 500)),
-            tank(B, Team::Blue, pose(2_500, 500)),
-            tank(C, Team::Blue, pose(7_500, 7_500)),
+            tank(A, PartyId::RED, pose(500, 500)),
+            tank(B, PartyId::BLUE, pose(2_500, 500)),
+            tank(C, PartyId::BLUE, pose(7_500, 7_500)),
         ]);
         let terrain = &arena.definition.terrain;
         let mut index = SpatialIndex::new(terrain);
@@ -1375,9 +1375,9 @@ mod tests {
     #[test]
     fn t107b_a_foreign_slice_takes_the_fallback() {
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(500, 500)),
-            tank(B, Team::Blue, pose(2_500, 500)),
-            tank(C, Team::Blue, pose(7_500, 7_500)),
+            tank(A, PartyId::RED, pose(500, 500)),
+            tank(B, PartyId::BLUE, pose(2_500, 500)),
+            tank(C, PartyId::BLUE, pose(7_500, 7_500)),
         ]);
         let terrain = &arena.definition.terrain;
         let mut index = SpatialIndex::new(terrain);
@@ -1385,7 +1385,7 @@ mod tests {
         const D: ObjId = ObjId(20);
         let mut foreign = arena.units.clone();
         foreign.retain(|unit| unit.id != B);
-        let appended = arena_of(vec![tank(D, Team::Red, pose(3_500, 500))]);
+        let appended = arena_of(vec![tank(D, PartyId::RED, pose(3_500, 500))]);
         foreign.extend(appended.units.iter().cloned());
         assert_eq!(
             foreign.iter().map(|unit| unit.id).collect::<Vec<_>>(),
@@ -1485,9 +1485,9 @@ mod tests {
     #[test]
     fn t107b_the_table_walk_pushes_in_id_order() {
         let arena = arena_of(vec![
-            tank(C, Team::Blue, pose(7_500, 7_500)),
-            tank(A, Team::Red, pose(500, 500)),
-            tank(B, Team::Blue, pose(2_500, 500)),
+            tank(C, PartyId::BLUE, pose(7_500, 7_500)),
+            tank(A, PartyId::RED, pose(500, 500)),
+            tank(B, PartyId::BLUE, pose(2_500, 500)),
         ]);
         // `Arena::new` sorted the slice whatever order it was handed in.
         assert_eq!(
@@ -1902,7 +1902,7 @@ mod tests {
             .enumerate()
             .map(|(n, (x_cm, y_cm))| {
                 let id = ObjId(10 + u32::try_from(n).unwrap_or(0));
-                let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+                let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
                 tank(id, team, pose(*x_cm, *y_cm))
             })
             .collect();
@@ -1961,8 +1961,8 @@ mod tests {
         // Two units three cells apart on the diagonal: the cell window covers
         // them, and only `range_cm` refuses the corner.
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(500, 500)),
-            tank(B, Team::Blue, pose(3_500, 3_500)),
+            tank(A, PartyId::RED, pose(500, 500)),
+            tank(B, PartyId::BLUE, pose(3_500, 3_500)),
         ]);
         let mut index = SpatialIndex::new(&arena.definition.terrain);
         index.rebuild(&arena.definition.terrain, &arena.units);
@@ -1982,9 +1982,9 @@ mod tests {
     #[test]
     fn pairs_within_answers_each_pair_once_in_id_order() {
         let arena = arena_of(vec![
-            tank(A, Team::Red, pose(500, 500)),
-            tank(B, Team::Blue, pose(1_500, 500)),
-            tank(C, Team::Blue, pose(7_500, 7_500)),
+            tank(A, PartyId::RED, pose(500, 500)),
+            tank(B, PartyId::BLUE, pose(1_500, 500)),
+            tank(C, PartyId::BLUE, pose(7_500, 7_500)),
         ]);
         let mut index = SpatialIndex::new(&arena.definition.terrain);
         index.rebuild(&arena.definition.terrain, &arena.units);
@@ -2067,7 +2067,7 @@ mod tests {
             .enumerate()
             .map(|(n, (x_cm, y_cm))| {
                 let id = ObjId(10 + u32::try_from(n).unwrap_or(0));
-                let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+                let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
                 let at = if transposed {
                     pose(*y_cm, *x_cm)
                 } else {

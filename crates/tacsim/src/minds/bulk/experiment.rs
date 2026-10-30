@@ -379,7 +379,7 @@ impl Diff {
 mod tests {
     use super::*;
     use crate::arena::{
-        Team,
+        PartyId,
         intents::IntentKind,
         test_support::{arena_of, pose, tank},
     };
@@ -410,7 +410,7 @@ mod tests {
         }
     }
     fn fixture() -> (Arena, MindSeal) {
-        let mut unit = tank(ObjId(4), Team::Red, pose(1500, 4500));
+        let mut unit = tank(ObjId(4), PartyId::RED, pose(1500, 4500));
         unit.controller = Controller::Mind;
         unit.reseal(&crate::match_::SealTerms::fixture()).unwrap();
         let seal = unit.seal.clone();
@@ -490,7 +490,7 @@ mod tests {
     }
     #[test]
     fn swap_preserves_destroyed_weapon_absence_and_disabled_profile_slot() {
-        let mut unit = tank(ObjId(4), Team::Red, pose(1500, 4500));
+        let mut unit = tank(ObjId(4), PartyId::RED, pose(1500, 4500));
         unit.weapons.push(crate::arena::test_support::cannon());
         unit.controller = Controller::Mind;
         unit.reseal(&crate::match_::SealTerms::fixture()).unwrap();

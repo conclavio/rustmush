@@ -119,8 +119,8 @@ fn designator(word: &str) -> Designator {
     }
     let mut letters = word.chars();
     let team = match letters.next() {
-        Some('R') => crate::arena::state::Team::Red,
-        Some('B') => crate::arena::state::Team::Blue,
+        Some('R') => crate::arena::state::PartyId::RED,
+        Some('B') => crate::arena::state::PartyId::BLUE,
         other => panic!("no side is lettered {other:?}"),
     };
     let slot = letters.fold(0_u16, |slot, letter| {
@@ -543,7 +543,7 @@ fn a_contact_id_still_renders_as_sixteen_digits_and_is_no_longer_typable() {
     let rows = vec![row(
         id,
         Designator::Slot {
-            team: crate::arena::state::Team::Blue,
+            team: crate::arena::state::PartyId::BLUE,
             slot: 1,
         },
         Some(2),
@@ -577,7 +577,7 @@ fn row(id: ContactId, designator: Designator, alias: Option<u16>) -> ContactRow 
 fn a_designator_resolves_by_its_current_name_or_by_the_number_behind_it() {
     let id = ContactId(7);
     let slot = Designator::Slot {
-        team: crate::arena::state::Team::Blue,
+        team: crate::arena::state::PartyId::BLUE,
         slot: 1,
     };
     let rows = vec![row(id, slot, Some(2))];
@@ -1615,7 +1615,7 @@ fn ag1_a_pilot_on_the_window_s_last_cell_says_only_the_tail() {
 /// show that neither prints.
 #[test]
 fn ag1_the_contact_sentence_is_the_row_s_own_fields() {
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     let row = |id: u64,
                designator: Designator,
                alias: Option<u16>,
@@ -1643,7 +1643,7 @@ fn ag1_the_contact_sentence_is_the_row_s_own_fields() {
         row(
             1,
             Designator::Slot {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 slot: 1,
             },
             Some(1),
@@ -1657,7 +1657,7 @@ fn ag1_the_contact_sentence_is_the_row_s_own_fields() {
         row(
             2,
             Designator::Slot {
-                team: Team::Red,
+                team: PartyId::RED,
                 slot: 2,
             },
             None,
@@ -1814,7 +1814,7 @@ fn ag1_named_spots_are_the_legend_s_in_authored_indexes() {
 
 fn y1_red(index: u16) -> crate::deliberation::SquadId {
     crate::deliberation::SquadId {
-        team: crate::arena::state::Team::Red,
+        team: crate::arena::state::PartyId::RED,
         index,
     }
 }
@@ -1844,7 +1844,7 @@ fn y1_parse_order_reads_every_line_of_the_grammar() {
         parse_order("  Blue-2   hold  hold FIRE "),
         Ok(y1_words(
             SquadWord::Id(crate::deliberation::SquadId {
-                team: crate::arena::state::Team::Blue,
+                team: crate::arena::state::PartyId::BLUE,
                 index: 2,
             }),
             ObjectiveWords::Hold,
@@ -3193,7 +3193,7 @@ fn m5_mind_profile_refuses_off_the_frame_in_one_line() {
 /// arena, with its rack replaced by the two rows this is about.
 #[test]
 fn ap1_the_aged_rows_count_down_from_receipt_and_a_floor_leaves_them_alone() {
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_at_epoch, pose, scout, tank};
     use crate::arena::weapons::FrameWeapon;
     use std::time::{Duration, Instant};
@@ -3201,8 +3201,8 @@ fn ap1_the_aged_rows_count_down_from_receipt_and_a_floor_leaves_them_alone() {
     const BLUE: ObjId = ObjId(9);
     let mut arena = arena_at_epoch(
         vec![
-            scout(RED, Team::Red, pose(1_500, 1_500)),
-            tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            scout(RED, PartyId::RED, pose(1_500, 1_500)),
+            tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
         ],
         1,
     );
@@ -3304,15 +3304,15 @@ fn ap1_the_aged_rows_count_down_from_receipt_and_a_floor_leaves_them_alone() {
 /// opening frame of a stepped arena, its fields replaced.
 fn ap3_scene() -> Frame {
     use crate::arena::perception::FrameContact;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_at_epoch, pose, scout, tank};
     use crate::arena::weapons::FrameWeapon;
     const RED: ObjId = ObjId(4);
     const BLUE: ObjId = ObjId(9);
     let mut arena = arena_at_epoch(
         vec![
-            scout(RED, Team::Red, pose(1_500, 1_500)),
-            tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            scout(RED, PartyId::RED, pose(1_500, 1_500)),
+            tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
         ],
         1,
     );
@@ -3324,10 +3324,10 @@ fn ap3_scene() -> Frame {
         .find(|frame| frame.unit == RED)
         .expect("red is sent its opening frame");
     frame.callsign = Designator::Slot {
-        team: Team::Red,
+        team: PartyId::RED,
         slot: 1,
     };
-    frame.team = Team::Red;
+    frame.team = PartyId::RED;
     frame.power = Power::Online;
     frame.speed_cms = 667;
     frame.pose.heading_mdeg = 90_000;
@@ -3339,11 +3339,11 @@ fn ap3_scene() -> Frame {
         FrameContact {
             id: ContactId(1),
             designator: Designator::Slot {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 slot: 1,
             },
             alias: Some(1),
-            class: Classification::Classified { team: Team::Blue },
+            class: Classification::Classified { party: PartyId::BLUE },
             moving: false,
             bearing_mdeg: 87_000,
             range_cm: 45_000,
@@ -3409,7 +3409,7 @@ fn ap3_lines(frame: &Frame) -> Vec<String> {
 fn ap3_watch_lines_are_the_three_lines_within_120_columns() {
     use crate::arena::clock::Tempo;
     use crate::arena::perception::FrameContact;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::weapons::FrameWeapon;
 
     // (1) `docs/help/cockpit.md`'s "Watching from line mode", verbatim.
@@ -3602,11 +3602,11 @@ fn ap3_watch_lines_are_the_three_lines_within_120_columns() {
     friendly.contacts.push(FrameContact {
         id: ContactId(3),
         designator: Designator::Slot {
-            team: Team::Red,
+            team: PartyId::RED,
             slot: 2,
         },
         alias: Some(2),
-        class: Classification::Classified { team: Team::Red },
+        class: Classification::Classified { party: PartyId::RED },
         moving: false,
         bearing_mdeg: 180_000,
         range_cm: 12_000,

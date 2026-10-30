@@ -628,7 +628,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::arena::input_tape::*;
     use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
-    use crate::arena::state::{Channel, Controller, StopReason, Team};
+    use crate::arena::state::{Channel, Controller, StopReason, PartyId};
     use crate::arena::test_support::{cannon, custody, pose, tactical_unit_cored, tank};
     use crate::arena::{CoreClass, SealEngine};
     use crate::config::{ArenaConfig, MatchConfig, MindsConfig, SensorsConfig};
@@ -651,7 +651,7 @@ pub(crate) mod tests {
         let mut units = Vec::new();
         for n in 0..count {
             let id = ObjId(n + 1);
-            let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+            let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
             let mut unit = tank(
                 id,
                 team,
@@ -775,7 +775,7 @@ pub(crate) mod tests {
                         issuer: ObjId(1000),
                         issuer_unit: ObjId(1),
                         squad: crate::deliberation::SquadId {
-                            team: Team::Red,
+                            team: PartyId::RED,
                             index: 1,
                         },
                         directive: Some(DetachmentObjective {

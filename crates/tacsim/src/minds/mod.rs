@@ -368,7 +368,7 @@ pub(crate) mod fixture {
         NoticeKind, Receiver, RefusalDetail,
     };
     use crate::arena::state::{
-        ArenaDefinition, Classification, ContactId, Designator, Power, Team,
+        ArenaDefinition, Classification, ContactId, Designator, Power, PartyId,
     };
     use crate::arena::step::{FrameFacet, FrameHeat, FrameSection};
     use crate::arena::weapons::{FrameArming, FrameBand, FrameRule, FrameWeapon};
@@ -393,7 +393,7 @@ pub(crate) mod fixture {
     /// The hostile's designator, `BB`.
     pub(crate) const fn hostile_designator() -> Designator {
         Designator::Slot {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             slot: 2,
         }
     }
@@ -410,10 +410,10 @@ pub(crate) mod fixture {
         MindView {
             unit: UNIT.0,
             callsign: Designator::Slot {
-                team: Team::Red,
+                team: PartyId::RED,
                 slot: 1,
             },
-            team: Team::Red,
+            team: PartyId::RED,
             cell: Some((1, 4)),
             mode: crate::arena::state::MatchMode::Hold,
             objective: Some(crate::arena::state::HoldObjective {
@@ -568,7 +568,7 @@ pub(crate) mod fixture {
                 FrameNotice::Contact {
                     kind: NoticeKind::Classified,
                     contact: hostile,
-                    class: Classification::Classified { team: Team::Blue },
+                    class: Classification::Classified { party: PartyId::BLUE },
                     was: Some(Designator::Provisional(3)),
                 },
                 FrameNotice::Hit {
@@ -626,7 +626,7 @@ pub(crate) mod fixture {
                     id: HOSTILE,
                     designator: hostile_designator(),
                     alias: Some(3),
-                    class: Classification::Classified { team: Team::Blue },
+                    class: Classification::Classified { party: PartyId::BLUE },
                     friendly: false,
                     moving: false,
                     bearing_deg: 90,
@@ -651,11 +651,11 @@ pub(crate) mod fixture {
                 ViewContact {
                     id: FRIEND,
                     designator: Designator::Slot {
-                        team: Team::Red,
+                        team: PartyId::RED,
                         slot: 2,
                     },
                     alias: None,
-                    class: Classification::Classified { team: Team::Red },
+                    class: Classification::Classified { party: PartyId::RED },
                     friendly: true,
                     moving: false,
                     bearing_deg: 0,

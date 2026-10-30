@@ -43,7 +43,7 @@ use smol_str::SmolStr;
 
 use crate::arena::CardChange;
 use crate::arena::intents::IntentKind;
-use crate::arena::state::{Controller, Designator, StopReason, Team};
+use crate::arena::state::{Controller, Designator, StopReason, PartyId};
 use crate::arena_bridge::{ArenaRegistry, CardSource};
 use crate::arena_task::{ArenaMsg, MatchId};
 
@@ -133,7 +133,7 @@ pub fn start(
     // entry as `SealChoice::unchosen`).
     let sides = vec![
         Side {
-            team: crate::arena::state::Team::Red,
+            team: crate::arena::state::PartyId::RED,
             units: parse_units(red)?
                 .into_iter()
                 .map(super::Fielded::unslotted)
@@ -141,7 +141,7 @@ pub fn start(
             minds: std::collections::BTreeMap::new(),
         },
         Side {
-            team: crate::arena::state::Team::Blue,
+            team: crate::arena::state::PartyId::BLUE,
             units: parse_units(blue)?
                 .into_iter()
                 .map(super::Fielded::unslotted)
@@ -918,8 +918,8 @@ fn pose_inner(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .ok_or_else(|| CmdError::msg("Heading is 0 to 359."))?,
         // Facing the other side, as the entry zone's own walk does.
         None => match team {
-            Team::Red => 90,
-            Team::Blue => 270,
+            PartyId::RED => 90,
+            _ => 270,
         },
     };
     // (6) The state.
@@ -945,17 +945,13 @@ fn pose_inner(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// A centre slot's callsign as the board prints it: the team letter and the slot
 /// letter ([`Designator::Slot`]'s own rendering, so the two cannot differ).
-fn callsign(team: Team, slot: u8) -> String {
-    Designator::Slot {
-        team,
-        slot: u16::from(slot),
-    }
-    .to_string()
+fn callsign(team: PartyId, slot: u8) -> String {
+    super::parties::pod_label(team, slot)
 }
 
 /// The `(team, slot)` a typed callsign names on this centre — a pod the centre's
 /// content actually made — or the one refusal for any other word.
-fn slot_of_callsign(w: &mush_core::World, named: &str) -> Result<(Team, u8), CmdError> {
+fn slot_of_callsign(w: &mush_core::World, named: &str) -> Result<(PartyId, u8), CmdError> {
     super::POD_ENTRIES
         .iter()
         .map(|(team, slot, _)| (*team, *slot))
@@ -1102,7 +1098,7 @@ fn arm_panic_for_seed(
     seed: u64,
 ) -> Result<(), String> {
     use crate::arena::state::{
-        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, Team, TerrainCell,
+        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, PartyId, TerrainCell,
         TrackedRules,
     };
     let terrain = ArenaTerrain::uniform(
@@ -1125,7 +1121,7 @@ fn arm_panic_for_seed(
     // never over-class either: it flies the ROM, as no core does.)
     let mut fault_unit = CustodyUnit {
         id: unit,
-        team: Team::Red,
+        team: PartyId::RED,
         pose: mush_sim::data::Pose::at(500, 500, 0, posture),
         mobility: TrackedRules::default(),
         sensor_height_cm: 0,
@@ -1159,6 +1155,7 @@ fn arm_panic_for_seed(
             resolution: crate::match_::stock_resolution(),
             seed,
             mode: crate::arena::state::MatchMode::Skirmish,
+            host: crate::arena::FieldHost::all_hostile(),
         },
         &crate::config::ArenaConfig::default(),
         &crate::config::MatchConfig::default(),

@@ -237,7 +237,7 @@ impl Arena {
                     FrameNotice::Contact {
                         kind: NoticeKind::Classified,
                         contact: self.name_of(viewer, contact),
-                        class: Classification::Classified { team },
+                        class: Classification::Classified { party: team },
                         was,
                     },
                 );
@@ -802,7 +802,7 @@ impl Arena {
                 reads_dead,
                 fatal,
                 // Doc 22 D-22-5: the type with the team, never before it.
-                unit_type: held.class.team().map(|_| words.unit_type.clone()),
+                unit_type: held.class.party().map(|_| words.unit_type.clone()),
             });
         }
         (rows, tables)

@@ -37,7 +37,7 @@ use support::{Muster, Timeline, booted_world, ledger_events, run_until, shipped_
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::doctrine::MachineState;
 use tacsim::arena::mind::{STOCK_THINK_MS, decode_memory};
-use tacsim::arena::state::{Arena, EndReason, ShadowContact, Team};
+use tacsim::arena::state::{Arena, EndReason, ShadowContact, PartyId};
 use tacsim::arena::stock_mind::StockMemory;
 
 /// One cell of the shipped window, centimetres.
@@ -172,8 +172,8 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::mind(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::mind(PartyId::BLUE, 1)],
         ],
     );
     // Each machine's own forward ceiling, off its decoded profile, read before
@@ -514,8 +514,8 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
     let arena: Arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)],
-            &[Muster::mind(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)],
+            &[Muster::mind(PartyId::BLUE, 1)],
         ],
     );
     assert_eq!(arena.units.len(), 3);
@@ -541,17 +541,17 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
     // assertion that has teeth is that Red 2 is *not* standing on it, not that
     // three units ended up on three cells (which they would if the override were
     // honoured and Red 1 were the one relocated).
-    let red_one = support::tank(&world, Team::Red, 1);
-    let red_two = support::tank(&world, Team::Red, 2);
+    let red_one = support::tank(&world, PartyId::RED, 1);
+    let red_two = support::tank(&world, PartyId::RED, 2);
     let taken = support::cell_of(&arena, red_one).expect("red 1 opened on the window");
     let crowded = shipped_arena(
         &world,
         &[
             &[
-                Muster::mind(Team::Red, 1),
-                Muster::mind(Team::Red, 2).at(taken),
+                Muster::mind(PartyId::RED, 1),
+                Muster::mind(PartyId::RED, 2).at(taken),
             ],
-            &[Muster::mind(Team::Blue, 1)],
+            &[Muster::mind(PartyId::BLUE, 1)],
         ],
     );
     let mut cells: Vec<(u16, u16)> = crowded
@@ -578,7 +578,7 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
         .definition
         .entry_zones
         .iter()
-        .find(|zone| zone.team == Team::Red)
+        .find(|zone| zone.team == PartyId::RED)
         .expect("red has an entry zone");
     assert!(
         (zone.x0.min(zone.x1)..=zone.x0.max(zone.x1)).contains(&moved.0)
@@ -670,11 +670,11 @@ fn e4_a_hurt_machine_against_two_ends_by_elimination() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1).hurt()],
-            &[Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)],
+            &[Muster::mind(PartyId::RED, 1).hurt()],
+            &[Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)],
         ],
     );
-    let hurt = support::tank(&world, Team::Red, 1);
+    let hurt = support::tank(&world, PartyId::RED, 1);
 
     let doctrine = arena.arena_cfg.reflex.clone();
     let health = arena.health_permille(hurt);
@@ -744,8 +744,8 @@ fn e4_a_healthy_one_against_one_ends_by_elimination() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::mind(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::mind(PartyId::BLUE, 1)],
         ],
     );
     let (reason, at_ms, timeline, wall) = play_to_the_end(&mut arena, |_| {});
@@ -765,11 +765,11 @@ fn e4_a_dry_loser_is_found_and_finished() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1).dry()],
-            &[Muster::mind(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1).dry()],
+            &[Muster::mind(PartyId::BLUE, 1)],
         ],
     );
-    let dry = support::tank(&world, Team::Red, 1);
+    let dry = support::tank(&world, PartyId::RED, 1);
     assert!(
         arena.unit(dry).is_some_and(|unit| unit.armed_at_checkout()
             && unit.weapons.iter().all(|w| unit.weapon_ammo(&w.id) == 0)),
@@ -824,12 +824,12 @@ fn aa1_two_machines_with_their_engines_gone_still_fight_out_to_their_reach() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1).engine_out()],
-            &[Muster::mind(Team::Blue, 1).engine_out().at(ENGINE_OUT_BLUE)],
+            &[Muster::mind(PartyId::RED, 1).engine_out()],
+            &[Muster::mind(PartyId::BLUE, 1).engine_out().at(ENGINE_OUT_BLUE)],
         ],
     );
-    let red = support::tank(&world, Team::Red, 1);
-    let blue = support::tank(&world, Team::Blue, 1);
+    let red = support::tank(&world, PartyId::RED, 1);
+    let blue = support::tank(&world, PartyId::BLUE, 1);
     let red_cell = support::cell_of(&arena, red).expect("red opened on the window");
     let blue_cell = support::cell_of(&arena, blue).expect("blue opened on the window");
     assert_eq!(red_cell, (6, 97), "red's authored muster");
@@ -1072,10 +1072,10 @@ fn af1_the_shipped_centre_encodes_under_the_expectation() {
     let world = booted_world();
     let pods = tacsim::match_::PODS_PER_SIDE;
     let red: Vec<Muster> = (1..=pods)
-        .map(|slot| Muster::mind(Team::Red, slot))
+        .map(|slot| Muster::mind(PartyId::RED, slot))
         .collect();
     let blue: Vec<Muster> = (1..=pods)
-        .map(|slot| Muster::mind(Team::Blue, slot))
+        .map(|slot| Muster::mind(PartyId::BLUE, slot))
         .collect();
     let mut arena = shipped_arena(&world, &[&red, &blue]);
     assert_eq!(arena.units.len(), 12, "twelve stock tanks");
@@ -1228,13 +1228,13 @@ mod m5r {
     #[test]
     fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
         let world = booted_world();
-        let one = support::tank(&world, Team::Red, 1);
-        let two = support::tank(&world, Team::Red, 2);
+        let one = support::tank(&world, PartyId::RED, 1);
+        let two = support::tank(&world, PartyId::RED, 2);
         let mut baseline = None;
         for (lane, cadence) in [(1, 5_000_i64), (0, 1_000), (0, 500), (2, 1_000)] {
             let mut arena = shipped_arena(
                 &world,
-                &[&[Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)]],
+                &[&[Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)]],
             );
             arena.clock.pin_tempo_for_tests(Tempo::Quiet);
             if lane == 1 {

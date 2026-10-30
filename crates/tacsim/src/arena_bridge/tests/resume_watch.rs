@@ -14,16 +14,16 @@ use crate::deliberation::{
 use mush_core::{Ctx, Outbox};
 fn squad() -> SquadId {
     SquadId {
-        team: Team::Red,
+        team: PartyId::RED,
         index: 1,
     }
 }
 fn native(by: CharacterRef, issuer: Option<ObjId>, ttl: u32) -> Arena {
     let mut arena = arena_at_epoch(
         vec![
-            tank(RA, Team::Red, pose(1500, 1500)),
-            tank(RB, Team::Red, pose(2500, 1500)),
-            tank(BA, Team::Blue, pose(6500, 6500)),
+            tank(RA, PartyId::RED, pose(1500, 1500)),
+            tank(RB, PartyId::RED, pose(2500, 1500)),
+            tank(BA, PartyId::BLUE, pose(6500, 6500)),
         ],
         1,
     );

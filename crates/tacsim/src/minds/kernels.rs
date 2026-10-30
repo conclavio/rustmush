@@ -606,7 +606,7 @@ mod tests {
     };
     use super::*;
     use crate::arena::perception::Aspect;
-    use crate::arena::state::{ArenaTerrain, Classification, ContactId, Team};
+    use crate::arena::state::{ArenaTerrain, Classification, ContactId, PartyId};
     use crate::arena::step::FrameHeat;
     use crate::arena::stock_mind::{fight_limit_cm, health_permille, holds_a_hostile, is_dry};
     use crate::deliberation::order::RangeBand;
@@ -1120,7 +1120,7 @@ mod tests {
         // The unidentified return, classified hostile: 600 m face-on at 135°.
         for row in &mut seen.contacts {
             if row.id == BLIP {
-                row.class = Classification::Classified { team: Team::Blue };
+                row.class = Classification::Classified { party: PartyId::BLUE };
                 row.reads_dead = Some(false);
             }
         }

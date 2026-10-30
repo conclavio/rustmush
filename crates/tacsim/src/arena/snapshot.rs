@@ -340,7 +340,11 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// matches restart rather than migrating.
 /// **18 since DT.1b:** per-hull detachment ownership, authority epochs and last
 /// accepted sequence. These fences are authoritative and survive a snapshot.
-pub const SNAPSHOT_FORMAT: u32 = 18;
+/// **19 since doc 32 cut CF.0:** the party ids (a letter; `red` and `blue`
+/// keep their words), the unit designators (`{"unit": {"party", "letter"}}`
+/// for the old slot form), every party's relation books and the field's end
+/// condition. Taken once, with the mind API and the frame.
+pub const SNAPSHOT_FORMAT: u32 = 19;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -976,6 +980,8 @@ struct ArenaStateRef<'a> {
     squads_expired: &'a ExpiredSquads,
     mode: &'a MatchMode,
     hold: &'a Option<HoldState>,
+    relations: &'a crate::arena::party::Relations,
+    end: &'a crate::arena::party::EndCondition,
 }
 
 impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
@@ -1078,6 +1084,8 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             squads_expired,
             mode,
             hold,
+            relations,
+            end,
         } = arena;
         ArenaStateRef {
             units,
@@ -1121,6 +1129,8 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             squads_expired,
             mode,
             hold,
+            relations,
+            end,
         }
     }
 }
@@ -1176,6 +1186,8 @@ struct ArenaState {
     squads_expired: ExpiredSquads,
     mode: MatchMode,
     hold: Option<HoldState>,
+    relations: crate::arena::party::Relations,
+    end: crate::arena::party::EndCondition,
 }
 
 impl ArenaState {
@@ -1224,6 +1236,8 @@ impl ArenaState {
             squads_expired,
             mode,
             hold,
+            relations,
+            end,
         } = self;
         // M5rules carries bounded typed rows. A digest authenticates bytes;
         // it does not substitute for validating their supported shape.
@@ -1329,6 +1343,8 @@ impl ArenaState {
             squads_expired,
             mode,
             hold,
+            relations,
+            end,
         };
         arena
             .hydrate_profiles()
@@ -1433,7 +1449,7 @@ mod tests {
     use crate::arena::motor::MotorRow;
     use crate::arena::resolution::Resolution;
     use crate::arena::state::{
-        Channel, Classification, ContactId, Designator, Power, SeenPose, ShadowContact, Team,
+        Channel, Classification, ContactId, Designator, Power, SeenPose, ShadowContact, PartyId,
         UnitState,
     };
     use crate::arena::test_support::{arena_of, pose, scout, tank};
@@ -1555,7 +1571,7 @@ mod tests {
     /// nobody listed, none added that nobody decided on.
     #[test]
     fn af1_a_unit_is_carried_whole_by_its_derive() {
-        let arena = arena_of(vec![scout(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let arena = arena_of(vec![scout(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         let snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
         let state: serde_json::Value = serde_json::from_slice(snapshot.bytes()).expect("a state");
         let keys: BTreeSet<&str> = state
@@ -1607,8 +1623,8 @@ mod tests {
         let squad = |team, index| SquadId { team, index };
         let watch = Paired {
             map: BTreeMap::from([
-                (squad(Team::Red, 1), SquadWatch::default()),
-                (squad(Team::Blue, 2), SquadWatch::default()),
+                (squad(PartyId::RED, 1), SquadWatch::default()),
+                (squad(PartyId::BLUE, 2), SquadWatch::default()),
             ]),
         };
         let text = round_trip(&watch);
@@ -1639,7 +1655,7 @@ mod tests {
                 (
                     9_000_i64,
                     Designator::Slot {
-                        team: Team::Blue,
+                        team: PartyId::BLUE,
                         slot: 1,
                     },
                 ),
@@ -1687,7 +1703,7 @@ mod tests {
                 ContactId(u64::MAX),
                 ShadowContact::sighted(
                     ObjId(9),
-                    Classification::Classified { team: Team::Blue },
+                    Classification::Classified { party: PartyId::BLUE },
                     5_000,
                     SeenPose::default(),
                 ),
@@ -1890,7 +1906,7 @@ mod tests {
         // The opaque unit's own maps (`SectionId`, `ComponentId`), through the
         // whole `TacticalUnit` — its `UnitRepr` already writes its two tuple- and
         // struct-keyed maps as pairs.
-        let arena = arena_of(vec![tank(unit, Team::Red, pose(1_500, 1_500))]);
+        let arena = arena_of(vec![tank(unit, PartyId::RED, pose(1_500, 1_500))]);
         let tactical = &arena.units.first().expect("one unit").unit;
         let text = serde_json::to_string(tactical).expect("the unit encodes");
         let back: mush_tactics::TacticalUnit = serde_json::from_str(&text).expect("and decodes");
@@ -1898,7 +1914,7 @@ mod tests {
         // And the squad watch and the expired set as the arena holds them:
         // the set is an array; the table is pairs (above).
         let expired: BTreeSet<SquadId> = BTreeSet::from([SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         }]);
         assert_eq!(round_trip(&expired), r#"[{"team":"red","index":1}]"#);
@@ -1909,7 +1925,7 @@ mod tests {
     /// finds out.
     #[test]
     fn af1_the_head_is_read_without_the_state() {
-        let arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         let snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
         let mut document = snapshot.document.clone();
         document["state"] = serde_json::Value::String("x".to_owned());
@@ -1933,7 +1949,7 @@ mod tests {
     /// holding one full was not between two pulses.
     #[test]
     fn af1_an_arena_inside_a_pulse_is_refused() {
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         arena.spent_hits.insert(1);
         assert_eq!(
             Snapshot::encode(&arena).map(|_| ()),

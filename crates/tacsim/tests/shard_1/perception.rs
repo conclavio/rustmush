@@ -51,7 +51,7 @@ use tacsim::arena::perception::{
 use tacsim::arena::rng::{DrawLabel, draw, draw_contact_id, stagger_ms};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    Designator, DueKind, EntryZone, Pilot, SeenPose, Team, TerrainCell, TrackedRules,
+    Designator, DueKind, EntryZone, Pilot, SeenPose, PartyId, TerrainCell, TrackedRules,
     WeaponSummary,
 };
 use tacsim::arena::step::Frame;
@@ -234,7 +234,7 @@ fn cannon() -> WeaponSummary {
 }
 
 /// A tank with `sensor` and the shipped cannon.
-fn tank(id: ObjId, team: Team, pose: Pose, sensor: Option<SensorProfile>) -> CustodyUnit {
+fn tank(id: ObjId, team: PartyId, pose: Pose, sensor: Option<SensorProfile>) -> CustodyUnit {
     CustodyUnit {
         id,
         team,
@@ -296,14 +296,14 @@ fn arena_with_sensors(
                 terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
                 entry_zones: vec![
                     EntryZone {
-                        team: Team::Red,
+                        team: PartyId::RED,
                         x0: 0,
                         y0: 0,
                         x1: 3,
                         y1: SIDE - 1,
                     },
                     EntryZone {
-                        team: Team::Blue,
+                        team: PartyId::BLUE,
                         x0: SIDE - 4,
                         y0: 0,
                         x1: SIDE - 1,
@@ -322,6 +322,7 @@ fn arena_with_sensors(
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -381,8 +382,8 @@ fn a_target_in_the_open_at_half_range_is_detected_and_then_classified() {
     // and `ground` stopped is 900, so 30,000 cm is comfortably inside 54,000.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -421,7 +422,7 @@ fn a_target_in_the_open_at_half_range_is_detected_and_then_classified() {
         .unwrap_or_else(|| panic!("still held"));
     assert_eq!(
         held.class,
-        Classification::Classified { team: Team::Blue },
+        Classification::Classified { party: PartyId::BLUE },
         "the viewer resolved the wrong side"
     );
     // And it does not classify twice.
@@ -437,7 +438,7 @@ fn a_target_in_the_open_at_half_range_is_detected_and_then_classified() {
         .cloned()
         .unwrap_or_else(|| panic!("one contact"));
     assert_eq!(row.id, id);
-    assert_eq!(row.class, Classification::Classified { team: Team::Blue });
+    assert_eq!(row.class, Classification::Classified { party: PartyId::BLUE });
     assert_eq!(row.range_cm, 30_000);
     assert_eq!(
         row.bearing_mdeg,
@@ -456,8 +457,8 @@ fn a_target_in_the_open_at_half_range_is_detected_and_then_classified() {
 fn a_target_behind_a_wall_is_never_detected() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         // One wall cell on the line, well inside the sensor's reach.
         &[(25, 10, cell(TerrainClass::Wall))],
@@ -512,8 +513,8 @@ fn heavy_woods_stopped_is_out_of_reach_and_a_road_moving_is_not() {
     ] {
         let mut arena = arena_of(
             vec![
-                tank(EYE, Team::Red, centre(5, 10), Some(visual())),
-                tank(MARK, Team::Blue, centre(45, 10), None),
+                tank(EYE, PartyId::RED, centre(5, 10), Some(visual())),
+                tank(MARK, PartyId::BLUE, centre(45, 10), None),
             ],
             // Only the target's own cell is painted: the endpoints of a trace never
             // block their own line, so the line itself is open ground either way
@@ -541,8 +542,8 @@ fn heavy_woods_stopped_is_out_of_reach_and_a_road_moving_is_not() {
     for (x_cm, detected) in [(35_000_i64, 1_u32), (35_001, 0)] {
         let mut arena = arena_of(
             vec![
-                tank(EYE, Team::Red, centre(5, 10), Some(visual())),
-                tank(MARK, Team::Blue, centre(45, 10), None),
+                tank(EYE, PartyId::RED, centre(5, 10), Some(visual())),
+                tank(MARK, PartyId::BLUE, centre(45, 10), None),
             ],
             &[(35, 10, cell(TerrainClass::WoodsHeavy))],
         );
@@ -583,8 +584,8 @@ fn a_belt_of_light_woods_is_a_detection_and_a_canopy_is_not() {
             .collect();
         let mut arena = arena_of(
             vec![
-                tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-                tank(MARK, Team::Blue, centre(30, 10), None),
+                tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+                tank(MARK, PartyId::BLUE, centre(30, 10), None),
             ],
             &painted,
         );
@@ -606,8 +607,8 @@ fn a_belt_of_light_woods_is_a_detection_and_a_canopy_is_not() {
 fn a_contact_expires_at_the_ttl_and_re_acquires_under_the_same_id() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -620,8 +621,8 @@ fn a_contact_expires_at_the_ttl_and_re_acquires_under_the_same_id() {
     // so the *loss* and not the range is what is under test.
     let walled = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[(25, 10, cell(TerrainClass::Wall))],
     );
@@ -647,8 +648,8 @@ fn a_contact_expires_at_the_ttl_and_re_acquires_under_the_same_id() {
     // function of the pair and the match seed and of nothing that counts upward.
     let open = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -673,8 +674,8 @@ fn a_contact_expires_at_the_ttl_and_re_acquires_under_the_same_id() {
 fn a_gap_longer_than_a_pass_restarts_the_classification_clock() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -725,9 +726,9 @@ fn the_mesh_reaches_a_teammate_in_line_of_sight_and_not_one_behind_a_wall() {
         }
         let mut arena = arena_of(
             vec![
-                tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-                tank(MARK, Team::Blue, centre(40, 10), None),
-                tank(MATE, Team::Red, centre(10, 13), Some(short.clone())),
+                tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+                tank(MARK, PartyId::BLUE, centre(40, 10), None),
+                tank(MATE, PartyId::RED, centre(10, 13), Some(short.clone())),
             ],
             &paint,
         );
@@ -742,7 +743,7 @@ fn the_mesh_reaches_a_teammate_in_line_of_sight_and_not_one_behind_a_wall() {
                 .contacts
                 .resolve(EYE, draw_contact_id(arena.seed, EYE, MARK))
                 .map(|held| held.class),
-            Some(Classification::Classified { team: Team::Blue })
+            Some(Classification::Classified { party: PartyId::BLUE })
         );
         let held = arena.contacts.resolve(MATE, target_id).copied();
         assert_eq!(
@@ -752,7 +753,7 @@ fn the_mesh_reaches_a_teammate_in_line_of_sight_and_not_one_behind_a_wall() {
         );
         if let Some(held) = held {
             // What arrives is classified, because only classified contacts travel.
-            assert_eq!(held.class, Classification::Classified { team: Team::Blue });
+            assert_eq!(held.class, Classification::Classified { party: PartyId::BLUE });
             assert_eq!(held.target, MARK);
             assert_eq!(held.first_seen_ms, 3_000, "the pass that classified it");
         }
@@ -792,9 +793,9 @@ fn the_mesh_refreshes_what_it_carries_so_a_shared_contact_outlives_the_ttl() {
     };
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
-            tank(MATE, Team::Red, centre(10, 13), Some(short)),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
+            tank(MATE, PartyId::RED, centre(10, 13), Some(short)),
         ],
         &[],
     );
@@ -822,8 +823,8 @@ fn the_mesh_refreshes_what_it_carries_so_a_shared_contact_outlives_the_ttl() {
 fn the_pass_runs_once_per_cadence_per_unit_staggered_by_unit_id() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), Some(visual())),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), Some(visual())),
         ],
         &[],
     );
@@ -888,8 +889,8 @@ fn the_pass_runs_once_per_cadence_per_unit_staggered_by_unit_id() {
 fn a_classification_carries_the_pinned_draw_label_and_its_value() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -917,8 +918,8 @@ fn a_classification_carries_the_pinned_draw_label_and_its_value() {
     // And the same through the ledger, where the wire form is what a replay reads.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), Some(visual())),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), Some(visual())),
         ],
         &[],
     );
@@ -988,8 +989,8 @@ fn a_classification_carries_the_pinned_draw_label_and_its_value() {
 fn a_contact_id_is_the_pair_and_the_seed_and_resolves_for_nobody_else() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), Some(visual())),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), Some(visual())),
         ],
         &[],
     );
@@ -1023,8 +1024,8 @@ fn a_contact_id_is_the_pair_and_the_seed_and_resolves_for_nobody_else() {
     // id, so a ledger replayed against the wrong match resolves nothing.
     let mut other = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), Some(visual())),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), Some(visual())),
         ],
         &[],
     );
@@ -1114,8 +1115,8 @@ fn eye_offset(arena: &Arena) -> i64 {
 fn watching() -> Arena {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -1281,9 +1282,9 @@ fn a_teammate_is_a_friendly_marker_and_an_unknown_return_is_neither() {
     // red, so `EYE`'s classified contact on `MATE` is its own side.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MATE, Team::Red, centre(20, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MATE, PartyId::RED, centre(20, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -1467,14 +1468,14 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     let named = tacsim::arena::perception::Named {
         id,
         designator: Designator::Slot {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             slot: 1,
         },
     };
     let silent = FrameNotice::Contact {
         kind: NoticeKind::Classified,
         contact: named,
-        class: Classification::Classified { team: Team::Blue },
+        class: Classification::Classified { party: PartyId::BLUE },
         was: None,
     };
     assert_eq!(cockpit::notice_line(&frame, &silent, &[]), "");
@@ -1497,7 +1498,7 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     carrying.notices = vec![FrameNotice::Contact {
         kind: NoticeKind::Classified,
         contact: named,
-        class: Classification::Classified { team: Team::Blue },
+        class: Classification::Classified { party: PartyId::BLUE },
         was: Some(Designator::Provisional(1)),
     }];
     assert_eq!(
@@ -1519,7 +1520,7 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     // refuses.
     for contact in &mut carrying.contacts {
         contact.designator = Designator::Slot {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             slot: 1,
         };
         contact.alias = Some(1);
@@ -1569,9 +1570,9 @@ fn short_sight() -> SensorProfile {
 fn meshed_pair() -> Arena {
     arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MATE, Team::Red, centre(10, 13), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MATE, PartyId::RED, centre(10, 13), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     )
@@ -1675,10 +1676,10 @@ fn a_contact_that_only_ever_arrived_over_the_mesh_is_never_shared_on() {
     // outside `EYE`'s, and must never learn of `MARK`.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MATE, Team::Red, centre(10, 13), Some(short_sight())),
-            tank(RELAY, Team::Red, centre(10, 43), Some(short_sight())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MATE, PartyId::RED, centre(10, 13), Some(short_sight())),
+            tank(RELAY, PartyId::RED, centre(10, 43), Some(short_sight())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -1737,9 +1738,9 @@ fn a_share_never_raises_a_receivers_stamp_above_the_sharers_own_sighting() {
     // sighting, not the moment of transmission.
     let walled = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MATE, Team::Red, centre(10, 13), Some(short_sight())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MATE, PartyId::RED, centre(10, 13), Some(short_sight())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[(25, 10, cell(TerrainClass::Wall))],
     );
@@ -1773,9 +1774,9 @@ fn a_viewer_that_runs_no_pass_of_its_own_still_expires_what_was_shared_to_it() {
     // the whole match.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(BLIND, Team::Red, centre(10, 13), None),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(BLIND, PartyId::RED, centre(10, 13), None),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -1815,8 +1816,8 @@ fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
     // building was tracked through it, cell by cell.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -1833,8 +1834,8 @@ fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
     // The wall goes up and the target drives away behind it.
     let walled = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &curtain(25),
     );
@@ -1864,8 +1865,8 @@ fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
     assert_eq!(kinds(&journal), vec!["lost"]);
     let open = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(50, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(50, 10), None),
         ],
         &[],
     );
@@ -2005,8 +2006,8 @@ fn nothing_a_pilot_is_shown_is_newer_than_the_platforms_last_sighting() {
     // The target moves behind a wall, and the platform is told nothing more.
     let walled = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &curtain(25),
     );
@@ -2052,10 +2053,10 @@ fn a_share_carries_the_sharers_own_plot_and_never_a_teammates() {
     // diverged, so what it is told is one share and not an older one.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MATE, Team::Red, centre(10, 13), Some(visual())),
-            tank(RELAY, Team::Red, centre(10, 70), Some(short_sight())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MATE, PartyId::RED, centre(10, 13), Some(visual())),
+            tank(RELAY, PartyId::RED, centre(10, 70), Some(short_sight())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -2169,10 +2170,10 @@ fn provisional_numbers_are_per_viewer_in_first_seen_order_and_never_reused() {
     // being deterministic.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
-            tank(RELAY, Team::Blue, centre(40, 20), None),
-            tank(MATE, Team::Red, centre(12, 10), Some(visual())),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
+            tank(RELAY, PartyId::BLUE, centre(40, 20), None),
+            tank(MATE, PartyId::RED, centre(12, 10), Some(visual())),
         ],
         &[],
     );
@@ -2198,8 +2199,8 @@ fn provisional_numbers_are_per_viewer_in_first_seen_order_and_never_reused() {
 fn a_contact_is_named_by_its_live_class_across_a_loss_and_a_re_detection() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
     );
@@ -2263,10 +2264,10 @@ fn a_mesh_arrival_carries_the_slot_name_and_consumes_no_number() {
     };
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(short_sight())),
-            tank(MATE, Team::Red, centre(30, 10), Some(mate_sight)),
-            tank(MARK, Team::Blue, centre(42, 10), None),
-            tank(RELAY, Team::Blue, centre(14, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(short_sight())),
+            tank(MATE, PartyId::RED, centre(30, 10), Some(mate_sight)),
+            tank(MARK, PartyId::BLUE, centre(42, 10), None),
+            tank(RELAY, PartyId::BLUE, centre(14, 10), None),
         ],
         &[],
     );
@@ -2327,10 +2328,10 @@ fn a_slot_is_taken_explicitly_then_by_unit_id_and_a_duplicate_is_refused() {
     // unit-id order. `RELAY` (#21) is fielded from pod 1, so `MARK` (#9) — which
     // sorts first — has to take pod 2.
     let mut units = vec![
-        tank(MARK, Team::Blue, centre(40, 10), None),
-        tank(RELAY, Team::Blue, centre(41, 10), None),
-        tank(BLIND, Team::Blue, centre(42, 10), None),
-        tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+        tank(MARK, PartyId::BLUE, centre(40, 10), None),
+        tank(RELAY, PartyId::BLUE, centre(41, 10), None),
+        tank(BLIND, PartyId::BLUE, centre(42, 10), None),
+        tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
     ];
     if let Some(unit) = units.get_mut(1) {
         unit.slot = 1;
@@ -2352,7 +2353,7 @@ fn a_slot_is_taken_explicitly_then_by_unit_id_and_a_duplicate_is_refused() {
     for n in 0..27_u32 {
         let mut unit = tank(
             ObjId(100 + n),
-            Team::Red,
+            PartyId::RED,
             centre(u16::try_from(n).unwrap_or(0), 40),
             None,
         );
@@ -2370,8 +2371,8 @@ fn a_slot_is_taken_explicitly_then_by_unit_id_and_a_duplicate_is_refused() {
     // Two units of one side in one pod would answer to one name, and that is a
     // refusal and not a rename.
     let mut clash = vec![
-        tank(MARK, Team::Blue, centre(40, 10), None),
-        tank(RELAY, Team::Blue, centre(41, 10), None),
+        tank(MARK, PartyId::BLUE, centre(40, 10), None),
+        tank(RELAY, PartyId::BLUE, centre(41, 10), None),
     ];
     for unit in &mut clash {
         unit.slot = 2;
@@ -2384,6 +2385,7 @@ fn a_slot_is_taken_explicitly_then_by_unit_id_and_a_duplicate_is_refused() {
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -2409,8 +2411,8 @@ fn the_switch_names_a_contact_at_detection_and_issues_no_number() {
     };
     let mut arena = arena_with_sensors(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &[],
         &sensors,
@@ -2519,7 +2521,7 @@ fn designator_arena() -> Arena {
         vec![
             tank(
                 EYE,
-                Team::Red,
+                PartyId::RED,
                 centre(10, 10),
                 // Ten cells of reach, and seven seconds to tell a return apart
                 // rather than the shipped three: a five-second checkpoint then
@@ -2531,7 +2533,7 @@ fn designator_arena() -> Arena {
                     ..visual()
                 }),
             ),
-            tank(MARK, Team::Blue, centre(15, 10), None),
+            tank(MARK, PartyId::BLUE, centre(15, 10), None),
         ],
         &[],
     )
@@ -3072,8 +3074,8 @@ fn own_reading(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<Reading> {
 fn a_reading_is_taken_only_inside_the_close_look_and_only_once_classified() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
         ],
         &[],
     );
@@ -3114,8 +3116,8 @@ fn a_reading_is_taken_only_inside_the_close_look_and_only_once_classified() {
 fn a_detection_outside_the_close_look_keeps_the_old_reading_and_its_old_stamp() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
         ],
         &[],
     );
@@ -3165,9 +3167,9 @@ fn a_target_that_breaks_contact_keeps_its_last_reading_until_the_row_dies() {
     // nothing can quietly refresh it.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MATE, Team::Red, centre(0, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MATE, PartyId::RED, centre(0, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
         ],
         &[],
     );
@@ -3242,9 +3244,9 @@ fn a_section_the_gunner_watched_go_survives_a_teammates_older_look() {
     // contradict the line the pilot was just sent half a second earlier.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MATE, Team::Red, centre(11, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MATE, PartyId::RED, centre(11, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
         ],
         &[],
     );
@@ -3294,10 +3296,10 @@ fn a_section_the_gunner_watched_go_survives_a_teammates_older_look() {
 fn a_share_carries_the_sharers_own_reading_and_never_replaces_a_newer_one() {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
             // Blind: everything on its scope arrived over the mesh.
-            tank(MATE, Team::Red, centre(11, 10), None),
-            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            tank(MATE, PartyId::RED, centre(11, 10), None),
+            tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
         ],
         &[],
     );
@@ -3347,9 +3349,9 @@ fn a_mesh_copy_of_a_contact_nobody_has_read_carries_no_reading_and_no_chassis() 
     // vocabulary for it at all, which is the whole of the `scan_tables` rule.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MATE, Team::Red, centre(11, 10), None),
-            tank(MARK, Team::Blue, centre(FAR.0, FAR.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MATE, PartyId::RED, centre(11, 10), None),
+            tank(MARK, PartyId::BLUE, centre(FAR.0, FAR.1), None),
         ],
         &[],
     );
@@ -3399,8 +3401,8 @@ fn a_mesh_copy_of_a_contact_nobody_has_read_carries_no_reading_and_no_chassis() 
 fn the_state_hash_moves_with_both_readings() {
     let base = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
         ],
         &[],
     );
@@ -3408,8 +3410,8 @@ fn the_state_hash_moves_with_both_readings() {
     let plant = |change: &dyn Fn(&mut tacsim::arena::state::ShadowContact)| -> u64 {
         let mut arena = arena_of(
             vec![
-                tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-                tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+                tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+                tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
             ],
             &[],
         );
@@ -3418,7 +3420,7 @@ fn the_state_hash_moves_with_both_readings() {
             id,
             tacsim::arena::state::ShadowContact::sighted(
                 MARK,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified { party: PartyId::BLUE },
                 0,
                 SeenPose::default(),
             ),
@@ -3480,8 +3482,8 @@ fn the_state_hash_moves_with_both_readings() {
 fn scan_frame(at: (u16, u16)) -> (Arena, Frame) {
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(at.0, at.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(at.0, at.1), None),
         ],
         &[],
     );
@@ -3512,8 +3514,8 @@ fn scan_of_an_unidentified_return_says_there_is_nothing_to_read() {
     // pilot does hold the contact.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
         ],
         &[],
     );
@@ -3671,8 +3673,8 @@ fn the_wire_frame_gives_an_unread_row_a_null_condition_and_no_table() {
     // (1) A return that is held and `Unknown`.
     let mut arena = arena_of(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(NEAR.0, NEAR.1), None),
         ],
         &[],
     );
@@ -3779,9 +3781,9 @@ const DECOY: ObjId = ObjId(7);
 /// pilot is `ObjId(1_000)` and [`pulse`] hands back its frames.
 fn flicker_units() -> Vec<CustodyUnit> {
     vec![
-        tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-        tank(DECOY, Team::Red, centre(10, 14), None),
-        tank(MARK, Team::Blue, centre(15, 10), None),
+        tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+        tank(DECOY, PartyId::RED, centre(10, 14), None),
+        tank(MARK, PartyId::BLUE, centre(15, 10), None),
     ]
 }
 
@@ -4083,7 +4085,7 @@ fn mesh_rename_arena() -> Arena {
         vec![
             tank(
                 EYE,
-                Team::Red,
+                PartyId::RED,
                 centre(10, 10),
                 Some(SensorProfile {
                     classify_after_ms: 10_000,
@@ -4092,14 +4094,14 @@ fn mesh_rename_arena() -> Arena {
             ),
             tank(
                 MATE,
-                Team::Red,
+                PartyId::RED,
                 centre(20, 10),
                 Some(SensorProfile {
                     max_range_cells: 25,
                     ..visual()
                 }),
             ),
-            tank(MARK, Team::Blue, centre(42, 10), None),
+            tank(MARK, PartyId::BLUE, centre(42, 10), None),
         ],
         &[],
     )
@@ -4195,7 +4197,7 @@ fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() 
     // **`T-19`**: and the acquisition carries the class the row actually has.
     assert_eq!(
         acquired_class,
-        vec![Classification::Classified { team: Team::Blue }],
+        vec![Classification::Classified { party: PartyId::BLUE }],
         "a mesh arrival's acquisition said `unknown` about a row already told apart"
     );
 }
@@ -4229,7 +4231,7 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
             // hold on `MARK` is an `X1` for the whole of that hold's life.
             tank(
                 EYE,
-                Team::Red,
+                PartyId::RED,
                 centre(10, 10),
                 Some(SensorProfile {
                     max_range_cells: 8,
@@ -4244,14 +4246,14 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
             // `EYE`'s own eight, so the only number `EYE` ever issues is `MARK`'s.
             tank(
                 MATE,
-                Team::Red,
+                PartyId::RED,
                 centre(25, 10),
                 Some(SensorProfile {
                     max_range_cells: 1,
                     ..visual()
                 }),
             ),
-            tank(MARK, Team::Blue, centre(15, 10), None),
+            tank(MARK, PartyId::BLUE, centre(15, 10), None),
         ],
         &[],
     );
@@ -4307,7 +4309,7 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
         theirs,
         tacsim::arena::state::ShadowContact::sighted(
             MARK,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             6_000,
             SeenPose::default(),
         ),
@@ -4333,11 +4335,11 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
             contact: tacsim::arena::perception::Named {
                 id: draw_contact_id(arena.seed, EYE, MARK),
                 designator: Designator::Slot {
-                    team: Team::Blue,
+                    team: PartyId::BLUE,
                     slot: 1,
                 },
             },
-            class: Classification::Classified { team: Team::Blue },
+            class: Classification::Classified { party: PartyId::BLUE },
             was: Some(Designator::Provisional(1)),
         }),
         "the cancel said something other than the rename: {staged:?}"
@@ -4433,7 +4435,7 @@ fn flicker_replay_arena() -> Arena {
         vec![
             tank(
                 EYE,
-                Team::Red,
+                PartyId::RED,
                 centre(10, 10),
                 Some(SensorProfile {
                     max_range_cells: 10,
@@ -4441,7 +4443,7 @@ fn flicker_replay_arena() -> Arena {
                     ..visual()
                 }),
             ),
-            tank(MARK, Team::Blue, centre(15, 10), None),
+            tank(MARK, PartyId::BLUE, centre(15, 10), None),
         ],
         &[],
         &flicker_sensors(),
@@ -4764,7 +4766,7 @@ fn j1_a_line_stopped_at_its_wall_reads_the_same_cells_at_every_cadence() {
             vec![
                 tank(
                     EYE,
-                    Team::Red,
+                    PartyId::RED,
                     centre(10, 10),
                     Some(SensorProfile {
                         max_range_cells: 10,
@@ -4772,8 +4774,8 @@ fn j1_a_line_stopped_at_its_wall_reads_the_same_cells_at_every_cadence() {
                         ..visual()
                     }),
                 ),
-                tank(MARK, Team::Blue, centre(15, 10), None),
-                tank(WALLED, Team::Blue, centre(10, 17), None),
+                tank(MARK, PartyId::BLUE, centre(15, 10), None),
+                tank(WALLED, PartyId::BLUE, centre(10, 17), None),
             ],
             &[(10, 13, cell(TerrainClass::Wall))],
             &flicker_sensors(),
@@ -4827,7 +4829,7 @@ fn j1_a_line_stopped_at_its_wall_reads_the_same_cells_at_every_cadence() {
 fn relay(id: ObjId) -> CustodyUnit {
     tank(
         id,
-        Team::Red,
+        PartyId::RED,
         centre(60, 60),
         Some(SensorProfile {
             max_range_cells: 10,
@@ -4844,7 +4846,7 @@ fn relayed_arena(relay_id: ObjId) -> Arena {
         vec![
             tank(
                 EYE,
-                Team::Red,
+                PartyId::RED,
                 centre(10, 10),
                 Some(SensorProfile {
                     max_range_cells: 10,
@@ -4852,7 +4854,7 @@ fn relayed_arena(relay_id: ObjId) -> Arena {
                     ..visual()
                 }),
             ),
-            tank(MARK, Team::Blue, centre(15, 10), None),
+            tank(MARK, PartyId::BLUE, centre(15, 10), None),
             relay(relay_id),
         ],
         &[],
@@ -5059,7 +5061,7 @@ fn m2_a_share_that_renames_a_held_loss_is_one_identification_at_every_cadence() 
             vec![
                 tank(
                     EYE,
-                    Team::Red,
+                    PartyId::RED,
                     centre(10, 10),
                     Some(SensorProfile {
                         max_range_cells: 10,
@@ -5067,7 +5069,7 @@ fn m2_a_share_that_renames_a_held_loss_is_one_identification_at_every_cadence() 
                         ..visual()
                     }),
                 ),
-                tank(MARK, Team::Blue, centre(15, 10), None),
+                tank(MARK, PartyId::BLUE, centre(15, 10), None),
                 relay(RELAY),
             ],
             &[],
@@ -5128,7 +5130,7 @@ fn m2_a_share_that_renames_a_held_loss_is_one_identification_at_every_cadence() 
         matches!(
             renamed.first(),
             Some(FrameNotice::Contact {
-                class: Classification::Classified { team: Team::Blue },
+                class: Classification::Classified { party: PartyId::BLUE },
                 was: Some(Designator::Provisional(1)),
                 ..
             })
@@ -5162,7 +5164,7 @@ fn m2_a_window_shorter_than_the_substep_is_one_story_at_every_cadence() {
             vec![
                 tank(
                     EYE,
-                    Team::Red,
+                    PartyId::RED,
                     centre(10, 10),
                     Some(SensorProfile {
                         max_range_cells: 10,
@@ -5170,7 +5172,7 @@ fn m2_a_window_shorter_than_the_substep_is_one_story_at_every_cadence() {
                         ..visual()
                     }),
                 ),
-                tank(MARK, Team::Blue, centre(15, 10), None),
+                tank(MARK, PartyId::BLUE, centre(15, 10), None),
             ],
             &[],
             &SensorsConfig {
@@ -5246,8 +5248,8 @@ fn u2_parked_pair(mark: Pose) -> Arena {
 fn u2_parked_pair_under(mark: Pose, sensors: &SensorsConfig) -> Arena {
     let mut arena = arena_with_sensors(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, mark, None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, mark, None),
         ],
         &[],
         sensors,
@@ -5265,8 +5267,8 @@ fn u2_parked_pair_under(mark: Pose, sensors: &SensorsConfig) -> Arena {
 fn u2_break_the_line(arena: &mut Arena) {
     let walled = arena_with_sensors(
         vec![
-            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
-            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(EYE, PartyId::RED, centre(10, 10), Some(visual())),
+            tank(MARK, PartyId::BLUE, centre(40, 10), None),
         ],
         &curtain(25),
         &u2_long_hold(),

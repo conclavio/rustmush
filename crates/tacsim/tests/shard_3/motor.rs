@@ -25,7 +25,7 @@ use tacsim::arena::CostRow;
 use tacsim::arena::motion::BlockedCause;
 use tacsim::arena::motor::MotorCounters;
 use tacsim::arena::motor::{MotorRow, Refusal};
-use tacsim::arena::state::{Arena, HoldState, Power, SeenPose, Team};
+use tacsim::arena::state::{Arena, HoldState, Power, SeenPose, PartyId};
 
 /// The final state hash of [`duel`] stepped at 1,000 ms for 60 s, read at
 /// `32a1cc23` — before `arena/motor.rs` existed — off this very run.
@@ -78,8 +78,8 @@ fn duel(world: &mush_testkit::TestWorld) -> Arena {
     shipped_arena(
         world,
         &[
-            &[Muster::fill(Team::Red, 1), Muster::fill(Team::Red, 2)],
-            &[Muster::fill(Team::Blue, 1), Muster::fill(Team::Blue, 2)],
+            &[Muster::fill(PartyId::RED, 1), Muster::fill(PartyId::RED, 2)],
+            &[Muster::fill(PartyId::BLUE, 1), Muster::fill(PartyId::BLUE, 2)],
         ],
     )
 }
@@ -116,8 +116,8 @@ fn m1a1_the_shipped_duel_hashes_as_before() {
     let (mut arena, identity) = support::shipped_arena_with_api4_hash_control(
         &world,
         &[
-            &[Muster::fill(Team::Red, 1), Muster::fill(Team::Red, 2)],
-            &[Muster::fill(Team::Blue, 1), Muster::fill(Team::Blue, 2)],
+            &[Muster::fill(PartyId::RED, 1), Muster::fill(PartyId::RED, 2)],
+            &[Muster::fill(PartyId::BLUE, 1), Muster::fill(PartyId::BLUE, 2)],
         ],
     );
     let mut searched = 0_u32;
@@ -290,12 +290,12 @@ fn m1a1_stand_off_cell_reads_the_plot_and_not_the_target() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::piloted(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::piloted(PartyId::BLUE, 1)],
         ],
     );
-    let red = tank(&world, Team::Red, 1);
-    let blue = tank(&world, Team::Blue, 1);
+    let red = tank(&world, PartyId::RED, 1);
+    let blue = tank(&world, PartyId::BLUE, 1);
     let seen = arena.unit(blue).map(SeenPose::of).expect("blue");
     let id = tacsim::arena::rng::draw_contact_id(support::SEED, red, blue);
     arena.contacts.insert(
@@ -303,7 +303,7 @@ fn m1a1_stand_off_cell_reads_the_plot_and_not_the_target() {
         id,
         tacsim::arena::state::ShadowContact::sighted(
             blue,
-            tacsim::arena::state::Classification::Classified { team: Team::Blue },
+            tacsim::arena::state::Classification::Classified { party: PartyId::BLUE },
             0,
             seen,
         ),
@@ -357,7 +357,7 @@ fn picks(arena: &Arena, unit: ObjId) -> Picks {
 #[test]
 fn m1a1_the_nav_pickers_read_the_ground_and_the_own_pose_only() {
     let world = booted_world();
-    let red = tank(&world, Team::Red, 1);
+    let red = tank(&world, PartyId::RED, 1);
     let field = || {
         let mut arena = duel(&world);
         let here = cell_of(&arena, red).expect("red is on the window");
@@ -442,12 +442,12 @@ fn m1a1_the_open_line_walks_read_terrain_and_the_avoid_list_and_never_the_index(
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::piloted(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::piloted(PartyId::BLUE, 1)],
         ],
     );
-    let red = tank(&world, Team::Red, 1);
-    let blue = tank(&world, Team::Blue, 1);
+    let red = tank(&world, PartyId::RED, 1);
+    let blue = tank(&world, PartyId::BLUE, 1);
     // Under way on a straight run of its route, pointed at the next cell: the
     // route's first three cells one step apart in one direction, that step's
     // compass heading within ten degrees of the hull's, the hull in the cell one
@@ -571,8 +571,8 @@ fn m1a1_the_open_line_walks_read_terrain_and_the_avoid_list_and_never_the_index(
 #[test]
 fn m1a1_hold_routeless_holds_a_routeless_row_whatever_the_controller() {
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     let terrain = arena.definition.terrain.clone();
     let row = arena.unit(red).map(|unit| unit.cost_row).expect("red");
     assert_eq!(row, CostRow::Tracked);
@@ -629,8 +629,8 @@ fn m1a1_hold_routeless_holds_a_routeless_row_whatever_the_controller() {
 #[test]
 fn m1a1_age_avoid_ages_a_pilot_rows_stops_and_drops_its_refusal() {
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     assert_eq!(
         arena
             .unit(red)
@@ -714,8 +714,8 @@ fn drive_run(
 ) -> DriveRun {
     use tacsim::arena::intents::Intent;
     use tacsim::arena::perception::FrameNotice;
-    let mut arena = shipped_arena(world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(world, Team::Red, 1);
+    let mut arena = shipped_arena(world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(world, PartyId::RED, 1);
     let _ = arena.seat_pilot(
         M1A4_PILOT,
         red,
@@ -888,8 +888,8 @@ fn m1a4_a_piloted_drive_drives_to_the_cell_at_three_cadences() {
     use tacsim::arena::motor::ARRIVE_CELLS;
 
     let world = booted_world();
-    let probe = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let probe = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     let from = cell_of(&probe, red).expect("red is on the window");
     let terrain = &probe.definition.terrain;
     let row = probe.unit(red).map(|unit| unit.cost_row).expect("red");
@@ -1026,26 +1026,26 @@ fn m1a4_the_fan_keeps_two_same_side_goals_apart_in_a_far_zone() {
         let mut arena = shipped_arena(
             &world,
             &[
-                &[Muster::piloted(Team::Red, 1), Muster::piloted(Team::Red, 2)],
-                &[Muster::mind(Team::Blue, 1)],
+                &[Muster::piloted(PartyId::RED, 1), Muster::piloted(PartyId::RED, 2)],
+                &[Muster::mind(PartyId::BLUE, 1)],
             ],
         );
-        for unit in [tank(&world, Team::Red, 1), tank(&world, Team::Red, 2)] {
+        for unit in [tank(&world, PartyId::RED, 1), tank(&world, PartyId::RED, 2)] {
             if let Some(state) = arena.unit_mut(unit) {
                 state.power = Power::Online;
             }
         }
         arena
     };
-    let (one, two) = (tank(&world, Team::Red, 1), tank(&world, Team::Red, 2));
-    let blue = tank(&world, Team::Blue, 1);
+    let (one, two) = (tank(&world, PartyId::RED, 1), tank(&world, PartyId::RED, 2));
+    let blue = tank(&world, PartyId::BLUE, 1);
     let probe = field();
     let row = probe.unit(one).map(|unit| unit.cost_row).expect("red");
     let zone = probe
         .definition
         .entry_zones
         .iter()
-        .find(|zone| zone.team == Team::Blue)
+        .find(|zone| zone.team == PartyId::BLUE)
         .copied()
         .expect("blue's entry zone");
     let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
@@ -1119,7 +1119,7 @@ fn m1a4_the_fan_keeps_two_same_side_goals_apart_in_a_far_zone() {
             .definition
             .entry_zones
             .iter()
-            .any(|zone| zone.team != Team::Red
+            .any(|zone| zone.team != PartyId::RED
                 && (zone.x0.min(zone.x1)..=zone.x0.max(zone.x1)).contains(&open.0)
                 && (zone.y0.min(zone.y1)..=zone.y0.max(zone.y1)).contains(&open.1)),
         "the premise: {open:?} is in no far zone"
@@ -1137,8 +1137,8 @@ fn m1a4_a_pilots_motor_row_ages_its_stops_on_the_tick() {
     use tacsim::arena::state::{Channel, DueKind};
 
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     if let Some(state) = arena.unit_mut(red) {
         state.power = Power::Online;
     }
@@ -1210,8 +1210,8 @@ fn m1a4_a_goal_is_driven_at_its_landing_millisecond() {
     use tacsim::arena::state::{Channel, DueKind};
 
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     if let Some(state) = arena.unit_mut(red) {
         state.power = Power::Online;
     }
@@ -1266,8 +1266,8 @@ fn m1a4_an_engine_killed_under_a_drive_lets_go_and_says_so() {
     use tacsim::arena::state::{Channel, DueKind};
 
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     let _ = arena.seat_pilot(M1A4_PILOT, red, arena.epochs.current(red, Channel::Helm));
     if let Some(state) = arena.unit_mut(red) {
         state.power = Power::Online;
@@ -1428,7 +1428,7 @@ fn m44a_a_hull_held_against_a_band_keeps_or_re_plans_its_route_and_never_gives_u
     let mut arena = rig::arena_of(
         vec![rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(6, 8),
             Vec::new(),
             Controller::Mind,
@@ -1517,7 +1517,7 @@ fn m44a_a_hull_held_against_a_band_keeps_or_re_plans_its_route_and_never_gives_u
 }
 
 /// A hull of the path-budget field: id, side, start cell and goal cell.
-type M44Hull = (ObjId, Team, (u16, u16), (u16, u16));
+type M44Hull = (ObjId, PartyId, (u16, u16), (u16, u16));
 
 /// **The path budget is a bound the arena applies per window of arena time**
 /// — 16b cut N.1's (i) (`tests/reflex.rs`'
@@ -1546,10 +1546,10 @@ fn m44a_the_path_budget_is_a_bound_the_arena_applies_per_window_of_arena_time() 
     // Each in its own column, driving nine cells south: nobody arrives inside
     // the six seconds and nobody is in anybody's way.
     let hulls: [M44Hull; 4] = [
-        (ObjId(4), Team::Red, (6, 6), (6, 15)),
-        (ObjId(5), Team::Red, (7, 6), (7, 15)),
-        (ObjId(6), Team::Blue, (8, 6), (8, 15)),
-        (ObjId(7), Team::Blue, (9, 6), (9, 15)),
+        (ObjId(4), PartyId::RED, (6, 6), (6, 15)),
+        (ObjId(5), PartyId::RED, (7, 6), (7, 15)),
+        (ObjId(6), PartyId::BLUE, (8, 6), (8, 15)),
+        (ObjId(7), PartyId::BLUE, (9, 6), (9, 15)),
     ];
     let mut arena = rig::arena_of(
         hulls
@@ -1635,14 +1635,14 @@ fn m44a_a_hull_stopped_by_a_parked_one_learns_the_cell_and_goes_round_it() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(5, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1700,14 +1700,14 @@ fn m44a_a_stop_and_a_shove_are_both_re_planned_within_one_decide_tick() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(5, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1813,14 +1813,14 @@ fn m44a_wreck_detour() -> Arena {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(4, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1887,14 +1887,14 @@ fn m44a_the_avoided_cells_survive_a_goal_that_moves_every_think() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(7, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1959,14 +1959,14 @@ fn m44a_a_remembered_stop_ages_out_and_the_cell_is_planned_through_again() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(5, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -2058,7 +2058,7 @@ fn m44a_a_hull_held_against_a_wreck_past_the_ttl_still_avoids_its_cell() {
             vec![
                 rig::tank(
                     rig::RED,
-                    Team::Red,
+                    PartyId::RED,
                     rig::centre(6, 8),
                     Vec::new(),
                     Controller::Mind,
@@ -2068,7 +2068,7 @@ fn m44a_a_hull_held_against_a_wreck_past_the_ttl_still_avoids_its_cell() {
                 // stepped, a side with no hull left ends the match).
                 rig::tank(
                     rig::RED2,
-                    Team::Red,
+                    PartyId::RED,
                     rig::centre(wreck_cell.0, wreck_cell.1),
                     Vec::new(),
                     Controller::Pilot,
@@ -2182,7 +2182,7 @@ fn m44a_the_follower_holds_rather_than_drive_at_a_bluff() {
         rig::definition_with(&bluff_wall, Waypoints::new(Vec::new(), &[])),
         vec![rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(6, 8),
             Vec::new(),
             Controller::Mind,
@@ -2616,7 +2616,7 @@ fn m44b_column_of(
             // rear furthest east, and the id falls as the place rises.
             rig::tank(
                 m44b_in_column(n),
-                Team::Red,
+                PartyId::RED,
                 rig::centre(10 + n, 8),
                 Vec::new(),
                 Controller::Mind,
@@ -2963,14 +2963,14 @@ fn m44b_a_wreck_in_the_ford_is_held_against_for_two_seconds_and_then_learned() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(4, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -3124,14 +3124,14 @@ fn m44b_road(len: u16, node: (u16, u16)) -> tacsim::arena::state::ArenaDefinitio
         terrain: ArenaTerrain::new(len, 8, rig::CELL_CM, cells).expect("the road window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: 7,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: len - 2,
                 y0: 0,
                 x1: len - 1,
@@ -3183,7 +3183,7 @@ fn m44b_a_machine_brakes_into_its_goal_and_does_not_overshoot_it() {
         },
         ..rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(44, 4),
             Vec::new(),
             Controller::Mind,
@@ -3276,14 +3276,14 @@ fn m44b_convoy_and_wreck() -> Arena {
             // The follower sorts below the leader, so it integrates first.
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(7, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
@@ -3487,14 +3487,14 @@ fn m44b_a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::pose(7_000, 8_500),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(5, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -3620,7 +3620,7 @@ fn m44b_e4_t42_a_routeless_machine_holds_at_a_cell_it_was_stopped_at() {
     let mut arena = rig::arena_of(
         vec![rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(6, 8),
             Vec::new(),
             Controller::Mind,
@@ -3766,7 +3766,7 @@ fn m44b_drive_to(
 /// at speed), inside which no neighbour cell ever falls. Unarmed, a mind's.
 fn m44c_slow_tank(
     id: ObjId,
-    team: Team,
+    team: PartyId,
     pose: mush_sim::data::Pose,
 ) -> tacsim::arena::state::CustodyUnit {
     use tacsim::arena::state::{Controller, CustodyUnit, TrackedRules};
@@ -3823,14 +3823,14 @@ fn m44c_window(
         terrain: ArenaTerrain::new(width, height, rig::CELL_CM, cells).expect("the AI.1 window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: height - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: width - 2,
                 y0: 0,
                 x1: width - 1,
@@ -4023,7 +4023,7 @@ fn m44c_ai1_a_follower_inside_its_circle_keeps_its_route_and_arrives() {
     let goal = (4_u16, 16_u16);
     let mut arena = rig::arena_on(
         m44c_window(32, 32, &[], &[goal]),
-        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(20, 16))],
+        vec![m44c_slow_tank(rig::RED, PartyId::RED, rig::centre(20, 16))],
         &m44c_cfg(),
         &[],
     );
@@ -4070,7 +4070,7 @@ fn m44c_ai1_a_bend_at_speed_and_a_push_beside_the_route_never_turn_back() {
         (0..=20).map(|y| (8_u16, y, rig::wall())).collect();
     let mut arena = rig::arena_on(
         m44c_window(32, 32, &wall_cells, &[goal]),
-        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(4, 4))],
+        vec![m44c_slow_tank(rig::RED, PartyId::RED, rig::centre(4, 4))],
         &m44c_cfg(),
         &[],
     );
@@ -4102,7 +4102,7 @@ fn m44c_ai1_a_bend_at_speed_and_a_push_beside_the_route_never_turn_back() {
     let goal = (28_u16, 16_u16);
     let mut arena = rig::arena_on(
         m44c_window(32, 32, &[], &[goal]),
-        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(4, 16))],
+        vec![m44c_slow_tank(rig::RED, PartyId::RED, rig::centre(4, 16))],
         &m44c_cfg(),
         &[],
     );
@@ -4168,7 +4168,7 @@ fn m44c_corner(at_speed_north: bool) -> Arena {
     };
     let mut arena = rig::arena_on(
         m44c_window(32, 32, &[(15, 8, rig::wall())], &[goal]),
-        vec![m44c_slow_tank(rig::RED, Team::Red, pose)],
+        vec![m44c_slow_tank(rig::RED, PartyId::RED, pose)],
         &m44c_cfg(),
         &[],
     );
@@ -4278,7 +4278,7 @@ fn m44c_ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_a
         m44c_window(16, 16, &[(6, 5, rig::wall()), (5, 6, rig::wall())], &[goal]),
         vec![rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(5, 5),
             Vec::new(),
             Controller::Mind,
@@ -4316,21 +4316,21 @@ fn m44c_ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_a
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::pose(5_800, 5_200),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 5),
                 Vec::new(),
                 Controller::Pilot,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(5, 6),
                 Vec::new(),
                 Controller::Pilot,
@@ -4416,7 +4416,7 @@ fn m44c_ai1_a_shove_inside_the_circle_keeps_the_route_and_beyond_it_re_plans() {
         let goal = (28_u16, 8_u16);
         let mut arena = rig::arena_on(
             m44c_window(32, 32, &[], &[goal]),
-            vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(3, 8))],
+            vec![m44c_slow_tank(rig::RED, PartyId::RED, rig::centre(3, 8))],
             &m44c_cfg(),
             &[],
         );
@@ -4495,13 +4495,13 @@ fn m44c_field() -> Arena {
     let mut arena = rig::arena_on(
         m44c_window(64, 64, &paint, &nodes),
         vec![
-            m44c_slow_tank(M44C_ORBIT, Team::Red, rig::centre(44, 56)),
-            m44c_slow_tank(M44C_CORNER, Team::Red, rig::pose(52_000, 8_500)),
-            m44c_slow_tank(M44C_PINCH, Team::Red, rig::centre(10, 0)),
-            m44c_slow_tank(M44C_BESIDE, Team::Red, rig::pose(10_500, 30_990)),
+            m44c_slow_tank(M44C_ORBIT, PartyId::RED, rig::centre(44, 56)),
+            m44c_slow_tank(M44C_CORNER, PartyId::RED, rig::pose(52_000, 8_500)),
+            m44c_slow_tank(M44C_PINCH, PartyId::RED, rig::centre(10, 0)),
+            m44c_slow_tank(M44C_BESIDE, PartyId::RED, rig::pose(10_500, 30_990)),
             rig::tank(
                 M44C_SEATED,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(26, 59),
                 Vec::new(),
                 Controller::Pilot,
@@ -4806,8 +4806,8 @@ fn m44c_come_back() -> Arena {
     let mut arena = rig::arena_on(
         m44c_window(48, 48, &paint, &nodes),
         vec![
-            m44c_slow_tank(M44C_PINCH, Team::Red, rig::centre(10, 0)),
-            m44c_slow_tank(M44C_CORNER, Team::Red, rig::centre(30, 10)),
+            m44c_slow_tank(M44C_PINCH, PartyId::RED, rig::centre(10, 0)),
+            m44c_slow_tank(M44C_CORNER, PartyId::RED, rig::centre(30, 10)),
         ],
         &m44c_cfg(),
         &[],
@@ -4990,7 +4990,7 @@ fn m45a_unit(
     let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("the unit");
     tacsim::arena::state::CustodyUnit {
         id,
-        team: Team::Red,
+        team: PartyId::RED,
         pose: rig::centre(cell.0, cell.1),
         mobility: tacsim::match_::tracked_rules(&cells),
         sensor_height_cm: tacsim::match_::sensor_height_cm(catalog, &cells),
@@ -5058,14 +5058,14 @@ fn m45a_relief(
         terrain: ArenaTerrain::new(width, height, rig::CELL_CM, cells).expect("the relief window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: height - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: width - 2,
                 y0: 0,
                 x1: width - 1,
@@ -5157,6 +5157,7 @@ fn m45a_routeless(
             resolution: tacsim::match_::resolution_for(catalog),
             seed: support::SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &cfg,
         &tacsim::config::MatchConfig::default(),

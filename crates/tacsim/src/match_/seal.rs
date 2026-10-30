@@ -830,7 +830,7 @@ mod tests {
 
     use super::*;
     use crate::arena::state::Controller;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::definitions::Catalog;
 
     /// The shipped content, as `match_::start` reads it.
@@ -860,7 +860,7 @@ mod tests {
             catalog,
             cells,
             id,
-            Team::Red,
+            PartyId::RED,
             mush_sim::data::Pose::at(1_500, 1_500, 0, posture),
             0,
             controller,
@@ -1342,7 +1342,7 @@ mod m5_tests {
     use mush_core::ObjId;
 
     use super::*;
-    use crate::arena::state::{Controller, Team};
+    use crate::arena::state::{Controller, PartyId};
     use crate::definitions::Catalog;
 
     /// **The presets a profile refusal lists are `PRESETS`** (17b cut M5.2's
@@ -1372,7 +1372,7 @@ mod m5_tests {
             &catalog,
             cells,
             id,
-            Team::Red,
+            PartyId::RED,
             mush_sim::data::Pose::at(1_500, 1_500, 0, posture),
             0,
             Controller::Mind,
@@ -1811,7 +1811,7 @@ mod m4_tests {
     use mush_core::ObjId;
 
     use super::*;
-    use crate::arena::state::{Controller, Team};
+    use crate::arena::state::{Controller, PartyId};
     use crate::arena::test_support::{line_tank, pose, scout, tactical_unit};
 
     /// **17b cut M4.1: the seal's class is `min(rated, core, cap)`** (the M4
@@ -1832,7 +1832,7 @@ mod m4_tests {
         let fixture = SealTerms::fixture();
         assert_eq!(fixture.rated, STOCK_RATED_CLASS);
         assert_eq!(fixture.class_cap, CoreClass::III);
-        let mut red = line_tank(ObjId(4), Team::Red, pose(1_500, 4_500));
+        let mut red = line_tank(ObjId(4), PartyId::RED, pose(1_500, 4_500));
         red.controller = Controller::Mind;
         assert_eq!(
             read_core(&red.unit).map(|core| core.class),
@@ -1871,7 +1871,7 @@ mod m4_tests {
         let bare = crate::arena::state::CustodyUnit {
             unit: tactical_unit(ObjId(9)),
             controller: Controller::Mind,
-            ..scout(ObjId(9), Team::Blue, pose(6_500, 4_500))
+            ..scout(ObjId(9), PartyId::BLUE, pose(6_500, 4_500))
         };
         let seal = seal_for(&bare, &SealTerms::fixture().rated(CoreClass::III)).expect("seals");
         assert_eq!(seal.class, CoreClass::Zero, "no core: the ROM");
@@ -1923,7 +1923,7 @@ mod m4_tests {
             unit: tactical_unit(ObjId(9)),
             controller: Controller::Mind,
             weapons: Vec::new(),
-            ..scout(ObjId(9), Team::Blue, pose(6_500, 4_500))
+            ..scout(ObjId(9), PartyId::BLUE, pose(6_500, 4_500))
         };
         let terms = SealTerms {
             classes: minds.classes,

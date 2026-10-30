@@ -32,7 +32,7 @@ use smol_str::SmolStr;
 use crate::arena::perception::{SensorProfile, SignatureFactor};
 use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
 use crate::arena::state::{
-    ArenaDefinition, ArenaTerrain, CostRow, EntryZone, Team, TerrainCell, TrackedRules,
+    ArenaDefinition, ArenaTerrain, CostRow, EntryZone, PartyId, TerrainCell, TrackedRules,
     WeaponSummary,
 };
 use crate::arena::weapons::WeaponBand;
@@ -87,14 +87,14 @@ pub fn stock_definition(id: &SmolStr) -> Option<ArenaDefinition> {
         terrain,
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: ENTRY_DEPTH.saturating_sub(1),
                 y1: ARENA_CELLS.saturating_sub(1),
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: ARENA_CELLS.saturating_sub(ENTRY_DEPTH),
                 y0: 0,
                 x1: ARENA_CELLS.saturating_sub(1),
@@ -191,7 +191,7 @@ pub fn definition_for(
 #[must_use]
 pub fn opening_pose(
     definition: &ArenaDefinition,
-    team: Team,
+    team: PartyId,
     world_pose: Option<Pose>,
     taken: &mut Vec<(u16, u16)>,
     row: CostRow,
@@ -231,8 +231,8 @@ pub fn opening_pose(
             let y_cm = i64::from(y) * i64::from(definition.terrain.cell_cm()) + half;
             // Facing the other side: red looks east, blue looks west.
             let heading = match team {
-                Team::Red => 90_000,
-                Team::Blue => 270_000,
+                PartyId::RED => 90_000,
+                _ => 270_000,
             };
             return Some(Pose {
                 x_cm,
@@ -301,7 +301,7 @@ pub fn custody_unit(
     catalog: &Catalog,
     cells: mush_tactics::TacticalUnit,
     id: mush_core::ObjId,
-    team: Team,
+    team: PartyId,
     pose: Pose,
     gunnery: u8,
     controller: crate::arena::state::Controller,
@@ -761,7 +761,7 @@ mod tests {
         let mut taken = Vec::new();
         let mut cells = Vec::new();
         for _ in 0..12 {
-            let pose = opening_pose(&definition, Team::Red, None, &mut taken, CostRow::Tracked)
+            let pose = opening_pose(&definition, PartyId::RED, None, &mut taken, CostRow::Tracked)
                 .unwrap_or_else(|| panic!("an entry zone of 8 by 256 has twelve free cells"));
             let cell = definition
                 .terrain
@@ -802,7 +802,7 @@ mod tests {
             id: SmolStr::new("m4.walled"),
             terrain: ArenaTerrain::new(8, 8, 1_000, cells).expect("a window"),
             entry_zones: vec![EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 2,
@@ -827,7 +827,7 @@ mod tests {
         let mut taken = Vec::new();
         let placed = opening_pose(
             &definition,
-            Team::Red,
+            PartyId::RED,
             Some(at(4, 4)),
             &mut taken,
             CostRow::Tracked,
@@ -839,7 +839,7 @@ mod tests {
         assert_eq!(cell, Some((2, 0)), "the zone's first cell with a way out");
         let kept = opening_pose(
             &definition,
-            Team::Red,
+            PartyId::RED,
             Some(at(6, 6)),
             &mut taken,
             CostRow::Tracked,

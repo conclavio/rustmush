@@ -1533,7 +1533,7 @@ async fn customer(
         assert!(PlayerWorld::private_text(&selected,GOD).contains("Your slot will carry"));
         world.say(GOD,"SIM START")?;assert_eq!(world.state()?,match_::MatchState::Boarding);
         // The lead character is read during Boarding (`lead_character_of`).
-        assert_eq!(match_::lobby::lead_character_of(&world.engine.world,crate::arena::Team::Red),Some(GOD));
+        assert_eq!(match_::lobby::lead_character_of(&world.engine.world,crate::arena::PartyId::RED),Some(GOD));
         let room=match_::centre_object(&world.engine.world,match_::RED_ROOM_ENTRY).ok_or("red room")?;
         world.engine.world.move_to(GOD,room)?;world.say(GOD,"BOARD")?;assert_eq!(world.state()?,match_::MatchState::Running);
         let id=match_::centre_of(&world.engine.world).and_then(|c|c.match_id).ok_or("match")?;

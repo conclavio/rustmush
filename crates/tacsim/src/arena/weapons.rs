@@ -1370,7 +1370,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{Classification, SeenPose, ShadowContact, Team};
+    use crate::arena::state::{Classification, SeenPose, ShadowContact, PartyId};
     use crate::arena::test_support::{arena_of, cannon, pose, scout, tank};
 
     const RED: ObjId = ObjId(4);
@@ -1380,8 +1380,8 @@ mod tests {
     /// shipped sight.
     fn two_scouts() -> Arena {
         arena_of(vec![
-            scout(RED, Team::Red, pose(1_500, 1_500)),
-            scout(BLUE, Team::Blue, pose(1_500, 5_500)),
+            scout(RED, PartyId::RED, pose(1_500, 1_500)),
+            scout(BLUE, PartyId::BLUE, pose(1_500, 5_500)),
         ])
     }
 
@@ -1455,7 +1455,7 @@ mod tests {
             id,
             ShadowContact::sighted(
                 target,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified { party: PartyId::BLUE },
                 0,
                 // 16b cut F.3: the plot is where the target actually stands, so
                 // every range these fixtures assert is unchanged.
@@ -1483,7 +1483,7 @@ mod tests {
         assert_eq!(state.weapon_ready_in_ms("cannon", 0), 0);
         assert_eq!(state.weapon_reach_cm(), cannon().max_range_cm);
         // A unit with no weapon has no rows and no reach.
-        let bare = arena_of(vec![tank(RED, Team::Red, pose(1_500, 1_500))]);
+        let bare = arena_of(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))]);
         let state = bare.unit(RED).unwrap_or_else(|| panic!("the bare tank"));
         assert!(state.ready_at_ms.is_empty());
         assert!(state.ammo.is_empty());
@@ -1539,7 +1539,7 @@ mod tests {
         assert_eq!(state.fight_limit_cm(1_000), 60_000);
 
         // And the empty list is still a platform that carries nothing that fires.
-        let bare = arena_of(vec![tank(RED, Team::Red, pose(1_500, 1_500))]);
+        let bare = arena_of(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))]);
         let state = bare.unit(RED).unwrap_or_else(|| panic!("the bare tank"));
         assert!(state.fire_bands_cm().is_empty());
         assert_eq!(
@@ -2078,14 +2078,14 @@ mod tests {
     /// pinned at 500 per mille, the cannon armed in S1 at 100.
     fn a_minds_lock() -> Arena {
         use crate::arena::test_support::line_tank;
-        let mut red = line_tank(RED, Team::Red, pose(1_500, 3_500));
+        let mut red = line_tank(RED, PartyId::RED, pose(1_500, 3_500));
         let mut mg = cannon();
         mg.id = SmolStr::new("machine_gun");
         red.weapons.push(mg);
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
-        let mut arena = arena_of(vec![red, line_tank(BLUE, Team::Blue, pose(5_500, 3_500))]);
+        let mut arena = arena_of(vec![red, line_tank(BLUE, PartyId::BLUE, pose(5_500, 3_500))]);
         arena.resolution.p_min = 500;
         arena.resolution.p_max = 500;
         let id = hold(&mut arena, RED, BLUE);

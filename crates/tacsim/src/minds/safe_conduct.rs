@@ -11,7 +11,7 @@ use crate::arena::{
     profile_rules::BoundProgram,
     profile_runtime::ProfileToken,
     runtime_card::{CardCatalog, CardDefinition, ProfileDefinition, ProfileKey, RuntimeCard},
-    state::{Channel, Classification, ContactId, Controller, Power, Team},
+    state::{Channel, Classification, ContactId, Controller, Power, PartyId},
     test_support::{arena_painted, ground, line_tank, pose},
 };
 use crate::config::ArenaConfig;
@@ -465,7 +465,7 @@ fn transit_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult
         (4, 7),
     ]
     .map(|(x, y)| (x, y, wall));
-    let mut hull = line_tank(fixture::UNIT, Team::Red, pose(3500, 3500));
+    let mut hull = line_tank(fixture::UNIT, PartyId::RED, pose(3500, 3500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_painted(vec![hull], &paint);
@@ -578,7 +578,7 @@ fn roles_at_full_public_row_bound_keep_real_class_and_memory_limits() -> TestRes
 
 #[test]
 fn actual_native_arrival_and_own_hurt_have_explicit_role_responses() -> TestResult {
-    let mut hull = line_tank(fixture::UNIT, Team::Red, pose(3500, 3500));
+    let mut hull = line_tank(fixture::UNIT, PartyId::RED, pose(3500, 3500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_painted(vec![hull], &[]);
@@ -633,7 +633,7 @@ fn actual_native_arrival_and_own_hurt_have_explicit_role_responses() -> TestResu
         Arc::make_mut(&mut harness.map)
             .entry_zones
             .iter_mut()
-            .find(|zone| zone.team == Team::Red)
+            .find(|zone| zone.team == PartyId::RED)
             .ok_or("own zone")?
             .x1 = 2;
         let result = harness.think(hurt, &[], 0)?;

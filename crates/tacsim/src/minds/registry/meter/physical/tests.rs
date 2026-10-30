@@ -2,7 +2,7 @@ use super::*;
 use crate::arena::{
     mind::{CollectedThink, MindRunner},
     motor::MotorCounters,
-    state::{Controller, Power, Team},
+    state::{Controller, Power, PartyId},
     test_support::{arena_of, line_tank, pose},
 };
 use crate::minds::registry::{subject::PreparedSubject, tests::revision};
@@ -19,12 +19,12 @@ fn fixture_source(
     maximum: u64,
     source: &str,
 ) -> Result<(Arena, Arc<MeteredRunner>), Box<dyn std::error::Error>> {
-    let mut hull = line_tank(OWN, Team::Red, pose(1500, 4500));
+    let mut hull = line_tank(OWN, PartyId::RED, pose(1500, 4500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_of(vec![
         hull,
-        line_tank(ObjId(9), Team::Blue, pose(6500, 4500)),
+        line_tank(ObjId(9), PartyId::BLUE, pose(6500, 4500)),
     ]);
     arena.unit_mut(OWN).ok_or("hull")?.power = Power::Online;
     let source = PreparedSubject::prepare(

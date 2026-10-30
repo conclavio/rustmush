@@ -20,7 +20,7 @@ use tacsim::arena::perception::{SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, Controller, CustodyOut, CustodyUnit,
-    EntryZone, Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules, Waypoint,
+    EntryZone, Pilot, Power, SeenPose, ShadowContact, PartyId, TerrainCell, TrackedRules, Waypoint,
     Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
@@ -217,14 +217,14 @@ pub fn definition_with(paint: &[(u16, u16, TerrainCell)], waypoints: Waypoints) 
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 2,
                 y0: 0,
                 x1: SIDE - 1,
@@ -301,7 +301,7 @@ pub fn carbine() -> WeaponSummary {
 /// who flies it.
 pub fn tank(
     id: ObjId,
-    team: Team,
+    team: PartyId,
     pose: Pose,
     weapons: Vec<WeaponSummary>,
     controller: Controller,
@@ -502,6 +502,7 @@ pub fn arena_on(
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         cfg,
         &match_cfg(),
@@ -576,14 +577,14 @@ pub fn plot_of(arena: &Arena, target: ObjId) -> SeenPose {
 
 /// Make `viewer` hold `target` as a classified hostile from `at_ms`, whatever the
 /// ground between them says. See this file's head for why a test may do this.
-pub fn plant_contact(arena: &mut Arena, viewer: ObjId, target: ObjId, team: Team, at_ms: i64) {
+pub fn plant_contact(arena: &mut Arena, viewer: ObjId, target: ObjId, team: PartyId, at_ms: i64) {
     let id = draw_contact_id(SEED, viewer, target);
     arena.contacts.insert(
         viewer,
         id,
         ShadowContact::sighted(
             target,
-            Classification::Classified { team },
+            Classification::Classified { party: team },
             at_ms,
             plot_of(arena, target),
         ),

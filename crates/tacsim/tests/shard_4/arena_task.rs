@@ -66,7 +66,7 @@ use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::perception::FrameNotice;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason, EntryZone,
-    Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
+    Pilot, Power, StopReason, PartyId, TerrainCell, TrackedRules,
 };
 use tacsim::arena_bridge::{ArenaTasks, ControlRefusal};
 use tacsim::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId, resume_arena, spawn_arena};
@@ -266,14 +266,14 @@ fn definition() -> ArenaDefinition {
         terrain: ArenaTerrain::uniform(SIDE, SIDE, CELL_CM, ground()).expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: 15,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: 14,
                 y0: 0,
                 x1: 15,
@@ -289,7 +289,7 @@ fn definition() -> ArenaDefinition {
     }
 }
 
-fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+fn tank(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
     CustodyUnit {
         id,
         team,
@@ -320,8 +320,8 @@ fn custody(seed: u64) -> CustodyOut {
     CustodyOut {
         definition: definition(),
         units: vec![
-            tank(RED, Team::Red, centre(1, 4)),
-            tank(BLUE, Team::Blue, centre(14, 4)),
+            tank(RED, PartyId::RED, centre(1, 4)),
+            tank(BLUE, PartyId::BLUE, centre(14, 4)),
         ],
         pilots: vec![
             Pilot {
@@ -340,7 +340,9 @@ fn custody(seed: u64) -> CustodyOut {
         resolution: tacsim::match_::stock_resolution(),
         seed,
         mode: tacsim::arena::MatchMode::Skirmish,
+        host: tacsim::arena::FieldHost::all_hostile(),
     }
+    host: tacsim::arena::FieldHost::all_hostile(),
 }
 
 /// A fast, chatty arena, so a test sees several pulses and several **closed**

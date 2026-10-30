@@ -48,7 +48,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 
 use crate::arena::doctrine::MachineState;
-use crate::arena::state::{Arena, Classification, ContactId, Team};
+use crate::arena::state::{Arena, Classification, ContactId, PartyId};
 use crate::deliberation::squad::{SquadId, SquadRoster};
 
 /// The most contacts one signal carries, nearest first.
@@ -175,7 +175,7 @@ pub struct SquadSignal {
     /// Its commander.
     pub commander: ObjId,
     /// Its side.
-    pub team: Team,
+    pub team: PartyId,
     /// Why now.
     pub reason: SignalReason,
     /// Arena milliseconds at the signal.
@@ -368,7 +368,7 @@ impl Arena {
             for (_, held) in self.contacts.of(squad.commander) {
                 match held.class {
                     Classification::Unknown => digest.unknown = digest.unknown.saturating_add(1),
-                    Classification::Classified { team } if team == commander.team => {
+                    Classification::Classified { party: team } if team == commander.team => {
                         digest.friendly = digest.friendly.saturating_add(1);
                     }
                     Classification::Classified { .. } => {

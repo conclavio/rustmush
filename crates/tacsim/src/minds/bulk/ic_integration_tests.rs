@@ -1297,7 +1297,7 @@ fn arena_for(
     actual: &IcWorld,
     seal: &crate::arena::MindSeal,
 ) -> TestResult<Box<crate::arena::Arena>> {
-    use crate::arena::{Arena, Controller, CustodyOut, CustodyUnit, MatchMode, Team, test_support};
+    use crate::arena::{Arena, Controller, CustodyOut, CustodyUnit, MatchMode, PartyId, test_support};
     let unit = mush_tactics::module::unit_of(&actual.engine.world, seal.unit)
         .ok_or("physical unit")?
         .clone();
@@ -1309,7 +1309,7 @@ fn arena_for(
     let catalog = store.definitions();
     let custody = CustodyUnit {
         id: seal.unit,
-        team: Team::Red,
+        team: PartyId::RED,
         pose: mush_sim::Pose::at(2000, 2000, 0, test_support::rules()),
         mobility: crate::match_::tracked_rules(&unit),
         sensor_height_cm: crate::match_::sensor_height_cm(catalog, &unit),
@@ -1329,7 +1329,7 @@ fn arena_for(
                 custody,
                 test_support::tank(
                     ObjId(u32::MAX - 1),
-                    Team::Blue,
+                    PartyId::BLUE,
                     mush_sim::Pose::at(6000, 6000, 0, test_support::rules()),
                 ),
             ],
@@ -1337,6 +1337,7 @@ fn arena_for(
             resolution: test_support::resolution(),
             seed: 9,
             mode: MatchMode::Skirmish,
+            host: crate::arena::FieldHost::all_hostile(),
         },
         &crate::config::ArenaConfig::default(),
         &crate::config::MatchConfig::default(),

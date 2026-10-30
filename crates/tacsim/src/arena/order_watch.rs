@@ -145,8 +145,9 @@ fn request(order: &Order) -> [u8; 32] {
     h.update(b"tacsim.accepted-order-watch.v1\0");
     fn hash_squad(h: &mut Sha256, s: SquadId) {
         h.update([match s.team {
-            super::Team::Red => 0,
-            super::Team::Blue => 1,
+            super::PartyId::RED => 0,
+            super::PartyId::BLUE => 1,
+            other => other.code(),
         }]);
         h.update(s.index.to_le_bytes());
     }
@@ -326,7 +327,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        Intent, IntentKind, IntentOutcome, IntentSource, MachineState, Snapshot, Team,
+        Intent, IntentKind, IntentOutcome, IntentSource, MachineState, Snapshot, PartyId,
         apply_intent, state_hash,
         test_support::{arena_at_epoch, pose, tank},
     };
@@ -335,16 +336,16 @@ mod tests {
     use serde_json::json;
     fn squad() -> SquadId {
         SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         }
     }
     pub(crate) fn field() -> Arena {
         let mut arena = arena_at_epoch(
             vec![
-                tank(ObjId(1), Team::Red, pose(1500, 1500)),
-                tank(ObjId(2), Team::Red, pose(2500, 1500)),
-                tank(ObjId(3), Team::Blue, pose(6500, 6500)),
+                tank(ObjId(1), PartyId::RED, pose(1500, 1500)),
+                tank(ObjId(2), PartyId::RED, pose(2500, 1500)),
+                tank(ObjId(3), PartyId::BLUE, pose(6500, 6500)),
             ],
             1,
         );
@@ -684,7 +685,7 @@ mod tests {
             .map(|id| {
                 tank(
                     ObjId(id),
-                    if id <= 150 { Team::Red } else { Team::Blue },
+                    if id <= 150 { PartyId::RED } else { PartyId::BLUE },
                     pose(
                         i64::from((id - 1) % 20) * 1000 + 500,
                         i64::from((id - 1) / 20) * 1000 + 500,
@@ -744,7 +745,7 @@ mod tests {
     #[test]
     fn r4_complete_maximum_record_is_bounded_and_digest_covers_request_fields() {
         let mut rows = OrderWatches::default();
-        for team in [Team::Red, Team::Blue] {
+        for team in [PartyId::RED, PartyId::BLUE] {
             for index in 1..=crate::deliberation::squad::MAX_SQUADS_PER_SIDE {
                 rows.0.0.insert(
                     SquadId {

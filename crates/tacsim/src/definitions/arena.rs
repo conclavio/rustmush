@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::arena::state::{
     ArenaDefinition, ArenaMode, ArenaTerrain, EntryZone, HoldRule, KeySpot as ArenaKeySpot,
-    PROVISIONAL_PREFIX, Team, TerrainCell, Waypoint as ArenaWaypoint, Waypoints,
+    PROVISIONAL_PREFIX, PartyId, TerrainCell, Waypoint as ArenaWaypoint, Waypoints,
 };
 use crate::definitions::DefinitionError;
 use crate::definitions::unit::TRACKED;
@@ -132,7 +132,7 @@ impl ArenaModeDef {
 #[serde(deny_unknown_fields)]
 pub struct EntryZoneDef {
     /// The side that deploys here.
-    pub team: Team,
+    pub team: PartyId,
     /// The west column.
     pub x0: u16,
     /// The south row.
@@ -188,7 +188,7 @@ pub struct TankDef {
     /// The object's name in the world.
     pub name: String,
     /// Its side.
-    pub team: Team,
+    pub team: PartyId,
     /// Its opening column.
     pub x: u16,
     /// Its opening row.
@@ -322,17 +322,17 @@ impl ArenaDef {
             seen.push(tile);
         }
         self.tile_keys(entry)?;
-        if self.entry_zones.len() != Team::ALL.len() {
+        if self.entry_zones.len() != PartyId::OOC.len() {
             return Err(DefinitionError::value(
                 entry,
                 format!(
                     "an arena declares one entry zone per side ({}); {} is not",
-                    Team::ALL.len(),
+                    PartyId::OOC.len(),
                     self.entry_zones.len()
                 ),
             ));
         }
-        for team in Team::ALL {
+        for team in PartyId::OOC {
             if !self.entry_zones.iter().any(|zone| zone.team == team) {
                 return Err(DefinitionError::value(
                     entry,
@@ -707,7 +707,7 @@ fn check_spot_name(
 /// **Whether a word has the shape of a designator** (16b cut V.1), either case:
 /// a team's letter followed only by ASCII letters (`RA`, `bAA`) — a slot in
 /// bijective base 26 — or [`PROVISIONAL_PREFIX`] followed only by ASCII digits
-/// (`X1`). The team letters are read off [`Team::ALL`], so a third side is
+/// (`X1`). The team letters are read off [`PartyId::OOC`], so a third side is
 /// covered without touching this.
 fn is_designator_shaped(word: &str) -> bool {
     let mut chars = word.chars();
@@ -718,7 +718,7 @@ fn is_designator_shaped(word: &str) -> bool {
     if rest.is_empty() {
         return false;
     }
-    if Team::ALL.iter().any(|team| team.letter() == first) {
+    if PartyId::OOC.iter().any(|team| team.letter() == first) {
         return rest.chars().all(|c| c.is_ascii_alphabetic());
     }
     first == PROVISIONAL_PREFIX && rest.chars().all(|c| c.is_ascii_digit())

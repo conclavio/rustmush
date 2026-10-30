@@ -53,7 +53,7 @@
 use mush_comsys::{ChannelFlags, ChannelId, ChannelPerms};
 use mush_core::{Ctx, LockExpr, ObjId, World};
 
-use crate::arena::state::Team;
+use crate::arena::state::PartyId;
 
 /// The red side's net.
 pub const RED_NET: &str = "RedNet";
@@ -63,16 +63,16 @@ pub const BLUE_NET: &str = "BlueNet";
 
 /// The name of `team`'s net.
 #[must_use]
-pub const fn net_name(team: Team) -> &'static str {
+pub const fn net_name(team: PartyId) -> &'static str {
     match team {
-        Team::Red => RED_NET,
-        Team::Blue => BLUE_NET,
+        PartyId::RED => RED_NET,
+        _ => BLUE_NET,
     }
 }
 
 /// The description `clist` prints beside a net (to its members; nobody else is
 /// shown the net at all).
-fn description(team: Team) -> String {
+fn description(team: PartyId) -> String {
     format!(
         "The {} side's net for a match in the simulator; joined with your pod and left with it.",
         team.as_str()
@@ -121,18 +121,18 @@ const fn flags() -> ChannelFlags {
 /// join lock a staffer opened with `@channel/perm` is shut again, a recoloured net
 /// keeps its colour — and nothing is made twice. `(None, None)` without comsys.
 pub(crate) fn ensure_nets(ctx: &mut Ctx<'_>) -> (Option<ChannelId>, Option<ChannelId>) {
-    let [red, blue] = Team::ALL.map(|team| ensure_net(ctx, team));
+    let [red, blue] = PartyId::OOC.map(|team| ensure_net(ctx, team));
     (red, blue)
 }
 
 /// One side's net, through `mush_comsys::api::ensure_channel`.
-fn ensure_net(ctx: &mut Ctx<'_>, team: Team) -> Option<ChannelId> {
+fn ensure_net(ctx: &mut Ctx<'_>, team: PartyId) -> Option<ChannelId> {
     mush_comsys::api::ensure_channel(ctx, net_name(team), &description(team), flags(), perms())
 }
 
 /// The channel id of `team`'s net, if the world holds one.
 #[must_use]
-pub(crate) fn net_of(w: &World, team: Team) -> Option<ChannelId> {
+pub(crate) fn net_of(w: &World, team: PartyId) -> Option<ChannelId> {
     mush_comsys::api::channel_id_by_name(w, net_name(team))
 }
 
@@ -141,7 +141,7 @@ pub(crate) fn net_of(w: &World, team: Team) -> Option<ChannelId> {
 ///
 /// [`join_pilot`] runs it first; the lobby's check-out also runs it alone for a
 /// side with no human pilot, so a machine-only side's net is emptied too.
-pub(crate) fn sweep(ctx: &mut Ctx<'_>, team: Team, roster: &[ObjId]) -> usize {
+pub(crate) fn sweep(ctx: &mut Ctx<'_>, team: PartyId, roster: &[ObjId]) -> usize {
     let Some(net) = net_of(ctx.w, team) else {
         return 0;
     };
@@ -174,7 +174,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, team: Team, roster: &[ObjId]) -> usize {
 pub(crate) fn join_pilot(
     ctx: &mut Ctx<'_>,
     pilot: ObjId,
-    team: Team,
+    team: PartyId,
     callsign: &str,
     roster: &[ObjId],
 ) -> bool {
@@ -203,7 +203,7 @@ pub(crate) fn join_pilot(
 /// Answers whether they were on either.
 pub(crate) fn leave_pilot(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
     let mut left = false;
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         if let Some(net) = net_of(ctx.w, team) {
             left |= mush_comsys::api::force_leave(ctx, pilot, net);
         }

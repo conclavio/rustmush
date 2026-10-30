@@ -43,7 +43,7 @@ pub struct Frame {
     /// contact as a friend or as a hostile without asking the world which team the
     /// pilot's slot was on. The platform's own side is never a secret from its
     /// pilot.
-    pub team: Team,
+    pub team: PartyId,
     /// **Its own unit type** (doc 22): its definition id, which names the look
     /// its pilot's doll is drawn from. Never a secret from its pilot.
     pub unit_type: SmolStr,
@@ -988,7 +988,7 @@ impl Arena {
     /// capacity. This same projection feeds the cockpit and the mind view.
     ///
     /// * **Which contacts** (the lead's ruling on 17b's Q2, built in 17b cut
-    ///   M1b.3). Only a held row whose class is `Classified { team }` with
+    ///   M1b.3). Only a held row whose class is `Classified { party: team }` with
     ///   `team` **another side than the hull's own**, and whose target is still
     ///   in the match: the fire control resolves hostiles, so a wingman between
     ///   the hull and the enemy never takes a row. **The hull's lock first** when
@@ -1022,7 +1022,7 @@ impl Arena {
         // **17b cut M1b.3** (Q2): classified, of another side, still in the
         // match — the one predicate the lock and the rest are both held to.
         let hostile = |held: &crate::arena::state::ShadowContact| {
-            matches!(held.class, Classification::Classified { team } if team != from.team)
+            matches!(held.class, Classification::Classified { party: team } if team != from.team)
                 && self.unit(held.target).is_some()
         };
         let locked = from

@@ -4512,7 +4512,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         side_unit_types: vec!["tacsim.unit.line_tank".into()],
         sensor_height_cm: 150,
         callsign: tacsim::arena::state::Designator::Slot {
-            team: tacsim::arena::state::Team::Red,
+            team: tacsim::arena::state::PartyId::RED,
             slot: 1,
         },
         cell: Some((6, 4)),
@@ -4520,7 +4520,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         objective: None,
         motor: None,
         own_last_hit_ms: None,
-        team: tacsim::arena::state::Team::Red,
+        team: tacsim::arena::state::PartyId::RED,
         pose: mush_sim::data::Pose::at(6_500, 4_500, 0, posture),
         speed_cms: 0,
         power: tacsim::arena::state::Power::Online,
@@ -4591,7 +4591,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
 #[test]
 fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
     use tacsim::arena::perception::{FrameNotice, Named, NoticeKind, Receiver};
-    use tacsim::arena::state::{Classification, ContactId, Designator, Team};
+    use tacsim::arena::state::{Classification, ContactId, Designator, PartyId};
     use tacsim::match_::cockpit;
 
     // (1) The two sentences and the `STATUS` line, whole.
@@ -4675,7 +4675,7 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         },
         class: Classification::Unknown,
         was: Some(Designator::Slot {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             slot: 1,
         }),
     };
@@ -4699,11 +4699,11 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
     let earlier = tacsim::arena::perception::FrameContact {
         id,
         designator: Designator::Slot {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             slot: 1,
         },
         alias: Some(2),
-        class: Classification::Classified { team: Team::Blue },
+        class: Classification::Classified { party: PartyId::BLUE },
         moving: false,
         bearing_mdeg: 45_000,
         range_cm: 45_000,

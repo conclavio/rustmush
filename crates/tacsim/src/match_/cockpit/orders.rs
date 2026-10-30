@@ -282,7 +282,7 @@ pub(crate) enum Command {
 pub(crate) fn command_of(
     w: &World,
     seat: &Seat,
-) -> (Option<MatchId>, Option<crate::arena::state::Team>, Command) {
+) -> (Option<MatchId>, Option<crate::arena::state::PartyId>, Command) {
     let match_id = w
         .module_state::<ArenaRegistry>()
         .and_then(|registry| registry.match_of_unit(seat.unit));
@@ -307,14 +307,11 @@ pub(crate) fn command_of(
         rosters.sort_by_key(|roster| roster.id.index);
         return (match_id, Some(team), Command::Squads(rosters));
     }
-    let wanted = Designator::Slot {
-        team,
-        slot: u16::from(pair(index)),
-    };
-    let wingman = record
-        .callsigns
-        .iter()
-        .find(|(_, callsign)| **callsign == wanted)
+    // Doc 32 cut CF.0: a callsign no longer spells the slot, so the paired
+    // pod's tank is found by its slot and its callsign read off the record.
+    let wanted = crate::match_::centre::tank_for_slot(w, team, pair(index));
+    let wingman = wanted
+        .and_then(|unit| record.callsigns.get_key_value(&unit))
         .and_then(|(unit, callsign)| {
             record
                 .squads
@@ -497,7 +494,7 @@ pub(super) fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), Co
                         .callsigns
                         .iter()
                         .find(|(_, designator)| {
-                            matches!(designator, Designator::Slot { team, .. } if *team == own)
+                            designator.party() == Some(own)
                                 && designator.to_string().eq_ignore_ascii_case(callsign)
                         })
                         .map(|(unit, designator)| (*unit, *designator))

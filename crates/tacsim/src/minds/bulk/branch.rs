@@ -429,13 +429,13 @@ fn parse_station(arena: &Arena, unit: ObjId, text: &str) -> Result<IntentKind, B
                     let mut rows = vec![crate::arena::rules::RuleContact {
                         name: c.designator.to_string().into(),
                         id: c.id,
-                        classified: c.class.team().is_some(),
+                        classified: c.class.party().is_some(),
                     }];
                     if let Some(n) = c.alias {
                         rows.push(crate::arena::rules::RuleContact {
                             name: format!("X{n}").into(),
                             id: c.id,
-                            classified: c.class.team().is_some(),
+                            classified: c.class.party().is_some(),
                         });
                     }
                     rows
@@ -482,15 +482,15 @@ fn parse_station(arena: &Arena, unit: ObjId, text: &str) -> Result<IntentKind, B
 mod tests {
     use super::*;
     use crate::arena::{
-        Channel, Controller, Team,
+        Channel, Controller, PartyId,
         test_support::{arena_of, pose, tank},
     };
     fn branch() -> Box<Branch> {
-        let mut red = tank(ObjId(4), Team::Red, pose(1500, 4500));
+        let mut red = tank(ObjId(4), PartyId::RED, pose(1500, 4500));
         red.weapons.push(crate::arena::test_support::cannon());
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture()).unwrap();
-        let arena = arena_of(vec![red, tank(ObjId(9), Team::Blue, pose(6500, 4500))]);
+        let arena = arena_of(vec![red, tank(ObjId(9), PartyId::BLUE, pose(6500, 4500))]);
         Branch::new(arena, ObjId(99), ObjId(4), 1, 0, true).unwrap()
     }
     #[test]

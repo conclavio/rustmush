@@ -89,7 +89,7 @@ use tacsim::arena::perception::FrameNotice;
 use tacsim::arena::resolution::FULL_ATTENUATION;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, CustodyOut, CustodyUnit, EntryZone,
-    Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, UnitState, Waypoint, Waypoints,
+    Pilot, Power, SeenPose, ShadowContact, PartyId, TerrainCell, UnitState, Waypoint, Waypoints,
 };
 use tacsim::config::{ArenaConfig, LoadedPack, MatchConfig, SensorsConfig};
 use tacsim::definitions::unit::{HEAT_CELL, HEAT_PER_SHOT_CELL, HEAT_SINK_CELL};
@@ -388,14 +388,14 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 2,
                 y0: 0,
                 x1: SIDE - 1,
@@ -437,7 +437,7 @@ fn unit_of(
     catalog: &Catalog,
     entry: &str,
     id: mush_core::ObjId,
-    team: Team,
+    team: PartyId,
     cell: (u16, u16),
 ) -> CustodyUnit {
     let key = CanonicalId::new(entry).expect("a canonical entry id");
@@ -487,6 +487,7 @@ fn arena_of(
             resolution: tacsim::match_::resolution_for(catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -502,8 +503,8 @@ fn duel(paint: &[(u16, u16, TerrainCell)]) -> Arena {
     let mut arena = arena_of(
         &catalog,
         vec![
-            unit_of(&catalog, content::LINE_TANK_LASER, RED, Team::Red, RED_CELL),
-            unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+            unit_of(&catalog, content::LINE_TANK_LASER, RED, PartyId::RED, RED_CELL),
+            unit_of(&catalog, content::LINE_TANK, BLUE, PartyId::BLUE, BLUE_CELL),
         ],
         paint,
     );
@@ -518,7 +519,7 @@ fn duel(paint: &[(u16, u16, TerrainCell)]) -> Arena {
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&arena, BLUE),
         ),
@@ -684,8 +685,8 @@ fn x1_a_beam_is_a_weapon_with_no_flight_time_and_its_impact_is_scheduled_at_now(
     let mut direct = arena_of(
         &stock,
         vec![
-            unit_of(&stock, content::LINE_TANK, RED, Team::Red, RED_CELL),
-            unit_of(&stock, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+            unit_of(&stock, content::LINE_TANK, RED, PartyId::RED, RED_CELL),
+            unit_of(&stock, content::LINE_TANK, BLUE, PartyId::BLUE, BLUE_CELL),
         ],
         &[],
     );
@@ -698,7 +699,7 @@ fn x1_a_beam_is_a_weapon_with_no_flight_time_and_its_impact_is_scheduled_at_now(
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&direct, BLUE),
         ),
@@ -884,16 +885,16 @@ fn x1_the_ground_a_beam_crosses_widens_its_cone_and_a_rounds_is_untouched() {
     let rounds = arena_of(
         &stock,
         vec![
-            unit_of(&stock, content::LINE_TANK, RED, Team::Red, RED_CELL),
-            unit_of(&stock, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+            unit_of(&stock, content::LINE_TANK, RED, PartyId::RED, RED_CELL),
+            unit_of(&stock, content::LINE_TANK, BLUE, PartyId::BLUE, BLUE_CELL),
         ],
         &[(8, 6, woods()), (8, 7, woods()), (8, 8, woods())],
     );
     let open = arena_of(
         &stock,
         vec![
-            unit_of(&stock, content::LINE_TANK, RED, Team::Red, RED_CELL),
-            unit_of(&stock, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+            unit_of(&stock, content::LINE_TANK, RED, PartyId::RED, RED_CELL),
+            unit_of(&stock, content::LINE_TANK, BLUE, PartyId::BLUE, BLUE_CELL),
         ],
         &[],
     );
@@ -1088,8 +1089,8 @@ fn march() -> (Catalog, Arena) {
     let mut arena = arena_of(
         &catalog,
         vec![
-            unit_of(&catalog, content::BIPED_MK1, RED, Team::Red, WALK_CELL),
-            unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, DRIVE_CELL),
+            unit_of(&catalog, content::BIPED_MK1, RED, PartyId::RED, WALK_CELL),
+            unit_of(&catalog, content::LINE_TANK, BLUE, PartyId::BLUE, DRIVE_CELL),
         ],
         &[],
     );
@@ -1107,8 +1108,8 @@ fn face_off(catalog: &Catalog, target: &str) -> Arena {
     let mut arena = arena_of(
         catalog,
         vec![
-            unit_of(catalog, content::LINE_TANK, RED, Team::Red, RED_CELL),
-            unit_of(catalog, target, BLUE, Team::Blue, BLUE_CELL),
+            unit_of(catalog, content::LINE_TANK, RED, PartyId::RED, RED_CELL),
+            unit_of(catalog, target, BLUE, PartyId::BLUE, BLUE_CELL),
         ],
         &[],
     );
@@ -1724,8 +1725,8 @@ fn watch(catalog: &Catalog, watcher: &str, target: (u16, u16)) -> Arena {
     let mut arena = arena_of(
         catalog,
         vec![
-            unit_of(catalog, watcher, RED, Team::Red, WATCH_CELL),
-            unit_of(catalog, content::LINE_TANK, BLUE, Team::Blue, target),
+            unit_of(catalog, watcher, RED, PartyId::RED, WATCH_CELL),
+            unit_of(catalog, content::LINE_TANK, BLUE, PartyId::BLUE, target),
         ],
         &[],
     );
@@ -2184,15 +2185,15 @@ fn jam_field(
     paint: &[(u16, u16, TerrainCell)],
 ) -> Arena {
     let mut units = vec![
-        unit_of(catalog, watcher, RED, Team::Red, at),
-        unit_of(catalog, content::LINE_TANK, BLUE, Team::Blue, target),
+        unit_of(catalog, watcher, RED, PartyId::RED, at),
+        unit_of(catalog, content::LINE_TANK, BLUE, PartyId::BLUE, target),
     ];
     if let Some(cell) = pod {
         units.push(unit_of(
             catalog,
             content::LINE_TANK_ECM,
             POD,
-            Team::Blue,
+            PartyId::BLUE,
             cell,
         ));
     }
@@ -3193,11 +3194,11 @@ fn x5_a_filter_shot_off_its_mount_recovers_nothing_and_a_cold_one_recovers_every
             &catalog,
             content::LINE_TANK_ECCM,
             RED,
-            Team::Red,
+            PartyId::RED,
             WATCH_CELL,
         ),
-        unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, MARK_CELL),
-        unit_of(&catalog, content::LINE_TANK_ECM, POD, Team::Blue, POD_CELL),
+        unit_of(&catalog, content::LINE_TANK, BLUE, PartyId::BLUE, MARK_CELL),
+        unit_of(&catalog, content::LINE_TANK_ECM, POD, PartyId::BLUE, POD_CELL),
     ];
     let addr = mush_tactics::CellAddr::Component {
         component: mush_tactics::ComponentId::new("eccm_pod").expect("a component id"),
@@ -3422,14 +3423,14 @@ fn relief(width: u16, height: u16, profile: &dyn Fn(u16, u16) -> i16) -> ArenaDe
         terrain: ArenaTerrain::new(width, height, CELL_CM, cells).expect("the relief window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: height - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: width - 2,
                 y0: 0,
                 x1: width - 1,
@@ -3503,6 +3504,7 @@ fn arena_over(
             resolution: tacsim::match_::resolution_for(catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         cfg,
         &MatchConfig::default(),
@@ -3927,7 +3929,7 @@ fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
         }
     };
     run(97, 0, terrain.width().saturating_sub(1));
-    for red in def.tanks.iter().filter(|tank| tank.team == Team::Red) {
+    for red in def.tanks.iter().filter(|tank| tank.team == PartyId::RED) {
         let slot = red.id.as_str().trim_start_matches("red_");
         let blue = def
             .tanks
@@ -3977,8 +3979,8 @@ fn x6_a_unit_opens_the_match_at_its_cells_elevation() {
         12 => -200,
         _ => 0,
     };
-    let mut red = unit_of(&catalog, content::LINE_TANK, RED, Team::Red, high);
-    let mut blue = unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, low);
+    let mut red = unit_of(&catalog, content::LINE_TANK, RED, PartyId::RED, high);
+    let mut blue = unit_of(&catalog, content::LINE_TANK, BLUE, PartyId::BLUE, low);
     // What the world hands over: a flat z on one, and a stale one on the other.
     assert_eq!(red.pose.z_cm, 0, "the check-out pose is written flat");
     blue.pose.z_cm = 9_999;
@@ -4072,21 +4074,21 @@ fn x6_a_climb_is_slower_than_the_flat_and_a_descent_is_not_faster() {
                 &catalog,
                 content::LINE_TANK,
                 CLIMBER,
-                Team::Red,
+                PartyId::RED,
                 (1, 1),
             )),
             blind(unit_of(
                 &catalog,
                 content::LINE_TANK,
                 LEVEL,
-                Team::Red,
+                PartyId::RED,
                 (1, 4),
             )),
             blind(unit_of(
                 &catalog,
                 content::LINE_TANK,
                 FALLER,
-                Team::Red,
+                PartyId::RED,
                 (1, 6),
             )),
         ],
@@ -4179,7 +4181,7 @@ fn x6_a_slope_past_the_limit_blocks_both_ways() {
             &catalog,
             content::LINE_TANK,
             RED,
-            Team::Red,
+            PartyId::RED,
             (20, 4),
         ))],
         relief(48, 8, &ledge(500)),
@@ -4214,7 +4216,7 @@ fn x6_a_slope_past_the_limit_blocks_both_ways() {
             &catalog,
             content::LINE_TANK,
             RED,
-            Team::Red,
+            PartyId::RED,
             (28, 4),
         ))],
         relief(48, 8, &ledge(500)),
@@ -4245,14 +4247,14 @@ fn x6_a_slope_past_the_limit_blocks_both_ways() {
                 &catalog,
                 content::LINE_TANK,
                 RED,
-                Team::Red,
+                PartyId::RED,
                 (20, 2),
             )),
             blind(unit_of(
                 &catalog,
                 content::LINE_TANK,
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 (28, 5),
             )),
         ],
@@ -4293,7 +4295,7 @@ fn x6_a_slope_past_the_limit_blocks_both_ways() {
                 &catalog,
                 content::LINE_TANK,
                 RED,
-                Team::Red,
+                PartyId::RED,
                 from,
             ))],
             relief(48, 8, &ledge(height)),
@@ -4362,7 +4364,7 @@ fn x6_a_slope_refusal_is_its_own_word_and_its_own_sentence() {
             &catalog,
             content::LINE_TANK,
             RED,
-            Team::Red,
+            PartyId::RED,
             (20, 4),
         ))],
         relief(48, 8, &|x: u16, _y: u16| if x >= 24 { 500 } else { 0 }),
@@ -4406,7 +4408,7 @@ fn x6_a_slope_refusal_is_its_own_word_and_its_own_sentence() {
             &catalog,
             content::LINE_TANK,
             RED,
-            Team::Red,
+            PartyId::RED,
             (20, 4),
         ))],
         impassable,
@@ -4449,14 +4451,14 @@ fn x6_the_limit_is_the_locomotions_own() {
                 &catalog,
                 content::BIPED_MK1,
                 RED,
-                Team::Red,
+                PartyId::RED,
                 (20, 2),
             )),
             blind(unit_of(
                 &catalog,
                 content::LINE_TANK,
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 (20, 5),
             )),
         ],
@@ -4690,7 +4692,7 @@ fn x6_the_route_goes_round_what_motion_refuses() {
             &catalog,
             content::LINE_TANK,
             RED,
-            Team::Red,
+            PartyId::RED,
             start,
         )))],
         definition,
@@ -4735,7 +4737,7 @@ fn x6_the_route_goes_round_what_motion_refuses() {
             &catalog,
             content::LINE_TANK,
             RED,
-            Team::Red,
+            PartyId::RED,
             start,
         ))))],
         definition,
@@ -4863,8 +4865,8 @@ fn x6_a_ridge_blocks_the_line_both_ways_and_a_taller_eye_sees_over_it() {
         let mut arena = arena_over(
             &catalog,
             vec![
-                unit_of(&catalog, content::LINE_TANK, RED, Team::Red, (8, 3)),
-                unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, (8, 11)),
+                unit_of(&catalog, content::LINE_TANK, RED, PartyId::RED, (8, 3)),
+                unit_of(&catalog, content::LINE_TANK, BLUE, PartyId::BLUE, (8, 11)),
             ],
             relief(16, 16, profile),
             &ArenaConfig::default(),
@@ -4901,8 +4903,8 @@ fn x6_a_ridge_blocks_the_line_both_ways_and_a_taller_eye_sees_over_it() {
     let mut arena = arena_over(
         &biped,
         vec![
-            unit_of(&biped, content::BIPED_MK1, RED, Team::Red, (8, 3)),
-            unit_of(&biped, content::LINE_TANK, BLUE, Team::Blue, (8, 11)),
+            unit_of(&biped, content::BIPED_MK1, RED, PartyId::RED, (8, 3)),
+            unit_of(&biped, content::LINE_TANK, BLUE, PartyId::BLUE, (8, 11)),
         ],
         relief(16, 16, &ridge(400)),
         &ArenaConfig::default(),
@@ -4933,8 +4935,8 @@ fn x6_a_ridge_blocks_the_line_both_ways_and_a_taller_eye_sees_over_it() {
     let mut arena = arena_over(
         &catalog,
         vec![
-            unit_of(&catalog, content::LINE_TANK, RED, Team::Red, (8, 3)),
-            unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, (8, 11)),
+            unit_of(&catalog, content::LINE_TANK, RED, PartyId::RED, (8, 3)),
+            unit_of(&catalog, content::LINE_TANK, BLUE, PartyId::BLUE, (8, 11)),
         ],
         relief(16, 16, &ridge(400)),
         &ArenaConfig::default(),
@@ -4954,7 +4956,7 @@ fn x6_a_ridge_blocks_the_line_both_ways_and_a_taller_eye_sees_over_it() {
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&arena, BLUE),
         ),
@@ -5213,14 +5215,14 @@ fn scripted_climb_arena(catalog: &Catalog, cfg: &ArenaConfig) -> Arena {
                 catalog,
                 content::LINE_TANK,
                 MOVER,
-                Team::Red,
+                PartyId::RED,
                 (5, 5),
             )),
             under_mind(blind(unit_of(
                 catalog,
                 content::LINE_TANK,
                 WALKER,
-                Team::Red,
+                PartyId::RED,
                 (5, 2),
             ))),
         ],
@@ -5471,7 +5473,7 @@ fn x6_a_refused_route_is_bounded_work() {
             &catalog,
             content::LINE_TANK,
             RED,
-            Team::Red,
+            PartyId::RED,
             (2, 4),
         )))],
         definition,
@@ -5515,14 +5517,14 @@ fn x6_a_refused_route_is_bounded_work() {
                 &catalog,
                 content::LINE_TANK,
                 RED,
-                Team::Red,
+                PartyId::RED,
                 (2, 4),
             ))),
             blind(unit_of(
                 &catalog,
                 content::LINE_TANK,
                 BLUE,
-                Team::Red,
+                PartyId::RED,
                 (21, 7),
             )),
         ],
@@ -5711,7 +5713,7 @@ fn cache_agrees(arena: &Arena, at: &str) {
 /// opens on 16b cut F.1's entry consequences with a section that is already gone.
 fn duel_with_a_spent_track() -> Arena {
     let catalog = catalog();
-    let mut blue = unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL);
+    let mut blue = unit_of(&catalog, content::LINE_TANK, BLUE, PartyId::BLUE, BLUE_CELL);
     let addr = mush_tactics::CellAddr::Section {
         section: mush_tactics::SectionId::new("left_track").expect("a section"),
         cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL).expect("a cell"),
@@ -5729,7 +5731,7 @@ fn duel_with_a_spent_track() -> Arena {
     let mut arena = arena_of(
         &catalog,
         vec![
-            unit_of(&catalog, content::LINE_TANK_LASER, RED, Team::Red, RED_CELL),
+            unit_of(&catalog, content::LINE_TANK_LASER, RED, PartyId::RED, RED_CELL),
             blue,
         ],
         &[],
@@ -5745,7 +5747,7 @@ fn duel_with_a_spent_track() -> Arena {
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&arena, BLUE),
         ),
@@ -5855,14 +5857,14 @@ fn q6_window(width: u16, height: u16) -> ArenaDefinition {
         terrain: ArenaTerrain::new(width, height, CELL_CM, cells).expect("the q6 window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: width - 1,
                 y1: 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: 0,
                 y0: height - 2,
                 x1: width - 1,
@@ -5895,6 +5897,7 @@ fn q6_arena(catalog: &Catalog, units: Vec<CustodyUnit>, definition: ArenaDefinit
             resolution: tacsim::match_::resolution_for(catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -6198,8 +6201,8 @@ fn q6_leg_arena(catalog: &Catalog) -> Arena {
     let mut arena = q6_arena(
         catalog,
         vec![
-            unit_of(catalog, content::LINE_TANK, RED, Team::Red, (8, 1)),
-            unit_of(catalog, content::BIPED_MK1, BLUE, Team::Blue, (8, 8)),
+            unit_of(catalog, content::LINE_TANK, RED, PartyId::RED, (8, 1)),
+            unit_of(catalog, content::BIPED_MK1, BLUE, PartyId::BLUE, (8, 8)),
         ],
         q6_window(16, 48),
     );
@@ -6225,7 +6228,7 @@ fn q6_leg_arena(catalog: &Catalog) -> Arena {
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&arena, BLUE),
         ),
@@ -6385,19 +6388,19 @@ fn q6_thermal_arena(catalog: &Catalog) -> Arena {
     let mut arena = q6_arena(
         catalog,
         vec![
-            unit_of(catalog, content::LINE_TANK_THERMAL, RED, Team::Red, (8, 1)),
+            unit_of(catalog, content::LINE_TANK_THERMAL, RED, PartyId::RED, (8, 1)),
             blind(unit_of(
                 catalog,
                 content::LINE_TANK,
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 (8, 21),
             )),
             blind(unit_of(
                 catalog,
                 content::LINE_TANK,
                 FAR_TARGET,
-                Team::Blue,
+                PartyId::BLUE,
                 (8, 35),
             )),
         ],
@@ -6491,19 +6494,19 @@ fn q6_bubble_arena(catalog: &Catalog, watcher: &str) -> Arena {
     let mut arena = q6_arena(
         catalog,
         vec![
-            unit_of(catalog, watcher, RED, Team::Red, (2, 1)),
+            unit_of(catalog, watcher, RED, PartyId::RED, (2, 1)),
             blind(unit_of(
                 catalog,
                 content::LINE_TANK,
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 (11, 8),
             )),
             blind(unit_of(
                 catalog,
                 content::LINE_TANK_ECM,
                 POD,
-                Team::Blue,
+                PartyId::BLUE,
                 (4, 8),
             )),
         ],
@@ -6668,19 +6671,19 @@ fn q6_mesh_arena(
     paint: &[(u16, u16, TerrainCell)],
 ) -> Arena {
     let mut units = vec![
-        unit_of(catalog, content::LINE_TANK, RED, Team::Red, sharer_cell),
+        unit_of(catalog, content::LINE_TANK, RED, PartyId::RED, sharer_cell),
         blind(unit_of(
             catalog,
             content::LINE_TANK,
             MESH_MATE,
-            Team::Red,
+            PartyId::RED,
             mate_cell,
         )),
         blind(unit_of(
             catalog,
             content::LINE_TANK,
             BLUE,
-            Team::Blue,
+            PartyId::BLUE,
             (3, 2),
         )),
     ];
@@ -6689,7 +6692,7 @@ fn q6_mesh_arena(
             catalog,
             content::LINE_TANK_ECM,
             POD,
-            Team::Blue,
+            PartyId::BLUE,
             cell,
         ));
     }
@@ -6707,7 +6710,7 @@ fn q6_mesh_arena(
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&arena, BLUE),
         ),
@@ -6934,7 +6937,7 @@ fn q6_mesh_replay_arena(catalog: &Catalog) -> Arena {
         id,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&arena, BLUE),
         ),
@@ -7046,22 +7049,22 @@ fn o2_emcon_arena(catalog: &Catalog) -> Arena {
     let mut arena = arena_of(
         catalog,
         vec![
-            unit_of(catalog, content::LINE_TANK, RED, Team::Red, (3, 8)),
+            unit_of(catalog, content::LINE_TANK, RED, PartyId::RED, (3, 8)),
             blind(unit_of(
                 catalog,
                 content::LINE_TANK,
                 MESH_MATE,
-                Team::Red,
+                PartyId::RED,
                 (9, 8),
             )),
             blind(unit_of(
                 catalog,
                 content::LINE_TANK,
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 (3, 2),
             )),
-            unit_of(catalog, content::LINE_TANK_ECM, POD, Team::Red, (13, 8)),
+            unit_of(catalog, content::LINE_TANK_ECM, POD, PartyId::RED, (13, 8)),
         ],
         &ridge,
     );
@@ -7076,7 +7079,7 @@ fn o2_emcon_arena(catalog: &Catalog) -> Arena {
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&arena, BLUE),
         ),
@@ -8137,7 +8140,7 @@ fn m4_the_ecm_tanks_gunnery_term_reads_its_sight_and_not_its_pod() {
             &catalog,
             vec![
                 shooter,
-                unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+                unit_of(&catalog, content::LINE_TANK, BLUE, PartyId::BLUE, BLUE_CELL),
             ],
             &[],
         );
@@ -8152,10 +8155,10 @@ fn m4_the_ecm_tanks_gunnery_term_reads_its_sight_and_not_its_pod() {
         &catalog,
         content::LINE_TANK,
         RED,
-        Team::Red,
+        PartyId::RED,
         RED_CELL,
     ));
-    let ecm = || unit_of(&catalog, content::LINE_TANK_ECM, RED, Team::Red, RED_CELL);
+    let ecm = || unit_of(&catalog, content::LINE_TANK_ECM, RED, PartyId::RED, RED_CELL);
     assert_eq!(
         ecm().sensor.map(|sensor| sensor.component),
         Some(SmolStr::new("visual_sensor")),
@@ -8190,7 +8193,7 @@ fn m4_the_ecm_tanks_gunnery_term_reads_its_sight_and_not_its_pod() {
 fn m4_a_pod_at_condition_nought_reads_as_no_pod_and_at_one_still_jams() {
     use tacsim::arena::perception::Jammer;
     let catalog = ecm_catalog();
-    let pod = || unit_of(&catalog, content::LINE_TANK_ECM, POD, Team::Blue, POD_CELL);
+    let pod = || unit_of(&catalog, content::LINE_TANK_ECM, POD, PartyId::BLUE, POD_CELL);
     let whole = Jammer::read(&pod().unit, CELL_CM);
     assert!(whole.is_some(), "the shipped pod radiates");
     assert_eq!(
@@ -8207,7 +8210,7 @@ fn m4_a_pod_at_condition_nought_reads_as_no_pod_and_at_one_still_jams() {
     let arena = arena_of(
         &catalog,
         vec![
-            unit_of(&catalog, content::LINE_TANK, RED, Team::Red, RED_CELL),
+            unit_of(&catalog, content::LINE_TANK, RED, PartyId::RED, RED_CELL),
             with_condition(pod(), "ecm_pod", 0),
         ],
         &[],
@@ -8369,6 +8372,7 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
                 resolution: tacsim::match_::resolution_for(&fielded),
                 seed: SEED,
                 mode: tacsim::arena::MatchMode::Range,
+                host: tacsim::arena::FieldHost::all_hostile(),
             },
             &ArenaConfig::default(),
             &MatchConfig::default(),
@@ -8397,11 +8401,11 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
             RED,
         )
         .expect("the stock tank's cells");
-        checked_out(cells, RED, Team::Red, RED_CELL)
+        checked_out(cells, RED, PartyId::RED, RED_CELL)
     };
     let arena = open(vec![
         shooter(),
-        checked_out(made, target, Team::Blue, BLUE_CELL),
+        checked_out(made, target, PartyId::BLUE, BLUE_CELL),
     ]);
     let state = arena.unit(target).expect("the target is checked out");
     assert!(state.weapons.is_empty(), "no weapon");
@@ -8698,7 +8702,7 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
             &fielded,
             content::BIPED_MK2,
             RED,
-            Team::Red,
+            PartyId::RED,
             RED_CELL,
         )],
         &[],
@@ -8929,14 +8933,14 @@ fn ae1_a_biped_walks_the_thick_woods_a_tank_is_refused() {
                     &catalog,
                     content::BIPED_MK1,
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     (16, 2),
                 )),
                 blind(unit_of(
                     &catalog,
                     content::LINE_TANK,
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     (16, 5),
                 )),
             ],
@@ -9055,7 +9059,7 @@ fn ae1_a_wheeled_car_is_stopped_by_rubble_and_takes_the_ford_slowly() {
 
     let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     let car = |id: mush_core::ObjId, cell: (u16, u16)| {
-        blind(unit_of(&catalog, content::SCOUT_MK1, id, Team::Red, cell))
+        blind(unit_of(&catalog, content::SCOUT_MK1, id, PartyId::RED, cell))
     };
 
     // Three classes, three cars, three stops.
@@ -9185,7 +9189,7 @@ fn ae1_a_wheeled_car_is_stopped_by_rubble_and_takes_the_ford_slowly() {
                 &catalog,
                 content::LINE_TANK,
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 (16, 5),
             )),
         ],
@@ -9237,7 +9241,7 @@ fn ae1_a_wheeled_car_is_stopped_by_rubble_and_takes_the_ford_slowly() {
     let mut taken = Vec::new();
     let opened = tacsim::match_::opening_pose(
         &definition,
-        Team::Red,
+        PartyId::RED,
         Some(on_rubble.clone()),
         &mut taken,
         row,
@@ -9251,7 +9255,7 @@ fn ae1_a_wheeled_car_is_stopped_by_rubble_and_takes_the_ford_slowly() {
     let mut taken = Vec::new();
     let kept = tacsim::match_::opening_pose(
         &definition,
-        Team::Red,
+        PartyId::RED,
         Some(on_rubble),
         &mut taken,
         CostRow::Tracked,
@@ -9421,7 +9425,7 @@ fn ae1_the_bluff_refuses_a_tank_and_a_car_and_admits_a_walker_on_the_shipped_gro
     let at_face = |entry: &str| {
         let mut arena = arena_over(
             &catalog,
-            vec![blind(unit_of(&catalog, entry, RED, Team::Red, (138, 111)))],
+            vec![blind(unit_of(&catalog, entry, RED, PartyId::RED, (138, 111)))],
             shipped.clone(),
             &ArenaConfig::default(),
         );
@@ -9490,7 +9494,7 @@ fn ae1_the_bluff_refuses_a_tank_and_a_car_and_admits_a_walker_on_the_shipped_gro
     let at_flank = |entry: &str| {
         let mut arena = arena_over(
             &catalog,
-            vec![blind(unit_of(&catalog, entry, RED, Team::Red, (150, 120)))],
+            vec![blind(unit_of(&catalog, entry, RED, PartyId::RED, (150, 120)))],
             shipped.clone(),
             &ArenaConfig::default(),
         );
@@ -9747,7 +9751,7 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
                 &catalog,
                 entry,
                 RED,
-                Team::Red,
+                PartyId::RED,
                 start,
             ))))],
             definition,
@@ -10178,7 +10182,7 @@ fn ae2_duel(
     controller: tacsim::arena::state::Controller,
 ) -> Arena {
     use tacsim::arena::state::Controller;
-    let red = unit_of(catalog, shooter, RED, Team::Red, shooter_cell);
+    let red = unit_of(catalog, shooter, RED, PartyId::RED, shooter_cell);
     let red = match controller {
         Controller::Pilot => red,
         Controller::Mind => under_mind(red),
@@ -10187,7 +10191,7 @@ fn ae2_duel(
         catalog,
         vec![
             red,
-            unit_of(catalog, content::LINE_TANK, BLUE, Team::Blue, target_cell),
+            unit_of(catalog, content::LINE_TANK, BLUE, PartyId::BLUE, target_cell),
         ],
         definition,
         &ArenaConfig::default(),
@@ -10203,7 +10207,7 @@ fn ae2_duel(
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot_of(&arena, BLUE),
         ),
@@ -11076,8 +11080,8 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     let arena = arena_of(
         &fielded,
         vec![
-            unit_of(&fielded, content::DRONE_MK1, RED, Team::Red, RED_CELL),
-            unit_of(&fielded, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+            unit_of(&fielded, content::DRONE_MK1, RED, PartyId::RED, RED_CELL),
+            unit_of(&fielded, content::LINE_TANK, BLUE, PartyId::BLUE, BLUE_CELL),
         ],
         &[],
     );

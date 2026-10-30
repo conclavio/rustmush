@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
 
-use crate::arena::state::{Designator, EndReason, MatchEnd, MatchMode, Team};
+use crate::arena::state::{Designator, EndReason, MatchEnd, MatchMode, PartyId};
 use crate::arena_task::MatchId;
 
 /// **The lifecycle** of doc 16 §3.8.
@@ -218,27 +218,38 @@ impl From<EndReason> for MatchOutcome {
     fn from(reason: EndReason) -> MatchOutcome {
         match reason {
             EndReason::Elimination {
-                winner: Some(Team::Red),
+                winner: Some(PartyId::RED),
             } => MatchOutcome::Red,
             EndReason::Elimination {
-                winner: Some(Team::Blue),
+                winner: Some(PartyId::BLUE),
             } => MatchOutcome::Blue,
             // 16b cut Q.7: nobody can shoot, so nobody won.
             EndReason::Elimination { winner: None } | EndReason::Spent => MatchOutcome::Draw,
             // 16b cut D.3 (`B-33`): a concede names its winner, so the outcome is
             // that side's word and not a seventh one.
-            EndReason::Conceded { winner: Team::Red } => MatchOutcome::Red,
-            EndReason::Conceded { winner: Team::Blue } => MatchOutcome::Blue,
+            EndReason::Conceded {
+                winner: Some(PartyId::RED),
+            } => MatchOutcome::Red,
+            EndReason::Conceded {
+                winner: Some(PartyId::BLUE),
+            } => MatchOutcome::Blue,
             // 16b cut O.1: a hold names its winner too, and the reason word
             // (`hold`) says how.
-            EndReason::Hold { winner: Team::Red } => MatchOutcome::Red,
-            EndReason::Hold { winner: Team::Blue } => MatchOutcome::Blue,
+            EndReason::Hold { winner: PartyId::RED } => MatchOutcome::Red,
+            EndReason::Hold { winner: PartyId::BLUE } => MatchOutcome::Blue,
             // And a match every pilot had left is a `timeout`: doc 16 §4's
             // vocabulary is six words, and this is the one that means *the clock
             // ended it and nobody was eliminated*.
             EndReason::Unattended | EndReason::Timeout => MatchOutcome::Timeout,
             EndReason::Abort => MatchOutcome::Abort,
             EndReason::Void | EndReason::LedgerOverflow => MatchOutcome::Void,
+            // Doc 32 cut CF.0: a winner the centre does not field (it fields red
+            // and blue, and nothing else), or a concede with more than one party
+            // left. The centre's lobby can reach neither; the record has six
+            // words and says the one that names no winner.
+            EndReason::Elimination { winner: Some(_) }
+            | EndReason::Conceded { .. }
+            | EndReason::Hold { .. } => MatchOutcome::Draw,
         }
     }
 }
@@ -317,7 +328,7 @@ impl UnitResult {
 #[serde(deny_unknown_fields)]
 pub struct TeamRoster {
     /// Which side.
-    pub team: Team,
+    pub team: PartyId,
     /// Its units.
     pub units: Vec<ObjId>,
     /// Its `(pilot, unit)` pairs at check-out.
@@ -515,7 +526,7 @@ impl MatchRecord {
 
     /// Which side `unit` is on.
     #[must_use]
-    pub fn team_of(&self, unit: ObjId) -> Option<Team> {
+    pub fn team_of(&self, unit: ObjId) -> Option<PartyId> {
         self.teams
             .iter()
             .find(|roster| roster.units.contains(&unit))
@@ -1350,7 +1361,7 @@ pub struct HistoryUnit {
     pub unit: ObjId,
     /// Its side. `None` for a unit on no roster — a restart abort's, whose
     /// document has `"teams": []`.
-    pub team: Option<Team>,
+    pub team: Option<PartyId>,
     /// Its callsign (`RA`), or empty on a document written before 16b cut V.2
     /// and on a restart abort's rows.
     pub callsign: SmolStr,
@@ -1468,7 +1479,7 @@ impl HistoryRow {
                         .and_then(Value::as_array)
                         .is_some_and(|units| units.iter().any(|held| object(held) == Some(unit)))
                 })
-                .and_then(|team| serde_json::from_value::<Team>(team.get("team")?.clone()).ok())
+                .and_then(|team| serde_json::from_value::<PartyId>(team.get("team")?.clone()).ok())
         };
         let pilot_of = |unit: ObjId| {
             teams
@@ -1575,7 +1586,7 @@ impl HistoryRow {
     /// **One side's losses**, as `(destroyed or disabled, of)` over the units on
     /// that side. A teamless unit (a restart abort's) is on neither.
     #[must_use]
-    pub fn losses(&self, team: Team) -> (u32, u32) {
+    pub fn losses(&self, team: PartyId) -> (u32, u32) {
         let side = self.units.iter().filter(|unit| unit.team == Some(team));
         let (mut lost, mut of) = (0_u32, 0_u32);
         for unit in side {
@@ -1590,7 +1601,7 @@ impl HistoryRow {
     /// How many units fought on `team` — the `2` of `SIM HISTORY`'s `2 v 2`. A
     /// teamless unit counts on neither side, so a restart row reads `0 v 0`.
     #[must_use]
-    pub fn side_size(&self, team: Team) -> u32 {
+    pub fn side_size(&self, team: PartyId) -> u32 {
         self.losses(team).1
     }
 }
@@ -1763,8 +1774,8 @@ pub fn history_lines<'a>(rows: impl Iterator<Item = &'a HistoryRow>, reader: Obj
             // under another rule.
             row.mode_tag(),
             duration_words(row.arena_ms),
-            row.side_size(Team::Red),
-            row.side_size(Team::Blue),
+            row.side_size(PartyId::RED),
+            row.side_size(PartyId::BLUE),
             civil_utc(row.ended_ms / 1_000),
         );
         if let Some(flown) = row
@@ -1870,7 +1881,7 @@ mod tests {
             ),
             (
                 EndReason::Elimination {
-                    winner: Some(Team::Blue),
+                    winner: Some(PartyId::BLUE),
                 },
                 MatchState::Ended,
                 MatchOutcome::Blue,
@@ -1880,18 +1891,18 @@ mod tests {
             // 16b cut D.3 (`B-33`): an end with a winner, and an end with none —
             // neither of them an abort and neither of them a void.
             (
-                EndReason::Conceded { winner: Team::Red },
+                EndReason::Conceded { winner: PartyId::RED },
                 MatchState::Ended,
                 MatchOutcome::Red,
             ),
             (
-                EndReason::Conceded { winner: Team::Blue },
+                EndReason::Conceded { winner: PartyId::BLUE },
                 MatchState::Ended,
                 MatchOutcome::Blue,
             ),
             // 16b cut O.1: a hold names its winner, and ends like any fight.
             (
-                EndReason::Hold { winner: Team::Red },
+                EndReason::Hold { winner: PartyId::RED },
                 MatchState::Ended,
                 MatchOutcome::Red,
             ),
@@ -1928,7 +1939,7 @@ mod tests {
     /// A running record of a 2 v 1: red 101 (pilot 5, `RA`) and 102 (a machine,
     /// `RB`), blue 201 (pilot 6, `BA`).
     fn v2_record() -> MatchRecord {
-        let slot = |team: Team, slot: u16| Designator::Slot { team, slot };
+        let slot = |team: PartyId, slot: u16| Designator::Slot { team, slot };
         MatchRecord {
             id: MatchId(12),
             state: MatchState::Running,
@@ -1936,12 +1947,12 @@ mod tests {
             arena_definition_digest: "ab".to_owned(),
             teams: vec![
                 TeamRoster {
-                    team: Team::Red,
+                    team: PartyId::RED,
                     units: vec![ObjId(101), ObjId(102)],
                     pilots: vec![(ObjId(5), ObjId(101))],
                 },
                 TeamRoster {
-                    team: Team::Blue,
+                    team: PartyId::BLUE,
                     units: vec![ObjId(201)],
                     pilots: vec![(ObjId(6), ObjId(201))],
                 },
@@ -1955,9 +1966,9 @@ mod tests {
             squads: Vec::new(),
             leaders: Vec::new(),
             callsigns: BTreeMap::from([
-                (ObjId(101), slot(Team::Red, 1)),
-                (ObjId(102), slot(Team::Red, 2)),
-                (ObjId(201), slot(Team::Blue, 1)),
+                (ObjId(101), slot(PartyId::RED, 1)),
+                (ObjId(102), slot(PartyId::RED, 2)),
+                (ObjId(201), slot(PartyId::BLUE, 1)),
             ]),
             folds: BTreeMap::new(),
             unparsed: 0,
@@ -2003,7 +2014,7 @@ mod tests {
             MatchOutcome::Red,
             MatchEnd {
                 reason: EndReason::Elimination {
-                    winner: Some(Team::Red),
+                    winner: Some(PartyId::RED),
                 },
                 t_ms: 272_000,
             },
@@ -2055,7 +2066,7 @@ mod tests {
             vec![
                 HistoryUnit {
                     unit: ObjId(101),
-                    team: Some(Team::Red),
+                    team: Some(PartyId::RED),
                     callsign: SmolStr::new("RA"),
                     pilot: Some(ObjId(5)),
                     outcome: UnitOutcome::Intact,
@@ -2064,7 +2075,7 @@ mod tests {
                 },
                 HistoryUnit {
                     unit: ObjId(102),
-                    team: Some(Team::Red),
+                    team: Some(PartyId::RED),
                     callsign: SmolStr::new("RB"),
                     pilot: None,
                     outcome: UnitOutcome::Disabled,
@@ -2073,7 +2084,7 @@ mod tests {
                 },
                 HistoryUnit {
                     unit: ObjId(201),
-                    team: Some(Team::Blue),
+                    team: Some(PartyId::BLUE),
                     callsign: SmolStr::new("BA"),
                     pilot: Some(ObjId(6)),
                     outcome: UnitOutcome::Destroyed,
@@ -2092,10 +2103,10 @@ mod tests {
             Some(ObjId(201))
         );
         assert_eq!(row.pilot_unit(ObjId(7)), None, "a bystander flew nothing");
-        assert_eq!(row.side_size(Team::Red), 2);
-        assert_eq!(row.side_size(Team::Blue), 1);
-        assert_eq!(row.losses(Team::Red), (1, 2), "disabled is a loss");
-        assert_eq!(row.losses(Team::Blue), (1, 1), "destroyed is a loss");
+        assert_eq!(row.side_size(PartyId::RED), 2);
+        assert_eq!(row.side_size(PartyId::BLUE), 1);
+        assert_eq!(row.losses(PartyId::RED), (1, 2), "disabled is a loss");
+        assert_eq!(row.losses(PartyId::BLUE), (1, 1), "destroyed is a loss");
 
         // `reports`, when a later cut writes it, is read back.
         let mut reported = written.clone();
@@ -2171,10 +2182,10 @@ mod tests {
         );
         assert!(!row.named);
         assert_eq!(
-            (row.side_size(Team::Red), row.side_size(Team::Blue)),
+            (row.side_size(PartyId::RED), row.side_size(PartyId::BLUE)),
             (0, 0)
         );
-        assert_eq!(row.losses(Team::Red), (0, 0));
+        assert_eq!(row.losses(PartyId::RED), (0, 0));
         assert_eq!(row.chunks, 0);
         assert_eq!(row.seed, 0);
     }
@@ -2365,12 +2376,12 @@ mod tests {
         for reason in [
             EndReason::Elimination { winner: None },
             EndReason::Elimination {
-                winner: Some(Team::Red),
+                winner: Some(PartyId::RED),
             },
             EndReason::Spent,
             // 16b cut O.1.
-            EndReason::Hold { winner: Team::Red },
-            EndReason::Conceded { winner: Team::Blue },
+            EndReason::Hold { winner: PartyId::RED },
+            EndReason::Conceded { winner: PartyId::BLUE },
             EndReason::Unattended,
             EndReason::Timeout,
             EndReason::Abort,
@@ -2397,7 +2408,7 @@ mod tests {
         newest.outcome = MatchOutcome::Blue;
         newest.units.push(HistoryUnit {
             unit: ObjId(202),
-            team: Some(Team::Blue),
+            team: Some(PartyId::BLUE),
             callsign: SmolStr::new("BB"),
             pilot: None,
             outcome: UnitOutcome::Intact,
@@ -2412,7 +2423,7 @@ mod tests {
         spent.units = vec![
             HistoryUnit {
                 unit: ObjId(101),
-                team: Some(Team::Red),
+                team: Some(PartyId::RED),
                 callsign: SmolStr::new("RA"),
                 pilot: Some(ObjId(7)),
                 outcome: UnitOutcome::Intact,
@@ -2421,7 +2432,7 @@ mod tests {
             },
             HistoryUnit {
                 unit: ObjId(201),
-                team: Some(Team::Blue),
+                team: Some(PartyId::BLUE),
                 callsign: SmolStr::new("BA"),
                 pilot: Some(ObjId(8)),
                 outcome: UnitOutcome::Intact,
@@ -2492,7 +2503,7 @@ mod tests {
             MatchOutcome::Red,
             MatchEnd {
                 reason: EndReason::Elimination {
-                    winner: Some(Team::Red),
+                    winner: Some(PartyId::RED),
                 },
                 t_ms: 272_000,
             },
@@ -2550,9 +2561,9 @@ mod tests {
             end_words(MatchOutcome::Red, "hold"),
             "red held the key spot"
         );
-        assert_eq!(reason_word(EndReason::Hold { winner: Team::Blue }), "hold");
+        assert_eq!(reason_word(EndReason::Hold { winner: PartyId::BLUE }), "hold");
         assert_eq!(
-            MatchOutcome::from(EndReason::Hold { winner: Team::Blue }),
+            MatchOutcome::from(EndReason::Hold { winner: PartyId::BLUE }),
             MatchOutcome::Blue
         );
         let mut record = v2_record();
@@ -2562,7 +2573,7 @@ mod tests {
             MatchId(3),
             MatchOutcome::Red,
             MatchEnd {
-                reason: EndReason::Hold { winner: Team::Red },
+                reason: EndReason::Hold { winner: PartyId::RED },
                 t_ms: 120_250,
             },
             "cd",
@@ -2838,7 +2849,7 @@ mod tests {
                 )
             })
             .collect();
-        let named: Vec<(ObjId, Designator, Team)> = record
+        let named: Vec<(ObjId, Designator, PartyId)> = record
             .callsigns
             .iter()
             .filter_map(|(unit, name)| record.team_of(*unit).map(|team| (*unit, *name, team)))
@@ -2860,7 +2871,7 @@ mod tests {
             match_id: Some(record.id),
             arena: record.arena.clone(),
             slots: vec![crate::match_::lobby::Slot {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
                 account,
                 pilot: ObjId(5),
@@ -2872,7 +2883,7 @@ mod tests {
                 released_by_resume: false,
                 mind: None,
             }],
-            leads: vec![(Team::Red, account)],
+            leads: vec![(PartyId::RED, account)],
             ..crate::match_::lobby::Centre::default()
         };
         LiveRecord {
@@ -2891,11 +2902,11 @@ mod tests {
         use crate::deliberation::{CharacterRef, LanceLeader, SquadId};
         let mut live = af2_live();
         let red = SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         };
         let blue = SquadId {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             index: 1,
         };
         live.record.leaders = vec![
@@ -2940,7 +2951,7 @@ mod tests {
         live.centre
             .fill_classes
             .push(crate::match_::lobby::FillClass {
-                team: Team::Red,
+                team: PartyId::RED,
                 lead: account,
                 class: crate::arena::core::CoreClass::II,
             });

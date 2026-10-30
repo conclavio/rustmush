@@ -81,7 +81,7 @@ use tacsim::arena::rng::{DrawLabel, draw, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Controller, CostRow, CustodyOut, CustodyUnit,
-    DueKind, EntryZone, HeatState, KeySpot, Pilot, Team, TerrainCell, TrackedRules, Waypoint,
+    DueKind, EntryZone, HeatState, KeySpot, Pilot, PartyId, TerrainCell, TrackedRules, Waypoint,
     Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
@@ -223,14 +223,14 @@ fn definition() -> ArenaDefinition {
         .expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 2,
                 y0: 0,
                 x1: SIDE - 1,
@@ -298,7 +298,7 @@ fn cannon() -> WeaponSummary {
 /// A tank that sees, with `weapons` and `controller`.
 fn tank(
     id: ObjId,
-    team: Team,
+    team: PartyId,
     pose: Pose,
     weapons: Vec<WeaponSummary>,
     controller: Controller,
@@ -357,6 +357,7 @@ fn arena_on(units: Vec<CustodyUnit>, seated: &[ObjId], reflex: ReflexConfig) -> 
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig {
             reflex,
@@ -418,15 +419,15 @@ fn the_j_field(controller: Controller) -> Arena {
         vec![
             seeing(tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 8),
                 vec![cannon()],
                 controller,
             )),
-            seeing(tank(RED2, Team::Red, centre(6, 10), Vec::new(), controller)),
+            seeing(tank(RED2, PartyId::RED, centre(6, 10), Vec::new(), controller)),
             presenting(seeing(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1802,7 +1803,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
         letter: Some('A'),
         radius_cells: 2,
         hold_ms: 60_000,
-        held_by: Some((Team::Red, now)),
+        held_by: Some((PartyId::RED, now)),
     });
     for outcome in [
         None,
@@ -1922,7 +1923,7 @@ fn written(
                 id: friend,
                 designator: friend_designator,
             },
-            class: tacsim::arena::state::Classification::Classified { team: Team::Red },
+            class: tacsim::arena::state::Classification::Classified { party: PartyId::RED },
             was: Some(tacsim::arena::state::Designator::Provisional(1)),
         },
         FrameNotice::Hit {
@@ -3665,8 +3666,8 @@ fn m2_the_twin_corpus_hashes_the_same_on_every_host() {
     );
     let world = support::booted_world();
     let cfg = ArenaConfig::default();
-    let reds = [Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)];
-    let blues = [Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)];
+    let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
+    let blues = [Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)];
     let mut rows: Vec<(u64, i64, u64, String, String)> = Vec::new();
     // (a) The stock corpus, T2 against T2.
     for seed in [2_350_u64, 2_351, 2_352] {
@@ -3818,7 +3819,7 @@ fn classed_field(
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified { party: PartyId::BLUE },
             0,
             plot,
         ),
@@ -4112,14 +4113,14 @@ fn gate_field() -> Arena {
         vec![
             seeing(tank(
                 GATE_UNIT,
-                Team::Red,
+                PartyId::RED,
                 centre(2, 8),
                 Vec::new(),
                 Controller::Mind,
             )),
             seeing(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 vec![beam()],
                 Controller::Pilot,
@@ -4475,21 +4476,21 @@ fn two_gun_field() -> Arena {
         vec![
             seeing(tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 8),
                 vec![cannon(), second_gun()],
                 Controller::Mind,
             )),
             seeing(tank(
                 RED2,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 10),
                 Vec::new(),
                 Controller::Mind,
             )),
             presenting(seeing(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -4977,7 +4978,7 @@ fn doctored_hull(
         catalog,
         cells,
         id,
-        Team::Red,
+        PartyId::RED,
         centre(2, 8),
         0,
         controller,
@@ -5027,7 +5028,7 @@ fn consequence_field(victim: CustodyUnit, seated: bool) -> Arena {
         }),
         ..tank(
             BLUE,
-            Team::Blue,
+            PartyId::BLUE,
             centre(9, 8),
             vec![heavy_beam()],
             Controller::Pilot,
@@ -5929,7 +5930,7 @@ fn m3_a_never_cored_mind_runs_the_rom_from_its_first_think_with_no_drop_line() {
         }),
         ..tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(6, 8),
             vec![cannon()],
             Controller::Mind,
@@ -5943,7 +5944,7 @@ fn m3_a_never_cored_mind_runs_the_rom_from_its_first_think_with_no_drop_line() {
             red,
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,

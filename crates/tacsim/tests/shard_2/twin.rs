@@ -90,7 +90,7 @@ use tacsim::arena::intents::{IntentKind, MotorGoal, Refusal};
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{MindRunner, MindView, ThinkJob, ThinkResult, decode_memory};
 use tacsim::arena::perception::{DriveOutcome, FrameNotice, MindObjective};
-use tacsim::arena::state::{Arena, ContactId, CostRow, EndReason, Team};
+use tacsim::arena::state::{Arena, ContactId, CostRow, EndReason, PartyId};
 use tacsim::arena::stock_mind::{
     NativeStockMind, StockMemory, Weights, best_hostile_ranked, health_permille, line_to,
     row_range_cm, would_overheat,
@@ -316,7 +316,7 @@ struct Played {
     end: EndReason,
     t_ms: i64,
     /// The side that won, or `None` for a draw.
-    winner: Option<Team>,
+    winner: Option<PartyId>,
     /// Red's side, then blue's.
     sides: [SideReport; 2],
     path_queries: u64,
@@ -488,8 +488,8 @@ fn play_on(
     flier: Flier,
     runner: Option<Arc<dyn MindRunner>>,
 ) -> Played {
-    let reds = [Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)];
-    let blues = [Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)];
+    let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
+    let blues = [Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)];
     let mut arena = support::shipped_arena_seeded(world, &[&reds, &blues], seed);
     let recording = Recording::new(runner.unwrap_or_else(|| runner_for(flier, &arena.arena_cfg)));
     arena.mind_runner = recording.clone();
@@ -594,7 +594,7 @@ fn play_on(
             .find(|state| state.id.0 == unit)
             .map(|state| state.team)
     };
-    let sides = [Team::Red, Team::Blue].map(|team| {
+    let sides = [PartyId::RED, PartyId::BLUE].map(|team| {
         let mut report = SideReport {
             arena_ms: ended.t_ms,
             ..SideReport::default()
@@ -1046,12 +1046,12 @@ fn pool_record(pool: &[Played]) -> PoolRecord {
     let mut head: Vec<String> = Vec::new();
     let mut tail: Vec<String> = Vec::new();
     let n = pool.len();
-    let won_by = |team: Team| {
+    let won_by = |team: PartyId| {
         pool.iter()
             .filter(|played| played.winner == Some(team))
             .count()
     };
-    let (red_wins, blue_wins) = (won_by(Team::Red), won_by(Team::Blue));
+    let (red_wins, blue_wins) = (won_by(PartyId::RED), won_by(PartyId::BLUE));
     for played in pool {
         head.push(format!(
             "twin_match: seed={} end={} t_ms={}",
@@ -1282,11 +1282,11 @@ fn m1a6_fallback_waypoint_is_the_motors_fallback_on_the_shipped_graph() {
     let arena = support::shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::mind(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::mind(PartyId::BLUE, 1)],
         ],
     );
-    let unit = support::tank(&world, Team::Red, 1);
+    let unit = support::tank(&world, PartyId::RED, 1);
     let graph = &arena.definition.waypoints;
     assert!(graph.nodes().len() >= 4, "the shipped graph");
     let mut onward = 0_usize;
@@ -1343,12 +1343,12 @@ fn m1a6_line_to_the_plot_parts_from_fire_line_once_the_target_drives_behind_cove
     let mut arena = support::shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::piloted(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::piloted(PartyId::BLUE, 1)],
         ],
     );
-    let red = support::tank(&world, Team::Red, 1);
-    let blue = support::tank(&world, Team::Blue, 1);
+    let red = support::tank(&world, PartyId::RED, 1);
+    let blue = support::tank(&world, PartyId::BLUE, 1);
     let def = arena.definition.clone();
     let Some(own) = support::cell_of(&arena, red) else {
         panic!("red on the window");
@@ -1399,7 +1399,7 @@ fn m1a6_line_to_the_plot_parts_from_fire_line_once_the_target_drives_behind_cove
         id,
         ShadowContact::sighted(
             blue,
-            tacsim::arena::state::Classification::Classified { team: Team::Blue },
+            tacsim::arena::state::Classification::Classified { party: PartyId::BLUE },
             0,
             plot,
         ),
@@ -1444,12 +1444,12 @@ fn m1b2_the_probes_line_rules_count_what_they_name() {
     let arena = support::shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::piloted(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::piloted(PartyId::BLUE, 1)],
         ],
     );
-    let red = support::tank(&world, Team::Red, 1);
-    let blue = support::tank(&world, Team::Blue, 1);
+    let red = support::tank(&world, PartyId::RED, 1);
+    let blue = support::tank(&world, PartyId::BLUE, 1);
     let elsewhere = ObjId(77);
     let (cannon, coax) = match arena.unit(red).map(|state| state.weapons.as_slice()) {
         Some([cannon, coax, ..]) => (cannon.id.to_string(), coax.id.to_string()),
@@ -1530,12 +1530,12 @@ fn m1b2_the_probes_law_counters_count_on_a_field_that_presents_nothing() {
     let mut arena = support::shipped_arena_seeded(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::piloted(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::piloted(PartyId::BLUE, 1)],
         ],
         SEED_0,
     );
-    let red = support::tank(&world, Team::Red, 1);
+    let red = support::tank(&world, PartyId::RED, 1);
     for state in &mut arena.units {
         state.profile = tacsim::arena::resolution::UnitProfile::default();
     }
@@ -1801,16 +1801,16 @@ fn m2_gate_a_on_a_mixed_pool() {
     let started = Instant::now();
     let world = support::booted_world();
     let unarmed = [
-        support::tank(&world, Team::Red, 2),
-        support::tank(&world, Team::Blue, 2),
+        support::tank(&world, PartyId::RED, 2),
+        support::tank(&world, PartyId::BLUE, 2),
     ];
     let reds = [
-        Muster::mind(Team::Red, 1),
-        Muster::mind_unarmed(Team::Red, 2),
+        Muster::mind(PartyId::RED, 1),
+        Muster::mind_unarmed(PartyId::RED, 2),
     ];
     let blues = [
-        Muster::mind(Team::Blue, 1),
-        Muster::mind_unarmed(Team::Blue, 2),
+        Muster::mind(PartyId::BLUE, 1),
+        Muster::mind_unarmed(PartyId::BLUE, 2),
     ];
     let cfg = tacsim::config::ArenaConfig::default();
     let mut thinks = 0_usize;
@@ -1987,8 +1987,8 @@ fn m2_gate_a_over_the_pooled_lanes_matches() {
     let world = support::booted_world();
     let cfg = tacsim::config::ArenaConfig::default();
     let reds = [
-        support::tank(&world, Team::Red, 1),
-        support::tank(&world, Team::Red, 2),
+        support::tank(&world, PartyId::RED, 1),
+        support::tank(&world, PartyId::RED, 2),
     ];
     let mut pool: Vec<Played> = Vec::new();
     let mut thinks = 0_usize;
@@ -2415,7 +2415,7 @@ fn m2_gate_a_over_the_authored_lance_field() {
     for k in 0..LANCE_SEEDS {
         let seed = SEED_0 + k;
         let mut arena = support::lance_arena(&world, seed);
-        let lances: Vec<usize> = [Team::Red, Team::Blue]
+        let lances: Vec<usize> = [PartyId::RED, PartyId::BLUE]
             .iter()
             .map(|team| {
                 arena
@@ -2623,8 +2623,8 @@ fn m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool() {
     let started = Instant::now();
     let world = support::booted_world();
     let cfg = tacsim::config::ArenaConfig::default();
-    let reds = [Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)];
-    let blues = [Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)];
+    let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
+    let blues = [Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)];
     let (mut matches, mut substeps, mut lines) = (0_usize, 0_usize, 0_usize);
     for k in 0..SEEDS {
         let seed = SEED_0 + k;
@@ -2979,8 +2979,8 @@ fn twin_rhai_timing() {
     // Lane 1: the pooled lane's matches, the twin on every hull (17b cut
     // M4.5: T1 against T1, one match a seed).
     let mut pooled: Vec<support::TwinThought> = Vec::new();
-    let reds = [Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)];
-    let blues = [Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)];
+    let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
+    let blues = [Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)];
     for k in 0..pool_seeds {
         let seed = SEED_0 + k;
         let twin = Arc::new(support::TwinRunner::new(&cfg));

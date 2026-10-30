@@ -151,7 +151,7 @@ pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> 
             ),
             age_ms: held.age_ms,
             cell: held.cell,
-            friendly: held.class.team() == Some(frame.team),
+            friendly: held.class.party() == Some(frame.team),
             // 17b cut M1a.3 (doc 17 §3): the side word of the face the plot was
             // showing, and the main gun's odds off `frame.odds` — the entry for
             // this row and the weapon a bare `FIRE` would fire, which
@@ -298,7 +298,7 @@ pub fn settle_ranges(
 pub fn own_scope(frame: &Frame) -> &'static str {
     let mut unidentified = false;
     for held in &frame.contacts {
-        match held.class.team() {
+        match held.class.party() {
             Some(team) if team == frame.team => {}
             Some(_) => return "hostile",
             None => unidentified = true,
@@ -320,7 +320,7 @@ pub fn own_scope(frame: &Frame) -> &'static str {
 /// pilot wants off a resolved return is whose it is.
 #[must_use]
 pub(crate) fn class_word(class: Classification) -> &'static str {
-    match class.team() {
+    match class.party() {
         Some(team) => team.as_str(),
         None => class.as_str(),
     }
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn a_contact_row_renders_its_designator_in_a_column_of_four() {
         let slot = Designator::Slot {
-            team: crate::arena::state::Team::Blue,
+            team: crate::arena::state::PartyId::BLUE,
             slot: 1,
         };
         assert_eq!(
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn m1a3_the_row_ends_in_the_aspect_and_the_main_guns_odds() {
         let slot = Designator::Slot {
-            team: crate::arena::state::Team::Blue,
+            team: crate::arena::state::PartyId::BLUE,
             slot: 1,
         };
         let mut far = row(ContactId(7), slot, None);

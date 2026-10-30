@@ -52,7 +52,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::core::CoreClass;
-use crate::arena::state::{Designator, EndReason, MatchMode, StopReason, Team};
+use crate::arena::state::{Designator, EndReason, MatchMode, StopReason, PartyId};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::config::{ArenaConfig, CommandConfig, MatchConfig, MindsConfig, SensorsConfig};
@@ -71,7 +71,7 @@ pub const OUTSIDE_CENTRE: &str = "The simulator is through the lobby.";
 #[serde(deny_unknown_fields)]
 pub struct Slot {
     /// Which side.
-    pub team: Team,
+    pub team: PartyId,
     /// Which slot of that side, 1-based — the pod it locks and the arena unit
     /// it flies.
     pub index: u8,
@@ -239,7 +239,7 @@ pub enum FillSetter {
 #[serde(deny_unknown_fields)]
 pub struct FillChoice {
     /// The side whose unclaimed pods it flies.
-    pub team: Team,
+    pub team: PartyId,
     /// Who set it.
     pub by: FillSetter,
     /// The mind and its one profile (empty is Line).
@@ -250,7 +250,7 @@ pub struct FillChoice {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FillClass {
-    pub team: Team,
+    pub team: PartyId,
     pub lead: AccountId,
     pub class: CoreClass,
 }
@@ -294,7 +294,7 @@ pub struct Centre {
     /// tank once the match is running (16b cut B.4), the side's first remaining
     /// claimant still in a tank ([`Centre::resettle_leads`]) — who may
     /// `SIM START` and `SIM CONCEDE`.
-    pub leads: Vec<(Team, AccountId)>,
+    pub leads: Vec<(PartyId, AccountId)>,
     /// When `Boarding` gives up on the unseated, in world milliseconds.
     pub board_deadline_ms: Option<i64>,
     /// How the last match ended, until staff reset the centre.
@@ -441,13 +441,13 @@ impl Centre {
 
     /// How many slots a side holds.
     #[must_use]
-    pub fn side_len(&self, team: Team) -> usize {
+    pub fn side_len(&self, team: PartyId) -> usize {
         self.slots.iter().filter(|slot| slot.team == team).count()
     }
 
     /// Whether `account` leads `team`.
     #[must_use]
-    pub fn leads_side(&self, team: Team, account: AccountId) -> bool {
+    pub fn leads_side(&self, team: PartyId, account: AccountId) -> bool {
         self.leads
             .iter()
             .any(|(side, lead)| *side == team && *lead == account)
@@ -469,7 +469,7 @@ impl Centre {
     /// every slot has left has no entry. `slot_left` calls this the moment it
     /// marks a slot, so the side's next claimant still in a tank leads at once.
     ///
-    /// The vector is rebuilt in [`Team::ALL`] order. Nothing reads the order:
+    /// The vector is rebuilt in [`PartyId::OOC`] order. Nothing reads the order:
     /// every reader asks `any`.
     ///
     /// **17b cut M5.1** (the design note's §2.4): before the check-out — in
@@ -480,8 +480,8 @@ impl Centre {
     /// another account's choice; a staff choice stays. From `Running` on the
     /// entry is what the check-out resolved and stays as it is.
     pub fn resettle_leads(&mut self) {
-        let mut leads: Vec<(Team, AccountId)> = Vec::with_capacity(Team::ALL.len());
-        for team in Team::ALL {
+        let mut leads: Vec<(PartyId, AccountId)> = Vec::with_capacity(PartyId::OOC.len());
+        for team in PartyId::OOC {
             let kept =
                 self.leads
                     .iter()
@@ -527,7 +527,7 @@ impl Centre {
     }
 
     /// The lowest unclaimed slot index on a side, or `None` when it is full.
-    fn free_index(&self, team: Team, cap: u8) -> Option<u8> {
+    fn free_index(&self, team: PartyId, cap: u8) -> Option<u8> {
         (1..=cap).find(|index| {
             !self
                 .slots
@@ -1099,10 +1099,10 @@ pub fn mind_words(mind: &str, profiles: &[SmolStr]) -> String {
 
 /// **A side's word with a capital** (`Red`, `Blue`), as a sentence opens
 /// with it.
-fn side_word(team: Team) -> &'static str {
+fn side_word(team: PartyId) -> &'static str {
     match team {
-        Team::Red => "Red",
-        Team::Blue => "Blue",
+        PartyId::RED => "Red",
+        _ => "Blue",
     }
 }
 
@@ -1125,7 +1125,7 @@ pub fn centre(w: &World) -> Option<&Centre> {
 /// match's fill, and a side with no lead, have no principal and nobody is
 /// told.
 #[must_use]
-pub fn lead_character_of(w: &World, team: Team) -> Option<ObjId> {
+pub fn lead_character_of(w: &World, team: PartyId) -> Option<ObjId> {
     let centre = centre(w)?;
     if centre.state != MatchState::Boarding {
         return None;
@@ -1209,7 +1209,7 @@ pub fn slots_per_side(w: &World, match_cfg: &MatchConfig) -> u8 {
 /// 255 if anything ever fed it one.
 #[must_use]
 pub fn largest_side(centre: &Centre) -> u8 {
-    Team::ALL
+    PartyId::OOC
         .iter()
         .map(|team| u8::try_from(centre.side_len(*team)).unwrap_or(u8::MAX))
         .max()
@@ -1256,12 +1256,12 @@ pub fn ai_side_size(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> u8 {
 /// after `release_rows` has dropped the rows; there the board prints no range
 /// line and the bare `SIM RANGE` read names no side.
 #[must_use]
-pub fn range_sides(centre: &Centre) -> Option<(Team, Team)> {
+pub fn range_sides(centre: &Centre) -> Option<(PartyId, PartyId)> {
     if centre.mode != MatchMode::Range {
         return None;
     }
     let shooters = centre.slots.first()?.team;
-    Some((shooters, shooters.other()))
+    Some((shooters, shooters.ooc_other()))
 }
 
 /// **A count of targets in words** (16b cut O.3, fixer): `1 target`, `2
@@ -1370,7 +1370,7 @@ fn in_centre(w: &World, actor: ObjId) -> Result<CentreRoom, SimError> {
 /// # Errors
 ///
 /// [`SimError`], as the line the player sees.
-pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
+pub fn claim(ctx: &mut Ctx<'_>, team: PartyId) -> Result<(), SimError> {
     let actor = ctx.actor;
     require_layer(ctx.w)?;
     in_centre(ctx.w, actor)?;
@@ -1752,7 +1752,7 @@ fn resolve_unit_type(
 /// "Yours" on a slot that has chosen nothing, and what the `Idle` reset puts
 /// back.
 #[must_use]
-pub fn authored_unit_type(w: &World, team: Team, index: u8) -> Option<SmolStr> {
+pub fn authored_unit_type(w: &World, team: PartyId, index: u8) -> Option<SmolStr> {
     let arena = mush_core::CanonicalId::new(CENTRE_ARENA).ok()?;
     let slot = centre::slot_id(w, CENTRE_ARENA, team, index)?;
     let definitions = w.module_state::<crate::TacsimStore>()?.definitions();
@@ -1792,7 +1792,7 @@ fn class_of_type(w: &World, id: &str) -> Option<crate::definitions::UnitClass> {
 /// tanks, where it binds, and [`start`] over the claimed slots' effective
 /// types plus the pods the fill will add ([`fill_pods`]), as a courtesy before
 /// anything is written.
-fn side_fields_a_gun(w: &World, team: Team, types: &[SmolStr]) -> Result<(), SimError> {
+fn side_fields_a_gun(w: &World, team: PartyId, types: &[SmolStr]) -> Result<(), SimError> {
     if types.is_empty() {
         return Ok(());
     }
@@ -1832,7 +1832,7 @@ fn fill_pods(
     w: &World,
     centre: &Centre,
     match_cfg: &MatchConfig,
-    team: Team,
+    team: PartyId,
     fielded: &[ObjId],
 ) -> Vec<(u8, ObjId)> {
     let fill_to = usize::from(ai_side_size(w, centre, match_cfg));
@@ -2208,7 +2208,7 @@ fn split_profile(rest: &str) -> Option<(&str, &str)> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FillRequest {
     /// `red` or `blue`, when the line names one.
-    pub side: Option<Team>,
+    pub side: Option<PartyId>,
     /// The rest.
     pub request: MindRequest,
 }
@@ -2225,8 +2225,8 @@ impl FillRequest {
         let rest = rest.trim();
         let (head, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
         let side = match head.to_ascii_lowercase().as_str() {
-            "red" => Some(Team::Red),
-            "blue" => Some(Team::Blue),
+            "red" => Some(PartyId::RED),
+            "blue" => Some(PartyId::BLUE),
             _ => None,
         };
         if let Some(side) = side {
@@ -2695,7 +2695,7 @@ pub fn fits_line(
 /// "visible in the fiction") — `Red's half of the centre's pool is 244,000
 /// ops a second and 3,000 are spoken for.`
 #[must_use]
-pub fn pool_line(team: Team, half: u64, spoken: u64) -> String {
+pub fn pool_line(team: PartyId, half: u64, spoken: u64) -> String {
     format!(
         "{}'s half of the centre's pool is {} ops a second and {} are spoken for.",
         side_word(team),
@@ -2939,7 +2939,7 @@ pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
 
 /// **The fill read for one side, privileged** — the setter's, the lead's
 /// and staff's line.
-fn fill_line(team: Team, fill: Option<&FillChoice>) -> String {
+fn fill_line(team: PartyId, fill: Option<&FillChoice>) -> String {
     match fill {
         Some(fill) => format!("{}'s fill: {}.", side_word(team), fill.choice.words()),
         None => format!(
@@ -2959,10 +2959,10 @@ fn fill_read_lines(
     centre: &Centre,
     account: Option<AccountId>,
     staff: bool,
-    only: Option<Team>,
+    only: Option<PartyId>,
 ) -> Vec<String> {
-    let fill_of = |team: Team| centre.fill_minds.iter().find(|fill| fill.team == team);
-    let teams = Team::ALL
+    let fill_of = |team: PartyId| centre.fill_minds.iter().find(|fill| fill.team == team);
+    let teams = PartyId::OOC
         .into_iter()
         .filter(|team| only.is_none_or(|only| only == *team));
     if matches!(centre.state, MatchState::Idle | MatchState::Selection) {
@@ -3070,7 +3070,7 @@ pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> 
             });
         }
         let led = account.and_then(|account| {
-            Team::ALL
+            PartyId::OOC
                 .into_iter()
                 .find(|team| centre.leads_side(*team, account))
         });
@@ -3186,7 +3186,7 @@ fn settle_boarding(ctx: &mut Ctx<'_>) {
         let empty = if fill || centre.mode == MatchMode::Range {
             centre.slots.is_empty().then_some(None)
         } else {
-            Team::ALL
+            PartyId::OOC
                 .iter()
                 .find(|team| centre.side_len(**team) == 0)
                 .copied()
@@ -3256,7 +3256,7 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
             });
         }
         let lead = account.is_some_and(|account| {
-            Team::ALL
+            PartyId::OOC
                 .iter()
                 .any(|team| centre.leads_side(*team, account))
         });
@@ -3278,7 +3278,7 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
                 return Err(SimError::NobodyPlaying);
             }
         } else {
-            for team in Team::ALL {
+            for team in PartyId::OOC {
                 if centre.side_len(team) == 0 {
                     return Err(SimError::EmptySide(team.as_str()));
                 }
@@ -3319,7 +3319,7 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
             return Err(SimError::Unavailable);
         };
         let targets = range_sides(centre).map(|(_, targets)| targets);
-        for team in Team::ALL {
+        for team in PartyId::OOC {
             if targets == Some(team) {
                 continue;
             }
@@ -3383,7 +3383,7 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         centre.board_deadline_ms = Some(deadline);
         // **17b cut M5.2** (Q-UM-15; the owner's OQ-5): decided once, here,
         // from the claims — humans on both sides.
-        centre.doctrine_only = Team::ALL.iter().all(|team| centre.side_len(*team) > 0);
+        centre.doctrine_only = PartyId::OOC.iter().all(|team| centre.side_len(*team) > 0);
     }
     tracing::info!(
         match_id = match_id.0,
@@ -3484,15 +3484,15 @@ fn fit_fielded_units(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // with a choice on them — a refusal on one refuses the start as a claimed
     // slot's does, with that pod's own index, because the range cannot run
     // without its targets. Every other pod wants what it wanted before.
-    let pods: Vec<(Team, u8, bool, Option<SmolStr>)> = {
+    let pods: Vec<(PartyId, u8, bool, Option<SmolStr>)> = {
         let Some(centre) = centre(ctx.w) else {
             return Err(SimError::Unavailable);
         };
         let range = range_sides(centre)
             .zip(centre.range_targets)
             .map(|((_, targets), count)| (targets, count));
-        let mut pods: Vec<(Team, u8, bool, Option<SmolStr>)> = Vec::new();
-        for team in Team::ALL {
+        let mut pods: Vec<(PartyId, u8, bool, Option<SmolStr>)> = Vec::new();
+        for team in PartyId::OOC {
             let targets = range
                 .filter(|(targets, _)| *targets == team)
                 .map_or(0, |(_, count)| count);
@@ -3527,7 +3527,7 @@ fn fit_fielded_units(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     };
     // The reads, then the writes: `refit_unit` takes `ctx` mutably, and the
     // binding it needs is cloned out first.
-    let mut owed: Vec<(Team, u8, bool, ObjId, String, mush_tactics::UnitSpec)> = Vec::new();
+    let mut owed: Vec<(PartyId, u8, bool, ObjId, String, mush_tactics::UnitSpec)> = Vec::new();
     for (team, index, claimed, chosen) in pods {
         let had_choice = chosen.is_some();
         let Some(want) = chosen.or_else(|| authored_unit_type(ctx.w, team, index)) else {
@@ -3597,7 +3597,7 @@ fn fit_fielded_units(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
 
 /// The refusal [`fit_fielded_units`] makes, with the raw reason put where staff
 /// read it and out of the sentence the lead sees (16b cut Q.8, fixer).
-fn refit_refusal(team: Team, index: u8, unit_type: String, why: String) -> SimError {
+fn refit_refusal(team: PartyId, index: u8, unit_type: String, why: String) -> SimError {
     tracing::warn!(
         team = team.as_str(),
         index,
@@ -3615,7 +3615,7 @@ fn refit_refusal(team: Team, index: u8, unit_type: String, why: String) -> SimEr
 
 /// A pod nobody claimed whose tank could not be put back: logged, and the match
 /// goes on (16b cut Q.8, fixer).
-fn skipped_pod(team: Team, index: u8, tank: ObjId, unit_type: &str, why: &str) {
+fn skipped_pod(team: PartyId, index: u8, tank: ObjId, unit_type: &str, why: &str) {
     tracing::warn!(
         team = team.as_str(),
         index,
@@ -3644,7 +3644,7 @@ fn skipped_pod(team: Team, index: u8, tank: ObjId, unit_type: &str, why: &str) {
 ///
 /// Silent and idempotent: a pod already holding its authored type — every pod of
 /// every lobby in which nobody chose anything — is compared and left alone.
-fn unfit_slot(ctx: &mut Ctx<'_>, team: Team, index: u8) {
+fn unfit_slot(ctx: &mut Ctx<'_>, team: PartyId, index: u8) {
     let Some(want) = authored_unit_type(ctx.w, team, index) else {
         return;
     };
@@ -4220,6 +4220,22 @@ fn tell_seal_lines(ctx: &mut Ctx<'_>, match_id: MatchId, sides: &[Side]) {
     }
 }
 
+/// **The callsign a centre pod's tank answers to** (16b cut Q.1; doc 32 cut
+/// CF.0): read off the running match's record, because since CF.0 the unit
+/// letter is drawn at check-out and no longer spells the slot. Before a match
+/// has checked the tank out it is the side's letter and a dash (`R-`): the
+/// letter is not drawn yet.
+fn slot_callsign(w: &World, team: PartyId, index: u8) -> String {
+    let drawn = centre(w)
+        .and_then(|centre| centre.match_id)
+        .and_then(|match_id| w.module_state::<crate::match_::MatchBook>()?.get(match_id))
+        .and_then(|record| {
+            let unit = crate::match_::centre::tank_for_slot(w, team, index)?;
+            record.callsigns.get(&unit).map(ToString::to_string)
+        });
+    drawn.unwrap_or_else(|| format!("{}-", team.letter()))
+}
+
 /// **Put every human pilot of the match that just started on their side's net**
 /// (16b cut Z.4; 16c `N8`; doc 16 §3.7 "Boarding") — [`run`]'s success arm, at
 /// the `Boarding → Running` trigger: the last `BOARD` or the board deadline, and
@@ -4239,7 +4255,7 @@ fn tell_seal_lines(ctx: &mut Ctx<'_>, match_id: MatchId, sides: &[Side]) {
 /// second lock on that door, because a pilot who never boarded must not be on
 /// the radio of a match they are not in.
 fn join_the_nets(ctx: &mut Ctx<'_>) {
-    let seated: Vec<(Team, u8, ObjId)> = centre(ctx.w)
+    let seated: Vec<(PartyId, u8, ObjId)> = centre(ctx.w)
         .map(|centre| {
             centre
                 .slots
@@ -4249,7 +4265,7 @@ fn join_the_nets(ctx: &mut Ctx<'_>) {
                 .collect()
         })
         .unwrap_or_default();
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         let roster: Vec<ObjId> = seated
             .iter()
             .filter(|(side, _, _)| *side == team)
@@ -4260,11 +4276,7 @@ fn join_the_nets(ctx: &mut Ctx<'_>) {
             continue;
         }
         for (_, index, pilot) in seated.iter().filter(|(side, _, _)| *side == team) {
-            let callsign = Designator::Slot {
-                team,
-                slot: u16::from(*index),
-            }
-            .to_string();
+            let callsign = slot_callsign(ctx.w, team, *index);
             if !net::join_pilot(ctx, *pilot, team, &callsign, &roster) {
                 tracing::debug!(
                     pilot = %pilot,
@@ -4326,7 +4338,7 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
         } else {
             None
         };
-        for team in Team::ALL {
+        for team in PartyId::OOC {
             // **16b cut O.3**: the targets' side is its pods 1 to `n`, each a
             // `Fielded` with **no seated pilot** — which is what makes a unit a
             // machine's (`crate::match_::start`: a unit mind's since 17b cut
@@ -4552,7 +4564,7 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
             return;
         };
         let centre = book.centre_mut();
-        let dropped: Vec<(ObjId, Team, u8)> = centre
+        let dropped: Vec<(ObjId, PartyId, u8)> = centre
             .slots
             .iter()
             .filter(|slot| !slot.is_seated())
@@ -4597,7 +4609,7 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
             .is_some_and(|centre| centre.slots.is_empty())
             .then_some(None)
     } else {
-        Team::ALL
+        PartyId::OOC
             .iter()
             .find(|team| centre(ctx.w).is_some_and(|centre| centre.side_len(**team) == 0))
             .copied()
@@ -4711,7 +4723,7 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
             });
         }
         let lead = account.is_some_and(|account| {
-            Team::ALL
+            PartyId::OOC
                 .iter()
                 .any(|team| centre.leads_side(*team, account))
         });
@@ -4809,7 +4821,7 @@ pub fn ai_class(ctx: &mut Ctx<'_>, chosen: Option<CoreClass>) -> Result<(), SimE
 }
 
 /// The same cap selected by the lobby preview, reread at actual check-out.
-pub(crate) fn checkout_class_cap(w: &World, team: Team, unit: ObjId, seated: bool) -> CoreClass {
+pub(crate) fn checkout_class_cap(w: &World, team: PartyId, unit: ObjId, seated: bool) -> CoreClass {
     let cfg = minds_config(w).unwrap_or_default();
     let centre = centre(w);
     if seated
@@ -4832,7 +4844,7 @@ pub(crate) fn checkout_class_cap(w: &World, team: Team, unit: ObjId, seated: boo
 
 /// Bounded preview used by integration fixtures without checking a match out.
 #[doc(hidden)]
-pub fn class_preview_for_tests(w: &World) -> Result<Vec<(Team, u8, CoreClass)>, SimError> {
+pub fn class_preview_for_tests(w: &World) -> Result<Vec<(PartyId, u8, CoreClass)>, SimError> {
     caps::preview(
         &super::original_access::HoldingAccess::legacy(w),
         centre(w).ok_or(SimError::Unavailable)?,
@@ -4996,7 +5008,7 @@ pub fn mode(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
             });
         }
         let lead = account.is_some_and(|account| {
-            Team::ALL
+            PartyId::OOC
                 .iter()
                 .any(|team| centre.leads_side(*team, account))
         });
@@ -5126,14 +5138,14 @@ pub fn range(ctx: &mut Ctx<'_>, count: Option<u8>) -> Result<(), SimError> {
             });
         }
         let lead = account.is_some_and(|account| {
-            Team::ALL
+            PartyId::OOC
                 .iter()
                 .any(|team| centre.leads_side(*team, account))
         });
         if !staff && !lead {
             return Err(SimError::NotLeadForRange);
         }
-        if Team::ALL.iter().all(|team| centre.side_len(*team) > 0) {
+        if PartyId::OOC.iter().all(|team| centre.side_len(*team) > 0) {
             return Err(SimError::RangeTwoSides);
         }
         // `Selection` is only reachable with a slot in it, so there is always a
@@ -5143,7 +5155,7 @@ pub fn range(ctx: &mut Ctx<'_>, count: Option<u8>) -> Result<(), SimError> {
             .first()
             .map(|slot| slot.team)
             .ok_or(SimError::NobodyPlaying)?;
-        shooters.other()
+        shooters.ooc_other()
     };
     if count < 1 || count > cap {
         return Err(SimError::RangeCount { max: cap });
@@ -5321,7 +5333,7 @@ pub fn concede(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         format!(
             "{name} concedes for the {} side. Match {match_id} goes to {} when the arena answers.",
             team.as_str(),
-            team.other().as_str()
+            team.ooc_other().as_str()
         ),
     );
     Ok(())
@@ -5761,10 +5773,12 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         }
         // **16b cut D.3 (`B-33`)**: the same argument for the two new ends. The
         // outcome word is the winner's, which says who won and not how.
-        (Some(_), Some(EndReason::Conceded { winner })) => format!(
+        (Some(_), Some(EndReason::Conceded {
+            winner: Some(winner),
+        })) => format!(
             "{head} — {} wins: {} conceded",
             winner.as_str(),
-            winner.other().as_str()
+            winner.ooc_other().as_str()
         ),
         (Some(_), Some(EndReason::Unattended)) => {
             format!("{head} — timeout: every pilot had left")
@@ -5792,7 +5806,7 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         BoardReader::Staff => None,
         BoardReader::Player(actor) => centre.slot_of_pilot(actor).map(|slot| slot.team),
     };
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         // Staff read every side in full in every state; a player reads a side in
         // full only when the match is not running or the side is their own.
         let in_full = match reader {
@@ -5805,10 +5819,7 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
             // pilot's name, and not one byte about where that pilot is or what
             // the slot is flying.
             if !in_full {
-                let callsign = crate::arena::state::Designator::Slot {
-                    team,
-                    slot: u16::from(slot.index),
-                };
+                let callsign = slot_callsign(w, team, slot.index);
                 pilots.push(format!(
                     "{} ({callsign}): {}",
                     slot.index,
@@ -5830,10 +5841,7 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
             // nothing — the letter is one piece of arithmetic on an index that is
             // already here — and it is what lets a pilot who hears `BA` on the
             // radio find out who that is.
-            let callsign = crate::arena::state::Designator::Slot {
-                team,
-                slot: u16::from(slot.index),
-            };
+            let callsign = slot_callsign(w, team, slot.index);
             // **16b cut Q.8**: the machine this slot has chosen, when it is not
             // the pod's own. A slot that chose nothing prints nothing, so the
             // row a stock lobby renders is byte for byte the one Q.1 wrote.
@@ -5897,7 +5905,7 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         && centre.mode != MatchMode::Range
         && configs(w).is_some_and(|(_, match_cfg, _)| match_cfg.ai_fill)
     {
-        for team in Team::ALL {
+        for team in PartyId::OOC {
             let Some(fill) = centre.fill_minds.iter().find(|fill| fill.team == team) else {
                 continue;
             };
@@ -6046,7 +6054,7 @@ pub fn board_mind_clause(choice: Option<&MindChoice>, reads: bool) -> String {
 /// may read it (the side's lead, staff), `  red fill: a mind` for everyone
 /// else. [`status_lines`] prints it in `Selection` only, for a chosen fill.
 #[must_use]
-pub fn board_fill_row(team: Team, choice: &MindChoice, reads: bool) -> String {
+pub fn board_fill_row(team: PartyId, choice: &MindChoice, reads: bool) -> String {
     if reads {
         format!("  {} fill: {}", team.as_str(), choice.words())
     } else {
@@ -6229,7 +6237,7 @@ mod tests {
         AccountId::mint(&format!("pilot-{n}"), i64::from(n)).expect("an account id mints")
     }
 
-    fn slot(team: Team, index: u8, who: u8) -> Slot {
+    fn slot(team: PartyId, index: u8, who: u8) -> Slot {
         Slot {
             team,
             index,
@@ -6250,19 +6258,19 @@ mod tests {
         let mut centre = Centre {
             state: MatchState::Selection,
             slots: vec![
-                slot(Team::Red, 1, 1),
-                slot(Team::Red, 2, 2),
-                slot(Team::Blue, 1, 3),
+                slot(PartyId::RED, 1, 1),
+                slot(PartyId::RED, 2, 2),
+                slot(PartyId::BLUE, 1, 3),
             ],
-            leads: vec![(Team::Red, account(1)), (Team::Blue, account(3))],
+            leads: vec![(PartyId::RED, account(1)), (PartyId::BLUE, account(3))],
             fill_classes: vec![
                 FillClass {
-                    team: Team::Red,
+                    team: PartyId::RED,
                     lead: account(1),
                     class: CoreClass::II,
                 },
                 FillClass {
-                    team: Team::Blue,
+                    team: PartyId::BLUE,
                     lead: account(3),
                     class: CoreClass::Zero,
                 },
@@ -6276,9 +6284,9 @@ mod tests {
         assert_eq!(centre.fill_classes.len(), 2);
         centre.slots.retain(|slot| slot.account != account(1));
         centre.resettle_leads();
-        assert!(centre.leads_side(Team::Red, account(2)));
+        assert!(centre.leads_side(PartyId::RED, account(2)));
         assert_eq!(centre.fill_classes.len(), 1);
-        assert_eq!(centre.fill_classes[0].team, Team::Blue);
+        assert_eq!(centre.fill_classes[0].team, PartyId::BLUE);
         let default = serde_json::to_value(Centre::default()).expect("default serializes");
         assert!(
             default.get("fill_classes").is_none(),
@@ -6289,19 +6297,19 @@ mod tests {
     #[test]
     fn a_side_fills_the_lowest_free_slot_and_then_refuses() {
         let mut centre = Centre::default();
-        assert_eq!(centre.free_index(Team::Red, 2), Some(1));
-        centre.slots.push(slot(Team::Red, 1, 1));
-        assert_eq!(centre.free_index(Team::Red, 2), Some(2));
-        centre.slots.push(slot(Team::Red, 2, 2));
-        assert_eq!(centre.free_index(Team::Red, 2), None, "a full side");
+        assert_eq!(centre.free_index(PartyId::RED, 2), Some(1));
+        centre.slots.push(slot(PartyId::RED, 1, 1));
+        assert_eq!(centre.free_index(PartyId::RED, 2), Some(2));
+        centre.slots.push(slot(PartyId::RED, 2, 2));
+        assert_eq!(centre.free_index(PartyId::RED, 2), None, "a full side");
         assert_eq!(
-            centre.free_index(Team::Blue, 2),
+            centre.free_index(PartyId::BLUE, 2),
             Some(1),
             "the other side is its own"
         );
         // And a released slot is the one the next claim takes.
         centre.slots.retain(|held| held.index != 1);
-        assert_eq!(centre.free_index(Team::Red, 2), Some(1));
+        assert_eq!(centre.free_index(PartyId::RED, 2), Some(1));
     }
 
     #[test]
@@ -6379,8 +6387,8 @@ mod tests {
     #[test]
     fn one_account_holds_one_slot_however_many_characters_it_has() {
         let mut centre = Centre::default();
-        centre.slots.push(slot(Team::Red, 1, 1));
-        let mut second = slot(Team::Blue, 1, 1);
+        centre.slots.push(slot(PartyId::RED, 1, 1));
+        let mut second = slot(PartyId::BLUE, 1, 1);
         second.pilot = ObjId(99);
         assert!(
             centre.slot_of_account(second.account).is_some(),
@@ -6398,39 +6406,39 @@ mod tests {
     fn resettle_leads_keeps_promotes_and_drops() {
         let (a, b, c) = (account(1), account(2), account(3));
         let mut centre = Centre::default();
-        centre.slots.push(slot(Team::Red, 1, 1));
-        centre.slots.push(slot(Team::Red, 2, 2));
-        centre.slots.push(slot(Team::Blue, 1, 3));
-        centre.leads = vec![(Team::Red, a), (Team::Blue, c)];
+        centre.slots.push(slot(PartyId::RED, 1, 1));
+        centre.slots.push(slot(PartyId::RED, 2, 2));
+        centre.slots.push(slot(PartyId::BLUE, 1, 3));
+        centre.leads = vec![(PartyId::RED, a), (PartyId::BLUE, c)];
 
         // Keep: every slot is still held, so nothing moves.
         centre.resettle_leads();
         assert!(
-            centre.leads_side(Team::Red, a),
+            centre.leads_side(PartyId::RED, a),
             "red keeps its first claimant"
         );
-        assert!(centre.leads_side(Team::Blue, c), "blue keeps its own");
+        assert!(centre.leads_side(PartyId::BLUE, c), "blue keeps its own");
         assert_eq!(centre.leads.len(), 2);
 
         // Promote: red's lead is gone, and red's next claimant leads it.
         centre.slots.retain(|held| held.account != a);
         centre.resettle_leads();
-        assert!(centre.leads_side(Team::Red, b), "red's heir leads it");
+        assert!(centre.leads_side(PartyId::RED, b), "red's heir leads it");
         assert!(
-            !centre.leads_side(Team::Red, a),
+            !centre.leads_side(PartyId::RED, a),
             "the dropped lead does not"
         );
-        assert!(centre.leads_side(Team::Blue, c), "blue is untouched");
+        assert!(centre.leads_side(PartyId::BLUE, c), "blue is untouched");
         assert_eq!(centre.leads.len(), 2);
 
         // Drop: blue has no slot left, so it has no lead at all.
         centre.slots.retain(|held| held.account != c);
         centre.resettle_leads();
         assert!(
-            !centre.leads.iter().any(|(side, _)| *side == Team::Blue),
+            !centre.leads.iter().any(|(side, _)| *side == PartyId::BLUE),
             "an empty side has no entry"
         );
-        assert!(centre.leads_side(Team::Red, b));
+        assert!(centre.leads_side(PartyId::RED, b));
         assert_eq!(centre.leads.len(), 1);
     }
 
@@ -6445,19 +6453,19 @@ mod tests {
         // Claim order is the board's order: `a`, then `c`, then `b` — so `c`
         // stands between the lead and `b`, and an heir search that skipped only
         // the outgoing lead would land on `c`.
-        centre.slots.push(slot(Team::Red, 1, 1));
-        centre.slots.push(slot(Team::Red, 2, 3));
-        centre.slots.push(slot(Team::Red, 3, 2));
-        centre.slots.push(slot(Team::Blue, 1, 4));
-        centre.leads = vec![(Team::Red, a), (Team::Blue, d)];
+        centre.slots.push(slot(PartyId::RED, 1, 1));
+        centre.slots.push(slot(PartyId::RED, 2, 3));
+        centre.slots.push(slot(PartyId::RED, 3, 2));
+        centre.slots.push(slot(PartyId::BLUE, 1, 4));
+        centre.leads = vec![(PartyId::RED, a), (PartyId::BLUE, d)];
 
         // Keep: a non-lead leaving moves nothing.
         if let Some(held) = centre.slots.iter_mut().find(|held| held.account == c) {
             held.left = true;
         }
         centre.resettle_leads();
-        assert!(centre.leads_side(Team::Red, a), "red keeps its lead");
-        assert!(centre.leads_side(Team::Blue, d));
+        assert!(centre.leads_side(PartyId::RED, a), "red keeps its lead");
+        assert!(centre.leads_side(PartyId::BLUE, d));
 
         // Promote past a left slot: the lead leaves; the next claimant in claim
         // order is `c`, who has left and is still on the board, so it is skipped
@@ -6466,13 +6474,13 @@ mod tests {
             held.left = true;
         }
         centre.resettle_leads();
-        assert!(centre.leads_side(Team::Red, b), "red's heir is in a tank");
+        assert!(centre.leads_side(PartyId::RED, b), "red's heir is in a tank");
         assert!(
-            !centre.leads_side(Team::Red, a),
+            !centre.leads_side(PartyId::RED, a),
             "the lead who left does not lead"
         );
         assert!(
-            !centre.leads_side(Team::Red, c),
+            !centre.leads_side(PartyId::RED, c),
             "nor does the earlier claimant who left"
         );
         assert_eq!(centre.slots.len(), 4, "the slots stay on the board");
@@ -6483,10 +6491,10 @@ mod tests {
         }
         centre.resettle_leads();
         assert!(
-            !centre.leads.iter().any(|(side, _)| *side == Team::Red),
+            !centre.leads.iter().any(|(side, _)| *side == PartyId::RED),
             "a side whose every slot has left has no entry"
         );
-        assert!(centre.leads_side(Team::Blue, d), "blue is untouched");
+        assert!(centre.leads_side(PartyId::BLUE, d), "blue is untouched");
         assert_eq!(centre.leads.len(), 1);
     }
 
@@ -6561,8 +6569,8 @@ mod tests {
             ..Centre::default()
         };
         assert_eq!(range_sides(&centre), None, "no slot to read a side off");
-        centre.slots.push(slot(Team::Blue, 1, 1));
-        assert_eq!(range_sides(&centre), Some((Team::Blue, Team::Red)));
+        centre.slots.push(slot(PartyId::BLUE, 1, 1));
+        assert_eq!(range_sides(&centre), Some((PartyId::BLUE, PartyId::RED)));
         centre.mode = MatchMode::Hold;
         assert_eq!(range_sides(&centre), None, "a hold is not a range");
         // One target is one target (the fixer's pluralisation).
@@ -6616,7 +6624,7 @@ mod tests {
             doctrine_only: true,
             ..Centre::default()
         };
-        let mut selected = slot(Team::Red, 1, 1);
+        let mut selected = slot(PartyId::RED, 1, 1);
         let ordinary = MindChoice {
             filed: None,
             saved: None,
@@ -6624,7 +6632,7 @@ mod tests {
             profiles: vec![],
         };
         let mut fill = FillChoice {
-            team: Team::Red,
+            team: PartyId::RED,
             by: FillSetter::Staff,
             choice: ordinary.clone(),
         };

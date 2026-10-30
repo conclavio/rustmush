@@ -151,7 +151,7 @@ mod tests {
     use super::*;
     use crate::arena::clock::Tempo;
     use crate::arena::state::Controller;
-    use crate::arena::state::{Designator, Team, TerrainCell};
+    use crate::arena::state::{Designator, PartyId, TerrainCell};
 
     fn ground() -> ArenaTerrain {
         ArenaTerrain::uniform(
@@ -167,7 +167,7 @@ mod tests {
         .expect("the shipped window's size")
     }
 
-    fn row(unit: u32, team: Team, slot: u16, cell: Option<(u16, u16)>) -> ObserverUnit {
+    fn row(unit: u32, team: PartyId, slot: u16, cell: Option<(u16, u16)>) -> ObserverUnit {
         ObserverUnit {
             unit: ObjId(unit),
             callsign: Designator::Slot { team, slot },
@@ -186,11 +186,11 @@ mod tests {
     /// cell for a unit off the window, and the floor as the mirror has it.
     #[test]
     fn i4_the_picture_carries_every_key_and_a_row_per_unit() {
-        let mut red = row(301, Team::Red, 1, Some((120, 97)));
+        let mut red = row(301, PartyId::RED, 1, Some((120, 97)));
         red.power = Power::Online;
         // 17b cut M4.5a: the machine is a mind (one machine flag, `m`).
         red.controller = Controller::Mind;
-        let mut blue = row(302, Team::Blue, 1, None);
+        let mut blue = row(302, PartyId::BLUE, 1, None);
         blue.heading_mdeg = 270_000;
         blue.wreck = true;
         let picture = Observer {
@@ -230,7 +230,7 @@ mod tests {
     /// mind, where it was the reflex controller).
     #[test]
     fn i4_the_flags_are_in_their_fixed_order() {
-        let mut unit = row(1, Team::Red, 1, Some((0, 0)));
+        let mut unit = row(1, PartyId::RED, 1, Some((0, 0)));
         assert_eq!(unit_flags(&unit), "");
         unit.held = true;
         assert_eq!(unit_flags(&unit), "h");
@@ -263,7 +263,7 @@ mod tests {
     fn i4_a_three_hundred_unit_picture_fits_the_frame_bound() {
         let units: Vec<ObserverUnit> = (0..300_u16)
             .map(|n| {
-                let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+                let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
                 let mut unit = row(
                     900_000 + u32::from(n),
                     team,

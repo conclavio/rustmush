@@ -3,7 +3,7 @@
 //! record the act carries ([`assemble`]); the Roll's reads are the excursion harness's
 //! (`tests/shard_4/ic_sortie_surface.rs`).
 use super::*;
-use crate::arena::Team;
+use crate::arena::PartyId;
 use crate::arena::core::CoreClass;
 use crate::arena::mind::SealEngine;
 use crate::arena::mind_seal::Admission;
@@ -21,7 +21,7 @@ const SOURCE: &str = "fn think(v,c) { this.marker = 73; }";
 
 /// A cored hull's unit (the fixture tank's Class I core), governed or not.
 fn unit(governed: bool) -> Result<mush_tactics::TacticalUnit, Box<dyn std::error::Error>> {
-    let mut unit = tank(TV, Team::Red, pose(1500, 1500)).unit;
+    let mut unit = tank(TV, PartyId::RED, pose(1500, 1500)).unit;
     if !governed {
         let core = mush_tactics::ComponentId::new("core")?;
         let key = mush_tactics::CapabilityKey {

@@ -196,16 +196,16 @@ fn finite_schedule_covers_all_pairs_and_charges_actual_case_rosters() -> TestRes
 fn actual_runner_meter_preserves_answers_and_counts_host_fees_at_real_landing() -> TestResult {
     use crate::arena::{
         motor::MotorCounters,
-        state::{Controller, Power, Team},
+        state::{Controller, Power, PartyId},
         test_support::{arena_of, line_tank, pose},
     };
     let own = ObjId(4);
-    let mut hull = line_tank(own, Team::Red, pose(1500, 4500));
+    let mut hull = line_tank(own, PartyId::RED, pose(1500, 4500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_of(vec![
         hull,
-        line_tank(ObjId(9), Team::Blue, pose(6500, 4500)),
+        line_tank(ObjId(9), PartyId::BLUE, pose(6500, 4500)),
     ]);
     arena.unit_mut(own).ok_or("own")?.power = Power::Online;
     let prepared = PreparedSubject::prepare(&revision(SOURCE)?, SOURCE, &ArenaConfig::default())?;
@@ -364,18 +364,18 @@ fn retained_api4_reconformance_checks_immutable_metadata_under_current_sandbox()
     // The unchanged historical source actually executes through the newly
     // compiled current runner; no old engine or metadata-generated authority.
     use crate::arena::{
-        Controller, Team,
+        Controller, PartyId,
         motor::MotorCounters,
         state::Power,
         test_support::{arena_of, line_tank, pose},
     };
     let own = ObjId(4);
-    let mut hull = line_tank(own, Team::Red, pose(1500, 4500));
+    let mut hull = line_tank(own, PartyId::RED, pose(1500, 4500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_of(vec![
         hull,
-        line_tank(ObjId(9), Team::Blue, pose(6500, 4500)),
+        line_tank(ObjId(9), PartyId::BLUE, pose(6500, 4500)),
     ]);
     arena.unit_mut(own).ok_or("own")?.power = Power::Online;
     arena.now_ms = 1250;

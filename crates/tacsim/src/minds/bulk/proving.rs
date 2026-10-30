@@ -10,7 +10,7 @@ use super::{
     report::{Game, Outcome, Report},
 };
 use crate::arena::{
-    Arena, EndReason, Team,
+    Arena, EndReason, PartyId,
     input_tape::{TapeChunk, TapeError, TapeEvent, TapeMark, TapeRecorder, TapeWrite},
     state_hash,
 };
@@ -179,8 +179,8 @@ impl ProvingMachine {
         let header = self.frozen.start.header(self.index)?;
         let mut arena = open_frozen_header(&header).map_err(tape_error)?;
         let plan = &self.frozen.plan;
-        let red = arena.units.iter().filter(|u| u.team == Team::Red).count();
-        let blue = arena.units.iter().filter(|u| u.team == Team::Blue).count();
+        let red = arena.units.iter().filter(|u| u.team == PartyId::RED).count();
+        let blue = arena.units.iter().filter(|u| u.team == PartyId::BLUE).count();
         if arena.seed != game.seed
             || arena.now_ms != 0
             || arena.ended.is_some()
@@ -404,7 +404,7 @@ impl Machine for ProvingMachine {
             unmeasured_thinks: 0,
             odds_unobserved: 0,
         };
-        let focus = if game.swapped { Team::Blue } else { Team::Red };
+        let focus = if game.swapped { PartyId::BLUE } else { PartyId::RED };
         std::mem::take(&mut active.metrics).finish(
             &mut game,
             &active.operations,
@@ -483,10 +483,11 @@ impl Machine for ProvingMachine {
     }
 }
 fn outcome(reason: EndReason, swapped: bool) -> Result<Outcome, BulkError> {
-    let focus = if swapped { Team::Blue } else { Team::Red };
+    let focus = if swapped { PartyId::BLUE } else { PartyId::RED };
     let winner = match reason {
         EndReason::Elimination { winner } => winner,
-        EndReason::Hold { winner } | EndReason::Conceded { winner } => Some(winner),
+        EndReason::Hold { winner } => Some(winner),
+        EndReason::Conceded { winner } => winner,
         EndReason::Spent => None,
         EndReason::Timeout | EndReason::Unattended => return Ok(Outcome::Timeout),
         EndReason::Abort | EndReason::Void | EndReason::LedgerOverflow => {
@@ -606,8 +607,8 @@ mod tests {
             test_support::{arena_at_epoch, pose, tank},
         };
         let units = vec![
-            tank(mush_core::ObjId(1), Team::Red, pose(500, 500)),
-            tank(mush_core::ObjId(2), Team::Blue, pose(6500, 6500)),
+            tank(mush_core::ObjId(1), PartyId::RED, pose(500, 500)),
+            tank(mush_core::ObjId(2), PartyId::BLUE, pose(6500, 6500)),
         ];
         let seals = units.iter().map(|u| u.seal.clone()).collect();
         let mut arena = arena_at_epoch(units, 0);
@@ -661,7 +662,7 @@ mod tests {
         assert_eq!(
             outcome(
                 EndReason::Elimination {
-                    winner: Some(Team::Red)
+                    winner: Some(PartyId::RED)
                 },
                 false
             ),
@@ -670,7 +671,7 @@ mod tests {
         assert_eq!(
             outcome(
                 EndReason::Elimination {
-                    winner: Some(Team::Red)
+                    winner: Some(PartyId::RED)
                 },
                 true
             ),

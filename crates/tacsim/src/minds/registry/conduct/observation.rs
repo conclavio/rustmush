@@ -150,7 +150,7 @@ impl Observer {
                 && row.age_ms <= age
                 && row.cell.is_some()
                 && row.reads_dead != Some(true)
-                && row.class.team().is_some()
+                && row.class.party().is_some()
         };
         let current = view
             .order
@@ -165,12 +165,12 @@ impl Observer {
             .contacts
             .iter()
             .filter(fresh)
-            .find(|row| Some(row.id) == charge && row.class.team() == Some(view.team));
+            .find(|row| Some(row.id) == charge && row.class.party() == Some(view.team));
         let threat = view
             .contacts
             .iter()
             .filter(fresh)
-            .any(|row| row.class.team() != Some(view.team) && row.range_m <= threat_m);
+            .any(|row| row.class.party() != Some(view.team) && row.range_m <= threat_m);
         let intents = &answer.result.intents;
         let drive = intents.iter().any(|intent| {
             matches!(intent, IntentKind::Goal(MotorGoal::Cell { .. }))
@@ -264,7 +264,7 @@ impl Observer {
         // slot admission, while native code remains the only shot resolver.
         let hostile = |id| {
             view.contacts.iter().filter(fresh).any(|row| {
-                row.id == id && row.class.team() != Some(view.team) && row.range_m <= threat_m
+                row.id == id && row.class.party() != Some(view.team) && row.range_m <= threat_m
             })
         };
         let condition_ok = |condition: &FireCondition| {

@@ -211,7 +211,7 @@ impl SquadBrief {
                 id: contact.id.to_string(),
                 stance: match contact.class {
                     Classification::Unknown => "unknown".to_string(),
-                    Classification::Classified { team } if team == signal.team => {
+                    Classification::Classified { party: team } if team == signal.team => {
                         "friendly".to_string()
                     }
                     Classification::Classified { .. } => "hostile".to_string(),
@@ -702,17 +702,17 @@ mod tests {
     use super::*;
     use crate::arena::command::{SignalContact, SignalMember, SquadDigest};
     use crate::arena::doctrine::MachineState;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use mush_core::ObjId;
 
     fn signal() -> SquadSignal {
         SquadSignal {
             squad: SquadId {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
             },
             commander: ObjId(4),
-            team: Team::Red,
+            team: PartyId::RED,
             reason: SignalReason::ContactsChanged,
             at_ms: 1_000,
             digest: SquadDigest {
@@ -723,7 +723,7 @@ mod tests {
             contacts: vec![
                 SignalContact {
                     id: ContactId(0x2a),
-                    class: Classification::Classified { team: Team::Blue },
+                    class: Classification::Classified { party: PartyId::BLUE },
                     bearing_mdeg: 90_000,
                     range_cm: 1_000,
                 },
@@ -778,7 +778,7 @@ mod tests {
     fn leader() -> CharacterRef {
         CharacterRef::Persona {
             squad: SquadId {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
             },
         }
@@ -857,7 +857,7 @@ mod tests {
         stock.sight_cm = 60_000;
         stock.contacts = vec![SignalContact {
             id: ContactId(0x2a),
-            class: Classification::Classified { team: Team::Blue },
+            class: Classification::Classified { party: PartyId::BLUE },
             bearing_mdeg: 90_000,
             range_cm: 45_000,
         }];

@@ -78,7 +78,7 @@ use crate::arena::core::{CoreClass, fitted_with_core, read_core};
 use crate::arena::damage::DESTROYED;
 use crate::arena::ledger::{EventKind, LedgerEvent};
 use crate::arena::resolution::{Consequence, UnitProfile};
-use crate::arena::state::{ContactId, CustodyUnit, EndReason, Team};
+use crate::arena::state::{ContactId, CustodyUnit, EndReason, PartyId};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::deliberation::order::CharacterRef;
@@ -119,7 +119,7 @@ pub const REPORT_RECORD: &str = "tacsim.report";
 #[serde(deny_unknown_fields)]
 pub struct RosterUnit {
     /// Its side, or `None` for a unit on no roster (a restart abort's).
-    pub team: Option<Team>,
+    pub team: Option<PartyId>,
     /// Its callsign as the arena resolved it (`RA`), or empty.
     pub callsign: SmolStr,
     /// The first pilot seated on it, or `None` for a machine.
@@ -154,7 +154,7 @@ impl Roster {
     pub fn insert(
         &mut self,
         unit: ObjId,
-        team: Option<Team>,
+        team: Option<PartyId>,
         callsign: SmolStr,
         pilot: Option<ObjId>,
     ) {
@@ -1886,7 +1886,7 @@ impl Fold {
             EventKind::MatchEnded { reason } => {
                 let winner = match reason {
                     EndReason::Elimination { winner: Some(team) }
-                    | EndReason::Conceded { winner: team }
+                    | EndReason::Conceded { winner: Some(team) }
                     // 16b cut O.1: a hold names its winner the same way.
                     | EndReason::Hold { winner: team } => team.as_str(),
                     _ => "-",
@@ -2060,8 +2060,8 @@ pub fn header_lines(
             duration_words(row.arena_ms),
         ),
         {
-            let (red_lost, red_of) = row.losses(Team::Red);
-            let (blue_lost, blue_of) = row.losses(Team::Blue);
+            let (red_lost, red_of) = row.losses(PartyId::RED);
+            let (blue_lost, blue_of) = row.losses(PartyId::BLUE);
             format!("Red lost {red_lost} of {red_of}; blue lost {blue_lost} of {blue_of}.")
         },
     ];
@@ -3085,8 +3085,8 @@ mod tests {
     /// Red's `RA` (#101, pilot #5) against blue's `BA` (#201, pilot #6).
     fn roster() -> Roster {
         let mut roster = Roster::new();
-        roster.insert(ME, Some(Team::Red), SmolStr::new("RA"), Some(ObjId(5)));
-        roster.insert(THEM, Some(Team::Blue), SmolStr::new("BA"), Some(ObjId(6)));
+        roster.insert(ME, Some(PartyId::RED), SmolStr::new("RA"), Some(ObjId(5)));
+        roster.insert(THEM, Some(PartyId::BLUE), SmolStr::new("BA"), Some(ObjId(6)));
         roster
     }
 
@@ -3191,7 +3191,7 @@ mod tests {
                     viewer: ME,
                     contact: SEEN,
                     target: THEM,
-                    team: Team::Blue,
+                    team: PartyId::BLUE,
                 },
                 draws("classify:101:201:3"),
             )
@@ -3257,7 +3257,7 @@ mod tests {
                 272_000,
                 EventKind::MatchEnded {
                     reason: EndReason::Elimination {
-                        winner: Some(Team::Blue),
+                        winner: Some(PartyId::BLUE),
                     },
                 },
             );
@@ -3660,7 +3660,7 @@ mod tests {
                 ObjId(301),
                 Some(CharacterRef::Persona {
                     squad: crate::deliberation::SquadId {
-                        team: Team::Red,
+                        team: PartyId::RED,
                         index: 1,
                     },
                 }),
@@ -4742,7 +4742,7 @@ mod tests {
         const RB: ObjId = ObjId(102);
         const OTHER: ContactId = ContactId(0x0fed_cba9_8765_4321);
         let mut roster = roster();
-        roster.insert(RB, Some(Team::Red), SmolStr::new("RB"), None);
+        roster.insert(RB, Some(PartyId::RED), SmolStr::new("RB"), None);
         let mut tape = the_tape();
         // Before the seq-1 miss: RB tells BA apart on its own contact.
         tape.insert(
@@ -4753,7 +4753,7 @@ mod tests {
                     viewer: RB,
                     contact: OTHER,
                     target: THEM,
-                    team: Team::Blue,
+                    team: PartyId::BLUE,
                 },
             ),
         );
@@ -4811,7 +4811,7 @@ mod tests {
                 viewer: ME,
                 contact: SEEN,
                 target: THEM,
-                team: Team::Blue,
+                team: PartyId::BLUE,
             },
         )
         .at(10_000, fired(ME, "cannon", 1, THEM, 1))
@@ -5143,7 +5143,7 @@ mod tests {
                 viewer: ME,
                 contact: SEEN,
                 target: THEM,
-                team: Team::Blue,
+                team: PartyId::BLUE,
             },
         )
         // One order to a squad of two: two lines, one moment.

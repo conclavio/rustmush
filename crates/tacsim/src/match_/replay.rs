@@ -58,7 +58,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::arena::ledger::{EventKind, LedgerEvent};
-use crate::arena::state::{ArenaDefinition, ArenaTerrain, Designator, KeySpot, MatchMode, Team};
+use crate::arena::state::{ArenaDefinition, ArenaTerrain, Designator, KeySpot, MatchMode, PartyId};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::match_::MatchBook;
@@ -165,7 +165,7 @@ pub struct ReplayRoster {
     /// The designator's `Display` (`RA`, `BC`).
     pub callsign: SmolStr,
     /// Its side.
-    pub team: Team,
+    pub team: PartyId,
 }
 
 /// **Where one unit stood at one keyframe** (16b cut I.1): an arena cell and a
@@ -423,10 +423,10 @@ impl ReplayFold {
         width: u16,
         height: u16,
         summary_ms: u32,
-        roster: &[(ObjId, Designator, Team)],
+        roster: &[(ObjId, Designator, PartyId)],
         opening: &[(ObjId, mush_sim::data::Pose)],
     ) -> ReplayFold {
-        let mut sorted: Vec<(ObjId, Designator, Team)> = roster.to_vec();
+        let mut sorted: Vec<(ObjId, Designator, PartyId)> = roster.to_vec();
         sorted.sort_by_key(|(unit, _, _)| *unit);
         sorted.dedup_by_key(|(unit, _, _)| *unit);
         let cut = if sorted.len() > REPLAY_MAX_UNITS {
@@ -798,8 +798,8 @@ impl Replay {
                 team: entry
                     .get("team")
                     .cloned()
-                    .and_then(|team| serde_json::from_value::<Team>(team).ok())
-                    .unwrap_or(Team::Red),
+                    .and_then(|team| serde_json::from_value::<PartyId>(team).ok())
+                    .unwrap_or(PartyId::RED),
             })
             .collect();
         let size = roster.len();
@@ -1084,11 +1084,13 @@ pub fn replay_window(
                 ("wreck", WRECK_GLYPH)
             } else {
                 match entry.team {
-                    Team::Red => {
+                    PartyId::RED => {
                         red = true;
                         ("red", RED_GLYPH)
                     }
-                    Team::Blue => {
+                    // Doc 32 cut CF.0: the centre fields red and blue; any
+                    // other party is drawn as the blue glyph is.
+                    _ => {
                         blue = true;
                         ("blue", BLUE_GLYPH)
                     }
@@ -1884,7 +1886,7 @@ mod tests {
     const BA: ObjId = ObjId(201);
     const BB: ObjId = ObjId(202);
 
-    fn slot(team: Team, slot: u16) -> Designator {
+    fn slot(team: PartyId, slot: u16) -> Designator {
         Designator::Slot { team, slot }
     }
 
@@ -1911,11 +1913,11 @@ mod tests {
             64,
             5_000,
             &[
-                (BB, slot(Team::Blue, 2), Team::Blue),
-                (RA, slot(Team::Red, 1), Team::Red),
-                (BA, slot(Team::Blue, 1), Team::Blue),
-                (RB, slot(Team::Red, 2), Team::Red),
-                (RA, slot(Team::Red, 1), Team::Red),
+                (BB, slot(PartyId::BLUE, 2), PartyId::BLUE),
+                (RA, slot(PartyId::RED, 1), PartyId::RED),
+                (BA, slot(PartyId::BLUE, 1), PartyId::BLUE),
+                (RB, slot(PartyId::RED, 2), PartyId::RED),
+                (RA, slot(PartyId::RED, 1), PartyId::RED),
             ],
             &[
                 (RA, pose(6, 4, 90_000)),
@@ -2179,8 +2181,8 @@ mod tests {
     #[test]
     fn i1_each_cap_and_the_byte_budget_set_truncated() {
         // Units.
-        let many: Vec<(ObjId, Designator, Team)> = (1..=30_u16)
-            .map(|n| (ObjId(u32::from(n)), slot(Team::Red, n), Team::Red))
+        let many: Vec<(ObjId, Designator, PartyId)> = (1..=30_u16)
+            .map(|n| (ObjId(u32::from(n)), slot(PartyId::RED, n), PartyId::RED))
             .collect();
         let wide = ReplayFold::new(
             MatchId(1),
@@ -2403,9 +2405,9 @@ mod tests {
     /// evenly over it, the last `destroyed` units wrecked: `(replay, document
     /// bytes)`.
     fn an_hour(units: u16, destroyed: u16) -> (Replay, usize) {
-        let roster: Vec<(ObjId, Designator, Team)> = (1..=units)
+        let roster: Vec<(ObjId, Designator, PartyId)> = (1..=units)
             .map(|n| {
-                let team = if n % 2 == 1 { Team::Red } else { Team::Blue };
+                let team = if n % 2 == 1 { PartyId::RED } else { PartyId::BLUE };
                 (ObjId(u32::from(n) + 1_000), slot(team, n.div_ceil(2)), team)
             })
             .collect();
