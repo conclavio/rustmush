@@ -2267,6 +2267,7 @@ pub(crate) fn dispatch_step(
             }
         }
         let rig = RigAt {
+            crew: None,
             tv,
             slot: lease.slot,
             mark: lease.mark.clone(),

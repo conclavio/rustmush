@@ -233,6 +233,44 @@ NPC execution remains required before claiming the IC parts of DT.1/DT.2
 complete. The OOC host cannot stand in for those production paths, and neither
 the communications nor permission integration claims the NPC mining story.
 
+DT.3g connects physical mining operators to the existing surface action host.
+The actual accepted operator, current unit console, K6 helm holder, employment,
+unit condition and OperateCrew permission admit each new action. The stock rental
+rigs have real, initially unoccupied helm consoles in their authored cabs; adding
+a missing console does not assign crew or take control.
+
+For the existing leased-rig mining host, a player operates their own lease. A
+hired Mining-duty NPC works its employer's actual leased rig on the accepted
+carrier. The character retains its own chart and action identity; the real
+employer/lessee supplies mining licence and tenure rights independently of field
+leadership. Renting, hiring, organizing or holding command conveys no missing
+unit permission. No NPC account, artificial lease or wage ledger is introduced.
+
+The DT flight retains the hull epoch. Surface work carries its exact operation,
+flight and operator as a causal link and never opens a second epoch. Bay charge
+ends at actual departure. Surface recovery uses ordinary placement; the existing
+flight observer confirms the return and closes its epoch. Loaded returns use
+the existing queued unload after that confirmation. A returned flight cannot
+restart field work through the surface host; its next departure uses DT launch.
+Station/control loss or disabled controls prevent further physical work, while
+the actual admitted work can still settle to a refusal. Individual drive, scan,
+sound, mine, recover, dump and unload actions are supported; the carrier's
+multi-trip teleoperation plans retain their existing separate admission.
+Their idle recall also remains on the teleoperation path; an idle physical slot
+does not pilot itself home.
+
+This adapter does not itself choose an NPC's next action. The delivered-order
+decision driver and authenticated attempt/completion reporting remain the next
+functional slice.
+
+DT.3g validation covers all 27 production preparation/launch/field stories,
+including a real leased-rig NPC mining and unload flow, permission loss at final
+take, station loss without a reading or charge spend, charge settlement for
+movement already completed, and no implicit recall of idle physical slots.
+The 183 surface library tests, 26 legacy mining tests, 30 excursion tests and
+27 source-policy tests passed. Strict Clippy and the unchanged six-package M7
+memory gate passed, including all targets for the memory checks.
+
 ## DT.1a verification
 
 Validated locally on 2026-10-28:

@@ -860,6 +860,7 @@ mod tests {
             plans: 0,
             recovery: None,
             sortie: None,
+            field_crew: None,
         }
     }
 

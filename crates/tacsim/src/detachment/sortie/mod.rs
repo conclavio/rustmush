@@ -8,6 +8,7 @@ mod model;
 mod prepare;
 mod runtime;
 mod seating;
+pub(crate) mod surface;
 mod tick;
 
 pub(crate) use commands::{SWITCHES, command, handles};
@@ -21,3 +22,4 @@ pub(crate) use runtime::{
     ACTION, action_descriptor, bridge_descriptor, outcome_descriptor, register,
 };
 pub(crate) use runtime::{availability_key, offer_available, require_available};
+pub use surface::SurfaceCrew;

@@ -1143,6 +1143,7 @@ impl GameModule for TacsimRuleset {
             return Err(ModError::msg("tacsim: no module state"));
         };
         *slot = loaded;
+        port::vehicle::boot_consoles(ctx);
         // Doc 20 cut SM.1 (Q-20-12): the geology key's boot pass — pin the fingerprint at the
         // first keyed boot (a module document, never a submission), compare it at every later
         // one, and leave the RAM-only status every consumer reads.

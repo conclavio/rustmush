@@ -367,6 +367,9 @@ pub fn idle_key(tv: ObjId, ordinal: u32) -> Option<IdempotencyKeyText> {
 /// the actor's helm hull.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RigAt {
+    /// An actual accepted physical-crew selection. The source re-reads it and
+    /// fences current control/permission before admission; this is no permit.
+    pub crew: Option<Box<crate::detachment::sortie::SurfaceCrew>>,
     /// The terrain vehicle.
     pub tv: ObjId,
     /// Its bay slot.
@@ -390,6 +393,7 @@ pub(crate) fn operator_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
         return crate::port::yard::house_rigs(w, actor)
             .into_iter()
             .map(|record| RigAt {
+                crew: None,
                 tv: record.tv,
                 slot: record.slot,
                 mark: record.mark.clone(),
@@ -405,6 +409,7 @@ pub(crate) fn operator_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
         .tv_leases_of(actor)
         .filter(|record| record.live() && record.hull == helm.hull)
         .map(|record| RigAt {
+            crew: None,
             tv: record.tv,
             slot: record.slot,
             mark: record.mark.clone(),
@@ -428,6 +433,7 @@ pub(crate) fn leased_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
         .tv_leases_of(actor)
         .filter(|record| record.live())
         .map(|record| RigAt {
+            crew: None,
             tv: record.tv,
             slot: record.slot,
             mark: record.mark.clone(),
@@ -437,6 +443,20 @@ pub(crate) fn leased_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
         .collect();
     rigs.sort_by_key(|rig| (rig.slot, rig.tv));
     rigs
+}
+
+impl RigAt {
+    pub(crate) fn operator_present(&self, w: &World, actor: ObjId) -> bool {
+        if let Some(crew) = self.crew.as_deref() {
+            crew.operator == actor
+                && crate::detachment::planning::projection::physically_aboard(w, actor, self.tv)
+        } else {
+            crate::port::voyage::aboard(w, self.hull, actor)
+        }
+    }
+    pub(crate) fn mining_principal(&self, actor: ObjId) -> ObjId {
+        self.crew.as_deref().map_or(actor, |crew| crew.principal)
+    }
 }
 
 /// **Where a rig stands** (the brief's 3.3).

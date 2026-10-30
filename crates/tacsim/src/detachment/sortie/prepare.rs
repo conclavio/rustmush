@@ -22,6 +22,7 @@ pub(super) struct Snapshot {
     index: Option<Write<FlightIndex>>,
     heads: Vec<Write<UnitHead>>,
     flights: Vec<Write<Flight>>,
+    surface_records: Vec<Write<crate::surface::excursion::RigRecord>>,
     observations: Vec<Value>,
     lines: Vec<(ObjId, crate::surface::black_box::BlackBoxLine)>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,6 +38,7 @@ impl Snapshot {
             index: None,
             heads: Vec::new(),
             flights: Vec::new(),
+            surface_records: Vec::new(),
             observations: Vec::new(),
             lines: Vec::new(),
             transport: None,
@@ -128,6 +130,15 @@ impl Snapshot {
             )?;
         }
         let mut result = Vec::new();
+        for write in self.surface_records {
+            save(
+                txn,
+                &handles.ports.excursions,
+                &crate::surface::excursion::RigKey(write.after.tv),
+                true,
+                write.after.clone(),
+            )?;
+        }
         for write in flights {
             write.after.validate().map_err(runtime::error)?;
             result.push(json!({"unit":write.after.key.unit,"flight":write.after.key.ordinal,"phase":write.after.phase}));
@@ -721,6 +732,34 @@ fn finish(
         ));
     } else {
         return Err("Physical departure or return is not confirmed.".into());
+    }
+    if next.phase == Phase::Returned
+        && let Some(record) = read.get(
+            &h.ports.excursions,
+            &crate::surface::excursion::RigKey(key.unit),
+        )?
+        && let Some(crew) = record
+            .field_crew
+            .as_deref()
+            .filter(|c| c.operation == next.operation && c.flight == next.key)
+        && record.act.is_none()
+        && record.run.is_none()
+    {
+        let mut after = record.clone();
+        super::surface::adopt_record(
+            crew,
+            &next,
+            &mut after,
+            u8::try_from(next.slot).map_err(|_| "Invalid slot.")?,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        if after != record {
+            patch.surface_records.push(Write {
+                before: Some(record),
+                after,
+            });
+        }
     }
     patch.observations.push(json!({"parent":world.module_state::<mush_sim::SpatialState>().map(|s|s.parent_of(key.unit)),
         "unit_revision":mush_tactics::module::unit_of(world,key.unit).map(|u|u.revision())}));

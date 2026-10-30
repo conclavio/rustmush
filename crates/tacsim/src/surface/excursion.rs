@@ -1024,6 +1024,10 @@ impl Run {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RigRecord {
+    /// Causal link to the existing DT flight for a physically crewed rig.
+    /// The flight owns its hull epoch; this record owns only surface work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_crew: Option<Box<crate::detachment::sortie::SurfaceCrew>>,
     /// [`EXCURSION_SCHEMA`].
     pub schema: u16,
     /// The terrain vehicle: the key.
@@ -1180,6 +1184,7 @@ impl RigRecord {
             plans: 0,
             recovery: None,
             sortie: None,
+            field_crew: None,
         }
     }
 
@@ -1208,6 +1213,7 @@ impl RigRecord {
             plans: 0,
             recovery: None,
             sortie: None,
+            field_crew: None,
         }
     }
 
@@ -1227,6 +1233,29 @@ impl RigRecord {
     ///
     /// The first invariant broken, as a sentence.
     pub fn check(&self) -> Result<(), String> {
+        if let Some(crew) = self.field_crew.as_deref() {
+            crew.operation.key()?;
+            if crew.flight.unit != self.tv
+                || crew.flight.ordinal == 0
+                || crew.operator.0 == 0
+                || crew.principal.0 == 0
+                || self.sortie.is_some()
+                || self
+                    .excursion
+                    .as_ref()
+                    .is_some_and(|e| e.operator != crew.operator)
+                || self
+                    .act
+                    .as_ref()
+                    .is_some_and(|a| a.operator != crew.operator)
+                || self
+                    .run
+                    .as_ref()
+                    .is_some_and(|r| r.operator != crew.operator)
+            {
+                return Err("physical surface work must match its actual flight operator and own no second epoch".into());
+            }
+        }
         if self.schema != EXCURSION_SCHEMA {
             return Err(format!(
                 "an excursion record is schema {EXCURSION_SCHEMA}, not {}",
@@ -2562,6 +2591,7 @@ mod tests {
             plans: 0,
             recovery: None,
             sortie: None,
+            field_crew: None,
         }
     }
 

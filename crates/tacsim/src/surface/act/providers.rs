@@ -2,6 +2,22 @@
 
 use super::*;
 
+fn selected_crew(
+    parameters: &Map<String, Value>,
+    tv: ObjId,
+) -> Result<Option<Box<crate::detachment::sortie::SurfaceCrew>>, ActionError> {
+    parameters
+        .get("rigs")
+        .and_then(|v| v.get(tv.0.to_string()))
+        .and_then(|v| v.get("crew"))
+        .map(|v| {
+            serde_json::from_value(v.clone())
+                .map_err(|_| invalid("invalid physical crew selection"))
+        })
+        .transpose()
+        .map(Option::flatten)
+}
+
 // ---- tacsim_surface_act: the start ---------------------------------------------------------------
 
 /// **`tacsim_surface_act`** — every act's start (the brief's 3.4; doc 20 cut SM.4a adds the scan
@@ -47,9 +63,43 @@ impl ActionProvider for SurfaceActProvider {
         &self,
         resolved: &mush_core::ResolvedActionInvocation,
     ) -> Result<Vec<mush_core::RevisionKey>, ActionError> {
-        Ok(vec![crate::detachment::sortie::availability_key(tv_of(
-            parameters_of(resolved.invocation())?,
-        )?)?])
+        let actor = resolved.invocation().actor();
+        let parameters = parameters_of(resolved.invocation())?;
+        let tv = tv_of(parameters)?;
+        let crew = selected_crew(parameters, tv)?;
+        if crew.is_some() {
+            Ok(vec![
+                crate::detachment::sortie::surface::revision_key(actor, tv)?,
+                mush_org::unit_authority::operation::revision_key(
+                    actor,
+                    tv,
+                    mush_org::unit_authority::UnitCapability::OperateCrew,
+                )?,
+            ])
+        } else {
+            Ok(vec![crate::detachment::sortie::availability_key(tv)?])
+        }
+    }
+    fn resolved_authority_witnesses(
+        &self,
+        r: &mush_core::ResolvedActionInvocation,
+        _engine: &mush_core::Engine,
+    ) -> Result<Vec<mush_core::AuthorityWitnessRequest>, ActionError> {
+        let params = parameters_of(r.invocation())?;
+        let unit = tv_of(params)?;
+        if selected_crew(params, unit)?.is_none() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![mush_core::AuthorityWitnessRequest::ControlLease {
+            provider: mush_core::OwnerId::new("sim")
+                .map_err(|_| invalid("control owner unavailable"))?,
+            subject: unit,
+            channel: mush_core::ChannelId::new("helm")
+                .ok_or_else(|| invalid("helm unavailable"))?,
+            holder: mush_core::PrincipalId::Object {
+                id: r.invocation().actor(),
+            },
+        }])
     }
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         let parameters = parameters_of(invocation)?;
@@ -71,13 +121,19 @@ impl ActionProvider for SurfaceActProvider {
         let w: &World = &engine.world;
         let actor = query.actor();
         let mut rigs = operator_rigs(w, actor);
+        if let Some(physical) = crate::detachment::sortie::surface::rig_in(engine, actor) {
+            rigs.retain(|rig| rig.tv != physical.tv);
+            rigs.push(physical);
+        }
         // The lead's pre-commit round, item 3: the actor's leased rigs off the helm, offered only
         // their plan's variants below.
         let mut off_helm: Vec<RigAt> = leased_rigs(w, actor)
             .into_iter()
             .filter(|rig| rigs.iter().all(|at| at.tv != rig.tv))
             .collect();
-        rigs.retain(|rig| crate::detachment::sortie::offer_available(engine, rig.tv));
+        rigs.retain(|rig| {
+            rig.crew.is_some() || crate::detachment::sortie::offer_available(engine, rig.tv)
+        });
         off_helm.retain(|rig| crate::detachment::sortie::offer_available(engine, rig.tv));
         if rigs.is_empty() && off_helm.is_empty() {
             return Ok(None);
@@ -210,6 +266,7 @@ impl ActionProvider for SurfaceActProvider {
             fixed_rigs.insert(
                 rig.tv.0.to_string(),
                 FixedRig {
+                    crew: rig.crew.clone(),
                     slot: rig.slot,
                     hull: rig.hull,
                     battery_id,
@@ -254,6 +311,7 @@ impl ActionProvider for SurfaceActProvider {
             fixed_rigs.insert(
                 rig.tv.0.to_string(),
                 FixedRig {
+                    crew: rig.crew.clone(),
                     slot: rig.slot,
                     hull: rig.hull,
                     battery_id,
@@ -415,6 +473,29 @@ impl ActionProvider for SurfaceActProvider {
 }
 
 impl SurfaceActProvider {
+    fn adopt_field(
+        &self,
+        rig: &FixedRig,
+        flight: Option<&crate::detachment::sortie::Flight>,
+        record: &mut RigRecord,
+    ) -> Result<(), ActionError> {
+        if let (Some(crew), Some(flight)) = (&rig.crew, flight) {
+            let battery = rig
+                .battery_id
+                .as_ref()
+                .and_then(|id| battery_of(&self.tools, id));
+            crate::detachment::sortie::surface::adopt_record(
+                crew, flight, record, rig.slot, battery,
+            )?;
+        } else if rig.crew.is_none()
+            && record.excursion.is_none()
+            && record.act.is_none()
+            && record.run.is_none()
+        {
+            record.field_crew = None;
+        }
+        Ok(())
+    }
     #[allow(clippy::too_many_lines)] // one ordered refusal list, then one bundle
     fn prepare_start(
         &self,
@@ -430,7 +511,8 @@ impl SurfaceActProvider {
         // owner-only preparation deliberately does not; its engine still
         // validates the detachment availability revision above. Preserve that
         // existing ingress rather than adding a new World requirement to it.
-        if let Some(context) = context.as_ref()
+        if selected_crew(parameters, tv)?.is_none()
+            && let Some(context) = context.as_ref()
             && let Ok(world) = context.world()
         {
             crate::detachment::sortie::require_available(world, txn, tv)?;
@@ -485,6 +567,51 @@ impl SurfaceActProvider {
                 "that rig is not yours to work",
             ));
         };
+        let flight = if let Some(crew) = &rig.crew {
+            if matches!(word, StartWord::PlanFile) {
+                return Err(invalid(
+                    "Field crews use individual drive, scan, sound, mine and recover orders.",
+                ));
+            }
+            let context = context
+                .as_ref()
+                .ok_or_else(|| invalid("physical crew requires composed preparation"))?;
+            Some(crate::detachment::sortie::surface::admit(
+                context
+                    .world()
+                    .map_err(|_| invalid("physical crew world unavailable"))?,
+                txn,
+                actor,
+                tv,
+                crew,
+                matches!(
+                    word,
+                    StartWord::Act {
+                        kind: ActKind::Drive | ActKind::Recover,
+                        ..
+                    }
+                ),
+            )?)
+        } else {
+            None
+        };
+        if flight
+            .as_ref()
+            .is_some_and(|f| f.phase == crate::detachment::sortie::Phase::Returned)
+            && !matches!(
+                word,
+                StartWord::Act {
+                    kind: ActKind::Unload,
+                    ..
+                } | StartWord::PlanClear
+                    | StartWord::PlanStrike
+                    | StartWord::PlanEnd
+            )
+        {
+            return Err(invalid(
+                "Launch the next DT flight before starting more field work.",
+            ));
+        }
         let world: Vec<u32> = parameters
             .get("world")
             .cloned()
@@ -523,7 +650,13 @@ impl SurfaceActProvider {
                 return self.stop_run(invocation, txn, (actor, tv, ordinal));
             }
             StartWord::PlanFile => {
-                return self.file_plan(invocation, txn, (actor, tv, ordinal, now), rig);
+                return self.file_plan(
+                    invocation,
+                    txn,
+                    (actor, tv, ordinal, now),
+                    rig,
+                    flight.as_ref(),
+                );
             }
             StartWord::PlanClear | StartWord::PlanStrike => {
                 return self.clear_plan(
@@ -642,11 +775,19 @@ impl SurfaceActProvider {
                 &plan,
                 &world,
                 &stamp,
+                flight.as_ref(),
             );
         }
         // Doc 20 cut SM.8: an unload starts on its own path too.
         if kind == ActKind::Unload {
-            return self.start_unload(invocation, txn, (actor, tv, ordinal, now), rig, &plan);
+            return self.start_unload(
+                invocation,
+                txn,
+                (actor, tv, ordinal, now),
+                rig,
+                &plan,
+                flight.as_ref(),
+            );
         }
         self.start_act(
             invocation,
@@ -657,6 +798,7 @@ impl SurfaceActProvider {
             &plan,
             &world,
             &stamp,
+            flight.as_ref(),
             (mind.as_ref().map(|(word, org)| (word, *org)), context),
         )
     }
@@ -707,6 +849,7 @@ impl SurfaceActProvider {
         plan: &FixedPlan,
         world: &[u32],
         stamp: &Stamp,
+        flight: Option<&crate::detachment::sortie::Flight>,
         (mind, context): (
             Option<(&crate::surface::dispatch::MindWord, Option<mush_org::OrgId>)>,
             Option<&mut mush_core::PrepareCtx<'_>>,
@@ -738,6 +881,7 @@ impl SurfaceActProvider {
                 |battery| RigRecord::fresh(tv, battery),
             )
         });
+        self.adopt_field(rig, flight, &mut record)?;
         if record.ordinal.checked_add(1) != Some(ordinal) {
             return Err(port_error(
                 ActionErrorCode::Conflict,
@@ -1146,6 +1290,7 @@ impl SurfaceActProvider {
         plan: &FixedPlan,
         world: &[u32],
         stamp: &Stamp,
+        flight: Option<&crate::detachment::sortie::Flight>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let conflict = |message: &'static str| port_error(ActionErrorCode::Conflict, message);
@@ -1168,6 +1313,7 @@ impl SurfaceActProvider {
         let existing = read_record(txn, &self.excursions, tv)?;
         let existed = existing.is_some();
         let mut record = existing.unwrap_or_else(|| RigRecord::fresh(tv, battery));
+        self.adopt_field(rig, flight, &mut record)?;
         if record.ordinal.checked_add(1) != Some(ordinal) || plan.ordinal != Some(ordinal) {
             return Err(conflict("that rig's orders moved on"));
         }
@@ -1365,6 +1511,7 @@ impl SurfaceActProvider {
         (actor, tv, ordinal, now): (ObjId, ObjId, u32, i64),
         rig: &FixedRig,
         plan: &FixedPlan,
+        flight: Option<&crate::detachment::sortie::Flight>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let conflict = |message: &'static str| port_error(ActionErrorCode::Conflict, message);
@@ -1412,6 +1559,7 @@ impl SurfaceActProvider {
                 |battery| RigRecord::fresh(tv, battery),
             )
         });
+        self.adopt_field(rig, flight, &mut record)?;
         if record.ordinal.checked_add(1) != Some(ordinal) {
             return Err(conflict("that rig's orders moved on"));
         }
@@ -1701,6 +1849,7 @@ impl SurfaceActProvider {
         txn: &mut ActionTxn<'_>,
         (actor, tv, ordinal, now): (ObjId, ObjId, u32, i64),
         rig: &FixedRig,
+        flight: Option<&crate::detachment::sortie::Flight>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let fixed = rig
@@ -1725,6 +1874,7 @@ impl SurfaceActProvider {
         let existing = read_record(txn, &self.excursions, tv)?;
         let existed = existing.is_some();
         let mut record = existing.unwrap_or_else(|| RigRecord::fresh_unread(tv));
+        self.adopt_field(rig, flight, &mut record)?;
         // A filing writes no act: the invocation's ordinal is the record's (at least 1, the
         // parameter's floor) and the order's.
         if record.ordinal != fill.ordinal || record.ordinal.max(1) != ordinal {
@@ -2309,6 +2459,21 @@ pub(super) fn epoch_move(
 }
 
 impl ActionProvider for SurfaceDoneProvider {
+    fn resolved_revision_keys(
+        &self,
+        r: &mush_core::ResolvedActionInvocation,
+    ) -> Result<Vec<mush_core::RevisionKey>, ActionError> {
+        let p = parameters_of(r.invocation())?;
+        let tv = tv_of(p)?;
+        if selected_crew(p, tv)?.is_some() {
+            Ok(vec![crate::detachment::sortie::surface::work_key(
+                r.invocation().actor(),
+                tv,
+            )?])
+        } else {
+            Ok(Vec::new())
+        }
+    }
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         let parameters = parameters_of(invocation)?;
         tv_of(parameters)?;
@@ -2340,6 +2505,32 @@ impl ActionProvider for SurfaceDoneProvider {
             .cloned()
             .chain(crate::port::yard::house_rigs(w, actor))
             .collect();
+        // Physical NPC operators finish their own admitted work, with the real
+        // lease retained as its financial contract. Completion needs no proxy
+        // account and cannot become another operator's work after succession.
+        let units = world_rigs(w);
+        if units.len() > crate::surface::excursion::MAX_EXCURSIONS_WORLD as usize {
+            return Err(invalid("surface work exceeds the record visit budget"));
+        }
+        for unit in units {
+            let Some(found) = engine
+                .action_state()
+                .get(&self.excursions, &RigKey(unit))
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            let Some(crew) = found.field_crew.as_deref().filter(|c| c.operator == actor) else {
+                continue;
+            };
+            if let Some(lease) = store
+                .tv_lease_on(unit)
+                .filter(|lease| lease.pilot == crew.principal)
+            {
+                records.push(lease.clone());
+            }
+        }
         records.sort_by_key(|record| record.tv);
         records.dedup_by_key(|record| record.tv);
         if records.is_empty() {
@@ -2349,6 +2540,14 @@ impl ActionProvider for SurfaceDoneProvider {
         let now = w.world_ic_now();
         let reads = crate::port::site_map::EngineReads(engine);
         for record in &records {
+            let current = engine
+                .action_state()
+                .get(&self.excursions, &RigKey(record.tv))
+                .ok()
+                .flatten();
+            let principal = current
+                .and_then(|r| r.field_crew.as_deref())
+                .map_or(actor, |c| c.principal);
             // Doc 20 cut SM.7 (§8 "rights are per act"; the brief's 3.7): a rig drilling has the
             // rights of its run's next cycle read here, at landing — the licence's standing, the
             // block's tenure, the lease.
@@ -2359,7 +2558,7 @@ impl ActionProvider for SurfaceDoneProvider {
                 .flatten()
                 .and_then(|found| found.run.clone())
                 .map(|run| RightsVerdict {
-                    licence: licence_verdict(w, actor, now.at),
+                    licence: licence_verdict(w, principal, now.at),
                     // The SM.7 lead's pre-commit round, item 3: a read that fails is `Dark`, never
                     // `Claimed` — the run ends with the dark line, not a false claim.
                     tenure: match site_def_of(w, &run.site) {
@@ -2370,7 +2569,7 @@ impl ActionProvider for SurfaceDoneProvider {
                             match mine_tenure(
                                 w,
                                 &reads,
-                                actor,
+                                principal,
                                 (&run.site, &site),
                                 run.letter,
                                 &now,
@@ -2417,6 +2616,7 @@ impl ActionProvider for SurfaceDoneProvider {
             rigs.insert(
                 record.tv.0.to_string(),
                 DoneRig {
+                    crew: current.and_then(|r| r.field_crew.clone()),
                     battery_id: rig_battery_id(w, record.tv),
                     facts: facts_of(w, record.tv, record.hull),
                     spoil: spoil_of(w, record.hull),
@@ -2518,7 +2718,7 @@ impl ActionProvider for SurfaceDoneProvider {
         }
         // Doc 20 cut SM.7 (the brief's 3.7): a run's cycle finishes on its own path.
         if let Some(k) = cycle_param(parameters)? {
-            return self.finish_cycle(invocation, txn, (actor, tv, ordinal, k, now), rig);
+            return self.finish_cycle(invocation, txn, (actor, tv, ordinal, k, now), rig, context);
         }
         // 1. The act in flight, this one, this operator's, and due.
         let Some(mut record) = read_record(txn, &self.excursions, tv)? else {
@@ -2580,7 +2780,21 @@ impl ActionProvider for SurfaceDoneProvider {
         let mut span: Option<ReadSpan> = None;
         let mut arrived: Option<[i64; 2]> = None;
         let mut stays: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+        let working = crate::detachment::sortie::surface::working_preimage(
+            context,
+            txn,
+            &record,
+            matches!(
+                act.kind,
+                ActKind::Drive | ActKind::Recover | ActKind::Launch
+            ),
+        )?;
         let result = match act.kind {
+            ActKind::Scan | ActKind::Sound | ActKind::Dump | ActKind::Unload if !working => {
+                ActResult::Refused {
+                    code: RefusedCode::Unworked,
+                }
+            }
             ActKind::Launch => {
                 let beside = matches!(
                     &rig.facts,
@@ -3008,6 +3222,8 @@ impl ActionProvider for SurfaceDoneProvider {
             stays,
             by: act.by,
         });
+        crate::detachment::sortie::surface::reconcile_return(context, txn, &mut record)
+            .map_err(|_| invalid("field return unavailable"))?;
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
             self.outcome.clone(),
@@ -3318,6 +3534,7 @@ impl SurfaceDoneProvider {
         txn: &mut ActionTxn<'_>,
         (actor, tv, ordinal, k, now): (ObjId, ObjId, u32, u8, i64),
         rig: &DoneRig,
+        context: &mut mush_core::PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let finished = || port_error(ActionErrorCode::Conflict, "that cycle is already finished");
@@ -3346,11 +3563,14 @@ impl SurfaceDoneProvider {
             .clone()
             .ok_or_else(|| integrity("a run's next rights are read at landing"))?;
         // 2. At the stand.
-        let at_stand = matches!(
-            &rig.facts,
-            Facts::Ground { site: Some(site), cell: Some(cell), .. }
-                if *site == run.site && *cell == run.stand
-        );
+        let working =
+            crate::detachment::sortie::surface::working_preimage(context, txn, &record, false)?;
+        let at_stand = working
+            && matches!(
+                &rig.facts,
+                Facts::Ground { site: Some(site), cell: Some(cell), .. }
+                    if *site == run.site && *cell == run.stand
+            );
         // 3. The yield.
         let own = read_cursor(txn, &self.pockets, run.deposit)?;
         let drawn = own
@@ -3418,7 +3638,11 @@ impl SurfaceDoneProvider {
             }
         } else {
             result = ActResult::Refused {
-                code: RefusedCode::Moved,
+                code: if working {
+                    RefusedCode::Moved
+                } else {
+                    RefusedCode::Unworked
+                },
             };
         }
         // 4. The end.
@@ -3544,6 +3768,8 @@ impl SurfaceDoneProvider {
             stays: BTreeMap::new(),
             by: run_by,
         });
+        crate::detachment::sortie::surface::reconcile_return(context, txn, &mut record)
+            .map_err(|_| invalid("field return unavailable"))?;
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
             self.outcome.clone(),
