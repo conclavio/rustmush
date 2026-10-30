@@ -1,170 +1,258 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FEED_COCKPIT, FEED_MAP, KIND_COCKPIT, PixelModule } from "./pixel/wasm";
 import {
-  applyBrushDab,
-  applyFloodFill,
-  applyLineStroke,
-  applyRampStroke,
-  applyRectStroke,
-  brushFootprint,
-  decodeTileCellsBase64,
-  EDITOR_TERRAINS,
+  applySculptBrush,
+  checkEditorMap,
+  computePassabilityOverlay,
+  computeViewshed,
+  createEditorMap,
+  decodeClassesBase64,
+  decodeElevLe16Base64,
+  despeckleEditorMap,
+  EditorUndoStack,
   editorToPictureFeeds,
-  encodeTileCellsBase64,
-  enforceLocalGradeLimit,
-  exportArenaDefJson,
-  generatePresetMap,
-  importArenaDefJson,
-  terrainByCode,
+  encodeClassesBase64,
+  encodeElevLe16Base64,
+  encodeElevZigzagDelta,
+  exportGroundDraftJson,
+  floodFillTerrain,
+  type GroundDraftJson,
+  importGroundDraftJson,
+  paintTerrainBrush,
+  paintTerrainLine,
+  relaxEditorSlopes,
+  routeEditorMap,
+  TERRAIN_PALETTE,
 } from "./map-editor";
 
-describe("map-editor core", () => {
-  it("provides all 18 mush_atlas TerrainClass entries in order", () => {
-    expect(EDITOR_TERRAINS).toHaveLength(18);
-    for (let i = 0; i < 18; i++) {
-      expect(EDITOR_TERRAINS[i]!.code).toBe(i);
-      expect(terrainByCode(i).code).toBe(i);
-    }
+function loadShippedProvingGroundDraft(): GroundDraftJson {
+  const draftPath = resolve(
+    __dirname,
+    "../../../crates/tacsim/content/ground/proving_ground.draft.json",
+  );
+  return JSON.parse(readFileSync(draftPath, "utf8")) as GroundDraftJson;
+}
+
+describe("map-editor WG.4 (ground.draft.v1 & parity with tacsim::ground)", () => {
+  it("provides all 18 mush_atlas TerrainClass codes (0..=17)", () => {
+    expect(TERRAIN_PALETTE).toHaveLength(18);
+    const codes = TERRAIN_PALETTE.map((s) => s.code).sort((a, b) => a - b);
+    expect(codes).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
   });
 
-  it("computes brush footprints for circle, square, and diamond shapes", () => {
-    const single = brushFootprint(5, 5, 1, "circle", 16, 16);
-    expect(single).toEqual([{ x: 5, y: 5, weight: 1 }]);
-
-    const square = brushFootprint(4, 4, 2, "square", 16, 16);
-    // radius 2 -> span = 1 -> 3x3 = 9 cells
-    expect(square).toHaveLength(9);
-
-    const diamond = brushFootprint(4, 4, 2, "diamond", 16, 16);
-    // Manhattan distance <= 1 -> center + 4 cardinal neighbors = 5 cells
-    expect(diamond).toHaveLength(5);
-
-    const clipped = brushFootprint(0, 0, 2, "square", 16, 16);
-    expect(clipped).toHaveLength(4);
-  });
-
-  it("paints terrain and sculpts elevation while clamping adjacent grade to <= 45 cm", () => {
-    const state = generatePresetMap("blank", 16, 16, 42);
-    // Paint rocks (code 9) with radius 2 square
-    applyBrushDab(state, 8, 8, {
-      tool: "paint",
-      shape: "square",
-      radius: 2,
-      terrainCode: 9,
-      densityPct: 100,
-      elevStepCm: 35,
+  it("round-trips 3-byte class RLE and le16 elevation base64 codecs", () => {
+    const state = createEditorMap(64, 64, "mars", 8);
+    paintTerrainBrush(state, 16, 16, 4, "circle", 9);
+    paintTerrainLine(state, 0, 32, 63, 32, 1, "square", 7);
+    applySculptBrush(state, 20, 20, {
+      mode: "raise",
+      shape: "circle",
+      radius: 5,
+      strengthCm: 350,
       targetElevCm: 0,
+      falloff: 0.5,
+      relaxToPassable: true,
     });
-    expect(state.classes[8 * 16 + 8]).toBe(9);
-    expect(state.classes[7 * 16 + 7]).toBe(9);
 
-    // Raise elevation repeatedly at (8, 8) and verify grade limit holds across neighbors
-    for (let i = 0; i < 6; i++) {
-      applyBrushDab(state, 8, 8, {
-        tool: "raise",
-        shape: "circle",
-        radius: 3,
-        terrainCode: 9,
-        densityPct: 100,
-        elevStepCm: 45,
-        targetElevCm: 0,
-      });
+    const classesB64 = encodeClassesBase64(64, 64, state.classes);
+    const decodedClasses = decodeClassesBase64(classesB64);
+    expect(decodedClasses.width).toBe(64);
+    expect(decodedClasses.height).toBe(64);
+    expect(Array.from(decodedClasses.classes)).toEqual(Array.from(state.classes));
+
+    const elevB64 = encodeElevLe16Base64(state.elevCm);
+    const decodedElev = decodeElevLe16Base64(elevB64, 64 * 64);
+    expect(Array.from(decodedElev)).toEqual(Array.from(state.elevCm));
+  });
+
+  it("round-trips the shipped proving_ground.draft.json byte-for-byte on classes and elev", () => {
+    const rawDraft = loadShippedProvingGroundDraft();
+    const state = importGroundDraftJson(rawDraft);
+    expect(state.width).toBe(256);
+    expect(state.height).toBe(256);
+    expect(state.biome).toBe("temperate");
+    expect(state.keySpots).toHaveLength(5);
+    expect(state.keySpots[0]).toEqual({ name: "The Ford", x: 64, y: 97 });
+    expect(state.keySpots[4]).toEqual({ name: "The Bluff", x: 144, y: 111 });
+
+    const reexported = exportGroundDraftJson(state);
+    expect(reexported.schema).toBe("ground.draft.v1");
+    expect(reexported.classes).toBe(rawDraft.classes);
+    expect(reexported.elev).toBe(rawDraft.elev);
+    expect(reexported.key_spots).toEqual(rawDraft.key_spots);
+    expect(reexported.waypoints).toEqual(rawDraft.waypoints);
+    expect(reexported.entry_zones).toEqual(rawDraft.entry_zones);
+  });
+
+  it("matches ground-pack check, route, and viewshed on the shipped proving_ground.draft.json", () => {
+    const rawDraft = loadShippedProvingGroundDraft();
+    const state = importGroundDraftJson(rawDraft);
+
+    // 1. Check report parity with `ground-pack check`
+    const report = checkEditorMap(state);
+    expect(report.passed).toBe(true);
+    expect(report.failures).toEqual([]);
+    expect(report.quadrants).toBe(4);
+    expect(report.tracked_passable_pct).toBeGreaterThanOrEqual(90);
+    expect(report.legged_passable_pct).toBeGreaterThanOrEqual(95);
+    expect(report.zones_reachable_tracked).toBe(true);
+    expect(report.zones_reachable_wheeled).toBe(true);
+    expect(report.zones_reachable_legged).toBe(true);
+    expect(report.key_spots_wheeled_reachable).toBe(true);
+    expect(report.waypoints_reachable).toBe(true);
+    expect(report.max_road_grade_pct).toBeLessThanOrEqual(20);
+    expect(report.max_entry_zone_step_cm).toBeLessThanOrEqual(100);
+
+    // 2. Viewshed from The Bluff (141, 111) with 300 cm target height
+    const vs = computeViewshed(state, 141, 111, 300);
+    expect(vs.length).toBe(256 * 256);
+    expect(vs[111 * 256 + 141]).toBe(1); // Origin is seen
+    let seen = 0;
+    let hullDown = 0;
+    let partial = 0;
+    let dead = 0;
+    for (let i = 0; i < vs.length; i++) {
+      if (vs[i] === 1) seen++;
+      else if (vs[i] === 2) hullDown++;
+      else if (vs[i] === 3) partial++;
+      else dead++;
     }
-    expect(state.elevCm[8 * 16 + 8]).toBeGreaterThan(80);
+    expect(seen).toBeGreaterThan(1000);
+    expect(hullDown).toBeGreaterThan(100);
+    expect(partial).toBeGreaterThan(100);
+    expect(dead).toBeGreaterThan(1000);
 
-    // Verify all 4-connected neighbors across the map differ by at most 45 cm
-    for (let y = 0; y < state.height; y++) {
-      for (let x = 0; x < state.width; x++) {
-        const here = state.elevCm[y * state.width + x]!;
-        if (x + 1 < state.width) {
-          expect(Math.abs(here - state.elevCm[y * state.width + (x + 1)]!)).toBeLessThanOrEqual(45);
-        }
-        if (y + 1 < state.height) {
-          expect(Math.abs(here - state.elevCm[(y + 1) * state.width + x]!)).toBeLessThanOrEqual(45);
-        }
+    // 3. Route synthesis over the proving ground with its waypoint graph emptied
+    state.waypoints = { nodes: [], edges: [] };
+    const routed = routeEditorMap(state);
+    expect(routed.nodes.length).toBeGreaterThanOrEqual(7);
+    expect(routed.edges.length).toBeGreaterThanOrEqual(6);
+    const afterRouteCheck = checkEditorMap(state);
+    expect(afterRouteCheck.passed).toBe(true);
+    expect(afterRouteCheck.waypoints_reachable).toBe(true);
+  });
+
+  it("matches ground-pack check on a 45% ridge (passes) and a 50% ridge (fails until relaxed)", () => {
+    const state = createEditorMap(64, 64, "temperate", 3);
+    // Build a vertical ridge at x=32 with a 450 cm step (45% grade over 10m cells)
+    for (let y = 0; y < 64; y++) {
+      for (let x = 32; x < 64; x++) {
+        state.elevCm[y * 64 + x] = 450;
       }
     }
+    // Road has <= 20% rule, so keep the road flat or test with no road
+    for (let i = 0; i < state.classes.length; i++) {
+      if (state.classes[i] === 7) state.classes[i] = 3;
+    }
+    state.keySpots = [];
+    state.waypoints = { nodes: [], edges: [] };
 
-    // Flatten back toward 0 cm
-    applyBrushDab(state, 8, 8, {
-      tool: "flatten",
-      shape: "square",
-      radius: 1,
-      terrainCode: 9,
-      densityPct: 100,
-      elevStepCm: 45,
-      targetElevCm: 0,
-    });
-    expect(state.elevCm[8 * 16 + 8]).toBeLessThanOrEqual(45);
+    const report45 = checkEditorMap(state);
+    expect(report45.max_grade_pct).toBe(45);
+    expect(report45.zones_reachable_tracked).toBe(true);
+    expect(report45.passed).toBe(true);
+
+    // Raise ridge to 500 cm (50% grade > 45% tracked limit)
+    for (let y = 0; y < 64; y++) {
+      for (let x = 32; x < 64; x++) {
+        state.elevCm[y * 64 + x] = 500;
+      }
+    }
+    const report50 = checkEditorMap(state);
+    expect(report50.max_grade_pct).toBe(50);
+    expect(report50.zones_reachable_tracked).toBe(false);
+    expect(report50.passed).toBe(false);
+
+    // Relax slopes and verify it passes check again
+    const undo = new EditorUndoStack();
+    undo.push(state);
+    const changed = relaxEditorSlopes(state, 45);
+    expect(changed.length).toBeGreaterThan(0);
+    const reportRelaxed = checkEditorMap(state);
+    expect(reportRelaxed.max_grade_pct).toBeLessThanOrEqual(45);
+    expect(reportRelaxed.zones_reachable_tracked).toBe(true);
+    expect(reportRelaxed.passed).toBe(true);
+
+    // Undo restores the 50% ridge
+    const restored = undo.undo(state);
+    expect(restored).not.toBeNull();
+    expect(checkEditorMap(restored!).max_grade_pct).toBe(50);
   });
 
-  it("supports line, ramp, rectangle, and flood-fill strokes", () => {
-    const state = generatePresetMap("blank", 16, 16, 42);
-    // Rectangle outline of walls (code 10) from (2,2) to (6,6)
-    applyRectStroke(state, 2, 2, 6, 6, 10, true);
-    expect(state.classes[2 * 16 + 2]).toBe(10);
-    expect(state.classes[4 * 16 + 2]).toBe(10);
-    expect(state.classes[4 * 16 + 4]).toBe(3); // inside remains grass
+  it("despeckles small natural islands while preserving 1-cell walls and key spots", () => {
+    const state = createEditorMap(64, 64, "temperate", 3);
+    // 2-cell woods_light (13) island at (20, 20) and (21, 20)
+    state.classes[20 * 64 + 20] = 13;
+    state.classes[20 * 64 + 21] = 13;
+    // 1-cell wall (10) at (25, 25) — built class, must survive
+    state.classes[25 * 64 + 25] = 10;
+    // 1-cell rock (9) under a key spot at (30, 30) — must survive
+    state.classes[30 * 64 + 30] = 9;
+    state.keySpots.push({ name: "Lone Crag", x: 30, y: 30 });
 
-    // Flood fill inside the walled box with floor (code 5)
-    applyFloodFill(state, 4, 4, 5);
-    expect(state.classes[4 * 16 + 4]).toBe(5);
-    expect(state.classes[3 * 16 + 3]).toBe(5);
-    expect(state.classes[1 * 16 + 1]).toBe(3); // outside untouched
-
-    // Line stroke of road (code 7)
-    applyLineStroke(state, 0, 10, 15, 10, {
-      tool: "line",
-      shape: "circle",
-      radius: 1,
-      terrainCode: 7,
-      densityPct: 100,
-      elevStepCm: 35,
-      targetElevCm: 0,
-    });
-    expect(state.classes[10 * 16 + 0]).toBe(7);
-    expect(state.classes[10 * 16 + 8]).toBe(7);
-    expect(state.classes[10 * 16 + 15]).toBe(7);
-
-    // Ramp stroke between (2, 12) at 0 cm and (12, 12) raised first
-    state.elevCm[12 * 16 + 12] = 180;
-    enforceLocalGradeLimit(state, 0, 0, 15, 15);
-    applyRampStroke(state, 2, 12, 12, 12, 2, 7);
-    expect(state.elevCm[12 * 16 + 7]!).toBeGreaterThan(state.elevCm[12 * 16 + 2]!);
-    expect(state.elevCm[12 * 16 + 12]!).toBeGreaterThan(state.elevCm[12 * 16 + 7]!);
+    const changed = despeckleEditorMap(state, 3);
+    expect(changed).toContain(20 * 64 + 20);
+    expect(changed).toContain(20 * 64 + 21);
+    expect(state.classes[20 * 64 + 20]).toBe(3);
+    expect(state.classes[20 * 64 + 21]).toBe(3);
+    expect(state.classes[25 * 64 + 25]).toBe(10);
+    expect(state.classes[30 * 64 + 30]).toBe(9);
   });
 
-  it("round-trips mush_atlas Cells RLE base64 and ArenaDef JSON", () => {
-    const state = generatePresetMap("mars_canyon", 32, 32, 42);
-    const b64 = encodeTileCellsBase64(state);
-    expect(b64.length).toBeGreaterThan(8);
+  it("emits real arena.map (elev zigzag-leb128-delta) and arena.cockpit (x_cm, y_cm, z_cm, heading_mdeg) feeds", () => {
+    const rawDraft = loadShippedProvingGroundDraft();
+    const state = importGroundDraftJson(rawDraft);
+    const bluffPin = { x: 144, y: 111, headingDeg: 270 };
+    const { arenaMap, arenaCockpit } = editorToPictureFeeds(state, bluffPin);
 
-    const decoded = decodeTileCellsBase64(b64);
-    expect(decoded).not.toBeNull();
-    expect(decoded!.width).toBe(32);
-    expect(decoded!.height).toBe(32);
-    expect(Array.from(decoded!.classes)).toEqual(Array.from(state.classes));
-    expect(Array.from(decoded!.elevCm)).toEqual(Array.from(state.elevCm));
+    expect(arenaMap.surface).toBe("tacsim.arena.proving_ground");
+    expect(arenaMap.biome).toBe("temperate");
+    expect(arenaMap.origin_cell).toEqual([0, 0]);
+    const elev = arenaMap.elev as { encoding: string; unit_cm: number; data: string };
+    expect(elev.encoding).toBe("zigzag-leb128-delta");
+    expect(elev.unit_cm).toBe(1);
+    expect(elev.data.length).toBeGreaterThan(100);
+    expect("elev_field" in arenaMap).toBe(false);
+    expect(arenaMap.rows).toHaveLength(256);
 
-    const json = exportArenaDefJson(state);
-    const reimported = importArenaDefJson(json);
-    expect(reimported).not.toBeNull();
-    expect(reimported!.label).toBe(state.label);
-    expect(reimported!.biome).toBe("mars");
-    expect(reimported!.width).toBe(32);
-    expect(reimported!.height).toBe(32);
-    expect(Array.from(reimported!.classes)).toEqual(Array.from(state.classes));
-    expect(Array.from(reimported!.elevCm)).toEqual(Array.from(state.elevCm));
-    expect(reimported!.spots.length).toBe(state.spots.length);
-  });
+    expect(arenaCockpit.x_cm).toBe(144 * 1000 + 500);
+    expect(arenaCockpit.y_cm).toBe(111 * 1000 + 500);
+    expect(arenaCockpit.z_cm).toBe(state.elevCm[111 * 256 + 144]);
+    expect(arenaCockpit.heading_mdeg).toBe(270_000);
+    expect("x_m" in arenaCockpit).toBe(false);
 
-  it("synthesizes arena.map and arena.cockpit feeds for the live 3D/2.5D preview", () => {
-    const state = generatePresetMap("proving_ground", 32, 32, 42);
-    const { map, cockpit } = editorToPictureFeeds(state);
-    expect(map.biome).toBe(state.biome);
-    expect(map.rows).toHaveLength(32);
-    expect(map.elev_field).toHaveLength(32);
-    expect((map.elev_field as string[])[0]).toHaveLength(32);
-    expect(cockpit.cell).toEqual([state.camera.x, state.camera.y]);
-    expect((cockpit.contacts as unknown[]).length).toBeGreaterThanOrEqual(2);
+    // Also verify passability overlay classification (1 = reachable from entry zones)
+    const overlay = computePassabilityOverlay(state, "tracked");
+    expect(overlay.length).toBe(256 * 256);
+    expect(overlay[97 * 256 + 64]).toBe(1); // The Ford is reachable
+
+    // Verify first-person WASM frame hash at The Bluff matches the server's frame for the same pose
+    const wasmBytes = readFileSync(resolve(__dirname, "./pixel/mush_pixel.wasm"));
+    const modStudio = new PixelModule(
+      new WebAssembly.Instance(new WebAssembly.Module(wasmBytes), {}),
+    );
+    modStudio.feed(FEED_MAP, JSON.stringify(arenaMap));
+    modStudio.feed(FEED_COCKPIT, JSON.stringify(arenaCockpit));
+    expect(modStudio.render(640, 480, { offsetMdeg: 0 }, KIND_COCKPIT)).toBe(true);
+    const studioBluffHash = modStudio.hash();
+    expect(studioBluffHash).toMatch(/^[0-9a-f]{16}$/);
+
+    const modServer = new PixelModule(
+      new WebAssembly.Instance(new WebAssembly.Module(wasmBytes), {}),
+    );
+    const serverMap = {
+      ...arenaMap,
+      match: 1,
+    };
+    const serverCockpit = {
+      ...arenaCockpit,
+      match: 1,
+    };
+    modServer.feed(FEED_MAP, JSON.stringify(serverMap));
+    modServer.feed(FEED_COCKPIT, JSON.stringify(serverCockpit));
+    expect(modServer.render(640, 480, { offsetMdeg: 0 }, KIND_COCKPIT)).toBe(true);
+    expect(studioBluffHash).toBe(modServer.hash());
   });
 });

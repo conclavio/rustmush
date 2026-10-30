@@ -4247,8 +4247,26 @@ impl mush_core::QueryHandler for MapQuery {
         &self,
         w: &mush_core::World,
         actor: ObjId,
-        _params: &serde_json::Value,
+        params: &serde_json::Value,
     ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        if let Some(draft_id) = params.get("draft").and_then(serde_json::Value::as_str) {
+            let data = crate::ground::draft_from_world(w, draft_id)
+                .and_then(|draft| {
+                    serde_json::to_value(draft)
+                        .map_err(|e| crate::ground::GroundError::Json(e.to_string()))
+                })
+                .unwrap_or_else(|e| {
+                    serde_json::json!({
+                        "schema": crate::ground::DRAFT_SCHEMA,
+                        "error": e.to_string(),
+                    })
+                });
+            return Ok(mush_proto::OutputEvent::Panel {
+                feed: SmolStr::new_static(MAP_FEED),
+                kind: mush_proto::PanelFrameKind::Keyframe,
+                data,
+            });
+        }
         let data = match seated_ground(w, actor) {
             // (1) 16b cut V.1: the ground's named spots ride the map, because
             // they are surveyed ground exactly as the terrain is.

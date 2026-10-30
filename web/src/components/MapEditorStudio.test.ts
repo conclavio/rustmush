@@ -3,9 +3,14 @@ import { fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GameApp } from "$lib/game.svelte";
+import { createEditorMap, exportGroundDraftJson } from "$lib/map-editor";
 import MapEditorStudio from "./MapEditorStudio.svelte";
 
-describe("MapEditorStudio", () => {
+vi.mock("../lib/pixel/local", () => ({
+  pixelModule: () => Promise.reject(new Error("no wasm in jsdom")),
+}));
+
+describe("MapEditorStudio (WG.4 ground.draft.v1)", () => {
   beforeEach(() => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
       () =>
@@ -14,6 +19,7 @@ describe("MapEditorStudio", () => {
           fillRect: vi.fn(),
           strokeRect: vi.fn(),
           beginPath: vi.fn(),
+          closePath: vi.fn(),
           moveTo: vi.fn(),
           lineTo: vi.fn(),
           stroke: vi.fn(),
@@ -21,6 +27,12 @@ describe("MapEditorStudio", () => {
           fill: vi.fn(),
           fillText: vi.fn(),
           putImageData: vi.fn(),
+          setLineDash: vi.fn(),
+          createImageData: (w: number, h: number) => ({
+            data: new Uint8ClampedArray(w * h * 4),
+            width: w,
+            height: h,
+          }),
           fillStyle: "",
           strokeStyle: "",
           lineWidth: 1,
@@ -33,47 +45,61 @@ describe("MapEditorStudio", () => {
     vi.restoreAllMocks();
   });
 
-  function mockApp() {
-    const focusComposer = vi.fn();
+  function mockApp(groundDraftFrame: Record<string, unknown> | null = null) {
+    const requestGroundDraft = vi.fn();
     return {
-      app: { focusComposer } as unknown as GameApp,
-      focusComposer,
+      app: {
+        requestGroundDraft,
+        groundDraftFrame,
+      } as unknown as GameApp,
+      requestGroundDraft,
     };
   }
 
-  it("renders toolbrushes, terrain palette, editing grid canvas, and live 3D preview controls", async () => {
+  it("renders ground.draft.v1 badge, toolbrushes, terrain palette, editing grid canvas, live preview, and §5 check report", async () => {
     const { app } = mockApp();
     render(MapEditorStudio, { app });
     await tick();
 
+    expect(screen.getByText("GROUND.DRAFT.V1")).toBeTruthy();
     expect(screen.getByLabelText("map editor canvas")).toBeTruthy();
     expect(screen.getByLabelText("live 3d preview canvas")).toBeTruthy();
     expect(screen.getByText("Terrain Palette")).toBeTruthy();
-    expect(screen.getByText("Toolbrushes")).toBeTruthy();
+    expect(screen.getByText("Tools")).toBeTruthy();
+    expect(screen.getByTestId("ground-check-report")).toBeTruthy();
 
-    // Cycle preview view mode
-    const viewBtn = screen.getByRole("button", { name: /View: 1st-Person 3D/i });
-    await fireEvent.click(viewBtn);
-    expect(screen.getByRole("button", { name: /View: 2.5D Tactical/i })).toBeTruthy();
-    await fireEvent.click(viewBtn);
-    expect(screen.getByRole("button", { name: /View: Overhead/i })).toBeTruthy();
+    // Verify no @atlas/window button exists (D-14-28)
+    expect(screen.queryByRole("button", { name: /@atlas\/window/i })).toBeNull();
+
+    // Switch preview sub-mode buttons
+    const fpBtn = screen.getByRole("button", { name: /^1st-Person$/i });
+    await fireEvent.click(fpBtn);
+    expect(screen.getByLabelText("live 3d preview canvas")).toBeTruthy();
   });
 
-  it("opens the Import / Export ArenaDef JSON drawer and pre-fills @atlas/window open", async () => {
-    const { app, focusComposer } = mockApp();
+  it("runs Relax Slopes, Despeckle, Auto-Route, and requests server draft via Load Server", async () => {
+    const draft = exportGroundDraftJson(createEditorMap(64, 64, "mars", 8));
+    const { app, requestGroundDraft } = mockApp(draft as unknown as Record<string, unknown>);
     render(MapEditorStudio, { app });
     await tick();
 
-    const exportBtn = screen.getByRole("button", { name: /Import \/ Export JSON/i });
-    await fireEvent.click(exportBtn);
+    const loadBtn = screen.getByRole("button", { name: /Load Server/i });
+    await fireEvent.click(loadBtn);
+    expect(requestGroundDraft).toHaveBeenCalled();
+
+    const relaxBtn = screen.getByRole("button", { name: /Relax Slopes/i });
+    await fireEvent.click(relaxBtn);
     await tick();
+    expect(screen.getByText(/Relaxed \d+ steep cell/i)).toBeTruthy();
 
-    const textarea = screen.getByLabelText("arena json buffer") as HTMLTextAreaElement;
-    expect(textarea.value).toContain('"label": "The Proving Ground"');
-    expect(textarea.value).toContain('"tile":');
+    const despeckleBtn = screen.getByRole("button", { name: /Despeckle/i });
+    await fireEvent.click(despeckleBtn);
+    await tick();
+    expect(screen.getByText(/Despeckled \d+ cell/i)).toBeTruthy();
 
-    const atlasBtn = screen.getByRole("button", { name: /^@atlas\/window$/i });
-    await fireEvent.click(atlasBtn);
-    expect(focusComposer).toHaveBeenCalledWith(expect.stringContaining("@atlas/window open "));
+    const routeBtn = screen.getByRole("button", { name: /Auto-Route/i });
+    await fireEvent.click(routeBtn);
+    await tick();
+    expect(screen.getByText(/Routed \d+ nodes/i)).toBeTruthy();
   });
 });
