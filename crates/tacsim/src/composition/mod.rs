@@ -609,6 +609,10 @@ pub fn atlas_module_builder(cfg: mush_atlas::AtlasConfig) -> mush_atlas::AtlasMo
         Ok(packs) => shelf.extend(packs),
         Err(error) => tracing::error!(%error, "passenger shelf pack refused"),
     }
+    match crate::detachment::crew::content::packs() {
+        Ok(packs) => shelf.extend(packs),
+        Err(error) => tracing::error!(%error, "crew shelf pack refused"),
+    }
     match crate::quest::packs::packs() {
         Ok(packs) => shelf.extend(packs),
         Err(error) => tracing::error!(%error, "starter quest shelf packs refused"),
@@ -634,6 +638,7 @@ pub fn boot_pack_list(
         packs.extend(crate::definitions::content::lane_packs()?);
         packs.extend(crate::relay_content::packs()?);
         packs.extend(crate::port::passenger::content::packs()?);
+        packs.extend(crate::detachment::crew::content::packs()?);
         packs.extend(crate::quest::packs::packs()?);
     }
     Ok(packs)
@@ -655,6 +660,9 @@ pub fn content_module_with(
             module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
         }
         for pack in crate::port::passenger::content::packs()? {
+            module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
+        }
+        for pack in crate::detachment::crew::content::packs()? {
             module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
         }
         for pack in crate::quest::packs::packs()? {

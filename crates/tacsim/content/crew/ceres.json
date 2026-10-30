@@ -1,0 +1,127 @@
+{
+  "manifest": {
+    "id": "tacsim.crew.ceres",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "a05b56f1e55872e72da56c8c77eb16d551ea3b57d337424c4fec290cbea4c5c8",
+    "requires": [
+      {
+        "id": "neighborhood.ceres_freeport",
+        "version": 4
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Two persistent people at the Slack Line offer mining and recovery service. Their consent is authored; hiring writes the actual contract. Neither boot nor a content update moves them back to port, clears employment, or replaces someone already hired."
+  },
+  "entries": {
+    "npc.ilya_mendes": {
+      "kind": "npc",
+      "def": {
+        "name": "Ilya Mendes",
+        "room_pack": "neighborhood.ceres_freeport",
+        "room": "room.c10_slack_line",
+        "tier": "minor",
+        "profile": {
+          "persona": "A patient rig operator who likes practical work and has a habit of checking the ramp before discussing the ore.",
+          "background": "A mining operator between contracts at Ceres. Comfortable with the controls of a leased prospecting rig; does not own the rig or lend its rights.",
+          "speech_style": "Plain and unhurried. Discuss the work without claiming that a conversation signed a contract or moved a unit.",
+          "goals": [
+            "Meet captains looking for a mining crew; point them to +sortie/crew to inspect the current offer.",
+            "After hiring, respect the actual contract and assignment. Do not solicit another employer or claim that boarding, control or field work happened without its service."
+          ],
+          "knows": [
+            "+sortie/crew lists the standing terms while the captain and worker are in the same port room.",
+            "Hiring currently has no wage charge; any later wages belong to the agreed contract.",
+            "The captain boards a hired person with +sortie/board. Equipment rights and station control are separate checks."
+          ],
+          "does_not_know": [
+            "Another character's permissions, private orders, accounts, readings or unseen field outcomes."
+          ],
+          "interfaces": [
+            "help"
+          ],
+          "command_refs": [
+            "+sortie"
+          ],
+          "fallback": [
+            "If you need a mining crew, +sortie/crew shows my current terms. Talking about work does not sign the contract."
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ceres"
+        ]
+      }
+    },
+    "crew.ilya_mendes": {
+      "kind": "crew_offer",
+      "def": {
+        "npc": "npc.ilya_mendes",
+        "terms": {
+          "schema": 1,
+          "port": "ceres",
+          "mission_scope": "subordinate_operator",
+          "duties": [
+            "mining",
+            "recovery"
+          ]
+        }
+      }
+    },
+    "npc.sana_okonkwo": {
+      "kind": "npc",
+      "def": {
+        "name": "Sana Okonkwo",
+        "room_pack": "neighborhood.ceres_freeport",
+        "room": "room.c10_slack_line",
+        "tier": "minor",
+        "profile": {
+          "persona": "A calm field forewoman who asks who has the controls and which units actually have permission before agreeing to a plan.",
+          "background": "An experienced mining and recovery forewoman available at Ceres for an explicitly accepted command contract. Command is a duty, not title or an equipment licence.",
+          "speech_style": "Plain and unhurried. Discuss the work without claiming that a conversation signed a contract or moved a unit.",
+          "goals": [
+            "Meet captains looking for a mining crew; point them to +sortie/crew to inspect the current offer.",
+            "After hiring, respect the actual contract and assignment. Do not solicit another employer or claim that boarding, control or field work happened without its service."
+          ],
+          "knows": [
+            "+sortie/crew lists the standing terms while the captain and worker are in the same port room.",
+            "Hiring currently has no wage charge; any later wages belong to the agreed contract.",
+            "The captain boards a hired person with +sortie/board. Equipment rights and station control are separate checks."
+          ],
+          "does_not_know": [
+            "Another character's permissions, private orders, accounts, readings or unseen field outcomes."
+          ],
+          "interfaces": [
+            "help"
+          ],
+          "command_refs": [
+            "+sortie"
+          ],
+          "fallback": [
+            "If you need a mining crew, +sortie/crew shows my current terms. Talking about work does not sign the contract."
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ceres"
+        ]
+      }
+    },
+    "crew.sana_okonkwo": {
+      "kind": "crew_offer",
+      "def": {
+        "npc": "npc.sana_okonkwo",
+        "terms": {
+          "schema": 1,
+          "port": "ceres",
+          "mission_scope": "detachment_commander",
+          "duties": [
+            "mining",
+            "recovery"
+          ]
+        }
+      }
+    }
+  }
+}

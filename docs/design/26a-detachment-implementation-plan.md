@@ -299,6 +299,17 @@ physical player/hired-NPC mining milestone; licensed autonomous-mind field hosts
 H1/H2/H3, DT.4 subset delegation and DT.5 dedicated communications remain their
 separate workstreams.
 
+DT.3i ships persistent mining/recovery crew at Ceres's Slack Line through the
+existing NPC and content-latch owners. Ilya Mendes offers subordinate service;
+Sana Okonkwo offers commander-capable terms. The crew role authors only standing
+consent on those actual people. Hiring still uses its one source contract write;
+boot and content updates preserve the hired person's identity, location and
+memories rather than replenishing a pool. The new pack defers while a kept world
+still has an older Ceres dependency. Three content tests, 13 production hiring
+stories, all 31 DT stories, 24 station tests, 27 source policies, strict Clippy and
+the unchanged M7 gate passed. Normal rental equipment still needs an explicit
+owner-issued operating/deployment/command loan; a rental record alone grants none.
+
 ## DT.1a verification
 
 Validated locally on 2026-10-28:

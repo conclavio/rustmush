@@ -71,6 +71,15 @@ attribute on existing NPCs, not an automatically replenished character pool:
 {"schema":1,"port":"ceres","mission_scope":"subordinate_operator","duties":["mining","recovery"]}
 ```
 
+The shipped `tacsim.crew.ceres` pack adds two persistent people at the Slack Line:
+Ilya Mendes (subordinate operator) and Sana Okonkwo (commander-capable), both for
+mining/recovery duty. Its `crew_offer` entries bind standing consent to NPC entries
+in the same pack, using the passenger-role content pattern. The NPC applier owns
+identity and profile; the crew role writes only the staff-owned offer attribute.
+Content updates and boot preserve location, memories and actual hiring contracts.
+No replacement pool, wages, permission grants or automatic boarding are created.
+The new pack waits for a kept world's Ceres v4 dependency to be upgraded by staff.
+
 Use `detachment_commander` for a commander-capable offer. The port must resolve
 to the NPC's current station port, rather than a field landing site or a ship
 interior. The pool read admits at most 256 room contents and 32 available offers;
