@@ -14,9 +14,10 @@ use mush_core::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionValidationContext,
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec, Engine,
     LegalActionQuery, ModError, ObjId, OwnerId, PerceivedRef, PrincipalId, Registrar, RequestUid,
-    RevisionSet, RulesValue, ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance,
-    ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy, ScheduleState,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
+    RevisionKey, RevisionKind, RevisionSet, RevisionStamp, RevisionValidator,
+    RevisionValidatorContext, RulesValue, ScheduleActionAdapter, ScheduleActionDraft,
+    ScheduleAdvance, ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
+    ScheduleState, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, World,
     canonical_json_bytes_with_limit, durable_schedule_state_family_descriptor,
 };
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,111 @@ const SCHEDULE_FAMILY: &str = "control_handoff_schedules";
 const JOB_FAMILY: &str = "control_handoff_jobs";
 const SCHEDULE_SOURCE: &str = "control_handoff";
 const MAX_HANDOFF_JOB_BYTES: usize = 4 * 1024;
+const NPC_STATION_REVISION: &str = "npc_station_presence";
+const NPC_STATION_REASON: &str = "crew.station_seat";
+
+/// A real NPC at one declared console inside this unit. No account or proxy focus.
+pub(crate) fn physical_npc_station(world: &World, actor: ObjId, unit: ObjId) -> Option<StationId> {
+    let person = world.get(actor)?;
+    if person.kind != mush_core::ObjKind::Npc || person.flags.contains(mush_core::Flags::GOING) {
+        return None;
+    }
+    let room = person.location?;
+    if world.get(unit).is_none_or(|o| {
+        o.kind != mush_core::ObjKind::Thing || o.flags.contains(mush_core::Flags::GOING)
+    }) || world.get(room).is_none_or(|o| {
+        o.kind != mush_core::ObjKind::Room || o.flags.contains(mush_core::Flags::GOING)
+    }) {
+        return None;
+    }
+    let state = world.module_state::<SpatialState>()?;
+    if state.is_quarantined(actor)
+        || state.is_quarantined(unit)
+        || state.held_assignment(unit).is_some()
+        || state.placements.contains_key(&actor)
+            && crate::graph::project(state, world, actor) != Some(room)
+    {
+        return None;
+    }
+    let space = crate::graph::anchored_space_of(world, room)?;
+    if !matches!(state.spaces.get(&space)?.anchor, crate::SpaceAnchor::MovingObject{host} if host == unit)
+    {
+        return None;
+    }
+    let mut found = state
+        .assignments
+        .get(&unit)?
+        .seats
+        .iter()
+        .filter_map(|(station, seat)| {
+            let spec = state.stations.get(&unit)?.stations.get(station)?;
+            let channel = station_channel(state, unit, station)?;
+            (seat.actor == actor
+                && seat.check().is_ok()
+                && spec.space == Some(room)
+                && seat
+                    .granted
+                    .as_ref()
+                    .is_none_or(|channels| channels.contains(&channel)))
+            .then_some(station.clone())
+        });
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
+}
+fn npc_station_key(actor: ObjId, unit: ObjId) -> Result<RevisionKey, ActionError> {
+    Ok(RevisionKey {
+        owner: OwnerId::new(NS)
+            .map_err(|_| HandoffProvider::invalid("station owner unavailable"))?,
+        kind: RevisionKind::new(
+            CanonicalId::new(NPC_STATION_REVISION)
+                .map_err(|_| HandoffProvider::invalid("station revision unavailable"))?,
+        ),
+        subject: SubjectKey::Object { id: unit },
+        facet: Some(
+            CanonicalId::new(format!("npc.{}", actor.0))
+                .map_err(|_| HandoffProvider::invalid("station actor unavailable"))?,
+        ),
+    })
+}
+fn npc_station_generation(world: &World, actor: ObjId, unit: ObjId) -> Option<u64> {
+    let station = physical_npc_station(world, actor, unit)?;
+    let epoch = world
+        .module_state::<SpatialState>()?
+        .control_generation(unit);
+    let hash = CanonicalHash::for_canonical_value(
+        "sim.npc_station.v1",
+        1,
+        &json!({"actor":actor,"unit":unit,"station":station,"epoch":epoch}),
+        1024,
+    )
+    .ok()?;
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&hash.as_bytes()[..8]);
+    Some(u64::from_be_bytes(bytes).max(1))
+}
+struct NpcStationValidator;
+impl RevisionValidator for NpcStationValidator {
+    fn current_generation(
+        &self,
+        ctx: &RevisionValidatorContext<'_>,
+        key: &RevisionKey,
+    ) -> Result<Option<u64>, ActionError> {
+        let SubjectKey::Object { id: unit } = key.subject else {
+            return Ok(None);
+        };
+        let actor = key
+            .facet
+            .as_ref()
+            .and_then(|f| f.as_str().strip_prefix("npc."))
+            .and_then(|raw| raw.parse::<u32>().ok())
+            .map(ObjId);
+        let Some(actor) = actor else { return Ok(None) };
+        if *key != npc_station_key(actor, unit)? {
+            return Ok(None);
+        }
+        Ok(npc_station_generation(ctx.world(), actor, unit))
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -204,6 +310,11 @@ struct GrantWitness {
     actor: ObjId,
     station: SmolStr,
     epoch: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    physical_npc: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Deserialize)]
@@ -384,7 +495,7 @@ impl HandoffProvider {
                     next_holder: parameters.next_holder,
                     requested_at: parameters.requested_at,
                     boundary: parameters.boundary.clone(),
-                    reason: parameters.reason,
+                    reason: parameters.reason.clone(),
                 },
             )
             .map_err(|error| Self::transition_error(&error))?;
@@ -393,6 +504,7 @@ impl HandoffProvider {
                 actor: invocation.actor(),
                 station,
                 epoch,
+                physical_npc: parameters.reason.as_str() == NPC_STATION_REASON,
             }),
             _ => None,
         };
@@ -628,8 +740,14 @@ impl HandoffProvider {
         // `reason`, so the lease's own audit trail says which of the two
         // ingresses established it. No second control model, no second focus.
         let proxy = focused_here.as_ref().is_some_and(|(_, proxy)| *proxy);
+        let physical_npc = physical_npc_station(&engine.world, actor, unit);
+        let npc_here = physical_npc.is_some() && focused_here.is_none();
         let (station, driving) = match focused_here.map(|(station, _)| station) {
             Some(station) => (station, true),
+            None if npc_here => (
+                physical_npc.ok_or_else(|| Self::stale("NPC station changed"))?,
+                true,
+            ),
             None if request => match departed_fallback_station(engine, actor, unit) {
                 Some(station) => (station, false),
                 None => return Ok(None),
@@ -677,7 +795,9 @@ impl HandoffProvider {
                     // Neither is what activation means. Keeping the acting NPC as
                     // `next_holder` makes `checked_request_handoff` answer
                     // `NoControlChange`: no relief, and no refusal.
-                    Some(holder) if *holder == actor_principal && proxy => actor_principal.clone(),
+                    Some(holder) if *holder == actor_principal && (proxy || npc_here) => {
+                        actor_principal.clone()
+                    }
                     Some(holder) if *holder == actor_principal => {
                         let Some(fallback) = declared_fallback(engine, unit, &station) else {
                             return Ok(None);
@@ -715,7 +835,7 @@ impl HandoffProvider {
                 "next_holder": next_holder,
                 "requested_at": now,
                 "boundary": now,
-                "reason": if proxy { "seat.activate" } else { "focus.station_seat" },
+                "reason": if npc_here { NPC_STATION_REASON } else if proxy { "seat.activate" } else { "focus.station_seat" },
                 "expected_revision": revision,
                 "station": station.as_str(),
                 "grant_epoch": epoch,
@@ -788,6 +908,25 @@ impl HandoffProvider {
 }
 
 impl ActionProvider for HandoffProvider {
+    fn resolved_revision_keys(
+        &self,
+        resolved: &mush_core::ResolvedActionInvocation,
+    ) -> Result<Vec<RevisionKey>, ActionError> {
+        let invocation = resolved.invocation();
+        if matches!(self.operation, HandoffOperation::Request)
+            && invocation
+                .parameters()
+                .get("reason")
+                .and_then(Value::as_str)
+                == Some(NPC_STATION_REASON)
+        {
+            return Ok(vec![npc_station_key(
+                invocation.actor(),
+                Self::subject(invocation)?,
+            )?]);
+        }
+        Ok(Vec::new())
+    }
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         self.validate(invocation)
     }
@@ -901,9 +1040,21 @@ impl ScheduleActionAdapter for HandoffScheduleAdapter {
         let definitions = engine.registry.definitions().ok_or_else(|| {
             HandoffProvider::integrity("control-handoff definition registry is unavailable")
         })?;
+        let revisions = if let Some(witness) = job.witness.as_ref().filter(|w| w.physical_npc) {
+            let generation =
+                npc_station_generation(&engine.world, witness.actor, job.lease.subject())
+                    .ok_or_else(|| HandoffProvider::stale("NPC left its physical station"))?;
+            RevisionSet::from_stamps([RevisionStamp {
+                key: npc_station_key(witness.actor, job.lease.subject())?,
+                generation,
+            }])
+            .map_err(|_| HandoffProvider::integrity("NPC station guards unavailable"))?
+        } else {
+            RevisionSet::default()
+        };
         let mut guards = engine
             .registry
-            .server_guard_set_builder(RevisionSet::default())
+            .server_guard_set_builder(revisions)
             .map_err(|_| {
                 HandoffProvider::integrity("control-handoff guard registry is unavailable")
             })?;
@@ -1151,6 +1302,13 @@ pub(crate) fn register(
     let request = reg.definition(descriptors.request)?;
     let cancel = reg.definition(descriptors.cancel)?;
     let apply = reg.definition(descriptors.apply)?;
+    reg.revision_validator(
+        RevisionKind::new(
+            CanonicalId::new(NPC_STATION_REVISION)
+                .map_err(|error| ModError::msg(error.to_string()))?,
+        ),
+        NpcStationValidator,
+    )?;
     let families = HandoffFamilies {
         leases,
         schedules: schedules.clone(),

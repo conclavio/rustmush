@@ -11,6 +11,7 @@ use mush_org::unit_authority::{
 use mush_tactics::detachment::planning::{PlanId, PlannedController};
 
 pub(crate) const SWITCHES: &[&str] = &[
+    "seat",
     "launch",
     "recover",
     "cancel-launch",
@@ -104,6 +105,9 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("launch") {
         return launch(ctx, id, selection.unwrap_or("all"));
+    }
+    if ctx.switches.has("seat") {
+        return super::seating::seat(ctx, id, slot(selection.ok_or_else(error)?)?);
     }
     let command = if ctx.switches.has("end") {
         if selection.is_some() {

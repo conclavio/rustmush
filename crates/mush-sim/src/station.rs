@@ -392,7 +392,9 @@ fn station_handoff(ctx: &mut Ctx<'_>, cancel: bool) -> Result<(), CmdError> {
     // Focus-gated: the offer is projected only for the actor's focused station
     // (the billet that proves authority and fixes the one channel). Refuse early
     // when the actor holds the billet but is not driving that station.
-    if focused_station(ctx, ctx.actor) != Some((unit, station.clone())) {
+    if focused_station(ctx, ctx.actor) != Some((unit, station.clone()))
+        && crate::handoff::physical_npc_station(ctx.w, ctx.actor, unit) != Some(station.clone())
+    {
         return Err(CmdError::msg(format!(
             "You are not driving `{station}` there; +focus it first."
         )));
@@ -433,6 +435,69 @@ fn submit_station_action(
         json!({}),
         key,
     );
+}
+
+/// Request the existing K6 handoff as a physically seated NPC. The campaign
+/// caller admits employment and unit permissions before arranging this request.
+/// The offer and scheduled apply independently recheck the real console/billet.
+pub fn request_npc_control(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    station: &StationId,
+    npc: ObjId,
+) -> Result<bool, CmdError> {
+    if crate::handoff::physical_npc_station(ctx.w, npc, unit).as_ref() != Some(station) {
+        return Err(CmdError::msg(
+            "NPC is not at its assigned physical console.",
+        ));
+    }
+    let channel = ctx
+        .w
+        .module_state::<SpatialState>()
+        .and_then(|state| crate::handoff::station_channel(state, unit, station))
+        .ok_or_else(|| CmdError::msg(NO_SUCH_STATION))?;
+    // Advisory duplicate suppression only. The campaign context cannot read
+    // Sim's typed family. Actual admission and launch use the real provider.
+    if crate::seat::channel_lease_holder(ctx.w, unit, &channel)
+        == Some(mush_core::PrincipalId::Object { id: npc })
+    {
+        return Ok(false);
+    }
+    if ctx.authoritative_pending(npc)
+        || ctx.authoritative_commit_pending()
+        || ctx.authoritative_queue_full()
+    {
+        return Err(CmdError::msg("A control request is already pending."));
+    }
+    let revision = ctx
+        .w
+        .command_subjects_of(npc)
+        .iter()
+        .find(|grant| grant.subject == unit && grant.station.as_str() == station.as_str())
+        .map(|grant| grant.epoch)
+        .ok_or_else(|| CmdError::msg(NO_SUCH_STATION))?;
+    let action = crate::handoff::request_action_ref(ctx.reg)
+        .ok_or_else(|| CmdError::msg("Station control unavailable."))?;
+    let key = IdempotencyKeyText::parse_canonical(format!(
+        "npc.station.{}.{}.{}.{}",
+        unit.0,
+        npc.0,
+        revision,
+        ctx.w.world_ic_now().at
+    ))
+    .map_err(|_| CmdError::msg("Station request unavailable."))?;
+    ctx.out
+        .defer(mush_core::Deferred::AuthoritativeSubmit(Box::new(
+            mush_core::AuthoritativeSubmit {
+                actor: npc,
+                action,
+                subject: PerceivedRef::KnownObject { id: unit, revision },
+                targets: Vec::new(),
+                parameters: json!({}),
+                key,
+            },
+        )));
+    Ok(true)
 }
 
 /// `@station/show [<unit>/<station>]` — the actor's foreground station and its

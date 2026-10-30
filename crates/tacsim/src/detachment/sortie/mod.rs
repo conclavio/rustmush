@@ -4,6 +4,7 @@ mod facts;
 mod model;
 mod prepare;
 mod runtime;
+mod seating;
 mod tick;
 
 pub(crate) use commands::{SWITCHES, command, handles};

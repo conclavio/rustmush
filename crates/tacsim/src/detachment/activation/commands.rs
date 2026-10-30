@@ -87,6 +87,20 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     slot.unit.ok_or_else(fail)?.0
                 ),
             );
+            if record.active()
+                && record.organizer == ctx.actor
+                && matches!(slot.controller, PlannedController::Npc { .. })
+            {
+                line(
+                    ctx,
+                    format!(
+                        "Arrange NPC station: +sortie/seat {}:{}={}",
+                        record.draft.0,
+                        record.revision,
+                        slot.slot.get()
+                    ),
+                );
+            }
         }
         if record.active() && record.organizer == ctx.actor {
             line(

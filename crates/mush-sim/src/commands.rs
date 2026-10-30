@@ -1445,6 +1445,18 @@ fn spatial_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.actor,
         parts.get(1).map(String::as_str).unwrap_or(""),
     )?;
+    assign_station(ctx, host, &station, actor)
+}
+
+/// Assign an existing billet through Sim's ordinary assignment writer.
+/// Campaign callers must admit the person's employment and unit-use authority.
+/// This grants station channels; it neither creates a console nor a control lease.
+pub fn assign_station(
+    ctx: &mut Ctx<'_>,
+    host: ObjId,
+    station: &StationId,
+    actor: ObjId,
+) -> Result<(), CmdError> {
     if ctx
         .w
         .get(actor)
@@ -1455,7 +1467,7 @@ fn spatial_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !st(ctx)
         .stations
         .get(&host)
-        .is_some_and(|hs| hs.stations.contains_key(&station))
+        .is_some_and(|hs| hs.stations.contains_key(station))
     {
         return Err(CmdError::msg(
             "That host has no such station (@spatial/station first).",
@@ -1473,7 +1485,7 @@ fn spatial_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
     if st(ctx).assignments.get(&host).is_some_and(|ha| {
-        !ha.seats.contains_key(&station) && ha.seats.len() >= crate::data::MAX_SEATS_PER_UNIT
+        !ha.seats.contains_key(station) && ha.seats.len() >= crate::data::MAX_SEATS_PER_UNIT
     }) {
         return Err(CmdError::msg(format!(
             "That host already carries {} seats, the most one unit may hold.",
@@ -1481,9 +1493,7 @@ fn spatial_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     }
     if let Some(a) = st(ctx).assignments.get(&host)
-        && a.seats
-            .get(&station)
-            .is_some_and(|seat| seat.actor != actor)
+        && a.seats.get(station).is_some_and(|seat| seat.actor != actor)
     {
         return Err(CmdError::msg(
             "That station is already held; @spatial/unassign first.",

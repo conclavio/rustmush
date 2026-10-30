@@ -176,8 +176,8 @@ the operator. Without Deploy, preflight withholds unit-condition and operator
 authority details. NPC location is checked only under the organizer's existing
 contract. The report neither stores a ready flag nor certifies a complete
 launch. DT.3b supplies physical deployment for operators already at real consoles
-with current leases. Automatic NPC seating, crew capability, mind admission and
-field command integration remain subsequent work.
+with current leases. DT.3c adds NPC seating and existing control-handoff admission;
+crew capability, mind admission and field command integration remain subsequent work.
 
 ## DT.3b physical deployment and operation history
 
@@ -220,10 +220,28 @@ capacity when returning. It preserves damage and records whether its operator
 was actually aboard at confirmation. `+sortie/end` cancels only departures still
 aboard; it never recalls field units or closes their epochs. Returned units may
 relaunch under the same operation with a new flight ordinal and epoch. History
-retains unresolved field units and missing crew. Automatic NPC seating/control
-acquisition and the IC field command/observer driver remain subsequent integration.
+retains unresolved field units and missing crew. DT.3c supplies NPC seating/control
+acquisition; the IC field command/observer driver remains subsequent integration.
 Admitted durations follow continuous world IC time across rate generations.
 An explicit world-time freeze suspends physical steps until time resumes.
+
+## DT.3c contracted NPC unit stations
+
+`+sortie/seat <draft>:<activation>=<slot>` arranges one accepted NPC assignment.
+The organizer and hired person must currently be aboard the selected carrier;
+the unit must occupy its actual vehicle bay. Current accepted contract scope,
+duty, reservations and real Deploy/OperateCrew decisions are checked before any
+movement. The unit must already have one authored physical helm console; this
+command creates neither an interior nor an NPC and cannot displace a billet holder.
+
+The NPC boards through ordinary Sim placement and receives its existing billet
+through the same owner writer as `@spatial/assign`. Its request then uses the
+existing K6 control-handoff action and scheduler as that NPC, without an account,
+OOC proxy focus or alternate lease record. The new physical-NPC offer and scheduled
+apply both guard current console/billet presence through final take. Historical
+handoff jobs retain their existing behavior and wire shape. Partial physical
+seating is retained if control admission refuses; a retry uses actual placement.
+Launch independently rechecks employment, containment, rights and the real lease.
 
 ## DT.2b1 ownership and records
 

@@ -180,9 +180,10 @@ adapter nor an NPC character's decision driver provides that authorization.
 
 DT.3b supplies physical bay-to-surface departures and mobile ramp returns for
 accepted operators already at real consoles with current helm leases. It retains
-per-unit flight history and actual hull epochs across restart. Automatic hired-NPC
-seating/control acquisition and the IC field command/observer driver remain the
-next integration work; this cut does not claim the complete NPC mining story.
+per-unit flight history and actual hull epochs across restart. DT.3c connects hired
+NPCs to their assigned physical consoles and the existing control-handoff host.
+The IC field command/observer driver and mining integration remain subsequent work;
+these cuts do not claim the complete NPC mining story.
 
 ## DT.1a verification
 
