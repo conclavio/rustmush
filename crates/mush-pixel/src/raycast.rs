@@ -448,12 +448,12 @@ const MAX_SPANS: usize = 4;
 /// A contact the sim reports is never invisible: one the picture's ground
 /// covers, or too far off to draw, is bracketed at least this many pixels a
 /// side.
-const MARK_MIN_PX: f32 = 6.0;
+pub(crate) const MARK_MIN_PX: f32 = 6.0;
 /// A contact drawn but too small or too fogged to read — under this many
 /// pixels tall, or in the last third of the fog — is bracketed as well, at
 /// least this many pixels a side (the dev2 smoke of 2026-10-22: a tank at
 /// 550 m was three fogged pixels under the reticle's centre).
-const MARK_FAR_PX: f32 = 10.0;
+pub(crate) const MARK_FAR_PX: f32 = 10.0;
 /// Half the field of view as the camera plane's length (66 degrees).
 pub(crate) const PLANE: f32 = 0.66;
 

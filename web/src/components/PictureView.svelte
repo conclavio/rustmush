@@ -40,23 +40,30 @@
   // already holds — the gateway is never asked and draws nothing.
   import type { CockpitFrame } from "$lib/cockpit";
   import type { GameApp } from "$lib/game.svelte";
+  import { isTextField } from "$lib/keys";
   import {
     DEFAULT_MAX_SPEED_KPH,
     DEFAULT_REVERSE_KPH,
+    DEFAULT_TURN_RATE_MDEG_S,
+    HELM_LEAD_DEG,
     HELM_REPEAT_MS,
     LOCK_PENDING_MS,
     LOOK_STEP_MS,
+    MIN_TAP_TURN_MDEG,
     PICTURE_PREF_KEY,
     SPEED_COALESCE_MS,
+    arcMdeg,
     gateLine,
     gateWord,
     helmLine,
     nextLock,
+    nextPictureKind,
     pictureKey,
     speedLine,
     speedOutstanding,
     steppedSpeed,
     swingLook,
+    wrap360Mdeg,
   } from "$lib/picture";
   import {
     FRAME_H,
@@ -94,6 +101,48 @@
   /** The held turn: `-1` left, `0` none, `1` right. */
   let turning = $state<-1 | 0 | 1>(0);
 
+  const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
+  const DEFAULT_PICTURE_W = 520;
+  const MIN_PICTURE_W = 280;
+  const MAX_PICTURE_W = 1120;
+
+  function loadPictureWidth(): number {
+    const raw = Number(storageGet(PICTURE_WIDTH_KEY));
+    if (Number.isFinite(raw) && raw >= MIN_PICTURE_W && raw <= MAX_PICTURE_W) {
+      return Math.round(raw);
+    }
+    return DEFAULT_PICTURE_W;
+  }
+
+  let frameWidth = $state(loadPictureWidth());
+  let dragging = $state(false);
+  let dragStartX = 0;
+  let dragStartW = DEFAULT_PICTURE_W;
+
+  function onResizeDown(ev: PointerEvent): void {
+    ev.preventDefault();
+    ev.stopPropagation();
+    dragging = true;
+    dragStartX = ev.clientX;
+    dragStartW = frameWidth;
+    (ev.currentTarget as HTMLElement | null)?.setPointerCapture?.(ev.pointerId);
+  }
+
+  function onResizeMove(ev: PointerEvent): void {
+    if (!dragging) return;
+    const next = Math.round(
+      Math.min(MAX_PICTURE_W, Math.max(MIN_PICTURE_W, dragStartW + (ev.clientX - dragStartX))),
+    );
+    frameWidth = next;
+  }
+
+  function onResizeUp(ev: PointerEvent): void {
+    if (!dragging) return;
+    dragging = false;
+    (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
+    storageSet(PICTURE_WIDTH_KEY, String(frameWidth));
+  }
+
   /** Why the picture could not be drawn here, once it could not. */
   let localFailed = $state<string | null>(null);
   let local = $state.raw<LocalPicture | null>(null);
@@ -104,8 +153,8 @@
   let painted = $state.raw<HTMLCanvasElement | null>(null);
   /** A frame has been drawn here, on the canvas that is up. */
   const drawnHere = $derived(painted !== null && painted === canvas);
-  /** The overhead is chosen (doc 21 cut G.12c; doc 28 P2). */
-  const overhead = $derived(app.picture.kind === "overhead");
+  /** Which camera is chosen (`cockpit`, `overhead`, or `iso25d`). */
+  const viewKind = $derived(app.picture.kind);
   /** Whether the picture is up: wanted, visible, and not failed. */
   const active = $derived(wanted && visible && localFailed === null);
 
@@ -119,10 +168,105 @@
     local = null;
   }
 
-  // The latest heading, for the helm's repeats (a prop read inside a timer).
+  // The latest heading, for the helm's repeats and client-side hull prediction
+  // (matching `mush-net-ssh/src/tui/helm.rs`).
   let heading = 0;
+  let frameHeadingMdeg = 0;
+  let baseHeadingMdeg = 0;
+  let baseAtMs = 0;
+  let orderedHeadingMdeg: number | null = null;
+  let orderedAtMs = 0;
+  let turnStartAtMs = 0;
+  let turnTapBaseMdeg = 0;
+  let turnRateMdegPerS = DEFAULT_TURN_RATE_MDEG_S;
+  let prevFrameTMs: number | null = null;
+  let prevFrameHeadingMdeg: number | null = null;
+
+  function hullStuck(): boolean {
+    if (frame === null) return false;
+    return (frame.power !== "" && frame.power !== "online") || frame.wreck || frame.immobile;
+  }
+
+  function predictedHeadingMdeg(now: number): number {
+    if (frame === null) return wrap360Mdeg(heading * 1_000);
+    if (hullStuck()) return frameHeadingMdeg;
+    if (orderedHeadingMdeg === null) return baseHeadingMdeg;
+    const elapsed = Math.max(0, Math.min(now - baseAtMs, 2_500));
+    const step = (turnRateMdegPerS * elapsed) / 1_000;
+    const d = arcMdeg(baseHeadingMdeg, orderedHeadingMdeg);
+    return wrap360Mdeg(baseHeadingMdeg + Math.sign(d) * Math.min(Math.abs(d), step));
+  }
+
   $effect(() => {
     heading = headingDeg;
+    const rawCockpit = app.picture.cockpitData as { heading_mdeg?: unknown } | null;
+    const rawMdeg = wrap360Mdeg(
+      typeof rawCockpit?.heading_mdeg === "number" ? rawCockpit.heading_mdeg : headingDeg * 1_000,
+    );
+    if (frame === null) {
+      frameHeadingMdeg = rawMdeg;
+      baseHeadingMdeg = rawMdeg;
+      orderedHeadingMdeg = null;
+      prevFrameTMs = null;
+      prevFrameHeadingMdeg = null;
+      return;
+    }
+    const f = frame;
+    untrack(() => {
+      if (f.t_ms === prevFrameTMs && rawMdeg === prevFrameHeadingMdeg) return;
+      const now = Date.now();
+      const currentPred = predictedHeadingMdeg(now);
+      if (
+        prevFrameTMs !== null &&
+        f.t_ms !== null &&
+        f.t_ms > prevFrameTMs &&
+        prevFrameHeadingMdeg !== null &&
+        orderedHeadingMdeg !== null
+      ) {
+        const dt = f.t_ms - prevFrameTMs;
+        const turned = Math.abs(arcMdeg(prevFrameHeadingMdeg, rawMdeg));
+        if (dt > 0 && turned > 0 && Math.abs(arcMdeg(rawMdeg, orderedHeadingMdeg)) > 1_000) {
+          turnRateMdegPerS = Math.min(180_000, Math.max(5_000, Math.round((turned * 1_000) / dt)));
+        }
+      }
+      frameHeadingMdeg = rawMdeg;
+      prevFrameTMs = f.t_ms;
+      prevFrameHeadingMdeg = rawMdeg;
+      if (hullStuck()) {
+        baseHeadingMdeg = rawMdeg;
+        baseAtMs = now;
+        orderedHeadingMdeg = null;
+        return;
+      }
+      if (orderedHeadingMdeg !== null) {
+        if (turning === 0 && Math.abs(arcMdeg(rawMdeg, orderedHeadingMdeg)) <= 1_000) {
+          baseHeadingMdeg = rawMdeg;
+          baseAtMs = now;
+          orderedHeadingMdeg = null;
+          return;
+        }
+        if (turning === 0 && now - orderedAtMs > 2_500) {
+          baseHeadingMdeg = rawMdeg;
+          baseAtMs = now;
+          orderedHeadingMdeg = null;
+          return;
+        }
+        const toOrderFromServer = arcMdeg(rawMdeg, orderedHeadingMdeg);
+        const toOrderFromPred = arcMdeg(currentPred, orderedHeadingMdeg);
+        const serverLagMdeg = arcMdeg(rawMdeg, currentPred);
+        if (
+          Math.sign(toOrderFromServer) === Math.sign(serverLagMdeg) &&
+          Math.abs(serverLagMdeg) <= 25_000 &&
+          Math.abs(toOrderFromPred) <= Math.abs(toOrderFromServer)
+        ) {
+          baseHeadingMdeg = currentPred;
+          baseAtMs = now;
+          return;
+        }
+      }
+      baseHeadingMdeg = rawMdeg;
+      baseAtMs = now;
+    });
   });
 
   function toggle(): void {
@@ -151,17 +295,34 @@
   // And the view torn down (the screen changed, the seat went) with a key
   // still held: let go as a blur would — not every browser blurs an element
   // it removes.
+  // Also listen in the capture phase on `window` so flight keys work anywhere
+  // on the cockpit screen without requiring the user to click inside `.frame`
+  // first, matching the TUI's screen 0 behaviour.
   $effect(() => () => release());
   $effect(() => {
     const onVisibility = (): void => {
       visible = document.visibilityState === "visible";
       if (!visible) release();
     };
+    const onFocusIn = (ev: FocusEvent): void => {
+      if (isTextField(ev.target)) release();
+    };
+    const onHelp = (ev: Event): void => {
+      ev.preventDefault();
+    };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("blur", release);
+    window.addEventListener("keydown", onWindowKeyDown, true);
+    window.addEventListener("keyup", onWindowKeyUp, true);
+    window.addEventListener("focusin", onFocusIn, true);
+    window.addEventListener("help", onHelp, true);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("blur", release);
+      window.removeEventListener("keydown", onWindowKeyDown, true);
+      window.removeEventListener("keyup", onWindowKeyUp, true);
+      window.removeEventListener("focusin", onFocusIn, true);
+      window.removeEventListener("help", onHelp, true);
     };
   });
 
@@ -197,12 +358,23 @@
       if (t - last < LOCAL_FRAME_MS) return;
       last = t;
       try {
+        const now = Date.now();
+        const predMdeg = predictedHeadingMdeg(now);
+        const hullOffsetMdeg = frame !== null ? arcMdeg(frameHeadingMdeg, predMdeg) : 0;
+        const orderedMdeg =
+          frame !== null &&
+          orderedHeadingMdeg !== null &&
+          Math.abs(arcMdeg(predMdeg, orderedHeadingMdeg)) > 1_000
+            ? orderedHeadingMdeg
+            : null;
         if (
           l.draw(
             app.picture.cockpitData,
             app.picture.mapData,
             app.picture.lookMdeg,
             app.picture.kind,
+            hullOffsetMdeg,
+            orderedMdeg,
           )
         ) {
           if (c.width !== FRAME_W || c.height !== FRAME_H) {
@@ -231,19 +403,63 @@
     return () => clearInterval(timer);
   });
 
+  function startTurn(dir: -1 | 1): void {
+    const now = Date.now();
+    if (frame !== null && !hullStuck()) {
+      const p = predictedHeadingMdeg(now);
+      turnStartAtMs = now;
+      turnTapBaseMdeg =
+        orderedHeadingMdeg !== null && Math.sign(arcMdeg(p, orderedHeadingMdeg)) === dir
+          ? orderedHeadingMdeg
+          : p;
+    }
+    turning = dir;
+  }
+
   // A held turn's order is extended while the key is down.
   $effect(() => {
     const dir = turning;
     if (dir === 0) return;
-    app.helm(helmLine(untrack(() => heading), dir));
-    const timer = setInterval(() => app.helm(helmLine(heading, dir)), HELM_REPEAT_MS);
+    const sendTurnOrder = (): void => {
+      const now = Date.now();
+      if (frame !== null && !hullStuck()) {
+        const p = predictedHeadingMdeg(now);
+        baseHeadingMdeg = p;
+        baseAtMs = now;
+        const deg = (((Math.round(p / 1_000 + dir * HELM_LEAD_DEG) % 360) + 360) % 360);
+        orderedHeadingMdeg = deg * 1_000;
+        orderedAtMs = now;
+        app.helm(helmLine(p / 1_000, dir));
+      } else {
+        app.helm(helmLine(heading, dir));
+      }
+    };
+    untrack(sendTurnOrder);
+    const timer = setInterval(sendTurnOrder, HELM_REPEAT_MS);
     return () => clearInterval(timer);
   });
 
   function stopTurn(): void {
     if (turning !== 0) {
+      const dir = turning;
       turning = 0;
-      app.helm(helmLine(heading, 0));
+      if (frame !== null && !hullStuck()) {
+        const now = Date.now();
+        const p = predictedHeadingMdeg(now);
+        const dt = now - turnStartAtMs;
+        const targetMdeg =
+          dt > 0 && dt < 170
+            ? wrap360Mdeg(turnTapBaseMdeg + dir * MIN_TAP_TURN_MDEG)
+            : p;
+        baseHeadingMdeg = p;
+        baseAtMs = now;
+        const deg = (((Math.round(targetMdeg / 1_000) % 360) + 360) % 360);
+        orderedHeadingMdeg = deg * 1_000;
+        orderedAtMs = now;
+        app.helm(helmLine(deg, 0));
+      } else {
+        app.helm(helmLine(heading, 0));
+      }
     }
   }
 
@@ -306,7 +522,18 @@
     orderedKph = 0;
     app.helm(speedLine(0));
     turning = 0;
-    app.helm(helmLine(heading, 0));
+    if (frame !== null && !hullStuck()) {
+      const now = Date.now();
+      const p = predictedHeadingMdeg(now);
+      baseHeadingMdeg = p;
+      baseAtMs = now;
+      const deg = (((Math.round(p / 1_000) % 360) + 360) % 360);
+      orderedHeadingMdeg = deg * 1_000;
+      orderedAtMs = now;
+      app.helm(helmLine(deg, 0));
+    } else {
+      app.helm(helmLine(heading, 0));
+    }
   }
 
   // A step still waiting when the view goes (the screen changed) is sent, not
@@ -333,13 +560,29 @@
     app.helm(`LOCK ${designator}`);
   }
 
+  function onWindowKeyDown(ev: KeyboardEvent): void {
+    if (ev.defaultPrevented || ev.isComposing) return;
+    if (typeof document !== "undefined" && document.querySelector('[role="dialog"]') !== null) return;
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    const key = pictureKey(ev.key);
+    if (key === null) return;
+    if (key.kind !== "order" && isTextField(ev.target)) return;
+    onKeyDown(ev);
+  }
+
+  function onWindowKeyUp(ev: KeyboardEvent): void {
+    if (ev.defaultPrevented) return;
+    onKeyUp(ev);
+  }
+
   function onKeyDown(ev: KeyboardEvent): void {
+    if (ev.defaultPrevented) return;
     // A chord is the browser's (Ctrl-W, Ctrl-T, Alt-F …), never the picture's.
     if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
     const key = pictureKey(ev.key);
     if (key === null) return;
     if (key.kind === "order") {
-      // Always taken while the picture has focus, so the browser's F1 help,
+      // Always taken on the cockpit screen, so the browser's F1 help,
       // F5 reload and F6 address bar never fire from the cockpit.
       ev.preventDefault();
       if (!ev.repeat) {
@@ -352,7 +595,7 @@
     ev.preventDefault();
     switch (key.kind) {
       case "turn":
-        if (!ev.repeat) turning = key.dir;
+        if (!ev.repeat) startTurn(key.dir);
         break;
       case "look":
         if (!ev.repeat) lookTurn = lookTurn === key.dir ? 0 : key.dir;
@@ -373,7 +616,7 @@
         if (!ev.repeat) allStop();
         break;
       case "view":
-        if (!ev.repeat) app.picture.kind = overhead ? "cockpit" : "overhead";
+        if (!ev.repeat) app.picture.kind = nextPictureKind(app.picture.kind);
         break;
       case "gate":
         if (!ev.repeat) app.helm(gateLine(frame?.weapons_free ?? null));
@@ -388,6 +631,7 @@
   }
 
   function onKeyUp(ev: KeyboardEvent): void {
+    if (ev.defaultPrevented) return;
     const key = pictureKey(ev.key);
     if (key?.kind === "turn" && key.dir === turning) {
       ev.preventDefault();
@@ -396,7 +640,11 @@
   }
 </script>
 
-<section class="picturebox" aria-label="picture">
+<section
+  class="picturebox"
+  aria-label="picture"
+  style={wanted ? `width: min(100%, ${frameWidth}px)` : undefined}
+>
   <header>
     <strong>picture</strong>
     <span class="grow"></span>
@@ -427,12 +675,13 @@
       class="frame"
       tabindex="0"
       role="application"
-      aria-label={overhead
-        ? "overhead view; the cockpit's flight keys work here, v returns to first person"
-        : "first-person view; a and d or the arrows turn, w and s set the speed, q and e swing the look, v the overhead"}
+      aria-label={viewKind === "overhead"
+        ? "overhead view; the cockpit's flight keys work here, v switches to 2.5D tactical"
+        : viewKind === "iso25d"
+          ? "2.5D tactical view; the cockpit's flight keys work here, v returns to first person"
+          : "first-person view; a and d or the arrows turn, w and s set the speed, q and e swing the look, v switches view"}
       onkeydown={onKeyDown}
       onkeyup={onKeyUp}
-      onblur={release}
     >
       <canvas bind:this={canvas} aria-hidden="true"></canvas>
       {#if !drawnHere}
@@ -440,12 +689,26 @@
           {localFailed !== null ? "Could not draw the picture." : "Waiting for the first picture…"}
         </p>
       {/if}
+      <div
+        class="resizer"
+        class:dragging
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="resize picture"
+        title="Drag to resize picture"
+        onpointerdown={onResizeDown}
+        onpointermove={onResizeMove}
+        onpointerup={onResizeUp}
+        onpointercancel={onResizeUp}
+      ></div>
     </div>
   {/if}
 </section>
 
 <style>
   .picturebox {
+    flex: 0 0 auto;
+    max-width: 100%;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg-panel);
@@ -456,9 +719,9 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.4rem;
     font-family: var(--font-mono);
-    font-size: 0.85rem;
+    font-size: 0.82rem;
   }
 
   .grow {
@@ -472,7 +735,9 @@
   /* The legend is long (doc 21 cut G.12c): it wraps under the readouts on a
      narrow window rather than pushing the buttons off it. */
   .legend {
-    font-size: 0.8rem;
+    font-size: 0.75rem;
+    width: 100%;
+    order: 10;
   }
 
   .readout {
@@ -499,8 +764,8 @@
 
   .frame {
     position: relative;
-    margin-top: 0.4rem;
-    max-width: 960px;
+    margin-top: 0.35rem;
+    width: 100%;
     outline: none;
   }
 
@@ -515,6 +780,36 @@
     aspect-ratio: 4 / 3;
     image-rendering: pixelated;
     background: var(--bg);
+  }
+
+  .resizer {
+    position: absolute;
+    top: 0;
+    right: -4px;
+    bottom: 0;
+    width: 10px;
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .resizer::after {
+    content: "";
+    position: absolute;
+    right: 3px;
+    bottom: 6px;
+    width: 4px;
+    height: 24px;
+    border-right: 2px solid var(--fg-muted);
+    border-left: 2px solid var(--fg-muted);
+    opacity: 0.45;
+    transition: opacity 0.15s ease;
+  }
+
+  .resizer:hover::after,
+  .resizer.dragging::after {
+    opacity: 1;
+    border-color: var(--accent, #6aa0ff);
   }
 
   .waiting {

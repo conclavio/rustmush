@@ -58,11 +58,15 @@ pub enum Key {
     /// **The kitty graphics probe answered OK** (pixel cockpit spike,
     /// 2026-10-21): an APC `ESC _ G i=31…;OK ESC \` reply to the probe
     /// image. Not a key a person pressed; the app feeds it to the probe's
-    /// state machine. Replies to other image ids are swallowed.
+    /// state machine.
     GraphicsOk,
     /// The probe answered with an error (the terminal parsed the APC but
     /// could not honour it).
     GraphicsErr,
+    /// A retained kitty graphics command (`q=1`) answered with an error for a
+    /// non-probe image ID (e.g. `ENOENT` after terminal storage eviction), so
+    /// the compositor can re-upload that image ID on the next tick.
+    GraphicsImageErr(u32),
     /// A primary device attributes reply (`CSI ? … c`), which every terminal
     /// sends for `CSI c`: the probe's "no answer is the answer" marker, and
     /// (doc 21 cut G.1) the attributes it lists, attribute `4` being sixel.
@@ -371,8 +375,8 @@ fn dcs_key(payload: &str) -> Option<Key> {
 const APC_CAP: usize = 256;
 
 /// A whole APC payload (between `ESC _` and `ESC \`) as a key, or nothing:
-/// only the kitty graphics probe's reply is one (its image id is
-/// `mush_pixel::kitty::PROBE_IMAGE_ID`); every other APC is swallowed.
+/// the kitty graphics probe's reply (`mush_pixel::kitty::PROBE_IMAGE_ID`), or
+/// a `q=1` error reply for a retained image ID; other APCs are swallowed.
 fn apc_key(payload: &str) -> Option<Key> {
     let keys = payload.strip_prefix('G')?;
     let probe_id = format!("i={}", mush_pixel::kitty::PROBE_IMAGE_ID);
@@ -381,7 +385,7 @@ fn apc_key(payload: &str) -> Option<Key> {
         .next()
         .is_some_and(|kv| kv.split(',').any(|kv| kv == probe_id));
     if !names_the_probe {
-        return None;
+        return mush_pixel::kitty::error_image_id(payload).map(Key::GraphicsImageErr);
     }
     Some(if mush_pixel::kitty::is_probe_ok(payload) {
         Key::GraphicsOk

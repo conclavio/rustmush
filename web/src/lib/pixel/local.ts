@@ -8,6 +8,7 @@ import {
   FEED_COCKPIT,
   FEED_MAP,
   KIND_COCKPIT,
+  KIND_ISO25D,
   KIND_OVERHEAD,
   type PixelModule,
   loadPixelModule,
@@ -59,9 +60,13 @@ export class LocalPicture {
     map: unknown,
     lookMdeg: number,
     kind: PictureKind = "cockpit",
+    hullOffsetMdeg = 0,
+    orderedMdeg: number | null = null,
   ): boolean {
     if (kind !== this.#kind) {
-      this.#m.setKind(kind === "overhead" ? KIND_OVERHEAD : KIND_COCKPIT);
+      const wasmKind =
+        kind === "overhead" ? KIND_OVERHEAD : kind === "iso25d" ? KIND_ISO25D : KIND_COCKPIT;
+      this.#m.setKind(wasmKind);
       this.#kind = kind;
     }
     if (cockpit !== this.#cockpit) {
@@ -72,7 +77,13 @@ export class LocalPicture {
       this.#m.feed(FEED_MAP, map == null ? null : JSON.stringify(map));
       this.#map = map;
     }
-    if (!this.#m.render(FRAME_W, FRAME_H, { offsetMdeg: lookMdeg })) {
+    if (
+      !this.#m.render(FRAME_W, FRAME_H, {
+        offsetMdeg: hullOffsetMdeg + lookMdeg,
+        hullOffsetMdeg,
+        orderedMdeg,
+      })
+    ) {
       this.#shown = null;
       return false;
     }

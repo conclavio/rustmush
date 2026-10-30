@@ -19,6 +19,7 @@ import {
   lockOrder,
   LOOK_MDEG_PER_S,
   nextLock,
+  nextPictureKind,
   orderPrefill,
   pictureCommand,
   pictureKey,
@@ -121,6 +122,9 @@ describe("the cockpit's keys (doc 21 §7.3, cut G.12c)", () => {
 
   it("v switches the camera", () => {
     expect(pictureKey("v")).toEqual({ kind: "view" });
+    expect(nextPictureKind("cockpit")).toBe("overhead");
+    expect(nextPictureKind("overhead")).toBe("iso25d");
+    expect(nextPictureKind("iso25d")).toBe("cockpit");
   });
 
   it("f flips the weapons gate", () => {

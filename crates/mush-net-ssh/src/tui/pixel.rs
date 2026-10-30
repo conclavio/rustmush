@@ -68,6 +68,7 @@ use mush_pixel::caps::{CellSize, DeviceAttributes, Encoder, EncoderChoice, Graph
 use mush_pixel::chart::ChartPicture;
 use mush_pixel::cockpit::CockpitPicture;
 use mush_pixel::doll::DollPicture;
+use mush_pixel::iso25d::Iso25DPicture;
 use mush_pixel::overhead::OverheadPicture;
 use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use mush_pixel::replay::ReplayPicture;
@@ -205,7 +206,7 @@ pub enum PictureKind {
     Doll,
 }
 
-/// **The cockpit's camera** (doc 21 §7.4, cut G.12b): which of its two
+/// **The cockpit's camera** (doc 21 §7.4, cut G.12b): which of its three
 /// pictures the cockpit view draws, swapped by `v` and kept for the session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CockpitCamera {
@@ -216,6 +217,9 @@ pub enum CockpitCamera {
     /// The overhead: the arena north up around the tank (bucket B's scene
     /// at bucket A's clock).
     Overhead,
+    /// The fixed-angle 2.5D tactical view: oblique voxel terrain and 3D-baked
+    /// mipmap sprites composited via retained Kitty graphics placements.
+    Tactical25D,
 }
 
 /// What [`PixelView::key`] made of a key (doc 21 cut G.12b).
@@ -373,6 +377,10 @@ pub struct PixelView {
     camera: CockpitCamera,
     /// The overhead picture the camera swaps in (G.12b).
     overhead: OverheadPicture,
+    /// The fixed-angle 2.5D picture and retained Kitty compositor.
+    iso25d: Iso25DPicture,
+    /// Dynamic pixel dimensions of the last rendered 2.5D viewport (up to 1280×720).
+    last_25d_size: Option<(usize, usize)>,
     /// The other orders the flight keys made (`FIRE …`, `LOCK …`), oldest
     /// first (G.12b).
     orders: Vec<String>,
@@ -478,6 +486,8 @@ impl PixelView {
             throttle: Throttle::new(),
             camera: CockpitCamera::FirstPerson,
             overhead: OverheadPicture::new(),
+            iso25d: Iso25DPicture::new(),
+            last_25d_size: None,
             orders: Vec::new(),
             detachment: None,
             lock_order: Vec::new(),
@@ -599,6 +609,12 @@ impl PixelView {
     /// next frame).
     #[must_use]
     pub fn size(&self) -> (usize, usize) {
+        if self.kind == PictureKind::Cockpit
+            && self.camera == CockpitCamera::Tactical25D
+            && let Some(sz) = self.last_25d_size
+        {
+            return sz;
+        }
         (self.frame.width(), self.frame.height())
     }
 
@@ -649,6 +665,27 @@ impl PixelView {
         if self.probe != Probe::NotSent {
             self.cell = Some(cell);
         }
+    }
+
+    /// Set the cell size directly from SSH `pty-req` or `window-change` pixel
+    /// dimensions (available even before the `CSI 16 t` probe runs).
+    pub fn set_cell_size(&mut self, cell: CellSize) {
+        self.cell = Some(cell);
+        self.last_sent = None;
+    }
+
+    /// A `q=1` Kitty graphics error reply named `image_id` as missing or
+    /// evicted from terminal storage quota: mark it for re-upload on the next
+    /// tick.
+    pub fn graphics_image_err(&mut self, image_id: u32) {
+        self.iso25d.invalidate_image(image_id);
+        self.last_sent = None;
+    }
+
+    /// Emit Kitty delete commands for all retained images and placements owned
+    /// by the 2.5D compositor.
+    pub fn cleanup_25d_bytes(&mut self) -> Vec<u8> {
+        self.iso25d.cleanup_kitty_bytes()
     }
 
     /// The DA1 reply arrived: if the graphics answer has not, it never will.
@@ -907,6 +944,11 @@ impl PixelView {
         if std::mem::take(&mut self.keyboard_pushed) {
             self.term_bytes.extend_from_slice(KEYBOARD_POP);
         }
+        let cleanup = self.iso25d.cleanup_kitty_bytes();
+        if !cleanup.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup);
+        }
+        self.last_25d_size = None;
         self.letters_held = false;
         self.last_sent = None;
         self.wipe_pending = false;
@@ -931,9 +973,13 @@ impl PixelView {
     /// The text frame wrote into the picture's cell box ([`sixel_box`](Self::sixel_box))
     /// or cleared the screen. A sixel picture there is gone, so the next
     /// tick sends it again; a kitty image sits above the text and is not
-    /// touched.
+    /// touched unless `terminal.clear()` (`CSI 2 J`) wiped the screen.
     pub fn text_touched(&mut self) {
         if self.shown() == Some(Encoder::Sixel) {
+            self.last_sent = None;
+        }
+        if self.kind == PictureKind::Cockpit && self.camera == CockpitCamera::Tactical25D {
+            self.iso25d.invalidate_placements();
             self.last_sent = None;
         }
     }
@@ -944,6 +990,12 @@ impl PixelView {
     pub fn sixel_box(&self) -> Option<(u16, u16, u16, u16)> {
         match self.shown {
             Some((Encoder::Sixel, (col, row, c, r))) => {
+                Some((col.saturating_sub(1), row.saturating_sub(1), c, r))
+            }
+            Some((Encoder::Kitty, (col, row, c, r)))
+                if self.kind == PictureKind::Cockpit
+                    && self.camera == CockpitCamera::Tactical25D =>
+            {
                 Some((col.saturating_sub(1), row.saturating_sub(1), c, r))
             }
             _ => None,
@@ -1098,10 +1150,22 @@ impl PixelView {
                 self.look_mdeg = 0;
             }
             Key::Char('v') => {
+                if self.camera == CockpitCamera::Tactical25D {
+                    let cleanup = self.iso25d.cleanup_kitty_bytes();
+                    self.term_bytes.extend_from_slice(&cleanup);
+                    self.last_25d_size = None;
+                } else if self.camera == CockpitCamera::Overhead
+                    && self.shown() == Some(Encoder::Kitty)
+                {
+                    self.term_bytes
+                        .extend_from_slice(&kitty::delete_bytes(IMAGE_ID));
+                }
                 self.camera = match self.camera {
                     CockpitCamera::FirstPerson => CockpitCamera::Overhead,
-                    CockpitCamera::Overhead => CockpitCamera::FirstPerson,
+                    CockpitCamera::Overhead => CockpitCamera::Tactical25D,
+                    CockpitCamera::Tactical25D => CockpitCamera::FirstPerson,
                 };
+                self.last_sent = None;
             }
             // The master gate (G.12a's verbs): the verb that flips what the
             // frame says, and the flip assumed until the next frame says.
@@ -1153,6 +1217,7 @@ impl PixelView {
             Key::Char('u') if self.cfg.diagnostics => {
                 self.uncapped = !self.uncapped;
                 self.last_sent = None;
+                self.iso25d.invalidate_placements();
             }
             Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
             | Key::Enter
@@ -1263,11 +1328,58 @@ impl PixelView {
                 .ordered()
                 .filter(|o| arc(predicted, *o).abs() > 1_000),
         };
+        if self.kind == PictureKind::Cockpit
+            && self.camera == CockpitCamera::Tactical25D
+            && encoder == Encoder::Kitty
+        {
+            let step_down = self.stepped_down || self.want == FRAME_W_LO;
+            let t0 = Instant::now();
+            let Some((vp, wire)) = self
+                .iso25d
+                .draw_kitty(feeds, &look, area, self.cell, step_down)
+            else {
+                return Vec::new();
+            };
+            let elapsed_us = t0.elapsed().as_micros();
+            let shown_px = (vp.width_px, vp.height_px);
+            let placed_box = (
+                area.0.saturating_add(vp.col_offset),
+                area.1.saturating_add(vp.row_offset),
+                vp.cols,
+                vp.rows,
+            );
+            self.last_25d_size = Some(shown_px);
+            self.shown_size = shown_px;
+            if wire.is_empty() {
+                self.stats.skipped += 1;
+                return Vec::new();
+            }
+            self.stats.render_us = elapsed_us;
+            self.stats.encode_us = 0;
+            self.stats.image_bytes = wire.len();
+            self.stats.wire_bytes = wire.len();
+            self.stats.sent += 1;
+            self.sent_at.push_back(now);
+            while self
+                .sent_at
+                .front()
+                .is_some_and(|at| now.saturating_duration_since(*at) >= Duration::from_secs(1))
+            {
+                self.sent_at.pop_front();
+            }
+            self.shown = Some((encoder, placed_box));
+            return wire;
+        }
         let t0 = Instant::now();
         // G.12b: the cockpit's camera picks its picture.
         let drawn = if self.kind == PictureKind::Cockpit && self.camera == CockpitCamera::Overhead {
+            self.last_25d_size = None;
             self.overhead.draw(&mut self.frame, feeds, &look)
+        } else if self.kind == PictureKind::Cockpit && self.camera == CockpitCamera::Tactical25D {
+            self.last_25d_size = None;
+            self.iso25d.draw(&mut self.frame, feeds, &look)
         } else {
+            self.last_25d_size = None;
             self.picture.draw(&mut self.frame, feeds, &look)
         };
         if !drawn {
@@ -1419,6 +1531,7 @@ impl PixelView {
             match self.camera {
                 CockpitCamera::FirstPerson => "PIXEL VIEW",
                 CockpitCamera::Overhead => "PIXEL OVERHEAD",
+                CockpitCamera::Tactical25D => "PIXEL 2.5D",
             },
             heading / 1_000,
             self.look_mdeg() / 1_000,
@@ -2670,8 +2783,9 @@ mod tests {
         assert!(invalid.take_orders().is_empty());
     }
 
-    /// `v` swaps the first-person picture for the overhead and back; the
-    /// camera, the look and the helm outlive a hide.
+    /// `v` swaps the first-person picture for the overhead, then the 2.5D
+    /// tactical view, and back; the camera, the look and the helm outlive a
+    /// hide.
     #[test]
     fn g12b_v_swaps_to_the_overhead_and_a_hide_keeps_the_cockpit() {
         let t0 = Instant::now();
@@ -2702,6 +2816,40 @@ mod tests {
         assert!(v.toggle_for(PictureKind::Cockpit, t0));
         assert_eq!((v.camera(), v.look_mdeg()), (CockpitCamera::Overhead, look));
         assert!(v.helm().ordered().is_some(), "the helm's order stands");
+        // Second `v` transitions to the fixed-angle 2.5D tactical view,
+        // scaling up to 1280px wide when the terminal cell size permits and
+        // emitting retained `a=t` uploads + `a=p` placements.
+        v.set_cell_size(CellSize {
+            width: 14,
+            height: 28,
+        });
+        v.key(Key::Char('v'), t0);
+        assert_eq!(v.camera(), CockpitCamera::Tactical25D);
+        let iso_bytes = v.paint(&both, 120, 40, t0);
+        assert!(!iso_bytes.is_empty(), "the 2.5D picture");
+        let iso_wire = String::from_utf8_lossy(&iso_bytes);
+        assert!(iso_wire.contains("a=t,f=100"), "uploads retained sheets");
+        assert!(iso_wire.contains("a=p,i="), "places sprites and terrain");
+        assert!(
+            iso_wire.contains("c=120,r=26"),
+            "fills the full 120x26 cell box"
+        );
+        assert_eq!(v.size(), (1200, 520), "scaled to terminal pixel size");
+        // Stationary second tick in 2.5D mode skips sending any bytes!
+        assert!(
+            v.paint(&both, 120, 40, t0).is_empty(),
+            "unchanged 2.5D tick is skipped"
+        );
+        let (top_25d, _) = v.hud(Some(&cockpit), t0);
+        assert!(top_25d.starts_with("PIXEL 2.5D"), "{top_25d}");
+        // Eviction error (`q=1` APC reply) marks the image for re-upload.
+        v.graphics_image_err(100);
+        let recovery = v.paint(&both, 120, 40, t0);
+        assert!(
+            String::from_utf8_lossy(&recovery).contains("a=t,f=100,t=d,i=100"),
+            "re-uploads evicted terrain image 100"
+        );
+        // Third `v` returns to first-person.
         v.key(Key::Char('v'), t0);
         assert_eq!(v.camera(), CockpitCamera::FirstPerson);
     }

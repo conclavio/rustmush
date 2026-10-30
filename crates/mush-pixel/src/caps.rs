@@ -93,6 +93,17 @@ impl CellSize {
         height: 20,
     };
 
+    /// Build a [`CellSize`] from non-zero pixel dimensions (e.g. derived from
+    /// SSH `pty-req` / `window-change` pixel width and height).
+    #[must_use]
+    pub const fn from_px(width: u16, height: u16) -> Option<CellSize> {
+        if width > 0 && height > 0 {
+            Some(CellSize { width, height })
+        } else {
+            None
+        }
+    }
+
     /// The report's parameters as the key parser holds them, `"6;20;10"`;
     /// `None` for any other `CSI … t` report or a zero side.
     #[must_use]

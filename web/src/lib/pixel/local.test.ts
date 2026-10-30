@@ -47,7 +47,7 @@ describe("the picture drawn here", () => {
     expect(p.draw(cockpit, map, 0)).toBe(false);
   });
 
-  it("draws the overhead camera and reports a new frame when the camera swaps (doc 28 P2)", async () => {
+  it("draws the overhead and 2.5D tactical cameras and reports a new frame when the camera swaps", async () => {
     const m = await module();
     const p = new LocalPicture(m);
     const cockpit = fixture("cockpit_frame.json");
@@ -56,6 +56,8 @@ describe("the picture drawn here", () => {
     expect(p.draw(cockpit, map, 0, "cockpit")).toBe(false);
     expect(p.draw(cockpit, map, 0, "overhead")).toBe(true);
     expect(p.draw(cockpit, map, 0, "overhead")).toBe(false);
+    expect(p.draw(cockpit, map, 0, "iso25d")).toBe(true);
+    expect(p.draw(cockpit, map, 0, "iso25d")).toBe(false);
     expect(p.draw(cockpit, map, 0, "cockpit")).toBe(true);
   });
 

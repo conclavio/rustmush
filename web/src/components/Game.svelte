@@ -129,6 +129,11 @@
     // 17g cut C3c: an open market form owns the bare keys (the TUI's rule): a second key
     // must not open another form over it. `MarketForm` takes Esc itself.
     if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && active.id === "market" && app.market.form !== null) return;
+    const inField = isTextField(ev.target);
+    const bindings =
+      active.id === "cockpit" && app.picture.on && !inField && !ev.altKey
+        ? new Set(["p"])
+        : app.screens.bindingKeys(gate);
     const intent = navIntent(
       {
         key: ev.key,
@@ -136,10 +141,10 @@
         ctrl: ev.ctrlKey,
         meta: ev.metaKey,
         shift: ev.shiftKey,
-        inField: isTextField(ev.target),
+        inField,
       },
       app.screens.exitKeysFor(gate),
-      app.screens.bindingKeys(gate),
+      bindings,
     );
     if (intent && app.act(intent)) {
       ev.preventDefault();

@@ -32,6 +32,8 @@ export const KIND_CHART = 3;
 export const KIND_DOLL = 4;
 /** `mp_kind`'s number for the match replay (`ReplayPicture`). */
 export const KIND_REPLAY = 5;
+/** `mp_kind`'s number for the cockpit's 2.5D tactical camera (`Iso25DPicture`). */
+export const KIND_ISO25D = 6;
 
 /** What the picture is drawn for: the look's offset from the hull, and the
  * hull's own offset from the frame's heading and an ordered heading when the

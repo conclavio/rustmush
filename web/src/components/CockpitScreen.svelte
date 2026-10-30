@@ -247,38 +247,40 @@
   {#if frame === null || view === null}
     <p class="muted pad">{NOT_IN_A_COCKPIT}</p>
   {:else}
-    <!-- Doc 21 cut G.3c: the first-person picture, above the map. -->
-    <PictureView {app} headingDeg={frame.heading_deg} {frame} {prefill} />
-    <section class="mapbox" aria-label="arena map">
-      <header>
-        <strong>{view.heading}</strong>
-        <span class="grow"></span>
-        <span class="dim">{cells} cells</span>
-        <!-- 16b cut B.1 (`B-60`): only the glyphs moved. The labels and the
-             handlers were always true — fewer cells IS zooming in — but the
-             button that zooms in wore a minus sign. -->
-        <button type="button" class="zoom" aria-label="zoom in" onclick={() => zoom(-1)}>+</button>
-        <button type="button" class="zoom" aria-label="zoom out" onclick={() => zoom(1)}>−</button>
-      </header>
-      {#if win === null}
-        <p class="muted">{WAITING_FOR_THE_MAP}</p>
-      {:else}
-        <div class="canvas-wrap">
-          <canvas
-            bind:this={canvas}
-            aria-label="arena window"
-            style="width: {win.w * cellPx}px; height: {win.h * cellPx}px"
-          ></canvas>
-        </div>
-        {#if view.legend.length > 0}
-          <p class="legendline">{view.legend}</p>
+    <!-- Doc 21 cut G.3c: the first-person picture top-left, the arena map flowing beside it. -->
+    <div class="top-deck">
+      <PictureView {app} headingDeg={frame.heading_deg} {frame} {prefill} />
+      <section class="mapbox" aria-label="arena map">
+        <header>
+          <strong>{view.heading}</strong>
+          <span class="grow"></span>
+          <span class="dim">{cells} cells</span>
+          <!-- 16b cut B.1 (`B-60`): only the glyphs moved. The labels and the
+               handlers were always true — fewer cells IS zooming in — but the
+               button that zooms in wore a minus sign. -->
+          <button type="button" class="zoom" aria-label="zoom in" onclick={() => zoom(-1)}>+</button>
+          <button type="button" class="zoom" aria-label="zoom out" onclick={() => zoom(1)}>−</button>
+        </header>
+        {#if win === null}
+          <p class="muted">{WAITING_FOR_THE_MAP}</p>
+        {:else}
+          <div class="canvas-wrap">
+            <canvas
+              bind:this={canvas}
+              aria-label="arena window"
+              style="width: {win.w * cellPx}px; height: {win.h * cellPx}px"
+            ></canvas>
+          </div>
+          {#if view.legend.length > 0}
+            <p class="legendline">{view.legend}</p>
+          {/if}
         {/if}
-      {/if}
-    </section>
+      </section>
+    </div>
 
     <div class="panes">
       {#if frame?.detachment}
-        <section class="pane wide" aria-label="detachment">
+        <section class="pane full" aria-label="detachment">
           <h4 class="pt">detachment</h4>
           {#each detachmentLines(frame.detachment) as line, i (i)}
             <p class="line">{line}</p>
@@ -318,14 +320,16 @@
           <div class="bar" data-kind="inside">
             <span class="fill" style="width: {row.pct}%"></span>
           </div>
-          {#each row.facets as facet, f (f)}
-            <div class="facet">
-              <span class="barlabel">{facet.id} {facet.armor}</span>
-              <div class="bar" data-kind="armour">
-                <span class="fill" style="width: {facet.pct}%"></span>
+          <div class="facets">
+            {#each row.facets as facet, f (f)}
+              <div class="facet">
+                <span class="barlabel">{facet.id} {facet.armor}</span>
+                <div class="bar" data-kind="armour">
+                  <span class="fill" style="width: {facet.pct}%"></span>
+                </div>
               </div>
-            </div>
-          {/each}
+            {/each}
+          </div>
         {/each}
         {#if view.damage.length === 0}
           <p class="muted">Nothing here.</p>
@@ -406,13 +410,22 @@
   .cockpit {
     height: 100%;
     overflow-y: auto;
-    padding: 0.6rem 0.75rem;
+    padding: 0.5rem 0.65rem;
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
+    gap: 0.5rem;
+  }
+
+  .top-deck {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.5rem;
   }
 
   .mapbox {
+    flex: 1 1 20rem;
+    min-width: 0;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg-panel);
@@ -448,7 +461,7 @@
 
   .canvas-wrap {
     overflow: auto;
-    max-height: 52vh;
+    max-height: 44vh;
     margin: 0.3rem 0;
   }
 
@@ -467,31 +480,31 @@
 
   .panes {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
-    gap: 0.6rem;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.5rem;
     align-items: start;
   }
 
   .pane {
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
-    padding: 0.5rem 0.65rem;
+    gap: 0.12rem;
+    padding: 0.45rem 0.6rem;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg-panel);
     min-width: 0;
+    max-height: 38vh;
+    overflow-y: auto;
     overflow-x: auto;
   }
 
-  .pane.wide {
-    grid-column: span 2;
+  .pane.full {
+    grid-column: 1 / -1;
   }
 
-  @media (max-width: 800px) {
-    .pane.wide {
-      grid-column: auto;
-    }
+  .pane.wide {
+    grid-column: span 1;
   }
 
   .pt {
@@ -551,8 +564,15 @@
     background: var(--accent-dim);
   }
 
+  .facets {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.1rem 0.4rem;
+    margin-left: 0.35rem;
+  }
+
   .facet {
-    margin-left: 0.8rem;
+    min-width: 0;
   }
 
   .barlabel {

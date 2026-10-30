@@ -319,10 +319,13 @@ impl AtlasModule {
         }
     }
 
-    /// Put packs on the shelf (the composition root adds the starter packs).
+    /// Put packs on the shelf (the composition root adds the starter packs
+    /// ahead of any operator-configured `[atlas].pack_paths`, so an operator's
+    /// pack with the same id takes precedence on the shelf).
     #[must_use]
-    pub fn with_shelf(mut self, packs: Vec<Pack>) -> AtlasModule {
-        self.shelf.extend(packs);
+    pub fn with_shelf(mut self, mut packs: Vec<Pack>) -> AtlasModule {
+        packs.extend(self.shelf);
+        self.shelf = packs;
         self
     }
 
