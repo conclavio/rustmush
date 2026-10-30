@@ -160,6 +160,8 @@ export type PictureKey =
   | { kind: "volley" }
   /** The next (`1`) or previous (`-1`) contact locked (`LOCK`). */
   | { kind: "lock"; dir: -1 | 1 }
+  /** Zoom in (`1`) or out (`-1`) on the 2.5D tactical camera. */
+  | { kind: "zoom"; dir: -1 | 1 }
   /** The chat line opened with an `ORDER` ready. */
   | { kind: "order"; slot: OrderSlot };
 
@@ -216,6 +218,12 @@ export function pictureKey(key: string): PictureKey | null {
       return { kind: "lock", dir: 1 };
     case "T":
       return { kind: "lock", dir: -1 };
+    case "+":
+    case "=":
+      return { kind: "zoom", dir: 1 };
+    case "-":
+    case "_":
+      return { kind: "zoom", dir: -1 };
     case "F1":
       return { kind: "order", slot: "ALL" };
     case "F2":
@@ -334,4 +342,90 @@ export function nextLock(
   const at = current === null ? -1 : order.indexOf(current);
   if (at < 0) return order[0] ?? null;
   return order[(at + dir + order.length) % order.length] ?? null;
+}
+
+// -- 2.5D zoom and interactive tactical canvas (`iso25d` / `overhead`) ---------
+
+export const ZOOM_MIN_PERMILLE = 500;
+export const ZOOM_MAX_PERMILLE = 2_000;
+export const ZOOM_DEFAULT_PERMILLE = 1_000;
+export const ZOOM_STEP_PERMILLE = 250;
+
+/** Step the 2.5D camera zoom in permille (`500..=2000`, `1000` = 1.0x), or reset on `0`. */
+export function stepZoomPermille(current: number, dir: -1 | 0 | 1): number {
+  if (dir === 0) return ZOOM_DEFAULT_PERMILLE;
+  const base = Number.isFinite(current) && current > 0 ? Math.round(current) : ZOOM_DEFAULT_PERMILLE;
+  return Math.min(
+    ZOOM_MAX_PERMILLE,
+    Math.max(ZOOM_MIN_PERMILLE, base + dir * ZOOM_STEP_PERMILLE),
+  );
+}
+
+/** Pick the nearest contact on the `iso25d` or `overhead` canvas at normalized `[0, 1]`
+ * coordinates `(normX, normY)`, returning its `designator` when within the hit radius. */
+export function pickCanvasContact(
+  contacts: readonly CockpitContact[],
+  kind: PictureKind,
+  normX: number,
+  normY: number,
+  zoomPermille = ZOOM_DEFAULT_PERMILLE,
+  sightM = 600,
+): string | null {
+  if (kind !== "iso25d" && kind !== "overhead") return null;
+  if (!Number.isFinite(normX) || !Number.isFinite(normY)) return null;
+  const px = normX * 640;
+  const py = normY * 480;
+  let pxPerMX: number;
+  let pxPerMY: number;
+  if (kind === "iso25d") {
+    const z =
+      Math.min(
+        ZOOM_MAX_PERMILLE,
+        Math.max(ZOOM_MIN_PERMILLE, zoomPermille > 0 ? zoomPermille : ZOOM_DEFAULT_PERMILLE),
+      ) / 1_000;
+    const scale = 2.0 * z;
+    pxPerMX = 1.15 * scale;
+    pxPerMY = 0.78 * scale;
+  } else {
+    const reach = Math.min(3_000, Math.max(150, (sightM > 0 ? sightM : 600) * 1.15));
+    const pxPerM = 240 / reach;
+    pxPerMX = pxPerM;
+    pxPerMY = pxPerM;
+  }
+
+  let bestDesig: string | null = null;
+  let bestDistSq = 34 * 34;
+  for (const c of contacts) {
+    if (!c.designator) continue;
+    const rad = (c.bearing_deg * Math.PI) / 180;
+    const cx = 320 + c.range_m * Math.sin(rad) * pxPerMX;
+    const cy = 240 - c.range_m * Math.cos(rad) * pxPerMY;
+    const dx = px - cx;
+    const dy = py - cy;
+    const distSq = dx * dx + dy * dy;
+    if (distSq <= bestDistSq) {
+      bestDistSq = distSq;
+      bestDesig = c.designator;
+    }
+  }
+  return bestDesig;
+}
+
+/** Compass bearing (`0..359` degrees clockwise from north) from the ego unit at canvas
+ * centre `(0.5, 0.5)` to `(normX, normY)` in `iso25d` or `overhead` view, or `null` inside
+ * the centre deadzone. */
+export function canvasClickHeadingDeg(
+  kind: PictureKind,
+  normX: number,
+  normY: number,
+): number | null {
+  if (kind !== "iso25d" && kind !== "overhead") return null;
+  if (!Number.isFinite(normX) || !Number.isFinite(normY)) return null;
+  const dxPx = normX * 640 - 320;
+  const dyPx = 240 - normY * 480;
+  if (dxPx * dxPx + dyPx * dyPx < 18 * 18) return null;
+  const east = kind === "iso25d" ? dxPx / 1.15 : dxPx;
+  const north = kind === "iso25d" ? dyPx / 0.78 : dyPx;
+  const deg = Math.round((Math.atan2(east, north) * 180) / Math.PI);
+  return ((deg % 360) + 360) % 360;
 }

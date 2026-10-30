@@ -458,8 +458,13 @@ struct IsoProj {
 }
 
 impl IsoProj {
-    fn for_viewport(vp_w: usize) -> Self {
-        let s = (vp_w as f32 / 640.0).sqrt().clamp(0.7, 1.45);
+    fn for_viewport_zoomed(vp_w: usize, zoom_permille: u16) -> Self {
+        let z_raw = if zoom_permille == 0 {
+            1000
+        } else {
+            zoom_permille.clamp(500, 2000)
+        };
+        let s = (vp_w as f32 / 640.0).sqrt().clamp(0.7, 1.45) * (f32::from(z_raw) * 0.001);
         Self {
             px_per_m_x: 1.15 * s,
             px_per_m_y: 0.78 * s,
@@ -508,6 +513,7 @@ struct TerrainCanvas {
     canvas_h: usize,
     vp_w: usize,
     vp_h: usize,
+    zoom_permille: u16,
     origin_x_cm: i64,
     origin_y_cm: i64,
     proj: IsoProj,
@@ -526,10 +532,11 @@ impl TerrainCanvas {
         origin_y_cm: i64,
         vp_w: usize,
         vp_h: usize,
+        zoom_permille: u16,
     ) -> Self {
         let canvas_w = ((vp_w * 5 / 2) & !1).min(2560).max(vp_w + 64);
         let canvas_h = ((vp_h * 5 / 2) & !1).min(1440).max(vp_h + 64);
-        let proj = IsoProj::for_viewport(vp_w);
+        let proj = IsoProj::for_viewport_zoomed(vp_w, zoom_permille);
         let origin_x_m = origin_x_cm as f32 * 0.01;
         let origin_y_m = origin_y_cm as f32 * 0.01;
         let ref_z_m = ground_z_m(map, terrain, origin_x_m, origin_y_m);
@@ -705,30 +712,61 @@ impl TerrainCanvas {
                 }
                 last_sy = sy.min(canvas_h);
 
-                // Solid 3D Wall extrusion (buildings / compounds / fortifications)
+                // Solid 3D Sci-Fi Bunker / Outpost Wall extrusion (Manufactura K4 style:
+                // bevelled perimeter parapets, vertical structural buttresses, recessed
+                // blast doors, and hazard-striped base plinths).
                 if ground == Ground::Wall {
                     let occ_top_m = (ground.height_cm() as f32) * 0.01;
                     let h_px = ((occ_top_m * proj.px_per_m_z).round() as i32).clamp(4, 48);
                     let y_bot = screen_y_i32.clamp(0, canvas_h as i32 - 1);
                     let y_top = (screen_y_i32 - h_px).clamp(0, canvas_h as i32 - 1);
                     let south_cell_y = ((wy_m - 1.2) / cell_m).floor() as i64;
+                    let north_cell_y = ((wy_m + 1.2) / cell_m).floor() as i64;
+                    let west_cell_x = ((wx_m - 1.2) / cell_m).floor() as i64;
+                    let east_cell_x = ((wx_m + 1.2) / cell_m).floor() as i64;
                     let is_south_face = map.get(cell_x, south_cell_y) != Ground::Wall;
+                    let is_parapet = is_south_face
+                        || map.get(cell_x, north_cell_y) != Ground::Wall
+                        || map.get(west_cell_x, cell_y) != Ground::Wall
+                        || map.get(east_cell_x, cell_y) != Ground::Wall;
+                    let sub_x_m = wx_m.rem_euclid(cell_m);
+                    let is_buttress = sub_x_m < 1.2 || sub_x_m > (cell_m - 1.2);
+                    let is_blast_door = is_south_face
+                        && ((cell_x ^ cell_y) & 1 == 0)
+                        && (3.2..=6.8).contains(&sub_x_m);
                     let checker = ((cell_x as i32) ^ (cell_y as i32)) & 1 != 0;
                     if y_top < y_bot {
                         let base_u16 = u16::try_from(y_bot.max(0)).unwrap_or(0);
                         for y in y_top..=y_bot {
                             let col: Rgb = if y <= y_top + 1 {
-                                [146, 150, 156]
-                            } else if !is_south_face {
-                                if checker {
-                                    [120, 124, 130]
+                                if is_parapet {
+                                    [158, 164, 172]
                                 } else {
-                                    [126, 130, 136]
+                                    [140, 144, 150]
                                 }
-                            } else if y >= y_bot - 1 {
-                                [66, 70, 76]
+                            } else if !is_south_face {
+                                if is_parapet {
+                                    [134, 138, 146]
+                                } else if checker {
+                                    [118, 122, 128]
+                                } else {
+                                    [124, 128, 134]
+                                }
+                            } else if y == y_bot - 1 {
+                                // Hazard chevron plinth stripe along South-facing outpost base
+                                if ((cx + (y as usize)) & 2) == 0 {
+                                    [196, 152, 42]
+                                } else {
+                                    [46, 50, 56]
+                                }
+                            } else if y >= y_bot - 2 {
+                                [62, 66, 72]
+                            } else if is_blast_door && y > y_top + 2 {
+                                [54, 60, 68]
+                            } else if is_buttress {
+                                [108, 112, 120]
                             } else {
-                                [92, 96, 102]
+                                [88, 92, 98]
                             };
                             let uy = y as usize;
                             ground_frame.put(cx, uy, col);
@@ -743,7 +781,8 @@ impl TerrainCanvas {
             }
         }
 
-        // Back-to-front (North-to-South) 3D conifer tree groves for Woods & WoodsHeavy cells.
+        // Back-to-front (North-to-South) 3D conifer tree groves (`Woods`, `WoodsHeavy`)
+        // and baked Manufactura K4 sci-fi rooftop structures (`Ground::Wall` compounds).
         let cx0 = (min_wx_m / cell_m).floor() as i64;
         let cx1 = (max_wx_m / cell_m).floor() as i64;
         let cy0 = (min_wy_m / cell_m).floor() as i64;
@@ -752,6 +791,69 @@ impl TerrainCanvas {
         for cy in (cy0..=cy1).rev() {
             for cx_cell in cx0..=cx1 {
                 let g = map.get(cx_cell, cy);
+                if g == Ground::Wall {
+                    if let Some((prop_idx, prop_h_m)) =
+                        crate::heightfield::scifi_prop_for_cell(map, cx_cell, cy)
+                        && let Some(grid) = crate::heightfield::K4_SCIFI_PROPS.get(prop_idx)
+                    {
+                        let wall_top_m = (Ground::Wall.height_cm() as f32) * 0.01;
+                        let pwx_m = (cx_cell as f32 + 0.5) * cell_m;
+                        let pwy_m = (cy as f32 + 0.5) * cell_m;
+                        let roof_dz_m =
+                            ground_z_m(map, terrain, pwx_m, pwy_m) + wall_top_m - ref_z_m;
+                        let (bx, by) = proj.world_to_canvas(
+                            ((pwx_m * 100.0) as i64, (pwy_m * 100.0) as i64),
+                            roof_dz_m,
+                            (origin_x_cm, origin_y_cm),
+                            (canvas_w, canvas_h),
+                        );
+                        let base_u16 = u16::try_from(by.clamp(0, u16::MAX as i32)).unwrap_or(0);
+                        for (r_idx, row) in grid.iter().enumerate() {
+                            let off_y_m = ((7.5 - r_idx as f32) / 16.0) * 6.5;
+                            let row_sy = by - (off_y_m * proj.px_per_m_y).round() as i32;
+                            for (c_idx, &cell_val) in row.iter().enumerate() {
+                                let hq = cell_val & 0x1F;
+                                if hq == 0 {
+                                    continue;
+                                }
+                                let shade_q = cell_val >> 5;
+                                let off_x_m = ((c_idx as f32 - 7.5) / 16.0) * 6.5;
+                                let px = bx + (off_x_m * proj.px_per_m_x).round() as i32;
+                                if px < 0 || (px as usize) >= canvas_w {
+                                    continue;
+                                }
+                                let ux = px as usize;
+                                let h_m = (f32::from(hq) / 31.0) * prop_h_m;
+                                let col_h_px =
+                                    ((h_m * proj.px_per_m_z).round() as i32).clamp(1, 18);
+                                for dy in 0..=col_h_px {
+                                    let py = row_sy - dy;
+                                    if py < 0 || (py as usize) >= canvas_h {
+                                        continue;
+                                    }
+                                    let uy = py as usize;
+                                    let col: Rgb = if dy == col_h_px && hq >= 28 && prop_idx < 3 {
+                                        // Reactor core / cooling conduit status strip
+                                        [86, 188, 214]
+                                    } else if dy >= col_h_px - 1 || shade_q >= 6 {
+                                        [168, 174, 184]
+                                    } else if shade_q >= 4 {
+                                        [132, 138, 148]
+                                    } else if shade_q >= 2 {
+                                        [96, 102, 112]
+                                    } else {
+                                        [68, 72, 80]
+                                    };
+                                    ground_frame.put(ux, uy, col);
+                                    if let Some(occ) = occluder_base_y.get_mut(uy * canvas_w + ux) {
+                                        *occ = (*occ).max(base_u16);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let tree_count: u32 = match g {
                     Ground::Woods => 3,
                     Ground::WoodsHeavy => 6,
@@ -919,6 +1021,7 @@ impl TerrainCanvas {
             canvas_h,
             vp_w,
             vp_h,
+            zoom_permille,
             origin_x_cm,
             origin_y_cm,
             proj,
@@ -1107,7 +1210,8 @@ pub struct Iso25DPicture {
     last_seated: Option<bool>,
     /// Dead-reckoned ego position offset `(dx_cm, dy_cm)` from the keyframe's `(x_cm, y_cm)`.
     offset_cm: (i64, i64),
-    /// Signature of the last cockpit frame whose `notices` were ingested into `active_fx`.
+    /// Camera zoom in permille (`500..=2000`, `1000` = `1.0×` default).
+    zoom_permille: u16,
     /// Last observed `t_ms` so combat FX only trigger on new keyframe pulses.
     last_fx_t_ms: Option<i64>,
     /// Active transient combat FX (weapon tracers, muzzle flash, hit burst, struck ring).
@@ -1157,6 +1261,7 @@ impl Iso25DPicture {
             #[cfg(feature = "encode")]
             last_seated: None,
             offset_cm: (0, 0),
+            zoom_permille: 1000,
             last_fx_t_ms: None,
             active_fx: Vec::new(),
             anim_tick: 0,
@@ -1167,6 +1272,30 @@ impl Iso25DPicture {
     /// keyframe's `(x_cm, y_cm)` for 20 Hz smooth camera and unit scrolling.
     pub fn set_offset_cm(&mut self, dx_cm: i64, dy_cm: i64) {
         self.offset_cm = (dx_cm, dy_cm);
+    }
+
+    /// Set the 2.5D camera zoom in permille (`500..=2000`; `0` or `1000` = `1.0×`).
+    pub fn set_zoom_permille(&mut self, zoom_permille: u16) {
+        let clamped = if zoom_permille == 0 {
+            1000
+        } else {
+            zoom_permille.clamp(500, 2000)
+        };
+        if self.zoom_permille != clamped {
+            self.zoom_permille = clamped;
+            self.canvas = None;
+            #[cfg(feature = "encode")]
+            {
+                self.terrain_uploaded = false;
+                self.last_terrain_placement = None;
+            }
+        }
+    }
+
+    /// Current 2.5D camera zoom in permille (`500..=2000`).
+    #[must_use]
+    pub fn zoom_permille(&self) -> u16 {
+        self.zoom_permille
     }
 
     /// Synchronise the cached heightfield terrain from `feeds` (`arena.map`),
@@ -1208,6 +1337,9 @@ impl Iso25DPicture {
         let cockpit = feeds.feed(COCKPIT_FEED)?;
         self.sync_map(feeds);
         self.offset_cm = (look.dx_cm, look.dy_cm);
+        if look.zoom_permille != 0 {
+            self.set_zoom_permille(look.zoom_permille);
+        }
         let look_off = i32::try_from(look.offset_mdeg).unwrap_or(0);
         let hull_off = i32::try_from(look.hull_offset_mdeg).unwrap_or(0);
         Some(self.render_kitty_bytes(cockpit, (hull_off, look_off), area, cell, step_down))
@@ -1358,7 +1490,7 @@ impl Iso25DPicture {
         step: usize,
     ) -> Vec<Unit25D> {
         let mut units = Vec::new();
-        let proj = IsoProj::for_viewport(vp_w);
+        let proj = IsoProj::for_viewport_zoomed(vp_w, self.zoom_permille);
         let base_x_m = pose.x_cm as f32 * 0.01;
         let base_y_m = pose.y_cm as f32 * 0.01;
         let ego_x_cm = pose.x_cm.saturating_add(self.offset_cm.0);
@@ -1644,7 +1776,7 @@ impl Iso25DPicture {
 
         let cx = (hud_w / 2) as i32;
         let cy = (hud_h / 2) as i32;
-        let proj = IsoProj::for_viewport(vp_w);
+        let proj = IsoProj::for_viewport_zoomed(vp_w, self.zoom_permille);
 
         let vectors = [
             (hull_mdeg, 24.0f32, [90u8, 215, 115, 220]),
@@ -2035,6 +2167,7 @@ impl Iso25DPicture {
         let needs_rebake = self
             .canvas
             .as_ref()
+            .filter(|c| c.zoom_permille == self.zoom_permille)
             .and_then(|c| c.camera_window(ego_x_cm, ego_y_cm))
             .is_none();
 
@@ -2046,6 +2179,7 @@ impl Iso25DPicture {
                 ego_y_cm,
                 vp.width_px,
                 vp.height_px,
+                self.zoom_permille,
             );
             let old_id = self.terrain_image_id;
             let new_id = if self.terrain_uploaded && old_id == IMAGE_ID_TERRAIN_A {
@@ -2412,7 +2546,9 @@ impl Iso25DPicture {
         let needs_rebake = self
             .canvas
             .as_ref()
-            .filter(|c| c.vp_w == width && c.vp_h == height)
+            .filter(|c| {
+                c.vp_w == width && c.vp_h == height && c.zoom_permille == self.zoom_permille
+            })
             .and_then(|c| c.camera_window(ego_x_cm, ego_y_cm))
             .is_none();
         if needs_rebake {
@@ -2423,6 +2559,7 @@ impl Iso25DPicture {
                 ego_y_cm,
                 width,
                 height,
+                self.zoom_permille,
             ));
         }
 
@@ -2565,7 +2702,7 @@ impl Iso25DPicture {
             .rem_euclid(360_000) as u32;
         let vcx = (width / 2) as i32;
         let vcy = (height / 2) as i32;
-        let proj = IsoProj::for_viewport(width);
+        let proj = IsoProj::for_viewport_zoomed(width, self.zoom_permille);
         let vectors = [
             (hull_mdeg, 24.0f32, [90u8, 215, 115]),
             (look_mdeg, 32.0f32, [248u8, 216, 72]),
@@ -2753,6 +2890,9 @@ impl Picture for Iso25DPicture {
         };
         self.sync_map(feeds);
         self.offset_cm = (look.dx_cm, look.dy_cm);
+        if look.zoom_permille != 0 {
+            self.set_zoom_permille(look.zoom_permille);
+        }
         let hull_off = i32::try_from(look.hull_offset_mdeg).unwrap_or(0);
         let look_off = i32::try_from(look.offset_mdeg).unwrap_or(0);
         *frame = self.render_frame(cockpit, hull_off, look_off, frame.width(), frame.height());
@@ -3012,5 +3152,56 @@ mod tests {
         pic.set_offset_cm(0, 0);
         let f_fx = pic.render_frame(&fx_frame, 0, 0, 640, 480);
         assert_ne!(f0.hash(), f_fx.hash());
+    }
+
+    #[test]
+    fn zoom_and_scifi_outpost_props_render_in_25d() {
+        let mut pic = Iso25DPicture::new();
+        let mut map = Map::new(32, 32, 1000);
+        // Place a 6x6 Ground::Wall outpost compound so interior cells receive
+        // Manufactura K4 rooftop generators/silos and perimeter cells get blast doors.
+        for cy in 12..18 {
+            for cx in 12..18 {
+                map.set(cx, cy, Ground::Wall);
+            }
+        }
+        pic.set_map(map);
+        let frame = json!({
+            "seated": true,
+            "t_ms": 1000,
+            "team": "blue",
+            "unit_type": "tacsim.unit.biped_mk1",
+            "x_cm": 15_000,
+            "y_cm": 10_000,
+            "z_cm": 0,
+            "heading_mdeg": 0,
+            "speed_cms": 0,
+            "contacts": [
+                {
+                    "id": "c1",
+                    "designator": "RA",
+                    "class": "red",
+                    "unit_type": "tacsim.unit.line_tank",
+                    "bearing_deg": 0.0,
+                    "range_m": 40.0,
+                    "facing": "front",
+                    "moving": false
+                }
+            ]
+        });
+
+        let f_100 = pic.render_frame(&frame, 0, 0, 640, 480);
+        assert!(pic.canvas.is_some());
+
+        pic.set_zoom_permille(1500);
+        assert_eq!(pic.zoom_permille(), 1500);
+        let f_150 = pic.render_frame(&frame, 0, 0, 640, 480);
+        assert_ne!(f_100.hash(), f_150.hash());
+
+        pic.set_zoom_permille(500);
+        assert_eq!(pic.zoom_permille(), 500);
+        let f_50 = pic.render_frame(&frame, 0, 0, 640, 480);
+        assert_ne!(f_100.hash(), f_50.hash());
+        assert_ne!(f_150.hash(), f_50.hash());
     }
 }
