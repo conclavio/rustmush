@@ -1824,12 +1824,22 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     );
     check_eq!(
         counts,
-        (39, 42),
-        "39 services and 42 grants: Sim's journey, focus, IC exclusion and deployment \
-         movement readers each add a service and grant to the 35/38 DT.2b1 composition; \
+        (40, 43),
+        "40 services and 43 grants: Sim's four movement readers and actual field-crew \
+         control reader each add a service and grant to the 35/38 DT.2b1 composition; \
          the caps are 64/64"
     );
     let definitions = e.registry.definitions().ok_or("definitions")?;
+    check!(
+        definitions.iter().any(|entry| {
+            let key = entry.reference().key();
+            key.owner.as_str() == "sim"
+                && key.kind.as_str() == "owner_read"
+                && key.id.as_str() == "field_crew_control"
+                && entry.reference().version() == 1
+        }),
+        "the additional read is the actual K6 field-crew control service"
+    );
     check!(
         definitions.iter().any(|entry| {
             let key = entry.reference().key();
