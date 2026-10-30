@@ -8,10 +8,12 @@
   // attribute-set path. See $lib/worldgen.ts for the payload contract this
   // renders against and web/README.md for the full writeup.
   import type { GameApp } from "$lib/game.svelte";
+  import MapEditorStudio from "./MapEditorStudio.svelte";
 
   let { app }: { app: GameApp } = $props();
 
   const wg = $derived(app.worldgen);
+  let buildTab = $state<"studio" | "drafts">("studio");
 
   let retrying = $state(false);
   let guidance = $state("");
@@ -42,6 +44,38 @@
   }
 </script>
 
+<div class="build-shell">
+  <div class="build-subnav" role="tablist" aria-label="Builder tools">
+    <button
+      type="button"
+      role="tab"
+      aria-selected={buildTab === "studio"}
+      class="subnav-tab"
+      class:active={buildTab === "studio"}
+      onclick={() => (buildTab = "studio")}
+    >
+      Terrain &amp; Arena Studio
+    </button>
+    <button
+      type="button"
+      role="tab"
+      aria-selected={buildTab === "drafts"}
+      class="subnav-tab"
+      class:active={buildTab === "drafts"}
+      onclick={() => (buildTab = "drafts")}
+    >
+      Room Drafts (@gen)
+      {#if wg.draft !== null}
+        <span class="draftbadge">DRAFT</span>
+      {/if}
+    </button>
+  </div>
+
+  {#if buildTab === "studio"}
+    <div class="studio-wrap">
+      <MapEditorStudio {app} />
+    </div>
+  {:else}
 <div class="worldgen">
   {#if wg.draft === null}
     <div class="empty">
@@ -148,10 +182,57 @@
     {/if}
   {/if}
 </div>
+  {/if}
+</div>
 
 <style>
-  .worldgen {
+  .build-shell {
     height: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .build-subnav {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel, #0d111a);
+    flex-shrink: 0;
+  }
+
+  .subnav-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: var(--bg-input, #121722);
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0.22rem 0.65rem;
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .subnav-tab.active {
+    background: rgba(74, 158, 255, 0.16);
+    color: var(--fg);
+    border-color: var(--accent, #4a9eff);
+  }
+
+  .studio-wrap {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .worldgen {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 0.6rem 0.75rem 1rem;
     font-size: 0.85rem;
