@@ -368,7 +368,7 @@ async fn the_rate_limit_drops_tcp_before_ssh() {
     })
     .await;
     for _ in 0..3 {
-        let _ = t.client().await;
+        drop(t.client().await);
     }
     assert!(t.try_client().await.is_err());
 }
@@ -414,4 +414,143 @@ async fn the_upstream_reply_is_honoured_for_pty_and_shell() {
         }
     }
     assert_eq!(replies, [true, true]);
+}
+
+#[tokio::test]
+async fn an_authenticated_session_that_never_opens_a_channel_is_closed() {
+    let t = Rig::start_with(Hooks::default(), |cfg| {
+        cfg.limits.auth_deadline_secs = 1;
+    })
+    .await;
+    let mut menu = t.client().await;
+    assert!(menu.authenticate_none("nick").await.unwrap().success());
+    let mut spliced = t.client().await;
+    assert!(spliced.authenticate_none("dev1").await.unwrap().success());
+    // Held with no channel: both are cut at the second deadline, so neither
+    // a slot nor a drain is held forever.
+    wait_for_secs(10, || t.door.drain.live() == 0).await;
+    assert!(menu.is_closed() && spliced.is_closed());
+}
+
+#[tokio::test]
+async fn a_menu_channel_that_never_asks_for_a_shell_times_out() {
+    let t = Rig::start_with(Hooks::default(), |cfg| {
+        cfg.limits.menu_idle_secs = 1;
+    })
+    .await;
+    let mut h = t.client().await;
+    assert!(h.authenticate_none("nick").await.unwrap().success());
+    let mut ch = h.channel_open_session().await.unwrap();
+    let out = read_to_close(&mut ch).await;
+    assert!(out.contains("Menu timed out."), "{out}");
+}
+
+#[tokio::test]
+async fn an_open_close_loop_is_capped() {
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    assert!(h.authenticate_none("dev1").await.unwrap().success());
+    let mut refused = 0;
+    for _ in 0..12 {
+        match h.channel_open_session().await {
+            Ok(ch) => {
+                let _ = ch.close().await;
+            }
+            Err(_) => refused += 1,
+        }
+    }
+    assert!(refused >= 4, "only {refused} of 12 opens refused");
+}
+
+#[tokio::test]
+async fn switching_service_between_attempts_redials_and_cannot_borrow_a_login() {
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    // A failed password on one service, then a key for an account the key
+    // is not registered to on another: neither may ride the first dial.
+    assert!(
+        !h.authenticate_password("dev1+faenix", "wrong")
+            .await
+            .unwrap()
+            .success()
+    );
+    assert!(
+        !h.authenticate_publickey("hidden+other", with_hash(test_key(1)))
+            .await
+            .unwrap()
+            .success()
+    );
+    assert!(
+        h.authenticate_password("hidden+faenix", "pw")
+            .await
+            .unwrap()
+            .success()
+    );
+    // Two dials (dev1, then hidden), each with its own Hello.
+    assert_eq!(t.hooks.opened().len(), 2);
+}
+
+#[tokio::test]
+async fn the_menu_bounds_its_input_line() {
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    assert!(h.authenticate_none("nick").await.unwrap().success());
+    let mut ch = shell(&h).await;
+    read_until(&mut ch, "Type a number").await;
+    ch.data(&vec![b'9'; 100_000][..]).await.unwrap();
+    ch.data(&b"\r"[..]).await.unwrap();
+    let out = read_until(&mut ch, "Unknown choice.").await;
+    // At most MAX_MENU_LINE characters were ever echoed back.
+    assert!(
+        out.matches('9').count() <= 64,
+        "echoed {}",
+        out.matches('9').count()
+    );
+}
+
+/// Adversarial review, critical: the menu channel's unread queue (100) used
+/// to wedge the session loop after ~100 keystrokes or resizes.
+#[tokio::test]
+async fn hundreds_of_resizes_and_keystrokes_at_the_menu_do_not_wedge_it() {
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    assert!(h.authenticate_none("nick").await.unwrap().success());
+    let mut ch = shell(&h).await;
+    read_until(&mut ch, "Type a number").await;
+    // Read the echoes as a terminal would, or this client's own queue fills.
+    let (mut rx, tx) = ch.split();
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let sink = std::sync::Arc::clone(&out);
+    let reader = tokio::spawn(async move {
+        while let Some(msg) = rx.wait().await {
+            if let ChannelMsg::Data { data } = msg {
+                sink.lock().unwrap().extend_from_slice(&data);
+            }
+        }
+    });
+    for i in 0..300u32 {
+        tx.window_change(100 + i % 50, 40, 0, 0).await.unwrap();
+        tx.data(&b"x\x7f"[..]).await.unwrap();
+    }
+    tx.data(&b"1\r"[..]).await.unwrap();
+    wait_for(|| {
+        String::from_utf8_lossy(&out.lock().unwrap()).contains("connect <account> <password>")
+    })
+    .await;
+    reader.abort();
+}
+
+/// Adversarial review F4: a front door with a character part.
+#[tokio::test]
+async fn a_front_door_with_a_character_part_still_reaches_the_welcome_screen() {
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    assert!(
+        h.authenticate_none("dev1+play+Kira")
+            .await
+            .unwrap()
+            .success()
+    );
+    let mut ch = shell(&h).await;
+    read_until(&mut ch, "connect <account> <password>").await;
 }

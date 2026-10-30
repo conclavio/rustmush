@@ -9,7 +9,13 @@
 set -euo pipefail
 
 budget_mb=300
-[[ "${1:-}" == "--budget-mb" ]] && budget_mb="${2:?--budget-mb needs a number}"
+case "${1:-}" in
+    "") ;;
+    --budget-mb) budget_mb="${2:?--budget-mb needs a number}" ;;
+    *) echo "usage: check-logging.sh [--budget-mb N]" >&2; exit 2 ;;
+esac
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
 
 conf=/etc/sshdoorway/logrotate.conf
 state=/var/lib/sshdoorway/logrotate.status
@@ -25,11 +31,11 @@ command -v zstd >/dev/null && command -v unzstd >/dev/null \
 
 [[ -r "$conf" ]] && ok "$conf exists" || bad "$conf is missing"
 
-if logrotate -d -s /tmp/sshdoorway-logrotate-check.status "$conf" >/tmp/sshdoorway-logrotate-check.out 2>&1 \
-    && ! grep -qiE '^error' /tmp/sshdoorway-logrotate-check.out; then
+if logrotate -d -s "$tmp/status" "$conf" >"$tmp/out" 2>&1 \
+    && ! grep -qiE '^error' "$tmp/out"; then
     ok "logrotate parses the config"
 else
-    bad "logrotate -d rejected the config:"; sed 's/^/        /' /tmp/sshdoorway-logrotate-check.out >&2
+    bad "logrotate -d rejected the config:"; sed 's/^/        /' "$tmp/out" >&2
 fi
 
 systemctl is-enabled --quiet sshdoorway-logrotate.timer \
@@ -51,39 +57,36 @@ for unit in $(systemctl list-units --plain --no-legend 'sshdoorway@*.service' | 
     fi
 done
 
-live=$(ls "$logdir"/*.log 2>/dev/null | head -n1 || true)
-if [[ -z "$live" ]]; then
-    bad "no live log file in $logdir (is [log].file_dir set and a generation running?)"
+# Every running generation's file is rotated, and each must be reopened.
+gens=$(systemctl list-units --plain --no-legend --state=active 'sshdoorway@*.service' \
+    | sed -n 's/^sshdoorway@\([a-z0-9]*\)\.service.*/\1/p')
+if [[ -z "$gens" ]]; then
+    bad "no sshdoorway generation is running"
 else
-    before=$(ls "$logdir" | grep -c '\.zst$' || true)
-    if logrotate -f -s "$state" "$conf"; then
-        ok "forced rotation ran"
-    else
-        bad "forced rotation failed"
-    fi
-    after=$(ls "$logdir" | grep -c '\.zst$' || true)
-    newest=$(ls -t "$logdir"/*.zst 2>/dev/null | head -n1 || true)
-    if [[ -n "$newest" ]] && (( after >= before )) && unzstd -t -q "$newest"; then
-        ok "rotation left a valid zstd archive ($(basename "$newest"))"
-    else
-        bad "no valid .zst archive after rotation"
-    fi
-    # The reopen: the doorway must write to the fresh file after SIGUSR2.
-    # A connection attempt guarantees a line at info (an unauthenticated
-    # close is counted into the minute summary, so poke the menu instead).
-    sleep 1
-    for addr in $(sed -n 's/^addrs *= *\[\(.*\)\]/\1/p' /etc/rustmush/sshdoorway.toml | tr -d '" ' | tr ',' ' '); do
-        host=${addr%:*}; port=${addr##*:}; host=${host#[}; host=${host%]}
-        timeout 5 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -p "$port" "logcheck@$host" true >/dev/null 2>&1 || true
-        break
+    before=$(find "$logdir" -maxdepth 1 -name '*.zst' | wc -l)
+    stamp="$tmp/stamp"; touch "$stamp"; sleep 1
+    for g in $gens; do
+        # Something to rotate: notifempty skips an empty file.
+        [[ -s "$logdir/$g.log" ]] || bad "$logdir/$g.log is empty or missing before rotation (is [log].file_dir set?)"
     done
-    sleep 2
-    if [[ -s "$live" ]]; then
-        ok "the live file was reopened and written ($(basename "$live"))"
+    if logrotate -f -s "$state" "$conf"; then ok "forced rotation ran"; else bad "forced rotation failed"; fi
+    after=$(find "$logdir" -maxdepth 1 -name '*.zst' | wc -l)
+    fresh=$(find "$logdir" -maxdepth 1 -name '*.zst' -newer "$stamp" | head -n1)
+    if (( after > before )) && [[ -n "$fresh" ]] && unzstd -t -q "$fresh"; then
+        ok "rotation left a new, valid zstd archive ($(basename "$fresh"))"
     else
-        bad "the live file is empty after rotation: SIGUSR2 reopen did not happen"
+        bad "no new valid .zst archive after the forced rotation"
     fi
+    sleep 2
+    for g in $gens; do
+        # logrotate renamed the file; only the doorway's SIGUSR2 reopen
+        # creates a fresh one at the same path.
+        if [[ -e "$logdir/$g.log" ]]; then
+            ok "generation $g reopened $g.log after rotation"
+        else
+            bad "generation $g did not reopen $g.log (SIGUSR2 not delivered or not handled)"
+        fi
+    done
 fi
 
 used_kb=$(du -sk "$logdir" 2>/dev/null | awk '{print $1}')

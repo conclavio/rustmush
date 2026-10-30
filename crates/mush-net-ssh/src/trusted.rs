@@ -261,6 +261,8 @@ pub struct BoundTrustedServer {
     path: std::path::PathBuf,
     listener: tokio::net::UnixListener,
     ingress: TrustedIngress,
+    /// The socket file's group (`sshdoorway`, from the setgid directory).
+    gid: u32,
 }
 
 #[cfg(unix)]
@@ -290,6 +292,14 @@ impl BoundTrustedServer {
         };
         match std::fs::symlink_metadata(&cfg.socket_path) {
             Ok(meta) if meta.file_type().is_socket() => {
+                // Only a *stale* socket is replaced: if something answers,
+                // another instance is configured with the same path.
+                if std::os::unix::net::UnixStream::connect(&cfg.socket_path).is_ok() {
+                    return Err(bind_err(std::io::Error::new(
+                        std::io::ErrorKind::AddrInUse,
+                        "a live socket is already listening at the path",
+                    )));
+                }
                 std::fs::remove_file(&cfg.socket_path).map_err(bind_err)?;
             }
             Ok(_) => {
@@ -304,11 +314,16 @@ impl BoundTrustedServer {
         let listener = tokio::net::UnixListener::bind(&cfg.socket_path).map_err(bind_err)?;
         std::fs::set_permissions(&cfg.socket_path, std::fs::Permissions::from_mode(0o660))
             .map_err(bind_err)?;
-        tracing::info!(path = %cfg.socket_path.display(), "SSH trusted ingress listening");
+        let gid = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&cfg.socket_path).map_err(bind_err)?.gid()
+        };
+        tracing::info!(path = %cfg.socket_path.display(), gid, "SSH trusted ingress listening");
         Ok(BoundTrustedServer {
             path: cfg.socket_path,
             listener,
             ingress,
+            gid,
         })
     }
 
@@ -319,9 +334,32 @@ impl BoundTrustedServer {
     }
 
     /// Accept forever, one task per doorway connection.
+    ///
+    /// **Peer credentials** (adversarial review F2): a preamble can claim any
+    /// address and attest any *public* key, so whoever can connect can log
+    /// into any account. File permissions alone admit the socket's owner too
+    /// — the gateway's own user, and anything running as it. So a connection
+    /// is served only when the peer's primary group is the socket's group
+    /// (the doorway runs as group `sshdoorway`), or the peer is root.
     pub async fn run(self) -> Result<(), SshError> {
         loop {
             let (stream, _) = self.listener.accept().await.map_err(SshError::Server)?;
+            match stream.peer_cred() {
+                Ok(cred) if cred.gid() == self.gid || cred.uid() == 0 => {}
+                Ok(cred) => {
+                    tracing::warn!(
+                        uid = cred.uid(),
+                        gid = cred.gid(),
+                        want_gid = self.gid,
+                        "trusted ingress: refused a peer outside the socket's group"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "trusted ingress: no peer credentials; refused");
+                    continue;
+                }
+            }
             let ingress = self.ingress.clone();
             tokio::spawn(async move { ingress.serve(stream).await });
         }
@@ -729,20 +767,25 @@ mod tests {
         let first = BoundTrustedServer::bind(cfg(), Arc::clone(&hooks))
             .await
             .unwrap();
-        let mode = std::fs::metadata(&socket_path).unwrap().permissions().mode();
+        let mode = std::fs::metadata(&socket_path)
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o660);
         drop(first);
         // The socket file is left behind (stale); a rebind replaces it.
         let second = BoundTrustedServer::bind(cfg(), Arc::clone(&hooks))
             .await
             .unwrap();
-        // And it answers a Ping.
-        let ingress = second.ingress.clone();
-        let listener = second.listener;
-        tokio::spawn(async move {
-            let (s, _) = listener.accept().await.unwrap();
-            ingress.serve(s).await;
-        });
+        // A live socket at the path is never taken over.
+        let err = BoundTrustedServer::bind(cfg(), Arc::clone(&hooks))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("live socket"), "{err}");
+        // And it answers a Ping from a peer in its group (this process: the
+        // socket's group is the creating process's group outside a setgid
+        // directory).
+        tokio::spawn(second.run());
         let mut s = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         proto::write_msg(&mut s, &DoorwayMsg::Ping).await.unwrap();
         let pong: IngressMsg = proto::read_msg(&mut s).await.unwrap();

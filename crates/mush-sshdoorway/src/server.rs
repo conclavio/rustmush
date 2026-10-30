@@ -10,10 +10,18 @@
 //!   for the upstream reply; `env`, `window-change` and `signal` are forwarded
 //!   and answered locally.
 //! - **R-2.** While a callback waits, russh processes nothing else on that
-//!   connection, and both session loops block on bounded queues — a cycle is
-//!   possible when a client stops reading. Every cross-session wait is
-//!   therefore timed: [`WRITE_TIMEOUT`] for data, [`UPSTREAM_TIMEOUT`] for
-//!   replies and opens. A timeout is a wedge, and closes both sessions.
+//!   connection — window adjusts included — and both session loops block on
+//!   bounded queues. So a callback never waits on the other session's flow
+//!   control: downstream → upstream traffic goes through a per-channel
+//!   **writer task** fed by a bounded queue ([`UP_QUEUE`]), and the callback
+//!   only enqueues. (Awaiting the upstream write in `data` let a slow player
+//!   who typed while their own window was full deadlock both loops — found by
+//!   the adversarial review.) The only callback waits left are replies to
+//!   `pty-req`/`shell`/`exec`/`subsystem` (R-1), bounded by
+//!   [`UPSTREAM_TIMEOUT`]; a missing reply closes the connection rather than
+//!   leaving the reply queue out of step. Every write the pumps make is
+//!   bounded by [`WRITE_TIMEOUT`]; a timeout is a wedge, and closes both
+//!   sessions.
 //! - **R-3.** Buffering is bounded by russh's channel queues (about 3 MiB a
 //!   direction); past that the doorway stops reading upstream and the
 //!   instance's own write timeout fires, as for a direct connection.
@@ -46,8 +54,20 @@ use crate::upstream::{
 /// treated as wedged and both sessions close (29a R-2).
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Downstream → upstream messages queued per channel before the callback
+/// itself waits (and, after [`WRITE_TIMEOUT`], gives up on the connection).
+pub const UP_QUEUE: usize = 256;
+
 /// At most this many session channels per connection: the game and `sftp`.
 pub const MAX_CHANNELS: usize = 2;
+
+/// At most this many session-channel opens over a connection's life, so an
+/// open/close loop cannot spin upstream work without end.
+pub const MAX_CHANNEL_OPENS: usize = 8;
+
+/// A menu (or notice) session is closed this long after it began, however
+/// much it types: the menu holds a slot and leads nowhere by itself.
+pub const MENU_HARD_CAP: Duration = Duration::from_secs(15 * 60);
 
 /// `env` limits per connection.
 pub const MAX_ENV_VARS: usize = 32;
@@ -147,6 +167,7 @@ impl Doorway {
             per_key: cfg.limits.per_ip_connections,
             rate: cfg.limits.per_ip_new_per_minute,
             global: cfg.limits.global_connections,
+            per_v6_48: cfg.limits.per_v6_48_connections,
         }
     }
 
@@ -225,9 +246,13 @@ impl Doorway {
             }
         };
         let id = self.next_conn.fetch_add(1, Ordering::Relaxed);
+        // An over-cap connection is told (banner) and refused; it gets only a
+        // few seconds, so over-cap churn cannot hold global capacity.
+        let over_cap = !slot.counted();
         let live = self.drain.enter(id);
         let authed = Arc::new(AtomicBool::new(false));
-        let conn = Conn::new(
+        let opened = Arc::new(AtomicBool::new(false));
+        let mut conn = Conn::new(
             Arc::clone(self),
             cfg,
             id,
@@ -237,8 +262,16 @@ impl Doorway {
             live,
             Arc::clone(&authed),
         );
+        conn.opened = Arc::clone(&opened);
         let config = Arc::clone(&self.server_config);
-        let deadline = Duration::from_secs(conn.cfg.limits.auth_deadline_secs);
+        let deadline = if over_cap {
+            Duration::from_secs(5).min(Duration::from_secs(conn.cfg.limits.auth_deadline_secs))
+        } else {
+            Duration::from_secs(conn.cfg.limits.auth_deadline_secs)
+        };
+        let switch = crate::kill::KillSwitch::new();
+        self.drain.track(id, Arc::clone(&switch));
+        let stream = crate::kill::Killable::new(stream, switch);
         tokio::spawn(async move {
             let session = match tokio::time::timeout(
                 deadline,
@@ -257,17 +290,23 @@ impl Doorway {
                 }
             };
             let handle = session.handle();
+            // Two deadlines, so nothing holds a slot (or a drain) forever:
+            // authenticate within `deadline`, and open a channel within
+            // another `deadline` after that.
             let watchdog = tokio::spawn(async move {
                 tokio::time::sleep(deadline).await;
-                if !authed.load(Ordering::SeqCst) {
-                    let _ = handle
-                        .disconnect(
-                            Disconnect::ByApplication,
-                            "authentication timed out".into(),
-                            String::new(),
-                        )
-                        .await;
-                }
+                let why = if !authed.load(Ordering::SeqCst) {
+                    "authentication timed out"
+                } else {
+                    tokio::time::sleep(deadline).await;
+                    if opened.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    "no session was opened"
+                };
+                let _ = handle
+                    .disconnect(Disconnect::ByApplication, why.into(), String::new())
+                    .await;
             });
             if let Err(e) = session.await {
                 tracing::debug!(conn = id, error = %e, "SSH session ended with error");
@@ -331,9 +370,30 @@ struct PtyReq {
 
 /// One relayed channel pair.
 struct Pair {
-    up: ChannelWriteHalf<client::Msg>,
-    pending: Pending,
+    /// The writer task's queue (downstream → upstream, in order).
+    tx: mpsc::Sender<UpCmd>,
     pump: tokio::task::JoinHandle<()>,
+    writer: tokio::task::JoinHandle<()>,
+}
+
+/// A request that wants a reply (29a R-1).
+enum Req {
+    Pty(PtyReq),
+    Shell,
+    Exec(Vec<u8>),
+    Subsystem(String),
+}
+
+/// One downstream → upstream message, applied in order by the writer task.
+enum UpCmd {
+    Data(Vec<u8>),
+    Ext(u32, Vec<u8>),
+    Eof,
+    Close,
+    Env(String, String),
+    Window(u32, u32, u32, u32),
+    Signal(Sig),
+    Request(Req, oneshot::Sender<bool>),
 }
 
 type Pending = Arc<Mutex<VecDeque<oneshot::Sender<bool>>>>;
@@ -354,6 +414,9 @@ struct Conn {
     slot: Slot,
     _live: LiveGuard,
     authed: Arc<AtomicBool>,
+    /// Set at the first accepted channel (the watchdog's second deadline).
+    opened: Arc<AtomicBool>,
+    channel_opens: usize,
     started: Instant,
     user: String,
     service: Option<String>,
@@ -362,8 +425,11 @@ struct Conn {
     up: Up,
     pending_notice: Option<String>,
     pairs: HashMap<ChannelId, Pair>,
-    /// The pre-splice channel (menu, notice).
-    front: Option<Channel<Msg>>,
+    /// The pre-splice channel (menu, notice): its id and write half. Its read
+    /// half is dropped at open — russh pushes every channel message into that
+    /// queue before calling the handler, and an unread queue of 100 would
+    /// wedge the session loop (adversarial review, critical).
+    front: Option<(ChannelId, ChannelWriteHalf<Msg>)>,
     pty: Option<PtyReq>,
     env: Vec<(String, String)>,
     env_bytes: usize,
@@ -419,6 +485,8 @@ struct PumpCtx {
     disconnect: DisconnectSlot,
     bytes: Arc<Bytes>,
     farewell: String,
+    drain: Arc<Drain>,
+    conn: u64,
 }
 
 fn crlf_line(line: &str) -> Vec<u8> {
@@ -437,7 +505,6 @@ async fn pump(mut ctx: PumpCtx) {
     }
     let end = loop {
         tokio::select! {
-            biased;
             msg = ctx.up_read.wait() => match msg {
                 None => break End::Gone,
                 Some(ChannelMsg::Data { data }) => {
@@ -457,20 +524,30 @@ async fn pump(mut ctx: PumpCtx) {
                     }
                 }
                 Some(ChannelMsg::Eof) => {
-                    let _ = ctx.down.eof().await;
+                    if tokio::time::timeout(WRITE_TIMEOUT, ctx.down.eof()).await.is_err() {
+                        break End::Wedged;
+                    }
                 }
                 Some(ChannelMsg::Close) => {
-                    let _ = ctx.down.close().await;
+                    let _ = tokio::time::timeout(WRITE_TIMEOUT, ctx.down.close()).await;
                     break End::Closed;
                 }
                 Some(ChannelMsg::ExitStatus { exit_status }) => {
-                    let _ = ctx.down.exit_status(exit_status).await;
+                    if tokio::time::timeout(WRITE_TIMEOUT, ctx.down.exit_status(exit_status)).await.is_err() {
+                        break End::Wedged;
+                    }
                 }
                 Some(ChannelMsg::ExitSignal { signal_name, core_dumped, error_message, lang_tag }) => {
-                    let _ = ctx
-                        .handle
-                        .exit_signal_request(ctx.down_id, signal_name, core_dumped, error_message, lang_tag)
-                        .await;
+                    let send = ctx.handle.exit_signal_request(
+                        ctx.down_id,
+                        signal_name,
+                        core_dumped,
+                        error_message,
+                        lang_tag,
+                    );
+                    if tokio::time::timeout(WRITE_TIMEOUT, send).await.is_err() {
+                        break End::Wedged;
+                    }
                 }
                 Some(ChannelMsg::Success) => reply(&ctx.pending, true),
                 Some(ChannelMsg::Failure) => reply(&ctx.pending, false),
@@ -503,26 +580,31 @@ async fn pump(mut ctx: PumpCtx) {
             let _ =
                 tokio::time::timeout(WRITE_TIMEOUT, ctx.down.data_bytes(crlf_line(&ctx.farewell)))
                     .await;
-            let _ = ctx.down.close().await;
-            let _ = ctx
-                .handle
-                .disconnect(
+            let _ = tokio::time::timeout(WRITE_TIMEOUT, ctx.down.close()).await;
+            let _ = tokio::time::timeout(
+                WRITE_TIMEOUT,
+                ctx.handle.disconnect(
                     Disconnect::ByApplication,
                     reason.unwrap_or_else(|| "the game server closed the connection".into()),
                     String::new(),
-                )
-                .await;
+                ),
+            )
+            .await;
         }
         End::Wedged => {
-            tracing::info!("client stopped reading; closing");
-            let _ = ctx
-                .handle
-                .disconnect(
+            tracing::info!(conn = ctx.conn, "client stopped reading; closing");
+            // A polite disconnect queues behind the data the client is not
+            // reading, so it gets two seconds and then the session is ended.
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                ctx.handle.disconnect(
                     Disconnect::ByApplication,
                     "the connection stopped reading".into(),
                     String::new(),
-                )
-                .await;
+                ),
+            )
+            .await;
+            ctx.drain.abort(ctx.conn);
         }
     }
 }
@@ -534,6 +616,73 @@ fn take_pending(p: &Pending) -> Option<oneshot::Sender<bool>> {
 fn reply(p: &Pending, ok: bool) {
     if let Some(tx) = take_pending(p) {
         let _ = tx.send(ok);
+    }
+}
+
+/// Downstream → upstream for one channel pair: applies queued messages in
+/// order, each bounded by [`WRITE_TIMEOUT`]. A reply-wanting request is
+/// registered in the pump's FIFO immediately before it is sent, so replies
+/// line up with requests.
+async fn writer(
+    up: ChannelWriteHalf<client::Msg>,
+    mut rx: mpsc::Receiver<UpCmd>,
+    pending: Pending,
+    handle: Handle,
+    drain: Arc<Drain>,
+    conn: u64,
+) {
+    while let Some(cmd) = rx.recv().await {
+        let sent = tokio::time::timeout(WRITE_TIMEOUT, async {
+            match cmd {
+                UpCmd::Data(d) => up.data_bytes(d).await,
+                UpCmd::Ext(code, d) => up.extended_data_bytes(code, d).await,
+                UpCmd::Eof => up.eof().await,
+                UpCmd::Close => up.close().await,
+                UpCmd::Env(k, v) => up.set_env(false, k, v).await,
+                UpCmd::Window(c, r, x, y) => up.window_change(c, r, x, y).await,
+                UpCmd::Signal(sig) => up.signal(sig).await,
+                UpCmd::Request(req, tx) => {
+                    if let Ok(mut q) = pending.lock() {
+                        q.push_back(tx);
+                    }
+                    let r = match req {
+                        Req::Pty(p) => {
+                            up.request_pty(true, &p.term, p.cols, p.rows, p.px, p.py, &p.modes)
+                                .await
+                        }
+                        Req::Shell => up.request_shell(true).await,
+                        Req::Exec(cmd) => up.exec(true, cmd).await,
+                        Req::Subsystem(name) => up.request_subsystem(true, name).await,
+                    };
+                    if r.is_err()
+                        && let Some(tx) = pending.lock().ok().and_then(|mut q| q.pop_back())
+                    {
+                        let _ = tx.send(false);
+                    }
+                    r
+                }
+            }
+        })
+        .await;
+        match sent {
+            Ok(Ok(())) => {}
+            // The upstream channel is gone; the pump tells the player.
+            Ok(Err(_)) => return,
+            Err(_) => {
+                tracing::info!(conn, "upstream stopped reading; closing");
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    handle.disconnect(
+                        Disconnect::ByApplication,
+                        "the game server stopped reading".into(),
+                        String::new(),
+                    ),
+                )
+                .await;
+                drain.abort(conn);
+                return;
+            }
+        }
     }
 }
 
@@ -558,6 +707,8 @@ impl Conn {
             slot,
             _live: live,
             authed,
+            opened: Arc::default(),
+            channel_opens: 0,
             started: Instant::now(),
             user: String::new(),
             service: None,
@@ -631,7 +782,15 @@ impl Conn {
     /// `Begin` and, on `Ready`, start upstream SSH.
     async fn begin(&mut self, user: &str, key: Option<String>) -> Result<BeginOutcome, UpError> {
         let outcome = match &mut self.up {
-            Up::Preamble { preamble, .. } => preamble.begin(user, key).await?,
+            Up::Preamble { preamble, .. } => match preamble.begin(user, key).await {
+                Ok(o) => o,
+                Err(e) => {
+                    // A dead preamble must not be reused: the next attempt
+                    // redials (adversarial review F3).
+                    self.drop_up();
+                    return Err(e);
+                }
+            },
             Up::Ssh { .. } if key.is_none() => return Ok(BeginOutcome::Ready),
             _ => return Err(UpError::Limit),
         };
@@ -647,6 +806,7 @@ impl Conn {
             &service,
         )
         .await?;
+        // (`self.up` is already `None` here, so a failure above redials.)
         self.up = Up::Ssh {
             service,
             handle,
@@ -659,14 +819,26 @@ impl Conn {
         let Up::Ssh { handle, .. } = &mut self.up else {
             return false;
         };
-        matches!(timed(handle.authenticate_none(user)).await, Ok(r) if r.success())
+        match timed(handle.authenticate_none(user)).await {
+            Ok(r) => r.success(),
+            Err(_) => {
+                self.drop_up();
+                false
+            }
+        }
     }
 
     async fn up_password(&mut self, user: &str, password: &str) -> bool {
         let Up::Ssh { handle, .. } = &mut self.up else {
             return false;
         };
-        matches!(timed(handle.authenticate_password(user, password)).await, Ok(r) if r.success())
+        match timed(handle.authenticate_password(user, password)).await {
+            Ok(r) => r.success(),
+            Err(_) => {
+                self.drop_up();
+                false
+            }
+        }
     }
 
     /// The front door of `service`: `none` upstream as `upstream_user`.
@@ -723,13 +895,13 @@ impl Conn {
         )
     }
 
-    fn pair_up(&mut self, down: Channel<Msg>, up: Channel<client::Msg>, handle: Handle) {
-        let down_id = down.id();
-        let (down_read, down_write) = down.split();
-        // Downstream data reaches the doorway through `Handler::data`; the
-        // channel's own queue is not read, and dropping its receiver keeps
-        // russh from ever waiting on it.
-        drop(down_read);
+    fn pair_up(
+        &mut self,
+        down_id: ChannelId,
+        down_write: ChannelWriteHalf<Msg>,
+        up: Channel<client::Msg>,
+        handle: Handle,
+    ) {
         let (up_read, up_write) = up.split();
         let pending: Pending = Arc::default();
         let inject = if self.pairs.is_empty() {
@@ -745,6 +917,15 @@ impl Conn {
             Up::Ssh { disconnect, .. } => Arc::clone(disconnect),
             _ => DisconnectSlot::default(),
         };
+        let (tx, rx) = mpsc::channel(UP_QUEUE);
+        let writer = tokio::spawn(writer(
+            up_write,
+            rx,
+            Arc::clone(&pending),
+            handle.clone(),
+            Arc::clone(&self.door.drain),
+            self.id,
+        ));
         let pump = tokio::spawn(pump(PumpCtx {
             up_read,
             down: down_write,
@@ -755,45 +936,57 @@ impl Conn {
             disconnect,
             bytes: Arc::clone(&self.bytes),
             farewell: self.farewell(),
+            drain: Arc::clone(&self.door.drain),
+            conn: self.id,
         }));
-        self.pairs.insert(
-            down_id,
-            Pair {
-                up: up_write,
-                pending,
-                pump,
-            },
-        );
+        self.pairs.insert(down_id, Pair { tx, pump, writer });
     }
 
-    /// Send a request that wants a reply upstream, and wait for it.
-    async fn relay_reply<F>(&self, ch: ChannelId, send: F) -> bool
-    where
-        F: AsyncFnOnce(&ChannelWriteHalf<client::Msg>) -> Result<(), russh::Error>,
-    {
+    /// Queue one message for the channel's writer. Waits only when the queue
+    /// is full, and then at most [`WRITE_TIMEOUT`].
+    async fn send_up(&self, ch: ChannelId, cmd: UpCmd) -> Result<(), russh::Error> {
         let Some(pair) = self.pairs.get(&ch) else {
-            return false;
+            return Ok(());
         };
-        let (tx, rx) = oneshot::channel();
-        if let Ok(mut q) = pair.pending.lock() {
-            q.push_back(tx);
-        } else {
-            return false;
-        }
-        if send(&pair.up).await.is_err() {
-            if let Ok(mut q) = pair.pending.lock() {
-                q.pop_back();
+        match pair.tx.try_send(cmd) {
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(cmd)) => {
+                match tokio::time::timeout(WRITE_TIMEOUT, pair.tx.send(cmd)).await {
+                    Ok(_) => Ok(()),
+                    Err(_) => {
+                        tracing::info!(conn = self.id, "upstream queue stayed full; closing");
+                        Err(russh::Error::Disconnect)
+                    }
+                }
             }
-            return false;
         }
-        matches!(
-            tokio::time::timeout(UPSTREAM_TIMEOUT, rx).await,
-            Ok(Ok(true))
-        )
+    }
+
+    /// Send a request that wants a reply upstream, and wait for it. A reply
+    /// that never comes closes the connection: the FIFO of pending replies
+    /// would otherwise be out of step for the rest of the session.
+    async fn relay_reply(&self, ch: ChannelId, req: Req) -> Result<bool, russh::Error> {
+        if !self.pairs.contains_key(&ch) {
+            return Ok(false);
+        }
+        let (tx, rx) = oneshot::channel();
+        self.send_up(ch, UpCmd::Request(req, tx)).await?;
+        match tokio::time::timeout(UPSTREAM_TIMEOUT + WRITE_TIMEOUT, rx).await {
+            Ok(Ok(ok)) => Ok(ok),
+            Ok(Err(_)) => Ok(false),
+            Err(_) => {
+                tracing::info!(conn = self.id, "upstream never replied; closing");
+                Err(russh::Error::Disconnect)
+            }
+        }
+    }
+
+    fn front_id(&self) -> Option<ChannelId> {
+        self.front.as_ref().map(|(id, _)| *id)
     }
 
     fn write_front(&self, session: &mut Session, text: &str) {
-        let Some(ch) = self.front.as_ref().map(Channel::id) else {
+        let Some(ch) = self.front_id() else {
             return;
         };
         let mut bytes = Vec::with_capacity(text.len() + 8);
@@ -806,7 +999,7 @@ impl Conn {
 
     fn close_front(&mut self, session: &mut Session, text: &str) {
         self.write_front(session, text);
-        if let Some(ch) = self.front.as_ref().map(Channel::id) {
+        if let Some(ch) = self.front_id() {
             let _ = session.close(ch);
         }
         let _ = session.disconnect(Disconnect::ByApplication, "goodbye", "");
@@ -822,7 +1015,7 @@ impl Conn {
     }
 
     fn menu_prompt(&self, session: &mut Session) {
-        if let Some(ch) = self.front.as_ref().map(Channel::id) {
+        if let Some(ch) = self.front_id() {
             let _ = session.data(ch, b"Type a number or a name (q to quit): ".to_vec());
         }
     }
@@ -830,11 +1023,12 @@ impl Conn {
     fn start_menu_watch(&mut self, handle: Handle) {
         let last = Arc::clone(&self.menu_last);
         let idle = Duration::from_secs(self.cfg.limits.menu_idle_secs);
-        let ch = self.front.as_ref().map(Channel::id);
+        let ch = self.front_id();
+        let began = Instant::now();
         self.menu_watch = Some(tokio::spawn(async move {
             loop {
                 let elapsed = last.lock().map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
-                if elapsed >= idle {
+                if elapsed >= idle || began.elapsed() >= MENU_HARD_CAP {
                     if let Some(ch) = ch {
                         let _ = handle.data(ch, b"\r\nMenu timed out.\r\n".to_vec()).await;
                     }
@@ -847,8 +1041,10 @@ impl Conn {
                         .await;
                     return;
                 }
-                tokio::time::sleep(idle.saturating_sub(elapsed).max(Duration::from_millis(50)))
-                    .await;
+                let left = idle
+                    .saturating_sub(elapsed)
+                    .min(MENU_HARD_CAP.saturating_sub(began.elapsed()));
+                tokio::time::sleep(left.max(Duration::from_millis(50))).await;
             }
         }));
     }
@@ -857,7 +1053,7 @@ impl Conn {
         if let Ok(mut t) = self.menu_last.lock() {
             *t = Instant::now();
         }
-        let Some(ch) = self.front.as_ref().map(Channel::id) else {
+        let Some(ch) = self.front_id() else {
             return;
         };
         let mut echo = Vec::new();
@@ -965,13 +1161,17 @@ impl Conn {
             if let Some(p) = &self.pty {
                 up.request_pty(true, &p.term, p.cols, p.rows, p.px, p.py, &p.modes)
                     .await?;
-                wait_reply(&mut up, &mut early).await;
+                if !wait_reply(&mut up, &mut early).await {
+                    return Err(russh::Error::Disconnect);
+                }
             }
             for (k, v) in &self.env {
                 up.set_env(false, k.as_str(), v.as_str()).await?;
             }
             up.request_shell(true).await?;
-            wait_reply(&mut up, &mut early).await;
+            if !wait_reply(&mut up, &mut early).await {
+                return Err(russh::Error::Disconnect);
+            }
             Ok::<(), russh::Error>(())
         };
         if !matches!(
@@ -988,7 +1188,7 @@ impl Conn {
                 self.cfg.menu.host
             ),
         );
-        if let Some(ch) = self.front.as_ref().map(Channel::id)
+        if let Some(ch) = self.front_id()
             && !early.is_empty()
         {
             let _ = session.data(ch, early);
@@ -996,31 +1196,37 @@ impl Conn {
         if let Some(w) = self.menu_watch.take() {
             w.abort();
         }
-        let Some(front) = self.front.take() else {
+        let Some((front_id, front_write)) = self.front.take() else {
             return;
         };
         self.user = format!("{service}+play");
         self.stage = Stage::Spliced;
-        self.pair_up(front, up, session.handle());
+        self.pair_up(front_id, front_write, up, session.handle());
     }
 }
 
 /// Wait for one `Success`/`Failure` on a not-yet-pumped channel, keeping any
-/// data that arrives first.
-async fn wait_reply(up: &mut Channel<client::Msg>, early: &mut Vec<u8>) {
+/// data that arrives first. `false` when the channel closed or ended first
+/// (the shell went away before answering) or the request failed.
+async fn wait_reply(up: &mut Channel<client::Msg>, early: &mut Vec<u8>) -> bool {
     while let Some(msg) = up.wait().await {
         match msg {
-            ChannelMsg::Success | ChannelMsg::Failure => return,
-            ChannelMsg::Data { data } => early.extend_from_slice(&data),
+            ChannelMsg::Success => return true,
+            ChannelMsg::Failure | ChannelMsg::Close | ChannelMsg::Eof => return false,
+            ChannelMsg::Data { data } if early.len() < 1024 * 1024 => {
+                early.extend_from_slice(&data);
+            }
             _ => {}
         }
     }
+    false
 }
 
 impl Drop for Conn {
     fn drop(&mut self) {
         for (_, pair) in self.pairs.drain() {
             pair.pump.abort();
+            pair.writer.abort();
         }
         if let Some(w) = self.menu_watch.take() {
             w.abort();
@@ -1048,6 +1254,15 @@ impl Drop for Conn {
 
 impl Handler for Conn {
     type Error = russh::Error;
+
+    async fn auth_succeeded(&mut self, session: &mut Session) -> Result<(), Self::Error> {
+        // Reachable by the drain's deadline from the moment it is in, before
+        // any channel exists.
+        self.door
+            .drain
+            .register(self.id, session.handle(), None, None);
+        Ok(())
+    }
 
     async fn authentication_banner(&mut self) -> Result<Option<String>, Self::Error> {
         if self.slot.counted() {
@@ -1223,6 +1438,18 @@ impl Handler for Conn {
         reply: russh::server::ChannelOpenHandle,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.channel_opens += 1;
+        if self.channel_opens > MAX_CHANNEL_OPENS {
+            drop(reply);
+            return Ok(());
+        }
+        let id = channel.id();
+        // Downstream messages reach the doorway through the Handler
+        // callbacks. The channel's own queue is never read, so its receiver
+        // is dropped here and russh's push into it fails at once instead of
+        // blocking the session loop (adversarial review, critical).
+        let (read, write) = channel.split();
+        drop(read);
         match self.stage {
             Stage::Spliced => {
                 if self.pairs.len() >= MAX_CHANNELS {
@@ -1236,7 +1463,8 @@ impl Handler for Conn {
                 match timed(handle.channel_open_session()).await {
                     Ok(up) => {
                         reply.accept().await;
-                        self.pair_up(channel, up, session.handle());
+                        self.opened.store(true, Ordering::SeqCst);
+                        self.pair_up(id, write, up, session.handle());
                     }
                     Err(_) => drop(reply),
                 }
@@ -1247,10 +1475,17 @@ impl Handler for Conn {
                     return Ok(());
                 }
                 reply.accept().await;
+                self.opened.store(true, Ordering::SeqCst);
                 self.door
                     .drain
-                    .register(self.id, session.handle(), Some(channel.id()), None);
-                self.front = Some(channel);
+                    .register(self.id, session.handle(), Some(id), None);
+                self.front = Some((id, write));
+                // The idle clock starts at the channel, not the shell request:
+                // a channel that never asks for a shell still times out.
+                if let Ok(mut t) = self.menu_last.lock() {
+                    *t = Instant::now();
+                }
+                self.start_menu_watch(session.handle());
             }
             Stage::PreAuth => drop(reply),
         }
@@ -1269,27 +1504,26 @@ impl Handler for Conn {
         modes: &[(Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if term.len() > 64 {
+            return session.channel_failure(channel);
+        }
+        let req = PtyReq {
+            term: term.to_owned(),
+            cols,
+            rows,
+            px,
+            py,
+            modes: modes.iter().take(64).copied().collect(),
+        };
         if self.pairs.contains_key(&channel) {
-            let ok = self
-                .relay_reply(channel, async |up| {
-                    up.request_pty(true, term, cols, rows, px, py, modes).await
-                })
-                .await;
-            return if ok {
+            return if self.relay_reply(channel, Req::Pty(req)).await? {
                 session.channel_success(channel)
             } else {
                 session.channel_failure(channel)
             };
         }
-        if self.front.as_ref().map(Channel::id) == Some(channel) && term.len() <= 64 {
-            self.pty = Some(PtyReq {
-                term: term.to_owned(),
-                cols,
-                rows,
-                px,
-                py,
-                modes: modes.iter().take(64).copied().collect(),
-            });
+        if self.front_id() == Some(channel) {
+            self.pty = Some(req);
             return session.channel_success(channel);
         }
         session.channel_failure(channel)
@@ -1307,10 +1541,8 @@ impl Handler for Conn {
             return session.channel_failure(channel);
         }
         self.env_bytes += size;
-        if let Some(pair) = self.pairs.get(&channel) {
-            let _ =
-                tokio::time::timeout(UPSTREAM_TIMEOUT, pair.up.set_env(false, name, value)).await;
-        }
+        self.send_up(channel, UpCmd::Env(name.to_owned(), value.to_owned()))
+            .await?;
         self.env.push((name.to_owned(), value.to_owned()));
         session.channel_success(channel)
     }
@@ -1324,10 +1556,9 @@ impl Handler for Conn {
         py: u32,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if let Some(pair) = self.pairs.get(&channel) {
-            let _ =
-                tokio::time::timeout(UPSTREAM_TIMEOUT, pair.up.window_change(cols, rows, px, py))
-                    .await;
+        if self.pairs.contains_key(&channel) {
+            self.send_up(channel, UpCmd::Window(cols, rows, px, py))
+                .await?;
         } else if let Some(p) = self.pty.as_mut() {
             (p.cols, p.rows, p.px, p.py) = (cols, rows, px, py);
         }
@@ -1340,16 +1571,13 @@ impl Handler for Conn {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.pairs.contains_key(&channel) {
-            let ok = self
-                .relay_reply(channel, async |up| up.request_shell(true).await)
-                .await;
-            return if ok {
+            return if self.relay_reply(channel, Req::Shell).await? {
                 session.channel_success(channel)
             } else {
                 session.channel_failure(channel)
             };
         }
-        if self.front.as_ref().map(Channel::id) != Some(channel) {
+        if self.front_id() != Some(channel) {
             return session.channel_failure(channel);
         }
         session.channel_success(channel)?;
@@ -1368,7 +1596,6 @@ impl Handler for Conn {
                 let text = self.menu_text();
                 self.write_front(session, &text);
                 self.menu_prompt(session);
-                self.start_menu_watch(session.handle());
             }
             _ => {}
         }
@@ -1382,17 +1609,14 @@ impl Handler for Conn {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.pairs.contains_key(&channel) && data.len() <= MAX_EXEC_BYTES {
-            let ok = self
-                .relay_reply(channel, async |up| up.exec(true, data.to_vec()).await)
-                .await;
-            return if ok {
+            return if self.relay_reply(channel, Req::Exec(data.to_vec())).await? {
                 session.channel_success(channel)
             } else {
                 session.channel_failure(channel)
             };
         }
         session.channel_failure(channel)?;
-        if self.front.as_ref().map(Channel::id) == Some(channel) {
+        if self.front_id() == Some(channel) {
             self.door.limits.count("exec-refused");
             let text = match &self.stage {
                 Stage::Notice(t) => t.clone(),
@@ -1411,10 +1635,10 @@ impl Handler for Conn {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.pairs.contains_key(&channel) && name.len() <= 64 {
-            let ok = self
-                .relay_reply(channel, async |up| up.request_subsystem(true, name).await)
-                .await;
-            return if ok {
+            return if self
+                .relay_reply(channel, Req::Subsystem(name.to_owned()))
+                .await?
+            {
                 session.channel_success(channel)
             } else {
                 session.channel_failure(channel)
@@ -1450,10 +1674,7 @@ impl Handler for Conn {
         signal: Sig,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if let Some(pair) = self.pairs.get(&channel) {
-            let _ = tokio::time::timeout(UPSTREAM_TIMEOUT, pair.up.signal(signal)).await;
-        }
-        Ok(())
+        self.send_up(channel, UpCmd::Signal(signal)).await
     }
 
     async fn data(
@@ -1462,25 +1683,13 @@ impl Handler for Conn {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if let Some(pair) = self.pairs.get(&channel) {
+        if self.pairs.contains_key(&channel) {
             self.bytes
                 .up
                 .fetch_add(data.len() as u64, Ordering::Relaxed);
-            return match tokio::time::timeout(WRITE_TIMEOUT, pair.up.data_bytes(data.to_vec()))
-                .await
-            {
-                Ok(Ok(())) => Ok(()),
-                // The upstream channel is gone; the pump tells the player.
-                Ok(Err(_)) => Ok(()),
-                Err(_) => {
-                    tracing::info!(conn = self.id, "upstream stopped reading; closing");
-                    Err(russh::Error::Disconnect)
-                }
-            };
+            return self.send_up(channel, UpCmd::Data(data.to_vec())).await;
         }
-        if matches!(self.stage, Stage::Menu)
-            && self.front.as_ref().map(Channel::id) == Some(channel)
-        {
+        if matches!(self.stage, Stage::Menu) && self.front_id() == Some(channel) {
             self.menu_input(data, session).await;
         }
         Ok(())
@@ -1493,17 +1702,7 @@ impl Handler for Conn {
         data: &[u8],
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if let Some(pair) = self.pairs.get(&channel)
-            && tokio::time::timeout(
-                WRITE_TIMEOUT,
-                pair.up.extended_data_bytes(code, data.to_vec()),
-            )
-            .await
-            .is_err()
-        {
-            return Err(russh::Error::Disconnect);
-        }
-        Ok(())
+        self.send_up(channel, UpCmd::Ext(code, data.to_vec())).await
     }
 
     async fn channel_eof(
@@ -1511,10 +1710,7 @@ impl Handler for Conn {
         channel: ChannelId,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if let Some(pair) = self.pairs.get(&channel) {
-            let _ = tokio::time::timeout(UPSTREAM_TIMEOUT, pair.up.eof()).await;
-        }
-        Ok(())
+        self.send_up(channel, UpCmd::Eof).await
     }
 
     async fn channel_close(
@@ -1523,15 +1719,18 @@ impl Handler for Conn {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         if let Some(pair) = self.pairs.remove(&channel) {
-            let _ = tokio::time::timeout(UPSTREAM_TIMEOUT, pair.up.close()).await;
-            // Let the pump deliver the upstream close; it ends on its own.
-            let pump = pair.pump;
+            let _ = pair.tx.try_send(UpCmd::Close);
+            // Let the writer deliver the close and the pump the upstream's
+            // answer; both end on their own, and are cut off after a grace.
+            // (Opens are capped per connection, so these stay few.)
+            let (pump, writer) = (pair.pump, pair.writer);
             tokio::spawn(async move {
                 tokio::time::sleep(UPSTREAM_TIMEOUT).await;
                 pump.abort();
+                writer.abort();
             });
         }
-        if self.front.as_ref().map(Channel::id) == Some(channel) {
+        if self.front_id() == Some(channel) {
             self.front = None;
         }
         Ok(())

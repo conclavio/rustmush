@@ -32,7 +32,8 @@ into a queue of `channel_buffer_size` messages. That allows a cycle:
    for input, or a reply) never gets it.
 
 **Every cross-session wait has a timeout.** Writes in either direction use `WRITE_TIMEOUT`
-(30 s, the instance's value). Request replies and channel opens use 10 s. A timeout is a
+(10 s; the instance's own write timeout is 5 s). Request replies and channel opens use
+10 s. A timeout is a
 wedge: the doorway closes both sessions. The instance's own wedge detection does the same
 thing to a direct connection, so a wedged player is cut off at about the same time either
 way.
@@ -172,3 +173,55 @@ Each attack runs against the built doorway and states its expected outcome.
 | X-13 | Instance down or restarting mid-session | Player told; doorway healthy; no task leak |
 | X-14 | Drain under live sessions | Warnings in order with the owner's wording; exit at the deadline; new connections reach the new generation |
 | X-15 | Log injection (CR/LF/escape sequences in the username) | Escaped in log lines |
+
+## 7. The adversarial review (2026-10-30) and what changed
+
+Three independent reviewers read the built code cold, each against one attack surface:
+the auth and trust boundary, the splice and denial of service, and drain and operations.
+None found a way to log in without a password or a registered key. Every finding is listed
+below with its disposition. Each fix has a test where one can be written on CI.
+
+### Auth and trust
+
+| # | Finding | Disposition |
+|---|---|---|
+| F1 | Authenticated sessions that are never spliced (menu, notice, `ssh -N`) never time out, so they can squat slots | **Fixed.** A second watchdog deadline cuts a session that opens no channel. The menu idle timer starts at channel open, not at the shell request, and a 15-minute hard cap applies. Tests: `an_authenticated_session_that_never_opens_a_channel_is_closed`, `a_menu_channel_that_never_asks_for_a_shell_times_out` |
+| F2 | Anyone who can connect to the trusted socket logs into any account, because the attestation needs only a **public** key. That includes the gateway's own user, since the socket is 0660 owner `mush` | **Fixed.** `SO_PEERCRED`: the socket serves only a peer whose primary group is the socket's group, or root |
+| F3 | A dead preamble or upstream is reused, so later passwords are rejected without reaching the instance | **Fixed.** Any upstream error drops `Up`, and the next attempt redials |
+| F4 | `dev1+play+Kira` sent `none` as `play+Kira`, which the instance refuses | **Fixed.** A front door forwards the bare name. Unit test plus `a_front_door_with_a_character_part_still_reaches_the_welcome_screen` |
+| F5 | Bidi and format characters in usernames | **Fixed.** `user_is_forwardable` refuses them |
+| F5 | IPv6 tempban keyed per address at the instance | **Open, pre-existing.** The direct port has it too. Normalising the instance's ban keys to /64 is a separate change |
+| F5 | An unlisted service's name is discoverable (it gets auth methods; a non-service name gets the menu) | **Accepted.** Unlisted means "not advertised", not "secret" |
+| F5 | A version mismatch on a later frame closes without saying so | **Accepted** (cosmetic) |
+
+### Splice and DoS
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 (critical) | The menu or notice channel's unread queue of 100 wedges the session loop. russh pushes every channel message into it before calling the handler | **Fixed.** Every downstream channel's read half is dropped at open. Test: `hundreds_of_resizes_and_keystrokes_at_the_menu_do_not_wedge_it` |
+| 2 | Menu and notice stages have no deadline | **Fixed** (as F1) |
+| 3 | The global cap is cheap to exhaust. Over-cap connections lived about 60 s, and a /48 holds 65,536 /64 keys | **Fixed.** Over-cap connections get 5 s. A per-/48 aggregate cap (`per_v6_48_connections`, default 64). Unit test |
+| 4 | A slow, healthy player who types while their own window is full can deadlock both loops (`data` awaited the upstream write) | **Fixed.** A per-channel **writer task** with a bounded queue. Callbacks only enqueue, so the session loop stays free to process window adjusts |
+| 5 | Drain broadcast and close are serial at 5 s each. Wedged sessions survive the close, so the generation never exits | **Fixed.** Concurrent under one bound. Each connection's stream sits in a kill switch (`kill.rs`), cut at the deadline and on wedge, because russh's own session task cannot be aborted from outside |
+| 6 | The reply FIFO desyncs on a timeout | **Fixed.** A reply that never comes closes the connection |
+| 7 | Untimed control writes in the pump | **Fixed.** All timed |
+| 8 | O(65k) sweep of a full rate table on every accept | **Fixed.** Swept at most once a second |
+| 9 | Close and Eof before the shell reply; `biased` starving warnings; close churn; auth-chain length | **Fixed**: `wait_reply` returns on Close and Eof, `biased` removed, opens capped at 8 per connection. **Accepted**: menu type-ahead after `\r` is dropped, and a slow upstream can make an auth chain overrun the deadline (the watchdog closes it) |
+
+### Drain and ops
+
+| # | Finding | Disposition |
+|---|---|---|
+| H1 | Gateway units under `ProtectSystem=strict` cannot create `/run/rustmush-ssh/*.sock` | **Fixed.** `ReadWritePaths=-/run/rustmush-ssh` in dev1, dev1-split and dev2-split |
+| H2 | `STOPPING=1` made the draining unit "deactivating", which broke swap.sh's guard | **Fixed.** The drain sends no `STOPPING`, and swap.sh reads `ActiveState` and the drain marker |
+| H3 | `SIGTERM` = drain turned stop, restart, reboot or needrestart into a 24 h outage | **Fixed.** `SIGUSR1` drains (swap.sh only), `SIGTERM` finishes in about 30 s, `TimeoutStopSec=120` |
+| M1 | A crash-restarted draining generation comes back into service | **Fixed.** A `draining-<gen>` marker makes the restart refuse. swap.sh clears it, waits 5 s and checks the new generation is still up |
+| M2 | check-logging.sh checked only `a.log`, and its archive check proved nothing | **Fixed.** It checks every running generation, needs a *new* archive (`-newer` a stamp), checks reopen by the file's re-creation, uses `mktemp` and refuses unknown arguments |
+| M3 | No hard exit; serial loops; a repeated finish restarted the grace | **Fixed.** A hard exit 60 s after the close, concurrent loops, and a repeated finish ignored |
+| M4 | Signals arriving during startup kill the process | **Fixed.** Handlers are installed first |
+| Low | Live socket stolen by a second instance; `[log]` changes ignored on reload; logrotate state dir before first start; unknown script arguments | **Fixed**: connect-probe before unlinking, a warning on reload, tmpfiles creates `/var/lib/sshdoorway`, argument checks. **Accepted**: warnings reach only the first spliced channel (the game channel) |
+
+**Not covered by a test:**
+- The peer-credential refusal itself: it needs a second group on the box. The acceptance
+  path is tested on Linux.
+- The systemd, logrotate and swap.sh behaviour. That is DW.4's box-level smoke.

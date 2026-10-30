@@ -1,10 +1,13 @@
 # 29. sshdoorway — one SSH front door on port 22
 
-**Draft 0.2, 2026-10-30.** Based on `origin/main` at `ebeee17b`. Docs only: nothing in this
+**Draft 0.3, 2026-10-30.** Based on `origin/main` at `ebeee17b`. Docs only: nothing in this
 document is built. The decisions in §12 come from the owner's design conversation of
 2026-10-30. The owner ruled every question in §13 the same day: five at their defaults, and
 Q-29-2 with a longer warning schedule (§9.4). Draft 0.2 also adds the owner's logging
 requirement: aggressive rotation and compression, checked before shipping (§8.1, D-29-18).
+Draft 0.3 records what the build and its adversarial review changed: the signals of §9.3
+(`SIGUSR1` drains, `SIGTERM` finishes), the trusted socket's peer-credential check (§4.1),
+and the other dispositions in 29a §7.
 
 ## 1. Goal
 
@@ -217,7 +220,8 @@ instance feature (another env variable, another exec verb) never needs a doorway
   upstream chunk only after the previous one was accepted by the downstream channel's window.
   If a player's client stops reading, the downstream window fills, the doorway stops reading
   upstream, the upstream window fills, and the instance's write times out as it does today.
-  The doorway buffers at most one channel window per direction.
+  Buffering is bounded by russh's channel queues, about 3 MiB per direction per
+  session, and every cross-session wait has a timeout (29a R-2, R-3).
 - **`want_reply` is honoured end to end.** The downstream reply to `pty-req`, `shell` and so
   on is the upstream reply. The doorway awaits it inside the handler callback.
 - **Keepalive and liveness.** Downstream keepalive uses the instance's settings (30 s
@@ -272,8 +276,10 @@ Port 22 on a public address receives every scanner on the internet. The doorway'
 - **Unknown names get `none` or nothing.** `password` and `publickey` attempts for names
   that are not services are rejected with no further methods. OpenSSH's `none` probe still
   reaches the menu. Password-spraying bots meet a door with no password prompt.
-- **The doorway's own blocks** (cap or rate exceeded) use the SSH banner, since they do not
-  depend on the username.
+- **The doorway's own blocks** use the SSH banner when a key is over its concurrency cap
+  (29a A-5). Over the rate limit or the global cap, the TCP connection is dropped before
+  any SSH work. Limits key on the IPv4 address or the IPv6 /64 (A-4). None of this
+  depends on the username, so it runs before routing.
 - **Logging is rate-limited.** One line per routed connection: peer, first segment,
   service, auth method, duration, bytes each way. Unrouted rejections are counted, not
   logged one by one; a summary line per minute gives the counts by reason. Passwords and
@@ -360,7 +366,7 @@ the sessions it already has until they end.
   group. A `sysctl.d` file ships with the units. At startup the doorway reads
   `/proc/sys/net/ipv4/tcp_migrate_req` and logs a warning if it is 0.
 - **Readiness.** The new instance signals `READY=1` (`Type=notify`) only after it has bound
-  every address, parsed the routing table, and completed a `Hello` round trip with every
+  every address, parsed the routing table, and had a `Ping` answered (29a A-3) by every
   service's trusted socket. The repository has no sd_notify helper yet, so this is a short
   write to `$NOTIFY_SOCKET`.
 
@@ -369,22 +375,30 @@ the sessions it already has until they end.
 | Signal | Effect |
 |---|---|
 | `SIGHUP` | Reload the routing table and limits. New connections use the new table; live sessions keep their route. Listen addresses and the host key path do not reload, because changing them needs a swap. |
-| `SIGTERM` | **Drain.** Close every listener (the kernel migrates its queue, §9.2), keep every session, and exit 0 when the last one ends or when the drain deadline passes. |
-| `SIGUSR1` | **Finish now.** Tell every session (§9.4), wait 30 s, close everything, exit 0. |
+| `SIGUSR1` | **Drain** (sent only by swap.sh). Close every listener (the kernel migrates its queue, §9.2), keep every session, warn on schedule, and exit 0 when the last one ends or when the drain deadline passes. Leaves a `draining-<gen>` marker so a crash-restart does not bring the generation back into service. |
+| `SIGTERM`, `SIGINT` | **Finish now.** Stop accepting, tell every session (§9.4), wait 30 s, close everything, exit 0. A repeated signal does not restart the grace. |
 | `SIGUSR2` | Reopen the log file (logrotate's `postrotate`, §8.1). |
-| second `SIGTERM` | The same as `SIGUSR1`. |
+
+Draft 0.2 had `SIGTERM` drain. The ops review showed why that is wrong (29a §7): a plain
+`systemctl stop` or `restart`, a reboot, or needrestart after a library upgrade would drain
+the **only** generation, leaving port 22 unserved for up to 24 h; and the `STOPPING=1` a
+drain sent made systemd report the draining unit as stopping, which broke swap.sh's
+two-generation guard. Now only swap.sh asks for the long drain, and only once a successor is
+serving. After the deadline (or the grace) the process exits within a minute even if some
+session never finished closing: those streams are cut (`kill.rs`).
 
 ### 9.4 The swap and its limits
 
 `deploy/sshdoorway/swap.sh` does the swap:
 
-1. It finds the active unit, say `a`. If `b` is also active, `b` is still draining, and the
-   script refuses unless given `--force`, which sends `SIGUSR1` to `b` and waits for it to
-   exit. **At most two generations ever run.**
-2. `systemctl start sshdoorway@b` returns once `b` is `READY`.
-3. `systemctl kill --signal=TERM sshdoorway@a`. This uses `kill`, not `stop`, so the script
-   does not block for hours while `a` drains. The units use `Restart=on-failure`, so a
-   drained exit 0 is not restarted.
+1. It takes a lock, then finds the serving unit, say `a`. If `b` is also running, `b` is
+   still draining (a drain leaves the unit active), and the script refuses unless given
+   `--force`, which sends `SIGTERM` (finish) to `b` and waits for it to exit. **At most two
+   generations ever run.**
+2. It clears `b`'s drain marker, then `systemctl start sshdoorway@b`, which returns once `b`
+   is `READY`. It waits 5 s and checks that `b` is still active; if not, `a` keeps serving.
+3. `systemctl kill --signal=USR1 sshdoorway@a`, so the script never blocks while `a`
+   drains. The units use `Restart=on-failure`, so a drained exit 0 is not restarted.
 
 - **Drain deadline and warnings (Q-29-2, ruled).** The deadline is 24 h after the drain
   begins. Warnings start early, so a player can reconnect at a convenient moment instead of
@@ -414,7 +428,7 @@ the sessions it already has until they end.
   data stream only between upstream chunks, so it never lands inside a kitty graphics
   escape. In TUI or cockpit mode the line may briefly mark the screen; the next repaint
   clears it.
-- **`TimeoutStopSec`** is the drain deadline plus 5 minutes, so a plain `systemctl stop`
+- **`TimeoutStopSec`** is 120 s: `SIGTERM` finishes in about 30 s, so a plain `systemctl stop`
   during a box shutdown cannot block forever.
 
 ### 9.5 Rarely needing a restart at all
@@ -477,7 +491,7 @@ listed = true
 - **Deploy files.** `deploy/sshdoorway/` holds `sshdoorway@.service`, `sshdoorway.toml`
   (example), `99-sshdoorway.conf` (sysctl), `sshdoorway.conf` (tmpfiles, which also creates
   `/var/log/sshdoorway` with mode 0750 owned by `sshdoorway`), `logrotate.conf`,
-  `sshdoorway-logrotate.service` and `.timer`, `check-logging.sh`, `swap.sh` and a README. Each instance's gateway unit gains `SupplementaryGroups=sshdoorway`, so its socket
+  `sshdoorway-logrotate.service` and `.timer`, `check-logging.sh`, `swap.sh` and a README. `/run/rustmush-ssh` is setgid (29a A-1), so each socket
   can carry that group.
 - **Linux only.** The doorway and the trusted ingress are Linux-only (`cfg(unix)`: Unix
   sockets, `SO_REUSEPORT`, sysctls). Their tests are skipped on Windows and run on Linux CI
@@ -515,11 +529,11 @@ New crates join the contract tests' feature census and panic budget (run before 
 | D-29-8 | Passwords and keyboard-interactive are relayed as upstream SSH `password`. The instance counts failures against the real address. The doorway never stores or logs a password (§5). |
 | D-29-9 | The doorway has its own host key, shared by every generation. The trusted hop's host key is not verified; socket permissions are the trust (§4.1, §5). |
 | D-29-10 | The session-channel vocabulary is relayed verbatim, at most 2 channels, and the instance decides. Forwarding, agent, X11 and other channel types are refused at the doorway (§6). |
-| D-29-11 | The splice is bounded to at most one channel window per direction, so the instance's wedge detection still works (§6). |
+| D-29-11 | The splice is bounded (russh's channel queues, about 3 MiB per direction) and every cross-session wait is timed, so a wedged client is cut off as it would be on a direct connection (§6, 29a R-2/R-3). |
 | D-29-12 | The menu needs a PTY shell, routes to a front door, and prints the direct username for next time (§7). |
 | D-29-13 | A per-instance block is accept-and-tell in the session. The doorway's own blocks use the SSH banner (§5, §8). |
 | D-29-14 | The doorway has its own per-IP, rate, global and deadline gates. Non-service names get `none` only (§8). |
-| D-29-15 | Graceful restart is a drain: `SO_REUSEPORT`, `tcp_migrate_req = 1`, two alternating units, at most two generations, `SIGTERM` drains, a deadline with in-session notices, `SIGHUP` reloads (§9). |
+| D-29-15 | Graceful restart is a drain: `SO_REUSEPORT`, `tcp_migrate_req = 1`, two alternating units, at most two generations, `SIGUSR1` (swap.sh only) drains, `SIGTERM` finishes in about 30 s, a deadline with in-session notices, `SIGHUP` reloads (§9). |
 | D-29-16 | The doorway holds no game state, account data or Redis connection (§4.3, §9.5). |
 | D-29-17 | The doorway and the trusted ingress are Linux-only; their tests are `cfg(unix)` (§10). |
 | D-29-18 | The doorway's logs rotate and compress aggressively: a stable file name per generation reopened on `SIGUSR2`, logrotate every 15 minutes with `maxsize 20M`, zstd, 60 archives and 14 days; journald gets `warn` and above only, rate-limited. `check-logging.sh` is a ship-time gate (§8.1). |

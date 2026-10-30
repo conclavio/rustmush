@@ -1,7 +1,9 @@
 # sshdoorway generation %i (a or b) — doc 29 §9-§10.
 # Two generations alternate: swap.sh starts the idle one, waits for READY=1,
-# then sends SIGTERM to the active one, which drains (warnings at 12h, 6h, 2h,
-# 1h, 15m, 1m remaining; closes at 24 h or when empty).
+# then sends SIGUSR1 to the active one, which drains (warnings at 12h, 6h, 2h,
+# 1h, 15m, 1m remaining; closes at 24 h or when empty). A draining generation
+# leaves /var/lib/sshdoorway/draining-%i, so a crash-restart does not bring it
+# back into service beside its successor; swap.sh clears it.
 [Unit]
 Description=sshdoorway (port-22 SSH front door), generation %i
 After=network-online.target
@@ -14,10 +16,14 @@ User=sshdoorway
 Group=sshdoorway
 ExecStart=/opt/rustmush/sshdoorway/sshdoorway --config /etc/rustmush/sshdoorway.toml --generation %i
 ExecReload=/bin/kill -HUP $MAINPID
-# SIGTERM drains; a drain lasts up to the deadline (24 h) plus a margin.
+# SIGTERM means FINISH: stop accepting, one 30 s warning, close, exit. So a
+# plain stop/restart, needrestart or a reboot never becomes a 24 h drain.
+# The 24 h drain is SIGUSR1, sent only by swap.sh once a successor is
+# serving; it does not change the unit's state, so swap.sh's two-generation
+# guard sees both. (Adversarial review H2/H3.)
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=86700
+TimeoutStopSec=120
 Restart=on-failure
 RestartSec=2
 

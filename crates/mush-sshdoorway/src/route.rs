@@ -76,10 +76,18 @@ fn forward(service: &str, upstream_user: &str) -> Route {
     if account.is_empty() {
         return Route::Invalid;
     }
+    let front_door = is_front_door(account);
     Route::Service {
         service: service.to_owned(),
-        upstream_user: upstream_user.to_owned(),
-        front_door: is_front_door(account),
+        // A front door is `none` upstream as the bare front-door name: the
+        // instance's `auth_none` matches the whole name, so `play+Kira` would
+        // be refused (adversarial review F4).
+        upstream_user: if front_door {
+            account.to_owned()
+        } else {
+            upstream_user.to_owned()
+        },
+        front_door,
     }
 }
 
@@ -132,6 +140,7 @@ mod tests {
         );
         assert_eq!(route("dev1+play", &c), svc("dev1", "play", true));
         assert_eq!(route("dev1+Guest", &c), svc("dev1", "Guest", true));
+        assert_eq!(route("dev1+play+Kira", &c), svc("dev1", "play", true));
         assert_eq!(route("DEV1+faenix", &c), svc("dev1", "faenix", false));
         assert_eq!(route("dev1+", &c), svc("dev1", "play", true));
         for menu in [

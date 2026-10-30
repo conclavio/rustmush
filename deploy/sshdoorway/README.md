@@ -34,7 +34,11 @@ things from the owner: moving admin `sshd` off the player addresses, and a go-ah
 3. **Each instance.** Add `trusted_socket = "/run/rustmush-ssh/<instance>.sock"` to its
    `[ssh]` section, then restart its gateway. The gateway creates the socket with mode
    0660. Because the directory is setgid, the socket's group is `sshdoorway`, and only
-   the doorway can connect to it. The instance's public port (6789, 6792) keeps working
+   the doorway can connect to it. The gateway also checks each connection's peer
+   credentials: it serves only a peer whose primary group is the socket's group (the unit
+   runs the doorway as `Group=sshdoorway`), so not even the gateway's own user can forge a
+   preamble. The gateway units already carry `ReadWritePaths=-/run/rustmush-ssh`, which they
+   need under `ProtectSystem=strict`. The instance's public port (6789, 6792) keeps working
    (Q-29-4).
 4. **Check the config.** Run `sshdoorway --config /etc/rustmush/sshdoorway.toml --check`.
 5. **Start.** Run `systemctl enable --now sshdoorway-logrotate.timer`, then
@@ -48,7 +52,8 @@ things from the owner: moving admin `sshd` off the player addresses, and a go-ah
 Run `swap.sh`. It:
 
 1. starts the idle generation and waits for it to report ready;
-2. sends `SIGTERM` to the old generation, which stops accepting connections. With
+2. after checking the new generation stayed up for 5 s, sends `SIGUSR1` to the old
+   generation, which stops accepting connections. With
    `tcp_migrate_req = 1`, connections already queued on it move to the new generation.
 3. lets the old generation keep serving its sessions, warning each player when 12h, 6h,
    2h, 1h, 15m and 1m remain;
@@ -57,6 +62,10 @@ Run `swap.sh`. It:
 `swap.sh` refuses to start a third generation while one is still draining. With
 `swap.sh --force`, the draining generation is finished instead: one 30 s warning, then
 close.
+
+**`systemctl stop` or `restart` is not a swap.** `SIGTERM` finishes the generation: one
+30 s warning, then every session closes. That is what a reboot does too. Use `swap.sh` to
+restart without dropping players.
 
 **Reloading.** `systemctl reload sshdoorway@a` (`SIGHUP`) reloads the routes, limits and
 menu. Changing `[listen]` needs a swap.

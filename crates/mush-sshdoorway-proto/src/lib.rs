@@ -247,11 +247,32 @@ where
 }
 
 /// Whether a username is forwardable: non-empty, at most [`MAX_USER_LEN`]
-/// bytes, and free of control characters (which would otherwise reach log
-/// lines and the instance's name parser).
+/// bytes, and free of control characters and of the invisible format
+/// characters (bidi overrides, zero-width joiners, the BOM) that would
+/// otherwise reach log lines, the menu's hints and the instance's name parser.
 #[must_use]
 pub fn user_is_forwardable(user: &str) -> bool {
-    !user.is_empty() && user.len() <= MAX_USER_LEN && !user.chars().any(char::is_control)
+    !user.is_empty()
+        && user.len() <= MAX_USER_LEN
+        && !user
+            .chars()
+            .any(|c| c.is_control() || is_invisible_format(c))
+}
+
+/// The Unicode format characters a username must not carry.
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+    )
 }
 
 #[cfg(test)]
@@ -399,6 +420,9 @@ mod tests {
         assert!(!user_is_forwardable(""));
         assert!(!user_is_forwardable("a\nb"));
         assert!(!user_is_forwardable("a\u{1b}[31m"));
+        assert!(!user_is_forwardable("dev1+admin\u{202e}"));
+        assert!(!user_is_forwardable("fae\u{200b}nix"));
+        assert!(user_is_forwardable("Kïra"));
         assert!(!user_is_forwardable(&"x".repeat(MAX_USER_LEN + 1)));
     }
 }

@@ -27,6 +27,12 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/opt/rustmush/dev1
+# Doc 29: the trusted-ingress socket sshdoorway connects to ([ssh].trusted_socket).
+# The "-" keeps the unit starting on a box without the directory (tmpfiles
+# deploy/sshdoorway/sshdoorway.conf creates it setgid, group sshdoorway).
+# Never RuntimeDirectory= for it: that would reset the setgid bit and remove
+# the directory when the unit stops.
+ReadWritePaths=-/run/rustmush-ssh
 
 [Install]
 WantedBy=multi-user.target

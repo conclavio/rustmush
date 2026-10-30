@@ -16,6 +16,7 @@
 //! | [`upstream`] | dialing, the preamble client, the upstream russh client |
 //! | [`server`] | the accept path, the auth relay, the menu, the splice |
 //! | [`drain`] | the graceful restart: warnings, the deadline, the registry |
+//! | [`kill`] | a stream the drain and the wedge path can cut |
 //! | [`listen`] | `SO_REUSEPORT` / `IPV6_V6ONLY` listeners |
 //! | [`logging`] | the file sink (reopened on `SIGUSR2`) and the journald sink |
 //! | [`notify`] | `sd_notify` |
@@ -35,6 +36,7 @@
 pub mod config;
 pub mod drain;
 pub mod hostkey;
+pub mod kill;
 pub mod limits;
 pub mod listen;
 pub mod logging;

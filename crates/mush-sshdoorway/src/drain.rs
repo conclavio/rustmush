@@ -22,6 +22,7 @@ use russh::{ChannelId, Disconnect};
 use tokio::sync::{Notify, mpsc, watch};
 
 use crate::config::Warning;
+use crate::kill::KillSwitch;
 
 /// How many injected lines may wait for one session's pump.
 pub const INJECT_QUEUE: usize = 8;
@@ -49,6 +50,7 @@ struct Entry {
 pub struct Drain {
     phase: watch::Sender<Phase>,
     sessions: Mutex<HashMap<u64, Entry>>,
+    tasks: Mutex<HashMap<u64, Arc<KillSwitch>>>,
     live: AtomicU64,
     empty: Notify,
 }
@@ -67,6 +69,7 @@ impl Default for Drain {
         Drain {
             phase: watch::channel(Phase::Serving).0,
             sessions: Mutex::new(HashMap::new()),
+            tasks: Mutex::new(HashMap::new()),
             live: AtomicU64::new(0),
             empty: Notify::new(),
         }
@@ -137,6 +140,47 @@ impl Drain {
 
     fn unregister(&self, id: u64) {
         self.lock().remove(&id);
+        self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+    }
+
+    /// Record a connection's kill switch, so a session that never finishes
+    /// closing can be cut ([`crate::kill`]). Called before the connection's
+    /// task starts, so its `LiveGuard` always removes it again.
+    pub fn track(&self, id: u64, task: Arc<KillSwitch>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, task);
+    }
+
+    /// Abort one connection's task: the wedge path, where a polite disconnect
+    /// would queue behind data the client is not reading.
+    pub fn abort(&self, id: u64) {
+        let task = self
+            .tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+        if let Some(t) = task {
+            t.kill();
+        }
+    }
+
+    /// Abort every tracked connection task.
+    pub fn abort_all(&self) {
+        let tasks: Vec<Arc<KillSwitch>> = self
+            .tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain()
+            .map(|(_, t)| t)
+            .collect();
+        for t in tasks {
+            t.kill();
+        }
     }
 
     /// The current phase.
@@ -175,35 +219,44 @@ impl Drain {
             .values()
             .map(|e| (e.inject.clone(), e.handle.clone(), e.channel))
             .collect();
-        for (inject, handle, channel) in targets {
-            match (inject, channel) {
-                (Some(tx), _) => {
-                    // A full queue means the session is not reading; it will
-                    // be closed at the deadline regardless.
-                    let _ = tx.try_send(line.to_owned());
+        // All at once, under one bound: one session not reading must not
+        // delay everyone else's warning (adversarial review).
+        let sends = targets
+            .into_iter()
+            .map(|(inject, handle, channel)| async move {
+                match (inject, channel) {
+                    (Some(tx), _) => {
+                        // A full queue means the session is not reading; it
+                        // will be closed at the deadline regardless.
+                        let _ = tx.try_send(line.to_owned());
+                    }
+                    (None, Some(ch)) => {
+                        let mut bytes = b"\r\n".to_vec();
+                        bytes.extend_from_slice(line.as_bytes());
+                        bytes.extend_from_slice(b"\r\n");
+                        let _ = handle.data(ch, bytes).await;
+                    }
+                    (None, None) => {}
                 }
-                (None, Some(ch)) => {
-                    let mut bytes = b"\r\n".to_vec();
-                    bytes.extend_from_slice(line.as_bytes());
-                    bytes.extend_from_slice(b"\r\n");
-                    let _ =
-                        tokio::time::timeout(Duration::from_secs(5), handle.data(ch, bytes)).await;
-                }
-                (None, None) => {}
-            }
-        }
+            });
+        let _ =
+            tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(sends)).await;
     }
 
-    /// Disconnect every registered session.
+    /// Disconnect every registered session (all at once, under one bound),
+    /// then abort every connection task still running.
     pub async fn close_all(&self, reason: &str) {
         let handles: Vec<Handle> = self.lock().values().map(|e| e.handle.clone()).collect();
-        for h in handles {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(5),
-                h.disconnect(Disconnect::ByApplication, reason.to_owned(), String::new()),
-            )
-            .await;
-        }
+        let closes = handles.into_iter().map(|h| async move {
+            let _ = h
+                .disconnect(Disconnect::ByApplication, reason.to_owned(), String::new())
+                .await;
+        });
+        let _ =
+            tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(closes)).await;
+        // Give the disconnects a moment to flush, then end what is left.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        self.abort_all();
     }
 
     /// Run a drain to completion: warnings on schedule, then close everything

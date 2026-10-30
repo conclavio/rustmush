@@ -27,6 +27,20 @@ pub const WINDOW: Duration = Duration::from_secs(60);
 /// Most keys the rate table tracks at once.
 pub const MAX_TRACKED: usize = 65_536;
 
+/// How often a full rate table may be swept (the sweep is O(table) under the
+/// lock, so it must not run on every accept — adversarial review).
+pub const SWEEP_EVERY: Duration = Duration::from_secs(1);
+
+/// The top 48 bits of an IPv6 address: one customer's typical allocation.
+/// IPv6 connections are also capped per /48 (in aggregate over its /64s), or
+/// one /48's 65,536 /64s would each get a full per-key budget.
+fn v6_48(ip: IpAddr) -> Option<u64> {
+    match ip {
+        IpAddr::V6(v6) if v6.to_ipv4_mapped().is_none() => Some((u128::from(v6) >> 80) as u64),
+        _ => None,
+    }
+}
+
 /// What the limits key an address on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum IpKey {
@@ -57,6 +71,8 @@ pub struct Caps {
     pub rate: u32,
     /// Concurrent connections in total.
     pub global: u32,
+    /// Concurrent connections per IPv6 /48, across its /64s.
+    pub per_v6_48: u32,
 }
 
 /// Why a connection was dropped at accept.
@@ -66,6 +82,8 @@ pub enum DropReason {
     Rate,
     /// Over the global cap.
     Global,
+    /// Over the per-/48 cap.
+    Prefix48,
 }
 
 /// The outcome of [`Limits::admit`].
@@ -87,6 +105,8 @@ pub struct Limits {
 #[derive(Debug, Default)]
 struct Inner {
     concurrent: HashMap<IpKey, u32>,
+    concurrent48: HashMap<u64, u32>,
+    last_sweep: Option<Instant>,
     rate: HashMap<IpKey, (Instant, u32)>,
     counters: BTreeMap<&'static str, u64>,
 }
@@ -109,7 +129,13 @@ impl Limits {
         let key = ip_key(ip);
         let mut inner = self.lock();
         // Rate first: a flood is refused before it costs a slot.
-        if inner.rate.len() >= MAX_TRACKED && !inner.rate.contains_key(&key) {
+        if inner.rate.len() >= MAX_TRACKED
+            && !inner.rate.contains_key(&key)
+            && inner
+                .last_sweep
+                .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY)
+        {
+            inner.last_sweep = Some(now);
             inner
                 .rate
                 .retain(|_, (start, _)| now.saturating_duration_since(*start) < WINDOW);
@@ -130,6 +156,15 @@ impl Limits {
             *inner.counters.entry("global").or_default() += 1;
             return Admission::Drop(DropReason::Global);
         }
+        let prefix = v6_48(ip);
+        if let Some(p) = prefix {
+            let n = inner.concurrent48.entry(p).or_default();
+            if *n >= caps.per_v6_48 {
+                *inner.counters.entry("per-48").or_default() += 1;
+                return Admission::Drop(DropReason::Prefix48);
+            }
+            *n += 1;
+        }
         self.global.fetch_add(1, Ordering::SeqCst);
         let count = inner.concurrent.entry(key).or_default();
         let counted = *count < caps.per_key;
@@ -141,6 +176,7 @@ impl Limits {
         Admission::Admit(Slot {
             limits: Arc::clone(self),
             key,
+            prefix,
             counted,
         })
     }
@@ -185,6 +221,7 @@ impl Limits {
 pub struct Slot {
     limits: Arc<Limits>,
     key: IpKey,
+    prefix: Option<u64>,
     counted: bool,
 }
 
@@ -199,13 +236,21 @@ impl Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         self.limits.global.fetch_sub(1, Ordering::SeqCst);
-        if self.counted {
-            let mut inner = self.limits.lock();
-            if let Some(n) = inner.concurrent.get_mut(&self.key) {
-                *n = n.saturating_sub(1);
-                if *n == 0 {
-                    inner.concurrent.remove(&self.key);
-                }
+        let mut inner = self.limits.lock();
+        if let Some(p) = self.prefix
+            && let Some(n) = inner.concurrent48.get_mut(&p)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                inner.concurrent48.remove(&p);
+            }
+        }
+        if self.counted
+            && let Some(n) = inner.concurrent.get_mut(&self.key)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                inner.concurrent.remove(&self.key);
             }
         }
     }
@@ -219,6 +264,7 @@ mod tests {
         per_key: 2,
         rate: 5,
         global: 10,
+        per_v6_48: 3,
     };
 
     fn ip(s: &str) -> IpAddr {
@@ -261,19 +307,40 @@ mod tests {
     }
 
     #[test]
+    fn a_v6_48_is_capped_across_its_64s_and_released() {
+        let l = Limits::new();
+        let now = Instant::now();
+        let held: Vec<Slot> = (0..3)
+            .map(|i| slot(l.admit(ip(&format!("2001:db8:0:{i:x}::1")), CAPS, now)))
+            .collect();
+        assert!(matches!(
+            l.admit(ip("2001:db8:0:ff::1"), CAPS, now),
+            Admission::Drop(DropReason::Prefix48)
+        ));
+        // Another /48 is unaffected, and dropping one frees a place.
+        let _other = slot(l.admit(ip("2001:db8:1::1"), CAPS, now));
+        drop(held);
+        let _again = slot(l.admit(ip("2001:db8:0:ff::1"), CAPS, now));
+    }
+
+    #[test]
     fn a_rotating_v6_host_shares_one_budget() {
         let l = Limits::new();
         let now = Instant::now();
         let mut held = Vec::new();
+        let caps = Caps {
+            per_v6_48: 100,
+            ..CAPS
+        };
         for i in 0..5 {
-            held.push(slot(l.admit(ip(&format!("2001:db8::{i:x}")), CAPS, now)));
+            held.push(slot(l.admit(ip(&format!("2001:db8::{i:x}")), caps, now)));
         }
         assert!(matches!(
-            l.admit(ip("2001:db8::ff"), CAPS, now),
+            l.admit(ip("2001:db8::ff"), caps, now),
             Admission::Drop(DropReason::Rate)
         ));
         // Another /64 is unaffected.
-        let _other = slot(l.admit(ip("2001:db8:0:1::1"), CAPS, now));
+        let _other = slot(l.admit(ip("2001:db8:0:1::1"), caps, now));
     }
 
     #[test]
@@ -312,6 +379,7 @@ mod tests {
             per_key: 1,
             rate: 1,
             global: u32::MAX,
+            per_v6_48: u32::MAX,
         };
         let t0 = Instant::now();
         for i in 0..(MAX_TRACKED as u32 + 100) {

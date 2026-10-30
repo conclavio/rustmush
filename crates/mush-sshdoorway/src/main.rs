@@ -2,9 +2,9 @@
 //!
 //! | Signal | Effect |
 //! |---|---|
+//! | `SIGUSR1` | drain (swap.sh only): stop accepting, warn on schedule, close at the deadline |
+//! | `SIGTERM`, `SIGINT` | finish now: stop accepting, one warning, close after the grace period |
 //! | `SIGHUP` | reload routing and limits (`[listen]` needs a swap) |
-//! | `SIGTERM` | drain: stop accepting, warn on schedule, exit at zero sessions or the deadline |
-//! | second `SIGTERM`, `SIGUSR1` | finish now: one warning, a grace period, close everything |
 //! | `SIGUSR2` | reopen the log file (logrotate) |
 
 #![deny(
@@ -106,9 +106,64 @@ async fn run() -> Result<(), String> {
     }
 }
 
+/// The signal streams, installed before anything slow happens: a default
+/// `SIGHUP` or `SIGUSR2` (logrotate's postrotate) would otherwise kill a
+/// generation that is still starting.
+#[cfg(unix)]
+struct Signals {
+    hup: tokio::signal::unix::Signal,
+    usr1: tokio::signal::unix::Signal,
+    usr2: tokio::signal::unix::Signal,
+    term: tokio::signal::unix::Signal,
+    int: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl Signals {
+    fn install() -> Result<Signals, String> {
+        use tokio::signal::unix::{SignalKind, signal};
+        let sig = |k: SignalKind| signal(k).map_err(|e| format!("signal handler: {e}"));
+        Ok(Signals {
+            hup: sig(SignalKind::hangup())?,
+            usr1: sig(SignalKind::user_defined1())?,
+            usr2: sig(SignalKind::user_defined2())?,
+            term: sig(SignalKind::terminate())?,
+            int: sig(SignalKind::interrupt())?,
+        })
+    }
+}
+
+/// How long after the drain's close (or a finish's grace) the process exits
+/// even if some session never finished closing.
+#[cfg(unix)]
+const HARD_EXIT_AFTER: Duration = Duration::from_secs(60);
+
+/// The marker a draining generation leaves, so systemd restarting it after a
+/// crash does not bring it back into service beside its successor. swap.sh
+/// clears it before starting that generation fresh.
+#[cfg(unix)]
+fn draining_marker(cfg: &Config, generation: &str) -> PathBuf {
+    let dir = cfg
+        .listen
+        .host_key
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    dir.join(format!("draining-{generation}"))
+}
+
 #[cfg(unix)]
 async fn serve(args: Args, cfg: Config) -> Result<(), String> {
+    let mut sigs = Signals::install()?;
     let log = logging::init(&cfg.log, &args.generation)?;
+    let marker = draining_marker(&cfg, &args.generation);
+    if marker.exists() {
+        tracing::warn!(
+            marker = %marker.display(),
+            "this generation was draining when it stopped; not serving again (swap.sh clears the marker)"
+        );
+        return Ok(());
+    }
     if listen::migrate_req_enabled() == Some(false) {
         tracing::warn!(
             "net.ipv4.tcp_migrate_req is 0: connections queued on a draining generation will be reset"
@@ -141,15 +196,16 @@ async fn serve(args: Args, cfg: Config) -> Result<(), String> {
     notify::notify("READY=1");
     tracing::warn!("sshdoorway ready");
 
-    signals(&args, &door, &log).await?;
-    tracing::warn!("sshdoorway drained; exiting");
-    Ok(())
+    let result = signals(&args, &door, &log, &mut sigs, &marker).await;
+    let _ = std::fs::remove_file(&marker);
+    tracing::warn!("sshdoorway exiting");
+    result
 }
 
-#[cfg(unix)]
 /// Readiness (29a A-3): at least one service must answer `Ping` within 30 s;
 /// a service that does not is logged, not fatal (an instance being down must
 /// not stop players reaching the others).
+#[cfg(unix)]
 async fn ready(door: &Arc<Doorway>) -> Result<(), String> {
     let cfg = door.config();
     if cfg.services.is_empty() {
@@ -165,9 +221,10 @@ async fn ready(door: &Arc<Doorway>) -> Result<(), String> {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
             Err(e) => {
+                let connector = door.connector();
                 let mut any = false;
                 for s in &cfg.services {
-                    if mush_sshdoorway::upstream::ping(&*door_connector(door), s)
+                    if mush_sshdoorway::upstream::ping(&*connector, s)
                         .await
                         .is_ok()
                     {
@@ -184,71 +241,111 @@ async fn ready(door: &Arc<Doorway>) -> Result<(), String> {
     }
 }
 
+/// The lifecycle (doc 29 §9.3, as amended by the ops review):
+///
+/// | Signal | Effect |
+/// |---|---|
+/// | `SIGUSR1` | **drain** (swap.sh): stop accepting, warn on schedule, close at the deadline |
+/// | `SIGTERM`, `SIGINT` | **finish**: stop accepting, one warning, close after the grace period |
+/// | `SIGHUP` | reload routing, limits and menu |
+/// | `SIGUSR2` | reopen the log file |
+///
+/// `SIGTERM` finishing quickly is what keeps `systemctl stop`/`restart`, a
+/// reboot or needrestart from turning into a 24 h outage; the 24 h drain is
+/// only ever asked for by swap.sh, after a successor is serving.
 #[cfg(unix)]
-fn door_connector(door: &Arc<Doorway>) -> Arc<dyn mush_sshdoorway::upstream::Connector> {
-    door.connector()
-}
-
-#[cfg(unix)]
-async fn signals(args: &Args, door: &Arc<Doorway>, log: &logging::LogGuard) -> Result<(), String> {
-    use tokio::signal::unix::{SignalKind, signal};
-    let sig = |k: SignalKind| signal(k).map_err(|e| format!("signal handler: {e}"));
-    let mut hup = sig(SignalKind::hangup())?;
-    let mut term = sig(SignalKind::terminate())?;
-    let mut usr1 = sig(SignalKind::user_defined1())?;
-    let mut usr2 = sig(SignalKind::user_defined2())?;
-    let mut int = sig(SignalKind::interrupt())?;
-    let mut draining: Option<tokio::task::JoinHandle<()>> = None;
+async fn signals(
+    args: &Args,
+    door: &Arc<Doorway>,
+    log: &logging::LogGuard,
+    sigs: &mut Signals,
+    marker: &std::path::Path,
+) -> Result<(), String> {
+    let mut work: Option<tokio::task::JoinHandle<()>> = None;
+    let mut finishing = false;
+    let mut hard_exit: Option<tokio::time::Instant> = None;
     loop {
+        let stopping = work.is_some();
         let empty = async {
-            if draining.is_some() {
+            if stopping {
                 door.drain.wait_empty().await;
             } else {
                 std::future::pending::<()>().await;
             }
         };
+        let work_done = async {
+            match work.as_mut() {
+                Some(task) if !task.is_finished() => {
+                    let _ = task.await;
+                }
+                _ => std::future::pending::<()>().await,
+            }
+        };
+        let hard = async {
+            match hard_exit {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
-            _ = hup.recv() => match Config::load(&args.config) {
-                Ok(new) => match door.reload(new) {
-                    Ok(()) => tracing::warn!("config reloaded"),
-                    Err(e) => tracing::error!(error = %e, "reload refused; keeping the old config"),
-                },
-                Err(e) => tracing::error!(error = %e, "reload refused; keeping the old config"),
-            },
-            _ = usr2.recv() => {
+            _ = sigs.hup.recv() => reload(args, door),
+            _ = sigs.usr2.recv() => {
                 if let Some(f) = &log.file
                     && let Err(e) = f.reopen()
                 {
                     tracing::error!(error = %e, path = %f.path().display(), "log reopen failed");
                 }
             }
-            _ = term.recv() => {
-                if draining.is_none() {
-                    draining = Some(start_drain(door));
-                } else {
-                    finish_now(door, &mut draining);
+            _ = sigs.usr1.recv() => {
+                if work.is_none() {
+                    if let Err(e) = std::fs::write(marker, b"draining\n") {
+                        tracing::error!(error = %e, marker = %marker.display(), "cannot write the drain marker");
+                    }
+                    work = Some(start_drain(door));
                 }
             }
-            _ = int.recv() => {
-                if draining.is_none() {
-                    draining = Some(start_drain(door));
-                }
-                finish_now(door, &mut draining);
-            }
-            _ = usr1.recv() => {
-                if draining.is_none() {
-                    draining = Some(start_drain(door));
-                }
-                finish_now(door, &mut draining);
+            _ = sigs.term.recv() => finish(door, &mut work, &mut finishing),
+            _ = sigs.int.recv() => finish(door, &mut work, &mut finishing),
+            () = work_done => {
+                // The deadline (or the grace) has closed everything it could;
+                // whatever has not finished closing gets a minute.
+                hard_exit = Some(tokio::time::Instant::now() + HARD_EXIT_AFTER);
             }
             () = empty => return Ok(()),
+            () = hard => {
+                tracing::warn!(sessions = door.drain.live(), "sessions still closing; exiting anyway");
+                return Ok(());
+            }
         }
     }
 }
 
 #[cfg(unix)]
+fn reload(args: &Args, door: &Arc<Doorway>) {
+    match Config::load(&args.config) {
+        Ok(new) => {
+            let log_changed = {
+                let old = door.config();
+                old.log.file_dir != new.log.file_dir
+                    || old.log.file_level != new.log.file_level
+                    || old.log.journal_level != new.log.journal_level
+            };
+            match door.reload(new) {
+                Ok(()) => {
+                    tracing::warn!("config reloaded");
+                    if log_changed {
+                        tracing::warn!("[log] changed: that takes effect at the next swap");
+                    }
+                }
+                Err(e) => tracing::error!(error = %e, "reload refused; keeping the old config"),
+            }
+        }
+        Err(e) => tracing::error!(error = %e, "reload refused; keeping the old config"),
+    }
+}
+
+#[cfg(unix)]
 fn start_drain(door: &Arc<Doorway>) -> tokio::task::JoinHandle<()> {
-    notify::notify("STOPPING=1");
     door.drain.begin();
     let cfg = door.config();
     let deadline = Duration::from_secs(cfg.limits.drain_deadline_secs);
@@ -263,17 +360,32 @@ fn start_drain(door: &Arc<Doorway>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move { door.drain.run(deadline, &warnings, &message).await })
 }
 
+/// Finish now. A repeated signal does not restart the grace period.
 #[cfg(unix)]
-fn finish_now(door: &Arc<Doorway>, draining: &mut Option<tokio::task::JoinHandle<()>>) {
-    if let Some(task) = draining.take() {
+fn finish(
+    door: &Arc<Doorway>,
+    work: &mut Option<tokio::task::JoinHandle<()>>,
+    finishing: &mut bool,
+) {
+    if *finishing {
+        return;
+    }
+    *finishing = true;
+    notify::notify("STOPPING=1");
+    door.drain.begin();
+    if let Some(task) = work.take() {
         task.abort();
     }
     let cfg = door.config();
     let grace = Duration::from_secs(cfg.limits.force_grace_secs);
     let message = cfg.limits.drain_message.clone();
-    tracing::warn!(grace_secs = grace.as_secs(), "finishing now");
+    tracing::warn!(
+        sessions = door.drain.live(),
+        grace_secs = grace.as_secs(),
+        "finishing now"
+    );
     let door = Arc::clone(door);
-    *draining = Some(tokio::spawn(async move {
+    *work = Some(tokio::spawn(async move {
         door.drain.finish_now(grace, &message).await;
     }));
 }

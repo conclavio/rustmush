@@ -52,6 +52,8 @@ pub struct LimitsCfg {
     pub per_ip_new_per_minute: u32,
     /// Concurrent connections in total.
     pub global_connections: u32,
+    /// Concurrent connections per IPv6 /48, across all of its /64s.
+    pub per_v6_48_connections: u32,
     /// Seconds to authenticate (or reach the menu) before being dropped.
     pub auth_deadline_secs: u64,
     /// Seconds the menu waits for input.
@@ -72,6 +74,7 @@ impl Default for LimitsCfg {
             per_ip_connections: 8,
             per_ip_new_per_minute: 20,
             global_connections: 2048,
+            per_v6_48_connections: 64,
             auth_deadline_secs: 30,
             menu_idle_secs: 120,
             drain_deadline_secs: 86_400,
@@ -237,6 +240,7 @@ impl Config {
         if l.per_ip_connections == 0
             || l.per_ip_new_per_minute == 0
             || l.global_connections == 0
+            || l.per_v6_48_connections == 0
             || l.auth_deadline_secs == 0
             || l.menu_idle_secs == 0
             || l.drain_deadline_secs == 0
