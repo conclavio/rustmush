@@ -1128,6 +1128,17 @@ fn own_filed(
     if term.licence != licence.id {
         return Err(OwnerReadError::Integrity);
     }
+    // The owner projection's status rule (`owner_holdings::check_status`): a recalled revision,
+    // or a withdrawn one the term does not pin, is not held. Without it the holdings listed as
+    // `Active` an owner licence the dispatch's admission refuses (doc 17h cut M8g's finding over
+    // story part 3, 17g C2h).
+    let status = row(ctx, &families.status, filed.key())?;
+    super::owner_holdings::check_status(
+        matches!(term.revision, super::records::RevisionPolicy::Pin { .. }),
+        status.withdrawn_by.is_some(),
+        status.recalled_by.is_some(),
+    )
+    .map_err(|_| OwnerReadError::Refused)?;
     Ok(OwnFiledView {
         filed,
         charter: charter.id,
