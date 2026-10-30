@@ -4109,6 +4109,7 @@ impl Rig {
                 p.manifest().id().as_str(),
                 "tacsim.passengers.stickney"
                     | "tacsim.passengers.ceres"
+                    | "tacsim.crew.ceres"
                     | "tacsim.quests.first_steps"
                     | "tacsim.quests.leila_followup"
                     | "tacsim.quests.port_connections"
@@ -4317,6 +4318,7 @@ impl Rig {
                 p.manifest().id().as_str(),
                 "tacsim.passengers.stickney"
                     | "tacsim.passengers.ceres"
+                    | "tacsim.crew.ceres"
                     | "tacsim.quests.first_steps"
                     | "tacsim.quests.leila_followup"
                     | "tacsim.quests.port_connections"
@@ -4571,6 +4573,7 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
             p.manifest().id().as_str(),
             "tacsim.passengers.stickney"
                 | "tacsim.passengers.ceres"
+                | "tacsim.crew.ceres"
                 | "tacsim.quests.first_steps"
                 | "tacsim.quests.leila_followup"
                 | "tacsim.quests.port_connections"
