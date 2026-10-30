@@ -50,7 +50,7 @@ use crate::Frame;
 use crate::frame::Rgb;
 use crate::math::Det as _;
 use crate::raycast::{
-    Base, Camera, EYE_HEIGHT_CM, FOG_CELLS, Ground, HORIZON, Map, PLANE, SKY_STEPS, Shades, Sprite,
+    Base, Biome, Camera, EYE_HEIGHT_CM, FOG_CELLS, Ground, Map, PLANE, SKY_STEPS, Shades, Sprite,
     SpriteAt, focal, fog_step,
 };
 
@@ -275,6 +275,7 @@ impl BakedLevel {
 /// indices stand for at each fog step.
 #[derive(Clone, Debug, PartialEq)]
 struct ColourMap {
+    horizon: Rgb,
     fine: BakedLevel,
     coarse: BakedLevel,
     /// Each index's colour at each fog step.
@@ -296,7 +297,7 @@ impl ColourMap {
             .and_then(|k| self.table.get(usize::from(k)))
             .and_then(|row| row.get(fog))
             .copied()
-            .unwrap_or(HORIZON)
+            .unwrap_or(self.horizon)
     }
 
     /// Look up a specific `(kind_idx, level)` entry at fog `step` so 3D
@@ -308,7 +309,7 @@ impl ColourMap {
             .get(idx)
             .and_then(|row| row.get(fog))
             .copied()
-            .unwrap_or(HORIZON)
+            .unwrap_or(self.horizon)
     }
 }
 
@@ -341,15 +342,87 @@ fn value_noise(seed: u64, px: f32, py: f32, period: f32) -> f32 {
 }
 
 impl Terrain {
+    /// Synthesize deterministic multi-octave elevation tailored to `self.map.biome()`
+    /// when a biome arena is loaded without pre-authored `elev` heights (or with
+    /// `"procedural_relief": true`).
+    pub fn synthesize_relief(&mut self, seed: u64) {
+        let (w, h) = (self.map.width(), self.map.height());
+        if w == 0 || h == 0 {
+            return;
+        }
+        let biome = self.map.biome();
+        let cx_mid = w as f32 * 0.5;
+        let cy_mid = h as f32 * 0.5;
+        let radius_ref = (w.min(h) as f32 * 0.36).max(6.0);
+
+        for y in 0..h {
+            for x in 0..w {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let ground = self.map.get(x as i64, y as i64);
+                let n_macro = value_noise(seed ^ 0xA5A5_5A5A, px, py, 18.0) - 0.5;
+                let n_meso = value_noise(seed ^ 0x3C3C_C3C3, px, py, 7.5) - 0.5;
+                let n_micro = value_noise(seed ^ 0x9696_6969, px, py, 3.0) - 0.5;
+
+                let cm = match biome {
+                    Biome::Temperate => {
+                        let base_m = n_macro * 22.0 + n_meso * 8.0 + n_micro * 2.5;
+                        let water_dip = if ground == Ground::Water { -4.5 } else { 0.0 };
+                        ((base_m + water_dip) * 100.0).round() as i32
+                    }
+                    Biome::Mars => {
+                        // Stepped Martian canyon mesas & flat valley floor channels
+                        let raw_m = (n_macro * 28.0 + n_meso * 11.0).clamp(-10.0, 26.0);
+                        let terraced_m = (raw_m / 4.5).round() * 4.5 + n_micro * 1.8;
+                        let channel_m = if ground == Ground::Water { -6.0 } else { 0.0 };
+                        ((terraced_m + channel_m) * 100.0).round() as i32
+                    }
+                    Biome::Lunar => {
+                        // Multi-ring impact crater with raised ejecta rim & central peak
+                        let dx = px - cx_mid;
+                        let dy = py - cy_mid;
+                        let r = (dx * dx + dy * dy).sqrt() / radius_ref;
+                        let crater_m = if r < 0.22 {
+                            // Central peak rising from crater floor
+                            -10.0 + (1.0 - (r / 0.22)) * 7.5
+                        } else if r < 0.78 {
+                            // Bowl floor
+                            let u = (r - 0.22) / 0.56;
+                            -11.0 + (u * u) * 11.0
+                        } else if r < 1.08 {
+                            // Raised ejecta rim
+                            let t = (r - 0.78) / 0.30;
+                            let u = 2.0 * t - 1.0;
+                            (1.0 - (u * u)) * 11.5
+                        } else {
+                            0.0
+                        };
+                        let highland_m = n_macro * 10.0 + n_meso * 5.0 + n_micro * 2.0;
+                        ((crater_m + highland_m) * 100.0).round() as i32
+                    }
+                    Biome::Ice => {
+                        // Tabular glacial ice shelves, pressure ridges, and deep crevasses
+                        let shelf_m = (n_macro * 20.0).clamp(-6.0, 18.0);
+                        let ridge_m = (n_meso.abs() * 12.0) + n_micro * 2.0;
+                        let crevasse_m = if ground == Ground::Water { -9.5 } else { 0.0 };
+                        ((shelf_m + ridge_m + crevasse_m) * 100.0).round() as i32
+                    }
+                };
+                self.set_elev_cm(x, y, cm);
+            }
+        }
+    }
+
     /// Bake the colour map (see the module docs): `seed` picks the mottle,
     /// so one map always bakes the same. Runs once a map; a later height
     /// change drops it.
     pub fn bake(&mut self, seed: u64) {
+        let biome = self.map.biome();
+        let horizon = biome.horizon_rgb();
         let fine = self.bake_level(seed, TEXELS);
         let coarse = self.bake_level(seed, 1);
         let mut table = Vec::with_capacity(KINDS.len() * LEVELS);
         for kind in KINDS {
-            let rgb = base(kind, true).rgb();
+            let rgb = base(kind, true).rgb_for_biome(biome);
             for gain in LEVEL_GAIN {
                 let lit = rgb.map(|c| (f32::from(c) * gain).round().min(255.0) as u8);
                 let mut row = [[0u8; 3]; BAKED_FOG];
@@ -358,7 +431,7 @@ impl Terrain {
                     *px = [0, 1, 2].map(|i| {
                         let (a, b) = (
                             f32::from(lit.get(i).copied().unwrap_or(0)),
-                            f32::from(HORIZON.get(i).copied().unwrap_or(0)),
+                            f32::from(horizon.get(i).copied().unwrap_or(0)),
                         );
                         (a + (b - a) * t).round() as u8
                     });
@@ -367,6 +440,7 @@ impl Terrain {
             }
         }
         self.baked = Some(ColourMap {
+            horizon,
             fine,
             coarse,
             table,
@@ -617,7 +691,9 @@ pub fn render(
         horizon,
         ..
     } = view;
-    let shades = Shades::new();
+    let biome = terrain.map.biome();
+    let shades = Shades::for_biome(biome);
+    let horizon_rgb = biome.horizon_rgb();
 
     // The lowest row each column has drawn down to (exclusive): ground
     // above it is hidden by nearer ground below it.
@@ -665,7 +741,7 @@ pub fn render(
             let px = if row < h / 2 {
                 shades.sky(band)
             } else {
-                HORIZON
+                horizon_rgb
             };
             frame.put(i, row, px);
         }
@@ -821,11 +897,15 @@ fn draw_trees(
                 ),
             };
 
-        let trunk_h = (h_px / 6).max(1);
+        let is_rock_spire = matches!(terrain.map.biome(), Biome::Mars | Biome::Lunar);
+        let trunk_h = if is_rock_spire { 0 } else { (h_px / 6).max(1) };
         let trunk_r = (max_r / 5).clamp(0, 3);
 
-        // 1. Bark trunk at the base of the tree
+        // 1. Bark trunk at the base of the tree (Temperate & Ice biomes)
         for dy in 0..=trunk_h {
+            if is_rock_spire {
+                break;
+            }
             let py = by - dy;
             if py < 0 || py >= h as i32 {
                 continue;
@@ -848,7 +928,7 @@ fn draw_trees(
             }
         }
 
-        // 2. 3-tiered conical conifer canopy from `trunk_h` to `h_px`
+        // 2. 3-tiered conical conifer canopy (Temperate/Ice) or jagged basalt/ejecta spire (Mars/Lunar)
         let crown_h = (h_px - trunk_h).max(2);
         for dy in 0..=crown_h {
             let py = by - trunk_h - dy;
@@ -858,7 +938,12 @@ fn draw_trees(
             let py_u = py as usize;
             let t = dy as f32 / crown_h as f32;
             let tier_local = (t * 3.0).rem_euclid(1.0);
-            let tier_flare = (1.0 - tier_local * 0.42) * (1.04 - 0.80 * t);
+            let tier_flare = if is_rock_spire {
+                let jag = (((dy as u32).wrapping_mul(17) ^ tree.seed_h2) & 3) as f32 * 0.06;
+                (1.12 - 0.78 * t * t - jag).max(0.18)
+            } else {
+                (1.0 - tier_local * 0.42) * (1.04 - 0.80 * t)
+            };
             let r_row = ((max_r as f32) * tier_flare).round() as i32;
 
             for dx in -r_row..=r_row {
@@ -1806,7 +1891,7 @@ fn draw_mip_sprite_fp(
 mod tests {
     use super::*;
     use crate::look::Material;
-    use crate::raycast::{SpriteKind, sprite_colour};
+    use crate::raycast::{HORIZON, SpriteKind, sprite_colour};
 
     /// A 64-cell square of grass with a crater in the middle: a bowl 12 m
     /// deep and 16 cells across, its rim 6 m above the plain.

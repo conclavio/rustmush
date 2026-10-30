@@ -66,14 +66,79 @@ pub enum Ground {
     Wall,
 }
 
+/// Planetary / regional surface biome for sky, horizon haze, ground palettes,
+/// and 3D surface scatter across all three cockpit views.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Biome {
+    /// Earthlike temperate valley (`proving_ground` default).
+    #[default]
+    Temperate,
+    /// Martian red-ochre regolith canyon & oxidized dust atmosphere.
+    Mars,
+    /// Airless lunar / asteroid grey basalt crater & vacuum black sky.
+    Lunar,
+    /// Glacial ice shelf / Europa frozen plains & deep crevasse water.
+    Ice,
+}
+
+impl Biome {
+    /// Parse an explicit biome identifier or surface keyword.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Biome> {
+        let s = name.trim().to_ascii_lowercase();
+        if s.contains("mars") || s.contains("canyon") || s.contains("red_planet") {
+            Some(Biome::Mars)
+        } else if s.contains("lunar")
+            || s.contains("moon")
+            || s.contains("asteroid")
+            || s.contains("crater")
+            || s.contains("regolith")
+        {
+            Some(Biome::Lunar)
+        } else if s.contains("ice")
+            || s.contains("glacier")
+            || s.contains("europa")
+            || s.contains("arctic")
+        {
+            Some(Biome::Ice)
+        } else if s.contains("temperate") || s.contains("earth") || s.contains("proving_ground") {
+            Some(Biome::Temperate)
+        } else {
+            None
+        }
+    }
+
+    /// Sky colour at the zenith.
+    #[must_use]
+    pub fn zenith_rgb(self) -> Rgb {
+        match self {
+            Biome::Temperate => ZENITH,
+            Biome::Mars => [68, 34, 28],
+            Biome::Lunar => [6, 8, 14],
+            Biome::Ice => [28, 48, 76],
+        }
+    }
+
+    /// Horizon haze colour that distant terrain and sprites fog toward.
+    #[must_use]
+    pub fn horizon_rgb(self) -> Rgb {
+        match self {
+            Biome::Temperate => HORIZON,
+            Biome::Mars => [186, 112, 78],
+            Biome::Lunar => [26, 30, 38],
+            Biome::Ice => [164, 198, 224],
+        }
+    }
+}
+
 impl Ground {
     /// The `arena.map` legend word for a glyph, mapped to a ground.
     #[must_use]
     pub fn from_legend_name(name: &str) -> Ground {
         match name {
             "grass" => Ground::Grass,
-            "water" => Ground::Water,
-            "road" => Ground::Road,
+            "water" | "water_deep" => Ground::Water,
+            "road" | "paved" => Ground::Road,
             "wall" | "rock" | "building" | "cliff" => Ground::Wall,
             "woods_heavy" => Ground::WoodsHeavy,
             n if n.starts_with("forest") => Ground::WoodsHeavy,
@@ -110,6 +175,7 @@ pub struct Map {
     width: usize,
     height: usize,
     cell_cm: u32,
+    biome: Biome,
     cells: Vec<Ground>,
 }
 
@@ -121,8 +187,20 @@ impl Map {
             width,
             height,
             cell_cm: cell_cm.max(1),
+            biome: Biome::Temperate,
             cells: vec![Ground::Open; width * height],
         }
+    }
+
+    /// The planetary/regional biome of this map.
+    #[must_use]
+    pub fn biome(&self) -> Biome {
+        self.biome
+    }
+
+    /// Set the planetary/regional biome of this map.
+    pub fn set_biome(&mut self, biome: Biome) {
+        self.biome = biome;
     }
 
     /// From glyph rows (south row first) and a legend.
@@ -382,22 +460,72 @@ impl Base {
     /// How many bases there are: the rows of the shade table.
     const COUNT: usize = 14;
 
-    pub(crate) fn rgb(self) -> Rgb {
-        match self {
-            Base::Open => [112, 96, 70],
-            Base::Grass => [78, 120, 52],
-            Base::Water => [44, 78, 130],
-            Base::Road => [120, 112, 100],
-            Base::OpenLine => [88, 74, 52],
-            Base::GrassLine => [58, 92, 38],
-            Base::WaterLine => [34, 62, 106],
-            Base::RoadLine => [96, 90, 80],
-            Base::WallLit => [150, 150, 158],
-            Base::WallDark => [104, 104, 112],
-            Base::Woods => [40, 84, 44],
-            Base::WoodsHeavy => [28, 62, 34],
-            Base::Wreck => [72, 62, 52],
-            Base::Outline => [18, 18, 22],
+    pub(crate) fn rgb_for_biome(self, biome: Biome) -> Rgb {
+        match biome {
+            Biome::Temperate => match self {
+                Base::Open => [112, 96, 70],
+                Base::Grass => [78, 120, 52],
+                Base::Water => [44, 78, 130],
+                Base::Road => [120, 112, 100],
+                Base::OpenLine => [88, 74, 52],
+                Base::GrassLine => [58, 92, 38],
+                Base::WaterLine => [34, 62, 106],
+                Base::RoadLine => [96, 90, 80],
+                Base::WallLit => [150, 150, 158],
+                Base::WallDark => [104, 104, 112],
+                Base::Woods => [40, 84, 44],
+                Base::WoodsHeavy => [28, 62, 34],
+                Base::Wreck => [72, 62, 52],
+                Base::Outline => [18, 18, 22],
+            },
+            Biome::Mars => match self {
+                Base::Open => [156, 78, 52],
+                Base::Grass => [136, 64, 42],
+                Base::Water => [58, 42, 40],
+                Base::Road => [124, 82, 64],
+                Base::OpenLine => [126, 60, 38],
+                Base::GrassLine => [108, 50, 32],
+                Base::WaterLine => [44, 32, 30],
+                Base::RoadLine => [98, 64, 50],
+                Base::WallLit => [164, 108, 86],
+                Base::WallDark => [116, 74, 58],
+                Base::Woods => [112, 62, 46],
+                Base::WoodsHeavy => [88, 48, 36],
+                Base::Wreck => [72, 62, 52],
+                Base::Outline => [18, 18, 22],
+            },
+            Biome::Lunar => match self {
+                Base::Open => [122, 126, 134],
+                Base::Grass => [96, 100, 108],
+                Base::Water => [48, 52, 60],
+                Base::Road => [144, 148, 156],
+                Base::OpenLine => [94, 98, 106],
+                Base::GrassLine => [74, 78, 86],
+                Base::WaterLine => [36, 40, 48],
+                Base::RoadLine => [116, 120, 128],
+                Base::WallLit => [164, 168, 176],
+                Base::WallDark => [112, 116, 124],
+                Base::Woods => [106, 110, 118],
+                Base::WoodsHeavy => [82, 86, 94],
+                Base::Wreck => [72, 62, 52],
+                Base::Outline => [18, 18, 22],
+            },
+            Biome::Ice => match self {
+                Base::Open => [196, 218, 236],
+                Base::Grass => [168, 198, 224],
+                Base::Water => [38, 82, 132],
+                Base::Road => [148, 172, 196],
+                Base::OpenLine => [156, 182, 206],
+                Base::GrassLine => [134, 164, 192],
+                Base::WaterLine => [28, 64, 106],
+                Base::RoadLine => [118, 142, 166],
+                Base::WallLit => [216, 234, 248],
+                Base::WallDark => [148, 174, 198],
+                Base::Woods => [68, 112, 122],
+                Base::WoodsHeavy => [48, 84, 96],
+                Base::Wreck => [72, 62, 52],
+                Base::Outline => [18, 18, 22],
+            },
         }
     }
 
@@ -482,25 +610,39 @@ pub(crate) fn fog_step(dist: f32) -> usize {
         .clamp(0.0, (FOG_STEPS - 1) as f32) as usize
 }
 
-fn shade(base: Base, step: usize) -> Rgb {
-    lerp(base.rgb(), HORIZON, step as f32 / (FOG_STEPS - 1) as f32)
+fn shade(base: Base, biome: Biome, step: usize) -> Rgb {
+    lerp(
+        base.rgb_for_biome(biome),
+        biome.horizon_rgb(),
+        step as f32 / (FOG_STEPS - 1) as f32,
+    )
 }
 
-fn sky(step: usize) -> Rgb {
-    lerp(ZENITH, HORIZON, step as f32 / (SKY_STEPS - 1) as f32)
+fn sky(biome: Biome, step: usize) -> Rgb {
+    lerp(
+        biome.zenith_rgb(),
+        biome.horizon_rgb(),
+        step as f32 / (SKY_STEPS - 1) as f32,
+    )
 }
 
 /// Every colour a render can draw, worked out once: each base at each fog
 /// step, and each sky band. The values are exactly [`shade`] and [`sky`]
 /// (built by calling them), so a table read and a lerp agree to the bit.
 pub(crate) struct Shades {
+    horizon: Rgb,
     base: [[Rgb; FOG_STEPS]; Base::COUNT],
     sky: [Rgb; SKY_STEPS],
     paint: [[Rgb; SPRITE_FOG]; Paint::COUNT],
 }
 
 impl Shades {
+    #[allow(dead_code)]
     pub(crate) fn new() -> Shades {
+        Self::for_biome(Biome::Temperate)
+    }
+
+    pub(crate) fn for_biome(biome: Biome) -> Shades {
         const ALL: [Base; Base::COUNT] = [
             Base::Open,
             Base::Grass,
@@ -517,23 +659,25 @@ impl Shades {
             Base::Wreck,
             Base::Outline,
         ];
+        let horizon = biome.horizon_rgb();
         let mut base = [[[0; 3]; FOG_STEPS]; Base::COUNT];
         for (row, b) in base.iter_mut().zip(ALL) {
             for (step, px) in row.iter_mut().enumerate() {
-                *px = shade(b, step);
+                *px = shade(b, biome, step);
             }
         }
         let mut bands = [[0; 3]; SKY_STEPS];
         for (step, px) in bands.iter_mut().enumerate() {
-            *px = sky(step);
+            *px = sky(biome, step);
         }
         let mut paint = [[[0; 3]; SPRITE_FOG]; Paint::COUNT];
         for (row, p) in paint.iter_mut().zip(Paint::ALL) {
             for (step, px) in row.iter_mut().enumerate() {
-                *px = lerp(p.rgb(), HORIZON, step as f32 / (SPRITE_FOG - 1) as f32);
+                *px = lerp(p.rgb(), horizon, step as f32 / (SPRITE_FOG - 1) as f32);
             }
         }
         Shades {
+            horizon,
             base,
             sky: bands,
             paint,
@@ -547,7 +691,7 @@ impl Shades {
             .get(p as usize)
             .and_then(|row| row.get(step * SPRITE_FOG / FOG_STEPS))
             .copied()
-            .unwrap_or(HORIZON)
+            .unwrap_or(self.horizon)
     }
 
     /// `base` at fog `step` (the horizon colour past the last step, which
@@ -557,12 +701,12 @@ impl Shades {
             .get(base as usize)
             .and_then(|row| row.get(step))
             .copied()
-            .unwrap_or(HORIZON)
+            .unwrap_or(self.horizon)
     }
 
     /// Sky band `step` (the horizon colour past the last band).
     pub(crate) fn sky(&self, step: usize) -> Rgb {
-        self.sky.get(step).copied().unwrap_or(HORIZON)
+        self.sky.get(step).copied().unwrap_or(self.horizon)
     }
 }
 
@@ -688,7 +832,8 @@ pub fn render_from(
     let hf = focal(w);
     let horizon = h / 2;
     let hz = horizon as f32;
-    let shades = Shades::new();
+    let shades = Shades::for_biome(map.biome());
+    let horizon_rgb = map.biome().horizon_rgb();
 
     // The column pass: one ray a column, walked past a block lower than one
     // behind it, so a wall shows the woods that rise over it.
@@ -756,7 +901,7 @@ pub fn render_from(
                 let line = fx.fract().abs() < LINE || fy.fract().abs() < LINE;
                 shades.shade(Base::floor(ground, line), step)
             } else {
-                HORIZON
+                horizon_rgb
             };
         }
     }
@@ -1198,9 +1343,9 @@ mod tests {
         render(&mut frame, &map, &cam, &sprites);
         // Top row is sky, the middle column has a wall slice around the
         // horizon, the bottom row is grass-ish floor.
-        assert_eq!(frame.get(160, 0), sky(0));
+        assert_eq!(frame.get(160, 0), sky(Biome::Temperate, 0));
         let mid = frame.get(160, 110);
-        assert_ne!(mid, sky(SKY_STEPS - 1));
+        assert_ne!(mid, sky(Biome::Temperate, SKY_STEPS - 1));
         let floor = frame.get(160, 219);
         assert!(
             floor[1] > floor[0] && floor[1] > floor[2],
