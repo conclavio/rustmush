@@ -18,6 +18,8 @@ pub(crate) const SWITCHES: &[&str] = &[
     "operation",
     "history",
     "end",
+    "refresh",
+    "field",
 ];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
@@ -33,7 +35,7 @@ fn number(raw: &str) -> Result<u64, CmdError> {
     }
     raw.parse().ok().filter(|n| *n > 0).ok_or_else(error)
 }
-fn id(raw: &str, actor: ObjId) -> Result<OperationId, CmdError> {
+pub(super) fn id(raw: &str, actor: ObjId) -> Result<OperationId, CmdError> {
     let fields = raw.trim().split(':').collect::<Vec<_>>();
     let (organizer, draft, activation) = match fields.as_slice() {
         [draft, revision] => (actor, *draft, *revision),
@@ -94,6 +96,42 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .split_once('=')
         .map_or((raw.as_str(), None), |(left, right)| (left, Some(right)));
     let id = id(selector, ctx.actor)?;
+    if ctx.switches.has("refresh") || ctx.switches.has("field") {
+        if selection.is_some() {
+            return Err(error());
+        }
+        let op = read(ctx, id)?;
+        if ctx.switches.has("refresh") {
+            return super::field::refresh(ctx, id).map_err(CmdError::msg);
+        }
+        if let Some(saved) = &op.command {
+            let roster = mush_tactics::detachment::roster::DetachmentRoster::restore(saved)
+                .map_err(|e| CmdError::msg(e.to_string()))?;
+            line(
+                ctx,
+                format!(
+                    "Last confirmed field command: detachment {}, revision {}, term {}; {}.",
+                    roster.id().0,
+                    roster.revision(),
+                    roster.term(),
+                    roster.leader().map_or_else(
+                        || "no leader".into(),
+                        |l| format!("slot {}, #{} leads", l.slot.get(), l.character.0)
+                    )
+                ),
+            );
+        } else {
+            line(ctx, "Field command has not yet been refreshed.");
+        }
+        line(
+            ctx,
+            format!(
+                "Refresh current field eligibility: +sortie/refresh {}:{}:{}",
+                id.organizer.0, id.draft.0, id.activation
+            ),
+        );
+        return Ok(());
+    }
     if ctx.switches.has("operation") {
         if selection.is_some() {
             return Err(error());

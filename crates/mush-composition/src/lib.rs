@@ -249,6 +249,7 @@ fn compose_server_modules<E>(
     let window_atlas_receipts = Arc::default();
     let window_scene_receipts = Arc::default();
     let simulation = mush_sim::SimulationModule::new()
+        .with_field_crew_control(tacsim_delegate)
         .with_tactics_movement_reads::<mush_tactics::movement_custody::MovementCustodyReader>()
         .with_atomic_scene_movement(Arc::clone(&scene_movement_receipts))
         .with_composed_movement(movement::factory(

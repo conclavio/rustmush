@@ -1,7 +1,7 @@
 //! Stable numbered membership and automatic command succession.
 //!
 //! The host supplies authoritative availability and mission authority. In IC it
-//! must resolve real characters, recorded embarkation, consent, actual stations,
+//! must resolve real characters, current carrier containment, consent, actual stations,
 //! and bounded mission grants; constructing this model grants none of them.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+mod checkpoint;
+pub use checkpoint::RosterCheckpoint;
 
 /// An operation's detachment identity, distinct from a hull's seal epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -169,7 +172,8 @@ pub struct RosterProjection {
     pub leader: Option<Leader>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Availability {
     available: bool,
     grace_until_ms: Option<u64>,
@@ -179,10 +183,11 @@ struct Availability {
 
 /// Immutable resolved membership plus ephemeral command availability.
 ///
-/// No direct deserializer bypasses construction. Hosts persist resolved records
-/// and explicitly rebuild availability after restart; this object is not an IC
-/// persistence implementation. A deliberate roster edit creates a new revision
-/// and requires the DT.2 consent/reservation owner to validate it.
+/// No direct deserializer bypasses construction. A bounded checkpoint retains
+/// succession and reconnect timers; restoring it requires fresh availability
+/// and authorization before command admission. The host owns its durable commit.
+/// A deliberate roster edit creates a new revision and requires the DT.2
+/// consent/reservation owner to validate it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DetachmentRoster {
     id: DetachmentId,
@@ -202,6 +207,8 @@ pub struct DetachmentRoster {
 pub enum RosterError {
     #[error("slot numbers start at one")]
     InvalidSlot,
+    #[error("invalid saved leadership state")]
+    InvalidCheckpoint,
     #[error("a detachment needs nonzero slot capacity")]
     InvalidCapacity,
     #[error("slot lies outside the configured command capacity")]

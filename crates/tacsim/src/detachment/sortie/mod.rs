@@ -1,6 +1,7 @@
 //! Durable physical launches. Ordinary placement remains owned by Sim.
 mod commands;
 mod facts;
+mod field;
 mod model;
 mod prepare;
 mod runtime;

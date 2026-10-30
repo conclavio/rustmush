@@ -101,13 +101,17 @@ pub(super) fn register(
     let expected_ic = DefinitionRegistryBuilder::new()
         .register(owner.clone(), ic_descriptor.clone())
         .map_err(bad)?;
+    let expected_crew = DefinitionRegistryBuilder::new()
+        .register(owner.clone(), crate::crew_control::definition_descriptor()?)
+        .map_err(bad)?;
     reg.definition_validator(
         descriptor.kind().clone(),
         move |ctx: &mush_core::DefinitionValidationContext<'_>| {
             if (ctx.definition().reference() == &expected
                 || ctx.definition().reference() == &expected_focus
                 || ctx.definition().reference() == &expected_ic
-                || ctx.definition().reference() == &expected_deployment)
+                || ctx.definition().reference() == &expected_deployment
+                || ctx.definition().reference() == &expected_crew)
                 && !ctx.definition().is_current()
             {
                 Ok(())

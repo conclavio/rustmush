@@ -31,6 +31,8 @@ pub struct SortieHandles {
     pub(super) ports: Box<PortFamilies>,
     pub(super) action: DefinitionRef,
     pub(super) enabled: bool,
+    pub(super) controls:
+        Option<mush_core::read_service::OwnerReadHandle<mush_sim::crew_control::CrewControlReader>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -54,6 +56,10 @@ pub(super) enum Command {
     Finish {
         flight: FlightKey,
         revision: u64,
+    },
+    Refresh {
+        operation: OperationId,
+        facts: super::field::OwnerFacts,
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +205,17 @@ pub(crate) fn register(
             action.clone(),
         ))?;
     }
+    let controls = if enabled {
+        let reference = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("sim").map_err(bad)?,
+                mush_sim::crew_control::definition_descriptor()?,
+            )
+            .map_err(bad)?;
+        Some(reg.request_owner_read::<mush_sim::crew_control::CrewControlReader>(reference)?)
+    } else {
+        None
+    };
     let handles = SortieHandles {
         index,
         operations,
@@ -210,6 +227,7 @@ pub(crate) fn register(
         ports: Box::new(ports.clone()),
         action: action.clone(),
         enabled,
+        controls,
     };
     let shared = Arc::new(handles.clone());
     reg.action_provider(
@@ -472,13 +490,6 @@ impl ActionProvider for Provider {
         let (intent, _) = chosen(r.invocation())?;
         // The fixed units/operators are re-read from this regenerated selection.
         // Core checks the real owner guards through final take.
-        let world_units = matches!(
-            intent.command,
-            Command::Launch { .. } | Command::Recover { .. }
-        );
-        if !world_units {
-            return Ok(Vec::new());
-        }
         prepare::authority_keys(&intent, r.invocation().actor())
     }
     fn resolved_authority_witnesses(
@@ -534,6 +545,9 @@ impl ActionProvider for Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let (intent, expected) = chosen(r.invocation())?;
+        if let Command::Refresh { operation, facts } = &intent.command {
+            super::field::verify_owner_facts(ctx, txn, &self.handles, *operation, facts)?;
+        }
         let snapshot = prepare::snapshot(
             ctx.world().map_err(error)?,
             &mut &mut *txn,
@@ -564,7 +578,7 @@ pub(super) fn finish_submit(ctx: &mut Ctx<'_>, flight: &Flight) -> Result<(), St
         },
     )
 }
-fn enqueue(ctx: &mut Ctx<'_>, actor: ObjId, command: Command) -> Result<(), String> {
+pub(super) fn enqueue(ctx: &mut Ctx<'_>, actor: ObjId, command: Command) -> Result<(), String> {
     if ctx.authoritative_pending(actor)
         || ctx.authoritative_commit_pending()
         || ctx.authoritative_queue_full()

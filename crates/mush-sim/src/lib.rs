@@ -27,6 +27,7 @@ mod test_checks;
 
 pub mod boot;
 pub mod commands;
+pub mod crew_control;
 pub mod custody;
 pub mod data;
 /// 16b cut T.3: **units a simulation authority holds custody of** (doc 16 §3.1
@@ -180,6 +181,7 @@ pub struct SimulationModule {
     composed_movement: Option<ComposedMovementFactory>,
     window_movement: Option<(window_movement::WindowSelector, ComposedMovementFactory)>,
     tactics_movement_reads: Option<movement_custody::CustodyReadFactory>,
+    field_crew_control: bool,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -224,6 +226,7 @@ impl SimulationModule {
             composed_movement: None,
             window_movement: None,
             tactics_movement_reads: None,
+            field_crew_control: false,
         }
     }
 
@@ -232,6 +235,13 @@ impl SimulationModule {
     #[must_use]
     pub fn with_ic_mind_custody(mut self, config: ic_exclusion::IcExclusionConfig) -> Self {
         self.ic_custody = Some(config);
+        self
+    }
+
+    /// Expose bounded K6 holder observations to the composed TacSim field host.
+    #[must_use]
+    pub fn with_field_crew_control(mut self, enabled: bool) -> Self {
+        self.field_crew_control = enabled;
         self
     }
 
@@ -1108,6 +1118,9 @@ impl GameModule for SimulationModule {
             .map(|factory| factory(reg))
             .transpose()?;
         let movement_reads = movement_reads::register(reg, tactics_read)?;
+        if self.field_crew_control {
+            crew_control::register(reg, control_leases_view.clone())?;
+        }
         physical::register(reg, self.ic_custody.is_some(), movement_reads.clone())?;
         locomotion::register(reg, movement_reads.clone())?;
         if let Some(reader) = &self.atomic_scene_movement {

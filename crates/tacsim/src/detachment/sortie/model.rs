@@ -74,11 +74,21 @@ pub struct OperationRecord {
     pub ended: Option<ClockStamp>,
     /// References remain discoverable after units join later operations.
     pub flights: Vec<FlightKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Box<mush_tactics::detachment::roster::RosterCheckpoint>>,
 }
 impl OperationRecord {
     pub fn validate(&self) -> Result<(), String> {
         self.roster.validate()?;
         self.id.key()?;
+        if let Some(saved) = &self.command {
+            mush_tactics::detachment::roster::DetachmentRoster::restore(saved)
+                .map_err(|e| e.to_string())?;
+            let expected = super::field::roster(self)?;
+            if !saved.matches_membership(&expected) {
+                return Err("Field command membership differs from accepted roster.".into());
+            }
+        }
         if self.schema != 1
             || self.id != OperationId::of(&self.roster)
             || !self.roster.active()
