@@ -502,6 +502,8 @@ mod net {
 pub struct SshListener {
     addr: std::net::SocketAddr,
     accept_loop: tokio::task::JoinHandle<()>,
+    /// Doc 29: the trusted ingress's accept loop, when one is bound.
+    trusted_loop: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl SshListener {
@@ -515,7 +517,50 @@ impl SshListener {
     /// they belong to their own per-connection tasks.
     pub fn stop_accepting(&self) {
         self.accept_loop.abort();
+        if let Some(trusted) = &self.trusted_loop {
+            trusted.abort();
+        }
         tracing::info!("SSH listener stopped accepting");
+    }
+
+    /// Doc 29: also serve the **trusted ingress** at `socket_path` — the
+    /// Unix socket sshdoorway connects to, whose connections carry the
+    /// player's real address and an attested key in a preamble before SSH.
+    /// Same host key, banner and hooks as the public port. Unix only.
+    pub async fn start_trusted<A: AuthBackend + 'static>(
+        &mut self,
+        socket_path: std::path::PathBuf,
+        data_dir: &std::path::Path,
+        banner: String,
+        bridge: Arc<SshBridge<A>>,
+    ) -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            let cfg = mush_net_ssh::TrustedConfig {
+                socket_path,
+                host_key_path: data_dir.join("ssh_host_ed25519"),
+                banner,
+                allow_own_group: false,
+            };
+            let hooks: Arc<dyn mush_net_ssh::SshHooks> = bridge;
+            let bound = mush_net_ssh::SshServer::bind_trusted(cfg, hooks)
+                .await
+                .map_err(|e| e.to_string())?;
+            self.trusted_loop = Some(tokio::spawn(async move {
+                if let Err(e) = bound.run().await {
+                    tracing::error!(error = %e, "SSH trusted ingress accept loop failed");
+                }
+            }));
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (data_dir, banner, bridge);
+            Err(format!(
+                "[ssh] trusted_socket = {} needs a Unix platform (sshdoorway is Linux-only)",
+                socket_path.display()
+            ))
+        }
     }
 }
 
@@ -541,5 +586,9 @@ pub async fn start_listener<A: AuthBackend + 'static>(
             tracing::error!(error = %e, "SSH accept loop failed");
         }
     });
-    Ok(SshListener { addr, accept_loop })
+    Ok(SshListener {
+        addr,
+        accept_loop,
+        trusted_loop: None,
+    })
 }

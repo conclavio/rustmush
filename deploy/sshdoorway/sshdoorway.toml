@@ -1,0 +1,48 @@
+# sshdoorway — the port-22 SSH front door (doc 29 §10).
+# Installed as /etc/rustmush/sshdoorway.toml. Validate before installing:
+#   sshdoorway --config /etc/rustmush/sshdoorway.toml --check
+# SIGHUP reloads [limits], [menu] and [[service]]; [listen] needs a swap.
+
+[listen]
+# Explicit addresses only; never 0.0.0.0 or [::]. These are documentation
+# addresses: put the box's player-facing addresses here.
+addrs = ["203.0.113.10:22", "[2001:db8::10]:22"]
+host_key = "/var/lib/sshdoorway/host_ed25519"
+
+[limits]
+per_ip_connections = 8        # per address; IPv6 per /64
+per_ip_new_per_minute = 20
+global_connections = 2048
+# Operator networks (CIDR or a bare address): no per-IP, rate or /48 cap, so a
+# bot fleet or a staff box from one address is not a flood. The global cap
+# still applies. Add your own address here; SIGHUP reloads it.
+exempt_nets = ["127.0.0.0/8", "::1/128"]
+auth_deadline_secs = 30
+menu_idle_secs = 120
+# Q-29-2 (owner, 2026-10-30): a 24 h drain, warned at these times remaining.
+drain_deadline_secs = 86400
+drain_warnings = ["12h", "6h", "2h", "1h", "15m", "1m"]
+drain_message = "ATTENTION: Game Doorway updated and requires a restart, please find a safe place and reconnect within the next {remaining}."
+force_grace_secs = 30
+
+[log]
+file_dir = "/var/log/sshdoorway"   # <generation>.log, reopened on SIGUSR2
+file_level = "info"
+journal_level = "warn"
+
+[menu]
+title = "conclav.io — choose a game server"
+host = "conclav.io"
+# default_service = "dev1"   # Q-29-3: unset, so bare names get the menu
+
+[[service]]
+name = "dev1"
+title = "Development server 1"
+socket = "/run/rustmush-ssh/dev1.sock"
+listed = true
+
+[[service]]
+name = "dev2"
+title = "Development server 2"
+socket = "/run/rustmush-ssh/dev2.sock"
+listed = true

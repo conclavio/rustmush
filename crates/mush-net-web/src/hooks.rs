@@ -30,8 +30,8 @@ use tokio::sync::mpsc;
 use crate::metrics::Metrics;
 
 /// First conn id this crate hands out. `mush-net-ssh` allocates from 1
-/// upward; starting the web side at `2^32` keeps the two ranges disjoint in
-/// the binary's shared `ConnId` space.
+/// upward (its trusted ingress from `2^31`); starting the web side at `2^32`
+/// keeps the ranges disjoint in the binary's shared `ConnId` space.
 pub const WEB_CONN_ID_BASE: u64 = 1 << 32;
 
 /// One character on an account, as listed by [`WebHooks::login`] and the
