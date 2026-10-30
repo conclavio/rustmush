@@ -699,6 +699,7 @@ fn g4_the_claim_channel_refuses_every_hull_until_the_ic_fight() {
 /// 2. once the owner term is due, the member's `@mind/attest <filed> org=Coprates` is refused
 ///    with the one sentence of its own, naming the rig and the flight's IC date — the channel
 ///    through which the Registry learns it, and the only one;
+/// 3. the ring survives a restart.
 ///
 /// Built in M8g G1's combined world (`m8_world`), the one world with a filed, rated, licensed
 /// mind on a port world and a real ungoverning shop.
@@ -747,9 +748,12 @@ async fn g4_the_attestation_channel_learns_an_ungoverned_flight_of_a_filed_mind(
     assert_eq!(ring[0]["hull"], json!(tv.0));
     let at_ic = ring[0]["at_ic"].as_i64().expect("the mark's IC second");
     crate::m8_world::recover(&mut world);
-    // No restart here: tier 2 (`m8g_story_tier2_held_minds_seal_aboard`) proves the ring
-    // survives one, and a reboot after the back-room refit trips the harness's economy journal
-    // (see the M8g report).
+    let mut world = world.reboot();
+    assert_eq!(
+        crate::m8_world::marks(&world, owner_licence),
+        ring,
+        "the ring survives a restart"
+    );
     eprintln!("M8G_STORY phase=attest.flight event=complete");
 
     // 2. The owner term due: the House's attestation is refused by the mark, by name and date.
