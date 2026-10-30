@@ -159,6 +159,7 @@ fn own_rig(
         hull: selected.lease.hull,
         record: selected.lease,
         crew: Some(Box::new(selected.crew)),
+        field_order: None,
     })
 }
 pub(crate) fn rig_in(
@@ -435,6 +436,9 @@ pub(crate) fn adopt_record(
     battery: Option<&crate::definitions::tools::BatteryDef>,
 ) -> Result<(), mush_core::ActionError> {
     use crate::surface::excursion::{Charge, Excursion, ExcursionId, charge_at};
+    if record.field_crew.as_deref() != Some(crew) {
+        record.field_work = None;
+    }
     if record.sortie.is_some() {
         return Err(bad("The DT flight already owns this hull's epoch."));
     }

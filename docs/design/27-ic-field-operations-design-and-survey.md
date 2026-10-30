@@ -20,9 +20,11 @@ the engineering work is incorrect. Preserve the work for reconsideration after
 the core systems support surface deployment and mining. Any later adoption or
 cleanup should follow an actual gameplay need rather than delay that milestone.
 
-Implementation has started with [DT.1a's neutral command foundation](26a-detachment-implementation-plan.md).
-The complete DT.1–DT.3/H1/H2 lifecycle remains unbuilt; the acceptance stories below
-remain future integration requirements.
+Implementation progress is recorded in [the DT implementation brief](26a-detachment-implementation-plan.md).
+The physical player/hired-NPC path now includes preparation, actual launches,
+field messages, NPC mining decisions and real ore return/unload, including restart.
+The complete lifecycle with licensed autonomous-mind field hosts, H1 combat and H2
+salvage remains unbuilt; their acceptance stories below remain future requirements.
 Based on `origin/main` at `2cbe9f7c264c79ee6ce6790a3c5ad420a30bec3b` and the owner's
 2026-10-28 rulings. This is the shared brief for doc 26 DT.1–DT.3, backlog H1 and H2.
 Rechecked against `origin/main` at `bef15abd` before this update on the same date.

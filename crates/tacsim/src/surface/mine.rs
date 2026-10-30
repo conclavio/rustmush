@@ -861,6 +861,7 @@ mod tests {
             recovery: None,
             sortie: None,
             field_crew: None,
+            field_work: None,
         }
     }
 

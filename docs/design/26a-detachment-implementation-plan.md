@@ -229,9 +229,9 @@ digest and activation identify the role; current field facts select its eligible
 holder, while Org retains the real finite lending lineage. Role declarations
 use the existing issue/revoke coordinator path and are not personal rights.
 
-NPC execution remains required before claiming the IC parts of DT.1/DT.2
-complete. The OOC host cannot stand in for those production paths, and neither
-the communications nor permission integration claims the NPC mining story.
+At DT.3f, NPC execution was still required before claiming the IC command flow
+complete. DT.3g supplies its physical surface host and DT.3h supplies the actual
+delivered-order driver. The OOC adapter alone does not prove those IC paths.
 
 DT.3g connects physical mining operators to the existing surface action host.
 The actual accepted operator, current unit console, K6 helm holder, employment,
@@ -259,9 +259,27 @@ multi-trip teleoperation plans retain their existing separate admission.
 Their idle recall also remains on the teleoperation path; an idle physical slot
 does not pilot itself home.
 
-This adapter does not itself choose an NPC's next action. The delivered-order
-decision driver and authenticated attempt/completion reporting remain the next
-functional slice.
+DT.3h adds a bounded NPC decision pass to the existing surface tick, sharing
+its actual-principal submission budget. It discovers accepted operators through
+the existing flight index and executes only orders delivered for that exact
+flight/site. Old messages without flight coordinates remain advisory. No new
+movement scheduler, personnel ledger or licensed-mind substitute is introduced.
+
+The physical Mining crew supports HOLD, ADVANCE, WITHDRAW and finite MINE
+[family] objectives. MINE uses the operator's own scan/sounding coverage, chooses
+among at most eight nearby known ore pockets, admits one real extraction cycle,
+then recovers and unloads. A failed receipt or no reachable known ore produces a
+real NEGATIVE reply. A replacement/expiry stops the old mining run after its
+current cycle; already admitted motion still settles physically. Unsupported
+combat/support objectives return NEGATIVE. Player control remains advisory.
+
+One causal link on the existing rig record identifies the delivered sequence,
+accepted flight and actual act ordinal. Source admission stamps Attempted in the
+same Tacsim transaction as real work. Matching actual drive/recovery or ore
+unload receipts alone stamp Completed. WILCO is neither authority nor execution.
+Stale receipts cannot complete a replacement order; the source history survives
+restart. Replies still use real Propagation envelopes, and the issuer view does
+not expose private recipient work as instantaneous telemetry.
 
 DT.3g validation covers all 27 production preparation/launch/field stories,
 including a real leased-rig NPC mining and unload flow, permission loss at final
@@ -270,6 +288,16 @@ movement already completed, and no implicit recall of idle physical slots.
 The 183 surface library tests, 26 legacy mining tests, 30 excursion tests and
 27 source-policy tests passed. Strict Clippy and the unchanged six-package M7
 memory gate passed, including all targets for the memory checks.
+
+DT.3h validation covers 31 production preparation/launch/field stories, including
+a two-member player-leader/hired-NPC mining trip across restart, refusal before
+message delivery, replacement stopping, unsupported/expired tasks, and actual
+ADVANCE/WITHDRAW movement completion. The 183 surface library tests, 26 legacy
+mining tests, 30 excursion tests and 27 source-policy tests passed. Strict Clippy
+and the unchanged six-package M7 all-target memory gate passed. This proves the
+physical player/hired-NPC mining milestone; licensed autonomous-mind field hosts,
+H1/H2/H3, DT.4 subset delegation and DT.5 dedicated communications remain their
+separate workstreams.
 
 ## DT.1a verification
 

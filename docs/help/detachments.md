@@ -208,7 +208,7 @@ the command term and reconnect timers, then rechecks current sessions and contro
 `/field` is the saved operation record, not a live casualty or position report.
 The flight tick refreshes changed leadership; `/refresh` requests the same durable
 check explicitly. Neither command issues an order or moves a unit. These records
-do not supply an NPC tactical decision driver.
+do not themselves move a unit.
 
 Use `+sortie/orders` for the current `ORDER DT:<detachment>:<revision>:<term>`
 prefill. Assigned players can identify the operation as
@@ -222,6 +222,7 @@ ORDER DT:12:1:3 2 ENGAGE
 ORDER DT:12:1:3 2 SCREEN 90 HOLD FIRE
 ORDER DT:12:1:3 2 SUPPORT 1
 ORDER DT:12:1:3 2 WITHDRAW EXPIRES 60
+ORDER DT:12:1:3 2 MINE metals
 ORDER DT:12:1:3 2 RELEASE
 ```
 
@@ -257,4 +258,18 @@ are advisory responses. They never operate the player's unit, report an attempt
 or claim completion. The sender sees a response only after its return message
 actually arrives. Field transport receipts are retained for 30 IC days; older
 recipient history remains readable but cannot manufacture a missing reply path.
-NPC execution and actual mining remain subsequent work.
+Contracted NPC mining crews execute delivered HOLD, ADVANCE, WITHDRAW and MINE
+orders through their real controls. MINE [family] is one finite trip: use their
+own scan and sounding, try up to eight nearby known ore pockets, mine one cycle,
+recover and unload. A failed action or no reachable known ore produces NEGATIVE. Send a fresh
+order for another trip after the next DT launch. HOLD and RELEASE stop a mining
+run after its current cycle; admitted movement still settles at its actual end.
+Unsupported combat and support objectives receive NEGATIVE until those field
+hosts exist. Players continue to control their own units.
+
+Executable orders belong to the exact deployed flight and site. A delayed message
+cannot become a command for a later launch. WILCO, attempted work and completion
+remain separate: only actual source action admission records an attempt, and only
+matching movement or inventory receipts record completion. The commander sees only
+replies whose return messages arrived; the report keeps execution unconfirmed
+rather than exposing the recipient's private work history as instant telemetry.

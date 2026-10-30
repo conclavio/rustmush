@@ -2,6 +2,13 @@
 
 use super::*;
 
+fn rig_parameters(rig: &RigAt, mut parameters: Value) -> Value {
+    if let (Some(sequence), Some(object)) = (rig.field_order, parameters.as_object_mut()) {
+        object.insert("field_order".into(), json!(sequence.to_string()));
+    }
+    parameters
+}
+
 // ---- the command: preview and go ------------------------------------------------------------
 
 /// The typed record a command reads: `ctx.action_state` on the family, absent as fresh
@@ -264,6 +271,7 @@ pub(crate) fn parked_short(
     };
     let rig = RigAt {
         crew: None,
+        field_order: None,
         tv: record.tv,
         slot: lease.slot,
         mark: lease.mark.clone(),
@@ -660,7 +668,13 @@ pub(crate) fn act_cmd(
             object.insert("org".into(), json!(org.0));
         }
     }
-    ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        rig_parameters(rig, parameters),
+        key,
+    );
     let line = match kind {
         ActKind::Launch => tv::LAUNCH_FILED
             .replace("{n}", &n)
@@ -971,7 +985,13 @@ pub(crate) fn unload_cmd(
             "how": how.word(),
         }),
     };
-    ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        rig_parameters(rig, parameters),
+        key,
+    );
     crate::port::coop::say(
         ctx,
         tv::UNLOAD_FILED.replace("{n}", &n).replace("{when}", &when),
@@ -1397,12 +1417,15 @@ pub(crate) fn drive_cmd(
         action,
         PerceivedRef::SelfActor,
         Vec::new(),
-        json!({
-            "tv": rig.tv.0.to_string(),
-            "act": wire_word(ActKind::Drive, false),
-            "ordinal": ordinal,
-            "to": to_word,
-        }),
+        rig_parameters(
+            rig,
+            json!({
+                "tv": rig.tv.0.to_string(),
+                "act": wire_word(ActKind::Drive, false),
+                "ordinal": ordinal,
+                "to": to_word,
+            }),
+        ),
         key,
     );
     let line = if stand.from_bay {
@@ -2551,11 +2574,14 @@ pub(crate) fn mine_cmd(
         action,
         PerceivedRef::SelfActor,
         Vec::new(),
-        json!({
-            "tv": rig.tv.0.to_string(),
-            "act": wire_word(ActKind::Mine, false),
-            "ordinal": ordinal,
-        }),
+        rig_parameters(
+            rig,
+            json!({
+                "tv": rig.tv.0.to_string(),
+                "act": wire_word(ActKind::Mine, false),
+                "ordinal": ordinal,
+            }),
+        ),
         key,
     );
     crate::port::coop::say(ctx, line);
@@ -2609,11 +2635,14 @@ pub(crate) fn mine_stop_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdErr
         action,
         PerceivedRef::SelfActor,
         Vec::new(),
-        json!({
-            "tv": rig.tv.0.to_string(),
-            "act": "mine_stop",
-            "ordinal": run.ordinal,
-        }),
+        rig_parameters(
+            rig,
+            json!({
+                "tv": rig.tv.0.to_string(),
+                "act": "mine_stop",
+                "ordinal": run.ordinal,
+            }),
+        ),
         key,
     );
     crate::port::coop::say(ctx, line);

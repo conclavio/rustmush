@@ -150,6 +150,7 @@ const fn start_cycle(cycle: u8) -> bool {
 /// touches it.
 #[derive(Clone, Debug, Default)]
 pub struct SurfaceTickState {
+    npc: crate::detachment::sortie::npc::Walk,
     /// Fires that found the layer on, this boot.
     fires: u64,
     /// The last fire's stats.
@@ -1048,6 +1049,14 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
         };
         fire.settle(tv, step);
     }
+    let npc = crate::detachment::sortie::npc::tick(
+        ctx,
+        &mut fire,
+        &mut state.npc,
+        8u32.min((MAX_EXCURSIONS_WORKED_PER_FIRE as u32).saturating_sub(stats.worked)),
+    );
+    stats.worked = stats.worked.saturating_add(npc);
+    stats.submitted = stats.submitted.saturating_add(npc);
     // The bookkeeping holds only acts still due; a capped scan prunes nothing.
     if complete {
         state.submitted.retain(|key| still_due.contains(key));
@@ -1739,6 +1748,7 @@ fn plan_step(
     };
     let rig = crate::surface::act::RigAt {
         crew: None,
+        field_order: None,
         tv,
         slot: lease.slot,
         mark: lease.mark.clone(),
@@ -1936,6 +1946,7 @@ fn idle_step(
     let operator = excursion.operator;
     let rig = crate::surface::act::RigAt {
         crew: None,
+        field_order: None,
         tv,
         slot: lease.slot,
         mark: lease.mark.clone(),
@@ -3224,6 +3235,7 @@ mod tests {
             recovery: None,
             sortie: None,
             field_crew: None,
+            field_work: None,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
         let mut records: Vec<RigRecord> = (1..=over)
@@ -3284,6 +3296,7 @@ mod tests {
             recovery: None,
             sortie: None,
             field_crew: None,
+            field_work: None,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
         let mut records: Vec<RigRecord> = (1..=stuck)
@@ -3453,6 +3466,7 @@ mod tests {
             recovery: None,
             sortie: None,
             field_crew: None,
+            field_work: None,
         };
         let state = SurfaceTickState::default();
         let records = vec![
@@ -3573,6 +3587,7 @@ mod tests {
             recovery: None,
             sortie: None,
             field_crew: None,
+            field_work: None,
         }
     }
 

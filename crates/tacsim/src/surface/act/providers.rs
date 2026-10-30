@@ -103,6 +103,7 @@ impl ActionProvider for SurfaceActProvider {
     }
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         let parameters = parameters_of(invocation)?;
+        crate::detachment::sortie::work::sequence(parameters)?;
         tv_of(parameters)?;
         ordinal_of(parameters)?;
         act_param(parameters)?;
@@ -353,6 +354,11 @@ impl ActionProvider for SurfaceActProvider {
                 },
             )?,
             parameter(
+                "field_order",
+                false,
+                ProjectedParameterKind::Text { maximum_bytes: 20 },
+            )?,
+            parameter(
                 "ordinal",
                 true,
                 ProjectedParameterKind::Integer {
@@ -473,6 +479,79 @@ impl ActionProvider for SurfaceActProvider {
 }
 
 impl SurfaceActProvider {
+    fn task_work(
+        &self,
+        context: Option<&mush_core::PrepareCtx<'_>>,
+        txn: &mut ActionTxn<'_>,
+        invocation: &ActionInvocation,
+        rig: &FixedRig,
+        step: crate::detachment::sortie::FieldStep,
+        plan: Option<&FixedPlan>,
+    ) -> Result<Option<Box<crate::detachment::sortie::FieldWork>>, ActionError> {
+        use crate::detachment::sortie::{FieldStep, work};
+        let parameters = parameters_of(invocation)?;
+        let sequence = work::sequence(parameters)?;
+        let tv = tv_of(parameters)?;
+        let ordinal = ordinal_of(parameters)?;
+        if sequence.is_none() {
+            if step == FieldStep::Act(ActKind::Unload)
+                && how_of(parameters) == Some(UnloadHow::Queued)
+                && let Some(crew) = rig.crew.as_deref()
+                && let Some(record) = read_record(txn, &self.excursions, tv)?
+                && let (Some(previous), Some(queue)) =
+                    (record.field_work.as_deref(), record.queued.as_ref())
+                && previous.step == FieldStep::Act(ActKind::Recover)
+                && previous.ordinal == queue.after
+                && previous.flight == crew.flight
+                && previous.operation == crew.operation
+                && queue.operator == invocation.actor()
+            {
+                let mut inherited = previous.clone();
+                inherited.ordinal = ordinal;
+                inherited.step = step;
+                return Ok(Some(Box::new(inherited)));
+            }
+            return Ok(None);
+        }
+        let crew = rig
+            .crew
+            .as_deref()
+            .ok_or_else(|| invalid("A field task needs its actual physical operator."))?;
+        let record = read_record(txn, &self.excursions, tv)?;
+        if step != FieldStep::Stop
+            && record
+                .as_ref()
+                .is_some_and(|r| r.act.is_some() || r.run.is_some())
+        {
+            return Err(invalid("Earlier field work is still settling."));
+        }
+        if step == FieldStep::Stop
+            && record
+                .as_ref()
+                .and_then(|r| r.run.as_ref())
+                .is_none_or(|r| r.stop)
+        {
+            return Err(invalid("No new mining stop is needed."));
+        }
+        let actual = work::admit(
+            context.ok_or_else(|| invalid("Field work needs composed preparation."))?,
+            txn,
+            work::WorkAdmission {
+                actor: invocation.actor(),
+                crew,
+                sequence: sequence.ok_or_else(|| invalid("Field sequence unavailable."))?,
+                ordinal,
+                step,
+                target: plan
+                    .and_then(|p| p.params.as_ref())
+                    .and_then(ActParams::leg)
+                    .map(|(_, to)| to),
+                family: plan.and_then(|p| p.mine.as_ref()).map(|m| m.family),
+                previous: record.as_ref().and_then(|r| r.field_work.as_deref()),
+            },
+        )?;
+        Ok(Some(Box::new(actual)))
+    }
     fn adopt_field(
         &self,
         rig: &FixedRig,
@@ -493,6 +572,7 @@ impl SurfaceActProvider {
             && record.run.is_none()
         {
             record.field_crew = None;
+            record.field_work = None;
         }
         Ok(())
     }
@@ -520,6 +600,13 @@ impl SurfaceActProvider {
         let ordinal = ordinal_of(parameters)?;
         let now = now_of(parameters)?;
         let word = act_param(parameters)?;
+        if crate::detachment::sortie::work::sequence(parameters)?.is_some()
+            && !matches!(word, StartWord::Act { .. } | StartWord::MineStop)
+        {
+            return Err(invalid(
+                "Field tasks bind individual work, not plan controls.",
+            ));
+        }
         if read_record(txn, &self.excursions, tv)?.is_some_and(|record| {
             record
                 .recovery
@@ -647,7 +734,15 @@ impl SurfaceActProvider {
         let (kind, quiet) = match word {
             StartWord::Act { kind, quiet } => (kind, quiet),
             StartWord::MineStop => {
-                return self.stop_run(invocation, txn, (actor, tv, ordinal));
+                let work = self.task_work(
+                    context.as_deref(),
+                    txn,
+                    invocation,
+                    rig,
+                    crate::detachment::sortie::FieldStep::Stop,
+                    None,
+                )?;
+                return self.stop_run(invocation, txn, (actor, tv, ordinal), work);
             }
             StartWord::PlanFile => {
                 return self.file_plan(
@@ -757,6 +852,14 @@ impl SurfaceActProvider {
                 code_of_word(plan.code.as_deref().unwrap_or("tv_dark")),
             ));
         }
+        let work = self.task_work(
+            context.as_deref(),
+            txn,
+            invocation,
+            rig,
+            crate::detachment::sortie::FieldStep::Act(kind),
+            Some(&plan),
+        )?;
         // Doc 20 cut SM.11: nothing in flight for a plan's step (SM.7/SM.8's idleness rule).
         if stamp.plan.is_some()
             && read_record(txn, &self.excursions, tv)?.is_some_and(|record| {
@@ -776,6 +879,7 @@ impl SurfaceActProvider {
                 &world,
                 &stamp,
                 flight.as_ref(),
+                work,
             );
         }
         // Doc 20 cut SM.8: an unload starts on its own path too.
@@ -787,6 +891,7 @@ impl SurfaceActProvider {
                 rig,
                 &plan,
                 flight.as_ref(),
+                work,
             );
         }
         self.start_act(
@@ -799,6 +904,7 @@ impl SurfaceActProvider {
             &world,
             &stamp,
             flight.as_ref(),
+            work,
             (mind.as_ref().map(|(word, org)| (word, *org)), context),
         )
     }
@@ -850,6 +956,7 @@ impl SurfaceActProvider {
         world: &[u32],
         stamp: &Stamp,
         flight: Option<&crate::detachment::sortie::Flight>,
+        work: Option<Box<crate::detachment::sortie::FieldWork>>,
         (mind, context): (
             Option<(&crate::surface::dispatch::MindWord, Option<mush_org::OrgId>)>,
             Option<&mut mush_core::PrepareCtx<'_>>,
@@ -1139,6 +1246,9 @@ impl SurfaceActProvider {
         if let Some(binding) = &stamp.plan {
             apply_update(&mut record, binding, now)?;
         }
+        if let Some(work) = work {
+            record.field_work = Some(work);
+        }
         write_record(txn, &self.excursions, record, existed)?;
         let outcome = RulesValue::new(
             self.outcome.clone(),
@@ -1291,6 +1401,7 @@ impl SurfaceActProvider {
         world: &[u32],
         stamp: &Stamp,
         flight: Option<&crate::detachment::sortie::Flight>,
+        work: Option<Box<crate::detachment::sortie::FieldWork>>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let conflict = |message: &'static str| port_error(ActionErrorCode::Conflict, message);
@@ -1459,6 +1570,9 @@ impl SurfaceActProvider {
                 Some(after),
             )?;
         }
+        if let Some(work) = work {
+            record.field_work = Some(work);
+        }
         write_record(txn, &self.excursions, record, existed)?;
         let outcome = RulesValue::new(
             self.outcome.clone(),
@@ -1504,6 +1618,7 @@ impl SurfaceActProvider {
     /// No licence, tenure, lease or battery is read (the battery's row names only a fresh record's
     /// charge). The outcome is the start's own shape.
     #[allow(clippy::too_many_lines)] // one ordered refusal list, then one bundle
+    #[allow(clippy::too_many_arguments)] // source plan, physical flight and optional causal task
     pub(super) fn start_unload(
         &self,
         invocation: &ActionInvocation,
@@ -1512,6 +1627,7 @@ impl SurfaceActProvider {
         rig: &FixedRig,
         plan: &FixedPlan,
         flight: Option<&crate::detachment::sortie::Flight>,
+        work: Option<Box<crate::detachment::sortie::FieldWork>>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let conflict = |message: &'static str| port_error(ActionErrorCode::Conflict, message);
@@ -1694,6 +1810,9 @@ impl SurfaceActProvider {
             seal: None,
         });
         record.queued = None;
+        if let Some(work) = work {
+            record.field_work = Some(work);
+        }
         write_record(txn, &self.excursions, record, existed)?;
         let outcome = RulesValue::new(
             self.outcome.clone(),
@@ -2088,6 +2207,7 @@ impl SurfaceActProvider {
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
         (actor, tv, ordinal): (ObjId, ObjId, u32),
+        work: Option<Box<crate::detachment::sortie::FieldWork>>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let not_drilling = || port_error(ActionErrorCode::Conflict, "that rig is not drilling");
         let Some(mut record) = read_record(txn, &self.excursions, tv)? else {
@@ -2104,6 +2224,9 @@ impl SurfaceActProvider {
         if !stopping {
             if let Some(run) = record.run.as_mut() {
                 run.stop = true;
+            }
+            if let Some(work) = work {
+                record.field_work = Some(work);
             }
             write_record(txn, &self.excursions, record, true)?;
         }
@@ -3222,6 +3345,7 @@ impl ActionProvider for SurfaceDoneProvider {
             stays,
             by: act.by,
         });
+        crate::detachment::sortie::work::finish(context, txn, &mut record)?;
         crate::detachment::sortie::surface::reconcile_return(context, txn, &mut record)
             .map_err(|_| invalid("field return unavailable"))?;
         write_record(txn, &self.excursions, record, true)?;
@@ -3768,6 +3892,7 @@ impl SurfaceDoneProvider {
             stays: BTreeMap::new(),
             by: run_by,
         });
+        crate::detachment::sortie::work::finish(context, txn, &mut record)?;
         crate::detachment::sortie::surface::reconcile_return(context, txn, &mut record)
             .map_err(|_| invalid("field return unavailable"))?;
         write_record(txn, &self.excursions, record, true)?;
