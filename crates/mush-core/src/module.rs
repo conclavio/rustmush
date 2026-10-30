@@ -1296,6 +1296,11 @@ pub trait InterfaceAbilityProvider: Send + Sync {
     ) -> Result<InterfaceReply, InterfaceError>;
 }
 
+/// The `mush_proto::InvokeRequest` services a module may register a handler
+/// for ([`Registrar::invoke_handler`]): `mind`, and since doc 31 cut UD.2
+/// `unit_design`. `legal_action` is gateway-owned and never a module's.
+pub const MODULE_INVOKE_FAMILIES: [&str; 2] = ["mind", "unit_design"];
+
 /// A closed typed service invoked with its registering module's normal Ctx.
 /// The engine verifies a live connection before entry; asynchronous owners must
 /// retain and recheck the connection lease before applying or returning work.
@@ -5216,13 +5221,16 @@ impl<'a> Registrar<'a> {
         Ok(PanelFeedHandle { feed })
     }
 
-    /// Register a handler for the finite typed request family.
+    /// Register a handler for the finite typed request family: one of the
+    /// module-owned services of `mush_proto::InvokeRequest` — `mind`, and
+    /// since doc 31 cut UD.2 `unit_design` (`legal_action` is the gateway's,
+    /// never a module's).
     pub fn invoke_handler(
         &mut self,
         name: &str,
         handler: Arc<dyn InvokeHandler>,
     ) -> Result<(), ModError> {
-        if name != "mind" {
+        if !MODULE_INVOKE_FAMILIES.contains(&name) {
             return Err(ModError::Conflict {
                 module: self.module.clone(),
                 what: "unknown invoke family",

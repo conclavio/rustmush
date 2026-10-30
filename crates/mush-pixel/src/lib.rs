@@ -73,6 +73,7 @@ pub mod bake;
 pub mod caps;
 pub mod chart;
 pub mod cockpit;
+pub mod design;
 pub mod doll;
 pub mod frame;
 pub mod heightfield;

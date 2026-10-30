@@ -40,3 +40,26 @@ for (const f of files) {
   total += statSync(join(modelsOut, f)).size;
 }
 console.log(`Unit models: ${files.length} files in ${modelsOut} (${total} bytes)`);
+// Doc 31 cut UD.2: the staff unit designer's catalogue — the shipped unit,
+// weapon, sensor and core packs, the shipped looks and the model index —
+// copied under `src/lib/designer/content/`, which the studio imports; the
+// rules themselves are checked by the server, never here.
+const designerOut = join(root, 'web', 'src', 'lib', 'designer', 'content');
+rmSync(designerOut, { recursive: true, force: true });
+const designerIn = [
+  ['units', join(root, 'crates', 'tacsim', 'content', 'units')],
+  ['weapons', join(root, 'crates', 'tacsim', 'content', 'weapons')],
+  ['sensors', join(root, 'crates', 'tacsim', 'content', 'sensors')],
+  ['cores', join(root, 'crates', 'tacsim', 'content', 'cores')],
+  ['looks', join(root, 'crates', 'mush-pixel', 'looks')],
+];
+let designerFiles = 0;
+for (const [name, dir] of designerIn) {
+  mkdirSync(join(designerOut, name), { recursive: true });
+  for (const f of readdirSync(dir).filter((f) => f.endsWith('.json'))) {
+    copyFileSync(join(dir, f), join(designerOut, name, f));
+    designerFiles += 1;
+  }
+}
+copyFileSync(join(modelsIn, 'index.json'), join(designerOut, 'models.json'));
+console.log(`Unit designer catalogue: ${designerFiles + 1} files in ${designerOut}`);

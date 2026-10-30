@@ -125,6 +125,7 @@ pub mod definitions;
 /// structured request that produces one, and the cost table the owner's cost run
 /// prints. The arena imports only [`deliberation::order`], which is data.
 pub mod deliberation;
+pub mod design;
 pub mod detachment;
 pub mod economy;
 pub mod ephemeris;
@@ -939,6 +940,9 @@ impl GameModule for TacsimRuleset {
         hardware::PublishedHardware::shipped()
             .map_err(|error| ModError::msg(error.to_string()))?
             .register(reg)?;
+        // Doc 31 cut UD.2: the staff unit designer's `unit_design` invoke —
+        // a design's rules checked by the loader and catalogue build above.
+        design::register(reg)?;
         // 16b cut T.2: the arena's world side — the `arena.cockpit` and
         // `arena.map` feeds (16b cut Q.3 named the first for doc 16 and added the
         // second), the
