@@ -504,6 +504,7 @@ fn site_region() -> RegionRec {
         ground: Vec::new(),
         ground_resolution_cm: 1_000,
         theme: None,
+        biome: None,
         revision: 1,
     }
 }

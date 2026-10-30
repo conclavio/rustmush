@@ -285,6 +285,9 @@ impl BackgroundRecipe {
     }
 }
 
+/// The supported ground biomes (doc 30 §6, `D-30-5`).
+pub const BIOMES: [&str; 4] = ["temperate", "mars", "lunar", "ice"];
+
 /// A region (doc 14 §2.1 `RegionRec`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -315,6 +318,9 @@ pub struct RegionRec {
     /// The theme staff or a pack set here (S2b); `None` inherits the tier above.
     #[serde(default)]
     pub theme: Option<crate::theme::Theme>,
+    /// The ground biome (doc 30 §6, `D-30-5`); `None` is `"temperate"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biome: Option<String>,
     /// Revision.
     pub revision: u64,
 }
@@ -324,6 +330,12 @@ fn default_ground_resolution() -> u16 {
 }
 
 impl RegionRec {
+    /// The region's ground biome (`"temperate"` when omitted).
+    #[must_use]
+    pub fn biome_str(&self) -> &str {
+        self.biome.as_deref().unwrap_or("temperate")
+    }
+
     /// Re-check every bound.
     ///
     /// # Errors
@@ -333,6 +345,13 @@ impl RegionRec {
         check_text("region.name", &self.name, MAX_NAME_BYTES)?;
         if let Some(theme) = &self.theme {
             theme.validate().map_err(RecordError::Value)?;
+        }
+        if let Some(biome) = &self.biome
+            && !BIOMES.contains(&biome.as_str())
+        {
+            return Err(RecordError::Value(format!(
+                "biome is one of {BIOMES:?}; `{biome}` is not"
+            )));
         }
         self.extent
             .validate()
@@ -1850,6 +1869,7 @@ mod tests {
             ground: Vec::new(),
             ground_resolution_cm: 1000,
             theme: None,
+            biome: None,
             revision: 1,
         };
         let err = region(32_700, 150).validate().unwrap_err();
@@ -1864,5 +1884,19 @@ mod tests {
             "-32,768 is the floor"
         );
         assert!(region(0, 150).validate().is_ok());
+        for valid in BIOMES {
+            let mut r = region(0, 0);
+            r.biome = Some(valid.to_string());
+            assert!(r.validate().is_ok(), "{valid} is a valid biome");
+        }
+        let mut bad = region(0, 0);
+        bad.biome = Some("lava_world".to_string());
+        assert!(
+            bad.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("biome is one of"),
+            "unknown biome is refused"
+        );
     }
 }

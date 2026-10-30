@@ -13,22 +13,29 @@
 //! [`from_packs`] is the inverse (`pack → draft`) so an existing arena pack pair
 //! can be opened in the studio or checked by `ground-pack`.
 
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 
 use mush_atlas::TerrainClass;
 use mush_atlas::cells::{base64_decode, base64_encode};
 use mush_atlas::def::{HeightfieldDef, RegionDef};
-use mush_atlas::physics::LocomotionTable;
+use mush_atlas::physics::{LocomotionTable, StepKind};
 use mush_core::{CanonicalId, DefinitionDigest};
 use serde::{Deserialize, Serialize};
 
-use crate::arena::state::{ArenaTerrain, KeySpot as ArenaKeySpot, Team, TerrainCell};
+use crate::arena::path::{PathScratch, path_with};
+use crate::arena::slope::steepness_pct;
+use crate::arena::state::{ArenaTerrain, CostRow, KeySpot as ArenaKeySpot, Team, TerrainCell};
 use crate::definitions::arena::{
     ArenaBuildError, ArenaDef, ArenaModeDef, BIOMES, EntryZoneDef, KeySpot, MAX_ARENA_TILES,
-    TankDef, WaypointGraph, WaypointNode, arena_map_within_bound,
+    MAX_WAYPOINT_EDGES, MAX_WAYPOINT_NODES, TankDef, WaypointGraph, WaypointNode,
+    arena_map_within_bound,
 };
 use crate::definitions::content;
 use crate::match_::cockpit::MAP_MAX_BYTES;
+
+/// Default minimum connected-component size for [`despeckle`] (doc 30 §5).
+pub const DEFAULT_SPECKLE_MIN_CELLS: usize = 3;
 
 /// Schema identifier for [`GroundDraft`] (doc 30 §4, D-30-3).
 pub const DRAFT_SCHEMA: &str = "ground.draft.v1";
@@ -216,11 +223,24 @@ pub enum GroundError {
     /// Pack parsing or digest error.
     #[error("ground pack error: {0}")]
     Pack(String),
+    /// Draft failed §5 grade, passability, or reachability checks.
+    #[error("ground draft `{id}` failed check: {}", failures.join("; "))]
+    CheckFailed {
+        /// Draft slug.
+        id: String,
+        /// Failure descriptions.
+        failures: Vec<String>,
+    },
 }
 
-/// Output of [`build`]: the two signed JSON packs and their manifests' digests.
+/// Output of [`build`]: the post-route/post-repair [`GroundDraft`], the two
+/// signed JSON packs, and their manifests' digests.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuiltPacks {
+    /// The [`GroundDraft`] the packs were built from (including any synthesized
+    /// waypoint graph from [`route`], any repair changes from [`relax_slopes`] /
+    /// [`despeckle`], and any generated §5 check report in `note`).
+    pub draft: GroundDraft,
     /// Signed atlas region pack JSON (`tacsim.<id>`).
     pub atlas_json: String,
     /// Computed digest of `atlas_json`.
@@ -231,8 +251,8 @@ pub struct BuiltPacks {
     pub arena_digest: DefinitionDigest,
 }
 
-/// Output of [`check`]: wire size and grid shape verification (extended in WG.3
-/// with grade and passability metrics).
+/// Output of [`check`]: wire size, grid shape, grade, and passability report
+/// (doc 30 §5 & §11 WG.1 / WG.3).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CheckReport {
     /// Draft slug.
@@ -247,6 +267,68 @@ pub struct CheckReport {
     pub map_bytes: usize,
     /// Maximum allowed byte length (`MAP_MAX_BYTES`, 262,144).
     pub map_max_bytes: usize,
+    /// Percentage of land cells reachable by `tracked` (limit 45 %) from both entry zones.
+    pub tracked_passable_pct: u32,
+    /// Percentage of land cells reachable by `wheeled` (limit 25 %) from both entry zones.
+    pub wheeled_passable_pct: u32,
+    /// Percentage of land cells reachable by `legged` (limit 70 %) from both entry zones.
+    pub legged_passable_pct: u32,
+    /// Whether the two entry zones can reach each other under `tracked`.
+    pub zones_reachable_tracked: bool,
+    /// Whether the two entry zones can reach each other under `wheeled`.
+    pub zones_reachable_wheeled: bool,
+    /// Whether the two entry zones can reach each other under `legged`.
+    pub zones_reachable_legged: bool,
+    /// Whether every key spot is reachable by `wheeled` from at least one entry zone.
+    pub key_spots_wheeled_reachable: bool,
+    /// Names of any key spots not reachable by `wheeled`.
+    pub unreachable_key_spots: Vec<String>,
+    /// Whether every waypoint node is reachable by `tracked` from the entry zones.
+    pub waypoints_reachable: bool,
+    /// IDs of any waypoint nodes not reachable by `tracked`.
+    pub unreachable_waypoints: Vec<String>,
+    /// Steepest orthogonal passable grade across the grid, in per cent.
+    pub max_grade_pct: u32,
+    /// Steepest orthogonal grade between adjacent `road` or `paved` cells, in per cent.
+    pub max_road_grade_pct: u32,
+    /// Maximum elevation step (`cm`) between orthogonal neighbours inside entry zones.
+    pub max_entry_zone_step_cm: u32,
+    /// Whether all §5 acceptance checks passed.
+    pub passed: bool,
+    /// Human-readable descriptions of any §5 check failures.
+    pub failures: Vec<String>,
+}
+
+impl CheckReport {
+    /// Format this §5 grade and passability report for inclusion in an arena
+    /// pack's `note` field (doc 30 §5).
+    #[must_use]
+    pub fn summary_note(&self) -> String {
+        format!(
+            "ground-pack check ({cols}x{rows}, {quads} tiles, map {bytes}/{max} B): \
+             passable tracked {t}% / wheeled {w}% / legged {l}%; \
+             zones tracked={zt} wheeled={zw} legged={zl}; \
+             key_spots_wheeled={ks}; waypoints={wp}; \
+             max_grade={mg}% road_grade={rg}% entry_step={es}cm; passed={p}.",
+            cols = self.cols,
+            rows = self.rows,
+            quads = self.quadrants,
+            bytes = self.map_bytes,
+            max = self.map_max_bytes,
+            t = self.tracked_passable_pct,
+            w = self.wheeled_passable_pct,
+            l = self.legged_passable_pct,
+            zt = self.zones_reachable_tracked,
+            zw = self.zones_reachable_wheeled,
+            zl = self.zones_reachable_legged,
+            ks = self.key_spots_wheeled_reachable,
+            wp = self.waypoints_reachable,
+            mg = self.max_grade_pct,
+            rg = self.max_road_grade_pct,
+            es = self.max_entry_zone_step_cm,
+            p = self.passed,
+        )
+    }
 }
 
 /// Encode a `cols × rows` slice of [`TerrainClass`] into the 3-byte run-length
@@ -543,8 +625,6 @@ impl GroundDraft {
             waypoints: self.waypoints.clone(),
             modes: self.modes.clone(),
             tanks,
-            biome: None,
-            procedural_relief: false,
             note: self.note.clone(),
         })
     }
@@ -905,6 +985,7 @@ pub fn atlas_pack_with(relief: Relief) -> String {
     build_atlas_pack_json(
         "proving_ground",
         "The Proving Ground",
+        "temperate",
         "luna",
         [ORIGIN_M, ORIGIN_M],
         CELL_CM,
@@ -922,6 +1003,7 @@ pub fn atlas_pack_with(relief: Relief) -> String {
 fn build_atlas_pack_json(
     id: &str,
     label: &str,
+    biome: &str,
     body: &str,
     origin_m: [i64; 2],
     cell_cm: u16,
@@ -944,27 +1026,37 @@ fn build_atlas_pack_json(
         format!("tacsim.{id}")
     };
 
+    let mut region_def = serde_json::json!({
+        "name": label,
+        "kind": "surface",
+        "body": body,
+        "extent": [[lo_x, lo_y], [hi_x, hi_y]],
+        "datum_m": 0.0,
+        "background": {
+            "surface": "ground",
+            "mix": [],
+            "relief_cm": 0,
+            "relief_period_cm": 1000,
+            "water_cm": null,
+            "seed": bg_seed
+        },
+        "ground_resolution_cm": cell_cm
+    });
+    // Omit `"biome": "temperate"` on the wire so the shipped `proving_ground`
+    // atlas pack reproduces byte-for-byte; `RegionRec::biome_str()` and
+    // `from_packs` both treat an absent `biome` key as `"temperate"` (doc 30 §6).
+    if biome != "temperate"
+        && let Some(obj) = region_def.as_object_mut()
+    {
+        obj.insert("biome".to_owned(), serde_json::json!(biome));
+    }
+
     let mut entries = serde_json::Map::new();
     entries.insert(
         region_id.clone(),
         serde_json::json!({
             "kind": "region",
-            "def": {
-                "name": label,
-                "kind": "surface",
-                "body": body,
-                "extent": [[lo_x, lo_y], [hi_x, hi_y]],
-                "datum_m": 0.0,
-                "background": {
-                    "surface": "ground",
-                    "mix": [],
-                    "relief_cm": 0,
-                    "relief_period_cm": 1000,
-                    "water_cm": null,
-                    "seed": bg_seed
-                },
-                "ground_resolution_cm": cell_cm
-            }
+            "def": region_def
         }),
     );
     entries.insert(
@@ -1191,32 +1283,76 @@ fn format_arena_pack_json(
 /// `<= 64 KiB` heightfield entries, and produce the signed atlas region pack
 /// and campaign-seed arena pack.
 ///
+/// By default (doc 30 §5), [`relax_slopes`] and [`despeckle`] run only when
+/// `draft.provenance.source == GroundSource::Extractor`, [`route`] runs when
+/// `draft.waypoints.nodes.is_empty()`, and the build is refused when [`check`]
+/// reports any §5 failure. See [`build_with_options`] for `--repair` / `--force`.
+///
 /// # Errors
 ///
 /// [`GroundError`] if validation, [`check`], or pack signing fails.
 pub fn build(draft: &GroundDraft) -> Result<BuiltPacks, GroundError> {
-    let (classes, elev) = draft.validate()?;
-    let _ = check(draft)?;
-    let arena_def = draft.to_arena_def()?;
-    let bg_seed = draft.provenance.seed.unwrap_or(2350);
+    build_with_options(draft, false, false)
+}
+
+/// **The writer with explicit `--repair` and `--force` flags** (doc 30 §5, WG.3).
+///
+/// - When `repair` is `true` or `draft.provenance.source == GroundSource::Extractor`,
+///   runs [`relax_slopes`] and [`despeckle`] (`DEFAULT_SPECKLE_MIN_CELLS`).
+/// - When `draft.waypoints.nodes.is_empty()`, runs [`route`] to synthesize a
+///   patrol graph over the tracked cost grid.
+/// - Runs [`check`] and refuses the build with [`GroundError::CheckFailed`]
+///   when `!report.passed && !force`.
+///
+/// # Errors
+///
+/// [`GroundError`] if validation, [`check`] (unless `force`), or pack signing fails.
+pub fn build_with_options(
+    draft: &GroundDraft,
+    repair: bool,
+    force: bool,
+) -> Result<BuiltPacks, GroundError> {
+    let mut working = draft.clone();
+    if repair || working.provenance.source == GroundSource::Extractor {
+        let _ = relax_slopes(&mut working)?;
+        let _ = despeckle(&mut working, DEFAULT_SPECKLE_MIN_CELLS)?;
+    }
+    if working.waypoints.nodes.is_empty() {
+        route(&mut working)?;
+    }
+    let (classes, elev) = working.validate()?;
+    let report = check(&working)?;
+    if !report.passed && !force {
+        return Err(GroundError::CheckFailed {
+            id: working.id,
+            failures: report.failures,
+        });
+    }
+    if working.note.is_empty() {
+        working.note = report.summary_note();
+    }
+    let arena_def = working.to_arena_def()?;
+    let bg_seed = working.provenance.seed.unwrap_or(2350);
 
     let (atlas_json, atlas_digest) = build_atlas_pack_json(
-        &draft.id,
-        &draft.label,
-        &draft.body,
-        draft.origin_m,
-        draft.cell_cm,
-        draft.cols,
-        draft.rows,
-        draft.atlas_version,
+        &working.id,
+        &working.label,
+        &working.biome,
+        &working.body,
+        working.origin_m,
+        working.cell_cm,
+        working.cols,
+        working.rows,
+        working.atlas_version,
         bg_seed,
         &classes,
         &elev,
     )?;
     let (arena_json, arena_digest) =
-        format_arena_pack_json(&draft.id, draft.arena_version, &arena_def)?;
+        format_arena_pack_json(&working.id, working.arena_version, &arena_def)?;
 
     Ok(BuiltPacks {
+        draft: working,
         atlas_json,
         atlas_digest,
         arena_json,
@@ -1224,20 +1360,15 @@ pub fn build(draft: &GroundDraft) -> Result<BuiltPacks, GroundError> {
     })
 }
 
-/// **The check** (doc 30 §4 & §11 WG.1): validate `draft`, price its cells from
-/// the shipped locomotion table, and verify that its widest `arena.map` frame
-/// fits within [`MAP_MAX_BYTES`] (`256 KiB`).
-///
-/// # Errors
-///
-/// [`GroundError`] if the draft is invalid, an entry zone is unusable, or the
-/// map frame exceeds [`MAP_MAX_BYTES`].
-pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
-    let (classes, elev) = draft.validate()?;
+fn build_priced_terrain(
+    draft: &GroundDraft,
+    classes: &[TerrainClass],
+    elev: &[i16],
+) -> Result<ArenaTerrain, GroundError> {
     let table = LocomotionTable::shipped();
     let total = usize::from(draft.cols) * usize::from(draft.rows);
     let mut cells: Vec<TerrainCell> = Vec::with_capacity(total);
-    for (class, elev_cm) in classes.into_iter().zip(elev) {
+    for (&class, &elev_cm) in classes.iter().zip(elev.iter()) {
         let move_cost = match table.cost(class.label(), "tracked", &[]) {
             Some(cost) => u16::try_from(cost).unwrap_or(u16::MAX),
             None => 0,
@@ -1251,9 +1382,104 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
     let arena_entry = format!("tacsim.arena.{}", draft.id);
     let terrain = ArenaTerrain::priced(draft.cols, draft.rows, draft.cell_cm, cells, table)
         .map_err(|error| ArenaBuildError::Shape {
-            arena: arena_entry.clone(),
+            arena: arena_entry,
             detail: error.to_string(),
-        })?;
+        })?
+        .with_biome(draft.biome.as_str());
+    Ok(terrain)
+}
+
+fn zone_seed_cells(
+    terrain: &ArenaTerrain,
+    zone: &EntryZoneDef,
+    tanks: &[TankDef],
+    row: CostRow,
+) -> Vec<(u16, u16)> {
+    let mut seeds: Vec<(u16, u16)> = tanks
+        .iter()
+        .filter(|t| {
+            t.team == zone.team
+                && t.x >= zone.x0
+                && t.x <= zone.x1
+                && t.y >= zone.y0
+                && t.y <= zone.y1
+                && terrain.passable_for(row, t.x, t.y)
+        })
+        .map(|t| (t.x, t.y))
+        .collect();
+    let cx = (zone.x0 + zone.x1) / 2;
+    let cy = (zone.y0 + zone.y1) / 2;
+    if terrain.passable_for(row, cx, cy) && !seeds.contains(&(cx, cy)) {
+        seeds.push((cx, cy));
+    }
+    if seeds.is_empty() {
+        let mut best: Option<(u32, (u16, u16))> = None;
+        for y in zone.y0..=zone.y1 {
+            for x in zone.x0..=zone.x1 {
+                if terrain.passable_for(row, x, y) {
+                    let dist = u32::from(x.abs_diff(cx)) + u32::from(y.abs_diff(cy));
+                    if best.is_none_or(|(d, _)| dist < d) {
+                        best = Some((dist, (x, y)));
+                    }
+                }
+            }
+        }
+        if let Some((_, cell)) = best {
+            seeds.push(cell);
+        }
+    }
+    seeds
+}
+
+fn flood_from_seeds(
+    terrain: &ArenaTerrain,
+    row: CostRow,
+    limit: u32,
+    seeds: &[(u16, u16)],
+) -> BTreeSet<(u16, u16)> {
+    let cell_cm = u32::from(terrain.cell_cm());
+    let mut seen: BTreeSet<(u16, u16)> = seeds.iter().copied().collect();
+    let mut queue: VecDeque<(u16, u16)> = seeds.iter().copied().collect();
+    while let Some((x, y)) = queue.pop_front() {
+        let Some(here) = terrain.get(x, y) else {
+            continue;
+        };
+        for (dx, dy) in [(1_i32, 0_i32), (-1, 0), (0, 1), (0, -1)] {
+            let (Some(nx), Some(ny)) = (
+                u16::try_from(i32::from(x) + dx).ok(),
+                u16::try_from(i32::from(y) + dy).ok(),
+            ) else {
+                continue;
+            };
+            if seen.contains(&(nx, ny)) || !terrain.passable_for(row, nx, ny) {
+                continue;
+            }
+            let Some(there) = terrain.get(nx, ny) else {
+                continue;
+            };
+            if steepness_pct(here, there, StepKind::Orthogonal, cell_cm) > limit {
+                continue;
+            }
+            seen.insert((nx, ny));
+            queue.push_back((nx, ny));
+        }
+    }
+    seen
+}
+
+/// **The check** (doc 30 §5 & §11 WG.1 / WG.3): validate `draft`, price its cells
+/// from the shipped locomotion table, verify that its widest `arena.map` frame
+/// fits within [`MAP_MAX_BYTES`] (`256 KiB`), and compute the §5 grade and
+/// passability report over [`crate::arena::slope`] and [`crate::arena::path`].
+///
+/// # Errors
+///
+/// [`GroundError`] if the draft is structurally invalid or the map frame exceeds
+/// [`MAP_MAX_BYTES`].
+pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
+    let (classes, elev) = draft.validate()?;
+    let terrain = build_priced_terrain(draft, &classes, &elev)?;
+    let arena_entry = format!("tacsim.arena.{}", draft.id);
     let spots: Vec<ArenaKeySpot> = draft
         .key_spots
         .iter()
@@ -1265,6 +1491,212 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
         .collect();
     let map_bytes = arena_map_within_bound(&arena_entry, &terrain, &spots)?;
     let quadrants = usize::from(draft.cols.div_ceil(QUAD)) * usize::from(draft.rows.div_ceil(QUAD));
+
+    let table = LocomotionTable::shipped();
+    let tracked_limit = table.max_slope_pct("tracked", &[]).unwrap_or(45);
+    let wheeled_limit = table.max_slope_pct("wheeled", &[]).unwrap_or(25);
+    let legged_limit = table.max_slope_pct("legged", &[]).unwrap_or(70);
+
+    let is_land = |c: TerrainClass| {
+        !matches!(
+            c,
+            TerrainClass::Void | TerrainClass::Water | TerrainClass::WaterDeep | TerrainClass::Wall
+        )
+    };
+    let land_total = classes.iter().copied().filter(|&c| is_land(c)).count();
+
+    let mut tracked_pct_min = 100_u32;
+    let mut wheeled_pct_min = 100_u32;
+    let mut legged_pct_min = 100_u32;
+
+    let mut tracked_union: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut wheeled_union: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut zone_seeds_tracked: Vec<Option<(u16, u16)>> = Vec::new();
+    let mut zone_seeds_wheeled: Vec<Option<(u16, u16)>> = Vec::new();
+    let mut zone_seeds_legged: Vec<Option<(u16, u16)>> = Vec::new();
+
+    for zone in &draft.entry_zones {
+        let t_seeds = zone_seed_cells(&terrain, zone, &draft.tanks, CostRow::Tracked);
+        let w_seeds = zone_seed_cells(&terrain, zone, &draft.tanks, CostRow::Wheeled);
+        let l_seeds = zone_seed_cells(&terrain, zone, &draft.tanks, CostRow::Legged);
+
+        zone_seeds_tracked.push(t_seeds.first().copied());
+        zone_seeds_wheeled.push(w_seeds.first().copied());
+        zone_seeds_legged.push(l_seeds.first().copied());
+
+        let t_flood = flood_from_seeds(&terrain, CostRow::Tracked, tracked_limit, &t_seeds);
+        let w_flood = flood_from_seeds(&terrain, CostRow::Wheeled, wheeled_limit, &w_seeds);
+        let l_flood = flood_from_seeds(&terrain, CostRow::Legged, legged_limit, &l_seeds);
+
+        let count_land = |set: &BTreeSet<(u16, u16)>| -> u32 {
+            if land_total == 0 {
+                return 100;
+            }
+            let reached = set
+                .iter()
+                .filter(|&&(x, y)| terrain.get(x, y).is_some_and(|c| is_land(c.class)))
+                .count();
+            u32::try_from((reached * 100) / land_total).unwrap_or(100)
+        };
+        tracked_pct_min = tracked_pct_min.min(count_land(&t_flood));
+        wheeled_pct_min = wheeled_pct_min.min(count_land(&w_flood));
+        legged_pct_min = legged_pct_min.min(count_land(&l_flood));
+
+        tracked_union.extend(t_flood);
+        wheeled_union.extend(w_flood);
+    }
+
+    let mut scratch = PathScratch::default();
+    let mutual =
+        |seeds: &[Option<(u16, u16)>], row: CostRow, limit: u32, scratch: &mut PathScratch| {
+            let (Some(Some(a)), Some(Some(b))) = (seeds.first(), seeds.get(1)) else {
+                return false;
+            };
+            path_with(
+                &terrain,
+                scratch,
+                *a,
+                *b,
+                u32::MAX,
+                terrain.min_cost(row),
+                Some(limit),
+                row,
+                &[],
+            )
+            .is_ok()
+        };
+    let zones_reachable_tracked = mutual(
+        &zone_seeds_tracked,
+        CostRow::Tracked,
+        tracked_limit,
+        &mut scratch,
+    );
+    let zones_reachable_wheeled = mutual(
+        &zone_seeds_wheeled,
+        CostRow::Wheeled,
+        wheeled_limit,
+        &mut scratch,
+    );
+    let zones_reachable_legged = mutual(
+        &zone_seeds_legged,
+        CostRow::Legged,
+        legged_limit,
+        &mut scratch,
+    );
+
+    let mut unreachable_key_spots = Vec::new();
+    for spot in &draft.key_spots {
+        if !wheeled_union.contains(&(spot.x, spot.y)) {
+            unreachable_key_spots.push(spot.name.clone());
+        }
+    }
+    let key_spots_wheeled_reachable = unreachable_key_spots.is_empty();
+
+    let mut unreachable_waypoints = Vec::new();
+    for node in &draft.waypoints.nodes {
+        if !tracked_union.contains(&(node.x, node.y)) {
+            unreachable_waypoints.push(node.id.to_string());
+        }
+    }
+    let waypoints_reachable = unreachable_waypoints.is_empty();
+
+    let cell_cm = u32::from(draft.cell_cm);
+    let mut max_grade_pct = 0_u32;
+    let mut max_road_grade_pct = 0_u32;
+    for y in 0..draft.rows {
+        for x in 0..draft.cols {
+            let Some(here) = terrain.get(x, y) else {
+                continue;
+            };
+            let here_road = matches!(here.class, TerrainClass::Road | TerrainClass::Paved);
+            for (nx, ny) in [(x.saturating_add(1), y), (x, y.saturating_add(1))] {
+                if nx >= draft.cols || ny >= draft.rows || (nx == x && ny == y) {
+                    continue;
+                }
+                let Some(there) = terrain.get(nx, ny) else {
+                    continue;
+                };
+                let steepness = steepness_pct(here, there, StepKind::Orthogonal, cell_cm);
+                if here.passable() && there.passable() {
+                    max_grade_pct = max_grade_pct.max(steepness);
+                }
+                if here_road && matches!(there.class, TerrainClass::Road | TerrainClass::Paved) {
+                    max_road_grade_pct = max_road_grade_pct.max(steepness);
+                }
+            }
+        }
+    }
+
+    let mut max_entry_zone_step_cm = 0_u32;
+    for zone in &draft.entry_zones {
+        let seeds = zone_seed_cells(&terrain, zone, &draft.tanks, CostRow::Tracked);
+        for (sx, sy) in seeds {
+            let Some(here) = terrain.get(sx, sy) else {
+                continue;
+            };
+            for (dx, dy) in [(1_i32, 0_i32), (-1, 0), (0, 1), (0, -1)] {
+                let (Some(nx), Some(ny)) = (
+                    u16::try_from(i32::from(sx) + dx).ok(),
+                    u16::try_from(i32::from(sy) + dy).ok(),
+                ) else {
+                    continue;
+                };
+                if nx < zone.x0 || nx > zone.x1 || ny < zone.y0 || ny > zone.y1 {
+                    continue;
+                }
+                if let Some(there) = terrain.get(nx, ny) {
+                    let step = u32::from(here.elev_cm.abs_diff(there.elev_cm));
+                    max_entry_zone_step_cm = max_entry_zone_step_cm.max(step);
+                }
+            }
+        }
+    }
+
+    let mut failures = Vec::new();
+    if tracked_pct_min < 90 {
+        failures.push(format!(
+            "tracked reachability is {tracked_pct_min}% (need >= 90%)"
+        ));
+    }
+    if legged_pct_min < 95 {
+        failures.push(format!(
+            "legged reachability is {legged_pct_min}% (need >= 95%)"
+        ));
+    }
+    if !zones_reachable_tracked {
+        failures.push("entry zones are not mutually reachable by tracked".to_owned());
+    }
+    if !zones_reachable_legged {
+        failures.push("entry zones are not mutually reachable by legged".to_owned());
+    }
+    if !zones_reachable_wheeled {
+        failures.push("entry zones are not mutually reachable by wheeled".to_owned());
+    }
+    if !key_spots_wheeled_reachable {
+        failures.push(format!(
+            "key spots not reachable by wheeled: {}",
+            unreachable_key_spots.join(", ")
+        ));
+    }
+    if !waypoints_reachable {
+        failures.push(format!(
+            "waypoints not reachable by tracked: {}",
+            unreachable_waypoints.join(", ")
+        ));
+    }
+    if max_road_grade_pct > 20 {
+        failures.push(format!(
+            "max road grade is {max_road_grade_pct}% (need <= 20%)"
+        ));
+    }
+    let step_limit_cm = 100_u32;
+    if max_entry_zone_step_cm > step_limit_cm {
+        failures.push(format!(
+            "entry zone step is {max_entry_zone_step_cm} cm (need <= {step_limit_cm} cm)"
+        ));
+    }
+
+    let passed = failures.is_empty();
     Ok(CheckReport {
         id: draft.id.clone(),
         cols: draft.cols,
@@ -1272,7 +1704,448 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
         quadrants,
         map_bytes,
         map_max_bytes: MAP_MAX_BYTES,
+        tracked_passable_pct: tracked_pct_min,
+        wheeled_passable_pct: wheeled_pct_min,
+        legged_passable_pct: legged_pct_min,
+        zones_reachable_tracked,
+        zones_reachable_wheeled,
+        zones_reachable_legged,
+        key_spots_wheeled_reachable,
+        unreachable_key_spots,
+        waypoints_reachable,
+        unreachable_waypoints,
+        max_grade_pct,
+        max_road_grade_pct,
+        max_entry_zone_step_cm,
+        passed,
+        failures,
     })
+}
+
+/// **Slope relaxation repair pass** (doc 30 §5): iteratively pull the higher cell
+/// of any steep orthogonal edge down toward the drive limit (`20 %` between
+/// `road` / `paved` cells, `45 %` on general passable ground), never modifying
+/// entry-zone cells. Returns the number of cells whose elevation changed.
+///
+/// # Errors
+///
+/// [`GroundError`] if `draft.classes` or `draft.elev` fails to decode.
+pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
+    let classes = decode_classes(&draft.id, draft.cols, draft.rows, &draft.classes)?;
+    let orig_elev = decode_elev(&draft.id, draft.cols, draft.rows, &draft.elev)?;
+    let mut elev = orig_elev.clone();
+
+    let w = usize::from(draft.cols);
+    let h = usize::from(draft.rows);
+    let mut in_zone = vec![false; w * h];
+    for z in &draft.entry_zones {
+        for y in z.y0..=z.y1.min(draft.rows.saturating_sub(1)) {
+            for x in z.x0..=z.x1.min(draft.cols.saturating_sub(1)) {
+                if let Some(slot) = in_zone.get_mut(usize::from(y) * w + usize::from(x)) {
+                    *slot = true;
+                }
+            }
+        }
+    }
+
+    let is_passable = |c: TerrainClass| {
+        !matches!(
+            c,
+            TerrainClass::Void
+                | TerrainClass::Wall
+                | TerrainClass::WaterDeep
+                | TerrainClass::WoodsHeavy
+        )
+    };
+    let is_road = |c: TerrainClass| matches!(c, TerrainClass::Road | TerrainClass::Paved);
+    let table = LocomotionTable::shipped();
+    let tracked_limit =
+        i32::try_from(table.max_slope_pct("tracked", &[]).unwrap_or(45)).unwrap_or(45);
+    let wheeled_limit =
+        i32::try_from(table.max_slope_pct("wheeled", &[]).unwrap_or(25)).unwrap_or(25);
+    let road_limit = wheeled_limit.saturating_sub(5);
+    let road_max_rise = (i32::from(draft.cell_cm) * road_limit) / 100;
+    let ground_max_rise = (i32::from(draft.cell_cm) * tracked_limit) / 100;
+
+    for _ in 0..64 {
+        let mut changed_iter = false;
+        for y in 0..h {
+            for x in 0..w {
+                let a = y * w + x;
+                let ca = classes.get(a).copied().unwrap_or(TerrainClass::Void);
+                if !is_passable(ca) {
+                    continue;
+                }
+                for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+                    if nx >= w || ny >= h {
+                        continue;
+                    }
+                    let b = ny * w + nx;
+                    let cb = classes.get(b).copied().unwrap_or(TerrainClass::Void);
+                    if !is_passable(cb) {
+                        continue;
+                    }
+                    let max_rise = if is_road(ca) && is_road(cb) {
+                        road_max_rise
+                    } else {
+                        ground_max_rise
+                    };
+                    let ea = i32::from(elev.get(a).copied().unwrap_or(0));
+                    let eb = i32::from(elev.get(b).copied().unwrap_or(0));
+                    let diff = (ea - eb).abs();
+                    if diff <= max_rise {
+                        continue;
+                    }
+                    let za = in_zone.get(a).copied().unwrap_or(false);
+                    let zb = in_zone.get(b).copied().unwrap_or(false);
+                    if za && zb {
+                        continue;
+                    }
+                    if ea > eb {
+                        if !za {
+                            let target = i16::try_from(
+                                (eb + max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX)),
+                            )
+                            .unwrap_or(0);
+                            if let Some(slot) = elev.get_mut(a)
+                                && *slot != target
+                            {
+                                *slot = target;
+                                changed_iter = true;
+                            }
+                        } else if !zb {
+                            let target = i16::try_from(
+                                (ea - max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX)),
+                            )
+                            .unwrap_or(0);
+                            if let Some(slot) = elev.get_mut(b)
+                                && *slot != target
+                            {
+                                *slot = target;
+                                changed_iter = true;
+                            }
+                        }
+                    } else if !zb {
+                        let target = i16::try_from(
+                            (ea + max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX)),
+                        )
+                        .unwrap_or(0);
+                        if let Some(slot) = elev.get_mut(b)
+                            && *slot != target
+                        {
+                            *slot = target;
+                            changed_iter = true;
+                        }
+                    } else if !za {
+                        let target = i16::try_from(
+                            (eb - max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX)),
+                        )
+                        .unwrap_or(0);
+                        if let Some(slot) = elev.get_mut(a)
+                            && *slot != target
+                        {
+                            *slot = target;
+                            changed_iter = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed_iter {
+            break;
+        }
+    }
+
+    let modified = orig_elev
+        .iter()
+        .zip(elev.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    if modified > 0 {
+        draft.elev = encode_elev(&elev);
+    }
+    Ok(modified)
+}
+
+/// **Speckle filter repair pass** (doc 30 §5): replace connected 4-neighbour
+/// class regions smaller than `min_region` (default [`DEFAULT_SPECKLE_MIN_CELLS`],
+/// 3) with their majority 4-neighbour class.
+///
+/// Never removes a built class (`paved`, `road`, `floor`, `door`, `platform`),
+/// `wall`, or any cell holding a [`KeySpot`].
+/// Returns the number of cells whose class changed.
+///
+/// # Errors
+///
+/// [`GroundError`] if `draft.classes` fails to decode.
+pub fn despeckle(draft: &mut GroundDraft, min_region: usize) -> Result<usize, GroundError> {
+    let orig_classes = decode_classes(&draft.id, draft.cols, draft.rows, &draft.classes)?;
+    if min_region <= 1 {
+        return Ok(0);
+    }
+    let mut classes = orig_classes.clone();
+    let w = usize::from(draft.cols);
+    let h = usize::from(draft.rows);
+    let spot_cells: BTreeSet<(usize, usize)> = draft
+        .key_spots
+        .iter()
+        .map(|s| (usize::from(s.x), usize::from(s.y)))
+        .collect();
+    let is_exempt_class = |c: TerrainClass| {
+        matches!(
+            c,
+            TerrainClass::Wall
+                | TerrainClass::Paved
+                | TerrainClass::Road
+                | TerrainClass::Floor
+                | TerrainClass::Door
+                | TerrainClass::Platform
+        )
+    };
+
+    let mut visited = vec![false; w * h];
+    let mut component = Vec::new();
+    let mut queue = VecDeque::new();
+
+    for y in 0..h {
+        for x in 0..w {
+            let start = y * w + x;
+            if visited.get(start).copied().unwrap_or(true) {
+                continue;
+            }
+            let target_class = classes.get(start).copied().unwrap_or(TerrainClass::Ground);
+            if let Some(v) = visited.get_mut(start) {
+                *v = true;
+            }
+            if is_exempt_class(target_class) {
+                continue;
+            }
+            component.clear();
+            queue.clear();
+            component.push((x, y));
+            queue.push_back((x, y));
+            let mut has_spot = spot_cells.contains(&(x, y));
+
+            while let Some((cx, cy)) = queue.pop_front() {
+                for (dx, dy) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
+                    let (Some(nx), Some(ny)) =
+                        (cx.checked_add_signed(dx), cy.checked_add_signed(dy))
+                    else {
+                        continue;
+                    };
+                    if nx >= w || ny >= h {
+                        continue;
+                    }
+                    let n_idx = ny * w + nx;
+                    if visited.get(n_idx).copied().unwrap_or(true) {
+                        continue;
+                    }
+                    if classes.get(n_idx).copied() == Some(target_class) {
+                        if let Some(v) = visited.get_mut(n_idx) {
+                            *v = true;
+                        }
+                        if spot_cells.contains(&(nx, ny)) {
+                            has_spot = true;
+                        }
+                        component.push((nx, ny));
+                        queue.push_back((nx, ny));
+                    }
+                }
+            }
+
+            if has_spot || component.len() >= min_region {
+                continue;
+            }
+
+            let comp_set: BTreeSet<(usize, usize)> = component.iter().copied().collect();
+            let mut neighbour_counts: BTreeMap<u8, (usize, TerrainClass)> = BTreeMap::new();
+            for &(cx, cy) in &component {
+                for (dx, dy) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
+                    let (Some(nx), Some(ny)) =
+                        (cx.checked_add_signed(dx), cy.checked_add_signed(dy))
+                    else {
+                        continue;
+                    };
+                    if nx >= w || ny >= h || comp_set.contains(&(nx, ny)) {
+                        continue;
+                    }
+                    if let Some(&nc) = classes.get(ny * w + nx)
+                        && nc != TerrainClass::Void
+                    {
+                        let entry = neighbour_counts.entry(nc.code()).or_insert((0, nc));
+                        entry.0 += 1;
+                    }
+                }
+            }
+            if let Some((_, &(_, replacement))) =
+                neighbour_counts
+                    .iter()
+                    .max_by(|(code_a, (cnt_a, _)), (code_b, (cnt_b, _))| {
+                        cnt_a.cmp(cnt_b).then_with(|| code_b.cmp(code_a))
+                    })
+            {
+                for &(cx, cy) in &component {
+                    if let Some(slot) = classes.get_mut(cy * w + cx) {
+                        *slot = replacement;
+                    }
+                }
+            }
+        }
+    }
+
+    let modified = orig_classes
+        .iter()
+        .zip(classes.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    if modified > 0 {
+        draft.classes = encode_classes(draft.cols, draft.rows, &classes);
+    }
+    Ok(modified)
+}
+
+/// **Auto-route waypoint synthesis** (doc 30 §5): place a waypoint node at each
+/// entry zone's muster/centre and at each [`KeySpot`], connect them by A\* over
+/// the tracked cost grid under the sim's slope rule with an intermediate node
+/// every 20 cells along each path, and write the graph into `draft.waypoints`.
+///
+/// # Errors
+///
+/// [`GroundError`] if the draft's grid fails to decode or canonical IDs cannot be formed.
+pub fn route(draft: &mut GroundDraft) -> Result<(), GroundError> {
+    let classes = decode_classes(&draft.id, draft.cols, draft.rows, &draft.classes)?;
+    let elev = decode_elev(&draft.id, draft.cols, draft.rows, &draft.elev)?;
+    let terrain = build_priced_terrain(draft, &classes, &elev)?;
+    let table = LocomotionTable::shipped();
+    let tracked_limit = table.max_slope_pct("tracked", &[]).unwrap_or(45);
+
+    let cid = |s: &str| {
+        CanonicalId::new(s).map_err(|e| GroundError::Invalid {
+            id: s.to_owned(),
+            detail: e.to_string(),
+        })
+    };
+
+    let mut nodes: Vec<WaypointNode> = Vec::new();
+    let mut edges: Vec<[CanonicalId; 2]> = Vec::new();
+    let mut edge_set: BTreeSet<(String, String)> = BTreeSet::new();
+
+    let find_or_insert_node = |nodes: &mut Vec<WaypointNode>,
+                               preferred_id: &str,
+                               x: u16,
+                               y: u16|
+     -> Result<CanonicalId, GroundError> {
+        if let Some(existing) = nodes
+            .iter()
+            .find(|n| n.x.abs_diff(x) <= 2 && n.y.abs_diff(y) <= 2)
+        {
+            return Ok(existing.id.clone());
+        }
+        if nodes.len() >= MAX_WAYPOINT_NODES
+            && let Some(nearest) = nodes
+                .iter()
+                .min_by_key(|n| u32::from(n.x.abs_diff(x)) + u32::from(n.y.abs_diff(y)))
+        {
+            return Ok(nearest.id.clone());
+        }
+        let id = cid(preferred_id)?;
+        nodes.push(WaypointNode {
+            id: id.clone(),
+            x,
+            y,
+        });
+        Ok(id)
+    };
+
+    let mut zone_anchors: Vec<(u16, u16)> = Vec::new();
+    for z in &draft.entry_zones {
+        let seeds = zone_seed_cells(&terrain, z, &draft.tanks, CostRow::Tracked);
+        let (zx, zy) = seeds
+            .first()
+            .copied()
+            .unwrap_or(((z.x0 + z.x1) / 2, (z.y0 + z.y1) / 2));
+        let _ = find_or_insert_node(&mut nodes, &format!("muster_{}", z.team.as_str()), zx, zy)?;
+        zone_anchors.push((zx, zy));
+    }
+
+    let mut spot_anchors: Vec<(u16, u16)> = Vec::new();
+    for (idx, spot) in draft.key_spots.iter().enumerate() {
+        let id = cid(&format!("spot_{idx}"))?;
+        if !nodes.iter().any(|n| n.x == spot.x && n.y == spot.y) && nodes.len() < MAX_WAYPOINT_NODES
+        {
+            nodes.push(WaypointNode {
+                id,
+                x: spot.x,
+                y: spot.y,
+            });
+        }
+        spot_anchors.push((spot.x, spot.y));
+    }
+
+    let mut pairs: Vec<((u16, u16), (u16, u16))> = Vec::new();
+    if spot_anchors.is_empty() {
+        if let (Some(&a), Some(&b)) = (zone_anchors.first(), zone_anchors.get(1)) {
+            pairs.push((a, b));
+        }
+    } else {
+        for &z_xy in &zone_anchors {
+            for &s_xy in &spot_anchors {
+                pairs.push((z_xy, s_xy));
+            }
+        }
+        for i in 0..spot_anchors.len() {
+            if let (Some(&a), Some(&b)) = (spot_anchors.get(i), spot_anchors.get(i + 1)) {
+                pairs.push((a, b));
+            }
+        }
+    }
+
+    let mut scratch = PathScratch::default();
+    let mut step_counter = 0_usize;
+    for (start, goal) in pairs {
+        let Ok(res) = path_with(
+            &terrain,
+            &mut scratch,
+            start,
+            goal,
+            u32::MAX,
+            terrain.min_cost(CostRow::Tracked),
+            Some(tracked_limit),
+            CostRow::Tracked,
+            &[],
+        ) else {
+            continue;
+        };
+        let mut waypoints_along: Vec<(u16, u16)> = vec![start];
+        for (i, &cell) in res.cells.iter().enumerate() {
+            if (i + 1) % 20 == 0 && cell != goal {
+                waypoints_along.push(cell);
+            }
+        }
+        waypoints_along.push(goal);
+
+        let mut prev_id: Option<CanonicalId> = None;
+        for (wx, wy) in waypoints_along {
+            let name = format!("wp_{step_counter:03}");
+            step_counter += 1;
+            let cur_id = find_or_insert_node(&mut nodes, &name, wx, wy)?;
+            if let Some(prev) = prev_id
+                && prev != cur_id
+                && edges.len() < MAX_WAYPOINT_EDGES
+            {
+                let a = prev.as_str().to_owned();
+                let b = cur_id.as_str().to_owned();
+                let key = if a <= b { (a, b) } else { (b, a) };
+                if edge_set.insert(key) {
+                    edges.push([prev, cur_id.clone()]);
+                }
+            }
+            prev_id = Some(cur_id);
+        }
+    }
+
+    draft.waypoints = WaypointGraph { nodes, edges };
+    Ok(())
 }
 
 /// **The inverse (`pack → draft`)** (doc 30 §8 & §11 WG.1): reconstruct a
@@ -1383,7 +2256,7 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
         schema: DRAFT_SCHEMA.to_owned(),
         id,
         label: arena_def.label,
-        biome: arena_def.biome.unwrap_or_else(|| "temperate".to_owned()),
+        biome: region_def.biome.unwrap_or_else(|| "temperate".to_owned()),
         body: region_def.body.unwrap_or_else(|| "luna".to_owned()),
         origin_m: arena_def.origin_m,
         cell_cm: arena_def.cell_cm,
@@ -1718,6 +2591,217 @@ mod tests {
         let void_grid = vec![TerrainClass::Void; usize::from(SIDE) * usize::from(SIDE)];
         bad_void.classes = encode_classes(SIDE, SIDE, &void_grid);
         check!(bad_void.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn wg3_proving_ground_check_report_meets_all_section_5_targets() -> Result<(), Box<dyn Error>> {
+        let draft = proving_ground_draft()?;
+        let report = check(&draft)?;
+        check!(report.passed);
+        check!(report.failures.is_empty());
+        check!(report.tracked_passable_pct >= 90);
+        check!(report.legged_passable_pct >= 95);
+        check!(report.zones_reachable_tracked);
+        check!(report.zones_reachable_wheeled);
+        check!(report.zones_reachable_legged);
+        check!(report.key_spots_wheeled_reachable);
+        check!(report.unreachable_key_spots.is_empty());
+        check!(report.waypoints_reachable);
+        check!(report.unreachable_waypoints.is_empty());
+        check!(report.max_road_grade_pct <= 20);
+        Ok(())
+    }
+
+    #[test]
+    fn wg3_ridge_at_45_pct_passes_check_and_50_pct_is_reported() -> Result<(), Box<dyn Error>> {
+        let make_ridge = |rise_cm: i16, cut_road: bool| -> Result<GroundDraft, Box<dyn Error>> {
+            let cols = 64_u16;
+            let rows = 64_u16;
+            let w = usize::from(cols);
+            let mut classes = vec![TerrainClass::Ground; w * usize::from(rows)];
+            let mut elev = vec![0_i16; w * usize::from(rows)];
+            for x in 0..w {
+                if let Some(slot) = classes.get_mut(32 * w + x) {
+                    *slot = TerrainClass::Road;
+                }
+            }
+            for y in 0..usize::from(rows) {
+                for x in 32..w {
+                    if let Some(slot) = elev.get_mut(y * w + x) {
+                        *slot = rise_cm;
+                    }
+                }
+            }
+            if cut_road {
+                // Cut a <= 20% road ramp through the ridge on row 32 (0 -> 150 -> 300 -> 450).
+                if let Some(slot) = elev.get_mut(32 * w + 32) {
+                    *slot = 150;
+                }
+                if let Some(slot) = elev.get_mut(32 * w + 33) {
+                    *slot = 300;
+                }
+            }
+            Ok(GroundDraft {
+                schema: DRAFT_SCHEMA.to_owned(),
+                id: "ridge_test".to_owned(),
+                label: "Ridge Test".to_owned(),
+                biome: "mars".to_owned(),
+                body: "mars".to_owned(),
+                origin_m: [0, 0],
+                cell_cm: 1_000,
+                cols,
+                rows,
+                classes: encode_classes(cols, rows, &classes),
+                elev: encode_elev(&elev),
+                entry_zones: vec![
+                    EntryZoneDef {
+                        team: Team::Red,
+                        x0: 0,
+                        y0: 0,
+                        x1: 7,
+                        y1: 63,
+                    },
+                    EntryZoneDef {
+                        team: Team::Blue,
+                        x0: 56,
+                        y0: 0,
+                        x1: 63,
+                        y1: 63,
+                    },
+                ],
+                key_spots: Vec::new(),
+                waypoints: WaypointGraph {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                },
+                modes: Vec::new(),
+                tanks: Vec::new(),
+                atlas_version: 1,
+                arena_version: 1,
+                provenance: GroundProvenance {
+                    source: GroundSource::Studio,
+                    version: "1.0".to_owned(),
+                    seed: None,
+                    inputs: Vec::new(),
+                },
+                note: String::new(),
+            })
+        };
+
+        let ridge_45 = make_ridge(450, true)?;
+        let report_45 = check(&ridge_45)?;
+        check!(report_45.passed);
+        check!(report_45.zones_reachable_tracked);
+        check!(report_45.zones_reachable_wheeled);
+        check!(report_45.max_road_grade_pct <= 20);
+        check_eq!(report_45.tracked_passable_pct, 100);
+
+        let ridge_50 = make_ridge(500, false)?;
+        let report_50 = check(&ridge_50)?;
+        check!(!report_50.passed);
+        check!(!report_50.zones_reachable_tracked);
+        check!(!report_50.zones_reachable_wheeled);
+        check!(report_50.tracked_passable_pct < 90);
+        check!(build(&ridge_50).is_err());
+
+        // Extractor draft with a 50% ridge is automatically relaxed on `build`,
+        // its routed waypoint graph and §5 report note are written into `built.draft`,
+        // and the built packs round-trip to match `built.draft`.
+        let mut extractor_ridge = ridge_50;
+        extractor_ridge.provenance.source = GroundSource::Extractor;
+        extractor_ridge.provenance.inputs = vec!["Mars Pack v1".to_owned()];
+        let built = build(&extractor_ridge)?;
+        check!(!built.draft.waypoints.nodes.is_empty());
+        check!(built.draft.note.contains("ground-pack check"));
+        let round_trip = from_packs(&built.atlas_json, &built.arena_json)?;
+        check_eq!(round_trip.biome, "mars");
+        check_eq!(round_trip.waypoints, built.draft.waypoints);
+        check_eq!(round_trip.note, built.draft.note);
+        let after = check(&round_trip)?;
+        check!(after.passed);
+        check!(after.zones_reachable_tracked);
+        check!(after.zones_reachable_wheeled);
+        Ok(())
+    }
+
+    #[test]
+    fn wg3_route_over_proving_ground_with_empty_graph_reaches_every_key_spot()
+    -> Result<(), Box<dyn Error>> {
+        let mut draft = proving_ground_draft()?;
+        draft.waypoints.nodes.clear();
+        draft.waypoints.edges.clear();
+        route(&mut draft)?;
+        check!(!draft.waypoints.nodes.is_empty());
+        check!(!draft.waypoints.edges.is_empty());
+        for spot in &draft.key_spots {
+            check!(
+                draft
+                    .waypoints
+                    .nodes
+                    .iter()
+                    .any(|n| n.x.abs_diff(spot.x) <= 2 && n.y.abs_diff(spot.y) <= 2)
+            );
+        }
+        let report = check(&draft)?;
+        check!(report.passed);
+        check!(report.waypoints_reachable);
+        Ok(())
+    }
+
+    #[test]
+    fn wg3_one_cell_wall_and_studio_70_pct_cliff_survive_build() -> Result<(), Box<dyn Error>> {
+        let mut draft = proving_ground_draft()?;
+        draft.id = "studio_cliff".to_owned();
+        draft.provenance.source = GroundSource::Studio;
+        draft.modes.clear();
+
+        let mut classes = decode_classes(&draft.id, draft.cols, draft.rows, &draft.classes)?;
+        // Place a 1-cell `wall` cover pillar at (50, 50) and a 1-cell `woods_light` speckle at (55, 50).
+        let w = usize::from(draft.cols);
+        if let Some(slot) = classes.get_mut(50 * w + 50) {
+            *slot = TerrainClass::Wall;
+        }
+        if let Some(slot) = classes.get_mut(50 * w + 55) {
+            *slot = TerrainClass::WoodsLight;
+        }
+        draft.classes = encode_classes(draft.cols, draft.rows, &classes);
+
+        // Studio build does NOT run repair passes by default: both the 70% cliff at The Bluff
+        // and the 1-cell wall survive `build`.
+        let built = build(&draft)?;
+        let rebuilt = from_packs(&built.atlas_json, &built.arena_json)?;
+        let rebuilt_classes =
+            decode_classes(&rebuilt.id, rebuilt.cols, rebuilt.rows, &rebuilt.classes)?;
+        let rebuilt_elev = decode_elev(&rebuilt.id, rebuilt.cols, rebuilt.rows, &rebuilt.elev)?;
+        check_eq!(
+            rebuilt_classes.get(50 * w + 50).copied(),
+            Some(TerrainClass::Wall)
+        );
+        // The Bluff's 70% west face (140, 111) -> (141, 111) is 700 cm rise.
+        let e_foot = rebuilt_elev.get(111 * w + 140).copied().unwrap_or(0);
+        let e_top = rebuilt_elev.get(111 * w + 141).copied().unwrap_or(0);
+        check_eq!((i32::from(e_top) - i32::from(e_foot)).abs(), 700);
+
+        // Even when `despeckle` runs explicitly, the 1-cell `wall` and built classes survive,
+        // while the 1-cell `woods_light` speckle is replaced by its grass neighbours.
+        let mut despeckled = draft;
+        let changed = despeckle(&mut despeckled, DEFAULT_SPECKLE_MIN_CELLS)?;
+        check!(changed >= 1);
+        let after_classes = decode_classes(
+            &despeckled.id,
+            despeckled.cols,
+            despeckled.rows,
+            &despeckled.classes,
+        )?;
+        check_eq!(
+            after_classes.get(50 * w + 50).copied(),
+            Some(TerrainClass::Wall)
+        );
+        check_eq!(
+            after_classes.get(50 * w + 55).copied(),
+            Some(TerrainClass::Grass)
+        );
         Ok(())
     }
 }

@@ -2,8 +2,9 @@
 //! (doc 30 §4, D-30-2; cut WG.1).
 //!
 //! Subcommands:
-//! - `ground-pack build <draft.json> --out <dir>`
+//! - `ground-pack build <draft.json> --out <dir> [--repair] [--force]`
 //! - `ground-pack check <draft.json>`
+//! - `ground-pack route <draft.json> [--out <draft.json>]`
 //! - `ground-pack gen <preset> [--seed <N>] [--biome <B>] [--out <draft.json>]`
 //! - `ground-pack from-packs <atlas.json> <arena.json> [--out <draft.json>]`
 
@@ -19,12 +20,13 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use tacsim::ground::{GroundDraft, build, check, from_packs, generate};
+use tacsim::ground::{GroundDraft, build_with_options, check, from_packs, generate, route};
 
 fn usage() -> &'static str {
     "Usage:\n  \
-     ground-pack build <draft.json> --out <dir>\n  \
+     ground-pack build <draft.json> --out <dir> [--repair] [--force]\n  \
      ground-pack check <draft.json>\n  \
+     ground-pack route <draft.json> [--out <draft.json>]\n  \
      ground-pack gen <preset> [--seed <N>] [--biome <B>] [--out <draft.json>]\n  \
      ground-pack from-packs <atlas.json> <arena.json> [--out <draft.json>]"
 }
@@ -40,12 +42,22 @@ fn run() -> Result<(), String> {
                 return Err(format!("missing <draft.json>\n{}", usage()));
             };
             let mut out_dir: Option<&str> = None;
+            let mut repair = false;
+            let mut force = false;
             let mut i = 2_usize;
             while i < args.len() {
                 match args.get(i).map(String::as_str) {
                     Some("--out") => {
                         out_dir = args.get(i + 1).map(String::as_str);
                         i += 2;
+                    }
+                    Some("--repair") => {
+                        repair = true;
+                        i += 1;
+                    }
+                    Some("--force") => {
+                        force = true;
+                        i += 1;
                     }
                     Some(other) => return Err(format!("unknown argument `{other}`\n{}", usage())),
                     None => break,
@@ -57,7 +69,14 @@ fn run() -> Result<(), String> {
             let raw = fs::read_to_string(draft_path)
                 .map_err(|e| format!("failed to read `{draft_path}`: {e}"))?;
             let draft = GroundDraft::from_json(&raw).map_err(|e| e.to_string())?;
-            let built = build(&draft).map_err(|e| e.to_string())?;
+            let built = build_with_options(&draft, repair, force).map_err(|e| e.to_string())?;
+
+            if built.draft != draft {
+                let updated_draft = built.draft.to_json_pretty().map_err(|e| e.to_string())?;
+                fs::write(draft_path, &updated_draft)
+                    .map_err(|e| format!("failed to update `{draft_path}`: {e}"))?;
+                println!("updated {draft_path}");
+            }
 
             let base = Path::new(out_dir);
             let atlas_dir = base.join("atlas");
@@ -88,6 +107,42 @@ fn run() -> Result<(), String> {
             let report = check(&draft).map_err(|e| e.to_string())?;
             let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
             println!("{text}");
+            if !report.passed {
+                return Err(format!(
+                    "draft `{}` failed check: {}",
+                    report.id,
+                    report.failures.join("; ")
+                ));
+            }
+            Ok(())
+        }
+        "route" => {
+            let Some(draft_path) = args.get(1) else {
+                return Err(format!("missing <draft.json>\n{}", usage()));
+            };
+            let mut out_path: Option<&str> = None;
+            let mut i = 2_usize;
+            while i < args.len() {
+                match args.get(i).map(String::as_str) {
+                    Some("--out") => {
+                        out_path = Some(
+                            args.get(i + 1)
+                                .ok_or_else(|| "missing value after --out".to_owned())?
+                                .as_str(),
+                        );
+                        i += 2;
+                    }
+                    Some(other) => return Err(format!("unknown argument `{other}`\n{}", usage())),
+                    None => break,
+                }
+            }
+            let raw = fs::read_to_string(draft_path)
+                .map_err(|e| format!("failed to read `{draft_path}`: {e}"))?;
+            let mut draft = GroundDraft::from_json(&raw).map_err(|e| e.to_string())?;
+            route(&mut draft).map_err(|e| e.to_string())?;
+            let json = draft.to_json_pretty().map_err(|e| e.to_string())?;
+            let target = out_path.unwrap_or(draft_path.as_str());
+            fs::write(target, &json).map_err(|e| format!("failed to write `{target}`: {e}"))?;
             Ok(())
         }
         "gen" => {

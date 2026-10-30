@@ -76,8 +76,8 @@ pub use physics::{
 };
 pub use place::{PlaceRef, chain_for_room, find_place};
 pub use record::{
-    Access, Footprint, MAX_KNOWN_PLACES, NeighborhoodRec, PortalRec, RecordError, RecordKey,
-    Records, RegionRec, RoomGeo, RoomKind, SiteRec, StructureRec, SurfaceRef, TileRec,
+    Access, BIOMES, Footprint, MAX_KNOWN_PLACES, NeighborhoodRec, PortalRec, RecordError,
+    RecordKey, Records, RegionRec, RoomGeo, RoomKind, SiteRec, StructureRec, SurfaceRef, TileRec,
 };
 pub use terrain::TerrainClass;
 pub use theme::{DescLength, Theme, resolve_place_theme, resolve_theme, world_theme};

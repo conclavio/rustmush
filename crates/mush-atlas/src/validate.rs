@@ -1067,6 +1067,17 @@ impl Run<'_> {
                     .decode::<RegionDef>()
                     .map_err(|e| e.to_string())
                     .and_then(|d| d.region_kind().map(|_| d))
+                    .and_then(|d| {
+                        if let Some(biome) = &d.biome
+                            && !crate::record::BIOMES.contains(&biome.as_str())
+                        {
+                            return Err(format!(
+                                "biome is one of {:?}; `{biome}` is not",
+                                crate::record::BIOMES
+                            ));
+                        }
+                        Ok(d)
+                    })
                     .map(|d| {
                         if self.decoded.region.is_some() {
                             // The second is a pack error, reported below.
