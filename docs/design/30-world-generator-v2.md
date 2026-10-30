@@ -1,5 +1,16 @@
 # 30. World generator v2 — the ground as content, one pipeline from authoring to the three views
 
+**Draft 0.3 — 2026-10-30, the questions ruled.** The owner accepted every open question at the
+lead's default (*"all Q-30s accepted as default"*): Q-30-1..7 and Q-30-9 are ruled as §13 marks them,
+and with D-30-10 confirmed the same day the document carries no open question — WG.1 may start.
+The defaults are now decisions: the writer lives in `tacsim::ground` with the `ground-pack` binary
+(Q-30-1); biome and body are independent fields (Q-30-2); roads are authored ≤ 20 % (Q-30-3); the
+passability acceptance stands (Q-30-4); the studio reaches the server by download → `build` →
+`pack_paths` → restart, `@ground/stage` later (Q-30-5); the biggest draft is 512 × 512, which
+makes WG.6's window a cut, not an option (Q-30-6); the Winter Pack valley is the second shipped
+arena and the generator's `mars_canyon` the first biome arena (Q-30-7); the extractor's artifacts
+are tree content with `provenance`, the script ships, the pack never does (Q-30-9).
+
 **Draft 0.2 — 2026-10-30, the review folded.** The author of PR #178 reviewed Draft 0.1 on PR
 #183 and raised six points, all taken (the owner, the same day: *"fold all six points into doc 30
 as Draft 0.2 … and rule Q-30-8 as the reviewer suggests pending my confirmation"*): the writer's
@@ -430,32 +441,32 @@ each other after WG.3. Each cut records itself in `30-cut-notes.md` in doc 20's 
 - **Doc 22** the look half: a biome's palettes are the look's, listed with the sheets.
 - **`docs/design/README.md`**: this row.
 
-## 13. Questions for the owner (the lead's defaults until ruled)
+## 13. Questions for the owner (all ruled 2026-10-30)
 
-- **Q-30-1 — where the writer lives.** Default: `tacsim::ground` with the `ground-pack` binary in
+- **Q-30-1 — where the writer lives.** **Ruled 2026-10-30 at the default:** `tacsim::ground` with the `ground-pack` binary in
   `crates/tacsim/src/bin/`, because the check needs `slope.rs` and `path.rs`; a `mush-ground` crate
-  below tacsim could not call them. Alternative: a crate with the check as a tacsim feature.
-- **Q-30-2 — biome and body.** Default: independent fields; a region on `luna` may be temperate (the
-  proving ground is, and stays). Alternative: `body` implies a default biome the region may override.
-- **Q-30-3 — road grade.** Default: roads authored ≤ 20 % (wheeled 25 % with a margin, the v4
+  below tacsim could not call them. The alternative, retired: a crate with the check as a tacsim feature.
+- **Q-30-2 — biome and body.** **Ruled 2026-10-30 at the default:** independent fields; a region on `luna` may be temperate (the
+  proving ground is, and stays). The alternative, retired: `body` implies a default biome the region may override.
+- **Q-30-3 — road grade.** **Ruled 2026-10-30 at the default:** roads authored ≤ 20 % (wheeled 25 % with a margin, the v4
   figure); off-road at each drive's limit.
-- **Q-30-4 — passability acceptance.** Default: tracked ≥ 90 %, legged ≥ 95 % of land cells from
+- **Q-30-4 — passability acceptance.** **Ruled 2026-10-30 at the default:** tracked ≥ 90 %, legged ≥ 95 % of land cells from
   both entry zones; the zones mutually reachable by tracked, wheeled and legged; every key spot
   wheeled-reachable.
-- **Q-30-5 — the studio's route to the server.** Default: download → `ground-pack build` →
+- **Q-30-5 — the studio's route to the server.** **Ruled 2026-10-30 at the default:** download → `ground-pack build` →
   `pack_paths` → restart for WG.4; `@ground/stage` (sign and hot-shelve a draft as an operator pack)
   as a later cut once the hot-load half of the shelf exists.
-- **Q-30-6 — the biggest draft.** Default: 512 × 512 at 10 m (sixteen 128-cell quadrants, the
-  `MAX_ARENA_TILES` cap), which forces WG.6's window. Alternative: hold at 256 until the window
+- **Q-30-6 — the biggest draft.** **Ruled 2026-10-30 at the default:** 512 × 512 at 10 m (sixteen 128-cell quadrants, the
+  `MAX_ARENA_TILES` cap), which forces WG.6's window. The alternative, retired: hold at 256 until the window
   lands.
-- **Q-30-7 — the second shipped arena.** Default: the extractor's Winter Pack valley (a real
+- **Q-30-7 — the second shipped arena.** **Ruled 2026-10-30 at the default:** the extractor's Winter Pack valley (a real
   temperate heightfield, no new vocabulary), then the generator's `mars_canyon` as the first
-  biome arena. Alternative: Mars first, to exercise the biome end to end sooner.
+  biome arena. The alternative, retired: Mars first, to exercise the biome end to end sooner.
 - **Q-30-8 — the `rock` class.** **Ruled 2026-10-30 (D-30-10, §7), confirmed by the owner the same day**: a surface —
   its cost and shading on the real heightfield, no height of its own; the picture raises only what
   the sim's sight table raises. The former default (a block, as drawn today) and the
   alternative (a `rock`/`cliff` split) are both retired by it.
-- **Q-30-9 — the extractor's artifacts as tree content.** Default: yes, per the 2026-10-29 ruling,
+- **Q-30-9 — the extractor's artifacts as tree content.** **Ruled 2026-10-30 at the default:** yes, per the 2026-10-29 ruling,
   with `provenance` naming the pack and version; the script ships, the `.unitypackage` never does.
 
 ## 14. Risks, and what this document refuses
