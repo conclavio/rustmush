@@ -42,7 +42,9 @@ things from the owner: moving admin `sshd` off the player addresses, and a go-ah
    (Q-29-4).
 4. **Check the config.** Run `sshdoorway --config /etc/rustmush/sshdoorway.toml --check`.
 5. **Start.** Run `systemctl enable --now sshdoorway-logrotate.timer`, then
-   `systemctl start sshdoorway@a`.
+   `systemctl enable --now sshdoorway@a`. Exactly one generation is enabled at any time;
+   `swap.sh` moves the enablement to the generation it starts, so a reboot brings back the
+   serving one.
 6. **Gate.** `check-logging.sh` must pass. Do not tell players about port 22 until it
    does.
 7. **Publish the host key fingerprint.** It is logged at start as `fingerprint=` (Q-29-5).
@@ -66,6 +68,14 @@ close.
 **`systemctl stop` or `restart` is not a swap.** `SIGTERM` finishes the generation: one
 30 s warning, then every session closes. That is what a reboot does too. Use `swap.sh` to
 restart without dropping players.
+
+**A drained generation stays drained.** The drain writes `/var/lib/sshdoorway/draining-<gen>`,
+and the doorway never removes it: a generation that finds its marker at start logs why,
+reports ready and exits cleanly, whether systemd restarted it after a crash, needrestart
+restarted it, or the box rebooted. Only `swap.sh` clears the marker, right before it starts
+that generation. If `swap.sh` sees that a new generation did not stay up for 5 s, it stops
+and disables that generation again, so `Restart=on-failure` cannot bring it up beside the
+old one.
 
 **Reloading.** `systemctl reload sshdoorway@a` (`SIGHUP`) reloads the routes, limits and
 menu. Changing `[listen]` needs a swap.

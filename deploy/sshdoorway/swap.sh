@@ -26,6 +26,9 @@ flock -n 9 || { echo "another swap is running" >&2; exit 1; }
 
 state() { systemctl show -p ActiveState --value "sshdoorway@$1"; }
 running() { case "$(state "$1")" in active|activating|deactivating|reloading) return 0;; *) return 1;; esac; }
+# The unit's StateDirectory=sshdoorway; the doorway reads $STATE_DIRECTORY.
+# A generation that finds its marker at start does not serve, so only this
+# script (which clears it) ever brings a drained generation back.
 marker() { echo "/var/lib/sshdoorway/draining-$1"; }
 draining() { [[ -e "$(marker "$1")" ]]; }
 
@@ -69,10 +72,19 @@ systemctl start "sshdoorway@$new"
 sleep 5
 if [[ "$(state "$new")" != active ]]; then
     echo "sshdoorway@$new did not stay up; the old generation keeps serving" >&2
+    # Restart=on-failure would otherwise start it again in a moment, beside
+    # the old one, with no marker to stop it.
+    systemctl stop "sshdoorway@$new" || true
+    systemctl reset-failed "sshdoorway@$new" || true
+    systemctl disable --quiet "sshdoorway@$new" || true
     exit 1
 fi
 
+# Exactly one generation is enabled, so a reboot brings back the serving one
+# (the drained one would refuse anyway, by its marker).
+systemctl enable --quiet "sshdoorway@$new"
 if [[ -n "$old" ]]; then
+    systemctl disable --quiet "sshdoorway@$old" || true
     echo "draining sshdoorway@$old (warnings at 12h/6h/2h/1h/15m/1m remaining; closes at 24 h)"
     systemctl kill --signal=USR1 "sshdoorway@$old"
 fi

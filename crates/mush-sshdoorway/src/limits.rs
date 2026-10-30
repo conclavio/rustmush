@@ -12,9 +12,12 @@
 //!   a household behind one NAT is told why.
 //!
 //! The rate table is bounded: when it grows past [`MAX_TRACKED`] it is swept
-//! of stale windows, and if it is still full new keys are refused at TCP
-//! accept (failing closed on rate so a spoofed/botnet flood cannot bypass
-//! per-key rate limits).
+//! of stale windows, and if it is still full one arbitrary entry is evicted
+//! to make room. It never fails closed: 65,536 keys is exactly the /64s of
+//! one IPv6 /48, so refusing new keys on a full table would let one customer
+//! allocation lock every new player out (adversarial review, round 2). The
+//! global and per-/48 caps are checked before a new key is inserted, so
+//! connections that would be dropped anyway do not fill the table (F-5).
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -165,6 +168,10 @@ impl Limits {
                 *inner.counters.entry("per-48").or_default() += 1;
                 return Admission::Drop(DropReason::Prefix48);
             }
+            if caps.rate == 0 {
+                *inner.counters.entry("rate").or_default() += 1;
+                return Admission::Drop(DropReason::Rate);
+            }
             if inner.rate.len() >= MAX_TRACKED
                 && inner
                     .last_sweep
@@ -175,9 +182,16 @@ impl Limits {
                     .rate
                     .retain(|_, (start, _)| now.saturating_duration_since(*start) < WINDOW);
             }
-            if inner.rate.len() >= MAX_TRACKED || caps.rate == 0 {
-                *inner.counters.entry("rate").or_default() += 1;
-                return Admission::Drop(DropReason::Rate);
+            if inner.rate.len() >= MAX_TRACKED {
+                // Still full of live windows: make room rather than refuse.
+                // A flood that fills the table owns almost every entry, so
+                // the victim almost always is its own; a legitimate key that
+                // is evicted merely starts a fresh window.
+                let victim = inner.rate.keys().next().copied();
+                if let Some(v) = victim {
+                    inner.rate.remove(&v);
+                }
+                *inner.counters.entry("rate-evict").or_default() += 1;
             }
             inner.rate.insert(key, (now, 1));
         }
@@ -425,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rate_table_is_bounded_and_fails_closed_when_full() {
+    fn the_rate_table_is_bounded_and_evicts_rather_than_refuse() {
         let l = Limits::new();
         let caps = Caps {
             per_key: 1,
@@ -439,9 +453,12 @@ mod tests {
             drop(slot(l.admit(addr, caps, t0)));
         }
         assert_eq!(l.tracked(), MAX_TRACKED);
-        // When the table is full of live windows, a new key is refused rather
-        // than admitted untracked (F-5).
+        // Full of live windows: a new key is still admitted (one entry is
+        // evicted for it), the table stays bounded, and the new key is
+        // tracked — its second connection in the window is over its rate.
         let extra = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + MAX_TRACKED as u32));
+        drop(slot(l.admit(extra, caps, t0)));
+        assert_eq!(l.tracked(), MAX_TRACKED);
         assert!(matches!(
             l.admit(extra, caps, t0),
             Admission::Drop(DropReason::Rate)
@@ -453,6 +470,30 @@ mod tests {
             l.admit(ip("198.18.0.1"), caps, t0 + WINDOW),
             Admission::Drop(DropReason::Rate)
         ));
+        assert_eq!(l.take_counters().get("rate-evict"), Some(&1));
+    }
+
+    #[test]
+    fn one_v6_48_cannot_fill_the_rate_table_against_everyone_else() {
+        // One /48 holds exactly MAX_TRACKED /64s. Connecting once from each
+        // and closing at once (so the /48 concurrency cap never trips) fills
+        // the table; a player from anywhere else must still get in.
+        let l = Limits::new();
+        let caps = Caps {
+            per_key: 8,
+            rate: 20,
+            global: 2048,
+            per_v6_48: 64,
+        };
+        let t0 = Instant::now();
+        for i in 0..MAX_TRACKED as u128 {
+            let v6 = std::net::Ipv6Addr::from((0x2001_0db8_0001u128 << 80) | (i << 64) | 1);
+            drop(slot(l.admit(IpAddr::V6(v6), caps, t0)));
+        }
+        assert_eq!(l.tracked(), MAX_TRACKED);
+        drop(slot(l.admit(ip("198.51.100.7"), caps, t0)));
+        drop(slot(l.admit(ip("2001:db8:2::1"), caps, t0)));
+        assert_eq!(l.tracked(), MAX_TRACKED);
     }
 
     #[test]

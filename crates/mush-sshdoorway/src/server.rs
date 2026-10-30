@@ -60,11 +60,13 @@ pub const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// `russh` half-closes the TCP write side on disconnect and waits for client
 /// EOF or `inactivity_timeout`; because `inactivity_timeout` is `None`, a
 /// half-open client would otherwise hold its slot and drain guard forever (F-1).
-pub const DISCONNECT_GRACE: Duration = Duration::from_secs(2);
+pub const DISCONNECT_GRACE: Duration = Duration::from_secs(5);
 
 /// Downstream → upstream messages queued per channel before the callback
 /// itself waits (and, after [`WRITE_TIMEOUT`], gives up on the connection).
-pub const UP_QUEUE: usize = 256;
+/// Each message is at most one SSH packet (32 KiB), so this also bounds the
+/// memory a client can park at the doorway per channel: 1 MiB.
+pub const UP_QUEUE: usize = 32;
 
 /// At most this many session channels per connection: the game and `sftp`.
 pub const MAX_CHANNELS: usize = 2;
@@ -83,8 +85,9 @@ pub const MAX_PASSWORD_TRIES: usize = 3;
 /// At most this many menu submissions (empty or invalid) before closing (F-2).
 pub const MAX_MENU_TRIES: usize = 16;
 
-/// Idle timeout for a `Stage::Notice` channel that never requests a shell (F-8).
-pub const NOTICE_IDLE: Duration = Duration::from_secs(5);
+/// A `Stage::Notice` session's whole post-auth life: long enough for a slow
+/// link to open the channel and read the one line, no longer (F-8).
+pub const NOTICE_IDLE: Duration = Duration::from_secs(10);
 
 /// A menu (or notice) session is closed this long after it began, however
 /// much it types: the menu holds a slot and leads nowhere by itself.
@@ -407,6 +410,10 @@ struct Pair {
     tx: mpsc::Sender<UpCmd>,
     pump: tokio::task::JoinHandle<()>,
     writer: tokio::task::JoinHandle<()>,
+    /// Replies the pump still owes the handler.
+    pending: Pending,
+    /// Set once the client has closed its side of the channel.
+    closed: Arc<AtomicBool>,
 }
 
 /// A request that wants a reply (29a R-1).
@@ -487,6 +494,18 @@ fn abort_after(drain: Arc<Drain>, conn: u64, delay: Duration) {
     });
 }
 
+/// [`abort_after`], unless the connection has authenticated by then: a
+/// password chain that ran out of tries must not cut a session that a key
+/// (or the front door) let in meanwhile.
+fn abort_unless_authed(drain: Arc<Drain>, conn: u64, delay: Duration, authed: Arc<AtomicBool>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        if !authed.load(Ordering::SeqCst) {
+            drain.abort(conn);
+        }
+    });
+}
+
 fn methods(kinds: &[MethodKind]) -> MethodSet {
     let mut m = MethodSet::empty();
     for k in kinds {
@@ -534,6 +553,10 @@ struct PumpCtx {
     farewell: String,
     drain: Arc<Drain>,
     conn: u64,
+    /// Set by `channel_close` when the client closes its side.
+    closed: Arc<AtomicBool>,
+    /// How long a client may leave a channel the doorway closed unanswered.
+    close_grace: Duration,
 }
 
 fn crlf_line(line: &str) -> Vec<u8> {
@@ -616,7 +639,31 @@ async fn pump(mut ctx: PumpCtx) {
         let _ = tx.send(false);
     }
     match end {
-        End::Closed => {}
+        End::Closed => {
+            // The doorway has closed the channel downstream. A client that
+            // never answers with its own close would keep the connection,
+            // and its slot, with nothing open; it gets the same grace the
+            // last channel's close gets before the no-session watchdog.
+            if !ctx.closed.load(Ordering::SeqCst) {
+                tokio::time::sleep(ctx.close_grace).await;
+                if !ctx.closed.load(Ordering::SeqCst) {
+                    tracing::info!(
+                        conn = ctx.conn,
+                        "a closed channel was never acknowledged; closing"
+                    );
+                    let _ = tokio::time::timeout(
+                        DISCONNECT_GRACE,
+                        ctx.handle.disconnect(
+                            Disconnect::ByApplication,
+                            "the channel was left half-closed".into(),
+                            String::new(),
+                        ),
+                    )
+                    .await;
+                    abort_after(ctx.drain, ctx.conn, DISCONNECT_GRACE);
+                }
+            }
+        }
         End::Gone => {
             let reason = ctx
                 .disconnect
@@ -931,7 +978,12 @@ impl Conn {
     async fn password(&mut self, service: &str, upstream_user: &str, password: &str) -> Auth {
         if self.password_tries >= MAX_PASSWORD_TRIES {
             self.door.limits.count("password-tries");
-            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
+            abort_unless_authed(
+                Arc::clone(&self.door.drain),
+                self.id,
+                DISCONNECT_GRACE,
+                Arc::clone(&self.authed),
+            );
             return reject_nothing();
         }
         self.password_tries += 1;
@@ -949,7 +1001,12 @@ impl Conn {
         if self.up_password(upstream_user, password).await {
             self.accept("password", Stage::Spliced)
         } else if self.password_tries >= MAX_PASSWORD_TRIES {
-            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
+            abort_unless_authed(
+                Arc::clone(&self.door.drain),
+                self.id,
+                DISCONNECT_GRACE,
+                Arc::clone(&self.authed),
+            );
             reject_nothing()
         } else {
             reject_toward_interactive()
@@ -993,6 +1050,7 @@ impl Conn {
             _ => DisconnectSlot::default(),
         };
         let (tx, rx) = mpsc::channel(UP_QUEUE);
+        let closed = Arc::new(AtomicBool::new(false));
         let writer = tokio::spawn(writer(
             up_write,
             rx,
@@ -1013,8 +1071,19 @@ impl Conn {
             farewell: self.farewell(),
             drain: Arc::clone(&self.door.drain),
             conn: self.id,
+            closed: Arc::clone(&closed),
+            close_grace: Duration::from_secs(self.door.config().limits.auth_deadline_secs),
         }));
-        self.pairs.insert(down_id, Pair { tx, pump, writer });
+        self.pairs.insert(
+            down_id,
+            Pair {
+                tx,
+                pump,
+                writer,
+                pending,
+                closed,
+            },
+        );
     }
 
     /// Queue one message for the channel's writer. Waits only when the queue
@@ -1372,21 +1441,37 @@ impl Drop for Conn {
         }
         self.drop_up();
         let segment = log_segment(&self.user);
-        if self.authed.load(Ordering::SeqCst) {
+        if !self.authed.load(Ordering::SeqCst) {
+            self.door.limits.count("unauthenticated");
+        } else if matches!(self.stage, Stage::Spliced) {
+            // One line per player session. Menu and notice sessions are
+            // cheap to make and would let an address write the log at will
+            // (the file sink is capped, but at the cost of the lines that
+            // matter), so they are counted instead and logged at debug.
             tracing::info!(
                 conn = self.id,
                 peer = %self.peer,
                 user = %segment,
                 service = self.service.as_deref().unwrap_or("-"),
                 method = self.method,
-                stage = ?std::mem::discriminant(&self.stage),
                 secs = self.started.elapsed().as_secs(),
                 up = self.bytes.up.load(Ordering::Relaxed),
                 down = self.bytes.down.load(Ordering::Relaxed),
                 "connection ended"
             );
         } else {
-            self.door.limits.count("unauthenticated");
+            self.door.limits.count(match self.stage {
+                Stage::Menu => "menu-ended",
+                _ => "notice-ended",
+            });
+            tracing::debug!(
+                conn = self.id,
+                peer = %self.peer,
+                user = %segment,
+                stage = ?std::mem::discriminant(&self.stage),
+                secs = self.started.elapsed().as_secs(),
+                "connection ended"
+            );
         }
     }
 }
@@ -1879,14 +1964,24 @@ impl Handler for Conn {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if let Some(pair) = self.pairs.remove(&channel) {
-            let _ = pair.tx.try_send(UpCmd::Close);
-            // Let the writer deliver the close and the pump the upstream's
-            // answer; both end on their own, and are cut off after a grace.
+            pair.closed.store(true, Ordering::SeqCst);
+            // The client has closed its side: nothing more goes down this
+            // channel, so the pump stops now. Left running, a pump blocked on
+            // this channel's exhausted window would wait out `WRITE_TIMEOUT`
+            // and then end the whole connection as wedged, other channels
+            // included. Every reply it still owed is a failure.
+            pair.pump.abort();
+            while let Some(tx) = take_pending(&pair.pending) {
+                let _ = tx.send(false);
+            }
+            // The close must reach the instance even through a full queue
+            // (dropped, it would leave the instance's channel open until its
+            // own timeout); the writer then gets a grace to deliver it.
             // (Opens are capped per connection, so these stay few.)
-            let (pump, writer) = (pair.pump, pair.writer);
+            let (tx, writer) = (pair.tx, pair.writer);
             tokio::spawn(async move {
+                let _ = tokio::time::timeout(WRITE_TIMEOUT, tx.send(UpCmd::Close)).await;
                 tokio::time::sleep(UPSTREAM_TIMEOUT).await;
-                pump.abort();
                 writer.abort();
             });
         }

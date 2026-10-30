@@ -9,6 +9,11 @@ Documentation=file:/opt/rustmush/dev2/build/deploy/dev2-split/README.md
 Type=simple
 User=mush
 Group=mush
+# The trusted ingress (doc 29) accepts a doorway connection before the
+# instance's own per-IP cap is applied at Hello, and the systemd default of
+# 1024 descriptors is below sshdoorway's global cap (2048): an EMFILE burst
+# must not starve the public port (doc 29a section 7, round 2).
+LimitNOFILE=65536
 WorkingDirectory=/opt/rustmush/dev2
 # LLM API keys (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). root-owned, mode 640,
 # injected by systemd into the GATEWAY's environment; the gateway spawns the

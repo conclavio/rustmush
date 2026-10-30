@@ -244,6 +244,7 @@ impl Config {
             || l.auth_deadline_secs == 0
             || l.menu_idle_secs == 0
             || l.drain_deadline_secs == 0
+            || l.force_grace_secs == 0
         {
             return bad("[limits] values must all be greater than zero".into());
         }
@@ -402,6 +403,7 @@ listed = false
                 "not a service",
             ),
             ("[menu]", "[limits]\nper_ip_connections = 0\n[menu]", "zero"),
+            ("[menu]", "[limits]\nforce_grace_secs = 0\n[menu]", "zero"),
             (
                 "[menu]",
                 "[limits]\ndrain_warnings = [\"25h\"]\n[menu]",

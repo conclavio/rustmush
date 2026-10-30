@@ -85,6 +85,14 @@ const PREAUTH_FLOOD_BURST: f64 = 5.0;
 /// channel-open, not an idle timer — in-game idlers are never affected.
 const PREAUTH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Pre-connect input is echoed, so a client that stops reading could make the
+/// server queue its own keystrokes without bound. Input that arrives while
+/// the channel's window is exhausted is dropped instead of echoed, and this
+/// many such arrivals in a row close the connection. One coincidence does
+/// not: a typist whose window refills within a round trip is left alone
+/// (doc 29a §7, round 2).
+const PENDING_STRIKES: u8 = 3;
+
 /// Cap on one output-pump write to the transport (design 02 §8.4: "try 5 s
 /// then disconnect"). A client that stops reading (terminal `^S`, dead
 /// peer behind a live TCP window) stalls `handle.data` on SSH window
@@ -316,10 +324,20 @@ impl russh::server::Server for Ingress {
 
 impl Ingress {
     pub(crate) fn new(hooks: Arc<dyn SshHooks>, banner: &str) -> Ingress {
+        Ingress::with_base(hooks, banner, 1)
+    }
+
+    /// An ingress whose connection ids start at `base`. Every listener in one
+    /// process must allocate from a disjoint range: the ids key the session
+    /// manager, and two listeners both counting from 1 would hand two players
+    /// the same id (adversarial review, round 2). The public port starts at
+    /// 1, the trusted ingress at [`crate::trusted::TRUSTED_CONN_ID_BASE`];
+    /// the web side starts at 2^32 and Discord at 2^48.
+    pub(crate) fn with_base(hooks: Arc<dyn SshHooks>, banner: &str, base: u64) -> Ingress {
         Ingress {
             hooks,
             banner: Arc::from(banner),
-            next_conn: Arc::new(AtomicU64::new(1)),
+            next_conn: Arc::new(AtomicU64::new(base)),
         }
     }
 
@@ -378,8 +396,17 @@ impl Ingress {
             command_task: None,
             counted,
             flood: FloodBucket::new(PREAUTH_FLOOD_RATE, PREAUTH_FLOOD_BURST, Instant::now()),
+            pending_strikes: 0,
             attested: None,
         }
+    }
+}
+
+impl ConnHandler {
+    /// This connection's id (tests).
+    #[cfg(test)]
+    pub(crate) fn conn_id(&self) -> u64 {
+        self.conn_id
     }
 }
 
@@ -553,6 +580,9 @@ pub(crate) struct ConnHandler {
     /// `false` means over-cap: refused at the first auth message.
     counted: bool,
     flood: FloodBucket,
+    /// Consecutive pre-connect inputs that arrived while the channel's window
+    /// was exhausted (see [`PENDING_STRIKES`]).
+    pending_strikes: u8,
     /// Doc 29: the account the trusted ingress's preamble bound to this
     /// connection, after the doorway attested the player holds a key that
     /// [`SshHooks::auth_account_key`] accepted. `auth_none` for exactly
@@ -1900,8 +1930,16 @@ impl Handler for ConnHandler {
         if matches!(self.lock().mode, Mode::Tui) {
             return self.tui_data(data, session).await;
         }
-        if !self.connected.load(Ordering::SeqCst) && session.has_pending_data(channel) {
-            return Err(russh::Error::Disconnect);
+        if !self.connected.load(Ordering::SeqCst) {
+            if session.has_pending_data(channel) {
+                self.pending_strikes = self.pending_strikes.saturating_add(1);
+                if self.pending_strikes >= PENDING_STRIKES {
+                    return Err(russh::Error::Disconnect);
+                }
+                // Not echoed into a window the client is not draining.
+                return Ok(());
+            }
+            self.pending_strikes = 0;
         }
         let (echo, actions) = {
             let mut sh = self.lock();

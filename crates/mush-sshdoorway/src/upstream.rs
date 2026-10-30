@@ -26,7 +26,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Stream for T {}
 pub type BoxStream = Box<dyn Stream>;
 
 /// How the doorway reaches a service. Production dials the service's Unix
-/// socket ([`UnixConnector`]); the tests dial an in-process ingress.
+/// socket (`UnixConnector`, Unix only); the tests dial an in-process ingress.
 pub trait Connector: Send + Sync + 'static {
     /// Open one stream to `service`.
     fn connect<'a>(&'a self, service: &'a ServiceCfg) -> BoxFuture<'a, std::io::Result<BoxStream>>;

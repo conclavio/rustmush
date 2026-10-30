@@ -5,7 +5,7 @@
 //! The doorway terminates the player's SSH session, so on this socket the SSH
 //! peer is always the doorway. The preamble restores what that hides:
 //!
-//! - the player's **real address**, which becomes [`ConnHandler`]'s `addr`, so
+//! - the player's **real address**, which becomes `ConnHandler`'s `addr`, so
 //!   every per-IP gate (the connection cap, `is_ip_blocked`, the failure
 //!   tempban, the welcome screen's re-checks) keys on the player, never on the
 //!   doorway;
@@ -24,7 +24,7 @@
 //!
 //! [`TrustedIngress::serve`] is generic over the stream, so the preamble runs
 //! under test on every platform (`tokio::io::duplex`);
-//! [`SshServer::bind_trusted`](crate::SshServer::bind_trusted) is the Unix
+//! `SshServer::bind_trusted` is the Unix
 //! wrapper.
 
 use std::sync::Arc;
@@ -46,6 +46,21 @@ use crate::server::{
 /// The whole preamble — from the first byte to `Ready` — must finish within
 /// this. A doorway that stalls is holding a per-IP slot it should not.
 pub const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The first connection id the trusted ingress hands out. The public port
+/// counts from 1, and both listeners feed one session manager that keys on
+/// the id, so the two ranges must not meet (adversarial review, round 2: two
+/// listeners both counting from 1 gave two players the same id, which the
+/// all-in-one `mushd` resolved by wiring the second player's input to the
+/// first player's character). Below the web side's 2^32 and Discord's 2^48.
+pub const TRUSTED_CONN_ID_BASE: u64 = 1 << 31;
+// Below the web side's base, so the four transports' ranges stay disjoint.
+const _: () = assert!(TRUSTED_CONN_ID_BASE < 1 << 32);
+
+/// A `KeyQuery` is answered no sooner than this after it arrived, so the
+/// account store's timing (an account that exists against one that does not)
+/// does not show through the doorway's fast key-offer rejections.
+pub const KEY_QUERY_FLOOR: Duration = Duration::from_millis(50);
 
 /// One instance's trusted ingress: the shared russh configuration plus the
 /// connection machinery the public port uses. Cheap to clone.
@@ -71,7 +86,7 @@ impl TrustedIngress {
     ) -> Result<TrustedIngress, SshError> {
         Ok(TrustedIngress {
             config: server_config(host_key_path)?,
-            ingress: Ingress::new(hooks, banner),
+            ingress: Ingress::with_base(hooks, banner, TRUSTED_CONN_ID_BASE),
         })
     }
 
@@ -181,6 +196,7 @@ where
     loop {
         match proto::read_msg::<_, DoorwayMsg>(stream).await? {
             DoorwayMsg::KeyQuery { user, key } => {
+                let asked = tokio::time::Instant::now();
                 queries += 1;
                 if queries > MAX_KEY_QUERIES {
                     tracing::info!(%addr, "trusted ingress: too many key queries");
@@ -193,6 +209,7 @@ where
                     ),
                     None => false,
                 };
+                tokio::time::sleep_until(asked + KEY_QUERY_FLOOR).await;
                 proto::write_msg(stream, &IngressMsg::KeyReply { acceptable }).await?;
             }
             DoorwayMsg::Begin { user, attested_key } => {
@@ -254,7 +271,7 @@ fn key_account<'a>(user: &'a str, key: &str) -> Option<&'a str> {
     Some(account)
 }
 
-/// Configuration for [`SshServer::bind_trusted`](crate::SshServer::bind_trusted).
+/// Configuration for `SshServer::bind_trusted` (a `cfg(unix)` method).
 #[derive(Clone, Debug)]
 pub struct TrustedConfig {
     /// The socket path, e.g. `/run/rustmush-ssh/dev1.sock`. Its directory must
@@ -264,6 +281,20 @@ pub struct TrustedConfig {
     pub host_key_path: std::path::PathBuf,
     /// Welcome-screen banner (as [`SshConfig::banner`](crate::SshConfig)).
     pub banner: String,
+    /// Serve even when the socket's group is this process's own effective
+    /// group. That is what happens when the directory is not setgid, and it
+    /// means every process running as this user (the gateway itself,
+    /// mush-server, another instance) could connect and forge a login, so
+    /// `bind` refuses it. **Tests only**; the gateway always passes `false`.
+    pub allow_own_group: bool,
+}
+
+/// This process's effective gid, as procfs reports it (`/proc/self` is owned
+/// by the task's effective ids). `None` where there is no procfs.
+#[cfg(unix)]
+fn effective_gid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").ok().map(|m| m.gid())
 }
 
 /// A bound trusted ingress, not yet accepting.
@@ -330,15 +361,11 @@ impl BoundTrustedServer {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(bind_err(e)),
         }
-        if let Some(parent) = cfg.socket_path.parent()
-            && let Ok(meta) = std::fs::metadata(parent)
-            && meta.permissions().mode() & 0o2000 == 0
-        {
-            tracing::warn!(
-                dir = %parent.display(),
-                "trusted ingress directory is not setgid (02750 group sshdoorway); socket inherits the process's primary group"
-            );
-        }
+        let setgid = cfg
+            .socket_path
+            .parent()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .is_some_and(|m| m.permissions().mode() & 0o2000 != 0);
         let listener = tokio::net::UnixListener::bind(&cfg.socket_path).map_err(bind_err)?;
         std::fs::set_permissions(&cfg.socket_path, std::fs::Permissions::from_mode(0o660))
             .map_err(bind_err)?;
@@ -346,6 +373,25 @@ impl BoundTrustedServer {
             use std::os::unix::fs::MetadataExt;
             std::fs::metadata(&cfg.socket_path).map_err(bind_err)?.gid()
         };
+        // The trust *is* the group. Outside a setgid directory the socket's
+        // group is this process's own, and the peer check below would then
+        // admit everything running as this user — the very hole it closes.
+        // So that is an error, not a warning (adversarial review, round 2).
+        if !cfg.allow_own_group {
+            let own = effective_gid();
+            if !setgid || own.is_none_or(|g| g == gid) {
+                let _ = std::fs::remove_file(&cfg.socket_path);
+                return Err(bind_err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "the socket's group ({gid}) is this process's own (effective gid {}): \
+                         the directory must be setgid to the doorway's group (tmpfiles: \
+                         `d /run/rustmush-ssh 2750 mush sshdoorway`); refusing to serve",
+                        own.map_or_else(|| "unknown".to_owned(), |g| g.to_string())
+                    ),
+                )));
+            }
+        }
         tracing::info!(path = %cfg.socket_path.display(), gid, "SSH trusted ingress listening");
         Ok(BoundTrustedServer {
             path: cfg.socket_path,
@@ -371,7 +417,17 @@ impl BoundTrustedServer {
     /// (the doorway runs as group `sshdoorway`), or the peer is root.
     pub async fn run(self) -> Result<(), SshError> {
         loop {
-            let (stream, _) = self.listener.accept().await.map_err(SshError::Server)?;
+            let (stream, _) = match self.listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(e) => {
+                    // EMFILE and friends are transient: one burst must not
+                    // close the doorway's way in until the gateway restarts
+                    // (adversarial review, round 2).
+                    tracing::warn!(error = %e, "trusted ingress: accept failed; retrying");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
             match stream.peer_cred() {
                 Ok(cred) if cred.gid() == self.gid || cred.uid() == 0 => {}
                 Ok(cred) => {
@@ -482,7 +538,20 @@ mod tests {
     }
 
     fn ingress(hooks: Arc<Hooks>) -> Ingress {
-        Ingress::new(hooks, "banner")
+        Ingress::with_base(hooks, "banner", TRUSTED_CONN_ID_BASE)
+    }
+
+    #[tokio::test]
+    async fn trusted_ids_never_meet_the_public_ports() {
+        let public = Ingress::new(Arc::new(Hooks::default()), "b");
+        let trusted = ingress(Arc::new(Hooks::default()));
+        let addr: IpAddr = "198.51.100.7".parse().unwrap();
+        let a = public.handler_for(addr, true);
+        let b = trusted.handler_for(addr, true);
+        assert_eq!(a.conn_id(), 1);
+        assert_eq!(b.conn_id(), TRUSTED_CONN_ID_BASE);
+        // That it sits below the web side's base (2^32) is asserted at
+        // compile time beside the constant.
     }
 
     fn hello() -> DoorwayMsg {
@@ -554,6 +623,7 @@ mod tests {
         );
         assert_eq!(h.addr, "198.51.100.7".parse::<IpAddr>().unwrap());
         assert!(h.attested.is_none());
+        assert!(h.conn_id() >= TRUSTED_CONN_ID_BASE);
         assert_eq!(*hooks.open_now.lock().unwrap(), 1);
         drop(h);
         assert_eq!(*hooks.open_now.lock().unwrap(), 0);
@@ -790,6 +860,8 @@ mod tests {
             socket_path: socket_path.clone(),
             host_key_path: dir.join("host"),
             banner: "b".into(),
+            // A temp dir is not setgid; see the refusal test below.
+            allow_own_group: true,
         };
         let hooks: Arc<dyn SshHooks> = Arc::new(Hooks::default());
         let first = BoundTrustedServer::bind(cfg(), Arc::clone(&hooks))
@@ -832,6 +904,36 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("not a socket"), "{err}");
         assert_eq!(std::fs::read(&file).unwrap(), b"keep me");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Outside a setgid directory the socket's group is this process's own,
+    /// and serving it would trust everything running as this user; the bind
+    /// refuses unless a test says otherwise, and leaves no socket behind.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_socket_in_the_processs_own_group_is_refused() {
+        let dir = std::env::temp_dir().join(format!(
+            "mush-trusted-own-{}-{}",
+            std::process::id(),
+            getrandom::u64().unwrap()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("dev1.sock");
+        let hooks: Arc<dyn SshHooks> = Arc::new(Hooks::default());
+        let err = BoundTrustedServer::bind(
+            TrustedConfig {
+                socket_path: socket_path.clone(),
+                host_key_path: dir.join("host"),
+                banner: "b".into(),
+                allow_own_group: false,
+            },
+            hooks,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("setgid"), "{err}");
+        assert!(!socket_path.exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 

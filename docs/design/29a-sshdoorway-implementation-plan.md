@@ -225,3 +225,67 @@ below with its disposition. Each fix has a test where one can be written on CI.
 - The peer-credential refusal itself: it needs a second group on the box. The acceptance
   path is tested on Linux.
 - The systemd, logrotate and swap.sh behaviour. That is DW.4's box-level smoke.
+
+## 8. The second review (2026-10-30, PR #193) and what changed
+
+The DoS hardening commit (`68f42ae6`, F-1..F-11: the kill switch and `abort_after` for
+half-closed clients, the menu-try, dial and password caps, the notice idle bound, the fast
+key-offer rejection, the asynchronous socket probe, the menu timer stop before a splice) was
+read against the code, and then three fresh reviewers took the same three surfaces as §7:
+auth and trust (B), splice and denial of service (A), drain and operations (C). The
+accounting invariants (every slot and drain guard released, every splice earned, the exact
+attested binding, "a notice stays a notice") and the absence of any login without a password
+or a registered key were re-verified. What follows is everything else.
+
+### From the hardening commit itself
+
+| # | Finding | Disposition |
+|---|---|---|
+| F-5 | The rate table refused new connections once it held 65,536 keys (fail closed) | **Reverted to fail open by eviction.** One IPv6 /48 is exactly 65,536 /64s: connect-and-close from one prefix filled the table in under a minute and locked every new player out. The table now evicts one entry and counts `rate-evict`; the global and /48 caps still run before the insert. Tests: `the_rate_table_is_bounded_and_evicts_rather_than_refuse`, `one_v6_48_cannot_fill_the_rate_table_against_everyone_else` |
+| CI | Three rustdoc links to private items failed the documentation job under `-D warnings` | **Fixed** (plain text) |
+
+### Auth and trust (B)
+
+| # | Finding | Disposition |
+|---|---|---|
+| B-1 (critical) | The trusted ingress allocated connection ids from 1, the same range as the instance's public SSH port, and both feed one `SessionManager`; a collision silently handed one connection the other's session | **Fixed.** The trusted ingress allocates from `TRUSTED_CONN_ID_BASE` (2^31); public from 1, web from 2^32, Discord from 2^48. `attach` logs an error on a duplicate before its `debug_assert`. Test: `trusted_ids_never_meet_the_public_ports` |
+| B-2 | An accept error ended the trusted accept loop for good (an `EMFILE` burst took the doorway's way in with it) | **Fixed.** The loop logs, waits 100 ms and goes on. `LimitNOFILE=65536` on the three gateway units |
+| B-3 | A socket directory that was not setgid, or that left the socket in the gateway's own group, only warned; the peer check then trusted the wrong group | **Fixed, fail closed.** `bind` refuses unless the directory is setgid and the socket's group is not the process's own (`TrustedConfig::allow_own_group`, tests only). Test: `a_socket_in_the_processs_own_group_is_refused` |
+| B-4 | No per-user (account) connection cap at the instance; the per-IP cap is the only one | **Open, pre-existing.** The direct port has the same shape; an account cap belongs with the instance's ban keys |
+| B-5 | The instance's pre-auth deadline (120 s) is longer than the doorway's, and `Up` is kept open while a player sits at the menu | **Accepted.** The doorway's own deadlines bound the connection; the upstream is dropped on any error and redialled |
+| B-6 | `user_is_forwardable` lets through some Unicode that renders confusingly (confusables, combining marks) | **Accepted.** Names are matched by the instance's account store; the doorway only has to keep control and format characters out of the log and the frame, which it does |
+| B-7 | `KeyQuery` answered as fast as the instance looked the key up: a timing oracle on account existence | **Fixed.** Every reply waits at least `KEY_QUERY_FLOOR` (50 ms) from the question |
+
+### Splice and DoS (A)
+
+| # | Finding | Disposition |
+|---|---|---|
+| A-1 | `per_ip_connections = 8` is tight for a CGNAT or campus address | **Tunable, for the owner.** The instance's own per-IP default is the number to align with; both are config |
+| A-2 | After three failed passwords the connection is aborted in 2 s even if a key (or the front door) lets it in meanwhile | **Fixed.** `abort_unless_authed` |
+| A-3 | A channel the doorway closed (the instance ended it) that the client never acknowledges keeps the connection, and its slot, with nothing open | **Fixed.** The pump gives the client the auth deadline to answer with its own close, then disconnects (`PumpCtx::close_grace`) |
+| A-4 | The instance's "no pending data before connect" gate dropped a healthy client whose window was exhausted during a rekey | **Fixed.** Three strikes (`PENDING_STRIKES`) before the disconnect |
+| A-5 | `DISCONNECT_GRACE` (2 s) and `NOTICE_IDLE` (5 s) cut slow links before the message arrived | **Fixed.** 5 s and 10 s |
+
+### Drain and ops (C)
+
+| # | Finding | Disposition |
+|---|---|---|
+| C-1 (high) | The §7 M1 fix did not work: the restarted draining generation consumed its marker and exited 0 *before* `READY=1`, which under `Type=notify` is a protocol failure, so `Restart=on-failure` started it once more, now with no marker, serving beside its successor | **Fixed.** The doorway never removes the marker. A start that finds it logs, reports `READY=1` and exits 0 (a clean run). Only swap.sh clears it, right before starting that generation. The marker lives in `$STATE_DIRECTORY` (what swap.sh reads); unit tests on `marker_dir` |
+| C-2 | Every authenticated connection wrote an `info` line at its end, so menu and notice sessions let an address fill the log | **Fixed.** `info` only for spliced sessions; menu and notice ends are counted (`menu-ended`, `notice-ended`) and logged at `debug` |
+| C-3 | `channel_close` left the pump running; blocked on that channel's exhausted window it hit `WRITE_TIMEOUT` and ended the whole connection as wedged. The close itself was `try_send`, dropped when the queue was full | **Fixed.** The pump is aborted at close (its owed replies fail), and the close is sent with a bound |
+| C-4 | swap.sh's "did not stay up" path left the failed generation to `Restart=on-failure`, which brought it up beside the old one | **Fixed.** Stop, `reset-failed`, disable |
+| C-5 | Nothing was enabled, so a reboot left port 22 unserved | **Fixed.** `enable --now sshdoorway@a` at install; swap.sh enables the new generation and disables the old, so exactly one is enabled |
+| C-6 | Listeners were bound before the readiness probe but accepted only after it: for up to 30 s the kernel queued half the new connections on a socket nobody read | **Fixed.** Accept from the moment of the bind |
+| C-7 | Injected lines (farewell, drain warnings) carry the username and operator text | **Accepted.** The farewell's user has passed `user_is_forwardable` (no control or format characters); the drain message is operator config |
+| C-8 | As B-2 | **Fixed** (as B-2) |
+| C-9 | As A-5 | **Fixed** (as A-5) |
+| C-10 | `UP_QUEUE` of 256 packets parked up to 8 MiB per channel at the doorway | **Fixed.** 32 (1 MiB per channel) |
+| C-11 | The trusted stale-socket probe treats any connect failure as stale | **Accepted.** The probe is bounded at 2 s; a live socket whose backlog is full answers within it, and a refused connect is the only common failure. The unlink is of a socket file only, never another kind of file |
+| C-12 | A race between the drain's "empty" and its "work done" arms in the signal loop | **Accepted.** Either arm ends the process cleanly |
+| C-13 | `force_grace_secs = 0` was accepted | **Fixed.** Validated with the other limits |
+| C-14 | As B-3 | **Fixed** (as B-3) |
+| C-15 | logrotate ran as root in a directory the doorway owns; further unit hardening possible | **Partly.** `su sshdoorway sshdoorway` in the logrotate stanza. Further systemd hardening (`SystemCallFilter`, `RestrictNamespaces`) is DW.4's box-level work, where it can be tested |
+
+**Not covered by a test**, as before: the systemd, logrotate and swap.sh behaviour (C-1,
+C-4, C-5) is DW.4's box-level smoke, and the half-closed-channel grace (A-3) needs a
+client that ignores a channel close, which russh's client does not offer.

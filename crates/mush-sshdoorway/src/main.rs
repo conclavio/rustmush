@@ -138,18 +138,39 @@ impl Signals {
 #[cfg(unix)]
 const HARD_EXIT_AFTER: Duration = Duration::from_secs(60);
 
-/// The marker a draining generation leaves, so systemd restarting it after a
-/// crash does not bring it back into service beside its successor. swap.sh
-/// clears it before starting that generation fresh.
+/// The marker a draining generation leaves, so that nothing but swap.sh ever
+/// brings it back into service beside its successor: not `Restart=on-failure`
+/// after a crash, not `systemctl restart` (needrestart), not a reboot. The
+/// doorway never removes it; a start that finds it reports `READY=1` and exits
+/// 0, which systemd counts as a clean run (an exit *before* `READY=1` under
+/// `Type=notify` is a protocol failure, and would be restarted into service).
+/// swap.sh clears the marker right before it starts that generation.
+///
+/// Under systemd the marker lives in `$STATE_DIRECTORY` (`StateDirectory=`,
+/// `/var/lib/sshdoorway`), the directory swap.sh reads; elsewhere, beside the
+/// host key.
 #[cfg(unix)]
 fn draining_marker(cfg: &Config, generation: &str) -> PathBuf {
-    let dir = cfg
-        .listen
-        .host_key
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_default();
-    dir.join(format!("draining-{generation}"))
+    marker_dir(
+        std::env::var_os("STATE_DIRECTORY").as_deref(),
+        &cfg.listen.host_key,
+    )
+    .join(format!("draining-{generation}"))
+}
+
+/// The first `STATE_DIRECTORY` entry (systemd separates several with `:`),
+/// else the host key's directory.
+#[cfg(any(unix, test))]
+fn marker_dir(state_directory: Option<&std::ffi::OsStr>, host_key: &std::path::Path) -> PathBuf {
+    state_directory
+        .map(|v| PathBuf::from(v.to_string_lossy().split(':').next().unwrap_or_default()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| {
+            host_key
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default()
+        })
 }
 
 #[cfg(unix)]
@@ -158,11 +179,12 @@ async fn serve(args: Args, cfg: Config) -> Result<(), String> {
     let log = logging::init(&cfg.log, &args.generation)?;
     let marker = draining_marker(&cfg, &args.generation);
     if marker.exists() {
-        let _ = std::fs::remove_file(&marker);
         tracing::warn!(
             marker = %marker.display(),
-            "this generation was draining when it stopped; not serving again (marker consumed)"
+            "this generation drained and was not swapped back in; not serving (swap.sh clears the marker)"
         );
+        // A clean run in systemd's eyes, so Restart=on-failure leaves it be.
+        notify::notify("READY=1");
         return Ok(());
     }
     if listen::migrate_req_enabled() == Some(false) {
@@ -179,13 +201,12 @@ async fn serve(args: Args, cfg: Config) -> Result<(), String> {
         "sshdoorway starting"
     );
 
-    let mut listeners = Vec::new();
+    // Accept from the moment the socket is bound: a bound listener that is
+    // not accepting still takes its share of the SO_REUSEPORT group, and
+    // every connection the kernel hands it would wait out the readiness
+    // probe (up to 30 s) in its queue.
     for addr in &cfg.listen.addrs {
         let l = listen::bind(*addr).map_err(|e| format!("binding {addr}: {e}"))?;
-        listeners.push(l);
-    }
-    ready(&door).await?;
-    for l in listeners {
         let door = Arc::clone(&door);
         tokio::spawn(async move {
             if let Err(e) = door.serve(l).await {
@@ -193,12 +214,13 @@ async fn serve(args: Args, cfg: Config) -> Result<(), String> {
             }
         });
     }
+    ready(&door).await?;
     tokio::spawn(Arc::clone(&door).summarize_forever());
     notify::notify("READY=1");
     tracing::warn!("sshdoorway ready");
 
+    // The drain marker, if this run wrote one, stays: see `draining_marker`.
     let result = signals(&args, &door, &log, &mut sigs, &marker).await;
-    let _ = std::fs::remove_file(&marker);
     tracing::warn!("sshdoorway exiting");
     result
 }
@@ -389,4 +411,36 @@ fn finish(
     *work = Some(tokio::spawn(async move {
         door.drain.finish_now(grace, &message).await;
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::marker_dir;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_marker_lives_in_the_state_directory_when_systemd_gives_one() {
+        let key = Path::new("/etc/rustmush/host_ed25519");
+        assert_eq!(
+            marker_dir(Some(OsStr::new("/var/lib/sshdoorway")), key),
+            PathBuf::from("/var/lib/sshdoorway")
+        );
+        // Several directories: the first one.
+        assert_eq!(
+            marker_dir(Some(OsStr::new("/var/lib/sshdoorway:/var/lib/other")), key),
+            PathBuf::from("/var/lib/sshdoorway")
+        );
+    }
+
+    #[test]
+    fn the_marker_lives_beside_the_host_key_otherwise() {
+        let key = Path::new("/etc/rustmush/host_ed25519");
+        assert_eq!(marker_dir(None, key), PathBuf::from("/etc/rustmush"));
+        assert_eq!(
+            marker_dir(Some(OsStr::new("")), key),
+            PathBuf::from("/etc/rustmush")
+        );
+        assert_eq!(marker_dir(None, Path::new("host_ed25519")), PathBuf::new());
+    }
 }

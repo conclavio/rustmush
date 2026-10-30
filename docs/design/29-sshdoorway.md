@@ -375,7 +375,7 @@ the sessions it already has until they end.
 | Signal | Effect |
 |---|---|
 | `SIGHUP` | Reload the routing table and limits. New connections use the new table; live sessions keep their route. Listen addresses and the host key path do not reload, because changing them needs a swap. |
-| `SIGUSR1` | **Drain** (sent only by swap.sh). Close every listener (the kernel migrates its queue, §9.2), keep every session, warn on schedule, and exit 0 when the last one ends or when the drain deadline passes. Leaves a `draining-<gen>` marker so a crash-restart does not bring the generation back into service. |
+| `SIGUSR1` | **Drain** (sent only by swap.sh). Close every listener (the kernel migrates its queue, §9.2), keep every session, warn on schedule, and exit 0 when the last one ends or when the drain deadline passes. Leaves a `draining-<gen>` marker that the doorway never removes: a start that finds it reports ready and exits 0, so neither a crash-restart, a `systemctl restart` nor a reboot brings the generation back into service. Only swap.sh clears it. |
 | `SIGTERM`, `SIGINT` | **Finish now.** Stop accepting, tell every session (§9.4), wait 30 s, close everything, exit 0. A repeated signal does not restart the grace. |
 | `SIGUSR2` | Reopen the log file (logrotate's `postrotate`, §8.1). |
 
@@ -396,9 +396,13 @@ session never finished closing: those streams are cut (`kill.rs`).
    `--force`, which sends `SIGTERM` (finish) to `b` and waits for it to exit. **At most two
    generations ever run.**
 2. It clears `b`'s drain marker, then `systemctl start sshdoorway@b`, which returns once `b`
-   is `READY`. It waits 5 s and checks that `b` is still active; if not, `a` keeps serving.
-3. `systemctl kill --signal=USR1 sshdoorway@a`, so the script never blocks while `a`
-   drains. The units use `Restart=on-failure`, so a drained exit 0 is not restarted.
+   is `READY`. It waits 5 s and checks that `b` is still active; if not, `a` keeps serving,
+   and `b` is stopped, reset and disabled so `Restart=on-failure` cannot bring it up later
+   beside `a`.
+3. It enables `b` and disables `a` (exactly one generation is enabled, so a reboot brings
+   back the serving one), then `systemctl kill --signal=USR1 sshdoorway@a`, so the script
+   never blocks while `a` drains. The units use `Restart=on-failure`, so a drained exit 0
+   is not restarted; and should `a` be started again anyway, its marker makes it exit.
 
 - **Drain deadline and warnings (Q-29-2, ruled).** The deadline is 24 h after the drain
   begins. Warnings start early, so a player can reconnect at a convenient moment instead of

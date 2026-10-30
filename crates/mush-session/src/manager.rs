@@ -433,6 +433,13 @@ impl SessionManager {
         let conn_id = conn.id;
         let addr = conn.addr;
         let attached_at = conn.connected_at;
+        if self.conns.contains_key(&conn_id) {
+            // The transports allocate ids from disjoint ranges, so this is a
+            // wiring bug; in a release build the insert below would silently
+            // take over the other connection's session, so it is at least
+            // loud (doc 29a §7, round 2).
+            tracing::error!(conn = conn_id.0, "attach: duplicate connection id");
+        }
         debug_assert!(
             !self.conns.contains_key(&conn_id),
             "attach: duplicate {conn_id}"

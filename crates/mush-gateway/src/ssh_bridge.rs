@@ -540,6 +540,7 @@ impl SshListener {
                 socket_path,
                 host_key_path: data_dir.join("ssh_host_ed25519"),
                 banner,
+                allow_own_group: false,
             };
             let hooks: Arc<dyn mush_net_ssh::SshHooks> = bridge;
             let bound = mush_net_ssh::SshServer::bind_trusted(cfg, hooks)
