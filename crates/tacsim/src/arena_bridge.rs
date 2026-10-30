@@ -4225,12 +4225,15 @@ fn watched_ground(
 /// **`arena.map`'s handler** (16b cut Q.3): the terrain of the arena the asker
 /// is flying in, or [`crate::match_::cockpit::map_unseated`].
 ///
-/// `params` is ignored today. A `window` parameter is where doc 16 §11's 10 km
+/// When `params` carries `{ "draft": "<arena_id>" }` (doc 30 §8 & §11 WG.4) and
+/// `actor` is staff (`crate::match_::lobby::is_staff`), answers the
+/// [`crate::ground::GroundDraft`] reconstructed from the world's content store.
+/// Otherwise `params` is ignored today. A `window` parameter is where doc 16 §11's 10 km
 /// path would slice it — `{ "window": [x0, y0, w, h] }` in cells — and the
 /// payload's `origin_cell` is in it for exactly that: a renderer written against
 /// that key keeps working when the map stops starting at the arena's corner.
 ///
-/// **16b cut I.1 gave it an order**, because a query carries no parameters and
+/// **16b cut I.1 gave it an order**, because an unparameterised query
 /// can only be keyed on who asks: (1) a seated pilot is answered their own
 /// match's map, as before; (2) a watcher, the watched match's ground (16b cut
 /// I.4); (3) an actor whose replay cursor names a finished match the ring
@@ -4247,8 +4250,36 @@ impl mush_core::QueryHandler for MapQuery {
         &self,
         w: &mush_core::World,
         actor: ObjId,
-        _params: &serde_json::Value,
+        params: &serde_json::Value,
     ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        if let Some(draft_id) = params.get("draft").and_then(serde_json::Value::as_str) {
+            if !crate::match_::lobby::is_staff(w, actor) {
+                return Ok(mush_proto::OutputEvent::Panel {
+                    feed: SmolStr::new_static(MAP_FEED),
+                    kind: mush_proto::PanelFrameKind::Keyframe,
+                    data: serde_json::json!({
+                        "schema": crate::ground::DRAFT_SCHEMA,
+                        "error": "Permission denied.",
+                    }),
+                });
+            }
+            let data = crate::ground::draft_from_world(w, draft_id)
+                .and_then(|draft| {
+                    serde_json::to_value(draft)
+                        .map_err(|e| crate::ground::GroundError::Json(e.to_string()))
+                })
+                .unwrap_or_else(|e| {
+                    serde_json::json!({
+                        "schema": crate::ground::DRAFT_SCHEMA,
+                        "error": e.to_string(),
+                    })
+                });
+            return Ok(mush_proto::OutputEvent::Panel {
+                feed: SmolStr::new_static(MAP_FEED),
+                kind: mush_proto::PanelFrameKind::Keyframe,
+                data,
+            });
+        }
         let data = match seated_ground(w, actor) {
             // (1) 16b cut V.1: the ground's named spots ride the map, because
             // they are surveyed ground exactly as the terrain is.
@@ -6566,5 +6597,30 @@ mod bulk_commit_tests {
         assert!(!latch.committed());
         tasks.ack_ledger_upto(101);
         assert!(latch.committed());
+    }
+
+    #[test]
+    fn wg4_map_query_draft_branch_is_staff_gated() {
+        use mush_core::GOD;
+        use mush_core::module::QueryHandler;
+
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![]);
+        let player = tw.spawn_player("Player0");
+        let params = serde_json::json!({ "draft": "proving_ground" });
+
+        let mush_proto::OutputEvent::Panel { data: denied, .. } =
+            MapQuery.query(tw.world(), player, &params).expect("query")
+        else {
+            panic!("expected Panel");
+        };
+        assert_eq!(denied["error"], "Permission denied.");
+
+        let mush_proto::OutputEvent::Panel { data: allowed, .. } =
+            MapQuery.query(tw.world(), GOD, &params).expect("query")
+        else {
+            panic!("expected Panel");
+        };
+        assert_eq!(allowed["schema"], "ground.draft.v1");
+        assert_eq!(allowed["id"], "proving_ground");
     }
 }

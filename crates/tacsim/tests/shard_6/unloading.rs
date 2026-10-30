@@ -1797,8 +1797,9 @@ fn sm8_the_unload_refuses_where_it_cannot_work() {
     let empty = DUMP_EMPTY.replace("{n}", "1");
     refused_everywhere(&mut rig, (pilot, tv), "+tv/1 unload", &|out| out == empty);
     fill(&mut rig, tv, "metal_ore", 3, 8_822);
-    // Not aboard: staff move the pilot from the hull's airlock space down into its bay
-    // (`excursions.rs`'s seam: aboard is the airlock interior), then back.
+    // The bay remains aboard; only moving outside the hull makes the operator ashore.
+    let (aboard_preview, queued) = command(&mut rig, pilot, "+tv/1 unload");
+    assert!(queued.is_empty(), "a preview starts nothing");
     let mush_sim::data::SpatialParent::Interior {
         space: airlock,
         slot: airlock_slot,
@@ -1816,6 +1817,17 @@ fn sm8_the_unload_refuses_where_it_cannot_work() {
         mush_sim::place_interior(ctx, pilot, bay, None)
     })
     .expect("staff move the pilot into the bay");
+    let (bay_preview, queued) = command(&mut rig, pilot, "+tv/1 unload");
+    assert_eq!(bay_preview, aboard_preview, "the bay is still aboard");
+    assert!(queued.is_empty(), "a preview starts nothing");
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff release the pilot's placement")
+    })
+    .expect("release placement before moving ashore");
+    rig.tw
+        .world_mut()
+        .move_to(pilot, mush_core::LIMBO)
+        .expect("staff take the pilot outside the hull");
     let ashore = TV_NOT_ABOARD.replace("{name}", HULL);
     refused_everywhere(&mut rig, (pilot, tv), "+tv/1 unload", &|out| out == ashore);
     support::with_ctx(&mut rig.tw, |ctx| {
@@ -1925,7 +1937,7 @@ fn overtaken(rig: &mut Rig, start: &AuthoritativeSubmit, (tv, hold): (ObjId, Vau
 /// changes** (A2's "at the prepare"; the fix round's correctness/F1, conformance/F5, tests/T1):
 /// each `+tv/<n> unload go` below is filed with room and the operator aboard, its start held in
 /// the queue while staff change the world, then landed: the hopper emptied under it → `ProviderRejected`
-/// `unload_changed` (the prepare's re-check of the hopper); the operator moved off the bridge →
+/// `unload_changed` (the prepare's re-check of the hopper); the operator moved off the hull →
 /// `not_aboard` (the offer re-runs `unload_plan`); a queued unload resolved, then the hopper
 /// emptied before its prepare → `unload_changed` (the queue kept); rig 2 put on the ground →
 /// `unload_out`; a SIBLING's hopper filled so the hold's unreserved room no longer takes the
@@ -1944,9 +1956,11 @@ fn sm8_a_start_overtaken_by_the_state_is_refused_at_the_start() {
     let start = filed(&mut rig, pilot, "+tv/1 unload go");
     staff_move(&mut rig, hop1, hold, "metal_ore", 3);
     overtaken(&mut rig, &start, (tv1, hold), UNLOAD_CHANGED_CODE);
-    // The operator off the bridge.
+    // The operator moved outside the hull after filing the unload.
     fill(&mut rig, tv1, "metal_ore", 3, 8_942);
     let start = filed(&mut rig, pilot, "+tv/1 unload go");
+    let (aboard_preview, queued) = command(&mut rig, pilot, "+tv/1 unload");
+    assert!(queued.is_empty(), "a preview starts nothing");
     let mush_sim::data::SpatialParent::Interior {
         space: airlock,
         slot: airlock_slot,
@@ -1964,6 +1978,17 @@ fn sm8_a_start_overtaken_by_the_state_is_refused_at_the_start() {
         mush_sim::place_interior(ctx, pilot, bay, None)
     })
     .expect("staff move the pilot into the bay");
+    let (bay_preview, queued) = command(&mut rig, pilot, "+tv/1 unload");
+    assert_eq!(bay_preview, aboard_preview, "the bay is still aboard");
+    assert!(queued.is_empty(), "a preview starts nothing");
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff release the pilot's placement")
+    })
+    .expect("release placement before moving ashore");
+    rig.tw
+        .world_mut()
+        .move_to(pilot, mush_core::LIMBO)
+        .expect("staff take the pilot outside the hull");
     overtaken(
         &mut rig,
         &start,

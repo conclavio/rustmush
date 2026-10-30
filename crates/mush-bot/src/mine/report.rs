@@ -56,6 +56,9 @@ pub struct Report {
     pub success: bool,
     /// The lane's failure, when it blocked.
     pub failure: Option<String>,
+    /// Detachment terminal evidence, present only for --mine-detachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detachment: Option<super::lane::detachment::Evidence>,
 }
 
 /// One beat: when its first line went and its last answer was read.

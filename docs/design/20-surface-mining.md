@@ -321,7 +321,11 @@ blocks are all open as built.
 
 The site's ground is an atlas region pack in the shape of `region.ceres_freeport.json`: **256 by 256
 cells at 10 m, 2.56 km** — exactly D-16-5's arena window, so a fight at a site later promotes the same
-ground with no re-mapping (`MAX_TILE_CELLS` 65,536, `mush-atlas/src/cells.rs:16-20`). The pad room
+ground with no re-mapping (`MAX_TILE_CELLS` 65,536, `mush-atlas/src/cells.rs:16-20`). *Amended
+2026-10-30:* 256 is the shipped side, not the rule. Doc 30 Q-30-6 allows authored maps of 512 a side
+behind the frame window of D-30-7 (cut WG.6, unbuilt), and doc 32 Q-CF-51 makes the side a per-region
+value read from the region pack, so a site and the field promoted on it always share one side whatever
+it is; blocks, fields and pockets keep their cell sizes. The 10 km path of D-16-5 is unchanged. The pad room
 (`port.dock`) sits at the site's centre cell (128, 128), so no pocket is more than 1.3 km from the
 ramp along either axis (1.8 km of driving straight across, about 4,100 cu of regolith) and a first
 scan reads a full square; a `background` recipe of regolith with ice and rock in the mix, relief at
@@ -2224,7 +2228,7 @@ screen. `docs/help/mining.md` builds beat 11, `orders.md` gains the `await tv` v
 
 | Number | Value | Basis |
 |---|---|---|
-| Site | 256 × 256 cells at 10 m, 2.56 km; 16 blocks of 640 m; 4 named fields a block; 256 addressed pockets of 40 m a block; the pad at the centre (1.3 km to any pocket along an axis, 1.8 km straight across) | D-16-5's arena window and `MAX_TILE_CELLS`; a block as the tenure unit keeps a site from being three claims |
+| Site | 256 × 256 cells at 10 m, 2.56 km; 16 blocks of 640 m; 4 named fields a block; 256 addressed pockets of 40 m a block; the pad at the centre (1.3 km to any pocket along an axis, 1.8 km straight across) | D-16-5's arena window and `MAX_TILE_CELLS`; a block as the tenure unit keeps a site from being three claims. Amended 2026-10-30: 256 is the shipped side, not a rule — doc 30 Q-30-6 allows 512-a-side maps behind WG.6's frame window (unbuilt), and doc 32 Q-CF-51 makes the side a per-region value; blocks, fields and pockets keep their cell sizes, so a 512 site has 64 blocks and the pad is 2.6 km from a corner pocket along an axis |
 | Geology | province one chart cell (6.43°); field 320 m (lean 1–4, fair 5–8, rich 9–16 ore pockets, shifted by an authored `prospectivity`); pocket 40 m (lean 3–6, fair 6–12, rich 12–24 t; up to two families) | ≤ 64 ore pockets a block a family by construction, so the cursor sidecar's cap never binds; a site is thousands of tonnes a family against the corridor's 4,000 t season; as built (SM.1): at most two families a pocket, the ranges code constants |
 | Instruments | scan 48 cells each axis (nine fields), sound 16 (a field), quiet 8; footing sets sharpness | per-axis squares, so "a whole field from its middle" is exact; as built (SM.4a): reach by the doubled-cell centre rule (exactly nine fields, 64 pockets and 16 from any stand), sight by the atlas line of sight from the 2.5 m mast to a mast's height over the field's centre cell |
 | Cycle | 1,800 IC s (75 real s); rock 3,600 | half `PRODUCTION_CADENCE_SECS` 3,600 (`workorder.rs:69`); four to six cycles a hopper keeps a trip under ten real minutes; as built (SM.7): read from the drill row (`mine::cycle_secs`) |

@@ -684,6 +684,10 @@ impl Catalog {
                     ),
                 ));
             }
+            packs.retain(|existing| {
+                !(existing.pack.manifest().id() == manifest.id()
+                    && existing.pack.manifest().version() < manifest.version())
+            });
             packs.push(loaded.clone());
         }
         Catalog::build(&packs, owner)

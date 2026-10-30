@@ -3949,3 +3949,55 @@ async fn crew_exit_waits_for_admitted_ramp_work_and_works_after_explicit_cancell
 
 #[path = "dt_chat.rs"]
 mod chat;
+
+#[tokio::test]
+async fn carrier_bay_access_stays_between_its_actual_hold_and_bay() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = rented_mining_fixture(&store).await?;
+    let actor = rig.organizer;
+    let before = rig.world.world().get(actor).and_then(|o| o.location);
+    let refused = text(&mut rig.world, actor, "+tv/bay in");
+    assert!(refused.contains("Board your carrier first"), "{refused}");
+    assert_eq!(
+        rig.world.world().get(actor).and_then(|o| o.location),
+        before
+    );
+    let view = tacsim::port::ship::hull_view(rig.world.world(), rig.carrier).ok_or("carrier")?;
+    let (_, bay) = view.bay().ok_or("bay")?;
+    let hold = view
+        .room(&mush_core::CanonicalId::new("hold")?)
+        .ok_or("hold")?;
+    rig.world.world_mut().move_to(actor, hold)?;
+    let entered = text(&mut rig.world, actor, "+tv/bay in");
+    assert!(entered.contains("entered vehicle bay"), "{entered}");
+    assert_eq!(
+        rig.world.world().get(actor).and_then(|o| o.location),
+        Some(bay)
+    );
+    assert!(
+        !actual_helm(&rig.world, rig.unit, actor)?,
+        "entering a bay grants no unit control"
+    );
+    let view = tacsim::port::ship::hull_view(rig.world.world(), rig.carrier).ok_or("carrier")?;
+    assert_eq!(
+        tacsim::port::vehicle::rigs_in_bay(rig.world.world(), &view)
+            .iter()
+            .map(|r| r.tv)
+            .collect::<Vec<_>>(),
+        vec![rig.unit],
+        "crew standing in the bay are not unlisted vehicles"
+    );
+    let refused = text(&mut rig.world, actor, "+tv/bay in");
+    assert!(refused.contains("from the cargo hold"), "{refused}");
+    assert_eq!(
+        rig.world.world().get(actor).and_then(|o| o.location),
+        Some(bay)
+    );
+    let exited = text(&mut rig.world, actor, "+tv/bay out");
+    assert!(exited.contains("returned to cargo hold"), "{exited}");
+    assert_eq!(
+        rig.world.world().get(actor).and_then(|o| o.location),
+        Some(hold)
+    );
+    Ok(())
+}

@@ -2034,9 +2034,23 @@ fn ic9_the_burn_offer_takes_no_forged_plan() {
     // The filing pilot taken off the hull by staff is not offered it either (the
     // offer's aboard gate), and is again once placed back aboard.
     let airlock = room_of(&row, "airlock");
+    let before = run(&mut rig.tw, pilot, "+ship/plan stickney");
     support::with_ctx(&mut rig.tw, |ctx| {
-        mush_sim::unplace(ctx, pilot, "staff took the pilot ashore").expect("unplaces")
+        mush_sim::unplace(ctx, pilot, "release explicit placement").expect("unplaces")
     });
+    assert!(
+        burn_offered(&rig.tw, pilot),
+        "unplacing leaves the pilot physically in the same ship room"
+    );
+    assert_eq!(
+        run(&mut rig.tw, pilot, "+ship/plan stickney"),
+        before,
+        "an ordinary walker still counts in the actual crew"
+    );
+    rig.tw
+        .world_mut()
+        .move_to(pilot, mush_core::LIMBO)
+        .expect("actually take the pilot ashore");
     assert!(
         !burn_offered(&rig.tw, pilot),
         "the filing pilot ashore is not offered it"

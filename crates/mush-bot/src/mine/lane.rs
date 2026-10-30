@@ -34,6 +34,9 @@
 //! kept out of every window: the echo is not the game's answer, and a heard
 //! line is another party's act, recorded (`LaneEvent::Heard`, the report's
 //! `heard`) and never acted on.
+#[path = "detachment.rs"]
+pub mod detachment;
+
 use std::collections::{BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
@@ -327,6 +330,7 @@ enum Board {
 /// What a step is: what its window is judged on and what follows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
+    Detachment(detachment::Task),
     /// A walk, done on the room's name.
     Walk {
         word: &'static str,
@@ -471,6 +475,7 @@ pub struct Lane {
     /// went stale.
     buying: Option<(u64, u64)>,
     stale_quotes: u32,
+    expedition: Option<detachment::Expedition>,
 }
 
 impl Lane {
@@ -525,9 +530,17 @@ impl Lane {
             bid: None,
             buying: None,
             stale_quotes: 0,
+            expedition: None,
         };
         lane.walk(Beat::KitUp, "c", ROOM_ARRIVALS, 0);
         lane
+    }
+
+    /// Play the hired-crew detachment expedition, retaining the solo travel/trade lane.
+    pub fn with_detachment(mut self) -> Self {
+        self.expedition = Some(detachment::Expedition::default());
+        self.report.detachment = Some(detachment::Evidence::default());
+        self
     }
 
     // -- reading the lane -----------------------------------------------------
@@ -811,6 +824,7 @@ impl Lane {
             return Verdict::Transient;
         }
         match &step.kind {
+            Kind::Detachment(task) => detachment::verdict(task, opened, &text, quiet, now_ms),
             Kind::Walk { room, .. } => done_if(has(&text, room)),
             Kind::Enrol => {
                 if has(&text, NOT_OPEN) {
@@ -1064,6 +1078,19 @@ impl Lane {
         );
         self.step = None;
         match (&step.kind, verdict) {
+            (Kind::Detachment(task), _) => {
+                if let Err(error) = self.expedition_next(task.phase, &raw, now_ms) {
+                    self.fail(now_ms, format!("detachment {:?}: {error}", task.phase));
+                }
+            }
+            (Kind::LiftOut, _) if self.expedition.is_some() => self.expedition_arrival(false),
+            (Kind::LiftHome, _) if self.expedition.is_some() => self.expedition_arrival(true),
+            (Kind::LeaseGo, _) if self.expedition.is_some() => self.expedition_start(),
+            (Kind::Board, _) if self.expedition.is_some() => self.expedition_board(),
+            (Kind::MapSite, _) if self.expedition.is_some() => {
+                self.report.witness = lines::grid_rows(&raw);
+                self.expedition_launch();
+            }
             (Kind::Walk { word, .. }, _) => self.after_walk(now_ms, step.beat, word),
             (Kind::Enrol, _) => self.send(Beat::KitUp, Kind::Refit, "+coop/refit prospector", 0),
             (Kind::Refit, _) => self.send(Beat::KitUp, Kind::LicencePreview, "+licence/buy", 0),
@@ -1344,7 +1371,9 @@ impl Lane {
         let want_locker = plan
             .crew_days
             .saturating_add(plan.home_days.unwrap_or(0))
-            .saturating_add(EXTRA_CREW_DAYS);
+            .saturating_add(
+                EXTRA_CREW_DAYS.saturating_mul(if self.expedition.is_some() { 2 } else { 1 }),
+            );
         if plan.tank_t >= want_tank && plan.locker >= want_locker {
             self.walk(Beat::BoardAndLift, "exchange", ROOM_EXCHANGE, 0);
             return;

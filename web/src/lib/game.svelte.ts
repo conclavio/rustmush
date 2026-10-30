@@ -299,6 +299,8 @@ export class GameApp {
   /** The latest `scenes` keyframe (the scene screen's glance rides in
    * `ambient.scene`; this is the full record for a future scene screen). */
   sceneFrame = $state<unknown>(null);
+  /** The latest `ground.draft.v1` frame answered on `arena.map` (`D-30-8`). */
+  groundDraftFrame = $state<Record<string, unknown> | null>(null);
   /** The palette's current rows and highlight. */
   paletteEntries = $state<PaletteEntry[]>([]);
   paletteSelected = $state(0);
@@ -1077,6 +1079,14 @@ export class GameApp {
     } else if (d.feed === ARENA_MAP_FEED) {
       // The terrain under it: pulled, never pushed, one per match.
       if (d.kind === "keyframe") {
+        if (
+          typeof d.data === "object" &&
+          d.data !== null &&
+          (d.data as Record<string, unknown>).schema === "ground.draft.v1"
+        ) {
+          this.groundDraftFrame = d.data as Record<string, unknown>;
+          return;
+        }
         this.picture.observeMap(d.data);
         if (this.cockpit.seated && decodeArenaMap(d.data)?.seated === false) {
           // The world answered a map ask `seated: false` while a seated frame
@@ -1867,6 +1877,17 @@ export class GameApp {
           feed: SITE_MAP_FEED,
           params: siteParams(this.quarry.mode, this.quarry.rig, this.quarry.family),
         },
+      },
+    );
+  }
+
+  /** Pull a `ground.draft.v1` document from `arena.map` for the Terrain Studio (`D-30-8`). */
+  requestGroundDraft(id = "proving_ground"): void {
+    this.#req(
+      { kind: "arena.map" },
+      {
+        t: "panel_subscribe",
+        d: { feed: ARENA_MAP_FEED, params: { draft: id } },
       },
     );
   }

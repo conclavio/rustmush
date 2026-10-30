@@ -1,5 +1,11 @@
 # 30. World generator v2 — the ground as content, one pipeline from authoring to the three views
 
+**Draft 0.4 — 2026-10-30, a Q-30-4 refinement.** The WG.3 review (PR #189) found §5's entry-zone
+step limit of 50 cm untrue of the shipped proving ground, whose V1 relief is rounded to whole
+metres, and the cut had bent the check around it with a hidden exception. The owner set the limit
+at **100 cm over every zone cell**, one number for every draft and no exception; §5 and Q-30-4
+carry it.
+
 **Draft 0.3 — 2026-10-30, the questions ruled.** The owner accepted every open question at the
 lead's default (*"all Q-30s accepted as default"*): Q-30-1..7 and Q-30-9 are ruled as §13 marks them,
 and with D-30-10 confirmed the same day the document carries no open question — WG.1 may start.
@@ -253,8 +259,9 @@ by the sim's own slope rule; the mutual reachability of the two entry zones; the
 every key spot and every waypoint node; the longest road grade. **Acceptance defaults** (Q-30-3,
 Q-30-4): tracked ≥ 90 % of land cells from both zones, legged ≥ 95 %, the two zones mutually
 reachable by all three drives, every key spot wheeled-reachable (roads carry wheels, so roads are
-authored ≤ 20 %), and every cell of every entry zone within ± 50 cm of its neighbours (flat musters,
-as #173 wanted). A draft that fails is a draft, not content; `build` refuses it unless `--force`,
+authored ≤ 20 %), and every cell of every entry zone within **± 100 cm** of its neighbours (flat musters,
+as #173 wanted; 100 cm is the ground's own quantum — the Q-30-4 refinement of 2026-10-30). A draft
+that fails is a draft, not content; `build` refuses it unless `--force`,
 and the report goes in the pack's `note`.
 
 **The repair passes** live in the writer so every source can have them, and (Draft 0.2, the
@@ -452,7 +459,10 @@ each other after WG.3. Each cut records itself in `30-cut-notes.md` in doc 20's 
   figure); off-road at each drive's limit.
 - **Q-30-4 — passability acceptance.** **Ruled 2026-10-30 at the default:** tracked ≥ 90 %, legged ≥ 95 % of land cells from
   both entry zones; the zones mutually reachable by tracked, wheeled and legged; every key spot
-  wheeled-reachable.
+  wheeled-reachable. **Refined 2026-10-30 (the WG.3 review, PR #189):** the entry-zone step limit is
+  **100 cm over every zone cell**, not 50 — the proving ground's V1 relief is rounded to whole
+  metres, so 50 cm was never true of the shipped content, and WG.3 had carved a hidden exception
+  for it. One number for every draft; the check examines every zone cell, not the musters alone.
 - **Q-30-5 — the studio's route to the server.** **Ruled 2026-10-30 at the default:** download → `ground-pack build` →
   `pack_paths` → restart for WG.4; `@ground/stage` (sign and hot-shelve a draft as an operator pack)
   as a later cut once the hot-load half of the shelf exists.

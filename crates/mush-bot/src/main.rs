@@ -25,7 +25,7 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
                 [--login <account+character>] [--model-tape <file.json>]\n\
                 [--test-controls] [--isolate-memory <new-directory>]\n\
                 [--arena <red|blue> [--matches <n>]]\n\
-                [--mine <site>]\n\
+                [--mine <site> | --mine-detachment <site>]\n\
        mush-bot --config <file> --replay <capture.json> --report <new.json> [--model <profile>]\n\
        mush-bot --config <file> --studio <concept.json> --output <new-directory> [--tui | --headless]\n\
        mush-bot --config <file> --studio-session <session.json> --output <new-directory> [--tui]\n\
@@ -408,7 +408,11 @@ fn launch() -> Result<u8> {
                     Some(mush_bot::arena::Side::parse(&word).ok_or("--arena takes red or blue")?);
             }
             // Doc 20 cut SM.12c-bot: play the mining loop at a site.
-            "--mine" => {
+            "--mine" | "--mine-detachment" => {
+                if options.mine.is_some() {
+                    return Err("choose --mine or --mine-detachment once".into());
+                }
+                options.mine_detachment = arg == "--mine-detachment";
                 let word = args.next().ok_or(mush_bot::mine::MINE_SITE_USAGE)?;
                 options.mine = Some(mush_bot::mine::Site::parse(&word)?);
             }

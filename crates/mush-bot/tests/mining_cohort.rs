@@ -301,55 +301,68 @@ fn cli(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
-/// **`--mine`'s refusals** (doc 20 cut SM.12c-bot, B5): an unknown site, a
-/// missing one, the arena, a goal, a session that sends its own lines and a
-/// run that is not headless — each before any connection — then the run the
-/// flag admits (`--mine ahuna --headless` reaches the connection: the
-/// runner's headless admission), and the usage's new line.
+/// Both mining flags reject unsupported sites and competing control lanes before
+/// connecting. Each admits a headless run, and the help presents the alternatives.
 #[test]
 fn the_mine_flag_refuses_what_it_cannot_play() {
     let session = "--mine cannot be combined with --script, --paused, --managed-floor, \
                    --replay, --studio, --harness or a campaign session";
-    for (args, sentence) in [
-        (&["--mine", "vesta"][..], mush_bot::mine::MINE_SITE_USAGE),
-        (&["--mine"][..], mush_bot::mine::MINE_SITE_USAGE),
-        (
-            &["--mine", "ahuna", "--arena", "red"][..],
-            "--mine and --arena are two lanes; choose one",
-        ),
-        (
-            &["--mine", "ahuna", "--goal", "x"][..],
-            "--mine plays now and --goal lets the model decide; choose one",
-        ),
-        (&["--mine", "ahuna", "--paused"][..], session),
-        // The runner's own refusal: the lane is headless (no REPL control or
-        // `/arena` can reach a run while it plays).
-        (
-            &["--mine", "ahuna"][..],
-            "the mining pilot plays headless; add --headless",
-        ),
-    ] {
-        let (code, _, stderr) = cli(args);
-        assert_eq!(code, Some(1), "{args:?}: {stderr}");
-        assert_eq!(stderr.trim(), format!("mush-bot: {sentence}"), "{args:?}");
+    for flag in ["--mine", "--mine-detachment"] {
+        for (args, sentence) in [
+            (&[flag, "vesta"][..], mush_bot::mine::MINE_SITE_USAGE),
+            (&[flag][..], mush_bot::mine::MINE_SITE_USAGE),
+            (
+                &[flag, "ahuna", "--arena", "red"][..],
+                "--mine and --arena are two lanes; choose one",
+            ),
+            (
+                &[flag, "ahuna", "--goal", "x"][..],
+                "--mine plays now and --goal lets the model decide; choose one",
+            ),
+            (&[flag, "ahuna", "--paused"][..], session),
+            // The runner's own refusal: neither lane admits REPL control.
+            (
+                &[flag, "ahuna"][..],
+                "the mining pilot plays headless; add --headless",
+            ),
+        ] {
+            let (code, stdout, stderr) = cli(args);
+            assert_eq!(code, Some(1), "{args:?}: {stderr}");
+            assert_eq!(stderr.trim(), format!("mush-bot: {sentence}"), "{args:?}");
+            assert!(!stdout.contains("[bot/connect]"), "{args:?}: {stdout}");
+        }
+        // Reject both duplicate selections and mixing solo with detachment,
+        // regardless of flag order, before any connection attempt.
+        for second in ["--mine", "--mine-detachment"] {
+            let args = [flag, "ahuna", second, "ahuna", "--headless"];
+            let (code, stdout, stderr) = cli(&args);
+            assert_eq!(code, Some(1), "{args:?}: {stderr}");
+            assert_eq!(
+                stderr.trim(),
+                "mush-bot: choose --mine or --mine-detachment once",
+                "{args:?}"
+            );
+            assert!(!stdout.contains("[bot/connect]"), "{args:?}: {stdout}");
+        }
+        // Admitted with no goal or model: port 1 refuses the SSH connection,
+        // so the run ends on connection failure, never a mining-lane refusal.
+        let (code, stdout, stderr) = cli(&[flag, "ahuna", "--headless"]);
+        assert_eq!(code, Some(1), "{flag}: {stdout}\n{stderr}");
+        assert!(
+            stdout.contains("[bot/connect] pilot+Pilot@127.0.0.1:1"),
+            "{flag} reached the connection:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("headless") && !stderr.contains("--mine"),
+            "{flag} has no refusal: {stderr}"
+        );
     }
-    // **Admitted**: `--mine ahuna --headless` passes every refusal, the
-    // runner's headless check included (`--mine` is a way to play headless
-    // with no goal and no model), and goes on to connect — port 1 refuses
-    // it, so the run ends on the connection, never on a refusal.
-    let (code, stdout, stderr) = cli(&["--mine", "ahuna", "--headless"]);
-    assert_eq!(code, Some(1), "{stdout}\n{stderr}");
-    assert!(
-        stdout.contains("[bot/connect] pilot+Pilot@127.0.0.1:1"),
-        "it reached the connection:\n{stdout}\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("headless") && !stderr.contains("--mine"),
-        "no refusal: {stderr}"
-    );
     let (code, usage, _) = cli(&["--help"]);
     assert_eq!(code, Some(0));
-    assert!(usage.contains("[--mine <site>]"), "{usage}");
+    assert!(
+        usage.contains("[--mine <site> | --mine-detachment <site>]"),
+        "{usage}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -736,4 +749,85 @@ async fn cohort() {
     }
     god.close().await;
     drop(rig);
+}
+
+/// The actual standalone executable plays the entire detachment loop over public SSH.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment() {
+    tokio::time::timeout(Duration::from_secs(22 * 60), async {
+        let miner = Miner {
+            account: "expedition",
+            character: "Expedition",
+            site: Site::Ahuna,
+        };
+        let rig = mine::boot(&[miner]).await;
+        println!("detachment rig: {}", rig.dir.display());
+        let config = arena::bot_config_agent(&rig, "expedition+Expedition", 1200, 250, 250, "");
+        let flight = arena::launch(&rig, &config, "detachment", &["--mine-detachment", "ahuna"]);
+        let mut god =
+            arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
+        // Only the server fixture changes the clock, after the captain enrols at rate 24.
+        let started = std::time::Instant::now();
+        loop {
+            let log = std::fs::read_to_string(&flight.transcript).unwrap_or_default();
+            if log.contains("+coop/refit prospector") {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(600),
+                "bot never enrolled: {log}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        if let Some(rate) = mine::rate_lift(mine::LIFTED_RATE) {
+            mine::lift_rate(&mut god, rate).await;
+        }
+        let landed = arena::land(flight, Duration::from_secs(20 * 60)).await;
+        let report = &landed.report["mine"];
+        assert_eq!(
+            report["success"], true,
+            "{}\n{}\n{}",
+            landed.report_text, landed.stdout, landed.stderr
+        );
+        assert!(report["sold_t"].as_u64().is_some_and(|n| n > 0), "{report}");
+        assert_eq!(
+            report["plan"]["crew_days"], 2,
+            "the planner includes Ilya and the captain before bunkering: {report}"
+        );
+        let evidence = &report["detachment"];
+        for fact in [
+            "chat_received",
+            "wilco_received",
+            "returned",
+            "unseated",
+            "closed",
+        ] {
+            assert_eq!(evidence[fact], true, "{fact}: {report}");
+        }
+        assert!(
+            evidence["contract"]
+                .as_str()
+                .is_some_and(|s| s.contains("Contract recorded"))
+        );
+        assert_eq!(evidence["units"].as_array().map(Vec::len), Some(2));
+        let sends: Vec<_> = landed
+            .records
+            .iter()
+            .filter(|r| r["kind"] == "mine-send")
+            .filter_map(|r| r["data"]["line"].as_str())
+            .collect();
+        assert!(
+            sends
+                .iter()
+                .all(|l| mush_bot::mine::lane::detachment::in_vocabulary(l)),
+            "{sends:?}"
+        );
+        assert!(
+            !sends.contains(&"+tv/1 launch go"),
+            "detachment must use real DT flights"
+        );
+        println!("detachment expedition sold {} tonnes", report["sold_t"]);
+    })
+    .await
+    .expect("the detachment expedition finishes within 22 minutes");
 }

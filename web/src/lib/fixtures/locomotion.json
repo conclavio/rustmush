@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "note": "The engine's locomotion table (doc 14 §5.1; plan §3.6). A cost is hundredths of a cell (100 = one cell at nominal speed); null is impassable. A class absent from a locomotion's classes takes its default. max_slope_pct is the rise over run, in percent, past which a cell is impassable; the cost climbs with the slope up to it. climb_cm is the step a locomotion climbs onto built ground (a kerb, a doorstep, a dock) regardless of slope, at half again the cost. wheeled water is 400 (16b cut AE.1): a ford is where wheels cross, at five times a road; deep water stays null.",
+  "locomotions": {
+    "biped": {
+      "default": 150,
+      "max_slope_pct": 60,
+      "climb_cm": 150,
+      "classes": {
+        "void": null, "paved": 100, "ground": 120, "grass": 120, "water": 300, "floor": 100,
+        "rubble": 250, "road": 100, "sand": 200, "rock": 200, "wall": null, "door": 100,
+        "platform": 100, "woods_light": 200, "woods_heavy": 300, "water_deep": null,
+        "ice": 200, "regolith": 150
+      }
+    },
+    "legged": {
+      "default": 120,
+      "max_slope_pct": 70,
+      "climb_cm": 300,
+      "classes": {
+        "void": null, "paved": 100, "ground": 110, "grass": 110, "water": 250, "floor": 120,
+        "rubble": 150, "road": 100, "sand": 150, "rock": 150, "wall": null, "door": 150,
+        "platform": 120, "woods_light": 150, "woods_heavy": 200, "water_deep": null,
+        "ice": 200, "regolith": 120
+      }
+    },
+    "wheeled": {
+      "default": 200,
+      "max_slope_pct": 25,
+      "classes": {
+        "void": null, "paved": 90, "ground": 200, "grass": 220, "water": 400, "floor": 100,
+        "rubble": null, "road": 80, "sand": 350, "rock": null, "wall": null, "door": 120,
+        "platform": 100, "woods_light": 400, "woods_heavy": null, "water_deep": null,
+        "ice": 300, "regolith": 250
+      }
+    },
+    "tracked": {
+      "default": 150,
+      "max_slope_pct": 45,
+      "classes": {
+        "void": null, "paved": 100, "ground": 130, "grass": 130, "water": 300, "floor": 120,
+        "rubble": 200, "road": 100, "sand": 180, "rock": 300, "wall": null, "door": 150,
+        "platform": 120, "woods_light": 250, "woods_heavy": null, "water_deep": null,
+        "ice": 200, "regolith": 150
+      }
+    },
+    "hover": {
+      "default": 110,
+      "max_slope_pct": 20,
+      "classes": {
+        "void": null, "paved": 100, "ground": 110, "grass": 110, "water": 110, "floor": 120,
+        "rubble": 300, "road": 100, "sand": 110, "rock": 300, "wall": null, "door": 150,
+        "platform": 120, "woods_light": 250, "woods_heavy": null, "water_deep": 120,
+        "ice": 100, "regolith": 110
+      }
+    },
+    "rotor": {
+      "default": 100,
+      "max_slope_pct": 100000,
+      "classes": { "void": 100, "wall": 100 }
+    },
+    "fixed_wing": {
+      "default": 100,
+      "max_slope_pct": 100000,
+      "classes": { "void": 100, "wall": 100 }
+    },
+    "displacement": {
+      "default": null,
+      "max_slope_pct": 10,
+      "classes": { "water": 100, "water_deep": 100 }
+    },
+    "thrust": {
+      "default": 100,
+      "max_slope_pct": 100000,
+      "classes": { "void": 100, "wall": 100 }
+    }
+  },
+  "tags": {
+    "amphibious": { "classes": { "water": 300, "water_deep": 400 } },
+    "jump": { "slope_factor": 2 },
+    "vtol": {},
+    "submersible": { "classes": { "water_deep": 100 } }
+  }
+}

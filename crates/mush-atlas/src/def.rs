@@ -46,6 +46,9 @@ pub struct RegionDef {
     /// A theme for this place and what lies within it (S2b).
     #[serde(default)]
     pub theme: Option<crate::theme::Theme>,
+    /// The ground biome (`temperate`, `mars`, `lunar`, `ice`; default `temperate`, doc 30 §6).
+    #[serde(default)]
+    pub biome: Option<String>,
 }
 
 fn default_ground_resolution() -> u16 {
