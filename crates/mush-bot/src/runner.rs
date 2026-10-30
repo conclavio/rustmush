@@ -99,6 +99,8 @@ pub struct Options {
     /// `--mine <site>`: play the mining loop at that site (doc 20 cut
     /// SM.12c-bot).
     pub mine: Option<crate::mine::Site>,
+    /// Include hired crew and a physical detachment in the mining expedition.
+    pub mine_detachment: bool,
 }
 
 pub enum Control {
@@ -1960,6 +1962,9 @@ impl App {
             },
             me,
         );
+        if self.options.mine_detachment {
+            lane = lane.with_detachment();
+        }
         let events = lane.events();
         self.mine = Some(lane);
         self.mine_reported = false;

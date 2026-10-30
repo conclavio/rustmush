@@ -737,3 +737,84 @@ async fn cohort() {
     god.close().await;
     drop(rig);
 }
+
+/// The actual standalone executable plays the entire detachment loop over public SSH.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment() {
+    tokio::time::timeout(Duration::from_secs(22 * 60), async {
+        let miner = Miner {
+            account: "expedition",
+            character: "Expedition",
+            site: Site::Ahuna,
+        };
+        let rig = mine::boot(&[miner]).await;
+        println!("detachment rig: {}", rig.dir.display());
+        let config = arena::bot_config_agent(&rig, "expedition+Expedition", 1200, 250, 250, "");
+        let flight = arena::launch(&rig, &config, "detachment", &["--mine-detachment", "ahuna"]);
+        let mut god =
+            arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
+        // Only the server fixture changes the clock, after the captain enrols at rate 24.
+        let started = std::time::Instant::now();
+        loop {
+            let log = std::fs::read_to_string(&flight.transcript).unwrap_or_default();
+            if log.contains("+coop/refit prospector") {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(600),
+                "bot never enrolled: {log}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        if let Some(rate) = mine::rate_lift(mine::LIFTED_RATE) {
+            mine::lift_rate(&mut god, rate).await;
+        }
+        let landed = arena::land(flight, Duration::from_secs(20 * 60)).await;
+        let report = &landed.report["mine"];
+        assert_eq!(
+            report["success"], true,
+            "{}\n{}\n{}",
+            landed.report_text, landed.stdout, landed.stderr
+        );
+        assert!(report["sold_t"].as_u64().is_some_and(|n| n > 0), "{report}");
+        assert_eq!(
+            report["plan"]["crew_days"], 2,
+            "the planner includes Ilya and the captain before bunkering: {report}"
+        );
+        let evidence = &report["detachment"];
+        for fact in [
+            "chat_received",
+            "wilco_received",
+            "returned",
+            "unseated",
+            "closed",
+        ] {
+            assert_eq!(evidence[fact], true, "{fact}: {report}");
+        }
+        assert!(
+            evidence["contract"]
+                .as_str()
+                .is_some_and(|s| s.contains("Contract recorded"))
+        );
+        assert_eq!(evidence["units"].as_array().map(Vec::len), Some(2));
+        let sends: Vec<_> = landed
+            .records
+            .iter()
+            .filter(|r| r["kind"] == "mine-send")
+            .filter_map(|r| r["data"]["line"].as_str())
+            .collect();
+        assert!(
+            sends
+                .iter()
+                .all(|l| mush_bot::mine::lane::detachment::in_vocabulary(l)),
+            "{sends:?}"
+        );
+        assert!(
+            !sends.contains(&"+tv/1 launch go"),
+            "detachment must use real DT flights"
+        );
+        println!("detachment expedition sold {} tonnes", report["sold_t"]);
+    })
+    .await
+    .expect("the detachment expedition finishes within 22 minutes");
+}

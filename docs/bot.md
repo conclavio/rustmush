@@ -1552,6 +1552,40 @@ game: its canary (every build) plays through the first scan in-process, and
 its cohort (run by hand) launches four bots, two at Ahuna Flank and two at
 Kerwan Floor, through the whole loop.
 
+### Detachment expedition
+
+Use `--headless --mine-detachment ahuna` for the hired-crew expedition. Start
+with a new captain in Limbo and give the run the same 2700-second budget as the
+solo pilot. This mode also runs without a model; choose it instead of `--mine`.
+
+The captain leases two rigs and requests their operational loans, meets Ilya
+Mendes at the Slack Line, accepts his printed mining agreement and arranges
+boarding. Supplies are planned after Ilya boards, so the planner counts both
+people. The bot lends the first rig's operating permission to Ilya, boards the
+second rig's actual console, requests its own control and accepts and readies
+its player slot. It activates the roster and arranges Ilya's station, then
+checks receipt of a detachment chat line before sailing.
+
+At the site it uses DT launch, reads the current field command fence and sends
+Ilya one finite `MINE metals` order. It waits for an arrived WILCO reply, the
+NPC's confirmed return and ore in the carrier's hold. It recovers the captain's
+rig, releases both seats, ends coordination and deactivates the roster, then
+sails home and sells the ore. It reads only its SSH terminal, including the
+printed contract hash, unit loans and consent and order fences. The `@` commands
+it uses are ordinary player permission, focus, control and channel commands.
+
+The report's `mine.detachment` records the contract, public object references,
+chat and WILCO receipts, confirmed returns, unseating, closure and hold reading.
+`mine.success` still requires the actual sale receipt. The NPC reads, scans and
+mines through its own controls; the bot does not treat a queued order as work
+completed, and does not claim the solo pilot's scan or sounding milestones.
+An unavailable crew member, refused duty, stale permissions or a blocked action
+ends the run with its current step and terminal evidence.
+
+```powershell
+cargo run -p mush-bot -- --config mush-bot.local.toml --mine-detachment ahuna --headless --report expedition.json
+```
+
 ## Character, personality and voice
 
 The [character and cast studio](bot-studio.md) develops JSON sheets from a concept:

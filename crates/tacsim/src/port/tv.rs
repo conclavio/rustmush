@@ -74,6 +74,7 @@ pub const TV_VERB: &str = "+tv";
 /// `+tv`'s help (doc 20 §4.3).
 pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain vehicle, its lease from Occator and its hopper, anywhere.
 +tv/<n>  the same for rig n.
++tv/bay in|out  from the cargo hold, enter the carrier's vehicle bay; from the bay, return to the hold.
 +tv/<n> board  in the carrier's bay, take the rig's physical helm billet with current OperateCrew permission; then use +focus and @station/handoff yourself.
 +tv/<n> leave  step from a rig in the bay into the carrier and give back your billet. Field units must return first.
 +tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting licence in force or in its grace (+licence). Without go it shows the terms and signs nothing.
@@ -2006,6 +2007,9 @@ fn slots_words(slots: &[u8]) -> String {
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    if ctx.switches.has("bay") {
+        return super::boarding::bay_access(ctx).map_err(CmdError::msg);
+    }
     if ctx.switches.has("board")
         || ctx.switches.has("leave")
         || matches!(ctx.args.raw().trim(), "board" | "leave")
