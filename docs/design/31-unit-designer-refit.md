@@ -1,5 +1,11 @@
 # 31. The unit designer and the refit bay
 
+**Draft 0.5 — 2026-10-30, UD.3 split; UD.3a built.** UD.3a makes a published design fieldable
+after a restart; the tactics catalogue, the catalogue generation and the looks on the feeds are
+UD.3b (§11). The staff verb is `@design`, not `@unit/design` (`@unit` is the tactics module's).
+Building it found operator packs' `requires` resolved without the shipped content, which would have
+refused every design at boot; fixed ([cut notes](31-cut-notes.md) "UD.3a").
+
 **Draft 0.4 — 2026-10-30, D-31-7 amended in cut UD.2; UD.1's roster ruled.** Building UD.2
 found Draft 0.3's schema crate a tacsim refactor of about 1,500 lines with arena types in tow, and
 `mush-core` not building for `wasm32`; the owner ruled the rules be checked by a staff-only server
@@ -325,7 +331,9 @@ mistake in a consequence shows before a match finds it.
 
 Exits: **Export** (the two files, D-31-8) and **Publish** (D-31-9: a new version to the instance,
 refused with the server's reason if the instance disagrees with the editor, which is a bug). A
-`@unit/design list|show|withdraw` staff command reads the registry from the line client.
+`@design/list|show|withdraw` staff command reads the registry from the line client (UD.3a:
+`@design`, not `@unit/design` — `@unit` is the tactics module's verb, and a module cannot add a
+switch to another's).
 
 ## 7. The refit and repair bay — IC hulls only (R4)
 
@@ -458,7 +466,8 @@ runs compress it well) and a section-to-part map on the look. Not built, not sch
 | **UD.0** | this document and its README row | — |
 | **UD.1** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the model catalogue (D-31-1..5): bake configs under `scripts/unit-bake/models/`, per-model `.mupk` files and `models/index.json` (format 3, keyed by model id), `"model"` on the six looks, `size_cm` on the look's top level, each model's fallback sheet, bakes keyed by model id (`bake_of_sheet`, `look_index` and the look-keyed `SheetKey` go), the installed pack and the fallback cache as tables that grow, the matrix check a model at a time and the look-against-model check, native binaries embedding every model by build script, the web's fetch by roster and on first sight with the text-sheet fallback (D-31-11), immutable content-named files; `units.bin` deleted | the six U.6 models ship as six files; a web client in a match of tanks fetches the tank's file and no other; a contact whose model has not arrived draws its text sheet and then its bake; no change to any picture once loaded |
 | **UD.2** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the staff designer v0 (D-31-6..8, §6): the `unit_design` invoke and `tacsim::design` (the rules check, the manifest's digest and `requires`), the look check and model preview in `mush-pixel-wasm`, the engine and studio, the chassis templates, the rules and look panes, undo/redo, the saved draft, the test hit, export to the two repo files | staff draw a biped variant with a different weapon fit from the catalogue, the studio refuses a broken one with the server's reason, and the exported files pass `cargo test` unchanged when committed |
-| **UD.3** | the runtime design registry (D-31-9, D-31-10, D-31-16): `tacsim:design:` rows on the pack ledger read by the host before the module registers, the tactics module's catalogue fed from the fielded one, the design namespace, Publish, `@unit/design`, the generation on the match record and the input tape's rebuild, the `looks` map on the feeds and the runtime look table on the gateway and in wasm, fieldable after a restart (Q-31-1) | a published design is fielded in an arena match after the restart and drawn with its own label and doll over SSH, kitty and the web; its input tape re-executes bit for bit; committing the design leaves the catalogue's digests unchanged |
+| **UD.3a** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the runtime design registry (D-31-9): Publish (the `unit_design` invoke's second op), `tacsim:design:` rows, the design namespace, the rows read by the host before the module registers and joined to the operator packs (a design that no longer verifies skipped, never a failed boot), `requires` resolved against the shipped content, `@design/list|show|withdraw`, a withdrawn design never offered to a new match, the studio's Publish, fieldable after a restart (Q-31-1) | a design published from the studio is in the catalogue after the restart and offered by `SIM UNIT`; the same version is refused a second time; a withdrawn one stays loaded and is no longer offered |
+| **UD.3b** | the rest of D-31-9, D-31-10, D-31-16: the tactics module's catalogue fed from the fielded one (`@unit/create` and IC hulls on a design), the generation on the match record and the input tape's rebuild, the `looks` map on the feeds and the runtime look table on the gateway and in wasm | a published design is drawn with its own label and doll over SSH, kitty and the web; its input tape re-executes bit for bit; committing the design leaves the catalogue's digests unchanged |
 | **UD.4** | the refit and repair bay on IC hulls (D-31-13..15): the bay view on a hull, quotes, the pending order state on the IC clock, the workshop orders through doc 08's driver at a `unit.maintain_refit` facility, refit families with slot-stable mount ids (the tank variants renamed), the refit transition, the arena refusal | an IC hull back from a sortie with a destroyed cannon is stripped, refitted with a stored like-for-like part, repaired and rearmed over IC time at a priced quote, or refitted to the laser variant and back, and a pod fitted and removed; a hull in the bay cannot launch; a simulator unit has no bay |
 
 UD.1 stands alone and could follow U.6 directly. UD.2 needs UD.1's index; UD.3 needs UD.2's

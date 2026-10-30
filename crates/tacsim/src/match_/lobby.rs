@@ -1714,6 +1714,9 @@ fn fieldable_ids(w: &World, reg: &mush_core::cmd::Registry) -> Vec<mush_core::Ca
                 .get(*id)
                 .is_some_and(|spec| spec.class_of().fieldable())
         })
+        // Doc 31 cut UD.3 (D-31-9): a withdrawn design stays loaded — a hull
+        // built on it still resolves — but is never offered to a new match.
+        .filter(|id| !store.design_withdrawn(id.as_str()))
         .cloned()
         .collect()
 }

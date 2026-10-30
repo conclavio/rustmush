@@ -34,6 +34,7 @@ describe("UnitDesignerStudio (doc 31 cut UD.2)", () => {
       expect(screen.getByRole("region", { name: pane })).toBeTruthy();
     }
     expect((screen.getByLabelText("Unit id") as HTMLInputElement).value).toBe("new_design");
+    // The draft's id is in the published-design namespace (D-31-9).
     expect(screen.getByRole("button", { name: "Export" }).hasAttribute("disabled")).toBe(true);
   });
 
@@ -48,6 +49,48 @@ describe("UnitDesignerStudio (doc 31 cut UD.2)", () => {
     expect(sent).toHaveLength(1);
     expect((sent[0] as { service: string }).service).toBe("unit_design");
     expect(screen.getByText("rules: a unit has at most 16 sections")).toBeTruthy();
+  });
+
+  it("publishes a checked design and says when it is fieldable (doc 31 cut UD.3)", async () => {
+    localStorage.clear();
+    const answers: unknown[] = [
+      { status: "checked", refusals: [], pack: { manifest: { id: "tacsim.pack.new_design" }, entries: {} } },
+      { status: "published", id: "tacsim.unit.new_design", version: 1, refusals: [] },
+    ];
+    const sent: unknown[] = [];
+    let handler: ((e: unknown) => void) | null = null;
+    let next = 1;
+    const client = {
+      on: (_t: string, fn: (e: unknown) => void) => {
+        handler = fn;
+        return () => {
+          handler = null;
+        };
+      },
+      invoke: (request: unknown) => {
+        sent.push(request);
+        const id = next++;
+        const answer = answers.shift();
+        queueMicrotask(() => handler?.({ d: { id, result: { service: "unit_design", result: answer } } }));
+        return id;
+      },
+    };
+    render(UnitDesignerStudio, { props: { app: { client } as unknown as GameApp } });
+    const settle = async () => {
+      await tick();
+      await new Promise((r) => setTimeout(r, 0));
+      await tick();
+    };
+    await fireEvent.click(screen.getByRole("button", { name: "Check on server" }));
+    await settle();
+    const publishButton = screen.getByRole("button", { name: "Publish" });
+    // No picture module under jsdom, so the look check is clean and Publish opens.
+    expect(publishButton.hasAttribute("disabled")).toBe(false);
+    await fireEvent.click(publishButton);
+    await settle();
+    expect((sent[1] as { request: { op: string; look: unknown } }).request.op).toBe("publish");
+    expect((sent[1] as { request: { look: unknown } }).request.look).toBeTruthy();
+    expect(screen.getByText(/fieldable after the next restart/)).toBeTruthy();
   });
 
   it("shows the test hit for a clicked doll part", async () => {

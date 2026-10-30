@@ -44,11 +44,11 @@ describe("the unit designer's engine (doc 31 cut UD.2)", () => {
 
   it("starts a draft from a template under a new id, its look pointed at it", () => {
     const d = tank();
-    expect(d.id).toBe("tacsim.unit.line_tank_mk2");
+    expect(d.id).toBe("tacsim.unit.design.line_tank_mk2");
     expect(d.look.units).toEqual([d.id]);
     expect(d.rules.label).toBe("Line Tank Mk2");
     expect(slugOf("  Heavy / Walker!! ")).toBe("heavy_walker");
-    expect(rename(d, "Other").look.units).toEqual(["tacsim.unit.other"]);
+    expect(rename(d, "Other").look.units).toEqual(["tacsim.unit.design.other"]);
   });
 
   it("edits armour, internals, weapons, speed and names without touching the template", () => {
