@@ -390,13 +390,29 @@ impl Default for StoreCfg {
 pub struct SshCfg {
     /// Listen address, e.g. `"0.0.0.0:2222"`.
     pub listen: String,
+    /// Doc 29: the **trusted ingress** socket sshdoorway connects to, e.g.
+    /// `"/run/rustmush-ssh/dev1.sock"`. Empty (the default) means no trusted
+    /// ingress. Unix only: a non-empty value on another platform is a boot
+    /// error. Its directory must exist (tmpfiles creates it setgid, group
+    /// `sshdoorway`, doc 29a A-1).
+    pub trusted_socket: String,
 }
 
 impl Default for SshCfg {
     fn default() -> Self {
         SshCfg {
             listen: "0.0.0.0:2222".to_string(),
+            trusted_socket: String::new(),
         }
+    }
+}
+
+impl SshCfg {
+    /// The trusted-ingress socket path, when one is configured.
+    #[must_use]
+    pub fn trusted_socket_path(&self) -> Option<std::path::PathBuf> {
+        let path = self.trusted_socket.trim();
+        (!path.is_empty()).then(|| std::path::PathBuf::from(path))
     }
 }
 

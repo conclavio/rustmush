@@ -104,7 +104,7 @@ const LINTS: [&str; 6] = [
 /// 2026-09-10, at S8's gate.
 const OUT_OF_ENGINE: [&str; 1] = ["mush-bot"];
 
-const MEASURED: [(&str, [u32; 6]); 48] = [
+const MEASURED: [(&str, [u32; 6]); 50] = [
     ("mush-ansi", [0, 0, 13, 0, 0, 0]),
     // S1: born with all six denied (14-spatial-implementation-plan §3.1).
     ("mush-atlas", [0, 0, 0, 0, 0, 0]),
@@ -161,6 +161,10 @@ const MEASURED: [(&str, [u32; 6]); 48] = [
     // are folded in here rather than left wrong. No count crossed zero, so the
     // per-lint tally below does not move.
     ("mush-sim", [3, 35, 5, 0, 0, 0]),
+    // Doc 29 (29a §3.4): the port-22 doorway and its preamble, both network-facing and
+    // born with all six denied.
+    ("mush-sshdoorway", [0, 0, 0, 0, 0, 0]),
+    ("mush-sshdoorway-proto", [0, 0, 0, 0, 0, 0]),
     ("mush-store", [18, 283, 15, 1, 1, 2]),
     ("mush-tactics", [3, 49, 1, 0, 2, 0]),
     ("mush-testkit", [0, 5, 0, 1, 0, 0]),
@@ -454,14 +458,14 @@ fn the_measurement_covers_every_crate_in_the_workspace() {
     );
     assert_eq!(
         MEASURED.len(),
-        48,
+        50,
         "the measurement in this file's header covered 43 crates; S1 added mush-atlas and \
          mush-content, both born at zero on every lint; 16b cut R-b deleted ruleset-wod and \
          ruleset-shadowrun; 17b cut M2.1 added mush-mind, born at zero on every lint; the \
          17d M6.1 adds mush-roll under the same six zero gates; the 2026-10-21 pixel cockpit \
          spike adds mush-pixel, born at zero on every lint; doc 21 cut G.3b adds \
          mush-pixel-wasm, born at zero on every lint; doc 28 P1 adds mush-composition, born \
-         at zero on every lint; crates in OUT_OF_ENGINE are not measured"
+         at zero on every lint; doc 29 adds mush-sshdoorway and mush-sshdoorway-proto, both born \n         at zero on every lint; crates in OUT_OF_ENGINE are not measured"
     );
 }
 
@@ -493,14 +497,15 @@ fn the_enabled_set_is_the_one_the_measurement_produced() {
             // 2026-10-21 pixel cockpit spike: mush-pixel adds one more to each.
             // Doc 21 cut G.3b: mush-pixel-wasm one more again.
             // Doc 28 P1: mush-composition adds one more to each.
-            ("clippy::unwrap_used", 45),
+            // Doc 29: mush-sshdoorway and mush-sshdoorway-proto add two more to each.
+            ("clippy::unwrap_used", 47),
             // 16b cut R-a: tacsim now carries the composition root's three expects, so
             // it no longer denies `expect_used`; nine crates did, ten with mush-mind.
-            ("clippy::expect_used", 14),
-            ("clippy::indexing_slicing", 21),
-            ("clippy::panic", 43),
-            ("clippy::unreachable", 39),
-            ("clippy::panic_in_result_fn", 46),
+            ("clippy::expect_used", 16),
+            ("clippy::indexing_slicing", 23),
+            ("clippy::panic", 45),
+            ("clippy::unreachable", 41),
+            ("clippy::panic_in_result_fn", 48),
         ]),
         "the per-lint crate counts moved; re-measure before changing them"
     );

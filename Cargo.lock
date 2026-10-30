@@ -2612,8 +2612,10 @@ dependencies = [
  "mush-pixel",
  "mush-proto",
  "mush-session",
+ "mush-sshdoorway-proto",
  "proptest",
  "ratatui",
+ "rmp-serde",
  "russh",
  "russh-sftp",
  "serde",
@@ -2895,6 +2897,36 @@ dependencies = [
  "smol_str",
  "thiserror 2.0.20",
  "tracing",
+]
+
+[[package]]
+name = "mush-sshdoorway"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "getrandom 0.4.3",
+ "mush-net-ssh",
+ "mush-proto",
+ "mush-sshdoorway-proto",
+ "russh",
+ "serde",
+ "socket2 0.6.5",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mush-sshdoorway-proto"
+version = "0.1.0"
+dependencies = [
+ "rmp-serde",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

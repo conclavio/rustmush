@@ -1,0 +1,47 @@
+# sshdoorway generation %i (a or b) — doc 29 §9-§10.
+# Two generations alternate: swap.sh starts the idle one, waits for READY=1,
+# then sends SIGTERM to the active one, which drains (warnings at 12h, 6h, 2h,
+# 1h, 15m, 1m remaining; closes at 24 h or when empty).
+[Unit]
+Description=sshdoorway (port-22 SSH front door), generation %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=sshdoorway
+Group=sshdoorway
+ExecStart=/opt/rustmush/sshdoorway/sshdoorway --config /etc/rustmush/sshdoorway.toml --generation %i
+ExecReload=/bin/kill -HUP $MAINPID
+# SIGTERM drains; a drain lasts up to the deadline (24 h) plus a margin.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=86700
+Restart=on-failure
+RestartSec=2
+
+# Port 22 without root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/sshdoorway /var/log/sshdoorway
+StateDirectory=sshdoorway
+StateDirectoryMode=0700
+
+# journald gets warn and above only; this caps a storm (doc 29 §8.1).
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
