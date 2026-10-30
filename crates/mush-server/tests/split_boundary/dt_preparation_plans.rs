@@ -710,6 +710,13 @@ async fn field_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
 }
 
 async fn field_operator_fixture(store: &InMemoryStore, npc: bool) -> TestResult<(Rig, ObjId)> {
+    field_commander_fixture(store, npc, false).await
+}
+async fn field_commander_fixture(
+    store: &InMemoryStore,
+    npc: bool,
+    commander: bool,
+) -> TestResult<(Rig, ObjId)> {
     let mut rig = fixture(store).await?;
     let cab = rig
         .world
@@ -749,7 +756,7 @@ async fn field_operator_fixture(store: &InMemoryStore, npc: bool) -> TestResult<
         &format!("@spatial/unassign #{}=pilot", rig.unit.0),
     )?;
     if npc {
-        hire_field_operator(&mut rig, store).await?;
+        hire_field_operator(&mut rig, store, commander).await?;
     }
     let (hull, ceres, crew, site) = {
         let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("programme port")?;
@@ -846,6 +853,9 @@ async fn field_operator_fixture(store: &InMemoryStore, npc: bool) -> TestResult<
     let mut payload = plan(&rig);
     if npc {
         payload["slots"][0]["controller"]["kind"] = json!("npc");
+        if commander {
+            payload["npc_commander"] = json!(rig.invitee.0);
+        }
     }
     commit(
         &mut rig.world,
@@ -889,7 +899,7 @@ async fn field_operator_fixture(store: &InMemoryStore, npc: bool) -> TestResult<
     Ok((rig, cab))
 }
 
-async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore) -> TestResult {
+async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore, commander: bool) -> TestResult {
     use tacsim::detachment::crew::{CrewDuty, HireTerms, NpcMissionScope, OFFER_ATTR};
     let key = mush_atlas::RecordKey::new(
         mush_core::CanonicalId::new("neighborhood.ceres_freeport")?,
@@ -905,7 +915,11 @@ async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore) -> TestResult
     let terms = HireTerms {
         schema: 1,
         port: mush_core::CanonicalId::new("ceres")?,
-        mission_scope: NpcMissionScope::SubordinateOperator,
+        mission_scope: if commander {
+            NpcMissionScope::DetachmentCommander
+        } else {
+            NpcMissionScope::SubordinateOperator
+        },
         duties: std::collections::BTreeSet::from([CrewDuty::Combat]),
     };
     rig.world.world_mut().set_attr(
@@ -1416,5 +1430,176 @@ async fn hired_npc_seating_requires_current_real_unit_use_permission() -> TestRe
     );
     assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
     assert!(rig.world.engine_mut().take_authoritative_submit().is_none());
+    Ok(())
+}
+
+fn field_roster(
+    world: &TestWorld,
+    organizer: ObjId,
+) -> TestResult<mush_tactics::detachment::roster::DetachmentRoster> {
+    let h = world
+        .world()
+        .module_state::<tacsim::detachment::sortie::SortieHandles>()
+        .ok_or("flight handles")?;
+    let op = world
+        .engine()
+        .action_state()
+        .get(
+            &h.operations,
+            &tacsim::detachment::sortie::OperationId {
+                organizer,
+                draft: PlanId(1),
+                activation: 1,
+            },
+        )?
+        .ok_or("operation")?;
+    Ok(mush_tactics::detachment::roster::DetachmentRoster::restore(
+        op.command.as_deref().ok_or("field command")?,
+    )?)
+}
+
+#[tokio::test]
+async fn ic_field_leadership_uses_real_player_control_sessions_and_restart() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = field_fixture(&store).await?;
+    let (organizer, player, carrier, unit) = (rig.organizer, rig.invitee, rig.carrier, rig.unit);
+    rig.world.connect(player);
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=all").await?;
+    let due = flight(&rig.world, unit, 1)?.due.at;
+    let finish = fire_flight(&mut rig.world, &store, due).await?;
+    land_request(&mut rig.world, &store, &finish).await?;
+    let now_ic = rig.world.world().world_ic_now().at;
+    let refresh = fire_flight(&mut rig.world, &store, now_ic).await?;
+    land_request(&mut rig.world, &store, &refresh).await?;
+    let selected = field_roster(&rig.world, organizer)?;
+    assert_eq!(selected.leader().map(|l| l.character), Some(player));
+    assert_ne!(
+        selected.leader().map(|l| l.character),
+        Some(organizer),
+        "launching does not confer field command"
+    );
+    let now_ic = rig.world.world().world_ic_now().at;
+    let unchanged = fire_flight(&mut rig.world, &store, now_ic).await;
+    assert!(
+        matches!(unchanged,Err(ref e) if e.to_string().contains("no flight completion queued")),
+        "clock advance alone does not write another leadership record"
+    );
+    let now = rig.world.world().now();
+    // Consume the session owner's disconnected/live-connection facts, without
+    // inventing a separate DT grace timer.
+    rig.world.world_mut().set_connected(player, false);
+    rig.world.world_mut().set_live_conns(player, 0);
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert!(field_roster(&rig.world, organizer)?.leader().is_none());
+    rig.world.world_mut().set_connected(player, true);
+    rig.world.world_mut().set_live_conns(player, 1);
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert!(
+        field_roster(&rig.world, organizer)?.leader().is_none(),
+        "return hysteresis survives owner commits"
+    );
+    rig.world.set_now(now + 4);
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert_eq!(
+        field_roster(&rig.world, organizer)?
+            .leader()
+            .map(|l| l.character),
+        Some(player)
+    );
+    let request = submit(&mut rig.world, organizer, "+sortie/refresh 1:1")?;
+    stage(&mut rig.world, &store, &request).await?;
+    let crew = tacsim::port::ship::hull_view(rig.world.world(), carrier)
+        .ok_or("hull")?
+        .room(&mush_core::CanonicalId::new("crew")?)
+        .ok_or("crew")?;
+    let crew = mush_sim::anchored_space_of(rig.world.world(), crew).ok_or("space")?;
+    // This player has ordinary room placement, not a Sim participant record.
+    rig.world.world_mut().move_to(player, crew)?;
+    assert!(
+        rig.world.engine_mut().take_staged_action().is_err(),
+        "leaving the actual console invalidates prepared leadership"
+    );
+    rig.world.world_mut().move_to(player, cab)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let term = field_roster(&rig.world, organizer)?.term();
+    let now = rig.world.world().now();
+    drop(rig);
+    let mut rig = fixture(&store).await?;
+    rig.world.set_now(now);
+    assert_eq!(
+        field_roster(&rig.world, organizer)?.term(),
+        term,
+        "restart preserves succession identity"
+    );
+    // A restarted player has neither a session nor a restored focus. Saved
+    // leadership is history, never a replacement for either current fact.
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert!(field_roster(&rig.world, organizer)?.leader().is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn ic_field_npc_commander_needs_current_contract_nomination_and_org_authority() -> TestResult
+{
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_commander_fixture(&store, true, true).await?;
+    let (organizer, npc, unit) = (rig.organizer, rig.invitee, rig.unit);
+    let seating = submit(&mut rig.world, organizer, "+sortie/seat 1:1=1")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    land_request(&mut rig.world, &store, &seating).await?;
+    install_due_handoff(&mut rig.world, &store).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let due = flight(&rig.world, unit, 1)?.due.at;
+    let finish = fire_flight(&mut rig.world, &store, due).await?;
+    land_request(&mut rig.world, &store, &finish).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert!(
+        field_roster(&rig.world, organizer)?.leader().is_none(),
+        "employment and nomination alone do not grant unit command"
+    );
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} command_assigned_ai",
+            unit.0, npc.0
+        ),
+    )
+    .await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    let commanded = field_roster(&rig.world, organizer)?;
+    assert_eq!(commanded.leader().map(|l| l.character), Some(npc));
+    commit(&mut rig.world, &store, organizer, "@unitgrant/revoke 2").await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    let revoked = field_roster(&rig.world, organizer)?;
+    assert!(revoked.leader().is_none());
+    assert_eq!(revoked.term(), commanded.term() + 1);
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!(
+            "@unitgrant/issue #{}=#{} command_assigned_ai",
+            unit.0, npc.0
+        ),
+    )
+    .await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert_eq!(
+        field_roster(&rig.world, organizer)?
+            .leader()
+            .map(|l| l.character),
+        Some(npc)
+    );
+    commit(&mut rig.world, &store, organizer, "+sortie/deactivate 1:1").await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert!(field_roster(&rig.world, organizer)?.leader().is_none());
+    let unresolved = flight(&rig.world, unit, 1)?;
+    assert_eq!(unresolved.phase, tacsim::detachment::sortie::Phase::Field);
+    assert!(
+        unresolved.closed.is_none(),
+        "disbanding does not recover the actual unit"
+    );
     Ok(())
 }

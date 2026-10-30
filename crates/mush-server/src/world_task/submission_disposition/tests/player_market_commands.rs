@@ -753,8 +753,8 @@ async fn listings_are_identical_for_every_principal_at_the_counter() -> TestResu
         for restarted in [false, true] {
             check_eq!(
                 w.server.owner_read_counts(),
-                Some((40, 43)),
-                "the composed reads (restarted: {restarted})"
+                Some((41, 44)),
+                "the composed reads including actual field-crew control (restarted: {restarted})"
             );
             let mut at_counter = Vec::new();
             for actor in principals {

@@ -185,6 +185,20 @@ NPCs to their assigned physical consoles and the existing control-handoff host.
 The IC field command/observer driver and mining integration remain subsequent work;
 these cuts do not claim the complete NPC mining story.
 
+DT.3d connects the common succession model to accepted IC operations. Its bounded
+checkpoint lives in the existing operation record, retaining command terms and
+reconnect timers across restart while excluding cached authorization. Sim supplies
+the actual K6 lease through an owner-attributed read; Org supplies current command
+rights. Preparation reads both owners again and retains their typed preimages.
+The flight tick and explicit `+sortie/refresh` reconcile current field placement,
+physical consoles, unit condition, employment and actual session state. Advancing
+the clock alone does not write another operation record. `+sortie/field` shows
+only the last saved leadership identity and term, not private availability causes.
+
+This establishes IC succession. Real order transport, current-leader mission-role
+grant integration and NPC execution remain required before claiming the IC parts
+of DT.1/DT.2 complete. The OOC host cannot stand in for those production paths.
+
 ## DT.1a verification
 
 Validated locally on 2026-10-28:

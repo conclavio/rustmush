@@ -58,6 +58,11 @@ pub enum UnitAuthorityRequest {
         unit: ObjId,
         operator: ObjId,
     },
+    /// Bounded owner-attributed field-host observation, never a portable permit.
+    /// Actual command admission still needs current unit-use revision guards.
+    CommandAvailability {
+        crew: Vec<(ObjId, ObjId)>,
+    },
     List {
         after: u64,
     },
@@ -70,6 +75,10 @@ pub enum UnitAuthorityRequest {
 pub enum UnitAuthorityResponse {
     Authority {
         allowed: bool,
+    },
+    CommandAvailability {
+        allowed: Vec<bool>,
+        operate: Vec<bool>,
     },
     Grants {
         grants: Vec<UnitGrant>,
@@ -242,6 +251,46 @@ impl OwnerReadService for UnitAuthorityReader {
                 )
                 .is_allow();
                 Ok(UnitAuthorityResponse::Authority { allowed })
+            }
+            UnitAuthorityRequest::CommandAvailability { crew } => {
+                if ctx.requester().as_str() != "tacsim"
+                    || crew.len() > 6
+                    || crew
+                        .iter()
+                        .any(|(unit, operator)| unit.0 == 0 || operator.0 == 0)
+                {
+                    return Err(OwnerReadError::Refused);
+                }
+                let facts = self.facts.facts(ctx.world());
+                let predicates = WorldPredicates {
+                    w: ctx.world(),
+                    providers: store.providers(),
+                };
+                let decision = |unit, actor, capability| {
+                    authorize_unit(
+                        store.state(),
+                        &registry.grants,
+                        facts.as_ref(),
+                        &predicates,
+                        &UnitAuthRequest {
+                            actor,
+                            unit,
+                            action: UnitAction::Exercise(capability),
+                            now: ctx.world().now(),
+                            mission: None,
+                        },
+                    )
+                    .is_allow()
+                };
+                let allowed = crew
+                    .iter()
+                    .map(|(u, a)| decision(*u, *a, UnitCapability::CommandAssignedAi))
+                    .collect();
+                let operate = crew
+                    .iter()
+                    .map(|(u, a)| decision(*u, *a, UnitCapability::OperateCrew))
+                    .collect();
+                Ok(UnitAuthorityResponse::CommandAvailability { allowed, operate })
             }
             UnitAuthorityRequest::CrewUse { unit, operator } => {
                 let facts = self.facts.facts(ctx.world());

@@ -26,7 +26,7 @@ pub(super) struct Snapshot {
     lines: Vec<(ObjId, crate::surface::black_box::BlackBoxLine)>,
 }
 impl Snapshot {
-    fn new(operation: OperationId) -> Result<Self, String> {
+    pub(super) fn new(operation: OperationId) -> Result<Self, String> {
         Ok(Self {
             hash: CanonicalHash::for_canonical_value("tacsim.flight.empty.v1", 1, &json!({}), 1024)
                 .map_err(|e| e.to_string())?,
@@ -124,7 +124,7 @@ where
     }
     .map_err(runtime::error)
 }
-fn operation(
+pub(super) fn operation(
     read: &mut impl Read,
     h: &SortieHandles,
     id: OperationId,
@@ -352,6 +352,32 @@ pub(super) fn snapshot(
             flight: key,
             revision,
         } => finish(world, read, h, actor, intent, *key, *revision)?,
+        Command::Refresh {
+            operation: id,
+            facts,
+        } => {
+            let old = operation(read, h, *id)?;
+            if actor != id.organizer
+                && !old
+                    .roster
+                    .plan
+                    .slots
+                    .iter()
+                    .any(|s| s.controller.character() == Some(actor))
+            {
+                return Err("Operation unavailable.".into());
+            }
+            let mut next = old.clone();
+            let (roster, observations) = super::field::reconcile(world, read, h, &old, facts)?;
+            next.command = Some(Box::new(roster.checkpoint()));
+            let mut patch = Snapshot::new(*id)?;
+            patch.observations = observations;
+            patch.record = Some(Box::new(Write {
+                before: Some(old),
+                after: next,
+            }));
+            patch
+        }
     };
     for write in &patch.flights {
         if write.after.phase.open() {
@@ -428,6 +454,7 @@ fn launch(
                 began: intent.ic.clone(),
                 ended: None,
                 flights: Vec::new(),
+                command: None,
             },
         }))
     }
@@ -788,6 +815,24 @@ pub(super) fn authority_keys(
         }
         Command::Recover { unit, .. } => {
             keys.insert(revision_key(actor, *unit, UnitCapability::RecoverLoad)?);
+        }
+        Command::Refresh { facts, .. } => {
+            for row in &facts.crew {
+                if row.operate {
+                    keys.insert(revision_key(
+                        row.operator,
+                        row.unit,
+                        UnitCapability::OperateCrew,
+                    )?);
+                }
+                if row.command_authorized {
+                    keys.insert(revision_key(
+                        row.operator,
+                        row.unit,
+                        UnitCapability::CommandAssignedAi,
+                    )?);
+                }
+            }
         }
         _ => {}
     }

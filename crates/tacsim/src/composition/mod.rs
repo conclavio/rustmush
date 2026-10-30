@@ -188,6 +188,7 @@ fn compose_domain_modules<E>(
         delegates.push(crate::NS);
     }
     let simulation = mush_sim::SimulationModule::new()
+        .with_field_crew_control(tacsim_delegate)
         .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
         .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks));
     let tactics = match launch {

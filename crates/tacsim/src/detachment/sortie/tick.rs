@@ -67,6 +67,7 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         state.after = next
     }
     let mut acted = BTreeSet::new();
+    let mut operations = BTreeSet::new();
     for head in heads {
         let Ok(Some(flight)) = ctx
             .action_state(&h.flights, &head.flight)
@@ -103,6 +104,32 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             .ok()
             .flatten()
             .cloned();
+        // The same bounded flight index discovers active operations. A refresh
+        // never moves a unit and retains no second roster/location registry.
+        if flight.phase == Phase::Field
+            && operations.insert(op.id)
+            && let Ok(facts) = super::field::read_owner_facts(ctx, &h, &op)
+            && let Ok((roster, _)) = super::field::reconcile(ctx.w, &mut &*ctx, &h, &op, &facts)
+            && op
+                .command
+                .as_deref()
+                .is_none_or(|old| !old.same_succession(&roster.checkpoint()))
+            && runtime::enqueue(
+                ctx,
+                op.id.organizer,
+                runtime::Command::Refresh {
+                    operation: op.id,
+                    facts,
+                },
+            )
+            .is_ok()
+        {
+            acted.insert(op.id.organizer);
+            if acted.len() >= 8 {
+                break;
+            }
+            continue;
+        }
         let already = flight.phase == Phase::Departing && facts::on_site(ctx.w, &flight)
             || matches!(flight.phase, Phase::Field | Phase::Returning)
                 && facts::in_bay(ctx.w, &flight);

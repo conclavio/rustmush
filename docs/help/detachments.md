@@ -55,6 +55,8 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/launch <draft>:<activation revision>=all` | Admit the unlaunched members of your accepted roster |
 | `+sortie/launch <draft>:<activation revision>=<slot>` | Admit or retry one unlaunched member |
 | `+sortie/operation <draft>:<activation revision>` | Read the operation's saved progress and flight references |
+| `+sortie/field <draft>:<activation revision>` | Read the last saved field leadership identity and command term |
+| `+sortie/refresh <draft>:<activation revision>` | Recheck the operation's current field leadership |
 | `+sortie/recover <draft>:<activation revision>=<slot>` | Bring a unit physically beside the ramp back into the carrier |
 | `+sortie/cancel-launch <draft>:<activation revision>=<slot>` | Cancel a departure that is still physically aboard |
 | `+sortie/end <draft>:<activation revision>` | End coordination, cancelling only departures still aboard |
@@ -181,3 +183,16 @@ their operation when recovering a unit or reading its history.
 
 OOC practice continues to use `+sortie/practice` and `+sortie/roster`, described
 in [cockpit help](cockpit.md).
+
+Field leadership follows the accepted numbered slots. The first available player
+with a real physical helm station and current control lease leads; launching or
+organizing the operation confers no field priority. A nominated NPC can take over
+only with the accepted command employment scope and current unit command rights.
+An unavailable roster has no leader. Session grace comes from the session owner;
+returning players settle briefly before reclaiming priority. A restart retains
+the command term and reconnect timers, then rechecks current sessions and control.
+
+`/field` is the saved operation record, not a live casualty or position report.
+The flight tick refreshes changed leadership; `/refresh` requests the same durable
+check explicitly. Neither command issues an order or moves a unit. These records
+do not supply a communications path or an NPC tactical decision driver.
