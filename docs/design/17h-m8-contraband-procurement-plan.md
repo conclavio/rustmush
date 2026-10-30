@@ -931,6 +931,11 @@ This closes **17g §4's first deferral**.
   A second cause followed: the story listed its minds only at the House counter, and
   procurement reads only player-market entitlement listings (P5). The story now files and
   publishes the rated lines on the player market. That fix is test-only.
+  A third cause was in the harness: a reboot folded queued command ops after the composed acts'
+  writes, so an older rewrite of an open economy-journal chunk overwrote a later seal
+  (`UnsealedNonTail`). Writes now fold in the order they were made. With all three fixed, the
+  story passes (PR #163): two Pins from each scoring line, the 0‰ line untouched, and month 2
+  closed with its budget spent.
   **Owner ruling, 2026-10-29: procurement reads player-market listings only. House counter
   lines stay out of it.**
 - **Still owed:**
@@ -938,4 +943,5 @@ This closes **17g §4's first deferral**.
   - **Blocked:** the heirloom over the launch world, because the launch composes no core3
     entitlement. Its test stays in the hardware rig.
   - **Not built:** tier 1 as one story, and the M8a delegation pin.
-  - **A harness gap:** a reboot after a back-room refit (`UnsealedNonTail`).
+  - ~~**A harness gap:** a reboot after a back-room refit (`UnsealedNonTail`).~~ Closed by the
+    same ordering fix (PR #163); the attestation control's restart step is restored.
