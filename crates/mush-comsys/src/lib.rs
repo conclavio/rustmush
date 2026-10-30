@@ -66,6 +66,7 @@
 pub mod api;
 mod commands;
 mod data;
+pub mod managed;
 mod query;
 mod speak;
 pub mod transit;
@@ -96,7 +97,10 @@ pub struct ComsysModule;
 impl ComsysModule {
     #[must_use]
     pub fn with_transport(self, transport: Arc<dyn transit::Transport>) -> TransportComsysModule {
-        TransportComsysModule { transport }
+        TransportComsysModule {
+            transport,
+            managed_actions: BTreeSet::new(),
+        }
     }
     /// A fresh module instance.
     #[must_use]
@@ -107,6 +111,13 @@ impl ComsysModule {
 
 pub struct TransportComsysModule {
     transport: Arc<dyn transit::Transport>,
+    managed_actions: BTreeSet<mush_core::DefinitionRef>,
+}
+impl TransportComsysModule {
+    pub fn with_managed_channels(mut self, actions: BTreeSet<mush_core::DefinitionRef>) -> Self {
+        self.managed_actions = actions;
+        self
+    }
 }
 impl GameModule for TransportComsysModule {
     fn name(&self) -> &'static str {
@@ -114,6 +125,7 @@ impl GameModule for TransportComsysModule {
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         ComsysModule.register(reg)?;
+        managed::register(reg, self.managed_actions.clone())?;
         reg.state(transit::Services(Arc::clone(&self.transport)));
         Ok(())
     }
