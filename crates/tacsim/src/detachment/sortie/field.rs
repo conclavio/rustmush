@@ -19,11 +19,13 @@ pub(super) struct CrewFact {
     pub controls: bool,
     pub operate: bool,
     pub command_authorized: bool,
+    pub command_role: Option<mush_org::unit_authority::UnitGrantId>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OwnerFacts {
     pub crew: Vec<CrewFact>,
+    pub mission: Option<mush_org::unit_authority::MissionFacts>,
 }
 
 pub(super) fn roster(op: &OperationRecord) -> Result<DetachmentRoster, String> {
@@ -91,6 +93,7 @@ fn combine(
         return Err("Incomplete owner facts.".into());
     }
     Ok(OwnerFacts {
+        mission: None,
         crew: query
             .into_iter()
             .zip(controls)
@@ -102,6 +105,7 @@ fn combine(
                 controls,
                 operate,
                 command_authorized,
+                command_role: None,
             })
             .collect(),
     })
@@ -126,7 +130,90 @@ pub(super) fn read_owner_facts(
             },
         )
         .map_err(|e| e.to_string())?;
-    combine(query, controls, allowed)
+    let mut facts = combine(query, controls, allowed)?;
+    let mission = selection(ctx.w, &mut &*ctx, h, op, &facts)?;
+    let observed = ctx
+        .read_owner(
+            rights(ctx.w)?,
+            UnitAuthorityRequest::MissionCommands {
+                mission: mission.clone(),
+                crew: facts.crew.iter().map(|r| (r.unit, r.operator)).collect(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    complete(&mut facts, mission, observed)?;
+    Ok(facts)
+}
+fn complete(
+    facts: &mut OwnerFacts,
+    mission: mush_org::unit_authority::MissionFacts,
+    observed: UnitAuthorityResponse,
+) -> Result<(), String> {
+    let UnitAuthorityResponse::MissionCommands(rows) = observed else {
+        return Err("Mission command rights unavailable.".into());
+    };
+    if rows.len() != facts.crew.len() {
+        return Err("Mission command rights incomplete.".into());
+    }
+    for (fact, right) in facts.crew.iter_mut().zip(rows) {
+        fact.command_authorized = right.allowed;
+        fact.command_role = right.role_grant;
+    }
+    facts.mission = Some(mission);
+    Ok(())
+}
+
+pub(super) fn binding(
+    op: &OperationRecord,
+) -> Result<mush_org::unit_authority::MissionBinding, String> {
+    mission_binding(&op.roster)
+}
+/// Stable identity of this exact accepted activation, independent of its leader.
+pub fn mission_binding(
+    roster: &crate::detachment::activation::ActiveDetachment,
+) -> Result<mush_org::unit_authority::MissionBinding, String> {
+    roster.validate()?;
+    let hash = CanonicalHash::for_canonical_value(
+        "tacsim.accepted_mission.v1",
+        1,
+        &serde_json::to_value(roster).map_err(|e| e.to_string())?,
+        128 * 1024,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(mush_org::unit_authority::MissionBinding {
+        mission: roster.detachment,
+        detachment: roster.detachment,
+        roster_revision: roster.revision,
+        accepted_roster_hash: *hash.as_bytes(),
+    })
+}
+fn selection(
+    world: &World,
+    read: &mut impl Read,
+    h: &SortieHandles,
+    op: &OperationRecord,
+    facts: &OwnerFacts,
+) -> Result<mush_org::unit_authority::MissionFacts, String> {
+    use mush_org::unit_authority::{MissionFacts, MissionLeader};
+    // Rank physically eligible people before asking Org whether the nominated
+    // fallback has command rights. A role grant cannot elect its own holder or
+    // displace a higher-priority player. The final reconcile uses Org's answer.
+    let mut candidate = facts.clone();
+    for row in &mut candidate.crew {
+        row.command_authorized = true;
+    }
+    let (roster, _) = reconcile(world, read, h, op, &candidate)?;
+    Ok(MissionFacts {
+        binding: binding(op)?,
+        active: read.get(&h.active, &op.id.reference())?.as_ref() == Some(&op.roster)
+            && op.ended.is_none(),
+        units: roster.members().iter().map(|m| m.unit).collect(),
+        leader: roster.leader().map(|l| match l.kind {
+            LeaderKind::Player => MissionLeader::Player(l.character),
+            LeaderKind::Npc => MissionLeader::Npc(l.character),
+        }),
+        term: roster.term(),
+    })
 }
 pub(super) fn verify_owner_facts(
     ctx: &mut PrepareCtx<'_>,
@@ -158,7 +245,27 @@ pub(super) fn verify_owner_facts(
             },
         )
         .map_err(runtime::error)?;
-    if combine(query, controls, allowed).map_err(runtime::error)? != *expected {
+    let mut actual = combine(query, controls, allowed).map_err(runtime::error)?;
+    let mission = selection(
+        ctx.world().map_err(runtime::error)?,
+        &mut &mut *txn,
+        h,
+        &op,
+        &actual,
+    )
+    .map_err(runtime::error)?;
+    let observed = ctx
+        .read_owner_preimage(
+            txn,
+            &rights,
+            UnitAuthorityRequest::MissionCommands {
+                mission: mission.clone(),
+                crew: actual.crew.iter().map(|r| (r.unit, r.operator)).collect(),
+            },
+        )
+        .map_err(runtime::error)?;
+    complete(&mut actual, mission, observed).map_err(runtime::error)?;
+    if actual != *expected {
         return Err(runtime::error("Field authority changed; refresh again."));
     }
     Ok(())

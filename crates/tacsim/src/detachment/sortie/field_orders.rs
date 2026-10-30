@@ -28,6 +28,7 @@ pub(super) struct CommandRight {
     pub issuer: ObjId,
     pub unit: ObjId,
     pub allowed: bool,
+    pub role_grant: Option<mush_org::unit_authority::UnitGrantId>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,10 +78,8 @@ fn observed_rights(
     coords: &[(ObjId, ObjId)],
     response: mush_org::unit_authority::reader::UnitAuthorityResponse,
 ) -> Result<Vec<CommandRight>, String> {
-    let mush_org::unit_authority::reader::UnitAuthorityResponse::CommandAvailability {
-        allowed,
-        ..
-    } = response
+    let mush_org::unit_authority::reader::UnitAuthorityResponse::MissionCommands(allowed) =
+        response
     else {
         return Err("Command rights unavailable.".into());
     };
@@ -90,10 +89,11 @@ fn observed_rights(
     Ok(coords
         .iter()
         .zip(allowed)
-        .map(|((unit, issuer), allowed)| CommandRight {
+        .map(|((unit, issuer), right)| CommandRight {
             unit: *unit,
             issuer: *issuer,
-            allowed,
+            allowed: right.allowed,
+            role_grant: right.role_grant,
         })
         .collect())
 }
@@ -112,8 +112,12 @@ pub(super) fn request(
         let observed = ctx
             .read_owner(
                 super::field::rights(ctx.w)?,
-                mush_org::unit_authority::reader::UnitAuthorityRequest::CommandAvailability {
+                mush_org::unit_authority::reader::UnitAuthorityRequest::MissionCommands {
                     crew: coords.clone(),
+                    mission: facts
+                        .mission
+                        .clone()
+                        .ok_or("Mission command unavailable.")?,
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -150,8 +154,13 @@ pub(super) fn verify(
         .read_owner_preimage(
             txn,
             &handle,
-            mush_org::unit_authority::reader::UnitAuthorityRequest::CommandAvailability {
+            mush_org::unit_authority::reader::UnitAuthorityRequest::MissionCommands {
                 crew: coords.clone(),
+                mission: request
+                    .facts
+                    .mission
+                    .clone()
+                    .ok_or_else(|| error("Mission command unavailable."))?,
             },
         )
         .map_err(error)?;

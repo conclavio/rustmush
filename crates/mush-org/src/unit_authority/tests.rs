@@ -738,6 +738,106 @@ fn mission_grant_follows_human_succession_only_for_exact_accepted_binding_and_te
 }
 
 #[test]
+fn prospective_mission_declaration_is_not_exercisable_and_its_lineage_stays_live() {
+    let orgs = OrgState::new();
+    let mut facts = facts();
+    let binding = MissionBinding {
+        mission: 4,
+        detachment: 5,
+        roster_revision: 2,
+        accepted_roster_hash: [7; 32],
+    };
+    let mut role = loan(1, PILOT);
+    role.capability = UnitCapability::CommandAssignedAi;
+    role.grantee = UnitGrantee::CurrentLeader(binding.clone());
+    role.delegable = false;
+    role.recovery = RecoveryPolicy::None;
+    assert!(
+        validate_mission_declaration(&orgs, &BTreeMap::new(), &facts, &NoPredicates, &role, 50)
+            .is_ok()
+    );
+    let grants = book([role.clone()]);
+    let mut req = request(PILOT, UNIT);
+    req.action = UnitAction::Exercise(UnitCapability::CommandAssignedAi);
+    req.mission = Some(MissionCommand {
+        binding: binding.clone(),
+        term: 1,
+    });
+    assert!(
+        !allowed(&orgs, &grants, &facts, &req),
+        "a declaration invents no active mission or leader"
+    );
+    assert!(
+        super::resolve::mission_lineage(
+            &orgs,
+            &grants,
+            &facts,
+            &NoPredicates,
+            (PILOT, UNIT, role.id),
+            50
+        )
+        .is_ok()
+    );
+    facts.missions.insert(
+        binding.clone(),
+        MissionFacts {
+            binding: binding.clone(),
+            active: true,
+            units: BTreeSet::from([UNIT]),
+            leader: Some(MissionLeader::Player(PILOT)),
+            term: 1,
+        },
+    );
+    assert!(allowed(&orgs, &grants, &facts, &req));
+    req.action = UnitAction::Delegate(UnitCapability::CommandAssignedAi);
+    assert!(!allowed(&orgs, &grants, &facts, &req));
+    req.action = UnitAction::Exercise(UnitCapability::CommandAssignedAi);
+    facts.assets.get_mut(&UNIT).expect("asset").lineage = lineage(11);
+    assert!(
+        !allowed(&orgs, &grants, &facts, &req),
+        "a title reissue by the same owner does not revive the old loan"
+    );
+    assert!(
+        super::resolve::mission_lineage(
+            &orgs,
+            &grants,
+            &facts,
+            &NoPredicates,
+            (PILOT, UNIT, role.id),
+            50
+        )
+        .is_err()
+    );
+    facts.assets.get_mut(&UNIT).expect("asset").lineage = lineage(10);
+    assert!(
+        super::resolve::mission_lineage(
+            &orgs,
+            &grants,
+            &facts,
+            &NoPredicates,
+            (PILOT, UNIT, role.id),
+            100
+        )
+        .is_err(),
+        "expiry is checked at use without rewriting grants"
+    );
+    let mut widened = role.clone();
+    widened.scope = UnitScope::Units {
+        units: BTreeSet::from([UNIT, OTHER]),
+    };
+    assert!(
+        validate_mission_declaration(&orgs, &BTreeMap::new(), &facts, &NoPredicates, &widened, 50)
+            .is_err()
+    );
+    let mut onward = role;
+    onward.delegable = true;
+    assert!(
+        validate_mission_declaration(&orgs, &BTreeMap::new(), &facts, &NoPredicates, &onward, 50)
+            .is_err()
+    );
+}
+
+#[test]
 fn record_decode_is_canonical_bounded_and_requires_explicit_windows_and_policy() {
     let grant = loan(1, PILOT);
     let value = serde_json::to_value(&grant).expect("encode");

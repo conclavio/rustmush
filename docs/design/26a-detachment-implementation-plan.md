@@ -223,9 +223,15 @@ and control facts still determine whether a saved pending message is admissible.
 Player acknowledgements remain advisory and move no unit. ENGAGE carries only a
 hint scoped to the issuer's own observation, without creating a contact share.
 
-Current-leader mission-role grant integration and NPC execution remain required
-before claiming the IC parts of DT.1/DT.2 complete. The OOC host cannot stand in
-for those production paths, and DT.3e does not claim the NPC mining story.
+DT.3f connects current-leader mission-role grants, as described in
+[26b](26b-unit-authority-and-grants.md#accepted-mission-roles). The accepted roster
+digest and activation identify the role; current field facts select its eligible
+holder, while Org retains the real finite lending lineage. Role declarations
+use the existing issue/revoke coordinator path and are not personal rights.
+
+NPC execution remains required before claiming the IC parts of DT.1/DT.2
+complete. The OOC host cannot stand in for those production paths, and neither
+the communications nor permission integration claims the NPC mining story.
 
 ## DT.1a verification
 

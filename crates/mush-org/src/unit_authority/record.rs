@@ -446,7 +446,7 @@ pub struct OrgControlFacts {
     pub revision: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MissionLeader {
     Player(ObjId),
     Npc(ObjId),
@@ -461,9 +461,10 @@ impl MissionLeader {
     }
 }
 
-/// The mission owner has verified acceptance, human identity, embarkation and
+/// The mission owner has verified acceptance, human identity, current presence and
 /// eligibility. The resolver still checks the exact binding, unit and term.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MissionFacts {
     pub binding: MissionBinding,
     pub active: bool,

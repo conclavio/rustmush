@@ -1482,6 +1482,187 @@ fn field_orders(
         .ok_or("field orders")?)
 }
 
+fn command_grant(world: &mut TestWorld, organizer: ObjId) -> TestResult<String> {
+    let report = text(world, organizer, "+sortie/command-grants 1:1");
+    report
+        .lines()
+        .find_map(|l| {
+            l.find("@unitgrant/json ")
+                .map(|start| l[start..].to_owned())
+        })
+        .ok_or_else(|| format!("no role prefill: {report}").into())
+}
+
+#[tokio::test]
+async fn ic_mission_role_grants_bind_the_accepted_roster_without_personal_command_rights()
+-> TestResult {
+    use mush_tactics::detachment::{OrderBook, Slot};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_fixture(&store).await?;
+    let (organizer, player, unit) = (rig.organizer, rig.invitee, rig.unit);
+    rig.world.connect(player);
+    let grant = command_grant(&mut rig.world, organizer)?;
+    let raw = grant.strip_prefix("@unitgrant/json ").ok_or("draft")?;
+    let mut wrong: Value = serde_json::from_str(raw)?;
+    wrong["grantee"]["CurrentLeader"]["accepted_roster_hash"][0] = json!(255);
+    if wrong == serde_json::from_str::<Value>(raw)? {
+        wrong["grantee"]["CurrentLeader"]["accepted_roster_hash"][0] = json!(254);
+    }
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!("@unitgrant/json {wrong}"),
+    )
+    .await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let due = flight(&rig.world, unit, 1)?.due.at;
+    let finish = fire_flight(&mut rig.world, &store, due).await?;
+    land_request(&mut rig.world, &store, &finish).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let command = format!(
+        "ORDER DT:{}:{}:{} 1 HOLD",
+        roster.id().0,
+        roster.revision(),
+        roster.term()
+    );
+    assert!(
+        submit(&mut rig.world, player, &command).is_err(),
+        "a different accepted digest cannot authorize this roster"
+    );
+    assert!(field_orders(&rig.world, organizer).is_err());
+    commit(&mut rig.world, &store, organizer, &grant).await?;
+    let check = text(
+        &mut rig.world,
+        player,
+        &format!("@unitgrant/check #{}=command_assigned_ai", unit.0),
+    );
+    assert!(
+        check.contains("unavailable"),
+        "mission roles are not personal grants: {check}"
+    );
+    commit(&mut rig.world, &store, player, &command).await?;
+    let now = rig.world.world().world_ic_now().at;
+    let poll = fire_flight(&mut rig.world, &store, now).await?;
+    land_request(&mut rig.world, &store, &poll).await?;
+    let slot = Slot::new(1)?;
+    let saved = field_orders(&rig.world, organizer)?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let book = OrderBook::restore(&saved.book, &roster)?;
+    let original = book
+        .delivered(slot)
+        .ok_or("role-authorized arrival")?
+        .order
+        .sequence;
+    // The declaration and its exact binding survive restart, with no leader or
+    // current permission cached in a World mirror.
+    persist_legacy(&mut rig.world, &store).await?;
+    let now = rig.world.world().now();
+    drop(rig);
+    let (mut restarted, cab) = {
+        let rig = fixture(&store).await?;
+        let cab = rig
+            .world
+            .world()
+            .get(player)
+            .and_then(|p| p.location)
+            .ok_or("cab")?;
+        (rig, cab)
+    };
+    restarted.world.set_now(now);
+    restarted.world.connect(player);
+    *restarted
+        .world
+        .world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .ok_or("account oracle")? = mush_sim::AccountOracle::new(Arc::new(PilotAccount {
+        actor: player,
+        account: AccountId::mint("PlanningPilot", 1)?,
+    }));
+    ordinary(
+        &mut restarted.world,
+        player,
+        &format!("+focus #{}/pilot", unit.0),
+    )?;
+    assert_eq!(
+        restarted.world.world().get(player).and_then(|p| p.location),
+        Some(cab)
+    );
+    persist_legacy(&mut restarted.world, &store).await?;
+    commit(
+        &mut restarted.world,
+        &store,
+        organizer,
+        "+sortie/refresh 1:1",
+    )
+    .await?;
+    let roster = field_roster(&restarted.world, organizer)?;
+    let command = format!(
+        "ORDER DT:{}:{}:{} 1 ADVANCE 4,5",
+        roster.id().0,
+        roster.revision(),
+        roster.term()
+    );
+    commit(&mut restarted.world, &store, player, &command).await?;
+    commit(
+        &mut restarted.world,
+        &store,
+        organizer,
+        "@unitgrant/revoke 3",
+    )
+    .await?;
+    let now = restarted.world.world().world_ic_now().at;
+    let poll = fire_flight(&mut restarted.world, &store, now).await?;
+    land_request(&mut restarted.world, &store, &poll).await?;
+    let saved = field_orders(&restarted.world, organizer)?;
+    let book = OrderBook::restore(&saved.book, &field_roster(&restarted.world, organizer)?)?;
+    assert!(book.pending(slot).is_none());
+    assert_eq!(
+        book.delivered(slot).ok_or("standing")?.order.sequence,
+        original
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ic_mission_role_can_authorize_the_actual_nominated_npc_without_electing_an_absent_one()
+-> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_commander_fixture(&store, true, true).await?;
+    let (organizer, npc, unit) = (rig.organizer, rig.invitee, rig.unit);
+    let grant = command_grant(&mut rig.world, organizer)?;
+    commit(&mut rig.world, &store, organizer, &grant).await?;
+    let seating = submit(&mut rig.world, organizer, "+sortie/seat 1:1=1")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    land_request(&mut rig.world, &store, &seating).await?;
+    install_due_handoff(&mut rig.world, &store).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert!(
+        field_roster(&rig.world, organizer)?.leader().is_none(),
+        "the granted NPC is still aboard during ramp transit"
+    );
+    let due = flight(&rig.world, unit, 1)?.due.at;
+    let finish = fire_flight(&mut rig.world, &store, due).await?;
+    land_request(&mut rig.world, &store, &finish).await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert_eq!(
+        field_roster(&rig.world, organizer)?
+            .leader()
+            .map(|l| l.character),
+        Some(npc)
+    );
+    commit(&mut rig.world, &store, organizer, "@unitgrant/revoke 2").await?;
+    commit(&mut rig.world, &store, organizer, "+sortie/refresh 1:1").await?;
+    assert!(field_roster(&rig.world, organizer)?.leader().is_none());
+    assert_eq!(
+        flight(&rig.world, unit, 1)?.phase,
+        tacsim::detachment::sortie::Phase::Field
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn ic_field_orders_use_real_transport_and_advisory_responses() -> TestResult {
     use mush_propagation::{EnvelopeState, PropagationStore};

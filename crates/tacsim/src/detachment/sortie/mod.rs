@@ -11,6 +11,7 @@ mod seating;
 mod tick;
 
 pub(crate) use commands::{SWITCHES, command, handles};
+pub use field::mission_binding;
 pub(crate) use field_commands::{field_order, field_response};
 pub use field_orders::{FieldObjective, FieldOrders, FieldPayload};
 pub use model::{Flight, FlightClose, FlightKey, OperationId, OperationRecord, Phase, UnitHead};

@@ -11,6 +11,7 @@ use mush_core::mechanics::OwnerId;
 
 mod commands;
 mod families;
+pub mod mission;
 pub mod operation;
 pub mod reader;
 mod record;

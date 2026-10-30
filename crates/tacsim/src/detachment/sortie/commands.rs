@@ -21,6 +21,7 @@ pub(crate) const SWITCHES: &[&str] = &[
     "refresh",
     "field",
     "orders",
+    "command-grants",
 ];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
@@ -97,6 +98,12 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .split_once('=')
         .map_or((raw.as_str(), None), |(left, right)| (left, Some(right)));
     let id = id(selector, ctx.actor)?;
+    if ctx.switches.has("command-grants") {
+        if selection.is_some() {
+            return Err(error());
+        }
+        return command_grants(ctx, id);
+    }
     if ctx.switches.has("orders") {
         if selection.is_some() {
             return Err(error());
@@ -185,6 +192,44 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     };
     runtime::submit(ctx, command).map_err(CmdError::msg)
+}
+fn command_grants(ctx: &mut Ctx<'_>, id: OperationId) -> Result<(), CmdError> {
+    let h = ctx
+        .w
+        .module_state::<runtime::SortieHandles>()
+        .ok_or_else(error)?;
+    let roster=ctx.action_state(&h.active,&id.reference()).map_err(|_|error())?.cloned()
+        .filter(|r|r.revision==id.activation&&r.active()
+            &&(ctx.actor==r.organizer||r.plan.slots.iter().any(|s|matches!(s.controller,PlannedController::Player{character} if character==ctx.actor))))
+        .ok_or_else(error)?;
+    roster.validate().map_err(CmdError::msg)?;
+    let binding = super::field::mission_binding(&roster).map_err(CmdError::msg)?;
+    line(
+        ctx,
+        "Each unit's owner or authorized lender can issue its printed mission-role grant. The role follows the eligible current leader; it grants no crew, deployment or onward-delegation permission.",
+    );
+    for member in &roster.plan.slots {
+        let draft = mush_org::unit_authority::reader::UnitGrantDraft {
+            grantee: mush_org::unit_authority::UnitGrantee::CurrentLeader(binding.clone()),
+            capability: UnitCapability::CommandAssignedAi,
+            scope: mush_org::unit_authority::UnitScope::Units {
+                units: std::collections::BTreeSet::from([member.unit.ok_or_else(error)?]),
+            },
+            valid_until: None,
+            delegable: false,
+            recovery: mush_org::unit_authority::RecoveryPolicy::None,
+            parent: None,
+        };
+        line(
+            ctx,
+            format!(
+                "Slot {}: @unitgrant/json {}",
+                member.slot.get(),
+                serde_json::to_string(&draft).map_err(|_| error())?
+            ),
+        );
+    }
+    Ok(())
 }
 fn launch(ctx: &mut Ctx<'_>, id: OperationId, selection: &str) -> Result<(), CmdError> {
     let h = ctx
