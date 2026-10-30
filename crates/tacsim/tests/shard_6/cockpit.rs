@@ -126,7 +126,11 @@ impl Rig {
     }
 
     fn boot_with(pilots: usize, cfg: TacsimConfig) -> Rig {
-        let mut tw = TestWorld::with_modules(roster_with(cfg));
+        Rig::boot_on(pilots, roster_with(cfg))
+    }
+
+    fn boot_on(pilots: usize, mods: Vec<Box<dyn mush_core::GameModule>>) -> Rig {
+        let mut tw = TestWorld::with_modules(mods);
         let lobby = match_::centre_object(tw.world(), match_::LOBBY_ENTRY)
             .expect("the OOC pack at version 4 carries the simulator lobby");
         let mut map = Accounts::default();
@@ -19166,4 +19170,70 @@ async fn dt_live_controller_delivery_is_journalled_and_stale_or_legacy_orders_re
         })
         .collect::<Vec<_>>();
     assert_eq!(commands, [1, 2]);
+}
+
+/// **Doc 30 cut WG.4**: open `proving_ground.draft.json`, move `"The Ford"` from
+/// `(64, 97)` to `(80, 97)`, rebuild the two packs with [`tacsim::ground::build`],
+/// boot a world from the rebuilt packs, verify [`tacsim::ground::draft_from_world`]
+/// reassembles the edited draft from live tiles with `provenance.source == Pack`,
+/// and run the live `RANGE The Ford` command in a started match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wg4_rebuilt_ground_draft_moves_the_ford_and_range_reads_the_moved_spot() {
+    let mut draft = tacsim::ground::proving_ground_draft().expect("shipped draft");
+    let ford = draft
+        .key_spots
+        .iter_mut()
+        .find(|s| s.name == "The Ford")
+        .expect("The Ford");
+    assert_eq!((ford.x, ford.y), (64, 97));
+    ford.x = 80;
+    draft.arena_version = 6;
+    let built = tacsim::ground::build(&draft).expect("rebuilt packs");
+
+    let mut cfg = config();
+    cfg.packs.push(tacsim::PackSource {
+        name: "rebuilt_arena.json".to_owned(),
+        bytes: built.arena_json.clone(),
+    });
+    let mut boot = mush_atlas::starter::packs().expect("starter packs");
+    let mut game = tacsim::definitions::content::boot_packs().expect("game packs");
+    let _old_arena = game.pop().expect("arena pack");
+    let _old_atlas = game.pop().expect("atlas pack");
+    boot.extend(game);
+    boot.push(mush_content::load_pack(&built.atlas_json).expect("rebuilt atlas pack"));
+    boot.push(mush_content::load_pack(&built.arena_json).expect("rebuilt arena pack"));
+
+    let mut rig = Rig::boot_on(2, support::roster_booting(cfg, boot));
+
+    let reassembled = tacsim::ground::draft_from_world(rig.tw.world(), "proving_ground")
+        .expect("draft_from_world reassembles from live tiles");
+    assert_eq!(
+        reassembled.provenance.source,
+        tacsim::ground::GroundSource::Pack
+    );
+    assert_eq!(
+        reassembled.provenance.inputs,
+        vec![
+            "tacsim.proving_ground:region.proving_ground".to_owned(),
+            "tacsim.proving_ground:tacsim.arena.proving_ground".to_owned()
+        ]
+    );
+    let reassembled_ford = reassembled
+        .key_spots
+        .iter()
+        .find(|s| s.name == "The Ford")
+        .expect("The Ford in reassembled draft");
+    assert_eq!((reassembled_ford.x, reassembled_ford.y), (80, 97));
+
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let frame = rig.held_frame(0);
+    assert_eq!(frame.cell, Some((6, 97)), "red slot 1 musters on (6, 97)");
+
+    let first = |said: String| said.lines().next().unwrap_or_default().to_owned();
+    // From (6, 97) to (80, 97) is 74 cells = 740 m (was 580 m at (64, 97)).
+    assert_eq!(
+        first(rig.say(0, "RANGE The Ford")),
+        "Range to The Ford (A): 740 m."
+    );
 }

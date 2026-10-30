@@ -32,6 +32,7 @@
     routeEditorMap,
     relaxEditorSlopes,
     despeckleEditorMap,
+    markStudioEdited,
     type BiomeName,
     type BrushShape,
     type DriveName,
@@ -155,6 +156,7 @@
   function handleBiomeChange(biome: BiomeName) {
     pushSnapshot();
     editorState.biome = biome;
+    markStudioEdited(editorState);
     refreshPreview();
   }
 
@@ -274,9 +276,11 @@
       );
       if (existingIdx >= 0) {
         editorState.keySpots.splice(existingIdx, 1);
+        markStudioEdited(editorState);
       } else if (editorState.keySpots.length < 12) {
         const letter = String.fromCharCode(65 + editorState.keySpots.length);
         editorState.keySpots.push({ name: `Point ${letter}`, x, y });
+        markStudioEdited(editorState);
       }
       refreshPreview();
     } else if (activeTool === 'waypoint') {
@@ -300,6 +304,7 @@
               } else if (editorState.waypoints.edges.length < 1024) {
                 editorState.waypoints.edges.push([a, b]);
               }
+              markStudioEdited(editorState);
               selectedWaypointIdx = hitIdx;
               refreshPreview();
             }
@@ -324,6 +329,7 @@
               editorState.waypoints.edges.push([prevNode.id, id]);
             }
           }
+          markStudioEdited(editorState);
           selectedWaypointIdx = newIdx;
           draggingWaypointIdx = newIdx;
           refreshPreview();
@@ -333,6 +339,7 @@
         if (node && (node.x !== x || node.y !== y)) {
           node.x = x;
           node.y = y;
+          markStudioEdited(editorState);
           refreshPreview();
         }
       }
@@ -391,6 +398,7 @@
         } else {
           editorState.entryZones.push(zone);
         }
+        markStudioEdited(editorState);
         refreshPreview();
       }
     }
@@ -1000,7 +1008,7 @@
         {:else if overlayMode === 'viewshed'}
           <label class="slider-row">
             <span>Target Hull: {(viewshedSizeCm / 100).toFixed(1)} m</span>
-            <input type="range" min="150" max="500" step="25" bind:value={viewshedSizeCm} />
+            <input type="range" min="50" max="600" step="25" bind:value={viewshedSizeCm} />
           </label>
         {/if}
 
@@ -1231,7 +1239,10 @@
               <input
                 type="text"
                 bind:value={spot.name}
-                oninput={() => refreshPreview()}
+                oninput={() => {
+                  markStudioEdited(editorState);
+                  refreshPreview();
+                }}
                 aria-label="Spot name"
               />
               <span class="spot-coords">({spot.x},{spot.y})</span>

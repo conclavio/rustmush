@@ -75,6 +75,13 @@ fn run() -> Result<(), String> {
             let draft = GroundDraft::from_json(&raw).map_err(|e| e.to_string())?;
             let built = build_with_options(&draft, repair, force).map_err(|e| e.to_string())?;
 
+            if built.draft != draft {
+                let updated_draft = built.draft.to_json_pretty().map_err(|e| e.to_string())?;
+                fs::write(draft_path, &updated_draft)
+                    .map_err(|e| format!("failed to update `{draft_path}`: {e}"))?;
+                println!("updated {draft_path}");
+            }
+
             let base = Path::new(out_dir);
             let atlas_dir = base.join("atlas");
             let arenas_dir = base.join("arenas");

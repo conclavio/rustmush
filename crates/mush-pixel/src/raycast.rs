@@ -56,6 +56,9 @@ pub enum Ground {
     Water,
     /// Road.
     Road,
+    /// Exposed rock surface (doc 30 D-30-10: a surface material with its own
+    /// shading and zero height extrusion; never blocks sight).
+    Rock,
     /// Light woods (trees with sight between them, 6 m): block the eye,
     /// drawn as a green block.
     Woods,
@@ -121,14 +124,15 @@ impl Biome {
 impl Ground {
     /// The `arena.map` legend word for a glyph, mapped to a ground.
     ///
-    /// Per doc 30 D-30-10, `rock` is a surface material with zero height
-    /// extrusion (`Ground::Open`), not an opaque `Wall` block.
+    /// Per doc 30 D-30-10, `rock` is a surface material with its own shading
+    /// and zero height extrusion ([`Ground::Rock`]), not an opaque [`Ground::Wall`].
     #[must_use]
     pub fn from_legend_name(name: &str) -> Ground {
         match name {
             "grass" | "sand" | "regolith" | "snow" => Ground::Grass,
             "water" | "water_deep" | "ice" => Ground::Water,
             "road" | "paved" => Ground::Road,
+            "rock" => Ground::Rock,
             "wall" => Ground::Wall,
             "woods_heavy" => Ground::WoodsHeavy,
             n if n.starts_with("forest") => Ground::WoodsHeavy,
@@ -527,6 +531,8 @@ impl Base {
             (Ground::Water, true) => Base::WaterLine,
             (Ground::Road, false) => Base::Road,
             (Ground::Road, true) => Base::RoadLine,
+            (Ground::Rock, false) => Base::WallDark,
+            (Ground::Rock, true) => Base::WallLit,
             (_, false) => Base::Open,
             (_, true) => Base::OpenLine,
         }
@@ -1255,7 +1261,7 @@ mod tests {
     #[test]
     fn legend_words_and_blocking() {
         assert_eq!(Ground::from_legend_name("woods_light"), Ground::Woods);
-        assert_eq!(Ground::from_legend_name("rock"), Ground::Open);
+        assert_eq!(Ground::from_legend_name("rock"), Ground::Rock);
         assert_eq!(Ground::from_legend_name("anything"), Ground::Open);
         assert!(Ground::Wall.blocks());
         assert!(!Ground::from_legend_name("rock").blocks());

@@ -74,8 +74,7 @@ export const TERRAIN_PALETTE: readonly TerrainSwatch[] = [
   { code: 16, word: 'ice', glyph: 'i', label: 'Ice', color: '#8ab4cc' },
   { code: 5, word: 'floor', glyph: '_', label: 'Floor', color: '#585c64' },
   { code: 11, word: 'door', glyph: '+', label: 'Door', color: '#b48a48' },
-  { code: 12, word: 'platform', glyph: 'D', label: 'Platform', color: '#7a828c' },
-  { code: 0, word: 'void', glyph: ' ', label: 'Void', color: '#14161a' }
+  { code: 12, word: 'platform', glyph: 'D', label: 'Platform', color: '#7a828c' }
 ] as const;
 
 const CLASS_META: Record<number, { glyph: string; word: string }> = {
@@ -169,7 +168,7 @@ export interface EditorTankDef {
 }
 
 export interface EditorProvenance {
-  source: 'generator' | 'extractor' | 'studio';
+  source: 'generator' | 'extractor' | 'studio' | 'pack';
   version: string;
   seed?: number;
   inputs?: string[];
@@ -267,10 +266,33 @@ export const DEFAULT_SLIDER_MIN_ELEV_CM = -15000;
 export const DEFAULT_SLIDER_MAX_ELEV_CM = 15000;
 export const MAX_ORTHOGONAL_STEP_CM = 450;
 export const MAX_DIAGONAL_STEP_CM = 630;
-export const MAX_MUSTER_STEP_CM = 50;
+export const MAX_MUSTER_STEP_CM = 100;
 export const MAP_MAX_BYTES = 262_144;
 export const EYE_HEIGHT_CM = 150;
 export const DEFAULT_HULL_SIZE_CM = 300;
+
+/**
+ * Record a studio edit in `state.provenance` (doc 30 §4 & §8):
+ * flips `source` to `'studio'`, sets `version` to `'1.0'`, drops `seed`, and
+ * preserves prior generator/pack provenance in `inputs`.
+ */
+export function markStudioEdited(state: EditorMapState): void {
+  if (state.provenance.source !== 'studio') {
+    const priorTag =
+      state.provenance.seed !== undefined
+        ? `${state.provenance.source}:${state.provenance.version}:seed=${state.provenance.seed}`
+        : `${state.provenance.source}:${state.provenance.version}`;
+    const existing = state.provenance.inputs ? [...state.provenance.inputs] : [];
+    if (!existing.includes(priorTag)) {
+      existing.push(priorTag);
+    }
+    state.provenance = {
+      source: 'studio',
+      version: '1.0',
+      inputs: existing
+    };
+  }
+}
 
 export function createEditorMap(
   width = 256,
@@ -500,6 +522,9 @@ export function paintTerrainBrush(
       changed = true;
     }
   }
+  if (changed) {
+    markStudioEdited(state);
+  }
   return changed;
 }
 
@@ -561,6 +586,9 @@ export function floodFillTerrain(
         queue.push(nIdx);
       }
     }
+  }
+  if (filled > 0) {
+    markStudioEdited(state);
   }
   return filled;
 }
@@ -698,6 +726,9 @@ export function applySculptBrush(
 
   if (changed && brush.relaxToPassable) {
     enforceLocalGradeLimit(state, cx, cy, brush.radius);
+  }
+  if (changed) {
+    markStudioEdited(state);
   }
   return changed;
 }
@@ -1004,8 +1035,33 @@ export function editorToPictureFeeds(
     return [meta.glyph, meta.word];
   });
 
-  const spots = state.keySpots.slice(0, 26).map((s, i) => ({
-    letter: String.fromCharCode(65 + i),
+  const SPOT_LETTERS = [
+    'A',
+    'B',
+    'C',
+    'E',
+    'F',
+    'G',
+    'H',
+    'I',
+    'J',
+    'K',
+    'L',
+    'M',
+    'N',
+    'O',
+    'P',
+    'Q',
+    'R',
+    'S',
+    'U',
+    'V',
+    'Y',
+    'Z'
+  ] as const;
+
+  const spots = state.keySpots.slice(0, SPOT_LETTERS.length).map((s, i) => ({
+    letter: SPOT_LETTERS[i]!,
     name: s.name,
     cell: [s.x, s.y]
   }));
@@ -1591,7 +1647,7 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
 
   let maxGradePct = 0;
   let maxRoadGradePct = 0;
-  let hasRoad = false;
+  let voidCount = 0;
   const w = state.width;
   const h = state.height;
 
@@ -1599,8 +1655,8 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
       const cHere = state.classes[idx] ?? 0;
+      if (cHere === 0) voidCount++;
       const hereRoad = cHere === 7 || cHere === 1;
-      if (hereRoad) hasRoad = true;
       const herePass = moveCostForDrive('tracked', cHere) > 0;
       const hereElev = state.elevCm[idx] ?? 0;
 
@@ -1651,6 +1707,9 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
   }
 
   const failures: string[] = [];
+  if (voidCount > 0) {
+    failures.push(`grid contains ${voidCount} Void cell(s)`);
+  }
   if (mapBytes > MAP_MAX_BYTES) {
     failures.push(`arena.map is ${mapBytes} bytes (max ${MAP_MAX_BYTES})`);
   }
@@ -1666,7 +1725,7 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
   if (!zonesReachableLegged) {
     failures.push('entry zones are not mutually reachable by legged');
   }
-  if (!zonesReachableWheeled && (state.keySpots.length > 0 || hasRoad)) {
+  if (!zonesReachableWheeled) {
     failures.push('entry zones are not mutually reachable by wheeled');
   }
   if (!keySpotsWheeledReachable) {
@@ -1678,7 +1737,7 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
   if (maxRoadGradePct > 20) {
     failures.push(`max road grade is ${maxRoadGradePct}% (need <= 20%)`);
   }
-  const stepLimitCm = state.provenance?.version === 'v3' ? 100 : 50;
+  const stepLimitCm = MAX_MUSTER_STEP_CM;
   if (maxEntryZoneStepCm > stepLimitCm) {
     failures.push(`entry zone muster step is ${maxEntryZoneStepCm} cm (need <= ${stepLimitCm} cm)`);
   }
@@ -1805,12 +1864,13 @@ export function routeEditorMap(state: EditorMapState): EditorWaypointGraph {
   }
 
   state.waypoints = { nodes, edges };
+  markStudioEdited(state);
   return state.waypoints;
 }
 
 /**
- * Exact `mush_atlas::trace::sight_only` ray walk (`crates/mush-atlas/src/trace.rs`),
- * used by `computeViewshed` to match `tacsim::ground::viewshed` / `horizon.rs`.
+ * Exact `mush_atlas::trace::sight_only` ray walk (`crates/mush-atlas/src/trace.rs:338-389`),
+ * used by `computeViewshed` to match `tacsim::ground::viewshed` / `horizon.rs` cell-for-cell.
  */
 function traceSightState(
   state: EditorMapState,
@@ -1833,41 +1893,34 @@ function traceSightState(
   const w = state.width;
   const zLo = (state.elevCm[loY * w + loX] ?? 0) + loH;
   const zHi = (state.elevCm[hiY * w + hiX] ?? 0) + hiH;
-  const n = Math.max(Math.abs(hiX - loX), Math.abs(hiY - loY));
+  const dx = Math.abs(hiX - loX);
+  const dy = -Math.abs(hiY - loY);
+  const n = Math.max(dx, -dy);
   if (n <= 1) {
     return 'clear';
   }
 
   // Exact mush_atlas::trace::Bresenham::new((loX, loY), (hiX, hiY))
-  const dx = Math.abs(hiX - loX);
-  const dy = Math.abs(hiY - loY);
   const sx = loX < hiX ? 1 : -1;
   const sy = loY < hiY ? 1 : -1;
-  const xMajor = dx >= dy;
-  let err = xMajor ? Math.trunc(dx / 2) : Math.trunc(dy / 2);
+  let err = dx + dy;
   let x = loX;
   let y = loY;
+  let step = 0;
   let attenuation = 0;
 
-  for (let i = 0; i < n; i++) {
-    // Advance one step to interior cell `i + 1`
-    if (xMajor) {
+  while (x !== hiX || y !== hiY) {
+    const e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
       x += sx;
-      err -= dy;
-      if (err < 0) {
-        y += sy;
-        err += dx;
-      }
-    } else {
-      y += sy;
-      err -= dx;
-      if (err < 0) {
-        x += sx;
-        err += dy;
-      }
     }
-    const step = i + 1;
-    if (step >= n) break;
+    if (e2 <= dx) {
+      err += dx;
+      y += sy;
+    }
+    step += 1;
+    if (x === hiX && y === hiY) break;
 
     const idx = y * w + x;
     const classCode = state.classes[idx] ?? 0;
@@ -1942,7 +1995,10 @@ export function computeViewshed(
  * (`20%` on roads/paved, `maxGradePct` default `45%` on general passable ground),
  * preserving entry zones, and returns the flat indices of all changed cells.
  */
-export function relaxEditorSlopes(state: EditorMapState, maxGradePct = 45): number[] {
+export function relaxEditorSlopes(
+  state: EditorMapState,
+  maxGradePct = maxSlopePctForDrive('tracked')
+): number[] {
   const w = state.width;
   const h = state.height;
   const orig = new Int16Array(state.elevCm);
@@ -1961,7 +2017,8 @@ export function relaxEditorSlopes(state: EditorMapState, maxGradePct = 45): numb
 
   const isPassable = (c: number) => c !== 0 && c !== 10 && c !== 15 && c !== 14;
   const isRoad = (c: number) => c === 7 || c === 1;
-  const roadMaxRise = Math.trunc((state.cellCm * 20) / 100);
+  const roadLimitPct = Math.max(0, maxSlopePctForDrive('wheeled') - 5);
+  const roadMaxRise = Math.trunc((state.cellCm * roadLimitPct) / 100);
   const groundMaxRise = Math.trunc((state.cellCm * maxGradePct) / 100);
 
   for (let iter = 0; iter < 64; iter++) {
@@ -2024,6 +2081,9 @@ export function relaxEditorSlopes(state: EditorMapState, maxGradePct = 45): numb
     if (state.elevCm[i] !== orig[i]) {
       changed.push(i);
     }
+  }
+  if (changed.length > 0) {
+    markStudioEdited(state);
   }
   return changed;
 }
@@ -2129,6 +2189,9 @@ export function despeckleEditorMap(state: EditorMapState, minCells = 3): number[
     if (state.classes[i] !== orig[i]) {
       changed.push(i);
     }
+  }
+  if (changed.length > 0) {
+    markStudioEdited(state);
   }
   return changed;
 }

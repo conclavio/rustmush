@@ -137,21 +137,25 @@ fn a_flat_field_draws_flat_under_every_biome() {
     }
 }
 
-/// Doc 30 §7 (D-30-10, cut WG.2): `rock` is a surface material with zero
-/// height extrusion (`obstacle_height_cm(Rock) == 0`), so a `rock` cell at
-/// `elev_cm == 0` blocks no sight line in any picture (raycaster, heightfield,
-/// overhead, or 2.5D).
+/// Doc 30 §7 (D-30-10, cut WG.2): `rock` is a surface material on the real
+/// heightfield — its own surface paint, zero height extrusion
+/// (`obstacle_height_cm(Rock) == 0`), and `blocks() == false` — so a pilot
+/// reading the ground for a wheeled route can see `rock`, while a `rock` cell
+/// at `elev_cm == 0` blocks no sight line (hides no target rows) in any picture.
 #[test]
 fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
     use mush_pixel::Frame;
     use mush_pixel::iso25d::Iso25DPicture;
-    use mush_pixel::raycast::{Camera, Ground, Sprite, SpriteKind};
+    use mush_pixel::overhead::OverheadPicture;
+    use mush_pixel::picture::{Look, Picture};
+    use mush_pixel::raycast::{Camera, Ground, Map, Sprite, SpriteKind};
+    use std::collections::HashMap;
 
     assert_eq!(
         mush_atlas::physics::obstacle_height_cm(TerrainClass::Rock),
         0
     );
-    assert_eq!(Ground::from_legend_name("rock"), Ground::Open);
+    assert_eq!(Ground::from_legend_name("rock"), Ground::Rock);
     assert_eq!(Ground::from_legend_name("rock").height_cm(), 0);
     assert!(!Ground::from_legend_name("rock").blocks());
 
@@ -189,11 +193,32 @@ fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
         pose: None,
     };
 
-    // 1. Raycaster: rock row at y=14 produces the exact same frame as open ground,
-    //    whereas a wall row at y=14 occludes the target behind a 3 m wall.
+    let diff_pixels =
+        |with_sprite: &Frame, without_sprite: &Frame| -> Vec<(usize, usize, [u8; 3])> {
+            let mut out = Vec::new();
+            for y in 0..with_sprite.height() {
+                for x in 0..with_sprite.width() {
+                    let px = with_sprite.get(x, y);
+                    if px != without_sprite.get(x, y) {
+                        out.push((x, y, px));
+                    }
+                }
+            }
+            out
+        };
+
+    // 1. Raycaster: rock row at y=14 paints visibly distinct from bare ground,
+    //    while hiding zero rows/pixels of the target sprite behind it (unlike wall).
     let open_map = mush_pixel::cockpit::map_from_feed(&open_feed);
     let rock_map = mush_pixel::cockpit::map_from_feed(&rock_feed);
     let wall_map = mush_pixel::cockpit::map_from_feed(&wall_feed);
+
+    let mut rc_open_bg = Frame::new(320, 220);
+    let mut rc_rock_bg = Frame::new(320, 220);
+    let mut rc_wall_bg = Frame::new(320, 220);
+    mush_pixel::raycast::render(&mut rc_open_bg, &open_map, &cam, &[]);
+    mush_pixel::raycast::render(&mut rc_rock_bg, &rock_map, &cam, &[]);
+    mush_pixel::raycast::render(&mut rc_wall_bg, &wall_map, &cam, &[]);
 
     let mut rc_open = Frame::new(320, 220);
     let mut rc_rock = Frame::new(320, 220);
@@ -201,21 +226,37 @@ fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
     mush_pixel::raycast::render(&mut rc_open, &open_map, &cam, &[target]);
     mush_pixel::raycast::render(&mut rc_rock, &rock_map, &cam, &[target]);
     mush_pixel::raycast::render(&mut rc_wall, &wall_map, &cam, &[target]);
+
+    assert_ne!(
+        rc_rock_bg.hash(),
+        rc_open_bg.hash(),
+        "raycaster: rock surface has its own paint distinct from bare ground"
+    );
+    let rc_open_target = diff_pixels(&rc_open, &rc_open_bg);
+    let rc_rock_target = diff_pixels(&rc_rock, &rc_rock_bg);
+    let rc_wall_target = diff_pixels(&rc_wall, &rc_wall_bg);
+    assert!(!rc_open_target.is_empty(), "raycaster: target is drawn");
     assert_eq!(
-        rc_rock.hash(),
-        rc_open.hash(),
-        "raycaster: rock == open at elev 0"
+        rc_rock_target, rc_open_target,
+        "raycaster: rock hides no row of the target sprite"
     );
     assert_ne!(
-        rc_rock.hash(),
-        rc_wall.hash(),
-        "raycaster: wall blocks, rock does not"
+        rc_rock_target, rc_wall_target,
+        "raycaster: wall occludes the target sprite, rock does not"
     );
 
-    // 2. Heightfield: rock row at y=14 produces the exact same frame as open ground.
+    // 2. Heightfield: rock row at y=14 paints visibly distinct from bare ground,
+    //    while hiding zero rows/pixels of the target sprite behind it (unlike wall).
     let open_hf = mush_pixel::cockpit::terrain_from_feed(&open_feed).expect("open hf");
     let rock_hf = mush_pixel::cockpit::terrain_from_feed(&rock_feed).expect("rock hf");
     let wall_hf = mush_pixel::cockpit::terrain_from_feed(&wall_feed).expect("wall hf");
+
+    let mut hf_open_bg = Frame::new(320, 220);
+    let mut hf_rock_bg = Frame::new(320, 220);
+    let mut hf_wall_bg = Frame::new(320, 220);
+    mush_pixel::heightfield::render(&mut hf_open_bg, &open_hf, &cam, None, &[]);
+    mush_pixel::heightfield::render(&mut hf_rock_bg, &rock_hf, &cam, None, &[]);
+    mush_pixel::heightfield::render(&mut hf_wall_bg, &wall_hf, &cam, None, &[]);
 
     let mut hf_open = Frame::new(320, 220);
     let mut hf_rock = Frame::new(320, 220);
@@ -223,58 +264,196 @@ fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
     mush_pixel::heightfield::render(&mut hf_open, &open_hf, &cam, None, &[target]);
     mush_pixel::heightfield::render(&mut hf_rock, &rock_hf, &cam, None, &[target]);
     mush_pixel::heightfield::render(&mut hf_wall, &wall_hf, &cam, None, &[target]);
+
+    assert_ne!(
+        hf_rock_bg.hash(),
+        hf_open_bg.hash(),
+        "heightfield: rock surface has its own paint distinct from bare ground"
+    );
+    let hf_open_target = diff_pixels(&hf_open, &hf_open_bg);
+    let hf_rock_target = diff_pixels(&hf_rock, &hf_rock_bg);
+    let hf_wall_target = diff_pixels(&hf_wall, &hf_wall_bg);
+    assert!(!hf_open_target.is_empty(), "heightfield: target is drawn");
     assert_eq!(
-        hf_rock.hash(),
-        hf_open.hash(),
-        "heightfield: rock == open at elev 0"
+        hf_rock_target, hf_open_target,
+        "heightfield: rock hides no row of the target sprite"
     );
     assert_ne!(
-        hf_rock.hash(),
-        hf_wall.hash(),
-        "heightfield: wall blocks, rock does not"
+        hf_rock_target, hf_wall_target,
+        "heightfield: wall occludes the target sprite, rock does not"
     );
 
-    // 3. 2.5D picture: rock row at y=14 produces the exact same frame as open ground.
-    let cockpit = serde_json::json!({
+    // 3. 2.5D & Overhead pictures: rock row at y=14 has its own surface paint
+    //    and hides zero pixels of a contact standing immediately north of y=14.
+    let make_cockpit = |with_contact: bool| -> serde_json::Value {
+        let contacts = if with_contact {
+            serde_json::json!([{
+                "id": "c1",
+                "designator": "RA",
+                "class": "red",
+                "unit_type": "tacsim.unit.line_tank",
+                "bearing_deg": 0.0,
+                "range_m": 60.0,
+                "facing": "front",
+                "moving": false
+            }])
+        } else {
+            serde_json::json!([])
+        };
+        serde_json::json!({
+            "seated": true,
+            "team": "blue",
+            "unit_type": "tacsim.unit.biped_mk1",
+            "x_cm": 16_500,
+            "y_cm": 8_500,
+            "z_cm": 0,
+            "heading_mdeg": 0,
+            "speed_cms": 0,
+            "contacts": contacts
+        })
+    };
+
+    let render_iso = |map_val: &Map, with_contact: bool| -> Frame {
+        let mut pic = Iso25DPicture::new();
+        pic.set_map(map_val.clone());
+        pic.render_frame(&make_cockpit(with_contact), 0, 0, 320, 220)
+    };
+
+    let iso_open_bg = render_iso(&open_map, false);
+    let iso_rock_bg = render_iso(&rock_map, false);
+    let iso_wall_bg = render_iso(&wall_map, false);
+    let iso_open = render_iso(&open_map, true);
+    let iso_rock = render_iso(&rock_map, true);
+    let iso_wall = render_iso(&wall_map, true);
+
+    assert_ne!(
+        iso_rock_bg.hash(),
+        iso_open_bg.hash(),
+        "iso25d: rock surface has its own paint distinct from bare ground"
+    );
+    let iso_open_coords: Vec<(usize, usize)> = diff_pixels(&iso_open, &iso_open_bg)
+        .into_iter()
+        .map(|(x, y, _)| (x, y))
+        .collect();
+    let iso_rock_coords: Vec<(usize, usize)> = diff_pixels(&iso_rock, &iso_rock_bg)
+        .into_iter()
+        .map(|(x, y, _)| (x, y))
+        .collect();
+    let iso_wall_coords: Vec<(usize, usize)> = diff_pixels(&iso_wall, &iso_wall_bg)
+        .into_iter()
+        .map(|(x, y, _)| (x, y))
+        .collect();
+    assert!(!iso_open_coords.is_empty(), "iso25d: target is drawn");
+    assert_eq!(
+        iso_rock_coords, iso_open_coords,
+        "iso25d: rock hides no pixel of the target unit"
+    );
+    assert!(
+        iso_wall_coords.len() < iso_rock_coords.len(),
+        "iso25d: wall occludes the target unit, rock does not"
+    );
+
+    // Overhead also paints rock distinctly from open ground and wall.
+    let render_ov = |map_val: &serde_json::Value| -> Frame {
+        let mut feeds = HashMap::new();
+        feeds.insert("arena.cockpit".to_owned(), make_cockpit(true));
+        feeds.insert("arena.map".to_owned(), map_val.clone());
+        let mut pic = OverheadPicture::new();
+        let mut frame = Frame::new(320, 200);
+        assert!(pic.draw(&mut frame, &feeds, &Look::default()));
+        frame
+    };
+    let ov_open = render_ov(&open_feed);
+    let ov_rock = render_ov(&rock_feed);
+    let ov_wall = render_ov(&wall_feed);
+    assert_ne!(ov_rock.hash(), ov_open.hash(), "overhead: rock != open");
+    assert_ne!(ov_rock.hash(), ov_wall.hash(), "overhead: rock != wall");
+}
+
+/// **Doc 30 cut WG.4**: The Bluff `(144, 111)` facing west (`270°`) on the
+/// shipped `proving_ground` rendered through `tacsim::match_::cockpit::map_frame`
+/// + `mush_pixel::cockpit::CockpitPicture` at `640x480` is pinned to the exact
+/// 16-hex-digit FNV-1a frame hash asserted by the Studio preview in
+/// `web/src/lib/map-editor.test.ts`.
+#[test]
+fn proving_ground_bluff_cockpit_frame_hash_is_pinned_to_the_studio_preview() {
+    use std::collections::HashMap;
+
+    use mush_pixel::{
+        Frame,
+        cockpit::CockpitPicture,
+        picture::{Look, Picture},
+    };
+
+    let draft = tacsim::ground::proving_ground_draft().expect("shipped proving_ground draft");
+    let classes =
+        tacsim::ground::decode_classes("proving_ground", draft.cols, draft.rows, &draft.classes)
+            .expect("decode classes");
+    let elev = tacsim::ground::decode_elev("proving_ground", draft.cols, draft.rows, &draft.elev)
+        .expect("decode elev");
+    let cells: Vec<TerrainCell> = classes
+        .into_iter()
+        .zip(elev)
+        .map(|(class, elev_cm)| TerrainCell {
+            class,
+            elev_cm,
+            move_cost: 1,
+        })
+        .collect();
+    let terrain =
+        ArenaTerrain::new(draft.cols, draft.rows, draft.cell_cm, cells).expect("arena terrain");
+    let spots: Vec<KeySpot> = draft
+        .key_spots
+        .iter()
+        .map(|s| KeySpot {
+            name: s.name.clone().into(),
+            x: s.x,
+            y: s.y,
+        })
+        .collect();
+
+    let mut map_val = tacsim::match_::cockpit::map_frame(
+        MatchId(1),
+        "tacsim.arena.proving_ground",
+        &terrain,
+        &spots,
+    );
+    map_val["biome"] = serde_json::json!(draft.biome);
+
+    let bluff_elev = terrain.get(144, 111).expect("The Bluff (144, 111)").elev_cm;
+    assert_eq!(bluff_elev, 500);
+    let cockpit_val = serde_json::json!({
+        "schema": {
+            "id": "arena.cockpit",
+            "version": 8,
+            "retain": "latest"
+        },
         "seated": true,
-        "team": "blue",
-        "unit_type": "tacsim.unit.biped_mk1",
-        "x_cm": 16_500,
-        "y_cm": 8_500,
-        "z_cm": 0,
-        "heading_mdeg": 0,
+        "match": -1,
+        "unit": 1,
+        "callsign": "PREVIEW",
+        "cell": [144, 111],
+        "x_cm": 144_500,
+        "y_cm": 111_500,
+        "z_cm": bluff_elev,
+        "heading_mdeg": 270_000,
+        "heading_deg": 270,
         "speed_cms": 0,
-        "contacts": [{
-            "id": "c1",
-            "designator": "RA",
-            "class": "red",
-            "unit_type": "tacsim.unit.line_tank",
-            "bearing_deg": 0.0,
-            "range_m": 60.0,
-            "facing": "front",
-            "moving": false
-        }]
+        "speed_kph": 0,
+        "power": "online",
+        "sight_m": 600,
+        "contacts": [],
+        "weapons": [],
+        "sections": []
     });
-    let mut iso_open = Iso25DPicture::new();
-    iso_open.set_map(open_map);
-    let f_iso_open = iso_open.render_frame(&cockpit, 0, 0, 320, 220);
 
-    let mut iso_rock = Iso25DPicture::new();
-    iso_rock.set_map(rock_map);
-    let f_iso_rock = iso_rock.render_frame(&cockpit, 0, 0, 320, 220);
+    let mut feeds = HashMap::new();
+    feeds.insert("arena.map".to_owned(), map_val);
+    feeds.insert("arena.cockpit".to_owned(), cockpit_val);
 
-    let mut iso_wall = Iso25DPicture::new();
-    iso_wall.set_map(wall_map);
-    let f_iso_wall = iso_wall.render_frame(&cockpit, 0, 0, 320, 220);
-
-    assert_eq!(
-        f_iso_rock.hash(),
-        f_iso_open.hash(),
-        "iso25d: rock == open at elev 0"
-    );
-    assert_ne!(
-        f_iso_rock.hash(),
-        f_iso_wall.hash(),
-        "iso25d: wall extrudes, rock does not"
-    );
+    let mut pic = CockpitPicture::new();
+    let mut frame = Frame::new(640, 480);
+    assert!(pic.draw(&mut frame, &feeds, &Look::default()));
+    let hash_hex = format!("{:016x}", frame.hash());
+    assert_eq!(hash_hex, "bdce88aa2e6d6ece");
 }

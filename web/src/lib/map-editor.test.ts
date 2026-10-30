@@ -20,12 +20,14 @@ import {
   floodFillTerrain,
   type GroundDraftJson,
   importGroundDraftJson,
+  markStudioEdited,
   paintTerrainBrush,
   paintTerrainLine,
   relaxEditorSlopes,
   routeEditorMap,
   TERRAIN_PALETTE,
 } from "./map-editor";
+import pgParityFixture from "./fixtures/proving_ground_wg4_parity.json";
 
 function loadShippedProvingGroundDraft(): GroundDraftJson {
   const draftPath = resolve(
@@ -36,10 +38,53 @@ function loadShippedProvingGroundDraft(): GroundDraftJson {
 }
 
 describe("map-editor WG.4 (ground.draft.v1 & parity with tacsim::ground)", () => {
-  it("provides all 18 mush_atlas TerrainClass codes (0..=17)", () => {
-    expect(TERRAIN_PALETTE).toHaveLength(18);
+  it("provides all 17 paintable mush_atlas TerrainClass codes (1..=17, omitting Void 0) and rejects Void cells in checkEditorMap", () => {
+    expect(TERRAIN_PALETTE).toHaveLength(17);
     const codes = TERRAIN_PALETTE.map((s) => s.code).sort((a, b) => a - b);
-    expect(codes).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+    expect(codes).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+
+    const state = createEditorMap(64, 64, "temperate", 3);
+    state.classes[10] = 0;
+    const report = checkEditorMap(state);
+    expect(report.passed).toBe(false);
+    expect(report.failures.some((f) => f.includes("Void cell"))).toBe(true);
+  });
+
+  it("updates provenance to studio v1.0 and preserves prior generator/pack provenance in inputs on edit", () => {
+    const rawDraft = loadShippedProvingGroundDraft();
+    const state = importGroundDraftJson(rawDraft);
+    expect(state.provenance.source).toBe("generator");
+    expect(state.provenance.seed).toBe(2350);
+
+    paintTerrainBrush(state, 10, 10, 0, "square", 7);
+    expect(state.provenance.source).toBe("studio");
+    expect(state.provenance.version).toBe("1.0");
+    expect(state.provenance.seed).toBeUndefined();
+    expect(state.provenance.inputs).toContain("generator:v3:seed=2350");
+
+    const packDraft: GroundDraftJson = {
+      ...rawDraft,
+      provenance: {
+        source: "pack",
+        version: "v3",
+        seed: 1,
+        inputs: [
+          "tacsim.proving_ground:region.proving_ground",
+          "tacsim.proving_ground:tacsim.arena.proving_ground",
+        ],
+      },
+    };
+    const packState = importGroundDraftJson(packDraft);
+    expect(packState.provenance.source).toBe("pack");
+    markStudioEdited(packState);
+    expect(packState.provenance.source).toBe("studio");
+    expect(packState.provenance.version).toBe("1.0");
+    expect(packState.provenance.seed).toBeUndefined();
+    expect(packState.provenance.inputs).toEqual([
+      "tacsim.proving_ground:region.proving_ground",
+      "tacsim.proving_ground:tacsim.arena.proving_ground",
+      "pack:v3:seed=1",
+    ]);
   });
 
   it("round-trips 3-byte class RLE and le16 elevation base64 codecs", () => {
@@ -105,56 +150,46 @@ describe("map-editor WG.4 (ground.draft.v1 & parity with tacsim::ground)", () =>
     expect(report.max_road_grade_pct).toBeLessThanOrEqual(20);
     expect(report.max_entry_zone_step_cm).toBeLessThanOrEqual(100);
 
-    // 2. Viewshed from The Bluff (141, 111) with 300 cm target height
-    const vs = computeViewshed(state, 141, 111, 300);
+    // 2. Viewshed from The Bluff (144, 111) with 300 cm target height — cell-for-cell parity with tacsim::ground::viewshed
+    const vs = computeViewshed(state, 144, 111, 300);
     expect(vs.length).toBe(256 * 256);
-    expect(vs[111 * 256 + 141]).toBe(1); // Origin is seen
-    let seen = 0;
-    let hullDown = 0;
-    let partial = 0;
-    let dead = 0;
-    for (let i = 0; i < vs.length; i++) {
-      if (vs[i] === 1) seen++;
-      else if (vs[i] === 2) hullDown++;
-      else if (vs[i] === 3) partial++;
-      else dead++;
-    }
-    expect(seen).toBeGreaterThan(1000);
-    expect(hullDown).toBeGreaterThan(100);
-    expect(partial).toBeGreaterThan(100);
-    expect(dead).toBeGreaterThan(1000);
+    expect(vs[111 * 256 + 144]).toBe(1); // Origin is seen
+    const expectedVs = decodeClassesBase64(pgParityFixture.bluff_viewshed_144_111_300_rle_b64);
+    expect(Array.from(vs)).toEqual(Array.from(expectedVs.classes));
 
-    // 3. Route synthesis over the proving ground with its waypoint graph emptied
+    // 3. Route synthesis over the proving ground with its waypoint graph emptied — exact parity with tacsim::ground::route
     state.waypoints = { nodes: [], edges: [] };
     const routed = routeEditorMap(state);
-    expect(routed.nodes.length).toBeGreaterThanOrEqual(7);
-    expect(routed.edges.length).toBeGreaterThanOrEqual(6);
+    expect(routed).toEqual(pgParityFixture.routed_waypoints);
     const afterRouteCheck = checkEditorMap(state);
     expect(afterRouteCheck.passed).toBe(true);
     expect(afterRouteCheck.waypoints_reachable).toBe(true);
   });
 
   it("matches ground-pack check on a 45% ridge (passes) and a 50% ridge (fails until relaxed)", () => {
-    const state = createEditorMap(64, 64, "temperate", 3);
+    const state = createEditorMap(64, 64, "temperate", 2);
+    for (let x = 0; x < 64; x++) {
+      state.classes[32 * 64 + x] = 7; // road on row 32
+    }
     // Build a vertical ridge at x=32 with a 450 cm step (45% grade over 10m cells)
     for (let y = 0; y < 64; y++) {
       for (let x = 32; x < 64; x++) {
         state.elevCm[y * 64 + x] = 450;
       }
     }
-    // Road has <= 20% rule, so keep the road flat or test with no road
-    for (let i = 0; i < state.classes.length; i++) {
-      if (state.classes[i] === 7) state.classes[i] = 3;
-    }
+    // Cut a <= 20% road ramp on row 32 (0 -> 150 -> 300 -> 450)
+    state.elevCm[32 * 64 + 32] = 150;
+    state.elevCm[32 * 64 + 33] = 300;
     state.keySpots = [];
     state.waypoints = { nodes: [], edges: [] };
 
     const report45 = checkEditorMap(state);
     expect(report45.max_grade_pct).toBe(45);
     expect(report45.zones_reachable_tracked).toBe(true);
+    expect(report45.zones_reachable_wheeled).toBe(true);
     expect(report45.passed).toBe(true);
 
-    // Raise ridge to 500 cm (50% grade > 45% tracked limit)
+    // Raise ridge to 500 cm with no ramp (50% grade > 45% tracked limit and > 20% road limit)
     for (let y = 0; y < 64; y++) {
       for (let x = 32; x < 64; x++) {
         state.elevCm[y * 64 + x] = 500;
@@ -168,11 +203,13 @@ describe("map-editor WG.4 (ground.draft.v1 & parity with tacsim::ground)", () =>
     // Relax slopes and verify it passes check again
     const undo = new EditorUndoStack();
     undo.push(state);
-    const changed = relaxEditorSlopes(state, 45);
+    const changed = relaxEditorSlopes(state);
     expect(changed.length).toBeGreaterThan(0);
     const reportRelaxed = checkEditorMap(state);
     expect(reportRelaxed.max_grade_pct).toBeLessThanOrEqual(45);
+    expect(reportRelaxed.max_road_grade_pct).toBeLessThanOrEqual(20);
     expect(reportRelaxed.zones_reachable_tracked).toBe(true);
+    expect(reportRelaxed.zones_reachable_wheeled).toBe(true);
     expect(reportRelaxed.passed).toBe(true);
 
     // Undo restores the 50% ridge
@@ -237,7 +274,8 @@ describe("map-editor WG.4 (ground.draft.v1 & parity with tacsim::ground)", () =>
     modStudio.feed(FEED_COCKPIT, JSON.stringify(arenaCockpit));
     expect(modStudio.render(640, 480, { offsetMdeg: 0 }, KIND_COCKPIT)).toBe(true);
     const studioBluffHash = modStudio.hash();
-    expect(studioBluffHash).toMatch(/^[0-9a-f]{16}$/);
+    // Pinned across Rust (`crates/mush-contract-tests/tests/pixel_relief.rs`) and Web
+    expect(studioBluffHash).toBe("bdce88aa2e6d6ece");
 
     const modServer = new PixelModule(
       new WebAssembly.Instance(new WebAssembly.Module(wasmBytes), {}),
