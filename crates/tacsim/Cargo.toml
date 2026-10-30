@@ -73,6 +73,9 @@ thiserror.workspace = true
 # level up.
 tokio.workspace = true
 tracing.workspace = true
+# Doc 30 cut WG.1 (from doc 21 cut G.7b): `tacsim::ground` computes the V3
+# landscape with libm so the pinned draft and packs are byte-identical on every host.
+libm.workspace = true
 
 [features]
 # 16b cut T.3: the `@arena/fault <match>` switch, which arms cut T.2's hidden
@@ -91,10 +94,6 @@ tracing.workspace = true
 fault-injection = []
 
 [dev-dependencies]
-# Doc 21 cut G.7b: the proving ground's version 3 generator (tests/support)
-# computes its landscape with libm, so the pinned pack is the same bytes on
-# every host.
-libm.workspace = true
 mush-testkit.workspace = true
 mush-proto.workspace = true
 # 17g cut C3a: `minds::market_commands::tests`' panel projection test asks the

@@ -130,6 +130,7 @@ pub mod economy;
 pub mod ephemeris;
 pub mod field_ops;
 pub mod fixture;
+pub mod ground;
 pub mod hardware;
 // Doc 17h cut M8h: House owner attestation in live play.
 pub(crate) mod house_attestation;
