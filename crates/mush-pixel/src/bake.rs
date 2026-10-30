@@ -1313,7 +1313,7 @@ mod tests {
     #[test]
     fn the_embedded_pack_holds_the_matrix_check() {
         /// The digest of `looks/units.bin`; `unit_reduce` prints it.
-        const PACK_DIGEST: u64 = 0xb536_de2b_6e6c_5e58;
+        const PACK_DIGEST: u64 = 0xc722_d076_e98b_1912;
         let bytes = embedded();
         let pack = Pack::decode(bytes).expect("the embedded pack decodes");
         assert_eq!(
