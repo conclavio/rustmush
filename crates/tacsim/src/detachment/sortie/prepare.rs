@@ -864,11 +864,7 @@ pub(super) fn authority_keys(
                     )?);
                 }
                 if row.command_authorized {
-                    keys.insert(revision_key(
-                        row.operator,
-                        row.unit,
-                        UnitCapability::CommandAssignedAi,
-                    )?);
+                    keys.insert(command_key(row.operator, row.unit, row.command_role)?);
                 }
             }
         }
@@ -882,26 +878,30 @@ pub(super) fn authority_keys(
                     )?);
                 }
                 if row.command_authorized {
-                    keys.insert(revision_key(
-                        row.operator,
-                        row.unit,
-                        UnitCapability::CommandAssignedAi,
-                    )?);
+                    keys.insert(command_key(row.operator, row.unit, row.command_role)?);
                 }
             }
             for right in &request.rights {
                 if right.allowed {
-                    keys.insert(revision_key(
-                        right.issuer,
-                        right.unit,
-                        UnitCapability::CommandAssignedAi,
-                    )?);
+                    keys.insert(command_key(right.issuer, right.unit, right.role_grant)?);
                 }
             }
         }
         _ => {}
     }
     Ok(keys.into_iter().collect())
+}
+fn command_key(
+    actor: ObjId,
+    unit: ObjId,
+    role: Option<mush_org::unit_authority::UnitGrantId>,
+) -> Result<mush_core::RevisionKey, mush_core::ActionError> {
+    match role {
+        Some(grant) => {
+            mush_org::unit_authority::operation::mission_revision_key(actor, unit, grant)
+        }
+        None => revision_key(actor, unit, UnitCapability::CommandAssignedAi),
+    }
 }
 
 fn message(

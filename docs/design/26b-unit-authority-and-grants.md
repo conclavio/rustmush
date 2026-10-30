@@ -69,9 +69,31 @@ NPC and command term. Succession changes the role holder without minting rights;
 a changed accepted roster requires fresh grants. A software mind is not a human
 principal.
 
-DT.2a production has no accepted IC mission owner yet, so mission-role resolution
-fails closed. DT.2b will connect its typed accepted-roster owner through the
-registered read boundary. The ephemeral OOC practice host is not that owner.
+DT.3f connects the accepted IC owner through Org's existing authenticated read
+boundary. Tacsim supplies a freshly derived eligibility selection from the
+actual accepted roster, live reservations, field flights, station/K6 control,
+employment, unit condition and sessions. Org accepts this request only from the
+registered Tacsim requester, then resolves its own actual grant registry and
+current owner/loan/policy facts. The final common roster uses that answer; a
+role declaration cannot elect its own holder or displace a higher-priority
+eligible player. No mission or grant authority is mirrored into World.
+
+A prospective declaration can be issued before a leader takes the field. It
+proves the lender's full finite command/delegation lineage at creation, but
+supplies no active mission, eligible person or current right. Ordinary grants
+retain their existing validation. At exercise, role resolution still requires
+the exact accepted binding, finite accepted units, active mission and current
+human leader/term. `+sortie/command-grants` prints per-unit declarations from the
+actual accepted activation for its authorized roster readers; the unit owner or
+authorized lender issues them through the existing Org coordinator action.
+
+Final admission retains both halves: Tacsim's source guard and actual owner
+preimage reads fence the accepted activation and current eligibility; an Org
+mission-lineage coordinate re-resolves the selected actual grant, its ancestors,
+current title lineage, expiry, exclusions and policy for the actor/unit. That
+coordinate alone never establishes leadership. Revoked or transferred backing
+refuses even if the actor has acquired an independent permission through another
+lineage. The ephemeral OOC practice host supplies none of these IC facts.
 
 ## Prospective revocation and retained custody
 

@@ -48,6 +48,9 @@ struct Resolver<'a> {
     visits: usize,
     sources: Vec<UnitAuthoritySource>,
     checking_exclusions: bool,
+    // Declaration/root checks prove lending authority only. Exercising a role
+    // always uses the ordinary resolver with actual mission-owner facts.
+    mission_lineage_only: bool,
 }
 
 impl<'a> Resolver<'a> {
@@ -76,6 +79,7 @@ impl<'a> Resolver<'a> {
             visits: 0,
             sources: Vec::new(),
             checking_exclusions: false,
+            mission_lineage_only: false,
         })
     }
 
@@ -233,6 +237,9 @@ impl<'a> Resolver<'a> {
                 scope,
             } if self.scope_active(*organization, *scope) => Ok(()),
             UnitGrantee::CurrentLeader(binding) => {
+                if self.mission_lineage_only {
+                    return Ok(());
+                }
                 let mission = self.facts.mission(binding).ok_or(UnitGrantError::Stale)?;
                 let UnitScope::Units { units } = &grant.scope else {
                     return Err(UnitGrantError::Widening);
@@ -535,6 +542,7 @@ impl<'a> Resolver<'a> {
                 visits: self.visits,
                 sources: Vec::new(),
                 checking_exclusions: true,
+                mission_lineage_only: self.mission_lineage_only,
             };
             // An exclusion only vetoes overlapping current control. While
             // proving that overlap, still enforce each backing loan's own
@@ -928,6 +936,61 @@ pub fn validate_unit_grant(
         }
     }
     Ok(resolver.witness())
+}
+
+/// A prospective role declaration grants nobody a current right. The actual
+/// mission owner must supply the exact accepted binding, leader and term at use.
+/// This proves the same finite lending lineage as an ordinary new grant.
+pub fn validate_mission_declaration(
+    orgs: &OrgState,
+    grants: &BTreeMap<UnitGrantId, UnitGrant>,
+    facts: &dyn UnitAuthorityFacts,
+    predicates: &dyn PredicateEval,
+    candidate: &UnitGrant,
+    now: i64,
+) -> Result<UnitGrantWitness, UnitGrantError> {
+    candidate.validate()?;
+    if !matches!(candidate.grantee, UnitGrantee::CurrentLeader(_)) {
+        return Err(UnitGrantError::NoAuthority);
+    }
+    if grants.len() >= MAX_UNIT_GRANTS {
+        return Err(UnitGrantError::Capacity);
+    }
+    if grants.contains_key(&candidate.id) {
+        return Err(UnitGrantError::Malformed("grant identity already exists"));
+    }
+    let mut resolver = Resolver::new(orgs, grants, facts, predicates, now, candidate.grantor)?;
+    resolver.mission_lineage_only = true;
+    resolver.shape(candidate, 0)?;
+    let UnitScope::Units { units } = &candidate.scope else {
+        return Err(UnitGrantError::Widening);
+    };
+    for unit in units {
+        resolver.asset(*unit)?;
+        resolver.walk(candidate, *unit, false, &candidate.grantee, 0)?;
+    }
+    Ok(resolver.witness())
+}
+
+/// One half of final admission: current owner/loan/policy backing for an actual
+/// issued role grant. This alone deliberately says nothing about who leads.
+pub(super) fn mission_lineage(
+    orgs: &OrgState,
+    grants: &BTreeMap<UnitGrantId, UnitGrant>,
+    facts: &dyn UnitAuthorityFacts,
+    predicates: &dyn PredicateEval,
+    coordinate: (ObjId, ObjId, UnitGrantId),
+    now: i64,
+) -> Result<(), UnitGrantError> {
+    let (actor, unit, grant) = coordinate;
+    let grant = grants.get(&grant).ok_or(UnitGrantError::NoAuthority)?;
+    if !matches!(grant.grantee, UnitGrantee::CurrentLeader(_)) {
+        return Err(UnitGrantError::NoAuthority);
+    }
+    let mut resolver = Resolver::new(orgs, grants, facts, predicates, now, actor)?;
+    resolver.mission_lineage_only = true;
+    resolver.asset(unit)?;
+    resolver.walk(grant, unit, false, &grant.grantee, 0)
 }
 
 /// Narrow retained custody, independently authenticated by its owning host.

@@ -9,6 +9,54 @@ use mush_core::{
 use std::sync::Arc;
 
 const KIND: &str = "unit_use_authority_v1";
+const MISSION_KIND: &str = "mission_grant_lineage_v1";
+
+/// Only the Org half of mission admission: the selected actual role grant must
+/// retain current title/loan/delegation/policy backing for this actor and unit.
+/// The mission owner separately fences the exact accepted binding and leader.
+pub fn mission_revision_key(
+    actor: ObjId,
+    unit: ObjId,
+    grant: super::UnitGrantId,
+) -> Result<RevisionKey, ActionError> {
+    if actor.0 == 0 || unit.0 == 0 || grant.0 == 0 {
+        return Err(super::runtime::error("invalid mission lineage coordinate"));
+    }
+    Ok(RevisionKey {
+        owner: OwnerId::new(crate::NS)
+            .map_err(|_| super::runtime::error("invalid mission owner"))?,
+        kind: RevisionKind::new(
+            CanonicalId::new(MISSION_KIND)
+                .map_err(|_| super::runtime::error("invalid mission kind"))?,
+        ),
+        subject: SubjectKey::Object { id: actor },
+        facet: Some(
+            CanonicalId::new(format!("{}.{}", unit.0, grant.0))
+                .map_err(|_| super::runtime::error("invalid mission facet"))?,
+        ),
+    })
+}
+fn parse_mission(key: &RevisionKey) -> Option<(ObjId, ObjId, super::UnitGrantId)> {
+    let SubjectKey::Object { id: actor } = key.subject else {
+        return None;
+    };
+    let (unit, grant) = key.facet.as_ref()?.as_str().split_once('.')?;
+    let coordinate = (
+        actor,
+        ObjId(unit.parse().ok()?),
+        super::UnitGrantId(grant.parse().ok()?),
+    );
+    (mission_revision_key(coordinate.0, coordinate.1, coordinate.2)
+        .ok()
+        .as_ref()
+        == Some(key))
+    .then_some(coordinate)
+}
+pub(super) fn mission_kind() -> Result<RevisionKind, mush_core::ModError> {
+    Ok(RevisionKind::new(
+        CanonicalId::new(MISSION_KIND).map_err(|e| mush_core::ModError::msg(e.to_string()))?,
+    ))
+}
 
 /// A provider names the real operator and unit; Org evaluates its own rights.
 /// This coordinate checks exercise, never permission to delegate that right.
@@ -66,9 +114,11 @@ impl RevisionValidator for Validator {
         context: &RevisionValidatorContext<'_>,
         key: &RevisionKey,
     ) -> Result<Option<u64>, ActionError> {
-        let Some((actor, unit, capability)) = parse(key) else {
+        let direct = parse(key);
+        let mission = parse_mission(key);
+        if direct.is_none() && mission.is_none() {
             return Ok(None);
-        };
+        }
         let empty = UnitGrantRegistry::default();
         let registry = context
             .action_state(&self.registry, &())
@@ -86,6 +136,21 @@ impl RevisionValidator for Validator {
             providers: store.providers(),
         };
         let facts = self.facts.facts(context.world());
+        if let Some(coordinate) = mission {
+            return Ok(super::resolve::mission_lineage(
+                store.state(),
+                &registry.grants,
+                facts.as_ref(),
+                &predicates,
+                coordinate,
+                context.world().now(),
+            )
+            .is_ok()
+            .then_some(1));
+        }
+        let Some((actor, unit, capability)) = direct else {
+            return Ok(None);
+        };
         let request = UnitAuthRequest {
             actor,
             unit,

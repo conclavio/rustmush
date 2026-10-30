@@ -58,6 +58,7 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/field <draft>:<activation revision>` | Read the last saved field leadership identity and command term |
 | `+sortie/refresh <draft>:<activation revision>` | Recheck the operation's current field leadership |
 | `+sortie/orders <draft>:<activation revision>` | Read your sent field messages, arrived replies and personally received orders |
+| `+sortie/command-grants <draft>:<activation revision>` | Print grants that a unit's owner or authorized lender can issue to this mission's current leader role |
 | `+sortie/recover <draft>:<activation revision>=<slot>` | Bring a unit physically beside the ramp back into the carrier |
 | `+sortie/cancel-launch <draft>:<activation revision>=<slot>` | Cancel a departure that is still physically aboard |
 | `+sortie/end <draft>:<activation revision>` | End coordination, cancelling only departures still aboard |
@@ -221,6 +222,19 @@ released or completed; an optional expiry suffix limits them in IC seconds.
 
 Sending requires current leadership, physical station control and command rights
 for every selected unit. Admission checks the entire `ALL` set before sending.
+For the usual mission lending arrangement, use `+sortie/command-grants` after
+activation. Each printed `@unitgrant/json` command lends command permission for
+one accepted unit to this exact mission's current leader. The unit's owner can
+issue it directly; another authorized lender supplies its real parent grant or
+organization root in the JSON. Printing a command grants nothing, and the
+organizer cannot lend a unit's rights without that authority.
+
+The mission role follows eligible human succession without creating personal
+command grants. It cannot be delegated onward and conveys no crew, deployment,
+recovery or title right. A changed accepted activation needs fresh grants.
+Owners can revoke their role grants through the existing unit-grant commands.
+Existing direct command grants continue to work.
+
 Messages use the existing communications transport, including its routing,
 latency, interference and queue limits. Arrival rechecks current assignments,
 leadership term and permissions before changing the recipient's last delivered

@@ -63,6 +63,13 @@ pub enum UnitAuthorityRequest {
     CommandAvailability {
         crew: Vec<(ObjId, ObjId)>,
     },
+    /// Mission-owner observations are accepted only from the registered IC
+    /// host. Its source transaction separately fences the actual accepted
+    /// roster, eligibility and current term; Org still resolves every grant.
+    MissionCommands {
+        mission: MissionFacts,
+        crew: Vec<(ObjId, ObjId)>,
+    },
     List {
         after: u64,
     },
@@ -80,6 +87,7 @@ pub enum UnitAuthorityResponse {
         allowed: Vec<bool>,
         operate: Vec<bool>,
     },
+    MissionCommands(Vec<super::mission::MissionAuthority>),
     Grants {
         grants: Vec<UnitGrant>,
         more: bool,
@@ -171,7 +179,12 @@ pub(crate) fn evaluate(
                 parent,
                 status: UnitGrantStatus::Active,
             };
-            validate_unit_grant(
+            let validate = if matches!(grant.grantee, UnitGrantee::CurrentLeader(_)) {
+                super::resolve::validate_mission_declaration
+            } else {
+                validate_unit_grant
+            };
+            validate(
                 store.state(),
                 &registry.grants,
                 facts.as_ref(),
@@ -291,6 +304,20 @@ impl OwnerReadService for UnitAuthorityReader {
                     .map(|(u, a)| decision(*u, *a, UnitCapability::OperateCrew))
                     .collect();
                 Ok(UnitAuthorityResponse::CommandAvailability { allowed, operate })
+            }
+            UnitAuthorityRequest::MissionCommands { mission, crew } => {
+                if ctx.requester().as_str() != "tacsim" {
+                    return Err(OwnerReadError::Authority);
+                }
+                super::mission::commands(
+                    ctx.world(),
+                    store,
+                    self.facts.as_ref(),
+                    &registry,
+                    &mission,
+                    &crew,
+                )
+                .map(UnitAuthorityResponse::MissionCommands)
             }
             UnitAuthorityRequest::CrewUse { unit, operator } => {
                 let facts = self.facts.facts(ctx.world());
