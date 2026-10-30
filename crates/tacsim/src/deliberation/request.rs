@@ -209,12 +209,15 @@ impl SquadBrief {
             .iter()
             .map(|contact| BriefContact {
                 id: contact.id.to_string(),
-                stance: match contact.class {
-                    Classification::Unknown => "unknown".to_string(),
-                    Classification::Classified { party: team } if team == signal.team => {
+                // Doc 32 cut CF.0: the commander's party's relation; a
+                // neutral is briefed as the word says.
+                stance: match contact.relation {
+                    crate::arena::party::Relation::Unknown => "unknown".to_string(),
+                    crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {
                         "friendly".to_string()
                     }
-                    Classification::Classified { .. } => "hostile".to_string(),
+                    crate::arena::party::Relation::Hostile => "hostile".to_string(),
+                    crate::arena::party::Relation::Neutral => "neutral".to_string(),
                 },
                 // **16b cut E.1** (16c `T-81`): the pilot's own word. It used to be
                 // `range_band`'s — thirds of the gun's inner band alone — so a

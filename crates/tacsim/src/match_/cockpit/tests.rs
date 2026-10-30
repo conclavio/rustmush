@@ -3327,7 +3327,7 @@ fn ap3_scene() -> Frame {
         team: PartyId::RED,
         slot: 1,
     };
-    frame.team = PartyId::RED;
+    frame.party = PartyId::RED;
     frame.power = Power::Online;
     frame.speed_cms = 667;
     frame.pose.heading_mdeg = 90_000;

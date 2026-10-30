@@ -39,11 +39,12 @@ pub struct Frame {
     pub objective: Option<crate::arena::state::HoldObjective>,
     /// This hull's requested motor goal and latest outcome.
     pub motor: Option<FrameMotor>,
-    /// **The side it is on** (16b cut S.2), so the cockpit can draw a classified
-    /// contact as a friend or as a hostile without asking the world which team the
-    /// pilot's slot was on. The platform's own side is never a secret from its
-    /// pilot.
-    pub team: PartyId,
+    /// **The party it is on** (16b cut S.2; doc 32 cut CF.0): its letter is the
+    /// one the own health bar carries (Q-CF-12). Since CF.0 a contact's friend or
+    /// foe is the row's own `relation`, off the arena's books, and never a
+    /// compare against this. The platform's own party is never a secret from
+    /// its pilot.
+    pub party: PartyId,
     /// **Its own unit type** (doc 22): its definition id, which names the look
     /// its pilot's doll is drawn from. Never a secret from its pilot.
     pub unit_type: SmolStr,
@@ -617,7 +618,7 @@ impl Frame {
         self.catchup.is_none()
             && other.catchup.is_none()
             && self.unit == other.unit
-            && self.team == other.team
+            && self.party == other.party
             // 16b cut Q.1: both are surfaces a pilot reads — the callsign on
             // `STATUS`'s first line, the cell on a panel's map — so both decide
             // whether a frame is sent. The callsign never moves in a match and
@@ -847,7 +848,7 @@ impl Arena {
         let aim = self.lock_aim(unit.id);
         Some(Frame {
             unit: unit.id,
-            team: unit.team,
+            party: unit.team,
             unit_type: SmolStr::new(unit.unit.schema().key().id.as_str()),
             side_unit_types: {
                 let mut types: Vec<SmolStr> = self
@@ -1022,8 +1023,7 @@ impl Arena {
         // **17b cut M1b.3** (Q2): classified, of another side, still in the
         // match — the one predicate the lock and the rest are both held to.
         let hostile = |held: &crate::arena::state::ShadowContact| {
-            matches!(held.class, Classification::Classified { party: team } if team != from.team)
-                && self.unit(held.target).is_some()
+            self.relations.hostile(from.team, held.class) && self.unit(held.target).is_some()
         };
         let locked = from
             .lock

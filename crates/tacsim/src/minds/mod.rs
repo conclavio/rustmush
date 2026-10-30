@@ -184,7 +184,11 @@ pub use sealed::{InstallError, install_sealed_runners};
 
 /// **The API's version** (doc 17 Â§13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
-pub const API_VERSION: u32 = 6;
+///
+/// **7 since doc 32 cut CF.0** (Q-CF-3, Q-CF-43): `View.team` is gone and
+/// `Contact.relation` reads the hull's party's relation to the row, so a mind
+/// sees relation and never party. Taken once, with the snapshot and the frame.
+pub const API_VERSION: u32 = 7;
 
 /// **The stock content's version** (doc 17 Â§13): the `stock=` part of
 /// [`MIND_ABI`]; version 3 distinguishes replacement detachment orders from

@@ -1187,8 +1187,9 @@ pub struct MindView {
     pub unit: u32,
     /// Its public name (`callsign`).
     pub callsign: Designator,
-    /// Its side.
-    pub team: PartyId,
+    /// Its party: what the entry-zone kernels read, never a mind (doc 32
+    /// Q-CF-3: the mind API exposes relation, not party).
+    pub party: PartyId,
     /// The cell it stands in (`cell`).
     pub cell: Option<(u16, u16)>,
     /// Public match mode (`mode`).
@@ -1283,8 +1284,11 @@ pub struct ViewContact {
     pub alias: Option<u16>,
     /// What the platform knows of it (`class`, the word's source).
     pub class: Classification,
-    /// Whether it is on the hull's own side (`friendly`).
+    /// Whether it is own or a friend (`friendly`).
     pub friendly: bool,
+    /// **The hull's party's relation to it** (`relation`; doc 32 Q-CF-3: the
+    /// mind API exposes relation, not party).
+    pub relation: crate::arena::party::Relation,
     /// Whether the last earned plot showed motion (`moving` on the keyframe).
     pub moving: bool,
     /// The bearing to its plot, whole degrees (`bearing_deg`).
@@ -1827,6 +1831,7 @@ impl Arena {
                     alias: row.alias,
                     class: held.class,
                     friendly: row.friendly,
+                    relation: row.relation,
                     moving: held.moving,
                     bearing_deg: row.bearing_deg,
                     relative_deg: row.relative_deg,
@@ -1850,7 +1855,7 @@ impl Arena {
         Some(MindView {
             unit: frame.unit.0,
             callsign: frame.callsign,
-            team: frame.team,
+            party: frame.party,
             cell: frame.cell,
             mode: frame.mode,
             own_last_hit_ms: frame.own_last_hit_ms,

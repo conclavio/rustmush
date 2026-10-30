@@ -1045,8 +1045,8 @@ impl Arena {
             (SlotTarget::Contact { id }, Classification::Classified { .. }) => {
                 id == lock && !self.contact_reads_dead(held)
             }
-            (SlotTarget::BestHostile, Classification::Classified { party: team }) => {
-                team != state.team && !self.contact_reads_dead(held)
+            (SlotTarget::BestHostile, Classification::Classified { .. }) => {
+                self.relations.hostile(state.team, held.class) && !self.contact_reads_dead(held)
             }
         };
         if !targeted {
@@ -1445,7 +1445,7 @@ impl Arena {
         self.frame_contacts(unit)
             .into_iter()
             .filter(|row| {
-                row.class.party().is_some_and(|team| team != own.team)
+                row.relation == crate::arena::party::Relation::Hostile
                     && row.reads_dead != Some(true)
                     && self.rule_predicates_hold(unit, rule, Some(row.id), at_ms)
             })

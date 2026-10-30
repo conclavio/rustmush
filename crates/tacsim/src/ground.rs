@@ -538,9 +538,10 @@ impl GroundDraft {
         if self.body.trim().is_empty() {
             return Err(err("body must not be empty".to_owned()));
         }
-        if self.cols == 0 || self.rows == 0 || self.cols > 512 || self.rows > 512 {
+        let max = crate::definitions::arena::MAX_WINDOW_SIDE;
+        if self.cols == 0 || self.rows == 0 || self.cols > max || self.rows > max {
             return Err(err(format!(
-                "draft dimensions must be in 1..=512; got {}×{}",
+                "draft dimensions must be in 1..={max}; got {}×{}",
                 self.cols, self.rows
             )));
         }

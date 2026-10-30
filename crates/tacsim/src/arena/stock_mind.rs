@@ -451,8 +451,7 @@ pub fn would_overheat(view: &MindView, weapon: &FrameWeapon) -> bool {
 #[must_use]
 pub fn holds_a_hostile(view: &MindView) -> bool {
     view.contacts.iter().any(|row| {
-        matches!(row.class, Classification::Classified { party: team } if team != view.team)
-            && row.reads_dead != Some(true)
+        row.relation == crate::arena::party::Relation::Hostile && row.reads_dead != Some(true)
     })
 }
 
@@ -545,7 +544,7 @@ pub fn best_hostile_ranked(
         .contacts
         .iter()
         .filter(|row| {
-            matches!(row.class, Classification::Classified { party: team } if team != view.team)
+            row.relation == crate::arena::party::Relation::Hostile
                 && row.reads_dead != Some(true)
                 && admit(row)
         })
@@ -1473,7 +1472,7 @@ impl NativeStockMind {
                 MachineState::Withdraw => {
                     if goal.is_none() {
                         goal = here
-                            .and_then(|cell| entry_cell(def, view.team, CostRow::Tracked, cell))
+                            .and_then(|cell| entry_cell(def, view.party, CostRow::Tracked, cell))
                             .or(here);
                     }
                     let arrived = view.immobile
@@ -1650,7 +1649,7 @@ impl NativeStockMind {
             return false;
         }
         let Some(cell) =
-            here.and_then(|cell| far_entry_cell(def, view.team, CostRow::Tracked, cell, &[]))
+            here.and_then(|cell| far_entry_cell(def, view.party, CostRow::Tracked, cell, &[]))
         else {
             mem.unheld_since_ms = Some(t_ms);
             return false;

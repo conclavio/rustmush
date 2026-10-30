@@ -384,6 +384,15 @@ impl Arena {
             },
             Vec::new(),
         ));
+        // **Doc 32 cut CF.0** (Q-CF-5, Q-CF-9): the round arriving is the fire
+        // the target's party sees, hit or miss; its book, and its friends',
+        // now hold the shooter's party hostile under whatever mark they hold.
+        if let (Some(shooter), Some(victim)) = (
+            self.unit(shot.shooter).map(|unit| unit.team),
+            self.unit(shot.target).map(|unit| unit.team),
+        ) {
+            self.relations.note_fire(shooter, victim);
+        }
         let miss = |reason: &str, journal: &mut Vec<Notice>| {
             journal.push((
                 t_ms,
@@ -1514,7 +1523,8 @@ impl Arena {
     /// Answers the end it recorded, so phase 5 can journal it against the hash it
     /// already has. A match that has already ended is left alone.
     pub fn settle_elimination(&mut self) -> Option<MatchEnd> {
-        if self.ended.is_some() {
+        // Doc 32 cut CF.0: only a host that supplies elimination ends on it.
+        if self.ended.is_some() || self.end != crate::arena::party::EndCondition::Elimination {
             return None;
         }
         let winner = self.eliminated()?;
@@ -1584,7 +1594,9 @@ impl Arena {
     /// eliminated on the same substep is an elimination with a winner, and a draw
     /// over the top of it would lose the result.
     pub fn settle_spent(&mut self) -> Option<MatchEnd> {
-        if self.ended.is_some() || !self.spent() {
+        if self.ended.is_some()
+            || self.end != crate::arena::party::EndCondition::Elimination
+            || !self.spent() {
             return None;
         }
         let end = MatchEnd {

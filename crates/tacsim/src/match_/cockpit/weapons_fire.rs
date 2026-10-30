@@ -898,7 +898,7 @@ pub fn range_sentence(frame: &Frame) -> String {
     if on_range(frame) {
         format!(
             " On the range: targets on the {} side.",
-            frame.team.ooc_other().as_str()
+            frame.party.ooc_other().as_str()
         )
     } else {
         String::new()
@@ -1025,7 +1025,7 @@ pub(super) fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError>
 pub(super) fn fitted_bracket(w: &World, unit: ObjId, frame: &Frame) -> String {
     // Doc 32 cut CF.0: the callsign no longer spells the slot, so the pod is
     // the centre's own whose tank this is, on the frame's side, and no other.
-    let team = frame.team;
+    let team = frame.party;
     let Some(index) = centre::POD_ENTRIES
         .iter()
         .filter(|(side, _, _)| *side == team)

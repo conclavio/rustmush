@@ -395,7 +395,7 @@ fn entry_cell(v: &mut View) -> Result<Dynamic, Box<EvalAltResult>> {
     with(|ctx| {
         cell(
             view.cell
-                .and_then(|here| motor::entry_cell(&ctx.map, view.team, CostRow::Tracked, here)),
+                .and_then(|here| motor::entry_cell(&ctx.map, view.party, CostRow::Tracked, here)),
         )
     })
 }
@@ -408,7 +408,7 @@ fn entry_interior_cell(v: &mut View) -> Result<Dynamic, Box<EvalAltResult>> {
     let view = &v.0;
     with(|ctx| {
         cell(view.cell.and_then(|here| {
-            motor::entry_interior_cell(&ctx.map, view.team, CostRow::Tracked, here)
+            motor::entry_interior_cell(&ctx.map, view.party, CostRow::Tracked, here)
         }))
     })
 }
@@ -421,7 +421,7 @@ fn far_entry_cell(v: &mut View) -> Result<Dynamic, Box<EvalAltResult>> {
     let view = &v.0;
     with(|ctx| {
         cell(view.cell.and_then(|here| {
-            motor::far_entry_cell(&ctx.map, view.team, CostRow::Tracked, here, &[])
+            motor::far_entry_cell(&ctx.map, view.party, CostRow::Tracked, here, &[])
         }))
     })
 }
@@ -626,10 +626,10 @@ mod tests {
         let mut map = fixture::map();
         map.entry_zones
             .iter_mut()
-            .find(|zone| zone.team == seen.team)
+            .find(|zone| zone.team == seen.party)
             .expect("own zone")
             .x1 = 3;
-        let native = motor::entry_interior_cell(&map, seen.team, CostRow::Tracked, (7, 4));
+        let native = motor::entry_interior_cell(&map, seen.party, CostRow::Tracked, (7, 4));
         assert_eq!(native, Some((2, 4)));
         let mut ctx = context_on(seen.clone());
         ctx.map = Arc::new(map.clone());
@@ -979,21 +979,21 @@ mod tests {
         );
         let entry = seen
             .cell
-            .and_then(|here| motor::entry_cell(&map, seen.team, CostRow::Tracked, here));
+            .and_then(|here| motor::entry_cell(&map, seen.party, CostRow::Tracked, here));
         assert_eq!(
             shown(&eval("entry_cell(v)").expect("entry")),
             shown(&cell(entry))
         );
         let interior = seen
             .cell
-            .and_then(|here| motor::entry_interior_cell(&map, seen.team, CostRow::Tracked, here));
+            .and_then(|here| motor::entry_interior_cell(&map, seen.party, CostRow::Tracked, here));
         assert_eq!(
             shown(&eval("entry_interior_cell(v)").expect("interior entry")),
             shown(&cell(interior))
         );
         let far = seen
             .cell
-            .and_then(|here| motor::far_entry_cell(&map, seen.team, CostRow::Tracked, here, &[]));
+            .and_then(|here| motor::far_entry_cell(&map, seen.party, CostRow::Tracked, here, &[]));
         assert_eq!(
             shown(&eval("far_entry_cell(v)").expect("far")),
             shown(&cell(far))

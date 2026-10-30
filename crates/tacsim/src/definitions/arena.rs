@@ -43,6 +43,21 @@ use crate::definitions::unit::TRACKED;
 /// window at C.1's 128 by 128 quadrants; sixteen is the same window at 64.
 pub const MAX_ARENA_TILES: usize = 16;
 
+/// **The window side a region gets when nothing says otherwise**, cells (doc 32
+/// Q-CF-51): 256 at 10 m, 2.56 km (D-16-16). Since doc 32 cut CF.0 the side is a
+/// per-region value — the region's own [`ArenaDef`] `cols` and `rows`, which its
+/// tiles already say — and this is only the shipped default the engine's
+/// stand-in window and the tests are built at. Nothing in the kernel names a
+/// side: it reads the window's own width and height.
+pub const DEFAULT_WINDOW_SIDE: u16 = 256;
+
+/// **The most cells a region's window may have along one side** (doc 30
+/// Q-30-6: the biggest authored map is 512 a side; doc 32 Q-CF-51). It is the
+/// window's bound, not a tile's: the window is composed of up to
+/// [`MAX_ARENA_TILES`] tiles, each under `mush_atlas::cells::MAX_TILE_SIDE`,
+/// which bounds one tile document and nothing else.
+pub const MAX_WINDOW_SIDE: u16 = 512;
+
 /// The most named key spots one arena may carry (doc 16 §3.2: *three or four*).
 ///
 /// **16b cut V.1 made it the alphabet's length.** Every spot is drawn on the
@@ -279,14 +294,14 @@ impl ArenaDef {
         crate::definitions::check_note(entry, &self.note)?;
         if self.cols == 0
             || self.rows == 0
-            || self.cols > mush_atlas::cells::MAX_TILE_SIDE
-            || self.rows > mush_atlas::cells::MAX_TILE_SIDE
+            || self.cols > MAX_WINDOW_SIDE
+            || self.rows > MAX_WINDOW_SIDE
         {
             return Err(DefinitionError::value(
                 entry,
                 format!(
                     "an arena window is 1 to {} cells a side; {}×{} is not",
-                    mush_atlas::cells::MAX_TILE_SIDE,
+                    MAX_WINDOW_SIDE,
                     self.cols,
                     self.rows
                 ),

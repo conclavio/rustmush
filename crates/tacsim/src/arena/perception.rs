@@ -2070,6 +2070,9 @@ pub struct FrameContact {
     pub alias: Option<u16>,
     /// `unknown`, or the side the platform has resolved.
     pub class: Classification,
+    /// **What the platform's party makes of it** (doc 32 Q-CF-5, Q-CF-12): off
+    /// the arena's relation books at the frame, `unknown` while `class` is.
+    pub relation: crate::arena::party::Relation,
     /// Bearing from the platform, millidegrees clockwise from north.
     pub bearing_mdeg: u32,
     /// Range from the platform **to the plot**, centimetres (doc 16 §3.2's one
@@ -2538,6 +2541,7 @@ impl FrameContact {
             designator,
             alias,
             class,
+            relation,
             bearing_mdeg,
             range_cm,
             age_ms,
@@ -2555,6 +2559,7 @@ impl FrameContact {
             designator: their_designator,
             alias: their_alias,
             class: their_class,
+            relation: their_relation,
             bearing_mdeg: their_bearing_mdeg,
             range_cm: their_range_cm,
             age_ms: their_age_ms,
@@ -2571,6 +2576,7 @@ impl FrameContact {
             && designator == their_designator
             && alias == their_alias
             && class == their_class
+            && relation == their_relation
             && bearing_mdeg == their_bearing_mdeg
             && range_cm == their_range_cm
             && moving == their_moving

@@ -83,6 +83,8 @@ pub struct SignalContact {
     pub id: ContactId,
     /// What the commander knows of it.
     pub class: Classification,
+    /// **The commander's party's relation to it** (doc 32 cut CF.0).
+    pub relation: crate::arena::party::Relation,
     /// Bearing from the commander, millidegrees clockwise from north.
     pub bearing_mdeg: u32,
     /// Range from the commander, centimetres. The *world* turns this into one of
@@ -366,12 +368,17 @@ impl Arena {
             // Then the digest, which is three counters and no allocation.
             let mut digest = SquadDigest::default();
             for (_, held) in self.contacts.of(squad.commander) {
-                match held.class {
-                    Classification::Unknown => digest.unknown = digest.unknown.saturating_add(1),
-                    Classification::Classified { party: team } if team == commander.team => {
+                // Doc 32 cut CF.0: by the commander's party's relation; a
+                // neutral is counted with the unknowns, neither friend nor foe.
+                match self.relations.of_class(commander.team, held.class) {
+                    crate::arena::party::Relation::Unknown
+                    | crate::arena::party::Relation::Neutral => {
+                        digest.unknown = digest.unknown.saturating_add(1);
+                    }
+                    crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {
                         digest.friendly = digest.friendly.saturating_add(1);
                     }
-                    Classification::Classified { .. } => {
+                    crate::arena::party::Relation::Hostile => {
                         digest.hostile = digest.hostile.saturating_add(1);
                     }
                 }
@@ -409,6 +416,7 @@ impl Arena {
                     SignalContact {
                         id: *id,
                         class: held.class,
+                        relation: self.relations.of_class(commander.team, held.class),
                         bearing_mdeg,
                         range_cm,
                     }

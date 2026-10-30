@@ -322,12 +322,12 @@ pub fn frame_points(first: bool, frame: &Frame) -> Vec<HintPoint> {
     {
         points.push(HintPoint::Power);
     }
-    let hostile = frame.notices.iter().any(|notice| {
-        matches!(
-            notice,
-            FrameNotice::Contact { class, .. }
-                if class.party().is_some_and(|side| side != frame.team)
-        )
+    // Doc 32 cut CF.0: a contact notice about a row the frame holds hostile.
+    let hostile = frame.notices.iter().any(|notice| match notice {
+        FrameNotice::Contact { contact, .. } => frame.contacts.iter().any(|held| {
+            held.id == contact.id && held.relation == crate::arena::party::Relation::Hostile
+        }),
+        _ => false,
     });
     if frame.power == Power::Online && !frame.weapons.is_empty() && hostile {
         points.push(HintPoint::Contact);
@@ -656,7 +656,7 @@ mod tests {
             .find(|frame| frame.unit == RED)
             .expect("red is sent its opening frame");
         assert!(!frame.weapons.is_empty(), "the scout carries its cannon");
-        assert_eq!(frame.team, PartyId::RED);
+        assert_eq!(frame.party, PartyId::RED);
         frame
     }
 

@@ -788,6 +788,8 @@ impl Arena {
                 designator: self.designator_for(platform, held),
                 alias: self.alias_for(platform, held),
                 class: held.class,
+                // Doc 32 cut CF.0: the viewer's party's belief, now.
+                relation: self.relations.of_class(from.team, held.class),
                 moving: held.seen_at.speed_cms != 0,
                 bearing_mdeg: held.seen_at.bearing_from(&from.pose),
                 range_cm: held.seen_at.range_from(&from.pose),

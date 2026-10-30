@@ -40,8 +40,10 @@ use crate::definitions::Catalog;
 use crate::definitions::resolution::{ErrorTerms, ResolutionDef};
 use crate::definitions::unit::ComponentRole;
 
-/// The arena window's side, in cells. 256 cells at 10 m is 2.56 km (D-16-16).
-pub const ARENA_CELLS: u16 = 256;
+/// **The stand-in window's side, in cells** — since doc 32 cut CF.0 (Q-CF-51)
+/// the shipped default, [`crate::definitions::arena::DEFAULT_WINDOW_SIDE`], and
+/// not a constant of the arena: a region's window is its own `ArenaDef`'s.
+pub const ARENA_CELLS: u16 = crate::definitions::arena::DEFAULT_WINDOW_SIDE;
 
 /// One cell's side, centimetres: 10 m (doc 16 §3.2).
 pub const ARENA_CELL_CM: u16 = 1_000;

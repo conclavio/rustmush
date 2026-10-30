@@ -333,7 +333,6 @@ const fn target_word(target: SlotTarget) -> &'static str {
 pub const PARITY: &[(&str, &str, &str)] = &[
     ("View", "unit", "unit"),
     ("View", "callsign", "callsign"),
-    ("View", "team", "the callsign's side (red / blue)"),
     ("View", "cell", "cell"),
     ("View", "mode", "mode"),
     ("View", "objective", "objective"),
@@ -395,6 +394,7 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     ("Contact", "alias", "alias (the number of its X<n> word)"),
     ("Contact", "identified", "class != unknown"),
     ("Contact", "friendly", "friendly"),
+    ("Contact", "relation", "relation"),
     ("Contact", "bearing_deg", "bearing_deg"),
     ("Contact", "relative_deg", "relative_deg"),
     ("Contact", "range_m", "range_m"),
@@ -608,9 +608,6 @@ fn register_view(api: &mut Registrar<'_>) {
     getter!(api, "View", "callsign", |v: &mut View| {
         word(&v.0.callsign.to_string())
     });
-    getter!(api, "View", "team", |v: &mut View| {
-        word(v.0.team.as_str())
-    });
     getter!(api, "View", "cell", |v: &mut View| { cell(v.0.cell) });
     getter!(api, "View", "mode", |v: &mut View| {
         word(v.0.mode.as_str())
@@ -748,6 +745,12 @@ fn register_contact(api: &mut Registrar<'_>) {
     });
     getter!(api, "Contact", "friendly", |c: &mut Contact| {
         on(c, |row| Dynamic::from_bool(row.friendly))
+    });
+    // Doc 32 cut CF.0 (Q-CF-3, API 7): the hull's party's relation to the row
+    // — `own`, `friend`, `hostile`, `neutral` or `unknown` — where API 6 read
+    // the hull's own `team` and left a mind to compare sides.
+    getter!(api, "Contact", "relation", |c: &mut Contact| {
+        on(c, |row| word(row.relation.as_str()))
     });
     getter!(api, "Contact", "bearing_deg", |c: &mut Contact| {
         on(c, |row| int(row.bearing_deg))

@@ -151,7 +151,8 @@ pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> 
             ),
             age_ms: held.age_ms,
             cell: held.cell,
-            friendly: held.class.party() == Some(frame.team),
+            friendly: held.relation.is_friendly(),
+            relation: held.relation,
             // 17b cut M1a.3 (doc 17 §3): the side word of the face the plot was
             // showing, and the main gun's odds off `frame.odds` — the entry for
             // this row and the weapon a bare `FIRE` would fire, which
@@ -298,10 +299,14 @@ pub fn settle_ranges(
 pub fn own_scope(frame: &Frame) -> &'static str {
     let mut unidentified = false;
     for held in &frame.contacts {
-        match held.class.party() {
-            Some(team) if team == frame.team => {}
-            Some(_) => return "hostile",
-            None => unidentified = true,
+        // Doc 32 cut CF.0: by relation. A neutral is held, not a threat, and
+        // not a friend: it reads as unidentified does.
+        match held.relation {
+            crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {}
+            crate::arena::party::Relation::Hostile => return "hostile",
+            crate::arena::party::Relation::Neutral | crate::arena::party::Relation::Unknown => {
+                unidentified = true;
+            }
         }
     }
     if unidentified {
@@ -471,6 +476,9 @@ pub struct ContactRow {
     /// Whether the resolved side is the platform's own — what decides the glyph
     /// `VIEW` draws it with. `false` while the contact is `unknown`.
     pub friendly: bool,
+    /// **The platform's party's relation to it** (doc 32 Q-CF-12): what the
+    /// clients colour it by. `friendly` is own or friend.
+    pub relation: crate::arena::party::Relation,
     /// **The side word of the face the contact was showing** (17b cut M1a.3; doc
     /// 17 §3): `front`, `side` or `rear` —
     /// [`crate::arena::perception::Aspect::side_word`] of the frame's facet.
@@ -518,12 +526,16 @@ impl ContactRow {
     /// unresolved, then [`FRIEND_GLYPH`] or [`HOSTILE_GLYPH`].
     #[must_use]
     pub fn glyph(&self) -> &'static str {
-        if self.class == "unknown" {
-            UNKNOWN_GLYPH
-        } else if self.friendly {
-            FRIEND_GLYPH
-        } else {
-            HOSTILE_GLYPH
+        // Doc 32 cut CF.0 (Q-CF-12): by relation; a neutral reads as an
+        // unknown does, one slot for the two.
+        match self.relation {
+            crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {
+                FRIEND_GLYPH
+            }
+            crate::arena::party::Relation::Hostile => HOSTILE_GLYPH,
+            crate::arena::party::Relation::Neutral | crate::arena::party::Relation::Unknown => {
+                UNKNOWN_GLYPH
+            }
         }
     }
 }

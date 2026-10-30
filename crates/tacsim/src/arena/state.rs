@@ -5475,7 +5475,7 @@ impl Arena {
             let reach = viewer.fight_inner_cm(cell_cm);
             reach != 0
                 && self.contacts.of(viewer.id).any(|(_, held)| {
-                    held.class.party().is_some_and(|team| team != viewer.team)
+                    self.relations.hostile(viewer.team, held.class)
                         && self.unit(held.target).is_some()
                         && !self.contact_reads_dead(held)
                         // 16b cut U.1 (16c `T-24`): the squared test, no root.
