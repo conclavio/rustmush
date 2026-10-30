@@ -75,9 +75,9 @@ const RAMP: (i64, i64, u32) = (128_000, 124_500, 180_000);
 /// The ramp's cell.
 const RAMP_CELL: (i64, i64) = (128, 124);
 /// Ahuna Flank's port entry.
-const AHUNA: &str = "ahuna_port";
+pub(crate) const AHUNA: &str = "ahuna_port";
 
-fn cid(word: &str) -> CanonicalId {
+pub(crate) fn cid(word: &str) -> CanonicalId {
     CanonicalId::new(word).expect("a canonical id")
 }
 
@@ -122,8 +122,8 @@ impl AccountIdentity for MapOracle {
 }
 
 /// A booted world, its oracle and the cumulative store.
-struct Rig {
-    tw: TestWorld,
+pub(crate) struct Rig {
+    pub(crate) tw: TestWorld,
     oracle: Arc<MapOracle>,
     store: HashMap<SmolStr, mush_core::ModuleBootData>,
     typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
@@ -195,13 +195,13 @@ fn stocked_with(keyed: bool) -> Rig {
 }
 
 /// The keyed rig.
-fn stocked() -> Rig {
+pub(crate) fn stocked() -> Rig {
     stocked_with(true)
 }
 
 /// Fold every write since the first boot and reboot keyed into the same roster; every
 /// connection drops (a real restart has no sessions) and `reconnect` come back.
-fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {
+pub(crate) fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {
     reboot_with(rig, reconnect, true)
 }
 
@@ -277,7 +277,7 @@ fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> Strin
     tw.seen_by(events, who).join("\n")
 }
 
-fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
+pub(crate) fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
     let events = tw.run(who, line);
     said(tw, &events, who)
 }
@@ -343,7 +343,7 @@ fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
 
 /// Drive one queued submission the way the world task does, keeping its typed post-images
 /// for a reboot; the error carries the prepare's own message.
-fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
     let token = next_token();
     let tw = &mut rig.tw;
     let (action, resolved) = {
@@ -422,7 +422,7 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     kept
 }
 
-fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
         land(rig, submit).unwrap_or_else(|error| {
             panic!(
@@ -483,7 +483,7 @@ fn stock(rig: &mut Rig) {
     panic!("the ports were not stocked within 40 fires");
 }
 
-fn typed<K, V>(
+pub(crate) fn typed<K, V>(
     tw: &mut TestWorld,
     handle: &mush_core::StateFamilyHandle<K, V>,
     key: &K,
@@ -641,7 +641,7 @@ fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
     events
 }
 
-fn handles(tw: &TestWorld) -> PortHandles {
+pub(crate) fn handles(tw: &TestWorld) -> PortHandles {
     tw.world()
         .module_state::<PortHandles>()
         .cloned()
@@ -654,7 +654,7 @@ fn ticket(tw: &mut TestWorld, hull: ObjId, seq: u32) -> Option<Ticket> {
 }
 
 /// A command and the submissions it queued.
-fn command(rig: &mut Rig, who: ObjId, line: &str) -> (String, Vec<AuthoritativeSubmit>) {
+pub(crate) fn command(rig: &mut Rig, who: ObjId, line: &str) -> (String, Vec<AuthoritativeSubmit>) {
     let out = run(&mut rig.tw, who, line);
     let queued = drain(&mut rig.tw);
     (out, queued)
@@ -704,7 +704,7 @@ fn rigs_of(tw: &TestWorld, pilot: ObjId) -> Vec<ObjId> {
 
 /// **A Dray-P on Ahuna Flank's pad**, its pilot aboard, `n_rigs` rigs leased; the site's ground
 /// warmed (the arrival asked for it; the surface tick builds it).
-fn on_pad_as(
+pub(crate) fn on_pad_as(
     rig: &mut Rig,
     who: &str,
     seed: i64,
@@ -754,14 +754,14 @@ fn open_ahuna(rig: &mut Rig) -> u32 {
 }
 
 /// [`on_pad_as`] for the usual pilot.
-fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
+pub(crate) fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
     on_pad_as(rig, "Pilot", 1, "Salt Moth", n_rigs)
 }
 
 /// Fire until Ahuna Flank's ground is cached — and, since doc 20 cut SM.4b, its home field built
 /// (a scan or a sounding from the ground reserves the real trip home; the surface tick builds the
 /// home the fire after the site).
-fn warm(rig: &mut Rig) {
+pub(crate) fn warm(rig: &mut Rig) {
     for _ in 0..8 {
         let homed = rig
             .tw
@@ -889,7 +889,7 @@ fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
 }
 
 /// Staff move `tv` to the centre of site cell `(x, y)` (the placement seam).
-fn to_cell(rig: &mut Rig, tv: ObjId, (x, y): (i64, i64)) {
+pub(crate) fn to_cell(rig: &mut Rig, tv: ObjId, (x, y): (i64, i64)) {
     staff_place(rig, tv, x * 1_000 + 500, y * 1_000 + 500);
 }
 
@@ -951,7 +951,7 @@ fn start(rig: &Rig, pilot: ObjId, tv: ObjId, act: &str, ordinal: u32) -> Authori
 }
 
 /// Launch rig 1 and finish it (it stands at the ramp).
-fn launched(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
+pub(crate) fn launched(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
     let _ = act_go(rig, pilot, "+tv/1 launch go");
     let _ = finish(rig, tv, pilot);
     assert!(on_ground_at(&rig.tw, tv, RAMP));

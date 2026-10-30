@@ -80,7 +80,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@tacsim".into(),
             shape: ArgShape::EqPair,
-            switches: ["pack", "seed", "pin", "time", "port", "tv"]
+            switches: ["pack", "seed", "pin", "time", "port", "tv", "site"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -112,7 +112,16 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @tacsim/tv close #<rig>             (staff) stop a rig's work and clear its plan and queued unload in place.\n\
                    @tacsim/tv home #<rig>              (staff) stop work and bring a stranded rig into its assigned hull's bay, preserving its hopper.\n\
                    @tacsim/tv home #<rig> #<hull>      (staff) bring a rig whose excursion staff closed with it out into another hull settled on its site, preserving its hopper and its lease.\n\
-                   @tacsim/tv unload #<rig>            (staff) transfer the whole hopper into its docked hull's hold, if it fits."
+                   @tacsim/tv unload #<rig>            (staff) transfer the whole hopper into its docked hull's hold, if it fits.\n\
+                   @tacsim/site <site>                 (staff) a site's record: the field open or the last one, the units left on its ground and the objects lying there.\n\
+                   @tacsim/site <site> leave #<unit> casualty|wreck <x>,<y>\n\
+                   \x20                                 (staff fixture) index a unit as left on the ground at a cell.\n\
+                   @tacsim/site <site> drop crate <qty> <good> <x>,<y>\n\
+                   @tacsim/site <site> drop remains <x>,<y> [<kg>]\n\
+                   \x20                                 (staff fixture) leave a crate or remains on the ground.\n\
+                   @tacsim/site <site> take #<unit>    (staff fixture) take a unit off the record.\n\
+                   @tacsim/site <site> remove <n>      (staff fixture) take an object off the ground.\n\
+                   @tacsim/site <site> promote|demote  (staff fixture) flag the site promoted — a field with no field host behind it, every surface act there refused — or clear the flag."
                 .into(),
             ..CommandSpec::default()
         },
@@ -482,6 +491,11 @@ fn tacsim_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         port_cmd(ctx)
     } else if ctx.switches.has("tv") {
         tv_recovery_cmd(ctx)
+    } else if ctx.switches.has("site") {
+        // Doc 32 cut CF.1: the site record and its staff fixture; the staff gate precedes parsing.
+        require_enabled(ctx)?;
+        require_staff(ctx)?;
+        crate::surface::site_record::command(ctx)
     } else {
         pack_cmd(ctx)
     }

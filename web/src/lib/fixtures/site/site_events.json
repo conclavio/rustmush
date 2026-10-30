@@ -364,6 +364,15 @@
       "d": [
         {
           "tag": "tacsim",
+          "text": "Presence: N 200-500 m."
+        }
+      ],
+      "t": "sys"
+    },
+    {
+      "d": [
+        {
+          "tag": "tacsim",
           "text": "Hold: 86 t of room unreserved."
         }
       ],

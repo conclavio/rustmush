@@ -85,8 +85,9 @@ pub const UNLOAD_S: u32 = 600;
 /// The most excursions one operator runs (§8, §11 Caps: the Compact's span-of-control
 /// lever).
 pub const MAX_EXCURSIONS_PER_OPERATOR: u32 = 4;
-/// The most excursions one site holds (§8, §11 Caps).
-pub const MAX_EXCURSIONS_PER_SITE: u32 = 32;
+/// The most excursions one site holds (§8, §11 Caps). **Doc 32 cut CF.1** (Q-CF-21): lowered
+/// from 32 to the field cap, so a promotion can always admit every rig on the ground.
+pub const MAX_EXCURSIONS_PER_SITE: u32 = crate::surface::site_record::FIELD_MAX_UNITS;
 /// The most excursions the world holds (§8, §11 Caps).
 pub const MAX_EXCURSIONS_WORLD: u32 = 1_024;
 /// The most goods one dump freezes (a hopper accepts the four ores).
