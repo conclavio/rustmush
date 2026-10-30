@@ -633,6 +633,10 @@ impl View {
         }
         let ground = terrain.height(wx, wy);
         let (wcm, hcm) = sprite.size_cm();
+        // The line from the eye to the unit's middle, below the level: the
+        // chain pick's angle (doc 22 §5).
+        let middle = ground + hcm / self.cell / 2.0;
+        let depression_deg = (self.eye - middle).det_atan2(ty).to_degrees();
         Some(SpriteAt {
             screenx: self.halfw * (1.0 + tx / ty),
             bottom: self.horizon + (self.eye - ground) * self.hf / ty,
@@ -640,6 +644,7 @@ impl View {
             fog_depth: ty * FOG_CELLS / VIEW_CELLS,
             height: hcm / self.cell * self.hf / ty,
             width: wcm / self.cell * self.hf / ty,
+            depression_deg,
             kind: sprite.kind,
             pose: sprite.pose,
         })
@@ -679,6 +684,44 @@ pub fn render(
         return;
     }
     let view = View::new(terrain, cam, eye_cm, w, h);
+    let shades = Shades::for_biome(terrain.map.biome());
+    let depth = draw_ground(frame, terrain, &view, &shades);
+    draw_sprites(frame, terrain, sprites, &depth, &shades, &view);
+}
+
+/// **The hull-down probe** (doc 22 §6): how many rows of `sprite`'s own body
+/// the picture [`render`] draws of `terrain` from `cam` (eye at `eye_cm`)
+/// into a `w` by `h` frame shows — its rows above whatever nearer ground,
+/// trees or structures cover it, the bracket and the shadow not counted. The
+/// hull-down check holds it to the sim's ray: a contact the sim sees over a
+/// crest shows at least one row, one it does not shows none.
+#[must_use]
+pub fn visible_rows(
+    terrain: &Terrain,
+    cam: &Camera,
+    eye_cm: Option<i64>,
+    (w, h): (usize, usize),
+    sprite: &Sprite,
+) -> usize {
+    if w == 0 || h == 0 {
+        return 0;
+    }
+    let mut frame = Frame::new(w, h);
+    let view = View::new(terrain, cam, eye_cm, w, h);
+    let shades = Shades::for_biome(terrain.map.biome());
+    let depth = draw_ground(&mut frame, terrain, &view, &shades);
+    let Some(at) = view.place(terrain, sprite) else {
+        return 0;
+    };
+    let depth_at = |x: usize, y: usize| depth.get(y * w + x).copied().unwrap_or(f32::INFINITY);
+    crate::raycast::draw_sprite(&mut frame, &shades, at, &depth_at).rows
+}
+
+/// The ground, the sky, the trees and the structures, far to near; the
+/// distance each pixel was drawn at, for the sprites (infinite where only
+/// sky is).
+fn draw_ground(frame: &mut Frame, terrain: &Terrain, view: &View, shades: &Shades) -> Vec<f32> {
+    let (w, h) = (frame.width(), frame.height());
     let View {
         posx,
         posy,
@@ -690,9 +733,8 @@ pub fn render(
         hf,
         horizon,
         ..
-    } = view;
+    } = *view;
     let biome = terrain.map.biome();
-    let shades = Shades::for_biome(biome);
     let horizon_rgb = biome.horizon_rgb();
 
     // The lowest row each column has drawn down to (exclusive): ground
@@ -747,9 +789,9 @@ pub fn render(
         }
     }
 
-    draw_trees(frame, terrain, &mut depth, &shades, &view);
-    draw_outpost_structures(frame, terrain, &mut depth, &shades, &view);
-    draw_sprites(frame, terrain, sprites, &depth, &shades, &view);
+    draw_trees(frame, terrain, &mut depth, shades, view);
+    draw_outpost_structures(frame, terrain, &mut depth, shades, view);
+    depth
 }
 
 /// Maximum distance (in cells) at which discrete 3D conifer trees are rendered
@@ -1473,774 +1515,7 @@ fn draw_sprites(
     placed.sort_by(|a, b| b.depth.total_cmp(&a.depth));
     let depth_at = |x: usize, y: usize| depth.get(y * w + x).copied().unwrap_or(f32::INFINITY);
     for at in placed {
-        draw_mip_sprite_fp(frame, shades, at, &depth_at);
-    }
-}
-
-const EMBEDDED_MIPS: &[u8] = include_bytes!("../looks/iso25d_mips.bin");
-const MIP_FALLBACK_SIZES: [usize; 6] = [96, 86, 78, 70, 64, 56];
-
-/// Decoded single mip level (`(6 * n) × (8 * n)` material codes `0..=6`).
-#[derive(Clone, Debug)]
-#[cfg_attr(not(feature = "encode"), allow(dead_code))]
-pub(crate) struct BakedMip {
-    pub(crate) size: usize,
-    pub(crate) anchor_x: usize,
-    pub(crate) anchor_y: usize,
-    /// Row-major `(8 * size)` rows by `(6 * size)` columns; `0` = transparent,
-    /// `1..=6` = [`crate::look::Material`].
-    pub(crate) pixels: Vec<u8>,
-}
-
-/// All 6 mipmap levels for the five unit model families (`Biped`, `Tank`,
-/// `Unknown`, `Scout`, `Heavy`).
-pub(crate) struct BakedMipPack {
-    pub(crate) models: [[BakedMip; 6]; 5],
-}
-
-static MIP_PACK: std::sync::OnceLock<BakedMipPack> = std::sync::OnceLock::new();
-static SCOUT_SHEET: std::sync::OnceLock<crate::look::Sheet> = std::sync::OnceLock::new();
-static HEAVY_SHEET: std::sync::OnceLock<crate::look::Sheet> = std::sync::OnceLock::new();
-
-pub(crate) fn mip_pack() -> &'static BakedMipPack {
-    MIP_PACK.get_or_init(load_mip_pack)
-}
-
-/// 8-facing 3D-shaded sprite sheet for wheeled reconnaissance vehicles (`scout_mk1`, 5.8 m × 2.2 m).
-pub(crate) fn scout_sheet() -> &'static crate::look::Sheet {
-    SCOUT_SHEET.get_or_init(|| sheet_from_mip(&synthesize_3d_mip(false, 64), (580, 220)))
-}
-
-/// 8-facing 3D-shaded sprite sheet for heavy assault/artillery carriers (`heavy_mk1`, 7.6 m × 2.8 m).
-pub(crate) fn heavy_sheet() -> &'static crate::look::Sheet {
-    HEAVY_SHEET.get_or_init(|| sheet_from_mip(&synthesize_3d_mip(true, 64), (760, 280)))
-}
-
-fn sheet_from_mip(mip: &BakedMip, size_cm: (u32, u32)) -> crate::look::Sheet {
-    use crate::look::{Facing, FacingFrames, Sheet};
-    let n = mip.size.max(1);
-    let raw_w = 6 * n;
-    let mut facings = std::collections::BTreeMap::new();
-    for (fi, &facing) in Facing::ALL.iter().enumerate() {
-        let extract = |pi: usize| -> crate::look::SpriteFrame {
-            let mut frame = Vec::with_capacity(n * n);
-            for lr in 0..n {
-                let row_off = (fi * n + lr) * raw_w + pi * n;
-                for lc in 0..n {
-                    let code = mip.pixels.get(row_off + lc).copied().unwrap_or(0);
-                    frame.push(material_from_code(code));
-                }
-            }
-            frame
-        };
-        facings.insert(
-            facing,
-            FacingFrames {
-                still: extract(0),
-                moving: (1..=4).map(extract).collect(),
-                wreck: Some(extract(5)),
-                muzzles: std::collections::BTreeMap::new(),
-            },
-        );
-    }
-    Sheet {
-        width: n,
-        height: n,
-        size_cm,
-        anchor: (mip.anchor_x.min(n - 1), mip.anchor_y.min(n - 1)),
-        facings,
-        wreck: Vec::new(),
-    }
-}
-
-/// Oriented 3D box primitive in local vehicle coordinates (`x` right, `y` forward, `z` up).
-#[derive(Clone, Copy)]
-struct Box3D {
-    x0: f32,
-    x1: f32,
-    y0: f32,
-    y1: f32,
-    z0: f32,
-    z1: f32,
-    mat_top: u8,
-    mat_lit: u8,
-    mat_dark: u8,
-}
-
-impl Box3D {
-    const fn new(
-        (x0, x1): (f32, f32),
-        (y0, y1): (f32, f32),
-        (z0, z1): (f32, f32),
-        (mat_top, mat_lit, mat_dark): (u8, u8, u8),
-    ) -> Self {
-        Self {
-            x0,
-            x1,
-            y0,
-            y1,
-            z0,
-            z1,
-            mat_top,
-            mat_lit,
-            mat_dark,
-        }
-    }
-}
-
-/// Exact `(sin, cos)` table for the 8 clockwise facings (`0°, 45°, …, 315°`).
-const FACING_SC: [(f32, f32); 8] = [
-    (0.0, 1.0),
-    (0.707_106_77, 0.707_106_77),
-    (1.0, 0.0),
-    (0.707_106_77, -0.707_106_77),
-    (0.0, -1.0),
-    (-0.707_106_77, -0.707_106_77),
-    (-1.0, 0.0),
-    (-0.707_106_77, 0.707_106_77),
-];
-
-/// Synthesize a 3D-shaded 8-facing × 6-pose mipmap sheet at cell size `n` for
-/// `is_heavy == false` (`UnitModel::Scout`: 6-wheeled recon car with sloped hull,
-/// Pale windshield, light autocannon turret, and tall rear radar mast) or
-/// `is_heavy == true` (`UnitModel::Heavy`: broad twin-tread assault carrier with
-/// wide track sponsons, dual main cannon barrels, and dorsal LRM missile pod).
-fn synthesize_3d_mip(is_heavy: bool, n: usize) -> BakedMip {
-    let sheet_w = 6 * n;
-    let sheet_h = 8 * n;
-    let mut pixels = vec![0u8; sheet_w * sheet_h];
-    let anchor_x = n / 2;
-    let anchor_y = (n * 50) / 64;
-    let scale = (n as f32) * 0.34;
-    let inv_scale = 1.0 / scale.max(1.0);
-
-    let slab = |o: f32, d: f32, lo: f32, hi: f32| -> (f32, f32, i8) {
-        if d.abs() < 1e-5 {
-            if o >= lo && o <= hi {
-                (-1e6, 1e6, 0)
-            } else {
-                (1e6, -1e6, 0)
-            }
-        } else {
-            let inv = 1.0 / d;
-            let t1 = (lo - o) * inv;
-            let t2 = (hi - o) * inv;
-            if t1 <= t2 { (t1, t2, -1) } else { (t2, t1, 1) }
-        }
-    };
-
-    for (fi, &(sin_f, cos_f)) in FACING_SC.iter().enumerate() {
-        for pi in 0..6usize {
-            let is_wreck = pi == 5;
-            let bob = if (1..=4).contains(&pi) && (pi & 1) == 1 {
-                0.025f32
-            } else {
-                0.0
-            };
-            let dish_shift = if (1..=4).contains(&pi) {
-                ((pi as f32) - 2.5) * 0.04
-            } else {
-                0.0
-            };
-
-            let mut parts: Vec<Box3D> = Vec::with_capacity(18);
-            if is_heavy {
-                let z_drop = if is_wreck { -0.10 } else { bob };
-                let hull_mats = if is_wreck { (1, 4, 4) } else { (3, 2, 1) };
-                // Wide armored left & right twin-tread sponsons.
-                for sx in [-1.0f32, 1.0] {
-                    let x0 = if sx < 0.0 { -0.78 } else { 0.44 };
-                    let x1 = if sx < 0.0 { -0.44 } else { 0.78 };
-                    parts.push(Box3D::new((x0, x1), (-0.90, 0.90), (0.0, 0.34), (5, 4, 4)));
-                    parts.push(Box3D::new(
-                        (x0 - 0.02, x1 + 0.02),
-                        (-0.86, 0.86),
-                        (0.24 + z_drop, 0.44 + z_drop),
-                        hull_mats,
-                    ));
-                }
-                // Broad stepped heavy hull.
-                parts.push(Box3D::new(
-                    (-0.48, 0.48),
-                    (-0.88, 0.88),
-                    (0.14 + z_drop, 0.52 + z_drop),
-                    hull_mats,
-                ));
-                // Rear engine grille (steel/black).
-                parts.push(Box3D::new(
-                    (-0.34, 0.34),
-                    (-0.84, -0.42),
-                    (0.48 + z_drop, 0.56 + z_drop),
-                    (5, 4, 4),
-                ));
-                // Wide slab-sided heavy turret.
-                parts.push(Box3D::new(
-                    (-0.44, 0.44),
-                    (-0.36, 0.40),
-                    (0.50 + z_drop, 0.82 + z_drop),
-                    hull_mats,
-                ));
-                // Twin heavy main cannon barrels.
-                if !is_wreck {
-                    parts.push(Box3D::new(
-                        (-0.20, -0.07),
-                        (0.38, 1.18),
-                        (0.62 + z_drop, 0.73 + z_drop),
-                        (6, 5, 4),
-                    ));
-                    parts.push(Box3D::new(
-                        (0.07, 0.20),
-                        (0.38, 1.18),
-                        (0.62 + z_drop, 0.73 + z_drop),
-                        (6, 5, 4),
-                    ));
-                    // Dorsal LRM missile pod launcher rack with pale warhead face.
-                    parts.push(Box3D::new(
-                        (-0.36, 0.36),
-                        (-0.56, -0.08),
-                        (0.80 + z_drop, 1.06 + z_drop),
-                        (3, 1, 4),
-                    ));
-                    parts.push(Box3D::new(
-                        (-0.30, 0.30),
-                        (-0.08, -0.02),
-                        (0.84 + z_drop, 1.02 + z_drop),
-                        (6, 6, 5),
-                    ));
-                }
-            } else {
-                let z_drop = if is_wreck { -0.08 } else { bob };
-                let hull_mats = if is_wreck { (1, 4, 4) } else { (3, 2, 1) };
-                // 6 distinct rubber/steel wheels (3 per side: front, mid, rear).
-                for sx in [-1.0f32, 1.0] {
-                    let x0 = if sx < 0.0 { -0.56 } else { 0.38 };
-                    let x1 = if sx < 0.0 { -0.38 } else { 0.56 };
-                    let hub_x0 = if sx < 0.0 { -0.58 } else { 0.54 };
-                    let hub_x1 = if sx < 0.0 { -0.54 } else { 0.58 };
-                    for wy in [-0.56f32, 0.0, 0.56] {
-                        parts.push(Box3D::new(
-                            (x0, x1),
-                            (wy - 0.18, wy + 0.18),
-                            (0.0, 0.32),
-                            (4, 4, 4),
-                        ));
-                        parts.push(Box3D::new(
-                            (hub_x0, hub_x1),
-                            (wy - 0.08, wy + 0.08),
-                            (0.09 + bob, 0.23 + bob),
-                            (5, 5, 5),
-                        ));
-                    }
-                }
-                // Sleek low-profile sloped reconnaissance hull + nose glacis.
-                parts.push(Box3D::new(
-                    (-0.40, 0.40),
-                    (-0.78, 0.68),
-                    (0.16 + z_drop, 0.46 + z_drop),
-                    hull_mats,
-                ));
-                parts.push(Box3D::new(
-                    (-0.34, 0.34),
-                    (0.56, 0.92),
-                    (0.18 + z_drop, 0.38 + z_drop),
-                    hull_mats,
-                ));
-                // Armored pale windshield visor.
-                if !is_wreck {
-                    parts.push(Box3D::new(
-                        (-0.28, 0.28),
-                        (0.32, 0.60),
-                        (0.42 + z_drop, 0.53 + z_drop),
-                        (6, 6, 5),
-                    ));
-                }
-                // Compact recon turret + 30mm autocannon barrel.
-                parts.push(Box3D::new(
-                    (-0.24, 0.24),
-                    (-0.24, 0.24),
-                    (0.45 + z_drop, 0.68 + z_drop),
-                    hull_mats,
-                ));
-                if !is_wreck {
-                    parts.push(Box3D::new(
-                        (-0.05, 0.05),
-                        (0.22, 0.96),
-                        (0.54 + z_drop, 0.62 + z_drop),
-                        (6, 5, 4),
-                    ));
-                    // Tall rear sensor / radar mast + crossbar dish.
-                    parts.push(Box3D::new(
-                        (-0.05, 0.05),
-                        (-0.68, -0.56),
-                        (0.44 + z_drop, 1.00 + z_drop),
-                        (5, 5, 4),
-                    ));
-                    parts.push(Box3D::new(
-                        (-0.24 + dish_shift, 0.24 + dish_shift),
-                        (-0.66, -0.54),
-                        (0.94 + z_drop, 1.06 + z_drop),
-                        (6, 6, 3),
-                    ));
-                }
-            }
-
-            // Direction of camera ray `(0, 0.90, -0.42)` in unit local coords:
-            let dlx = -0.90 * sin_f;
-            let dly = -0.90 * cos_f;
-            let dlz = -0.42f32;
-
-            for lr in 0..n {
-                let sy = (anchor_y as f32 - lr as f32) * inv_scale;
-                let wy0 = -sy * 0.42;
-                let wz0 = sy * 0.90;
-                let dst_r = fi * n + lr;
-                for lc in 0..n {
-                    let sx = (lc as f32 - anchor_x as f32) * inv_scale;
-                    let wx0 = sx;
-                    let lx0 = wx0 * cos_f - wy0 * sin_f;
-                    let ly0 = -wx0 * sin_f - wy0 * cos_f;
-                    let lz0 = wz0;
-
-                    let mut best_t = 1e5f32;
-                    let mut best_mat = 0u8;
-                    for b in &parts {
-                        let (tx0, tx1, sx_n) = slab(lx0, dlx, b.x0, b.x1);
-                        let (ty0, ty1, sy_n) = slab(ly0, dly, b.y0, b.y1);
-                        let (tz0, tz1, _sz_n) = slab(lz0, dlz, b.z0, b.z1);
-                        let t_enter = tx0.max(ty0).max(tz0);
-                        let t_exit = tx1.min(ty1).min(tz1);
-                        if t_enter <= t_exit && t_enter < best_t {
-                            best_t = t_enter;
-                            best_mat = if (t_enter - tz0).abs() <= 1e-4 {
-                                b.mat_top
-                            } else {
-                                // World normal of hit side face to shade NW sun vs SE shadow:
-                                let (nx, ny) = if (t_enter - tx0).abs() <= 1e-4 {
-                                    (f32::from(sx_n) * cos_f, -f32::from(sx_n) * sin_f)
-                                } else {
-                                    (-f32::from(sy_n) * sin_f, -f32::from(sy_n) * cos_f)
-                                };
-                                if -nx + ny >= -0.15 {
-                                    b.mat_lit
-                                } else {
-                                    b.mat_dark
-                                }
-                            };
-                        }
-                    }
-                    if best_mat != 0
-                        && let Some(dst) = pixels.get_mut(dst_r * sheet_w + pi * n + lc)
-                    {
-                        *dst = best_mat;
-                    }
-                }
-            }
-        }
-    }
-
-    BakedMip {
-        size: n,
-        anchor_x,
-        anchor_y,
-        pixels,
-    }
-}
-
-fn decode_rle(rle: &[u8], expected_len: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(expected_len);
-    for &b in rle {
-        let mat = b & 0x07;
-        let run = usize::from(b >> 3) + 1;
-        let limit = run.min(expected_len.saturating_sub(out.len()));
-        out.resize(out.len() + limit, mat);
-    }
-    if out.len() < expected_len {
-        out.resize(expected_len, 0);
-    }
-    out
-}
-
-fn fallback_mip_from_sheet(sheet: Option<&crate::look::Sheet>, n: usize) -> BakedMip {
-    use crate::look::{Facing, Material};
-    let sheet_w = 6 * n;
-    let sheet_h = 8 * n;
-    let mut pixels = vec![0u8; sheet_w * sheet_h];
-    let Some(s) = sheet else {
-        return BakedMip {
-            size: n,
-            anchor_x: n / 2,
-            anchor_y: (n * 3) / 4,
-            pixels,
-        };
-    };
-    let (sw, sh) = (s.width.max(1), s.height.max(1));
-    let scale_w = (n * 3 / 4).max(1);
-    let scale_h = (scale_w * sh / sw).clamp(1, (n * 3 / 4).max(1));
-    let off_x = (n.saturating_sub(scale_w)) / 2;
-    let off_y = n.saturating_sub(scale_h + n / 8);
-
-    for (fi, &facing) in Facing::ALL.iter().enumerate() {
-        for pi in 0..6usize {
-            let resolved = if pi == 5 {
-                s.wreck_frame(facing).map(|f| (f, false))
-            } else if pi == 0 {
-                s.frame(facing, false, 0)
-            } else {
-                s.frame(facing, true, pi - 1)
-            };
-            let Some((frame_pixels, mirror)) = resolved else {
-                continue;
-            };
-            for dy in 0..scale_h {
-                let sy = (dy * sh / scale_h).min(sh.saturating_sub(1));
-                let dst_r = fi * n + off_y + dy;
-                for dx in 0..scale_w {
-                    let sx_raw = (dx * sw / scale_w).min(sw.saturating_sub(1));
-                    let sx = if mirror {
-                        sw.saturating_sub(1 + sx_raw)
-                    } else {
-                        sx_raw
-                    };
-                    if let Some(Some(mat)) = frame_pixels.get(sy * sw + sx) {
-                        let code = match mat {
-                            Material::TeamDark => 1,
-                            Material::Team => 2,
-                            Material::TeamLight => 3,
-                            Material::Black => 4,
-                            Material::Steel => 5,
-                            Material::Pale => 6,
-                        };
-                        if let Some(dst) = pixels.get_mut(dst_r * sheet_w + pi * n + off_x + dx) {
-                            *dst = code;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    BakedMip {
-        size: n,
-        anchor_x: n / 2,
-        anchor_y: off_y + scale_h.saturating_sub(1),
-        pixels,
-    }
-}
-
-fn load_mip_pack() -> BakedMipPack {
-    let mut cursor = EMBEDDED_MIPS;
-    let mut parsed_models: Vec<Vec<BakedMip>> = Vec::new();
-    if cursor.len() >= 6 && cursor.get(..4) == Some(b"M25D") {
-        let unit_count = cursor.get(5).copied().unwrap_or(0) as usize;
-        cursor = cursor.get(6..).unwrap_or(&[]);
-        for _ in 0..unit_count {
-            let mip_count = cursor.first().copied().unwrap_or(0) as usize;
-            cursor = cursor.get(1..).unwrap_or(&[]);
-            let mut mips = Vec::with_capacity(mip_count);
-            for _ in 0..mip_count {
-                if cursor.len() < 10 {
-                    break;
-                }
-                let n = u16::from_le_bytes([
-                    cursor.first().copied().unwrap_or(0),
-                    cursor.get(1).copied().unwrap_or(0),
-                ]) as usize;
-                let ax = u16::from_le_bytes([
-                    cursor.get(2).copied().unwrap_or(0),
-                    cursor.get(3).copied().unwrap_or(0),
-                ]) as usize;
-                let ay = u16::from_le_bytes([
-                    cursor.get(4).copied().unwrap_or(0),
-                    cursor.get(5).copied().unwrap_or(0),
-                ]) as usize;
-                let rle_len = u32::from_le_bytes([
-                    cursor.get(6).copied().unwrap_or(0),
-                    cursor.get(7).copied().unwrap_or(0),
-                    cursor.get(8).copied().unwrap_or(0),
-                    cursor.get(9).copied().unwrap_or(0),
-                ]) as usize;
-                cursor = cursor.get(10..).unwrap_or(&[]);
-                let rle = cursor.get(..rle_len).unwrap_or(&[]);
-                cursor = cursor.get(rle_len..).unwrap_or(&[]);
-                let pixels = decode_rle(rle, 6 * n * 8 * n);
-                mips.push(BakedMip {
-                    size: n,
-                    anchor_x: ax,
-                    anchor_y: ay,
-                    pixels,
-                });
-            }
-            parsed_models.push(mips);
-        }
-    }
-
-    let unk_sheet = crate::look::unknown().and_then(|l| l.sprites.as_ref());
-    let biped_sheet =
-        crate::look::for_unit("tacsim.unit.biped_mk1").and_then(|l| l.sprites.as_ref());
-    let tank_sheet =
-        crate::look::for_unit("tacsim.unit.line_tank").and_then(|l| l.sprites.as_ref());
-
-    let build_six = |idx: usize, fallback: Option<&crate::look::Sheet>| -> [BakedMip; 6] {
-        std::array::from_fn(|mi| {
-            let target_n = MIP_FALLBACK_SIZES.get(mi).copied().unwrap_or(64);
-            parsed_models
-                .get(idx)
-                .and_then(|m| m.get(mi))
-                .cloned()
-                .unwrap_or_else(|| fallback_mip_from_sheet(fallback, target_n))
-        })
-    };
-
-    let build_synth_six = |is_heavy: bool| -> [BakedMip; 6] {
-        std::array::from_fn(|mi| {
-            let target_n = MIP_FALLBACK_SIZES.get(mi).copied().unwrap_or(64);
-            synthesize_3d_mip(is_heavy, target_n)
-        })
-    };
-
-    BakedMipPack {
-        models: [
-            build_six(0, biped_sheet),
-            build_six(1, tank_sheet),
-            build_six(2, unk_sheet),
-            build_synth_six(false),
-            build_synth_six(true),
-        ],
-    }
-}
-
-pub(crate) fn material_from_code(code: u8) -> Option<crate::look::Material> {
-    use crate::look::Material;
-    match code {
-        1 => Some(Material::TeamDark),
-        2 => Some(Material::Team),
-        3 => Some(Material::TeamLight),
-        4 => Some(Material::Black),
-        5 => Some(Material::Steel),
-        6 => Some(Material::Pale),
-        _ => None,
-    }
-}
-
-/// Draw a first-person unit sprite (`at`) using the 3D-baked 8-facing × 6-pose
-/// mipmapped models when `at.pose` is a biped, tank, scout, or heavy carrier,
-/// falling back to [`crate::raycast::draw_sprite`] for `None` or unclassified
-/// silhouettes.
-fn draw_mip_sprite_fp(
-    frame: &mut Frame,
-    shades: &Shades,
-    at: SpriteAt,
-    depth_at: &dyn Fn(usize, usize) -> f32,
-) {
-    use crate::look::{Facing, Material};
-    use crate::raycast::SpriteKind;
-
-    let Some(pose) = at.pose else {
-        crate::raycast::draw_sprite(frame, shades, at, depth_at);
-        return;
-    };
-    let biped_sheet =
-        crate::look::for_unit("tacsim.unit.biped_mk1").and_then(|l| l.sprites.as_ref());
-    let tank_sheet =
-        crate::look::for_unit("tacsim.unit.line_tank").and_then(|l| l.sprites.as_ref());
-    let model_idx = if biped_sheet.is_some_and(|s| std::ptr::eq(pose.sheet, s))
-        || pose.sheet.size_cm == (520, 1100)
-    {
-        0usize // UnitModel::Biped
-    } else if tank_sheet.is_some_and(|s| std::ptr::eq(pose.sheet, s))
-        || pose.sheet.size_cm == (700, 250)
-    {
-        1usize // UnitModel::Tank
-    } else if pose.sheet.size_cm == (580, 220) {
-        3usize // UnitModel::Scout
-    } else if pose.sheet.size_cm == (760, 280) {
-        4usize // UnitModel::Heavy
-    } else {
-        crate::raycast::draw_sprite(frame, shades, at, depth_at);
-        return;
-    };
-
-    let (w, h) = (frame.width(), frame.height());
-    let wf = w as f32;
-    if at.screenx + at.width / 2.0 < 0.0 || at.screenx - at.width / 2.0 >= wf {
-        return;
-    }
-
-    let mut drawn = 0usize;
-    let step = fog_step(at.fog_depth);
-    if at.height >= 2.0 && at.width >= 1.0 {
-        let pack = mip_pack();
-        let target_px = at.width.max(at.height);
-        let mut chosen_mi = 0usize;
-        if let Some(mips) = pack.models.get(model_idx) {
-            for (mi, m) in mips.iter().enumerate() {
-                if (m.size as f32) * 0.72 >= target_px * 0.85 {
-                    chosen_mi = mi;
-                }
-            }
-        }
-        if let Some(mip) = pack.models.get(model_idx).and_then(|m| m.get(chosen_mi)) {
-            let n = mip.size.max(1);
-            let raw_w = 6 * n;
-            let fi = Facing::ALL
-                .iter()
-                .position(|&f| f == pose.facing)
-                .unwrap_or(0);
-            let pi = if at.kind == SpriteKind::Wreck {
-                5
-            } else if !pose.moving {
-                0
-            } else {
-                1 + (pose.step % 4)
-            };
-
-            let mut min_x = n;
-            let mut max_x = 0usize;
-            let mut min_y = n;
-            let mut max_y = 0usize;
-            for lr in 0..n {
-                let row_off = (fi * n + lr) * raw_w + pi * n;
-                for lc in 0..n {
-                    if mip.pixels.get(row_off + lc).copied().unwrap_or(0) != 0 {
-                        min_x = min_x.min(lc);
-                        max_x = max_x.max(lc);
-                        min_y = min_y.min(lr);
-                        max_y = max_y.max(lr);
-                    }
-                }
-            }
-
-            if min_x <= max_x && min_y <= max_y {
-                let mut ref_max_w = (max_x - min_x + 1) as f32;
-                for f_scan in 0..8usize {
-                    let mut f_min_x = n;
-                    let mut f_max_x = 0usize;
-                    for lr in 0..n {
-                        let row_off = (f_scan * n + lr) * raw_w;
-                        for lc in 0..n {
-                            if mip.pixels.get(row_off + lc).copied().unwrap_or(0) != 0 {
-                                f_min_x = f_min_x.min(lc);
-                                f_max_x = f_max_x.max(lc);
-                            }
-                        }
-                    }
-                    if f_min_x <= f_max_x {
-                        ref_max_w = ref_max_w.max((f_max_x - f_min_x + 1) as f32);
-                    }
-                }
-
-                let src_w = (max_x - min_x + 1) as f32;
-                let src_h = (max_y - min_y + 1) as f32;
-                let width_ratio = (src_w / ref_max_w.max(1.0)).clamp(0.58, 1.0);
-                let draw_w = (at.width * width_ratio).max(1.0);
-                let draw_h = at.height.max(2.0);
-                let left = at.screenx - draw_w * 0.5;
-                let top = at.bottom - draw_h;
-
-                // 1. Ground shadow ellipse under the unit's base
-                let rx = draw_w * 0.44;
-                let ry = (rx * 0.16).max(1.0);
-                let shadow = shades.paint(crate::raycast::Paint::Shadow, step);
-                let sx0 = (at.screenx - rx).floor().max(0.0) as usize;
-                let sx1 = ((at.screenx + rx).ceil().max(0.0) as usize).min(w);
-                let sy0 = (at.bottom - ry).floor().max(0.0) as usize;
-                let sy1 = ((at.bottom + ry).ceil().max(0.0) as usize).min(h);
-                for y in sy0..sy1 {
-                    for x in sx0..sx1 {
-                        let dx = (x as f32 + 0.5 - at.screenx) / rx.max(0.5);
-                        let dy = (y as f32 + 0.5 - at.bottom) / ry.max(0.5);
-                        if dx * dx + dy * dy <= 1.0 && depth_at(x, y) >= at.depth * 0.85 {
-                            frame.put(x, y, shadow);
-                        }
-                    }
-                }
-
-                // 2. 3D-baked unit body + 1px dark silhouette rim
-                let pad_src = if draw_h >= 8.0 { 1.0 } else { 0.0 };
-                let x0 = (left - 1.0).floor().max(0.0) as usize;
-                let x1 = ((left + draw_w + 1.0).ceil().max(0.0) as usize).min(w);
-                let y0 = (top - 1.0).floor().max(0.0) as usize;
-                let y1 = ((top + draw_h + 1.0).ceil().max(0.0) as usize).min(h);
-                let outline = shades.shade(Base::Outline, step);
-
-                for y in y0..y1 {
-                    let v = (y as f32 + 0.5 - top) / draw_h;
-                    let sy_f = min_y as f32 + v * src_h;
-                    let lr = sy_f.floor() as isize;
-                    if lr < (min_y as isize - 1) || lr > (max_y as isize + 1) {
-                        continue;
-                    }
-                    for x in x0..x1 {
-                        if at.depth >= depth_at(x, y) {
-                            continue;
-                        }
-                        let u = (x as f32 + 0.5 - left) / draw_w;
-                        let sx_f = min_x as f32 + u * src_w;
-                        let lc = sx_f.floor() as isize;
-                        if lc < (min_x as isize - 1) || lc > (max_x as isize + 1) {
-                            continue;
-                        }
-                        let code = if lr >= 0 && (lr as usize) < n && lc >= 0 && (lc as usize) < n {
-                            mip.pixels
-                                .get((fi * n + lr as usize) * raw_w + pi * n + lc as usize)
-                                .copied()
-                                .unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        if let Some(material) = material_from_code(code) {
-                            frame.put(
-                                x,
-                                y,
-                                crate::raycast::sprite_colour(shades, at.kind, material, step),
-                            );
-                            drawn += 1;
-                        } else if pad_src > 0.0 {
-                            let mut adj = false;
-                            for (dr, dc) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
-                                let nr = lr + dr;
-                                let nc = lc + dc;
-                                if nr >= 0
-                                    && (nr as usize) < n
-                                    && nc >= 0
-                                    && (nc as usize) < n
-                                    && mip
-                                        .pixels
-                                        .get((fi * n + nr as usize) * raw_w + pi * n + nc as usize)
-                                        .copied()
-                                        .unwrap_or(0)
-                                        != 0
-                                {
-                                    adj = true;
-                                    break;
-                                }
-                            }
-                            if adj {
-                                frame.put(x, y, outline);
-                                drawn += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let faint =
-        at.height < crate::raycast::MARK_FAR_PX || step >= crate::raycast::FOG_STEPS * 2 / 3;
-    if drawn == 0 || faint {
-        let least = if drawn == 0 {
-            crate::raycast::MARK_MIN_PX
-        } else {
-            crate::raycast::MARK_FAR_PX
-        };
-        let bw = at.width.max(least);
-        let bh = at.height.max(least);
-        let cy = at.bottom - at.height / 2.0;
-        crate::raycast::mark(
-            frame,
-            (at.screenx - bw / 2.0, cy - bh / 2.0, bw, bh),
-            crate::raycast::sprite_colour(shades, at.kind, Material::Team, 0),
-        );
+        let _ = crate::raycast::draw_sprite(frame, shades, at, &depth_at);
     }
 }
 

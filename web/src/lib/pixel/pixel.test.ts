@@ -26,6 +26,7 @@ import {
 } from "./wasm";
 
 const WASM = new URL("./mush_pixel.wasm", import.meta.url);
+const UNITS = new URL("./units.bin", import.meta.url);
 const fixture = (name: string) => readFileSync(new URL(`../fixtures/cockpit/${name}`, import.meta.url), "utf8");
 
 async function load(): Promise<PixelModule> {
@@ -33,7 +34,14 @@ async function load(): Promise<PixelModule> {
     throw new Error("web/src/lib/pixel/mush_pixel.wasm is missing: run `npm run wasm`");
   }
   const { instance } = await WebAssembly.instantiate(readFileSync(WASM), {});
-  return new PixelModule(instance);
+  const m = new PixelModule(instance);
+  // The unit pack the page fetches (doc 22 D-22-10), as the native goldens
+  // draw with it embedded.
+  if (!existsSync(UNITS)) {
+    throw new Error("web/src/lib/pixel/units.bin is missing: run `npm run wasm`");
+  }
+  expect(m.loadUnits(new Uint8Array(readFileSync(UNITS)))).toBe(true);
+  return m;
 }
 
 describe("the picture module", () => {

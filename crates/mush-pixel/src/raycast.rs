@@ -40,6 +40,7 @@
 //! fallback, which a test pins against.
 
 use crate::Frame;
+use crate::bake;
 use crate::frame::Rgb;
 use crate::look::{Facing, Material, Sheet};
 use crate::math::Det as _;
@@ -777,6 +778,7 @@ impl Eye {
             fog_depth: ty,
             height: hcm / self.cell * hf / ty,
             width: wcm / self.cell * hf / ty,
+            depression_deg: 0.0,
             kind: s.kind,
             pose: s.pose,
         })
@@ -920,7 +922,7 @@ pub fn render_from(
     let mut placed: Vec<SpriteAt> = sprites.iter().filter_map(|s| e.project(w, h, s)).collect();
     placed.sort_by(|a, b| b.depth.total_cmp(&a.depth));
     for at in placed {
-        draw_sprite(frame, &shades, at, &depth);
+        let _ = draw_sprite(frame, &shades, at, &depth);
     }
 }
 
@@ -965,8 +967,22 @@ pub(crate) struct SpriteAt {
     pub(crate) fog_depth: f32,
     pub(crate) height: f32,
     pub(crate) width: f32,
+    /// How far below the eye's level the line to the unit's middle runs,
+    /// degrees (negative above it): the heightfield's chain pick (doc 22 §5).
+    /// Zero in the raycaster, whose ground is flat and which draws `fp`.
+    pub(crate) depression_deg: f32,
     pub(crate) kind: SpriteKind,
     pub(crate) pose: Option<SpritePose>,
+}
+
+/// What a sprite's draw put in the frame: the unit's pixels (its body and
+/// rim; the shadow's are not counted, a shadow alone is not a contact seen)
+/// and the rows its body's own pixels reach — the hull-down check's measure
+/// (doc 22 §6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Drawn {
+    pub(crate) pixels: usize,
+    pub(crate) rows: usize,
 }
 
 /// Draw one unit: its silhouette wherever the picture drew nothing nearer
@@ -976,24 +992,39 @@ pub(crate) struct SpriteAt {
 /// never invisible** in the picture, whatever the picture's own ground or
 /// walls make of the line between (the sim's sight decides what is seen;
 /// the picture only draws it). A unit off the side of the view is not drawn.
+///
+/// A unit whose look is baked (doc 22 D-22-10) draws from its chain — the
+/// `fp` chain, or the `iso` one past [`bake::CROSSOVER_DEG`] of depression
+/// ([`bake::View::for_depression`]) — at the size nearest above its height
+/// ([`draw_chain`]); a look with no chain draws its text sheet,
+/// nearest-sampled ([`draw_sheet`], rule 3's fallback); a type with no sheet
+/// the silhouette.
 pub(crate) fn draw_sprite(
     frame: &mut Frame,
     shades: &Shades,
     at: SpriteAt,
     depth_at: &dyn Fn(usize, usize) -> f32,
-) {
+) -> Drawn {
     let (w, h) = (frame.width(), frame.height());
     let wf = w as f32;
     if at.screenx + at.width / 2.0 < 0.0 || at.screenx - at.width / 2.0 >= wf {
-        return;
+        return Drawn::default();
     }
     let top = at.bottom - at.height;
     let left = at.screenx - at.width / 2.0;
-    let mut drawn = 0usize;
+    let mut drawn = Drawn::default();
     if at.height >= 2.0 && at.width >= 1.0 {
         let step = fog_step(at.fog_depth);
         drawn = match at.pose {
-            Some(pose) => draw_sheet(frame, shades, &at, pose, step, depth_at),
+            Some(pose) => match bake::bake_of_sheet(pose.sheet).and_then(|b| {
+                b.chain(bake::View::for_depression(at.depression_deg))
+                    .map(|c| (b, c))
+            }) {
+                Some((b, chain)) => {
+                    draw_chain(frame, shades, &at, pose, (b.size_cm.1, chain), depth_at)
+                }
+                None => draw_sheet(frame, shades, &at, pose, step, depth_at),
+            },
             None => {
                 let body = sprite_colour(shades, at.kind, Material::Team, step);
                 let outline = shades.shade(Base::Outline, step);
@@ -1002,7 +1033,8 @@ pub(crate) fn draw_sprite(
                 let y0 = top.floor().max(0.0) as usize;
                 let y1 = (at.bottom.ceil().max(0.0) as usize).min(h);
                 let (du, dv) = (1.0 / at.width, 1.0 / at.height);
-                let mut n = 0;
+                let mut n = Drawn::default();
+                let mut rows = vec![false; y1.saturating_sub(y0)];
                 for x in x0..x1 {
                     let u = (x as f32 + 0.5 - left) / at.width;
                     for y in y0..y1 {
@@ -1018,16 +1050,24 @@ pub(crate) fn draw_sprite(
                             || !tank(u, v - dv)
                             || !tank(u, v + dv);
                         frame.put(x, y, if edge { outline } else { body });
-                        n += 1;
+                        n.pixels += 1;
+                        if let Some(r) = rows.get_mut(y - y0) {
+                            *r = true;
+                        }
                     }
                 }
+                n.rows = rows.iter().filter(|&&r| r).count();
                 n
             }
         };
     }
     let faint = at.height < MARK_FAR_PX || fog_step(at.fog_depth) >= FOG_STEPS * 2 / 3;
-    if drawn == 0 || faint {
-        let least = if drawn == 0 { MARK_MIN_PX } else { MARK_FAR_PX };
+    if drawn.pixels == 0 || faint {
+        let least = if drawn.pixels == 0 {
+            MARK_MIN_PX
+        } else {
+            MARK_FAR_PX
+        };
         let bw = at.width.max(least);
         let bh = at.height.max(least);
         let cy = at.bottom - at.height / 2.0;
@@ -1037,6 +1077,7 @@ pub(crate) fn draw_sprite(
             sprite_colour(shades, at.kind, Material::Team, 0),
         );
     }
+    drawn
 }
 
 /// Draw a unit from its sheet (doc 22 cut U.3): a shadow on the ground under
@@ -1053,7 +1094,7 @@ fn draw_sheet(
     pose: SpritePose,
     step: usize,
     depth_at: &dyn Fn(usize, usize) -> f32,
-) -> usize {
+) -> Drawn {
     let (w, h) = (frame.width(), frame.height());
     let sheet = pose.sheet;
     let picked = if at.kind == SpriteKind::Wreck {
@@ -1062,7 +1103,7 @@ fn draw_sheet(
         sheet.frame(pose.facing, pose.moving, pose.step)
     };
     let Some((pixels, mirrored)) = picked else {
-        return 0;
+        return Drawn::default();
     };
     let (sw, sh) = (sheet.width as f32, sheet.height as f32);
     let (ax, ay) = (sheet.anchor.0 as f32, sheet.anchor.1 as f32);
@@ -1099,10 +1140,11 @@ fn draw_sheet(
     let x1 = ((left + at.width).ceil().max(0.0) as usize).min(w);
     let y0 = top.floor().max(0.0) as usize;
     let y1 = ((top + at.height).ceil().max(0.0) as usize).min(h);
-    let mut drawn = 0;
+    let mut drawn = Drawn::default();
     for y in y0..y1 {
         let sy = (((y as f32 + 0.5 - top) / at.height * sh).floor().max(0.0) as usize)
             .min(sheet.height - 1);
+        let mut row = false;
         for x in x0..x1 {
             if at.depth >= depth_at(x, y) {
                 continue;
@@ -1112,9 +1154,110 @@ fn draw_sheet(
             let sx = if mirrored { sheet.width - 1 - sx } else { sx };
             if let Some(Some(material)) = pixels.get(sy * sheet.width + sx) {
                 frame.put(x, y, sprite_colour(shades, at.kind, *material, step));
-                drawn += 1;
+                drawn.pixels += 1;
+                row = true;
             }
         }
+        drawn.rows += usize::from(row);
+    }
+    drawn
+}
+
+/// **Draw a unit from its baked chain** (doc 22 D-22-10, cut U.6): the size
+/// nearest above the unit's height on screen ([`bake::Chain::pick`]: every
+/// frame of a chain spans the same world, so the unit's pixels a metre pick
+/// the size), scaled down to it — never up from a smaller size while a larger
+/// exists — with the frame's anchor on `at.bottom` at `at.screenx`; a shadow
+/// on the ground under it, a one-pixel dark rim around it once it is eight
+/// pixels tall, and every pixel hidden where the picture drew something
+/// nearer (the hull-down clip, doc 22 §5). `height_cm` is the baked model's
+/// height.
+fn draw_chain(
+    frame: &mut Frame,
+    shades: &Shades,
+    at: &SpriteAt,
+    pose: SpritePose,
+    (height_cm, chain): (u32, &bake::Chain),
+    depth_at: &dyn Fn(usize, usize) -> f32,
+) -> Drawn {
+    let (w, h) = (frame.width(), frame.height());
+    if height_cm == 0 {
+        return Drawn::default();
+    }
+    let px_per_m = at.height / (height_cm as f32 / 100.0);
+    let Some((_, sized)) = chain.pick(px_per_m) else {
+        return Drawn::default();
+    };
+    let pose_i = bake::pose_index(pose.moving, pose.step, at.kind == SpriteKind::Wreck);
+    let Some(f) = sized.frame(pose.facing, pose_i) else {
+        return Drawn::default();
+    };
+    if f.w == 0 || f.h == 0 {
+        return Drawn::default();
+    }
+    let step = fog_step(at.fog_depth);
+    // Screen pixels a frame pixel.
+    let k = chain.needed_px(px_per_m) / f32::from(sized.size.max(1));
+    let left = at.screenx - (f32::from(f.anchor.0) + 0.5) * k;
+    let top = at.bottom - (f32::from(f.anchor.1) + 1.0) * k;
+    let (bx0, bx1) = (left + f32::from(f.x) * k, left + f32::from(f.x + f.w) * k);
+    let (by0, by1) = (top + f32::from(f.y) * k, top + f32::from(f.y + f.h) * k);
+
+    // The shadow: a flat ellipse on the ground under the anchor.
+    let rx = (bx1 - bx0) * 0.44;
+    let ry = (rx * 0.16).max(1.0);
+    let shadow = shades.paint(Paint::Shadow, step);
+    let (sx0, sx1) = (
+        (at.screenx - rx).floor().max(0.0) as usize,
+        ((at.screenx + rx).ceil().max(0.0) as usize).min(w),
+    );
+    let (sy0, sy1) = (
+        (at.bottom - ry).floor().max(0.0) as usize,
+        ((at.bottom + ry).ceil().max(0.0) as usize).min(h),
+    );
+    for y in sy0..sy1 {
+        for x in sx0..sx1 {
+            let (dx, dy) = (
+                (x as f32 + 0.5 - at.screenx) / rx.max(0.5),
+                (y as f32 + 0.5 - at.bottom) / ry,
+            );
+            if dx * dx + dy * dy <= 1.0 && depth_at(x, y) >= at.depth * 0.85 {
+                frame.put(x, y, shadow);
+            }
+        }
+    }
+
+    // The body, and its rim once it is eight pixels tall.
+    let rim = (by1 - by0) >= 8.0;
+    let pad = if rim { 1.0 } else { 0.0 };
+    let outline = shades.shade(Base::Outline, step);
+    let x0 = (bx0 - pad).floor().max(0.0) as usize;
+    let x1 = ((bx1 + pad).ceil().max(0.0) as usize).min(w);
+    let y0 = (by0 - pad).floor().max(0.0) as usize;
+    let y1 = ((by1 + pad).ceil().max(0.0) as usize).min(h);
+    let mut drawn = Drawn::default();
+    for y in y0..y1 {
+        let sy = ((y as f32 + 0.5 - top) / k).floor() as i64;
+        let mut row = false;
+        for x in x0..x1 {
+            if at.depth >= depth_at(x, y) {
+                continue;
+            }
+            let sx = ((x as f32 + 0.5 - left) / k).floor() as i64;
+            if let Some(material) = bake::material_from_code(f.code(sx, sy)) {
+                frame.put(x, y, sprite_colour(shades, at.kind, material, step));
+                drawn.pixels += 1;
+                row = true;
+            } else if rim
+                && [(0, -1), (0, 1), (-1, 0), (1, 0)]
+                    .iter()
+                    .any(|&(dx, dy)| f.code(sx + dx, sy + dy) != 0)
+            {
+                frame.put(x, y, outline);
+                drawn.pixels += 1;
+            }
+        }
+        drawn.rows += usize::from(row);
     }
     drawn
 }

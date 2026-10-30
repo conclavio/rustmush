@@ -1,0 +1,33 @@
+{
+  "look": "drone",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
+  "root": "Assets/Mech_Constructor_Spiders/",
+  "id_texture": "Materials/MC_Spiders_X_Color_ID.png",
+  "prefab": "Prefabs/Legs_Spider_Lt.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpit_Flybot",
+      "mount": "Mount_Top",
+      "parent": ""
+    }
+  ],
+  "still": {
+    "file": "Animations/Legs_Spider_Lt@Legs_Spider_Lt_Idle.fbx",
+    "name": "Legs_Spider_Lt_Idle"
+  },
+  "moving": {
+    "file": "Animations/Legs_Spider_Lt@Legs_Spider_Lt_Walk.fbx",
+    "name": "Legs_Spider_Lt_Walk"
+  },
+  "wreck": {
+    "file": "Animations/Legs_Spider_Lt@Legs_Spider_Lt_Death.fbx",
+    "name": "Legs_Spider_Lt_Death"
+  },
+  "muzzles": [],
+  "size_cm": [
+    250,
+    100
+  ]
+}

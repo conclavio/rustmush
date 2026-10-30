@@ -4,6 +4,7 @@
 // gateway draws nothing for a web viewer.
 import type { PictureKind } from "../picture";
 import wasmUrl from "./mush_pixel.wasm?url";
+import unitsUrl from "./units.bin?url";
 import {
   FEED_COCKPIT,
   FEED_MAP,
@@ -40,7 +41,7 @@ let loading: Promise<PixelModule> | null = null;
 
 /** The module, loaded once for the page. */
 export function pixelModule(): Promise<PixelModule> {
-  loading ??= loadPixelModule(wasmUrl);
+  loading ??= loadPixelModule(wasmUrl, unitsUrl);
   return loading;
 }
 
