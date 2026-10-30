@@ -95,6 +95,15 @@ use data::{persist_channel, persist_del, persist_membership, persist_meta};
 pub struct ComsysModule;
 
 impl ComsysModule {
+    /// Enable roster-owned channels without installing an IC transport.
+    #[must_use]
+    pub fn with_managed_channels(
+        self,
+        actions: BTreeSet<mush_core::DefinitionRef>,
+    ) -> ManagedComsysModule {
+        ManagedComsysModule { actions }
+    }
+
     #[must_use]
     pub fn with_transport(self, transport: Arc<dyn transit::Transport>) -> TransportComsysModule {
         TransportComsysModule {
@@ -106,6 +115,33 @@ impl ComsysModule {
     #[must_use]
     pub fn new() -> ComsysModule {
         ComsysModule
+    }
+}
+
+/// Comsys with an explicit allowlist of roster channel owners.
+pub struct ManagedComsysModule {
+    actions: BTreeSet<mush_core::DefinitionRef>,
+}
+impl GameModule for ManagedComsysModule {
+    fn name(&self) -> &'static str {
+        NS
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        ComsysModule.register(reg)?;
+        managed::register(reg, self.actions.clone())
+    }
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        ComsysModule.on_world_loaded(ctx, data)
+    }
+    fn boot_stream_requests(
+        &self,
+        kv: &[(SmolStr, serde_json::Value)],
+    ) -> Result<Vec<(SmolStr, u32)>, ModError> {
+        ComsysModule.boot_stream_requests(kv)
     }
 }
 
