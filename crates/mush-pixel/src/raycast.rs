@@ -610,9 +610,20 @@ pub(crate) fn fog_step(dist: f32) -> usize {
         .clamp(0.0, (FOG_STEPS - 1) as f32) as usize
 }
 
-#[cfg(test)]
-fn sky(step: usize) -> Rgb {
-    lerp(ZENITH, HORIZON, step as f32 / (SKY_STEPS - 1) as f32)
+fn shade(base: Base, biome: Biome, step: usize) -> Rgb {
+    lerp(
+        base.rgb_for_biome(biome),
+        biome.horizon_rgb(),
+        step as f32 / (FOG_STEPS - 1) as f32,
+    )
+}
+
+fn sky(biome: Biome, step: usize) -> Rgb {
+    lerp(
+        biome.zenith_rgb(),
+        biome.horizon_rgb(),
+        step as f32 / (SKY_STEPS - 1) as f32,
+    )
 }
 
 /// Every colour a render can draw, worked out once: each base at each fog
@@ -648,18 +659,16 @@ impl Shades {
             Base::Wreck,
             Base::Outline,
         ];
-        let zenith = biome.zenith_rgb();
         let horizon = biome.horizon_rgb();
         let mut base = [[[0; 3]; FOG_STEPS]; Base::COUNT];
         for (row, b) in base.iter_mut().zip(ALL) {
-            let rgb = b.rgb_for_biome(biome);
             for (step, px) in row.iter_mut().enumerate() {
-                *px = lerp(rgb, horizon, step as f32 / (FOG_STEPS - 1) as f32);
+                *px = shade(b, biome, step);
             }
         }
         let mut bands = [[0; 3]; SKY_STEPS];
         for (step, px) in bands.iter_mut().enumerate() {
-            *px = lerp(zenith, horizon, step as f32 / (SKY_STEPS - 1) as f32);
+            *px = sky(biome, step);
         }
         let mut paint = [[[0; 3]; SPRITE_FOG]; Paint::COUNT];
         for (row, p) in paint.iter_mut().zip(Paint::ALL) {
@@ -1334,9 +1343,9 @@ mod tests {
         render(&mut frame, &map, &cam, &sprites);
         // Top row is sky, the middle column has a wall slice around the
         // horizon, the bottom row is grass-ish floor.
-        assert_eq!(frame.get(160, 0), sky(0));
+        assert_eq!(frame.get(160, 0), sky(Biome::Temperate, 0));
         let mid = frame.get(160, 110);
-        assert_ne!(mid, sky(SKY_STEPS - 1));
+        assert_ne!(mid, sky(Biome::Temperate, SKY_STEPS - 1));
         let floor = frame.get(160, 219);
         assert!(
             floor[1] > floor[0] && floor[1] > floor[2],
