@@ -593,15 +593,23 @@ mod tests {
         let _ = units(SHIPPED_PACK);
     }
 
-    /// The unit pack is fetched, not embedded (rule 7): this build carries
-    /// none, refuses what is not a pack, and keeps the first one installed.
+    /// The unit pack is fetched, not embedded (rule 7): the module refuses
+    /// what is not a pack and keeps the first one installed. The wasm32
+    /// build (mush-pixel without `encode`) embeds no pack; a host test run
+    /// inside the workspace gets `encode` by feature unification and embeds
+    /// it, so only the target build is held to that.
     #[test]
     fn the_unit_pack_is_installed_not_embedded() {
-        assert!(
-            mush_pixel::bake::embedded().is_empty(),
-            "the web build embeds no pack"
+        if cfg!(target_arch = "wasm32") {
+            assert!(
+                mush_pixel::bake::embedded().is_empty(),
+                "the web build embeds no pack"
+            );
+        }
+        const _: () = assert!(
+            mush_pixel::bake::WEB_FETCHES_PACK,
+            "the web fetches the pack"
         );
-        const _: () = assert!(mush_pixel::bake::WEB_FETCHES_PACK, "the web fetches the pack");
         assert!(!units(b"not a pack"));
         install_shipped_pack();
         assert!(!units(SHIPPED_PACK), "installed once");

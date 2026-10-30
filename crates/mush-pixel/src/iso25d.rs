@@ -16,7 +16,7 @@
 //!   the projection and the zoom, the row a depth cue on it — so a drone and
 //!   a heavy on one row stand in the ratio of their heights, and 0.5× zoom
 //!   halves a unit as it halves the ground wherever the chain has the room
-//!   (to its step; see [`UNIT_SCALE`]). Any number of units sharing a
+//!   (to its step; the unit scale's note says where it has not). Any number of units sharing a
 //!   sheet are placed simultaneously under distinct `placement_id`s (`p=100`,
 //!   `p=101`, …).
 //! - **Place and move (`a=p,i=<id>,p=<pid>,x=…,y=…,w=…,h=…,X=0,Y=0,z=…,C=1,q=1`)**:
