@@ -47,7 +47,7 @@
     type ComposedWindow,
     type Marker,
   } from "$lib/cockpit";
-  import { TERRAIN_COLOURS } from "$lib/stores/map.svelte";
+  import { biomeTerrainColours } from "$lib/stores/map.svelte";
   import PictureView from "./PictureView.svelte";
   import DollView from "./DollView.svelte";
   import { lookFor } from "$lib/look";
@@ -124,6 +124,36 @@
     app.focusComposer(line);
   }
 
+  /** Clicking a contact marker on the arena window prefills `lock <designator>`,
+   * matching the contact list's designator buttons without sending anything. */
+  function onMapClick(ev: MouseEvent): void {
+    const w = win;
+    const c = canvas;
+    const px = cellPx;
+    if (!w || !c || px <= 0) return;
+    const rect = c.getBoundingClientRect();
+    const scaleX = rect.width > 0 ? c.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? c.height / rect.height : 1;
+    const mx = (ev.clientX - rect.left) * scaleX;
+    const my = (ev.clientY - rect.top) * scaleY;
+    const maxDist = Math.max(8, px * 1.8);
+    let best: Marker | null = null;
+    let bestDistSq = maxDist * maxDist;
+    for (const marker of w.markers) {
+      if (marker.kind === "you" || marker.kind === "spot") continue;
+      const cx = marker.x * px + px / 2;
+      const cy = (w.h - 1 - marker.y) * px + px / 2;
+      const d2 = (mx - cx) * (mx - cx) + (my - cy) * (my - cy);
+      if (d2 <= bestDistSq) {
+        bestDistSq = d2;
+        best = marker;
+      }
+    }
+    if (best !== null) {
+      prefill(`lock ${best.designator}`);
+    }
+  }
+
   $effect(() => {
     const w = win;
     const c = canvas;
@@ -147,10 +177,11 @@
       const tctx = off.getContext("2d");
       if (!tctx) return;
       tctx.clearRect(0, 0, off.width, off.height);
+      const palette = biomeTerrainColours(g.surface);
       for (let row = 0; row < w.h; row += 1) {
         const line = w.terrain[row] ?? "";
         for (let col = 0; col < w.w; col += 1) {
-          const colour = TERRAIN_COLOURS[line.charAt(col)] ?? "transparent";
+          const colour = palette[line.charAt(col)] ?? "transparent";
           if (colour === "transparent") continue;
           tctx.fillStyle = colour;
           tctx.fillRect(col * px, row * px, px, px);
@@ -269,6 +300,7 @@
               bind:this={canvas}
               aria-label="arena window"
               style="width: {win.w * cellPx}px; height: {win.h * cellPx}px"
+              onclick={onMapClick}
             ></canvas>
           </div>
           {#if view.legend.length > 0}
@@ -306,31 +338,35 @@
         {/each}
       </section>
 
-      <section class="pane" aria-label="damage">
+      <section class="pane damage-pane" aria-label="damage">
         <h4 class="pt">damage</h4>
         {#if look?.doll && frame}
           <DollView doll={look.doll} sections={frame.sections} label={look.label} />
         {/if}
-        {#each view.damage as row, i (i)}
-          <p class="line" title={damageText(row)}>
-            <span class="rowid">{row.id}</span>
-            <span class="cond">{row.condition}</span>
-            <span class="frac">{row.internals}</span>
-          </p>
-          <div class="bar" data-kind="inside">
-            <span class="fill" style="width: {row.pct}%"></span>
-          </div>
-          <div class="facets">
-            {#each row.facets as facet, f (f)}
-              <div class="facet">
-                <span class="barlabel">{facet.id} {facet.armor}</span>
-                <div class="bar" data-kind="armour">
-                  <span class="fill" style="width: {facet.pct}%"></span>
-                </div>
+        <div class="damage-grid">
+          {#each view.damage as row, i (i)}
+            <div class="damage-section">
+              <p class="line damage-head" title={damageText(row)}>
+                <span class="rowid">{row.id}</span>
+                <span class="cond">{row.condition}</span>
+                <span class="frac">{row.internals}</span>
+              </p>
+              <div class="bar" data-kind="inside">
+                <span class="fill" style="width: {row.pct}%"></span>
               </div>
-            {/each}
-          </div>
-        {/each}
+              <div class="facets">
+                {#each row.facets as facet, f (f)}
+                  <div class="facet">
+                    <span class="barlabel">{facet.id} {facet.armor}</span>
+                    <div class="bar" data-kind="armour">
+                      <span class="fill" style="width: {facet.pct}%"></span>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
         {#if view.damage.length === 0}
           <p class="muted">Nothing here.</p>
         {/if}
@@ -469,6 +505,7 @@
     image-rendering: pixelated;
     display: block;
     background: var(--bg);
+    cursor: pointer;
   }
 
   .legendline {
@@ -523,9 +560,29 @@
     white-space: pre;
   }
 
+  .damage-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(7.2rem, 1fr));
+    gap: 0.25rem 0.45rem;
+  }
+
+  .damage-section {
+    min-width: 0;
+  }
+
+  .damage-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.2rem;
+    font-size: 0.75rem;
+  }
+
   .rowid {
     display: inline-block;
-    min-width: 7rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .detachment-actions {
@@ -538,7 +595,7 @@
   .cond {
     color: var(--fg-muted);
     display: inline-block;
-    min-width: 6rem;
+    min-width: 0;
   }
 
   .frac {
@@ -546,12 +603,12 @@
   }
 
   .bar {
-    height: 0.4rem;
+    height: 0.32rem;
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 2px;
     overflow: hidden;
-    margin: 0 0 0.25rem;
+    margin: 0 0 0.14rem;
   }
 
   .fill {
@@ -567,8 +624,8 @@
   .facets {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.1rem 0.4rem;
-    margin-left: 0.35rem;
+    gap: 0.06rem 0.3rem;
+    margin-left: 0.15rem;
   }
 
   .facet {

@@ -41,8 +41,8 @@
   .doll {
     display: block;
     width: 100%;
-    max-width: 192px;
+    max-width: 112px;
     height: auto;
-    margin: 0.2rem auto 0.4rem;
+    margin: 0.1rem auto 0.25rem;
   }
 </style>
