@@ -48,9 +48,66 @@
     replayView,
     WAITING_FOR_THE_REPLAY,
   } from "$lib/replay";
+  import {
+    FRAME_H,
+    FRAME_W,
+    LocalReplayPicture,
+    localCapable,
+    pixelModule,
+    type ReplayCameraMode,
+  } from "$lib/pixel/local";
   import { TERRAIN_COLOURS } from "$lib/stores/map.svelte";
 
   let { app }: { app: GameApp } = $props();
+
+  let camera = $state<ReplayCameraMode>("overview");
+  let zoomPermille = $state(1000);
+  let localReplay = $state<LocalReplayPicture | null>(null);
+
+  $effect(() => {
+    if (!localCapable()) return;
+    let cancelled = false;
+    void pixelModule()
+      .then((m) => {
+        if (!cancelled) {
+          localReplay = new LocalReplayPicture(m);
+        }
+      })
+      .catch(() => {
+        // Fallback 2D canvas drawing handles environments without WASM.
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  function cycleCamera(): void {
+    camera =
+      camera === "overview"
+        ? "iso25d"
+        : camera === "iso25d"
+          ? "first_person"
+          : "overview";
+    localReplay?.forget();
+  }
+
+  function onWindowKeydown(ev: KeyboardEvent): void {
+    const tag = (ev.target as HTMLElement | null)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    if (ev.key === "v") {
+      ev.preventDefault();
+      cycleCamera();
+    } else if (ev.key === "z" && camera === "iso25d") {
+      ev.preventDefault();
+      zoomPermille = Math.min(2000, zoomPermille + 200);
+      localReplay?.forget();
+    } else if (ev.key === "Z" && camera === "iso25d") {
+      ev.preventDefault();
+      zoomPermille = Math.max(500, zoomPermille - 200);
+      localReplay?.forget();
+    }
+  }
 
   /** What a replay's markers are painted in: red, blue, a wreck's grey, and a
    * named spot in the cockpit's own sand tone. */
@@ -135,12 +192,42 @@
     const w = win;
     const c = canvas;
     const g = ground;
-    if (!w || !c || !g) return;
+    const d = doc;
+    const mode = camera;
+    const z = zoomPermille;
+    const cursorMs = app.replay.cursorMs;
+    const focusIdx = app.replay.focus;
+    if (!w || !c || !g || !d) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+
+    if (mode !== "overview") {
+      c.width = FRAME_W;
+      c.height = FRAME_H;
+      if (localReplay !== null && typeof ctx.putImageData === "function") {
+        localReplay.forget();
+        if (localReplay.draw(d, g, d.match, cursorMs, focusIdx, mode, z)) {
+          ctx.putImageData(localReplay.image(), 0, 0);
+          return;
+        }
+      }
+      // 2D follow-cam fallback when WASM is unavailable (e.g., jsdom tests).
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.fillStyle = mode === "first_person" ? "#1c2434" : "#121820";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.fillStyle = "#e6edf3";
+      ctx.font = "14px ui-monospace, monospace";
+      ctx.fillText(
+        `${mode === "iso25d" ? "TACTICAL FOLLOW" : "COCKPIT FOLLOW"} ${focusCallsign ?? ""}`,
+        16,
+        28,
+      );
+      return;
+    }
+
     const px = cellPx;
     c.width = w.w * px;
     c.height = w.h * px;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
     ctx.clearRect(0, 0, c.width, c.height);
     const key = terrainCacheKey(w, px);
     if (terrainCanvas === null || key !== terrainKey || g !== terrainGround) {
@@ -202,13 +289,35 @@
   });
 </script>
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 <div class="replay">
   {#if doc === null || view === null}
     <p class="muted pad">{WAITING_FOR_THE_REPLAY}</p>
   {:else}
     <section class="mapbox" aria-label="replay map">
-      <header>
+      <header class="map-head">
         <strong class="head">{view.header}</strong>
+        <div class="view-bar" role="group" aria-label="replay camera">
+          <button
+            type="button"
+            class="view-btn"
+            class:active={camera === "overview"}
+            onclick={() => (camera = "overview")}>overview</button
+          >
+          <button
+            type="button"
+            class="view-btn"
+            class:active={camera === "iso25d"}
+            onclick={() => (camera = "iso25d")}>tactical</button
+          >
+          <button
+            type="button"
+            class="view-btn"
+            class:active={camera === "first_person"}
+            onclick={() => (camera = "first_person")}>cockpit</button
+          >
+        </div>
       </header>
       {#if win === null}
         <p class="muted">{WAITING_FOR_THE_MAP}</p>
@@ -217,7 +326,7 @@
           <canvas
             bind:this={canvas}
             aria-label="replay window"
-            style="width: {win.w * cellPx}px; height: {win.h * cellPx}px"
+            style="width: {camera === 'overview' ? win.w * cellPx : FRAME_W}px; height: {camera === 'overview' ? win.h * cellPx : FRAME_H}px"
           ></canvas>
         </div>
       {/if}
@@ -319,6 +428,36 @@
   .mapbox header {
     font-family: var(--font-mono);
     font-size: 0.85rem;
+  }
+
+  .map-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+
+  .view-bar {
+    display: inline-flex;
+    gap: 0.25rem;
+  }
+
+  .view-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg-muted);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0.05rem 0.45rem;
+  }
+
+  .view-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
   }
 
   .canvas-wrap {

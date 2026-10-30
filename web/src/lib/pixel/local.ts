@@ -7,12 +7,18 @@ import wasmUrl from "./mush_pixel.wasm?url";
 import {
   FEED_COCKPIT,
   FEED_MAP,
+  FEED_REPLAY,
+  FEED_REPLAY_CURSOR,
   KIND_COCKPIT,
   KIND_ISO25D,
   KIND_OVERHEAD,
+  KIND_REPLAY,
   type PixelModule,
   loadPixelModule,
 } from "./wasm";
+
+/** Camera view mode for match replay and live `@arena/watch`. */
+export type ReplayCameraMode = "overview" | "iso25d" | "first_person";
 
 /** The frame drawn: 640x480 (doc 21 §5). */
 export const FRAME_W = 640;
@@ -110,6 +116,67 @@ export class LocalPicture {
    * yet (the picture hidden and shown again makes a fresh element; doc 21a
    * `X-04`: an unchanged scene was never painted onto it until something
    * moved). */
+  forget(): void {
+    this.#shown = null;
+  }
+}
+
+/** Browser WASM renderer for `ReplayPicture` (`KIND_REPLAY`) across all three
+ * views (`overview`, `iso25d` follow-cam, and `first_person` ride-along). */
+export class LocalReplayPicture {
+  readonly #m: PixelModule;
+  #replayJson: string | null = null;
+  #mapJson: string | null = null;
+  #shown: string | null = null;
+
+  constructor(module: PixelModule) {
+    this.#m = module;
+  }
+
+  draw(
+    replayDoc: unknown,
+    map: unknown,
+    matchId: number,
+    tMs: number,
+    focus: number,
+    view: ReplayCameraMode,
+    zoomPermille = 1000,
+  ): boolean {
+    this.#m.setKind(KIND_REPLAY);
+    const replayPayload =
+      replayDoc == null
+        ? null
+        : JSON.stringify({
+            schema: { id: "arena.replay", version: 1, shape: "replay" },
+            ...(replayDoc as Record<string, unknown>),
+          });
+    if (replayPayload !== this.#replayJson) {
+      this.#m.feed(FEED_REPLAY, replayPayload);
+      this.#replayJson = replayPayload;
+    }
+    const mapPayload = map == null ? null : JSON.stringify(map);
+    if (mapPayload !== this.#mapJson) {
+      this.#m.feed(FEED_MAP, mapPayload);
+      this.#mapJson = mapPayload;
+    }
+    this.#m.feed(
+      FEED_REPLAY_CURSOR,
+      JSON.stringify({ match: matchId, t_ms: tMs, focus, view }),
+    );
+    if (!this.#m.render(FRAME_W, FRAME_H, { offsetMdeg: 0, zoomPermille })) {
+      this.#shown = null;
+      return false;
+    }
+    const hash = this.#m.hash();
+    if (hash === this.#shown) return false;
+    this.#shown = hash;
+    return true;
+  }
+
+  image(): ImageData {
+    return this.#m.image();
+  }
+
   forget(): void {
     this.#shown = null;
   }

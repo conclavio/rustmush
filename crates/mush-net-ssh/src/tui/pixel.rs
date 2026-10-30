@@ -245,7 +245,8 @@ pub const REPLAY_SPEEDS: [i64; 3] = [1, 4, 16];
 pub const REPLAY_SEEK_MS: i64 = 10_000;
 
 /// **The replay's cursor** (G.8): where the picture stands in the match,
-/// whether it plays, how fast, and where the match ends.
+/// whether it plays, how fast, where the match ends, and which camera view is
+/// active (`Overview`, `Iso25d`, or `FirstPerson`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReplayClock {
     /// The arena millisecond drawn.
@@ -256,6 +257,8 @@ pub struct ReplayClock {
     pub speed: usize,
     /// When the match ended (the cursor's end), as the document says.
     pub end_ms: i64,
+    /// Which camera view the replay picture renders (`v`).
+    pub view: mush_pixel::replay::ReplayCamera,
 }
 
 impl ReplayClock {
@@ -1081,6 +1084,10 @@ impl PixelView {
                 Key::Char('f') => {
                     self.replay.speed = (self.replay.speed + 1) % REPLAY_SPEEDS.len();
                 }
+                Key::Char('v') => {
+                    self.replay.view = self.replay.view.next();
+                    self.last_sent = None;
+                }
                 Key::Esc | Key::Char('q') => self.close(),
                 _ => {}
             }
@@ -1590,7 +1597,7 @@ impl PixelView {
             format!("paused (x{})", r.speed())
         };
         let top = format!("REPLAY  {state}  |  {probe}, drawing {drawing}");
-        let bottom = ", .: keyframe   [ ]: 10 s   space: play   f: speed   u: focus   x: close the replay   Enter: chat   Esc/q: back".to_string();
+        let bottom = ", .: keyframe   [ ]: 10 s   space: play   f: speed   v: view   u: focus   x: close the replay   Enter: chat   Esc/q: back".to_string();
         (top, bottom)
     }
 

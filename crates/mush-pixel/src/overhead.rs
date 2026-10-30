@@ -617,7 +617,7 @@ fn overhead_scene(
 /// image's centre, [`OFF_MAP`] off the map. Flat: at under a pixel a cell
 /// relief shading is noise, and the first-person frame's palette has little
 /// room beside the raycaster's closed set.
-fn biome_ground_rgb(biome: Biome, g: Ground) -> Rgb {
+pub(crate) fn biome_ground_rgb(biome: Biome, g: Ground) -> Rgb {
     if biome == Biome::Temperate {
         return ground_rgb(g);
     }
@@ -692,13 +692,13 @@ fn ground_image(map: &Map, terrain: Option<&Terrain>, px_per_m: f64) -> Frame {
 
 /// How lit a cell is, `-SHADES/2..=SHADES/2`: its height over its
 /// north-west neighbour's, in [`SHADE_STEP_CM`] steps.
-fn relief(t: &Terrain, x: i64, y: i64) -> i64 {
+pub(crate) fn relief(t: &Terrain, x: i64, y: i64) -> i64 {
     let rise = i64::from(t.elev_cm(x, y)) - i64::from(t.elev_cm(x - 1, y + 1));
     (rise / SHADE_STEP_CM).clamp(-(SHADES / 2), SHADES / 2)
 }
 
 /// `rgb` a step of relief lighter or darker (a tenth a step).
-fn shade(rgb: Rgb, step: i64) -> Rgb {
+pub(crate) fn shade(rgb: Rgb, step: i64) -> Rgb {
     let f = 10 + step;
     rgb.map(|c| u8::try_from((i64::from(c) * f / 10).clamp(0, 255)).unwrap_or(u8::MAX))
 }
