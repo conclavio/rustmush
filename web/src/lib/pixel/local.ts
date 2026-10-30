@@ -64,6 +64,7 @@ export class LocalPicture {
     orderedMdeg: number | null = null,
     dxCm = 0,
     dyCm = 0,
+    zoomPermille = 1000,
   ): boolean {
     if (kind !== this.#kind) {
       const wasmKind =
@@ -86,6 +87,7 @@ export class LocalPicture {
         orderedMdeg,
         dxCm,
         dyCm,
+        zoomPermille,
       })
     ) {
       this.#shown = null;

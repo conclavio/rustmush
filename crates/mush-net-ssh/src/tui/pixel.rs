@@ -1219,6 +1219,16 @@ impl PixelView {
                 self.last_sent = None;
                 self.iso25d.invalidate_placements();
             }
+            Key::Char('+' | '=') if self.camera == CockpitCamera::Tactical25D => {
+                let next = self.iso25d.zoom_permille().saturating_add(250).min(2000);
+                self.iso25d.set_zoom_permille(next);
+                self.last_sent = None;
+            }
+            Key::Char('-' | '_') if self.camera == CockpitCamera::Tactical25D => {
+                let next = self.iso25d.zoom_permille().saturating_sub(250).max(500);
+                self.iso25d.set_zoom_permille(next);
+                self.last_sent = None;
+            }
             Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
             | Key::Enter
             | Key::Esc
@@ -1330,6 +1340,7 @@ impl PixelView {
                 .filter(|o| arc(predicted, *o).abs() > 1_000),
             dx_cm,
             dy_cm,
+            zoom_permille: self.iso25d.zoom_permille(),
         };
         if self.kind == PictureKind::Cockpit
             && self.camera == CockpitCamera::Tactical25D

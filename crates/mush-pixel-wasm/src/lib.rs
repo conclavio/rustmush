@@ -109,6 +109,7 @@ struct State {
     feeds: HashMap<String, Value>,
     kind: u32,
     offset_cm: (i64, i64),
+    zoom_permille: u16,
     cockpit: CockpitPicture,
     overhead: OverheadPicture,
     iso25d: Iso25DPicture,
@@ -126,6 +127,7 @@ impl State {
             feeds: HashMap::new(),
             kind: KIND_COCKPIT,
             offset_cm: (0, 0),
+            zoom_permille: 1000,
             cockpit: CockpitPicture::new(),
             overhead: OverheadPicture::new(),
             iso25d: Iso25DPicture::new(),
@@ -261,6 +263,7 @@ pub fn pixels() -> Vec<u8> {
 pub fn reset() {
     with(|s| {
         s.offset_cm = (0, 0);
+        s.zoom_permille = 1000;
         s.cockpit = CockpitPicture::new();
         s.overhead = OverheadPicture::new();
         s.iso25d = Iso25DPicture::new();
@@ -308,6 +311,13 @@ pub extern "C" fn mp_offset_cm(dx_cm: i32, dy_cm: i32) {
     with(|s| s.offset_cm = (i64::from(dx_cm), i64::from(dy_cm)));
 }
 
+/// Set the 2.5D tactical camera zoom in permille (`500..=2000`; `1000` = `1.0×`).
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_zoom_permille(zoom_permille: u32) {
+    let clamped = u16::try_from(zoom_permille.clamp(500, 2000)).unwrap_or(1000);
+    with(|s| s.zoom_permille = clamped);
+}
+
 /// Draw a frame for the look.
 #[unsafe(no_mangle)]
 pub extern "C" fn mp_render(
@@ -318,13 +328,14 @@ pub extern "C" fn mp_render(
     ordered_mdeg: i32,
     has_ordered: u32,
 ) -> u32 {
-    let (dx_cm, dy_cm) = with(|s| s.offset_cm);
+    let ((dx_cm, dy_cm), zoom_permille) = with(|s| (s.offset_cm, s.zoom_permille));
     let look = Look {
         offset_mdeg: i64::from(look_mdeg),
         hull_offset_mdeg: i64::from(hull_mdeg),
         ordered_mdeg: (has_ordered != 0).then_some(i64::from(ordered_mdeg)),
         dx_cm,
         dy_cm,
+        zoom_permille,
     };
     u32::from(render(w, h, look))
 }

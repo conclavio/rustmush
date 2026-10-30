@@ -44,6 +44,7 @@ export interface PixelLook {
   orderedMdeg?: number | null;
   dxCm?: number;
   dyCm?: number;
+  zoomPermille?: number;
 }
 
 interface PixelExports {
@@ -53,6 +54,7 @@ interface PixelExports {
   mp_input(len: number): number;
   mp_feed(feed: number, len: number): number;
   mp_offset_cm?(dxCm: number, dyCm: number): void;
+  mp_zoom_permille?(zoomPermille: number): void;
   mp_render(w: number, h: number, look: number, hull: number, ordered: number, hasOrdered: number): number;
   mp_pixels(): number;
   mp_hash_hi(): number;
@@ -110,6 +112,9 @@ export class PixelModule {
     if (kind !== undefined && !this.setKind(kind)) return false;
     if (typeof this.#x.mp_offset_cm === "function") {
       this.#x.mp_offset_cm(Math.round(look.dxCm ?? 0) | 0, Math.round(look.dyCm ?? 0) | 0);
+    }
+    if (typeof this.#x.mp_zoom_permille === "function") {
+      this.#x.mp_zoom_permille(Math.round(look.zoomPermille ?? 1000) >>> 0);
     }
     const ordered = look.orderedMdeg ?? null;
     const drawn =

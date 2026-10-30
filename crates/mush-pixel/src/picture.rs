@@ -61,6 +61,9 @@ pub struct Look {
     /// Dead-reckoned northward position offset from the keyframe's `y_cm`,
     /// centimetres, integrated at 20 Hz between server pulses.
     pub dy_cm: i64,
+    /// Optional 2.5D tactical camera zoom in permille (`500..=2000`, `0` or
+    /// `1000` = `1.0×` default).
+    pub zoom_permille: u16,
 }
 
 /// One producer, its instruments and its clock.

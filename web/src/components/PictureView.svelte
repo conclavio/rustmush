@@ -52,16 +52,20 @@
     MIN_TAP_TURN_MDEG,
     PICTURE_PREF_KEY,
     SPEED_COALESCE_MS,
+    ZOOM_DEFAULT_PERMILLE,
     arcMdeg,
+    canvasClickHeadingDeg,
     gateLine,
     gateWord,
     helmLine,
     nextLock,
     nextPictureKind,
+    pickCanvasContact,
     pictureKey,
     predictedOffsetCm,
     speedLine,
     speedOutstanding,
+    stepZoomPermille,
     steppedSpeed,
     swingLook,
     wrap360Mdeg,
@@ -101,6 +105,8 @@
   let lookTurn = $state<-1 | 0 | 1>(0);
   /** The held turn: `-1` left, `0` none, `1` right. */
   let turning = $state<-1 | 0 | 1>(0);
+  /** The 2.5D camera zoom in permille (`500..=2000`, `1000` = 100%). */
+  let zoomPermille = $state(ZOOM_DEFAULT_PERMILLE);
 
   const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
   const DEFAULT_PICTURE_W = 520;
@@ -405,6 +411,7 @@
             orderedMdeg,
             dxCm,
             dyCm,
+            zoomPermille,
           )
         ) {
           if (c.width !== FRAME_W || c.height !== FRAME_H) {
@@ -657,7 +664,82 @@
       case "lock":
         if (!ev.repeat) cycleLock(key.dir);
         break;
+      case "zoom":
+        if (viewKind === "iso25d") {
+          zoomPermille = stepZoomPermille(zoomPermille, key.dir);
+        }
+        break;
     }
+  }
+
+  function canvasNormCoords(ev: MouseEvent): { normX: number; normY: number } | null {
+    const el = canvas;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      normX: (ev.clientX - rect.left) / rect.width,
+      normY: (ev.clientY - rect.top) / rect.height,
+    };
+  }
+
+  function onCanvasWheel(ev: WheelEvent): void {
+    if (viewKind !== "iso25d" || !active) return;
+    ev.preventDefault();
+    const dir = ev.deltaY < 0 ? 1 : -1;
+    zoomPermille = stepZoomPermille(zoomPermille, dir);
+  }
+
+  function onCanvasClick(ev: MouseEvent): void {
+    if ((viewKind !== "iso25d" && viewKind !== "overhead") || !active || frame === null) return;
+    const coords = canvasNormCoords(ev);
+    if (!coords) return;
+    const rawCockpit = app.picture.cockpitData as { sight_m?: unknown } | null;
+    const sightM = typeof rawCockpit?.sight_m === "number" ? rawCockpit.sight_m : 600;
+    const desig = pickCanvasContact(
+      frame.contacts,
+      viewKind,
+      coords.normX,
+      coords.normY,
+      zoomPermille,
+      sightM,
+    );
+    if (desig !== null) {
+      lockAsked = { designator: desig, at: Date.now() };
+      app.helm(`LOCK ${desig}`);
+    }
+  }
+
+  function onCanvasDblClick(ev: MouseEvent): void {
+    if ((viewKind !== "iso25d" && viewKind !== "overhead") || !active) return;
+    const coords = canvasNormCoords(ev);
+    if (!coords) return;
+    if (frame !== null) {
+      const rawCockpit = app.picture.cockpitData as { sight_m?: unknown } | null;
+      const sightM = typeof rawCockpit?.sight_m === "number" ? rawCockpit.sight_m : 600;
+      if (
+        pickCanvasContact(
+          frame.contacts,
+          viewKind,
+          coords.normX,
+          coords.normY,
+          zoomPermille,
+          sightM,
+        ) !== null
+      ) {
+        return;
+      }
+    }
+    const deg = canvasClickHeadingDeg(viewKind, coords.normX, coords.normY);
+    if (deg === null) return;
+    const now = Date.now();
+    if (frame !== null && !hullStuck()) {
+      baseHeadingMdeg = predictedHeadingMdeg(now);
+      baseAtMs = now;
+      orderedHeadingMdeg = deg * 1_000;
+      orderedAtMs = now;
+    }
+    app.helm(helmLine(deg, 0));
   }
 
   function onKeyUp(ev: KeyboardEvent): void {
@@ -689,6 +771,29 @@
           <span class="readout" aria-label="match mode">RANGE</span>
         {/if}
       {/if}
+      {#if viewKind === "iso25d"}
+        <span class="zoom-controls" aria-label="2.5D zoom">
+          <button
+            type="button"
+            class="toggle zoom-btn"
+            title="Zoom out (-)"
+            onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, -1))}>−</button
+          >
+          <button
+            type="button"
+            class="toggle zoom-btn"
+            title="Reset zoom"
+            onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, 0))}
+            >{Math.round(zoomPermille / 10)}%</button
+          >
+          <button
+            type="button"
+            class="toggle zoom-btn"
+            title="Zoom in (+)"
+            onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, 1))}>+</button
+          >
+        </span>
+      {/if}
       <span class="dim legend"
         >a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
         F1–F6 order</span
@@ -713,7 +818,13 @@
       onkeydown={onKeyDown}
       onkeyup={onKeyUp}
     >
-      <canvas bind:this={canvas} aria-hidden="true"></canvas>
+      <canvas
+        bind:this={canvas}
+        aria-hidden="true"
+        onwheel={onCanvasWheel}
+        onclick={onCanvasClick}
+        ondblclick={onCanvasDblClick}
+      ></canvas>
       {#if !drawnHere}
         <p class="muted waiting">
           {localFailed !== null ? "Could not draw the picture." : "Waiting for the first picture…"}
@@ -790,6 +901,17 @@
 
   .toggle:hover {
     color: var(--fg);
+  }
+
+  .zoom-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+  }
+
+  .zoom-btn {
+    padding: 0.05rem 0.35rem;
+    font-size: 0.75rem;
   }
 
   .frame {

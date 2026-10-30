@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import { decodeCockpitFrame, type CockpitContact } from "./cockpit";
 import {
+  canvasClickHeadingDeg,
   gateLine,
   gateWord,
   helmLine,
@@ -21,6 +22,7 @@ import {
   nextLock,
   nextPictureKind,
   orderPrefill,
+  pickCanvasContact,
   pictureCommand,
   pictureKey,
   predictedOffsetCm,
@@ -28,6 +30,7 @@ import {
   speedOutstanding,
   speedStep,
   steppedSpeed,
+  stepZoomPermille,
   swingLook,
   wrapMdeg,
 } from "./picture";
@@ -261,5 +264,26 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(predictedOffsetCm(1_000, 0, 500)).toEqual({ dxCm: 0, dyCm: 500 });
     expect(predictedOffsetCm(1_000, 90_000, 500)).toEqual({ dxCm: 500, dyCm: 0 });
     expect(predictedOffsetCm(1_000, 90_000, 5_000, 1_500)).toEqual({ dxCm: 1_500, dyCm: 0 });
+  });
+
+  it("steps 2.5D zoom between 500 and 2000 permille and picks contacts or headings on tactical canvas", () => {
+    expect(pictureKey("+")).toEqual({ kind: "zoom", dir: 1 });
+    expect(pictureKey("-")).toEqual({ kind: "zoom", dir: -1 });
+    expect(stepZoomPermille(1_000, 1)).toBe(1_250);
+    expect(stepZoomPermille(2_000, 1)).toBe(2_000);
+    expect(stepZoomPermille(500, -1)).toBe(500);
+    expect(stepZoomPermille(1_500, 0)).toBe(1_000);
+
+    const contacts = fixtureContacts();
+    // Friendly RB is at range 100m, bearing 270 deg (due west) -> in iso25d (1000 permille):
+    // dx_m = -100m -> sx = 320 - 100 * 2.3 = 90 -> normX = 90 / 640, sy = 240 -> normY = 0.5
+    expect(pickCanvasContact(contacts, "iso25d", 90 / 640, 240 / 480, 1_000)).toBe("RB");
+    expect(pickCanvasContact(contacts, "cockpit", 90 / 640, 240 / 480, 1_000)).toBeNull();
+
+    // Double-click heading: straight north of centre (0.5, 0.2) -> 0 deg; straight east (0.8, 0.5) -> 90 deg
+    expect(canvasClickHeadingDeg("iso25d", 0.5, 0.2)).toBe(0);
+    expect(canvasClickHeadingDeg("iso25d", 0.8, 0.5)).toBe(90);
+    expect(canvasClickHeadingDeg("iso25d", 0.5, 0.5)).toBeNull();
+    expect(canvasClickHeadingDeg("cockpit", 0.8, 0.5)).toBeNull();
   });
 });
