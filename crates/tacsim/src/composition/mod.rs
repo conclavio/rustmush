@@ -202,7 +202,14 @@ fn compose_domain_modules<E>(
     };
     let unit_authority = domain_unit_authority(tacsim_delegate);
     let modules: Vec<Box<dyn GameModule>> = vec![
-        Box::new(mush_comsys::ComsysModule::new()),
+        Box::new(
+            mush_comsys::ComsysModule::new().with_managed_channels(
+                crate::detachment::activation::channel_action_ref()
+                    .into_iter()
+                    .filter(|_| tacsim_delegate)
+                    .collect(),
+            ),
+        ),
         Box::new(mush_canon::CanonModule::new()),
         Box::new(
             mush_org::OrgModule::with_predicates(vec![std::sync::Arc::new(

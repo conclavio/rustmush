@@ -5,7 +5,7 @@ use crate::detachment::planning::DraftRef;
 use mush_core::{CmdError, Ctx, ObjId};
 use mush_tactics::detachment::planning::{PlanId, PlannedController};
 
-pub(crate) const SWITCHES: &[&str] = &["activate", "deactivate", "active", "preflight"];
+pub(crate) const SWITCHES: &[&str] = &["chat", "activate", "deactivate", "active", "preflight"];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
 }
@@ -44,6 +44,9 @@ fn line(ctx: &mut Ctx<'_>, text: impl Into<String>) {
         .sys_to_actor(ctx.actor, "tacsim.detachment", text.into());
 }
 pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("chat") {
+        return crate::detachment::chat::command(ctx);
+    }
     if ctx.switches.iter().count() != 1 || ctx.args.raw().len() > 256 {
         return Err(fail());
     }
@@ -101,6 +104,15 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     ),
                 );
             }
+        }
+        if record.active() {
+            line(
+                ctx,
+                format!(
+                    "Detachment IC chat: +sortie/chat {}:{}:{}",
+                    record.organizer.0, record.draft.0, record.revision
+                ),
+            );
         }
         if record.active() && record.organizer == ctx.actor {
             line(
