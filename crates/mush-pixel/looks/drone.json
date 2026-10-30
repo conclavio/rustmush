@@ -1,5 +1,7 @@
 {
-  "units": ["tacsim.unit.drone_mk1"],
+  "units": [
+    "tacsim.unit.drone_mk1"
+  ],
   "label": "Ground drone",
   "short": "DR",
   "doll": {
@@ -12,11 +14,223 @@
       "..BBBBBB.."
     ],
     "legend": {
-      "F": { "section": "body", "facet": "front" },
-      "B": { "section": "body", "facet": "rear" },
-      "L": { "section": "body", "facet": "left" },
-      "R": { "section": "body", "facet": "right" },
-      "b": { "section": "body" }
+      "F": {
+        "section": "body",
+        "facet": "front"
+      },
+      "B": {
+        "section": "body",
+        "facet": "rear"
+      },
+      "L": {
+        "section": "body",
+        "facet": "left"
+      },
+      "R": {
+        "section": "body",
+        "facet": "right"
+      },
+      "b": {
+        "section": "body"
+      }
     }
+  },
+  "sprites": {
+    "size": [
+      20,
+      8
+    ],
+    "size_cm": [
+      250,
+      100
+    ],
+    "anchor": [
+      10,
+      7
+    ],
+    "palette": {
+      "a": "team-dark",
+      "b": "team",
+      "c": "team-light",
+      "k": "black",
+      "s": "steel",
+      "p": "pale"
+    },
+    "facings": {
+      "front": {
+        "still": [
+          "........pppp........",
+          ".........kk.........",
+          ".........kk.........",
+          ".....cccccccccc.....",
+          "....ksbbppppbbsk....",
+          "....kkaaaaaaaakk....",
+          "....kkkkkkkkkkkk....",
+          "....kk........kk...."
+        ],
+        "moving": [
+          [
+            "........pppp........",
+            ".........kk.........",
+            ".........kk.........",
+            ".....cccccccccc.....",
+            "....kkbbppppbbkk....",
+            "....ksaaaaaaaask....",
+            "....kkkkkkkkkkkk....",
+            "....kk........kk...."
+          ],
+          [
+            "........pppp........",
+            ".........kk.........",
+            ".........kk.........",
+            ".....cccccccccc.....",
+            "....kkbbppppbbkk....",
+            "....kkaaaaaaaakk....",
+            "....kskkkkkkkksk....",
+            "....kk........kk...."
+          ],
+          [
+            "........pppp........",
+            ".........kk.........",
+            ".........kk.........",
+            ".....cccccccccc.....",
+            "....kkbbppppbbkk....",
+            "....kkaaaaaaaakk....",
+            "....kkkkkkkkkkkk....",
+            "....ks........sk...."
+          ],
+          [
+            "........pppp........",
+            ".........kk.........",
+            ".........kk.........",
+            ".....cccccccccc.....",
+            "....ksbbppppbbsk....",
+            "....kkaaaaaaaakk....",
+            "....kkkkkkkkkkkk....",
+            "....kk........kk...."
+          ]
+        ]
+      },
+      "rear": {
+        "still": [
+          "........pppp........",
+          ".........kk.........",
+          ".........kk.........",
+          ".....cccccccccc.....",
+          "....ksbbbbbbbbsk....",
+          "....kkaaaaaaaakk....",
+          "....kkkkkkkkkkkk....",
+          "....kk........kk...."
+        ],
+        "moving": [
+          [
+            "........pppp........",
+            ".........kk.........",
+            ".........kk.........",
+            ".....cccccccccc.....",
+            "....kkbbbbbbbbkk....",
+            "....ksaaaaaaaask....",
+            "....kkkkkkkkkkkk....",
+            "....kk........kk...."
+          ],
+          [
+            "........pppp........",
+            ".........kk.........",
+            ".........kk.........",
+            ".....cccccccccc.....",
+            "....kkbbbbbbbbkk....",
+            "....kkaaaaaaaakk....",
+            "....kskkkkkkkksk....",
+            "....kk........kk...."
+          ],
+          [
+            "........pppp........",
+            ".........kk.........",
+            ".........kk.........",
+            ".....cccccccccc.....",
+            "....kkbbbbbbbbkk....",
+            "....kkaaaaaaaakk....",
+            "....kkkkkkkkkkkk....",
+            "....ks........sk...."
+          ],
+          [
+            "........pppp........",
+            ".........kk.........",
+            ".........kk.........",
+            ".....cccccccccc.....",
+            "....ksbbbbbbbbsk....",
+            "....kkaaaaaaaakk....",
+            "....kkkkkkkkkkkk....",
+            "....kk........kk...."
+          ]
+        ]
+      },
+      "right": {
+        "still": [
+          "...........ppp......",
+          "............k.......",
+          "............k.......",
+          "...cccccccccccccc...",
+          "...bbbbbbbbbbbbbb...",
+          "..kkkkkkkkkkkkkkkk..",
+          "..kskkkskkkskkkskk..",
+          "..kkkkkkkkkkkkkkkk.."
+        ],
+        "moving": [
+          [
+            "...........ppp......",
+            "............k.......",
+            "............k.......",
+            "...cccccccccccccc...",
+            "...bbbbbbbbbbbbbb...",
+            "..kkkkkkkkkkkkkkkk..",
+            "..kkskkkskkkskkksk..",
+            "..kkkkkkkkkkkkkkkk.."
+          ],
+          [
+            "...........ppp......",
+            "............k.......",
+            "............k.......",
+            "...cccccccccccccc...",
+            "...bbbbbbbbbbbbbb...",
+            "..kkkkkkkkkkkkkkkk..",
+            "..kkkskkkskkkskkks..",
+            "..kkkkkkkkkkkkkkkk.."
+          ],
+          [
+            "...........ppp......",
+            "............k.......",
+            "............k.......",
+            "...cccccccccccccc...",
+            "...bbbbbbbbbbbbbb...",
+            "..kkkkkkkkkkkkkkkk..",
+            "..kkkkskkkskkkskkk..",
+            "..kkkkkkkkkkkkkkkk.."
+          ],
+          [
+            "...........ppp......",
+            "............k.......",
+            "............k.......",
+            "...cccccccccccccc...",
+            "...bbbbbbbbbbbbbb...",
+            "..kkkkkkkkkkkkkkkk..",
+            "..kskkkskkkskkkskk..",
+            "..kkkkkkkkkkkkkkkk.."
+          ]
+        ]
+      }
+    },
+    "wreck": [
+      [
+        "....................",
+        "....................",
+        "....................",
+        "..............kkkk..",
+        "...cccccccccccccc...",
+        "...bbbbbbbbbbbbbb...",
+        "..kkkkkkkkkkkkkkkk..",
+        "..kkkkkkkkkkkkkkkk.."
+      ]
+    ]
   }
 }

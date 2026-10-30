@@ -5,7 +5,6 @@
     "tacsim.unit.line_tank_thermal",
     "tacsim.unit.line_tank_ecm",
     "tacsim.unit.line_tank_eccm",
-    "tacsim.unit.heavy_mk1",
     "tacsim.unit.target_mk1"
   ],
   "label": "Tracked tank",
@@ -13,8 +12,7 @@
   "weapons": {
     "cannon": "105",
     "laser": "LASER",
-    "machine_gun": "MG",
-    "missiles": "LRM"
+    "machine_gun": "MG"
   },
   "doll": {
     "view": "top",
@@ -169,10 +167,6 @@
           "laser": [
             27,
             6
-          ],
-          "missiles": [
-            23,
-            5
           ]
         }
       },
@@ -323,10 +317,6 @@
           "laser": [
             55,
             5
-          ],
-          "missiles": [
-            36,
-            3
           ]
         }
       }

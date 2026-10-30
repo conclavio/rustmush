@@ -1,5 +1,18 @@
 # 22. The unit kit — what a new unit defines
 
+**Draft 0.8 — 2026-10-30, U.6 as built.** The bake matrix is in the tree
+([22-cut-notes.md](22-cut-notes.md) "U.6"): `mush_pixel::bake` holds the unit pack (format 2,
+named entries keyed by look id with provenance), the size and chain picks and the matrix check;
+`scripts/unit-bake/bake.sh` is the one command (Unity's batch mode renders, the Rust reducer
+reduces); the first bake of all six looks ships (1,043,471 bytes, so the web fetches it, rule 7).
+Four things moved from Drafts 0.5–0.7 in the building, each a measurement: rule 7's runs carry the
+material in the varint's first byte (a whole material byte measured twice the size); the matrix
+check holds a bake's width within half to twice its look's, not to its height's 2 % (barrels and
+arms stand past the sim's silhouette); the 2.5D's size pick reads every frame of a chain as one
+world span, so the unit's pixels a metre pick the size; and "0.5× halves both" holds only where
+the chain has the room — the chain spans 4:1, the baked frames 8:1 (§5). `heavy_mk1` has its own
+look (Q-22-5); the scout's `size_cm` is the sim's 520 × 220, not the 580 the old code used.
+
 **Draft 0.7 — 2026-10-30, the questions ruled.** The owner ruled Q-22-1, -2, -4 and -5 at the
 lead's defaults the same day (*"rule Q-22-1, -2, -4 and -5 at their defaults"*); with Q-22-3 ruled
 in Draft 0.6 the document carries no open question, and U.6 may start.
@@ -307,6 +320,33 @@ The rules:
 - **Q-22-5** `heavy_mk1`. **Ruled 2026-10-30 at the default:** a look and a bake with the rest, so the 2.5D slot stops being
   a synthesised shape.
 
+**As built (U.6, Draft 0.8).**
+
+- **The pack** (`crates/mush-pixel/looks/units.bin`, `mush_pixel::bake`): magic `MUPK`, version
+  2; per entry the look id (its file's stem), the provenance (asset pack and version — the package
+  file's SHA-256 prefix when the config names none —, the assembled prefab and its parts, the
+  clips, the bake and reduce commits), `size_cm`, the muzzle names, and per view its span (the
+  world a frame's side covers: one scale for the whole chain) and the chain; per frame the tight
+  box, anchor, height, muzzles and runs. Rule 7's run is the material in the low three bits of a
+  varint's first byte with four bits of length, so a run of up to sixteen is one byte: measured on
+  the shipped M25D art, the literal material byte plus varint came to 3.1 MB for six looks against
+  1.6 MB. The first bake is 1,043,471 bytes for six looks, the `iso` chain about twice the `fp`:
+  over the 512 KiB budget, so the native binaries embed it and the web's WebAssembly build embeds
+  none — the page fetches `units.bin` beside the module and hands it to `mp_units`.
+- **The bake** (`scripts/unit-bake/`): one config a look (`looks/<look>.json`: the package, the
+  prefab and the parts in their mounts, the colour-ID texture or a material-to-part map, the clips,
+  the muzzle locators by weapon id, `size_cm`); `Bake.cs` scales the model to its look's height,
+  frames each view on the unit's turning circle, holds a moving frame's middle over the still's (a
+  drive clip's root motion drove the tank out of its frame in the first bake), tilts a wreck with
+  no fall clip; `bake.sh` imports, bakes, reduces and prints the pack's size, digest and the matrix
+  check. The reducer is Rust (`bake::reduce`, `examples/unit_reduce.rs`), tested on a synthetic 384
+  px render; `reduce.py` and the voxel grids are gone.
+- **The width rule.** The matrix check holds a bake's height to its look's within 2 % (the bake
+  scales to it) and its widest silhouette within half to twice its look's: the PoC walker measures
+  9.6 m across its cannon against its look's 5.2 m. The kit's vehicles are squat — the tank 4.1 m
+  long at its look's 2.5 m height, the sim's 7 m — and draw their bake's width, not the look's: a
+  longer model is a config change.
+
 ## 4. Teams and colours — D-22-3, D-22-5
 
 In the arena, **bodies are drawn in their team's colour** — red-team red, blue-team blue,
@@ -345,7 +385,15 @@ Neither is a frame version: fields added for the person in the seat are not one 
   projected height — the heightfield's from `size_cm` at its range, the 2.5D's from `size_cm`
   through the projection and the zoom, the row's depth cue a factor on that height rather than a
   fixed step — so a drone and a heavy on one row stand in the ratio of their heights, and 0.5×
-  zoom halves a unit as it halves the ground.
+  zoom halves a unit as it halves the ground. *As built (U.6):* every frame of a chain spans one
+  world span, so the pick is the smallest size at or above the frame side the unit's pixels a
+  metre ask for (`Chain::pick`); the heightfield scales that size down to the contact, the 2.5D
+  blits it natively at nine pixels a metre at 1.0× on a 640 px viewport, the top row at 0.85 of the
+  bottom's. The chain spans 4:1 and the baked frames 8:1 (the drone's 2.2 m to the walker's
+  17.8 m), so no one scale keeps every unit inside the chain at every zoom: the drone draws on the
+  24 px floor within a chain step of its ratio to the heavy, the tank, the heavy and the scout
+  halve at 0.5× (to the chain's step: 56 has no half), the walker stands on the 96 px ceiling and
+  steps down to 80.
 - **The chain pick** (Draft 0.6): the heightfield draws a contact from the chain whose pitch is
   nearer the line to it — `fp` (3°) within about 15° of depression, `iso` (28°) beyond it — so
   looking down into a bowl from a hill shows the view the 2.5D bakes. The marks come with the
@@ -394,7 +442,7 @@ player can write.
 | **U.3** | the sprite sheets: facings from `aspect`, the moving cycle, team slots, scale from `size_cm`, the shadow; placeholder art for the tank and the biped | a walker and a tank read differently at 300 m, turn their faces as they turn, and roll or walk while moving |
 | U.4 | the web client's doll and sprites from the same looks | — |
 | **U.5** | the art: the tank, the biped and `unknown` redrawn for what the picture makes of a sheet at 100 m, 300 m and 1 km; the shipped sheets held to standing on their anchor, muzzles on the weapon, a cycle that moves, a wreck that is not the still; `examples/sheets.rs` | a tank reads as a tank and a biped as a biped at 300 m; the PNG importer deferred |
-| **U.6** | the bake matrix (D-22-10): `Bake.cs` with both views (`fp` at 3°), the reducer emitting the `fp` and `iso` chains from the large render, the named-entry pack format with provenance and rule 7's tight-box RLE, `synthesize_3d_mip` deleted, every shipped look baked (`heavy_mk1` per Q-22-5), `size_cm` on the `drone` and `wheeled_scout` looks, the 2.5D's projected-height pick (`pick_mip_level` goes) and the heightfield's chain-by-elevation pick, the look check extended to the matrix and the hull-down fixture, the pack's digest and size pinned; the line-ups at 100 m, 300 m and 1 km under [images/22-u6/](images/22-u6/) as U.5 did | both pictures draw every shipped unit from its own view's chain at every range; a tank at 300 m in the first-person frame reads as a tank from the 12 px size, not from a resampled 56; a drone and a heavy on one 2.5D row stand in the ratio of their heights and 0.5× halves both; a contact behind a crest shows rows above it exactly when the sim's ray sees it; the pack under 512 KiB embedded, or fetched by the web; no synthesised sprite in a shipped build |
+| **U.6** (built 2026-10-30, [cut notes](22-cut-notes.md)) | the bake matrix (D-22-10): `Bake.cs` with both views (`fp` at 3°), the reducer emitting the `fp` and `iso` chains from the large render, the named-entry pack format with provenance and rule 7's tight-box RLE, `synthesize_3d_mip` deleted, every shipped look baked (`heavy_mk1` per Q-22-5), `size_cm` on the `drone` and `wheeled_scout` looks, the 2.5D's projected-height pick (`pick_mip_level` goes) and the heightfield's chain-by-elevation pick, the look check extended to the matrix and the hull-down fixture, the pack's digest and size pinned; the line-ups at 100 m, 300 m and 1 km under [images/22-u6/](images/22-u6/) as U.5 did | both pictures draw every shipped unit from its own view's chain at every range; a tank at 300 m in the first-person frame reads as a tank from the 12 px size, not from a resampled 56; a drone and a heavy on one 2.5D row stand in the ratio of their heights and 0.5× halves both; a contact behind a crest shows rows above it exactly when the sim's ray sees it; the pack under 512 KiB embedded, or fetched by the web; no synthesised sprite in a shipped build |
 
 ## 9. Decisions
 

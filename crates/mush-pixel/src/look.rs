@@ -50,6 +50,7 @@ const SHIPPED: &[(&str, &str)] = &[
         "wheeled_scout.json",
         include_str!("../looks/wheeled_scout.json"),
     ),
+    ("heavy.json", include_str!("../looks/heavy.json")),
     ("biped.json", include_str!("../looks/biped.json")),
     ("drone.json", include_str!("../looks/drone.json")),
     ("unknown.json", include_str!("../looks/unknown.json")),
@@ -416,6 +417,10 @@ impl Doll {
 /// One unit type's look.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Look {
+    /// The look's id: its file's stem among the shipped looks (`biped`,
+    /// `tracked_tank`, …), which keys its bake in the unit pack (doc 22
+    /// D-22-10); empty for a look parsed from text alone.
+    pub id: String,
     /// The unit types (definition ids) it draws.
     pub units: Vec<String>,
     /// The type's name.
@@ -511,6 +516,7 @@ impl Look {
         let doll = obj.get("doll").map(parse_doll).transpose()?;
         let sprites = obj.get("sprites").map(parse_sheet).transpose()?;
         Ok(Look {
+            id: String::new(),
             units,
             label,
             short,
@@ -830,7 +836,11 @@ pub fn shipped() -> &'static [Look] {
     LOOKS.get_or_init(|| {
         SHIPPED
             .iter()
-            .filter_map(|(_, text)| Look::parse(text).ok())
+            .filter_map(|(name, text)| {
+                let mut look = Look::parse(text).ok()?;
+                look.id = name.strip_suffix(".json").unwrap_or(name).to_string();
+                Some(look)
+            })
             .collect()
     })
 }

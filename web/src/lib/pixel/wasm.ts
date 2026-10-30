@@ -60,6 +60,7 @@ interface PixelExports {
   mp_hash_hi(): number;
   mp_hash_lo(): number;
   mp_reset(): void;
+  mp_units?(len: number): number;
 }
 
 const EXPORTS: (keyof PixelExports)[] = [
@@ -157,11 +158,24 @@ export class PixelModule {
   reset(): void {
     this.#x.mp_reset();
   }
+
+  /** **Install the unit pack** (doc 22 D-22-10: every baked look's size
+   * chains, fetched as a cached asset because it is over the 512 KiB the
+   * module may embed); whether the module took it. Until it does, every unit
+   * draws its look's text sheet. */
+  loadUnits(pack: Uint8Array): boolean {
+    if (typeof this.#x.mp_units !== "function") return false;
+    const ptr = this.#x.mp_input(pack.length);
+    new Uint8Array(this.#x.memory.buffer, ptr, pack.length).set(pack);
+    return this.#x.mp_units(pack.length) === 1;
+  }
 }
 
 /** **Load the module from `url`**: streamed and compiled as it arrives where
- * the server says `application/wasm`, else fetched whole and compiled. */
-export async function loadPixelModule(url: string): Promise<PixelModule> {
+ * the server says `application/wasm`, else fetched whole and compiled; then
+ * the unit pack from `unitsUrl` when given (a pack that does not arrive
+ * leaves every unit on its look's text sheet, never a failed load). */
+export async function loadPixelModule(url: string, unitsUrl?: string): Promise<PixelModule> {
   let instance: WebAssembly.Instance;
   try {
     instance = (await WebAssembly.instantiateStreaming(fetch(url), {})).instance;
@@ -169,5 +183,14 @@ export async function loadPixelModule(url: string): Promise<PixelModule> {
     const bytes = await (await fetch(url)).arrayBuffer();
     instance = (await WebAssembly.instantiate(bytes, {})).instance;
   }
-  return new PixelModule(instance);
+  const module = new PixelModule(instance);
+  if (unitsUrl !== undefined) {
+    try {
+      const response = await fetch(unitsUrl);
+      if (response.ok) module.loadUnits(new Uint8Array(await response.arrayBuffer()));
+    } catch {
+      // No pack: the text sheets.
+    }
+  }
+  return module;
 }

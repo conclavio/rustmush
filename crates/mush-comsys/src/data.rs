@@ -176,6 +176,9 @@ impl Default for HistoryPolicy {
 /// is the persisted `chan:{id}` document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
+    /// Module-owned roster binding; closed bindings retain history without access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<crate::managed::Binding>,
     /// Stable id (also keys the history stream).
     pub id: ChannelId,
     /// Display name, unique case-insensitively ("Public").
@@ -201,10 +204,15 @@ pub struct Channel {
 }
 
 impl Channel {
+    pub fn active(&self) -> bool {
+        self.managed.as_ref().is_none_or(|binding| binding.active)
+    }
+
     /// A fresh channel with default perms/color/flags/history and `seq` 0.
     #[must_use]
     pub fn new(id: ChannelId, name: &str) -> Channel {
         Channel {
+            managed: None,
             id,
             name: SmolStr::new(name),
             description: String::new(),
@@ -230,7 +238,7 @@ impl Channel {
     /// answers the membership question itself.
     #[must_use]
     pub fn hears(&self, w: &World, who: ObjId) -> bool {
-        self.flags.closed || eval_lock(w, &self.perms.see, who, MAX_LOCK_DEPTH)
+        self.active() && (self.flags.closed || eval_lock(w, &self.perms.see, who, MAX_LOCK_DEPTH))
     }
 }
 
@@ -372,6 +380,7 @@ impl ComsysState {
         self.members
             .range((player, ChannelId(0))..=(player, ChannelId(u64::MAX)))
             .map(|(_, m)| m)
+            .filter(|m| self.channels.get(&m.channel).is_some_and(Channel::active))
     }
 
     /// All members of one channel (full scan; membership counts are small).

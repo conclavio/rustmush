@@ -112,6 +112,146 @@ pub fn encode_rgba(width: usize, height: usize, rgba: &[u8]) -> Vec<u8> {
     out
 }
 
+/// **Decode a PNG to RGBA** (doc 22 cut U.6: the reducer reads the bake's
+/// renders, which Unity writes as 8-bit RGBA): `(width, height, rgba)`, four
+/// bytes a pixel. Reads 8-bit greyscale, RGB, palette (with `tRNS`), grey
+/// with alpha and RGBA, non-interlaced, all five row filters; anything else
+/// is refused with a reason, never a panic.
+///
+/// # Errors
+///
+/// What is not a PNG this reads, or is cut short.
+pub fn decode_rgba(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
+    use std::io::Read;
+    if bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n".as_slice()) {
+        return Err("not a PNG".into());
+    }
+    let be32 = |b: &[u8], i: usize| -> usize {
+        let byte = |k: usize| u32::from(b.get(i + k).copied().unwrap_or(0));
+        ((byte(0) << 24) | (byte(1) << 16) | (byte(2) << 8) | byte(3)) as usize
+    };
+    let (mut w, mut h, mut colour, mut ended) = (0usize, 0usize, 0u8, false);
+    let (mut plte, mut trns, mut idat) = (Vec::new(), Vec::new(), Vec::new());
+    let mut at = 8usize;
+    while let Some(head) = bytes.get(at..at + 8) {
+        let len = be32(head, 0);
+        let kind = head.get(4..8).unwrap_or(&[]);
+        // The chunk's data and its CRC's four bytes must all be there.
+        let data = bytes
+            .get(at + 8..(at + 12).saturating_add(len))
+            .and_then(|d| d.get(..len))
+            .ok_or("a chunk runs past the end")?;
+        match kind {
+            b"IHDR" => {
+                w = be32(data, 0);
+                h = be32(data, 4);
+                colour = data.get(9).copied().unwrap_or(0);
+                if data.get(8) != Some(&8) {
+                    return Err("only 8-bit PNGs are read".into());
+                }
+                if data.get(12) != Some(&0) {
+                    return Err("interlaced PNGs are not read".into());
+                }
+            }
+            b"PLTE" => plte = data.to_vec(),
+            b"tRNS" => trns = data.to_vec(),
+            b"IDAT" => idat.extend_from_slice(data),
+            b"IEND" => {
+                ended = true;
+                break;
+            }
+            _ => {}
+        }
+        at = at.saturating_add(12).saturating_add(len);
+    }
+    if !ended {
+        return Err("no IEND: the PNG is cut short".into());
+    }
+    let channels = match colour {
+        0 | 3 => 1,
+        2 => 3,
+        4 => 2,
+        6 => 4,
+        c => return Err(format!("colour type {c} is not read")),
+    };
+    if w == 0 || h == 0 || w > 16_384 || h > 16_384 {
+        return Err(format!("a {w}x{h} image"));
+    }
+    let stride = w * channels;
+    let mut raw = Vec::with_capacity(h * (stride + 1));
+    flate2::read::ZlibDecoder::new(idat.as_slice())
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("the image data does not inflate: {e}"))?;
+    if raw.len() < h * (stride + 1) {
+        return Err("the image data is short".into());
+    }
+    let mut prev = vec![0u8; stride];
+    let mut row = vec![0u8; stride];
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for line in raw.chunks_exact(stride + 1).take(h) {
+        let (filter, src) = line.split_first().ok_or("an empty row")?;
+        for i in 0..stride {
+            let x = src.get(i).copied().unwrap_or(0);
+            let left = |r: &[u8]| {
+                if i >= channels {
+                    r.get(i - channels).copied().unwrap_or(0)
+                } else {
+                    0
+                }
+            };
+            let (a, b, c) = (left(&row), prev.get(i).copied().unwrap_or(0), left(&prev));
+            let v = match filter {
+                0 => x,
+                1 => x.wrapping_add(a),
+                2 => x.wrapping_add(b),
+                3 => x.wrapping_add(((u16::from(a) + u16::from(b)) / 2) as u8),
+                4 => x.wrapping_add(paeth(a, b, c)),
+                f => return Err(format!("row filter {f}")),
+            };
+            if let Some(slot) = row.get_mut(i) {
+                *slot = v;
+            }
+        }
+        for px in row.chunks_exact(channels) {
+            let get = |i: usize| px.get(i).copied().unwrap_or(0);
+            let out = match colour {
+                0 => [get(0), get(0), get(0), 255],
+                2 => [get(0), get(1), get(2), 255],
+                3 => {
+                    let i = usize::from(get(0));
+                    let rgb = plte
+                        .get(i * 3..i * 3 + 3)
+                        .ok_or("a pixel outside the palette")?;
+                    let at = |k: usize| rgb.get(k).copied().unwrap_or(0);
+                    [at(0), at(1), at(2), trns.get(i).copied().unwrap_or(255)]
+                }
+                4 => [get(0), get(0), get(0), get(1)],
+                _ => [get(0), get(1), get(2), get(3)],
+            };
+            rgba.extend_from_slice(&out);
+        }
+        std::mem::swap(&mut prev, &mut row);
+    }
+    Ok((w, h, rgba))
+}
+
+/// The Paeth predictor (PNG filter 4).
+fn paeth(a: u8, b: u8, c: u8) -> u8 {
+    let p = i16::from(a) + i16::from(b) - i16::from(c);
+    let (pa, pb, pc) = (
+        (p - i16::from(a)).abs(),
+        (p - i16::from(b)).abs(),
+        (p - i16::from(c)).abs(),
+    );
+    if pa <= pb && pa <= pc {
+        a
+    } else if pb <= pc {
+        b
+    } else {
+        c
+    }
+}
+
 /// The filtered, palette-indexed rows of RGBA `pixels` (`w` a row), filling
 /// `palette` as `(r, g, b, a)` tuples appear — or `None` the moment a 257th
 /// tuple does.
@@ -254,6 +394,78 @@ fn crc32(bytes: &[u8]) -> u32 {
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn decode_reads_back_what_encode_wrote() {
+        // Indexed with tRNS (few colours) and RGBA (more than 256).
+        let few: Vec<u8> = (0..7 * 5u32)
+            .flat_map(|i| {
+                [
+                    (i % 3) as u8 * 80,
+                    10,
+                    200,
+                    if i % 4 == 0 { 0 } else { 255 },
+                ]
+            })
+            .collect();
+        assert_eq!(decode_rgba(&encode_rgba(7, 5, &few)).unwrap(), (7, 5, few));
+        let many: Vec<u8> = (0..40 * 30u32)
+            .flat_map(|i| [(i % 251) as u8, (i / 7 % 256) as u8, (i % 13) as u8, 255])
+            .collect();
+        assert_eq!(
+            decode_rgba(&encode_rgba(40, 30, &many)).unwrap(),
+            (40, 30, many)
+        );
+        assert!(decode_rgba(b"not a png").is_err());
+        let png = encode_rgba(40, 30, &[9; 40 * 30 * 4]);
+        for cut in [9, 20, 33, png.len() - 13, png.len() - 1] {
+            assert!(decode_rgba(&png[..cut]).is_err(), "cut at {cut}");
+        }
+    }
+
+    /// Every row filter reconstructs (`encode_rgba` writes only filter 0, so
+    /// the rows here are filtered by hand).
+    #[test]
+    fn decode_undoes_every_row_filter() {
+        let (w, h) = (3usize, 5usize);
+        let px: Vec<u8> = (0..w * h * 4).map(|i| (i * 37 % 256) as u8).collect();
+        let stride = w * 4;
+        let mut raw = Vec::new();
+        for y in 0..h {
+            let filter = y as u8; // 0..=4
+            raw.push(filter);
+            for i in 0..stride {
+                let x = px[y * stride + i];
+                let a = if i >= 4 { px[y * stride + i - 4] } else { 0 };
+                let b = if y > 0 { px[(y - 1) * stride + i] } else { 0 };
+                let c = if y > 0 && i >= 4 {
+                    px[(y - 1) * stride + i - 4]
+                } else {
+                    0
+                };
+                let pred = match filter {
+                    0 => 0,
+                    1 => a,
+                    2 => b,
+                    3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
+                    _ => paeth(a, b, c),
+                };
+                raw.push(x.wrapping_sub(pred));
+            }
+        }
+        let mut z = ZlibEncoder::new(Vec::new(), Compression::new(6));
+        z.write_all(&raw).unwrap();
+        let idat = z.finish().unwrap();
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&3u32.to_be_bytes());
+        ihdr.extend_from_slice(&5u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        chunk(&mut png, b"IHDR", &ihdr);
+        chunk(&mut png, b"IDAT", &idat);
+        chunk(&mut png, b"IEND", &[]);
+        assert_eq!(decode_rgba(&png).unwrap(), (w, h, px));
+    }
 
     #[test]
     fn crc_matches_the_reference_vector() {

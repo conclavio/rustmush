@@ -30,12 +30,16 @@ const MAX_PENDING: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Operation {
+pub(crate) enum Operation {
     Activate {
         id: PlanId,
         expected_revision: u64,
         before_activation: u64,
         duty: CrewDuty,
+    },
+    Chat {
+        reference: DraftRef,
+        expected_activation: u64,
     },
     Deactivate {
         id: PlanId,
@@ -43,9 +47,19 @@ pub(super) enum Operation {
     },
 }
 impl Operation {
+    fn reference(&self, actor: ObjId) -> DraftRef {
+        match self {
+            Self::Chat { reference, .. } => *reference,
+            _ => DraftRef {
+                organizer: actor,
+                id: self.id(),
+            },
+        }
+    }
     fn id(&self) -> PlanId {
         match self {
             Self::Activate { id, .. } | Self::Deactivate { id, .. } => *id,
+            Self::Chat { reference, .. } => reference.id,
         }
     }
 }
@@ -69,6 +83,8 @@ fn pending(world: &World, actor: ObjId) -> Option<&Intent> {
 
 #[derive(Clone, Debug)]
 pub struct ActivationHandles {
+    pub(super) channels:
+        Option<mush_core::participant::ParticipantHandle<mush_comsys::managed::ManagedChannels>>,
     pub records: StateFamilyHandle<DraftRef, ActiveDetachment>,
     pub reservations: StateFamilyHandle<ObjId, Reservation>,
     pub action: DefinitionRef,
@@ -209,6 +225,15 @@ pub fn register(
         ))?;
     }
     let handles = ActivationHandles {
+        channels: if enabled {
+            Some(
+                reg.request_owner_participant::<mush_comsys::managed::ManagedChannels>(
+                    action.clone(),
+                )?,
+            )
+        } else {
+            None
+        },
         records,
         reservations,
         action: action.clone(),
@@ -344,10 +369,7 @@ fn snapshot(
     {
         return Err("Preparation input expired.".into());
     }
-    let reference = DraftRef {
-        organizer: actor,
-        id: intent.operation.id(),
-    };
+    let reference = intent.operation.reference(actor);
     let before = validate_record(reference, before)?;
     let (selection, observation) = match intent.operation {
         Operation::Activate {
@@ -378,11 +400,25 @@ fn snapshot(
         Operation::Deactivate {
             expected_activation,
             ..
+        }
+        | Operation::Chat {
+            expected_activation,
+            ..
         } => {
             let record = before
                 .as_ref()
                 .filter(|r| r.active() && r.revision == expected_activation)
                 .ok_or("Active roster changed.")?;
+            if matches!(intent.operation, Operation::Chat { .. })
+                && actor != record.organizer
+                && !record
+                    .plan
+                    .slots
+                    .iter()
+                    .any(|s| s.controller.character() == Some(actor))
+            {
+                return Err("No visible active detachment.".into());
+            }
             let entities = record.entities();
             for entity in &entities {
                 if reservation(*entity)?.as_ref() != Some(&Reservation::for_entity(record, *entity))
@@ -468,10 +504,7 @@ impl RevisionValidator for Validator {
         let Some(intent) = pending(ctx.world(), actor) else {
             return Ok(None);
         };
-        let reference = DraftRef {
-            organizer: actor,
-            id: intent.operation.id(),
-        };
+        let reference = intent.operation.reference(actor);
         let before = ctx
             .action_state(&self.handles.records, &reference)
             .map_err(|_| refused())?
@@ -550,10 +583,7 @@ impl ActionProvider for Provider {
         let Some(intent) = pending(&engine.world, actor) else {
             return Ok(None);
         };
-        let reference = DraftRef {
-            organizer: actor,
-            id: intent.operation.id(),
-        };
+        let reference = intent.operation.reference(actor);
         let before = engine
             .action_state()
             .get(&self.handles.records, &reference)
@@ -681,10 +711,7 @@ impl ActionProvider for Provider {
         }
         let i = resolved.invocation();
         let input = chosen(i)?;
-        let reference = DraftRef {
-            organizer: i.actor(),
-            id: input.intent.operation.id(),
-        };
+        let reference = input.intent.operation.reference(i.actor());
         let before = txn
             .get(&self.handles.records, &reference)
             .map_err(|_| refused())?
@@ -766,6 +793,9 @@ impl ActionProvider for Provider {
                 activated_at: world.world_ic_now(),
                 closed_at: None,
             },
+            (Operation::Chat { .. }, Selection::Deactivate { .. }) => {
+                state.before.clone().ok_or_else(refused)?
+            }
             (Operation::Deactivate { .. }, Selection::Deactivate { .. }) => {
                 let mut record = state.before.clone().ok_or_else(refused)?;
                 record.closed_at = Some(world.world_ic_now());
@@ -774,18 +804,51 @@ impl ActionProvider for Provider {
             _ => return Err(refused()),
         };
         record.validate().map_err(|_| refused())?;
-        for entity in record.entities() {
-            if record.active() {
-                txn.insert(
-                    &self.handles.reservations,
-                    &entity,
-                    Reservation::for_entity(&record, entity),
-                )
-            } else {
-                txn.remove(&self.handles.reservations, &entity)
-            }
+        let prepared = context
+            .prepare_owner(
+                self.handles.channels.as_ref().ok_or_else(refused)?,
+                mush_comsys::managed::Request {
+                    join: matches!(input.intent.operation, Operation::Chat { .. })
+                        .then_some(i.actor())
+                        .filter(|a| {
+                            record
+                                .plan
+                                .slots
+                                .iter()
+                                .any(|s| s.controller.character() == Some(*a))
+                        }),
+                    close: (!record.active()).then(|| crate::detachment::chat::key(&record)),
+                    open: record.active().then(|| mush_comsys::managed::Roster {
+                        key: crate::detachment::chat::key(&record),
+                        members: record
+                            .plan
+                            .slots
+                            .iter()
+                            .filter_map(|s| s.controller.character())
+                            .collect(),
+                    }),
+                },
+            )
             .map_err(|_| refused())?;
+        context
+            .require_owner_preparation_binding(txn, prepared.binding())
+            .map_err(|_| refused())?;
+        if !matches!(input.intent.operation, Operation::Chat { .. }) {
+            for entity in record.entities() {
+                if record.active() {
+                    txn.insert(
+                        &self.handles.reservations,
+                        &entity,
+                        Reservation::for_entity(&record, entity),
+                    )
+                } else {
+                    txn.remove(&self.handles.reservations, &entity)
+                }
+                .map_err(|_| refused())?;
+            }
         }
+        // The source row anchors this composed action even when only channel
+        // membership changes; its accepted revision and contents stay identical.
         if state.before.is_some() {
             txn.replace(&self.handles.records, &reference, record.clone())
         } else {
@@ -829,7 +892,7 @@ pub(super) fn read(ctx: &Ctx<'_>, reference: DraftRef) -> Result<Option<ActiveDe
     }
     Ok(record)
 }
-pub(super) fn submit(ctx: &mut Ctx<'_>, operation: Operation) -> Result<(), String> {
+pub(crate) fn submit(ctx: &mut Ctx<'_>, operation: Operation) -> Result<(), String> {
     if ctx.authoritative_pending(ctx.actor)
         || ctx.authoritative_commit_pending()
         || ctx.authoritative_queue_full()
@@ -873,4 +936,18 @@ pub(super) fn submit(ctx: &mut Ctx<'_>, operation: Operation) -> Result<(), Stri
         idempotency,
     );
     Ok(())
+}
+
+pub fn channel_action_ref() -> Result<DefinitionRef, ModError> {
+    let mut registry = mush_core::DefinitionRegistryBuilder::new();
+    let owner = OwnerId::new(crate::NS).map_err(bad)?;
+    let outcome = registry
+        .register(owner.clone(), outcome_descriptor()?)
+        .map_err(bad)?;
+    registry
+        .register(
+            owner,
+            action_descriptor(&BTreeMap::from([(OUTCOME.to_owned(), outcome)]))?,
+        )
+        .map_err(bad)
 }

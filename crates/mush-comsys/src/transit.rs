@@ -204,6 +204,13 @@ pub fn intents(w: &World) -> Option<Vec<Intent>> {
     let mut result = Vec::new();
     for id in &st.ic.pending {
         let m = st.ic.messages.get(id)?;
+        if !st
+            .channels
+            .get(&m.channel)
+            .is_some_and(crate::Channel::active)
+        {
+            continue;
+        }
         for &to in &m.pending {
             result.push(Intent {
                 representation: m.representation,
@@ -343,13 +350,17 @@ pub(crate) fn settle(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Sc
         let mut changed = false;
         for &to in &message.pending {
             visited += 1;
+            let active = ctx
+                .state::<ComsysState>()
+                .and_then(|s| s.channels.get(&id.0))
+                .is_some_and(crate::Channel::active);
             let alive = ctx
                 .w
                 .get(to)
                 .is_some_and(|o| !o.flags.contains(Flags::GOING));
             // Withdrawal is cancellation, not a delivery claim. A destroyed
             // recipient cannot consume content; no result is exposed remotely.
-            let Some(arrived) = (if alive {
+            let Some(arrived) = (if alive && active {
                 service.0.receipt(ctx.w, &message.key(to))
             } else {
                 Some(false)

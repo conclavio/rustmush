@@ -1,0 +1,14 @@
+{
+  "look": "unknown",
+  "asset_pack": "Unity built-in primitives",
+  "asset_version": "Unity 6000.6.7f1",
+  "package": "",
+  "root": "",
+  "primitive": "Sphere",
+  "default_part": "paint",
+  "size_cm": [
+    700,
+    350
+  ],
+  "muzzles": []
+}

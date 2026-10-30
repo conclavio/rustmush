@@ -114,6 +114,43 @@ what do flat sprites cost against voxel models?
 
 **Ruled (D-22-9)**: sprites, eight facings, six poses, 96 pixels.
 
+## U.6 (2026-10-30) — the bake matrix, D-22-10
+
+Built on `claude/mystifying-galileo-4b3706` against doc 22 Draft 0.7, one PR. The renders ran on
+the owner's machine (Unity 6000.6.7f1, the Mech Constructor packs), so the first bake ships with
+the pipeline.
+
+- **`mush_pixel::bake`**: the pack (format 2), its codec (decode refuses every truncation, a box
+  outside its frame, a run past its box), `Chain::pick` and `View::for_depression` (`fp` within
+  15° of depression), the text-sheet fallback chain for the 2.5D (`chain_from_sheet`), the matrix
+  check (`check_matrix`), `install` for a fetched pack. Replaces `load_mip_pack`, `decode_rle`,
+  `BakedMipPack`, `synthesize_3d_mip`, `scout_sheet`, `heavy_sheet`, `UnitModel`,
+  `pick_mip_level`, `MIP_SIZES` and `looks/iso25d_mips.bin`.
+- **The pictures**: the raycaster's `draw_sprite` draws a baked look from its chain
+  (`draw_chain`: the size nearest above, scaled down, the anchor on the ground, the depth test,
+  the rim from eight pixels) and an unbaked one from its text sheet; the heightfield passes the
+  line's depression, so a bowl seen from a hill draws `iso`; the 2.5D draws each look's `iso` chain
+  (or its text sheet's) at the size its height asks for.
+- **The looks**: `heavy.json` (Q-22-5; the tank's look loses `heavy_mk1` and its `missiles`);
+  text sheets and `size_cm` for the scout (520 × 220, the sim's) and the drone (250 × 100).
+- **The checks**: the matrix check on the embedded pack, its digest pinned; the 2.5D's ratio and
+  half-zoom test; the hull-down contract test (`mush-contract-tests/tests/pixel_hull_down.rs`): a
+  2 m berm three cells deep at 100, 200 and 500 m, a 2.5 m contact behind each where the 1.5 m
+  eye's line clears the crest and well into its shadow; tacsim's `ArenaTerrain::sight` and
+  `heightfield::visible_rows` agree on all six (one row is half a metre at 1.5 km in a 4096 px
+  frame). The berm is three cells deep because the picture's ground is bilinear between cell
+  centres: a one-cell lip is a tent its march can sample off the peak.
+- **The bake, measured**: biped 963 × 1100 cm, tank 410 × 250, heavy 440 × 280, scout 428 × 220,
+  drone 136 × 100, unknown 700 × 350; spans `fp`/`iso` 15.6/17.8 m (biped), 6.1 m (tank), 7.7 m
+  (heavy), 6.0 m (scout), 2.2 m (drone), 8.5 m (unknown); per look 78–217 KB packed, 1,043,471
+  bytes for six. Two defects found by the first full bake and fixed: the tank's drive clip carried
+  root motion (three of four moving frames empty), and the first tank, heavy and scout assemblies
+  stacked a mech cockpit on the chassis (3 m long at 2.5 m tall).
+- **Not done here**: the vehicles' proportions (the kit's are squat; a longer tank is a config
+  change and one command); the walker on the 2.5D's 96 px ceiling (a 128 px `iso` size, or a
+  tighter frame than the turning circle, would be a doc 22 decision); the kitty compositor's
+  follow-ups from the PR #154 review (doc 30 WG.6).
+
 ## D-22-9 format & 8-way sensor facing (2026-10-28)
 
 - **Sheet format & parser (`mush_pixel::look`)**: `SPRITE_MAX` raised from `64` to `96`; `Facing` expanded to all eight directions (`Front`, `FrontRight`, `Right`, `RearRight`, `Rear`, `RearLeft`, `Left`, `FrontLeft`) in clockwise 45° order with `Facing::ALL`, `Facing::named`, `Facing::from_aspect`, `Facing::as_str`, and `Facing::cardinal`. `Look::parse` accepts all eight facings (requiring all eight when any diagonal is present, while keeping 3/4-facing hand-drawn sheets valid), optional per-facing `"wreck"` inside each facing object, and up to eight top-level `"wreck"` frames. `Sheet::frame` and `Sheet::wreck_frame` resolve exact diagonal frames on 8-facing sheets and fall back to `facing.cardinal()` on 3/4-facing sheets.

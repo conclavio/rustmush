@@ -32,6 +32,13 @@
 //! - `mp_reset()` — fresh pictures (their animation counters and ground caches
 //!   from zero), the feeds and chosen kind kept: what the parity test draws
 //!   each case from.
+//! - `mp_units(len) -> u32` — read the input buffer's first `len` bytes as the
+//!   unit pack (doc 22 D-22-10: every baked look's size chains), which this
+//!   module does not embed — the pack is over rule 7's 512 KiB budget, so the
+//!   page fetches it as a cached asset and hands it over once; `1` installed,
+//!   `0` refused (not a pack this build reads, or one already installed).
+//!   Optional for the caller: until a pack arrives every unit draws its look's
+//!   text sheet.
 //!
 //! A buffer the module hands out moves when its memory grows, so the caller
 //! takes a fresh view of `memory.buffer` after every call that may allocate.
@@ -200,6 +207,13 @@ pub fn feed(feed: u32, json: &[u8]) -> bool {
     })
 }
 
+/// Install `pack` as the unit pack (see the crate's ABI, `mp_units`): whether
+/// it was installed.
+#[must_use]
+pub fn units(pack: &[u8]) -> bool {
+    mush_pixel::bake::install(pack).unwrap_or(false)
+}
+
 /// Draw a `w` x `h` frame of the chosen picture for the look (see the crate's
 /// ABI): whether one was drawn.
 #[must_use]
@@ -304,6 +318,13 @@ pub extern "C" fn mp_feed(which: u32, len: u32) -> u32 {
     u32::from(json.is_some_and(|json| feed(which, &json)))
 }
 
+/// Install the input buffer's first `len` bytes as the unit pack.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_units(len: u32) -> u32 {
+    let pack = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec));
+    u32::from(pack.is_some_and(|pack| units(&pack)))
+}
+
 /// Set the dead-reckoned ego position offset `(dx_cm, dy_cm)` from the held
 /// keyframe's `(x_cm, y_cm)`.
 #[unsafe(no_mangle)]
@@ -380,6 +401,7 @@ mod tests {
     /// functions its exports call (the browser's half is `pixel.test.ts`).
     #[test]
     fn the_module_draws_the_golden() {
+        install_shipped_pack();
         let golden: Value = serde_json::from_str(include_str!(
             "../../../web/src/lib/fixtures/pixel/cockpit_hashes.json"
         ))
@@ -419,6 +441,7 @@ mod tests {
     /// hash (`mush-pixel/tests/golden/overhead_hashes.json`).
     #[test]
     fn the_module_draws_the_overhead_golden() {
+        install_shipped_pack();
         let golden: Value = serde_json::from_str(include_str!(
             "../../mush-pixel/tests/golden/overhead_hashes.json"
         ))
@@ -463,6 +486,7 @@ mod tests {
     /// hash for hash.
     #[test]
     fn the_module_draws_the_bucket_b_pictures() {
+        install_shipped_pack();
         // DollPicture over the committed cockpit fixture.
         assert!(set_kind(KIND_DOLL));
         assert!(feed(FEED_COCKPIT, fixture("cockpit").as_bytes()));
@@ -557,5 +581,42 @@ mod tests {
         assert!(feed(FEED_COCKPIT, br#"{"seated": false}"#));
         assert!(!render(320, 220, Look::default()), "the seat went");
         assert_eq!(mp_abi(), ABI_VERSION);
+    }
+
+    /// The pack the page fetches: the native build's embedded one.
+    const SHIPPED_PACK: &[u8] = include_bytes!("../../mush-pixel/looks/units.bin");
+
+    /// Install the shipped unit pack, as the page does before it draws, so
+    /// these tests draw what the native goldens draw (the first caller
+    /// installs it; the tests share the process).
+    fn install_shipped_pack() {
+        let _ = units(SHIPPED_PACK);
+    }
+
+    /// The unit pack is fetched, not embedded (rule 7): the module refuses
+    /// what is not a pack and keeps the first one installed. The wasm32
+    /// build (mush-pixel without `encode`) embeds no pack; a host test run
+    /// inside the workspace gets `encode` by feature unification and embeds
+    /// it, so only the target build is held to that.
+    #[test]
+    fn the_unit_pack_is_installed_not_embedded() {
+        if cfg!(target_arch = "wasm32") {
+            assert!(
+                mush_pixel::bake::embedded().is_empty(),
+                "the web build embeds no pack"
+            );
+        }
+        const _: () = assert!(
+            mush_pixel::bake::WEB_FETCHES_PACK,
+            "the web fetches the pack"
+        );
+        assert!(!units(b"not a pack"));
+        install_shipped_pack();
+        assert!(!units(SHIPPED_PACK), "installed once");
+        assert_eq!(
+            Some(mush_pixel::bake::pack()),
+            mush_pixel::bake::Pack::decode(SHIPPED_PACK).ok().as_ref()
+        );
+        assert_eq!(mp_units(u32::MAX), 0, "past the input buffer");
     }
 }
