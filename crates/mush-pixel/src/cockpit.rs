@@ -496,15 +496,18 @@ fn contact_sprite(c: &Value, cam: &Camera, step: usize) -> Sprite {
         .or_else(|| c.get("aspect"))
         .and_then(Value::as_str)
         .unwrap_or("front");
-    let pose = look
-        .and_then(|l| l.sprites.as_ref())
-        .or_else(|| {
-            c.get("unit_type")
-                .and_then(Value::as_str)
-                .filter(|u| u.contains("scout"))
-                .and_then(|_| look::for_unit("tacsim.unit.line_tank"))
-                .and_then(|l| l.sprites.as_ref())
-        })
+    let unit_str = c.get("unit_type").and_then(Value::as_str);
+    let sheet_override = match unit_str {
+        Some(u) if u.contains("scout") || u.contains("recon") => {
+            Some(crate::heightfield::scout_sheet())
+        }
+        Some(u) if u.contains("heavy") || u.contains("artillery") => {
+            Some(crate::heightfield::heavy_sheet())
+        }
+        _ => None,
+    };
+    let pose = sheet_override
+        .or_else(|| look.and_then(|l| l.sprites.as_ref()))
         .map(|sheet| SpritePose {
             sheet,
             facing: Facing::from_aspect(facing_word),

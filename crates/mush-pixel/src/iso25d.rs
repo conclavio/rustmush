@@ -150,11 +150,17 @@ const OFF_MAP_RGB: Rgb = [10, 12, 16];
 pub enum UnitModel {
     /// Walker (`biped_mk1`, `biped_mk2`) — baked from the 3D Fox light mech.
     Biped = 0,
-    /// Tracked or wheeled vehicle (`line_tank` family, `heavy_mk1`,
-    /// `target_mk1`, `scout_mk1`) — baked from the 3D Tracked Tank.
+    /// Standard tracked main battle tank (`line_tank` family, `target_mk1`) —
+    /// baked from the 3D Tracked Tank.
     Tank = 1,
     /// Unclassified contact or drone/other — reduced from `look::unknown()`.
     Unknown = 2,
+    /// Wheeled reconnaissance vehicle (`scout_mk1`) — 6-wheeled sloped hull with
+    /// autocannon turret and rear sensor mast.
+    Scout = 3,
+    /// Heavy assault / artillery carrier (`heavy_mk1`) — wide twin-tread hull with
+    /// dual main cannon barrels and dorsal LRM missile pod rack.
+    Heavy = 4,
 }
 
 impl UnitModel {
@@ -166,11 +172,11 @@ impl UnitModel {
         };
         if ut.contains("biped") {
             Self::Biped
-        } else if ut.contains("tank")
-            || ut.contains("heavy")
-            || ut.contains("target")
-            || ut.contains("scout")
-        {
+        } else if ut.contains("scout") || ut.contains("recon") {
+            Self::Scout
+        } else if ut.contains("heavy") || ut.contains("artillery") {
+            Self::Heavy
+        } else if ut.contains("tank") || ut.contains("target") {
             Self::Tank
         } else {
             Self::Unknown
@@ -1647,8 +1653,12 @@ impl Iso25DPicture {
 
             let kind = contact_kind(c);
             let model = if kind == SpriteKind::Wreck {
-                UnitModel::from_unit_type(c.get("unit_type").and_then(Value::as_str))
-                    .min(UnitModel::Tank)
+                let m = UnitModel::from_unit_type(c.get("unit_type").and_then(Value::as_str));
+                if m == UnitModel::Unknown {
+                    UnitModel::Tank
+                } else {
+                    m
+                }
             } else {
                 UnitModel::from_unit_type(c.get("unit_type").and_then(Value::as_str))
             };
@@ -3382,6 +3392,102 @@ mod tests {
                 assert_ne!(fp_hashes.get(i), fp_hashes.get(j));
                 assert_ne!(ov_hashes.get(i), ov_hashes.get(j));
                 assert_ne!(iso_hashes.get(i), iso_hashes.get(j));
+            }
+        }
+    }
+
+    #[test]
+    fn distinct_unit_silhouettes_render_in_25d_and_first_person() {
+        use crate::cockpit::CockpitPicture;
+        use std::collections::HashMap;
+
+        struct MapFeeds(HashMap<String, Value>);
+        impl Feeds for MapFeeds {
+            fn feed(&self, name: &str) -> Option<&Value> {
+                self.0.get(name)
+            }
+        }
+
+        assert_eq!(
+            UnitModel::from_unit_type(Some("tacsim.unit.biped_mk1")),
+            UnitModel::Biped
+        );
+        assert_eq!(
+            UnitModel::from_unit_type(Some("tacsim.unit.line_tank")),
+            UnitModel::Tank
+        );
+        assert_eq!(
+            UnitModel::from_unit_type(Some("tacsim.unit.scout_mk1")),
+            UnitModel::Scout
+        );
+        assert_eq!(
+            UnitModel::from_unit_type(Some("tacsim.unit.heavy_mk1")),
+            UnitModel::Heavy
+        );
+
+        let map_json = json!({
+            "surface": "tacsim.arena.mars_canyon",
+            "biome": "mars",
+            "procedural_relief": true,
+            "width": 16,
+            "height": 16,
+            "cell_cm": 1000,
+            "legend": [["\"", "grass"]],
+            "rows": (0..16).map(|_| json!([["\"", 16]])).collect::<Vec<_>>()
+        });
+
+        let unit_types = [
+            "tacsim.unit.biped_mk1",
+            "tacsim.unit.line_tank",
+            "tacsim.unit.scout_mk1",
+            "tacsim.unit.heavy_mk1",
+        ];
+        let mut iso_hashes = Vec::new();
+        let mut fp_hashes = Vec::new();
+
+        for ut in unit_types {
+            let cockpit = json!({
+                "seated": true,
+                "team": "blue",
+                "unit_type": ut,
+                "x_cm": 8_500,
+                "y_cm": 5_500,
+                "z_cm": 0,
+                "heading_mdeg": 0,
+                "speed_cms": 400,
+                "contacts": [
+                    {
+                        "id": "RA",
+                        "class": "red",
+                        "unit_type": ut,
+                        "bearing_deg": 0.0,
+                        "range_m": 32.0,
+                        "facing": "front_right",
+                        "moving": true
+                    }
+                ]
+            });
+            let mut feeds = MapFeeds(HashMap::new());
+            feeds.0.insert(COCKPIT_FEED.to_string(), cockpit);
+            feeds.0.insert(ARENA_MAP_FEED.to_string(), map_json.clone());
+            let look = Look::default();
+
+            let mut iso_pic = Iso25DPicture::new();
+            let mut iso_frame = Frame::new(320, 240);
+            assert!(iso_pic.draw(&mut iso_frame, &feeds, &look));
+            iso_hashes.push(iso_frame.hash());
+
+            let mut fp_pic = CockpitPicture::new();
+            let mut fp_frame = Frame::new(320, 240);
+            assert!(fp_pic.draw(&mut fp_frame, &feeds, &look));
+            assert!(fp_frame.count_colours(256) <= 256);
+            fp_hashes.push(fp_frame.hash());
+        }
+
+        for i in 0..unit_types.len() {
+            for j in (i + 1)..unit_types.len() {
+                assert_ne!(iso_hashes.get(i), iso_hashes.get(j));
+                assert_ne!(fp_hashes.get(i), fp_hashes.get(j));
             }
         }
     }
