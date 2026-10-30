@@ -706,6 +706,10 @@ async fn activation_requires_current_player_readiness_station_and_helm_lease() -
 }
 
 async fn field_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
+    field_operator_fixture(store, false).await
+}
+
+async fn field_operator_fixture(store: &InMemoryStore, npc: bool) -> TestResult<(Rig, ObjId)> {
     let mut rig = fixture(store).await?;
     let cab = rig
         .world
@@ -744,6 +748,9 @@ async fn field_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
         GOD,
         &format!("@spatial/unassign #{}=pilot", rig.unit.0),
     )?;
+    if npc {
+        hire_field_operator(&mut rig, store).await?;
+    }
     let (hull, ceres, crew, site) = {
         let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("programme port")?;
         let row = port.map.hulls.first().ok_or("programme hull")?;
@@ -794,19 +801,37 @@ async fn field_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
             "@spatial/station #{}=pilot,pilot,channels:helm,space:#{}",
             rig.unit.0, cab.0
         ),
-        format!("@spatial/assign #{}=pilot,#{}", rig.unit.0, rig.invitee.0),
         format!("@asset/title #{}=#{}", rig.unit.0, rig.organizer.0),
-        format!("@spatial/place/domain #{}={site}", hull.0),
     ] {
         ordinary(&mut rig.world, GOD, &command)?;
     }
-    rig.world.world_mut().move_to(rig.organizer, crew)?;
-    rig.world.world_mut().move_to(rig.invitee, cab)?;
+    if npc {
+        ordinary(
+            &mut rig.world,
+            rig.organizer,
+            &format!("+sortie/board #{}", rig.invitee.0),
+        )?;
+    } else {
+        ordinary(
+            &mut rig.world,
+            GOD,
+            &format!("@spatial/assign #{}=pilot,#{}", rig.unit.0, rig.invitee.0),
+        )?;
+    }
     ordinary(
         &mut rig.world,
-        rig.invitee,
-        &format!("+focus #{}/pilot", rig.unit.0),
+        GOD,
+        &format!("@spatial/place/domain #{}={site}", hull.0),
     )?;
+    rig.world.world_mut().move_to(rig.organizer, crew)?;
+    if !npc {
+        rig.world.world_mut().move_to(rig.invitee, cab)?;
+        ordinary(
+            &mut rig.world,
+            rig.invitee,
+            &format!("+focus #{}/pilot", rig.unit.0),
+        )?;
+    }
     persist_legacy(&mut rig.world, store).await?;
     commit(
         &mut rig.world,
@@ -818,7 +843,10 @@ async fn field_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
         ),
     )
     .await?;
-    let payload = plan(&rig);
+    let mut payload = plan(&rig);
+    if npc {
+        payload["slots"][0]["controller"]["kind"] = json!("npc");
+    }
     commit(
         &mut rig.world,
         store,
@@ -826,29 +854,31 @@ async fn field_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
         &format!("+sortie/draft {payload}"),
     )
     .await?;
-    let selected = draft(&rig.world, rig.organizer, 1)?;
-    commit(
-        &mut rig.world,
-        store,
-        rig.invitee,
-        &declaration("accept", &selected),
-    )
-    .await?;
-    commit(
-        &mut rig.world,
-        store,
-        rig.invitee,
-        &format!("@station/handoff #{}/pilot", rig.unit.0),
-    )
-    .await?;
-    install_due_handoff(&mut rig.world, store).await?;
-    commit(
-        &mut rig.world,
-        store,
-        rig.invitee,
-        &declaration("ready", &selected),
-    )
-    .await?;
+    if !npc {
+        let selected = draft(&rig.world, rig.organizer, 1)?;
+        commit(
+            &mut rig.world,
+            store,
+            rig.invitee,
+            &declaration("accept", &selected),
+        )
+        .await?;
+        commit(
+            &mut rig.world,
+            store,
+            rig.invitee,
+            &format!("@station/handoff #{}/pilot", rig.unit.0),
+        )
+        .await?;
+        install_due_handoff(&mut rig.world, store).await?;
+        commit(
+            &mut rig.world,
+            store,
+            rig.invitee,
+            &declaration("ready", &selected),
+        )
+        .await?;
+    }
     commit(
         &mut rig.world,
         store,
@@ -857,6 +887,42 @@ async fn field_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
     )
     .await?;
     Ok((rig, cab))
+}
+
+async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore) -> TestResult {
+    use tacsim::detachment::crew::{CrewDuty, HireTerms, NpcMissionScope, OFFER_ATTR};
+    let key = mush_atlas::RecordKey::new(
+        mush_core::CanonicalId::new("neighborhood.ceres_freeport")?,
+        mush_core::CanonicalId::new("room.c10_slack_line")?,
+    );
+    let room =
+        tacsim::port::apply::room_by_key(rig.world.world(), &key).ok_or("actual crew bar")?;
+    rig.world.world_mut().move_to(rig.organizer, room)?;
+    let npc =
+        rig.world
+            .world_mut()
+            .create(ObjKind::Npc, "Contracted field pilot", GOD, Some(room))?;
+    let terms = HireTerms {
+        schema: 1,
+        port: mush_core::CanonicalId::new("ceres")?,
+        mission_scope: NpcMissionScope::SubordinateOperator,
+        duties: std::collections::BTreeSet::from([CrewDuty::Combat]),
+    };
+    rig.world.world_mut().set_attr(
+        npc,
+        OFFER_ATTR,
+        mush_core::Attr::json(serde_json::to_value(&terms)?, GOD),
+    )?;
+    persist_legacy(&mut rig.world, store).await?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        &format!("+sortie/hire #{}={}", npc.0, terms.digest()?.to_hex()),
+    )
+    .await?;
+    rig.invitee = npc;
+    Ok(())
 }
 fn flight(
     world: &TestWorld,
@@ -1195,5 +1261,160 @@ async fn physical_departure_before_confirmation_reconciles_after_restart() -> Te
             .parent_of(rig.unit),
         before
     );
+    Ok(())
+}
+
+fn actual_helm(world: &TestWorld, unit: ObjId, actor: ObjId) -> TestResult<bool> {
+    Ok(world
+        .engine()
+        .authority_witness(&mush_core::AuthorityWitnessRequest::ControlLease {
+            provider: mush_core::OwnerId::new("sim")?,
+            subject: unit,
+            channel: mush_core::ChannelId::new("helm").ok_or("helm")?,
+            holder: mush_core::PrincipalId::Object { id: actor },
+        })?
+        .is_some())
+}
+
+#[tokio::test]
+async fn hired_npc_boards_takes_actual_unit_control_and_departs_without_proxy_focus() -> TestResult
+{
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = field_operator_fixture(&store, true).await?;
+    let organizer = rig.organizer;
+    assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    assert!(
+        rig.world
+            .world()
+            .module_state::<mush_sim::FocusState>()
+            .ok_or("focus")?
+            .focus_of_actor(rig.invitee)
+            .is_none()
+    );
+    let request = submit(&mut rig.world, organizer, "+sortie/seat 1:1=1")?;
+    assert_eq!(
+        request.actor, rig.invitee,
+        "the existing handoff belongs to the NPC"
+    );
+    assert_eq!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        Some(cab)
+    );
+    assert!(
+        !actual_helm(&rig.world, rig.unit, rig.invitee)?,
+        "physical seating is not a lease"
+    );
+    persist_legacy(&mut rig.world, &store).await?;
+    land_request(&mut rig.world, &store, &request).await?;
+    assert!(
+        !actual_helm(&rig.world, rig.unit, rig.invitee)?,
+        "a pending request is not a lease"
+    );
+    let (npc, carrier, now) = (rig.invitee, rig.carrier, rig.world.world().now());
+    drop(rig);
+    let mut rig = fixture(&store).await?;
+    rig.invitee = npc;
+    rig.carrier = carrier;
+    rig.world.set_now(now);
+    assert_eq!(
+        rig.world.world().get(npc).and_then(|o| o.location),
+        Some(cab)
+    );
+    assert!(
+        rig.world
+            .world()
+            .module_state::<mush_sim::FocusState>()
+            .ok_or("focus")?
+            .focus_of_actor(npc)
+            .is_none()
+    );
+    install_due_handoff(&mut rig.world, &store).await?;
+    assert!(actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    commit(&mut rig.world, &store, organizer, "+sortie/launch 1:1=1").await?;
+    let departure = flight(&rig.world, rig.unit, 1)?;
+    let request = fire_flight(&mut rig.world, &store, departure.due.at).await?;
+    land_request(&mut rig.world, &store, &request).await?;
+    let field = flight(&rig.world, rig.unit, 1)?;
+    assert_eq!(field.phase, Phase::Field);
+    assert_eq!(
+        field.epoch.as_ref().ok_or("NPC epoch")?.operator,
+        rig.invitee
+    );
+    assert_eq!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        Some(cab)
+    );
+    commit(&mut rig.world, &store, organizer, "+sortie/recover 1:1=1").await?;
+    let returning = flight(&rig.world, rig.unit, 1)?;
+    let request = fire_flight(&mut rig.world, &store, returning.due.at).await?;
+    land_request(&mut rig.world, &store, &request).await?;
+    assert_eq!(flight(&rig.world, rig.unit, 1)?.phase, Phase::Returned);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hired_npc_station_request_and_apply_recheck_current_physical_console() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = field_operator_fixture(&store, true).await?;
+    let organizer = rig.organizer;
+    let crew = rig
+        .world
+        .world()
+        .get(rig.invitee)
+        .and_then(|o| o.location)
+        .ok_or("crew compartment")?;
+    let crew = mush_sim::anchored_space_of(rig.world.world(), crew).ok_or("carrier interior")?;
+    let request = submit(&mut rig.world, organizer, "+sortie/seat 1:1=1")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    stage(&mut rig.world, &store, &request).await?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/interior #{}=#{}", rig.invitee.0, crew.0),
+    )?;
+    assert!(rig.world.engine_mut().take_staged_action().is_err());
+    assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    rig.world.set_now(rig.world.world().now() + 1);
+    let request = submit(&mut rig.world, organizer, "+sortie/seat 1:1=1")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    land_request(&mut rig.world, &store, &request).await?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/interior #{}=#{}", rig.invitee.0, crew.0),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    assert!(install_due_handoff(&mut rig.world, &store).await.is_err());
+    assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/interior #{}=#{}", rig.invitee.0, cab.0),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    install_due_handoff(&mut rig.world, &store).await?;
+    assert!(actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hired_npc_seating_requires_current_real_unit_use_permission() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_operator_fixture(&store, true).await?;
+    let organizer = rig.organizer;
+    let before = rig.world.world().get(rig.invitee).and_then(|o| o.location);
+    commit(&mut rig.world, &store, organizer, "@unitgrant/revoke 1").await?;
+    let refused = text(&mut rig.world, organizer, "+sortie/seat 1:1=1");
+    assert!(
+        refused.contains("OperateCrew permissions are required"),
+        "{refused}"
+    );
+    assert_eq!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        before
+    );
+    assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    assert!(rig.world.engine_mut().take_authoritative_submit().is_none());
     Ok(())
 }

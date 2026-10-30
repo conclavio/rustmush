@@ -277,11 +277,12 @@ fn vf_g13_the_station_assignment_writer_census_is_pinned() {
         vec![
             // hydration insert, the seat-cap `retain` pass, and the B4 hold.
             ("mush-sim/src/boot.rs", 3, vec!["load_boot".to_owned()]),
-            // `@spatial/assign` and `@spatial/unassign`.
+            // `@spatial/assign` shares its owner writer with contracted NPC seating;
+            // `@spatial/unassign` remains the other command writer.
             (
                 "mush-sim/src/commands.rs",
                 2,
-                vec!["spatial_assign".to_owned(), "spatial_unassign".to_owned()]
+                vec!["assign_station".to_owned(), "spatial_unassign".to_owned()]
             ),
             // destroy, plus cut 10's A4 actor-death seat cleanup.
             (

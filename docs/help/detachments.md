@@ -51,6 +51,7 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/active <organizer>:<draft>` | Inspect an accepted roster that assigns you a player slot |
 | `+sortie/deactivate <draft>:<activation revision>` | Release the accepted assignments |
 | `+sortie/preflight <draft>:<activation revision>` | Inspect current launch facts for your accepted roster while aboard its carrier |
+| `+sortie/seat <draft>:<activation revision>=<slot>` | Arrange an accepted NPC operator's physical unit console and control request |
 | `+sortie/launch <draft>:<activation revision>=all` | Admit the unlaunched members of your accepted roster |
 | `+sortie/launch <draft>:<activation revision>=<slot>` | Admit or retry one unlaunched member |
 | `+sortie/operation <draft>:<activation revision>` | Read the operation's saved progress and flight references |
@@ -158,8 +159,14 @@ readiness: launch still needs current containment, control, capability/health
 and the applicable mission-role grants.
 
 Launch requires each operator inside their assigned unit at its real console
-with a current helm lease. Automatic seating and control acquisition for hired
-NPCs are still being integrated. Each departure takes the existing ramp duration;
+with a current helm lease. For an accepted NPC slot, use `+sortie/seat` while
+you and the hired person are aboard the selected carrier. Its unit must be in
+the actual vehicle bay and have an authored helm console. You need Deploy
+permission and the NPC needs OperateCrew permission; employment alone grants
+neither. An occupied billet or another operator's control prevents taking over.
+The NPC boards the unit and requests control through its existing station.
+Preflight and launch check current facts again after that request settles.
+Each departure takes the existing ramp duration;
 units complete independently. A blocked departure remains pending and can be
 retried or cancelled while still aboard. Inspect `+sortie/operation` for confirmed
 progress and individual flight references. History is available to the original
