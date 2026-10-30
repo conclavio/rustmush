@@ -298,6 +298,7 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::detachment::activation::action_descriptor(
         &outcome_refs,
     )?);
+    actions.push(crate::detachment::sortie::action_descriptor(&outcome_refs)?);
     actions.push(crate::procurement::action_descriptor(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
@@ -481,7 +482,14 @@ pub(crate) fn register_with_coverage(
     )?;
     let quest =
         crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
-    crate::detachment::register_preparation(reg, &action_refs, &outcome_refs, unit_authority)?;
+    crate::detachment::register_preparation(
+        reg,
+        &action_refs,
+        &outcome_refs,
+        unit_authority,
+        &port_families,
+        black_box.detachment,
+    )?;
     // Doc 17h cut M8f: the procurement ledger, its record action and the `tacsim.procurement`
     // tick, unconditionally (no policy, no visit).
     crate::procurement::register(reg, &action_refs, &outcome_refs)?;
@@ -536,6 +544,7 @@ fn register_outcomes(
     outcomes.push(crate::detachment::planning::outcome_descriptor()?);
     outcomes.push(crate::detachment::crew::outcome_descriptor()?);
     outcomes.push(crate::detachment::activation::outcome_descriptor()?);
+    outcomes.push(crate::detachment::sortie::outcome_descriptor()?);
     outcomes.push(crate::procurement::outcome_descriptor()?);
     if let Some(ic) = ic {
         outcomes.push(ic.outcome()?);
@@ -725,6 +734,7 @@ type BlackBoxHandle =
 
 /// The black box participant's handles, one an action that asks for it.
 struct BlackBoxHandles {
+    detachment: Option<BlackBoxHandle>,
     /// `tacsim_surface_done`'s.
     done: Option<BlackBoxHandle>,
     /// `tacsim_surface_recovery`'s.
@@ -765,14 +775,17 @@ fn register_black_box(
         .filter(|_| inventory)
         .cloned();
     let epoch = actions.get(crate::port::epoch::EPOCH_ACTION).cloned();
+    let detachment = actions.get(crate::detachment::sortie::ACTION).cloned();
     let allowed: BTreeSet<DefinitionRef> = done
         .iter()
         .chain(recovery.iter())
         .chain(epoch.iter())
+        .chain(detachment.iter())
         .cloned()
         .collect();
     if allowed.is_empty() {
         return Ok(BlackBoxHandles {
+            detachment: None,
             done: None,
             recovery: None,
             epoch: None,
@@ -785,6 +798,7 @@ fn register_black_box(
             .transpose()
     };
     Ok(BlackBoxHandles {
+        detachment: request(detachment)?,
         done: request(done)?,
         recovery: request(recovery)?,
         epoch: request(epoch)?,

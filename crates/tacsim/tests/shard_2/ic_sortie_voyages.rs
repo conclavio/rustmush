@@ -235,6 +235,7 @@ fn s2_ceres_to_stickney_opens_and_closes() {
     assert_eq!(
         both[1],
         BlackBoxLine::SortieClosed {
+            detachment: None,
             unit: hull,
             sortie: open.id,
             at_ic: arrival,

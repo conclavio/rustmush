@@ -178,6 +178,12 @@ does not open/close a hull epoch, recall a field unit, repair damage, or resolve
 casualty. Licensed unit minds need their actual production host; neither the OOC
 adapter nor an NPC character's decision driver provides that authorization.
 
+DT.3b supplies physical bay-to-surface departures and mobile ramp returns for
+accepted operators already at real consoles with current helm leases. It retains
+per-unit flight history and actual hull epochs across restart. Automatic hired-NPC
+seating/control acquisition and the IC field command/observer driver remain the
+next integration work; this cut does not claim the complete NPC mining story.
+
 ## DT.1a verification
 
 Validated locally on 2026-10-28:

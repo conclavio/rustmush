@@ -1,0 +1,140 @@
+use super::{
+    facts,
+    model::*,
+    runtime::{self, SortieHandles},
+};
+use mush_core::{Ctx, ModError, Registrar, SceneId, TickCadence};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
+
+#[derive(Clone, Default)]
+struct TickState {
+    after: Option<mush_core::ObjId>,
+}
+pub(super) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    reg.state(TickState::default());
+    reg.tick(
+        "tacsim.detachment_flights",
+        TickCadence::Coarse(Duration::from_secs(5)),
+        Arc::new(tick),
+    )
+}
+fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
+    let Some(h) = ctx
+        .w
+        .module_state::<SortieHandles>()
+        .filter(|h| h.enabled)
+        .cloned()
+    else {
+        return;
+    };
+    if ctx
+        .w
+        .module_state::<crate::TacsimStore>()
+        .is_none_or(|s| !s.enabled())
+        || ctx.authoritative_commit_pending()
+        || ctx.w.world_timeline().is_frozen()
+    {
+        return;
+    }
+    let after = ctx.w.module_state::<TickState>().and_then(|s| s.after);
+    let Ok(Some(index)) = ctx.action_state(&h.index, &()) else {
+        return;
+    };
+    if index.validate().is_err() {
+        return;
+    }
+    let mut units = index
+        .units
+        .iter()
+        .copied()
+        .filter(|unit| after.is_none_or(|last| *unit > last))
+        .take(33)
+        .collect::<Vec<_>>();
+    let more = units.len() > 32;
+    units.truncate(32);
+    let next = if more { units.last().copied() } else { None };
+    let heads = units
+        .iter()
+        .filter_map(|unit| {
+            ctx.action_state(&h.heads, unit)
+                .ok()
+                .flatten()
+                .filter(|head| head.flight.unit == *unit && head.validate().is_ok())
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    if let Some(state) = ctx.w.module_state_mut::<TickState>() {
+        state.after = next
+    }
+    let mut acted = BTreeSet::new();
+    for head in heads {
+        let Ok(Some(flight)) = ctx
+            .action_state(&h.flights, &head.flight)
+            .map(|f| f.cloned())
+        else {
+            continue;
+        };
+        if flight.key != head.flight
+            || flight.validate().is_err()
+            || !flight.phase.open()
+            || !known_clock(ctx.w, &flight.requested)
+            || !known_clock(ctx.w, &flight.due)
+            || matches!(flight.phase, Phase::Departing | Phase::Returning)
+                && ctx.w.world_ic_now().at < flight.due.at
+            || ctx.authoritative_pending(flight.continuation_actor())
+            || acted.contains(&flight.continuation_actor())
+        {
+            continue;
+        }
+        let Ok(Some(op)) = ctx
+            .action_state(&h.operations, &flight.operation)
+            .map(|o| o.cloned())
+        else {
+            continue;
+        };
+        if op.id != flight.operation
+            || op.validate().is_err()
+            || super::prepare::membership(&op, &flight).is_err()
+        {
+            continue;
+        }
+        let contract = ctx
+            .action_state(&h.contracts, &flight.operator)
+            .ok()
+            .flatten()
+            .cloned();
+        let already = flight.phase == Phase::Departing && facts::on_site(ctx.w, &flight)
+            || matches!(flight.phase, Phase::Field | Phase::Returning)
+                && facts::in_bay(ctx.w, &flight);
+        if !already {
+            if flight.phase == Phase::Field
+                || op.ended.is_some() && flight.phase == Phase::Departing
+                || !facts::pending_can_move(ctx.w, &op.roster, &flight, contract)
+            {
+                continue;
+            }
+            let moved = match flight.phase {
+                Phase::Departing => {
+                    mush_sim::place(ctx, flight.key.unit, flight.domain, flight.ramp.clone())
+                }
+                Phase::Returning => mush_sim::place_interior(
+                    ctx,
+                    flight.key.unit,
+                    flight.bay_room,
+                    Some(flight.bay_slot.clone()),
+                ),
+                _ => continue,
+            };
+            if let Err(error) = moved {
+                tracing::warn!(unit=flight.key.unit.0,%error,"detachment physical step refused");
+                continue;
+            }
+        }
+        if runtime::finish_submit(ctx, &flight).is_ok() {
+            acted.insert(flight.continuation_actor());
+        }
+        if acted.len() >= 8 {
+            break;
+        }
+    }
+}

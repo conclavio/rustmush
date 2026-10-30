@@ -148,7 +148,7 @@ pub fn register(
     planning: &PlanningHandles,
     contracts: &CrewHandles,
     enabled: bool,
-) -> Result<(), ModError> {
+) -> Result<ActivationHandles, ModError> {
     let records = reg.state_family(
         crate::port::families::family_descriptor(
             RECORDS,
@@ -194,7 +194,10 @@ pub fn register(
         )?;
         reg.definition_validator(
             DefinitionKind::new("bridge").map_err(bad)?,
-            crate::definitions::exact_validator(vec![bridge.clone()]),
+            crate::definitions::exact_validator(vec![
+                bridge.clone(),
+                crate::detachment::sortie::bridge_descriptor()?,
+            ]),
         )?;
         let definition = reg.definition(bridge)?;
         reg.interaction_bridge(BridgeDescriptor::new(
@@ -226,8 +229,8 @@ pub fn register(
         },
     )?;
     reg.state(Pending::default());
-    reg.state(handles);
-    Ok(())
+    reg.state(handles.clone());
+    Ok(handles)
 }
 
 fn validate_record(

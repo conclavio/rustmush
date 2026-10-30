@@ -110,6 +110,13 @@ pub enum EpochHost {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum Hangar {
+    /// A real compartment without an invented numbered vehicle berth.
+    Compartment {
+        hull: ObjId,
+        room: ObjId,
+        compartment: mush_sim::SlotId,
+        sortie: Option<SortieId>,
+    },
     /// A carrier's bay (`{"hull":n,"slot":k,"sortie":…}`).
     Bay {
         /// The carrier hull (the Dray-P whose bay the rig left).
@@ -269,6 +276,34 @@ impl SealFacts {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetachmentLink {
+    pub operation: crate::detachment::sortie::OperationId,
+    pub detachment: u64,
+    pub roster_revision: u64,
+    pub source_revision: u64,
+    pub slot: u16,
+    pub launcher: ObjId,
+    pub operator: ObjId,
+}
+impl DetachmentLink {
+    fn check(&self) -> Result<(), String> {
+        self.operation.key()?;
+        if self.detachment
+            != crate::detachment::activation::detachment_id(self.operation.reference())?
+            || self.roster_revision != self.operation.activation
+            || self.source_revision == 0
+            || !(1..=6).contains(&self.slot)
+            || self.launcher != self.operation.organizer
+            || self.operator.0 == 0
+        {
+            return Err("Invalid detachment epoch link.".into());
+        }
+        Ok(())
+    }
+}
+
 /// **One black box line** (cut S.1's L7): a JSON object with a `kind` word in the arena's flat
 /// style (`crate::arena::ledger::EventKind`'s words are the pattern, not the type). Strict.
 // A line is built, encoded into the ledger and dropped; it is never held in bulk, so the open
@@ -280,6 +315,8 @@ pub enum BlackBoxLine {
     /// **An epoch opened under its seal** (doc 23 §6 "At the dispatch"): the hull left its
     /// hangar at `at_ic`.
     MindSealed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detachment: Option<Box<DetachmentLink>>,
         /// The hull whose epoch it is.
         unit: ObjId,
         /// Its epoch's id (the IC kind, [`SortieId::ic`]).
@@ -342,6 +379,8 @@ pub enum BlackBoxLine {
     /// **An epoch closed** (doc 23 §6 "At the close"; D-23-1): the hull arrived in a hangar or
     /// was recovered.
     SortieClosed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detachment: Option<Box<DetachmentLink>>,
         /// The hull.
         unit: ObjId,
         /// Its epoch's id.
@@ -378,6 +417,32 @@ pub enum BlackBoxLine {
 }
 
 impl BlackBoxLine {
+    #[must_use]
+    pub fn with_detachment(mut self, link: DetachmentLink) -> Self {
+        match &mut self {
+            Self::MindSealed { detachment, .. } | Self::SortieClosed { detachment, .. } => {
+                *detachment = Some(Box::new(link))
+            }
+        }
+        self
+    }
+    #[must_use]
+    pub fn with_compartment(mut self, room: ObjId, compartment: mush_sim::SlotId) -> Self {
+        if let Self::MindSealed {
+            hangar: hangar @ Hangar::Bay { .. },
+            ..
+        } = &mut self
+            && let Hangar::Bay { hull, sortie, .. } = hangar
+        {
+            *hangar = Hangar::Compartment {
+                hull: *hull,
+                room,
+                compartment,
+                sortie: *sortie,
+            };
+        }
+        self
+    }
     /// **The open line** (L7): `seal` is `None` when the hull had no `TacticalUnit`.
     #[must_use]
     pub fn mind_sealed(
@@ -463,6 +528,7 @@ impl BlackBoxLine {
         close: IcCloseKind,
     ) -> BlackBoxLine {
         BlackBoxLine::SortieClosed {
+            detachment: None,
             unit: hull,
             sortie: epoch.id,
             at_ic,
@@ -485,6 +551,7 @@ impl BlackBoxLine {
         close: IcCloseKind,
     ) -> BlackBoxLine {
         BlackBoxLine::SortieClosed {
+            detachment: None,
             unit: tv,
             sortie: open.id,
             at_ic,
@@ -542,6 +609,10 @@ impl BlackBoxLine {
     ///
     /// The first invariant broken, as a sentence.
     pub fn check(&self, hull: ObjId) -> Result<(), String> {
+        let (Self::MindSealed { detachment, .. } | Self::SortieClosed { detachment, .. }) = self;
+        if let Some(link) = detachment {
+            link.check()?
+        }
         if self.unit() != hull {
             return Err("a black box line is its own hull's".to_owned());
         }
@@ -571,6 +642,11 @@ impl BlackBoxLine {
                     return Err("only an ungoverned seal records admissions".to_owned());
                 }
                 match hangar {
+                    Hangar::Compartment { hull: of, room, .. } => {
+                        if *of == hull || of.0 == 0 || room.0 == 0 {
+                            return Err("A unit leaves a real compartment in another hull.".into());
+                        }
+                    }
                     Hangar::Bay { hull: of, slot, .. } => {
                         if *of == hull || of.0 == 0 || *slot == 0 {
                             return Err("a hull leaves another hull's bay slot".to_owned());
@@ -655,6 +731,7 @@ fn sealed_line(
     admitted: Admitted,
 ) -> BlackBoxLine {
     BlackBoxLine::MindSealed {
+        detachment: None,
         unit,
         sortie,
         at_ic,
@@ -1358,6 +1435,7 @@ mod tests {
             Some(unrecorded)
         );
         let close_line = |sortie: SortieId, base: ObjId| BlackBoxLine::SortieClosed {
+            detachment: None,
             unit: ObjId(30),
             sortie,
             at_ic: 4_000,
@@ -1480,6 +1558,7 @@ mod tests {
         );
         let line = |close: IcCloseKind, abandoned: bool, at: Option<i64>, by: Option<ObjId>| {
             BlackBoxLine::SortieClosed {
+                detachment: None,
                 unit: ObjId(30),
                 sortie: SortieId::ic(ObjId(30), 500),
                 at_ic: 4_000,

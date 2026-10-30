@@ -2,8 +2,8 @@
 
 Use `+sortie/plans` to see your private presets and editable mission drafts.
 Use `+sortie/invitations` to see drafts that assign you a player slot. These
-commands prepare a plan. Activate a complete draft to reserve its assignments;
-physical launch follows separately.
+commands prepare a plan. Activate a complete draft to reserve its assignments,
+then use `+sortie/launch` at a surface berth with a ramp and vehicle bay.
 
 To hire an NPC, meet them at a port and use `+sortie/crew`. It lists the available
 people in your room, their agreed duties and whether they can command a detachment.
@@ -51,6 +51,13 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/active <organizer>:<draft>` | Inspect an accepted roster that assigns you a player slot |
 | `+sortie/deactivate <draft>:<activation revision>` | Release the accepted assignments |
 | `+sortie/preflight <draft>:<activation revision>` | Inspect current launch facts for your accepted roster while aboard its carrier |
+| `+sortie/launch <draft>:<activation revision>=all` | Admit the unlaunched members of your accepted roster |
+| `+sortie/launch <draft>:<activation revision>=<slot>` | Admit or retry one unlaunched member |
+| `+sortie/operation <draft>:<activation revision>` | Read the operation's saved progress and flight references |
+| `+sortie/recover <draft>:<activation revision>=<slot>` | Bring a unit physically beside the ramp back into the carrier |
+| `+sortie/cancel-launch <draft>:<activation revision>=<slot>` | Cancel a departure that is still physically aboard |
+| `+sortie/end <draft>:<activation revision>` | End coordination, cancelling only departures still aboard |
+| `+sortie/history <unit>:<flight>` | Read an authorized flight's departure and return history |
 
 `+sortie/active` prints the preflight command for the accepted activation. Preflight
 uses those accepted assignments even if you subsequently edit the draft. It
@@ -62,6 +69,23 @@ mining vehicle is not treated as an armed combat vehicle. This is an inspection,
 not launch permission. Actual station control, crew capability and any selected
 mind still require admission at launch. Preflight moves nobody and stores no
 readiness flag.
+
+Launch requires the assigned operator inside the real unit at its helm console,
+with its actual control lease. NPCs need a real helm billet as well as their
+employment agreement; hiring and activation do not create a station or take
+control. The carrier must be settled at a field site, with the unit in its
+vehicle bay. You need Deploy and the operator needs OperateCrew. Launch uses
+the existing 300 IC second ramp transit. Returned units may launch again within
+the same operation, creating another flight and hull epoch.
+
+Departure progress is saved separately for each unit. If someone leaves their
+station or a physical step refuses, departed units stay out and the remainder
+stays pending. Restore the prerequisites and retry, or cancel that member while
+it is still aboard. Already departed members are reported and never launched
+twice. Recovery requires RecoverLoad and a unit actually beside the carrier's
+ramp; it does not drive or teleport a distant unit home or repair damage.
+Ending an operation leaves field units and their epochs unresolved until a real
+return. Saved progress describes confirmed events, not a remote casualty sensor.
 
 `+sortie/plan` prints the current accept, ready and decline commands for your
 assignment. Use the complete printed command. Accept first, then mark ready
@@ -132,6 +156,21 @@ permissions change; it does not move people or units. Ordinary walking remains
 available while reserved. Activation establishes assignments, not launch
 readiness: launch still needs current containment, control, capability/health
 and the applicable mission-role grants.
+
+Launch requires each operator inside their assigned unit at its real console
+with a current helm lease. Automatic seating and control acquisition for hired
+NPCs are still being integrated. Each departure takes the existing ramp duration;
+units complete independently. A blocked departure remains pending and can be
+retried or cancelled while still aboard. Inspect `+sortie/operation` for confirmed
+progress and individual flight references. History is available to the original
+organizer and assigned player participants; it is not a remote casualty sensor.
+
+Recover a mobile unit after bringing it beside the carrier's ramp. Recovery
+requires current recovery permission and preserves damage. Disabled units need
+physical towing or loading. Ending an operation leaves field units and their
+epochs unresolved; it does not recall them. Returned units may launch again.
+Assigned operators can use `<organizer>:<draft>:<activation revision>` to identify
+their operation when recovering a unit or reading its history.
 
 OOC practice continues to use `+sortie/practice` and `+sortie/roster`, described
 in [cockpit help](cockpit.md).

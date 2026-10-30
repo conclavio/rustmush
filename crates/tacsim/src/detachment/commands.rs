@@ -225,6 +225,9 @@ fn roster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +sortie operation."));
     }
+    if super::sortie::handles(ctx) {
+        return super::sortie::command(ctx);
+    }
     if super::activation::handles(ctx) {
         return super::activation::command(ctx);
     }
@@ -288,11 +291,12 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         .chain(super::planning::commands::SWITCHES.iter().copied())
         .chain(super::crew::SWITCHES.iter().copied())
         .chain(super::activation::SWITCHES.iter().copied())
+        .chain(super::sortie::SWITCHES.iter().copied())
         .map(Into::into)
         .collect();
     reg.command(CommandSpec {
         name: "+sortie".into(), switches, shape: ArgShape::Raw,
-        help: "+sortie/crew lists NPC hiring terms in your port room; +sortie/hire accepts them and +sortie/contract shows your agreement. +sortie/board <npc> arranges boarding for your hired crew at your ship's departure port. +sortie/plans manages private presets and mission drafts; +sortie/invitations lists assigned plans. Use +sortie/plan for accept/ready commands. +sortie/activate <draft>:<revision>=mining|combat|recovery reserves complete assignments; +sortie/active shows them and +sortie/deactivate releases them. +sortie/preflight <draft>:<activation revision> inspects the accepted roster's current launch facts. +sortie/practice and +sortie/roster manage the OOC group. Physical launch follows separately.".into(),
+        help: "+sortie/crew lists NPC hiring terms in your port room; +sortie/hire accepts them and +sortie/contract shows your agreement. +sortie/board <npc> arranges boarding for your hired crew at your ship's departure port. +sortie/plans manages private presets and mission drafts; +sortie/invitations lists assigned plans. Use +sortie/plan for accept/ready commands. +sortie/activate <draft>:<revision>=mining|combat|recovery reserves complete assignments; +sortie/active shows them and +sortie/deactivate releases them. +sortie/preflight <draft>:<activation revision> inspects current launch facts. +sortie/launch <draft>:<activation>=all|slot starts physical deployment; +sortie/recover <draft>:<activation>=slot returns a mobile unit at the ramp. +sortie/cancel-launch cancels a pending departure; +sortie/end ends the operation without recalling field units. +sortie/operation shows confirmed deployment history and +sortie/history #unit:flight shows a departure. +sortie/practice and +sortie/roster manage the OOC group.".into(),
         ..CommandSpec::default()
     }, Arc::new(roster))?;
     for (name, response) in [("wilco", Response::Wilco), ("negative", Response::Negative)] {
