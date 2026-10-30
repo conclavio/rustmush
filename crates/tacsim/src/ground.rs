@@ -233,9 +233,14 @@ pub enum GroundError {
     },
 }
 
-/// Output of [`build`]: the two signed JSON packs and their manifests' digests.
+/// Output of [`build`]: the post-route/post-repair [`GroundDraft`], the two
+/// signed JSON packs, and their manifests' digests.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuiltPacks {
+    /// The [`GroundDraft`] the packs were built from (including any synthesized
+    /// waypoint graph from [`route`], any repair changes from [`relax_slopes`] /
+    /// [`despeckle`], and any generated §5 check report in `note`).
+    pub draft: GroundDraft,
     /// Signed atlas region pack JSON (`tacsim.<id>`).
     pub atlas_json: String,
     /// Computed digest of `atlas_json`.
@@ -286,12 +291,44 @@ pub struct CheckReport {
     pub max_grade_pct: u32,
     /// Steepest orthogonal grade between adjacent `road` or `paved` cells, in per cent.
     pub max_road_grade_pct: u32,
-    /// Maximum elevation step (`cm`) between orthogonal neighbours around entry zone musters.
+    /// Maximum elevation step (`cm`) between orthogonal neighbours inside entry zones.
     pub max_entry_zone_step_cm: u32,
     /// Whether all §5 acceptance checks passed.
     pub passed: bool,
     /// Human-readable descriptions of any §5 check failures.
     pub failures: Vec<String>,
+}
+
+impl CheckReport {
+    /// Format this §5 grade and passability report for inclusion in an arena
+    /// pack's `note` field (doc 30 §5).
+    #[must_use]
+    pub fn summary_note(&self) -> String {
+        format!(
+            "ground-pack check ({cols}x{rows}, {quads} tiles, map {bytes}/{max} B): \
+             passable tracked {t}% / wheeled {w}% / legged {l}%; \
+             zones tracked={zt} wheeled={zw} legged={zl}; \
+             key_spots_wheeled={ks}; waypoints={wp}; \
+             max_grade={mg}% road_grade={rg}% entry_step={es}cm; passed={p}.",
+            cols = self.cols,
+            rows = self.rows,
+            quads = self.quadrants,
+            bytes = self.map_bytes,
+            max = self.map_max_bytes,
+            t = self.tracked_passable_pct,
+            w = self.wheeled_passable_pct,
+            l = self.legged_passable_pct,
+            zt = self.zones_reachable_tracked,
+            zw = self.zones_reachable_wheeled,
+            zl = self.zones_reachable_legged,
+            ks = self.key_spots_wheeled_reachable,
+            wp = self.waypoints_reachable,
+            mg = self.max_grade_pct,
+            rg = self.max_road_grade_pct,
+            es = self.max_entry_zone_step_cm,
+            p = self.passed,
+        )
+    }
 }
 
 /// Encode a `cols × rows` slice of [`TerrainClass`] into the 3-byte run-length
@@ -1005,6 +1042,9 @@ fn build_atlas_pack_json(
         },
         "ground_resolution_cm": cell_cm
     });
+    // Omit `"biome": "temperate"` on the wire so the shipped `proving_ground`
+    // atlas pack reproduces byte-for-byte; `RegionRec::biome_str()` and
+    // `from_packs` both treat an absent `biome` key as `"temperate"` (doc 30 §6).
     if biome != "temperate"
         && let Some(obj) = region_def.as_object_mut()
     {
@@ -1288,6 +1328,9 @@ pub fn build_with_options(
             failures: report.failures,
         });
     }
+    if working.note.is_empty() {
+        working.note = report.summary_note();
+    }
     let arena_def = working.to_arena_def()?;
     let bg_seed = working.provenance.seed.unwrap_or(2350);
 
@@ -1309,6 +1352,7 @@ pub fn build_with_options(
         format_arena_pack_json(&working.id, working.arena_version, &arena_def)?;
 
     Ok(BuiltPacks {
+        draft: working,
         atlas_json,
         atlas_digest,
         arena_json,
@@ -1559,16 +1603,12 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
     let cell_cm = u32::from(draft.cell_cm);
     let mut max_grade_pct = 0_u32;
     let mut max_road_grade_pct = 0_u32;
-    let mut has_road = false;
     for y in 0..draft.rows {
         for x in 0..draft.cols {
             let Some(here) = terrain.get(x, y) else {
                 continue;
             };
             let here_road = matches!(here.class, TerrainClass::Road | TerrainClass::Paved);
-            if here_road {
-                has_road = true;
-            }
             for (nx, ny) in [(x.saturating_add(1), y), (x, y.saturating_add(1))] {
                 if nx >= draft.cols || ny >= draft.rows || (nx == x && ny == y) {
                     continue;
@@ -1629,7 +1669,7 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
     if !zones_reachable_legged {
         failures.push("entry zones are not mutually reachable by legged".to_owned());
     }
-    if !zones_reachable_wheeled && (!draft.key_spots.is_empty() || has_road) {
+    if !zones_reachable_wheeled {
         failures.push("entry zones are not mutually reachable by wheeled".to_owned());
     }
     if !key_spots_wheeled_reachable {
@@ -1649,14 +1689,10 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
             "max road grade is {max_road_grade_pct}% (need <= 20%)"
         ));
     }
-    let step_limit_cm = if draft.provenance.version == "v3" {
-        100
-    } else {
-        50
-    };
+    let step_limit_cm = 100_u32;
     if max_entry_zone_step_cm > step_limit_cm {
         failures.push(format!(
-            "entry zone muster step is {max_entry_zone_step_cm} cm (need <= {step_limit_cm} cm)"
+            "entry zone step is {max_entry_zone_step_cm} cm (need <= {step_limit_cm} cm)"
         ));
     }
 
@@ -1722,8 +1758,14 @@ pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
         )
     };
     let is_road = |c: TerrainClass| matches!(c, TerrainClass::Road | TerrainClass::Paved);
-    let road_max_rise = (i32::from(draft.cell_cm) * 20) / 100;
-    let ground_max_rise = (i32::from(draft.cell_cm) * 45) / 100;
+    let table = LocomotionTable::shipped();
+    let tracked_limit =
+        i32::try_from(table.max_slope_pct("tracked", &[]).unwrap_or(45)).unwrap_or(45);
+    let wheeled_limit =
+        i32::try_from(table.max_slope_pct("wheeled", &[]).unwrap_or(25)).unwrap_or(25);
+    let road_limit = wheeled_limit.saturating_sub(5);
+    let road_max_rise = (i32::from(draft.cell_cm) * road_limit) / 100;
+    let ground_max_rise = (i32::from(draft.cell_cm) * tracked_limit) / 100;
 
     for _ in 0..64 {
         let mut changed_iter = false;
@@ -1829,8 +1871,8 @@ pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
 /// class regions smaller than `min_region` (default [`DEFAULT_SPECKLE_MIN_CELLS`],
 /// 3) with their majority 4-neighbour class.
 ///
-/// Never removes a built class ([`TerrainClass::is_built`]: `paved`, `road`,
-/// `floor`, `door`, `platform`), `wall`, or any cell holding a [`KeySpot`].
+/// Never removes a built class (`paved`, `road`, `floor`, `door`, `platform`),
+/// `wall`, or any cell holding a [`KeySpot`].
 /// Returns the number of cells whose class changed.
 ///
 /// # Errors
@@ -2573,16 +2615,31 @@ mod tests {
 
     #[test]
     fn wg3_ridge_at_45_pct_passes_check_and_50_pct_is_reported() -> Result<(), Box<dyn Error>> {
-        let make_ridge = |rise_cm: i16| -> Result<GroundDraft, Box<dyn Error>> {
+        let make_ridge = |rise_cm: i16, cut_road: bool| -> Result<GroundDraft, Box<dyn Error>> {
             let cols = 64_u16;
             let rows = 64_u16;
-            let classes = vec![TerrainClass::Ground; usize::from(cols) * usize::from(rows)];
-            let mut elev = vec![0_i16; usize::from(cols) * usize::from(rows)];
+            let w = usize::from(cols);
+            let mut classes = vec![TerrainClass::Ground; w * usize::from(rows)];
+            let mut elev = vec![0_i16; w * usize::from(rows)];
+            for x in 0..w {
+                if let Some(slot) = classes.get_mut(32 * w + x) {
+                    *slot = TerrainClass::Road;
+                }
+            }
             for y in 0..usize::from(rows) {
-                for x in 32..usize::from(cols) {
-                    if let Some(slot) = elev.get_mut(y * usize::from(cols) + x) {
+                for x in 32..w {
+                    if let Some(slot) = elev.get_mut(y * w + x) {
                         *slot = rise_cm;
                     }
+                }
+            }
+            if cut_road {
+                // Cut a <= 20% road ramp through the ridge on row 32 (0 -> 150 -> 300 -> 450).
+                if let Some(slot) = elev.get_mut(32 * w + 32) {
+                    *slot = 150;
+                }
+                if let Some(slot) = elev.get_mut(32 * w + 33) {
+                    *slot = 300;
                 }
             }
             Ok(GroundDraft {
@@ -2632,29 +2689,39 @@ mod tests {
             })
         };
 
-        let ridge_45 = make_ridge(450)?;
+        let ridge_45 = make_ridge(450, true)?;
         let report_45 = check(&ridge_45)?;
         check!(report_45.passed);
         check!(report_45.zones_reachable_tracked);
+        check!(report_45.zones_reachable_wheeled);
+        check!(report_45.max_road_grade_pct <= 20);
         check_eq!(report_45.tracked_passable_pct, 100);
 
-        let ridge_50 = make_ridge(500)?;
+        let ridge_50 = make_ridge(500, false)?;
         let report_50 = check(&ridge_50)?;
         check!(!report_50.passed);
         check!(!report_50.zones_reachable_tracked);
+        check!(!report_50.zones_reachable_wheeled);
         check!(report_50.tracked_passable_pct < 90);
         check!(build(&ridge_50).is_err());
 
-        // Extractor draft with a 50% ridge is automatically relaxed on `build`.
+        // Extractor draft with a 50% ridge is automatically relaxed on `build`,
+        // its routed waypoint graph and §5 report note are written into `built.draft`,
+        // and the built packs round-trip to match `built.draft`.
         let mut extractor_ridge = ridge_50;
         extractor_ridge.provenance.source = GroundSource::Extractor;
         extractor_ridge.provenance.inputs = vec!["Mars Pack v1".to_owned()];
         let built = build(&extractor_ridge)?;
+        check!(!built.draft.waypoints.nodes.is_empty());
+        check!(built.draft.note.contains("ground-pack check"));
         let round_trip = from_packs(&built.atlas_json, &built.arena_json)?;
         check_eq!(round_trip.biome, "mars");
+        check_eq!(round_trip.waypoints, built.draft.waypoints);
+        check_eq!(round_trip.note, built.draft.note);
         let after = check(&round_trip)?;
         check!(after.passed);
         check!(after.zones_reachable_tracked);
+        check!(after.zones_reachable_wheeled);
         Ok(())
     }
 
