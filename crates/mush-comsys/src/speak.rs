@@ -128,6 +128,14 @@ pub(crate) fn channel_speak(
     text: &str,
     origin: Option<&str>,
 ) {
+    if !w
+        .module_state::<ComsysState>()
+        .and_then(|s| s.channels.get(&chan))
+        .is_some_and(crate::Channel::active)
+    {
+        out.error(actor, "That channel is closed.");
+        return;
+    }
     let now_ms = w.now().saturating_mul(1000);
     let actor_ref = obj_ref(w, actor);
     if let Some(st) = w.module_state::<ComsysState>()

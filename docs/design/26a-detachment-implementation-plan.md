@@ -393,6 +393,50 @@ If gameplay ECM is not yet connected to this delivery path, the required work is
 that narrow shared integration, with evidence from actual deliveries rather than
 a separate detachment-only jam flag.
 
+### DT.5 implementation
+
+`+sortie/chat` locates the caller's accepted roster and prints its normal Comsys
+channel alias. An explicit activation reference may send a line directly. Native
+channel aliases, poses, recall and the existing web/SSH channel surfaces carry
+the conversation. Chat does not enter the order parser or grant command rights.
+
+The activation source uses a narrow Comsys owner participant to create the IC
+channel and its at-most-six assigned memberships in the roster commit. A separate
+source request initializes an older accepted roster or rejoins its caller; it
+rechecks that actual accepted roster without changing its revision or selections.
+Deactivation closes the binding in that same commit. Closed bindings no longer
+claim aliases, hydrate channel tabs, expose recall or dispatch pending lines.
+A later activation has a new binding and arrival history. The channel retains
+its bounded archival records under Comsys; it is not an embarkation ledger.
+
+Each line uses the existing Comsys durable intent and recipient knowledge, then
+Propagation's ordinary IC channel dispatch. There is no new chat queue, delivery
+clock, relay or jamming model. Comsys exposes only each recipient's actual arrival
+sequence and history. Managed-channel listings suppress remote connection and
+listening state; normal channel administration cannot turn this channel into an
+OOC broadcast or admit outsiders. The organizer is a member only when assigned
+in the accepted roster. Hired NPCs retain their actual character identities.
+
+### DT.5 verification (2026-10-30)
+
+Validated against `origin/main` at `41e8b896` after DT.3k merged:
+43 production DT stories (including five new chat stories), 65 relay stories,
+four full-commerce composition checks, 54 Comsys tests, ten propagation order/
+acknowledgement tests and 32 source-policy checks passed: 208 tests in total.
+Strict Clippy for Comsys, composition, TacSim and the server passed, as did
+workspace formatting, `git diff --check` and the unchanged six-crate M7 all-target
+memory gate. The existing M7 acronym warnings are unrelated to its four enforced
+memory limits.
+
+The chat stories use the production modules, actual accepted rosters, committed
+coordinator images and normal IC channel dispatch. They cover unassigned-organizer
+and outsider denial; advisory text and stale selectors; per-recipient jamming;
+restart with a delayed line; a separately jammed return path; pre-ACK closure
+isolation; new-activation history isolation; rejoining without pending/received
+history replay; and an older accepted roster acquiring chat after restart.
+This is automated production-path evidence; no separate remote deployment is
+claimed. DT.4 remains deferred.
+
 ## DT.1a verification
 
 Validated locally on 2026-10-28:

@@ -292,8 +292,8 @@ fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
                 "designator": "RA",
                 "class": "red",
                 "unit_type": "tacsim.unit.line_tank",
-                "bearing_deg": 0.0,
-                "range_m": 60.0,
+                "bearing_deg": 35.0,
+                "range_m": 80.0,
                 "facing": "front",
                 "moving": false
             }])

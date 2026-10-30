@@ -44,6 +44,7 @@ fn chan_snapshot(ctx: &Ctx<'_>, name: &str) -> Result<Channel, CmdError> {
     ctx.w
         .module_state::<ComsysState>()
         .and_then(|st| st.channel_by_name(name).cloned())
+        .filter(|c| c.managed.is_none() || chan_visible(ctx.w, ctx.actor, c))
         .ok_or_else(|| CmdError::msg("No such channel."))
 }
 
@@ -72,6 +73,9 @@ fn chan_admin(w: &World, who: ObjId, c: &Channel) -> bool {
 /// may be `#false`, which is what hides it from everybody else), a non-member
 /// does not, whatever the lock says. The admin bypass is unchanged.
 fn chan_visible(w: &World, who: ObjId, c: &Channel) -> bool {
+    if !c.active() {
+        return false;
+    }
     let seen = if c.flags.closed {
         w.module_state::<ComsysState>()
             .is_some_and(|st| st.members.contains_key(&(who, c.id)))
@@ -160,6 +164,14 @@ fn addcom_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let c = chan_snapshot(ctx, &chan_name)?;
     if !chan_visible(ctx.w, actor, &c) {
         // Invisible channels are indistinguishable from missing ones.
+        return Err(CmdError::msg("No such channel."));
+    }
+    if c.managed.is_some()
+        && !ctx
+            .w
+            .module_state::<ComsysState>()
+            .is_some_and(|s| s.members.contains_key(&(actor, c.id)))
+    {
         return Err(CmdError::msg("No such channel."));
     }
     if !eval_lock(ctx.w, &c.perms.join, actor, MAX_LOCK_DEPTH) && !chan_admin(ctx.w, actor, &c) {
@@ -370,7 +382,7 @@ fn comtitle_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn clist_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let rows: Vec<(String, usize, String, String)> = {
+    let rows: Vec<(String, String, String, String)> = {
         let st = ctx
             .w
             .module_state::<ComsysState>()
@@ -382,7 +394,11 @@ fn clist_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .map(|c| {
                 (
                     c.name.to_string(),
-                    st.members_of(c.id).count(),
+                    if c.managed.is_some() {
+                        "roster".to_owned()
+                    } else {
+                        st.members_of(c.id).count().to_string()
+                    },
                     flag_letters(c),
                     c.description.clone(),
                 )
@@ -515,6 +531,9 @@ fn channel_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn channel_destroy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let c = chan_snapshot(ctx, ctx.args.lhs().trim())?;
+    if c.managed.is_some() {
+        return Err(CmdError::msg("That channel is managed by its roster."));
+    }
     if !chan_admin(ctx.w, actor, &c) {
         return Err(CmdError::msg("Permission denied."));
     }
@@ -567,6 +586,9 @@ fn channel_destroy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn channel_perm(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let c = chan_snapshot(ctx, ctx.args.lhs().trim())?;
+    if c.managed.is_some() {
+        return Err(CmdError::msg("That channel is managed by its roster."));
+    }
     if !chan_admin(ctx.w, actor, &c) {
         return Err(CmdError::msg("Permission denied."));
     }
@@ -666,6 +688,9 @@ fn channel_color(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let c = chan_snapshot(ctx, ctx.args.lhs().trim())?;
+    if c.managed.is_some() {
+        return Err(CmdError::msg("That channel is managed by its roster."));
+    }
     if !chan_admin(ctx.w, actor, &c) {
         return Err(CmdError::msg("Permission denied."));
     }
@@ -767,6 +792,10 @@ fn channel_who(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let c = chan_snapshot(ctx, ctx.args.lhs().trim())?;
     if !chan_visible(ctx.w, actor, &c) {
         return Err(CmdError::msg("No such channel."));
+    }
+    if c.managed.is_some() {
+        ctx.out.info(actor, "Membership follows the accepted detachment roster. Channel UI does not report remote presence or listening state.");
+        return Ok(());
     }
     let mut rows: Vec<String> = {
         let st = ctx

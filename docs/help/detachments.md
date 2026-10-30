@@ -60,6 +60,8 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/discard <draft>:<revision>` | Discard your draft and its invitations |
 | `+sortie/drop-preset <preset>:<revision>` | Delete your private preset |
 | `+sortie/activate <draft>:<revision>=mining\|combat\|recovery` | Accept the current assignments and reserve their units and people |
+| `+sortie/chat` | Show your accepted detachment's IC channel and personal alias |
+| `+sortie/chat [<organizer>:]<draft>:<activation>=<message>` | Queue a chat line to that accepted detachment |
 | `+sortie/active <draft>` | Inspect your accepted roster and release command |
 | `+sortie/active <organizer>:<draft>` | Inspect an accepted roster that assigns you a player slot |
 | `+sortie/deactivate <draft>:<activation revision>` | Release the accepted assignments |
@@ -79,6 +81,43 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/cancel-launch <draft>:<activation revision>=<slot>` | Cancel a departure that is still physically aboard |
 | `+sortie/end <draft>:<activation revision>` | End coordination, cancelling only departures still aboard |
 | `+sortie/history <unit>:<flight>` | Read an authorized flight's departure and return history |
+
+## Detachment chat
+
+An accepted roster has its own private IC channel. Use `+sortie/chat` to see
+its name and your personal alias, normally `dt`. If that alias already belongs
+to another channel, use the alias printed for you. All six assigned people may
+participate; organizing or owning the carrier alone does not join the channel.
+
+```
++sortie/chat
++sortie/chat =Ready beside the ramp.
+dt Ready beside the ramp.
+dt :signals to the crew.
+@channel/recall dt
+```
+
+Use the printed alias in place of `dt` where necessary. You can also select a
+roster explicitly with `+sortie/chat <organizer>:<draft>:<activation>=<message>`.
+Normal channel tabs and recall show only lines that have actually reached you.
+"Queued for IC transit" confirms submission, not reception by another member.
+Lag, jamming, outages and transport capacity apply through the ordinary
+communications system. Pending lines and your received history survive restart.
+
+Chat text is conversation. Writing `HOLD` or `WILCO` in chat does not issue or
+acknowledge an order; keep using the existing fenced order and response commands.
+The channel does not show remote connection or listening status.
+
+Chat is available during preparation, deployment and recovery. Ending operation
+coordination does not close it while its accepted roster remains active.
+Deactivating the roster closes chat and cancels outstanding traffic; a new
+activation gets a separate channel and no previous activation's history.
+
+You may leave with `delcom <alias>`. Use `+sortie/chat` again to request rejoining
+while you are still assigned. After that request commits, repeat the command to
+see your alias. Rejoining starts with new traffic and does not recover missed
+or previously discarded lines. Accepted rosters from before chat was installed
+can use the same command to request their channel without changing assignments.
 
 `+sortie/active` prints the preflight command for the accepted activation. Preflight
 uses those accepted assignments even if you subsequently edit the draft. It

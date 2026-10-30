@@ -3946,3 +3946,6 @@ async fn crew_exit_waits_for_admitted_ramp_work_and_works_after_explicit_cancell
     );
     Ok(())
 }
+
+#[path = "dt_chat.rs"]
+mod chat;

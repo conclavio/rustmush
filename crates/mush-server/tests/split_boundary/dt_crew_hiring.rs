@@ -501,6 +501,8 @@ async fn activation_is_atomic_recovers_lost_ack_and_releases_original_assignment
     let employer = rig.employer;
     let npc = rig.npc;
     let agreement = contract(&rig)?;
+    let chat_key = format!("dt:{}:1:1", employer.0);
+    assert!(mush_comsys::managed::channel(rig.world.world(), &chat_key).is_none());
     let request = submit(&mut rig.world, employer, "+sortie/activate 1:1=mining")?;
     let ingress = stage(&mut rig.world, &store, &request).await?;
     let (bundle, installation) = rig
@@ -511,11 +513,12 @@ async fn activation_is_atomic_recovers_lost_ack_and_releases_original_assignment
         .into_parts();
     assert_eq!(
         bundle.writes().len(),
-        3,
-        "only accepted roster and unit/person reservations"
+        6,
+        "accepted roster, unit/person reservations and atomic chat channel, allocator and NPC membership"
     );
     assert!(active(&rig, 1)?.is_none());
     assert!(!reserved(&rig, unit)?);
+    assert!(mush_comsys::managed::channel(rig.world.world(), &chat_key).is_none());
     store
         .reserve_authoritative_intent((*bundle).clone())
         .await?;
@@ -523,9 +526,28 @@ async fn activation_is_atomic_recovers_lost_ack_and_releases_original_assignment
         .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
         .await?;
     assert!(active(&rig, 1)?.is_none());
+    assert!(mush_comsys::managed::channel(rig.world.world(), &chat_key).is_none());
     drop(installation);
     drop(rig);
     let mut rig = fixture(&store).await?;
+    let channel = mush_comsys::managed::channel(rig.world.world(), &chat_key)
+        .ok_or("chat recovered with activation after lost acknowledgement")?;
+    let comsys = rig
+        .world
+        .world()
+        .module_state::<mush_comsys::ComsysState>()
+        .ok_or("comsys")?;
+    let members: Vec<_> = comsys
+        .members
+        .keys()
+        .filter(|(_, id)| *id == channel)
+        .map(|(actor, _)| *actor)
+        .collect();
+    assert_eq!(
+        members,
+        vec![npc],
+        "only the assigned NPC joins; the unassigned organizer does not"
+    );
     let accepted = active(&rig, 1)?.ok_or("recovered activation")?;
     assert!(accepted.active());
     assert!(reserved(&rig, unit)? && reserved(&rig, npc)?);
@@ -582,6 +604,7 @@ async fn activation_is_atomic_recovers_lost_ack_and_releases_original_assignment
     commit_line(&mut rig, &store, employer, "+sortie/deactivate 1:1").await?;
     assert!(!reserved(&rig, unit)? && !reserved(&rig, npc)?);
     assert!(!active(&rig, 1)?.ok_or("closed activation")?.active());
+    assert!(mush_comsys::managed::channel(rig.world.world(), &chat_key).is_none());
     assert_eq!(
         rig.world.world().get(npc).and_then(|o| o.location),
         Some(rig.room)
@@ -614,6 +637,13 @@ async fn activation_is_atomic_recovers_lost_ack_and_releases_original_assignment
     let replacement = active(&rig, 1)?.ok_or("replacement activation")?;
     assert_eq!(replacement.revision, 2);
     assert_eq!(replacement.source_revision, 3);
+    let replacement_channel =
+        mush_comsys::managed::channel(rig.world.world(), &format!("dt:{}:1:2", employer.0))
+            .ok_or("replacement chat")?;
+    assert_ne!(
+        replacement_channel, channel,
+        "new activations have separate chat"
+    );
     let stale = submit(&mut rig.world, employer, "+sortie/deactivate 1:1")?;
     assert!(stage(&mut rig.world, &store, &stale).await.is_err());
     assert!(reserved(&rig, unit)? && reserved(&rig, npc)?);

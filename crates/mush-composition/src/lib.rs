@@ -278,7 +278,13 @@ fn compose_server_modules<E>(
     let modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(
             mush_comsys::ComsysModule::new()
-                .with_transport(Arc::new(mail_transport::MailTransport)),
+                .with_transport(Arc::new(mail_transport::MailTransport))
+                .with_managed_channels(
+                    tacsim::detachment::activation::channel_action_ref()
+                        .into_iter()
+                        .filter(|_| tacsim_delegate)
+                        .collect(),
+                ),
         ),
         Box::new(mush_canon::CanonModule::new()),
         Box::new(mush_privileges::PrivilegesModule::new()),

@@ -1,238 +1,368 @@
-// Throwaway PoC: bakes one assembled light mech into raw renders (colour-ID
-// and world-normal passes) for 8 facings x poses, plus voxel grids at 48 and
-// 96 cells, into <project>/bake_out. Never shipped; only the reduced sheets are.
+// The unit bake (doc 22 D-22-10, cut U.6): one look's bake matrix from one
+// named asset pack — both views (`fp` at 3 degrees down, Q-22-3; `iso` at the
+// 2.5D's 28), eight facings, six poses (still, four moving, the wreck), each
+// rendered orthographic at 384 px twice, a colour-ID pass and a world-normal
+// pass — and `meta.json` (format 2): every frame's anchor and muzzles, each
+// view's world span, the model's size and the provenance the pack records.
+//
+// Driven by one per-look config (`scripts/unit-bake/looks/<look>.json`) and
+// run by `scripts/unit-bake/bake.sh`, which hands the renders to the reducer
+// (`crates/mush-pixel/examples/unit_reduce.rs`), the only resampler.
+//
+//   Unity -batchmode -quit -projectPath <proj> -executeMethod Bake.Run \
+//     -bakeConfig <look.json> -bakeOut <dir> -bakeCommit <sha> \
+//     [-bakeAssetVersion <version>]
+//
+// Never commit the asset packs, the Unity project or the renders (the owner's
+// licensing ruling of 2026-10-29): only this script, the configs and the
+// reduced pack ship.
 using UnityEngine;
 using UnityEditor;
+using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Text;
 using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
 
 public static class Bake {
-    const string Root = "Assets/Mech_Constructor_LtMed/";
     const int Res = 384;
-    const float Elev = 8f;
+    static readonly (string name, float pitch)[] Views = { ("fp", 3f), ("iso", 28f) };
+    // Yaw that turns the model's front (+Z) to each facing, the camera looking
+    // along +Z: `rear` shows its back, `right` its front to the viewer's right.
     static readonly (string name, float yaw)[] Facings = {
         ("front", 180), ("front_right", 135), ("right", 90), ("rear_right", 45),
         ("rear", 0), ("rear_left", 315), ("left", 270), ("front_left", 225) };
+    static readonly string[] Poses = { "still", "moving0", "moving1", "moving2", "moving3", "wreck" };
 
-    static T Load<T>(string p) where T : Object {
-        var a = AssetDatabase.LoadAssetAtPath<T>(Root + p);
-        if (a == null) throw new System.Exception("missing " + p);
+    [Serializable] public class ClipRef { public string file = ""; public string name = ""; }
+    [Serializable] public class Part { public string prefab = ""; public string mount = ""; public string parent = ""; }
+    [Serializable] public class MuzzleRef { public string locator = ""; public string weapon = ""; }
+    [Serializable] public class MaterialPart { public string match = ""; public string part = "paint"; }
+    [Serializable] public class WreckPose { public float tilt_deg = 9f; public float roll_deg = 5f; }
+
+    [Serializable] public class Config {
+        public string look = "";
+        public string asset_pack = "";
+        public string asset_version = "";
+        public string package = "";
+        public string root = "";
+        public string prefab = "";
+        public string primitive = "";
+        public Part[] attach = new Part[0];
+        public string id_texture = "";
+        public MaterialPart[] material_parts = new MaterialPart[0];
+        public string default_part = "paint";
+        public ClipRef still = new ClipRef();
+        public ClipRef moving = new ClipRef();
+        public ClipRef wreck = new ClipRef();
+        public WreckPose wreck_pose = new WreckPose();
+        public MuzzleRef[] muzzles = new MuzzleRef[0];
+        public int[] size_cm = new int[0];
+        public float yaw_offset_deg = 0f;
+        public string[] id_classes = new string[0];
+    }
+
+    public static void Run() {
+        try {
+            RunBake();
+        } catch (Exception e) {
+            Debug.LogError("BAKE FAILED: " + e.Message + "\n" + e.StackTrace);
+            EditorApplication.Exit(1);
+        }
+    }
+
+    static string Arg(string name) {
+        var a = Environment.GetCommandLineArgs();
+        for (int i = 0; i + 1 < a.Length; i++) if (a[i] == name) return a[i + 1];
+        return null;
+    }
+
+    static string F(float f) => f.ToString("0.###", CultureInfo.InvariantCulture);
+
+    static string J(string s) {
+        var sb = new StringBuilder("\"");
+        foreach (var c in s ?? "") {
+            if (c == '"' || c == '\\') sb.Append('\\').Append(c);
+            else if (c < ' ') sb.Append("\\u").Append(((int)c).ToString("x4"));
+            else sb.Append(c);
+        }
+        return sb.Append('"').ToString();
+    }
+
+    static T Load<T>(string path) where T : UnityEngine.Object {
+        var a = AssetDatabase.LoadAssetAtPath<T>(path);
+        if (a == null) throw new Exception("missing asset " + path + " (is the package imported?)");
         return a;
     }
-    static AnimationClip Clip(string file, string name) {
-        foreach (var o in AssetDatabase.LoadAllAssetsAtPath(Root + "Animations/" + file))
-            if (o is AnimationClip c && c.name == name) return c;
-        throw new System.Exception("missing clip " + name);
-    }
+
     static Transform Find(Transform t, string n) {
         if (t.name == n) return t;
         foreach (Transform c in t) { var r = Find(c, n); if (r) return r; }
         return null;
     }
-    static GameObject Attach(string prefab, Transform mount) {
-        var go = (GameObject)Object.Instantiate(Load<GameObject>("Prefabs/" + prefab + ".prefab"), mount);
-        go.name = prefab;
-        go.transform.localPosition = Vector3.zero;
-        go.transform.localRotation = Quaternion.identity;
-        go.transform.localScale = Vector3.one;
+
+    static IEnumerable<string> Mounts(Transform t) {
+        if (t.name.StartsWith("Mount", StringComparison.OrdinalIgnoreCase)) yield return t.name;
+        foreach (Transform c in t) foreach (var m in Mounts(c)) yield return m;
+    }
+
+    // A locator by path: `Weapon_cannon_lvl3/Barrel_end` is the first
+    // `Barrel_end` under the first `Weapon_cannon_lvl3`.
+    static Transform Locate(Transform root, string path) {
+        Transform at = root;
+        foreach (var seg in path.Split('/')) { at = at ? Find(at, seg) : null; }
+        return at;
+    }
+
+    static GameObject Place(string root, string prefab, Transform parent) {
+        var path = root + prefab + (prefab.EndsWith(".prefab") ? "" : ".prefab");
+        var go = parent == null
+            ? (GameObject)UnityEngine.Object.Instantiate(Load<GameObject>(path))
+            : (GameObject)UnityEngine.Object.Instantiate(Load<GameObject>(path), parent);
+        go.name = Path.GetFileNameWithoutExtension(prefab);
+        if (parent != null) {
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localRotation = Quaternion.identity;
+            go.transform.localScale = Vector3.one;
+        }
         return go;
     }
 
-    static void MakeReadable() {
-        foreach (var g in AssetDatabase.FindAssets("t:Model", new[] { Root + "Models", Root + "Animations" })) {
-            var p = AssetDatabase.GUIDToAssetPath(g);
-            var mi = (ModelImporter)AssetImporter.GetAtPath(p);
-            if (!mi.isReadable) { mi.isReadable = true; mi.SaveAndReimport(); }
+    static AnimationClip Clip(string root, ClipRef r) {
+        if (r == null || string.IsNullOrEmpty(r.file)) return null;
+        var found = new List<string>();
+        foreach (var o in AssetDatabase.LoadAllAssetsAtPath(root + r.file)) {
+            if (o is AnimationClip c && !c.name.StartsWith("__preview__")) {
+                if (c.name == r.name) return c;
+                found.Add(c.name);
+            }
         }
-        var ti = (TextureImporter)AssetImporter.GetAtPath(Root + "Materials/MC_LtMed_X_Color_ID.png");
-        if (!ti.isReadable || ti.mipmapEnabled || ti.textureCompression != TextureImporterCompression.Uncompressed) {
-            ti.isReadable = true; ti.mipmapEnabled = false; ti.filterMode = FilterMode.Point;
+        throw new Exception("no clip " + r.name + " in " + root + r.file + "; it has: " + string.Join(", ", found));
+    }
+
+    static Bounds Measure(Renderer[] rs) {
+        var b = rs[0].bounds;
+        foreach (var r in rs) b.Encapsulate(r.bounds);
+        return b;
+    }
+
+    // Poses a frame: samples the clip at `t`, tilts it by `tilt` (a wreck
+    // with no fall clip), lifts the unit by `lift` so the still pose stands on
+    // the ground (a wreck is set on the ground by its own bounds, and a wreck
+    // from a clip recentred over the origin, since a fall moves the hips off
+    // the spot), holds a moving frame's middle over `hold` (a drive or walk
+    // clip's root motion would carry the unit out of the frame), and turns it
+    // to `yaw`.
+    static void Pose(GameObject unit, Renderer[] rs, AnimationClip clip, float t, float yaw, float lift,
+                     bool wreck, bool recentre, WreckPose tilt, Vector3? hold = null) {
+        unit.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+        if (clip != null) clip.SampleAnimation(unit, t);
+        if (tilt != null)
+            unit.transform.rotation = Quaternion.Euler(tilt.tilt_deg, 0, tilt.roll_deg) * unit.transform.rotation;
+        var off = unit.transform.position + Vector3.up * lift;
+        if (wreck) {
+            unit.transform.position = off;
+            var b = Measure(rs);
+            off += new Vector3(recentre ? -b.center.x : 0, -b.min.y, recentre ? -b.center.z : 0);
+        } else if (hold.HasValue) {
+            unit.transform.position = off;
+            var b = Measure(rs);
+            off += new Vector3(hold.Value.x - b.center.x, 0, hold.Value.z - b.center.z);
+        }
+        var rot = Quaternion.Euler(0, yaw, 0);
+        unit.transform.SetPositionAndRotation(rot * off, rot * unit.transform.rotation);
+    }
+
+    static Texture2D PrepareIdTexture(string path) {
+        var ti = (TextureImporter)AssetImporter.GetAtPath(path);
+        if (ti == null) throw new Exception("missing id texture " + path);
+        if (ti.mipmapEnabled || ti.filterMode != FilterMode.Point || ti.textureCompression != TextureImporterCompression.Uncompressed) {
+            ti.mipmapEnabled = false; ti.filterMode = FilterMode.Point;
             ti.textureCompression = TextureImporterCompression.Uncompressed; ti.maxTextureSize = 8192;
             ti.SaveAndReimport();
         }
+        return Load<Texture2D>(path);
     }
 
-    // Poses a frame: samples the clip, and for the wreck recentres the body
-    // on the origin and the ground (the fall moves the hips off the spot).
-    static void Pose(GameObject mech, Renderer[] rs, AnimationClip clip, float t, float yaw, bool recentre) {
-        mech.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
-        clip.SampleAnimation(mech, t);
-        if (recentre) {
-            var b = rs[0].bounds; foreach (var r in rs) b.Encapsulate(r.bounds);
-            mech.transform.position = new Vector3(-b.center.x, -b.min.y, -b.center.z);
+    // The colour-ID colour of a part (the reducer's default table reads it:
+    // green paint, blue secondary, black dark metal, red accent, white bright).
+    static Color PartColour(string part) {
+        switch (part) {
+            case "second": return new Color(0, 0, 1);
+            case "dark": return new Color(0, 0, 0);
+            case "accent": return new Color(1, 0, 0);
+            case "bright": return new Color(1, 1, 1);
+            case "paint": return new Color(0, 1, 0);
+            default: throw new Exception("part " + part + " is not paint/second/dark/accent/bright");
         }
-        var off = mech.transform.position;
-        var rot = Quaternion.Euler(0, yaw, 0);
-        mech.transform.SetPositionAndRotation(rot * off, rot);
     }
 
-    static string F(float f) => f.ToString("0.###", CultureInfo.InvariantCulture);
-
-    public static void Run() {
-        MakeReadable();
-        string outDir = Path.GetFullPath("bake_out");
+    public static void RunBake() {
+        string cfgPath = Arg("-bakeConfig") ?? throw new Exception("no -bakeConfig <look.json>");
+        string outDir = Path.GetFullPath(Arg("-bakeOut") ?? "bake_out");
+        string commit = Arg("-bakeCommit") ?? "";
+        var cfg = JsonUtility.FromJson<Config>(File.ReadAllText(cfgPath));
+        string version = string.IsNullOrEmpty(cfg.asset_version) ? (Arg("-bakeAssetVersion") ?? "") : cfg.asset_version;
+        if (cfg.size_cm == null || cfg.size_cm.Length != 2 || cfg.size_cm[1] <= 0)
+            throw new Exception(cfgPath + ": size_cm must be [width, height], the look's");
         Directory.CreateDirectory(outDir);
-        var idTex = Load<Texture2D>("Materials/MC_LtMed_X_Color_ID.png");
-        var idMat = new Material(Shader.Find("Hidden/IdOut")); idMat.mainTexture = idTex;
+        string root = cfg.root == "" || cfg.root.EndsWith("/") ? cfg.root : cfg.root + "/";
+
+        // 1. The unit: a prefab with its parts in their mounts, or a primitive.
+        GameObject unit;
+        var built = new List<string>();
+        if (!string.IsNullOrEmpty(cfg.primitive)) {
+            var type = (PrimitiveType)Enum.Parse(typeof(PrimitiveType), cfg.primitive);
+            unit = new GameObject("Unit");
+            var body = GameObject.CreatePrimitive(type);
+            body.transform.SetParent(unit.transform, false);
+            body.transform.localScale = new Vector3(cfg.size_cm[0] / 100f * 0.5f, cfg.size_cm[1] / 100f, cfg.size_cm[0] / 100f);
+            body.transform.localPosition = new Vector3(0, cfg.size_cm[1] / 200f, 0);
+            UnityEngine.Object.DestroyImmediate(body.GetComponent<Collider>());
+            built.Add("primitive " + cfg.primitive);
+        } else {
+            unit = Place(root, cfg.prefab, null);
+            built.Add(cfg.prefab);
+            var placed = new Dictionary<string, GameObject> { { "", unit } };
+            foreach (var p in cfg.attach) {
+                if (!placed.TryGetValue(p.parent ?? "", out var parent))
+                    throw new Exception("attach " + p.prefab + ": its parent '" + p.parent + "' is not placed (list parents first)");
+                var mount = Find(parent.transform, p.mount);
+                if (mount == null)
+                    throw new Exception("attach " + p.prefab + ": no mount '" + p.mount + "' on " + parent.name +
+                                        "; its mounts: " + string.Join(", ", Mounts(parent.transform).Distinct()));
+                var go = Place(root, p.prefab, mount);
+                placed[go.name] = go;
+                built.Add(p.prefab + " on " + p.mount);
+            }
+        }
+        foreach (var an in unit.GetComponentsInChildren<Animator>()) an.enabled = false;
+        var rs = unit.GetComponentsInChildren<Renderer>()
+            .Where(r => r is MeshRenderer || r is SkinnedMeshRenderer).ToArray();
+        if (rs.Length == 0) throw new Exception("the unit has nothing to render");
+
+        // 2. The passes' materials.
+        var original = rs.Select(r => r.sharedMaterials).ToArray();
+        Material[][] idMats;
+        if (!string.IsNullOrEmpty(cfg.id_texture)) {
+            var m = new Material(Shader.Find("Hidden/IdOut")) { mainTexture = PrepareIdTexture(root + cfg.id_texture) };
+            idMats = original.Select(ms => ms.Select(_ => m).ToArray()).ToArray();
+        } else {
+            var flat = new Dictionary<string, Material>();
+            Material For(string part) {
+                if (!flat.TryGetValue(part, out var m)) {
+                    m = new Material(Shader.Find("Hidden/FlatId"));
+                    m.SetColor("_Color", PartColour(part));
+                    flat[part] = m;
+                }
+                return m;
+            }
+            idMats = original.Select(ms => ms.Select(mat => {
+                var name = mat ? mat.name : "";
+                var hit = cfg.material_parts.FirstOrDefault(mp => name.IndexOf(mp.match, StringComparison.OrdinalIgnoreCase) >= 0);
+                return For(hit != null ? hit.part : cfg.default_part);
+            }).ToArray()).ToArray();
+        }
         var nMat = new Material(Shader.Find("Hidden/NormalOut"));
+        var nMats = original.Select(ms => ms.Select(_ => nMat).ToArray()).ToArray();
 
-        // Asymmetric light mech: cannon right, machine gun left, rockets on top.
-        var mech = (GameObject)Object.Instantiate(Load<GameObject>("Prefabs/Legs_Lt.prefab"));
-        mech.name = "Mech";
-        var cockpit = Attach("Cockpit_fox", Find(mech.transform, "Mount_top"));
-        Attach("Weapon_cannon_lvl3", Find(cockpit.transform, "Mount_Weapon_R"));
-        Attach("Weapon_machinegun_lvl3", Find(cockpit.transform, "Mount_Weapon_L"));
-        Attach("Weapon_rockets_shoulder_lvl1", Find(cockpit.transform, "Mount_Weapon_top"));
-        foreach (var an in mech.GetComponentsInChildren<Animator>()) an.enabled = false;
-        var renderers = mech.GetComponentsInChildren<Renderer>();
+        // 3. The poses' clips.
+        var still = Clip(root, cfg.still);
+        var moving = Clip(root, cfg.moving);
+        var fall = Clip(root, cfg.wreck);
+        var clips = new[] { still, moving, fall }.Where(c => c != null).Select(c => c.name).ToList();
+        // A pose index to (clip, time, whether a wreck, whether tilted): the
+        // moving cycle from its clip (four still frames without one), the wreck
+        // from its fall clip's last frame or, without one, the still tilted.
+        (AnimationClip clip, float t, bool wreck, bool tilted) PoseOf(int k) {
+            if (k == 0) return (still, 0f, false, false);
+            if (k <= 4) return moving != null ? (moving, moving.length * (k - 1) / 4f, false, false) : (still, 0f, false, false);
+            return fall != null ? (fall, fall.length, true, false) : (still, 0f, true, true);
+        }
 
-        var idle = Clip("Legs_Lt@Legs_lt_idle.fbx", "Legs_lt_idle_simple");
-        var walk = Clip("Legs_Lt@Legs_lt_walk.fbx", "Legs_lt_walk");
-        var fall = Clip("Legs_Lt@Legs_lt_fall_back.fbx", "Legs_lt_fall_back");
-        var poses = new List<(string name, AnimationClip clip, float t)> { ("still", idle, 0) };
-        for (int k = 0; k < 4; k++) poses.Add(("moving" + k, walk, walk.length * k / 4f));
-        poses.Add(("wreck", fall, fall.length));
-
-        // Framing from the still pose: span S covers height and turning radius.
-        idle.SampleAnimation(mech, 0);
-        var b = renderers[0].bounds; foreach (var r in renderers) b.Encapsulate(r.bounds);
+        // 4. The model to its look's height, standing on the ground.
+        Pose(unit, rs, still, 0, 0, 0, false, false, null);
+        var b0 = Measure(rs);
+        if (b0.size.y <= 0) throw new Exception("the unit has no height");
+        unit.transform.localScale = unit.transform.localScale * (cfg.size_cm[1] / 100f / b0.size.y);
+        Pose(unit, rs, still, 0, 0, 0, false, false, null);
+        float lift = -Measure(rs).min.y;
+        Pose(unit, rs, still, 0, 0, lift, false, false, null);
+        var middle = Measure(rs).center;
+        Pose(unit, rs, still, 0, cfg.yaw_offset_deg, lift, false, false, null);
+        var b = Measure(rs);
         float H = b.max.y;
-        float R = Mathf.Max(Mathf.Abs(b.min.x), Mathf.Abs(b.max.x), Mathf.Abs(b.min.z), Mathf.Abs(b.max.z));
-        float S = Mathf.Max(H, 2 * R) * 1.1f;
+        float Rc = 0;
+        foreach (var x in new[] { b.min.x, b.max.x })
+            foreach (var z in new[] { b.min.z, b.max.z })
+                Rc = Mathf.Max(Rc, Mathf.Sqrt(x * x + z * z));
+        int widthCm = Mathf.RoundToInt(Mathf.Max(b.size.x, b.size.z) * 100);
+        int heightCm = Mathf.RoundToInt(H * 100);
 
-        var camGo = new GameObject("Cam"); var cam = camGo.AddComponent<Camera>();
-        cam.orthographic = true; cam.orthographicSize = S / 2; cam.aspect = 1;
+        // 5. The camera and the renders, view by view.
+        var cam = new GameObject("Cam").AddComponent<Camera>();
+        cam.orthographic = true; cam.aspect = 1;
         cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = new Color(0, 0, 0, 0);
-        cam.nearClipPlane = 0.01f; cam.farClipPlane = 200;
-        cam.transform.rotation = Quaternion.Euler(Elev, 0, 0);
-        cam.transform.position = new Vector3(0, S * 0.45f, 0) - cam.transform.forward * 50;
-        var rt = new RenderTexture(Res, Res, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-        rt.antiAliasing = 1; cam.targetTexture = rt;
+        cam.nearClipPlane = 0.01f; cam.farClipPlane = 400;
+        var rt = new RenderTexture(Res, Res, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) { antiAliasing = 1 };
+        cam.targetTexture = rt;
         var read = new Texture2D(Res, Res, TextureFormat.RGBA32, false, true);
 
-        var meta = new StringBuilder();
-        meta.Append("{\"res\":").Append(Res).Append(",\"span_m\":").Append(F(S))
-            .Append(",\"height_m\":").Append(F(H)).Append(",\"elev_deg\":").Append(F(Elev))
-            .Append(",\"frames\":[");
-        bool first = true;
-        foreach (var (fname, yaw) in Facings) {
-            foreach (var (pname, clip, t) in poses) {
-                Pose(mech, renderers, clip, t, yaw, pname == "wreck");
-                foreach (var (tag, mat) in new[] { ("id", idMat), ("n", nMat) }) {
-                    foreach (var r in renderers) {
-                        var m = new Material[r.sharedMaterials.Length];
-                        for (int i = 0; i < m.Length; i++) m[i] = mat;
-                        r.sharedMaterials = m;
+        var views = new List<string>();
+        foreach (var (vname, pitch) in Views) {
+            float p = pitch * Mathf.Deg2Rad;
+            // The frame spans the unit at any facing: its turning circle across,
+            // its height and that circle's depth foreshortened down it.
+            float S = Mathf.Max(2 * Rc, H * Mathf.Cos(p) + 2 * Rc * Mathf.Sin(p)) * 1.08f;
+            cam.orthographicSize = S / 2;
+            cam.transform.rotation = Quaternion.Euler(pitch, 0, 0);
+            cam.transform.position = cam.transform.up * (H * Mathf.Cos(p) / 2) - cam.transform.forward * 200;
+            var frames = new List<string>();
+            foreach (var (fname, yaw) in Facings) {
+                for (int k = 0; k < Poses.Length; k++) {
+                    var (clip, t, wreck, tilted) = PoseOf(k);
+                    Pose(unit, rs, clip, t, yaw + cfg.yaw_offset_deg, lift, wreck, wreck && !tilted,
+                         tilted ? cfg.wreck_pose : null, k >= 1 && k <= 4 ? middle : (Vector3?)null);
+                    foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats) }) {
+                        for (int i = 0; i < rs.Length; i++) rs[i].sharedMaterials = mats[i];
+                        cam.Render();
+                        RenderTexture.active = rt;
+                        read.ReadPixels(new Rect(0, 0, Res, Res), 0, 0); read.Apply();
+                        RenderTexture.active = null;
+                        File.WriteAllBytes(Path.Combine(outDir, $"{vname}_{fname}_{Poses[k]}_{tag}.png"), read.EncodeToPNG());
                     }
-                    cam.Render();
-                    RenderTexture.active = rt; read.ReadPixels(new Rect(0, 0, Res, Res), 0, 0); read.Apply(); RenderTexture.active = null;
-                    File.WriteAllBytes(Path.Combine(outDir, $"{fname}_{pname}_{tag}.png"), read.EncodeToPNG());
+                    var a = cam.WorldToViewportPoint(Vector3.zero);
+                    var muzzles = new List<string>();
+                    foreach (var mz in cfg.muzzles) {
+                        var at = Locate(unit.transform, mz.locator);
+                        if (!at) throw new Exception("no muzzle locator " + mz.locator);
+                        var v = cam.WorldToViewportPoint(at.position);
+                        muzzles.Add(J(mz.weapon) + ":[" + F(v.x * Res) + "," + F((1 - v.y) * Res) + "]");
+                    }
+                    frames.Add("{\"facing\":" + J(fname) + ",\"pose\":" + J(Poses[k]) +
+                               ",\"anchor\":[" + F(a.x * Res) + "," + F((1 - a.y) * Res) + "]" +
+                               ",\"muzzles\":{" + string.Join(",", muzzles) + "}}");
                 }
-                var anchor = cam.WorldToViewportPoint(Vector3.zero);
-                meta.Append(first ? "" : ",").Append("{\"facing\":\"").Append(fname).Append("\",\"pose\":\"").Append(pname)
-                    .Append("\",\"anchor\":[").Append(F(anchor.x * Res)).Append(',').Append(F((1 - anchor.y) * Res)).Append("],\"muzzles\":{");
-                first = false;
-                bool mf = true;
-                foreach (var w in new[] { "Weapon_cannon_lvl3", "Weapon_machinegun_lvl3", "Weapon_rockets_shoulder_lvl1" }) {
-                    var wt = Find(mech.transform, w);
-                    var bt = wt ? Find(wt, "Barrel_end") : null;
-                    if (!bt) continue;
-                    var v = cam.WorldToViewportPoint(bt.position);
-                    meta.Append(mf ? "" : ",").Append('"').Append(w).Append("\":[").Append(F(v.x * Res)).Append(',')
-                        .Append(F((1 - v.y) * Res)).Append(',').Append(F(v.z)).Append(']');
-                    mf = false;
-                }
-                meta.Append("}}");
             }
+            views.Add("{\"view\":" + J(vname) + ",\"pitch_deg\":" + F(pitch) + ",\"span_cm\":" + F(S * 100) +
+                      ",\"frames\":[" + string.Join(",", frames) + "]}");
         }
-        meta.Append("]}");
-        File.WriteAllText(Path.Combine(outDir, "meta.json"), meta.ToString());
+        for (int i = 0; i < rs.Length; i++) rs[i].sharedMaterials = original[i];
 
-        // Voxels: mech at yaw 0 (front toward +Z), grid x,z in [-S/2,S/2], y in [0,S].
-        // Layout: index (y * N + z) * N + x; value 0 empty, else 1 + colour-ID bits (r4 g2 b1).
-        Physics.queriesHitBackfaces = true;
-        var idPixels = idTex.GetPixels32(); int tw = idTex.width, th = idTex.height;
-        foreach (int N in new[] { 48, 96 }) {
-            foreach (var (pname, clip, t) in poses) {
-                Pose(mech, renderers, clip, t, 0, pname == "wreck");
-                var cols = new List<GameObject>();
-                foreach (var r in renderers) {
-                    Mesh mesh;
-                    var cg = new GameObject("col");
-                    cg.transform.SetPositionAndRotation(r.transform.position, r.transform.rotation);
-                    if (r is SkinnedMeshRenderer sk) { mesh = new Mesh(); sk.BakeMesh(mesh, true); cg.transform.localScale = Vector3.one; }
-                    else { mesh = r.GetComponent<MeshFilter>().sharedMesh; cg.transform.localScale = r.transform.lossyScale; }
-                    cg.AddComponent<MeshCollider>().sharedMesh = mesh;
-                    cols.Add(cg);
-                }
-                Physics.SyncTransforms();
-                float v = S / N;
-                var grid = new byte[N * N * N];
-                Vector3 origin = new Vector3(-S / 2, 0, -S / 2);
-                // Every crossing of every part along each axis ray (Unity's
-                // RaycastAll gives one hit per collider, so march each part's
-                // collider past each hit). A crossing's cell takes its class
-                // (the surface); per part, cells between an entering and a
-                // leaving crossing are inside (parts interpenetrate, so parity
-                // is per part), and a cell two axes of three call inside is
-                // filled with the entering crossing's class.
-                var votes = new byte[N * N * N];
-                var fill = new byte[N * N * N];
-                var surf = new byte[N * N * N];
-                var hitsBuf = new List<(float d, byte cls)>();
-                foreach (var cg in cols) {
-                    var mc = cg.GetComponent<MeshCollider>();
-                    System.Array.Clear(votes, 0, votes.Length);
-                    System.Array.Clear(fill, 0, fill.Length);
-                    for (int axis = 0; axis < 3; axis++)
-                        for (int i = 0; i < N; i++)
-                            for (int j = 0; j < N; j++) {
-                                float a = (i + 0.5f) * v, c = (j + 0.5f) * v;
-                                Vector3 p0, dir;
-                                if (axis == 0) { p0 = origin + new Vector3(-1, a, c); dir = Vector3.right; }
-                                else if (axis == 1) { p0 = origin + new Vector3(a, -1, c); dir = Vector3.up; }
-                                else { p0 = origin + new Vector3(a, c, -1); dir = Vector3.forward; }
-                                hitsBuf.Clear();
-                                float travelled = 0;
-                                while (travelled < S + 2 && hitsBuf.Count < 64) {
-                                    if (!mc.Raycast(new Ray(p0 + dir * travelled, dir), out var h, S + 2 - travelled)) break;
-                                    travelled += h.distance;
-                                    var uv = h.textureCoord;
-                                    int px = Mathf.Clamp((int)(uv.x * tw), 0, tw - 1), py = Mathf.Clamp((int)(uv.y * th), 0, th - 1);
-                                    var col = idPixels[py * tw + px];
-                                    hitsBuf.Add((travelled, (byte)(1 + (col.r > 127 ? 4 : 0) + (col.g > 127 ? 2 : 0) + (col.b > 127 ? 1 : 0))));
-                                    travelled += 1e-4f;
-                                }
-                                foreach (var (d, cls) in hitsBuf) {
-                                    int kk = Mathf.FloorToInt((d - 1) / v);
-                                    if (kk < 0 || kk >= N) continue;
-                                    int x, y, z;
-                                    if (axis == 0) { x = kk; y = i; z = j; } else if (axis == 1) { x = i; y = kk; z = j; } else { x = i; y = j; z = kk; }
-                                    surf[(y * N + z) * N + x] = cls;
-                                }
-                                for (int hI = 0; hI + 1 < hitsBuf.Count; hI += 2) {
-                                    int k0 = Mathf.CeilToInt((hitsBuf[hI].d - 1) / v - 0.5f);
-                                    int k1 = Mathf.FloorToInt((hitsBuf[hI + 1].d - 1) / v - 0.5f);
-                                    for (int kk = Mathf.Max(k0, 0); kk <= Mathf.Min(k1, N - 1); kk++) {
-                                        int x, y, z;
-                                        if (axis == 0) { x = kk; y = i; z = j; } else if (axis == 1) { x = i; y = kk; z = j; } else { x = i; y = j; z = kk; }
-                                        int idx = (y * N + z) * N + x;
-                                        votes[idx]++;
-                                        if (fill[idx] == 0) fill[idx] = hitsBuf[hI].cls;
-                                    }
-                                }
-                            }
-                    for (int idx = 0; idx < grid.Length; idx++)
-                        if (votes[idx] >= 2 && grid[idx] == 0) grid[idx] = fill[idx];
-                }
-                for (int idx = 0; idx < grid.Length; idx++)
-                    if (surf[idx] != 0) grid[idx] = surf[idx];
-                File.WriteAllBytes(Path.Combine(outDir, $"vox{N}_{pname}.bin"), grid);
-                foreach (var cg in cols) Object.DestroyImmediate(cg);
-            }
-        }
-        Debug.Log("BAKE DONE S=" + S + " H=" + H);
+        var meta = new StringBuilder();
+        meta.Append("{\"format\":2,\"look\":").Append(J(cfg.look)).Append(",\"res\":").Append(Res)
+            .Append(",\"size_cm\":[").Append(widthCm).Append(',').Append(heightCm).Append(']')
+            .Append(",\"provenance\":{\"asset_pack\":").Append(J(cfg.asset_pack))
+            .Append(",\"asset_version\":").Append(J(version))
+            .Append(",\"prefab\":").Append(J(string.Join(" + ", built)))
+            .Append(",\"clips\":[").Append(string.Join(",", clips.Select(J))).Append(']')
+            .Append(",\"bake_commit\":").Append(J(commit)).Append('}');
+        if (cfg.id_classes != null && cfg.id_classes.Length > 0)
+            meta.Append(",\"id_classes\":[").Append(string.Join(",", cfg.id_classes.Select(J))).Append(']');
+        meta.Append(",\"views\":[").Append(string.Join(",", views)).Append("]}");
+        File.WriteAllText(Path.Combine(outDir, "meta.json"), meta.ToString());
+        Debug.Log("BAKE DONE " + cfg.look + ": " + heightCm + " cm tall, " + widthCm + " cm wide, " +
+                  (Views.Length * Facings.Length * Poses.Length * 2) + " renders in " + outDir);
     }
 }

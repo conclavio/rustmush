@@ -45,6 +45,9 @@ pub fn ensure_channel(
     let st = ctx.w.module_state_mut::<ComsysState>()?;
     if let Some(id) = st.channel_by_name(name).map(|c| c.id) {
         let c = st.channels.get_mut(&id)?;
+        if c.managed.is_some() {
+            return None;
+        }
         if c.flags.ic != flags.ic && c.seq != 0 {
             return None;
         }
@@ -188,6 +191,14 @@ pub fn force_join(ctx: &mut Ctx<'_>, player: ObjId, channel: ChannelId, alias: &
     {
         return true;
     }
+    if ctx
+        .w
+        .module_state::<ComsysState>()
+        .and_then(|s| s.channels.get(&channel))
+        .is_some_and(|c| c.managed.is_some())
+    {
+        return false;
+    }
     // Pick a free alias: the desired one, else numbered variants.
     let base = alias_from_name(alias);
     let candidates = std::iter::once(base.clone()).chain((2..=9).map(|n| format!("{base}{n}")));
@@ -270,6 +281,47 @@ pub fn force_leave(ctx: &mut Ctx<'_>, player: ObjId, channel: ChannelId) -> bool
         format!("You have been removed from channel {name}."),
     );
     true
+}
+
+/// Speak through the same membership, gag and lock gates as a personal alias.
+/// IC lines still queue in the existing transport.
+pub fn speak(ctx: &mut Ctx<'_>, channel: ChannelId, text: &str) -> Result<(), mush_core::CmdError> {
+    let c = ctx
+        .w
+        .module_state::<ComsysState>()
+        .and_then(|s| s.channels.get(&channel))
+        .ok_or_else(|| mush_core::CmdError::msg("No such channel."))?;
+    let member = ctx
+        .w
+        .module_state::<ComsysState>()
+        .and_then(|s| s.members.get(&(ctx.actor, channel)))
+        .ok_or_else(|| mush_core::CmdError::msg("No such channel."))?;
+    if !c.active()
+        || member.gagged
+        || !mush_core::eval_lock(
+            ctx.w,
+            &c.perms.speak,
+            ctx.actor,
+            mush_core::lock::MAX_LOCK_DEPTH,
+        )
+    {
+        return Err(mush_core::CmdError::msg(
+            "You cannot speak on that channel.",
+        ));
+    }
+    let text = text.trim();
+    let (kind, text) = if let Some(t) = text.strip_prefix(':') {
+        (mush_proto::NarrativeKind::Pose, t)
+    } else if let Some(t) = text.strip_prefix(';') {
+        (mush_proto::NarrativeKind::SemiPose, t)
+    } else {
+        (mush_proto::NarrativeKind::Say, text)
+    };
+    if text.trim().is_empty() {
+        return Err(mush_core::CmdError::msg("What do you want to say?"));
+    }
+    crate::speak::channel_speak(ctx.w, ctx.out, ctx.actor, channel, kind, text, None);
+    Ok(())
 }
 
 #[cfg(test)]
