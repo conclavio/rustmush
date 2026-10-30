@@ -144,12 +144,12 @@ fn a_flat_field_draws_flat_under_every_biome() {
 /// at `elev_cm == 0` blocks no sight line (hides no target rows) in any picture.
 #[test]
 fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
-    use std::collections::HashMap;
     use mush_pixel::Frame;
     use mush_pixel::iso25d::Iso25DPicture;
     use mush_pixel::overhead::OverheadPicture;
     use mush_pixel::picture::{Look, Picture};
     use mush_pixel::raycast::{Camera, Ground, Map, Sprite, SpriteKind};
+    use std::collections::HashMap;
 
     assert_eq!(
         mush_atlas::physics::obstacle_height_cm(TerrainClass::Rock),
