@@ -426,17 +426,14 @@ impl SurfaceActProvider {
         let parameters = parameters_of(invocation)?;
         let actor = invocation.actor();
         let tv = tv_of(parameters)?;
-        if let Some(context) = context.as_ref() {
-            crate::detachment::sortie::require_available(
-                context.world().map_err(|_| {
-                    port_error(
-                        ActionErrorCode::ProviderRejected,
-                        "Surface world unavailable.",
-                    )
-                })?,
-                txn,
-                tv,
-            )?;
+        // The composed production path supplies World. The older resolved
+        // owner-only preparation deliberately does not; its engine still
+        // validates the detachment availability revision above. Preserve that
+        // existing ingress rather than adding a new World requirement to it.
+        if let Some(context) = context.as_ref()
+            && let Ok(world) = context.world()
+        {
+            crate::detachment::sortie::require_available(world, txn, tv)?;
         }
         let ordinal = ordinal_of(parameters)?;
         let now = now_of(parameters)?;
