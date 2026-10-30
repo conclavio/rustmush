@@ -105,6 +105,9 @@ pub const MAX_MENU_LINE: usize = 64;
 /// The doorway's shared state.
 pub struct Doorway {
     cfg: RwLock<Arc<Config>>,
+    /// `[limits]` as the gates read it, rebuilt on reload (the exempt
+    /// networks are parsed once here, not at every accept).
+    caps: RwLock<Caps>,
     server_config: Arc<ServerConfig>,
     client_config: Arc<client::Config>,
     connector: Arc<dyn Connector>,
@@ -154,6 +157,7 @@ impl Doorway {
             ..ServerConfig::default()
         });
         Ok(Arc::new(Doorway {
+            caps: RwLock::new(Self::caps(&cfg)),
             cfg: RwLock::new(Arc::new(cfg)),
             server_config,
             client_config: client_config(),
@@ -185,6 +189,10 @@ impl Doorway {
             return Err("[listen] changed; that needs a swap, not a reload".into());
         }
         *self
+            .caps
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Self::caps(&new);
+        *self
             .cfg
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(new);
@@ -197,7 +205,18 @@ impl Doorway {
             rate: cfg.limits.per_ip_new_per_minute,
             global: cfg.limits.global_connections,
             per_v6_48: cfg.limits.per_v6_48_connections,
+            // Validated at load and on reload, so this cannot fail; an
+            // unparsable list would exempt nothing rather than everything.
+            exempt: cfg.exempt_nets().unwrap_or_default().into(),
         }
+    }
+
+    /// The gates' current numbers.
+    fn current_caps(&self) -> Caps {
+        self.caps
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// How this doorway reaches services.
@@ -266,7 +285,7 @@ impl Doorway {
         let cfg = self.config();
         let slot = match self
             .limits
-            .admit(peer.ip(), Self::caps(&cfg), Instant::now())
+            .admit(peer.ip(), &self.current_caps(), Instant::now())
         {
             Admission::Admit(slot) => slot,
             Admission::Drop(reason) => {

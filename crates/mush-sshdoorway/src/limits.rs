@@ -11,6 +11,11 @@
 //! - **Concurrency** per key is answered in SSH (a banner, then refusal), so
 //!   a household behind one NAT is told why.
 //!
+//! - **Exempt networks** (`[limits].exempt_nets`, [`Net`]): the operator's
+//!   own addresses, where a bot fleet or a staff box opens many sessions at
+//!   once. They skip the per-key, rate and /48 caps; the global cap still
+//!   applies, because it bounds the process, not the player.
+//!
 //! The rate table is bounded: when it grows past [`MAX_TRACKED`] it is swept
 //! of stale windows, and if it is still full one arbitrary entry is evicted
 //! to make room. It never fails closed: 65,536 keys is exactly the /64s of
@@ -72,8 +77,70 @@ pub fn ip_key(ip: IpAddr) -> IpKey {
     }
 }
 
+/// A network in CIDR form (`198.51.100.0/24`, `2001:db8::/32`) or a bare
+/// address (`/32`, `/128`), for `[limits].exempt_nets`. An IPv4-mapped IPv6
+/// address is the IPv4 address it carries, as in [`ip_key`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Net {
+    /// The network's bits; an IPv4 network sits in the low 32.
+    bits: u128,
+    /// Prefix length over `bits` (an IPv4 prefix is shifted up by 96).
+    prefix: u8,
+    v4: bool,
+}
+
+impl Net {
+    /// Parse `addr` or `addr/prefix`. `None` if it is neither.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Net> {
+        let s = s.trim();
+        let (addr, prefix) = match s.split_once('/') {
+            Some((a, p)) => (a.parse::<IpAddr>().ok()?, Some(p.parse::<u8>().ok()?)),
+            None => (s.parse::<IpAddr>().ok()?, None),
+        };
+        let (bits, v4) = widen(addr);
+        let max = if v4 { 32 } else { 128 };
+        let prefix = prefix.unwrap_or(max);
+        if prefix > max {
+            return None;
+        }
+        let prefix = if v4 { prefix + 96 } else { prefix };
+        Some(Net {
+            bits: mask(bits, prefix),
+            prefix,
+            v4,
+        })
+    }
+
+    /// Whether `ip` is in this network.
+    #[must_use]
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        let (bits, v4) = widen(ip);
+        v4 == self.v4 && mask(bits, self.prefix) == self.bits
+    }
+}
+
+/// An address as 128 bits, and whether it is (or carries) IPv4.
+fn widen(ip: IpAddr) -> (u128, bool) {
+    match ip {
+        IpAddr::V4(v4) => (u128::from(u32::from(v4)), true),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => (u128::from(u32::from(v4)), true),
+            None => (u128::from(v6), false),
+        },
+    }
+}
+
+fn mask(bits: u128, prefix: u8) -> u128 {
+    match prefix {
+        0 => 0,
+        p if p >= 128 => bits,
+        p => bits & (u128::MAX << (128 - u32::from(p))),
+    }
+}
+
 /// The numbers the gates apply (from `[limits]`, reloadable).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Caps {
     /// Concurrent connections per key.
     pub per_key: u32,
@@ -83,6 +150,9 @@ pub struct Caps {
     pub global: u32,
     /// Concurrent connections per IPv6 /48, across its /64s.
     pub per_v6_48: u32,
+    /// Networks exempt from the per-key, rate and /48 caps (never from the
+    /// global cap).
+    pub exempt: Arc<[Net]>,
 }
 
 /// Why a connection was dropped at accept.
@@ -139,10 +209,28 @@ impl Limits {
     }
 
     /// Gate one accepted connection.
-    pub fn admit(self: &Arc<Self>, ip: IpAddr, caps: Caps, now: Instant) -> Admission {
+    pub fn admit(self: &Arc<Self>, ip: IpAddr, caps: &Caps, now: Instant) -> Admission {
         let key = ip_key(ip);
         let prefix = v6_48(ip);
         let mut inner = self.lock();
+        if caps.exempt.iter().any(|n| n.contains(ip)) {
+            // The operator's own network: no per-key, rate or /48 gate, and
+            // no rate-table entry. The global cap is the process's bound and
+            // still holds.
+            if self.global.load(Ordering::SeqCst) >= caps.global as usize {
+                *inner.counters.entry("global").or_default() += 1;
+                return Admission::Drop(DropReason::Global);
+            }
+            *inner.counters.entry("exempt").or_default() += 1;
+            self.global.fetch_add(1, Ordering::SeqCst);
+            return Admission::Admit(Slot {
+                limits: Arc::clone(self),
+                key,
+                prefix: None,
+                counted: true,
+                exempt: true,
+            });
+        }
         // If this key is already tracked in the rate table, enforce its rate
         // window first so a known flooder is dropped as `Rate`.
         if let Some(entry) = inner.rate.get_mut(&key) {
@@ -227,6 +315,7 @@ impl Limits {
             key,
             prefix,
             counted,
+            exempt: false,
         })
     }
 
@@ -272,10 +361,13 @@ pub struct Slot {
     key: IpKey,
     prefix: Option<u64>,
     counted: bool,
+    /// From an exempt network: it holds a global slot and nothing else.
+    exempt: bool,
 }
 
 impl Slot {
-    /// Whether this connection holds a per-key slot.
+    /// Whether this connection holds a per-key slot (always true for an
+    /// exempt network, which is never refused for its address).
     #[must_use]
     pub fn counted(&self) -> bool {
         self.counted
@@ -285,6 +377,9 @@ impl Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         self.limits.global.fetch_sub(1, Ordering::SeqCst);
+        if self.exempt {
+            return;
+        }
         let mut inner = self.limits.lock();
         if let Some(p) = self.prefix
             && let Some(n) = inner.concurrent48.get_mut(&p)
@@ -314,15 +409,99 @@ impl Drop for Slot {
 mod tests {
     use super::*;
 
-    const CAPS: Caps = Caps {
-        per_key: 2,
-        rate: 5,
-        global: 10,
-        per_v6_48: 3,
-    };
+    fn caps() -> Caps {
+        Caps {
+            per_key: 2,
+            rate: 5,
+            global: 10,
+            per_v6_48: 3,
+            exempt: Arc::from([]),
+        }
+    }
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    fn net(s: &str) -> Net {
+        Net::parse(s).unwrap_or_else(|| panic!("{s:?} should parse"))
+    }
+
+    #[test]
+    fn nets_parse_as_cidr_or_bare_and_contain_what_they_should() {
+        let lo = net("127.0.0.0/8");
+        assert!(lo.contains(ip("127.0.0.1")) && lo.contains(ip("127.255.255.254")));
+        assert!(lo.contains(ip("::ffff:127.0.0.1")), "mapped v4 is v4");
+        assert!(!lo.contains(ip("128.0.0.1")) && !lo.contains(ip("::1")));
+        let one = net("::1/128");
+        assert!(one.contains(ip("::1")) && !one.contains(ip("::2")));
+        assert_eq!(net("::1"), one, "a bare address is /128");
+        assert_eq!(net("198.51.100.7"), net("198.51.100.7/32"));
+        let site = net("2001:db8:1::/48");
+        assert!(site.contains(ip("2001:db8:1:ffff::1")) && !site.contains(ip("2001:db8:2::1")));
+        assert!(net("0.0.0.0/0").contains(ip("203.0.113.9")));
+        assert!(
+            !net("0.0.0.0/0").contains(ip("2001:db8::1")),
+            "v4 any is not v6 any"
+        );
+        assert_eq!(
+            net("10.1.2.3/8"),
+            net("10.0.0.0/8"),
+            "host bits are dropped"
+        );
+        for bad in [
+            "",
+            "foo",
+            "1.2.3.4/33",
+            "2001:db8::/129",
+            "10.0.0.0/",
+            "/8",
+            "10.0.0.0/-1",
+            "10.0.0.0/8/8",
+        ] {
+            assert!(Net::parse(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn exempt_nets_skip_every_cap_but_the_global_one() {
+        let l = Limits::new();
+        let now = Instant::now();
+        let caps = Caps {
+            exempt: Arc::from([net("127.0.0.0/8"), net("2001:db8:1:2::1/128")]),
+            ..caps()
+        };
+        // Nine at once from loopback: over per_key (2) and rate (5), all in.
+        let fleet: Vec<Slot> = (0..9)
+            .map(|_| slot(l.admit(ip("127.0.0.1"), &caps, now)))
+            .collect();
+        assert!(fleet.iter().all(Slot::counted));
+        assert_eq!(l.concurrent(ip("127.0.0.1")), 0, "no per-key count");
+        assert_eq!(l.tracked(), 0, "no rate-table entry");
+        assert_eq!(l.live(), 9);
+        // The global cap (10) still binds them, and everyone else.
+        let _tenth = slot(l.admit(ip("127.0.0.2"), &caps, now));
+        assert!(matches!(
+            l.admit(ip("127.0.0.3"), &caps, now),
+            Admission::Drop(DropReason::Global)
+        ));
+        assert!(matches!(
+            l.admit(ip("198.51.100.7"), &caps, now),
+            Admission::Drop(DropReason::Global)
+        ));
+        drop(fleet);
+        assert_eq!(l.live(), 1);
+        // An exempt single address inside a /64 leaves its neighbours' count
+        // alone when it goes.
+        let a = slot(l.admit(ip("2001:db8:1:2::2"), &caps, now));
+        let b = slot(l.admit(ip("2001:db8:1:2::3"), &caps, now));
+        let x = slot(l.admit(ip("2001:db8:1:2::1"), &caps, now));
+        assert_eq!(l.concurrent(ip("2001:db8:1:2::9")), 2);
+        drop(x);
+        assert_eq!(l.concurrent(ip("2001:db8:1:2::9")), 2);
+        drop((a, b));
+        assert_eq!(l.concurrent(ip("2001:db8:1:2::9")), 0);
+        assert_eq!(l.take_counters().get("exempt"), Some(&11));
     }
 
     fn slot(a: Admission) -> Slot {
@@ -349,16 +528,16 @@ mod tests {
     fn concurrency_is_counted_and_released() {
         let l = Limits::new();
         let now = Instant::now();
-        let a = slot(l.admit(ip("198.51.100.7"), CAPS, now));
-        let b = slot(l.admit(ip("198.51.100.7"), CAPS, now));
-        let c = slot(l.admit(ip("198.51.100.7"), CAPS, now));
-        let d = slot(l.admit(ip("198.51.100.7"), CAPS, now));
+        let a = slot(l.admit(ip("198.51.100.7"), &caps(), now));
+        let b = slot(l.admit(ip("198.51.100.7"), &caps(), now));
+        let c = slot(l.admit(ip("198.51.100.7"), &caps(), now));
+        let d = slot(l.admit(ip("198.51.100.7"), &caps(), now));
         assert!(a.counted() && b.counted() && !c.counted() && !d.counted());
         // Beyond MAX_UNCOUNTED_PER_KEY (2) simultaneous banner slots, further
         // connections from the same key are dropped at TCP accept without
         // claiming global slots (F-1).
         assert!(matches!(
-            l.admit(ip("198.51.100.7"), CAPS, now),
+            l.admit(ip("198.51.100.7"), &caps(), now),
             Admission::Drop(DropReason::PerIp)
         ));
         assert_eq!(l.concurrent(ip("198.51.100.7")), 2);
@@ -373,16 +552,16 @@ mod tests {
         let l = Limits::new();
         let now = Instant::now();
         let held: Vec<Slot> = (0..3)
-            .map(|i| slot(l.admit(ip(&format!("2001:db8:0:{i:x}::1")), CAPS, now)))
+            .map(|i| slot(l.admit(ip(&format!("2001:db8:0:{i:x}::1")), &caps(), now)))
             .collect();
         assert!(matches!(
-            l.admit(ip("2001:db8:0:ff::1"), CAPS, now),
+            l.admit(ip("2001:db8:0:ff::1"), &caps(), now),
             Admission::Drop(DropReason::Prefix48)
         ));
         // Another /48 is unaffected, and dropping one frees a place.
-        let _other = slot(l.admit(ip("2001:db8:1::1"), CAPS, now));
+        let _other = slot(l.admit(ip("2001:db8:1::1"), &caps(), now));
         drop(held);
-        let _again = slot(l.admit(ip("2001:db8:0:ff::1"), CAPS, now));
+        let _again = slot(l.admit(ip("2001:db8:0:ff::1"), &caps(), now));
     }
 
     #[test]
@@ -392,21 +571,21 @@ mod tests {
         let mut held = Vec::new();
         let caps = Caps {
             per_v6_48: 100,
-            ..CAPS
+            ..caps()
         };
         for i in 0..5 {
-            let s = slot(l.admit(ip(&format!("2001:db8::{i:x}")), caps, now));
+            let s = slot(l.admit(ip(&format!("2001:db8::{i:x}")), &caps, now));
             assert_eq!(s.counted(), i < 2);
             if s.counted() {
                 held.push(s);
             }
         }
         assert!(matches!(
-            l.admit(ip("2001:db8::ff"), caps, now),
+            l.admit(ip("2001:db8::ff"), &caps, now),
             Admission::Drop(DropReason::Rate)
         ));
         // Another /64 is unaffected.
-        let _other = slot(l.admit(ip("2001:db8:0:1::1"), caps, now));
+        let _other = slot(l.admit(ip("2001:db8:0:1::1"), &caps, now));
     }
 
     #[test]
@@ -414,24 +593,24 @@ mod tests {
         let l = Limits::new();
         let t0 = Instant::now();
         for _ in 0..5 {
-            drop(slot(l.admit(ip("203.0.113.1"), CAPS, t0)));
+            drop(slot(l.admit(ip("203.0.113.1"), &caps(), t0)));
         }
         assert!(matches!(
-            l.admit(ip("203.0.113.1"), CAPS, t0),
+            l.admit(ip("203.0.113.1"), &caps(), t0),
             Admission::Drop(DropReason::Rate)
         ));
-        drop(slot(l.admit(ip("203.0.113.1"), CAPS, t0 + WINDOW)));
+        drop(slot(l.admit(ip("203.0.113.1"), &caps(), t0 + WINDOW)));
 
         let mut held = Vec::new();
         for i in 0..10 {
-            held.push(slot(l.admit(ip(&format!("192.0.2.{i}")), CAPS, t0)));
+            held.push(slot(l.admit(ip(&format!("192.0.2.{i}")), &caps(), t0)));
         }
         assert!(matches!(
-            l.admit(ip("192.0.2.200"), CAPS, t0),
+            l.admit(ip("192.0.2.200"), &caps(), t0),
             Admission::Drop(DropReason::Global)
         ));
         held.clear();
-        drop(slot(l.admit(ip("192.0.2.200"), CAPS, t0)));
+        drop(slot(l.admit(ip("192.0.2.200"), &caps(), t0)));
         let counters = l.take_counters();
         assert_eq!(counters.get("rate"), Some(&1));
         assert_eq!(counters.get("global"), Some(&1));
@@ -446,28 +625,29 @@ mod tests {
             rate: 1,
             global: u32::MAX,
             per_v6_48: u32::MAX,
+            exempt: Arc::from([]),
         };
         let t0 = Instant::now();
         for i in 0..(MAX_TRACKED as u32) {
             let addr = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + i));
-            drop(slot(l.admit(addr, caps, t0)));
+            drop(slot(l.admit(addr, &caps, t0)));
         }
         assert_eq!(l.tracked(), MAX_TRACKED);
         // Full of live windows: a new key is still admitted (one entry is
         // evicted for it), the table stays bounded, and the new key is
         // tracked — its second connection in the window is over its rate.
         let extra = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + MAX_TRACKED as u32));
-        drop(slot(l.admit(extra, caps, t0)));
+        drop(slot(l.admit(extra, &caps, t0)));
         assert_eq!(l.tracked(), MAX_TRACKED);
         assert!(matches!(
-            l.admit(extra, caps, t0),
+            l.admit(extra, &caps, t0),
             Admission::Drop(DropReason::Rate)
         ));
         // Later, the stale windows are swept and new keys are tracked again.
-        drop(slot(l.admit(ip("198.18.0.1"), caps, t0 + WINDOW)));
+        drop(slot(l.admit(ip("198.18.0.1"), &caps, t0 + WINDOW)));
         assert!(l.tracked() <= MAX_TRACKED);
         assert!(matches!(
-            l.admit(ip("198.18.0.1"), caps, t0 + WINDOW),
+            l.admit(ip("198.18.0.1"), &caps, t0 + WINDOW),
             Admission::Drop(DropReason::Rate)
         ));
         assert_eq!(l.take_counters().get("rate-evict"), Some(&1));
@@ -484,15 +664,16 @@ mod tests {
             rate: 20,
             global: 2048,
             per_v6_48: 64,
+            exempt: Arc::from([]),
         };
         let t0 = Instant::now();
         for i in 0..MAX_TRACKED as u128 {
             let v6 = std::net::Ipv6Addr::from((0x2001_0db8_0001u128 << 80) | (i << 64) | 1);
-            drop(slot(l.admit(IpAddr::V6(v6), caps, t0)));
+            drop(slot(l.admit(IpAddr::V6(v6), &caps, t0)));
         }
         assert_eq!(l.tracked(), MAX_TRACKED);
-        drop(slot(l.admit(ip("198.51.100.7"), caps, t0)));
-        drop(slot(l.admit(ip("2001:db8:2::1"), caps, t0)));
+        drop(slot(l.admit(ip("198.51.100.7"), &caps, t0)));
+        drop(slot(l.admit(ip("2001:db8:2::1"), &caps, t0)));
         assert_eq!(l.tracked(), MAX_TRACKED);
     }
 
@@ -505,13 +686,14 @@ mod tests {
             rate: 5,
             global: 1,
             per_v6_48: 1,
+            exempt: Arc::from([]),
         };
-        let held = slot(l.admit(ip("2001:db8:0:1::1"), caps, t0));
+        let held = slot(l.admit(ip("2001:db8:0:1::1"), &caps, t0));
         assert_eq!(l.tracked(), 1);
         // While global (and /48) is full, new IPs are dropped before inserting
         // into the rate table.
         assert!(matches!(
-            l.admit(ip("198.51.100.99"), caps, t0),
+            l.admit(ip("198.51.100.99"), &caps, t0),
             Admission::Drop(DropReason::Global)
         ));
         assert_eq!(l.tracked(), 1);

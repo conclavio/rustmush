@@ -260,7 +260,7 @@ or a registered key were re-verified. What follows is everything else.
 
 | # | Finding | Disposition |
 |---|---|---|
-| A-1 | `per_ip_connections = 8` is tight for a CGNAT or campus address | **Tunable, for the owner.** The instance's own per-IP default is the number to align with; both are config |
+| A-1 | `per_ip_connections = 8` is tight for a CGNAT or campus address, and the owner's own bot fleet comes from one address | **Tunable, plus an allow-list.** `[limits].exempt_nets` (CIDR, loopback by default) skips the per-IP, rate and /48 caps, never the global one; reloaded on `SIGHUP`. Tests: `nets_parse_as_cidr_or_bare_and_contain_what_they_should`, `exempt_nets_skip_every_cap_but_the_global_one`, config validation. The instance's own cap is the separate hardening task |
 | A-2 | After three failed passwords the connection is aborted in 2 s even if a key (or the front door) lets it in meanwhile | **Fixed.** `abort_unless_authed` |
 | A-3 | A channel the doorway closed (the instance ended it) that the client never acknowledges keeps the connection, and its slot, with nothing open | **Fixed.** The pump gives the client the auth deadline to answer with its own close, then disconnects (`PumpCtx::close_grace`) |
 | A-4 | The instance's "no pending data before connect" gate dropped a healthy client whose window was exhausted during a rekey | **Fixed.** Three strikes (`PENDING_STRIKES`) before the disconnect |

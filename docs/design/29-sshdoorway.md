@@ -280,6 +280,12 @@ Port 22 on a public address receives every scanner on the internet. The doorway'
   (29a A-5). Over the rate limit or the global cap, the TCP connection is dropped before
   any SSH work. Limits key on the IPv4 address or the IPv6 /64 (A-4). None of this
   depends on the username, so it runs before routing.
+- **Operator networks are exempt.** `[limits].exempt_nets` (CIDR or bare addresses;
+  loopback by default) skip the per-IP, rate and /48 caps: a fleet of `mush-bot` clients
+  or a staff box opens many sessions from one address and must not look like a flood. The
+  global cap still applies to them, since it bounds the process rather than the player.
+  Exempt connections are counted (`exempt`) in the per-minute summary. Reloaded on
+  `SIGHUP`. (Owner, 2026-10-30.)
 - **Logging is rate-limited.** One line per routed connection: peer, first segment,
   service, auth method, duration, bytes each way. Unrouted rejections are counted, not
   logged one by one; a summary line per minute gives the counts by reason. Passwords and
@@ -457,6 +463,7 @@ host_key = "/var/lib/sshdoorway/host_ed25519"
 per_ip_connections = 8
 per_ip_new_per_minute = 20
 global_connections = 2048
+exempt_nets = ["127.0.0.0/8", "::1/128"]   # operator networks: no per-IP caps
 auth_deadline_secs = 30
 menu_idle_secs = 120
 drain_deadline_secs = 86400

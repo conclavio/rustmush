@@ -235,6 +235,11 @@ impl Rig {
 addrs = ["127.0.0.1:2222"]
 host_key = {host_key:?}
 
+[limits]
+# The rig's clients all come from loopback, which the default exempts from
+# the per-IP caps; the cap tests need to be able to hit them.
+exempt_nets = []
+
 [menu]
 title = "test menu"
 host = "test.host"

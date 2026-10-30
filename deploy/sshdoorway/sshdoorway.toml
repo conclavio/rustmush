@@ -13,6 +13,10 @@ host_key = "/var/lib/sshdoorway/host_ed25519"
 per_ip_connections = 8        # per address; IPv6 per /64
 per_ip_new_per_minute = 20
 global_connections = 2048
+# Operator networks (CIDR or a bare address): no per-IP, rate or /48 cap, so a
+# bot fleet or a staff box from one address is not a flood. The global cap
+# still applies. Add your own address here; SIGHUP reloads it.
+exempt_nets = ["127.0.0.0/8", "::1/128"]
 auth_deadline_secs = 30
 menu_idle_secs = 120
 # Q-29-2 (owner, 2026-10-30): a 24 h drain, warned at these times remaining.

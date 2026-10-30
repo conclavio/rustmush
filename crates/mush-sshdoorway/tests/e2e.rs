@@ -607,6 +607,43 @@ async fn over_cap_banner_slots_are_bounded_and_aborted_when_half_open() {
     wait_for_secs(8, || t.door.limits.live() == 1).await;
 }
 
+/// The owner's bot fleet: many sessions from one exempt address pass the
+/// per-IP cap, a reload can take the exemption away and give it back, and the
+/// change applies to the next connection.
+#[tokio::test]
+async fn exempt_nets_let_a_fleet_past_the_per_ip_cap_and_reload_changes_them() {
+    let t = Rig::start_with(Hooks::default(), |cfg| {
+        cfg.limits.per_ip_connections = 1;
+        cfg.limits.exempt_nets = vec!["127.0.0.0/8".into()];
+    })
+    .await;
+    let mut fleet = Vec::new();
+    for _ in 0..3 {
+        let mut h = t.client().await;
+        assert!(h.authenticate_none("dev1").await.unwrap().success());
+        fleet.push(h);
+    }
+    assert_eq!(t.door.limits.live(), 3);
+    assert_eq!(t.door.limits.concurrent("127.0.0.1".parse().unwrap()), 0);
+
+    // Reload without the exemption: the next loopback connection is over
+    // the cap of one... but the fleet's slots were never counted, so it is
+    // the first counted one and gets in; the one after it is refused.
+    let mut cfg = (*t.door.config()).clone();
+    cfg.limits.exempt_nets.clear();
+    t.door.reload(cfg.clone()).unwrap();
+    let mut first = t.client().await;
+    assert!(first.authenticate_none("dev1").await.unwrap().success());
+    let mut second = t.client().await;
+    assert!(refused(second.authenticate_none("dev1").await));
+
+    // And back: exempt again, so a further connection is admitted outright.
+    cfg.limits.exempt_nets = vec!["127.0.0.1".into()];
+    t.door.reload(cfg).unwrap();
+    let mut again = t.client().await;
+    assert!(again.authenticate_none("dev1").await.unwrap().success());
+}
+
 /// Regression test for F-2: a burst of invalid menu submissions (or a client
 /// that never reads menu output) is cut off at `MAX_MENU_TRIES` and aborted.
 #[tokio::test]

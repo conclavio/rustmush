@@ -80,6 +80,10 @@ old one.
 **Reloading.** `systemctl reload sshdoorway@a` (`SIGHUP`) reloads the routes, limits and
 menu. Changing `[listen]` needs a swap.
 
+**Your own addresses.** Put the networks you run bots or staff sessions from in
+`[limits].exempt_nets` (CIDR or bare addresses; loopback is there by default). They skip
+the per-IP connection, rate and /48 caps, not the global cap. A reload applies the change.
+
 ## Logs
 
 - **The file.** `info` and above goes to `/var/log/sshdoorway/<generation>.log`.

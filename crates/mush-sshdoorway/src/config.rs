@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::limits::Net;
+
 /// The default drain warning, with the owner's wording (Q-29-2, 2026-10-30).
 pub const DEFAULT_DRAIN_MESSAGE: &str = "ATTENTION: Game Doorway updated and requires a restart, please find a safe place and reconnect within the next {remaining}.";
 
@@ -54,6 +56,11 @@ pub struct LimitsCfg {
     pub global_connections: u32,
     /// Concurrent connections per IPv6 /48, across all of its /64s.
     pub per_v6_48_connections: u32,
+    /// Networks (CIDR, or a bare address) exempt from the three caps above:
+    /// the operator's own addresses, where a bot fleet or a staff box opens
+    /// many sessions at once. `global_connections` still applies to them.
+    /// Default: loopback.
+    pub exempt_nets: Vec<String>,
     /// Seconds to authenticate (or reach the menu) before being dropped.
     pub auth_deadline_secs: u64,
     /// Seconds the menu waits for input.
@@ -75,6 +82,7 @@ impl Default for LimitsCfg {
             per_ip_new_per_minute: 20,
             global_connections: 2048,
             per_v6_48_connections: 64,
+            exempt_nets: ["127.0.0.0/8", "::1/128"].map(str::to_owned).to_vec(),
             auth_deadline_secs: 30,
             menu_idle_secs: 120,
             drain_deadline_secs: 86_400,
@@ -252,6 +260,7 @@ impl Config {
             return bad("[limits].drain_message must contain {remaining}".into());
         }
         self.warnings()?;
+        self.exempt_nets()?;
         if !matches!(
             self.log.file_level.as_str(),
             "error" | "warn" | "info" | "debug" | "trace"
@@ -286,6 +295,21 @@ impl Config {
         }
         out.sort_by_key(|w| std::cmp::Reverse(w.remaining));
         Ok(out)
+    }
+
+    /// `[limits].exempt_nets`, parsed.
+    pub fn exempt_nets(&self) -> Result<Vec<Net>, ConfigError> {
+        self.limits
+            .exempt_nets
+            .iter()
+            .map(|s| {
+                Net::parse(s).ok_or_else(|| {
+                    ConfigError::Invalid(format!(
+                        "[limits].exempt_nets: {s:?} is not an address or a network like 198.51.100.0/24"
+                    ))
+                })
+            })
+            .collect()
     }
 
     /// The service named `name`, ASCII case-insensitively.
@@ -366,6 +390,20 @@ listed = false
                 .starts_with("ATTENTION: Game Doorway updated")
         );
         assert_eq!(cfg.service("DEV1").unwrap().name, "dev1");
+        // Loopback is exempt by default; nothing else is.
+        let exempt = cfg.exempt_nets().unwrap();
+        assert_eq!(exempt.len(), 2);
+        assert!(
+            exempt
+                .iter()
+                .any(|n| n.contains("127.0.0.1".parse().unwrap()))
+        );
+        assert!(exempt.iter().any(|n| n.contains("::1".parse().unwrap())));
+        assert!(
+            !exempt
+                .iter()
+                .any(|n| n.contains("203.0.113.9".parse().unwrap()))
+        );
     }
 
     #[test]
@@ -404,6 +442,16 @@ listed = false
             ),
             ("[menu]", "[limits]\nper_ip_connections = 0\n[menu]", "zero"),
             ("[menu]", "[limits]\nforce_grace_secs = 0\n[menu]", "zero"),
+            (
+                "[menu]",
+                "[limits]\nexempt_nets = [\"10.0.0.0/33\"]\n[menu]",
+                "exempt_nets",
+            ),
+            (
+                "[menu]",
+                "[limits]\nexempt_nets = [\"home\"]\n[menu]",
+                "exempt_nets",
+            ),
             (
                 "[menu]",
                 "[limits]\ndrain_warnings = [\"25h\"]\n[menu]",
