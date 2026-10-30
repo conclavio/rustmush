@@ -247,10 +247,12 @@ pays for the models it draws and nothing else.
 `units.bin`. Each frame's contacts carry a `unit_type`; the client maps type → look → model id →
 file name (the look table and the model index ship with the module, a few kilobytes) and fetches
 `/units/<model id>.<digest>.mupk` the first time it needs that model, handing it to `mp_units` to
-install beside the others. Two triggers: at muster, the match's roster (every type in the match,
-known before the first frame) is prefetched, so a fight normally draws baked from its first frame;
-and lazily, any type that first appears in a frame (a late join, a spectator, a type introduced
-mid-match) is fetched then. Until a model arrives the contact draws its look's text sheet — the
+install beside the others. Two triggers: at muster, the pilot's **own side's** types (the cockpit
+frame's `side_unit_types`) are prefetched, so the pilot's own side draws baked from the first
+frame; and lazily, any type that first appears in a frame (a contact as it is classified, a late
+join, a spectator) is fetched then. **Ruled 2026-10-30 (UD.1):** the owner chose own side only —
+*"i think its okay to send on first sight for bad guys, avoids the info leak"*: a roster of the
+other side would tell a client what was fielded against it before its sensors did. Until a model arrives the contact draws its look's text sheet — the
 fallback every picture already has — so a slow fetch costs crispness for a second, never a blank.
 The files are immutable and content-named, so they carry a year's `Cache-Control` and a client
 fetches each model once per bake, ever. A design published in the instance has no new art (its
@@ -437,7 +439,7 @@ runs compress it well) and a section-to-part map on the look. Not built, not sch
 | Cut | What | Done when |
 |---|---|---|
 | **UD.0** | this document and its README row | — |
-| **UD.1** | the model catalogue (D-31-1..5): bake configs under `scripts/unit-bake/models/`, per-model `.mupk` files and `models/index.json` (format 3, keyed by model id), `"model"` on the six looks, `size_cm` on the look's top level, each model's fallback sheet, bakes keyed by model id (`bake_of_sheet`, `look_index` and the look-keyed `SheetKey` go), the installed pack and the fallback cache as tables that grow, the matrix check a model at a time and the look-against-model check, native binaries embedding every model by build script, the web's fetch by roster and on first sight with the text-sheet fallback (D-31-11), immutable content-named files; `units.bin` deleted | the six U.6 models ship as six files; a web client in a match of tanks fetches the tank's file and no other; a contact whose model has not arrived draws its text sheet and then its bake; no change to any picture once loaded |
+| **UD.1** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the model catalogue (D-31-1..5): bake configs under `scripts/unit-bake/models/`, per-model `.mupk` files and `models/index.json` (format 3, keyed by model id), `"model"` on the six looks, `size_cm` on the look's top level, each model's fallback sheet, bakes keyed by model id (`bake_of_sheet`, `look_index` and the look-keyed `SheetKey` go), the installed pack and the fallback cache as tables that grow, the matrix check a model at a time and the look-against-model check, native binaries embedding every model by build script, the web's fetch by roster and on first sight with the text-sheet fallback (D-31-11), immutable content-named files; `units.bin` deleted | the six U.6 models ship as six files; a web client in a match of tanks fetches the tank's file and no other; a contact whose model has not arrived draws its text sheet and then its bake; no change to any picture once loaded |
 | **UD.2** | the staff designer v0 (D-31-6..8, §6): the schema crate out of tacsim, the engine and studio, the chassis templates, the model preview through `mush-pixel-wasm`, the rules and look panes, the validator and the manifest's digest and `requires` in wasm, undo/redo, the saved draft, the test hit, export to the two repo files | staff draw a biped variant with a different weapon fit from the catalogue, the studio refuses a broken one with the server's reason, and the exported files pass `cargo test` unchanged when committed |
 | **UD.3** | the runtime design registry (D-31-9, D-31-10, D-31-16): `tacsim:design:` rows on the pack ledger read by the host before the module registers, the tactics module's catalogue fed from the fielded one, the design namespace, Publish, `@unit/design`, the generation on the match record and the input tape's rebuild, the `looks` map on the feeds and the runtime look table on the gateway and in wasm, fieldable after a restart (Q-31-1) | a published design is fielded in an arena match after the restart and drawn with its own label and doll over SSH, kitty and the web; its input tape re-executes bit for bit; committing the design leaves the catalogue's digests unchanged |
 | **UD.4** | the refit and repair bay on IC hulls (D-31-13..15): the bay view on a hull, quotes, the pending order state on the IC clock, the workshop orders through doc 08's driver at a `unit.maintain_refit` facility, refit families with slot-stable mount ids (the tank variants renamed), the refit transition, the arena refusal | an IC hull back from a sortie with a destroyed cannon is stripped, refitted with a stored like-for-like part, repaired and rearmed over IC time at a priced quote, or refitted to the laser variant and back, and a pod fitted and removed; a hull in the bay cannot launch; a simulator unit has no bay |
@@ -468,7 +470,8 @@ neither, and could go first once IC hulls return damaged, doc 27 H2).
   fielded one (Draft 0.3).
 - **D-31-10** The match hash folds the fielded catalogue as today; the registry is append-only, a
   match records its generation as a count, and the input tape rebuilds from it (Draft 0.3).
-- **D-31-11** The web fetches a model by roster at muster and on first sight, text sheet until it
+- **D-31-11** The web fetches a model by its own side's roster at muster (ruled 2026-10-30: never
+  the other side's) and on first sight, text sheet until it
   arrives; nothing else crosses to a player.
 - **D-31-12** The editor fetches models on demand; rule 7 becomes a per-model web ceiling.
 - **D-31-13** Repair is work orders over doc 27's workshop and doc 08's driver on IC hulls, quoted,

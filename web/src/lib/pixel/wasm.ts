@@ -9,7 +9,11 @@
 // kept.
 
 /** The ABI version this file speaks (`mush_pixel_wasm::ABI_VERSION`). */
-export const PIXEL_ABI = 2;
+export const PIXEL_ABI = 3;
+
+/** Where model file `file` (`models/index.json`'s `file`, doc 31 D-31-2) is
+ * fetched from, or `undefined` for a file this page does not serve. */
+export type ModelUrl = (file: string) => string | undefined;
 
 /** `mp_feed`'s number for `arena.cockpit`. */
 export const FEED_COCKPIT = 1;
@@ -61,6 +65,8 @@ interface PixelExports {
   mp_hash_lo(): number;
   mp_reset(): void;
   mp_units?(len: number): number;
+  mp_wanted?(): number;
+  mp_output?(): number;
 }
 
 const EXPORTS: (keyof PixelExports)[] = [
@@ -82,6 +88,8 @@ export class PixelModule {
   readonly #x: PixelExports;
   #width = 0;
   #height = 0;
+  #modelUrl: ModelUrl | null = null;
+  readonly #requested = new Set<string>();
 
   constructor(instance: WebAssembly.Instance) {
     const x = instance.exports as unknown as PixelExports;
@@ -104,7 +112,48 @@ export class PixelModule {
     const bytes = json === null ? new Uint8Array(0) : new TextEncoder().encode(json);
     const ptr = this.#x.mp_input(bytes.length);
     new Uint8Array(this.#x.memory.buffer, ptr, bytes.length).set(bytes);
-    return this.#x.mp_feed(feed, bytes.length) === 1;
+    const kept = this.#x.mp_feed(feed, bytes.length) === 1;
+    if (kept) this.#fetchWanted();
+    return kept;
+  }
+
+  /** **Fetch model files from `resolve` as the feeds need them** (doc 31
+   * D-31-11): after every feed kept, each model a unit in the held feeds is
+   * drawn from and the module lacks is fetched once and installed; until it
+   * arrives the unit draws its look's text sheet. A fetch that fails is
+   * tried again on a later feed. */
+  fetchModelsFrom(resolve: ModelUrl): void {
+    this.#modelUrl = resolve;
+    this.#fetchWanted();
+  }
+
+  /** The model files the held feeds need and the module lacks
+   * (`mp_wanted`). */
+  wantedModels(): string[] {
+    if (typeof this.#x.mp_wanted !== "function" || typeof this.#x.mp_output !== "function") return [];
+    const len = this.#x.mp_wanted();
+    if (len === 0) return [];
+    const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
+    return text.split("\n").filter((f) => f.length > 0);
+  }
+
+  #fetchWanted(): void {
+    const resolve = this.#modelUrl;
+    if (resolve === null) return;
+    for (const file of this.wantedModels()) {
+      if (this.#requested.has(file)) continue;
+      const url = resolve(file);
+      if (url === undefined) continue;
+      this.#requested.add(file);
+      void fetch(url)
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`${r.status}`))))
+        .then((bytes) => {
+          this.loadUnits(new Uint8Array(bytes));
+        })
+        .catch(() => {
+          this.#requested.delete(file);
+        });
+    }
   }
 
   /** Draw a `width` x `height` frame of the chosen picture (or `kind` when
@@ -159,10 +208,9 @@ export class PixelModule {
     this.#x.mp_reset();
   }
 
-  /** **Install the unit pack** (doc 22 D-22-10: every baked look's size
-   * chains, fetched as a cached asset because it is over the 512 KiB the
-   * module may embed); whether the module took it. Until it does, every unit
-   * draws its look's text sheet. */
+  /** **Install one model's file** (doc 31 D-31-2: a baked model's size
+   * chains, which the module does not embed); whether the module added it.
+   * Until a model is added the units on it draw their look's text sheet. */
   loadUnits(pack: Uint8Array): boolean {
     if (typeof this.#x.mp_units !== "function") return false;
     const ptr = this.#x.mp_input(pack.length);
@@ -172,10 +220,11 @@ export class PixelModule {
 }
 
 /** **Load the module from `url`**: streamed and compiled as it arrives where
- * the server says `application/wasm`, else fetched whole and compiled; then
- * the unit pack from `unitsUrl` when given (a pack that does not arrive
- * leaves every unit on its look's text sheet, never a failed load). */
-export async function loadPixelModule(url: string, unitsUrl?: string): Promise<PixelModule> {
+ * the server says `application/wasm`, else fetched whole and compiled; then,
+ * when `modelUrl` is given, the model files are fetched from it as the feeds
+ * need them ({@link PixelModule.fetchModelsFrom}; a model that does not
+ * arrive leaves its units on their look's text sheet, never a failed load). */
+export async function loadPixelModule(url: string, modelUrl?: ModelUrl): Promise<PixelModule> {
   let instance: WebAssembly.Instance;
   try {
     instance = (await WebAssembly.instantiateStreaming(fetch(url), {})).instance;
@@ -184,13 +233,6 @@ export async function loadPixelModule(url: string, unitsUrl?: string): Promise<P
     instance = (await WebAssembly.instantiate(bytes, {})).instance;
   }
   const module = new PixelModule(instance);
-  if (unitsUrl !== undefined) {
-    try {
-      const response = await fetch(unitsUrl);
-      if (response.ok) module.loadUnits(new Uint8Array(await response.arrayBuffer()));
-    } catch {
-      // No pack: the text sheets.
-    }
-  }
+  if (modelUrl !== undefined) module.fetchModelsFrom(modelUrl);
   return module;
 }

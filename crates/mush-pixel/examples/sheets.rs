@@ -42,9 +42,12 @@ fn main() {
         heading_mdeg: 0,
     };
     for look in look::shipped() {
-        let Some(sheet) = look.sprites.as_ref() else {
+        // The text sheet alone (its own, else its model's), never the bake:
+        // this is the sheets' line-up.
+        let Some(base) = SpritePose::of_look(look, Facing::Front, false, 0) else {
             continue;
         };
+        let sheet = base.sheet;
         let kind = team_of(look);
         let name = look
             .units
@@ -71,10 +74,11 @@ fn main() {
                 .enumerate()
                 .map(|(i, &(facing, moving, step, kind))| Sprite {
                     pose: Some(SpritePose {
-                        sheet,
                         facing,
                         moving,
                         step,
+                        model: None,
+                        ..base
                     }),
                     ..Sprite::at_bearing(
                         &cam,

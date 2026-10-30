@@ -4,7 +4,6 @@
 // gateway draws nothing for a web viewer.
 import type { PictureKind } from "../picture";
 import wasmUrl from "./mush_pixel.wasm?url";
-import unitsUrl from "./units.bin?url";
 import {
   FEED_COCKPIT,
   FEED_MAP,
@@ -14,6 +13,7 @@ import {
   KIND_ISO25D,
   KIND_OVERHEAD,
   KIND_REPLAY,
+  type ModelUrl,
   type PixelModule,
   loadPixelModule,
 } from "./wasm";
@@ -39,9 +39,21 @@ export function localCapable(): boolean {
 
 let loading: Promise<PixelModule> | null = null;
 
+// Doc 31 D-31-11: every model file `npm run wasm` copied beside the module,
+// fingerprinted by Vite into `assets/` (served immutable) and fetched only
+// when a unit drawn from it is in a feed.
+const MODEL_URLS = import.meta.glob<string>("./models/*.mupk", {
+  query: "?url",
+  import: "default",
+  eager: true,
+});
+
+/** Where model file `file` is served from. */
+const modelUrl: ModelUrl = (file) => MODEL_URLS[`./models/${file}`];
+
 /** The module, loaded once for the page. */
 export function pixelModule(): Promise<PixelModule> {
-  loading ??= loadPixelModule(wasmUrl, unitsUrl);
+  loading ??= loadPixelModule(wasmUrl, modelUrl);
   return loading;
 }
 

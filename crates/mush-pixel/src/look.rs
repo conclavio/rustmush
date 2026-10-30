@@ -4,6 +4,9 @@
 //! carries:
 //!
 //! - `label` and `short`: what a screen prints for the type;
+//! - `size_cm`: how big the unit stands in the world, `(width, height)`;
+//! - `model` (doc 31 D-31-1): the baked model it is drawn from, an id in
+//!   [`crate::model`]'s catalogue — absent for a hand-drawn look;
 //! - `weapons`: a short name a weapon component, for the text panel;
 //! - `doll`: the grid its damage is painted onto (D-22-2), at most
 //!   [`DOLL_MAX_W`] by [`DOLL_MAX_H`] cells written as rows of characters, a
@@ -15,8 +18,9 @@
 //!   as text, each character a [`Material`] or `.` for nothing: the facings
 //!   `front`, `rear` and `right` (and `left`, else `right` mirrored), each a
 //!   `still` frame and two to four `moving` frames, one or more `wreck`
-//!   frames, the frame's size in pixels, the unit's size in the world, the
-//!   pixel that stands on the ground, a muzzle point a weapon a facing.
+//!   frames, the frame's size in pixels, the pixel that stands on the
+//!   ground, a muzzle point a weapon a facing. A look on a model carries
+//!   none: it draws the model's sheet ([`Look::sheet`]).
 //!
 //! The reserved unit id [`UNKNOWN`] names the look a contact not yet
 //! classified is drawn with.
@@ -199,8 +203,6 @@ pub struct Sheet {
     pub width: usize,
     /// Frame height, pixels.
     pub height: usize,
-    /// How big the unit stands in the world, `(width, height)` centimetres.
-    pub size_cm: (u32, u32),
     /// The frame pixel that stands on the ground, `(x, y)`.
     pub anchor: (usize, usize),
     /// The facings: all eight on a D-22-9 baked sheet, or front/rear/right
@@ -418,11 +420,18 @@ impl Doll {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Look {
     /// The look's id: its file's stem among the shipped looks (`biped`,
-    /// `tracked_tank`, …), which keys its bake in the unit pack (doc 22
-    /// D-22-10); empty for a look parsed from text alone.
+    /// `tracked_tank`, …); empty for a look parsed from text alone. Its bake
+    /// is keyed by its [`Look::model`] (doc 31 D-31-1), not by this id.
     pub id: String,
     /// The unit types (definition ids) it draws.
     pub units: Vec<String>,
+    /// The model it is drawn from (doc 31 D-31-1), an id in
+    /// [`crate::model`]'s catalogue; `None` for a hand-drawn look, which
+    /// draws its own sheet.
+    pub model: Option<String>,
+    /// How big the unit stands in the world, `(width, height)` centimetres
+    /// (on the look since doc 31: a look with no sheet of its own has one).
+    pub size_cm: (u32, u32),
     /// The type's name.
     pub label: String,
     /// Its short name.
@@ -431,7 +440,8 @@ pub struct Look {
     pub weapons: BTreeMap<String, String>,
     /// The doll, where it has one.
     pub doll: Option<Doll>,
-    /// The sprite sheet, where it has one.
+    /// Its own sprite sheet, where it has one (a hand-drawn unit's; a look
+    /// on a model draws the model's, [`Look::sheet`]).
     pub sprites: Option<Sheet>,
 }
 
@@ -486,7 +496,9 @@ impl Look {
         };
         only(
             obj,
-            &["units", "label", "short", "weapons", "doll", "sprites"],
+            &[
+                "units", "label", "short", "model", "size_cm", "weapons", "doll", "sprites",
+            ],
             "look",
         )?;
         let units: Vec<String> = match obj.get("units").and_then(Value::as_array) {
@@ -498,6 +510,19 @@ impl Look {
             _ => return err("look: `units` must name at least one unit type"),
         };
         let label = string(obj, "label", "look")?;
+        let model = match obj.get("model") {
+            None => None,
+            Some(_) => Some(string(obj, "model", "look")?),
+        };
+        let (cw, ch) = pair(obj.get("size_cm"), "size_cm")
+            .map_err(|_| LookError("look: `size_cm` must be two whole numbers".into()))?;
+        if cw == 0 || ch == 0 {
+            return err("look: `size_cm` must not be zero");
+        }
+        let size_cm = (
+            u32::try_from(cw).unwrap_or(u32::MAX),
+            u32::try_from(ch).unwrap_or(u32::MAX),
+        );
         let short = string(obj, "short", "look")?;
         let mut weapons = BTreeMap::new();
         if let Some(w) = obj.get("weapons") {
@@ -518,12 +543,23 @@ impl Look {
         Ok(Look {
             id: String::new(),
             units,
+            model,
+            size_cm,
             label,
             short,
             weapons,
             doll,
             sprites,
         })
+    }
+
+    /// **The sheet the look draws** when no bake is drawn: its own, else its
+    /// model's fallback sheet ([`crate::model::sheet`], doc 31 D-31-1).
+    #[must_use]
+    pub fn sheet(&self) -> Option<&Sheet> {
+        self.sprites
+            .as_ref()
+            .or_else(|| self.model.as_deref().and_then(crate::model::sheet))
     }
 
     /// The short name of weapon component `id`: the look's, else the id.
@@ -634,13 +670,25 @@ fn pair(v: Option<&Value>, what: &str) -> Result<(u64, u64), LookError> {
     }
 }
 
+/// **Read and check one sheet** given as its own JSON text — a model's
+/// fallback sheet under `models/` (doc 31 D-31-1) — by the rules a look's
+/// `sprites` is read by.
+///
+/// # Errors
+///
+/// [`LookError`] naming the first thing that does not hold.
+pub fn parse_sheet_text(text: &str) -> Result<Sheet, LookError> {
+    let v: Value = serde_json::from_str(text).map_err(|e| LookError(format!("not JSON: {e}")))?;
+    parse_sheet(&v)
+}
+
 fn parse_sheet(v: &Value) -> Result<Sheet, LookError> {
     let Some(obj) = v.as_object() else {
         return err("sprites: must be an object");
     };
     only(
         obj,
-        &["size", "size_cm", "anchor", "palette", "facings", "wreck"],
+        &["size", "anchor", "palette", "facings", "wreck"],
         "sprites",
     )?;
     let (w, h) = pair(obj.get("size"), "size")?;
@@ -652,10 +700,6 @@ fn parse_sheet(v: &Value) -> Result<Sheet, LookError> {
         return err(format!(
             "sprites: frames {w}x{h}; at most {SPRITE_MAX}x{SPRITE_MAX}"
         ));
-    }
-    let (cw, ch) = pair(obj.get("size_cm"), "size_cm")?;
-    if cw == 0 || ch == 0 {
-        return err("sprites: `size_cm` must not be zero");
     }
     let (ax, ay) = pair(obj.get("anchor"), "anchor")?;
     let anchor = (
@@ -817,10 +861,6 @@ fn parse_sheet(v: &Value) -> Result<Sheet, LookError> {
     Ok(Sheet {
         width: w,
         height: h,
-        size_cm: (
-            u32::try_from(cw).unwrap_or(u32::MAX),
-            u32::try_from(ch).unwrap_or(u32::MAX),
-        ),
         anchor,
         facings,
         wreck,
@@ -883,8 +923,11 @@ mod tests {
     /// The check refuses what doc 22 §6 says it must, with a reason.
     #[test]
     fn the_check_refuses_with_a_reason() {
-        let base =
-            |doll: &str| format!(r#"{{"units":["u"],"label":"U","short":"U","doll":{doll}}}"#);
+        let base = |doll: &str| {
+            format!(
+                r#"{{"units":["u"],"label":"U","short":"U","size_cm":[100,100],"doll":{doll}}}"#
+            )
+        };
         let refused = |text: String, why: &str| {
             let e = Look::parse(&text).expect_err(why);
             assert!(e.0.contains(why), "{e} should say {why}");
@@ -915,12 +958,24 @@ mod tests {
             "view",
         );
         refused(
-            r#"{"units":["u"],"label":"U","short":"U","colour":"red"}"#.to_string(),
+            r#"{"units":["u"],"label":"U","short":"U","size_cm":[1,1],"colour":"red"}"#.to_string(),
             "unknown key",
         );
         refused(
-            r#"{"units":[],"label":"U","short":"U"}"#.to_string(),
+            r#"{"units":[],"label":"U","short":"U","size_cm":[1,1]}"#.to_string(),
             "at least one",
+        );
+        refused(
+            r#"{"units":["u"],"label":"U","short":"U"}"#.to_string(),
+            "size_cm",
+        );
+        refused(
+            r#"{"units":["u"],"label":"U","short":"U","size_cm":[0,1]}"#.to_string(),
+            "not be zero",
+        );
+        refused(
+            r#"{"units":["u"],"label":"U","short":"U","size_cm":[1,1],"model":""}"#.to_string(),
+            "model",
         );
     }
 
@@ -929,8 +984,9 @@ mod tests {
     /// from the right, the moving cycle wrapping, the wreck by facing.
     #[test]
     fn a_sheet_is_checked_and_picks_its_frames() {
+        // The biped's sheet is its model's (doc 31 D-31-1).
         let sheet = for_unit("tacsim.unit.biped_mk1")
-            .and_then(|l| l.sprites.as_ref())
+            .and_then(Look::sheet)
             .expect("the biped's sheet");
         assert_eq!(
             (sheet.width, sheet.height, sheet.anchor),
@@ -948,15 +1004,15 @@ mod tests {
         assert!(std::ptr::eq(still, &sheet.facings[&Facing::Front].still));
         assert!(sheet.wreck_frame(Facing::Rear).is_some());
 
-        let text = shipped_sources()
+        let text = crate::model::sheet_sources()
             .iter()
-            .find(|(n, _)| *n == "biped.json")
+            .find(|(n, _)| *n == "mc.lt.fox_biped.sheet.json")
             .map(|(_, t)| *t)
-            .expect("the biped's look");
+            .expect("the biped's sheet");
         let edited = |edit: &dyn Fn(&mut Value)| {
-            let mut v: Value = serde_json::from_str(text).expect("JSON");
+            let mut v = serde_json::json!({ "sprites": serde_json::from_str::<Value>(text).expect("JSON") });
             edit(&mut v);
-            Look::parse(&v.to_string())
+            parse_sheet_text(&v["sprites"].to_string())
         };
         let refused = |edit: &dyn Fn(&mut Value), why: &str| {
             let e = edited(edit).expect_err(why);
@@ -1013,9 +1069,9 @@ mod tests {
             "units": ["tacsim.unit.biped_mk1"],
             "label": "Biped 96",
             "short": "BP",
+            "size_cm": [520, 1100],
             "sprites": {
                 "size": [96, 96],
-                "size_cm": [520, 1100],
                 "anchor": [0, 95],
                 "palette": { "a": "team" },
                 "facings": facings8,
@@ -1052,11 +1108,21 @@ mod tests {
     /// moves (no two frames of it the same) and the wreck is not the still.
     #[test]
     fn every_shipped_sheet_stands_moves_and_wrecks() {
-        for (name, text) in SHIPPED {
-            let look = Look::parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));
-            let Some(sheet) = look.sprites.as_ref() else {
-                continue;
-            };
+        // The looks' own sheets and the models' (doc 31 D-31-1): every sheet
+        // the tree ships.
+        let mut sheets: Vec<(String, Sheet)> = SHIPPED
+            .iter()
+            .filter_map(|(name, text)| {
+                let look = Look::parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+                Some((name.to_string(), look.sprites?))
+            })
+            .collect();
+        for (name, text) in crate::model::sheet_sources() {
+            let sheet = parse_sheet_text(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            sheets.push((name.to_string(), sheet));
+        }
+        assert!(sheets.len() >= 6, "every model has its sheet");
+        for (name, sheet) in &sheets {
             let (w, h, (ax, ay)) = (sheet.width, sheet.height, sheet.anchor);
             assert!(ax < w && ay < h, "{name}: the anchor is inside");
             let drawn = |frame: &SpriteFrame, x: usize, y: usize| {

@@ -16,6 +16,9 @@ serde_json.workspace = true
 # Doc 21 cut G.3b: every sine, cosine, exponential, logarithm and hypotenuse
 # goes through `math` and so through libm, the same on every target.
 libm.workspace = true
+# Doc 31 cut UD.1 (D-31-2): a model's file is named by its SHA-256, which the
+# reducer computes and the catalogue test checks — native builds only.
+sha2 = { workspace = true, optional = true }
 
 [lints]
 workspace = true
@@ -25,7 +28,7 @@ workspace = true
 # the terminal probe. On by default; the browser's wasm build (doc 21 cut G.3b,
 # `mush-pixel-wasm`) draws into a canvas and leaves them out.
 default = ["encode"]
-encode = ["dep:flate2"]
+encode = ["dep:flate2", "dep:sha2"]
 
 [[example]]
 name = "fixture"

@@ -1,16 +1,16 @@
-// The unit bake (doc 22 D-22-10, cut U.6): one look's bake matrix from one
+// The unit bake (doc 22 D-22-10, cut U.6): one model's bake matrix from one
 // named asset pack — both views (`fp` at 3 degrees down, Q-22-3; `iso` at the
 // 2.5D's 28), eight facings, six poses (still, four moving, the wreck), each
 // rendered orthographic at 384 px twice, a colour-ID pass and a world-normal
-// pass — and `meta.json` (format 2): every frame's anchor and muzzles, each
+// pass — and `meta.json` (format 3): every frame's anchor and muzzles, each
 // view's world span, the model's size and the provenance the pack records.
 //
-// Driven by one per-look config (`scripts/unit-bake/looks/<look>.json`) and
+// Driven by one per-model config (`scripts/unit-bake/models/<model>.json`) and
 // run by `scripts/unit-bake/bake.sh`, which hands the renders to the reducer
 // (`crates/mush-pixel/examples/unit_reduce.rs`), the only resampler.
 //
 //   Unity -batchmode -quit -projectPath <proj> -executeMethod Bake.Run \
-//     -bakeConfig <look.json> -bakeOut <dir> -bakeCommit <sha> \
+//     -bakeConfig <model.json> -bakeOut <dir> -bakeCommit <sha> \
 //     [-bakeAssetVersion <version>]
 //
 // Never commit the asset packs, the Unity project or the renders (the owner's
@@ -42,7 +42,7 @@ public static class Bake {
     [Serializable] public class WreckPose { public float tilt_deg = 9f; public float roll_deg = 5f; }
 
     [Serializable] public class Config {
-        public string look = "";
+        public string model = "";
         public string asset_pack = "";
         public string asset_version = "";
         public string package = "";
@@ -199,7 +199,7 @@ public static class Bake {
     }
 
     public static void RunBake() {
-        string cfgPath = Arg("-bakeConfig") ?? throw new Exception("no -bakeConfig <look.json>");
+        string cfgPath = Arg("-bakeConfig") ?? throw new Exception("no -bakeConfig <model.json>");
         string outDir = Path.GetFullPath(Arg("-bakeOut") ?? "bake_out");
         string commit = Arg("-bakeCommit") ?? "";
         var cfg = JsonUtility.FromJson<Config>(File.ReadAllText(cfgPath));
@@ -351,7 +351,7 @@ public static class Bake {
         for (int i = 0; i < rs.Length; i++) rs[i].sharedMaterials = original[i];
 
         var meta = new StringBuilder();
-        meta.Append("{\"format\":2,\"look\":").Append(J(cfg.look)).Append(",\"res\":").Append(Res)
+        meta.Append("{\"format\":3,\"model\":").Append(J(cfg.model)).Append(",\"res\":").Append(Res)
             .Append(",\"size_cm\":[").Append(widthCm).Append(',').Append(heightCm).Append(']')
             .Append(",\"provenance\":{\"asset_pack\":").Append(J(cfg.asset_pack))
             .Append(",\"asset_version\":").Append(J(version))
@@ -362,7 +362,7 @@ public static class Bake {
             meta.Append(",\"id_classes\":[").Append(string.Join(",", cfg.id_classes.Select(J))).Append(']');
         meta.Append(",\"views\":[").Append(string.Join(",", views)).Append("]}");
         File.WriteAllText(Path.Combine(outDir, "meta.json"), meta.ToString());
-        Debug.Log("BAKE DONE " + cfg.look + ": " + heightCm + " cm tall, " + widthCm + " cm wide, " +
+        Debug.Log("BAKE DONE " + cfg.model + ": " + heightCm + " cm tall, " + widthCm + " cm wide, " +
                   (Views.Length * Facings.Length * Poses.Length * 2) + " renders in " + outDir);
     }
 }

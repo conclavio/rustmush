@@ -32,13 +32,16 @@
 //! - `mp_reset()` — fresh pictures (their animation counters and ground caches
 //!   from zero), the feeds and chosen kind kept: what the parity test draws
 //!   each case from.
-//! - `mp_units(len) -> u32` — read the input buffer's first `len` bytes as the
-//!   unit pack (doc 22 D-22-10: every baked look's size chains), which this
-//!   module does not embed — the pack is over rule 7's 512 KiB budget, so the
-//!   page fetches it as a cached asset and hands it over once; `1` installed,
-//!   `0` refused (not a pack this build reads, or one already installed).
-//!   Optional for the caller: until a pack arrives every unit draws its look's
-//!   text sheet.
+//! - `mp_units(len) -> u32` — read the input buffer's first `len` bytes as one
+//!   model's file (doc 31 D-31-2: a one-entry unit pack, a baked model's size
+//!   chains), which this module does not embed — the page fetches each model
+//!   the first time a unit drawn from it is in a feed (D-31-11) — and add it
+//!   to the models the pictures draw from; `1` added, `0` refused (not a
+//!   pack this build reads, or a model already installed). Until a model
+//!   arrives the units on it draw their look's text sheet.
+//! - `mp_wanted() -> len` — the model files the held feeds need and the
+//!   module lacks, one file name a line (`models/index.json`'s `file`), into
+//!   the output buffer `mp_output()` points at; `0` when nothing is wanted.
 //!
 //! A buffer the module hands out moves when its memory grows, so the caller
 //! takes a fresh view of `memory.buffer` after every call that may allocate.
@@ -70,8 +73,10 @@ use mush_pixel::picture::{Look, Picture};
 use mush_pixel::replay::{REPLAY_CURSOR_FEED, REPLAY_FEED, ReplayPicture};
 use serde_json::Value;
 
-/// The ABI's version: the caller refuses a module that answers another.
-pub const ABI_VERSION: u32 = 2;
+/// The ABI's version: the caller refuses a module that answers another
+/// (version 3, doc 31 cut UD.1: `mp_units` takes one model a call and
+/// `mp_wanted` names the files to fetch).
+pub const ABI_VERSION: u32 = 3;
 
 /// `mp_feed`'s number for `arena.cockpit`.
 pub const FEED_COCKPIT: u32 = 1;
@@ -125,6 +130,7 @@ struct State {
     replay: ReplayPicture,
     frame: Frame,
     rgba: Vec<u8>,
+    output: Vec<u8>,
 }
 
 impl State {
@@ -143,6 +149,7 @@ impl State {
             replay: ReplayPicture::new(),
             frame: Frame::new(1, 1),
             rgba: Vec::new(),
+            output: Vec::new(),
         }
     }
 }
@@ -207,11 +214,28 @@ pub fn feed(feed: u32, json: &[u8]) -> bool {
     })
 }
 
-/// Install `pack` as the unit pack (see the crate's ABI, `mp_units`): whether
-/// it was installed.
+/// Add the model file `pack` to the models drawn (see the crate's ABI,
+/// `mp_units`): whether it added one.
 #[must_use]
 pub fn units(pack: &[u8]) -> bool {
     mush_pixel::bake::install(pack).unwrap_or(false)
+}
+
+/// The model files the held feeds need and the module lacks (see the
+/// crate's ABI, `mp_wanted`), in the order first needed.
+#[must_use]
+pub fn wanted() -> Vec<&'static str> {
+    with(|s| {
+        let mut types = Vec::new();
+        let mut names: Vec<&String> = s.feeds.keys().collect();
+        names.sort();
+        for name in names {
+            if let Some(feed) = s.feeds.get(name) {
+                mush_pixel::model::unit_types_in(feed, &mut types);
+            }
+        }
+        mush_pixel::model::wanted_files(types)
+    })
 }
 
 /// Draw a `w` x `h` frame of the chosen picture for the look (see the crate's
@@ -318,11 +342,28 @@ pub extern "C" fn mp_feed(which: u32, len: u32) -> u32 {
     u32::from(json.is_some_and(|json| feed(which, &json)))
 }
 
-/// Install the input buffer's first `len` bytes as the unit pack.
+/// Add the input buffer's first `len` bytes as one model's file.
 #[unsafe(no_mangle)]
 pub extern "C" fn mp_units(len: u32) -> u32 {
     let pack = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec));
     u32::from(pack.is_some_and(|pack| units(&pack)))
+}
+
+/// Write the wanted model files, one a line, into the output buffer: its
+/// length.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_wanted() -> u32 {
+    let text = wanted().join("\n");
+    with(|s| {
+        s.output = text.into_bytes();
+        u32::try_from(s.output.len()).unwrap_or(0)
+    })
+}
+
+/// The output buffer `mp_wanted` wrote.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_output() -> *const u8 {
+    with(|s| s.output.as_ptr())
 }
 
 /// Set the dead-reckoned ego position offset `(dx_cm, dy_cm)` from the held
@@ -583,40 +624,53 @@ mod tests {
         assert_eq!(mp_abi(), ABI_VERSION);
     }
 
-    /// The pack the page fetches: the native build's embedded one.
-    const SHIPPED_PACK: &[u8] = include_bytes!("../../mush-pixel/looks/units.bin");
-
-    /// Install the shipped unit pack, as the page does before it draws, so
-    /// these tests draw what the native goldens draw (the first caller
-    /// installs it; the tests share the process).
-    fn install_shipped_pack() {
-        let _ = units(SHIPPED_PACK);
+    /// The model files the page fetches, read from the tree.
+    fn shipped_models() -> Vec<Vec<u8>> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mush-pixel/models");
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .map(|d| d.filter_map(Result::ok).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        files.sort();
+        files
+            .iter()
+            .filter(|p| p.extension().is_some_and(|x| x == "mupk"))
+            .filter_map(|p| std::fs::read(p).ok())
+            .collect()
     }
 
-    /// The unit pack is fetched, not embedded (rule 7): the module refuses
-    /// what is not a pack and keeps the first one installed. The wasm32
-    /// build (mush-pixel without `encode`) embeds no pack; a host test run
-    /// inside the workspace gets `encode` by feature unification and embeds
-    /// it, so only the target build is held to that.
+    /// Install every shipped model, as the page does as each is needed, so
+    /// these tests draw what the native goldens draw (a host test run gets
+    /// `encode` by feature unification and embeds them already).
+    fn install_shipped_pack() {
+        for model in shipped_models() {
+            let _ = units(&model);
+        }
+    }
+
+    /// The models are fetched, not embedded (D-31-3, D-31-11): the module
+    /// refuses what is not a pack, adds a model once, and names the files the
+    /// held feeds still need. The wasm32 build (mush-pixel without `encode`)
+    /// embeds none; a host test run inside the workspace gets `encode` by
+    /// feature unification and embeds them, so only the target build is held
+    /// to that.
     #[test]
-    fn the_unit_pack_is_installed_not_embedded() {
+    fn the_models_are_installed_not_embedded() {
         if cfg!(target_arch = "wasm32") {
             assert!(
-                mush_pixel::bake::embedded().is_empty(),
-                "the web build embeds no pack"
+                mush_pixel::model::embedded_files().is_empty(),
+                "the web build embeds no model"
             );
         }
-        const _: () = assert!(
-            mush_pixel::bake::WEB_FETCHES_PACK,
-            "the web fetches the pack"
-        );
         assert!(!units(b"not a pack"));
+        let models = shipped_models();
+        assert_eq!(models.len(), mush_pixel::model::index().len());
         install_shipped_pack();
-        assert!(!units(SHIPPED_PACK), "installed once");
-        assert_eq!(
-            Some(mush_pixel::bake::pack()),
-            mush_pixel::bake::Pack::decode(SHIPPED_PACK).ok().as_ref()
-        );
+        for model in &models {
+            assert!(!units(model), "installed once");
+        }
+        assert!(feed(FEED_COCKPIT, fixture("cockpit").as_bytes()));
+        assert!(wanted().is_empty(), "every model on the map is installed");
+        assert_eq!(mp_wanted(), 0);
         assert_eq!(mp_units(u32::MAX), 0, "past the input buffer");
     }
 }

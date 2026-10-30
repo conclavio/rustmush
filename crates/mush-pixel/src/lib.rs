@@ -81,6 +81,7 @@ pub mod iso25d;
 pub mod kitty;
 pub mod look;
 pub mod math;
+pub mod model;
 pub mod overhead;
 pub mod overlay;
 pub mod picture;

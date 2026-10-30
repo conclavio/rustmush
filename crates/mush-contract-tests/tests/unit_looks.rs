@@ -189,9 +189,11 @@ fn every_unit_type_has_a_look_and_every_look_fits_its_units() {
                 }
             }
         }
+        // The muzzles of the sheet it draws: its own, else its model's (doc 31
+        // D-31-1).
         let muzzles = look
-            .sprites
-            .iter()
+            .sheet()
+            .into_iter()
             .flat_map(|sheet| sheet.facings.values())
             .flat_map(|facing| facing.muzzles.keys());
         for weapon in look.weapons.keys().chain(muzzles) {

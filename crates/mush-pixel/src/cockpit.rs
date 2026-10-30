@@ -443,14 +443,14 @@ fn contact_sprite(c: &Value, cam: &Camera, step: usize) -> Sprite {
         .or_else(|| c.get("aspect"))
         .and_then(Value::as_str)
         .unwrap_or("front");
-    let pose = look
-        .and_then(|l| l.sprites.as_ref())
-        .map(|sheet| SpritePose {
-            sheet,
-            facing: Facing::from_aspect(facing_word),
-            moving: c.get("moving").and_then(Value::as_bool) == Some(true),
+    let pose = look.and_then(|l| {
+        SpritePose::of_look(
+            l,
+            Facing::from_aspect(facing_word),
+            c.get("moving").and_then(Value::as_bool) == Some(true),
             step,
-        });
+        )
+    });
     Sprite {
         pose,
         ..Sprite::at_bearing(

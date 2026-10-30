@@ -930,6 +930,9 @@
     }
   ],
   "sensor_height_cm": 150,
+  "side_unit_types": [
+    "tacsim.unit.line_tank"
+  ],
   "sight_m": 600,
   "speed_cms": 1200,
   "speed_kph": 43,

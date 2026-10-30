@@ -1,7 +1,8 @@
 //! **The bake matrix** (doc 22 D-22-10, cut U.6): a shipped unit's art as two
 //! views (`fp` and `iso`) × eight facings × six poses × a size chain each,
 //! reduced from one 384 px render of one named asset by one script, and
-//! stored in a named-entry pack keyed by look id with its provenance.
+//! stored in a named-entry pack keyed by **model id** with its provenance
+//! (doc 31 D-31-1: a look names the model it is drawn from).
 //!
 //! - **The views.** `fp` is baked at a 3° pitch (Q-22-3): the heightfield's
 //!   camera is level, so the only pitch to a contact is its line's own
@@ -15,25 +16,27 @@
 //!   `bake::reduce`, the only resampler). A contact draws from the size
 //!   nearest above its projected height ([`Chain::pick`]).
 //! - **The pack** (format version [`FORMAT_VERSION`], magic [`FORMAT_MAGIC`]):
-//!   named entries keyed by look id — the look file's stem, `biped`,
-//!   `tracked_tank`, `wheeled_scout`, `drone`, `heavy`, `unknown` — each with
-//!   its provenance (asset pack and version, prefab, clips, the bake and
-//!   reduce commits, rule 2), its `size_cm`, and per view a frame span and
-//!   the chain. A frame is its tight bounding box, its anchor, its height and
-//!   its muzzles, and its pixels run-length coded (rule 7, [`encode_runs`]).
-//! - **The fallback** (rule 3): a look with no chain draws its text sheet,
-//!   nearest-sampled — the raycaster's own sheet draw in the first-person
-//!   pictures, and [`chain_from_sheet`] in the 2.5D. It is the path every look
-//!   takes until the owner's bake lands, and a player-designed unit's for
-//!   good.
+//!   named entries keyed by model id (`mc.st.tank_lvl2`, …; the catalogue is
+//!   [`crate::model`]), each with its provenance (asset pack and version,
+//!   prefab, clips, the bake and reduce commits, rule 2), its `size_cm`, and
+//!   per view a frame span and the chain. A frame is its tight bounding box,
+//!   its anchor, its height and its muzzles, and its pixels run-length coded
+//!   (rule 7, [`encode_runs`]). A shipped model is **one file of one entry**
+//!   (doc 31 D-31-2), `models/<id>.<sha-256 prefix>.mupk`.
+//! - **The fallback** (rule 3): a look whose model is not installed draws its
+//!   text sheet ([`Look::sheet`]: its own, else its model's), nearest-sampled
+//!   — the raycaster's own sheet draw in the first-person pictures, and
+//!   [`chain_from_sheet`] in the 2.5D.
 //!
-//! **Where the pack comes from.** Native builds embed
-//! `looks/units.bin`; the web's WebAssembly build (no `encode` feature)
-//! embeds nothing, and the page fetches the pack as a separate cached asset
-//! and hands it to [`install`] (rule 7: the full matrix measures over the
-//! 512 KiB embedded budget, [`BUDGET_BYTES`]).
+//! **Where the models come from** ([`model`], [`install`]). Native builds
+//! embed every shipped model file (the build script lists `models/`), so the
+//! gateway never waits on one (D-31-3); the web's WebAssembly build (no
+//! `encode` feature) embeds none, and the page fetches each model's file the
+//! first time a unit drawn from it is in a feed (D-31-11) and hands it to
+//! [`install`], which adds it to the table the pictures read. A model that
+//! arrives supersedes its fallback on the next frame.
 
-use std::sync::OnceLock;
+use std::sync::{OnceLock, PoisonError, RwLock};
 
 use crate::look::{self, Facing, Look, Material, Sheet};
 
@@ -42,8 +45,10 @@ pub mod reduce;
 
 /// The pack's first four bytes.
 pub const FORMAT_MAGIC: [u8; 4] = *b"MUPK";
-/// The pack format's version (version 1 was PR #154's positional `M25D`).
-pub const FORMAT_VERSION: u16 = 2;
+/// The pack format's version (version 1 was PR #154's positional `M25D`;
+/// version 2, U.6's, keyed its entries by look id; version 3 by model id,
+/// doc 31 D-31-2).
+pub const FORMAT_VERSION: u16 = 3;
 /// The side of the render every size is reduced from, pixels.
 pub const RENDER_PX: u16 = 384;
 /// The `fp` chain, largest first (Q-22-4: the floor is 8 px; under it the
@@ -66,22 +71,9 @@ pub const POSES: [&str; 6] = ["still", "moving0", "moving1", "moving2", "moving3
 pub const POSE_WRECK: usize = 5;
 /// Frames a size: eight facings by six poses, facing-major.
 pub const FRAMES: usize = 48;
-/// Rule 7's budget for an embedded pack, bytes.
+/// Rule 7's budget, bytes: since doc 31 (D-31-12) a ceiling on **one
+/// model's** file, which is what the web fetches.
 pub const BUDGET_BYTES: usize = 512 * 1024;
-/// Whether the web fetches the pack instead of embedding it (rule 7's way
-/// past the budget): the `encode`-less WebAssembly build embeds no pack and
-/// `mush-pixel-wasm`'s `mp_units` installs the fetched one.
-pub const WEB_FETCHES_PACK: bool = true;
-/// The looks a shipped build bakes (rule 4, Q-22-5): every look under
-/// `looks/`, by id.
-pub const ROSTER: [&str; 6] = [
-    "biped",
-    "tracked_tank",
-    "wheeled_scout",
-    "drone",
-    "heavy",
-    "unknown",
-];
 /// The longest string the pack carries.
 const MAX_STR: u64 = 4096;
 /// The most clips, weapons or muzzles one entry carries.
@@ -337,11 +329,11 @@ impl Chain {
     }
 }
 
-/// One look's bake: its provenance, its size and both chains.
+/// One model's bake: its provenance, its size and both chains.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LookBake {
-    /// The look's id: its file's stem (`biped`, `tracked_tank`, …).
-    pub look: String,
+pub struct ModelBake {
+    /// The model's id (`mc.st.tank_lvl2`, …), which a look names.
+    pub model: String,
     /// What it was made from.
     pub provenance: Provenance,
     /// How big the baked model stands, `(width, height)` centimetres: the
@@ -351,7 +343,7 @@ pub struct LookBake {
     pub chains: Vec<Chain>,
 }
 
-impl LookBake {
+impl ModelBake {
     /// The chain for `view`.
     #[must_use]
     pub fn chain(&self, view: View) -> Option<&Chain> {
@@ -373,26 +365,26 @@ fn refuse<T>(why: impl Into<String>) -> Result<T, PackError> {
     Err(PackError(why.into()))
 }
 
-/// The baked looks a build draws from, sorted by look id.
+/// Baked models, sorted by model id: a shipped model's file holds one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
-    /// One entry a baked look.
-    pub entries: Vec<LookBake>,
+    /// One entry a baked model.
+    pub entries: Vec<ModelBake>,
 }
 
 impl Pack {
-    /// The entry for look `id`.
+    /// The entry for model `id`.
     #[must_use]
-    pub fn get(&self, id: &str) -> Option<&LookBake> {
-        self.entries.iter().find(|e| e.look == id)
+    pub fn get(&self, id: &str) -> Option<&ModelBake> {
+        self.entries.iter().find(|e| e.model == id)
     }
 
-    /// Put `entry` in, replacing the entry for the same look, kept sorted by
-    /// look id (so a pack's bytes depend only on its entries).
-    pub fn put(&mut self, entry: LookBake) {
-        self.entries.retain(|e| e.look != entry.look);
+    /// Put `entry` in, replacing the entry for the same model, kept sorted by
+    /// model id (so a pack's bytes depend only on its entries).
+    pub fn put(&mut self, entry: ModelBake) {
+        self.entries.retain(|e| e.model != entry.model);
         self.entries.push(entry);
-        self.entries.sort_by(|a, b| a.look.cmp(&b.look));
+        self.entries.sort_by(|a, b| a.model.cmp(&b.model));
     }
 
     /// The pack as bytes (format [`FORMAT_VERSION`]).
@@ -403,7 +395,7 @@ impl Pack {
         out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
         put_varint(&mut out, self.entries.len() as u64);
         for e in &self.entries {
-            put_str(&mut out, &e.look);
+            put_str(&mut out, &e.model);
             let p = &e.provenance;
             put_str(&mut out, &p.asset_pack);
             put_str(&mut out, &p.asset_version);
@@ -461,7 +453,7 @@ impl Pack {
     /// Read a pack, checking its structure: the magic and version, every
     /// count in bounds, every box inside its frame, every run filling its box
     /// exactly, nothing left over. (What the frames must hold — both chains at
-    /// every size, the marks inside — is [`check_matrix`]'s.)
+    /// every size, the marks inside — is [`check_model`]'s.)
     ///
     /// # Errors
     ///
@@ -523,8 +515,8 @@ impl Pack {
                 });
             }
             chains.sort_by_key(|c| c.view);
-            pack.put(LookBake {
-                look,
+            pack.put(ModelBake {
+                model: look,
                 provenance: Provenance {
                     asset_pack,
                     asset_version,
@@ -538,7 +530,7 @@ impl Pack {
             });
         }
         if pack.entries.len() != count {
-            return refuse("two entries for one look");
+            return refuse("two entries for one model");
         }
         if r.at != bytes.len() {
             return refuse(format!("{} bytes after the last entry", bytes.len() - r.at));
@@ -737,102 +729,166 @@ pub fn code_of(material: Material) -> u8 {
     }
 }
 
-/// A 64-bit FNV-1a of `bytes`: the digest the matrix check pins a pack by.
-#[must_use]
-pub fn digest(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, &b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
+/// The models this build carries, decoded from the files it embeds on first
+/// use, and every model [`install`]ed since: append-only, so a slot never
+/// changes its model. Each entry is leaked once — a model is installed at
+/// most once a process, and the pictures hand out `'static` chains.
+static MODELS: RwLock<Vec<&'static ModelBake>> = RwLock::new(Vec::new());
+static EMBEDDED_LOADED: OnceLock<()> = OnceLock::new();
+
+fn load_embedded() {
+    EMBEDDED_LOADED.get_or_init(|| {
+        for (file, bytes) in crate::model::embedded_files() {
+            // A shipped file that does not decode is a build defect the
+            // catalogue test names; the pictures draw the fallback instead.
+            if insert(bytes).is_err() {
+                debug_assert!(false, "{file}: not a unit pack this build reads");
+            }
+        }
+    });
 }
 
-/// The pack this build embeds: `looks/units.bin` natively, nothing in the
-/// web's WebAssembly build (which fetches it, [`install`]).
-#[cfg(feature = "encode")]
-const EMBEDDED: &[u8] = include_bytes!("../looks/units.bin");
-#[cfg(not(feature = "encode"))]
-const EMBEDDED: &[u8] = &[];
-
-/// The pack bytes this build embeds (empty in the WebAssembly build).
-#[must_use]
-pub fn embedded() -> &'static [u8] {
-    EMBEDDED
-}
-
-static INSTALLED: OnceLock<Pack> = OnceLock::new();
-static EMBEDDED_PACK: OnceLock<Pack> = OnceLock::new();
-
-/// **The pack the pictures draw from**: the one [`install`]ed, else the
-/// embedded one, else none. An embedded pack that does not decode is a build
-/// defect the matrix check catches; the pictures fall back to the text sheets
-/// rather than fail.
-#[must_use]
-pub fn pack() -> &'static Pack {
-    if let Some(p) = INSTALLED.get() {
-        return p;
+fn insert(bytes: &[u8]) -> Result<bool, PackError> {
+    let pack = Pack::decode(bytes)?;
+    let mut table = MODELS.write().unwrap_or_else(PoisonError::into_inner);
+    let mut added = false;
+    for entry in pack.entries {
+        if table.iter().all(|m| m.model != entry.model) {
+            table.push(Box::leak(Box::new(entry)));
+            added = true;
+        }
     }
-    EMBEDDED_PACK.get_or_init(|| Pack::decode(EMBEDDED).unwrap_or_default())
+    Ok(added)
 }
 
-/// **Install a fetched pack** (the web's path, rule 7): decoded and kept for
-/// the process; whether it was installed (`false` when one already was).
+/// **Install a fetched model file** (the web's path, doc 31 D-31-11): every
+/// entry it holds that the table lacks joins it, and the pictures draw from
+/// it on their next frame; whether any did (`false` for a model already
+/// installed — the files are immutable, so a second copy is the same model).
 ///
 /// # Errors
 ///
 /// [`PackError`] when the bytes are not a pack this build reads.
 pub fn install(bytes: &[u8]) -> Result<bool, PackError> {
-    let p = Pack::decode(bytes)?;
-    Ok(INSTALLED.set(p).is_ok())
+    load_embedded();
+    insert(bytes)
 }
 
-/// The look that owns `sheet`, among the shipped ones (by identity: a sheet
-/// that is not a shipped look's — a test's, a player's — has no bake).
+/// The slot of model `id` in the table, if it is installed (or embedded).
 #[must_use]
-pub fn look_of_sheet(sheet: &Sheet) -> Option<&'static Look> {
-    look::shipped()
+pub fn model_slot(id: &str) -> Option<usize> {
+    load_embedded();
+    MODELS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
         .iter()
-        .find(|l| l.sprites.as_ref().is_some_and(|s| std::ptr::eq(s, sheet)))
+        .position(|m| m.model == id)
 }
 
-/// The baked entry for the shipped look that owns `sheet`, if it has one.
+/// The model in table slot `slot`.
 #[must_use]
-pub fn bake_of_sheet(sheet: &Sheet) -> Option<&'static LookBake> {
-    look_of_sheet(sheet).and_then(|l| pack().get(&l.id))
+pub fn model_in_slot(slot: usize) -> Option<&'static ModelBake> {
+    load_embedded();
+    MODELS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(slot)
+        .copied()
+}
+
+/// **The bake of model `id`**, when this build embeds it or a fetched file
+/// installed it.
+#[must_use]
+pub fn model(id: &str) -> Option<&'static ModelBake> {
+    model_slot(id).and_then(model_in_slot)
+}
+
+/// Every model the pictures can draw now, in table order.
+#[must_use]
+pub fn models() -> Vec<&'static ModelBake> {
+    load_embedded();
+    MODELS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// The bake look `look` draws from, when its model is installed.
+#[must_use]
+pub fn bake_of_look(look: &Look) -> Option<&'static ModelBake> {
+    look.model.as_deref().and_then(model)
+}
+
+/// **What a 2.5D unit's art is drawn from**: its model's installed bake, by
+/// table slot, or its look's fallback sheet, by the look's index in
+/// [`look::shipped`]. Two looks on one model draw one art — what the 2.5D's
+/// kitty sheet cache keys on, so five tank variants upload one sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Art {
+    /// A baked model, by its slot in the table ([`model_slot`]).
+    Model(usize),
+    /// A shipped look's text sheet, by the look's index.
+    Sheet(usize),
+}
+
+/// The art shipped look `index` draws in the 2.5D now: its model's bake when
+/// installed, else its sheet ([`Look::sheet`]); `None` for a look with
+/// neither.
+#[must_use]
+pub fn iso_art(index: usize) -> Option<Art> {
+    let look = look::shipped().get(index)?;
+    if let Some(slot) = look.model.as_deref().and_then(model_slot)
+        && model_in_slot(slot).is_some_and(|m| m.chain(View::Iso).is_some())
+    {
+        return Some(Art::Model(slot));
+    }
+    look.sheet().map(|_| Art::Sheet(index))
 }
 
 /// The fallback chains, one slot a shipped look, built on first use.
 static FALLBACK: OnceLock<Vec<OnceLock<Option<Chain>>>> = OnceLock::new();
 
-/// **The `iso` chain the 2.5D draws shipped look `index` from**: the pack's,
-/// else its text sheet's ([`chain_from_sheet`]); `None` for a look with
-/// neither. With the look's height, centimetres, for the size pick.
+/// **The `iso` chain `art` is drawn from**, with the height, centimetres,
+/// the size pick reads: the model's own, or the look's sheet as a chain
+/// ([`chain_from_sheet`]) at the look's `size_cm`.
+#[must_use]
+pub fn art_chain(art: Art) -> Option<(&'static Chain, u32)> {
+    match art {
+        Art::Model(slot) => {
+            let bake = model_in_slot(slot)?;
+            Some((bake.chain(View::Iso)?, bake.size_cm.1))
+        }
+        Art::Sheet(index) => {
+            let look = look::shipped().get(index)?;
+            let sheet = look.sheet()?;
+            let slots = FALLBACK.get_or_init(|| {
+                (0..look::shipped().len())
+                    .map(|_| OnceLock::new())
+                    .collect()
+            });
+            let chain = slots
+                .get(index)?
+                .get_or_init(|| Some(chain_from_sheet(sheet, look.size_cm, View::Iso)))
+                .as_ref()?;
+            Some((chain, look.size_cm.1))
+        }
+    }
+}
+
+/// **The `iso` chain the 2.5D draws shipped look `index` from** now
+/// ([`iso_art`], [`art_chain`]).
 #[must_use]
 pub fn iso_chain(index: usize) -> Option<(&'static Chain, u32)> {
-    let look = look::shipped().get(index)?;
-    if let Some(bake) = pack().get(&look.id)
-        && let Some(chain) = bake.chain(View::Iso)
-    {
-        return Some((chain, bake.size_cm.1));
-    }
-    let slots = FALLBACK.get_or_init(|| {
-        (0..look::shipped().len())
-            .map(|_| OnceLock::new())
-            .collect()
-    });
-    let sheet = look.sprites.as_ref()?;
-    let chain = slots
-        .get(index)?
-        .get_or_init(|| Some(chain_from_sheet(sheet, View::Iso)))
-        .as_ref()?;
-    Some((chain, sheet.size_cm.1))
+    art_chain(iso_art(index)?)
 }
 
 /// **A look's text sheet as a chain** (rule 3's fallback, for the 2.5D):
 /// every size of `view`'s chain nearest-sampled from the sheet, the unit
-/// three-quarters of the frame's side at its widest, standing an eighth of
+/// at `size_cm`, three-quarters of the frame's side at its widest, standing an eighth of
 /// the side above the frame's foot.
 #[must_use]
-pub fn chain_from_sheet(sheet: &Sheet, view: View) -> Chain {
-    let (wcm, hcm) = (sheet.size_cm.0.max(1), sheet.size_cm.1.max(1));
+pub fn chain_from_sheet(sheet: &Sheet, size_cm: (u32, u32), view: View) -> Chain {
+    let (wcm, hcm) = (size_cm.0.max(1), size_cm.1.max(1));
     let span_cm = wcm.max(hcm).saturating_mul(4) / 3;
     let sizes = view
         .sizes()
@@ -843,7 +899,7 @@ pub fn chain_from_sheet(sheet: &Sheet, view: View) -> Chain {
                 .iter()
                 .flat_map(|&facing| {
                     (0..POSES.len())
-                        .map(move |pose| sheet_frame(sheet, facing, pose, size, span_cm))
+                        .map(move |pose| sheet_frame(sheet, size_cm, facing, pose, size, span_cm))
                 })
                 .collect(),
         })
@@ -855,7 +911,14 @@ pub fn chain_from_sheet(sheet: &Sheet, view: View) -> Chain {
     }
 }
 
-fn sheet_frame(sheet: &Sheet, facing: Facing, pose: usize, size: u16, span_cm: u32) -> BakedFrame {
+fn sheet_frame(
+    sheet: &Sheet,
+    size_cm: (u32, u32),
+    facing: Facing,
+    pose: usize,
+    size: u16,
+    span_cm: u32,
+) -> BakedFrame {
     let n = usize::from(size);
     let picked = match pose {
         0 => sheet.frame(facing, false, 0),
@@ -867,7 +930,7 @@ fn sheet_frame(sheet: &Sheet, facing: Facing, pose: usize, size: u16, span_cm: u
     };
     let (sw, sh) = (sheet.width.max(1), sheet.height.max(1));
     let scale = |cm: u32| ((cm as usize * n) / span_cm.max(1) as usize).clamp(1, n);
-    let (dw, dh) = (scale(sheet.size_cm.0), scale(sheet.size_cm.1));
+    let (dw, dh) = (scale(size_cm.0), scale(size_cm.1));
     let off_x = (n - dw) / 2;
     let off_y = n.saturating_sub(dh + n / 8);
     let mut grid = vec![0u8; n * n];
@@ -900,104 +963,93 @@ fn sheet_frame(sheet: &Sheet, facing: Facing, pose: usize, size: u16, span_cm: u
     BakedFrame::from_grid(&grid, n, anchor, Vec::new())
 }
 
-/// **The matrix check** (doc 22 §6, D-22-10): what `pack` must hold against
-/// the shipped `looks`. Every entry names a shipped look and its provenance;
-/// once the pack holds any entry, every look of the [`ROSTER`] has one (rule
-/// 4); every entry has both chains at exactly their sizes, 48 frames each;
-/// every frame's box, anchor, height and muzzles lie inside it, and every
-/// muzzle names a weapon of the look; the entry's height is its look's
-/// (within 2 %: the bake scales the model to it) and its widest silhouette
-/// within half to twice its look's (barrels and arms stand past the sim's
-/// silhouette — the walker measures 9.6 m across its cannon against its
-/// look's 5.2 m — so this catches a wrong model, not a long gun); and every
-/// still frame's anchor stands under the unit's middle — in the box's
-/// middle half across, and on its foot in the `fp` view. Returns what does
-/// not hold, empty when everything does.
+/// **The matrix check** (doc 22 §6, D-22-10; a model at a time since doc 31
+/// D-31-2): what model bake `e` must hold against the `looks` that name it.
+/// At least one look names it, and its provenance is complete; it has both
+/// chains at exactly their sizes, 48 frames each; every frame's box, anchor,
+/// height and muzzles lie inside it, and every muzzle names a weapon of a
+/// look that names the model; its height is each such look's `size_cm`
+/// height (within 2 %: the bake scales the model to it) and its widest
+/// silhouette within half to twice the look's width (barrels and arms stand
+/// past the sim's silhouette — the walker measures 9.6 m across its cannon
+/// against its look's 5.2 m — so this catches a wrong model, not a long gun);
+/// and every still frame's anchor stands under the unit's middle — in the
+/// box's middle half across, and on its foot in the `fp` view. Returns what
+/// does not hold, empty when everything does.
 #[must_use]
-pub fn check_matrix(pack: &Pack, looks: &[Look]) -> Vec<String> {
+pub fn check_model(e: &ModelBake, looks: &[Look]) -> Vec<String> {
     let mut bad = Vec::new();
-    if !pack.entries.is_empty() {
-        for id in ROSTER {
-            if pack.get(id).is_none() {
-                bad.push(format!(
-                    "{id}: no bake (rule 4: every shipped look is baked)"
-                ));
-            }
+    let naming: Vec<&Look> = looks
+        .iter()
+        .filter(|l| l.model.as_deref() == Some(e.model.as_str()))
+        .collect();
+    if naming.is_empty() {
+        bad.push(format!("{}: no shipped look names the model", e.model));
+    }
+    let p = &e.provenance;
+    for (what, v) in [
+        ("asset pack", &p.asset_pack),
+        ("asset version", &p.asset_version),
+        ("prefab", &p.prefab),
+        ("bake commit", &p.bake_commit),
+        ("reduce commit", &p.reduce_commit),
+    ] {
+        if v.trim().is_empty() {
+            bad.push(format!("{}: no {what} in its provenance", e.model));
         }
     }
-    for e in &pack.entries {
-        let Some(look) = looks.iter().find(|l| l.id == e.look) else {
-            bad.push(format!("{}: names no shipped look", e.look));
-            continue;
-        };
-        let p = &e.provenance;
-        for (what, v) in [
-            ("asset pack", &p.asset_pack),
-            ("asset version", &p.asset_version),
-            ("prefab", &p.prefab),
-            ("bake commit", &p.bake_commit),
-            ("reduce commit", &p.reduce_commit),
-        ] {
-            if v.trim().is_empty() {
-                bad.push(format!("{}: no {what} in its provenance", e.look));
-            }
+    for look in &naming {
+        let (lw, lh) = look.size_cm;
+        if e.size_cm.1.abs_diff(lh) * 50 > lh {
+            bad.push(format!(
+                "{}: baked {} cm tall, look {} {lh} cm",
+                e.model, e.size_cm.1, look.id
+            ));
         }
-        match look.sprites.as_ref() {
-            Some(sheet) => {
-                let (lw, lh) = sheet.size_cm;
-                if e.size_cm.1.abs_diff(lh) * 50 > lh {
-                    bad.push(format!(
-                        "{}: baked {} cm tall, its look {lh} cm",
-                        e.look, e.size_cm.1
-                    ));
-                }
-                if e.size_cm.0 * 2 < lw || e.size_cm.0 > lw * 2 {
-                    bad.push(format!(
-                        "{}: baked {} cm wide, its look {lw} cm",
-                        e.look, e.size_cm.0
-                    ));
-                }
-            }
-            None => bad.push(format!("{}: its look has no sheet to agree with", e.look)),
+        if e.size_cm.0 * 2 < lw || e.size_cm.0 > lw * 2 {
+            bad.push(format!(
+                "{}: baked {} cm wide, look {} {lw} cm",
+                e.model, e.size_cm.0, look.id
+            ));
         }
-        let weapons: Vec<&str> = look
-            .weapons
-            .keys()
-            .map(String::as_str)
-            .chain(
-                look.sprites
-                    .iter()
+    }
+    let weapons: Vec<&str> = naming
+        .iter()
+        .flat_map(|look| {
+            look.weapons.keys().map(String::as_str).chain(
+                look.sheet()
+                    .into_iter()
                     .flat_map(|s| s.facings.values())
                     .flat_map(|f| f.muzzles.keys().map(String::as_str)),
             )
-            .collect();
-        for view in View::ALL {
-            let Some(chain) = e.chain(view) else {
-                bad.push(format!("{}: no {} chain", e.look, view.name()));
-                continue;
-            };
-            let sizes: Vec<u16> = chain.sizes.iter().map(|s| s.size).collect();
-            if sizes != view.sizes() {
-                bad.push(format!(
-                    "{} {}: sizes {sizes:?}, not {:?}",
-                    e.look,
-                    view.name(),
-                    view.sizes()
-                ));
-            }
-            if chain.span_cm == 0 {
-                bad.push(format!("{} {}: a span of 0", e.look, view.name()));
-            }
-            for s in &chain.sizes {
-                check_size(&mut bad, &e.look, view, s, &weapons);
-            }
+        })
+        .collect();
+    for view in View::ALL {
+        let Some(chain) = e.chain(view) else {
+            bad.push(format!("{}: no {} chain", e.model, view.name()));
+            continue;
+        };
+        let sizes: Vec<u16> = chain.sizes.iter().map(|s| s.size).collect();
+        if sizes != view.sizes() {
+            bad.push(format!(
+                "{} {}: sizes {sizes:?}, not {:?}",
+                e.model,
+                view.name(),
+                view.sizes()
+            ));
+        }
+        if chain.span_cm == 0 {
+            bad.push(format!("{} {}: a span of 0", e.model, view.name()));
+        }
+        for s in &chain.sizes {
+            check_size(&mut bad, &e.model, view, s, &weapons);
         }
     }
     bad
 }
 
-fn check_size(bad: &mut Vec<String>, look: &str, view: View, s: &SizedFrames, weapons: &[&str]) {
-    let at = format!("{look} {} {}", view.name(), s.size);
+fn check_size(bad: &mut Vec<String>, model: &str, view: View, s: &SizedFrames, weapons: &[&str]) {
+    let at = format!("{model} {} {}", view.name(), s.size);
     if s.frames.len() != FRAMES {
         bad.push(format!("{at}: {} frames, not {FRAMES}", s.frames.len()));
     }
@@ -1027,7 +1079,9 @@ fn check_size(bad: &mut Vec<String>, look: &str, view: View, s: &SizedFrames, we
                 bad.push(format!("{at}: muzzle {name} {xy:?} outside the frame"));
             }
             if !weapons.contains(&name.as_str()) {
-                bad.push(format!("{at}: muzzle {name} names no weapon of the look"));
+                bad.push(format!(
+                    "{at}: muzzle {name} names no weapon of a look on the model"
+                ));
             }
         }
         if i % POSES.len() == 0 {
@@ -1069,9 +1123,9 @@ mod tests {
         BakedFrame::from_grid(&grid, n, (a, foot), vec![("cannon".into(), (a, a))])
     }
 
-    fn block_entry(look: &str, size_cm: (u32, u32)) -> LookBake {
-        LookBake {
-            look: look.into(),
+    fn block_entry(model: &str, size_cm: (u32, u32)) -> ModelBake {
+        ModelBake {
+            model: model.into(),
             provenance: Provenance {
                 asset_pack: "Test Pack".into(),
                 asset_version: "1.0".into(),
@@ -1138,11 +1192,14 @@ mod tests {
     #[test]
     fn a_pack_round_trips_and_refuses_what_is_not_one() {
         let mut pack = Pack::default();
-        pack.put(block_entry("tracked_tank", (700, 250)));
-        pack.put(block_entry("biped", (520, 1100)));
-        pack.put(block_entry("biped", (520, 1100)));
-        assert_eq!(pack.entries.len(), 2, "put replaces a look's entry");
-        assert_eq!(pack.entries[0].look, "biped", "sorted by look id");
+        pack.put(block_entry("mc.st.tank_lvl2", (700, 250)));
+        pack.put(block_entry("mc.lt.fox_biped", (520, 1100)));
+        pack.put(block_entry("mc.lt.fox_biped", (520, 1100)));
+        assert_eq!(pack.entries.len(), 2, "put replaces a model's entry");
+        assert_eq!(
+            pack.entries[0].model, "mc.lt.fox_biped",
+            "sorted by model id"
+        );
         let bytes = pack.encode();
         assert_eq!(&bytes[..4], b"MUPK");
         assert_eq!(Pack::decode(&bytes).unwrap(), pack);
@@ -1156,9 +1213,9 @@ mod tests {
         let mut long = bytes.clone();
         long.push(0);
         assert!(Pack::decode(&long).is_err());
-        let mut v1 = bytes.clone();
-        v1[4] = 1;
-        assert!(Pack::decode(&v1).unwrap_err().0.contains("version 1"));
+        let mut v2 = bytes.clone();
+        v2[4] = 2;
+        assert!(Pack::decode(&v2).unwrap_err().0.contains("version 2"));
         let mut wide = Pack::default();
         let mut e = block_entry("drone", (250, 100));
         e.chains[0].sizes[7].frames[0].w = 9;
@@ -1197,136 +1254,118 @@ mod tests {
     }
 
     #[test]
-    fn the_matrix_check_holds_a_complete_pack_and_names_what_is_missing() {
+    fn the_matrix_check_holds_a_model_against_the_looks_that_name_it() {
         let looks = look::shipped();
-        let mut pack = Pack::default();
-        for id in ROSTER {
-            let look = looks.iter().find(|l| l.id == id).expect("a shipped look");
-            let sheet = look
-                .sprites
-                .as_ref()
-                .unwrap_or_else(|| panic!("{id} has a sheet"));
-            pack.put(block_entry(id, sheet.size_cm));
-        }
-        // The block frames carry a `cannon` muzzle; the scout, the drone and
-        // the unknown look have none.
-        let bad = check_matrix(&pack, looks);
-        assert!(!bad.is_empty());
-        assert!(bad.iter().all(|b| b.contains("muzzle cannon")), "{bad:?}");
-        for e in &mut pack.entries {
-            let look = looks
-                .iter()
-                .find(|l| l.id == e.look)
-                .expect("a shipped look");
-            let weapon = look.weapons.keys().next().cloned();
-            for c in &mut e.chains {
-                for s in &mut c.sizes {
-                    for f in &mut s.frames {
-                        match &weapon {
-                            Some(w) => f.muzzles.iter_mut().for_each(|m| m.0.clone_from(w)),
-                            None => f.muzzles.clear(),
-                        }
-                    }
-                }
-            }
-        }
-        assert_eq!(check_matrix(&pack, looks), Vec::<String>::new());
-        let mut short = pack.clone();
-        short.entries.retain(|e| e.look != "heavy");
+        let tank = looks
+            .iter()
+            .find(|l| l.id == "tracked_tank")
+            .expect("the tank's look");
+        let id = tank.model.as_deref().expect("the tank names a model");
+        let good = block_entry(id, tank.size_cm);
+        assert_eq!(check_model(&good, looks), Vec::<String>::new());
+        let orphan = block_entry("mc.nobody", tank.size_cm);
         assert!(
-            check_matrix(&short, looks)
+            check_model(&orphan, looks)
                 .iter()
-                .any(|b| b.starts_with("heavy: no bake"))
+                .any(|b| b.contains("no shipped look names"))
         );
-        let mut tall = pack.clone();
-        tall.entries[0].size_cm.1 *= 2;
+        let mut tall = good.clone();
+        tall.size_cm.1 *= 2;
         assert!(
-            check_matrix(&tall, looks)
+            check_model(&tall, looks)
                 .iter()
                 .any(|b| b.contains("cm tall"))
         );
-        let mut wide = pack.clone();
-        wide.entries[0].size_cm.0 = wide.entries[0].size_cm.0 * 18 / 10;
+        let mut wide = good.clone();
+        wide.size_cm.0 = wide.size_cm.0 * 18 / 10;
         assert!(
-            check_matrix(&wide, looks).is_empty(),
+            check_model(&wide, looks).is_empty(),
             "a long gun is not a wrong model"
         );
-        wide.entries[0].size_cm.0 *= 2;
+        wide.size_cm.0 *= 2;
         assert!(
-            check_matrix(&wide, looks)
+            check_model(&wide, looks)
                 .iter()
                 .any(|b| b.contains("cm wide"))
         );
-        let mut chain = pack.clone();
-        chain.entries[0].chains[1].sizes.pop();
+        let mut chain = good.clone();
+        chain.chains[1].sizes.pop();
         assert!(
-            check_matrix(&chain, looks)
+            check_model(&chain, looks)
                 .iter()
                 .any(|b| b.contains("sizes"))
         );
-        let mut anchor = pack.clone();
-        anchor.entries[0].chains[0].sizes[0].frames[0].anchor = (2, 2);
+        let mut anchor = good.clone();
+        anchor.chains[0].sizes[0].frames[0].anchor = (2, 2);
         assert!(
-            check_matrix(&anchor, looks)
+            check_model(&anchor, looks)
                 .iter()
                 .any(|b| b.contains("anchor"))
         );
-        let mut prov = pack;
-        prov.entries[0].provenance.asset_version.clear();
+        let mut muzzle = good.clone();
+        muzzle.chains[0].sizes[0].frames[0].muzzles[0].0 = "railgun".into();
         assert!(
-            check_matrix(&prov, looks)
+            check_model(&muzzle, looks)
+                .iter()
+                .any(|b| b.contains("muzzle railgun"))
+        );
+        let mut prov = good;
+        prov.provenance.asset_version.clear();
+        assert!(
+            check_model(&prov, looks)
                 .iter()
                 .any(|b| b.contains("asset version"))
-        );
-        assert!(
-            check_matrix(&Pack::default(), looks).is_empty(),
-            "no bake yet"
         );
     }
 
     #[test]
-    fn every_shipped_look_is_on_the_roster_and_has_a_fallback_chain() {
-        let ids: Vec<&str> = look::shipped().iter().map(|l| l.id.as_str()).collect();
-        let mut roster = ROSTER.to_vec();
-        roster.sort_unstable();
-        let mut sorted = ids.clone();
-        sorted.sort_unstable();
-        assert_eq!(sorted, roster, "the roster is the looks under looks/");
-        for (i, id) in ids.iter().enumerate() {
-            let (chain, h) = iso_chain(i).unwrap_or_else(|| panic!("{id}: no iso chain"));
+    fn every_shipped_look_has_an_iso_chain() {
+        for (i, l) in look::shipped().iter().enumerate() {
+            let (chain, h) = iso_chain(i).unwrap_or_else(|| panic!("{}: no iso chain", l.id));
             assert!(h > 0);
             let sizes: Vec<u16> = chain.sizes.iter().map(|s| s.size).collect();
-            assert_eq!(sizes, ISO_SIZES, "{id}");
+            assert_eq!(sizes, ISO_SIZES, "{}", l.id);
             for s in &chain.sizes {
-                assert_eq!(s.frames.len(), FRAMES, "{id}");
+                assert_eq!(s.frames.len(), FRAMES, "{}", l.id);
                 let still = s.frame(Facing::Front, 0).unwrap();
-                assert!(still.w > 0 && still.h > 0, "{id} {}: drawn", s.size);
+                assert!(still.w > 0 && still.h > 0, "{} {}: drawn", l.id, s.size);
                 assert!(u16::from(still.anchor.1) < s.size);
             }
         }
     }
 
-    /// **The matrix check on the pack this build embeds** (doc 22 §6): its
-    /// digest is pinned (regenerated on purpose: the reducer prints the new
-    /// one), it decodes, it holds against the shipped looks, and it is under
-    /// rule 7's budget or the web fetches it.
+    /// The fallback chain from a sheet stands every pose on its anchor, at
+    /// every size of the view's chain.
     #[test]
-    fn the_embedded_pack_holds_the_matrix_check() {
-        /// The digest of `looks/units.bin`; `unit_reduce` prints it.
-        const PACK_DIGEST: u64 = 0xc722_d076_e98b_1912;
-        let bytes = embedded();
-        let pack = Pack::decode(bytes).expect("the embedded pack decodes");
-        assert_eq!(
-            digest(bytes),
-            PACK_DIGEST,
-            "looks/units.bin changed: pin its new digest {:#018x} on purpose",
-            digest(bytes)
-        );
-        assert_eq!(check_matrix(&pack, look::shipped()), Vec::<String>::new());
-        assert!(
-            bytes.len() <= BUDGET_BYTES || WEB_FETCHES_PACK,
-            "the pack is {} bytes, over rule 7's {BUDGET_BYTES}, and the web embeds it",
-            bytes.len()
-        );
+    fn a_sheet_makes_a_whole_chain() {
+        for l in look::shipped() {
+            let sheet = l.sheet().unwrap_or_else(|| panic!("{}: a sheet", l.id));
+            for view in View::ALL {
+                let chain = chain_from_sheet(sheet, l.size_cm, view);
+                let sizes: Vec<u16> = chain.sizes.iter().map(|s| s.size).collect();
+                assert_eq!(sizes, view.sizes(), "{}", l.id);
+                assert!(chain.sizes.iter().all(|s| s.frames.len() == FRAMES));
+            }
+        }
+    }
+
+    /// **The table grows a model at a time** (doc 31 D-31-2): a fetched
+    /// file joins the table, a second copy adds nothing, a slot never moves,
+    /// and what is not a pack is refused.
+    #[test]
+    fn the_model_table_grows() {
+        let before = models().len();
+        let mut one = Pack::default();
+        one.put(block_entry("test.grows_a", (250, 100)));
+        assert_eq!(install(&one.encode()), Ok(true));
+        let slot = model_slot("test.grows_a").expect("installed");
+        assert_eq!(install(&one.encode()), Ok(false), "the same model twice");
+        let mut two = Pack::default();
+        two.put(block_entry("test.grows_b", (250, 100)));
+        assert_eq!(install(&two.encode()), Ok(true));
+        assert_eq!(model_slot("test.grows_a"), Some(slot), "a slot never moves");
+        assert!(models().len() >= before + 2);
+        assert_eq!(model("test.grows_b").map(|m| m.size_cm), Some((250, 100)));
+        assert!(install(b"not a pack").is_err());
     }
 }

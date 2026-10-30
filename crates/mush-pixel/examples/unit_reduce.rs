@@ -1,27 +1,27 @@
-//! **Reduce one look's bake into the unit pack** (doc 22 D-22-10, cut U.6):
-//! reads the 384 px renders and `meta.json` that `scripts/unit-bake/unity/
-//! Editor/Bake.cs` wrote for one look, reduces every size of both chains from
-//! them (`mush_pixel::bake::reduce`, the only resampler), puts the look's
-//! entry into the pack — replacing its old one, keeping the others — and
-//! prints the entry's size by chain, the pack's size against rule 7's budget,
-//! its digest (to pin in `bake.rs`'s `PACK_DIGEST`) and the matrix check.
-//! With `--preview`, a PNG of every size's still frames, both views, for an
-//! eye check.
+//! **Reduce one model's bake into the catalogue** (doc 22 D-22-10, cut U.6;
+//! doc 31 D-31-2, cut UD.1): reads the 384 px renders and `meta.json` that
+//! `scripts/unit-bake/unity/Editor/Bake.cs` wrote for one model, reduces every
+//! size of both chains from them (`mush_pixel::bake::reduce`, the only
+//! resampler), writes the model's own content-named file under `models/` —
+//! removing its older file — and its entry in `models/index.json`
+//! (`mush_pixel::model::write_model`), and prints the entry's size by chain,
+//! the file's size against rule 7's per-model ceiling, its SHA-256 and the
+//! matrix check against the looks that name the model. With `--preview`, a
+//! PNG of every size's still frames, both views, for an eye check.
 //!
 //! ```text
-//! cargo run --release -p mush-pixel --example unit_reduce -- <bake_out/look> \
-//!     [--pack crates/mush-pixel/looks/units.bin] [--reduce-commit <sha>] [--preview <png>]
+//! cargo run --release -p mush-pixel --example unit_reduce -- <bake_out/model> //!     [--models crates/mush-pixel/models] [--reduce-commit <sha>] [--preview <png>]
 //! ```
 //!
-//! `scripts/unit-bake/bake.sh` runs it after each look's bake.
+//! `scripts/unit-bake/bake.sh` runs it after each model's bake.
 
 use std::path::PathBuf;
 
 use mush_pixel::bake::{self, Pack, View, reduce};
 use mush_pixel::look::{self, Facing};
-use mush_pixel::png;
+use mush_pixel::{model, png};
 
-const USAGE: &str = "usage: unit_reduce <bake_out/look> [--pack <units.bin>] [--reduce-commit <sha>] [--preview <png>]";
+const USAGE: &str = "usage: unit_reduce <bake_out/model> [--models <dir>] [--reduce-commit <sha>] [--preview <png>]";
 
 fn main() {
     if let Err(e) = run() {
@@ -32,13 +32,13 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut dir: Option<PathBuf> = None;
-    let mut pack_path = PathBuf::from("crates/mush-pixel/looks/units.bin");
+    let mut models_dir = PathBuf::from("crates/mush-pixel/models");
     let mut commit = String::new();
     let mut preview: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--pack" => pack_path = args.next().ok_or(USAGE)?.into(),
+            "--models" => models_dir = args.next().ok_or(USAGE)?.into(),
             "--reduce-commit" => commit = args.next().ok_or(USAGE)?,
             "--preview" => preview = Some(args.next().ok_or(USAGE)?.into()),
             _ if dir.is_none() && !a.starts_with("--") => dir = Some(a.into()),
@@ -50,8 +50,14 @@ fn run() -> Result<(), String> {
     let text =
         std::fs::read_to_string(&meta_path).map_err(|e| format!("{}: {e}", meta_path.display()))?;
     let meta = reduce::parse_meta(&text)?;
-    if !look::shipped().iter().any(|l| l.id == meta.look) {
-        return Err(format!("{}: no shipped look has that id", meta.look));
+    if !look::shipped()
+        .iter()
+        .any(|l| l.model.as_deref() == Some(meta.model.as_str()))
+    {
+        eprintln!(
+            "unit_reduce: {}: no shipped look names this model yet (add `\"model\"` to one)",
+            meta.model
+        );
     }
     let res = meta.res;
     let mut load = |name: &str| -> Result<Vec<u8>, String> {
@@ -67,7 +73,7 @@ fn run() -> Result<(), String> {
 
     println!(
         "{}: {} x {} cm, from {} {} ({}), clips {:?}",
-        entry.look,
+        entry.model,
         entry.size_cm.0,
         entry.size_cm.1,
         entry.provenance.asset_pack,
@@ -77,7 +83,7 @@ fn run() -> Result<(), String> {
     );
     for chain in &entry.chains {
         let alone = Pack {
-            entries: vec![bake::LookBake {
+            entries: vec![bake::ModelBake {
                 chains: vec![chain.clone()],
                 ..entry.clone()
             }],
@@ -95,31 +101,16 @@ fn run() -> Result<(), String> {
         println!("  preview: {}", path.display());
     }
 
-    let mut pack = match std::fs::read(&pack_path) {
-        Ok(bytes) => Pack::decode(&bytes).map_err(|e| format!("{}: {e}", pack_path.display()))?,
-        Err(_) => Pack::default(),
-    };
-    pack.put(entry);
-    let bytes = pack.encode();
-    std::fs::write(&pack_path, &bytes).map_err(|e| format!("{}: {e}", pack_path.display()))?;
-    let looks: Vec<&str> = pack.entries.iter().map(|e| e.look.as_str()).collect();
+    let bad = bake::check_model(&entry, look::shipped());
+    let written = model::write_model(&models_dir, entry)?;
     println!(
-        "pack {}: {} bytes ({:.0} KiB; rule 7's embedded budget is {} KiB{}), looks {looks:?}",
-        pack_path.display(),
-        bytes.len(),
-        bytes.len() as f64 / 1024.0,
+        "model {}: {} bytes ({:.0} KiB; rule 7's per-model ceiling is {} KiB), sha-256 {}",
+        models_dir.join(&written.file).display(),
+        written.bytes,
+        written.bytes as f64 / 1024.0,
         bake::BUDGET_BYTES / 1024,
-        if bake::WEB_FETCHES_PACK {
-            ", and the web fetches it"
-        } else {
-            ""
-        }
+        written.sha256
     );
-    println!(
-        "digest {:#018x}  (pin it in bake.rs's PACK_DIGEST)",
-        bake::digest(&bytes)
-    );
-    let bad = bake::check_matrix(&pack, look::shipped());
     if bad.is_empty() {
         println!("matrix check: holds");
     } else {
@@ -133,7 +124,7 @@ fn run() -> Result<(), String> {
 
 /// Every size's still front, right, rear and left, the `fp` chain above the
 /// `iso`, a 104 px cell each, in the red team's colours over a dark ground.
-fn preview_png(entry: &bake::LookBake) -> Vec<u8> {
+fn preview_png(entry: &bake::ModelBake) -> Vec<u8> {
     let facings = [Facing::Front, Facing::Right, Facing::Rear, Facing::Left];
     let cell = 104usize;
     let sizes = bake::FP_SIZES.len();
