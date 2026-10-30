@@ -1022,6 +1022,15 @@ See [16b](16b-combat-implementation-plan.md).
 
 ## 11. Supersessions and amendments
 
+**The window — amended 2026-10-30 (doc 30 Q-30-6, D-30-7; doc 32 Q-CF-51; no code change).**
+§3.2's "256 by 256 cells, the current `MAX_TILE_SIDE`" describes the tree: `ARENA_CELLS`,
+`SITE_CELLS` and `MAX_TILE_SIDE` are 256 and no terrain cut moved them. Doc 30 ruled the biggest
+*authored* map at 512 a side (sixteen 128-cell quadrants, `MAX_ARENA_TILES`), to be played through
+a `window` on the frame (D-30-7) that cut WG.6 owes; the sim grid is not yet 512 anywhere. Doc 32
+Q-CF-51 makes the side a per-region value read from the region's window, with 256 the shipped
+default, so the IC field never names a side; the 10 km path of D-16-5 stays an addition, a
+separate scale programme. Doc 20 §3.1 and §11 carry the same amendment.
+
 **M5r — accepted 2026-10-17 (not deployed).** The post-M5 behavior cut
 restores the public Hold objective geometry, goal-keyed motor completion and
 retry, retained entry-zone spacing, and shot-origin-based blocked-cell learning.
@@ -1233,7 +1242,7 @@ Historical landed amendments follow unchanged.
 | D-16-2 | Adaptive tempo per arena: `Quiet` 5,000 ms, `Alert` 1,000 ms, `Engaged` 500 ms; the model is rate-independent through substeps and timestamped events (amended at 16b cut M.2, 16c Q23: a pilot's discrete action resolves at the end of the pulse that accepted it, everything it schedules from there being a due event; the M.2 entry in §11) | 16a Q2 B |
 | D-16-3 | OOC matches hold state in RAM and the arena never touches the store; the ledger is streamed through the world task; a crash voids the match; per-pulse durability and resume are requirements before IC play (amended at 16b cut AF, 16c Q40: the arena is snapshotted every `snapshot_ms` of arena time and the world task writes the document on its own lane beside its live record; a server restart resumes the match from the last snapshot, the tail abandoned behind a marker, and voids it by name only when it cannot; the AF.1 to AF.3 entries in §11); and, gained at 17b cut M5 by doc 17's D-UM-50 (the first cut that reads an IC holding from the sim), an OOC match posts nothing to, consumes nothing of and reads nothing from the IC world but D-UM-49's mind holdings | 16a Q3 C, Q4 A, review; doc 17 D-UM-50 |
 | D-16-4 | Integer authoritative state; integer `Pose`; draws derived from `(seed, label)`; a state hash per substep | 16a Q5 A, Q10 B, review |
-| D-16-5 | One 2.56 km arena at 10 m cells; the 10 km path is an addition | 16a Q11 A |
+| D-16-5 | One 2.56 km arena at 10 m cells; the 10 km path is an addition (amended 2026-10-30: the sim's window is 256 a side by constant and no cut has changed it; doc 30 Q-30-6 allows authored maps of 512 a side, played through the frame window of doc 30 D-30-7, cut WG.6, not yet built; doc 32 Q-CF-51 makes the side a per-region value with 256 the shipped default; the 10 km path is unchanged; the entry in §11) | 16a Q11 A; doc 30 Q-30-6; doc 32 Q-CF-51 |
 | D-16-6 | M32 is the unit truth; persistent per-pod tanks reset by plan; a wreck is a named condition plus revoked capabilities; hit location by facet table | 16a Q14 A, Q15 A, review |
 | D-16-7 | Kinematic motion in one-cell substeps; a uniform-grid spatial index | 16a Q13 A, Q16 A, review |
 | D-16-8 | Scheduled impacts; per-mille resolution from dispersion against silhouette with cover, motion and gunnery terms; fixed damage per ammunition; bursts as one binomial draw; the percentage is shown; a blocked shot costs like any shot | 16a Q17 A, Q18 A, Q33, review |
