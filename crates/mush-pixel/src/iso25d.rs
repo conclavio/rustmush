@@ -236,7 +236,7 @@ impl SheetKey {
     }
 }
 
-fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
+pub(crate) fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
     // Unfogged RGB colours matching raycast::Paint's sprite palette.
     let (td, tm, tl) = match kind {
         SpriteKind::Red => ([120, 36, 32], [178, 54, 48], [214, 98, 84]),

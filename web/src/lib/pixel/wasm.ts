@@ -67,6 +67,24 @@ interface PixelExports {
   mp_units?(len: number): number;
   mp_wanted?(): number;
   mp_output?(): number;
+  mp_check_look?(len: number): number;
+  mp_preview?(len: number): number;
+}
+
+/** The look check's answer (`mush_pixel::design::LookCheck`). */
+export interface LookCheck {
+  refusals: string[];
+  notes: string[];
+}
+
+/** What the designer's preview draws (`mp_preview`). */
+export interface PreviewSpec {
+  model: string;
+  view: "fp" | "iso";
+  size: number;
+  facing: string;
+  pose: number;
+  team: "red" | "blue";
 }
 
 const EXPORTS: (keyof PixelExports)[] = [
@@ -135,6 +153,35 @@ export class PixelModule {
     if (len === 0) return [];
     const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
     return text.split("\n").filter((f) => f.length > 0);
+  }
+
+  #write(text: string): number {
+    const bytes = new TextEncoder().encode(text);
+    const ptr = this.#x.mp_input(bytes.length);
+    new Uint8Array(this.#x.memory.buffer, ptr, bytes.length).set(bytes);
+    return bytes.length;
+  }
+
+  /** **The staff unit designer's look check** (doc 31 cut UD.2): `look`
+   * against the unit `rules` (its `def`) and the model it names. A module
+   * without the export answers one refusal saying so. */
+  checkLook(look: unknown, rules: unknown): LookCheck {
+    if (typeof this.#x.mp_check_look !== "function" || typeof this.#x.mp_output !== "function") {
+      return { refusals: ["This picture module has no look check; rebuild it."], notes: [] };
+    }
+    const len = this.#x.mp_check_look(this.#write(JSON.stringify({ look, rules })));
+    const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
+    return JSON.parse(text) as LookCheck;
+  }
+
+  /** **The designer's model preview**: one frame of a model's chain, a
+   * `side` x `side` RGBA copy, or `null` for a model the catalogue lacks. */
+  preview(spec: PreviewSpec): { side: number; rgba: Uint8ClampedArray<ArrayBuffer> } | null {
+    if (typeof this.#x.mp_preview !== "function") return null;
+    const side = this.#x.mp_preview(this.#write(JSON.stringify(spec)));
+    if (side === 0) return null;
+    const rgba = new Uint8ClampedArray(this.#x.memory.buffer, this.#x.mp_pixels(), side * side * 4).slice();
+    return { side, rgba };
   }
 
   #fetchWanted(): void {

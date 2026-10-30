@@ -42,6 +42,14 @@
 //! - `mp_wanted() -> len` — the model files the held feeds need and the
 //!   module lacks, one file name a line (`models/index.json`'s `file`), into
 //!   the output buffer `mp_output()` points at; `0` when nothing is wanted.
+//! - `mp_check_look(len) -> len` — the staff unit designer's look check (doc
+//!   31 cut UD.2): the input buffer's first `len` bytes are
+//!   `{"look": <look JSON>, "rules": <the unit's def>}`; the answer,
+//!   `{"refusals": [...], "notes": [...]}`, goes into the output buffer.
+//! - `mp_preview(len) -> side` — the designer's model preview: the input
+//!   buffer holds `{"model", "view": "fp"|"iso", "size", "facing", "pose",
+//!   "team": "red"|"blue"}`; the frame, `side` x `side` RGBA, is what
+//!   `mp_pixels()` then points at; `0` for a model the catalogue lacks.
 //!
 //! A buffer the module hands out moves when its memory grows, so the caller
 //! takes a fresh view of `memory.buffer` after every call that may allocate.
@@ -360,7 +368,78 @@ pub extern "C" fn mp_wanted() -> u32 {
     })
 }
 
-/// The output buffer `mp_wanted` wrote.
+/// The staff unit designer's look check (see the crate's ABI,
+/// `mp_check_look`): the answer's JSON.
+#[must_use]
+pub fn check_look(input: &[u8]) -> String {
+    let answer = match serde_json::from_slice::<Value>(input) {
+        Ok(v) => {
+            let look = v.get("look").map(Value::to_string).unwrap_or_default();
+            let rules = v.get("rules").cloned().unwrap_or(Value::Null);
+            let found = mush_pixel::design::check_draft(&look, &rules);
+            serde_json::json!({ "refusals": found.refusals, "notes": found.notes })
+        }
+        Err(e) => serde_json::json!({ "refusals": [format!("not JSON: {e}")], "notes": [] }),
+    };
+    answer.to_string()
+}
+
+/// The designer's model preview (see the crate's ABI, `mp_preview`): the
+/// frame's side, with the RGBA kept for `mp_pixels`.
+#[must_use]
+pub fn preview(input: &[u8]) -> u32 {
+    let Ok(v) = serde_json::from_slice::<Value>(input) else {
+        return 0;
+    };
+    let word = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+    let view = mush_pixel::bake::View::named(word("view")).unwrap_or(mush_pixel::bake::View::Fp);
+    let facing = mush_pixel::look::Facing::named(word("facing"))
+        .unwrap_or(mush_pixel::look::Facing::FrontRight);
+    let kind = if word("team") == "blue" {
+        mush_pixel::raycast::SpriteKind::Blue
+    } else {
+        mush_pixel::raycast::SpriteKind::Red
+    };
+    let size = v
+        .get("size")
+        .and_then(Value::as_u64)
+        .and_then(|n| u16::try_from(n).ok())
+        .unwrap_or(96);
+    let pose = v
+        .get("pose")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0)
+        .min(mush_pixel::bake::POSE_WRECK);
+    match mush_pixel::design::preview_rgba(word("model"), view, size, facing, pose, kind) {
+        Some((side, rgba)) => with(|s| {
+            s.rgba = rgba;
+            u32::try_from(side).unwrap_or(0)
+        }),
+        None => 0,
+    }
+}
+
+/// Run the look check on the input buffer's first `len` bytes; the answer's
+/// length in the output buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_check_look(len: u32) -> u32 {
+    let input = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec)).unwrap_or_default();
+    let answer = check_look(&input);
+    with(|s| {
+        s.output = answer.into_bytes();
+        u32::try_from(s.output.len()).unwrap_or(0)
+    })
+}
+
+/// Draw the preview the input buffer's first `len` bytes ask for: its side.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_preview(len: u32) -> u32 {
+    let input = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec)).unwrap_or_default();
+    preview(&input)
+}
+
+/// The output buffer `mp_wanted` or `mp_check_look` wrote.
 #[unsafe(no_mangle)]
 pub extern "C" fn mp_output() -> *const u8 {
     with(|s| s.output.as_ptr())
@@ -672,5 +751,38 @@ mod tests {
         assert!(wanted().is_empty(), "every model on the map is installed");
         assert_eq!(mp_wanted(), 0);
         assert_eq!(mp_units(u32::MAX), 0, "past the input buffer");
+    }
+
+    /// Doc 31 cut UD.2: the designer's look check and preview answer through
+    /// the module.
+    #[test]
+    fn the_designer_checks_a_look_and_previews_a_model() {
+        let look: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../mush-pixel/looks/tracked_tank.json"),
+            )
+            .expect("the tank's look"),
+        )
+        .expect("JSON");
+        let answer: Value = serde_json::from_str(&check_look(
+            serde_json::json!({ "look": look, "rules": { "sections": [], "components": [] } })
+                .to_string()
+                .as_bytes(),
+        ))
+        .expect("JSON");
+        assert!(
+            !answer["refusals"].as_array().expect("refusals").is_empty(),
+            "a doll naming sections the unit lacks"
+        );
+        let id = mush_pixel::model::index()[0].id.clone();
+        let side = preview(
+            serde_json::json!({ "model": id, "view": "iso", "size": 64, "facing": "front_right", "pose": 0, "team": "blue" })
+                .to_string()
+                .as_bytes(),
+        );
+        assert_eq!(side, 64);
+        assert_eq!(with(|s| s.rgba.len()), 64 * 64 * 4);
+        assert_eq!(preview(br#"{"model":"mc.nobody"}"#), 0);
     }
 }

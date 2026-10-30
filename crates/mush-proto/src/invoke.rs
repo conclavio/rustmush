@@ -27,6 +27,9 @@ pub enum InvokeRequest {
     Mind(MindRequest),
     /// Gateway-owned opaque legal offer submission and authenticated status.
     LegalAction(crate::LegalActionRequest),
+    /// Staff unit designer (doc 31 cut UD.2): a design's rules checked by the
+    /// server's own loader and catalogue build.
+    UnitDesign(UnitDesignRequest),
 }
 impl InvokeRequest {
     /// Registration key, independent of caller-controlled strings.
@@ -35,6 +38,7 @@ impl InvokeRequest {
         match self {
             Self::Mind(_) => "mind",
             Self::LegalAction(_) => "legal_action",
+            Self::UnitDesign(_) => "unit_design",
         }
     }
     /// A request-family-correct transport refusal, without declaring an action absent.
@@ -42,6 +46,10 @@ impl InvokeRequest {
     pub fn unavailable(&self) -> InvokeResult {
         match self {
             Self::Mind(_) => InvokeResult::error("unavailable", "This service is unavailable."),
+            Self::UnitDesign(_) => InvokeResult::UnitDesign(UnitDesignResponse::Error {
+                code: "unavailable".into(),
+                message: "This service is unavailable.".into(),
+            }),
             Self::LegalAction(_) => {
                 InvokeResult::LegalAction(crate::LegalActionResponse::Unavailable {
                     reference: None,
@@ -56,6 +64,10 @@ impl InvokeRequest {
             Self::Mind(_) => {
                 InvokeResult::error("invalid", "Invalid or oversized structured request.")
             }
+            Self::UnitDesign(_) => InvokeResult::UnitDesign(UnitDesignResponse::Error {
+                code: "invalid".into(),
+                message: "Invalid or oversized structured request.".into(),
+            }),
             Self::LegalAction(_) => {
                 InvokeResult::LegalAction(crate::LegalActionResponse::Invalid {})
             }
@@ -68,6 +80,7 @@ impl InvokeRequest {
         let request = match self {
             Self::Mind(request) => request,
             Self::LegalAction(request) => return request.validate(),
+            Self::UnitDesign(request) => return request.validate(),
         };
         if let MindRequest::FiledSource {
             licence,
@@ -791,6 +804,8 @@ pub enum InvokeResult {
     Mind(MindResponse),
     /// Source-free admission/status result from the gateway-owned service.
     LegalAction(crate::LegalActionResponse),
+    /// Staff unit designer result (doc 31 cut UD.2).
+    UnitDesign(UnitDesignResponse),
 }
 impl InvokeResult {
     /// Generic ingress/registration refusal in the current service family.
@@ -814,9 +829,82 @@ impl InvokeResult {
                 Self::LegalAction(_) => {
                     Self::LegalAction(crate::LegalActionResponse::Unavailable { reference: None })
                 }
+                Self::UnitDesign(_) => Self::UnitDesign(UnitDesignResponse::Error {
+                    code: "too_large".into(),
+                    message: "Result exceeds the structured response limit.".into(),
+                }),
             }
         }
     }
+}
+
+/// The longest design id (`tacsim.unit.<slug>`), bytes.
+pub const MAX_UNIT_DESIGN_ID_BYTES: usize = 96;
+/// The largest design `rules` or `look`, encoded, bytes.
+pub const MAX_UNIT_DESIGN_BYTES: usize = 128 * 1024;
+
+/// **The staff unit designer's requests** (doc 31 cut UD.2, D-31-7 as amended:
+/// the rules are checked on the server, by the loader and catalogue build the
+/// game itself runs, never by a second implementation in the browser).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UnitDesignRequest {
+    /// Check a design and, when it holds, answer its finished rules pack.
+    Check {
+        /// The unit's definition id, `tacsim.unit.<slug>`.
+        id: String,
+        /// The pack's version, from 1.
+        version: u32,
+        /// The unit's `def` object, as `crates/tacsim/content/units/*.json`
+        /// carries it under its entry.
+        rules: serde_json::Value,
+    },
+}
+
+impl UnitDesignRequest {
+    /// The request's own bounds, before the owner reads it.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let Self::Check { id, version, rules } = self;
+        if id.is_empty() || id.len() > MAX_UNIT_DESIGN_ID_BYTES {
+            return Err("invalid design id");
+        }
+        if *version == 0 {
+            return Err("a design's version is 1 or more");
+        }
+        if !rules.is_object()
+            || serde_json::to_vec(rules)
+                .map_err(|_| "invalid rules")?
+                .len()
+                > MAX_UNIT_DESIGN_BYTES
+        {
+            return Err("a design's rules are an object of at most 128 KiB");
+        }
+        Ok(())
+    }
+}
+
+/// **The staff unit designer's answers.**
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UnitDesignResponse {
+    /// The design was checked. `refusals` is empty when it holds; then `pack`
+    /// is its finished rules pack — the manifest's `requires` and `digest`
+    /// filled in — ready for `crates/tacsim/content/units/`.
+    Checked {
+        /// Each reason the server's loader or catalogue build refused it.
+        refusals: Vec<String>,
+        /// The finished pack, when it holds.
+        pack: Option<serde_json::Value>,
+    },
+    /// The request was not answered (not staff, unavailable, too large).
+    Error {
+        /// A short code.
+        code: String,
+        /// The sentence to show.
+        message: String,
+    },
 }
 
 /// Bounded linear preflight before serde allocates containers. This is not a
