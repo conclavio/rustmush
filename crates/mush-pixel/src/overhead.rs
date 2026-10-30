@@ -300,9 +300,13 @@ fn overhead_scene(
         Dress::Camera if w.min(h) >= 360 => 2,
         _ => 1,
     };
-    let you = (
+    let base_you = (
         num(cockpit.get("x_cm")) / 100.0,
         num(cockpit.get("y_cm")) / 100.0,
+    );
+    let you = (
+        base_you.0 + look.dx_cm as f64 / 100.0,
+        base_you.1 + look.dy_cm as f64 / 100.0,
     );
     let heading = num(cockpit.get("heading_mdeg"));
     let hull_deg = (heading + look.hull_offset_mdeg as f64) / 1_000.0;
@@ -473,7 +477,7 @@ fn overhead_scene(
         .map(|c| {
             (
                 pl.place(at_bearing(
-                    you,
+                    base_you,
                     num(c.get("bearing_deg")),
                     num(c.get("range_m")),
                 )),

@@ -108,6 +108,7 @@ struct State {
     input: Vec<u8>,
     feeds: HashMap<String, Value>,
     kind: u32,
+    offset_cm: (i64, i64),
     cockpit: CockpitPicture,
     overhead: OverheadPicture,
     iso25d: Iso25DPicture,
@@ -124,6 +125,7 @@ impl State {
             input: Vec::new(),
             feeds: HashMap::new(),
             kind: KIND_COCKPIT,
+            offset_cm: (0, 0),
             cockpit: CockpitPicture::new(),
             overhead: OverheadPicture::new(),
             iso25d: Iso25DPicture::new(),
@@ -258,6 +260,7 @@ pub fn pixels() -> Vec<u8> {
 /// Fresh pictures, the feeds and chosen kind kept.
 pub fn reset() {
     with(|s| {
+        s.offset_cm = (0, 0);
         s.cockpit = CockpitPicture::new();
         s.overhead = OverheadPicture::new();
         s.iso25d = Iso25DPicture::new();
@@ -298,6 +301,13 @@ pub extern "C" fn mp_feed(which: u32, len: u32) -> u32 {
     u32::from(json.is_some_and(|json| feed(which, &json)))
 }
 
+/// Set the dead-reckoned ego position offset `(dx_cm, dy_cm)` from the held
+/// keyframe's `(x_cm, y_cm)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_offset_cm(dx_cm: i32, dy_cm: i32) {
+    with(|s| s.offset_cm = (i64::from(dx_cm), i64::from(dy_cm)));
+}
+
 /// Draw a frame for the look.
 #[unsafe(no_mangle)]
 pub extern "C" fn mp_render(
@@ -308,10 +318,13 @@ pub extern "C" fn mp_render(
     ordered_mdeg: i32,
     has_ordered: u32,
 ) -> u32 {
+    let (dx_cm, dy_cm) = with(|s| s.offset_cm);
     let look = Look {
         offset_mdeg: i64::from(look_mdeg),
         hull_offset_mdeg: i64::from(hull_mdeg),
         ordered_mdeg: (has_ordered != 0).then_some(i64::from(ordered_mdeg)),
+        dx_cm,
+        dy_cm,
     };
     u32::from(render(w, h, look))
 }
@@ -422,6 +435,7 @@ mod tests {
                     offset_mdeg,
                     hull_offset_mdeg: 10_000,
                     ordered_mdeg: Some(90_000),
+                    ..Look::default()
                 }
             };
             assert!(render(w as u32, h as u32, look));

@@ -56,6 +56,26 @@ export function arcMdeg(from: number, to: number): number {
   return d > FULL_MDEG / 2 ? d - FULL_MDEG : d;
 }
 
+/** Dead-reckoned `(dxCm, dyCm)` position offset from the last keyframe's `(x_cm, y_cm)`
+ * integrated along `headingMdeg` for `elapsedMs` (clamped to `maxElapsedMs`). */
+export function predictedOffsetCm(
+  speedCms: number,
+  headingMdeg: number,
+  elapsedMs: number,
+  maxElapsedMs = 1_500,
+): { dxCm: number; dyCm: number } {
+  if (!Number.isFinite(speedCms) || speedCms === 0 || elapsedMs <= 0) {
+    return { dxCm: 0, dyCm: 0 };
+  }
+  const dtMs = Math.min(Math.max(0, elapsedMs), maxElapsedMs);
+  const distCm = (speedCms * dtMs) / 1_000;
+  const rad = ((wrap360Mdeg(headingMdeg) / 1_000) * Math.PI) / 180;
+  return {
+    dxCm: Math.round(distCm * Math.sin(rad)) | 0,
+    dyCm: Math.round(distCm * Math.cos(rad)) | 0,
+  };
+}
+
 /** Whether this viewer last wanted the picture (a per-viewer convenience). */
 export const PICTURE_PREF_KEY = "rustmush.picture";
 

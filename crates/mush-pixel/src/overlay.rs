@@ -227,7 +227,7 @@ pub(crate) fn line(frame: &mut Frame, x0: i64, y0: i64, x1: i64, y1: i64, px: Rg
 }
 
 /// The 5x7 font: each glyph is seven rows of five bits, top row first.
-fn glyph(c: char) -> Option<[u8; 7]> {
+pub(crate) fn glyph(c: char) -> Option<[u8; 7]> {
     Some(match c.to_ascii_uppercase() {
         ' ' => [0, 0, 0, 0, 0, 0, 0],
         'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],

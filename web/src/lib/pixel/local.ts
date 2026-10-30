@@ -62,6 +62,8 @@ export class LocalPicture {
     kind: PictureKind = "cockpit",
     hullOffsetMdeg = 0,
     orderedMdeg: number | null = null,
+    dxCm = 0,
+    dyCm = 0,
   ): boolean {
     if (kind !== this.#kind) {
       const wasmKind =
@@ -82,6 +84,8 @@ export class LocalPicture {
         offsetMdeg: hullOffsetMdeg + lookMdeg,
         hullOffsetMdeg,
         orderedMdeg,
+        dxCm,
+        dyCm,
       })
     ) {
       this.#shown = null;

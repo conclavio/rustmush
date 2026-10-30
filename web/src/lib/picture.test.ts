@@ -23,6 +23,7 @@ import {
   orderPrefill,
   pictureCommand,
   pictureKey,
+  predictedOffsetCm,
   speedLine,
   speedOutstanding,
   speedStep,
@@ -253,5 +254,12 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     store.observeCockpit({ seated: false });
     expect(store.cockpitData).toBeNull();
     expect(store.mapData).toBe(map);
+  });
+
+  it("dead-reckons 20 Hz position offsets along the predicted heading and clamps at 1.5 pulses", () => {
+    expect(predictedOffsetCm(0, 90_000, 500)).toEqual({ dxCm: 0, dyCm: 0 });
+    expect(predictedOffsetCm(1_000, 0, 500)).toEqual({ dxCm: 0, dyCm: 500 });
+    expect(predictedOffsetCm(1_000, 90_000, 500)).toEqual({ dxCm: 500, dyCm: 0 });
+    expect(predictedOffsetCm(1_000, 90_000, 5_000, 1_500)).toEqual({ dxCm: 1_500, dyCm: 0 });
   });
 });

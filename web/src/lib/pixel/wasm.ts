@@ -42,6 +42,8 @@ export interface PixelLook {
   offsetMdeg: number;
   hullOffsetMdeg?: number;
   orderedMdeg?: number | null;
+  dxCm?: number;
+  dyCm?: number;
 }
 
 interface PixelExports {
@@ -50,6 +52,7 @@ interface PixelExports {
   mp_kind(kind: number): number;
   mp_input(len: number): number;
   mp_feed(feed: number, len: number): number;
+  mp_offset_cm?(dxCm: number, dyCm: number): void;
   mp_render(w: number, h: number, look: number, hull: number, ordered: number, hasOrdered: number): number;
   mp_pixels(): number;
   mp_hash_hi(): number;
@@ -105,6 +108,9 @@ export class PixelModule {
    * given) for `look`; whether one was drawn. */
   render(width: number, height: number, look: PixelLook, kind?: number): boolean {
     if (kind !== undefined && !this.setKind(kind)) return false;
+    if (typeof this.#x.mp_offset_cm === "function") {
+      this.#x.mp_offset_cm(Math.round(look.dxCm ?? 0) | 0, Math.round(look.dyCm ?? 0) | 0);
+    }
     const ordered = look.orderedMdeg ?? null;
     const drawn =
       this.#x.mp_render(

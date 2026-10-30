@@ -75,6 +75,10 @@ struct Seen {
     t_ms: i64,
     /// Its heading.
     heading: i64,
+    /// Its ground speed, centimetres per second.
+    speed_cms: i64,
+    /// Whether the hull can physically make way (powered, unblocked, mobile).
+    can_move: bool,
     /// When it arrived here.
     at: Instant,
 }
@@ -87,6 +91,8 @@ pub struct Helm {
     /// The heading last ordered, and when.
     ordered: Option<(i64, Instant)>,
     seen: Option<Seen>,
+    /// True once consecutive arena pulses (`prev.t_ms < t_ms`) have been observed.
+    live_stream: bool,
     rate: i64,
     tempo_ms: i64,
     /// `HEADING` lines waiting to be sent.
@@ -107,6 +113,7 @@ impl Helm {
             turning: 0,
             ordered: None,
             seen: None,
+            live_stream: false,
             rate: DEFAULT_TURN_RATE,
             tempo_ms: 1_000,
             orders: Vec::new(),
@@ -143,6 +150,24 @@ impl Helm {
             .and_then(Value::as_i64)
             .unwrap_or(0)
             .rem_euclid(FULL);
+        let speed_cms = cockpit
+            .get("speed_cms")
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| {
+                cockpit
+                    .get("speed_kph")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    * 1_000
+                    / 36
+            });
+        let can_move = cockpit.get("blocked").and_then(Value::as_bool) != Some(true)
+            && cockpit.get("wreck").and_then(Value::as_bool) != Some(true)
+            && cockpit.get("immobile").and_then(Value::as_bool) != Some(true)
+            && !matches!(
+                cockpit.get("power").and_then(Value::as_str),
+                Some("off" | "starting")
+            );
         if let Some(ms) = cockpit
             .get("tempo")
             .and_then(Value::as_str)
@@ -154,8 +179,9 @@ impl Helm {
             if prev.t_ms == t_ms {
                 return;
             }
-            let turned = arc(prev.heading, heading).abs();
             let dt = t_ms - prev.t_ms;
+            self.live_stream = dt > 0 && dt <= 10_000;
+            let turned = arc(prev.heading, heading).abs();
             if let Some((o, _)) = self.ordered
                 && dt > 0
                 && turned > 0
@@ -168,6 +194,8 @@ impl Helm {
         self.seen = Some(Seen {
             t_ms,
             heading,
+            speed_cms,
+            can_move,
             at: now,
         });
         if self.turning == 0
@@ -203,6 +231,39 @@ impl Helm {
         let step = self.rate * i64::try_from(elapsed).unwrap_or(0) / 1_000;
         let d = arc(seen.heading, o);
         Some((seen.heading + d.signum() * d.abs().min(step)).rem_euclid(FULL))
+    }
+
+    /// Dead-reckoned `(dx_cm, dy_cm)` position offset from the last observed
+    /// keyframe's `(x_cm, y_cm)` at `now`, integrated along the predicted hull
+    /// heading for at most a pulse and a half while a live pulse stream or helm
+    /// order is active.
+    #[must_use]
+    pub fn predicted_offset_cm(&self, now: Instant) -> (i64, i64) {
+        let Some(seen) = self.seen else {
+            return (0, 0);
+        };
+        if !seen.can_move
+            || seen.speed_cms == 0
+            || (!self.live_stream && self.ordered.is_none() && self.turning == 0)
+        {
+            return (0, 0);
+        }
+        let pulse = Duration::from_millis(u64::try_from(self.tempo_ms).unwrap_or(1_000));
+        let elapsed_ms = i64::try_from(
+            now.saturating_duration_since(seen.at)
+                .min(pulse + pulse / 2)
+                .as_millis(),
+        )
+        .unwrap_or(0);
+        if elapsed_ms <= 0 {
+            return (0, 0);
+        }
+        let hdg_mdeg = self.predicted(now).unwrap_or(seen.heading);
+        let rad = ((hdg_mdeg as f64) / 1_000.0).to_radians();
+        let dist_cm = (seen.speed_cms as f64) * (elapsed_ms as f64) / 1_000.0;
+        let dx_cm = (dist_cm * rad.sin()).round() as i64;
+        let dy_cm = (dist_cm * rad.cos()).round() as i64;
+        (dx_cm, dy_cm)
     }
 
     /// How far ahead a held turn orders: a pulse and a half of turning.
@@ -668,5 +729,35 @@ mod tests {
         assert_eq!(lock_next(&order, None, -1).as_deref(), Some("BA"));
         assert_eq!(lock_next(&order, Some("ZZ"), 1).as_deref(), Some("BA"));
         assert_eq!(lock_next(&[], None, 1), None);
+    }
+
+    #[test]
+    fn helm_dead_reckons_position_along_predicted_heading_between_pulses() {
+        let t0 = Instant::now();
+        let mut h = Helm::new();
+        // A lone static fixture frame does not dead-reckon until a second pulse or helm order.
+        h.observe(
+            &serde_json::json!({
+                "t_ms": 1_000,
+                "heading_mdeg": 90_000,
+                "speed_cms": 1_000,
+                "tempo": "alert"
+            }),
+            t0,
+        );
+        assert_eq!(h.predicted_offset_cm(t0 + ms(500)), (0, 0));
+
+        // Second pulse activates live 20 Hz dead-reckoning: heading 90° (East) at 10 m/s
+        // for 500 ms moves +500 cm East, 0 cm North.
+        h.observe(
+            &serde_json::json!({
+                "t_ms": 2_000,
+                "heading_mdeg": 90_000,
+                "speed_cms": 1_000,
+                "tempo": "alert"
+            }),
+            t0 + ms(1_000),
+        );
+        assert_eq!(h.predicted_offset_cm(t0 + ms(1_500)), (500, 0));
     }
 }

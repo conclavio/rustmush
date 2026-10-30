@@ -60,6 +60,7 @@ fn golden() -> String {
                     offset_mdeg: offset,
                     hull_offset_mdeg: hull,
                     ordered_mdeg: ordered,
+                    ..Look::default()
                 };
                 assert!(
                     OverheadPicture::new().draw(&mut frame, &feeds, &look),

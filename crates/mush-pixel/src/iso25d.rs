@@ -42,7 +42,7 @@ use serde_json::Value;
 #[cfg(feature = "encode")]
 use crate::caps::CellSize;
 use crate::cockpit::{
-    ARENA_MAP_FEED, COCKPIT_FEED, contact_kind, map_from_feed, terrain_from_feed,
+    ARENA_MAP_FEED, COCKPIT_FEED, contact_health, contact_kind, map_from_feed, terrain_from_feed,
 };
 use crate::frame::{Frame, Rgb};
 use crate::heightfield::{Terrain, material_from_code, mip_pack};
@@ -50,7 +50,9 @@ use crate::heightfield::{Terrain, material_from_code, mip_pack};
 use crate::kitty::{self, Placement};
 use crate::look::{Facing, Material};
 use crate::math::Det as _;
-use crate::overlay::{self, ground_rgb};
+use crate::overlay::{
+    self, BLUE_TEAM, BORDER, GONE, HEALTH_PIPS, Health, LOCK, PANEL, RED_TEAM, TEXT, ground_rgb,
+};
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 #[cfg(feature = "encode")]
 use crate::png;
@@ -102,6 +104,9 @@ const IMAGE_ID_HUD: u32 = 130;
 /// Image ID for the target-lock bracket overlay (`z = -1`).
 #[cfg(feature = "encode")]
 const IMAGE_ID_LOCK: u32 = 131;
+/// Image ID for transient combat FX (weapon tracers, muzzle flash, impact burst, `z = -1`).
+#[cfg(feature = "encode")]
+const IMAGE_ID_FX: u32 = 132;
 /// Base image ID (`200..`) for lazily uploaded `(UnitModel, PaintKey, mip)`
 /// sprite sheets (one image per `(model, paint, mip)` shared by all units via
 /// distinct `placement_id`s).
@@ -117,6 +122,9 @@ const PLACEMENT_HUD: u32 = 30;
 /// Placement ID (`p=31`) for the target-lock corner bracket overlay.
 #[cfg(feature = "encode")]
 const PLACEMENT_LOCK: u32 = 31;
+/// Placement ID (`p=32`) for transient combat FX overlay.
+#[cfg(feature = "encode")]
+const PLACEMENT_FX: u32 = 32;
 /// Base unit placement ID (`p=100` = player's own unit, `p=101..` = contacts
 /// keyed by contact `"id"`).
 const PLACEMENT_UNIT_BASE: u32 = 100;
@@ -981,8 +989,12 @@ fn read_pose_25d(frame: &Value) -> Pose25D {
 
 #[derive(Clone, Debug)]
 struct Unit25D {
-    #[cfg_attr(not(feature = "encode"), allow(dead_code))]
     placement_id: u32,
+    contact_id: Option<String>,
+    designator: Option<String>,
+    health: Option<Health>,
+    range_m: i64,
+    percent: Option<i64>,
     model: UnitModel,
     kind: SpriteKind,
     facing: Facing,
@@ -992,6 +1004,38 @@ struct Unit25D {
     screen_x: i32,
     screen_y: i32,
     locked: bool,
+}
+
+/// Duration of transient combat FX in 20 Hz ticks (`8` ticks = `400 ms`).
+const FX_DURATION_TICKS: u8 = 8;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CombatFxKind {
+    /// Outgoing weapon volley from player toward a target contact (`id` or `designator`).
+    Fire {
+        target_key: Option<String>,
+        hit: bool,
+        kill: bool,
+    },
+    /// Incoming weapon hit on the player's own hull.
+    Struck { severe: bool },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CombatFx25D {
+    kind: CombatFxKind,
+    ticks_left: u8,
+}
+
+#[cfg(feature = "encode")]
+struct FxOverlayRgba {
+    col_off: u16,
+    row_off: u16,
+    cols: u16,
+    rows: u16,
+    width_px: usize,
+    height_px: usize,
+    rgba: Vec<u8>,
 }
 
 /// Convert a unit's world heading (`0..360_000` mdeg clockwise from North) into
@@ -1054,9 +1098,20 @@ pub struct Iso25DPicture {
     #[cfg(feature = "encode")]
     last_lock_placement: Option<Placement>,
     #[cfg(feature = "encode")]
+    fx_uploaded: bool,
+    #[cfg(feature = "encode")]
+    last_fx_placement: Option<Placement>,
+    #[cfg(feature = "encode")]
     last_viewport: Option<Viewport25D>,
     #[cfg(feature = "encode")]
     last_seated: Option<bool>,
+    /// Dead-reckoned ego position offset `(dx_cm, dy_cm)` from the keyframe's `(x_cm, y_cm)`.
+    offset_cm: (i64, i64),
+    /// Signature of the last cockpit frame whose `notices` were ingested into `active_fx`.
+    /// Last observed `t_ms` so combat FX only trigger on new keyframe pulses.
+    last_fx_t_ms: Option<i64>,
+    /// Active transient combat FX (weapon tracers, muzzle flash, hit burst, struck ring).
+    active_fx: Vec<CombatFx25D>,
     anim_tick: usize,
 }
 
@@ -1094,11 +1149,24 @@ impl Iso25DPicture {
             #[cfg(feature = "encode")]
             last_lock_placement: None,
             #[cfg(feature = "encode")]
+            fx_uploaded: false,
+            #[cfg(feature = "encode")]
+            last_fx_placement: None,
+            #[cfg(feature = "encode")]
             last_viewport: None,
             #[cfg(feature = "encode")]
             last_seated: None,
+            offset_cm: (0, 0),
+            last_fx_t_ms: None,
+            active_fx: Vec::new(),
             anim_tick: 0,
         }
+    }
+
+    /// Set the dead-reckoned ego position offset `(dx_cm, dy_cm)` from the held
+    /// keyframe's `(x_cm, y_cm)` for 20 Hz smooth camera and unit scrolling.
+    pub fn set_offset_cm(&mut self, dx_cm: i64, dy_cm: i64) {
+        self.offset_cm = (dx_cm, dy_cm);
     }
 
     /// Synchronise the cached heightfield terrain from `feeds` (`arena.map`),
@@ -1114,6 +1182,8 @@ impl Iso25DPicture {
             self.canvas = None;
             self.contact_pids.clear();
             self.next_contact_pid = PLACEMENT_UNIT_BASE + 1;
+            self.last_fx_t_ms = None;
+            self.active_fx.clear();
             #[cfg(feature = "encode")]
             {
                 self.terrain_uploaded = false;
@@ -1137,6 +1207,7 @@ impl Iso25DPicture {
     ) -> Option<(Viewport25D, Vec<u8>)> {
         let cockpit = feeds.feed(COCKPIT_FEED)?;
         self.sync_map(feeds);
+        self.offset_cm = (look.dx_cm, look.dy_cm);
         let look_off = i32::try_from(look.offset_mdeg).unwrap_or(0);
         let hull_off = i32::try_from(look.hull_offset_mdeg).unwrap_or(0);
         Some(self.render_kitty_bytes(cockpit, (hull_off, look_off), area, cell, step_down))
@@ -1165,6 +1236,7 @@ impl Iso25DPicture {
         self.active_unit_placements.clear();
         self.last_hud_placement = None;
         self.last_lock_placement = None;
+        self.last_fx_placement = None;
     }
 
     /// Mark an image ID as evicted after a `q=1` terminal error reply so the
@@ -1180,6 +1252,9 @@ impl Iso25DPicture {
         } else if image_id == IMAGE_ID_LOCK {
             self.lock_uploaded = false;
             self.last_lock_placement = None;
+        } else if image_id == IMAGE_ID_FX {
+            self.fx_uploaded = false;
+            self.last_fx_placement = None;
         } else {
             self.uploaded_sheets.remove(&image_id);
             self.active_unit_placements
@@ -1213,6 +1288,11 @@ impl Iso25DPicture {
             kitty::delete_image_bytes(&mut out, IMAGE_ID_LOCK);
             self.lock_uploaded = false;
             self.last_lock_placement = None;
+        }
+        if self.fx_uploaded || self.last_fx_placement.is_some() {
+            kitty::delete_image_bytes(&mut out, IMAGE_ID_FX);
+            self.fx_uploaded = false;
+            self.last_fx_placement = None;
         }
         for &sheet_id in &self.uploaded_sheets {
             kitty::delete_image_bytes(&mut out, sheet_id);
@@ -1264,6 +1344,10 @@ impl Iso25DPicture {
     /// Gather the player's own unit and all visible contacts inside the
     /// current 2.5D viewport, assigning each contact a stable `placement_id`
     /// keyed by its `"id"` (or `"designator"`).
+    ///
+    /// Contacts are anchored in world coordinates at the keyframe's `(pose.x_cm, pose.y_cm)`
+    /// while projected relative to the dead-reckoned ego camera `(pose.x_cm + dx_cm, pose.y_cm + dy_cm)`,
+    /// so contacts stay fixed to the ground as the player drives at 20 Hz between pulses.
     fn collect_units(
         &mut self,
         frame: &Value,
@@ -1275,9 +1359,13 @@ impl Iso25DPicture {
     ) -> Vec<Unit25D> {
         let mut units = Vec::new();
         let proj = IsoProj::for_viewport(vp_w);
-        let eye_x_m = pose.x_cm as f32 * 0.01;
-        let eye_y_m = pose.y_cm as f32 * 0.01;
-        let ref_z_m = ground_z_m(&self.map, self.terrain.as_ref(), eye_x_m, eye_y_m);
+        let base_x_m = pose.x_cm as f32 * 0.01;
+        let base_y_m = pose.y_cm as f32 * 0.01;
+        let ego_x_cm = pose.x_cm.saturating_add(self.offset_cm.0);
+        let ego_y_cm = pose.y_cm.saturating_add(self.offset_cm.1);
+        let ego_x_m = ego_x_cm as f32 * 0.01;
+        let ego_y_m = ego_y_cm as f32 * 0.01;
+        let ref_z_m = ground_z_m(&self.map, self.terrain.as_ref(), ego_x_m, ego_y_m);
 
         // 1. Player's own unit at the center of the viewport.
         let own_wreck = frame.get("wreck").and_then(Value::as_bool) == Some(true);
@@ -1294,9 +1382,10 @@ impl Iso25DPicture {
         let own_heading = (i64::from(pose.body_heading_mdeg) + i64::from(hull_offset_mdeg))
             .rem_euclid(360_000) as u32;
         let own_facing = heading_to_facing_25d(own_heading);
+        let own_moving = pose.moving || (self.offset_cm.0 != 0 || self.offset_cm.1 != 0);
         let own_pose_col = if own_wreck {
             5
-        } else if pose.moving {
+        } else if own_moving {
             1 + (step & 3)
         } else {
             0
@@ -1305,6 +1394,11 @@ impl Iso25DPicture {
         let own_sy = (vp_h / 2) as i32;
         units.push(Unit25D {
             placement_id: PLACEMENT_UNIT_BASE,
+            contact_id: None,
+            designator: None,
+            health: None,
+            range_m: 0,
+            percent: None,
             model: own_model,
             kind: own_kind,
             facing: own_facing,
@@ -1323,6 +1417,8 @@ impl Iso25DPicture {
                 .and_then(Value::as_str)
         });
         let lock_desig = frame.get("lock_designator").and_then(Value::as_str);
+        let lock_range_override = frame.get("lock_range_m").and_then(Value::as_i64);
+        let lock_pct = frame.get("lock_percent").and_then(Value::as_i64);
         let Some(contacts) = frame.get("contacts").and_then(Value::as_array) else {
             return units;
         };
@@ -1359,10 +1455,10 @@ impl Iso25DPicture {
             let rad = (bearing_deg as f32).to_radians();
             let (sin_b, cos_b) = rad.det_sin_cos();
             let r_f = range_m as f32;
-            let dx_m = r_f * sin_b;
-            let dy_m = r_f * cos_b;
-            let wx_m = eye_x_m + dx_m;
-            let wy_m = eye_y_m + dy_m;
+            let wx_m = base_x_m + r_f * sin_b;
+            let wy_m = base_y_m + r_f * cos_b;
+            let dx_m = wx_m - ego_x_m;
+            let dy_m = wy_m - ego_y_m;
             let dz_m = ground_z_m(&self.map, self.terrain.as_ref(), wx_m, wy_m) - ref_z_m;
 
             let sx = ((vp_w as f32 * 0.5) + dx_m * proj.px_per_m_x).round() as i32;
@@ -1390,9 +1486,25 @@ impl Iso25DPicture {
             };
             let locked = (lock_id.is_some() && lock_id == id)
                 || (lock_desig.is_some() && lock_desig == desig);
+            let disp_desig = if locked {
+                lock_desig.or(desig).or(id).map(str::to_owned)
+            } else {
+                desig.or(id).map(str::to_owned)
+            };
+            let live_range_m = ((dx_m * dx_m + dy_m * dy_m).sqrt()).round() as i64;
+            let disp_range_m = if locked {
+                lock_range_override.unwrap_or(live_range_m)
+            } else {
+                live_range_m
+            };
 
             units.push(Unit25D {
                 placement_id: pid,
+                contact_id: id.map(str::to_owned),
+                designator: disp_desig,
+                health: contact_health(c),
+                range_m: disp_range_m,
+                percent: if locked { lock_pct } else { None },
                 model,
                 kind,
                 facing,
@@ -1405,6 +1517,97 @@ impl Iso25DPicture {
         }
 
         units
+    }
+
+    /// Ingest any new combat `notices` from `frame` into `self.active_fx` when a new
+    /// keyframe pulse arrives (`t_ms` advances beyond the previously seen pulse).
+    fn sync_combat_fx(&mut self, frame: &Value) {
+        let t_ms = frame.get("t_ms").and_then(Value::as_i64).unwrap_or(0);
+        let Some(prev_t) = self.last_fx_t_ms else {
+            self.last_fx_t_ms = Some(t_ms);
+            return;
+        };
+        if t_ms <= prev_t {
+            return;
+        }
+        self.last_fx_t_ms = Some(t_ms);
+
+        let Some(notices) = frame.get("notices").and_then(Value::as_array) else {
+            return;
+        };
+        if notices.is_empty() {
+            return;
+        }
+
+        let fallback_target = frame
+            .get("lock")
+            .and_then(Value::as_str)
+            .or_else(|| frame.get("lock_designator").and_then(Value::as_str))
+            .map(str::to_owned);
+
+        for n in notices {
+            let Some(kind_str) = n.get("kind").and_then(Value::as_str) else {
+                continue;
+            };
+            let target_key = n
+                .get("contact")
+                .and_then(Value::as_str)
+                .or_else(|| n.get("designator").and_then(Value::as_str))
+                .map(str::to_owned)
+                .or_else(|| fallback_target.clone());
+            match kind_str {
+                "hit" | "target_section_lost" => {
+                    self.active_fx.push(CombatFx25D {
+                        kind: CombatFxKind::Fire {
+                            target_key,
+                            hit: true,
+                            kill: false,
+                        },
+                        ticks_left: FX_DURATION_TICKS,
+                    });
+                }
+                "kill" => {
+                    self.active_fx.push(CombatFx25D {
+                        kind: CombatFxKind::Fire {
+                            target_key,
+                            hit: true,
+                            kill: true,
+                        },
+                        ticks_left: FX_DURATION_TICKS,
+                    });
+                }
+                "miss" | "slot_fired" => {
+                    self.active_fx.push(CombatFx25D {
+                        kind: CombatFxKind::Fire {
+                            target_key,
+                            hit: false,
+                            kill: false,
+                        },
+                        ticks_left: FX_DURATION_TICKS,
+                    });
+                }
+                "struck" | "struck_spent" => {
+                    self.active_fx.push(CombatFx25D {
+                        kind: CombatFxKind::Struck { severe: false },
+                        ticks_left: FX_DURATION_TICKS,
+                    });
+                }
+                "section_lost" => {
+                    self.active_fx.push(CombatFx25D {
+                        kind: CombatFxKind::Struck { severe: true },
+                        ticks_left: FX_DURATION_TICKS,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn step_combat_fx(&mut self) {
+        for fx in &mut self.active_fx {
+            fx.ticks_left = fx.ticks_left.saturating_sub(1);
+        }
+        self.active_fx.retain(|fx| fx.ticks_left > 0);
     }
 
     /// Render the compact center tactical HUD overlay (`hud_w × hud_h` RGBA,
@@ -1479,9 +1682,16 @@ impl Iso25DPicture {
         (sig, rgba)
     }
 
-    /// Render a compact target-lock corner bracket image (`lock_w × lock_h` RGBA).
+    /// Render a compact target-lock corner bracket image (`lock_w × lock_h` RGBA)
+    /// with the locked contact's callsign, range, hit-odds `%`, and 3-pip health
+    /// gauge baked into the top header strip.
     #[cfg(feature = "encode")]
-    fn render_lock_bracket_rgba(lock_w: usize, lock_h: usize) -> Vec<u8> {
+    fn render_lock_bracket_rgba(
+        lock_w: usize,
+        lock_h: usize,
+        label: &str,
+        health: Option<Health>,
+    ) -> Vec<u8> {
         let mut rgba = vec![0u8; lock_w * lock_h * 4];
         let put = |buf: &mut [u8], x: i32, y: i32, col: [u8; 4]| {
             if x >= 0 && x < lock_w as i32 && y >= 0 && y < lock_h as i32 {
@@ -1491,8 +1701,9 @@ impl Iso25DPicture {
                 }
             }
         };
+        let header_h = 14i32;
         let lx0 = 4i32;
-        let ly0 = 4i32;
+        let ly0 = header_h + 2;
         let lx1 = (lock_w as i32 - 5).max(lx0 + 4);
         let ly1 = (lock_h as i32 - 5).max(ly0 + 4);
         let corner = ((lx1 - lx0).min(ly1 - ly0) / 3).max(5);
@@ -1509,7 +1720,251 @@ impl Iso25DPicture {
                 put(&mut rgba, lx1 - t, ly1 - d, yel);
             }
         }
+
+        // Top tactical badge: dark backing pill + 5x7 text + optional 3-pip health bar.
+        if !label.is_empty() {
+            let text_w = (label.chars().count() as i32) * 6 - 1;
+            let pips_w = if health.is_some() { 16 } else { 0 };
+            let pill_w = (text_w + pips_w + 6).min(lock_w as i32 - 2);
+            let px0 = ((lock_w as i32 - pill_w) / 2).max(1);
+            let py0 = 1i32;
+            for yy in py0..(py0 + 11) {
+                for xx in px0..(px0 + pill_w) {
+                    let is_border =
+                        yy == py0 || yy == py0 + 10 || xx == px0 || xx == px0 + pill_w - 1;
+                    let col = if is_border {
+                        [96, 104, 120, 235]
+                    } else {
+                        [16, 18, 24, 225]
+                    };
+                    put(&mut rgba, xx, yy, col);
+                }
+            }
+            let mut cx = px0 + 3;
+            for ch in label.chars() {
+                if cx + 5 > px0 + pill_w - pips_w - 1 {
+                    break;
+                }
+                let rows = overlay::glyph(ch)
+                    .or_else(|| overlay::glyph('?'))
+                    .unwrap_or([0; 7]);
+                for (r, bits) in rows.iter().enumerate() {
+                    for col in 0..5 {
+                        if bits & (0x10 >> col) != 0 {
+                            put(&mut rgba, cx + col, py0 + 2 + r as i32, yel);
+                        }
+                    }
+                }
+                cx += 6;
+            }
+            if let Some(h) = health {
+                let lit = h.lit();
+                let [hr, hg, hb] = h.rgb();
+                let pip_x0 = px0 + pill_w - 15;
+                let pip_y0 = py0 + 3;
+                for i in 0..HEALTH_PIPS {
+                    let c = if i < lit {
+                        [hr, hg, hb, 250]
+                    } else {
+                        [GONE[0], GONE[1], GONE[2], 220]
+                    };
+                    let sx = pip_x0 + (i as i32) * 4;
+                    for dy in 0..5 {
+                        for dx in 0..3 {
+                            put(&mut rgba, sx + dx, pip_y0 + dy, c);
+                        }
+                    }
+                }
+            }
+        }
         rgba
+    }
+
+    /// Render active combat FX (weapon tracers, muzzle flash, impact burst, struck ring)
+    /// into a bounded RGBA overlay for the retained Kitty compositor (`IMAGE_ID_FX`).
+    #[cfg(feature = "encode")]
+    fn render_combat_fx_rgba(&self, units: &[Unit25D], vp: &Viewport25D) -> Option<FxOverlayRgba> {
+        if self.active_fx.is_empty() {
+            return None;
+        }
+        let vcx = (vp.width_px / 2) as i32;
+        let vcy = (vp.height_px / 2) as i32;
+        let gun_x = vcx;
+        let gun_y = vcy - 14;
+
+        let mut min_x = (gun_x - 28).max(0);
+        let mut max_x = (gun_x + 28).min(vp.width_px as i32 - 1);
+        let mut min_y = (gun_y - 28).max(0);
+        let mut max_y = (gun_y + 28).min(vp.height_px as i32 - 1);
+
+        for fx in &self.active_fx {
+            if let CombatFxKind::Fire { target_key, .. } = &fx.kind
+                && let Some(tu) = Self::find_fx_target(units, target_key.as_deref())
+            {
+                min_x = min_x.min(tu.screen_x - 28).max(0);
+                max_x = max_x.max(tu.screen_x + 28).min(vp.width_px as i32 - 1);
+                min_y = min_y.min(tu.screen_y - 36).max(0);
+                max_y = max_y.max(tu.screen_y + 20).min(vp.height_px as i32 - 1);
+            }
+        }
+
+        let cw = i32::from(vp.cell_w.max(1));
+        let ch = i32::from(vp.cell_h.max(1));
+        let c0 = (min_x / cw).clamp(0, i32::from(vp.cols).saturating_sub(1));
+        let r0 = (min_y / ch).clamp(0, i32::from(vp.rows).saturating_sub(1));
+        let c1 = ((max_x + cw) / cw).clamp(c0 + 1, i32::from(vp.cols));
+        let r1 = ((max_y + ch) / ch).clamp(r0 + 1, i32::from(vp.rows));
+        let cols = u16::try_from(c1 - c0).unwrap_or(1);
+        let rows = u16::try_from(r1 - r0).unwrap_or(1);
+        let ox = c0 * cw;
+        let oy = r0 * ch;
+        let fx_w = usize::from(cols) * usize::from(vp.cell_w.max(1));
+        let fx_h = usize::from(rows) * usize::from(vp.cell_h.max(1));
+        let mut rgba = vec![0u8; fx_w * fx_h * 4];
+
+        let mut put = |x: i32, y: i32, col: [u8; 4]| {
+            let lx = x - ox;
+            let ly = y - oy;
+            if lx >= 0 && lx < fx_w as i32 && ly >= 0 && ly < fx_h as i32 {
+                let off = (ly as usize * fx_w + lx as usize) * 4;
+                if let Some(dst) = rgba.get_mut(off..off + 4) {
+                    dst.copy_from_slice(&col);
+                }
+            }
+        };
+
+        Self::paint_combat_fx(&self.active_fx, units, (gun_x, gun_y), &mut put);
+
+        Some(FxOverlayRgba {
+            col_off: u16::try_from(c0).unwrap_or(0),
+            row_off: u16::try_from(r0).unwrap_or(0),
+            cols,
+            rows,
+            width_px: fx_w,
+            height_px: fx_h,
+            rgba,
+        })
+    }
+
+    fn find_fx_target<'a>(units: &'a [Unit25D], target_key: Option<&str>) -> Option<&'a Unit25D> {
+        if let Some(tk) = target_key
+            && let Some(u) = units.iter().find(|u| {
+                u.placement_id != PLACEMENT_UNIT_BASE
+                    && (u.contact_id.as_deref() == Some(tk) || u.designator.as_deref() == Some(tk))
+            })
+        {
+            return Some(u);
+        }
+        units
+            .iter()
+            .find(|u| u.locked)
+            .or_else(|| units.iter().find(|u| u.placement_id != PLACEMENT_UNIT_BASE))
+    }
+
+    fn paint_combat_fx<F>(
+        active_fx: &[CombatFx25D],
+        units: &[Unit25D],
+        (gun_x, gun_y): (i32, i32),
+        put: &mut F,
+    ) where
+        F: FnMut(i32, i32, [u8; 4]),
+    {
+        for fx in active_fx {
+            let progress =
+                (FX_DURATION_TICKS.saturating_sub(fx.ticks_left)) as f32 / FX_DURATION_TICKS as f32;
+            match &fx.kind {
+                CombatFxKind::Fire {
+                    target_key,
+                    hit,
+                    kill,
+                } => {
+                    // 1. Muzzle flash at player's gun mount during the first half of the burst.
+                    if fx.ticks_left >= FX_DURATION_TICKS / 2 {
+                        let r_m = if fx.ticks_left >= FX_DURATION_TICKS - 2 {
+                            5i32
+                        } else {
+                            3i32
+                        };
+                        for dy in -r_m..=r_m {
+                            for dx in -r_m..=r_m {
+                                let d2 = dx * dx + dy * dy;
+                                if d2 <= 4 {
+                                    put(gun_x + dx, gun_y + dy, [255, 248, 196, 250]);
+                                } else if d2 <= r_m * r_m {
+                                    put(gun_x + dx, gun_y + dy, [248, 156, 48, 225]);
+                                }
+                            }
+                        }
+                    }
+
+                    let Some(tu) = Self::find_fx_target(units, target_key.as_deref()) else {
+                        continue;
+                    };
+                    let tx = tu.screen_x + if *hit { 0 } else { 14 };
+                    let ty = tu.screen_y - 14 + if *hit { 0 } else { -10 };
+
+                    // 2. Glowing weapon tracer line from ego gun mount to target.
+                    let steps = 48i32;
+                    let t_start = (progress * 0.35).clamp(0.0, 0.7);
+                    let t_end = (progress * 1.35 + 0.35).clamp(0.25, 1.0);
+                    let s0 = (t_start * steps as f32) as i32;
+                    let s1 = (t_end * steps as f32) as i32;
+                    let tracer_col = if *hit {
+                        [255, 226, 96, 245]
+                    } else {
+                        [214, 186, 118, 210]
+                    };
+                    for s in s0..=s1 {
+                        if !*hit && (s & 3) == 2 {
+                            continue;
+                        }
+                        let f = s as f32 / steps as f32;
+                        let px = gun_x + ((tx - gun_x) as f32 * f).round() as i32;
+                        let py = gun_y + ((ty - gun_y) as f32 * f).round() as i32;
+                        put(px, py, tracer_col);
+                        put(px + 1, py, tracer_col);
+                        put(px, py + 1, [245, 140, 42, 200]);
+                    }
+
+                    // 3. Target impact explosion burst on hit or kill.
+                    if *hit {
+                        let max_r = if *kill { 15i32 } else { 10i32 };
+                        let r_outer = ((0.45 + 0.55 * progress) * max_r as f32)
+                            .round()
+                            .clamp(4.0, max_r as f32) as i32;
+                        let r_core = (r_outer / 2).max(2);
+                        for dy in -r_outer..=r_outer {
+                            for dx in -r_outer..=r_outer {
+                                let d2 = dx * dx + dy * dy;
+                                if d2 <= r_core * r_core {
+                                    put(tx + dx, ty + dy, [255, 248, 192, 250]);
+                                } else if d2 <= (r_outer - 2) * (r_outer - 2) {
+                                    put(tx + dx, ty + dy, [246, 122, 36, 235]);
+                                } else if d2 <= r_outer * r_outer && ((dx ^ dy) & 1 == 0) {
+                                    put(tx + dx, ty + dy, [68, 54, 48, 210]);
+                                }
+                            }
+                        }
+                    }
+                }
+                CombatFxKind::Struck { severe } => {
+                    let r_ring = if *severe { 20i32 } else { 15i32 };
+                    let col = if *severe {
+                        [245, 68, 48, 240]
+                    } else {
+                        [248, 148, 48, 225]
+                    };
+                    for deg in (0..360).step_by(8) {
+                        let rad = (deg as f32).to_radians();
+                        let (s, c) = rad.det_sin_cos();
+                        let px = gun_x + (r_ring as f32 * s).round() as i32;
+                        let py = gun_y + (r_ring as f32 * 0.75 * c).round() as i32;
+                        put(px, py, col);
+                        put(px + 1, py, col);
+                    }
+                }
+            }
+        }
     }
 
     /// Produce one tick's retained Kitty compositor command stream (`CSI ? 2026 h`
@@ -1554,6 +2009,9 @@ impl Iso25DPicture {
         self.last_seated = Some(true);
 
         let pose = read_pose_25d(frame);
+        let ego_x_cm = pose.x_cm.saturating_add(self.offset_cm.0);
+        let ego_y_cm = pose.y_cm.saturating_add(self.offset_cm.1);
+        let ego_moving = pose.moving || (self.offset_cm.0 != 0 || self.offset_cm.1 != 0);
         let any_contact_moving =
             frame
                 .get("contacts")
@@ -1563,9 +2021,10 @@ impl Iso25DPicture {
                         .any(|c| c.get("moving").and_then(Value::as_bool) == Some(true))
                 });
         let step = self.anim_tick / 3;
-        if pose.moving || any_contact_moving {
+        if ego_moving || any_contact_moving {
             self.anim_tick = self.anim_tick.wrapping_add(1);
         }
+        self.sync_combat_fx(frame);
 
         let base_col = area_col.saturating_add(vp.col_offset);
         let base_row = area_row.saturating_add(vp.row_offset);
@@ -1576,15 +2035,15 @@ impl Iso25DPicture {
         let needs_rebake = self
             .canvas
             .as_ref()
-            .and_then(|c| c.camera_window(pose.x_cm, pose.y_cm))
+            .and_then(|c| c.camera_window(ego_x_cm, ego_y_cm))
             .is_none();
 
         if needs_rebake {
             let new_canvas = TerrainCanvas::bake(
                 &self.map,
                 self.terrain.as_ref(),
-                pose.x_cm,
-                pose.y_cm,
+                ego_x_cm,
+                ego_y_cm,
                 vp.width_px,
                 vp.height_px,
             );
@@ -1615,7 +2074,7 @@ impl Iso25DPicture {
         let (cam_x, cam_y) = self
             .canvas
             .as_ref()
-            .and_then(|c| c.camera_window(pose.x_cm, pose.y_cm))
+            .and_then(|c| c.camera_window(ego_x_cm, ego_y_cm))
             .unwrap_or((
                 u32::try_from(vp.width_px / 2).unwrap_or(0),
                 u32::try_from(vp.height_px / 2).unwrap_or(0),
@@ -1813,27 +2272,38 @@ impl Iso25DPicture {
             self.last_hud_placement = Some(hud_p);
         }
 
-        // 4. Optional target-lock corner bracket (`IMAGE_ID_LOCK`, `placement_id = PLACEMENT_LOCK`).
+        // 4. Optional target-lock corner bracket (`IMAGE_ID_LOCK`, `placement_id = PLACEMENT_LOCK`)
+        //    with baked callsign, range, hit-odds `%`, and 3-pip health gauge.
         if let Some(lu) = units.iter().find(|u| u.locked) {
             let lock_cols = u16::try_from(
-                (72usize.div_ceil(usize::from(vp.cell_w.max(1))) & !1)
+                (96usize.div_ceil(usize::from(vp.cell_w.max(1))) & !1)
                     .clamp(2, usize::from(vp.cols.max(2))),
             )
-            .unwrap_or(8);
+            .unwrap_or(10);
             let lock_rows = u16::try_from(
-                (72usize.div_ceil(usize::from(vp.cell_h.max(1))) & !1)
+                (84usize.div_ceil(usize::from(vp.cell_h.max(1))) & !1)
                     .clamp(2, usize::from(vp.rows.max(2))),
             )
-            .unwrap_or(4);
+            .unwrap_or(5);
             let lock_w = usize::from(lock_cols) * usize::from(vp.cell_w.max(1));
             let lock_h = usize::from(lock_rows) * usize::from(vp.cell_h.max(1));
             let dc = (lu.screen_x / cw_i32 - i32::from(lock_cols) / 2)
                 .clamp(0, i32::from(vp.cols.saturating_sub(lock_cols)));
             let dr = (lu.screen_y / ch_i32 - i32::from(lock_rows) * 2 / 3)
                 .clamp(0, i32::from(vp.rows.saturating_sub(lock_rows)));
-            let lock_sig = ((lock_w as u64) << 16) ^ (lock_h as u64);
+            let desig_str = lu.designator.as_deref().unwrap_or("LOCK");
+            let label = match lu.percent {
+                Some(pct) => format!("{desig_str} {}M {pct}%", lu.range_m),
+                None => format!("{desig_str} {}M", lu.range_m),
+            };
+            let mut lock_sig = ((lock_w as u64) << 40)
+                ^ ((lock_h as u64) << 24)
+                ^ (u64::from(lu.health.map_or(0u8, |h| h.lit() as u8)) << 16);
+            for b in label.bytes() {
+                lock_sig = (lock_sig ^ u64::from(b)).wrapping_mul(0x0100_0000_01B3);
+            }
             if !self.lock_uploaded || self.last_lock_signature != lock_sig {
-                let lock_rgba = Self::render_lock_bracket_rgba(lock_w, lock_h);
+                let lock_rgba = Self::render_lock_bracket_rgba(lock_w, lock_h, &label, lu.health);
                 let png = png::encode_rgba(lock_w, lock_h, &lock_rgba);
                 kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_LOCK);
                 self.lock_uploaded = true;
@@ -1850,8 +2320,8 @@ impl Iso25DPicture {
                 cell_y: 0,
                 src_x: 0,
                 src_y: 0,
-                src_w: u32::try_from(lock_w).unwrap_or(72),
-                src_h: u32::try_from(lock_h).unwrap_or(72),
+                src_w: u32::try_from(lock_w).unwrap_or(96),
+                src_h: u32::try_from(lock_h).unwrap_or(84),
                 z: Z_HUD,
             };
             if self.last_lock_placement != Some(lock_p) {
@@ -1860,6 +2330,34 @@ impl Iso25DPicture {
             }
         } else if self.last_lock_placement.take().is_some() {
             kitty::delete_placement_bytes(&mut ops, IMAGE_ID_LOCK, PLACEMENT_LOCK);
+        }
+
+        // 5. Transient combat FX overlay (`IMAGE_ID_FX`, `placement_id = PLACEMENT_FX`).
+        if let Some(fx) = self.render_combat_fx_rgba(&units, &vp) {
+            let png = png::encode_rgba(fx.width_px, fx.height_px, &fx.rgba);
+            kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FX);
+            let fx_p = Placement {
+                image_id: IMAGE_ID_FX,
+                placement_id: PLACEMENT_FX,
+                col: base_col.saturating_add(fx.col_off),
+                row: base_row.saturating_add(fx.row_off),
+                cols: fx.cols,
+                rows: fx.rows,
+                cell_x: 0,
+                cell_y: 0,
+                src_x: 0,
+                src_y: 0,
+                src_w: u32::try_from(fx.width_px).unwrap_or(64),
+                src_h: u32::try_from(fx.height_px).unwrap_or(64),
+                z: Z_HUD,
+            };
+            kitty::place_bytes(&mut ops, &fx_p);
+            self.fx_uploaded = true;
+            self.last_fx_placement = Some(fx_p);
+            self.step_combat_fx();
+        } else if self.last_fx_placement.take().is_some() || self.fx_uploaded {
+            kitty::delete_image_bytes(&mut ops, IMAGE_ID_FX);
+            self.fx_uploaded = false;
         }
 
         if ops.is_empty() {
@@ -1894,6 +2392,9 @@ impl Iso25DPicture {
             return out;
         }
         let pose = read_pose_25d(frame);
+        let ego_x_cm = pose.x_cm.saturating_add(self.offset_cm.0);
+        let ego_y_cm = pose.y_cm.saturating_add(self.offset_cm.1);
+        let ego_moving = pose.moving || (self.offset_cm.0 != 0 || self.offset_cm.1 != 0);
         let any_contact_moving =
             frame
                 .get("contacts")
@@ -1903,22 +2404,23 @@ impl Iso25DPicture {
                         .any(|c| c.get("moving").and_then(Value::as_bool) == Some(true))
                 });
         let step = self.anim_tick / 3;
-        if pose.moving || any_contact_moving {
+        if ego_moving || any_contact_moving {
             self.anim_tick = self.anim_tick.wrapping_add(1);
         }
+        self.sync_combat_fx(frame);
 
         let needs_rebake = self
             .canvas
             .as_ref()
             .filter(|c| c.vp_w == width && c.vp_h == height)
-            .and_then(|c| c.camera_window(pose.x_cm, pose.y_cm))
+            .and_then(|c| c.camera_window(ego_x_cm, ego_y_cm))
             .is_none();
         if needs_rebake {
             self.canvas = Some(TerrainCanvas::bake(
                 &self.map,
                 self.terrain.as_ref(),
-                pose.x_cm,
-                pose.y_cm,
+                ego_x_cm,
+                ego_y_cm,
                 width,
                 height,
             ));
@@ -1931,7 +2433,7 @@ impl Iso25DPicture {
             return out;
         };
         let (cam_x, cam_y) = canvas
-            .camera_window(pose.x_cm, pose.y_cm)
+            .camera_window(ego_x_cm, ego_y_cm)
             .unwrap_or(((width / 2) as u32, (height / 2) as u32));
         let cx0 = cam_x as usize;
         let cy0 = cam_y as usize;
@@ -2103,7 +2605,73 @@ impl Iso25DPicture {
             }
         }
 
-        // 4. Optional target-lock corner bracket around locked contact.
+        // 4. Rising smoke + ember plumes on wrecks, on-unit callsign & health
+        //    badges on live contacts, and target-lock bracket + readout on locked unit.
+        for u in &units {
+            if u.kind == SpriteKind::Wreck {
+                for p in 0..5i32 {
+                    let phase = ((step as i32) + p * 2) & 7;
+                    let sx = u.screen_x + ((p & 1) * 2 - 1) * ((phase + 1) / 3);
+                    let sy = u.screen_y - 14 - p * 4 - (phase / 2);
+                    let r_smoke = (1 + p / 2).min(3);
+                    let col: Rgb = if p == 0 && (phase & 1 == 0) {
+                        [235, 118, 42]
+                    } else if p <= 1 {
+                        [56, 50, 48]
+                    } else {
+                        [38, 38, 42]
+                    };
+                    for dy in -r_smoke..=r_smoke {
+                        for dx in -r_smoke..=r_smoke {
+                            if dx * dx + dy * dy <= r_smoke * r_smoke
+                                && let (Ok(ux), Ok(uy)) =
+                                    (usize::try_from(sx + dx), usize::try_from(sy + dy))
+                            {
+                                out.put(ux, uy, col);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            if u.placement_id == PLACEMENT_UNIT_BASE || u.locked {
+                continue;
+            }
+            // Non-locked live contact badge: compact callsign + 3-pip health gauge.
+            let label = u.designator.as_deref().unwrap_or("");
+            if label.is_empty() && u.health.is_none() {
+                continue;
+            }
+            let text_w = if label.is_empty() {
+                0
+            } else {
+                (label.chars().count() as i64) * 6 - 1
+            };
+            let pips_w = if u.health.is_some() { 14 } else { 0 };
+            let sep = if text_w > 0 && pips_w > 0 { 3 } else { 0 };
+            let pill_w = (text_w + sep + pips_w + 4).max(10);
+            let pill_x = i64::from(u.screen_x) - pill_w / 2;
+            let pill_y = i64::from(u.screen_y) - 42;
+            overlay::fill_rect(&mut out, pill_x, pill_y, pill_w, 9, PANEL);
+            let mut cx = pill_x + 2;
+            if !label.is_empty() {
+                let team_col = match u.kind {
+                    SpriteKind::Red => RED_TEAM,
+                    SpriteKind::Blue => BLUE_TEAM,
+                    _ => TEXT,
+                };
+                cx += overlay::text(&mut out, cx, pill_y + 1, label, team_col, 1) + 2;
+            }
+            if let Some(h) = u.health {
+                let lit = h.lit();
+                let h_rgb = h.rgb();
+                for i in 0..HEALTH_PIPS {
+                    let c = if i < lit { h_rgb } else { GONE };
+                    overlay::fill_rect(&mut out, cx + i * 4, pill_y + 2, 3, 5, c);
+                }
+            }
+        }
+
         if let Some(lu) = units.iter().find(|u| u.locked) {
             let half = 32i32;
             let lx0 = lu.screen_x - half;
@@ -2111,7 +2679,6 @@ impl Iso25DPicture {
             let lx1 = lu.screen_x + half;
             let ly1 = lu.screen_y + half - 8;
             let corner = 12i32;
-            let yel: Rgb = [248, 216, 64];
             for d in 0..=corner {
                 for t in 0..=1 {
                     for (px, py) in [
@@ -2125,11 +2692,44 @@ impl Iso25DPicture {
                         (lx1 - t, ly1 - d),
                     ] {
                         if let (Ok(ux), Ok(uy)) = (usize::try_from(px), usize::try_from(py)) {
-                            out.put(ux, uy, yel);
+                            out.put(ux, uy, LOCK);
                         }
                     }
                 }
             }
+            let desig_str = lu.designator.as_deref().unwrap_or("LOCK");
+            let label = match lu.percent {
+                Some(pct) => format!("{desig_str} {}M {pct}%", lu.range_m),
+                None => format!("{desig_str} {}M", lu.range_m),
+            };
+            let text_w = (label.chars().count() as i64) * 6 - 1;
+            let pips_w = if lu.health.is_some() { 15 } else { 0 };
+            let pill_w = text_w + pips_w + 6;
+            let pill_x = i64::from(lu.screen_x) - pill_w / 2;
+            let pill_y = i64::from(ly0) - 12;
+            overlay::fill_rect(&mut out, pill_x, pill_y, pill_w, 11, PANEL);
+            overlay::outline_rect(&mut out, pill_x, pill_y, pill_w, 11, BORDER);
+            let drawn = overlay::text(&mut out, pill_x + 3, pill_y + 2, &label, LOCK, 1);
+            if let Some(h) = lu.health {
+                let lit = h.lit();
+                let h_rgb = h.rgb();
+                let px0 = pill_x + 3 + drawn + 2;
+                for i in 0..HEALTH_PIPS {
+                    let c = if i < lit { h_rgb } else { GONE };
+                    overlay::fill_rect(&mut out, px0 + i * 4, pill_y + 3, 3, 5, c);
+                }
+            }
+        }
+
+        // 5. Active combat FX (weapon tracers, muzzle flash, target impact burst, struck ring).
+        if !self.active_fx.is_empty() {
+            let mut put_rgb = |x: i32, y: i32, col: [u8; 4]| {
+                if let (Ok(ux), Ok(uy)) = (usize::try_from(x), usize::try_from(y)) {
+                    out.put(ux, uy, [col[0], col[1], col[2]]);
+                }
+            };
+            Self::paint_combat_fx(&self.active_fx, &units, (vcx, vcy - 14), &mut put_rgb);
+            self.step_combat_fx();
         }
 
         out
@@ -2152,6 +2752,7 @@ impl Picture for Iso25DPicture {
             return false;
         };
         self.sync_map(feeds);
+        self.offset_cm = (look.dx_cm, look.dy_cm);
         let hull_off = i32::try_from(look.hull_offset_mdeg).unwrap_or(0);
         let look_off = i32::try_from(look.offset_mdeg).unwrap_or(0);
         *frame = self.render_frame(cockpit, hull_off, look_off, frame.width(), frame.height());
@@ -2335,5 +2936,81 @@ mod tests {
         let (_vp, bytes3) = pic.render_kitty_bytes(&frame2, (0, 0), (1, 2, 120, 40), cell, false);
         let s3 = String::from_utf8_lossy(&bytes3);
         assert!(s3.contains(&format!("a=t,f=100,t=d,i={evicted_id},q=1")));
+    }
+
+    #[test]
+    fn dead_reckoning_badges_and_combat_fx_render_in_software_and_kitty() {
+        let mut pic = Iso25DPicture::new();
+        pic.set_map(Map::new(128, 128, 1000));
+        let base_frame = json!({
+            "seated": true,
+            "t_ms": 1000,
+            "team": "blue",
+            "unit_type": "tacsim.unit.biped_mk1",
+            "x_cm": 50_000,
+            "y_cm": 50_000,
+            "z_cm": 0,
+            "heading_mdeg": 0,
+            "speed_cms": 1200,
+            "lock": "c1",
+            "lock_designator": "RA",
+            "lock_range_m": 45,
+            "lock_percent": 68,
+            "contacts": [
+                {
+                    "id": "c1",
+                    "designator": "RA",
+                    "class": "red",
+                    "health": "damaged",
+                    "unit_type": "tacsim.unit.line_tank",
+                    "bearing_deg": 30.0,
+                    "range_m": 45.0,
+                    "facing": "front_left",
+                    "moving": true
+                },
+                {
+                    "id": "c2",
+                    "designator": "RB",
+                    "class": "red",
+                    "health": "crippled",
+                    "unit_type": "tacsim.unit.biped_mk1",
+                    "bearing_deg": -25.0,
+                    "range_m": 55.0,
+                    "facing": "front",
+                    "moving": false
+                }
+            ]
+        });
+
+        let f0 = pic.render_frame(&base_frame, 0, 0, 640, 480);
+        pic.set_offset_cm(300, 400);
+        let f_dr = pic.render_frame(&base_frame, 0, 0, 640, 480);
+        // Dead-reckoned ego offset scrolls the 2.5D terrain and shifts world-anchored contacts.
+        assert_ne!(f0.hash(), f_dr.hash());
+
+        // Trigger combat FX via a new keyframe pulse carrying `hit` and `struck` notices.
+        let fx_frame = json!({
+            "seated": true,
+            "t_ms": 2000,
+            "team": "blue",
+            "unit_type": "tacsim.unit.biped_mk1",
+            "x_cm": 50_000,
+            "y_cm": 50_000,
+            "z_cm": 0,
+            "heading_mdeg": 0,
+            "speed_cms": 1200,
+            "lock": "c1",
+            "lock_designator": "RA",
+            "lock_range_m": 45,
+            "lock_percent": 68,
+            "contacts": base_frame["contacts"],
+            "notices": [
+                { "kind": "hit", "contact": "c1", "designator": "RA", "weapon": "cannon" },
+                { "kind": "struck", "direction": "front" }
+            ]
+        });
+        pic.set_offset_cm(0, 0);
+        let f_fx = pic.render_frame(&fx_frame, 0, 0, 640, 480);
+        assert_ne!(f0.hash(), f_fx.hash());
     }
 }
