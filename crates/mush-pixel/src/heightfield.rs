@@ -1178,7 +1178,10 @@ fn draw_mip_sprite_fp(
         if let Some(mip) = pack.models.get(model_idx).and_then(|m| m.get(chosen_mi)) {
             let n = mip.size.max(1);
             let raw_w = 6 * n;
-            let fi = Facing::ALL.iter().position(|&f| f == pose.facing).unwrap_or(0);
+            let fi = Facing::ALL
+                .iter()
+                .position(|&f| f == pose.facing)
+                .unwrap_or(0);
             let pi = if at.kind == SpriteKind::Wreck {
                 5
             } else if !pose.moving {
@@ -1273,11 +1276,7 @@ fn draw_mip_sprite_fp(
                         if lc < (min_x as isize - 1) || lc > (max_x as isize + 1) {
                             continue;
                         }
-                        let code = if lr >= 0
-                            && (lr as usize) < n
-                            && lc >= 0
-                            && (lc as usize) < n
-                        {
+                        let code = if lr >= 0 && (lr as usize) < n && lc >= 0 && (lc as usize) < n {
                             mip.pixels
                                 .get((fi * n + lr as usize) * raw_w + pi * n + lc as usize)
                                 .copied()
@@ -1323,8 +1322,8 @@ fn draw_mip_sprite_fp(
         }
     }
 
-    let faint = at.height < crate::raycast::MARK_FAR_PX
-        || step >= crate::raycast::FOG_STEPS * 2 / 3;
+    let faint =
+        at.height < crate::raycast::MARK_FAR_PX || step >= crate::raycast::FOG_STEPS * 2 / 3;
     if drawn == 0 || faint {
         let least = if drawn == 0 {
             crate::raycast::MARK_MIN_PX

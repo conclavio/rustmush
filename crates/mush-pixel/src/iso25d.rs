@@ -616,8 +616,11 @@ impl TerrainCanvas {
                 } else {
                     (0.0, 0.0)
                 };
-                let raw =
-                    1.0 + slope_light + contour_darken + mottle + if checker { -0.025 } else { 0.0 };
+                let raw = 1.0
+                    + slope_light
+                    + contour_darken
+                    + mottle
+                    + if checker { -0.025 } else { 0.0 };
                 let q = ((raw - 0.60) / 0.60 * 7.0).round().clamp(0.0, 7.0);
                 let sun = 0.60 + (q / 7.0) * 0.60;
                 if let Some(slot) = tex_col.get_mut(row_off + gx) {
@@ -808,11 +811,7 @@ impl TerrainCanvas {
                                 && py >= 0
                                 && (py as usize) < canvas_h
                             {
-                                let col: Rgb = if dx <= 0 {
-                                    [62, 44, 30]
-                                } else {
-                                    [42, 30, 20]
-                                };
+                                let col: Rgb = if dx <= 0 { [62, 44, 30] } else { [42, 30, 20] };
                                 let ux = px as usize;
                                 let uy = py as usize;
                                 ground_frame.put(ux, uy, col);
@@ -1011,13 +1010,7 @@ fn heading_to_facing_25d(heading_mdeg: u32) -> Facing {
 fn pick_mip_level(screen_y: i32, vp_w: usize, vp_h: usize) -> u8 {
     let y_clamped = screen_y.clamp(0, vp_h as i32) as usize;
     let depth_step = ((vp_h.saturating_sub(y_clamped)) * 3) / vp_h.max(1);
-    let res_bias = if vp_w >= 1080 {
-        2
-    } else if vp_w >= 800 {
-        3
-    } else {
-        3
-    };
+    let res_bias = if vp_w >= 1080 { 2 } else { 3 };
     u8::try_from((depth_step + res_bias).min(5)).unwrap_or(5)
 }
 
@@ -2085,7 +2078,8 @@ impl Iso25DPicture {
                 let py = vcy - (d_m * cos_h * proj.px_per_m_y).round() as i32;
                 for dy in -1..=1 {
                     for dx in -1..=1 {
-                        if let (Ok(ux), Ok(uy)) = (usize::try_from(px + dx), usize::try_from(py + dy))
+                        if let (Ok(ux), Ok(uy)) =
+                            (usize::try_from(px + dx), usize::try_from(py + dy))
                         {
                             out.put(ux, uy, [12, 14, 18]);
                         }
