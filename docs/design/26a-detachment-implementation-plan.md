@@ -195,9 +195,37 @@ physical consoles, unit condition, employment and actual session state. Advancin
 the clock alone does not write another operation record. `+sortie/field` shows
 only the last saved leadership identity and term, not private availability causes.
 
-This establishes IC succession. Real order transport, current-leader mission-role
-grant integration and NPC execution remain required before claiming the IC parts
-of DT.1/DT.2 complete. The OOC host cannot stand in for those production paths.
+DT.3e connects fenced IC `ORDER`, `WILCO` and `NEGATIVE` commands to the existing
+Propagation transport. The common bounded order checkpoint lives beside the
+operation's succession checkpoint. One exact-action Propagation participant
+enqueues real envelopes in the source action's commit; the existing delivery
+tick supplies actual routing, serialization, service admission and interference.
+No second transport scheduler or authoritative World copy of the operation is
+introduced. Mail/channel reconciliation remains responsible only for its own
+external source references. Field envelopes use existing global queue limits and
+the 30 IC day retention window, then are compacted without erasing the source's
+last confirmed delivered objective.
+
+Each issue and delivery freshly reconciles actual field station/control,
+employment, sessions and unit condition. Org command rights are read through
+the authenticated owner service and fenced by actual permission revision keys;
+becoming leader grants no missing asset right. All selected units pass before
+any outbound message is committed. Delivery must match the exact source slot,
+sequence, actors, revision and command term. Obsolete, missing or expired
+transport cannot replace a standing delivery. Explicit optional expiry uses IC
+seconds; no arena TTL is renewed to simulate an IC standing order.
+
+The recipient projection shows only its own delivered messages. The issuer
+projection uses actual outgoing transport references and arrived return packets,
+never private recipient acknowledgements or inferred attempts/completion.
+Repeated replies and pending/standing history survive restart; current session
+and control facts still determine whether a saved pending message is admissible.
+Player acknowledgements remain advisory and move no unit. ENGAGE carries only a
+hint scoped to the issuer's own observation, without creating a contact share.
+
+Current-leader mission-role grant integration and NPC execution remain required
+before claiming the IC parts of DT.1/DT.2 complete. The OOC host cannot stand in
+for those production paths, and DT.3e does not claim the NPC mining story.
 
 ## DT.1a verification
 

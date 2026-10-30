@@ -1073,6 +1073,12 @@ fn refusal(error: CockpitError) -> CmdError {
 /// verb takes it — each reads the cockpit as [`Seat::driver`] and answers
 /// `ctx.actor`.
 fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError> {
+    if verb == "order" {
+        let raw = ctx.args.raw().trim().to_owned();
+        if let Some(result) = crate::detachment::sortie::field_order(ctx, &raw) {
+            return result.map_err(CmdError::msg);
+        }
+    }
     let Some(seat) = flying(ctx.w, ctx.actor) else {
         return Err(CmdError::msg(waiting_to_start(ctx.w, ctx.actor)));
     };

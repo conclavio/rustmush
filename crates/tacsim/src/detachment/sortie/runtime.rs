@@ -21,6 +21,8 @@ pub(super) type BlackBoxHandle =
 
 #[derive(Clone, Debug)]
 pub struct SortieHandles {
+    pub(super) transport:
+        Option<participant::ParticipantHandle<mush_propagation::field_transport::FieldTransport>>,
     pub index: StateFamilyHandle<(), FlightIndex>,
     pub operations: StateFamilyHandle<OperationId, OperationRecord>,
     pub heads: StateFamilyHandle<ObjId, UnitHead>,
@@ -61,6 +63,7 @@ pub(super) enum Command {
         operation: OperationId,
         facts: super::field::OwnerFacts,
     },
+    Message(Box<super::field_orders::Request>),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,6 +133,16 @@ pub(crate) fn action_descriptor(
         json!({"format":1,"subject":"self_actor","targets":0,"families":[OPS,HEADS,FLIGHTS,INDEX]}),
     )
     .map(|d| d.as_current().with_references(vec![outcome]))
+}
+/// Exact source action admitted by the composed Propagation owner participant.
+pub fn transport_action_ref() -> Result<DefinitionRef, ModError> {
+    let mut registry = DefinitionRegistryBuilder::new();
+    let owner = OwnerId::new(crate::NS).map_err(bad)?;
+    let outcome = registry
+        .register(owner.clone(), outcome_descriptor()?)
+        .map_err(bad)?;
+    let descriptor = action_descriptor(&BTreeMap::from([(OUTCOME.to_owned(), outcome)]))?;
+    registry.register(owner, descriptor).map_err(bad)
 }
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
@@ -217,6 +230,15 @@ pub(crate) fn register(
         None
     };
     let handles = SortieHandles {
+        transport: if enabled {
+            Some(
+                reg.request_owner_participant::<mush_propagation::field_transport::FieldTransport>(
+                    action.clone(),
+                )?,
+            )
+        } else {
+            None
+        },
         index,
         operations,
         heads,
@@ -545,6 +567,9 @@ impl ActionProvider for Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let (intent, expected) = chosen(r.invocation())?;
+        if let Command::Message(request) = &intent.command {
+            super::field_orders::verify(ctx, txn, &self.handles, r.invocation().actor(), request)?;
+        }
         if let Command::Refresh { operation, facts } = &intent.command {
             super::field::verify_owner_facts(ctx, txn, &self.handles, *operation, facts)?;
         }

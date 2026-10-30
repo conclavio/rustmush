@@ -76,6 +76,8 @@ pub struct OperationRecord {
     pub flights: Vec<FlightKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Box<mush_tactics::detachment::roster::RosterCheckpoint>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orders: Option<Box<super::field_orders::FieldOrders>>,
 }
 impl OperationRecord {
     pub fn validate(&self) -> Result<(), String> {
@@ -88,6 +90,13 @@ impl OperationRecord {
             if !saved.matches_membership(&expected) {
                 return Err("Field command membership differs from accepted roster.".into());
             }
+            if let Some(orders) = &self.orders {
+                let roster = mush_tactics::detachment::roster::DetachmentRoster::restore(saved)
+                    .map_err(|e| e.to_string())?;
+                orders.validate(&roster)?;
+            }
+        } else if self.orders.is_some() {
+            return Err("Field orders have no command history.".into());
         }
         if self.schema != 1
             || self.id != OperationId::of(&self.roster)

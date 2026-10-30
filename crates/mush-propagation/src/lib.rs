@@ -65,6 +65,7 @@ pub mod commands;
 pub mod commerce;
 pub mod context;
 pub mod dispatch;
+pub mod field_transport;
 pub mod panel;
 pub mod pass;
 pub mod policy;
@@ -153,6 +154,7 @@ pub const MAX_DOMAINS_PER_DETECTION_FIRE: usize = 8;
 /// The propagation module.
 #[derive(Debug, Default)]
 pub struct PropagationModule {
+    field_actions: std::collections::BTreeSet<mush_core::DefinitionRef>,
     metric: Option<Arc<dyn routing::MetricProvider>>,
     sources: Option<Arc<dyn dispatch::Sources>>,
     service: Option<Arc<dyn service::Integration>>,
@@ -163,6 +165,7 @@ impl PropagationModule {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            field_actions: std::collections::BTreeSet::new(),
             metric: None,
             sources: None,
             service: None,
@@ -186,6 +189,17 @@ impl PropagationModule {
         self.sources = Some(sources);
         self
     }
+
+    /// Allow these exact source actions to enqueue bounded field messages in
+    /// their own authoritative commit. Delivery remains Propagation's concern.
+    #[must_use]
+    pub fn with_field_transport(
+        mut self,
+        actions: std::collections::BTreeSet<mush_core::DefinitionRef>,
+    ) -> Self {
+        self.field_actions = actions;
+        self
+    }
 }
 
 impl GameModule for PropagationModule {
@@ -197,6 +211,7 @@ impl GameModule for PropagationModule {
         // K8.5: the module's lane is declared BEFORE any command registers.
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(record::PropagationStore::default());
+        field_transport::register(reg, self.field_actions.clone())?;
         if let Some(sources) = &self.sources {
             reg.state(dispatch::Services(Arc::clone(sources)));
         }
@@ -346,7 +361,16 @@ impl GameModule for PropagationModule {
             schedule::validate_bindings(ctx.w, state).map_err(ModError::msg)?;
         }
         store.reconcile_allocators();
-        let dispatches: Vec<_> = store.envelopes().filter_map(|e| e.dispatch_ref()).collect();
+        let dispatches: Vec<_> = store
+            .envelopes()
+            .filter(|e| {
+                matches!(
+                    e.kind(),
+                    record::DispatchKind::Mail | record::DispatchKind::Channel
+                )
+            })
+            .filter_map(|e| e.dispatch_ref())
+            .collect();
         let keys: std::collections::BTreeSet<_> = dispatches.iter().map(|d| &d.key).collect();
         if dispatches.len() > dispatch::MAX_DISPATCHES || keys.len() != dispatches.len() {
             return Err(ModError::msg("invalid or duplicate dispatch handoffs"));
@@ -380,6 +404,9 @@ impl GameModule for PropagationModule {
 /// report and `@prop/pass` prints it, so the operator is told rather than a log
 /// line being written into the dark.
 fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
+    if ctx.authoritative_commit_pending() {
+        return;
+    }
     dispatch::reconcile(ctx);
     commerce::sweep(ctx);
     billing::maintain(ctx);
@@ -544,6 +571,9 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
 /// refusal are **paged** into the store's own notice queue, which `@prop/pass`
 /// and `@prop/held` drain (E4c V6).
 fn detection_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
+    if ctx.authoritative_commit_pending() {
+        return;
+    }
     let at = ctx.w.world_ic_now();
     let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
         return;

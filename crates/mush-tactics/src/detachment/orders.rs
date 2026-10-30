@@ -9,20 +9,23 @@
 use std::collections::BTreeMap;
 
 use mush_core::ObjId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::roster::{Controller, DetachmentId, DetachmentRoster, Member, RosterError, Slot};
 
+mod checkpoint;
+pub use checkpoint::OrderCheckpoint;
+
 /// Slots are resolved to their current units when an order is admitted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderTarget {
     Slot(Slot),
     All,
 }
 
 /// Cancellation travels through the same authority and delivery fences.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Directive<P> {
     Objective(P),
     Cancel,
@@ -40,7 +43,7 @@ pub struct OrderRequest<P> {
 }
 
 /// A projection of an admitted message, not an importable authority token.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrderEnvelope<P> {
     pub detachment: DetachmentId,
     pub sequence: u64,
@@ -62,13 +65,13 @@ pub struct IssuedOrder {
     pub recipients: Vec<Slot>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
     Wilco,
     Negative,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Acknowledgement {
     pub by: ObjId,
     pub response: Response,
@@ -83,7 +86,7 @@ pub enum ExecutionObservation {
 
 /// These fields record only what the host actually observed. Completion does
 /// not invent an earlier attempt or an acknowledgement.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveredOrder<P> {
     pub order: OrderEnvelope<P>,
     pub delivered_at_ms: u64,
@@ -100,6 +103,8 @@ pub enum DeliveryOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum OrderError {
+    #[error("invalid saved order history")]
+    InvalidCheckpoint,
     #[error("the order belongs to another detachment")]
     WrongDetachment,
     #[error(transparent)]
@@ -128,7 +133,8 @@ pub enum OrderError {
     SequenceExhausted,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SlotHistory<P> {
     pending: Option<OrderEnvelope<P>>,
     delivered: Option<DeliveredOrder<P>>,
@@ -154,6 +160,35 @@ pub struct OrderBook<P> {
 }
 
 impl<P> OrderBook<P> {
+    #[must_use]
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Withdraw one obsolete/expired pending message without replacing the
+    /// recipient's last delivered objective. This grants no execution authority.
+    pub fn discard_pending(
+        &mut self,
+        slot: Slot,
+        sequence: u64,
+        now_ms: u64,
+    ) -> Result<(), OrderError> {
+        self.check_time(now_ms)?;
+        let history = self.slots.get_mut(&slot).ok_or(OrderError::StaleSequence)?;
+        if history
+            .pending
+            .as_ref()
+            .is_none_or(|p| p.sequence != sequence)
+        {
+            return Err(OrderError::StaleSequence);
+        }
+        history.pending = None;
+        if history.delivered.is_none() {
+            self.slots.remove(&slot);
+        }
+        self.last_time_ms = Some(now_ms);
+        Ok(())
+    }
     #[must_use]
     pub fn new(detachment: DetachmentId) -> Self {
         Self {

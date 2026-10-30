@@ -218,6 +218,12 @@ fn compose_domain_modules<E>(
         Box::new(tactics),
         Box::new(
             mush_propagation::PropagationModule::new()
+                .with_field_transport(
+                    crate::detachment::sortie::transport_action_ref()
+                        .into_iter()
+                        .filter(|_| tacsim_delegate)
+                        .collect(),
+                )
                 .with_metric(Arc::new(crate::relay_metric::RelayMetric))
                 .with_service(Arc::new(crate::relay_service::RelayService::new())),
         ),

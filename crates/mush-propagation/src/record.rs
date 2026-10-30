@@ -333,6 +333,8 @@ pub enum DispatchKind {
     Acknowledgement,
     Mail,
     Channel,
+    Detachment,
+    DetachmentReply,
 }
 
 /// A delivery envelope: an order, a report or an acknowledgement in flight.
@@ -413,7 +415,15 @@ impl<'de> Deserialize<'de> for Envelope {
             wire.advanced,
             wire.ack_of,
             wire.shares,
-            matches!(wire.kind, Some(DispatchKind::Mail | DispatchKind::Channel)),
+            matches!(
+                wire.kind,
+                Some(
+                    DispatchKind::Mail
+                        | DispatchKind::Channel
+                        | DispatchKind::Detachment
+                        | DispatchKind::DetachmentReply
+                )
+            ),
         )
         .map_err(serde::de::Error::custom)?;
         envelope.representation = wire.representation;
@@ -428,13 +438,17 @@ impl<'de> Deserialize<'de> for Envelope {
             envelope.kind = kind;
         }
         if let Some(reference) = wire.dispatch {
-            if !reference.valid()
-                || !matches!(envelope.kind, DispatchKind::Mail | DispatchKind::Channel)
-            {
+            if !reference.valid_for(envelope.kind) {
                 return Err(serde::de::Error::custom("invalid dispatch reference"));
             }
             envelope.dispatch = Some(reference);
-        } else if matches!(envelope.kind, DispatchKind::Mail | DispatchKind::Channel) {
+        } else if matches!(
+            envelope.kind,
+            DispatchKind::Mail
+                | DispatchKind::Channel
+                | DispatchKind::Detachment
+                | DispatchKind::DetachmentReply
+        ) {
             return Err(serde::de::Error::custom(
                 "message dispatch reference missing",
             ));
@@ -641,7 +655,7 @@ impl Envelope {
         reference: crate::dispatch::DispatchRef,
         issued: ClockStamp,
     ) -> Result<Self, RecordError> {
-        if !reference.valid() || !matches!(kind, DispatchKind::Mail | DispatchKind::Channel) {
+        if !reference.valid_for(kind) {
             return Err(RecordError::DispatchReference);
         }
         let mut envelope = Self::from_parts(

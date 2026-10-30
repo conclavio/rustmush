@@ -57,6 +57,7 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/operation <draft>:<activation revision>` | Read the operation's saved progress and flight references |
 | `+sortie/field <draft>:<activation revision>` | Read the last saved field leadership identity and command term |
 | `+sortie/refresh <draft>:<activation revision>` | Recheck the operation's current field leadership |
+| `+sortie/orders <draft>:<activation revision>` | Read your sent field messages, arrived replies and personally received orders |
 | `+sortie/recover <draft>:<activation revision>=<slot>` | Bring a unit physically beside the ramp back into the carrier |
 | `+sortie/cancel-launch <draft>:<activation revision>=<slot>` | Cancel a departure that is still physically aboard |
 | `+sortie/end <draft>:<activation revision>` | End coordination, cancelling only departures still aboard |
@@ -195,4 +196,40 @@ the command term and reconnect timers, then rechecks current sessions and contro
 `/field` is the saved operation record, not a live casualty or position report.
 The flight tick refreshes changed leadership; `/refresh` requests the same durable
 check explicitly. Neither command issues an order or moves a unit. These records
-do not supply a communications path or an NPC tactical decision driver.
+do not supply an NPC tactical decision driver.
+
+Use `+sortie/orders` for the current `ORDER DT:<detachment>:<revision>:<term>`
+prefill. Assigned players can identify the operation as
+`<organizer>:<draft>:<activation revision>`. The current leader can send to a
+numbered slot or `ALL`, using the same line vocabulary as practice:
+
+```text
+ORDER DT:12:1:3 ALL HOLD
+ORDER DT:12:1:3 2 ADVANCE 40,50
+ORDER DT:12:1:3 2 ENGAGE
+ORDER DT:12:1:3 2 SCREEN 90 HOLD FIRE
+ORDER DT:12:1:3 2 SUPPORT 1
+ORDER DT:12:1:3 2 WITHDRAW EXPIRES 60
+ORDER DT:12:1:3 2 RELEASE
+```
+
+Replace the example identity and term with the printed prefill. ADVANCE takes a
+field cell within the 256 by 256 site. SUPPORT takes an accepted slot. ENGAGE may
+include a contact prefix from your own observation; a hint grants its recipient
+no contact knowledge or targeting permission. Orders stand until replaced,
+released or completed; an optional expiry suffix limits them in IC seconds.
+
+Sending requires current leadership, physical station control and command rights
+for every selected unit. Admission checks the entire `ALL` set before sending.
+Messages use the existing communications transport, including its routing,
+latency, interference and queue limits. Arrival rechecks current assignments,
+leadership term and permissions before changing the recipient's last delivered
+order. A delayed obsolete or expired replacement leaves that older order intact.
+
+An assigned player reads their own arrived directive and can use the printed
+`WILCO DT:<detachment>:<revision> <sequence>` or `NEGATIVE ...` response. These
+are advisory responses. They never operate the player's unit, report an attempt
+or claim completion. The sender sees a response only after its return message
+actually arrives. Field transport receipts are retained for 30 IC days; older
+recipient history remains readable but cannot manufacture a missing reply path.
+NPC execution and actual mining remain subsequent work.
