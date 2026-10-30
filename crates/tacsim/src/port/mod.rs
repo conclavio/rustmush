@@ -284,3 +284,5 @@ pub use yard::{
     house_rigs, is_dispatcher_of, operates, operating_hull, operator_principal, rig_lease,
     yard_of_dispatcher, yard_of_hull, yards,
 };
+
+pub(crate) mod boarding;

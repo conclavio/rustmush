@@ -3661,7 +3661,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@station".into(),
             shape: ArgShape::EqPair,
-            switches: ["handoff", "cancel", "show", "fallback"]
+            switches: ["handoff", "release", "cancel", "show", "fallback"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -3669,6 +3669,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             help: "@station  --  Station control leases (K6).\n\
                    @station/handoff <unit>/<station>   Take the control lease for the station \
                    you are driving (the first request establishes a vacant lease).\n\
+                   @station/release <unit>/<station>   Give up your own lease at its safe boundary.\n\
                    @station/cancel <unit>/<station>    Withdraw your still-pending handoff.\n\
                    @station/show [<unit>/<station>]    Show the station you are driving.\n\
                    @station/fallback <unit>/<station>=<who>   (staff) Declare its fallback \

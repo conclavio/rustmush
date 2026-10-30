@@ -478,6 +478,12 @@ with real, embarked human-NPC leadership.
   initially; attachments that delegate a subset of command stay in DT.4. Delivered standing
   orders survive succession until superseded; delayed orders from an expired leadership term
   cannot overwrite orders from the new leader.
+- **Owner amendment (2026-10-30):** defer DT.4 subset command delegation. Retain
+  DT.5 as a dedicated detachment communications surface over the existing IC
+  communications and ECM path. Per-recipient delivery and returning replies must
+  respect real lag, jamming and outages; this does not introduce another transport
+  or change the distinction between chat, orders and acknowledged receipt. See
+  [26a](26a-detachment-implementation-plan.md#dt5-communications-integration).
 
 ### B. Unit authority, delegation and money
 

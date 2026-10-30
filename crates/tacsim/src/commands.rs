@@ -276,6 +276,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                     "plan",
                     "show",
                     "permissions",
+                    "board",
+                    "leave",
                 ])
                 .map(SmolStr::new)
                 .collect(),

@@ -1,9 +1,9 @@
 //! Explicit NPC boarding of an assigned unit, using the existing Sim writers.
 use super::{OperationId, facts, runtime::SortieHandles};
 use crate::detachment::planning::{PlanningHandles, projection};
-use mush_core::{CmdError, Ctx, ObjId};
+use crate::port::boarding::console;
+use mush_core::{CmdError, Ctx};
 use mush_org::unit_authority::reader::{UnitAuthorityRequest, UnitAuthorityResponse};
-use mush_sim::{SpatialParent, SpatialState, StationId};
 use mush_tactics::detachment::planning::PlannedController;
 
 pub(super) fn seat(ctx: &mut Ctx<'_>, operation: OperationId, slot: u16) -> Result<(), CmdError> {
@@ -127,56 +127,4 @@ fn arrange(ctx: &mut Ctx<'_>, operation: OperationId, slot: u16) -> Result<(), S
         ),
     );
     Ok(())
-}
-fn console(
-    ctx: &Ctx<'_>,
-    unit: ObjId,
-    carrier: ObjId,
-    npc: ObjId,
-) -> Result<(StationId, ObjId, bool), String> {
-    let view =
-        crate::port::ship::hull_view(ctx.w, carrier).ok_or("Carrier interior unavailable.")?;
-    let (bay, room) = view.bay().ok_or("Carrier has no vehicle bay.")?;
-    let state = ctx
-        .w
-        .module_state::<SpatialState>()
-        .ok_or("Spatial state unavailable.")?;
-    let slot = mush_sim::SlotId::new(bay.slot.id.as_str()).ok_or("Bay compartment unavailable.")?;
-    if state.is_quarantined(unit)
-        || state.held_assignment(unit).is_some()
-        || !matches!(state.parent_of(unit),SpatialParent::Interior{space,slot:Some(ref at)} if space==room && at==&slot)
-    {
-        return Err("Unit must be in the selected carrier's actual vehicle bay.".into());
-    }
-    let stations = state
-        .stations
-        .get(&unit)
-        .ok_or("Unit needs an authored physical helm console.")?;
-    let mut found = Vec::new();
-    for (id, spec) in &stations.stations {
-        if spec.channels.len() != 1 || !spec.channels.iter().any(|c| c.as_str() == "helm") {
-            continue;
-        }
-        let Some(room) = spec.space else { continue };
-        let Some(space) = mush_sim::anchored_space_of(ctx.w, room) else {
-            continue;
-        };
-        if !matches!(state.spaces.get(&space).map(|s|&s.anchor),Some(mush_sim::SpaceAnchor::MovingObject{host}) if *host==unit)
-        {
-            continue;
-        }
-        let occupant = state.assignments.get(&unit).and_then(|a| a.seats.get(id));
-        if occupant.is_some_and(|a| a.actor != npc) {
-            return Err("Release the existing helm billet first.".into());
-        }
-        found.push((id.clone(), room, occupant.is_some()));
-    }
-    if found.len() != 1 {
-        return Err(
-            "Unit needs exactly one authored physical helm console for this assignment.".into(),
-        );
-    }
-    found
-        .pop()
-        .ok_or_else(|| "Unit console unavailable.".into())
 }

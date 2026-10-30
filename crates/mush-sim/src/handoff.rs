@@ -29,6 +29,7 @@ use crate::data::{SpatialState, StationId};
 use crate::focus::FocusState;
 
 const REQUEST_ACTION_ID: &str = "control_handoff_request";
+const RELEASE_ACTION_ID: &str = "control_handoff_release";
 const CANCEL_ACTION_ID: &str = "control_handoff_cancel";
 const APPLY_ACTION_ID: &str = "control_handoff_apply";
 const OUTCOME_ID: &str = "control_handoff_result";
@@ -268,6 +269,7 @@ struct HandoffFamilies {
 #[derive(Clone, Copy, Debug)]
 enum HandoffOperation {
     Request,
+    Release,
     Cancel,
     Apply,
 }
@@ -421,8 +423,15 @@ impl HandoffProvider {
     fn validate(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         Self::subject(invocation)?;
         match self.operation {
-            HandoffOperation::Request => {
-                let _: RequestParameters = Self::decode(invocation)?;
+            HandoffOperation::Request | HandoffOperation::Release => {
+                let p: RequestParameters = Self::decode(invocation)?;
+                if matches!(self.operation, HandoffOperation::Release)
+                    && (p.next_holder.is_some() || p.station.is_none() || p.grant_epoch.is_none())
+                {
+                    return Err(Self::invalid(
+                        "station release requires a vacant target and actual billet",
+                    ));
+                }
             }
             HandoffOperation::Cancel => {
                 let _: CancelParameters = Self::decode(invocation)?;
@@ -486,6 +495,13 @@ impl HandoffProvider {
             .clone()
             .map_or_else(|| ControlLeaseState::new(key.clone()), Ok)
             .map_err(|error| Self::transition_error(&error))?;
+        if matches!(self.operation, HandoffOperation::Release)
+            && lease.holder() != Some(invocation.principal())
+        {
+            return Err(Self::invalid(
+                "only the actual holder may release station control",
+            ));
+        }
         let next = lease
             .checked_request_handoff(
                 parameters.expected_revision,
@@ -712,7 +728,7 @@ impl HandoffProvider {
         engine: &Engine,
     ) -> Result<Option<mush_core::ProviderOfferDraft>, ActionError> {
         let request = match self.operation {
-            HandoffOperation::Request => true,
+            HandoffOperation::Request | HandoffOperation::Release => true,
             HandoffOperation::Cancel => false,
             HandoffOperation::Apply => return Ok(None),
         };
@@ -770,7 +786,20 @@ impl HandoffProvider {
             .map_err(|error| Self::state_error(&error))?;
         let revision = lease.map_or(0, ControlLeaseState::revision);
         let now = engine.world.world_ic_now();
-        let fixed = if request {
+        let release = matches!(self.operation, HandoffOperation::Release);
+        let fixed = if release {
+            if !driving
+                || lease.and_then(ControlLeaseState::holder) != Some(&actor_principal)
+                || lease.and_then(ControlLeaseState::pending).is_some()
+            {
+                return Ok(None);
+            }
+            json!({
+                "channel":channel,"next_holder":null,"requested_at":now,"boundary":now,
+                "reason":if npc_here { NPC_STATION_REASON } else { "crew.station_release" },
+                "expected_revision":revision,"station":station.as_str(),"grant_epoch":epoch,
+            })
+        } else if request {
             let holder = lease.and_then(ControlLeaseState::holder);
             let next_holder = if driving {
                 // The manual `@station/handoff` authority split, by lease state:
@@ -878,6 +907,11 @@ impl HandoffProvider {
             .add_definition(action.clone(), definitions)
             .map_err(|_| Self::integrity("control-handoff definition guard is unavailable"))?;
         let (verb, label, help) = match self.operation {
+            HandoffOperation::Release => (
+                "release",
+                "Release station control",
+                "Give up your own station lease at the next safe boundary.",
+            ),
             HandoffOperation::Request => (
                 "station_handoff",
                 "Establish station control",
@@ -913,12 +947,14 @@ impl ActionProvider for HandoffProvider {
         resolved: &mush_core::ResolvedActionInvocation,
     ) -> Result<Vec<RevisionKey>, ActionError> {
         let invocation = resolved.invocation();
-        if matches!(self.operation, HandoffOperation::Request)
-            && invocation
-                .parameters()
-                .get("reason")
-                .and_then(Value::as_str)
-                == Some(NPC_STATION_REASON)
+        if matches!(
+            self.operation,
+            HandoffOperation::Request | HandoffOperation::Release
+        ) && invocation
+            .parameters()
+            .get("reason")
+            .and_then(Value::as_str)
+            == Some(NPC_STATION_REASON)
         {
             return Ok(vec![npc_station_key(
                 invocation.actor(),
@@ -960,7 +996,9 @@ impl ActionProvider for HandoffProvider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.validate(invocation)?;
         match self.operation {
-            HandoffOperation::Request => self.prepare_request(invocation, txn),
+            HandoffOperation::Request | HandoffOperation::Release => {
+                self.prepare_request(invocation, txn)
+            }
             HandoffOperation::Cancel => self.prepare_cancel(invocation, txn),
             HandoffOperation::Apply => self.prepare_apply(invocation, txn),
         }
@@ -1084,6 +1122,7 @@ impl ScheduleActionAdapter for HandoffScheduleAdapter {
 struct HandoffDescriptors {
     outcome: DefinitionDescriptor,
     request: DefinitionDescriptor,
+    release: DefinitionDescriptor,
     cancel: DefinitionDescriptor,
     apply: DefinitionDescriptor,
 }
@@ -1144,6 +1183,7 @@ fn handoff_descriptors() -> Result<HandoffDescriptors, ModError> {
     Ok(HandoffDescriptors {
         outcome,
         request: action(REQUEST_ACTION_ID, "request")?,
+        release: action(RELEASE_ACTION_ID, "release")?,
         cancel: action(CANCEL_ACTION_ID, "cancel")?,
         apply: action(APPLY_ACTION_ID, "apply")?,
     })
@@ -1197,6 +1237,11 @@ fn exact_definition_validator(
 /// command ingress (which selects it through `Ctx::submit_authoritative`).
 pub(crate) fn request_action_ref(registry: &mush_core::Registry) -> Option<DefinitionRef> {
     action_ref(registry, REQUEST_ACTION_ID)
+}
+
+/// The registered voluntary release of the actual holder's station lease.
+pub(crate) fn release_action_ref(registry: &mush_core::Registry) -> Option<DefinitionRef> {
+    action_ref(registry, RELEASE_ACTION_ID)
 }
 
 /// The registered station-handoff cancel action.
@@ -1280,6 +1325,7 @@ pub(crate) fn register(
         DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
         exact_definition_validator(&[
             descriptors.request.clone(),
+            descriptors.release.clone(),
             descriptors.cancel.clone(),
             descriptors.apply.clone(),
             tick.tick_action.clone(),
@@ -1300,6 +1346,7 @@ pub(crate) fn register(
     };
     let outcome = reg.definition(descriptors.outcome)?;
     let request = reg.definition(descriptors.request)?;
+    let release = reg.definition(descriptors.release)?;
     let cancel = reg.definition(descriptors.cancel)?;
     let apply = reg.definition(descriptors.apply)?;
     reg.revision_validator(
@@ -1316,6 +1363,7 @@ pub(crate) fn register(
     };
     for (action, operation) in [
         (request, HandoffOperation::Request),
+        (release, HandoffOperation::Release),
         (cancel, HandoffOperation::Cancel),
         (apply.clone(), HandoffOperation::Apply),
     ] {
