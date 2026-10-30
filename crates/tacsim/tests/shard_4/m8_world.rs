@@ -916,6 +916,25 @@ fn m8g_the_combined_world_boots_active() {
 fn m8g_the_procuring_world_boots_active() {
     let world = m8_world_with(Some(("Meridiani", 160_000, 5)));
     assert_eq!(world.deployment.procurement.len(), 1);
+    // The hulls the procurement cap counts (`procurement::tick::titled_hulls`): the House's
+    // live titles that are hulls of a programme port's map.
+    let org = world.deployment.houses.meridiani.organization;
+    let mapped: std::collections::BTreeSet<ObjId> =
+        tacsim::port::coop::programme_ports(world.rig.tw.world())
+            .iter()
+            .flat_map(|port| port.map.hulls.iter().map(|row| ObjId(row.hull)))
+            .collect();
+    let titled: Vec<ObjId> = economy(&world.rig.tw)
+        .snapshot()
+        .assets_of(&PrincipalId::Organization(org))
+        .filter(|asset| asset.lifecycle == mush_economy::AssetLifecycle::Active)
+        .map(|asset| asset.object)
+        .collect();
+    let counted = titled.iter().filter(|hull| mapped.contains(hull)).count();
+    assert_eq!(
+        counted, 5,
+        "the cap's hulls: titled {titled:?}, mapped {mapped:?}"
+    );
     crate::excursions::no_refused_writes(&world.rig.tw);
 }
 
@@ -1286,17 +1305,6 @@ fn title_hulls_to(rig: &mut Rig, house: &str, hulls: &[ObjId]) {
     }
 }
 
-/// `org`'s paid licences, by charter: the Roll's paid-licence rows the organisation holds.
-fn house_licences(world: &M8World, org: OrgId) -> std::collections::BTreeMap<String, usize> {
-    let mut by_charter = std::collections::BTreeMap::new();
-    for row in world.rows("roll_mind_personal_paid_licence") {
-        if row["holder"]["org"] == json!(org.0) {
-            *by_charter.entry(row["charter"].to_string()).or_insert(0) += 1;
-        }
-    }
-    by_charter
-}
-
 /// Fire the world's ticks `n` times, landing every submission (the procurement agent's buys
 /// are its own submissions).
 fn fires(world: &mut M8World, n: usize) {
@@ -1336,9 +1344,21 @@ async fn m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap() {
     );
     let mut world = m8_world_with(Some(("Meridiani", BUDGET, 5)));
     let meridiani = world.deployment.houses.meridiani.organization;
-    let _listed = rate_and_list(&mut world).await;
+    // Procurement reads only the player market's listings (doc 17h §3 M8f, P5:
+    // `ProcurementListings` scans the `@mind/publish` lines); the House counter's lines are out
+    // of its scope, so the story publishes each rated line on the player market. Whether House
+    // counter lines should feed procurement is with the owner.
+    let published = rate_and_publish(&mut world).await;
     rate_unlisted(&mut world).await;
     eprintln!("M8G_STORY phase=zero_pc.rated event=complete");
+    log_rating_scores(&world);
+    // The House shops once per IC month (the lead's ruling, doc 17h, under the provisional
+    // economy defaults): a month closed with nothing listed stays closed, and new listings are
+    // seen the next month. The month open while the lines were rated closed at its first visit
+    // ("nothing affordable under the cap is listed"), so the House shops in the next IC month,
+    // every line listed by then. This is the designed behaviour, not a workaround.
+    let next_month = world.rig.tw.world().now() + 31 * 86_400;
+    world.rig.tw.set_now(next_month);
     fires(&mut world, 120);
     eprintln!(
         "M8G_STORY zero_pc ledger {} rows; market {}; ic now {}",
@@ -1346,27 +1366,19 @@ async fn m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap() {
         census(&world, "market_mind"),
         world.rig.tw.world().world_ic_now().at
     );
-    let bought = house_licences(&world, meridiani);
+    let bought = procured(&world, meridiani);
     eprintln!("M8G_STORY zero_pc bought {bought:?}");
-    // Each listed line's charter, by the House that filed it.
-    let charter_of = |world: &M8World, house: &HouseDeployment| -> String {
-        let licence = _listed
+    let charter_of = |selector: &str| -> String {
+        published
             .iter()
-            .find(|(listed, _, _)| listed.organization == house.organization)
-            .map(|(_, licence, _)| *licence)
-            .expect("the House's listed line");
-        world
-            .rows("roll_mind_owner_licence")
-            .into_iter()
-            .find(|row| row["id"] == json!(licence))
-            .map(|row| row["charter"].to_string())
-            .expect("the line's charter")
+            .find(|(name, _)| *name == selector)
+            .map(|(_, charter)| charter.clone())
+            .expect("the published line")
     };
-    let houses = world.deployment.houses.clone();
     let (best, second, zero) = (
-        charter_of(&world, &houses.meridiani),
-        charter_of(&world, &houses.coprates),
-        charter_of(&world, &houses.tycho),
+        charter_of("meridiani"),
+        charter_of("coprates"),
+        charter_of("safe_conduct"),
     );
     assert_eq!(
         bought.get(&best).copied(),
@@ -1389,26 +1401,16 @@ async fn m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap() {
         .map(|row| row["price_minor"].as_i64().expect("a price"))
         .sum();
     assert_eq!(spent, BUDGET, "the month's budget, exactly");
-    // The unlisted line is untouched: every licence the House bought is one of a listed line.
-    let listed_charters: std::collections::BTreeSet<String> = _listed
-        .iter()
-        .filter_map(|(_, licence, _)| {
-            world
-                .rows("roll_mind_owner_licence")
-                .into_iter()
-                .find(|row| row["id"] == json!(licence))
-                .map(|row| row["charter"].to_string())
-        })
-        .collect();
+    // The unlisted line is untouched: every charter the House bought is a published line's.
     assert!(
         bought
             .keys()
-            .all(|charter| listed_charters.contains(charter)),
-        "only listed lines are bought: {bought:?} of {listed_charters:?}"
+            .all(|charter| published.iter().any(|(_, c)| c == charter)),
+        "only published lines are bought: {bought:?} of {published:?}"
     );
     let mut world = world.reboot();
     assert_eq!(
-        house_licences(&world, meridiani),
+        procured(&world, meridiani),
         bought,
         "a restart changes nothing"
     );
@@ -1416,7 +1418,7 @@ async fn m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap() {
     world.rig.tw.world_mut().set_now(next_month);
     fires(&mut world, 60);
     assert_eq!(
-        house_licences(&world, meridiani),
+        procured(&world, meridiani),
         bought,
         "a second month, the treasury spent, buys nothing"
     );
@@ -1426,11 +1428,15 @@ async fn m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap() {
     // of the House's bought Pins on a cored rig; the open line names the mind, with the House
     // the holder and the member the warrant principal.
     let house_pin = world
-        .rows("roll_mind_personal_paid_licence")
+        .rows("tacsim.procurement_ledger")
         .into_iter()
-        .find(|row| row["holder"]["org"] == json!(meridiani.0))
-        .and_then(|row| row["id"].as_u64())
-        .expect("a House Pin");
+        .find(|row| row["org"] == json!(meridiani.0) && row["phase"] == json!("granted"))
+        .and_then(|row| {
+            row["licence"]
+                .as_u64()
+                .or_else(|| row["licence"].as_str()?.parse().ok())
+        })
+        .expect("a licence the House bought");
     let (pilot, tv) = (world.pilot, world.tvs[0]);
     god(
         &mut world.rig,
@@ -2244,4 +2250,156 @@ fn m8g_a_grey_core_reads_grey_to_the_inspection_and_is_seizable() {
         ),
         "the grey core is seizable: {seized}"
     );
+}
+
+/// **Diagnostic** (doc 17h cut M8g, the zero-PC story): each rating's score as P1's
+/// `rating_score` computes it over its result pages, and per class the rows by outcome.
+fn log_rating_scores(world: &M8World) {
+    let mut by_rating: std::collections::BTreeMap<
+        String,
+        Vec<mush_roll::commerce::rating::RatingPage>,
+    > = std::collections::BTreeMap::new();
+    for value in world.rows("rating_pages") {
+        let rating = value["rating"].to_string();
+        match serde_json::from_value::<mush_roll::commerce::rating::RatingPage>(value.clone()) {
+            Ok(page) => by_rating.entry(rating).or_default().push(page),
+            Err(error) => eprintln!("M8G_DIAG an undecodable page: {error}"),
+        }
+    }
+    for (rating, pages) in &by_rating {
+        let contents: Vec<_> = pages.iter().map(|page| page.content().clone()).collect();
+        let score = mush_roll::commerce::rating::rating_score(&contents);
+        let mut rows = std::collections::BTreeMap::<String, usize>::new();
+        for page in pages {
+            let value = serde_json::to_value(page.content()).unwrap_or_default();
+            for row in value["rows"].as_array().cloned().unwrap_or_default() {
+                let outcome = match &row["outcome"] {
+                    Value::Object(map) => map.keys().next().cloned().unwrap_or_default(),
+                    other => other.to_string(),
+                };
+                let win =
+                    row.to_string().contains("\"Win\"") || row.to_string().contains("\"win\"");
+                *rows
+                    .entry(format!(
+                        "{} {outcome}{}",
+                        row["key"]["class"],
+                        if win { " win" } else { "" }
+                    ))
+                    .or_default() += 1;
+            }
+        }
+        eprintln!("M8G_DIAG rating {rating}: score {score:?}; rows {rows:?}");
+    }
+}
+
+/// **The House's procured licences, by charter** (the zero-PC story): the procurement
+/// ledger's rows for `org` that count (not refunded), each licence once.
+fn procured(world: &M8World, org: OrgId) -> std::collections::BTreeMap<String, usize> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut by_charter = std::collections::BTreeMap::new();
+    for row in world.rows("tacsim.procurement_ledger") {
+        if row["org"] == json!(org.0)
+            && row["phase"] != json!("refunded")
+            && seen.insert(row["licence"].to_string())
+        {
+            *by_charter.entry(row["charter"].to_string()).or_insert(0) += 1;
+        }
+    }
+    by_charter
+}
+
+/// **A line on the player market** (the zero-PC story; doc 17h §3 M8f, P5): GOD files the
+/// certified revision personally (the Roll's `initial_filing`, paid from GOD's own account)
+/// and publishes it at the counter (`@mind/publish <filed> form=sealed`, the market's List).
+/// Procurement scans these listings (`ProcurementListings`), never the House counter's. Returns
+/// the charter.
+fn file_and_publish(
+    world: &mut M8World,
+    (revision, rating): &(mush_roll::Revision, mush_roll::commerce::rating::RatingRef),
+    charter_name: &str,
+) -> String {
+    let existing = economy(&world.rig.tw)
+        .snapshot()
+        .accounts()
+        .find(|a| a.owner == PrincipalId::Object(GOD))
+        .map(|a| a.id);
+    let payer = if let Some(id) = existing {
+        id
+    } else {
+        god(&mut world.rig, "@account/open #1=tacsim.credit");
+        account(&world.rig, &PrincipalId::Object(GOD), None)
+    };
+    let faucet = account(&world.rig, &system("hardware.fixture"), None);
+    god(
+        &mut world.rig,
+        &format!("@econ/mint {}={} 100000", faucet.0, payer.0),
+    );
+    let (shell, _) = world.perform(
+        "roll",
+        mush_core::reserved_shell::RESERVE_ACTION,
+        GOD,
+        json!({}),
+    );
+    let reference = revision.reference();
+    let (filing, _) = world.perform(
+        "roll",
+        "initial_filing",
+        GOD,
+        json!({
+            "shell_request": mush_core::RequestUid::from_bytes(*shell.as_bytes()),
+            "mind": reference.key.mind, "revision": reference.key.number,
+            "revision_digest": reference.digest, "rating_job": rating.job(),
+            "rating_id": rating.id(), "rating_digest": rating.receipt_digest(),
+            "payer": payer.0, "charter_name": charter_name
+        }),
+    );
+    let birth = world
+        .rows("roll_mind_initial_filing")
+        .into_iter()
+        .find(|row| row.get("commit") == Some(&json!(filing)))
+        .expect("the personal filing");
+    let filed = birth
+        .get("filed")
+        .and_then(|filed| filed.as_str()?.parse::<u64>().ok())
+        .expect("its filed revision");
+    let charter = birth["charter"].to_string();
+    let room = world.deployment.venue.room;
+    world
+        .rig
+        .tw
+        .world_mut()
+        .move_to(GOD, room)
+        .expect("GOD at the counter");
+    let out = run(
+        &mut world.rig.tw,
+        GOD,
+        &format!("@mind/publish {filed} form=sealed"),
+    );
+    let mut staged = Vec::new();
+    while let Some(submit) = world.rig.tw.engine_mut().take_authoritative_submit() {
+        staged.push(*submit);
+    }
+    assert_eq!(staged.len(), 1, "the List stages: {out}");
+    crate::excursions::land(&mut world.rig, &staged[0])
+        .unwrap_or_else(|error| panic!("the List lands: {error}"));
+    eprintln!("M8G_STORY published {charter_name}: {out}");
+    charter
+}
+
+/// **The zero-PC story's rated half**: the three named sources certified, then each filed by
+/// GOD personally and published on the player market ([`file_and_publish`]). Returns each
+/// line's selector and charter.
+async fn rate_and_publish(world: &mut M8World) -> Vec<(&'static str, String)> {
+    let houses = world.deployment.houses.clone();
+    let mut published = Vec::new();
+    for (selector, house) in [
+        ("coprates", houses.coprates),
+        ("meridiani", houses.meridiani),
+        ("safe_conduct", houses.tycho),
+    ] {
+        let certified = certify(world, selector, &house.source_name.clone()).await;
+        let charter = file_and_publish(world, &certified, &format!("{} Market", house.source_name));
+        published.push((selector, charter));
+    }
+    published
 }

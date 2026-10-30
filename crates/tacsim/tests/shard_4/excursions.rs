@@ -877,6 +877,12 @@ fn land_keyed(
 /// **Keep a composed act's writes** (doc 17h cut M8g G1): the module writes split into the
 /// store the reboot boots from, the typed post-images kept.
 pub(crate) fn keep_composed(rig: &mut Rig, writes: Vec<mush_core::authoritative::ReplayWrite>) {
+    // Doc 17h cut M8g: the commands' module writes queued since the last act land first, so
+    // the boot store takes every write in the order it was made. Folded only at the reboot,
+    // an older command's rewrite of a ledger chunk (an open journal chunk) overwrote a later
+    // act's seal of it, and the economy refused to boot on the hole (`UnsealedNonTail`).
+    let earlier = rig.tw.take_module_ops();
+    fold_module_ops_into(&mut rig.store, earlier);
     // Doc 17h cut M8g G1: in the combined world an act may allocate an object (the Roll's
     // reserved charter shell); the composed install applied it to the World, which the reboot
     // keeps, so only the module writes are split (the hardware flow driver's `retain_writes`).
