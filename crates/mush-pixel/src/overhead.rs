@@ -45,7 +45,7 @@ use crate::overlay::{
     ground_rgb, outline_rect,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
-use crate::raycast::{Map, SpriteKind};
+use crate::raycast::{Base, Biome, Ground, Map, SpriteKind};
 use crate::scene::{Anchor, Item, Scene, Shape, Transform, Viewport};
 
 /// The sight assumed when the frame names none (`sight_m`), metres: the
@@ -617,6 +617,18 @@ fn overhead_scene(
 /// image's centre, [`OFF_MAP`] off the map. Flat: at under a pixel a cell
 /// relief shading is noise, and the first-person frame's palette has little
 /// room beside the raycaster's closed set.
+fn biome_ground_rgb(biome: Biome, g: Ground) -> Rgb {
+    if biome == Biome::Temperate {
+        return ground_rgb(g);
+    }
+    match g {
+        Ground::Wall => Base::WallLit.rgb_for_biome(biome),
+        Ground::Woods => Base::Woods.rgb_for_biome(biome),
+        Ground::WoodsHeavy => Base::WoodsHeavy.rgb_for_biome(biome),
+        _ => Base::floor(g, false).rgb_for_biome(biome),
+    }
+}
+
 fn sampled_ground(
     map: &Map,
     you: (f64, f64),
@@ -624,6 +636,7 @@ fn sampled_ground(
     px_per_m: f64,
     (w, h): (i64, i64),
 ) -> Frame {
+    let biome = map.biome();
     let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
     let (cols, rows) = (map.width() as i64, map.height() as i64);
     let mut image = Frame::new(w.max(0) as usize, h.max(0) as usize);
@@ -640,7 +653,7 @@ fn sampled_ground(
                 (north / cell_m).floor() as i64,
             );
             let rgb = if (0..cols).contains(&cx) && (0..rows).contains(&cy) {
-                ground_rgb(map.get(cx, cy))
+                biome_ground_rgb(biome, map.get(cx, cy))
             } else {
                 OFF_MAP
             };
@@ -655,6 +668,7 @@ fn sampled_ground(
 /// where it is held (lit from the north-west, in [`SHADES`] steps) and flat
 /// where it is not.
 fn ground_image(map: &Map, terrain: Option<&Terrain>, px_per_m: f64) -> Frame {
+    let biome = map.biome();
     let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
     let px_per_cell = (cell_m * px_per_m).max(0.01);
     let fw = (map.width() as f64 * px_per_cell).ceil().max(1.0) as usize;
@@ -665,7 +679,7 @@ fn ground_image(map: &Map, terrain: Option<&Terrain>, px_per_m: f64) -> Frame {
         let cy = rows - 1 - (py as f64 / px_per_cell) as i64;
         for px in 0..fw {
             let cx = (px as f64 / px_per_cell) as i64;
-            let base = ground_rgb(map.get(cx, cy));
+            let base = biome_ground_rgb(biome, map.get(cx, cy));
             let rgb = match terrain {
                 Some(t) => shade(base, relief(t, cx, cy)),
                 None => base,

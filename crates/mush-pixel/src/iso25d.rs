@@ -56,7 +56,7 @@ use crate::overlay::{
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 #[cfg(feature = "encode")]
 use crate::png;
-use crate::raycast::{Ground, Map, SpriteKind};
+use crate::raycast::{Base, Biome, Ground, Map, SpriteKind};
 
 /// Geometric mipmap frame sizes in pixels (~10 % steps: 1.00, 0.90, 0.81,
 /// 0.73, 0.66, 0.58).
@@ -548,6 +548,19 @@ impl TerrainCanvas {
         let mut ground_frame = Frame::new(canvas_w, canvas_h);
         ground_frame.clear(OFF_MAP_RGB);
         let mut occluder_base_y = vec![0u16; canvas_w * canvas_h];
+        let biome = map.biome();
+        let iso_ground_rgb = |g: Ground| -> Rgb {
+            if biome == Biome::Temperate {
+                ground_rgb(g)
+            } else {
+                match g {
+                    Ground::Wall => Base::WallLit.rgb_for_biome(biome),
+                    Ground::Woods => Base::Woods.rgb_for_biome(biome),
+                    Ground::WoodsHeavy => Base::WoodsHeavy.rgb_for_biome(biome),
+                    _ => Base::floor(g, false).rgb_for_biome(biome),
+                }
+            }
+        };
 
         let half_w = canvas_w as f32 * 0.5;
         let half_h = canvas_h as f32 * 0.5;
@@ -639,7 +652,7 @@ impl TerrainCanvas {
                 let q = ((raw - 0.60) / 0.60 * 7.0).round().clamp(0.0, 7.0);
                 let sun = 0.60 + (q / 7.0) * 0.60;
                 if let Some(slot) = tex_col.get_mut(row_off + gx) {
-                    *slot = scale_rgb(ground_rgb(ground_under), sun);
+                    *slot = scale_rgb(iso_ground_rgb(ground_under), sun);
                 }
             }
         }
@@ -692,8 +705,12 @@ impl TerrainCanvas {
                 if sy > last_sy + 2 {
                     // Steep South-facing cliff/escarpment facing the camera:
                     // shade the vertical cliff span with stratified rock/earth tone.
-                    let cliff_base: Rgb = [64, 72, 54];
-                    let cliff_dark: Rgb = [50, 58, 44];
+                    let (cliff_base, cliff_dark): (Rgb, Rgb) = match biome {
+                        Biome::Temperate => ([64, 72, 54], [50, 58, 44]),
+                        Biome::Mars => ([122, 58, 40], [96, 44, 30]),
+                        Biome::Lunar => ([84, 88, 96], [64, 68, 76]),
+                        Biome::Ice => ([126, 162, 194], [98, 134, 168]),
+                    };
                     for y in last_sy..sy.min(canvas_h) {
                         let col = if (y & 2) == 0 { cliff_base } else { cliff_dark };
                         ground_frame.put(cx, y, col);
@@ -893,10 +910,21 @@ impl TerrainCanvas {
                     let h_px =
                         (((base_h_m + var_h_m) * proj.px_per_m_z).round() as i32).clamp(7, 22);
                     let max_r = (h_px * 3 / 8).clamp(3, 8);
-                    let trunk_h = (h_px / 5).clamp(1, 4);
+                    let is_rock_spire = matches!(biome, Biome::Mars | Biome::Lunar);
+                    let trunk_h = if is_rock_spire {
+                        0
+                    } else {
+                        (h_px / 5).clamp(1, 4)
+                    };
                     let base_u16 = u16::try_from(by.clamp(0, u16::MAX as i32)).unwrap_or(0);
+                    let shadow_rgb: Rgb = match biome {
+                        Biome::Temperate => [32, 52, 28],
+                        Biome::Mars => [84, 40, 28],
+                        Biome::Lunar => [44, 48, 54],
+                        Biome::Ice => [118, 148, 176],
+                    };
 
-                    // 1. Subtle ground shadow ellipse to SE of trunk base (fixed palette colour)
+                    // 1. Subtle ground shadow ellipse to SE of base
                     for sdy in -1..=2i32 {
                         for sdx in 0..=(max_r + 2) {
                             let sx = bx + sdx;
@@ -906,13 +934,16 @@ impl TerrainCanvas {
                                 && sy >= 0
                                 && (sy as usize) < canvas_h
                             {
-                                ground_frame.put(sx as usize, sy as usize, [32, 52, 28]);
+                                ground_frame.put(sx as usize, sy as usize, shadow_rgb);
                             }
                         }
                     }
 
-                    // 2. Trunk
+                    // 2. Trunk (Temperate and Ice biomes)
                     for dy in 0..=trunk_h {
+                        if is_rock_spire {
+                            break;
+                        }
                         for dx in -1..=1i32 {
                             let px = bx + dx;
                             let py = by - dy;
@@ -934,12 +965,17 @@ impl TerrainCanvas {
                         }
                     }
 
-                    // 3. 3-tiered conifer canopy from trunk_h up to h_px
+                    // 3. 3-tiered conifer canopy (Temperate/Ice) or jagged basalt/ejecta spire (Mars/Lunar)
                     let crown_h = (h_px - trunk_h).max(6);
                     for dy in 0..=crown_h {
                         let t = dy as f32 / crown_h as f32;
                         let tier_local = (t * 3.0).fract();
-                        let tier_flare = (1.0 - tier_local * 0.45) * (1.05 - 0.78 * t);
+                        let tier_flare = if is_rock_spire {
+                            let jag = (((dy as u32).wrapping_mul(17) ^ h2) & 3) as f32 * 0.06;
+                            (1.12 - 0.78 * t * t - jag).max(0.20)
+                        } else {
+                            (1.0 - tier_local * 0.45) * (1.05 - 0.78 * t)
+                        };
                         let r_row = ((max_r as f32) * tier_flare).round() as i32;
                         let py = by - trunk_h - dy;
                         if py < 0 || (py as usize) >= canvas_h {
@@ -959,14 +995,47 @@ impl TerrainCanvas {
                             }
                             let nx = (dx as f32) / (r_row.max(1) as f32);
                             let light = -nx * 0.55 + (t - 0.4) * 0.35 + (tier_local - 0.3) * 0.25;
-                            let col: Rgb = if tier_local < 0.16 && t < 0.85 {
-                                [24, 50, 24]
-                            } else if light > 0.22 {
-                                [72, 126, 54]
-                            } else if light > -0.08 {
-                                [50, 96, 40]
-                            } else {
-                                [34, 68, 30]
+                            let col: Rgb = match biome {
+                                Biome::Temperate => {
+                                    if tier_local < 0.16 && t < 0.85 {
+                                        [24, 50, 24]
+                                    } else if light > 0.22 {
+                                        [72, 126, 54]
+                                    } else if light > -0.08 {
+                                        [50, 96, 40]
+                                    } else {
+                                        [34, 68, 30]
+                                    }
+                                }
+                                Biome::Ice => {
+                                    if tier_local < 0.16 && t < 0.85 {
+                                        [34, 62, 74]
+                                    } else if light > 0.24 {
+                                        [196, 224, 242]
+                                    } else if light > -0.06 {
+                                        [88, 134, 146]
+                                    } else {
+                                        [52, 88, 102]
+                                    }
+                                }
+                                Biome::Mars => {
+                                    if light > 0.22 {
+                                        [164, 92, 66]
+                                    } else if light > -0.08 {
+                                        [126, 68, 48]
+                                    } else {
+                                        [88, 46, 34]
+                                    }
+                                }
+                                Biome::Lunar => {
+                                    if light > 0.22 {
+                                        [158, 162, 170]
+                                    } else if light > -0.08 {
+                                        [116, 120, 128]
+                                    } else {
+                                        [78, 82, 90]
+                                    }
+                                }
                             };
                             let ux = px as usize;
                             ground_frame.put(ux, uy, col);
@@ -988,7 +1057,7 @@ impl TerrainCanvas {
         let max_y_cm = origin_y_cm + ((canvas_h as f32 * inv_px_y * 60.0) as i64);
         let gx0 = (min_x_cm / grid_step_cm) * grid_step_cm;
         let gy0 = (min_y_cm / grid_step_cm) * grid_step_cm;
-        let grid_col = ground_rgb(Ground::Road);
+        let grid_col = iso_ground_rgb(Ground::Road);
         let mut gx = gx0;
         while gx <= max_x_cm {
             let mut gy = gy0;
@@ -3203,5 +3272,117 @@ mod tests {
         let f_50 = pic.render_frame(&frame, 0, 0, 640, 480);
         assert_ne!(f_100.hash(), f_50.hash());
         assert_ne!(f_150.hash(), f_50.hash());
+    }
+
+    #[test]
+    fn multi_biome_and_procedural_relief_render_across_all_three_views() {
+        use crate::cockpit::CockpitPicture;
+        use crate::overhead::OverheadPicture;
+        use std::collections::HashMap;
+
+        struct MapFeeds(HashMap<String, Value>);
+        impl Feeds for MapFeeds {
+            fn feed(&self, name: &str) -> Option<&Value> {
+                self.0.get(name)
+            }
+        }
+
+        let cockpit = json!({
+            "seated": true,
+            "t_ms": 1000,
+            "team": "blue",
+            "unit_type": "tacsim.unit.biped_mk1",
+            "x_cm": 16_000,
+            "y_cm": 16_000,
+            "z_cm": 0,
+            "heading_mdeg": 45_000,
+            "speed_cms": 800,
+            "contacts": [
+                {
+                    "id": "c1",
+                    "designator": "RA",
+                    "class": "red",
+                    "health": "intact",
+                    "unit_type": "tacsim.unit.line_tank",
+                    "bearing_deg": 45.0,
+                    "range_m": 45.0,
+                    "facing": "front",
+                    "moving": true
+                }
+            ]
+        });
+
+        let mut fp_hashes = Vec::new();
+        let mut ov_hashes = Vec::new();
+        let mut iso_hashes = Vec::new();
+
+        for (match_id, biome) in [(1, "temperate"), (2, "mars"), (3, "lunar"), (4, "ice")] {
+            let map_json = json!({
+                "match": match_id,
+                "surface": format!("sector_{biome}"),
+                "biome": biome,
+                "procedural_relief": true,
+                "width": 32,
+                "height": 32,
+                "cell_cm": 1000,
+                "legend": [
+                    ["\"", "grass"],
+                    ["~", "water"],
+                    ["#", "wall"],
+                    ["=", "road"],
+                    ["t", "woods_light"],
+                    ["T", "woods_heavy"]
+                ],
+                "rows": (0..32).map(|y| {
+                    if y == 16 {
+                        json!([["=", 32]])
+                    } else if y == 20 {
+                        json!([["\"", 10], ["~", 4], ["t", 8], ["#", 6], ["T", 4]])
+                    } else {
+                        json!([["\"", 32]])
+                    }
+                }).collect::<Vec<_>>()
+            });
+
+            let terrain = terrain_from_feed(&map_json).expect("procedural biome terrain");
+            assert!(terrain.is_baked());
+            let has_non_zero = (0..32)
+                .flat_map(|y| (0..32).map(move |x| (x, y)))
+                .any(|(x, y)| terrain.elev_cm(x, y) != 0);
+            assert!(has_non_zero, "procedural relief synthesized for {biome}");
+
+            let mut feeds = MapFeeds(HashMap::new());
+            feeds.0.insert(COCKPIT_FEED.to_string(), cockpit.clone());
+            feeds.0.insert(ARENA_MAP_FEED.to_string(), map_json);
+            let look = Look::default();
+
+            let mut fp_pic = CockpitPicture::new();
+            let mut fp_frame = Frame::new(320, 240);
+            assert!(fp_pic.draw(&mut fp_frame, &feeds, &look));
+            assert!(
+                fp_frame.count_colours(256) <= 256,
+                "{biome} first-person stays within 256-colour PNG palette budget"
+            );
+            fp_hashes.push(fp_frame.hash());
+
+            let mut ov_pic = OverheadPicture::new();
+            let mut ov_frame = Frame::new(320, 240);
+            assert!(ov_pic.draw(&mut ov_frame, &feeds, &look));
+            ov_hashes.push(ov_frame.hash());
+
+            let mut iso_pic = Iso25DPicture::new();
+            let mut iso_frame = Frame::new(320, 240);
+            assert!(iso_pic.draw(&mut iso_frame, &feeds, &look));
+            iso_hashes.push(iso_frame.hash());
+        }
+
+        // Every biome produces distinct First-Person, Overhead, and 2.5D frames.
+        for i in 0..fp_hashes.len() {
+            for j in (i + 1)..fp_hashes.len() {
+                assert_ne!(fp_hashes.get(i), fp_hashes.get(j));
+                assert_ne!(ov_hashes.get(i), ov_hashes.get(j));
+                assert_ne!(iso_hashes.get(i), iso_hashes.get(j));
+            }
+        }
     }
 }
