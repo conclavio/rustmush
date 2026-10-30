@@ -1,5 +1,16 @@
 # 22. The unit kit — what a new unit defines
 
+**Draft 0.6 — 2026-10-30, the review folded.** The author of PR #178 reviewed Draft 0.5 on PR
+#184 with four points, all taken (the owner, the same day: *"fold all four points into doc 22 as
+Draft 0.6 … with your refinements"*): the `iso` chain reaches 24 px in eight sizes and both
+pictures pick a size from the projected height, which also mends two live defects — the 2.5D reads
+neither `size_cm` nor its zoom when it picks a mip (§3.3, §5); the `fp` bake pitches 3°, not 8°,
+because the heightfield's camera is level, and the heightfield draws from the chain whose pitch is
+nearer the line of sight — **Q-22-3 ruled** (§3.3, §5); the hull-down clip is already built, the
+heightfield's per-pixel depth test, and becomes a check against the sim's ray (§5, §6); and the
+pack gets a size rule with a measured budget, rule 7 of D-22-10 (§3.3). Two looks, `drone` and
+`wheeled_scout`, carry no `size_cm` in the tree; U.6 completes them.
+
 **Draft 0.5 — 2026-10-30, the bake matrix (D-22-10) and cut U.6.** The week's pictures — the
 heightfield's first person (doc 21 §8), PR #154's fixed-angle 2.5D (merged `4e2f52a9`) and the
 Unity extractor's trial — showed that D-22-9's one sheet is not what a unit needs: the two pictures
@@ -216,6 +227,18 @@ tree does not have it yet.
   frame is 11 x 4 px, U.5's whole lesson — and two of the shipped looks are synthesised. The
   owner's observation of 2026-10-29: the mips are less crisp than U.5's render-large-then-reduce
   sheets, because they were baked at target size.
+- The heightfield's camera is level — its horizon is the frame's middle row; there is no
+  down-look — so the only pitch to a contact is its line's own elevation angle, near 0° on level
+  ground at any range; an 8° bake shows a roof on every contact (Draft 0.6, the review).
+- The 2.5D picks a mip from the contact's screen row and the viewport width alone
+  (`pick_mip_level`) and blits it at its native size: `size_cm` and the camera's zoom
+  (`set_zoom_permille`, 0.5×–2×) play no part, so a drone draws at a heavy tank's size and at
+  0.5× the ground halves while every unit keeps its pixels. The six sizes' ~10 % steps were a
+  depth cue for a parallel projection, not a scale (Draft 0.6, the review).
+- The heightfield already clips a contact against the ground: its march writes a per-pixel depth,
+  trees and structures write into it, and the sprite blit skips every pixel whose terrain is
+  nearer (`draw_mip_sprite_fp`), so a tank behind a crest shows only the rows above it. Nothing
+  holds that to the sim's ray yet (Draft 0.6, the review).
 - `scripts/unit-bake/`: `Bake.cs` renders orthographic at 384 px at one pitch (`Elev` 8°), eight
   facings, six poses, a colour-ID pass and a normal pass, anchors and muzzles in `meta.json`, and
   the PoC's voxel grids; `reduce.py` reduces to the six materials at 48 and 96.
@@ -224,10 +247,10 @@ tree does not have it yet.
 
 | Axis | Values | Why |
 |---|---|---|
-| View | `fp` — a 1.5 m eye, pitch 8° as `Bake.cs` has it (Q-22-3); `iso` — the 2.5D's fixed 28°; `top` reserved (Q-22-2) | the two pictures look from different heights; one bake cannot serve both |
+| View | `fp` — a 1.5 m eye, pitch **3°** (Q-22-3, ruled in Draft 0.6; `Bake.cs` has 8° today); `iso` — the 2.5D's fixed 28°; `top` reserved (Q-22-2) | the two pictures look from different heights; one bake cannot serve both; a contact draws from the chain whose pitch is nearer its line of sight (§5) |
 | Facing | eight at 45°, each its own art (D-22-9); Q-22-1 on sixteen for `iso` | |
 | Pose | `still`, `moving` × 4, `wreck` (D-22-9) | |
-| Size | `fp`: 96, 64, 48, 32, 24, 16, 12, 8 px; `iso`: 96, 86, 78, 70, 64, 56 | a contact draws from the size nearest above its on-screen height, never resampled from a smaller one; `fp`'s chain reaches 1 km in the 640 frame (Q-22-4 on the floor) |
+| Size | `fp`: 96, 64, 48, 32, 24, 16, 12, 8 px; `iso`: 96, 80, 64, 56, 48, 40, 32, 24 px (Draft 0.6: eight sizes, every step under 25 %; the 2.5D's 96, 86, 78, 70, 64, 56 retired with its pick) | a contact draws from the size nearest above its projected height — from `size_cm` at its range in the heightfield, through the projection and the zoom in the 2.5D (§5) — never resampled from a smaller one; `fp`'s chain reaches 1 km in the 640 frame (Q-22-4 on the floor); `iso`'s reaches a drone at 0.5× |
 | Material | the six materials through the colour-ID pass, team slots recoloured at draw (D-22-3, D-22-7); at most 16 colours a sheet | the frame's 256 colours by construction |
 | Marks | anchor, height (the 2.5D's depth sort, the lock box) and a muzzle a weapon — per view, per facing, per size | the pitch moves them |
 
@@ -244,15 +267,28 @@ The rules:
 3. **The look JSON stays the player's source** (D-22-7): one hand-drawable 96 px text sheet,
    `size_cm`, anchor, muzzles. The baked chains are a binary pack generated from the bake, keyed
    by **look id** — named entries and a version, replacing `M25D`'s positional header — and a
-   chain must agree with its look's `size_cm` and anchor. A look with no chain draws its text sheet
-   nearest-sampled in every picture, as today: the path a player-designed unit takes.
+   chain must agree with its look's `size_cm` and anchor (the `drone` and `wheeled_scout` looks
+   carry no `size_cm` in the tree today; U.6 completes them). A look with no chain draws its text
+   sheet nearest-sampled in every picture, as today: the path a player-designed unit takes.
 4. **The roster rule.** Every look under `looks/` (the biped, the tracked tank, the wheeled scout,
    the drone, `unknown`) has both chains at every size; `synthesize_3d_mip` goes, and the
    sheet-to-chain fallback stays for unshipped looks only. `heavy_mk1` has a 2.5D slot and no look
    (Q-22-5).
-5. **Which picture reads which chain** (§5): the raycaster and the heightfield the `fp` chain; the
-   2.5D the `iso` chain; the web's canvas the `fp` chain at its own scale.
+5. **Which picture reads which chain** (§5): the raycaster the `fp` chain; the heightfield the
+   chain whose pitch is nearer the contact's line of sight — `fp` within about 15° of depression,
+   `iso` beyond it (Draft 0.6); the 2.5D the `iso` chain; the web's canvas the `fp` chain at its
+   own scale.
 6. The voxel grids leave the bake: D-22-9 chose sprites.
+7. **The pack's size** (Draft 0.6, the review's fourth point). A frame is stored as its tight
+   bounding box, run-length coded with a material byte and a varint run — `M25D`'s runs are one
+   byte, three material bits and a five-bit length capped at 32, and the transparent field around
+   a sprite is what a chain pays for. The bake prints the pack's size and the matrix check (§6)
+   pins it against a budget: **512 KiB embedded**. The figures: today's pack is 410 KB for two
+   models at one view, eight times under its raw bytes; the full matrix — six looks, both chains —
+   is about 13 MB raw and about 1.6 MB at today's packing, so the budget is a measurement U.6
+   makes, not a promise. Past it, the native binaries keep embedding the pack and the web fetches
+   it as a separate cached asset instead of carrying it inside `mush-pixel-wasm`, which drops
+   flate2 and so has no free inflate.
 
 **Questions, with the lead's defaults until the owner rules.**
 
@@ -260,8 +296,9 @@ The rules:
   and sixteen doubles every `iso` sheet.
 - **Q-22-2** A `top` view for the overhead? Default no: the overhead keeps its scene markers (doc
   21 §7.4); an icon is a later cut if the overhead ever zooms past a few pixels a unit.
-- **Q-22-3** The `fp` pitch. Default 8°, `Bake.cs` as it is and the heightfield's slight
-  down-look; 0° is the alternative if the level raycaster is the view that matters.
+- **Q-22-3** The `fp` pitch. **Ruled 2026-10-30 (Draft 0.6): 3°.** The heightfield's camera is
+  level, so the 8° default showed a roof on every contact on level ground; 0° would lose the roof
+  and with it the body's solidity; 3° keeps a sliver. `Bake.cs`'s `Elev` moves with it.
 - **Q-22-4** The `fp` floor. Default 8 px; under it the bracket alone, which is the bracket rule.
 - **Q-22-5** `heavy_mk1`. Default: a look and a bake with the rest, so the 2.5D slot stops being
   a synthesised shape.
@@ -300,6 +337,19 @@ Neither is a frame version: fields added for the person in the seat are not one 
   from the baked chains — today from `looks/iso25d_mips.bin`, the one oblique bake, at both
   pitches, which is the defect U.6 fixes; the raycaster from the look's text sheet. A look with no
   chain draws its sheet nearest-sampled in every picture.
+- **The size pick, both pictures** (Draft 0.6): a contact draws from the size nearest above its
+  projected height — the heightfield's from `size_cm` at its range, the 2.5D's from `size_cm`
+  through the projection and the zoom, the row's depth cue a factor on that height rather than a
+  fixed step — so a drone and a heavy on one row stand in the ratio of their heights, and 0.5×
+  zoom halves a unit as it halves the ground.
+- **The chain pick** (Draft 0.6): the heightfield draws a contact from the chain whose pitch is
+  nearer the line to it — `fp` (3°) within about 15° of depression, `iso` (28°) beyond it — so
+  looking down into a bowl from a hill shows the view the 2.5D bakes. The marks come with the
+  chain.
+- **Hull-down, as built**: the heightfield's ground march writes a per-pixel depth, trees and
+  structures write into it, and the sprite blit skips every pixel whose terrain is nearer, so a
+  contact behind a crest shows only the rows above it — the picture's half of doc 30 §5's
+  hull-down ground. §6 holds it to the sim's ray.
 
 ## 6. Checks — D-22-6
 
@@ -314,7 +364,13 @@ Neither is a frame version: fields added for the person in the seat are not one 
 - **The matrix check** (D-22-10, U.6): the baked pack's header names each look and its
   provenance; every shipped look has both chains at every size; every frame's anchor, height and
   muzzles lie inside it; a chain's `size_cm` and anchor agree with its look's; the pack's digest
-  is pinned, and regenerated on purpose.
+  is pinned, and regenerated on purpose; the pack's size is under rule 7's budget, or the web's
+  fetch path is on.
+- **The hull-down check** (Draft 0.6): on a fixture of lips — a 2 m rise at 100 m, 200 m and
+  500 m before a 2.5 m-tall contact — the sim's ray to the contact (`horizon.rs`) and the
+  heightfield picture agree: seen draws at least one row of the contact above the crest, unseen
+  draws none. The 2.5D's check: a drone and a heavy on one row draw in the ratio of their
+  heights, and 0.5× zoom halves a unit as it halves the ground.
 
 ## 7. Player-designed units — D-22-7
 
@@ -334,7 +390,7 @@ player can write.
 | **U.3** | the sprite sheets: facings from `aspect`, the moving cycle, team slots, scale from `size_cm`, the shadow; placeholder art for the tank and the biped | a walker and a tank read differently at 300 m, turn their faces as they turn, and roll or walk while moving |
 | U.4 | the web client's doll and sprites from the same looks | — |
 | **U.5** | the art: the tank, the biped and `unknown` redrawn for what the picture makes of a sheet at 100 m, 300 m and 1 km; the shipped sheets held to standing on their anchor, muzzles on the weapon, a cycle that moves, a wreck that is not the still; `examples/sheets.rs` | a tank reads as a tank and a biped as a biped at 300 m; the PNG importer deferred |
-| **U.6** | the bake matrix (D-22-10): `Bake.cs` with both views, the reducer emitting the `fp` and `iso` chains from the large render, the named-entry pack format with provenance, `synthesize_3d_mip` deleted, every shipped look baked (`heavy_mk1` per Q-22-5), the look check extended to the matrix, the pack's digest pinned; the line-ups at 100 m, 300 m and 1 km under [images/22-u6/](images/22-u6/) as U.5 did | both pictures draw every shipped unit from its own view's chain at every range; a tank at 300 m in the first-person frame reads as a tank from the 12 px size, not from a resampled 56; no synthesised sprite in a shipped build |
+| **U.6** | the bake matrix (D-22-10): `Bake.cs` with both views (`fp` at 3°), the reducer emitting the `fp` and `iso` chains from the large render, the named-entry pack format with provenance and rule 7's tight-box RLE, `synthesize_3d_mip` deleted, every shipped look baked (`heavy_mk1` per Q-22-5), `size_cm` on the `drone` and `wheeled_scout` looks, the 2.5D's projected-height pick (`pick_mip_level` goes) and the heightfield's chain-by-elevation pick, the look check extended to the matrix and the hull-down fixture, the pack's digest and size pinned; the line-ups at 100 m, 300 m and 1 km under [images/22-u6/](images/22-u6/) as U.5 did | both pictures draw every shipped unit from its own view's chain at every range; a tank at 300 m in the first-person frame reads as a tank from the 12 px size, not from a resampled 56; a drone and a heavy on one 2.5D row stand in the ratio of their heights and 0.5× halves both; a contact behind a crest shows rows above it exactly when the sim's ray sees it; the pack under 512 KiB embedded, or fetched by the web; no synthesised sprite in a shipped build |
 
 ## 9. Decisions
 
@@ -366,4 +422,8 @@ player can write.
   matrix** — two views (`fp`, `iso`) × eight facings × six poses × a size chain each — produced by
   one script from one named asset, every size reduced from the large render, keyed by look id in a
   named-entry pack with provenance; the look's text sheet stays the player's source and the
-  fallback. Cut U.6 builds it; Q-22-1..5 (§3.3) take the lead's defaults until ruled.
+  fallback. Cut U.6 builds it; Q-22-1, -2, -4 and -5 (§3.3) take the lead's defaults until ruled.
+  Draft 0.6 (2026-10-30, the PR #184 review folded): the `iso` chain reaches 24 px and both
+  pictures pick a size from the projected height; the `fp` bake pitches 3° and the heightfield
+  picks the chain nearer the line of sight (Q-22-3 ruled); the hull-down clip, already built, is
+  held to the sim's ray; the pack has a size rule and a measured budget (rule 7).
