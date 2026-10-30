@@ -95,6 +95,48 @@
   /** The held turn: `-1` left, `0` none, `1` right. */
   let turning = $state<-1 | 0 | 1>(0);
 
+  const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
+  const DEFAULT_PICTURE_W = 520;
+  const MIN_PICTURE_W = 280;
+  const MAX_PICTURE_W = 1120;
+
+  function loadPictureWidth(): number {
+    const raw = Number(storageGet(PICTURE_WIDTH_KEY));
+    if (Number.isFinite(raw) && raw >= MIN_PICTURE_W && raw <= MAX_PICTURE_W) {
+      return Math.round(raw);
+    }
+    return DEFAULT_PICTURE_W;
+  }
+
+  let frameWidth = $state(loadPictureWidth());
+  let dragging = $state(false);
+  let dragStartX = 0;
+  let dragStartW = DEFAULT_PICTURE_W;
+
+  function onResizeDown(ev: PointerEvent): void {
+    ev.preventDefault();
+    ev.stopPropagation();
+    dragging = true;
+    dragStartX = ev.clientX;
+    dragStartW = frameWidth;
+    (ev.currentTarget as HTMLElement | null)?.setPointerCapture?.(ev.pointerId);
+  }
+
+  function onResizeMove(ev: PointerEvent): void {
+    if (!dragging) return;
+    const next = Math.round(
+      Math.min(MAX_PICTURE_W, Math.max(MIN_PICTURE_W, dragStartW + (ev.clientX - dragStartX))),
+    );
+    frameWidth = next;
+  }
+
+  function onResizeUp(ev: PointerEvent): void {
+    if (!dragging) return;
+    dragging = false;
+    (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
+    storageSet(PICTURE_WIDTH_KEY, String(frameWidth));
+  }
+
   /** Why the picture could not be drawn here, once it could not. */
   let localFailed = $state<string | null>(null);
   let local = $state.raw<LocalPicture | null>(null);
@@ -397,7 +439,11 @@
   }
 </script>
 
-<section class="picturebox" aria-label="picture">
+<section
+  class="picturebox"
+  aria-label="picture"
+  style={wanted ? `width: min(100%, ${frameWidth}px)` : undefined}
+>
   <header>
     <strong>picture</strong>
     <span class="grow"></span>
@@ -424,7 +470,7 @@
   {#if wanted}
     <!-- An application region: it takes keys while focused. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-      <div
+    <div
       class="frame"
       tabindex="0"
       role="application"
@@ -443,12 +489,26 @@
           {localFailed !== null ? "Could not draw the picture." : "Waiting for the first picture…"}
         </p>
       {/if}
+      <div
+        class="resizer"
+        class:dragging
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="resize picture"
+        title="Drag to resize picture"
+        onpointerdown={onResizeDown}
+        onpointermove={onResizeMove}
+        onpointerup={onResizeUp}
+        onpointercancel={onResizeUp}
+      ></div>
     </div>
   {/if}
 </section>
 
 <style>
   .picturebox {
+    flex: 0 0 auto;
+    max-width: 100%;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg-panel);
@@ -459,9 +519,9 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.4rem;
     font-family: var(--font-mono);
-    font-size: 0.85rem;
+    font-size: 0.82rem;
   }
 
   .grow {
@@ -475,7 +535,9 @@
   /* The legend is long (doc 21 cut G.12c): it wraps under the readouts on a
      narrow window rather than pushing the buttons off it. */
   .legend {
-    font-size: 0.8rem;
+    font-size: 0.75rem;
+    width: 100%;
+    order: 10;
   }
 
   .readout {
@@ -502,8 +564,8 @@
 
   .frame {
     position: relative;
-    margin-top: 0.4rem;
-    max-width: 960px;
+    margin-top: 0.35rem;
+    width: 100%;
     outline: none;
   }
 
@@ -518,6 +580,36 @@
     aspect-ratio: 4 / 3;
     image-rendering: pixelated;
     background: var(--bg);
+  }
+
+  .resizer {
+    position: absolute;
+    top: 0;
+    right: -4px;
+    bottom: 0;
+    width: 10px;
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .resizer::after {
+    content: "";
+    position: absolute;
+    right: 3px;
+    bottom: 6px;
+    width: 4px;
+    height: 24px;
+    border-right: 2px solid var(--fg-muted);
+    border-left: 2px solid var(--fg-muted);
+    opacity: 0.45;
+    transition: opacity 0.15s ease;
+  }
+
+  .resizer:hover::after,
+  .resizer.dragging::after {
+    opacity: 1;
+    border-color: var(--accent, #6aa0ff);
   }
 
   .waiting {

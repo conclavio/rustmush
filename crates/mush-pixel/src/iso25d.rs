@@ -453,9 +453,9 @@ impl IsoProj {
     fn for_viewport(vp_w: usize) -> Self {
         let s = (vp_w as f32 / 640.0).sqrt().clamp(0.7, 1.45);
         Self {
-            px_per_m_x: 2.2 * s,
-            px_per_m_y: 1.45 * s,
-            px_per_m_z: 2.2 * s,
+            px_per_m_x: 1.15 * s,
+            px_per_m_y: 0.78 * s,
+            px_per_m_z: 1.25 * s,
         }
     }
 
@@ -778,9 +778,9 @@ impl TerrainCanvas {
                     let base_h_m = if g == Ground::WoodsHeavy { 8.5 } else { 7.0 };
                     let var_h_m = ((h2 & 0x3F) as f32 / 63.0) * 3.0;
                     let h_px =
-                        (((base_h_m + var_h_m) * proj.px_per_m_z).round() as i32).clamp(10, 32);
-                    let max_r = (h_px * 3 / 8).clamp(4, 11);
-                    let trunk_h = (h_px / 5).clamp(2, 5);
+                        (((base_h_m + var_h_m) * proj.px_per_m_z).round() as i32).clamp(7, 22);
+                    let max_r = (h_px * 3 / 8).clamp(3, 8);
+                    let trunk_h = (h_px / 5).clamp(1, 4);
                     let base_u16 = u16::try_from(by.clamp(0, u16::MAX as i32)).unwrap_or(0);
 
                     // 1. Subtle ground shadow ellipse to SE of trunk base (fixed palette colour)
@@ -1010,13 +1010,13 @@ fn heading_to_facing_25d(heading_mdeg: u32) -> Facing {
 /// viewport width `vp_w`.
 fn pick_mip_level(screen_y: i32, vp_w: usize, vp_h: usize) -> u8 {
     let y_clamped = screen_y.clamp(0, vp_h as i32) as usize;
-    let depth_step = ((vp_h.saturating_sub(y_clamped)) * 4) / vp_h.max(1);
+    let depth_step = ((vp_h.saturating_sub(y_clamped)) * 3) / vp_h.max(1);
     let res_bias = if vp_w >= 1080 {
-        0
-    } else if vp_w >= 800 {
-        1
-    } else {
         2
+    } else if vp_w >= 800 {
+        3
+    } else {
+        3
     };
     u8::try_from((depth_step + res_bias).min(5)).unwrap_or(5)
 }
@@ -1451,8 +1451,8 @@ impl Iso25DPicture {
         let proj = IsoProj::for_viewport(vp_w);
 
         let vectors = [
-            (hull_mdeg, 13.0f32, [90u8, 215, 115, 220]),
-            (look_mdeg, 17.0f32, [248u8, 216, 72, 235]),
+            (hull_mdeg, 24.0f32, [90u8, 215, 115, 220]),
+            (look_mdeg, 32.0f32, [248u8, 216, 72, 235]),
         ];
         for &(mdeg, len_m, _col) in &vectors {
             let rad = ((mdeg as f32) * 0.001).to_radians();
@@ -2072,8 +2072,8 @@ impl Iso25DPicture {
         let vcy = (height / 2) as i32;
         let proj = IsoProj::for_viewport(width);
         let vectors = [
-            (hull_mdeg, 13.0f32, [90u8, 215, 115]),
-            (look_mdeg, 17.0f32, [248u8, 216, 72]),
+            (hull_mdeg, 24.0f32, [90u8, 215, 115]),
+            (look_mdeg, 32.0f32, [248u8, 216, 72]),
         ];
         for &(mdeg, len_m, _col) in &vectors {
             let rad = ((mdeg as f32) * 0.001).to_radians();
