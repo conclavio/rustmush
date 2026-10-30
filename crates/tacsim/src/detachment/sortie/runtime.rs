@@ -266,7 +266,12 @@ pub(crate) fn register(
     )?;
     reg.revision_validator(
         RevisionKind::new(CanonicalId::new("detachment_unreserved_unit").map_err(bad)?),
-        Availability(shared),
+        Availability(Arc::clone(&shared)),
+    )?;
+    super::surface::register(
+        reg,
+        shared,
+        actions.get(crate::surface::act::SURFACE_ACT_ACTION),
     )?;
     reg.state(Pending::default());
     reg.state(handles);

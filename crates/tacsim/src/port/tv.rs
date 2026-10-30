@@ -2283,6 +2283,15 @@ fn select_word(
     named: Option<u8>,
     word: &str,
 ) -> Result<crate::surface::act::RigAt, String> {
+    if let Some(physical) = crate::detachment::sortie::surface::rig(ctx) {
+        return select_among(
+            ctx.w,
+            ctx.actor,
+            vec![physical],
+            named,
+            &WHICH_RIG_ACT.replace("{act}", word),
+        );
+    }
     let w: &World = ctx.w;
     if crate::surface::act::operator_rigs(w, ctx.actor).is_empty() {
         status_lines(ctx, named, &mut Vec::new())?;
@@ -2300,6 +2309,9 @@ fn select_plan_word(
     named: Option<u8>,
     word: &str,
 ) -> Result<crate::surface::act::RigAt, String> {
+    if crate::detachment::sortie::surface::rig(ctx).is_some() {
+        return select_word(ctx, named, word);
+    }
     let w: &World = ctx.w;
     if !crate::surface::act::operator_rigs(w, ctx.actor).is_empty() {
         return select_word(ctx, named, word);

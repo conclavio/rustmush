@@ -659,6 +659,8 @@ pub(super) fn plan_fixed(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FixedRig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) crew: Option<Box<crate::detachment::sortie::SurfaceCrew>>,
     pub(super) slot: u8,
     pub(super) hull: ObjId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -692,6 +694,8 @@ pub(super) enum Facts {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DoneRig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) crew: Option<Box<crate::detachment::sortie::SurfaceCrew>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) battery_id: Option<CanonicalId>,
     pub(super) facts: Facts,

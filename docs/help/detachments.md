@@ -183,6 +183,17 @@ epochs unresolved; it does not recall them. Returned units may launch again.
 Assigned operators can use `<organizer>:<draft>:<activation revision>` to identify
 their operation when recovering a unit or reading its history.
 
+After a mining deployment, the physical operator of a leased stock rig can use
+its individual `+tv/<n> drive`, `scan`, `sound`, `mine`, `recover`, `dump` and
+`unload` controls. They must remain at the rig's real console with control and
+permission to operate it. A hired mining operator uses their own readings and
+the employer's mining licence and claim rights; field leadership supplies
+neither. A loaded recovery unloads into the carrier after the physical return
+is confirmed. Launch the next flight with `+sortie/launch` before starting more
+field work. Field crews use individual orders rather than the carrier's
+multi-trip `+tv/<n> plan` controls.
+An idle field crew waits for orders rather than recalling the unit automatically.
+
 OOC practice continues to use `+sortie/practice` and `+sortie/roster`, described
 in [cockpit help](cockpit.md).
 

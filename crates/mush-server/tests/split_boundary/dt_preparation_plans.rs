@@ -26,6 +26,9 @@ struct Rig {
 }
 
 async fn fixture(store: &InMemoryStore) -> TestResult<Rig> {
+    fixture_keyed(store, false).await
+}
+async fn fixture_keyed(store: &InMemoryStore, geology: bool) -> TestResult<Rig> {
     let mut config = mush_config::config::Config::default();
     config.tacsim.enabled = true;
     let llm = Arc::new(mush_llm::LlmService::from_config(
@@ -49,6 +52,12 @@ async fn fixture(store: &InMemoryStore) -> TestResult<Rig> {
     world.set_now(100);
     let mut engine =
         Engine::with_modules(world, mush_server::world_task::base_registry(), modules)?;
+    if geology {
+        tacsim::surface::install_geology(
+            &mut engine.world,
+            mush_core::GeologyBoot::Key(mush_core::GeologySecret::new(1, [0x31; 32])?),
+        );
+    }
     mush_server::modules::boot_modules(&mut engine, store).await?;
     engine.world.set_now(100);
     engine.set_offer_keys(OfferKeyRing::new(OfferSecret::new(1, [0x42; 32])?, [])?);
@@ -77,6 +86,77 @@ fn plan(rig: &Rig) -> Value {
     json!({"carrier":rig.carrier.0,"slots":[{"slot":1,"unit":rig.unit.0,
         "controller":{"kind":"player","character":rig.invitee.0},"role":"scout","mind":null}],
         "npc_commander":null,"financial_terms":null})
+}
+
+#[tokio::test]
+async fn stock_surface_rigs_have_real_unoccupied_helm_consoles_across_restart() -> TestResult {
+    let store = InMemoryStore::new();
+    let rig = fixture(&store).await?;
+    let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("programme port")?;
+    let rigs = port
+        .map
+        .vehicles
+        .as_ref()
+        .ok_or("actual stock rigs")?
+        .rigs
+        .clone();
+    assert!(!rigs.is_empty());
+    let pilot = mush_sim::StationId::new("pilot").ok_or("station")?;
+    let helm = mush_core::ChannelId::new("helm").ok_or("channel")?;
+    let spatial = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial")?;
+    let mut generations = Vec::new();
+    for row in &rigs {
+        let unit = ObjId(row.tv);
+        let cab = ObjId(
+            *row.rooms
+                .get(&mush_core::CanonicalId::new("cab")?)
+                .ok_or("authored cab")?,
+        );
+        let station = spatial
+            .stations
+            .get(&unit)
+            .and_then(|s| s.stations.get(&pilot))
+            .ok_or("authored physical station")?;
+        assert_eq!(station.space, Some(cab));
+        assert!(station.channels.contains(&helm));
+        assert!(
+            matches!(spatial.spaces.get(&cab).map(|s|&s.anchor),Some(mush_sim::SpaceAnchor::MovingObject{host}) if *host==unit)
+        );
+        assert!(
+            spatial
+                .assignments
+                .get(&unit)
+                .is_none_or(|a| a.seats.is_empty()),
+            "authoring the station never assigns an operator"
+        );
+        generations.push((unit, spatial.control_generation(unit)));
+    }
+    drop(rig);
+    let restarted = fixture(&store).await?;
+    let spatial = restarted
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("restored spatial")?;
+    for (unit, generation) in generations {
+        assert_eq!(
+            spatial.control_generation(unit),
+            generation,
+            "reloading authored consoles must not churn control generations"
+        );
+        assert!(
+            spatial
+                .stations
+                .get(&unit)
+                .and_then(|s| s.stations.get(&pilot))
+                .is_some()
+        );
+    }
+    Ok(())
 }
 
 fn book(world: &TestWorld, owner: ObjId) -> TestResult<PlanningBook> {
@@ -920,7 +1000,7 @@ async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore, commander: bo
         } else {
             NpcMissionScope::SubordinateOperator
         },
-        duties: std::collections::BTreeSet::from([CrewDuty::Combat]),
+        duties: std::collections::BTreeSet::from([CrewDuty::Combat, CrewDuty::Mining]),
     };
     rig.world.world_mut().set_attr(
         npc,
@@ -936,6 +1016,718 @@ async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore, commander: bo
     )
     .await?;
     rig.invitee = npc;
+    Ok(())
+}
+
+async fn mining_crew_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
+    let mut rig = fixture_keyed(store, true).await?;
+    ordinary(&mut rig.world, GOD, "@tacsim/time rate=24")?;
+    for _ in 0..40 {
+        let status = text(&mut rig.world, GOD, "@tacsim/port status");
+        let gated: Vec<_> = status
+            .lines()
+            .filter(|l| {
+                l.ends_with(']')
+                    && !l.starts_with("sky: ")
+                    && !l.starts_with("geology: ")
+                    && !(l.contains(" site: ")
+                        && (l.contains("; opening, ")
+                            || l.contains("; opening: its ground is still being mapped")))
+            })
+            .collect();
+        if gated.len() > 1 && gated.iter().all(|l| l.ends_with("[ready]")) {
+            break;
+        }
+        pulse(&mut rig.world, store, 6).await?;
+    }
+    *rig.world
+        .world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .ok_or("account oracle")? = mush_sim::AccountOracle::new(Arc::new(PilotAccount {
+        actor: rig.organizer,
+        account: AccountId::mint("MiningCaptain", 1)?,
+    }));
+    let room = |world: &TestWorld, name: &str| -> TestResult<ObjId> {
+        let key = mush_atlas::RecordKey::new(
+            mush_core::CanonicalId::new("neighborhood.ceres_freeport")?,
+            mush_core::CanonicalId::new(name)?,
+        );
+        tacsim::port::apply::room_by_key(world.world(), &key)
+            .ok_or_else(|| format!("missing {name}").into())
+    };
+    let desk = room(&rig.world, "room.c05_registry")?;
+    rig.world.world_mut().move_to(rig.organizer, desk)?;
+    ordinary(&mut rig.world, rig.organizer, "+coop/enrol Field Moth")?;
+    ordinary(&mut rig.world, rig.organizer, "+coop/refit prospector")?;
+    ordinary(&mut rig.world, rig.organizer, "+licence/buy go")?;
+    let counter = room(&rig.world, "room.c07_exchange")?;
+    rig.world.world_mut().move_to(rig.organizer, counter)?;
+    ordinary(&mut rig.world, rig.organizer, "+tv/lease go")?;
+    let lease = rig
+        .world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("tacsim")?
+        .tv_leases_of(rig.organizer)
+        .find(|l| l.live())
+        .cloned()
+        .ok_or("actual leased stock rig")?;
+    rig.unit = lease.tv;
+    rig.carrier = lease.hull;
+    let cab = {
+        let (_, row) =
+            tacsim::port::vehicle::rig_row(rig.world.world(), rig.unit).ok_or("stock rig")?;
+        ObjId(
+            *row.rooms
+                .get(&mush_core::CanonicalId::new("cab")?)
+                .ok_or("cab")?,
+        )
+    };
+    hire_field_operator(&mut rig, store, false).await?;
+    ordinary(
+        &mut rig.world,
+        rig.organizer,
+        &format!("+sortie/board #{}", rig.invitee.0),
+    )?;
+    // The real lessor grants explicit operational rights. Renting alone is not permission.
+    let (org, scope) = {
+        let asset = rig
+            .world
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .ok_or("economy")?
+            .snapshot()
+            .asset(rig.unit)
+            .ok_or("actual title")?;
+        let mush_org::PrincipalId::Organization(org) = asset.title_owner else {
+            return Err("stock lessor title".into());
+        };
+        (org, asset.scope.ok_or("asset scope")?)
+    };
+    for (actor, cap) in [
+        (rig.organizer, "unit.deploy"),
+        (rig.invitee, "unit.operate_crew"),
+    ] {
+        ordinary(
+            &mut rig.world,
+            GOD,
+            &format!("@org/grant #{}={} {cap} scope={scope}", actor.0, org),
+        )?;
+    }
+    let site = rig
+        .world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("tacsim")?
+        .port_maps()
+        .find(|m| m.entry.as_str() == "ahuna_port")
+        .and_then(|m| m.domain)
+        .ok_or("Ahuna domain")?;
+    let mut opened = false;
+    for _ in 0..80 {
+        let status = text(&mut rig.world, GOD, "@tacsim/port status");
+        if status
+            .lines()
+            .any(|l| l.contains("ahuna_port site:") && l.ends_with("[ready]"))
+        {
+            opened = true;
+            break;
+        }
+        pulse(&mut rig.world, store, 6).await?;
+    }
+    assert!(
+        opened,
+        "the real site opener must finish before the carrier arrives"
+    );
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/domain #{}={site}", rig.carrier.0),
+    )?;
+    let crew_room = {
+        let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("programme")?;
+        let row = port
+            .map
+            .hulls
+            .iter()
+            .find(|r| r.hull == rig.carrier.0)
+            .ok_or("charter hull")?;
+        ObjId(
+            *row.rooms
+                .get(&mush_core::CanonicalId::new("crew")?)
+                .ok_or("crew")?,
+        )
+    };
+    rig.world.world_mut().move_to(rig.organizer, crew_room)?;
+    persist_legacy(&mut rig.world, store).await?;
+    let mut payload = plan(&rig);
+    payload["slots"][0]["controller"]["kind"] = json!("npc");
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        &format!("+sortie/draft {payload}"),
+    )
+    .await?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        "+sortie/activate 1:1=mining",
+    )
+    .await?;
+    let seating = submit(&mut rig.world, rig.organizer, "+sortie/seat 1:1=1")?;
+    persist_legacy(&mut rig.world, store).await?;
+    land_request(&mut rig.world, store, &seating).await?;
+    install_due_handoff(&mut rig.world, store).await?;
+    commit(&mut rig.world, store, rig.organizer, "+sortie/launch 1:1=1").await?;
+    let departure = flight(&rig.world, rig.unit, 1)?;
+    let finish = fire_flight(&mut rig.world, store, departure.due.at).await?;
+    land_request(&mut rig.world, store, &finish).await?;
+    Ok((rig, cab))
+}
+
+#[tokio::test]
+async fn hired_mining_operator_uses_real_stock_rig_and_existing_surface_host() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, cab) = mining_crew_fixture(&store).await?;
+    assert_eq!(
+        rig.world.world().get(rig.invitee).and_then(|o| o.location),
+        Some(cab)
+    );
+    assert!(actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    let before = flight(&rig.world, rig.unit, 1)?;
+    let line = text(&mut rig.world, rig.invitee, "+tv/1 scan");
+    assert!(!line.contains("no charter"), "{line}");
+    commit(&mut rig.world, &store, rig.invitee, "+tv/1 scan go").await?;
+    let h = rig
+        .world
+        .world()
+        .module_state::<tacsim::port::PortHandles>()
+        .ok_or("ports")?;
+    let record = rig
+        .world
+        .engine()
+        .action_state()
+        .get(
+            &h.families.excursions,
+            &tacsim::surface::excursion::RigKey(rig.unit),
+        )?
+        .ok_or("real surface work")?;
+    assert_eq!(
+        record
+            .field_crew
+            .as_ref()
+            .ok_or("physical crew link")?
+            .operator,
+        rig.invitee
+    );
+    assert_eq!(
+        record.excursion.as_ref().ok_or("excursion")?.operator,
+        rig.invitee
+    );
+    assert!(record.sortie.is_none(), "DT retains the only epoch");
+    assert_eq!(flight(&rig.world, rig.unit, 1)?, before);
+    settle_surface(&mut rig, &store).await?;
+    let record = surface_record(&rig.world, rig.unit)?.ok_or("surface record")?;
+    assert_eq!(
+        record.last.as_ref().ok_or("actual scan outcome")?.result,
+        tacsim::surface::excursion::ActResult::Done
+    );
+    let drive = adjacent_drive(&mut rig, &store).await?;
+    persist_legacy(&mut rig.world, &store).await?;
+    land_request(&mut rig.world, &store, &drive).await?;
+    settle_surface(&mut rig, &store).await?;
+    assert_eq!(
+        surface_record(&rig.world, rig.unit)?
+            .ok_or("surface record")?
+            .last
+            .ok_or("drive outcome")?
+            .result,
+        tacsim::surface::excursion::ActResult::Done
+    );
+    commit(&mut rig.world, &store, rig.invitee, "+tv/1 sound go").await?;
+    settle_surface(&mut rig, &store).await?;
+    // Choose only from this NPC's own completed sounding, never a staff geology peek.
+    let site = mush_core::CanonicalId::new("ahuna_port")?;
+    let chart = {
+        let h = rig
+            .world
+            .world()
+            .module_state::<tacsim::port::PortHandles>()
+            .ok_or("ports")?;
+        rig.world
+            .engine()
+            .action_state()
+            .get(
+                &h.families.charts,
+                &tacsim::surface::chart::ChartKey {
+                    principal: rig.invitee,
+                    site: site.clone(),
+                },
+            )?
+            .cloned()
+            .ok_or("NPC's own chart")?
+    };
+    let mut pockets = Vec::new();
+    let stand = chart.sound_stand.ok_or("sounding stand")?;
+    for y in 0..64 {
+        for x in 0..64 {
+            if !chart.pocket_sounded((x, y)) {
+                continue;
+            }
+            let reading = tacsim::surface::chart::pocket_reading(
+                rig.world.world(),
+                &site,
+                Some(&chart),
+                (x, y),
+            );
+            if ["lean", "fair", "rich"]
+                .iter()
+                .any(|word| reading.contains(word))
+            {
+                pockets.push((
+                    (x * 4 + 2 - stand[0]).abs() + (y * 4 + 2 - stand[1]).abs(),
+                    x,
+                    y,
+                ));
+            }
+        }
+    }
+    pockets.sort();
+    let mut moved = false;
+    for (_, x, y) in pockets {
+        let address = tacsim::surface::address::pocket_address(x, y).ok_or("pocket")?;
+        text(
+            &mut rig.world,
+            rig.invitee,
+            &format!("+tv/1 drive {address} go"),
+        );
+        if let Some(request) = rig.world.engine_mut().take_authoritative_submit() {
+            persist_legacy(&mut rig.world, &store).await?;
+            land_request(&mut rig.world, &store, &request).await?;
+            settle_surface(&mut rig, &store).await?;
+            moved = true;
+            break;
+        }
+    }
+    assert!(moved, "the own sounding must offer reachable ore");
+    commit(&mut rig.world, &store, rig.invitee, "+tv/1 mine 1 go").await?;
+    let run = surface_record(&rig.world, rig.unit)?
+        .ok_or("surface")?
+        .run
+        .ok_or("run")?;
+    let inventory = rig
+        .world
+        .world()
+        .module_state::<mush_inventory::InventoryHandles>()
+        .ok_or("inventory")?;
+    let key = mush_inventory::pool_key(
+        mush_inventory::EndpointRef(mush_economy::VaultId(run.source.ok_or("source")?)),
+        &run.good,
+    )?;
+    let source_before = pool_amount(
+        &rig.world,
+        mush_economy::VaultId(run.source.ok_or("source")?),
+        &run.good,
+    )?;
+    assert!(
+        rig.world
+            .engine()
+            .action_state()
+            .get(&inventory.0.pools, &key)?
+            .is_some(),
+        "the site opener must supply the real deposit inventory"
+    );
+    settle_surface(&mut rig, &store).await?;
+    let mining_outcome = surface_record(&rig.world, rig.unit)?
+        .ok_or("surface record")?
+        .last
+        .ok_or("mining outcome")?;
+    assert_eq!(
+        mining_outcome.result,
+        tacsim::surface::excursion::ActResult::Done,
+        "{mining_outcome:?}"
+    );
+    let mined = surface_record(&rig.world, rig.unit)?
+        .ok_or("surface record")?
+        .last
+        .ok_or("actual cycle")?
+        .mined
+        .ok_or("mining receipt")?;
+    assert!(
+        mined.tonnes > 0,
+        "real ore must move from the site into this rig's hopper: {mined:?}"
+    );
+    assert_eq!(
+        pool_amount(
+            &rig.world,
+            mush_economy::VaultId(run.source.ok_or("source")?),
+            &run.good
+        )?,
+        source_before - i64::from(mined.tonnes)
+    );
+    assert_eq!(
+        pool_amount(&rig.world, mush_economy::VaultId(run.hopper), &run.good)?,
+        i64::from(mined.tonnes)
+    );
+    commit(&mut rig.world, &store, rig.invitee, "+tv/1 recover go").await?;
+    settle_surface(&mut rig, &store).await?;
+    assert_eq!(
+        surface_record(&rig.world, rig.unit)?
+            .ok_or("surface record")?
+            .last
+            .ok_or("recover outcome")?
+            .result,
+        tacsim::surface::excursion::ActResult::Done
+    );
+    for _ in 0..4 {
+        if flight(&rig.world, rig.unit, 1)?.phase == tacsim::detachment::sortie::Phase::Returned {
+            break;
+        }
+        pulse(&mut rig.world, &store, 6).await?;
+    }
+    assert_eq!(
+        flight(&rig.world, rig.unit, 1)?.phase,
+        tacsim::detachment::sortie::Phase::Returned
+    );
+    let record = surface_record(&rig.world, rig.unit)?.ok_or("surface record")?;
+    assert_eq!(
+        record.last.as_ref().ok_or("unload receipt")?.kind,
+        tacsim::surface::excursion::ActKind::Unload,
+        "a loaded recovery must finish the real unload"
+    );
+    assert!(record.excursion.is_none() && record.sortie.is_none() && record.charge.in_bay);
+    let hold = {
+        let view =
+            tacsim::port::ship::hull_view(rig.world.world(), rig.carrier).ok_or("carrier")?;
+        tacsim::port::ship::hold_vault(rig.world.world(), &view).ok_or("hold")?
+    };
+    assert_eq!(
+        pool_amount(&rig.world, hold, &run.good)?,
+        i64::from(mined.tonnes)
+    );
+    assert_eq!(
+        pool_amount(&rig.world, mush_economy::VaultId(run.hopper), &run.good)?,
+        0
+    );
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/launch 1:1=1",
+    )
+    .await?;
+    assert_eq!(
+        flight(&rig.world, rig.unit, 2)?.phase,
+        tacsim::detachment::sortie::Phase::Departing
+    );
+    Ok(())
+}
+
+fn surface_record(
+    world: &TestWorld,
+    unit: ObjId,
+) -> TestResult<Option<tacsim::surface::excursion::RigRecord>> {
+    let h = world
+        .world()
+        .module_state::<tacsim::port::PortHandles>()
+        .ok_or("ports")?;
+    Ok(world
+        .engine()
+        .action_state()
+        .get(
+            &h.families.excursions,
+            &tacsim::surface::excursion::RigKey(unit),
+        )?
+        .cloned())
+}
+
+fn pool_amount(
+    world: &TestWorld,
+    vault: mush_economy::VaultId,
+    good: &mush_core::CanonicalId,
+) -> TestResult<i64> {
+    let inventory = world
+        .world()
+        .module_state::<mush_inventory::InventoryHandles>()
+        .ok_or("inventory")?;
+    let key = mush_inventory::pool_key(mush_inventory::EndpointRef(vault), good)?;
+    Ok(world
+        .engine()
+        .action_state()
+        .get(&inventory.0.pools, &key)?
+        .map_or(0, |s| s.current()))
+}
+
+async fn adjacent_drive(
+    rig: &mut Rig,
+    store: &InMemoryStore,
+) -> TestResult<Box<mush_core::AuthoritativeSubmit>> {
+    let mut diagnostics = Vec::new();
+    for bearing in ["n", "ne", "e", "se", "s", "sw", "w", "nw"]
+        .into_iter()
+        .cycle()
+        .take(16)
+    {
+        diagnostics.push(text(
+            &mut rig.world,
+            rig.invitee,
+            &format!("+tv/1 drive {bearing} 20 go"),
+        ));
+        if let Some(request) = rig.world.engine_mut().take_authoritative_submit() {
+            return Ok(request);
+        }
+        pulse(&mut rig.world, store, 6).await?;
+    }
+    Err(format!("no drivable adjacent ground: {diagnostics:?}").into())
+}
+
+#[tokio::test]
+async fn physical_surface_completed_movement_still_spends_charge_after_station_loss() -> TestResult
+{
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_crew_fixture(&store).await?;
+    let start = adjacent_drive(&mut rig, &store).await?;
+    persist_legacy(&mut rig.world, &store).await?;
+    land_request(&mut rig.world, &store, &start).await?;
+    let before = surface_record(&rig.world, rig.unit)?.ok_or("surface record")?;
+    let act = before.act.as_ref().ok_or("drive")?;
+    assert!(act.reserved_cu > 0);
+    let rate = i64::from(rig.world.world().world_timeline().current().rate.max(1));
+    let ahead = (act.due_ic - rig.world.world().world_ic_now().at).max(0);
+    let now = rig.world.world().now() + ((ahead + rate - 1) / rate).max(6);
+    rig.world.set_now(now);
+    rig.world.fire_due(now * 1000);
+    let mut finish = None;
+    while let Some(request) = rig.world.engine_mut().take_authoritative_submit() {
+        if request.action.key().id.as_str() == tacsim::surface::act::SURFACE_DONE_ACTION
+            && request.actor == rig.invitee
+        {
+            finish = Some(request);
+        }
+    }
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/unassign #{}=pilot", rig.unit.0),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let finish = finish.ok_or("actual drive finish")?;
+    land_request(&mut rig.world, &store, &finish).await?;
+    let after = surface_record(&rig.world, rig.unit)?.ok_or("surface record")?;
+    assert_eq!(
+        after.last.ok_or("actual outcome")?.result,
+        tacsim::surface::excursion::ActResult::Done
+    );
+    assert_eq!(
+        after.charge.value_cu,
+        before.charge.value_cu - act.reserved_cu,
+        "a later control change cannot refund an actual drive"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_surface_final_take_rechecks_current_asset_permission() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_crew_fixture(&store).await?;
+    let request = submit(&mut rig.world, rig.invitee, "+tv/1 scan go")?;
+    stage(&mut rig.world, &store, &request).await?;
+    let org = {
+        let economy = rig
+            .world
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .ok_or("economy")?;
+        let mush_org::PrincipalId::Organization(org) = economy
+            .snapshot()
+            .asset(rig.unit)
+            .ok_or("title")?
+            .title_owner
+        else {
+            return Err("lessor".into());
+        };
+        org
+    };
+    ordinary(&mut rig.world, GOD, &format!("@org/status {org}=suspended"))?;
+    assert!(rig.world.engine_mut().take_staged_action().is_err());
+    assert!(surface_record(&rig.world, rig.unit)?.is_none());
+    assert_eq!(
+        flight(&rig.world, rig.unit, 1)?.phase,
+        tacsim::detachment::sortie::Phase::Field
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_field_idle_wait_does_not_recall_the_crew() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_crew_fixture(&store).await?;
+    commit(&mut rig.world, &store, rig.invitee, "+tv/1 scan go").await?;
+    settle_surface(&mut rig, &store).await?;
+    let before = surface_record(&rig.world, rig.unit)?.ok_or("surface record")?;
+    let rate = i64::from(rig.world.world().world_timeline().current().rate.max(1));
+    pulse(&mut rig.world, &store, 2 * 86_400 / rate + 1).await?;
+    let after = surface_record(&rig.world, rig.unit)?.ok_or("surface record")?;
+    assert_eq!(
+        after.ordinal, before.ordinal,
+        "idle recall cannot issue a new physical control action"
+    );
+    assert!(after.act.is_none() && after.run.is_none() && after.excursion.is_some());
+    assert_eq!(
+        flight(&rig.world, rig.unit, 1)?.phase,
+        tacsim::detachment::sortie::Phase::Field
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_surface_station_loss_finishes_without_a_reading_or_charge_spend() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_crew_fixture(&store).await?;
+    commit(&mut rig.world, &store, rig.invitee, "+tv/1 scan go").await?;
+    let before = surface_record(&rig.world, rig.unit)?.ok_or("surface record")?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/unassign #{}=pilot", rig.unit.0),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    settle_surface(&mut rig, &store).await?;
+    let after = surface_record(&rig.world, rig.unit)?.ok_or("surface record")?;
+    assert_eq!(after.charge, before.charge);
+    assert_eq!(
+        after.last.ok_or("actual refusal")?.result,
+        tacsim::surface::excursion::ActResult::Refused {
+            code: tacsim::surface::excursion::RefusedCode::Unworked
+        }
+    );
+    let h = rig
+        .world
+        .world()
+        .module_state::<tacsim::port::PortHandles>()
+        .ok_or("ports")?;
+    assert!(
+        rig.world
+            .engine()
+            .action_state()
+            .get(
+                &h.families.charts,
+                &tacsim::surface::chart::ChartKey {
+                    principal: rig.invitee,
+                    site: before.excursion.ok_or("excursion")?.site
+                }
+            )?
+            .is_none()
+    );
+    assert_eq!(
+        flight(&rig.world, rig.unit, 1)?.phase,
+        tacsim::detachment::sortie::Phase::Field
+    );
+    Ok(())
+}
+async fn settle_surface(rig: &mut Rig, store: &InMemoryStore) -> TestResult {
+    for _ in 0..16 {
+        let record = surface_record(&rig.world, rig.unit)?.ok_or("surface work")?;
+        let due = record
+            .act
+            .as_ref()
+            .map(|a| a.due_ic)
+            .into_iter()
+            .chain(record.run.as_ref().map(|r| r.due_ic))
+            .min();
+        let Some(due) = due else {
+            if record.queued.is_some() {
+                pulse(&mut rig.world, store, 6).await?;
+                continue;
+            }
+            return Ok(());
+        };
+        let rate = i64::from(rig.world.world().world_timeline().current().rate.max(1));
+        let ahead = (due - rig.world.world().world_ic_now().at).max(0);
+        let now = rig.world.world().now() + ((ahead + rate - 1) / rate).max(6);
+        rig.world.set_now(now);
+        rig.world.fire_due(now * 1000);
+        persist_legacy(&mut rig.world, store).await?;
+        while let Some(request) = rig.world.engine_mut().take_authoritative_submit() {
+            land_request(&mut rig.world, store, &request).await?;
+        }
+    }
+    Err("surface work did not settle".into())
+}
+
+async fn pulse(world: &mut TestWorld, store: &InMemoryStore, seconds: i64) -> TestResult {
+    // Keep background site opening bounded to this story's Ahuna site. Other
+    // clerks verify by pull and retry later; every landed act uses the coordinator.
+    let other_sites: std::collections::BTreeSet<_> = world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("tacsim")?
+        .port_maps()
+        .filter(|m| m.entry.as_str() != "ahuna_port")
+        .filter_map(|m| m.site.as_ref().and_then(|s| s.clerk).map(ObjId))
+        .collect();
+    let now = world.world().now() + seconds;
+    world.set_now(now);
+    world.fire_due(now * 1000);
+    persist_legacy(world, store).await?;
+    while let Some(request) = world.engine_mut().take_authoritative_submit() {
+        if other_sites.contains(&request.actor) {
+            continue;
+        }
+        land_request(world, store, &request).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stock_cab_console_is_added_to_an_existing_rig_on_restart() -> TestResult {
+    let store = InMemoryStore::new();
+    let mut rig = fixture(&store).await?;
+    let unit = ObjId(
+        tacsim::port::coop::programme_port(rig.world.world())
+            .ok_or("programme")?
+            .map
+            .vehicles
+            .as_ref()
+            .ok_or("vehicles")?
+            .rigs
+            .first()
+            .ok_or("rig")?
+            .tv,
+    );
+    let parent = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial")?
+        .parent_of(unit);
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/unstation #{}=pilot", unit.0),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    drop(rig);
+    let rig = fixture(&store).await?;
+    let spatial = rig
+        .world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .ok_or("spatial")?;
+    let pilot = mush_sim::StationId::new("pilot").ok_or("pilot")?;
+    assert!(
+        spatial
+            .stations
+            .get(&unit)
+            .is_some_and(|s| s.stations.contains_key(&pilot))
+    );
+    assert_eq!(
+        spatial.parent_of(unit),
+        parent,
+        "authoring a missing console does not move the rig"
+    );
     Ok(())
 }
 fn flight(

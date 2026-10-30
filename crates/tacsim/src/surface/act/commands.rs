@@ -263,6 +263,7 @@ pub(crate) fn parked_short(
         return false;
     };
     let rig = RigAt {
+        crew: None,
         tv: record.tv,
         slot: lease.slot,
         mark: lease.mark.clone(),
@@ -1850,7 +1851,7 @@ pub(crate) fn aboard_site(
 ) -> Result<(CanonicalId, String), Refusal> {
     let (view, name) = view_of(w, rig)?;
     let berth = site_berth(w, &view)?;
-    if !crate::port::voyage::aboard(w, rig.hull, actor) {
+    if !rig.operator_present(w, actor) {
         return Err(Refusal::NotAboard { name });
     }
     Ok((berth.entry.clone(), berth.name.clone()))
@@ -2000,10 +2001,11 @@ pub(crate) fn mine_plan(
         })?;
     // 4. The licence.
     let now = w.world_ic_now();
-    let lapses_ic = mine_licence(w, actor, now.at)?;
+    let principal = rig.mining_principal(actor);
+    let lapses_ic = mine_licence(w, principal, now.at)?;
     // 5. The tenure, block-level.
     let site_def = berth.def.site.as_ref().ok_or_else(dark)?;
-    mine_tenure(w, reads, actor, (&stand.site, site_def), letter, &now).map_err(
+    mine_tenure(w, reads, principal, (&stand.site, site_def), letter, &now).map_err(
         |bar| match bar {
             TenureBar::Claimed => Refusal::Claimed,
             TenureBar::Dark(_) => dark(),
@@ -2671,7 +2673,7 @@ pub(crate) fn plan_ask(
         return Err(Refusal::UnderWay { name });
     }
     let berth = site_berth(w, &view)?;
-    if !crate::port::voyage::aboard(w, rig.hull, actor) {
+    if !rig.operator_present(w, actor) {
         return Err(Refusal::NotAboard { name });
     }
     let dark = || Refusal::Dark { name: name.clone() };
@@ -2753,8 +2755,16 @@ pub(crate) fn plan_ask(
     };
     let site_def = berth.def.site.as_ref().ok_or_else(dark)?;
     let now = w.world_ic_now();
-    let tenure =
-        |letter: char| mine_tenure(w, reads, actor, (&berth.entry, site_def), letter, &now);
+    let tenure = |letter: char| {
+        mine_tenure(
+            w,
+            reads,
+            rig.mining_principal(actor),
+            (&berth.entry, site_def),
+            letter,
+            &now,
+        )
+    };
     let cache = std::cell::RefCell::new(BTreeMap::new());
     let classes = |pocket: (i64, i64)| {
         crate::surface::plan::read_classes(&site, row.as_ref(), pocket, &mut cache.borrow_mut())
@@ -2770,7 +2780,7 @@ pub(crate) fn plan_ask(
         row: row.as_ref(),
         list,
         family,
-        licence: licence_verdict(w, actor, now_ic),
+        licence: licence_verdict(w, rig.mining_principal(actor), now_ic),
         lease: lease_gate(w, &rig.record),
         tenure: &tenure,
         classes: &classes,
@@ -2882,6 +2892,11 @@ pub(crate) fn plan_cmd(
     family_word: Option<&str>,
     go: bool,
 ) -> Result<(), CmdError> {
+    if rig.crew.is_some() {
+        return Err(CmdError::msg(
+            "Field crews use individual drive, scan, sound, mine and recover orders.",
+        ));
+    }
     let actor = ctx.actor;
     let handles = ctx
         .w

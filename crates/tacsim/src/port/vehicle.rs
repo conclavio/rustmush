@@ -50,6 +50,79 @@ use crate::port::ship::HullView;
 use crate::port::site::VEHICLES_PRINCIPAL;
 use crate::store::{TacsimStore, put_port_map};
 
+fn ensure_console(ctx: &mut Ctx<'_>, tv: ObjId, cab: ObjId) -> Result<(), String> {
+    let pilot = mush_sim::StationId::new("pilot").ok_or("Invalid pilot station.")?;
+    let helm = mush_core::ChannelId::new("helm").ok_or("Invalid helm channel.")?;
+    let spatial = ctx
+        .w
+        .module_state::<SpatialState>()
+        .ok_or("Spatial state unavailable.")?;
+    if !ctx.w.get(cab).is_some_and(|o| o.kind == ObjKind::Room)
+        || !spatial.spaces.get(&cab).is_some_and(|s| {
+            s.anchor == SpaceAnchor::MovingObject { host: tv } && s.rooms.contains(&cab)
+        })
+    {
+        return Err("The rig's cab must remain its actual authored moving interior.".into());
+    }
+    if let Some(existing) = spatial
+        .stations
+        .get(&tv)
+        .and_then(|s| s.stations.get(&pilot))
+    {
+        return if existing.space == Some(cab) && existing.channels.contains(&helm) {
+            Ok(())
+        } else {
+            Err("The pilot station changed; repair its cab and channels explicitly.".into())
+        };
+    }
+    if spatial
+        .assignments
+        .get(&tv)
+        .is_some_and(|a| a.seats.contains_key(&pilot))
+    {
+        return Err("A missing pilot station has a stale assignment; repair it explicitly.".into());
+    }
+    mush_sim::declare_station(
+        ctx,
+        tv,
+        &pilot,
+        "pilot",
+        &BTreeSet::from([helm]),
+        Some(cab),
+        0,
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Install only the absent console on stock rigs created before physical crew.
+/// Do not reapply their port placement, title, lease, unit or station assignment.
+pub(crate) fn boot_consoles(ctx: &mut Ctx<'_>) {
+    let Some(store) = ctx.w.module_state::<TacsimStore>().filter(|s| s.enabled()) else {
+        return;
+    };
+    let Ok(cab_key) = CanonicalId::new("cab") else {
+        return;
+    };
+    let rigs: Vec<_> = store
+        .port_maps()
+        .flat_map(|map| {
+            map.vehicles.iter().flat_map(|v| v.rigs.iter()).chain(
+                map.site
+                    .iter()
+                    .filter_map(|s| s.yard.as_ref())
+                    .flat_map(|y| y.rigs.iter()),
+            )
+        })
+        .filter_map(|r| r.rooms.get(&cab_key).map(|cab| (ObjId(r.tv), ObjId(*cab))))
+        .collect();
+    for (unit, cab) in rigs {
+        if let Err(error) = ensure_console(ctx, unit, cab) {
+            tracing::warn!(unit=unit.0,%error,"tacsim: stock rig console unavailable; existing crew and control left unchanged");
+        }
+    }
+}
+
 /// **The vehicle unit's interior template, its binding's instantiation shape
 /// and its logistics** (doc 20 cut SM.3a), or the refusal naming what is
 /// missing.
@@ -501,6 +574,10 @@ pub(crate) fn lay_up_rig(
         )
         .map_err(|e| format!("{id}: rig {mark} berths: {e}"))?;
     }
+    // Physical crew use this actual authored cab. Existing teleoperation from
+    // the carrier retains its own admission; laying up a rig seats nobody and
+    // takes no control lease.
+    ensure_console(ctx, tv, cab).map_err(|e| format!("{id}: rig {mark}: {e}"))?;
     // 5. The hopper vault (doc 20 §4.2): the system principal's, no scope.
     if row(map).is_some_and(|rig| rig.vault.is_none()) {
         let owner = hopper_owner().ok_or_else(|| {

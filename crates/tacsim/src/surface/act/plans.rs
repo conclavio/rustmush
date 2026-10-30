@@ -86,7 +86,7 @@ pub(crate) fn launch_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPla
         });
     }
     let berth = site_berth(w, &view)?;
-    if !crate::port::voyage::aboard(w, rig.hull, actor) {
+    if !rig.operator_present(w, actor) {
         return Err(Refusal::NotAboard { name });
     }
     if let Err(bar) = lease_gate(w, &rig.record) {
@@ -178,7 +178,7 @@ pub(crate) fn recover_plan(
         return Err(Refusal::UnderWay { name });
     }
     let berth = site_berth(w, &view)?;
-    if !crate::port::voyage::aboard(w, rig.hull, actor) {
+    if !rig.operator_present(w, actor) {
         return Err(Refusal::NotAboard { name });
     }
     let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);
@@ -278,7 +278,7 @@ pub(crate) fn dump_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPlan,
         Refusal::NotSite { name } => Refusal::DumpNotSite { n: rig.slot, name },
         other => other,
     })?;
-    if !crate::port::voyage::aboard(w, rig.hull, actor) {
+    if !rig.operator_present(w, actor) {
         return Err(Refusal::NotAboard { name });
     }
     match where_is(w, rig.tv) {
@@ -338,7 +338,7 @@ pub(crate) fn unload_plan(
         Refusal::UnderWay { name } => Refusal::UnloadUnderWay { name },
         other => other,
     })?;
-    if !queued && !crate::port::voyage::aboard(w, rig.hull, actor) {
+    if !queued && !rig.operator_present(w, actor) {
         return Err(Refusal::NotAboard { name });
     }
     match where_is(w, rig.tv) {
@@ -503,7 +503,7 @@ pub(crate) fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Re
         });
     }
     let berth = site_berth(w, &view)?;
-    if !crate::port::voyage::aboard(w, rig.hull, actor) {
+    if !rig.operator_present(w, actor) {
         return Err(Refusal::NotAboard { name });
     }
     match where_is(w, rig.tv) {

@@ -197,6 +197,7 @@ pub fn register(
             crate::definitions::exact_validator(vec![
                 bridge.clone(),
                 crate::detachment::sortie::bridge_descriptor()?,
+                crate::detachment::sortie::surface::bridge_descriptor()?,
             ]),
         )?;
         let definition = reg.definition(bridge)?;

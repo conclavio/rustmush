@@ -956,6 +956,12 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
             // Doc 20 cut SM.8 (lead ruling 1; the brief's 3.9): a recover's queued unload, started
             // as the operator under its own key, by the attempt rule (a start that does not land
             // and leaves the queue standing counts an attempt).
+            (None, _)
+                if candidate.queued
+                    && !crate::detachment::sortie::surface::unload_ready(ctx, record) =>
+            {
+                Step::Held
+            }
             (None, _) if candidate.queued => {
                 let queued = record.queued.as_ref();
                 match (queued, handles.surface_act.as_ref()) {
@@ -1322,6 +1328,16 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
     let Some(act) = &record.act else {
         return;
     };
+    if !crate::detachment::sortie::surface::working(
+        ctx,
+        record,
+        matches!(
+            act.kind,
+            ActKind::Drive | ActKind::Recover | ActKind::Launch
+        ),
+    ) {
+        return;
+    }
     let tv = record.tv;
     let berth = hull_view_berth(ctx.w, act.hull);
     let Some((entry, domain, ramp, bay_room, bay_slot)) = berth else {
@@ -1722,6 +1738,7 @@ fn plan_step(
         return Step::Worked;
     };
     let rig = crate::surface::act::RigAt {
+        crew: None,
         tv,
         slot: lease.slot,
         mark: lease.mark.clone(),
@@ -1899,6 +1916,12 @@ fn idle_step(
     stats: &mut SurfaceFireStats,
 ) -> Step {
     use crate::surface::act::Refusal;
+    // Carrier teleoperation's idle recall is not an instruction to pilot a
+    // physical detachment slot. Its operator (or actual NPC order driver)
+    // chooses recovery through the normal admitted action.
+    if record.field_crew.is_some() {
+        return Step::Worked;
+    }
     let tv = record.tv;
     let now = ctx.w.world_ic_now().at;
     let retry = now.saturating_add(crate::surface::plan::IDLE_PARK_IC_SECS);
@@ -1912,6 +1935,7 @@ fn idle_step(
     };
     let operator = excursion.operator;
     let rig = crate::surface::act::RigAt {
+        crew: None,
         tv,
         slot: lease.slot,
         mark: lease.mark.clone(),
@@ -3199,6 +3223,7 @@ mod tests {
             plans: 0,
             recovery: None,
             sortie: None,
+            field_crew: None,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
         let mut records: Vec<RigRecord> = (1..=over)
@@ -3258,6 +3283,7 @@ mod tests {
             plans: 0,
             recovery: None,
             sortie: None,
+            field_crew: None,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
         let mut records: Vec<RigRecord> = (1..=stuck)
@@ -3426,6 +3452,7 @@ mod tests {
             plans: 0,
             recovery: None,
             sortie: None,
+            field_crew: None,
         };
         let state = SurfaceTickState::default();
         let records = vec![
@@ -3545,6 +3572,7 @@ mod tests {
             plans: 0,
             recovery: None,
             sortie: None,
+            field_crew: None,
         }
     }
 
