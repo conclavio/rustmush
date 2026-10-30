@@ -8,7 +8,7 @@ repair passes no longer touch a studio draft by default and never a built class 
 cells (§4); the waypoint graph is authored in the studio or routed by the writer (§4, §5, §8); the
 studio gains a viewshed overlay and runs the §5 report live, with a fixture test holding its
 TypeScript to the Rust check (§8, §11, §14); and `rock` is ruled a surface, not a block —
-**D-30-10** in §7, at the reviewer's default and pending the owner's confirmation — because the
+**D-30-10** in §7, at the reviewer's default, confirmed by the owner the same day — because the
 sim's sight table makes only `wall` opaque and the woods partial, while the picture had been
 raising a wall out of it. The cut rows WG.2–WG.4 carry the work.
 
@@ -313,7 +313,7 @@ the same mechanism on the picture side. The window is its own cut (WG.6), schedu
 until then the cap is a check, and the proving ground (65 536 cells, V3 relief) passes it today.
 
 **D-30-10 — `rock` is a surface, not a block** (Draft 0.2; Q-30-8 ruled at the reviewer's
-default, pending the owner's confirmation). The sim's sight table
+default, confirmed by the owner 2026-10-30). The sim's sight table
 (`crates/mush-atlas/src/physics.rs:153`) makes `void` and `wall` opaque and the woods partial
 (25 % light, 60 % heavy); every other class, `rock` included, is clear and has no height — a ridge
 is `elev_cm`. `rock` is priced as costly passable ground (biped 200, legged 150, tracked 300, hover
@@ -451,10 +451,10 @@ each other after WG.3. Each cut records itself in `30-cut-notes.md` in doc 20's 
 - **Q-30-7 — the second shipped arena.** Default: the extractor's Winter Pack valley (a real
   temperate heightfield, no new vocabulary), then the generator's `mars_canyon` as the first
   biome arena. Alternative: Mars first, to exercise the biome end to end sooner.
-- **Q-30-8 — the `rock` class.** **Ruled provisionally 2026-10-30 (D-30-10, §7)**: a surface —
+- **Q-30-8 — the `rock` class.** **Ruled 2026-10-30 (D-30-10, §7), confirmed by the owner the same day**: a surface —
   its cost and shading on the real heightfield, no height of its own; the picture raises only what
-  the sim's sight table raises. The owner's confirmation is owed; the former default (a block, as
-  drawn today) and the alternative (a `rock`/`cliff` split) are both retired by it.
+  the sim's sight table raises. The former default (a block, as drawn today) and the
+  alternative (a `rock`/`cliff` split) are both retired by it.
 - **Q-30-9 — the extractor's artifacts as tree content.** Default: yes, per the 2026-10-29 ruling,
   with `provenance` naming the pack and version; the script ships, the `.unitypackage` never does.
 
