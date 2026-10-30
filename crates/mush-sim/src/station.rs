@@ -469,12 +469,7 @@ pub fn request_npc_control(
     {
         return Err(CmdError::msg("A control request is already pending."));
     }
-    let revision = ctx
-        .w
-        .command_subjects_of(npc)
-        .iter()
-        .find(|grant| grant.subject == unit && grant.station.as_str() == station.as_str())
-        .map(|grant| grant.epoch)
+    let revision = actor_grant_epoch(ctx, npc, unit, station.as_str())
         .ok_or_else(|| CmdError::msg(NO_SUCH_STATION))?;
     let action = crate::handoff::request_action_ref(ctx.reg)
         .ok_or_else(|| CmdError::msg("Station control unavailable."))?;
