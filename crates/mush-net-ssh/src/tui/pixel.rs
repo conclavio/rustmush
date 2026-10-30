@@ -1319,6 +1319,7 @@ impl PixelView {
         }
         let predicted = self.helm.predicted(now).unwrap_or(frame_heading);
         let hull_offset_mdeg = arc(frame_heading, predicted);
+        let (dx_cm, dy_cm) = self.helm.predicted_offset_cm(now);
         let look = Look {
             offset_mdeg: hull_offset_mdeg + self.look_mdeg,
             hull_offset_mdeg,
@@ -1327,6 +1328,8 @@ impl PixelView {
                 .helm
                 .ordered()
                 .filter(|o| arc(predicted, *o).abs() > 1_000),
+            dx_cm,
+            dy_cm,
         };
         if self.kind == PictureKind::Cockpit
             && self.camera == CockpitCamera::Tactical25D

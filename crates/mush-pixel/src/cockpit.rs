@@ -146,8 +146,13 @@ impl Picture for CockpitPicture {
         }
         let map = feeds.feed(ARENA_MAP_FEED);
         let cam = camera(cockpit, look);
+        let base_cam = Camera {
+            x_cm: num(cockpit.get("x_cm")),
+            y_cm: num(cockpit.get("y_cm")),
+            heading_mdeg: cam.heading_mdeg,
+        };
         self.draws = self.draws.wrapping_add(1);
-        let sprites = contacts_as_sprites(cockpit, &cam, self.draws / ANIMATION_DRAWS);
+        let sprites = contacts_as_sprites(cockpit, &base_cam, self.draws / ANIMATION_DRAWS);
         let overlay = self.overlay;
         self.ensure_map(map);
         let arena = &self.arena;
@@ -155,7 +160,7 @@ impl Picture for CockpitPicture {
         // for the unit; on a flat map, seen from the unit's own sensor height
         // above the ground (doc 21a `W-10`).
         let terrain = self.terrain.as_ref();
-        let eye = eye_cm(cockpit);
+        let eye = eye_at_cam_cm(cockpit, arena, terrain, look, &cam);
         let sensor_eye = sensor_height_cm(cockpit);
         match terrain {
             Some(terrain) => heightfield::render(frame, terrain, &cam, eye, &sprites),
@@ -198,14 +203,40 @@ fn eye_cm(cockpit: &Value) -> Option<i64> {
         .map(|z| z + sensor_height_cm(cockpit).unwrap_or(i64::from(EYE_HEIGHT_CM)))
 }
 
-/// The camera: the sim's own pose from the cockpit frame, turned by the
-/// viewer's local look.
+/// Adjust [`eye_cm`] by the ground height delta when dead-reckoning (`look.dx_cm`,
+/// `look.dy_cm`) across sloped relief so the camera follows the terrain surface
+/// between keyframes without burrowing into hills.
+fn eye_at_cam_cm(
+    cockpit: &Value,
+    arena: &Map,
+    terrain: Option<&Terrain>,
+    look: &Look,
+    cam: &Camera,
+) -> Option<i64> {
+    let base_eye = eye_cm(cockpit)?;
+    if look.dx_cm == 0 && look.dy_cm == 0 {
+        return Some(base_eye);
+    }
+    if let Some(t) = terrain {
+        let cell = arena.cell_cm().max(1) as f32;
+        let bx = num(cockpit.get("x_cm")) as f32 / cell;
+        let by = num(cockpit.get("y_cm")) as f32 / cell;
+        let cx = cam.x_cm as f32 / cell;
+        let cy = cam.y_cm as f32 / cell;
+        let dz_cm = ((t.height(cx, cy) - t.height(bx, by)) * cell).round() as i64;
+        return Some(base_eye.saturating_add(dz_cm));
+    }
+    Some(base_eye)
+}
+
+/// The camera: the sim's own pose from the cockpit frame, turned and
+/// dead-reckoned by the viewer's local look.
 #[must_use]
 pub fn camera(cockpit: &Value, look: &Look) -> Camera {
     let heading = (num(cockpit.get("heading_mdeg")) + look.offset_mdeg).rem_euclid(360_000);
     Camera {
-        x_cm: num(cockpit.get("x_cm")),
-        y_cm: num(cockpit.get("y_cm")),
+        x_cm: num(cockpit.get("x_cm")).saturating_add(look.dx_cm),
+        y_cm: num(cockpit.get("y_cm")).saturating_add(look.dy_cm),
         heading_mdeg: u32::try_from(heading).unwrap_or(0),
     }
 }
@@ -491,8 +522,13 @@ pub fn hud(
     // whichever of the heightfield and the raycaster drew the view, so the
     // lock's box and a health gauge land on the drawn sprite.
     let sensor_eye = sensor_height_cm(cockpit);
+    let base_cam = Camera {
+        x_cm: num(cockpit.get("x_cm")),
+        y_cm: num(cockpit.get("y_cm")),
+        heading_mdeg: cam.heading_mdeg,
+    };
     let place = |c: &Value| {
-        let sprite = contact_sprite(c, cam, 0);
+        let sprite = contact_sprite(c, &base_cam, 0);
         match terrain {
             Some(terrain) => heightfield::project(terrain, cam, eye_cm, w, h, &sprite),
             None => project_from(arena, cam, sensor_eye, w, h, &sprite),
@@ -995,6 +1031,7 @@ mod tests {
             offset_mdeg: 90_000,
             hull_offset_mdeg: 0,
             ordered_mdeg: Some(60_000),
+            ..Look::default()
         };
         let cam = camera(&cockpit, &look);
         let h = hud(&frame, &arena, None, None, &cockpit, &look, &cam);

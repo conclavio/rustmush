@@ -59,6 +59,7 @@
     nextLock,
     nextPictureKind,
     pictureKey,
+    predictedOffsetCm,
     speedLine,
     speedOutstanding,
     steppedSpeed,
@@ -181,6 +182,8 @@
   let turnRateMdegPerS = DEFAULT_TURN_RATE_MDEG_S;
   let prevFrameTMs: number | null = null;
   let prevFrameHeadingMdeg: number | null = null;
+  let frameArrivedAtMs = 0;
+  let livePulseStream = false;
 
   function hullStuck(): boolean {
     if (frame === null) return false;
@@ -209,6 +212,8 @@
       orderedHeadingMdeg = null;
       prevFrameTMs = null;
       prevFrameHeadingMdeg = null;
+      frameArrivedAtMs = 0;
+      livePulseStream = false;
       return;
     }
     const f = frame;
@@ -216,6 +221,11 @@
       if (f.t_ms === prevFrameTMs && rawMdeg === prevFrameHeadingMdeg) return;
       const now = Date.now();
       const currentPred = predictedHeadingMdeg(now);
+      if (prevFrameTMs !== null && f.t_ms !== null) {
+        const pulseDt = f.t_ms - prevFrameTMs;
+        livePulseStream = pulseDt > 0 && pulseDt <= 10_000;
+      }
+      frameArrivedAtMs = now;
       if (
         prevFrameTMs !== null &&
         f.t_ms !== null &&
@@ -367,6 +377,24 @@
           Math.abs(arcMdeg(predMdeg, orderedHeadingMdeg)) > 1_000
             ? orderedHeadingMdeg
             : null;
+        const rawCockpit = app.picture.cockpitData as {
+          speed_cms?: unknown;
+          blocked?: unknown;
+        } | null;
+        const speedCms =
+          typeof rawCockpit?.speed_cms === "number"
+            ? rawCockpit.speed_cms
+            : Math.round(((frame?.speed_kph ?? 0) * 1_000) / 36);
+        const canDeadReckon =
+          frame !== null &&
+          !hullStuck() &&
+          rawCockpit?.blocked !== true &&
+          speedCms !== 0 &&
+          frameArrivedAtMs > 0 &&
+          (livePulseStream || orderedHeadingMdeg !== null || turning !== 0 || orderedKph !== null);
+        const { dxCm, dyCm } = canDeadReckon
+          ? predictedOffsetCm(speedCms, predMdeg, now - frameArrivedAtMs)
+          : { dxCm: 0, dyCm: 0 };
         if (
           l.draw(
             app.picture.cockpitData,
@@ -375,6 +403,8 @@
             app.picture.kind,
             hullOffsetMdeg,
             orderedMdeg,
+            dxCm,
+            dyCm,
           )
         ) {
           if (c.width !== FRAME_W || c.height !== FRAME_H) {

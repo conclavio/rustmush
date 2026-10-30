@@ -55,6 +55,12 @@ pub struct Look {
     /// A heading the viewer's helm has ordered and the hull has not reached,
     /// millidegrees (the HUD marks it on the tape).
     pub ordered_mdeg: Option<i64>,
+    /// Dead-reckoned eastward position offset from the keyframe's `x_cm`,
+    /// centimetres, integrated at 20 Hz between server pulses.
+    pub dx_cm: i64,
+    /// Dead-reckoned northward position offset from the keyframe's `y_cm`,
+    /// centimetres, integrated at 20 Hz between server pulses.
+    pub dy_cm: i64,
 }
 
 /// One producer, its instruments and its clock.
