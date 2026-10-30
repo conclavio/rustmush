@@ -827,7 +827,7 @@ pub fn bake_of_look(look: &Look) -> Option<&'static ModelBake> {
 pub enum Art {
     /// A baked model, by its slot in the table ([`model_slot`]).
     Model(usize),
-    /// A shipped look's text sheet, by the look's index.
+    /// A look's text sheet, by the look's index ([`look::by_index`]).
     Sheet(usize),
 }
 
@@ -836,7 +836,7 @@ pub enum Art {
 /// neither.
 #[must_use]
 pub fn iso_art(index: usize) -> Option<Art> {
-    let look = look::shipped().get(index)?;
+    let look = look::by_index(index)?;
     if let Some(slot) = look.model.as_deref().and_then(model_slot)
         && model_in_slot(slot).is_some_and(|m| m.chain(View::Iso).is_some())
     {
@@ -845,8 +845,10 @@ pub fn iso_art(index: usize) -> Option<Art> {
     look.sheet().map(|_| Art::Sheet(index))
 }
 
-/// The fallback chains, one slot a shipped look, built on first use.
-static FALLBACK: OnceLock<Vec<OnceLock<Option<Chain>>>> = OnceLock::new();
+/// The fallback chains, one a look ([`look::by_index`]), built on first use
+/// and leaked once, so a look installed at run time gets one too.
+static FALLBACK: std::sync::Mutex<std::collections::BTreeMap<usize, &'static Chain>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// **The `iso` chain `art` is drawn from**, with the height, centimetres,
 /// the size pick reads: the model's own, or the look's sheet as a chain
@@ -859,17 +861,18 @@ pub fn art_chain(art: Art) -> Option<(&'static Chain, u32)> {
             Some((bake.chain(View::Iso)?, bake.size_cm.1))
         }
         Art::Sheet(index) => {
-            let look = look::shipped().get(index)?;
+            let look = look::by_index(index)?;
             let sheet = look.sheet()?;
-            let slots = FALLBACK.get_or_init(|| {
-                (0..look::shipped().len())
-                    .map(|_| OnceLock::new())
-                    .collect()
-            });
-            let chain = slots
-                .get(index)?
-                .get_or_init(|| Some(chain_from_sheet(sheet, look.size_cm, View::Iso)))
-                .as_ref()?;
+            let mut cache = FALLBACK.lock().unwrap_or_else(PoisonError::into_inner);
+            let chain: &'static Chain = match cache.get(&index) {
+                Some(chain) => chain,
+                None => {
+                    let chain: &'static Chain =
+                        Box::leak(Box::new(chain_from_sheet(sheet, look.size_cm, View::Iso)));
+                    cache.insert(index, chain);
+                    chain
+                }
+            };
             Some((chain, look.size_cm.1))
         }
     }

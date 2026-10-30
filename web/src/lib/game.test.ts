@@ -2911,3 +2911,46 @@ describe("the mind market (17g cut C3c)", () => {
     expect(invokes(ws)).toEqual([]);
   });
 });
+
+// Doc 31 cut UD.3b (D-31-16): published designs' looks, asked for by the picture module.
+describe("the unit.looks feed (doc 31 cut UD.3b)", () => {
+  /** A picture module stand-in: it asks once through the asker and records installs. */
+  function fakeModule() {
+    const installed: unknown[] = [];
+    let ask: ((types: string[]) => void) | null = null;
+    const m = {
+      askLooksWith: (fn: (types: string[]) => void) => {
+        ask = fn;
+      },
+      installLooks: (frame: unknown) => {
+        installed.push(frame);
+        return 1;
+      },
+    };
+    return { m, installed, ask: (types: string[]) => ask?.(types) };
+  }
+
+  it("asks the feed with the types and hands the answer back", () => {
+    const { app, ws } = boot(["unit.looks"]);
+    const fake = fakeModule();
+    app.bindPixelModule(fake.m as never);
+    const before = ws.reqs().length;
+    fake.ask(["tacsim.unit.design.x"]);
+    const asked = ws.reqs().slice(before);
+    expect(asked.map(feedOf)).toEqual(["unit.looks"]);
+    const params = asked[0]!.q.t === "panel_subscribe" ? (asked[0]!.q.d as { params?: unknown }).params : null;
+    expect(params).toEqual({ types: ["tacsim.unit.design.x"] });
+    const frame = { looks: { "tacsim.unit.design.x": { units: ["tacsim.unit.design.x"] } } };
+    ws.deliver(reply(9, asked[0]!.id, panelEvent("unit.looks", "keyframe", frame)));
+    expect(fake.installed).toEqual([frame]);
+  });
+
+  it("asks nothing where the manifest has no such feed", () => {
+    const { app, ws } = boot([]);
+    const fake = fakeModule();
+    app.bindPixelModule(fake.m as never);
+    const before = ws.reqs().length;
+    fake.ask(["tacsim.unit.design.x"]);
+    expect(ws.reqs().length).toBe(before);
+  });
+});

@@ -68,6 +68,8 @@ interface PixelExports {
   mp_wanted?(): number;
   mp_output?(): number;
   mp_check_look?(len: number): number;
+  mp_wanted_looks?(): number;
+  mp_looks?(len: number): number;
   mp_preview?(len: number): number;
 }
 
@@ -108,6 +110,8 @@ export class PixelModule {
   #height = 0;
   #modelUrl: ModelUrl | null = null;
   readonly #requested = new Set<string>();
+  #askLooks: ((types: string[]) => void) | null = null;
+  readonly #looksAsked = new Set<string>();
 
   constructor(instance: WebAssembly.Instance) {
     const x = instance.exports as unknown as PixelExports;
@@ -131,8 +135,50 @@ export class PixelModule {
     const ptr = this.#x.mp_input(bytes.length);
     new Uint8Array(this.#x.memory.buffer, ptr, bytes.length).set(bytes);
     const kept = this.#x.mp_feed(feed, bytes.length) === 1;
-    if (kept) this.#fetchWanted();
+    if (kept) {
+      this.#fetchWanted();
+      this.#askWantedLooks();
+    }
     return kept;
+  }
+
+  /** **Ask for published designs' looks through `ask`** (doc 31 cut UD.3b,
+   * D-31-16): after every feed kept, each unit type the held feeds name
+   * that has no look yet is asked for once, at most eight a call (the
+   * `unit.looks` query's bound); the answer comes back through
+   * {@link installLooks}. Until it does the unit draws as `unknown`. */
+  askLooksWith(ask: (types: string[]) => void): void {
+    this.#askLooks = ask;
+    this.#askWantedLooks();
+  }
+
+  /** The unit types the held feeds name that have no look (`mp_wanted_looks`). */
+  wantedLooks(): string[] {
+    if (typeof this.#x.mp_wanted_looks !== "function" || typeof this.#x.mp_output !== "function") return [];
+    const len = this.#x.mp_wanted_looks();
+    const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
+    try {
+      return JSON.parse(text) as string[];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Install a `unit.looks` keyframe's looks: how many were new. */
+  installLooks(frame: unknown): number {
+    if (typeof this.#x.mp_looks !== "function") return 0;
+    return this.#x.mp_looks(this.#write(JSON.stringify(frame)));
+  }
+
+  #askWantedLooks(): void {
+    const ask = this.#askLooks;
+    if (ask === null) return;
+    const fresh = this.wantedLooks().filter((t) => !this.#looksAsked.has(t));
+    for (let i = 0; i < fresh.length; i += 8) {
+      const batch = fresh.slice(i, i + 8);
+      for (const t of batch) this.#looksAsked.add(t);
+      ask(batch);
+    }
   }
 
   /** **Fetch model files from `resolve` as the feeds need them** (doc 31

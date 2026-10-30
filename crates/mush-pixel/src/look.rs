@@ -885,10 +885,96 @@ pub fn shipped() -> &'static [Look] {
     })
 }
 
-/// The shipped look that draws unit type `unit`, if any.
+/// The looks installed at run time (doc 31 cut UD.3b, D-31-16): published
+/// designs' looks, learned from the `unit.looks` feed. Append-only, each
+/// leaked once, so every reader keeps a `'static` look and an index never
+/// moves.
+static RUNTIME: std::sync::RwLock<Vec<&'static Look>> = std::sync::RwLock::new(Vec::new());
+
+fn runtime() -> Vec<&'static Look> {
+    RUNTIME
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// **Install a published design's look** for unit type `unit` (doc 31 cut
+/// UD.3b): parsed and checked as a shipped look is, its id the unit type; a
+/// unit that already has a look (shipped or installed) keeps it. Whether it
+/// was installed.
+///
+/// # Errors
+///
+/// [`LookError`] when the look does not parse, or does not name `unit`.
+pub fn install(unit: &str, text: &str) -> Result<bool, LookError> {
+    let mut look = Look::parse(text)?;
+    if !look.units.iter().any(|u| u == unit) {
+        return err(format!("look: it draws {:?}, not {unit}", look.units));
+    }
+    if for_unit(unit).is_some() {
+        return Ok(false);
+    }
+    look.id = unit.to_string();
+    RUNTIME
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Box::leak(Box::new(look)));
+    Ok(true)
+}
+
+/// The look at `index` among every look this process draws: the shipped ones
+/// in [`shipped`]'s order, then those [`install`]ed, in install order.
+#[must_use]
+pub fn by_index(index: usize) -> Option<&'static Look> {
+    let shipped = shipped();
+    match shipped.get(index) {
+        Some(look) => Some(look),
+        None => runtime().get(index - shipped.len()).copied(),
+    }
+}
+
+/// The index ([`by_index`]) of the look that draws unit type `unit`.
+#[must_use]
+pub fn index_for_unit(unit: &str) -> Option<usize> {
+    let shipped = shipped();
+    shipped
+        .iter()
+        .position(|l| l.units.iter().any(|u| u == unit))
+        .or_else(|| {
+            runtime()
+                .iter()
+                .position(|l| l.units.iter().any(|u| u == unit))
+                .map(|i| shipped.len() + i)
+        })
+}
+
+/// The look that draws unit type `unit`, if any: a shipped one, else one
+/// [`install`]ed.
 #[must_use]
 pub fn for_unit(unit: &str) -> Option<&'static Look> {
-    shipped().iter().find(|l| l.units.iter().any(|u| u == unit))
+    shipped()
+        .iter()
+        .find(|l| l.units.iter().any(|u| u == unit))
+        .or_else(|| {
+            runtime()
+                .into_iter()
+                .find(|l| l.units.iter().any(|u| u == unit))
+        })
+}
+
+/// **The unit types a client still needs a look for** (doc 31 cut UD.3b):
+/// each named type with no shipped or installed look, once each, in the
+/// order first named. A type with no look anywhere (a hauler) is named too;
+/// the caller asks once and remembers.
+#[must_use]
+pub fn wanted<'a>(types: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for unit in types {
+        if unit != UNKNOWN && for_unit(unit).is_none() && !out.contains(&unit) {
+            out.push(unit);
+        }
+    }
+    out
 }
 
 /// The look an unclassified contact is drawn with ([`UNKNOWN`]).

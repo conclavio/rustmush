@@ -158,6 +158,15 @@ fn ud3_a_published_design_is_kept_never_republished_and_loads_after_a_restart() 
         packs: sources,
         ..enabled()
     };
+    // Doc 31 cut UD.3b: the tactics module's catalogue over the same packs
+    // (what the host composes `@unit/create` with) holds the design; the
+    // shipped-only one does not.
+    assert!(
+        tacsim::composition::tactics_catalog_with(&cfg)
+            .get(ID)
+            .is_some()
+    );
+    assert!(tacsim::composition::tactics_catalog().get(ID).is_none());
     let boot_data: HashMap<SmolStr, ModuleBootData> = HashMap::from([(
         SmolStr::new(tacsim::NS),
         ModuleBootData {
@@ -177,6 +186,14 @@ fn ud3_a_published_design_is_kept_never_republished_and_loads_after_a_restart() 
         "the design is in the catalogue the boot froze"
     );
     assert_eq!(snap(&tw).designs().count(), 1, "the registry row hydrated");
+    // Doc 31 cut UD.3b (D-31-16): the looks feed answers the design's look and
+    // nothing for a type that is not a design.
+    let frame = tacsim::design::looks_frame(
+        Some(snap(&tw)),
+        &serde_json::json!({ "types": [ID, "tacsim.unit.line_tank"] }),
+    );
+    assert_eq!(frame["looks"][ID]["units"][0], ID);
+    assert!(frame["looks"].get("tacsim.unit.line_tank").is_none());
     assert!(!snap(&tw).design_withdrawn(ID));
 
     // Withdrawn: still loaded, no longer offered.

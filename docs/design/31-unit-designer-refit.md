@@ -1,5 +1,11 @@
 # 31. The unit designer and the refit bay
 
+**Draft 0.6 — 2026-10-30, UD.3b built; D-31-10 corrected.** The tactics catalogue is built from the
+host's packs, and a published design's look reaches the web and the SSH TUI through a pulled
+`unit.looks` feed rather than a map on every keyframe (D-31-16). D-31-10 is corrected: the arena
+hash folds the arena's own mind-card catalogue and a match carries its units' resolved rules, so no
+catalogue generation is recorded ([cut notes](31-cut-notes.md) "UD.3b").
+
 **Draft 0.5 — 2026-10-30, UD.3 split; UD.3a built.** UD.3a makes a published design fieldable
 after a restart; the tactics catalogue, the catalogue generation and the looks on the feeds are
 UD.3b (§11). The staff verb is `@design`, not `@unit/design` (`@unit` is the tactics module's).
@@ -74,8 +80,8 @@ read by the host, verified by the one loader (`pack::load_pack`), ledgered as
 `tacsim:pack:{id}@{version}` rows in Redis whose digest the boot gate compares, so a published
 version is never re-signed in place (`record.rs`, `store.rs`, `@tacsim/pack`). Both routes land in
 one `Catalog::build_fielded`, which the composition root **freezes** at boot. The arena's hash folds
-the catalogue's definition count and its ordered definition digests (`arena/hash.rs`, item 3c), and
-a persisted unit names its exact `DefinitionRef` digest and fails boot if that definition is gone.
+its own mind-card catalogue (`arena/hash.rs`, item 3c; corrected in UD.3b, D-31-10 — not the
+server's unit catalogue), and a persisted unit names its exact `DefinitionRef` digest and fails boot if that definition is gone.
 
 **The look half.** One look a unit type under `crates/mush-pixel/looks/` (six files), checked by
 `mush-pixel` alone and against its unit by the contract test (doc 22 §6). Under U.6 the baked
@@ -244,20 +250,20 @@ module's `UnitCatalog` (behind `@unit/create`) is built by `tactics_catalog()` f
 content alone, so today not even an operator pack reaches it; UD.3 feeds it from the fielded
 catalogue, which mends that for operator packs too.
 
-**D-31-10 The match hash folds what it already folds.** The catalogue the arena hashes is the
-fielded catalogue, so a published design changes the catalogue's count and digests and therefore
-the hash of every match after it — which is correct, since the hash is a statement about the rules
-a match ran under. What follows is a recording duty, and a small one (Draft 0.3, the review):
-because a design version is never re-signed or deleted (D-31-9), the registry is **append-only**,
-and the fielded catalogue at any moment is the shipped content plus a prefix of the registry in
-publish order. A match records that prefix as a **generation** — a count, with one digest over the
-ordered definition digests as its check — and nothing is snapshotted. The public picture replay
-(`arena.replay`) replays recorded frames and needs only the looks; the private input tape
-(`arena/input_tape.rs`) **re-executes** the match from its opening snapshot, and its hash folds the
-catalogue, so it rebuilds the catalogue at the recorded generation from the current registry.
-Withdrawal is a fieldability flag outside the catalogue and moves no hash. A design's versions
-never leave Redis (backup and restore of the instance are doc 16c T-112's; designs are now part of
-what it must keep).
+**D-31-10 A match carries its own rules; no generation is recorded** (corrected 2026-10-30 in cut
+UD.3b). Drafts 0.1–0.3 read the arena's hash item 3c as folding the **server's** unit catalogue, so
+that a published design would move the hash of every later match and a match would have to record
+the catalogue generation it ran under. It does not: item 3c folds the arena's own **mind-card**
+catalogue (`arena::runtime_card::CardCatalog`, the Rhai profiles admitted for that match), and a
+unit enters the arena as a custody unit with its rules already resolved — its tactical unit, its
+mobility, sensor, weapons and profile — which the opening snapshot serializes with the rest of the
+arena. So publishing a design moves the hash of no match that does not field it; a match that
+fields one carries the design's rules in its own snapshot; and the private input tape
+(`arena/input_tape.rs`) re-executes from that snapshot without the registry. The public picture
+replay (`arena.replay`) replays recorded frames and needs only the looks (D-31-16), which the
+registry keeps: a design's versions are withdrawn, never deleted (D-31-9), and never leave Redis
+(backup and restore of the instance are doc 16c T-112's; designs are now part of what it must
+keep).
 
 A published design becomes fieldable at the next server restart (Q-31-1, ruled, §10).
 
@@ -467,7 +473,7 @@ runs compress it well) and a section-to-part map on the look. Not built, not sch
 | **UD.1** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the model catalogue (D-31-1..5): bake configs under `scripts/unit-bake/models/`, per-model `.mupk` files and `models/index.json` (format 3, keyed by model id), `"model"` on the six looks, `size_cm` on the look's top level, each model's fallback sheet, bakes keyed by model id (`bake_of_sheet`, `look_index` and the look-keyed `SheetKey` go), the installed pack and the fallback cache as tables that grow, the matrix check a model at a time and the look-against-model check, native binaries embedding every model by build script, the web's fetch by roster and on first sight with the text-sheet fallback (D-31-11), immutable content-named files; `units.bin` deleted | the six U.6 models ship as six files; a web client in a match of tanks fetches the tank's file and no other; a contact whose model has not arrived draws its text sheet and then its bake; no change to any picture once loaded |
 | **UD.2** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the staff designer v0 (D-31-6..8, §6): the `unit_design` invoke and `tacsim::design` (the rules check, the manifest's digest and `requires`), the look check and model preview in `mush-pixel-wasm`, the engine and studio, the chassis templates, the rules and look panes, undo/redo, the saved draft, the test hit, export to the two repo files | staff draw a biped variant with a different weapon fit from the catalogue, the studio refuses a broken one with the server's reason, and the exported files pass `cargo test` unchanged when committed |
 | **UD.3a** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the runtime design registry (D-31-9): Publish (the `unit_design` invoke's second op), `tacsim:design:` rows, the design namespace, the rows read by the host before the module registers and joined to the operator packs (a design that no longer verifies skipped, never a failed boot), `requires` resolved against the shipped content, `@design/list|show|withdraw`, a withdrawn design never offered to a new match, the studio's Publish, fieldable after a restart (Q-31-1) | a design published from the studio is in the catalogue after the restart and offered by `SIM UNIT`; the same version is refused a second time; a withdrawn one stays loaded and is no longer offered |
-| **UD.3b** | the rest of D-31-9, D-31-10, D-31-16: the tactics module's catalogue fed from the fielded one (`@unit/create` and IC hulls on a design), the generation on the match record and the input tape's rebuild, the `looks` map on the feeds and the runtime look table on the gateway and in wasm | a published design is drawn with its own label and doll over SSH, kitty and the web; its input tape re-executes bit for bit; committing the design leaves the catalogue's digests unchanged |
+| **UD.3b** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the rest of D-31-9 and D-31-16: the tactics module's catalogue built from the host's packs (`@unit/create` and IC hulls on a design), the pulled `unit.looks` feed, the runtime look table in `mush-pixel`, the web and the SSH TUI asking for a design's look once and drawing from it; D-31-10 corrected (no generation is recorded) | `@unit/create` resolves a published design after the restart; a client seeing a design's type asks its look once and draws its label, doll and model |
 | **UD.4** | the refit and repair bay on IC hulls (D-31-13..15): the bay view on a hull, quotes, the pending order state on the IC clock, the workshop orders through doc 08's driver at a `unit.maintain_refit` facility, refit families with slot-stable mount ids (the tank variants renamed), the refit transition, the arena refusal | an IC hull back from a sortie with a destroyed cannon is stripped, refitted with a stored like-for-like part, repaired and rearmed over IC time at a priced quote, or refitted to the laser variant and back, and a pod fitted and removed; a hull in the bay cannot launch; a simulator unit has no bay |
 
 UD.1 stands alone and could follow U.6 directly. UD.2 needs UD.1's index; UD.3 needs UD.2's
@@ -496,8 +502,9 @@ neither, and could go first once IC hulls return damaged, doc 27 H2).
 - **D-31-9** The runtime registry rides the pack ledger, in its own id namespace; withdrawn, never
   deleted; read by the host before the module registers, and the tactics catalogue fed from the
   fielded one (Draft 0.3).
-- **D-31-10** The match hash folds the fielded catalogue as today; the registry is append-only, a
-  match records its generation as a count, and the input tape rebuilds from it (Draft 0.3).
+- **D-31-10** (corrected in UD.3b) A match carries its units' resolved rules in its own snapshot,
+  and the arena hash folds its own mind-card catalogue, not the server's unit catalogue: no
+  generation is recorded and a tape needs no rebuild; the registry keeps every version's look.
 - **D-31-11** The web fetches a model by its own side's roster at muster (ruled 2026-10-30: never
   the other side's) and on first sight, text sheet until it
   arrives; nothing else crosses to a player.

@@ -170,3 +170,51 @@ match record and the looks on the feeds.
   host's packs do not reach; threading them needs six composition signatures across three crates.
   UD.3b.
 - **Not seen live**: no dev2 restart with a published design was driven.
+
+## UD.3b (2026-10-30) — the tactics catalogue and the looks, D-31-9, D-31-16; D-31-10 corrected
+
+Built on `claude/ud3b-catalogue-looks`, stacked on UD.3a (PR #199).
+
+- **The tactics catalogue** (D-31-9): `tacsim::composition::tactics_catalog_with(cfg)` builds the
+  fielded catalogue over the host's packs — the operator's and the published designs — and
+  `mush_composition::server_modules_with_tacsim_units` hands it to `TacticsModule`; `boot.rs` calls
+  that in the ordinary composition (no launch deployment, no mind commerce). `TacsimComposition::Standard`
+  carries the optional catalogue; every existing public function keeps its signature (the dozen
+  test callers unchanged). The launch and commerce compositions keep the shipped catalogue: each
+  builds its tactics module from its own captured resources, and neither is a path a staff
+  designer publishes into today.
+- **`unit.looks`** (D-31-16, as built differently from Draft 0.3): a **pulled** feed, not a `looks`
+  map on every feed. `{"types": [...]}` (at most eight) is answered `{"looks": {type: look}}` for
+  each type that is a published design (its newest version's look). A look is presentation, not
+  match state, so answering any type a client names leaks nothing; and a pull, asked once a type,
+  costs no bytes on the 20 Hz cockpit keyframe. Registered with the designer's invoke, after the
+  port's feeds; `boot_parity`'s manifest list carries it.
+- **The runtime look table** (`mush_pixel::look`): `install(unit, text)` (parsed and checked as a
+  shipped look; a unit with a look keeps it), `for_unit` consults it after the shipped looks,
+  `by_index`/`index_for_unit` span both, and `wanted(types)` names the types with no look. The
+  2.5D's `look_index` and the bake's `iso_art`/`art_chain` read through `by_index`; the fallback
+  chain cache became a map keyed by look index, so an installed look gets one.
+- **The web**: `PixelModule.askLooksWith(ask)` asks, after every kept feed, for the types the held
+  feeds name with no look, once each, eight a call; `installLooks` takes the answer
+  (`mp_wanted_looks`, `mp_looks`). `GameApp.bindPixelModule` sends the asks as `unit.looks`
+  queries where the manifest carries the feed and routes the answers back; `Game.svelte` binds the
+  page's module (`PictureView` stays inside its architecture test's two app calls).
+- **The SSH TUI**: a cockpit, replay or observer keyframe naming a type with no look asks
+  `unit.looks` once per connection; the answer installs the look into the gateway process's
+  table, so every picture it draws finds it.
+- **D-31-10 corrected**: Draft 0.1 misread the arena hash's item 3c as folding the server's unit
+  catalogue; it folds the arena's mind-card catalogue, and a unit enters the arena with its rules
+  resolved and serialized in the snapshot. So no catalogue generation is recorded and a tape needs
+  no rebuild (doc 31 §4).
+- **Tests**: `tacsim/tests/shard_3/designs.rs` — the host's tactics catalogue holds the design and
+  the shipped one does not; the looks feed answers the design's look and nothing for a shipped type.
+  `mush-pixel-wasm`: a feed naming a design asks its look, the answer installs it once, the type is
+  drawn from it. `web`: the module asks once and installs (`pixel.test.ts`); the app asks the feed
+  with the types and routes the answer, and asks nothing without the feed (`game.test.ts`).
+  `mush-net-ssh` (`quarry_screen.rs`, for its helpers): a cockpit frame asks once and the answer
+  installs.
+
+**Not done here, and why.**
+
+- **The launch and commerce compositions** keep the shipped tactics catalogue (above).
+- **Not seen live**: no dev2 restart drew a published design over SSH, kitty or the web.

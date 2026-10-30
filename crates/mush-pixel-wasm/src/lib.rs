@@ -42,6 +42,11 @@
 //! - `mp_wanted() -> len` — the model files the held feeds need and the
 //!   module lacks, one file name a line (`models/index.json`'s `file`), into
 //!   the output buffer `mp_output()` points at; `0` when nothing is wanted.
+//! - `mp_wanted_looks() -> len` — the unit types the held feeds name that have
+//!   no look yet (doc 31 cut UD.3b: published designs'), a JSON array into
+//!   the output buffer: what the page asks the `unit.looks` feed for.
+//! - `mp_looks(len) -> u32` — install a `unit.looks` keyframe's looks (the
+//!   input buffer's first `len` bytes): how many were installed.
 //! - `mp_check_look(len) -> len` — the staff unit designer's look check (doc
 //!   31 cut UD.2): the input buffer's first `len` bytes are
 //!   `{"look": <look JSON>, "rules": <the unit's def>}`; the answer,
@@ -366,6 +371,64 @@ pub extern "C" fn mp_wanted() -> u32 {
         s.output = text.into_bytes();
         u32::try_from(s.output.len()).unwrap_or(0)
     })
+}
+
+/// The unit types the held feeds name that have no look yet (see the crate's
+/// ABI, `mp_wanted_looks`).
+#[must_use]
+pub fn wanted_looks() -> Vec<String> {
+    with(|s| {
+        let mut types = Vec::new();
+        let mut names: Vec<&String> = s.feeds.keys().collect();
+        names.sort();
+        for name in names {
+            if let Some(feed) = s.feeds.get(name) {
+                mush_pixel::model::unit_types_in(feed, &mut types);
+            }
+        }
+        mush_pixel::model::wanted_looks(types)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    })
+}
+
+/// Install a `unit.looks` keyframe's looks (see the crate's ABI, `mp_looks`):
+/// how many were installed.
+#[must_use]
+pub fn looks(frame: &[u8]) -> u32 {
+    let Ok(v) = serde_json::from_slice::<Value>(frame) else {
+        return 0;
+    };
+    let mut installed = 0;
+    for (unit, look) in v
+        .get("looks")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        if mush_pixel::look::install(unit, &look.to_string()).unwrap_or(false) {
+            installed += 1;
+        }
+    }
+    installed
+}
+
+/// Write the types still wanting a look into the output buffer: its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_wanted_looks() -> u32 {
+    let text = serde_json::to_string(&wanted_looks()).unwrap_or_else(|_| "[]".into());
+    with(|s| {
+        s.output = text.into_bytes();
+        u32::try_from(s.output.len()).unwrap_or(0)
+    })
+}
+
+/// Install the looks in the input buffer's first `len` bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_looks(len: u32) -> u32 {
+    let input = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec)).unwrap_or_default();
+    looks(&input)
 }
 
 /// The staff unit designer's look check (see the crate's ABI,
@@ -751,6 +814,33 @@ mod tests {
         assert!(wanted().is_empty(), "every model on the map is installed");
         assert_eq!(mp_wanted(), 0);
         assert_eq!(mp_units(u32::MAX), 0, "past the input buffer");
+    }
+
+    /// Doc 31 cut UD.3b: a feed naming a type with no look asks for it; a
+    /// `unit.looks` answer installs it, and the type is drawn from it after.
+    #[test]
+    fn a_published_designs_look_is_asked_for_and_installed() {
+        let unit = "tacsim.unit.design.wasm_probe";
+        assert!(feed(
+            FEED_COCKPIT,
+            serde_json::json!({ "seated": true, "unit_type": unit, "contacts": [] })
+                .to_string()
+                .as_bytes()
+        ));
+        assert!(wanted_looks().iter().any(|t| t == unit));
+        let look = serde_json::json!({
+            "units": [unit], "label": "Probe", "short": "PR",
+            "model": "mc.st.tank_lvl2", "size_cm": [700, 250],
+        });
+        let frame = serde_json::json!({ "looks": { unit: look } }).to_string();
+        assert_eq!(looks(frame.as_bytes()), 1);
+        assert_eq!(looks(frame.as_bytes()), 0, "installed once");
+        assert!(!wanted_looks().iter().any(|t| t == unit));
+        assert_eq!(
+            mush_pixel::look::for_unit(unit).map(|l| l.label.as_str()),
+            Some("Probe")
+        );
+        assert!(feed(FEED_COCKPIT, b""));
     }
 
     /// Doc 31 cut UD.2: the designer's look check and preview answer through

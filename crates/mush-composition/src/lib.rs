@@ -101,7 +101,41 @@ pub fn server_modules_with_tacsim(
         onboarding,
         game,
         recovery,
-        TacsimComposition::Standard,
+        TacsimComposition::Standard(None),
+        Ok::<_, std::convert::Infallible>,
+    );
+    match composed {
+        Ok(composed) => composed,
+        Err(never) => match never {},
+    }
+}
+
+/// [`server_modules_with_tacsim`] with the tactics module's catalogue `units`
+/// (doc 31 cut UD.3b, D-31-9): what the booting host builds from its
+/// `[tacsim]` packs and the published unit designs
+/// ([`tacsim::composition::tactics_catalog_with`]), so `@unit/create` and the
+/// IC hulls resolve every unit the arena's catalogue holds.
+#[must_use]
+pub fn server_modules_with_tacsim_units(
+    weather: mush_weather::WeatherConfig,
+    economy: mush_economy::EconomyConfig,
+    atlas: mush_atlas::AtlasConfig,
+    onboarding: &mush_core::OnboardingConfig,
+    game: &tacsim::economy::GameEconomyConfig,
+    recovery: mush_campaign::RecoveryConfig,
+    units: mush_tactics::UnitCatalog,
+) -> (
+    Vec<Box<dyn GameModule>>,
+    mush_inventory::InventoryHandleCell,
+) {
+    let composed = compose_server_modules(
+        weather,
+        economy,
+        atlas,
+        onboarding,
+        game,
+        recovery,
+        TacsimComposition::Standard(Some(units)),
         Ok::<_, std::convert::Infallible>,
     );
     match composed {
@@ -171,7 +205,9 @@ pub fn server_modules_with_launch(
 #[derive(Clone, Copy)]
 enum TacsimComposition<'a> {
     Absent,
-    Standard,
+    /// The layer, its tactics catalogue the shipped content's (`None`) or the
+    /// one the host built from its packs (doc 31 cut UD.3b).
+    Standard(Option<mush_tactics::UnitCatalog>),
     Commerce(&'a mind_commerce::MindCommerce),
     Launch(&'a tacsim::launch::LaunchComposition),
 }
@@ -195,11 +231,11 @@ fn compose_server_modules<E>(
     ),
     E,
 > {
-    let (tacsim_delegate, commerce, launch) = match composition {
-        TacsimComposition::Absent => (false, None, None),
-        TacsimComposition::Standard => (true, None, None),
-        TacsimComposition::Commerce(commerce) => (true, Some(commerce), None),
-        TacsimComposition::Launch(launch) => (true, Some(launch.commerce()), Some(launch)),
+    let (tacsim_delegate, commerce, launch, units) = match composition {
+        TacsimComposition::Absent => (false, None, None, None),
+        TacsimComposition::Standard(units) => (true, None, None, units),
+        TacsimComposition::Commerce(commerce) => (true, Some(commerce), None, None),
+        TacsimComposition::Launch(launch) => (true, Some(launch.commerce()), Some(launch), None),
     };
     economy
         .instruments
@@ -267,7 +303,12 @@ fn compose_server_modules<E>(
         .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks));
     let tactics = match launch {
         Some(launch) => launch.tactics(),
-        None => mush_tactics::TacticsModule::with_catalog(tacsim::composition::tactics_catalog()),
+        // Doc 31 cut UD.3b (D-31-9): the host's catalogue when it built one —
+        // the operator packs and the published designs with the shipped
+        // content — so `@unit/create` resolves a design as the arena does.
+        None => mush_tactics::TacticsModule::with_catalog(
+            units.unwrap_or_else(tacsim::composition::tactics_catalog),
+        ),
     }
     .with_movement_custody_reads()
     .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy));
