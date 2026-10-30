@@ -428,7 +428,11 @@ fn check_term(window: TermWindow, now: WorldIcSeconds) -> Result<(), OwnerProjec
         TermPhase::NotEffective | TermPhase::Lapsed => Err(OwnerProjectionError::NotHeld),
     }
 }
-fn check_status(pinned: bool, withdrawn: bool, recalled: bool) -> Result<(), OwnerProjectionError> {
+pub(super) fn check_status(
+    pinned: bool,
+    withdrawn: bool,
+    recalled: bool,
+) -> Result<(), OwnerProjectionError> {
     if recalled || (withdrawn && !pinned) {
         return Err(OwnerProjectionError::NotHeld);
     }

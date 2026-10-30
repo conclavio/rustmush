@@ -1505,3 +1505,59 @@ fn resale_step_on_a_granted_transferable_licence() -> TestResult {
     );
     Ok(())
 }
+
+/// **`OwnFiled` applies the owner projection's status rule** (doc 17h cut M8g's finding over
+/// 17g C2h story part 3; `owner_holdings::check_status`): the author's own filed revision, held
+/// under the filing's Follow term, answers while clear; withdrawn (and not pinned) it is
+/// `Refused`, as the dispatch's admission reads it; recalled it is `Refused` too. Every caller
+/// (`+minds/holdings`' owner section, `@mind/attest`'s `own_filed_for`, the dispatch's owner
+/// read) skips a `Refused` row, so a licence holdings calls `Active` is one a launch admits.
+#[test]
+fn own_filed_hides_a_withdrawn_unpinned_or_recalled_revision() -> TestResult {
+    let mut f = Fixture::new_with_reads(true, tacsim_reads, true);
+    let request = f.request();
+    let (prepared, _) = f.engine.prepare_registered_composed_authoritative_action(
+        &config().initial_filing_action()?,
+        &request,
+        token(4),
+    )?;
+    let (_, install) = prepared.into_parts();
+    f.engine.install_composed_action(install)?;
+    let filed = FiledRevisionId::new(1)?;
+    check!(
+        read(&mut f, GOD, json!(1))?.is_ok(),
+        "a clear revision is held"
+    );
+    let status_family = f.families.status.clone();
+    let set = |f: &mut Fixture, withdrawn: bool, recalled: bool| -> TestResult {
+        let mut status = f
+            .engine
+            .action_state()
+            .get(&status_family, &filed.key())?
+            .cloned()
+            .ok_or("the status row")?;
+        status.withdrawn_by = withdrawn.then(|| token(9));
+        status.recalled_by = recalled.then(|| token(10));
+        let mut txn = f.engine.action_transaction(&status_family)?;
+        txn.replace(&status_family, &filed.key(), status)?;
+        let (_, install) = txn.prepare()?.into_parts();
+        f.engine.install_prepared_action(install)?;
+        Ok(())
+    };
+    set(&mut f, true, false)?;
+    check!(
+        matches!(read(&mut f, GOD, json!(1))?, Err(OwnerReadError::Refused)),
+        "a withdrawn revision the Follow term does not pin is not held"
+    );
+    set(&mut f, false, true)?;
+    check!(
+        matches!(read(&mut f, GOD, json!(1))?, Err(OwnerReadError::Refused)),
+        "a recalled revision is not held"
+    );
+    set(&mut f, false, false)?;
+    check!(
+        read(&mut f, GOD, json!(1))?.is_ok(),
+        "clear again, held again"
+    );
+    Ok(())
+}
