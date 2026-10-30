@@ -144,6 +144,7 @@ pub(crate) fn ground_rgb(ground: Ground) -> Rgb {
         Ground::Grass => [60, 100, 44],
         Ground::Water => [40, 70, 120],
         Ground::Road => [120, 112, 100],
+        Ground::Rock => [104, 104, 112],
         Ground::Woods => [34, 70, 38],
         Ground::WoodsHeavy => [24, 52, 28],
         Ground::Wall => [150, 150, 158],

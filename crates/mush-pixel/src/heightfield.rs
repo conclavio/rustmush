@@ -241,7 +241,7 @@ const LEVEL_GAIN: [f32; LEVELS] = [0.56, 0.74, 0.90, 1.05, 1.18];
 /// metre-high terraces read.
 const RELIEF_GAIN: f32 = 4.0;
 /// The ground kinds a texel can be, in table order.
-const KINDS: [Ground; 7] = [
+const KINDS: [Ground; 8] = [
     Ground::Open,
     Ground::Grass,
     Ground::Water,
@@ -249,6 +249,7 @@ const KINDS: [Ground; 7] = [
     Ground::Wall,
     Ground::Woods,
     Ground::WoodsHeavy,
+    Ground::Rock,
 ];
 
 /// One level of a baked colour map: `kind * LEVELS + level` per texel,
