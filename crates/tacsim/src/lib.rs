@@ -130,8 +130,6 @@ pub mod economy;
 pub mod ephemeris;
 pub mod field_ops;
 pub mod fixture;
-/// Doc 30 cut WG.1: **world generator v2 — `ground.draft.v1`, the generator, and
-/// the pack writer** (D-30-1..3).
 pub mod ground;
 pub mod hardware;
 // Doc 17h cut M8h: House owner attestation in live play.

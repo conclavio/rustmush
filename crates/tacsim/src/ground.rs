@@ -103,6 +103,9 @@ pub enum GroundSource {
     Extractor,
     /// Web Terrain & Arena Studio (`web/src/components/MapEditorStudio.svelte`).
     Studio,
+    /// Reconstructed from a pack pair (`tacsim::ground::from_packs`), with the
+    /// pack IDs and digests recorded in `provenance.inputs`.
+    Pack,
 }
 
 /// Provenance metadata carried by a [`GroundDraft`] (doc 30 §4, D-30-3).
@@ -475,6 +478,12 @@ impl GroundDraft {
                 "an extractor draft must name its upstream pack(s) in provenance.inputs".to_owned(),
             ));
         }
+        if self.provenance.source == GroundSource::Pack && self.provenance.inputs.is_empty() {
+            return Err(err(
+                "a pack-reconstructed draft must name its pack id(s) and digest(s) in provenance.inputs"
+                    .to_owned(),
+            ));
+        }
 
         let classes = decode_classes(&self.id, self.cols, self.rows, &self.classes)?;
         let elev = decode_elev(&self.id, self.cols, self.rows, &self.elev)?;
@@ -733,7 +742,7 @@ fn v3_features(fx: f64, fy: f64) -> f64 {
 }
 
 /// **Version 3's relief** (doc 21 cut G.7b): version 2's relief ([`elev_at`]
-/// with the bluff), unchanged on the fought-over ground, and [`v3_features`]
+/// with the bluff), unchanged on the fought-over ground, and `v3_features`
 /// blending in over [`V3_BLEND`] cells away from them.
 #[must_use]
 pub fn elev_v3(x: u16, y: u16) -> i16 {
@@ -1390,10 +1399,23 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
         atlas_version: atlas_pack.manifest().version(),
         arena_version: arena_pack.manifest().version(),
         provenance: GroundProvenance {
-            source: GroundSource::Generator,
+            source: GroundSource::Pack,
             version: format!("v{}", atlas_pack.manifest().version()),
             seed,
-            inputs: Vec::new(),
+            inputs: vec![
+                format!(
+                    "{}@v{}:{}",
+                    atlas_pack.manifest().id(),
+                    atlas_pack.manifest().version(),
+                    atlas_pack.manifest().digest().to_hex()
+                ),
+                format!(
+                    "{}@v{}:{}",
+                    arena_pack.manifest().id(),
+                    arena_pack.manifest().version(),
+                    arena_pack.manifest().digest().to_hex()
+                ),
+            ],
         },
         note: arena_def.note,
     };
@@ -1606,14 +1628,25 @@ pub fn generate(preset: &str, seed: u64, biome: Option<&str>) -> Result<GroundDr
     }
     match preset {
         "proving_ground" => {
-            let mut draft = proving_ground_draft()?;
             if seed != 2350 {
-                draft.provenance.seed = Some(seed);
+                return Err(GroundError::Invalid {
+                    id: preset.to_owned(),
+                    detail: format!(
+                        "`proving_ground` is the fixed V3 landscape (seed 2350); got `--seed {seed}`"
+                    ),
+                });
             }
-            if let Some(b) = biome {
-                draft.biome = b.to_owned();
+            if let Some(b) = biome
+                && b != "temperate"
+            {
+                return Err(GroundError::Invalid {
+                    id: preset.to_owned(),
+                    detail: format!(
+                        "`proving_ground` is the fixed temperate V3 landscape; got `--biome {b}`"
+                    ),
+                });
             }
-            Ok(draft)
+            proving_ground_draft()
         }
         other => Err(GroundError::Invalid {
             id: other.to_owned(),
@@ -1649,8 +1682,12 @@ mod tests {
             content::PROVING_GROUND_ATLAS_JSON,
             content::PROVING_GROUND_JSON,
         )?;
+        check_eq!(draft.provenance.source, GroundSource::Pack);
+        check_eq!(draft.provenance.inputs.len(), 2);
         let expected = proving_ground_draft()?;
-        check_eq!(draft, expected);
+        let mut normalized = draft.clone();
+        normalized.provenance = expected.provenance.clone();
+        check_eq!(normalized, expected);
         let built = build(&draft)?;
         check_eq!(
             built.atlas_json.replace("\r\n", "\n"),
@@ -1670,6 +1707,12 @@ mod tests {
         draft.provenance.source = GroundSource::Extractor;
         draft.provenance.inputs.clear();
         check!(draft.validate().is_err());
+
+        draft.provenance.source = GroundSource::Pack;
+        check!(draft.validate().is_err());
+
+        check!(generate("proving_ground", 7, None).is_err());
+        check!(generate("proving_ground", 2350, Some("mars")).is_err());
 
         let mut bad_void = proving_ground_draft()?;
         let void_grid = vec![TerrainClass::Void; usize::from(SIDE) * usize::from(SIDE)];
