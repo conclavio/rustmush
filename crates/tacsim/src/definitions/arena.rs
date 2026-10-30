@@ -198,6 +198,9 @@ pub struct TankDef {
     pub unit: CanonicalId,
 }
 
+/// Supported planetary/regional surface biome identifiers for [`ArenaDef::biome`].
+pub const BIOMES: [&str; 4] = ["temperate", "mars", "lunar", "ice"];
+
 /// One arena (doc 16 §4's `arenas/proving_ground.json`).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -231,12 +234,35 @@ pub struct ArenaDef {
     pub modes: Vec<ArenaModeDef>,
     /// The stock units.
     pub tanks: Vec<TankDef>,
+    /// Optional planetary/regional biome (`"temperate"`, `"mars"`, `"lunar"`, `"ice"`).
+    /// When set, [`from_pack`] adapts surface classes to the biome's regolith/sand/ice
+    /// vocabulary so locomotion pricing and client `arena.map` legends agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biome: Option<String>,
+    /// When `true`, [`from_pack`] synthesizes deterministic multi-scale integer
+    /// relief (canyons/mesas, craters, or glacial ridges) across passable ground
+    /// outside entry zones, roads, and water so server-side line of sight and
+    /// slope physics match the client heightfield renderer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub procedural_relief: bool,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
 }
 
 impl ArenaDef {
+    /// Derive a playable biome and relief variant from an existing [`ArenaDef`]
+    /// over the same atlas tiles, remapping TankDef slot IDs to `arena_id` when
+    /// needed.
+    #[must_use]
+    pub fn biome_variant(&self, biome: &str, label: &str) -> Self {
+        let mut out = self.clone();
+        out.label = label.to_owned();
+        out.biome = Some(biome.to_owned());
+        out.procedural_relief = true;
+        out
+    }
+
     /// The record key of the region this arena stands on.
     ///
     /// # Errors
@@ -276,6 +302,14 @@ impl ArenaDef {
     pub fn check(&self, entry: &str) -> Result<(), DefinitionError> {
         crate::definitions::check_label(entry, &self.label)?;
         crate::definitions::check_note(entry, &self.note)?;
+        if let Some(biome) = &self.biome
+            && !BIOMES.contains(&biome.as_str())
+        {
+            return Err(DefinitionError::value(
+                entry,
+                format!("biome is one of {BIOMES:?}; `{biome}` is not"),
+            ));
+        }
         if self.cols == 0
             || self.rows == 0
             || self.cols > mush_atlas::cells::MAX_TILE_SIDE
@@ -976,7 +1010,8 @@ pub fn from_pack(
             total,
         });
     }
-    let cells: Vec<TerrainCell> = cells.into_iter().flatten().collect();
+    let mut cells: Vec<TerrainCell> = cells.into_iter().flatten().collect();
+    apply_biome_and_relief(entry, def, table, &mut cells);
     // **16b cut AE.1** (16c `B-58`): priced per row. The cells carry the tracked
     // row as `move_cost`, as they always have; the terrain carries the whole
     // class table beside them, so a walker and a car pay their own rows. This is
@@ -1069,6 +1104,182 @@ fn move_cost_of(table: &LocomotionTable, class: TerrainClass) -> u16 {
     match table.cost(class.label(), TRACKED, &[]) {
         Some(cost) => u16::try_from(cost).unwrap_or(u16::MAX),
         None => 0,
+    }
+}
+
+/// Integer sine table for one 64-step period, scaled by `1000`.
+const SIN64: [i32; 64] = [
+    0, 98, 195, 290, 383, 471, 556, 634, 707, 773, 831, 882, 924, 957, 981, 995, 1000, 995, 981,
+    957, 924, 882, 831, 773, 707, 634, 556, 471, 383, 290, 195, 98, 0, -98, -195, -290, -383, -471,
+    -556, -634, -707, -773, -831, -882, -924, -957, -981, -995, -1000, -995, -981, -957, -924,
+    -882, -831, -773, -707, -634, -556, -471, -383, -290, -195, -98,
+];
+
+fn sin64(idx: i64) -> i32 {
+    SIN64.get(idx.rem_euclid(64) as usize).copied().unwrap_or(0)
+}
+
+/// Apply optional biome surface remapping and deterministic integer relief
+/// synthesis to `cells` when [`ArenaDef::biome`] or [`ArenaDef::procedural_relief`]
+/// is set. Leaves arenas with neither option untouched to the byte.
+fn apply_biome_and_relief(
+    entry: &str,
+    def: &ArenaDef,
+    table: &LocomotionTable,
+    cells: &mut [TerrainCell],
+) {
+    if def.biome.is_none() && !def.procedural_relief {
+        return;
+    }
+    let biome = def.biome.as_deref().unwrap_or("temperate");
+    if matches!(biome, "mars" | "lunar" | "ice") {
+        for cell in cells.iter_mut() {
+            let mapped = match (biome, cell.class) {
+                ("mars", TerrainClass::Grass) => TerrainClass::Sand,
+                ("mars", TerrainClass::Water | TerrainClass::WaterDeep) => TerrainClass::Ground,
+                ("lunar", TerrainClass::Grass) => TerrainClass::Regolith,
+                ("lunar", TerrainClass::Water | TerrainClass::WaterDeep) => TerrainClass::Ground,
+                ("ice", TerrainClass::Water | TerrainClass::WaterDeep) => TerrainClass::Ice,
+                (_, other) => other,
+            };
+            if mapped != cell.class {
+                cell.class = mapped;
+                cell.move_cost = move_cost_of(table, mapped);
+            }
+        }
+    }
+    if !def.procedural_relief {
+        return;
+    }
+    let w = usize::from(def.cols);
+    let h = usize::from(def.rows);
+    if w == 0 || h == 0 || cells.len() != w.saturating_mul(h) {
+        return;
+    }
+    let seed = entry
+        .bytes()
+        .chain(biome.bytes())
+        .fold(0xcbf2_9ce4_8422_2325_u64, |acc, b| {
+            (acc ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+    let px = ((seed & 0x3f) as i64) * 3;
+    let py = (((seed >> 8) & 0x3f) as i64) * 5;
+
+    let zone_dist = |x: u16, y: u16| -> u16 {
+        def.entry_zones
+            .iter()
+            .map(|z| {
+                let dx = if x < z.x0 {
+                    z.x0 - x
+                } else {
+                    x.saturating_sub(z.x1)
+                };
+                let dy = if y < z.y0 {
+                    z.y0 - y
+                } else {
+                    y.saturating_sub(z.y1)
+                };
+                dx.max(dy)
+            })
+            .min()
+            .unwrap_or(16)
+    };
+
+    let mut raw = vec![0i32; cells.len()];
+    let cx1 = (w as i64) * 35 / 100;
+    let cy1 = (h as i64) * 42 / 100;
+    let cx2 = (w as i64) * 68 / 100;
+    let cy2 = (h as i64) * 58 / 100;
+    let mid_y = (h as i64) / 2;
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            let class = cells.get(idx).map_or(TerrainClass::Void, |c| c.class);
+            if matches!(class, TerrainClass::Water | TerrainClass::WaterDeep) {
+                continue;
+            }
+            let d = zone_dist(x as u16, y as u16);
+            if d == 0 {
+                continue;
+            }
+            let env = i32::from(d.min(12)) * 256 / 12;
+            let xi = x as i64;
+            let yi = y as i64;
+            let swell = (sin64((xi + px) * 64 / 72) * 320
+                + sin64((yi + py) * 64 / 64) * 280
+                + sin64((xi + yi + px) * 64 / 48) * 180)
+                / 1000;
+            let shape = match biome {
+                "mars" => {
+                    // Central canyon trough with stepped northern and southern mesa shelves.
+                    let dy = (yi - mid_y).abs();
+                    let shelf = ((dy - 18).clamp(0, 36) * 28) as i32;
+                    shelf + swell
+                }
+                "lunar" => {
+                    // Two broad mare impact craters with raised circular rims and depressed bowls.
+                    let crater = |cx: i64, cy: i64, r_sq: i64| -> i32 {
+                        let d_sq = (xi - cx) * (xi - cx) + (yi - cy) * (yi - cy);
+                        if d_sq < r_sq {
+                            -420 * ((r_sq - d_sq) as i32) / (r_sq as i32)
+                        } else if d_sq < r_sq * 2 {
+                            380 * ((r_sq * 2 - d_sq) as i32) / (r_sq as i32)
+                        } else {
+                            0
+                        }
+                    };
+                    crater(cx1, cy1, 480) + crater(cx2, cy2, 360) + swell / 2
+                }
+                "ice" => {
+                    // Long parallel glacial pressure ridges and shelf terraces.
+                    let ridge = sin64((xi * 2 - yi + px) * 64 / 56) * 440 / 1000;
+                    ridge + swell
+                }
+                _ => swell * 3 / 2,
+            };
+            let road_scale = if matches!(class, TerrainClass::Road | TerrainClass::Paved) {
+                128
+            } else {
+                256
+            };
+            if let Some(slot) = raw.get_mut(idx) {
+                *slot = shape * env / 256 * road_scale / 256;
+            }
+        }
+    }
+
+    // Two smoothing passes keep adjacent cell deltas <= 45 cm (<= 4.5% grade and
+    // 1 byte per cell in `elev_field`).
+    for _ in 0..2 {
+        let prev = raw.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let idx = y * w + x;
+                let class = cells.get(idx).map_or(TerrainClass::Void, |c| c.class);
+                if matches!(class, TerrainClass::Water | TerrainClass::WaterDeep)
+                    || zone_dist(x as u16, y as u16) == 0
+                {
+                    if let Some(slot) = raw.get_mut(idx) {
+                        *slot = 0;
+                    }
+                    continue;
+                }
+                let at = |xx: usize, yy: usize| prev.get(yy * w + xx).copied().unwrap_or(0);
+                let xm = x.saturating_sub(1);
+                let xp = (x + 1).min(w - 1);
+                let ym = y.saturating_sub(1);
+                let yp = (y + 1).min(h - 1);
+                let avg = (at(x, y) * 4 + at(xm, y) + at(xp, y) + at(x, ym) + at(x, yp)) / 8;
+                if let Some(slot) = raw.get_mut(idx) {
+                    *slot = avg;
+                }
+            }
+        }
+    }
+
+    for (cell, elev) in cells.iter_mut().zip(raw) {
+        cell.elev_cm = i16::try_from(elev.clamp(-4_000, 4_000)).unwrap_or(0);
     }
 }
 
@@ -1380,5 +1591,79 @@ mod tests {
         let mut stray = def;
         stray.modes = vec![hold("The Pub", 6, 120_000)];
         assert!(stray.arena_modes().is_empty());
+    }
+
+    #[test]
+    fn biome_variants_validate_remap_classes_and_synthesize_bounded_relief() {
+        let base = shipped();
+        for biome in BIOMES {
+            let v = base.biome_variant(biome, &format!("{biome} proving ground"));
+            assert_eq!(refusal(&v), None, "{biome} variant is valid");
+        }
+        let bad = base.biome_variant("lava_world", "Lava World");
+        assert!(
+            refusal(&bad).is_some_and(|why| why.contains("biome is one of")),
+            "unknown biome is refused"
+        );
+
+        let table = LocomotionTable::shipped();
+        let make_grid = |def: &ArenaDef, entry: &str| -> ArenaTerrain {
+            let total = usize::from(def.cols) * usize::from(def.rows);
+            let mut cells = vec![
+                TerrainCell {
+                    class: TerrainClass::Grass,
+                    elev_cm: 0,
+                    move_cost: move_cost_of(table, TerrainClass::Grass),
+                };
+                total
+            ];
+            // Add a pond and a road strip so biome remapping and road scaling are exercised.
+            for x in 80..110usize {
+                cells[20 * usize::from(def.cols) + x] = TerrainCell {
+                    class: TerrainClass::Water,
+                    elev_cm: 0,
+                    move_cost: move_cost_of(table, TerrainClass::Water),
+                };
+                cells[97 * usize::from(def.cols) + x] = TerrainCell {
+                    class: TerrainClass::Road,
+                    elev_cm: 0,
+                    move_cost: move_cost_of(table, TerrainClass::Road),
+                };
+            }
+            apply_biome_and_relief(entry, def, table, &mut cells);
+            ArenaTerrain::priced(def.cols, def.rows, def.cell_cm, cells, table).expect("terrain")
+        };
+
+        let mars_def = base.biome_variant("mars", "Mars Canyon");
+        let mars = make_grid(&mars_def, "tacsim.arena.mars_canyon");
+        assert_eq!(mars.get(0, 0).map(|c| c.class), Some(TerrainClass::Sand));
+        assert_eq!(
+            mars.get(90, 20).map(|c| c.class),
+            Some(TerrainClass::Ground)
+        );
+        assert!(mars.cells().iter().any(|c| c.elev_cm > 300));
+        let mars_bytes =
+            arena_map_within_bound("tacsim.arena.mars_canyon", &mars, &[]).expect("within bound");
+        assert!(mars_bytes <= crate::match_::cockpit::MAP_MAX_BYTES);
+
+        let lunar_def = base.biome_variant("lunar", "Lunar Crater");
+        let lunar = make_grid(&lunar_def, "tacsim.arena.lunar_crater");
+        assert_eq!(
+            lunar.get(0, 0).map(|c| c.class),
+            Some(TerrainClass::Regolith)
+        );
+        assert!(lunar.cells().iter().any(|c| c.elev_cm < -100));
+        assert!(lunar.cells().iter().any(|c| c.elev_cm > 100));
+        let lunar_bytes =
+            arena_map_within_bound("tacsim.arena.lunar_crater", &lunar, &[]).expect("within bound");
+        assert!(lunar_bytes <= crate::match_::cockpit::MAP_MAX_BYTES);
+
+        let ice_def = base.biome_variant("ice", "Ice Shelf");
+        let ice = make_grid(&ice_def, "tacsim.arena.ice_shelf");
+        assert_eq!(ice.get(90, 20).map(|c| c.class), Some(TerrainClass::Ice));
+        assert!(ice.cells().iter().any(|c| c.elev_cm != 0));
+        let ice_bytes =
+            arena_map_within_bound("tacsim.arena.ice_shelf", &ice, &[]).expect("within bound");
+        assert!(ice_bytes <= crate::match_::cockpit::MAP_MAX_BYTES);
     }
 }
