@@ -99,13 +99,24 @@ impl TrustedIngress {
                 return;
             }
         };
-        match russh::server::run_stream(Arc::clone(&self.config), stream, handler).await {
-            Ok(session) => {
-                if let Err(error) = session.await {
-                    tracing::debug!(%error, "trusted ingress: SSH session ended with error");
-                }
+        let session = match tokio::time::timeout(
+            PREAMBLE_TIMEOUT,
+            russh::server::run_stream(Arc::clone(&self.config), stream, handler),
+        )
+        .await
+        {
+            Ok(Ok(session)) => session,
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "trusted ingress: SSH start failed");
+                return;
             }
-            Err(error) => tracing::debug!(%error, "trusted ingress: SSH start failed"),
+            Err(_) => {
+                tracing::info!("trusted ingress: SSH start timed out");
+                return;
+            }
+        };
+        if let Err(error) = session.await {
+            tracing::debug!(%error, "trusted ingress: SSH session ended with error");
         }
     }
 }
@@ -293,8 +304,16 @@ impl BoundTrustedServer {
         match std::fs::symlink_metadata(&cfg.socket_path) {
             Ok(meta) if meta.file_type().is_socket() => {
                 // Only a *stale* socket is replaced: if something answers,
-                // another instance is configured with the same path.
-                if std::os::unix::net::UnixStream::connect(&cfg.socket_path).is_ok() {
+                // another instance is configured with the same path. Probed
+                // asynchronously with a short timeout so a full accept backlog
+                // never blocks a Tokio worker thread (F-7).
+                let live = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    tokio::net::UnixStream::connect(&cfg.socket_path),
+                )
+                .await
+                .is_ok_and(|r| r.is_ok());
+                if live {
                     return Err(bind_err(std::io::Error::new(
                         std::io::ErrorKind::AddrInUse,
                         "a live socket is already listening at the path",
@@ -310,6 +329,15 @@ impl BoundTrustedServer {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(bind_err(e)),
+        }
+        if let Some(parent) = cfg.socket_path.parent()
+            && let Ok(meta) = std::fs::metadata(parent)
+            && meta.permissions().mode() & 0o2000 == 0
+        {
+            tracing::warn!(
+                dir = %parent.display(),
+                "trusted ingress directory is not setgid (02750 group sshdoorway); socket inherits the process's primary group"
+            );
         }
         let listener = tokio::net::UnixListener::bind(&cfg.socket_path).map_err(bind_err)?;
         std::fs::set_permissions(&cfg.socket_path, std::fs::Permissions::from_mode(0o660))

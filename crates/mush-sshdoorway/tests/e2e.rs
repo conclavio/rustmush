@@ -554,3 +554,168 @@ async fn a_front_door_with_a_character_part_still_reaches_the_welcome_screen() {
     let mut ch = shell(&h).await;
     read_until(&mut ch, "connect <account> <password>").await;
 }
+
+/// Regression test for F-3: a client that sends the `SSH-2.0-` banner (so
+/// `run_stream` returns `Ok(RunningSession)` and enters KEX) and then stalls
+/// forever without sending `KEXINIT` or closing its TCP socket must be killed
+/// by the watchdog via `KillSwitch` and release its slot and drain guard.
+#[tokio::test]
+async fn kex_stall_after_ssh_banner_is_aborted_and_releases_slot() {
+    use tokio::io::AsyncWriteExt;
+    let t = Rig::start_with(Hooks::default(), |cfg| {
+        cfg.limits.auth_deadline_secs = 1;
+    })
+    .await;
+    let mut raw = tokio::net::TcpStream::connect(t.addr).await.unwrap();
+    raw.write_all(b"SSH-2.0-OpenSSH_9.0\r\n").await.unwrap();
+    raw.flush().await.unwrap();
+    wait_for(|| t.door.limits.live() == 1 && t.door.drain.live() == 1).await;
+    // Hold `raw` open so the client never sends EOF; the watchdog must abort
+    // the underlying Killable<TcpStream> even while `kex.active()` is true.
+    wait_for_secs(6, || t.door.limits.live() == 0 && t.door.drain.live() == 0).await;
+    drop(raw);
+}
+
+/// Regression test for F-1: over-cap connections are capped at
+/// `MAX_UNCOUNTED_PER_KEY` (2) simultaneous banner slots per IP key (further
+/// concurrent connections are dropped at TCP accept without claiming global
+/// slots), and half-open over-cap clients are forcibly aborted after refusal.
+#[tokio::test]
+async fn over_cap_banner_slots_are_bounded_and_aborted_when_half_open() {
+    let t = Rig::start_with(Hooks::default(), |cfg| {
+        cfg.limits.per_ip_connections = 1;
+        cfg.limits.auth_deadline_secs = 2;
+    })
+    .await;
+    let mut a = t.client().await;
+    assert!(a.authenticate_none("dev1").await.unwrap().success());
+    let _ch = shell(&a).await;
+
+    // Two simultaneous over-cap connections are admitted to deliver the banner.
+    let mut b = t.client().await;
+    let _c = t.client().await;
+    assert_eq!(t.door.limits.live(), 3);
+
+    // A third simultaneous over-cap connection from the same IP is dropped at
+    // TCP accept without claiming a global slot.
+    assert!(t.try_client().await.is_err());
+    assert_eq!(t.door.limits.live(), 3);
+
+    // Refuse `b` and leave both `b` and `_c` open without disconnecting from
+    // the client side; the doorway aborts both within a few seconds.
+    assert!(refused(b.authenticate_none("dev1").await));
+    wait_for_secs(8, || t.door.limits.live() == 1).await;
+}
+
+/// Regression test for F-2: a burst of invalid menu submissions (or a client
+/// that never reads menu output) is cut off at `MAX_MENU_TRIES` and aborted.
+#[tokio::test]
+async fn menu_invalid_submission_flood_is_capped_and_closed() {
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    assert!(h.authenticate_none("nick").await.unwrap().success());
+    let mut ch = shell(&h).await;
+    read_until(&mut ch, "Type a number").await;
+    let payload = b"99\r".repeat(32);
+    let _ = ch.data(&payload[..]).await;
+    let out = read_to_close(&mut ch).await;
+    assert!(out.contains("Too many invalid choices."), "{out}");
+    wait_for_secs(6, || t.door.drain.live() == 0).await;
+}
+
+/// Regression test for F-4: repeated public-key offers against a blocked
+/// service or alternating services cannot dial upstream more than `MAX_DIALS`
+/// times on one connection.
+#[tokio::test]
+async fn publickey_probes_and_service_switches_cap_upstream_dials() {
+    let t = Rig::start(Hooks {
+        blocked: true,
+        ..Hooks::default()
+    })
+    .await;
+    let mut h = t.client().await;
+    // Against a blocked service, the first key offer dials once and learns the
+    // notice; subsequent offers before signing are rejected without re-dialing.
+    assert!(
+        h.authenticate_publickey("dev1+faenix", with_hash(test_key(1)))
+            .await
+            .unwrap()
+            .success()
+    );
+    assert_eq!(t.hooks.opened().len(), 1);
+    let mut ch = shell(&h).await;
+    let out = read_to_close(&mut ch).await;
+    assert!(
+        out.contains("Connections from your address are not permitted."),
+        "{out}"
+    );
+
+    // Alternating services on a single connection cannot exceed MAX_DIALS (4).
+    let t2 = Rig::start(Hooks::default()).await;
+    let mut h2 = t2.client().await;
+    for i in 0..8u8 {
+        let user = if i % 2 == 0 {
+            "dev1+faenix"
+        } else {
+            "hidden+faenix"
+        };
+        let _ = h2
+            .authenticate_publickey(user, with_hash(test_key(10 + i)))
+            .await;
+    }
+    assert!(
+        t2.hooks.opened().len() <= mush_sshdoorway::server::MAX_DIALS,
+        "opened {} upstream connections, expected <= {}",
+        t2.hooks.opened().len(),
+        mush_sshdoorway::server::MAX_DIALS
+    );
+}
+
+/// Regression test for F-6: a player whose `ssh-agent` offers 6 unregistered
+/// keys before falling back to password can still log in with their password.
+#[tokio::test]
+async fn multi_key_ssh_agent_falls_through_to_password_without_lockout() {
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    for seed in 10..16 {
+        assert!(
+            !h.authenticate_publickey("dev1+faenix", with_hash(test_key(seed)))
+                .await
+                .unwrap()
+                .success()
+        );
+    }
+    assert!(
+        h.authenticate_password("dev1+faenix", "pw")
+            .await
+            .unwrap()
+            .success()
+    );
+}
+
+/// Regression test for F-11: a `SIGHUP` config reload takes effect immediately
+/// for a session that is already sitting at the menu.
+#[tokio::test]
+async fn sighup_reload_updates_an_open_menu_session() {
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    assert!(h.authenticate_none("nick").await.unwrap().success());
+    let mut ch = shell(&h).await;
+    read_until(&mut ch, "Type a number").await;
+
+    let mut cfg = (*t.door.config()).clone();
+    cfg.services.push(mush_sshdoorway::config::ServiceCfg {
+        name: "dev2".into(),
+        title: "Development server 2".into(),
+        socket: "unused".into(),
+        listed: true,
+    });
+    t.door.reload(cfg).unwrap();
+
+    ch.data(&b"dev2\r"[..]).await.unwrap();
+    let out = read_until(&mut ch, "connect <account> <password>").await;
+    assert!(
+        out.contains("Next time: ssh dev2+<account>@test.host"),
+        "{out}"
+    );
+}

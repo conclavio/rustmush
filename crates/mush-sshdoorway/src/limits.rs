@@ -12,8 +12,9 @@
 //!   a household behind one NAT is told why.
 //!
 //! The rate table is bounded: when it grows past [`MAX_TRACKED`] it is swept
-//! of stale windows, and if it is still full the new key is admitted
-//! untracked (failing open on rate, while the global cap still holds).
+//! of stale windows, and if it is still full new keys are refused at TCP
+//! accept (failing closed on rate so a spoofed/botnet flood cannot bypass
+//! per-key rate limits).
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -30,6 +31,12 @@ pub const MAX_TRACKED: usize = 65_536;
 /// How often a full rate table may be swept (the sweep is O(table) under the
 /// lock, so it must not run on every accept — adversarial review).
 pub const SWEEP_EVERY: Duration = Duration::from_secs(1);
+
+/// Most simultaneous over-cap (`counted == false`) connections admitted per
+/// key solely to deliver the "too many connections" SSH banner. Further
+/// concurrent connections from the same key are dropped at TCP accept so one
+/// key cannot hold `rate` global slots in banner/half-close state (F-1).
+pub const MAX_UNCOUNTED_PER_KEY: u32 = 2;
 
 /// The top 48 bits of an IPv6 address: one customer's typical allocation.
 /// IPv6 connections are also capped per /48 (in aggregate over its /64s), or
@@ -78,12 +85,15 @@ pub struct Caps {
 /// Why a connection was dropped at accept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DropReason {
-    /// Over the per-key rate.
+    /// Over the per-key rate (or the rate table is full).
     Rate,
     /// Over the global cap.
     Global,
     /// Over the per-/48 cap.
     Prefix48,
+    /// Over the per-key concurrency cap and [`MAX_UNCOUNTED_PER_KEY`] banner
+    /// slots are already in flight for this key.
+    PerIp,
 }
 
 /// The outcome of [`Limits::admit`].
@@ -105,6 +115,7 @@ pub struct Limits {
 #[derive(Debug, Default)]
 struct Inner {
     concurrent: HashMap<IpKey, u32>,
+    uncounted: HashMap<IpKey, u32>,
     concurrent48: HashMap<u64, u32>,
     last_sweep: Option<Instant>,
     rate: HashMap<IpKey, (Instant, u32)>,
@@ -127,22 +138,11 @@ impl Limits {
     /// Gate one accepted connection.
     pub fn admit(self: &Arc<Self>, ip: IpAddr, caps: Caps, now: Instant) -> Admission {
         let key = ip_key(ip);
+        let prefix = v6_48(ip);
         let mut inner = self.lock();
-        // Rate first: a flood is refused before it costs a slot.
-        if inner.rate.len() >= MAX_TRACKED
-            && !inner.rate.contains_key(&key)
-            && inner
-                .last_sweep
-                .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY)
-        {
-            inner.last_sweep = Some(now);
-            inner
-                .rate
-                .retain(|_, (start, _)| now.saturating_duration_since(*start) < WINDOW);
-        }
-        let tracked = inner.rate.len() < MAX_TRACKED || inner.rate.contains_key(&key);
-        if tracked {
-            let entry = inner.rate.entry(key).or_insert((now, 0));
+        // If this key is already tracked in the rate table, enforce its rate
+        // window first so a known flooder is dropped as `Rate`.
+        if let Some(entry) = inner.rate.get_mut(&key) {
             if now.saturating_duration_since(entry.0) >= WINDOW {
                 *entry = (now, 0);
             }
@@ -151,28 +151,63 @@ impl Limits {
                 *inner.counters.entry("rate").or_default() += 1;
                 return Admission::Drop(DropReason::Rate);
             }
+        } else {
+            // Before inserting a *new* key into the rate table, check the
+            // global and /48 concurrency caps so rejected floods cannot fill
+            // `MAX_TRACKED` and lock out new IPs (adversarial review F-5).
+            if self.global.load(Ordering::SeqCst) >= caps.global as usize {
+                *inner.counters.entry("global").or_default() += 1;
+                return Admission::Drop(DropReason::Global);
+            }
+            if let Some(p) = prefix
+                && inner.concurrent48.get(&p).copied().unwrap_or(0) >= caps.per_v6_48
+            {
+                *inner.counters.entry("per-48").or_default() += 1;
+                return Admission::Drop(DropReason::Prefix48);
+            }
+            if inner.rate.len() >= MAX_TRACKED
+                && inner
+                    .last_sweep
+                    .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY)
+            {
+                inner.last_sweep = Some(now);
+                inner
+                    .rate
+                    .retain(|_, (start, _)| now.saturating_duration_since(*start) < WINDOW);
+            }
+            if inner.rate.len() >= MAX_TRACKED || caps.rate == 0 {
+                *inner.counters.entry("rate").or_default() += 1;
+                return Admission::Drop(DropReason::Rate);
+            }
+            inner.rate.insert(key, (now, 1));
         }
         if self.global.load(Ordering::SeqCst) >= caps.global as usize {
             *inner.counters.entry("global").or_default() += 1;
             return Admission::Drop(DropReason::Global);
         }
-        let prefix = v6_48(ip);
-        if let Some(p) = prefix {
-            let n = inner.concurrent48.entry(p).or_default();
-            if *n >= caps.per_v6_48 {
-                *inner.counters.entry("per-48").or_default() += 1;
-                return Admission::Drop(DropReason::Prefix48);
-            }
-            *n += 1;
+        if let Some(p) = prefix
+            && inner.concurrent48.get(&p).copied().unwrap_or(0) >= caps.per_v6_48
+        {
+            *inner.counters.entry("per-48").or_default() += 1;
+            return Admission::Drop(DropReason::Prefix48);
         }
-        self.global.fetch_add(1, Ordering::SeqCst);
-        let count = inner.concurrent.entry(key).or_default();
-        let counted = *count < caps.per_key;
+        let count = inner.concurrent.get(&key).copied().unwrap_or(0);
+        let counted = count < caps.per_key;
         if counted {
-            *count += 1;
+            *inner.concurrent.entry(key).or_default() += 1;
         } else {
+            let uncounted = inner.uncounted.get(&key).copied().unwrap_or(0);
+            if uncounted >= MAX_UNCOUNTED_PER_KEY {
+                *inner.counters.entry("per-ip").or_default() += 1;
+                return Admission::Drop(DropReason::PerIp);
+            }
+            *inner.uncounted.entry(key).or_default() += 1;
             *inner.counters.entry("per-ip").or_default() += 1;
         }
+        if let Some(p) = prefix {
+            *inner.concurrent48.entry(p).or_default() += 1;
+        }
+        self.global.fetch_add(1, Ordering::SeqCst);
         Admission::Admit(Slot {
             limits: Arc::clone(self),
             key,
@@ -245,12 +280,17 @@ impl Drop for Slot {
                 inner.concurrent48.remove(&p);
             }
         }
-        if self.counted
-            && let Some(n) = inner.concurrent.get_mut(&self.key)
-        {
+        if self.counted {
+            if let Some(n) = inner.concurrent.get_mut(&self.key) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    inner.concurrent.remove(&self.key);
+                }
+            }
+        } else if let Some(n) = inner.uncounted.get_mut(&self.key) {
             *n = n.saturating_sub(1);
             if *n == 0 {
-                inner.concurrent.remove(&self.key);
+                inner.uncounted.remove(&self.key);
             }
         }
     }
@@ -298,10 +338,18 @@ mod tests {
         let a = slot(l.admit(ip("198.51.100.7"), CAPS, now));
         let b = slot(l.admit(ip("198.51.100.7"), CAPS, now));
         let c = slot(l.admit(ip("198.51.100.7"), CAPS, now));
-        assert!(a.counted() && b.counted() && !c.counted());
+        let d = slot(l.admit(ip("198.51.100.7"), CAPS, now));
+        assert!(a.counted() && b.counted() && !c.counted() && !d.counted());
+        // Beyond MAX_UNCOUNTED_PER_KEY (2) simultaneous banner slots, further
+        // connections from the same key are dropped at TCP accept without
+        // claiming global slots (F-1).
+        assert!(matches!(
+            l.admit(ip("198.51.100.7"), CAPS, now),
+            Admission::Drop(DropReason::PerIp)
+        ));
         assert_eq!(l.concurrent(ip("198.51.100.7")), 2);
-        assert_eq!(l.live(), 3);
-        drop((a, b, c));
+        assert_eq!(l.live(), 4);
+        drop((a, b, c, d));
         assert_eq!(l.concurrent(ip("198.51.100.7")), 0);
         assert_eq!(l.live(), 0);
     }
@@ -333,7 +381,11 @@ mod tests {
             ..CAPS
         };
         for i in 0..5 {
-            held.push(slot(l.admit(ip(&format!("2001:db8::{i:x}")), caps, now)));
+            let s = slot(l.admit(ip(&format!("2001:db8::{i:x}")), caps, now));
+            assert_eq!(s.counted(), i < 2);
+            if s.counted() {
+                held.push(s);
+            }
         }
         assert!(matches!(
             l.admit(ip("2001:db8::ff"), caps, now),
@@ -373,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rate_table_is_bounded() {
+    fn the_rate_table_is_bounded_and_fails_closed_when_full() {
         let l = Limits::new();
         let caps = Caps {
             per_key: 1,
@@ -382,17 +434,46 @@ mod tests {
             per_v6_48: u32::MAX,
         };
         let t0 = Instant::now();
-        for i in 0..(MAX_TRACKED as u32 + 100) {
+        for i in 0..(MAX_TRACKED as u32) {
             let addr = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + i));
-            drop(l.admit(addr, caps, t0));
+            drop(slot(l.admit(addr, caps, t0)));
         }
-        assert!(l.tracked() <= MAX_TRACKED);
+        assert_eq!(l.tracked(), MAX_TRACKED);
+        // When the table is full of live windows, a new key is refused rather
+        // than admitted untracked (F-5).
+        let extra = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + MAX_TRACKED as u32));
+        assert!(matches!(
+            l.admit(extra, caps, t0),
+            Admission::Drop(DropReason::Rate)
+        ));
         // Later, the stale windows are swept and new keys are tracked again.
-        drop(l.admit(ip("198.18.0.1"), caps, t0 + WINDOW));
+        drop(slot(l.admit(ip("198.18.0.1"), caps, t0 + WINDOW)));
         assert!(l.tracked() <= MAX_TRACKED);
         assert!(matches!(
             l.admit(ip("198.18.0.1"), caps, t0 + WINDOW),
             Admission::Drop(DropReason::Rate)
         ));
+    }
+
+    #[test]
+    fn global_and_prefix48_drops_do_not_pollute_the_rate_table() {
+        let l = Limits::new();
+        let t0 = Instant::now();
+        let caps = Caps {
+            per_key: 2,
+            rate: 5,
+            global: 1,
+            per_v6_48: 1,
+        };
+        let held = slot(l.admit(ip("2001:db8:0:1::1"), caps, t0));
+        assert_eq!(l.tracked(), 1);
+        // While global (and /48) is full, new IPs are dropped before inserting
+        // into the rate table.
+        assert!(matches!(
+            l.admit(ip("198.51.100.99"), caps, t0),
+            Admission::Drop(DropReason::Global)
+        ));
+        assert_eq!(l.tracked(), 1);
+        drop(held);
     }
 }

@@ -1900,6 +1900,9 @@ impl Handler for ConnHandler {
         if matches!(self.lock().mode, Mode::Tui) {
             return self.tui_data(data, session).await;
         }
+        if !self.connected.load(Ordering::SeqCst) && session.has_pending_data(channel) {
+            return Err(russh::Error::Disconnect);
+        }
         let (echo, actions) = {
             let mut sh = self.lock();
             let mut out = Vec::new();

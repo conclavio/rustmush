@@ -158,9 +158,10 @@ async fn serve(args: Args, cfg: Config) -> Result<(), String> {
     let log = logging::init(&cfg.log, &args.generation)?;
     let marker = draining_marker(&cfg, &args.generation);
     if marker.exists() {
+        let _ = std::fs::remove_file(&marker);
         tracing::warn!(
             marker = %marker.display(),
-            "this generation was draining when it stopped; not serving again (swap.sh clears the marker)"
+            "this generation was draining when it stopped; not serving again (marker consumed)"
         );
         return Ok(());
     }

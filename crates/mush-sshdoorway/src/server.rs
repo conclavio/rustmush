@@ -49,10 +49,18 @@ use crate::upstream::{
     BeginOutcome, Connector, DisconnectSlot, HelloOutcome, Preamble, UPSTREAM_TIMEOUT, UpError,
     UpHandler, client_config, start_ssh, timed,
 };
+use mush_sshdoorway_proto::MAX_KEY_QUERIES;
 
 /// A single relayed write must finish within this, or the connection is
 /// treated as wedged and both sessions close (29a R-2).
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Grace period after the doorway initiates `SSH_MSG_DISCONNECT` before the
+/// underlying TCP stream is forcibly killed via [`crate::kill::KillSwitch`].
+/// `russh` half-closes the TCP write side on disconnect and waits for client
+/// EOF or `inactivity_timeout`; because `inactivity_timeout` is `None`, a
+/// half-open client would otherwise hold its slot and drain guard forever (F-1).
+pub const DISCONNECT_GRACE: Duration = Duration::from_secs(2);
 
 /// Downstream → upstream messages queued per channel before the callback
 /// itself waits (and, after [`WRITE_TIMEOUT`], gives up on the connection).
@@ -64,6 +72,19 @@ pub const MAX_CHANNELS: usize = 2;
 /// At most this many session-channel opens over a connection's life, so an
 /// open/close loop cannot spin upstream work without end.
 pub const MAX_CHANNEL_OPENS: usize = 8;
+
+/// At most this many upstream service dials over one connection's life (F-4).
+pub const MAX_DIALS: usize = 4;
+
+/// At most this many password / keyboard-interactive attempts over one
+/// connection's life (F-6).
+pub const MAX_PASSWORD_TRIES: usize = 3;
+
+/// At most this many menu submissions (empty or invalid) before closing (F-2).
+pub const MAX_MENU_TRIES: usize = 16;
+
+/// Idle timeout for a `Stage::Notice` channel that never requests a shell (F-8).
+pub const NOTICE_IDLE: Duration = Duration::from_secs(5);
 
 /// A menu (or notice) session is closed this long after it began, however
 /// much it types: the menu holds a slot and leads nowhere by itself.
@@ -118,9 +139,14 @@ impl Doorway {
             inactivity_timeout: None,
             keepalive_interval: Some(Duration::from_secs(30)),
             keepalive_max: 3,
-            auth_rejection_time: Duration::from_secs(1),
+            // Key-offer rejections at the doorway are fast (50 ms) and allow up
+            // to 16 attempts so multi-key `ssh-agent` users can fall through to
+            // password without a 5 s stall or lockout (F-6/F-11); password
+            // attempts are separately capped at `MAX_PASSWORD_TRIES` (3) and
+            // delayed 1 s by the upstream instance.
+            auth_rejection_time: Duration::from_millis(50),
             auth_rejection_time_initial: Some(Duration::ZERO),
-            max_auth_attempts: 6,
+            max_auth_attempts: 16,
             nodelay: true,
             ..ServerConfig::default()
         });
@@ -254,7 +280,6 @@ impl Doorway {
         let opened = Arc::new(AtomicBool::new(false));
         let mut conn = Conn::new(
             Arc::clone(self),
-            cfg,
             id,
             peer,
             local,
@@ -265,13 +290,14 @@ impl Doorway {
         conn.opened = Arc::clone(&opened);
         let config = Arc::clone(&self.server_config);
         let deadline = if over_cap {
-            Duration::from_secs(5).min(Duration::from_secs(conn.cfg.limits.auth_deadline_secs))
+            Duration::from_secs(5).min(Duration::from_secs(cfg.limits.auth_deadline_secs))
         } else {
-            Duration::from_secs(conn.cfg.limits.auth_deadline_secs)
+            Duration::from_secs(cfg.limits.auth_deadline_secs)
         };
         let switch = crate::kill::KillSwitch::new();
         self.drain.track(id, Arc::clone(&switch));
         let stream = crate::kill::Killable::new(stream, switch);
+        let watchdog_drain = Arc::clone(&self.drain);
         tokio::spawn(async move {
             let session = match tokio::time::timeout(
                 deadline,
@@ -292,7 +318,9 @@ impl Doorway {
             let handle = session.handle();
             // Two deadlines, so nothing holds a slot (or a drain) forever:
             // authenticate within `deadline`, and open a channel within
-            // another `deadline` after that.
+            // another `deadline` after that. If the client is stalled in KEX
+            // or half-closed after disconnect, `watchdog_drain.abort(id)`
+            // trips the stream's `KillSwitch` unconditionally (F-1, F-3).
             let watchdog = tokio::spawn(async move {
                 tokio::time::sleep(deadline).await;
                 let why = if !authed.load(Ordering::SeqCst) {
@@ -304,9 +332,13 @@ impl Doorway {
                     }
                     "no session was opened"
                 };
-                let _ = handle
-                    .disconnect(Disconnect::ByApplication, why.into(), String::new())
-                    .await;
+                let _ = tokio::time::timeout(
+                    DISCONNECT_GRACE,
+                    handle.disconnect(Disconnect::ByApplication, why.into(), String::new()),
+                )
+                .await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                watchdog_drain.abort(id);
             });
             if let Err(e) = session.await {
                 tracing::debug!(conn = id, error = %e, "SSH session ended with error");
@@ -343,6 +375,7 @@ impl Up {
 enum Dial {
     Opened,
     Tell(String),
+    Cap,
 }
 
 /// Where the connection is.
@@ -407,7 +440,6 @@ struct Bytes {
 /// One downstream connection.
 struct Conn {
     door: Arc<Doorway>,
-    cfg: Arc<Config>,
     id: u64,
     peer: SocketAddr,
     local: SocketAddr,
@@ -417,6 +449,11 @@ struct Conn {
     /// Set at the first accepted channel (the watchdog's second deadline).
     opened: Arc<AtomicBool>,
     channel_opens: usize,
+    dials: usize,
+    key_queries: usize,
+    password_tries: usize,
+    notice_offered: bool,
+    menu_tries: usize,
     started: Instant,
     user: String,
     service: Option<String>,
@@ -438,6 +475,16 @@ struct Conn {
     menu_last: Arc<Mutex<Instant>>,
     menu_watch: Option<tokio::task::JoinHandle<()>>,
     bytes: Arc<Bytes>,
+}
+
+/// Schedule a hard stream abort via [`Drain::abort`] after `delay` so a
+/// half-closed client cannot hold its slot and drain guard after the server
+/// sends `SSH_MSG_DISCONNECT` (F-1).
+fn abort_after(drain: Arc<Drain>, conn: u64, delay: Duration) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        drain.abort(conn);
+    });
 }
 
 fn methods(kinds: &[MethodKind]) -> MethodSet {
@@ -582,7 +629,7 @@ async fn pump(mut ctx: PumpCtx) {
                     .await;
             let _ = tokio::time::timeout(WRITE_TIMEOUT, ctx.down.close()).await;
             let _ = tokio::time::timeout(
-                WRITE_TIMEOUT,
+                DISCONNECT_GRACE,
                 ctx.handle.disconnect(
                     Disconnect::ByApplication,
                     reason.unwrap_or_else(|| "the game server closed the connection".into()),
@@ -590,13 +637,14 @@ async fn pump(mut ctx: PumpCtx) {
                 ),
             )
             .await;
+            abort_after(ctx.drain, ctx.conn, DISCONNECT_GRACE);
         }
         End::Wedged => {
             tracing::info!(conn = ctx.conn, "client stopped reading; closing");
             // A polite disconnect queues behind the data the client is not
             // reading, so it gets two seconds and then the session is ended.
             let _ = tokio::time::timeout(
-                Duration::from_secs(2),
+                DISCONNECT_GRACE,
                 ctx.handle.disconnect(
                     Disconnect::ByApplication,
                     "the connection stopped reading".into(),
@@ -690,7 +738,6 @@ impl Conn {
     #[allow(clippy::too_many_arguments)]
     fn new(
         door: Arc<Doorway>,
-        cfg: Arc<Config>,
         id: u64,
         peer: SocketAddr,
         local: SocketAddr,
@@ -700,7 +747,6 @@ impl Conn {
     ) -> Conn {
         Conn {
             door,
-            cfg,
             id,
             peer,
             local,
@@ -709,6 +755,11 @@ impl Conn {
             authed,
             opened: Arc::default(),
             channel_opens: 0,
+            dials: 0,
+            key_queries: 0,
+            password_tries: 0,
+            notice_offered: false,
+            menu_tries: 0,
             started: Instant::now(),
             user: String::new(),
             service: None,
@@ -737,6 +788,10 @@ impl Conn {
     }
 
     fn tell(&mut self, method: &'static str, text: String) -> Auth {
+        // A notice session exists only to print one refusal line and close;
+        // bound its entire post-auth life by `NOTICE_IDLE` whether or not the
+        // client ever opens a channel or requests a shell (F-1, F-8).
+        abort_after(Arc::clone(&self.door.drain), self.id, NOTICE_IDLE);
         self.accept(method, Stage::Notice(text))
     }
 
@@ -754,7 +809,14 @@ impl Conn {
             return Dial::Opened;
         }
         self.drop_up();
-        let Some(svc) = self.cfg.service(service).cloned() else {
+        if self.dials >= MAX_DIALS {
+            self.door.limits.count("dial-cap");
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
+            return Dial::Cap;
+        }
+        self.dials += 1;
+        let cfg = self.door.config();
+        let Some(svc) = cfg.service(service).cloned() else {
             return Dial::Tell(format!("{service} is not available."));
         };
         match Preamble::hello(&*self.door.connector, &svc, self.peer, self.local, self.id).await {
@@ -771,7 +833,8 @@ impl Conn {
                 "Too many connections from your address to {service}; close one and try again."
             )),
             Err(e) => {
-                tracing::warn!(conn = self.id, service, error = %e, "service unreachable");
+                self.door.limits.count("service-unreachable");
+                tracing::debug!(conn = self.id, service, error = %e, "service unreachable");
                 Dial::Tell(format!(
                     "{service} is not reachable right now; please try again in a minute."
                 ))
@@ -845,6 +908,7 @@ impl Conn {
     async fn front_door(&mut self, service: &str, upstream_user: &str) -> Auth {
         match self.dial(service).await {
             Dial::Tell(t) => return self.tell("none", t),
+            Dial::Cap => return reject_nothing(),
             Dial::Opened => {}
         }
         match self.begin(upstream_user, None).await {
@@ -865,8 +929,15 @@ impl Conn {
 
     /// A password (or keyboard-interactive answer) for an account name.
     async fn password(&mut self, service: &str, upstream_user: &str, password: &str) -> Auth {
+        if self.password_tries >= MAX_PASSWORD_TRIES {
+            self.door.limits.count("password-tries");
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
+            return reject_nothing();
+        }
+        self.password_tries += 1;
         match self.dial(service).await {
             Dial::Tell(t) => return self.tell("password", t),
+            Dial::Cap => return reject_nothing(),
             Dial::Opened => {}
         }
         if !matches!(
@@ -877,12 +948,16 @@ impl Conn {
         }
         if self.up_password(upstream_user, password).await {
             self.accept("password", Stage::Spliced)
+        } else if self.password_tries >= MAX_PASSWORD_TRIES {
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
+            reject_nothing()
         } else {
             reject_toward_interactive()
         }
     }
 
     fn farewell(&self) -> String {
+        let cfg = self.door.config();
         let service = self.service.as_deref().unwrap_or("the game server");
         let user = if self.user.is_empty() {
             service.to_owned()
@@ -891,7 +966,7 @@ impl Conn {
         };
         format!(
             "{service} closed the connection; reconnect with ssh {user}@{}",
-            self.cfg.menu.host
+            cfg.menu.host
         )
     }
 
@@ -989,6 +1064,9 @@ impl Conn {
         let Some(ch) = self.front_id() else {
             return;
         };
+        if session.has_pending_data(ch) {
+            return;
+        }
         let mut bytes = Vec::with_capacity(text.len() + 8);
         for line in text.lines() {
             bytes.extend_from_slice(line.as_bytes());
@@ -1003,11 +1081,13 @@ impl Conn {
             let _ = session.close(ch);
         }
         let _ = session.disconnect(Disconnect::ByApplication, "goodbye", "");
+        abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
     }
 
     fn menu_text(&self) -> String {
-        let mut out = format!("{}\n\n", self.cfg.menu.title);
-        for (i, s) in self.cfg.services.iter().filter(|s| s.listed).enumerate() {
+        let cfg = self.door.config();
+        let mut out = format!("{}\n\n", cfg.menu.title);
+        for (i, s) in cfg.services.iter().filter(|s| s.listed).enumerate() {
             out.push_str(&format!("  {}  {:<8} {}\n", i + 1, s.name, s.title));
         }
         out.push('\n');
@@ -1015,30 +1095,48 @@ impl Conn {
     }
 
     fn menu_prompt(&self, session: &mut Session) {
-        if let Some(ch) = self.front_id() {
+        if let Some(ch) = self.front_id()
+            && !session.has_pending_data(ch)
+        {
             let _ = session.data(ch, b"Type a number or a name (q to quit): ".to_vec());
         }
     }
 
     fn start_menu_watch(&mut self, handle: Handle) {
+        if let Some(w) = self.menu_watch.take() {
+            w.abort();
+        }
         let last = Arc::clone(&self.menu_last);
-        let idle = Duration::from_secs(self.cfg.limits.menu_idle_secs);
+        let idle = if matches!(self.stage, Stage::Notice(_)) {
+            NOTICE_IDLE
+        } else {
+            Duration::from_secs(self.door.config().limits.menu_idle_secs)
+        };
         let ch = self.front_id();
+        let drain = Arc::clone(&self.door.drain);
+        let conn = self.id;
         let began = Instant::now();
         self.menu_watch = Some(tokio::spawn(async move {
             loop {
                 let elapsed = last.lock().map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
                 if elapsed >= idle || began.elapsed() >= MENU_HARD_CAP {
                     if let Some(ch) = ch {
-                        let _ = handle.data(ch, b"\r\nMenu timed out.\r\n".to_vec()).await;
+                        let _ = tokio::time::timeout(
+                            DISCONNECT_GRACE,
+                            handle.data(ch, b"\r\nMenu timed out.\r\n".to_vec()),
+                        )
+                        .await;
                     }
-                    let _ = handle
-                        .disconnect(
+                    let _ = tokio::time::timeout(
+                        DISCONNECT_GRACE,
+                        handle.disconnect(
                             Disconnect::ByApplication,
                             "menu timed out".into(),
                             String::new(),
-                        )
-                        .await;
+                        ),
+                    )
+                    .await;
+                    abort_after(drain, conn, DISCONNECT_GRACE);
                     return;
                 }
                 let left = idle
@@ -1056,6 +1154,17 @@ impl Conn {
         let Some(ch) = self.front_id() else {
             return;
         };
+        if session.has_pending_data(ch) {
+            self.door.limits.count("menu-window-wedged");
+            let _ = session.close(ch);
+            let _ = session.disconnect(
+                Disconnect::ByApplication,
+                "the connection stopped reading",
+                "",
+            );
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
+            return;
+        }
         let mut echo = Vec::new();
         for &b in data {
             // A tiny escape-sequence skipper, so arrow keys are not typed.
@@ -1075,8 +1184,12 @@ impl Conn {
             match b {
                 0x1b => self.menu_esc = 1,
                 b'\r' | b'\n' => {
-                    let _ = session.data(ch, std::mem::take(&mut echo));
-                    let _ = session.data(ch, b"\r\n".to_vec());
+                    if !session.has_pending_data(ch) {
+                        let _ = session.data(ch, std::mem::take(&mut echo));
+                        let _ = session.data(ch, b"\r\n".to_vec());
+                    } else {
+                        echo.clear();
+                    }
                     let line = std::mem::take(&mut self.menu_line);
                     if self.menu_submit(line.trim(), session).await {
                         return;
@@ -1088,7 +1201,9 @@ impl Conn {
                     }
                 }
                 0x03 | 0x04 => {
-                    let _ = session.data(ch, std::mem::take(&mut echo));
+                    if !session.has_pending_data(ch) {
+                        let _ = session.data(ch, std::mem::take(&mut echo));
+                    }
                     self.close_front(session, "\r\nGoodbye.");
                     return;
                 }
@@ -1099,12 +1214,20 @@ impl Conn {
                 _ => {}
             }
         }
-        let _ = session.data(ch, echo);
+        if !echo.is_empty() && !session.has_pending_data(ch) {
+            let _ = session.data(ch, echo);
+        }
     }
 
     /// Returns `true` when the menu is finished (spliced or closed).
     async fn menu_submit(&mut self, line: &str, session: &mut Session) -> bool {
         if line.is_empty() {
+            self.menu_tries += 1;
+            if self.menu_tries >= MAX_MENU_TRIES {
+                self.door.limits.count("menu-tries");
+                self.close_front(session, "Goodbye.");
+                return true;
+            }
             self.menu_prompt(session);
             return false;
         }
@@ -1112,8 +1235,8 @@ impl Conn {
             self.close_front(session, "Goodbye.");
             return true;
         }
-        let listed: Vec<String> = self
-            .cfg
+        let cfg = self.door.config();
+        let listed: Vec<String> = cfg
             .services
             .iter()
             .filter(|s| s.listed)
@@ -1123,9 +1246,15 @@ impl Conn {
             Ok(n) if n >= 1 => listed.get(n - 1).cloned(),
             Ok(_) => None,
             // Unlisted services are reachable by name (Q-29-6).
-            Err(_) => self.cfg.service(line).map(|s| s.name.clone()),
+            Err(_) => cfg.service(line).map(|s| s.name.clone()),
         };
         let Some(service) = choice else {
+            self.menu_tries += 1;
+            if self.menu_tries >= MAX_MENU_TRIES {
+                self.door.limits.count("menu-tries");
+                self.close_front(session, "Too many invalid choices.");
+                return true;
+            }
             self.write_front(session, "Unknown choice.");
             self.menu_prompt(session);
             return false;
@@ -1135,10 +1264,22 @@ impl Conn {
     }
 
     async fn splice_from_menu(&mut self, service: &str, session: &mut Session) {
+        // Stop the menu idle timer before awaiting the upstream handshake so it
+        // cannot fire mid-splice and disconnect the newly spliced session (F-9).
+        if let Some(w) = self.menu_watch.take() {
+            w.abort();
+        }
         self.write_front(session, &format!("Connecting to {service}..."));
-        if let Dial::Tell(t) = self.dial(service).await {
-            self.close_front(session, &t);
-            return;
+        match self.dial(service).await {
+            Dial::Tell(t) => {
+                self.close_front(session, &t);
+                return;
+            }
+            Dial::Cap => {
+                self.close_front(session, "Too many authentication attempts.");
+                return;
+            }
+            Dial::Opened => {}
         }
         let unreachable =
             format!("{service} is not reachable right now; please try again in a minute.");
@@ -1181,20 +1322,15 @@ impl Conn {
             self.close_front(session, &unreachable);
             return;
         }
+        let host = self.door.config().menu.host.clone();
         self.write_front(
             session,
-            &format!(
-                "Next time: ssh {service}+<account>@{}\n",
-                self.cfg.menu.host
-            ),
+            &format!("Next time: ssh {service}+<account>@{host}\n"),
         );
         if let Some(ch) = self.front_id()
             && !early.is_empty()
         {
             let _ = session.data(ch, early);
-        }
-        if let Some(w) = self.menu_watch.take() {
-            w.abort();
         }
         let Some((front_id, front_write)) = self.front.take() else {
             return;
@@ -1205,6 +1341,8 @@ impl Conn {
     }
 }
 
+const MAX_EARLY_BYTES: usize = 1024 * 1024;
+
 /// Wait for one `Success`/`Failure` on a not-yet-pumped channel, keeping any
 /// data that arrives first. `false` when the channel closed or ended first
 /// (the shell went away before answering) or the request failed.
@@ -1213,8 +1351,9 @@ async fn wait_reply(up: &mut Channel<client::Msg>, early: &mut Vec<u8>) -> bool 
         match msg {
             ChannelMsg::Success => return true,
             ChannelMsg::Failure | ChannelMsg::Close | ChannelMsg::Eof => return false,
-            ChannelMsg::Data { data } if early.len() < 1024 * 1024 => {
-                early.extend_from_slice(&data);
+            ChannelMsg::Data { data } if early.len() < MAX_EARLY_BYTES => {
+                let room = MAX_EARLY_BYTES - early.len();
+                early.extend_from_slice(data.get(..room).unwrap_or(&data));
             }
             _ => {}
         }
@@ -1275,10 +1414,12 @@ impl Handler for Conn {
 
     async fn auth_none(&mut self, user: &str) -> Result<Auth, Self::Error> {
         if !self.slot.counted() {
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
             return Ok(reject_nothing());
         }
         self.user = user.to_owned();
-        match route(user, &self.cfg) {
+        let cfg = self.door.config();
+        match route(user, &cfg) {
             Route::Invalid => {
                 self.door.limits.count("invalid-user");
                 Ok(reject_nothing())
@@ -1295,10 +1436,12 @@ impl Handler for Conn {
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         if !self.slot.counted() {
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
             return Ok(reject_nothing());
         }
         self.user = user.to_owned();
-        match route(user, &self.cfg) {
+        let cfg = self.door.config();
+        match route(user, &cfg) {
             Route::Invalid | Route::Menu => {
                 self.door.limits.count("password-for-non-service");
                 Ok(reject_nothing())
@@ -1323,10 +1466,12 @@ impl Handler for Conn {
         response: Option<Response<'a>>,
     ) -> Result<Auth, Self::Error> {
         if !self.slot.counted() {
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
             return Ok(reject_nothing());
         }
         self.user = user.to_owned();
-        match route(user, &self.cfg) {
+        let cfg = self.door.config();
+        match route(user, &cfg) {
             Route::Invalid | Route::Menu => {
                 self.door.limits.count("password-for-non-service");
                 Ok(reject_nothing())
@@ -1363,16 +1508,22 @@ impl Handler for Conn {
         key: &PublicKey,
     ) -> Result<Auth, Self::Error> {
         if !self.slot.counted() {
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
             return Ok(reject_nothing());
         }
+        if self.notice_offered || self.key_queries >= MAX_KEY_QUERIES {
+            return Ok(reject_toward_interactive());
+        }
+        self.key_queries += 1;
         self.user = user.to_owned();
+        let cfg = self.door.config();
         let Route::Service {
             service,
             upstream_user,
             front_door: false,
-        } = route(user, &self.cfg)
+        } = route(user, &cfg)
         else {
-            return Ok(match route(user, &self.cfg) {
+            return Ok(match route(user, &cfg) {
                 Route::Service { .. } => reject_toward_interactive(),
                 _ => reject_nothing(),
             });
@@ -1382,31 +1533,39 @@ impl Handler for Conn {
         };
         match self.dial(&service).await {
             Dial::Tell(t) => {
-                // Let the client sign; the signed callback accepts and tells.
+                // Let the client sign at most once; the signed callback accepts and tells (F-4).
                 self.pending_notice = Some(t);
+                self.notice_offered = true;
                 return Ok(Auth::Accept);
             }
+            Dial::Cap => return Ok(reject_nothing()),
             Dial::Opened => {}
         }
         let Up::Preamble { preamble, .. } = &mut self.up else {
             return Ok(reject_toward_interactive());
         };
-        Ok(match preamble.key_query(&upstream_user, &openssh).await {
-            Ok(true) => Auth::Accept,
-            Ok(false) | Err(_) => reject_toward_interactive(),
-        })
+        match preamble.key_query(&upstream_user, &openssh).await {
+            Ok(true) => Ok(Auth::Accept),
+            Ok(false) => Ok(reject_toward_interactive()),
+            Err(_) => {
+                self.drop_up();
+                Ok(reject_toward_interactive())
+            }
+        }
     }
 
     async fn auth_publickey(&mut self, user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
         if !self.slot.counted() {
+            abort_after(Arc::clone(&self.door.drain), self.id, DISCONNECT_GRACE);
             return Ok(reject_nothing());
         }
         self.user = user.to_owned();
+        let cfg = self.door.config();
         let Route::Service {
             service,
             upstream_user,
             front_door: false,
-        } = route(user, &self.cfg)
+        } = route(user, &cfg)
         else {
             return Ok(reject_nothing());
         };
@@ -1418,6 +1577,7 @@ impl Handler for Conn {
         };
         match self.dial(&service).await {
             Dial::Tell(t) => return Ok(self.tell("publickey", t)),
+            Dial::Cap => return Ok(reject_nothing()),
             Dial::Opened => {}
         }
         match self.begin(&upstream_user, Some(openssh)).await {
@@ -1716,7 +1876,7 @@ impl Handler for Conn {
     async fn channel_close(
         &mut self,
         channel: ChannelId,
-        _session: &mut Session,
+        session: &mut Session,
     ) -> Result<(), Self::Error> {
         if let Some(pair) = self.pairs.remove(&channel) {
             let _ = pair.tx.try_send(UpCmd::Close);
@@ -1732,6 +1892,29 @@ impl Handler for Conn {
         }
         if self.front_id() == Some(channel) {
             self.front = None;
+        }
+        if self.pairs.is_empty() && self.front.is_none() {
+            self.opened.store(false, Ordering::SeqCst);
+            let opened = Arc::clone(&self.opened);
+            let drain = Arc::clone(&self.door.drain);
+            let conn = self.id;
+            let handle = session.handle();
+            let grace = Duration::from_secs(self.door.config().limits.auth_deadline_secs);
+            tokio::spawn(async move {
+                tokio::time::sleep(grace).await;
+                if !opened.load(Ordering::SeqCst) {
+                    let _ = tokio::time::timeout(
+                        DISCONNECT_GRACE,
+                        handle.disconnect(
+                            Disconnect::ByApplication,
+                            "no session is open".into(),
+                            String::new(),
+                        ),
+                    )
+                    .await;
+                    abort_after(drain, conn, DISCONNECT_GRACE);
+                }
+            });
         }
         Ok(())
     }
