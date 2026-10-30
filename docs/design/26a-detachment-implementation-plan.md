@@ -16,7 +16,9 @@ host and clients. IC preparation, NPC personnel and durable launches follow.
 | DT.2b | Presets, drafts, personnel and preparation | Multiple private plans, current carrier containment, consent/readiness for a revision, contracted NPC crew and exclusive unit reservations |
 | DT.3 | Launch and operation history | Preflight then individually durable departures, hull-epoch links, partial failure/retry, returns and unresolved casualties; no rollback of physical departures |
 
-DT.4 subset delegation and DT.5 dedicated communications remain later cuts.
+DT.4 subset delegation is deferred by the owner (2026-10-30). DT.5 remains
+the communications follow-on, integrated with the existing IC transport and ECM
+path; see [its scope below](#dt5-communications-integration).
 The DT.2a authority and retained-custody policy is specified in
 [26b](26b-unit-authority-and-grants.md).
 The preparation slices and their durable admission boundaries are specified in
@@ -296,8 +298,8 @@ ADVANCE/WITHDRAW movement completion. The 183 surface library tests, 26 legacy
 mining tests, 30 excursion tests and 27 source-policy tests passed. Strict Clippy
 and the unchanged six-package M7 all-target memory gate passed. This proves the
 physical player/hired-NPC mining milestone; licensed autonomous-mind field hosts,
-H1/H2/H3, DT.4 subset delegation and DT.5 dedicated communications remain their
-separate workstreams.
+H1/H2/H3 remain separate workstreams. DT.4 subset delegation is deferred;
+DT.5 follows through the existing communications/ECM path.
 
 DT.3i ships persistent mining/recovery crew at Ceres's Slack Line through the
 existing NPC and content-latch owners. Ilya Mendes offers subordinate service;
@@ -348,9 +350,48 @@ checks passed. Strict Clippy, formatting and the unchanged six-crate M7 all-targ
 memory gate passed as well.
 
 This closes the DT.1–DT.3 physical player/hired-NPC mining milestone. Licensed
-autonomous-mind field hosting, optional DT.4 attachments, DT.5 dedicated chat,
-and H1/H2/H3 retain their separate briefs. No deferred locomotion work is a
-prerequisite for taking these crews mining.
+autonomous-mind field hosting and H1/H2/H3 retain their separate briefs. DT.4
+attachments are deferred; DT.5 dedicated communications remains the follow-on
+described below. No deferred locomotion work is a prerequisite for taking these
+crews mining.
+
+## DT.5 communications integration
+
+Owner direction, 2026-10-30: defer DT.4 attachments/subset command delegation;
+retain DT.5 on top of the communications work that integrates ECM. This is an
+implementation scope, not a claim that the delivery and ECM integration is complete.
+
+Provide a dedicated detachment communications surface for member coordination,
+orders and replies. Reuse the existing IC channel/propagation transport from
+[doc 15](15-comms-relay-backbone.md) and the existing DT order/response path.
+Keep their distinct message semantics: a chat line does not become an order,
+and channel membership does not grant command authority. Do not build another
+relay, queue, jamming model or personnel ledger for this feature.
+
+Delivery remains per recipient, subject to the real communication path's lag,
+ECM/jamming, outages and routing. Acknowledgements must travel back; issuing an
+order or locally generating a reply does not prove its remote arrival. Members
+see only delivered messages and knowledge available to them. Lack of a reply
+must not reveal hidden positions, damage, connectivity causes or casualties.
+
+Acceptance uses a real detachment and the gameplay communications/ECM integration:
+
+- Members exchange detachment text over actual IC delivery, with different arrival
+  times where their communication paths differ; outsiders receive no messages.
+- Jamming one recipient delays its traffic without stopping reachable members.
+  That unit retains its last delivered standing order. A jammed reply path leaves
+  the issuer without an acknowledgement until the reply actually arrives.
+- Restoring communication delivers valid pending traffic under the existing
+  transport's expiry and supersession rules. Order revisions and command terms
+  still prevent obsolete orders from replacing the current valid order.
+- Restart during delayed traffic preserves pending delivery without duplicate
+  visible messages. The player-facing surface distinguishes local submission
+  from received messages and acknowledgements without exposing hidden telemetry.
+
+DT.4 delegation and a broader electronic-warfare redesign are not prerequisites.
+If gameplay ECM is not yet connected to this delivery path, the required work is
+that narrow shared integration, with evidence from actual deliveries rather than
+a separate detachment-only jam flag.
 
 ## DT.1a verification
 

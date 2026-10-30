@@ -199,8 +199,8 @@ the casualty stays in the field for a later physical recovery expedition.
 | DT.1 | Common numbered roster and command authority; player/NPC/automated orders; automatic succession; client projection; OOC adapter | Player in any slot; first active player commands and resumes priority; assigned available human NPC can lead without active players; neither means no leader; stable slots; player orders do not actuate controls; NPC acts from own view; stale/unauthorized orders handled |
 | DT.2 | Presets/drafts; shared unit authority and bounded mission-role grants; NPC hiring contracts and current-containment eligibility; consent/readiness; reservation; aboard editing | Charter holder absent; organizer differs from leader; personal/org grants; reject invented or absent NPCs; resolve six slots against current hull occupants; no double reservation; revoked grants/stale acceptances handled |
 | DT.3 | Physical group/individual launch; epoch linkage; partial progress/restart; returns and casualty history | Units launch once; no rollback teleport; recover/relaunch; disband leaves field units out; same history feeds H1/H2 |
-| DT.4 | Optional attachments/subset command delegation | Bounded authority; no forced human controls |
-| DT.5 | Dedicated detachment communications surface | Real availability and observer-safe delivered knowledge |
+| DT.4 | Deferred: optional attachments/subset command delegation | Revisit separately; current leader command remains sufficient |
+| DT.5 | Dedicated detachment communications over the existing IC communications/ECM path | Per-recipient delivery and returning acknowledgements respect lag, jamming and outages; observer-safe delivered knowledge |
 
 DT.1 builds a neutral command contract, not a lobby extension awaiting an IC rewrite. DT.2 needs
 real unit authority, not a charter shortcut. DT.3 can prove human/coreless launch independently,
@@ -228,6 +228,11 @@ and common acceptance story are in doc 27 §§5–6.
 See the [complete owner survey](27-ic-field-operations-design-and-survey.md#7-owner-survey).
 
 ## 9. Ledger
+
+- **2026-10-30:** Owner defers DT.4 subset command delegation. DT.5 remains
+  in scope as integration with the existing IC communications and ECM work,
+  rather than a separate transport. Its bounded scope and acceptance story are
+  recorded in [26a](26a-detachment-implementation-plan.md#dt5-communications-integration).
 
 - **2026-10-29:** Draft 0.5 replaces last-port/recorded-embarkation eligibility
   with current containment at preparation and launch. Any later wages accrue
