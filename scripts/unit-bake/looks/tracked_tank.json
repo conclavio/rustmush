@@ -1,0 +1,53 @@
+{
+  "look": "tracked_tank",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
+  "root": "Assets/Mech_Constructor_Spiders/",
+  "id_texture": "Materials/MC_Spiders_X_Color_ID.png",
+  "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Tanks/Chassis_Tank_Lvl2",
+      "mount": "Mount_Chassis",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Cockpit_Gun_Flat_Part",
+      "mount": "Mount_Top",
+      "parent": "Chassis_Tank_Lvl2"
+    },
+    {
+      "prefab": "Prefabs/Weapon_Sniper_lvl3",
+      "mount": "Mount_Weapon_Main",
+      "parent": "Cockpit_Gun_Flat_Part"
+    },
+    {
+      "prefab": "Prefabs/Weapon_DoubleGun_lvl1",
+      "mount": "Mount_HalfShoulder_R",
+      "parent": "Cockpit_Gun_Flat_Part"
+    }
+  ],
+  "still": {
+    "file": "Animations/Chassis_Tank_Anim_ROOT@Tank_Anim_Idle.fbx",
+    "name": "Tank_Anim_Idle"
+  },
+  "moving": {
+    "file": "Animations/Chassis_Tank_Anim_ROOT@Tank_Anim_Drive_Forward.fbx",
+    "name": "Tank_Anim_Drive_Forward"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_Sniper_lvl3/Barrel_end",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "Weapon_DoubleGun_lvl1/Barrel_End_1",
+      "weapon": "machine_gun"
+    }
+  ],
+  "size_cm": [
+    700,
+    250
+  ]
+}
