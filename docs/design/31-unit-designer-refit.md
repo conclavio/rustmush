@@ -1,5 +1,20 @@
 # 31. The unit designer and the refit bay
 
+**Draft 0.3 — 2026-10-30, the PR #191 review folded.** A review against `origin/main` (PR #188
+merged) found six gaps, each confirmed in the code, and proposed three rulings, two taken whole and
+one in part (the owner: *"fold your edits into pr 191"*). The refit engine refuses the line tank
+family as the tanks are written, so refit families need slot-stable component ids and a refit
+transition that `replace_component` is not (D-31-14, D-31-15); a published look has no way to the
+gateway or the browser, so the feeds carry the looks a match uses that are not shipped (D-31-16);
+the host reads the design rows before the module registers, and the tactics module's own unit
+catalogue is fed from the fielded one (D-31-9); `size_cm` moves to the look's top level and the
+text-sheet fallback to the model, and bakes are keyed by model, not by sheet pointer or roster
+index (D-31-1); the installed pack becomes a table that grows a model at a time (D-31-2); the bay's
+capability is `unit.maintain_refit` alone and its orders need a pending state on the IC clock
+(D-31-13). The validator moves into a small schema crate rather than pulling tacsim into wasm
+(D-31-7); a catalogue generation is a count over an append-only list (D-31-10); the studio stamps
+the pack's digest and `requires`, keeps drafts and undo, and previews hits (§6).
+
 **Draft 0.2 — 2026-10-30, the questions ruled.** The owner ruled both questions on PR #191 the
 same day: Q-31-1 at the restart for now, with live catalogue extension deferred for its cost and
 made a prerequisite of player designs; Q-31-2 at the default. The document carries no open
@@ -16,21 +31,19 @@ It stands on doc 22 Draft 0.8 and its cut U.6 (PR #188, open on
 `claude/mystifying-galileo-4b3706` as this is written): the unit pack format 2
 (`mush_pixel::bake`, magic `MUPK`, named entries keyed by look id with provenance), the one-command
 bake (`scripts/unit-bake/bake.sh`: Unity batch mode renders, the Rust reducer reduces) and the first
-bake of six looks, 1,043,471 bytes. Where this document says "as built" about the pack, it means
-that branch.
+bake of six looks, 1,043,471 bytes. PR #188 merged on 2026-10-30; "as built" now means `main`.
 
 ## 1. The owner's rulings (2026-10-30)
 
 - **R1 — the model/look split: yes.** (*"sounds good to me"*.) A **model** is one baked assembly
   — the art; a **look** is how one unit type is presented — its label, short name, weapon names,
-  doll, `size_cm`, anchor, and the model it is drawn from. Models live in a catalogue keyed by
+  doll, `size_cm`, and the model it is drawn from. Models live in a catalogue keyed by
   **model id**; a look names its model. This amends D-22-10, which keyed the baked chains by look
   id (D-31-1).
 - **R2 — sprites stay whole under damage, for now.** Damage shows on the doll (doc 22 §3.1) and,
   at the end, in the wreck pose; a unit that has lost its arm still draws with its arm. The owner:
   *"kitty accepts patches against images, so there's a line of sight to doing it reasonably
-  cleanly, but not required for where we are at right now."* The later route is recorded in §8
-  (D-31-13).
+  cleanly, but not required for where we are at right now."* The later route is recorded in §8.
 - **R3 — designers are staff only, for now.** Player-designed units stay the long-run path of
   D-22-7; nothing here closes it, and §9 lists what a player designer would add.
 - **R4 — repair is for IC hulls only.** The owner: *"simulator/arena pods represent virtual units
@@ -97,8 +110,24 @@ document takes the same line for units.
 `look` renamed `model`. A look gains `"model": "<model id>"` (absent: the look draws its text
 sheet, the D-22-10 rule 3 fallback, which stays the path for a hand-drawn unit). Many looks may name
 one model — the line tank's variants already share one look and would share one model under any
-look split. `size_cm` and the anchor stay on the look, and the matrix check holds a look to its
-model's measured height and width (doc 22 §6, the width rule) instead of a chain to its look.
+look split. The matrix check holds a look to its model's measured height and width (doc 22 §6, the
+width rule) instead of a chain to its look.
+
+Three things in `mush-pixel` move with the split (Draft 0.3, the review):
+
+- **`size_cm` leaves the sheet.** Today `size_cm` and the anchor both live inside `sprites`
+  (`look::Sheet`), so a look without a hand-drawn sheet has neither. `size_cm` moves to the look's
+  top level (every look has one; the sheet's copy goes); the anchor stays with whatever is drawn —
+  a text sheet has its own, and every baked frame already carries its own per size.
+- **The fallback belongs to the model.** A designed look has no text sheet of its own; what it
+  draws while its model is in flight, or in a picture with no baked chain, is its **model's**
+  fallback sheet — a hand-drawn 96 px text sheet beside the model's file (the six U.6 looks' sheets
+  become their models' sheets), or `unknown`'s. A look may still carry its own sheet; a hand-drawn
+  unit with no model is exactly that.
+- **Bakes are keyed by model id.** `bake_of_sheet` finds a bake by the sheet's pointer among
+  `look::shipped()`, and `iso25d` indexes bakes and fallbacks by the look's position in that list
+  (`look_index`); both become lookups by model id, which is also what kitty's uploaded-sheet cache
+  (`SheetKey`) keys on, so five tank variants on one model upload one sheet, not five.
 
 **D-31-2 Per-model files.** The single `units.bin` becomes one file a model,
 `crates/mush-pixel/models/<model id>.<digest prefix>.mupk`: the format-2 entry unchanged in body,
@@ -106,6 +135,12 @@ keyed by model id, its name carrying the first twelve hex digits of its SHA-256 
 cache it forever and a re-bake is a new name. A `models/index.json` lists id, digest, size, height
 and the bake's provenance line. The format version moves to 3 for the key change; the pack's codec
 and rule 7's runs do not. The matrix check runs a model at a time.
+
+The installed pack becomes a table that grows (Draft 0.3): today `bake::install` fills a
+`OnceLock<Pack>` and a second call drops its bytes, and `iso25d`'s `FALLBACK` caches a look's
+fallback chain on first draw for good. Both become a model table keyed by model id that accepts one
+model's file at a time (a lock on native, a cell on wasm), and a draw asks the table before the
+fallback, so a model that arrives mid-match supersedes the fallback on the next frame.
 
 **D-31-3 Native binaries embed every shipped model.** The gateway draws SSH and kitty frames
 server-side and must never wait on a file: it `include_bytes!`es every shipped model (a build
@@ -142,12 +177,20 @@ from the weapon catalogue (`content/weapons/`), sensors, cores, mobility within 
 the editor first: `UnitSpec::check` and the catalogue build's cross-checks (the design's weapons,
 sensors and cores resolve), the look check (`mush-pixel`), the look-against-unit contract test's
 rules (every section in the doll, every weapon named, every muzzle a weapon), and the
-look-against-model check (D-31-5, the matrix check's height and width rule). They compile into
-`mush-pixel-wasm` behind a `design` feature — tacsim's definitions are already pure data and
-`serde_json` — so the studio refuses a design with the server's own reason before export. The
-server runs the same code at publish; nothing is checked twice by two implementations. (If the
-tacsim definitions crate is too heavy for the module, the check becomes its own small wasm module;
-the builder measures.)
+look-against-model check (D-31-5, the matrix check's height and width rule). The studio refuses a
+design with the server's own reason before export, and the server runs the same code at publish;
+nothing is checked twice by two implementations.
+
+The checks cannot reach the browser through tacsim: tacsim depends on most of the server (the
+economy, industry, the LLM and NPC crates, the sim) and does not build for `wasm32`, and
+`mush-pixel` has no tacsim dependency at all. So (Draft 0.3, the review) the pure schema —
+`UnitSpec` and the weapon, sensor and core specs the cross-checks resolve, their `check`s and the
+binding rules that can refuse a unit — moves into a small dependency-light crate (`tacsim-schema`:
+serde and the definition types only, or `mush-tactics` if it stays wasm-clean; the builder's call),
+which tacsim and a `design` feature of `mush-pixel-wasm` both depend on. The same entry point also
+**computes the pack's manifest**: the canonical-JSON SHA-256 `digest` (`PACK_DIGEST_DOMAIN`) and the
+complete `requires` list (the weapon, sensor and core packs the design names), so an exported or
+published pack can never fail the loader on its own manifest.
 
 **D-31-8 Two exits: the repo and the instance.** Like the map editor, the studio exports files: a
 rules pack for `crates/tacsim/content/units/` and a look for `crates/mush-pixel/looks/`, downloaded
@@ -168,14 +211,30 @@ published design can never shadow a shipped unit; promoting one into the repo ke
 design is withdrawn by marking it unfieldable, never by deleting its version: a hull built on it
 names its digest forever (§2), and so does every match record that fielded it.
 
+**Where the rows enter the boot** (Draft 0.3, the review). `TacsimRuleset::register` builds the
+catalogue and registers every descriptor, and the engine freezes the definition registry before
+`on_world_loaded` runs; a persisted unit on a design the registry lacks then fails its exact
+definition check during hydration. So the host reads every `tacsim:design:*` row from Redis
+**before** the tacsim module registers, beside the files it reads for `[tacsim].pack_paths`, and
+hands both to the one loader as operator packs. One more reading must join the freeze: the tactics
+module's `UnitCatalog` (behind `@unit/create`) is built by `tactics_catalog()` from the shipped
+content alone, so today not even an operator pack reaches it; UD.3 feeds it from the fielded
+catalogue, which mends that for operator packs too.
+
 **D-31-10 The match hash folds what it already folds.** The catalogue the arena hashes is the
 fielded catalogue, so a published design changes the catalogue's count and digests and therefore
 the hash of every match after it — which is correct, since the hash is a statement about the rules
-a match ran under. What follows is a recording duty: a match record names the **catalogue
-generation** it ran under (the ordered digests, or one digest over them), and a replay rebuilds
-that catalogue from the shipped content plus the ledgered designs of that generation. A design's
-versions never leave Redis while a record names them (backup and restore of the instance are
-doc 16c T-112's; designs are now part of what it must keep).
+a match ran under. What follows is a recording duty, and a small one (Draft 0.3, the review):
+because a design version is never re-signed or deleted (D-31-9), the registry is **append-only**,
+and the fielded catalogue at any moment is the shipped content plus a prefix of the registry in
+publish order. A match records that prefix as a **generation** — a count, with one digest over the
+ordered definition digests as its check — and nothing is snapshotted. The public picture replay
+(`arena.replay`) replays recorded frames and needs only the looks; the private input tape
+(`arena/input_tape.rs`) **re-executes** the match from its opening snapshot, and its hash folds the
+catalogue, so it rebuilds the catalogue at the recorded generation from the current registry.
+Withdrawal is a fieldability flag outside the catalogue and moves no hash. A design's versions
+never leave Redis (backup and restore of the instance are doc 16c T-112's; designs are now part of
+what it must keep).
 
 A published design becomes fieldable at the next server restart (Q-31-1, ruled, §10).
 
@@ -196,7 +255,19 @@ fallback every picture already has — so a slow fetch costs crispness for a sec
 The files are immutable and content-named, so they carry a year's `Cache-Control` and a client
 fetches each model once per bake, ever. A design published in the instance has no new art (its
 model is shipped, D-31-4), so publishing never sends a model to anyone; it sends a look, a few
-hundred bytes, in the roster.
+hundred bytes (D-31-16).
+
+**D-31-16 The feeds carry the looks a match uses that are not shipped** (Draft 0.3, the review).
+`look::shipped()` is compiled in, and the panel feeds (`arena.cockpit`, `arena.map`,
+`arena.replay`) name a unit's type by id and carry no look; the gateway (SSH, kitty, the text
+cockpit) and the browser both draw from `shipped()`, and the gateway half never reads Redis. So the
+feeds that open a match — the cockpit's first frame, the map, the replay's header — carry a `looks`
+map, unit type to look JSON, for every type in the match whose look is not shipped (with no
+`sprites`: a designed look is its label, short name, weapon names, doll, `size_cm` and model, a few
+hundred bytes); later frames add a type only when it first appears. `mush_pixel::look` gains a
+runtime table beside `shipped()` (`install_look`), filled by the gateway from the feed and by
+`mush-pixel-wasm` from the same JSON, consulted after the shipped looks. The look stays out of
+every hash (D-22-1); the feed carries it because the drawing side has no other way to learn it.
 
 **D-31-12 The editor pays for the catalogue, on demand.** The studio loads the model index and
 fetches a model only when staff pick it for preview; browsing the catalogue's list costs the index.
@@ -226,6 +297,13 @@ sits in (`WorldgenPanel.svelte`), shown to staff only. One screen, four panes:
 4. **Compare.** The design beside a shipped unit: armour by facet, weapons by band, speed, heat —
    numbers, not a balance verdict.
 
+Two working habits from the map studio (Draft 0.3, the review): a bounded undo/redo stack over the
+engine's state, and the working draft saved to `localStorage` beside the JSON download and upload,
+so a closed tab costs nothing. And one check the server cannot give: a **test hit** in the preview —
+click a section or facet, choose damaged or destroyed, and the doll recolours and the consequences
+it would trigger (`remove_weapons`, `slow`, `disable_motion`, …) are listed — so an authoring
+mistake in a consequence shows before a match finds it.
+
 Exits: **Export** (the two files, D-31-8) and **Publish** (D-31-9: a new version to the instance,
 refused with the server's reason if the instance disagrees with the editor, which is a bug). A
 `@unit/design list|show|withdraw` staff command reads the registry from the line client.
@@ -245,26 +323,61 @@ operational state — on the doll, and offers only actions that are work orders:
 | Strip a destroyed or unwanted component | `strip_component` | title or salvage authority (doc 27 FO-4); the part goes to the bay's stores with its provenance |
 | Fit a like-for-like replacement | `replace_component_in_slot` | a part of the slot's definition, from stores (a stripped record) or bought; labour, time |
 | Rearm | `rearm_component` | rounds, cost, time |
-| **Refit** to another design | `replace_component` between registered roots | the target design is registered and in the hull's refit family; the part; an industry refit order (doc 08) on a facility with the capability |
+| **Refit** to another design | the refit transition between registered roots (D-31-15) | the target design is registered and in the hull's refit family; the part; an industry refit order (doc 08) on a facility with the capability |
 | Restore everything | `quote_full_restoration`, then the orders it lists | the quote's total |
 
 Every action produces a quote first (parts, cost, IC duration, facility), and nothing happens
 until it is accepted and its order runs to completion on the IC clock at a facility that has the
-capability (`unit.maintain_refit`, `industry.core.refit` on its scope) — doc 08's driver owns the
-recipe, the facility and the duration; the bay never sets a number. A hull in the field gets only
-what doc 27's field engineering already allows; the bay is a facility.
+capability (`unit.maintain_refit` on its scope) — doc 08's driver owns the recipe, the facility
+and the duration; the bay never sets a number. (`industry.core.refit` is not a bay capability: it
+is the governed-hardware licence for fitting a mind core, `RefitKind`'s, and a bay that also refits
+cores holds both.) A hull in the field gets only what doc 27's field engineering already allows;
+the bay is a facility.
+
+**Orders take time** (Draft 0.3, the review). Every `WorkshopBook` method applies its mutation
+immediately and stamps `completed_at_ic` with the time it was called. UD.4 adds the pending state
+around it: an accepted order holds the hull in the bay (no launch, no custody move, no second order
+on the same section or component) and keeps its parts reserved; at its IC completion time — doc
+27's `W-clock` freezes and outage adjustments apply — the driver commits the workshop mutation (or
+the refit transition) with the order's own completion time, or refuses it with the parts returned
+if the hull's revision moved. Cancelling before completion returns the parts and refunds by the
+driver's rule.
 
 **D-31-14 A refit is a change of design.** `replace_component_in_slot` only fits a part of the
 slot's own definition: a destroyed 105 mm cannon is replaced by a 105 mm cannon. Fitting a laser in
 its place changes what the unit *is* — its rules — and in this tree a unit's rules are its
-registered definition, so a refit is `replace_component` from the hull's design to another
-registered design that differs only in what the refit changes. The designer is how that second
-design exists: staff publish the variants a chassis may be refitted to (the line tank's laser,
-thermal, ECM and ECCM variants are already exactly that family), and each design declares its
-**refit family** — the designs a hull of it may become in a bay. The bay offers the family, never a
-free edit, and `core_replacement.rs`'s adapter shows the shape a family adapter takes. A refit's
-look can change with it (a laser tank names its own model when one is baked) — the look is never in
-the hash (D-22-1), so that costs nothing in the rules.
+registered definition, so a refit moves the hull from its design to another registered design. The
+designer is how that second design exists: staff publish the variants a chassis may be refitted
+to, and each design declares its **refit family** — the designs a hull of it may become in a bay.
+The bay offers the family, never a free edit. A refit's look can change with it (a laser tank names
+its own model when one is baked) — the look is never in the hash (D-22-1), so that costs nothing in
+the rules.
+
+**The family has to be written for it** (Draft 0.3, the review). The line tank's variants look like
+a family and are not one to the engine. `replace_component` swaps one component between two roots
+whose sections, unit cells, mobility, rules and every other component are identical, and the target
+component must exist in the new root. Against the shipped tanks:
+
+- `line_tank` to `line_tank_laser` changes the main gun's component id (`cannon` to `laser`), so
+  the rest no longer match; and the laser's `heat_max` makes the binder add `heat` and `heat_sink`
+  cells to the hull section, so the sections differ too. Refused twice.
+- `line_tank` to `line_tank_ecm` adds `ecm_pod`, which the M8b rule (a component fitted into a
+  mount the preimage lacked) admits; `line_tank_ecm` back to `line_tank` removes it, which nothing
+  admits.
+
+So within a refit family a mount keeps **one component id** whatever it holds (`main_gun`, not
+`cannon` or `laser`; `pod_1`, not `ecm_pod`), and the designer enforces it — a design that joins a
+family takes the family's mount ids. The shipped tank variants are renamed when UD.4 makes them a
+family (a content change that moves their digests, pre-launch with no units to migrate).
+
+**D-31-15 The refit transition.** A new pure function beside `replace_component` in
+`mush_tactics::unit::replacement` (the shape `core_replacement.rs`'s finite adapter already takes):
+from an exact registered root to another in its family, it **removes** at most one component and
+**installs** at most one (either side optional, so a pod can come off as well as go on), and admits
+exactly the section-cell changes the binder derives from the two roots (the heat pair when one has
+`heat_max` and the other not, its bounds when both do); every other field must still be equal. The
+removed component's state goes to custody in the journal as `replace_component`'s does, and the
+heat cell's current value is carried when both roots have it and starts at zero when it is new.
 
 Arena and simulator pods have none of this (R4): a match's damage ends with the match, and a pod
 has no hull to repair. The bay refuses a non-IC unit by kind.
@@ -324,10 +437,10 @@ runs compress it well) and a section-to-part map on the look. Not built, not sch
 | Cut | What | Done when |
 |---|---|---|
 | **UD.0** | this document and its README row | — |
-| **UD.1** | the model catalogue (D-31-1..5): bake configs under `scripts/unit-bake/models/`, per-model `.mupk` files and `models/index.json` (format 3, keyed by model id), `"model"` on the six looks, the matrix check a model at a time and the look-against-model check, native binaries embedding every model by build script, the web's fetch by roster and on first sight with the text-sheet fallback (D-31-11), immutable content-named files; `units.bin` deleted | the six U.6 models ship as six files; a web client in a match of tanks fetches the tank's file and no other; a contact whose model has not arrived draws its text sheet and then its bake; no change to any picture once loaded |
-| **UD.2** | the staff designer v0 (D-31-6..8, §6): the engine and studio, the chassis templates, the model preview through `mush-pixel-wasm`, the rules and look panes, the validator in wasm, export to the two repo files | staff draw a biped variant with a different weapon fit from the catalogue, the studio refuses a broken one with the server's reason, and the exported files pass `cargo test` unchanged when committed |
-| **UD.3** | the runtime design registry (D-31-9, D-31-10): `tacsim:design:` rows on the pack ledger, the design namespace, Publish, `@unit/design`, the catalogue generation on the match record and its replay, fieldable after a restart (Q-31-1) | a published design is fielded in an arena match after the restart, the match replays bit for bit, and committing the design leaves the catalogue's digests unchanged |
-| **UD.4** | the refit and repair bay on IC hulls (D-31-13, D-31-14): the bay view on a hull, quotes, the workshop orders through doc 08's driver at a facility, refit families and the refit adapter, the arena refusal | an IC hull back from a sortie with a destroyed cannon is stripped, refitted with a stored like-for-like part, repaired and rearmed over IC time at a priced quote, or refitted to a family variant; a simulator unit has no bay |
+| **UD.1** | the model catalogue (D-31-1..5): bake configs under `scripts/unit-bake/models/`, per-model `.mupk` files and `models/index.json` (format 3, keyed by model id), `"model"` on the six looks, `size_cm` on the look's top level, each model's fallback sheet, bakes keyed by model id (`bake_of_sheet`, `look_index` and the look-keyed `SheetKey` go), the installed pack and the fallback cache as tables that grow, the matrix check a model at a time and the look-against-model check, native binaries embedding every model by build script, the web's fetch by roster and on first sight with the text-sheet fallback (D-31-11), immutable content-named files; `units.bin` deleted | the six U.6 models ship as six files; a web client in a match of tanks fetches the tank's file and no other; a contact whose model has not arrived draws its text sheet and then its bake; no change to any picture once loaded |
+| **UD.2** | the staff designer v0 (D-31-6..8, §6): the schema crate out of tacsim, the engine and studio, the chassis templates, the model preview through `mush-pixel-wasm`, the rules and look panes, the validator and the manifest's digest and `requires` in wasm, undo/redo, the saved draft, the test hit, export to the two repo files | staff draw a biped variant with a different weapon fit from the catalogue, the studio refuses a broken one with the server's reason, and the exported files pass `cargo test` unchanged when committed |
+| **UD.3** | the runtime design registry (D-31-9, D-31-10, D-31-16): `tacsim:design:` rows on the pack ledger read by the host before the module registers, the tactics module's catalogue fed from the fielded one, the design namespace, Publish, `@unit/design`, the generation on the match record and the input tape's rebuild, the `looks` map on the feeds and the runtime look table on the gateway and in wasm, fieldable after a restart (Q-31-1) | a published design is fielded in an arena match after the restart and drawn with its own label and doll over SSH, kitty and the web; its input tape re-executes bit for bit; committing the design leaves the catalogue's digests unchanged |
+| **UD.4** | the refit and repair bay on IC hulls (D-31-13..15): the bay view on a hull, quotes, the pending order state on the IC clock, the workshop orders through doc 08's driver at a `unit.maintain_refit` facility, refit families with slot-stable mount ids (the tank variants renamed), the refit transition, the arena refusal | an IC hull back from a sortie with a destroyed cannon is stripped, refitted with a stored like-for-like part, repaired and rearmed over IC time at a priced quote, or refitted to the laser variant and back, and a pod fitted and removed; a hull in the bay cannot launch; a simulator unit has no bay |
 
 UD.1 stands alone and could follow U.6 directly. UD.2 needs UD.1's index; UD.3 needs UD.2's
 export; UD.4 needs UD.3 only for refits to published designs (repair and like-for-like work need
@@ -337,26 +450,36 @@ neither, and could go first once IC hulls return damaged, doc 27 H2).
 
 - **R1–R4** the owner's rulings of 2026-10-30 (§1).
 - **D-31-1** Models in a catalogue keyed by model id; a look names its model; amends D-22-10's
-  keying by look id.
-- **D-31-2** One immutable, content-named format-3 file a model, and an index.
+  keying by look id. `size_cm` on the look, the fallback sheet on the model, bakes keyed by model
+  (Draft 0.3).
+- **D-31-2** One immutable, content-named format-3 file a model, and an index; installed into a
+  table that grows (Draft 0.3).
 - **D-31-3** Native binaries embed every shipped model; the gateway never waits on a file.
 - **D-31-4** The catalogue is curated whole assemblies, pre-baked on the owner's box; no
   compositing of parts; a bake queue later.
 - **D-31-5** A model's mounts and muzzles bound which designs suit it (a look check, not a rule).
 - **D-31-6** A design is a rules pack and a look, composed from closed parts, versioned and never
   re-signed.
-- **D-31-7** The server's validators run in the editor through wasm; one implementation.
+- **D-31-7** The server's validators run in the editor through wasm; one implementation, in a
+  schema crate both depend on, which also stamps the manifest (Draft 0.3).
 - **D-31-8** Two exits: export to the repo, publish to the instance; the same bytes.
 - **D-31-9** The runtime registry rides the pack ledger, in its own id namespace; withdrawn, never
-  deleted.
-- **D-31-10** The match hash folds the fielded catalogue as today; a match records its catalogue
-  generation and a replay rebuilds it.
+  deleted; read by the host before the module registers, and the tactics catalogue fed from the
+  fielded one (Draft 0.3).
+- **D-31-10** The match hash folds the fielded catalogue as today; the registry is append-only, a
+  match records its generation as a count, and the input tape rebuilds from it (Draft 0.3).
 - **D-31-11** The web fetches a model by roster at muster and on first sight, text sheet until it
   arrives; nothing else crosses to a player.
 - **D-31-12** The editor fetches models on demand; rule 7 becomes a per-model web ceiling.
 - **D-31-13** Repair is work orders over doc 27's workshop and doc 08's driver on IC hulls, quoted,
-  timed and priced; never a free edit; arena units have no bay.
-- **D-31-14** A refit is a change of registered design within the hull's declared refit family.
+  timed and priced; never a free edit; arena units have no bay; `unit.maintain_refit` only; orders
+  pend on the IC clock and hold the hull (Draft 0.3).
+- **D-31-14** A refit is a change of registered design within the hull's declared refit family;
+  a family keeps one component id a mount (Draft 0.3).
+- **D-31-15** (Draft 0.3) The refit transition: remove and install at most one component each, and
+  the binder's derived section cells, between family roots.
+- **D-31-16** (Draft 0.3) The feeds carry the looks a match uses that are not shipped; a runtime
+  look table on the gateway and in wasm.
 - **Q-31-1** (ruled 2026-10-30) A published design is fieldable after the next server restart;
   live catalogue extension is deferred for cost and is a prerequisite of player designs.
 - **Q-31-2** (ruled 2026-10-30) IC hulls may be built on registry-only designs; commit before any
