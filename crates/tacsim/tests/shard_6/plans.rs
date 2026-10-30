@@ -4597,8 +4597,8 @@ fn sm11_a_clear_retyped_across_a_queued_unload_is_one_intent() {
 /// **The bound precedes every wait: a plan past its deadline ends from the `Ashore` wait** (the
 /// lead's pre-commit round, item 3; the judge's correctness/F5): a one-pocket plan filed with the
 /// rig on the ground, its filing staff-shifted so its 288 IC hours run out ten IC minutes on; staff
-/// move the pilot out of the hull's airlock space into its bay (not aboard by `voyage::aboard`'s
-/// rule, `excursions.rs`'s gate test): the plan waits `Ashore` (told once to the connected pilot,
+/// move the pilot outside the hull, after checking the bay still allows plan control:
+/// the plan waits `Ashore` (told once to the connected pilot,
 /// nothing submitted); at the deadline the tick submits the plan's `plan_end` as the pilot — still
 /// not aboard — and it lands: the plan ends `Bound` where the rig stands (no recover: the way home
 /// waits for the pilot, or the idle return), told once.
@@ -4620,6 +4620,18 @@ fn sm11_the_bound_ends_a_plan_waiting_ashore() {
         mush_sim::place_interior(ctx, pilot, bay, None)
     })
     .expect("staff move the pilot into the bay");
+    let (out, bay_clear) = command(&mut rig, pilot, "+tv/1 plan clear");
+    assert_eq!(bay_clear.len(), 1, "the bay is still aboard: {out}");
+    assert_eq!(act_word(&bay_clear[0]), "plan_clear");
+    // Leave the offered clear unlanded; this test exercises the plan's bound.
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff release the pilot's placement")
+    })
+    .expect("release placement before moving ashore");
+    rig.tw
+        .world_mut()
+        .move_to(pilot, mush_core::LIMBO)
+        .expect("staff take the pilot outside the hull");
     let mut heard = String::new();
     let mut ended_at: Option<i64> = None;
     for _ in 0..200 {
@@ -4752,8 +4764,8 @@ fn sm11_the_author_clears_their_plan_off_the_helm() {
 /// deadline; then exactly one `plan_end` is submitted as the author and lands within one fire of
 /// the deadline — through the off-helm offer's `plan` variant; the plan is `Ended { Bound }`;
 /// `PLAN_ENDED` with `END_BOUND` is told once. With `aboard` false staff also move the pilot from
-/// the airlock into the hull's bay (not aboard by `voyage::aboard`'s rule): the off-helm offer then
-/// fixes the plan's variants with `controls == false` — a `plan_clear` the author typed while
+/// the airlock through the bay, where plan control still works, then outside the hull:
+/// the off-helm offer fixes the plan's variants with `controls == false` — a `plan_clear` typed while
 /// still aboard, landed after the move, is refused and the plan stays live — while its `plan`
 /// variant is still offered, so the `Bound` end lands as the author with no helm and not aboard.
 #[allow(clippy::too_many_lines)]
@@ -4798,6 +4810,18 @@ fn bound_off_the_helm(aboard: bool) {
             mush_sim::place_interior(ctx, pilot, bay, None)
         })
         .expect("staff move the pilot into the bay");
+        let (out, bay_clear) = command(&mut rig, pilot, "+tv/1 plan clear");
+        assert_eq!(bay_clear.len(), 1, "the bay is still aboard: {out}");
+        assert_eq!(act_word(&bay_clear[0]), "plan_clear");
+        // Leave the offered clear unlanded; this test exercises the plan's bound.
+        support::with_ctx(&mut rig.tw, |ctx| {
+            mush_sim::unplace(ctx, pilot, "staff release the pilot's placement")
+        })
+        .expect("release placement before moving ashore");
+        rig.tw
+            .world_mut()
+            .move_to(pilot, mush_core::LIMBO)
+            .expect("staff take the pilot outside the hull");
         let refused = land(&mut rig, &clear[0]).expect_err("the clear is not offered off the hull");
         assert!(
             refused.contains("the operator is not aboard the hull"),

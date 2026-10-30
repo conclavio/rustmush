@@ -3358,9 +3358,10 @@ fn sm3b_the_act_gates_refuse_at_the_command_and_at_the_prepare() {
         &NO_RIG.replace("{n}", "2").replace("{name}", "Salt Moth"),
     );
 
-    // Off the bridge: staff move the pilot from the hull's airlock space down into its
-    // bay (aboard is the airlock interior, `voyage::aboard`); every act refuses, and so does
-    // the built start at the prepare.
+    // The bay remains aboard: moving there preserves the launch preview. Staff then
+    // take the pilot outside the hull; every act refuses, including the built start.
+    let (aboard_preview, queued) = command(&mut rig, pilot, "+tv/1 launch");
+    assert!(queued.is_empty(), "a preview starts nothing");
     let SpatialParent::Interior {
         space: airlock,
         slot: airlock_slot,
@@ -3373,6 +3374,17 @@ fn sm3b_the_act_gates_refuse_at_the_command_and_at_the_prepare() {
         mush_sim::place_interior(ctx, pilot, bay, None)
     })
     .expect("staff move the pilot into the bay");
+    let (bay_preview, queued) = command(&mut rig, pilot, "+tv/1 launch");
+    assert_eq!(bay_preview, aboard_preview, "the bay is still aboard");
+    assert!(queued.is_empty(), "a preview starts nothing");
+    keeping(&mut rig, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff release the pilot's placement")
+    })
+    .expect("release placement before moving ashore");
+    rig.tw
+        .world_mut()
+        .move_to(pilot, mush_core::LIMBO)
+        .expect("staff take the pilot outside the hull");
     let not_aboard = TV_NOT_ABOARD.replace("{name}", "Salt Moth");
     for line in ["+tv/1 launch", "+tv/1 recover go", "+tv/1 dump"] {
         refuses(&mut rig, pilot, line, &not_aboard);
