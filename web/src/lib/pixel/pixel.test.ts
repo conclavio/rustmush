@@ -18,6 +18,7 @@ import {
   KIND_CHART,
   KIND_COCKPIT,
   KIND_DOLL,
+  KIND_ISO25D,
   KIND_OVERHEAD,
   KIND_REPLAY,
   PIXEL_ABI,
@@ -108,6 +109,14 @@ describe("the picture module", () => {
     expect(m.feed(FEED_REPLAY_CURSOR, JSON.stringify({ match: 1, t_ms: 0, focus: 0 }))).toBe(true);
     expect(m.render(640, 480, { offsetMdeg: 0 }, KIND_REPLAY)).toBe(true);
     expect(m.hash()).not.toBe(chartHash);
+
+    // Iso25DPicture (2.5D tactical camera)
+    const relief = readFileSync(new URL("../fixtures/pixel/arena_map_relief.json", import.meta.url), "utf8");
+    expect(m.feed(FEED_MAP, relief)).toBe(true);
+    expect(m.render(640, 480, { offsetMdeg: 0 }, KIND_ISO25D)).toBe(true);
+    const isoHash = m.hash();
+    expect(isoHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(isoHash).not.toBe(dollHash);
   });
 
   it("draws nothing without a cockpit, and forgets one that is unseated", async () => {

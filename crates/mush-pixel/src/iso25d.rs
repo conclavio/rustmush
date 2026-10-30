@@ -2,73 +2,71 @@
 //!
 //! Cycling the camera (`v` in the pixel cockpit) steps across three views:
 //! first-person (`cockpit`), overhead (`overhead`), and this oblique 2.5D view
-//! (`iso25d`). Unlike the first two views — which rasterise a complete
-//! indexed [`Frame`] and push a fresh `a=T` PNG every 50 ms — the 2.5D view
-//! drives the Kitty graphics protocol as a **retained hardware sprite and
-//! layer compositor**:
+//! (`iso25d`).
+//!
+//! In SSH terminals with Kitty graphics, the 2.5D view drives the Kitty
+//! protocol as a **retained hardware sprite and layer compositor**:
 //!
 //! - **Upload once (`a=t,i=<id>,q=1`)**: unit sprite sheets (8 facings × 6
 //!   poses: still, four moving frames, wreck) baked from the 3D models at six
 //!   geometric mipmap scales (`96, 86, 78, 70, 64, 56` px, ~10 % steps) are
-//!   uploaded lazily the first time a unit type, team paint, and depth scale
-//!   appear.
-//! - **Place and move (`a=p,i=<id>,p=<pid>,x=…,y=…,w=…,h=…,X=…,Y=…,z=…,C=1,q=1`)**:
+//!   uploaded lazily once per `(UnitModel, PaintKey, mip)`. Any number of units
+//!   sharing a sheet are placed simultaneously under distinct `placement_id`s
+//!   (`p=100`, `p=101`, …).
+//! - **Place and move (`a=p,i=<id>,p=<pid>,x=…,y=…,w=…,h=…,X=0,Y=0,z=…,C=1,q=1`)**:
 //!   each tick updates every visible unit's position, facing, animation frame,
-//!   and depth `z` in a single short escape sequence using source-rectangle
-//!   selection (`x,y,w,h`) and sub-cell pixel offsets (`X,Y`).
+//!   and depth `z` in a single short escape sequence using padded source-rect
+//!   selection (`x,y,w,h`).
 //! - **Pure-translation terrain scrolling (`z = -100`) and `a=f` patching**:
 //!   because the 2.5D camera is a fixed oblique angle, camera motion over the
-//!   voxel terrain is pure 2D translation. An oversized `2×` terrain canvas is
-//!   rendered and uploaded once, then scrolled each tick by moving the
+//!   voxel terrain is pure 2D translation. An oversized `2.5×` terrain canvas
+//!   is baked and uploaded once, then scrolled each tick by moving the
 //!   placement's source rectangle `x=<cam_x>,y=<cam_y>,w=<vp_w>,h=<vp_h>`.
-//!   When the camera approaches the canvas margin, a new canvas is centered on
-//!   the mech under the alternate terrain image ID and the old one is deleted.
-//!   Local terrain modifications patch the stored image in place via `a=f`
-//!   ([`kitty::patch_frame_bytes`]).
-//! - **Depth-sliced terrain occlusion (`z = -50..-2`)**: tall features
-//!   (`Wall`, `Woods`, `WoodsHeavy`) are split into horizontal depth strips
-//!   whose `z` tracks screen Y, interleaved with unit `z` values so mechs and
-//!   tanks walk behind buildings, walls, and trees.
-//! - **Dynamic viewport scaling up to 1280 px wide**: scales to ~85 % of the
-//!   player's terminal pixel width (from SSH `pty-req` / `window-change` pixel
-//!   dimensions or `CSI 16 t`) up to `1280×720` (`640×360` when stepped down).
+//!   When the camera approaches the `16 px` canvas edge margin, a new canvas is
+//!   centered on the mech under the alternate terrain image ID and the old one
+//!   is deleted. Local terrain modifications patch the stored image in place via
+//!   `a=f` ([`kitty::patch_frame_bytes`]).
+//!
+//! In the web client (`mush-pixel-wasm` / `<canvas>`) and Sixel fallback,
+//! [`Iso25DPicture::render_frame`] composites the same `2.5×` cached terrain
+//! canvas, 3D-baked mipmapped unit models, ground shadows, silhouette rims,
+//! per-pixel tree and building occlusion (`occluder_base_y`), hull/look heading
+//! vectors, and target-lock brackets directly into an RGB [`Frame`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(feature = "encode")]
+use std::collections::BTreeSet;
 
 use serde_json::Value;
 
+#[cfg(feature = "encode")]
 use crate::caps::CellSize;
 use crate::cockpit::{
     ARENA_MAP_FEED, COCKPIT_FEED, contact_kind, map_from_feed, terrain_from_feed,
 };
 use crate::frame::{Frame, Rgb};
-use crate::heightfield::Terrain;
+use crate::heightfield::{Terrain, material_from_code, mip_pack};
+#[cfg(feature = "encode")]
 use crate::kitty::{self, Placement};
-use crate::look::{self, Facing, Material, Sheet};
+use crate::look::{Facing, Material};
 use crate::math::Det as _;
 use crate::overlay::{self, ground_rgb};
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
+#[cfg(feature = "encode")]
 use crate::png;
 use crate::raycast::{Ground, Map, SpriteKind};
-
-/// Embedded 6-level 2.5D mipmap sheets (`96, 86, 78, 70, 64, 56` px) baked from
-/// the licensed 3D models (`biped` and `tracked_tank`) at a 26° oblique
-/// elevation angle.
-const EMBEDDED_MIPS: &[u8] = include_bytes!("../looks/iso25d_mips.bin");
 
 /// Geometric mipmap frame sizes in pixels (~10 % steps: 1.00, 0.90, 0.81,
 /// 0.73, 0.66, 0.58).
 pub const MIP_SIZES: [usize; 6] = [96, 86, 78, 70, 64, 56];
 
-/// Number of horizontal depth strips used to interleave tall terrain occluders
-/// (`Wall`, `Woods`, `WoodsHeavy`) with units by screen Y.
-const OCCLUDER_STRIPS: usize = 6;
-
 /// Default cell pixel width when neither SSH `pty-req` nor `CSI 16 t` has
 /// reported the terminal's cell size yet.
+#[cfg(feature = "encode")]
 const DEFAULT_CELL_W: u16 = 8;
 /// Default cell pixel height when neither SSH `pty-req` nor `CSI 16 t` has
 /// reported the terminal's cell size yet.
+#[cfg(feature = "encode")]
 const DEFAULT_CELL_H: u16 = 16;
 
 /// Maximum viewport width in pixels at full resolution.
@@ -83,40 +81,57 @@ pub const MIN_HEIGHT_PX: usize = 180;
 /// Horizontal transparent padding (in pixels) around each cell in an uploaded
 /// sprite sheet so sub-cell horizontal positioning can shift `src_x` without
 /// using Kitty's `X=` (which `wezterm-term` applies as per-cell padding).
+#[cfg(feature = "encode")]
 const SHEET_PAD_X: usize = 16;
 /// Vertical transparent padding (in pixels) around each cell in an uploaded
 /// sprite sheet so sub-cell vertical positioning can shift `src_y` without
 /// using Kitty's `Y=` (which `wezterm-term` applies as per-cell padding).
+#[cfg(feature = "encode")]
 const SHEET_PAD_Y: usize = 24;
 
 // ---- Stable Kitty Image & Placement IDs ------------------------------------
 
-/// Ping-pong image IDs for the oversized 2.5D terrain ground canvas.
+/// Ping-pong image IDs for the oversized `2.5×` 2.5D terrain ground canvas.
+#[cfg(feature = "encode")]
 const IMAGE_ID_TERRAIN_A: u32 = 100;
+#[cfg(feature = "encode")]
 const IMAGE_ID_TERRAIN_B: u32 = 101;
-/// Shared image ID for the transparent terrain occluder canvas (`Wall`, `Woods`,
-/// `WoodsHeavy`); all depth-sliced occluder strip placements window into this
-/// single image so terminal GPU memory stays well under `w11term`'s 32 MiB cap.
-const IMAGE_ID_OCC_BASE: u32 = 110;
 /// Image ID for the compact center tactical HUD vector overlay (`z = -1`).
+#[cfg(feature = "encode")]
 const IMAGE_ID_HUD: u32 = 130;
 /// Image ID for the target-lock bracket overlay (`z = -1`).
+#[cfg(feature = "encode")]
 const IMAGE_ID_LOCK: u32 = 131;
 /// Base image ID (`200..`) for lazily uploaded `(UnitModel, PaintKey, mip)`
-/// sprite sheets.
+/// sprite sheets (one image per `(model, paint, mip)` shared by all units via
+/// distinct `placement_id`s).
+#[cfg(feature = "encode")]
 const IMAGE_ID_SHEET_BASE: u32 = 200;
 
-/// Base unit slot key (`100` = player's own unit, `101..` = contacts).
+/// Placement ID (`p=1`) for the terrain ground canvas.
+#[cfg(feature = "encode")]
+const PLACEMENT_TERRAIN: u32 = 1;
+/// Placement ID (`p=30`) for the center tactical HUD vector overlay.
+#[cfg(feature = "encode")]
+const PLACEMENT_HUD: u32 = 30;
+/// Placement ID (`p=31`) for the target-lock corner bracket overlay.
+#[cfg(feature = "encode")]
+const PLACEMENT_LOCK: u32 = 31;
+/// Base unit placement ID (`p=100` = player's own unit, `p=101..` = contacts
+/// keyed by contact `"id"`).
 const PLACEMENT_UNIT_BASE: u32 = 100;
 
 /// Z-index of the ground terrain placement (below all units and text).
+#[cfg(feature = "encode")]
 const Z_TERRAIN: i32 = -100;
-/// Base Z-index for wrecks (above ground, below all live units and occluders).
+/// Base Z-index for wrecks (above ground, below all live units).
+#[cfg(feature = "encode")]
 const Z_WRECK_BASE: i32 = -80;
-/// Base Z-index for live units and depth-sliced occluder strips (`-50..-2`).
+/// Base Z-index for live units (`-50..-2`).
+#[cfg(feature = "encode")]
 const Z_DEPTH_BASE: i32 = -50;
-/// Z-index for the tactical HUD overlay (above units and occluders, below
-/// terminal text).
+/// Z-index for the tactical HUD overlay (above units, below terminal text).
+#[cfg(feature = "encode")]
 const Z_HUD: i32 = -1;
 
 /// Off-map void colour.
@@ -156,15 +171,17 @@ impl UnitModel {
 }
 
 /// Key uniquely identifying one pre-baked mipmap sprite sheet in terminal
-/// storage.
+/// storage. All units sharing `(model, paint, mip)` reference this single
+/// image via distinct `placement_id`s (`p=100`, `p=101`, …).
+#[cfg(feature = "encode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct SheetKey {
     model: UnitModel,
     paint: PaintKey,
     mip: u8,
-    slot: u8,
 }
 
+#[cfg(feature = "encode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum PaintKey {
     Red = 0,
@@ -173,6 +190,7 @@ enum PaintKey {
     Wreck = 3,
 }
 
+#[cfg(feature = "encode")]
 impl PaintKey {
     fn from_kind(k: SpriteKind) -> Self {
         match k {
@@ -193,199 +211,14 @@ impl PaintKey {
     }
 }
 
+#[cfg(feature = "encode")]
 impl SheetKey {
-    /// Deterministic Kitty image ID (`>= 200`) for this `(model, paint, mip, slot)`.
+    /// Deterministic Kitty image ID (`>= 200`) for this `(model, paint, mip)`.
     fn image_id(self) -> u32 {
         let m = self.model as u32;
         let p = self.paint as u32;
         let mip = u32::from(self.mip);
-        let slot = u32::from(self.slot);
-        IMAGE_ID_SHEET_BASE + (m * 96) + (p * 24) + (mip * 4) + slot
-    }
-}
-
-/// Decoded single mip level (`(6 * n) × (8 * n)` material codes `0..=6`).
-#[derive(Clone, Debug)]
-struct BakedMip {
-    size: usize,
-    anchor_x: usize,
-    anchor_y: usize,
-    /// Row-major `(8 * size)` rows by `(6 * size)` columns; `0` = transparent,
-    /// `1..=6` = [`Material`].
-    pixels: Vec<u8>,
-}
-
-/// All 6 mipmap levels for the three unit model families.
-struct BakedMipPack {
-    models: [[BakedMip; 6]; 3],
-}
-
-static MIP_PACK: std::sync::OnceLock<BakedMipPack> = std::sync::OnceLock::new();
-
-fn mip_pack() -> &'static BakedMipPack {
-    MIP_PACK.get_or_init(load_mip_pack)
-}
-
-fn decode_rle(rle: &[u8], expected_len: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(expected_len);
-    for &b in rle {
-        let mat = b & 0x07;
-        let run = usize::from(b >> 3) + 1;
-        let limit = run.min(expected_len.saturating_sub(out.len()));
-        out.resize(out.len() + limit, mat);
-    }
-    if out.len() < expected_len {
-        out.resize(expected_len, 0);
-    }
-    out
-}
-
-fn fallback_mip_from_sheet(sheet: Option<&Sheet>, n: usize) -> BakedMip {
-    let sheet_w = 6 * n;
-    let sheet_h = 8 * n;
-    let mut pixels = vec![0u8; sheet_w * sheet_h];
-    let Some(s) = sheet else {
-        return BakedMip {
-            size: n,
-            anchor_x: n / 2,
-            anchor_y: (n * 3) / 4,
-            pixels,
-        };
-    };
-    let (sw, sh) = (s.width.max(1), s.height.max(1));
-    // Scale the hand-drawn sheet into the bottom-center of the n x n cell.
-    let scale_w = (n * 3 / 4).max(1);
-    let scale_h = (scale_w * sh / sw).clamp(1, (n * 3 / 4).max(1));
-    let off_x = (n.saturating_sub(scale_w)) / 2;
-    let off_y = n.saturating_sub(scale_h + n / 8);
-
-    for (fi, &facing) in Facing::ALL.iter().enumerate() {
-        for pi in 0..6usize {
-            let resolved = if pi == 5 {
-                s.wreck_frame(facing).map(|f| (f, false))
-            } else if pi == 0 {
-                s.frame(facing, false, 0)
-            } else {
-                s.frame(facing, true, pi - 1)
-            };
-            let Some((frame_pixels, mirror)) = resolved else {
-                continue;
-            };
-            for dy in 0..scale_h {
-                let sy = (dy * sh / scale_h).min(sh.saturating_sub(1));
-                let dst_r = fi * n + off_y + dy;
-                for dx in 0..scale_w {
-                    let sx_raw = (dx * sw / scale_w).min(sw.saturating_sub(1));
-                    let sx = if mirror {
-                        sw.saturating_sub(1 + sx_raw)
-                    } else {
-                        sx_raw
-                    };
-                    if let Some(Some(mat)) = frame_pixels.get(sy * sw + sx) {
-                        let code = match mat {
-                            Material::TeamDark => 1,
-                            Material::Team => 2,
-                            Material::TeamLight => 3,
-                            Material::Black => 4,
-                            Material::Steel => 5,
-                            Material::Pale => 6,
-                        };
-                        if let Some(dst) = pixels.get_mut(dst_r * sheet_w + pi * n + off_x + dx) {
-                            *dst = code;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    BakedMip {
-        size: n,
-        anchor_x: n / 2,
-        anchor_y: off_y + scale_h.saturating_sub(1),
-        pixels,
-    }
-}
-
-fn load_mip_pack() -> BakedMipPack {
-    let mut cursor = EMBEDDED_MIPS;
-    let mut parsed_models: Vec<Vec<BakedMip>> = Vec::new();
-    if cursor.len() >= 6 && cursor.get(..4) == Some(b"M25D") {
-        let unit_count = cursor.get(5).copied().unwrap_or(0) as usize;
-        cursor = cursor.get(6..).unwrap_or(&[]);
-        for _ in 0..unit_count {
-            let mip_count = cursor.first().copied().unwrap_or(0) as usize;
-            cursor = cursor.get(1..).unwrap_or(&[]);
-            let mut mips = Vec::with_capacity(mip_count);
-            for _ in 0..mip_count {
-                if cursor.len() < 10 {
-                    break;
-                }
-                let n = u16::from_le_bytes([
-                    cursor.first().copied().unwrap_or(0),
-                    cursor.get(1).copied().unwrap_or(0),
-                ]) as usize;
-                let ax = u16::from_le_bytes([
-                    cursor.get(2).copied().unwrap_or(0),
-                    cursor.get(3).copied().unwrap_or(0),
-                ]) as usize;
-                let ay = u16::from_le_bytes([
-                    cursor.get(4).copied().unwrap_or(0),
-                    cursor.get(5).copied().unwrap_or(0),
-                ]) as usize;
-                let rle_len = u32::from_le_bytes([
-                    cursor.get(6).copied().unwrap_or(0),
-                    cursor.get(7).copied().unwrap_or(0),
-                    cursor.get(8).copied().unwrap_or(0),
-                    cursor.get(9).copied().unwrap_or(0),
-                ]) as usize;
-                cursor = cursor.get(10..).unwrap_or(&[]);
-                let rle = cursor.get(..rle_len).unwrap_or(&[]);
-                cursor = cursor.get(rle_len..).unwrap_or(&[]);
-                let pixels = decode_rle(rle, 6 * n * 8 * n);
-                mips.push(BakedMip {
-                    size: n,
-                    anchor_x: ax,
-                    anchor_y: ay,
-                    pixels,
-                });
-            }
-            parsed_models.push(mips);
-        }
-    }
-
-    let unk_sheet = look::unknown().and_then(|l| l.sprites.as_ref());
-    let biped_sheet = look::for_unit("tacsim.unit.biped_mk1").and_then(|l| l.sprites.as_ref());
-    let tank_sheet = look::for_unit("tacsim.unit.line_tank").and_then(|l| l.sprites.as_ref());
-
-    let build_six = |idx: usize, fallback: Option<&Sheet>| -> [BakedMip; 6] {
-        std::array::from_fn(|mi| {
-            let target_n = MIP_SIZES.get(mi).copied().unwrap_or(64);
-            parsed_models
-                .get(idx)
-                .and_then(|m| m.get(mi))
-                .cloned()
-                .unwrap_or_else(|| fallback_mip_from_sheet(fallback, target_n))
-        })
-    };
-
-    BakedMipPack {
-        models: [
-            build_six(0, biped_sheet),
-            build_six(1, tank_sheet),
-            build_six(2, unk_sheet),
-        ],
-    }
-}
-
-fn material_from_code(code: u8) -> Option<Material> {
-    match code {
-        1 => Some(Material::TeamDark),
-        2 => Some(Material::Team),
-        3 => Some(Material::TeamLight),
-        4 => Some(Material::Black),
-        5 => Some(Material::Steel),
-        6 => Some(Material::Pale),
-        _ => None,
+        IMAGE_ID_SHEET_BASE + (m * 24) + (p * 6) + mip
     }
 }
 
@@ -415,6 +248,7 @@ fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
 /// by shifting the placement's source rectangle `(src_x, src_y)` while keeping
 /// Kitty's `X=0, Y=0` and `c=cols, r=rows` (avoiding `wezterm-term`'s per-cell
 /// `X/Y` padding bug).
+#[cfg(feature = "encode")]
 fn render_sheet_rgba(key: SheetKey) -> (usize, usize, Vec<u8>) {
     let pack = mip_pack();
     let model_idx = key.model as usize;
@@ -515,6 +349,7 @@ fn render_sheet_rgba(key: SheetKey) -> (usize, usize, Vec<u8>) {
 // ---- Dynamic Viewport Sizing (up to 1280px wide) ---------------------------
 
 /// Pixel and cell geometry for the 2.5D viewport inside `picture_area`.
+#[cfg(feature = "encode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Viewport25D {
     /// Viewport width in render pixels (`<= 1280`, exact multiple of `cols` and even).
@@ -540,6 +375,7 @@ pub struct Viewport25D {
 /// `Overhead` even on high-DPI displays), while scaling internal render pixels
 /// per cell `(cell_w, cell_h)` cleanly up to `1280×720` (`640×360` when
 /// `step_down` is true).
+#[cfg(feature = "encode")]
 #[must_use]
 pub fn viewport_25d(
     area_cols: u16,
@@ -600,7 +436,7 @@ pub fn viewport_25d(
     }
 }
 
-// ---- 2.5D Oblique Voxel Terrain + Occluder Strip Baking --------------------
+// ---- 2.5D Oblique Voxel Terrain + Occluder Depth Baking --------------------
 
 /// Projection scale for a given viewport width.
 #[derive(Clone, Copy, Debug)]
@@ -615,11 +451,11 @@ struct IsoProj {
 
 impl IsoProj {
     fn for_viewport(vp_w: usize) -> Self {
-        let s = (vp_w as f32 / 640.0).clamp(0.5, 2.0);
+        let s = (vp_w as f32 / 640.0).sqrt().clamp(0.7, 1.45);
         Self {
-            px_per_m_x: 3.8 * s,
-            px_per_m_y: 2.5 * s,
-            px_per_m_z: 3.0 * s,
+            px_per_m_x: 2.2 * s,
+            px_per_m_y: 1.45 * s,
+            px_per_m_z: 2.2 * s,
         }
     }
 
@@ -652,29 +488,12 @@ fn ground_z_m(map: &Map, terrain: Option<&Terrain>, wx_m: f32, wy_m: f32) -> f32
     t.height(px, py) * cell_m
 }
 
-/// Sun shade factor (`0.60..=1.20`, quantized to 4 steps so the ground canvas
-/// stays within the 256-colour indexed PNG palette) at `(wx_m, wy_m)`.
-fn sun_gain(map: &Map, terrain: Option<&Terrain>, wx_m: f32, wy_m: f32, checker: bool) -> f32 {
-    let cell_m = (map.cell_cm().max(1) as f32) * 0.01;
-    let cx = (wx_m / cell_m).floor() as i64;
-    let cy = (wy_m / cell_m).floor() as i64;
-    let step = match terrain {
-        Some(t) => {
-            let rise = i64::from(t.elev_cm(cx, cy)) - i64::from(t.elev_cm(cx - 1, cy + 1));
-            (rise / 120).clamp(-2, 2)
-        }
-        None => 0,
-    };
-    let base = 1.0 + (step as f32) * 0.08;
-    if checker { base * 0.96 } else { base }
-}
-
 fn scale_rgb(rgb: Rgb, gain: f32) -> Rgb {
     rgb.map(|c| ((f32::from(c) * gain).round().clamp(0.0, 255.0)) as u8)
 }
 
-/// Oversized 2.5D terrain ground canvas (`1.5×` viewport) plus shared
-/// transparent occluder layer.
+/// Oversized 2.5D terrain ground canvas (`2.5×` viewport, up to `2560×1440`)
+/// plus per-pixel `occluder_base_y` depth table for software/WASM compositing.
 #[derive(Debug)]
 struct TerrainCanvas {
     canvas_w: usize,
@@ -685,10 +504,10 @@ struct TerrainCanvas {
     origin_y_cm: i64,
     proj: IsoProj,
     ground_frame: Frame,
-    /// Full-canvas RGBA occluder layer (`canvas_w * canvas_h * 4`).
-    occluder_rgba: Vec<u8>,
-    /// Whether any tall feature (`Wall`, `Woods`, `WoodsHeavy`) wrote to `occluder_rgba`.
-    has_occluders: bool,
+    /// Base canvas Y (`by`) of any tall feature (`Wall`, `Woods`, `WoodsHeavy`)
+    /// drawn at each canvas pixel (`0` for plain ground), enabling pixel-exact
+    /// occlusion of units walking behind buildings and trees in `render_frame`.
+    occluder_base_y: Vec<u16>,
 }
 
 impl TerrainCanvas {
@@ -700,8 +519,8 @@ impl TerrainCanvas {
         vp_w: usize,
         vp_h: usize,
     ) -> Self {
-        let canvas_w = ((vp_w * 3 / 2) & !1).max(vp_w + 16);
-        let canvas_h = ((vp_h * 3 / 2) & !1).max(vp_h + 16);
+        let canvas_w = ((vp_w * 5 / 2) & !1).min(2560).max(vp_w + 64);
+        let canvas_h = ((vp_h * 5 / 2) & !1).min(1440).max(vp_h + 64);
         let proj = IsoProj::for_viewport(vp_w);
         let origin_x_m = origin_x_cm as f32 * 0.01;
         let origin_y_m = origin_y_cm as f32 * 0.01;
@@ -713,21 +532,110 @@ impl TerrainCanvas {
 
         let mut ground_frame = Frame::new(canvas_w, canvas_h);
         ground_frame.clear(OFF_MAP_RGB);
-        let mut occluder_rgba = vec![0u8; canvas_w * canvas_h * 4];
-        let mut has_occluders = false;
+        let mut occluder_base_y = vec![0u16; canvas_w * canvas_h];
 
-        // Column-by-column back-to-front (North to South, i.e. top of canvas to
-        // bottom of canvas) voxel extrusion so nearer ridges naturally overwrite
-        // further ground, while tall features (Walls, Woods) also populate the
-        // transparent occluder buffer for unit depth-sorting.
         let half_w = canvas_w as f32 * 0.5;
         let half_h = canvas_h as f32 * 0.5;
         let inv_px_x = 1.0 / proj.px_per_m_x;
         let inv_px_y = 1.0 / proj.px_per_m_y;
 
+        // Precompute a 2.5 m sub-cell texel lookup table (4 texels per cell)
+        // covering the visible world bounding box so `t.height()`, normal finite
+        // differences, and `sun_gain` are evaluated once per 2.5 m texel instead
+        // of four times per canvas pixel (~6× faster bakes).
+        let tex_m = (cell_m * 0.25).max(0.25);
+        let inv_tex_m = 1.0 / tex_m;
+        let min_wx_m = (origin_x_m - half_w * inv_px_x - cell_m).max(0.0);
+        let max_wx_m = (origin_x_m + half_w * inv_px_x + cell_m).min(map_w_m);
+        let min_wy_m = (origin_y_m - (half_h + 32.0) * inv_px_y - cell_m).max(0.0);
+        let max_wy_m = (origin_y_m + (half_h + 32.0) * inv_px_y + cell_m).min(map_h_m);
+
+        let tx0 = ((min_wx_m * inv_tex_m).floor() as i32) - 2;
+        let tx1 = ((max_wx_m * inv_tex_m).ceil() as i32) + 2;
+        let ty0 = ((min_wy_m * inv_tex_m).floor() as i32) - 2;
+        let ty1 = ((max_wy_m * inv_tex_m).ceil() as i32) + 2;
+        let grid_w = (tx1 - tx0 + 1).max(4) as usize;
+        let grid_h = (ty1 - ty0 + 1).max(4) as usize;
+
+        let mut tex_z = vec![0.0f32; grid_w * grid_h];
+        if let Some(t) = terrain {
+            for gy in 0..grid_h {
+                let py = ((ty0 + gy as i32) as f32) * 0.25;
+                let row_off = gy * grid_w;
+                for gx in 0..grid_w {
+                    let px = ((tx0 + gx as i32) as f32) * 0.25;
+                    if let Some(slot) = tex_z.get_mut(row_off + gx) {
+                        *slot = t.height(px, py) * cell_m;
+                    }
+                }
+            }
+        }
+
+        let mut tex_col = vec![OFF_MAP_RGB; grid_w * grid_h];
+        for gy in 0..grid_h {
+            let ty = ty0 + gy as i32;
+            let wy_m = (ty as f32 + 0.5) * tex_m;
+            let cell_y = (wy_m / cell_m).floor() as i64;
+            let gy_m1 = gy.saturating_sub(1);
+            let gy_p1 = (gy + 1).min(grid_h - 1);
+            let row_off = gy * grid_w;
+            for gx in 0..grid_w {
+                let tx = tx0 + gx as i32;
+                let wx_m = (tx as f32 + 0.5) * tex_m;
+                let cell_x = (wx_m / cell_m).floor() as i64;
+                let ground = map.get(cell_x, cell_y);
+                let ground_under = match ground {
+                    Ground::Wall => Ground::Road,
+                    other => other,
+                };
+                let checker = ((cell_x as i32) ^ (cell_y as i32)) & 1 != 0;
+                let h = (tx as u32)
+                    .wrapping_mul(0x9E37_79B9)
+                    .wrapping_add((ty as u32).wrapping_mul(0x85EB_CA6B));
+                let mottle = (((h >> 28) as i32) - 8) as f32 * 0.004;
+
+                let (slope_light, contour_darken) = if terrain.is_some() {
+                    let gx_m1 = gx.saturating_sub(1);
+                    let gx_p1 = (gx + 1).min(grid_w - 1);
+                    let z_e = tex_z.get(row_off + gx_p1).copied().unwrap_or(0.0);
+                    let z_w = tex_z.get(row_off + gx_m1).copied().unwrap_or(0.0);
+                    let z_n = tex_z.get(gy_p1 * grid_w + gx).copied().unwrap_or(0.0);
+                    let z_s = tex_z.get(gy_m1 * grid_w + gx).copied().unwrap_or(0.0);
+                    let z_c = tex_z.get(row_off + gx).copied().unwrap_or(0.0);
+                    // Scale 2-texel (5 m) difference to match 0.7-cell (7 m) span
+                    let dz_dx = (z_e - z_w) * 1.4;
+                    let dz_dy = (z_n - z_s) * 1.4;
+                    let sun_dot = (dz_dy - dz_dx) * 0.14;
+                    let steepness = (dz_dx * dz_dx + dz_dy * dz_dy).sqrt();
+                    let steep_penalty = (steepness * 0.04).min(0.18);
+                    let in_contour = steepness > 0.25 && z_c.rem_euclid(4.0) < 0.28;
+                    (
+                        (sun_dot - steep_penalty).clamp(-0.35, 0.28),
+                        if in_contour { -0.10 } else { 0.0 },
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
+                let raw =
+                    1.0 + slope_light + contour_darken + mottle + if checker { -0.025 } else { 0.0 };
+                let q = ((raw - 0.60) / 0.60 * 7.0).round().clamp(0.0, 7.0);
+                let sun = 0.60 + (q / 7.0) * 0.60;
+                if let Some(slot) = tex_col.get_mut(row_off + gx) {
+                    *slot = scale_rgb(ground_rgb(ground_under), sun);
+                }
+            }
+        }
+
+        // Column-by-column back-to-front (North to South, i.e. top of canvas to
+        // bottom of canvas) voxel extrusion so nearer ridges naturally overwrite
+        // further ground.
         for cx in 0..canvas_w {
             let wx_m = origin_x_m + ((cx as f32) - half_w) * inv_px_x;
-            let mut prev_draw_y: usize = 0;
+            let mut last_sy: usize = 0;
+            let fx = wx_m * inv_tex_m - (tx0 as f32);
+            let gx0 = (fx.floor() as i32).clamp(0, grid_w as i32 - 2) as usize;
+            let tx_frac = (fx - fx.floor()).clamp(0.0, 1.0);
+            let cell_x = (wx_m / cell_m).floor() as i64;
 
             let steps = canvas_h + 64;
             for step in 0..steps {
@@ -736,97 +644,226 @@ impl TerrainCanvas {
 
                 if wx_m < 0.0 || wy_m < 0.0 || wx_m >= map_w_m || wy_m >= map_h_m {
                     let sy = (flat_y.round() as i32).clamp(0, canvas_h as i32) as usize;
-                    for y in prev_draw_y..sy.min(canvas_h) {
+                    for y in last_sy..sy.min(canvas_h) {
                         ground_frame.put(cx, y, OFF_MAP_RGB);
                     }
-                    prev_draw_y = prev_draw_y.max(sy.min(canvas_h));
+                    last_sy = sy.min(canvas_h);
                     continue;
                 }
 
-                let gz = ground_z_m(map, terrain, wx_m, wy_m);
+                let fy = wy_m * inv_tex_m - (ty0 as f32);
+                let gy0 = (fy.floor() as i32).clamp(0, grid_h as i32 - 2) as usize;
+                let ty_frac = (fy - fy.floor()).clamp(0.0, 1.0);
+                let r0 = gy0 * grid_w + gx0;
+                let r1 = (gy0 + 1) * grid_w + gx0;
+                let z00 = tex_z.get(r0).copied().unwrap_or(0.0);
+                let z10 = tex_z.get(r0 + 1).copied().unwrap_or(z00);
+                let z01 = tex_z.get(r1).copied().unwrap_or(z00);
+                let z11 = tex_z.get(r1 + 1).copied().unwrap_or(z00);
+                let gz = (z00 * (1.0 - tx_frac) + z10 * tx_frac) * (1.0 - ty_frac)
+                    + (z01 * (1.0 - tx_frac) + z11 * tx_frac) * ty_frac;
+
                 let dz = gz - ref_z_m;
                 let screen_y_i32 = (flat_y - dz * proj.px_per_m_z).round() as i32;
                 let sy = screen_y_i32.clamp(0, canvas_h as i32) as usize;
 
-                let cell_x = (wx_m / cell_m).floor() as i64;
                 let cell_y = (wy_m / cell_m).floor() as i64;
                 let ground = map.get(cell_x, cell_y);
-                let checker = ((cell_x as i32) ^ (cell_y as i32)) & 1 != 0;
-                let sun = sun_gain(map, terrain, wx_m, wy_m, checker);
+                let surf_col = tex_col.get(r0).copied().unwrap_or(OFF_MAP_RGB);
 
-                let ground_under = match ground {
-                    Ground::Wall => Ground::Road,
-                    other => other,
-                };
-                let surf_col = scale_rgb(ground_rgb(ground_under), sun);
-
-                if sy >= prev_draw_y {
-                    for y in prev_draw_y..=sy.min(canvas_h.saturating_sub(1)) {
+                if sy > last_sy + 2 {
+                    // Steep South-facing cliff/escarpment facing the camera:
+                    // shade the vertical cliff span with stratified rock/earth tone.
+                    let cliff_base: Rgb = [64, 72, 54];
+                    let cliff_dark: Rgb = [50, 58, 44];
+                    for y in last_sy..sy.min(canvas_h) {
+                        let col = if (y & 2) == 0 { cliff_base } else { cliff_dark };
+                        ground_frame.put(cx, y, col);
+                    }
+                    if sy < canvas_h {
+                        ground_frame.put(cx, sy, surf_col);
+                    }
+                } else if sy >= last_sy {
+                    for y in last_sy..=sy.min(canvas_h.saturating_sub(1)) {
                         ground_frame.put(cx, y, surf_col);
                     }
-                    prev_draw_y = (sy + 1).min(canvas_h);
                 } else {
-                    let cliff_col =
-                        scale_rgb(ground_rgb(ground_under), (sun * 0.72).clamp(0.4, 1.0));
-                    for y in sy..prev_draw_y.min(canvas_h) {
-                        ground_frame.put(cx, y, cliff_col);
+                    for y in sy..=last_sy.min(canvas_h.saturating_sub(1)) {
+                        ground_frame.put(cx, y, surf_col);
                     }
                 }
+                last_sy = sy.min(canvas_h);
 
-                // Tall occluders: Wall (buildings/walls) and Woods / WoodsHeavy
-                let occ_top_m = (ground.height_cm() as f32) * 0.01;
-                if occ_top_m >= 1.5 {
-                    let h_px = ((occ_top_m * proj.px_per_m_z).round() as i32).clamp(2, 48);
+                // Solid 3D Wall extrusion (buildings / compounds / fortifications)
+                if ground == Ground::Wall {
+                    let occ_top_m = (ground.height_cm() as f32) * 0.01;
+                    let h_px = ((occ_top_m * proj.px_per_m_z).round() as i32).clamp(4, 48);
                     let y_bot = screen_y_i32.clamp(0, canvas_h as i32 - 1);
                     let y_top = (screen_y_i32 - h_px).clamp(0, canvas_h as i32 - 1);
-                    let hash = ((cx as u32).wrapping_mul(2654435761))
-                        ^ ((step as u32).wrapping_mul(2246822519));
-                    let draw_column = match ground {
-                        Ground::Wall => true,
-                        Ground::WoodsHeavy => (hash & 3) != 0,
-                        Ground::Woods => (hash & 1) == 0,
-                        _ => false,
-                    };
-                    if draw_column && y_top < y_bot {
-                        has_occluders = true;
-                        let base_ground_col = scale_rgb(ground_rgb(ground), sun);
+                    let south_cell_y = ((wy_m - 1.2) / cell_m).floor() as i64;
+                    let is_south_face = map.get(cell_x, south_cell_y) != Ground::Wall;
+                    let checker = ((cell_x as i32) ^ (cell_y as i32)) & 1 != 0;
+                    if y_top < y_bot {
+                        let base_u16 = u16::try_from(y_bot.max(0)).unwrap_or(0);
                         for y in y_top..=y_bot {
-                            let frac = (y - y_top) as f32 / (y_bot - y_top).max(1) as f32;
-                            let (r, g, b, a) = match ground {
-                                Ground::Wall => {
-                                    if frac < 0.25 {
-                                        let v = (128.0_f32 * sun).clamp(60.0_f32, 175.0_f32) as u8;
-                                        (v, v.saturating_add(4), v.saturating_add(8), 255u8)
-                                    } else {
-                                        let v = (96.0_f32 * sun).clamp(42.0_f32, 140.0_f32) as u8;
-                                        (v, v, v.saturating_add(4), 255u8)
-                                    }
+                            let col: Rgb = if y <= y_top + 1 {
+                                [146, 150, 156]
+                            } else if !is_south_face {
+                                if checker {
+                                    [120, 124, 130]
+                                } else {
+                                    [126, 130, 136]
                                 }
-                                Ground::WoodsHeavy => {
-                                    if frac > 0.78 {
-                                        (46, 34, 24, 235)
-                                    } else if frac < 0.35 {
-                                        (44, 88, 42, 245)
-                                    } else {
-                                        (30, 64, 30, 245)
-                                    }
-                                }
-                                _ => {
-                                    if frac > 0.75 {
-                                        (54, 40, 28, 220)
-                                    } else if frac < 0.40 {
-                                        (58, 108, 50, 235)
-                                    } else {
-                                        (40, 80, 36, 235)
-                                    }
-                                }
+                            } else if y >= y_bot - 1 {
+                                [66, 70, 76]
+                            } else {
+                                [92, 96, 102]
                             };
-                            let idx = y as usize * canvas_w + cx;
-                            let off = idx * 4;
-                            if let Some(dst) = occluder_rgba.get_mut(off..off + 4) {
-                                dst.copy_from_slice(&[r, g, b, a]);
+                            let uy = y as usize;
+                            ground_frame.put(cx, uy, col);
+                            if y < y_bot
+                                && let Some(occ) = occluder_base_y.get_mut(uy * canvas_w + cx)
+                            {
+                                *occ = (*occ).max(base_u16);
                             }
-                            ground_frame.put(cx, y as usize, base_ground_col);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Back-to-front (North-to-South) 3D conifer tree groves for Woods & WoodsHeavy cells.
+        let cx0 = (min_wx_m / cell_m).floor() as i64;
+        let cx1 = (max_wx_m / cell_m).floor() as i64;
+        let cy0 = (min_wy_m / cell_m).floor() as i64;
+        let cy1 = (max_wy_m / cell_m).floor() as i64;
+
+        for cy in (cy0..=cy1).rev() {
+            for cx_cell in cx0..=cx1 {
+                let g = map.get(cx_cell, cy);
+                let tree_count: u32 = match g {
+                    Ground::Woods => 3,
+                    Ground::WoodsHeavy => 6,
+                    _ => continue,
+                };
+                // Generate deterministic sub-cell trees sorted North-to-South (descending oy_m)
+                let mut trees: [(f32, f32, u32); 6] = [(0.0, 0.0, 0); 6];
+                for k in 0..tree_count {
+                    let seed = ((cx_cell as u32).wrapping_mul(0x9E37_79B9))
+                        ^ ((cy as u32).wrapping_mul(0x85EB_CA6B))
+                        ^ (k.wrapping_mul(0xC2B2_AE35));
+                    let h1 = seed.wrapping_mul(0x27D4_EB2D);
+                    let h2 = h1.rotate_left(13).wrapping_mul(0x1656_67B1);
+                    let ox_m = 1.4 + ((h1 & 0xFF) as f32 / 255.0) * 7.2;
+                    let oy_m = 1.4 + (((h1 >> 8) & 0xFF) as f32 / 255.0) * 7.2;
+                    if let Some(slot) = trees.get_mut(k as usize) {
+                        *slot = (ox_m, oy_m, h2);
+                    }
+                }
+                let n_trees = tree_count as usize;
+                if let Some(slice) = trees.get_mut(..n_trees) {
+                    slice.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                }
+
+                for &(ox_m, oy_m, h2) in trees.iter().take(n_trees) {
+                    let twx_m = (cx_cell as f32) * cell_m + ox_m;
+                    let twy_m = (cy as f32) * cell_m + oy_m;
+                    let tgz_m = ground_z_m(map, terrain, twx_m, twy_m);
+                    let (bx, by) = proj.world_to_canvas(
+                        ((twx_m * 100.0) as i64, (twy_m * 100.0) as i64),
+                        tgz_m - ref_z_m,
+                        (origin_x_cm, origin_y_cm),
+                        (canvas_w, canvas_h),
+                    );
+                    let base_h_m = if g == Ground::WoodsHeavy { 8.5 } else { 7.0 };
+                    let var_h_m = ((h2 & 0x3F) as f32 / 63.0) * 3.0;
+                    let h_px =
+                        (((base_h_m + var_h_m) * proj.px_per_m_z).round() as i32).clamp(10, 32);
+                    let max_r = (h_px * 3 / 8).clamp(4, 11);
+                    let trunk_h = (h_px / 5).clamp(2, 5);
+                    let base_u16 = u16::try_from(by.clamp(0, u16::MAX as i32)).unwrap_or(0);
+
+                    // 1. Subtle ground shadow ellipse to SE of trunk base (fixed palette colour)
+                    for sdy in -1..=2i32 {
+                        for sdx in 0..=(max_r + 2) {
+                            let sx = bx + sdx;
+                            let sy = by + sdy;
+                            if sx >= 0
+                                && (sx as usize) < canvas_w
+                                && sy >= 0
+                                && (sy as usize) < canvas_h
+                            {
+                                ground_frame.put(sx as usize, sy as usize, [32, 52, 28]);
+                            }
+                        }
+                    }
+
+                    // 2. Trunk
+                    for dy in 0..=trunk_h {
+                        for dx in -1..=1i32 {
+                            let px = bx + dx;
+                            let py = by - dy;
+                            if px >= 0
+                                && (px as usize) < canvas_w
+                                && py >= 0
+                                && (py as usize) < canvas_h
+                            {
+                                let col: Rgb = if dx <= 0 {
+                                    [62, 44, 30]
+                                } else {
+                                    [42, 30, 20]
+                                };
+                                let ux = px as usize;
+                                let uy = py as usize;
+                                ground_frame.put(ux, uy, col);
+                                if dy > 0
+                                    && let Some(occ) = occluder_base_y.get_mut(uy * canvas_w + ux)
+                                {
+                                    *occ = (*occ).max(base_u16);
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. 3-tiered conifer canopy from trunk_h up to h_px
+                    let crown_h = (h_px - trunk_h).max(6);
+                    for dy in 0..=crown_h {
+                        let t = dy as f32 / crown_h as f32;
+                        let tier_local = (t * 3.0).fract();
+                        let tier_flare = (1.0 - tier_local * 0.45) * (1.05 - 0.78 * t);
+                        let r_row = ((max_r as f32) * tier_flare).round() as i32;
+                        let py = by - trunk_h - dy;
+                        if py < 0 || (py as usize) >= canvas_h {
+                            continue;
+                        }
+                        let uy = py as usize;
+                        for dx in -r_row..=r_row {
+                            let px = bx + dx;
+                            if px < 0 || (px as usize) >= canvas_w {
+                                continue;
+                            }
+                            let edge_hash = ((dx as u32).wrapping_mul(73856093))
+                                ^ ((dy as u32).wrapping_mul(19349663))
+                                ^ h2;
+                            if dx.abs() == r_row && r_row > 2 && (edge_hash & 1) != 0 {
+                                continue;
+                            }
+                            let nx = (dx as f32) / (r_row.max(1) as f32);
+                            let light = -nx * 0.55 + (t - 0.4) * 0.35 + (tier_local - 0.3) * 0.25;
+                            let col: Rgb = if tier_local < 0.16 && t < 0.85 {
+                                [24, 50, 24]
+                            } else if light > 0.22 {
+                                [72, 126, 54]
+                            } else if light > -0.08 {
+                                [50, 96, 40]
+                            } else {
+                                [34, 68, 30]
+                            };
+                            let ux = px as usize;
+                            ground_frame.put(ux, uy, col);
+                            if let Some(occ) = occluder_base_y.get_mut(uy * canvas_w + ux) {
+                                *occ = (*occ).max(base_u16);
+                            }
                         }
                     }
                 }
@@ -879,38 +916,14 @@ impl TerrainCanvas {
             origin_y_cm,
             proj,
             ground_frame,
-            occluder_rgba,
-            has_occluders,
+            occluder_base_y,
         }
     }
 
-    /// Whether the rectangular sub-window `(x0..x0+w, y0..y0+h)` inside
-    /// `occluder_rgba` contains any non-transparent pixel.
-    fn strip_window_has_alpha(&self, x0: usize, y0: usize, w: usize, h: usize) -> bool {
-        if !self.has_occluders {
-            return false;
-        }
-        let y_end = (y0 + h).min(self.canvas_h);
-        let x_end = (x0 + w).min(self.canvas_w);
-        if x0 >= x_end || y0 >= y_end {
-            return false;
-        }
-        for r in y0..y_end {
-            let row_start = (r * self.canvas_w + x0) * 4;
-            let row_end = (r * self.canvas_w + x_end) * 4;
-            if let Some(sl) = self.occluder_rgba.get(row_start..row_end)
-                && sl.iter().skip(3).step_by(4).any(|&a| a > 0)
-            {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Compute the viewport's top-left offset `(cam_x, cam_y)` inside the `1.5×`
+    /// Compute the viewport's top-left offset `(cam_x, cam_y)` inside the `2.5×`
     /// canvas for camera world center `(cam_wx_cm, cam_wy_cm)`. Returns `None`
-    /// when the camera is close enough to the canvas edge that a fresh canvas
-    /// centered on the mech should be baked.
+    /// when the camera is within `16 px` of the canvas edge so a fresh canvas
+    /// centered on the mech is baked.
     fn camera_window(&self, cam_wx_cm: i64, cam_wy_cm: i64) -> Option<(u32, u32)> {
         let (cx, cy) = self.proj.world_to_canvas(
             (cam_wx_cm, cam_wy_cm),
@@ -920,8 +933,8 @@ impl TerrainCanvas {
         );
         let left = cx - (self.vp_w as i32 / 2);
         let top = cy - (self.vp_h as i32 / 2);
-        let margin_x = (self.vp_w as i32) / 12;
-        let margin_y = (self.vp_h as i32) / 12;
+        let margin_x = 16i32;
+        let margin_y = 16i32;
         let max_left = (self.canvas_w as i32) - (self.vp_w as i32) - margin_x;
         let max_top = (self.canvas_h as i32) - (self.vp_h as i32) - margin_y;
         if left < margin_x || left > max_left || top < margin_y || top > max_top {
@@ -969,6 +982,7 @@ fn read_pose_25d(frame: &Value) -> Pose25D {
 
 #[derive(Clone, Debug)]
 struct Unit25D {
+    #[cfg_attr(not(feature = "encode"), allow(dead_code))]
     placement_id: u32,
     model: UnitModel,
     kind: SpriteKind,
@@ -1007,7 +1021,7 @@ fn pick_mip_level(screen_y: i32, vp_w: usize, vp_h: usize) -> u8 {
     u8::try_from((depth_step + res_bias).min(5)).unwrap_or(5)
 }
 
-// ---- Retained Kitty 2.5D Picture Producer ----------------------------------
+// ---- Retained Kitty & Software/WASM 2.5D Picture Producer ------------------
 
 /// Stateful 2.5D tactical producer and retained Kitty graphics compositor.
 #[derive(Debug)]
@@ -1016,25 +1030,39 @@ pub struct Iso25DPicture {
     map: Map,
     terrain: Option<Terrain>,
     canvas: Option<TerrainCanvas>,
+    /// Stable mapping from contact `"id"` (or designator) to Kitty `placement_id`
+    /// (`>= 101`) so gaining or losing a contact never reshuffles existing slots.
+    contact_pids: BTreeMap<String, u32>,
+    next_contact_pid: u32,
+    #[cfg(feature = "encode")]
     terrain_image_id: u32,
+    #[cfg(feature = "encode")]
     terrain_uploaded: bool,
+    #[cfg(feature = "encode")]
     last_terrain_placement: Option<Placement>,
-    /// Whether each depth-sliced occluder strip (`IMAGE_ID_OCC_BASE + s`) is uploaded for `canvas`.
-    occluder_uploaded: [bool; OCCLUDER_STRIPS],
-    last_occ_placements: [Option<Placement>; OCCLUDER_STRIPS],
     /// Set of sheet image IDs (`>= 200`) currently stored in terminal memory.
+    #[cfg(feature = "encode")]
     uploaded_sheets: BTreeSet<u32>,
-    /// Active unit placements from the previous tick: `unit_slot -> Placement`.
+    /// Active unit placements from the previous tick: `placement_id -> Placement`.
+    #[cfg(feature = "encode")]
     active_unit_placements: BTreeMap<u32, Placement>,
     /// Whether the center HUD vector overlay has been uploaded since the last reset.
+    #[cfg(feature = "encode")]
     hud_uploaded: bool,
+    #[cfg(feature = "encode")]
     last_hud_signature: u64,
+    #[cfg(feature = "encode")]
     last_hud_placement: Option<Placement>,
     /// Whether the target-lock bracket image has been uploaded since the last reset.
+    #[cfg(feature = "encode")]
     lock_uploaded: bool,
+    #[cfg(feature = "encode")]
     last_lock_signature: u64,
+    #[cfg(feature = "encode")]
     last_lock_placement: Option<Placement>,
+    #[cfg(feature = "encode")]
     last_viewport: Option<Viewport25D>,
+    #[cfg(feature = "encode")]
     last_seated: Option<bool>,
     anim_tick: usize,
 }
@@ -1048,20 +1076,33 @@ impl Iso25DPicture {
             map: Map::new(512, 512, 1000),
             terrain: None,
             canvas: None,
+            contact_pids: BTreeMap::new(),
+            next_contact_pid: PLACEMENT_UNIT_BASE + 1,
+            #[cfg(feature = "encode")]
             terrain_image_id: IMAGE_ID_TERRAIN_A,
+            #[cfg(feature = "encode")]
             terrain_uploaded: false,
+            #[cfg(feature = "encode")]
             last_terrain_placement: None,
-            occluder_uploaded: [false; OCCLUDER_STRIPS],
-            last_occ_placements: [None; OCCLUDER_STRIPS],
+            #[cfg(feature = "encode")]
             uploaded_sheets: BTreeSet::new(),
+            #[cfg(feature = "encode")]
             active_unit_placements: BTreeMap::new(),
+            #[cfg(feature = "encode")]
             hud_uploaded: false,
+            #[cfg(feature = "encode")]
             last_hud_signature: 0,
+            #[cfg(feature = "encode")]
             last_hud_placement: None,
+            #[cfg(feature = "encode")]
             lock_uploaded: false,
+            #[cfg(feature = "encode")]
             last_lock_signature: 0,
+            #[cfg(feature = "encode")]
             last_lock_placement: None,
+            #[cfg(feature = "encode")]
             last_viewport: None,
+            #[cfg(feature = "encode")]
             last_seated: None,
             anim_tick: 0,
         }
@@ -1078,10 +1119,13 @@ impl Iso25DPicture {
             self.terrain = raw_map.and_then(terrain_from_feed);
             self.match_id = Some(wanted);
             self.canvas = None;
-            self.terrain_uploaded = false;
-            self.last_terrain_placement = None;
-            self.occluder_uploaded = [false; OCCLUDER_STRIPS];
-            self.last_occ_placements = [None; OCCLUDER_STRIPS];
+            self.contact_pids.clear();
+            self.next_contact_pid = PLACEMENT_UNIT_BASE + 1;
+            #[cfg(feature = "encode")]
+            {
+                self.terrain_uploaded = false;
+                self.last_terrain_placement = None;
+            }
         }
     }
 
@@ -1089,6 +1133,7 @@ impl Iso25DPicture {
     /// (`CSI ? 2026 h` … `CSI ? 2026 l`), returning `None` if no cockpit frame
     /// is held in `feeds`. When nothing changed since the previous tick, the
     /// returned byte vector is empty so the caller skips sending a frame.
+    #[cfg(feature = "encode")]
     pub fn draw_kitty(
         &mut self,
         feeds: &dyn Feeds,
@@ -1110,17 +1155,20 @@ impl Iso25DPicture {
         self.terrain = None;
         self.match_id = Some(None);
         self.canvas = None;
-        self.terrain_uploaded = false;
-        self.last_terrain_placement = None;
-        self.occluder_uploaded = [false; OCCLUDER_STRIPS];
-        self.last_occ_placements = [None; OCCLUDER_STRIPS];
+        self.contact_pids.clear();
+        self.next_contact_pid = PLACEMENT_UNIT_BASE + 1;
+        #[cfg(feature = "encode")]
+        {
+            self.terrain_uploaded = false;
+            self.last_terrain_placement = None;
+        }
     }
 
     /// Force all retained placements to be re-emitted on the next tick (e.g.
     /// after a text overlay or diagnostic clock switch).
+    #[cfg(feature = "encode")]
     pub fn invalidate_placements(&mut self) {
         self.last_terrain_placement = None;
-        self.last_occ_placements = [None; OCCLUDER_STRIPS];
         self.active_unit_placements.clear();
         self.last_hud_placement = None;
         self.last_lock_placement = None;
@@ -1128,20 +1176,11 @@ impl Iso25DPicture {
 
     /// Mark an image ID as evicted after a `q=1` terminal error reply so the
     /// next tick re-uploads and re-places it automatically.
+    #[cfg(feature = "encode")]
     pub fn invalidate_image(&mut self, image_id: u32) {
         if image_id == self.terrain_image_id {
             self.terrain_uploaded = false;
             self.last_terrain_placement = None;
-        } else if (IMAGE_ID_OCC_BASE..IMAGE_ID_OCC_BASE + OCCLUDER_STRIPS as u32)
-            .contains(&image_id)
-        {
-            let idx = (image_id - IMAGE_ID_OCC_BASE) as usize;
-            if let Some(u) = self.occluder_uploaded.get_mut(idx) {
-                *u = false;
-            }
-            if let Some(p) = self.last_occ_placements.get_mut(idx) {
-                *p = None;
-            }
         } else if image_id == IMAGE_ID_HUD {
             self.hud_uploaded = false;
             self.last_hud_placement = None;
@@ -1158,10 +1197,11 @@ impl Iso25DPicture {
     /// Emit Kitty delete commands for every retained image and placement owned
     /// by the 2.5D compositor, resetting terminal state cleanly when switching
     /// views or closing the pixel view.
+    #[cfg(feature = "encode")]
     pub fn cleanup_kitty_bytes(&mut self) -> Vec<u8> {
         let mut out = Vec::new();
         for p in self.active_unit_placements.values() {
-            kitty::delete_placement_bytes(&mut out, p.image_id, 0);
+            kitty::delete_placement_bytes(&mut out, p.image_id, p.placement_id);
         }
         self.active_unit_placements.clear();
 
@@ -1171,16 +1211,6 @@ impl Iso25DPicture {
             self.terrain_uploaded = false;
             self.last_terrain_placement = None;
         }
-        for s in 0..OCCLUDER_STRIPS {
-            if self.occluder_uploaded.get(s).copied().unwrap_or(false)
-                || self.last_occ_placements.get(s).copied().flatten().is_some()
-            {
-                kitty::delete_image_bytes(&mut out, IMAGE_ID_OCC_BASE + s as u32);
-            }
-        }
-        self.occluder_uploaded = [false; OCCLUDER_STRIPS];
-        self.last_occ_placements = [None; OCCLUDER_STRIPS];
-
         if self.hud_uploaded || self.last_hud_placement.is_some() {
             kitty::delete_image_bytes(&mut out, IMAGE_ID_HUD);
             self.hud_uploaded = false;
@@ -1202,6 +1232,7 @@ impl Iso25DPicture {
 
     /// Patch a rectangular region `(dst_x, dst_y, w, h)` of the stored terrain
     /// image in place using Kitty's frame-editing command (`a=f`).
+    #[cfg(feature = "encode")]
     pub fn patch_terrain_rect(
         &self,
         out: &mut Vec<u8>,
@@ -1238,9 +1269,10 @@ impl Iso25DPicture {
     }
 
     /// Gather the player's own unit and all visible contacts inside the
-    /// current 2.5D viewport.
+    /// current 2.5D viewport, assigning each contact a stable `placement_id`
+    /// keyed by its `"id"` (or `"designator"`).
     fn collect_units(
-        &self,
+        &mut self,
         frame: &Value,
         pose: &Pose25D,
         hull_offset_mdeg: i32,
@@ -1309,8 +1341,20 @@ impl Iso25DPicture {
             let Some(range_m) = c.get("range_m").and_then(Value::as_f64) else {
                 continue;
             };
-            let id = c.get("id").and_then(Value::as_str).unwrap_or("?");
+            let id = c.get("id").and_then(Value::as_str);
             let desig = c.get("designator").and_then(Value::as_str);
+            let key_str = id
+                .or(desig)
+                .map_or_else(|| format!("idx:{ci}"), str::to_owned);
+            let pid = if let Some(&existing) = self.contact_pids.get(&key_str) {
+                existing
+            } else {
+                let assigned = self.next_contact_pid;
+                self.next_contact_pid = self.next_contact_pid.saturating_add(1);
+                self.contact_pids.insert(key_str, assigned);
+                assigned
+            };
+
             let kind = contact_kind(c);
             let model = if kind == SpriteKind::Wreck {
                 UnitModel::from_unit_type(c.get("unit_type").and_then(Value::as_str))
@@ -1351,11 +1395,11 @@ impl Iso25DPicture {
             } else {
                 0
             };
-            let locked = (lock_id.is_some() && lock_id == Some(id))
+            let locked = (lock_id.is_some() && lock_id == id)
                 || (lock_desig.is_some() && lock_desig == desig);
 
             units.push(Unit25D {
-                placement_id: PLACEMENT_UNIT_BASE + 1 + u32::try_from(ci).unwrap_or(0),
+                placement_id: pid,
                 model,
                 kind,
                 facing,
@@ -1372,6 +1416,7 @@ impl Iso25DPicture {
 
     /// Render the compact center tactical HUD overlay (`hud_w × hud_h` RGBA,
     /// ~`128×128` px) with 2-px thick hull and look heading lines.
+    #[cfg(feature = "encode")]
     fn render_center_hud_rgba(
         &self,
         hud_w: usize,
@@ -1405,8 +1450,6 @@ impl Iso25DPicture {
         let cy = (hud_h / 2) as i32;
         let proj = IsoProj::for_viewport(vp_w);
 
-        // Draw dark 1px outline first, then 2px thick bright vector core so
-        // hull (emerald) and look (gold) vectors read as solid lines.
         let vectors = [
             (hull_mdeg, 13.0f32, [90u8, 215, 115, 220]),
             (look_mdeg, 17.0f32, [248u8, 216, 72, 235]),
@@ -1444,6 +1487,7 @@ impl Iso25DPicture {
     }
 
     /// Render a compact target-lock corner bracket image (`lock_w × lock_h` RGBA).
+    #[cfg(feature = "encode")]
     fn render_lock_bracket_rgba(lock_w: usize, lock_h: usize) -> Vec<u8> {
         let mut rgba = vec![0u8; lock_w * lock_h * 4];
         let put = |buf: &mut [u8], x: i32, y: i32, col: [u8; 4]| {
@@ -1480,6 +1524,7 @@ impl Iso25DPicture {
     ///
     /// Returns an empty `Vec<u8>` when nothing changed since the previous tick so
     /// stationary scenes send zero bytes and never churn terminal cell state.
+    #[cfg(feature = "encode")]
     pub fn render_kitty_bytes(
         &mut self,
         frame: &Value,
@@ -1532,8 +1577,8 @@ impl Iso25DPicture {
         let base_col = area_col.saturating_add(vp.col_offset);
         let base_row = area_row.saturating_add(vp.row_offset);
 
-        // 1. Ensure the oversized 2.5D terrain canvas covers the mech's current
-        //    position; if approaching the margin, bake a new canvas centered on
+        // 1. Ensure the oversized 2.5× terrain canvas covers the mech's current
+        //    position; if within 16 px of the edge, bake a new canvas centered on
         //    the mech and ping-pong the terrain image ID.
         let needs_rebake = self
             .canvas
@@ -1564,15 +1609,6 @@ impl Iso25DPicture {
             self.terrain_image_id = new_id;
             self.terrain_uploaded = true;
             self.last_terrain_placement = None;
-            for s in 0..OCCLUDER_STRIPS {
-                if self.occluder_uploaded.get(s).copied().unwrap_or(false)
-                    || self.last_occ_placements.get(s).copied().flatten().is_some()
-                {
-                    kitty::delete_image_bytes(&mut ops, IMAGE_ID_OCC_BASE + s as u32);
-                }
-            }
-            self.occluder_uploaded = [false; OCCLUDER_STRIPS];
-            self.last_occ_placements = [None; OCCLUDER_STRIPS];
             self.canvas = Some(new_canvas);
         } else if !self.terrain_uploaded
             && let Some(canvas) = &self.canvas
@@ -1588,15 +1624,15 @@ impl Iso25DPicture {
             .as_ref()
             .and_then(|c| c.camera_window(pose.x_cm, pose.y_cm))
             .unwrap_or((
-                u32::try_from(vp.width_px / 4).unwrap_or(0),
-                u32::try_from(vp.height_px / 4).unwrap_or(0),
+                u32::try_from(vp.width_px / 2).unwrap_or(0),
+                u32::try_from(vp.height_px / 2).unwrap_or(0),
             ));
 
-        // Place the terrain ground window (`z = -100`, `placement_id = 0`) only
-        // when its placement parameters (`cam_x`, `cam_y`, `image_id`, `cols`, `rows`) changed!
+        // Place the terrain ground window (`z = -100`, `placement_id = PLACEMENT_TERRAIN`)
+        // only when its placement parameters (`cam_x`, `cam_y`, `image_id`, `cols`, `rows`) changed.
         let terrain_p = Placement {
             image_id: self.terrain_image_id,
-            placement_id: 0,
+            placement_id: PLACEMENT_TERRAIN,
             col: base_col,
             row: base_row,
             cols: vp.cols,
@@ -1614,101 +1650,9 @@ impl Iso25DPicture {
             self.last_terrain_placement = Some(terrain_p);
         }
 
-        // 2. Depth-sliced occluder strips (`OCCLUDER_STRIPS = 6`), each with its
-        //    own `IMAGE_ID_OCC_BASE + s` and `placement_id = 0` (`p=` omitted),
-        //    uploaded lazily as a cropped horizontal band and placed only when
-        //    non-transparent occluder pixels are visible in that strip's window.
-        if let Some(canvas) = &self.canvas {
-            if canvas.has_occluders {
-                let strip_rows = (vp.rows / u16::try_from(OCCLUDER_STRIPS).unwrap_or(6)).max(1);
-                let max_cam_y = canvas.canvas_h.saturating_sub(vp.height_px);
-                for s in 0..OCCLUDER_STRIPS {
-                    let row_off = u16::try_from(s).unwrap_or(0) * strip_rows;
-                    if row_off >= vp.rows {
-                        break;
-                    }
-                    let rows_this = if s + 1 == OCCLUDER_STRIPS {
-                        vp.rows.saturating_sub(row_off)
-                    } else {
-                        strip_rows.min(vp.rows.saturating_sub(row_off))
-                    };
-                    let y0 = usize::from(row_off) * usize::from(vp.cell_h);
-                    let h_px = usize::from(rows_this) * usize::from(vp.cell_h);
-                    if h_px == 0 || y0 >= canvas.canvas_h {
-                        continue;
-                    }
-                    let vis_alpha = canvas.strip_window_has_alpha(
-                        cam_x as usize,
-                        cam_y as usize + y0,
-                        vp.width_px,
-                        h_px,
-                    );
-                    let occ_img_id = IMAGE_ID_OCC_BASE + s as u32;
-                    if vis_alpha {
-                        if !self.occluder_uploaded.get(s).copied().unwrap_or(false) {
-                            let band_h = (max_cam_y + h_px).min(canvas.canvas_h.saturating_sub(y0));
-                            let row_bytes = canvas.canvas_w * 4;
-                            let byte_start = y0 * row_bytes;
-                            let byte_end = (y0 + band_h) * row_bytes;
-                            if let Some(band_slice) = canvas.occluder_rgba.get(byte_start..byte_end)
-                            {
-                                let png = png::encode_rgba(canvas.canvas_w, band_h, band_slice);
-                                kitty::transmit_bytes(&mut ops, &png, occ_img_id);
-                            }
-                            if let Some(u) = self.occluder_uploaded.get_mut(s) {
-                                *u = true;
-                            }
-                            if let Some(slot) = self.last_occ_placements.get_mut(s) {
-                                *slot = None;
-                            }
-                        }
-                        let strip_row = base_row.saturating_add(row_off);
-                        let strip_bottom_y = (y0 + h_px) as i32;
-                        let z_strip =
-                            Z_DEPTH_BASE + ((strip_bottom_y * 46) / (vp.height_px.max(1) as i32));
-                        let occ_p = Placement {
-                            image_id: occ_img_id,
-                            placement_id: 0,
-                            col: base_col,
-                            row: strip_row,
-                            cols: vp.cols,
-                            rows: rows_this,
-                            cell_x: 0,
-                            cell_y: 0,
-                            src_x: cam_x,
-                            src_y: cam_y,
-                            src_w: u32::try_from(vp.width_px).unwrap_or(640),
-                            src_h: u32::try_from(h_px).unwrap_or(60),
-                            z: z_strip,
-                        };
-                        if self.last_occ_placements.get(s).copied().flatten() != Some(occ_p) {
-                            kitty::place_bytes(&mut ops, &occ_p);
-                            if let Some(slot) = self.last_occ_placements.get_mut(s) {
-                                *slot = Some(occ_p);
-                            }
-                        }
-                    } else if let Some(slot) = self.last_occ_placements.get_mut(s)
-                        && slot.take().is_some()
-                    {
-                        kitty::delete_placement_bytes(&mut ops, occ_img_id, 0);
-                    }
-                }
-            } else {
-                for s in 0..OCCLUDER_STRIPS {
-                    if self.occluder_uploaded.get(s).copied().unwrap_or(false)
-                        || self.last_occ_placements.get(s).copied().flatten().is_some()
-                    {
-                        kitty::delete_image_bytes(&mut ops, IMAGE_ID_OCC_BASE + s as u32);
-                    }
-                }
-                self.occluder_uploaded = [false; OCCLUDER_STRIPS];
-                self.last_occ_placements = [None; OCCLUDER_STRIPS];
-            }
-        }
-
-        // 3. Collect visible units, lazily upload needed mipmap sprite sheets,
-        //    and emit retained `a=p` placements using padded source-rect shifts
-        //    (`X=0, Y=0, c=cols, r=rows, placement_id=0`) and delta-only updates!
+        // 2. Collect visible units, lazily upload needed mipmap sprite sheets
+        //    (one image per `(UnitModel, PaintKey, mip)`), and emit retained
+        //    `a=p,i=<img_id>,p=<pid>` placements using padded source-rect shifts.
         let units = self.collect_units(
             frame,
             &pose,
@@ -1719,24 +1663,15 @@ impl Iso25DPicture {
         );
         let pack = mip_pack();
         let mut next_placements = BTreeMap::new();
-        let mut slot_counts: BTreeMap<(UnitModel, PaintKey, u8), u8> = BTreeMap::new();
         let cw_i32 = i32::from(vp.cell_w.max(1));
         let ch_i32 = i32::from(vp.cell_h.max(1));
 
         for u in &units {
             let paint = PaintKey::from_kind(u.kind);
-            let slot_entry = slot_counts.entry((u.model, paint, u.mip_idx)).or_insert(0);
-            let slot = *slot_entry;
-            if slot >= 4 {
-                continue;
-            }
-            *slot_entry = slot + 1;
-
             let key = SheetKey {
                 model: u.model,
                 paint,
                 mip: u.mip_idx,
-                slot,
             };
             let img_id = key.image_id();
             if !self.uploaded_sheets.contains(&img_id) {
@@ -1802,7 +1737,7 @@ impl Iso25DPicture {
 
             let unit_p = Placement {
                 image_id: img_id,
-                placement_id: 0,
+                placement_id: u.placement_id,
                 col,
                 row,
                 cols: unit_cols,
@@ -1819,7 +1754,7 @@ impl Iso25DPicture {
             if let Some(old_p) = self.active_unit_placements.get(&u.placement_id)
                 && old_p.image_id != img_id
             {
-                kitty::delete_placement_bytes(&mut ops, old_p.image_id, 0);
+                kitty::delete_placement_bytes(&mut ops, old_p.image_id, old_p.placement_id);
             }
             if self.active_unit_placements.get(&u.placement_id) != Some(&unit_p) {
                 kitty::place_bytes(&mut ops, &unit_p);
@@ -1829,12 +1764,12 @@ impl Iso25DPicture {
 
         for (&old_pid, old_p) in &self.active_unit_placements {
             if !next_placements.contains_key(&old_pid) {
-                kitty::delete_placement_bytes(&mut ops, old_p.image_id, 0);
+                kitty::delete_placement_bytes(&mut ops, old_p.image_id, old_p.placement_id);
             }
         }
         self.active_unit_placements = next_placements;
 
-        // 4. Compact center tactical HUD vector overlay (`z = -1`, `placement_id = 0`).
+        // 3. Compact center tactical HUD vector overlay (`z = -1`, `placement_id = PLACEMENT_HUD`).
         let hud_cols = u16::try_from(
             (128usize.div_ceil(usize::from(vp.cell_w.max(1))) & !1)
                 .clamp(2, usize::from(vp.cols.max(2))),
@@ -1860,7 +1795,7 @@ impl Iso25DPicture {
         );
         let hud_p = Placement {
             image_id: IMAGE_ID_HUD,
-            placement_id: 0,
+            placement_id: PLACEMENT_HUD,
             col: hud_col,
             row: hud_row,
             cols: hud_cols,
@@ -1885,7 +1820,7 @@ impl Iso25DPicture {
             self.last_hud_placement = Some(hud_p);
         }
 
-        // 5. Optional target-lock corner bracket (`IMAGE_ID_LOCK`, `placement_id = 0`).
+        // 4. Optional target-lock corner bracket (`IMAGE_ID_LOCK`, `placement_id = PLACEMENT_LOCK`).
         if let Some(lu) = units.iter().find(|u| u.locked) {
             let lock_cols = u16::try_from(
                 (72usize.div_ceil(usize::from(vp.cell_w.max(1))) & !1)
@@ -1913,7 +1848,7 @@ impl Iso25DPicture {
             }
             let lock_p = Placement {
                 image_id: IMAGE_ID_LOCK,
-                placement_id: 0,
+                placement_id: PLACEMENT_LOCK,
                 col: base_col.saturating_add(u16::try_from(dc).unwrap_or(0)),
                 row: base_row.saturating_add(u16::try_from(dr).unwrap_or(0)),
                 cols: lock_cols,
@@ -1931,7 +1866,7 @@ impl Iso25DPicture {
                 self.last_lock_placement = Some(lock_p);
             }
         } else if self.last_lock_placement.take().is_some() {
-            kitty::delete_placement_bytes(&mut ops, IMAGE_ID_LOCK, 0);
+            kitty::delete_placement_bytes(&mut ops, IMAGE_ID_LOCK, PLACEMENT_LOCK);
         }
 
         if ops.is_empty() {
@@ -1947,7 +1882,11 @@ impl Iso25DPicture {
         (vp, out)
     }
 
-    /// Software fallback (`Frame`) for Sixel terminals or headless tests.
+    /// Software & WASM `<canvas>` compositor (`Frame`): draws the cached `2.5×`
+    /// terrain window, unit ground shadows, 3D-baked mipmapped unit sprites with
+    /// 1px silhouette rims, pixel-exact tree and building occlusion via
+    /// `occluder_base_y`, center hull/look heading vectors, and target-lock
+    /// corner brackets.
     pub fn render_frame(
         &mut self,
         frame: &Value,
@@ -1962,8 +1901,18 @@ impl Iso25DPicture {
             return out;
         }
         let pose = read_pose_25d(frame);
+        let any_contact_moving =
+            frame
+                .get("contacts")
+                .and_then(Value::as_array)
+                .is_some_and(|cs| {
+                    cs.iter()
+                        .any(|c| c.get("moving").and_then(Value::as_bool) == Some(true))
+                });
         let step = self.anim_tick / 3;
-        self.anim_tick = self.anim_tick.wrapping_add(1);
+        if pose.moving || any_contact_moving {
+            self.anim_tick = self.anim_tick.wrapping_add(1);
+        }
 
         let needs_rebake = self
             .canvas
@@ -1982,12 +1931,15 @@ impl Iso25DPicture {
             ));
         }
 
+        let mut units = self.collect_units(frame, &pose, hull_offset_mdeg, width, height, step);
+        units.sort_by_key(|u| (u.kind != SpriteKind::Wreck, u.screen_y));
+
         let Some(canvas) = &self.canvas else {
             return out;
         };
         let (cam_x, cam_y) = canvas
             .camera_window(pose.x_cm, pose.y_cm)
-            .unwrap_or(((width / 4) as u32, (height / 4) as u32));
+            .unwrap_or(((width / 2) as u32, (height / 2) as u32));
         let cx0 = cam_x as usize;
         let cy0 = cam_y as usize;
 
@@ -1996,9 +1948,6 @@ impl Iso25DPicture {
                 out.put(c, r, canvas.ground_frame.get(cx0 + c, cy0 + r));
             }
         }
-
-        let mut units = self.collect_units(frame, &pose, hull_offset_mdeg, width, height, step);
-        units.sort_by_key(|u| (u.kind != SpriteKind::Wreck, u.screen_y));
 
         let pack = mip_pack();
         for u in &units {
@@ -2010,29 +1959,185 @@ impl Iso25DPicture {
                 continue;
             };
             let n = mip.size;
-            let sheet_w = 6 * n;
+            let raw_w = 6 * n;
             let top_left_x = u.screen_x - (mip.anchor_x as i32);
             let top_left_y = u.screen_y - (mip.anchor_y as i32);
-            for r in 0..n {
-                let sy = top_left_y + r as i32;
-                if sy < 0 || sy >= height as i32 {
+            let unit_canvas_y =
+                u16::try_from((cy0 as i32 + u.screen_y).clamp(0, u16::MAX as i32)).unwrap_or(0);
+
+            let is_occluded = |sx: usize, sy: usize| -> bool {
+                canvas
+                    .occluder_base_y
+                    .get((cy0 + sy) * canvas.canvas_w + (cx0 + sx))
+                    .copied()
+                    .unwrap_or(0)
+                    > unit_canvas_y
+            };
+
+            // 1. Soft ground shadow ellipse around unit anchor.
+            let rx = (n as i32 * 3 / 10).max(4);
+            let ry = (n as i32 / 8).max(2);
+            for dy in -ry..=ry {
+                let sy_i = u.screen_y + dy;
+                if sy_i < 0 || sy_i >= height as i32 {
                     continue;
                 }
-                let src_row = (u.facing as usize * n + r) * sheet_w + u.pose_col * n;
+                let sy = sy_i as usize;
+                for dx in -rx..=rx {
+                    let sx_i = u.screen_x + dx;
+                    if sx_i < 0 || sx_i >= width as i32 {
+                        continue;
+                    }
+                    let d = (dx * dx * 100) / (rx * rx) + (dy * dy * 100) / (ry * ry);
+                    if d <= 100 {
+                        let sx = sx_i as usize;
+                        if !is_occluded(sx, sy) {
+                            let bg = out.get(sx, sy);
+                            out.put(
+                                sx,
+                                sy,
+                                [
+                                    (u16::from(bg[0]) * 55 / 100) as u8,
+                                    (u16::from(bg[1]) * 55 / 100) as u8,
+                                    (u16::from(bg[2]) * 55 / 100) as u8,
+                                ],
+                            );
+                        }
+                    }
+                }
+            }
+
+            // 2. Opaque sprite pixels + 1px dark silhouette rim, occluded by
+            //    any nearer 3D trees or building walls (`occluder_base_y > unit_canvas_y`).
+            let col_kind = if u.pose_col == 5 {
+                SpriteKind::Wreck
+            } else {
+                u.kind
+            };
+            let fi = u.facing as usize;
+            let pi = u.pose_col;
+            for r in 0..n {
+                let sy_i = top_left_y + r as i32;
+                if sy_i < 0 || sy_i >= height as i32 {
+                    continue;
+                }
+                let sy = sy_i as usize;
+                let src_row = (fi * n + r) * raw_w + pi * n;
                 for c in 0..n {
-                    let sx = top_left_x + c as i32;
-                    if sx < 0 || sx >= width as i32 {
+                    let sx_i = top_left_x + c as i32;
+                    if sx_i < 0 || sx_i >= width as i32 {
+                        continue;
+                    }
+                    let sx = sx_i as usize;
+                    if is_occluded(sx, sy) {
                         continue;
                     }
                     let code = mip.pixels.get(src_row + c).copied().unwrap_or(0);
                     if let Some(mat) = material_from_code(code) {
-                        out.put(sx as usize, sy as usize, material_rgb(mat, u.kind));
+                        out.put(sx, sy, material_rgb(mat, col_kind));
+                    } else {
+                        let mut adj = false;
+                        for (dr, dc) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
+                            let nr = r as isize + dr;
+                            let nc = c as isize + dc;
+                            if nr >= 0
+                                && nr < n as isize
+                                && nc >= 0
+                                && nc < n as isize
+                                && mip
+                                    .pixels
+                                    .get((fi * n + nr as usize) * raw_w + (pi * n + nc as usize))
+                                    .copied()
+                                    .unwrap_or(0)
+                                    != 0
+                            {
+                                adj = true;
+                                break;
+                            }
+                        }
+                        if adj {
+                            out.put(sx, sy, [12, 14, 18]);
+                        }
                     }
                 }
             }
         }
 
-        let _ = look_offset_mdeg;
+        // 3. Center hull (emerald) and look (gold) heading vectors.
+        let hull_mdeg = (i64::from(pose.body_heading_mdeg) + i64::from(hull_offset_mdeg))
+            .rem_euclid(360_000) as u32;
+        let look_mdeg = (i64::from(pose.body_heading_mdeg) + i64::from(look_offset_mdeg))
+            .rem_euclid(360_000) as u32;
+        let vcx = (width / 2) as i32;
+        let vcy = (height / 2) as i32;
+        let proj = IsoProj::for_viewport(width);
+        let vectors = [
+            (hull_mdeg, 13.0f32, [90u8, 215, 115]),
+            (look_mdeg, 17.0f32, [248u8, 216, 72]),
+        ];
+        for &(mdeg, len_m, _col) in &vectors {
+            let rad = ((mdeg as f32) * 0.001).to_radians();
+            let (sin_h, cos_h) = rad.det_sin_cos();
+            let steps = 80i32;
+            for s in 18..=steps {
+                let d_m = len_m * (s as f32 / steps as f32);
+                let px = vcx + (d_m * sin_h * proj.px_per_m_x).round() as i32;
+                let py = vcy - (d_m * cos_h * proj.px_per_m_y).round() as i32;
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        if let (Ok(ux), Ok(uy)) = (usize::try_from(px + dx), usize::try_from(py + dy))
+                        {
+                            out.put(ux, uy, [12, 14, 18]);
+                        }
+                    }
+                }
+            }
+        }
+        for &(mdeg, len_m, col) in &vectors {
+            let rad = ((mdeg as f32) * 0.001).to_radians();
+            let (sin_h, cos_h) = rad.det_sin_cos();
+            let steps = 80i32;
+            for s in 18..=steps {
+                let d_m = len_m * (s as f32 / steps as f32);
+                let px = vcx + (d_m * sin_h * proj.px_per_m_x).round() as i32;
+                let py = vcy - (d_m * cos_h * proj.px_per_m_y).round() as i32;
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1)] {
+                    if let (Ok(ux), Ok(uy)) = (usize::try_from(px + dx), usize::try_from(py + dy)) {
+                        out.put(ux, uy, col);
+                    }
+                }
+            }
+        }
+
+        // 4. Optional target-lock corner bracket around locked contact.
+        if let Some(lu) = units.iter().find(|u| u.locked) {
+            let half = 32i32;
+            let lx0 = lu.screen_x - half;
+            let ly0 = lu.screen_y - half - 8;
+            let lx1 = lu.screen_x + half;
+            let ly1 = lu.screen_y + half - 8;
+            let corner = 12i32;
+            let yel: Rgb = [248, 216, 64];
+            for d in 0..=corner {
+                for t in 0..=1 {
+                    for (px, py) in [
+                        (lx0 + d, ly0 + t),
+                        (lx0 + t, ly0 + d),
+                        (lx1 - d, ly0 + t),
+                        (lx1 - t, ly0 + d),
+                        (lx0 + d, ly1 - t),
+                        (lx0 + t, ly1 - d),
+                        (lx1 - d, ly1 - t),
+                        (lx1 - t, ly1 - d),
+                    ] {
+                        if let (Ok(ux), Ok(uy)) = (usize::try_from(px), usize::try_from(py)) {
+                            out.put(ux, uy, yel);
+                        }
+                    }
+                }
+            }
+        }
+
         out
     }
 }
@@ -2085,6 +2190,39 @@ mod tests {
     }
 
     #[test]
+    fn software_compositor_renders_terrain_units_hud_and_occlusion() {
+        let mut pic = Iso25DPicture::new();
+        pic.set_map(Map::new(128, 128, 1000));
+        let frame_json = json!({
+            "seated": true,
+            "team": "blue",
+            "unit_type": "tacsim.unit.biped_mk1",
+            "x_cm": 50_000,
+            "y_cm": 50_000,
+            "z_cm": 0,
+            "heading_mdeg": 45_000,
+            "speed_cms": 800,
+            "lock": "RA",
+            "contacts": [
+                {
+                    "id": "RA",
+                    "class": "red",
+                    "unit_type": "tacsim.unit.line_tank",
+                    "bearing_deg": 45.0,
+                    "range_m": 40.0,
+                    "facing": "front_left",
+                    "moving": true
+                }
+            ]
+        });
+        let f1 = pic.render_frame(&frame_json, 0, 15_000, 640, 480);
+        assert_eq!(f1.width(), 640);
+        assert_eq!(f1.height(), 480);
+        assert_ne!(f1.hash(), 0);
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
     fn viewport_25d_fills_cell_box_and_scales_up_to_1280() {
         let cell = Some(CellSize {
             width: 10,
@@ -2105,6 +2243,7 @@ mod tests {
         assert!(lo.height_px <= 360);
     }
 
+    #[cfg(feature = "encode")]
     #[test]
     fn retained_kitty_compositor_scrolls_by_translation_reuses_sheets_and_skips_idle_ticks() {
         let mut pic = Iso25DPicture::new();
@@ -2113,6 +2252,21 @@ mod tests {
             width: 8,
             height: 16,
         });
+
+        // Put 8 identical red line_tanks at the same depth to verify all 8 share
+        // ONE uploaded sheet image via distinct `p=<pid>` placement IDs (`p=101..108`).
+        let mut contacts = Vec::new();
+        for i in 0..8 {
+            contacts.push(json!({
+                "id": format!("R{}", i + 1),
+                "class": "red",
+                "unit_type": "tacsim.unit.line_tank",
+                "bearing_deg": -35.0 + (i as f64) * 10.0,
+                "range_m": 40.0,
+                "facing": "front_left",
+                "moving": false
+            }));
+        }
 
         let frame1 = json!({
             "seated": true,
@@ -2123,25 +2277,23 @@ mod tests {
             "z_cm": 0,
             "heading_mdeg": 0,
             "speed_cms": 0,
-            "contacts": [
-                {
-                    "id": "RA",
-                    "class": "red",
-                    "unit_type": "tacsim.unit.line_tank",
-                    "bearing_deg": 45,
-                    "range_m": 40,
-                    "facing": "front_left",
-                    "moving": false
-                }
-            ]
+            "contacts": contacts
         });
 
         let (_vp, bytes1) = pic.render_kitty_bytes(&frame1, (0, 0), (1, 2, 120, 40), cell, false);
         let s1 = String::from_utf8_lossy(&bytes1);
         assert!(s1.contains("a=t,f=100,t=d,i=100,q=1"));
-        assert!(s1.contains("a=p,i=100,x="));
-        assert!(!s1.contains(",p="));
+        assert!(s1.contains("a=p,i=100,p=1,x="));
+        assert!(s1.contains(",p=100,"));
+        for pid in 101..=108 {
+            assert!(
+                s1.contains(&format!(",p={pid},")),
+                "missing placement p={pid}"
+            );
+        }
         assert!(s1.contains("X=0,Y=0,"));
+        // Only 2 unit sheets uploaded total: 1 for blue biped + 1 shared by all 8 red tanks!
+        assert_eq!(pic.uploaded_sheets.len(), 2);
 
         // Stationary tick with no changes emits ZERO bytes!
         let (_vp, idle_bytes) =
@@ -2150,7 +2302,7 @@ mod tests {
 
         // Moving tick: mech steps north (y_cm = 50_400). Terrain and unit sheets
         // are already uploaded, so steady-state tick emits zero terrain/sheet
-        // `a=t` uploads and scrolls via `a=p` source-rect!
+        // `a=t` uploads and scrolls via `a=p,i=100,p=1` source-rect!
         let frame2 = json!({
             "seated": true,
             "team": "blue",
@@ -2162,7 +2314,7 @@ mod tests {
             "speed_cms": 800,
             "contacts": [
                 {
-                    "id": "RA",
+                    "id": "R1",
                     "class": "red",
                     "unit_type": "tacsim.unit.line_tank",
                     "bearing_deg": 45,
@@ -2175,8 +2327,10 @@ mod tests {
         let (_vp, bytes2) = pic.render_kitty_bytes(&frame2, (0, 0), (1, 2, 120, 40), cell, false);
         let s2 = String::from_utf8_lossy(&bytes2);
         assert!(!s2.contains("a=t,f=100,t=d,i=100"));
-        assert!(s2.contains("a=p,i=100,x="));
-        assert!(!s2.contains(",p="));
+        assert!(s2.contains("a=p,i=100,p=1,x="));
+        // Contacts R2..R8 left the contact list -> deleted by placement_id `p=102..108`!
+        assert!(s2.contains("a=d,d=i,i="));
+        assert!(s2.contains(",p=102,q=2"));
         assert!(bytes2.len() < bytes1.len() / 5);
 
         // Simulated eviction of a sheet image ID triggers re-upload on the next tick.

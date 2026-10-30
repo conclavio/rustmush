@@ -35,11 +35,11 @@ import {
   type PictureKind,
 } from "$lib/picture";
 import { LOCAL_FRAME_MS } from "$lib/pixel/local";
-import { KIND_COCKPIT, KIND_OVERHEAD } from "$lib/pixel/wasm";
+import { KIND_COCKPIT, KIND_ISO25D, KIND_OVERHEAD } from "$lib/pixel/wasm";
 import { PictureStore } from "$lib/stores/picture.svelte";
 
 /** The engine's module, faked: every render succeeds and hashes by camera kind
- * (`KIND_COCKPIT` vs `KIND_OVERHEAD`), as an unchanged scene does. */
+ * (`KIND_COCKPIT` vs `KIND_OVERHEAD` vs `KIND_ISO25D`), as an unchanged scene does. */
 const fake = vi.hoisted(() => {
   let kind = 1;
   return {
@@ -53,7 +53,7 @@ const fake = vi.hoisted(() => {
       },
       feed: () => true,
       render: () => true,
-      hash: () => (kind === 2 ? "overhead frame" : "cockpit frame"),
+      hash: () => (kind === 2 ? "overhead frame" : kind === 6 ? "iso25d frame" : "cockpit frame"),
       image: () => ({ width: 1, height: 1, data: new Uint8ClampedArray(4) }),
       pixels: () => new Uint8Array(0),
       reset: () => {},
@@ -406,7 +406,7 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     expect(picture.lookMdeg).toBe(swingLook(0, 1, LOOK_STEP_MS));
   });
 
-  it("v swaps between the first-person cockpit and the overhead camera locally (doc 28 P2)", async () => {
+  it("v cycles across the three cockpit cameras locally (cockpit → overhead → iso25d → cockpit)", async () => {
     const { picture, setPicture, frame } = mount(fixtureFrame());
     await tick();
     await press(frame, "v");
@@ -414,6 +414,9 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     expect(picture.kind).toBe("overhead");
     expect(picture.on).toBe(true);
     expect(setPicture).not.toHaveBeenCalled();
+    await press(frame, "v");
+    await tick();
+    expect(picture.kind).toBe("iso25d");
     await press(frame, "v");
     await tick();
     expect(picture.kind).toBe("cockpit");
@@ -499,7 +502,7 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     unmount();
   });
 
-  it("paints the overhead camera locally on v and first person again on v back (doc 28 P2)", async () => {
+  it("paints the overhead and 2.5D tactical cameras locally on v and first person again on v back", async () => {
     const setKind = vi.spyOn(fake.module, "setKind");
     const { picture, setPicture, frame, unmount } = mount(fixtureFrame());
     await settle();
@@ -522,13 +525,21 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     await frameTime();
     expect(paints.get(c)).toBe(2);
 
+    // Step to 2.5D tactical camera.
+    await fireEvent.keyDown(frame, { key: "v" });
+    await settle();
+    await frameTime();
+    expect(picture.kind).toBe("iso25d");
+    expect(setKind).toHaveBeenLastCalledWith(KIND_ISO25D);
+    expect(paints.get(c)).toBe(3);
+
     // Back to first person: painted here again, the server still never asked.
     await fireEvent.keyDown(frame, { key: "v" });
     await settle();
     await frameTime();
     expect(picture.kind).toBe("cockpit");
     expect(setKind).toHaveBeenLastCalledWith(KIND_COCKPIT);
-    expect(paints.get(c)).toBe(3);
+    expect(paints.get(c)).toBe(4);
     unmount();
   });
 });

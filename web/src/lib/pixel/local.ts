@@ -8,6 +8,7 @@ import {
   FEED_COCKPIT,
   FEED_MAP,
   KIND_COCKPIT,
+  KIND_ISO25D,
   KIND_OVERHEAD,
   type PixelModule,
   loadPixelModule,
@@ -61,7 +62,9 @@ export class LocalPicture {
     kind: PictureKind = "cockpit",
   ): boolean {
     if (kind !== this.#kind) {
-      this.#m.setKind(kind === "overhead" ? KIND_OVERHEAD : KIND_COCKPIT);
+      const wasmKind =
+        kind === "overhead" ? KIND_OVERHEAD : kind === "iso25d" ? KIND_ISO25D : KIND_COCKPIT;
+      this.#m.setKind(wasmKind);
       this.#kind = kind;
     }
     if (cockpit !== this.#cockpit) {

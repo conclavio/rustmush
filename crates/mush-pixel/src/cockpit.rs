@@ -403,6 +403,13 @@ fn contact_sprite(c: &Value, cam: &Camera, step: usize) -> Sprite {
         .unwrap_or("front");
     let pose = look
         .and_then(|l| l.sprites.as_ref())
+        .or_else(|| {
+            c.get("unit_type")
+                .and_then(Value::as_str)
+                .filter(|u| u.contains("scout"))
+                .and_then(|_| look::for_unit("tacsim.unit.line_tank"))
+                .and_then(|l| l.sprites.as_ref())
+        })
         .map(|sheet| SpritePose {
             sheet,
             facing: Facing::from_aspect(facing_word),

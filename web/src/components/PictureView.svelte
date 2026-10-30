@@ -52,6 +52,7 @@
     gateWord,
     helmLine,
     nextLock,
+    nextPictureKind,
     pictureKey,
     speedLine,
     speedOutstanding,
@@ -104,8 +105,8 @@
   let painted = $state.raw<HTMLCanvasElement | null>(null);
   /** A frame has been drawn here, on the canvas that is up. */
   const drawnHere = $derived(painted !== null && painted === canvas);
-  /** The overhead is chosen (doc 21 cut G.12c; doc 28 P2). */
-  const overhead = $derived(app.picture.kind === "overhead");
+  /** Which camera is chosen (`cockpit`, `overhead`, or `iso25d`). */
+  const viewKind = $derived(app.picture.kind);
   /** Whether the picture is up: wanted, visible, and not failed. */
   const active = $derived(wanted && visible && localFailed === null);
 
@@ -373,7 +374,7 @@
         if (!ev.repeat) allStop();
         break;
       case "view":
-        if (!ev.repeat) app.picture.kind = overhead ? "cockpit" : "overhead";
+        if (!ev.repeat) app.picture.kind = nextPictureKind(app.picture.kind);
         break;
       case "gate":
         if (!ev.repeat) app.helm(gateLine(frame?.weapons_free ?? null));
@@ -423,13 +424,15 @@
   {#if wanted}
     <!-- An application region: it takes keys while focused. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-    <div
+      <div
       class="frame"
       tabindex="0"
       role="application"
-      aria-label={overhead
-        ? "overhead view; the cockpit's flight keys work here, v returns to first person"
-        : "first-person view; a and d or the arrows turn, w and s set the speed, q and e swing the look, v the overhead"}
+      aria-label={viewKind === "overhead"
+        ? "overhead view; the cockpit's flight keys work here, v switches to 2.5D tactical"
+        : viewKind === "iso25d"
+          ? "2.5D tactical view; the cockpit's flight keys work here, v returns to first person"
+          : "first-person view; a and d or the arrows turn, w and s set the speed, q and e swing the look, v switches view"}
       onkeydown={onKeyDown}
       onkeyup={onKeyUp}
       onblur={release}

@@ -178,10 +178,10 @@ pub struct Placement {
 
 /// Append a cursor move + retained placement (`a=p`) command to `out`.
 ///
-/// Uses `C=1` so the cursor does not move after placing, and `q=1` so only
-/// errors (such as an evicted image ID) are reported back by the terminal.
-/// When `p.placement_id == 0`, `p=` is omitted so `wezterm-surface` does not
-/// duplicate `ImageCell`s across overlapping cell updates.
+/// Uses `C=1` so the cursor does not move after placing, `q=1` so only errors
+/// (such as an evicted image ID) are reported back by the terminal, and `p=<id>`
+/// when `p.placement_id > 0` so re-sending the same `(image_id, placement_id)`
+/// updates the placement in place per the Kitty graphics specification.
 pub fn place_bytes(out: &mut Vec<u8>, p: &Placement) {
     let pid_part = if p.placement_id > 0 {
         format!(",p={}", p.placement_id)

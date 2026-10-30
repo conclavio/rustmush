@@ -1,9 +1,9 @@
 //! **The pixel engine in the browser** (doc 21 cut G.3b; doc 28 P2):
 //! `mush-pixel`'s pictures ([`CockpitPicture`], [`OverheadPicture`],
-//! [`ChartPicture`], [`DollPicture`], [`ReplayPicture`]) built for
-//! `wasm32-unknown-unknown` with plain exports and no wasm-bindgen, so the web
-//! client draws every picture from its own feeds and the gateway draws nothing
-//! for it.
+//! [`Iso25DPicture`], [`ChartPicture`], [`DollPicture`], [`ReplayPicture`])
+//! built for `wasm32-unknown-unknown` with plain exports and no wasm-bindgen,
+//! so the web client draws every picture from its own feeds and the gateway
+//! draws nothing for it.
 //!
 //! **The ABI** (version [`ABI_VERSION`]; `web/src/lib/pixel/wasm.ts` is its
 //! one caller). Every argument and result is a number; text crosses through
@@ -12,7 +12,8 @@
 //! - `mp_abi() -> u32` — the ABI version, checked before anything else.
 //! - `mp_kind(kind) -> u32` — choose which picture `mp_render` draws
 //!   ([`KIND_COCKPIT`], [`KIND_OVERHEAD`], [`KIND_CHART`], [`KIND_DOLL`],
-//!   [`KIND_REPLAY`]; [`KIND_COCKPIT`] by default); `1` kept, `0` refused.
+//!   [`KIND_REPLAY`], [`KIND_ISO25D`]; [`KIND_COCKPIT`] by default); `1` kept,
+//!   `0` refused.
 //! - `mp_input(len) -> ptr` — a buffer of `len` bytes for the caller to write
 //!   one feed's JSON into (it lives until the next `mp_input`).
 //! - `mp_feed(feed, len) -> u32` — read the buffer's first `len` bytes as a
@@ -56,6 +57,7 @@ use mush_pixel::Frame;
 use mush_pixel::chart::{ChartPicture, SKY_CHART_FEED};
 use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture};
 use mush_pixel::doll::DollPicture;
+use mush_pixel::iso25d::Iso25DPicture;
 use mush_pixel::overhead::OverheadPicture;
 use mush_pixel::picture::{Look, Picture};
 use mush_pixel::replay::{REPLAY_CURSOR_FEED, REPLAY_FEED, ReplayPicture};
@@ -94,6 +96,9 @@ pub const KIND_DOLL: u32 = 4;
 /// `mp_kind`'s number for the match replay ([`ReplayPicture`]).
 pub const KIND_REPLAY: u32 = 5;
 
+/// `mp_kind`'s number for the cockpit's 2.5D tactical camera ([`Iso25DPicture`]).
+pub const KIND_ISO25D: u32 = 6;
+
 /// The largest frame side drawn, pixels.
 pub const MAX_SIDE: u32 = 2048;
 
@@ -105,6 +110,7 @@ struct State {
     kind: u32,
     cockpit: CockpitPicture,
     overhead: OverheadPicture,
+    iso25d: Iso25DPicture,
     chart: ChartPicture,
     doll: DollPicture,
     replay: ReplayPicture,
@@ -120,6 +126,7 @@ impl State {
             kind: KIND_COCKPIT,
             cockpit: CockpitPicture::new(),
             overhead: OverheadPicture::new(),
+            iso25d: Iso25DPicture::new(),
             chart: ChartPicture::new(),
             doll: DollPicture::new(),
             replay: ReplayPicture::new(),
@@ -151,7 +158,7 @@ fn feed_name(feed: u32) -> Option<&'static str> {
 fn valid_kind(kind: u32) -> bool {
     matches!(
         kind,
-        KIND_COCKPIT | KIND_OVERHEAD | KIND_CHART | KIND_DOLL | KIND_REPLAY
+        KIND_COCKPIT | KIND_OVERHEAD | KIND_CHART | KIND_DOLL | KIND_REPLAY | KIND_ISO25D
     )
 }
 
@@ -206,6 +213,7 @@ pub fn render(w: u32, h: u32, look: Look) -> bool {
             kind,
             cockpit,
             overhead,
+            iso25d,
             chart,
             doll,
             replay,
@@ -216,6 +224,7 @@ pub fn render(w: u32, h: u32, look: Look) -> bool {
         let drawn = match *kind {
             KIND_COCKPIT => cockpit.draw(frame, feeds, &look),
             KIND_OVERHEAD => overhead.draw(frame, feeds, &look),
+            KIND_ISO25D => iso25d.draw(frame, feeds, &look),
             KIND_CHART => chart.draw(frame, feeds, &look),
             KIND_DOLL => doll.draw(frame, feeds, &look),
             KIND_REPLAY => replay.draw(frame, feeds, &look),
@@ -251,6 +260,7 @@ pub fn reset() {
     with(|s| {
         s.cockpit = CockpitPicture::new();
         s.overhead = OverheadPicture::new();
+        s.iso25d = Iso25DPicture::new();
         s.chart = ChartPicture::new();
         s.doll = DollPicture::new();
         s.replay = ReplayPicture::new();
@@ -477,6 +487,28 @@ mod tests {
         let mut native_replay = Frame::new(640, 480);
         assert!(ReplayPicture::new().draw(&mut native_replay, &replay_feeds, &Look::default()));
         assert_eq!(hash(), native_replay.hash());
+
+        // Iso25DPicture: draws the 2.5D tactical view and matches native `Iso25DPicture`.
+        assert!(set_kind(KIND_ISO25D));
+        assert!(feed(FEED_COCKPIT, fixture("cockpit").as_bytes()));
+        assert!(feed(FEED_MAP, fixture("relief").as_bytes()));
+        reset();
+        assert!(render(640, 480, Look::default()));
+        let iso_feeds: HashMap<String, Value> = [
+            (
+                COCKPIT_FEED.to_string(),
+                serde_json::from_str(fixture("cockpit")).unwrap(),
+            ),
+            (
+                ARENA_MAP_FEED.to_string(),
+                serde_json::from_str(fixture("relief")).unwrap(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let mut native_iso = Frame::new(640, 480);
+        assert!(Iso25DPicture::new().draw(&mut native_iso, &iso_feeds, &Look::default()));
+        assert_eq!(hash(), native_iso.hash());
 
         assert!(set_kind(KIND_COCKPIT));
     }

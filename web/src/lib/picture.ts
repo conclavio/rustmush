@@ -38,9 +38,23 @@ export const HELM_REPEAT_MS = 700;
 /** Whether this viewer last wanted the picture (a per-viewer convenience). */
 export const PICTURE_PREF_KEY = "rustmush.picture";
 
-/** Which camera the picture is (doc 21 §7.4): the first-person view, or the
- * overhead — the arena north-up with the pilot's tank at its centre. */
-export type PictureKind = "cockpit" | "overhead";
+/** Which camera the picture is (doc 21 §7.4): the first-person view, the
+ * overhead (north-up with the pilot's tank at its centre), or the oblique
+ * 2.5D tactical camera. */
+export type PictureKind = "cockpit" | "overhead" | "iso25d";
+
+/** Cycle to the next cockpit camera (`cockpit` → `overhead` → `iso25d` → `cockpit`),
+ * matching the SSH TUI's `v` key. */
+export function nextPictureKind(kind: PictureKind): PictureKind {
+  switch (kind) {
+    case "cockpit":
+      return "overhead";
+    case "overhead":
+      return "iso25d";
+    case "iso25d":
+      return "cockpit";
+  }
+}
 
 /**
  * The `picture` command: on or off, at a look, of a kind (doc 21 cut G.12c
@@ -52,7 +66,8 @@ export function pictureCommand(
   lookMdeg: number,
   kind: PictureKind = "cockpit",
 ): ClientCommand {
-  return { t: "picture", d: { on, look_mdeg: wrapMdeg(lookMdeg), kind } };
+  const wireKind = kind === "overhead" ? "overhead" : "cockpit";
+  return { t: "picture", d: { on, look_mdeg: wrapMdeg(lookMdeg), kind: wireKind } };
 }
 
 /** A look in `-180_000..180_000` millidegrees. */
