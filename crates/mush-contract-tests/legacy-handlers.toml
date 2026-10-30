@@ -473,6 +473,12 @@ family = "core.attrs"
 note = "Object description setter (@desc): sets or clears the desc attribute on a controlled world object via the core object snapshot lane."
 
 [[handler]]
+name = "@design"
+category = "legacy-post-image"
+family = "tacsim.design"
+note = "Doc 31 cut UD.3a: the staff unit-design registry from the line client. /list and /show read TacsimStore's design rows; /withdraw sets the withdrawn flag on a design's tacsim:design:{id}@{version} rows through tacsim's single put_design writer (a bounded module-document post-image). Publishing is not this verb's: it is the staff-only unit_design invoke, which writes the same row. Staff-only (require_staff)."
+
+[[handler]]
 name = "@destroy"
 category = "legacy-post-image"
 family = "core.objects"
