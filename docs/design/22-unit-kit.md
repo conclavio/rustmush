@@ -1,5 +1,9 @@
 # 22. The unit kit — what a new unit defines
 
+**Draft 0.7 — 2026-10-30, the questions ruled.** The owner ruled Q-22-1, -2, -4 and -5 at the
+lead's defaults the same day (*"rule Q-22-1, -2, -4 and -5 at their defaults"*); with Q-22-3 ruled
+in Draft 0.6 the document carries no open question, and U.6 may start.
+
 **Draft 0.6 — 2026-10-30, the review folded.** The author of PR #178 reviewed Draft 0.5 on PR
 #184 with four points, all taken (the owner, the same day: *"fold all four points into doc 22 as
 Draft 0.6 … with your refinements"*): the `iso` chain reaches 24 px in eight sizes and both
@@ -290,17 +294,17 @@ The rules:
    it as a separate cached asset instead of carrying it inside `mush-pixel-wasm`, which drops
    flate2 and so has no free inflate.
 
-**Questions, with the lead's defaults until the owner rules.**
+**Questions — all ruled 2026-10-30** (Q-22-3 in Draft 0.6, the rest in Draft 0.7, the owner at the lead's defaults).
 
-- **Q-22-1** Sixteen facings for `iso`? Default eight: the 2.5D turns a unit in 45° steps today,
+- **Q-22-1** Sixteen facings for `iso`? **Ruled 2026-10-30 at the default:** eight: the 2.5D turns a unit in 45° steps today,
   and sixteen doubles every `iso` sheet.
-- **Q-22-2** A `top` view for the overhead? Default no: the overhead keeps its scene markers (doc
+- **Q-22-2** A `top` view for the overhead? **Ruled 2026-10-30 at the default:** no: the overhead keeps its scene markers (doc
   21 §7.4); an icon is a later cut if the overhead ever zooms past a few pixels a unit.
 - **Q-22-3** The `fp` pitch. **Ruled 2026-10-30 (Draft 0.6): 3°.** The heightfield's camera is
   level, so the 8° default showed a roof on every contact on level ground; 0° would lose the roof
   and with it the body's solidity; 3° keeps a sliver. `Bake.cs`'s `Elev` moves with it.
-- **Q-22-4** The `fp` floor. Default 8 px; under it the bracket alone, which is the bracket rule.
-- **Q-22-5** `heavy_mk1`. Default: a look and a bake with the rest, so the 2.5D slot stops being
+- **Q-22-4** The `fp` floor. **Ruled 2026-10-30 at the default:** 8 px; under it the bracket alone, which is the bracket rule.
+- **Q-22-5** `heavy_mk1`. **Ruled 2026-10-30 at the default:** a look and a bake with the rest, so the 2.5D slot stops being
   a synthesised shape.
 
 ## 4. Teams and colours — D-22-3, D-22-5
@@ -422,7 +426,7 @@ player can write.
   matrix** — two views (`fp`, `iso`) × eight facings × six poses × a size chain each — produced by
   one script from one named asset, every size reduced from the large render, keyed by look id in a
   named-entry pack with provenance; the look's text sheet stays the player's source and the
-  fallback. Cut U.6 builds it; Q-22-1, -2, -4 and -5 (§3.3) take the lead's defaults until ruled.
+  fallback. Cut U.6 builds it; Q-22-1..5 (§3.3) are all ruled, the owner on 2026-10-30.
   Draft 0.6 (2026-10-30, the PR #184 review folded): the `iso` chain reaches 24 px and both
   pictures pick a size from the projected height; the `fp` bake pitches 3° and the heightfield
   picks the chain nearer the line of sight (Q-22-3 ruled); the hull-down clip, already built, is
