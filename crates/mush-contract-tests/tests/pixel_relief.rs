@@ -370,9 +370,9 @@ fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
     assert_ne!(ov_rock.hash(), ov_wall.hash(), "overhead: rock != wall");
 }
 
-/// **Doc 30 cut WG.4**: The Bluff `(144, 111)` facing west (`270°`) on the
+/// **Doc 30 cut WG.4**: The Bluff `(141, 100)` facing west (`270°`) on the
 /// shipped `proving_ground` rendered through `tacsim::match_::cockpit::map_frame`
-/// + `mush_pixel::cockpit::CockpitPicture` at `640x480` is pinned to the exact
+/// and `mush_pixel::cockpit::CockpitPicture` at `640x480` is pinned to the exact
 /// 16-hex-digit FNV-1a frame hash asserted by the Studio preview in
 /// `web/src/lib/map-editor.test.ts`.
 #[test]
