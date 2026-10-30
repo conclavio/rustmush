@@ -907,12 +907,7 @@ impl TerrainCanvas {
                     let h_px =
                         (((base_h_m + var_h_m) * proj.px_per_m_z).round() as i32).clamp(7, 22);
                     let max_r = (h_px * 3 / 8).clamp(3, 8);
-                    let is_rock_spire = matches!(biome, Biome::Mars | Biome::Lunar);
-                    let trunk_h = if is_rock_spire {
-                        0
-                    } else {
-                        (h_px / 5).clamp(1, 4)
-                    };
+                    let trunk_h = (h_px / 5).clamp(1, 4);
                     let base_u16 = u16::try_from(by.clamp(0, u16::MAX as i32)).unwrap_or(0);
                     let shadow_rgb: Rgb = match biome {
                         Biome::Temperate => [32, 52, 28],
@@ -936,11 +931,8 @@ impl TerrainCanvas {
                         }
                     }
 
-                    // 2. Trunk (Temperate and Ice biomes)
+                    // 2. Trunk
                     for dy in 0..=trunk_h {
-                        if is_rock_spire {
-                            break;
-                        }
                         for dx in -1..=1i32 {
                             let px = bx + dx;
                             let py = by - dy;
@@ -962,17 +954,12 @@ impl TerrainCanvas {
                         }
                     }
 
-                    // 3. 3-tiered conifer canopy (Temperate/Ice) or jagged basalt/ejecta spire (Mars/Lunar)
+                    // 3. 3-tiered conifer canopy
                     let crown_h = (h_px - trunk_h).max(6);
                     for dy in 0..=crown_h {
                         let t = dy as f32 / crown_h as f32;
                         let tier_local = (t * 3.0).fract();
-                        let tier_flare = if is_rock_spire {
-                            let jag = (((dy as u32).wrapping_mul(17) ^ h2) & 3) as f32 * 0.06;
-                            (1.12 - 0.78 * t * t - jag).max(0.20)
-                        } else {
-                            (1.0 - tier_local * 0.45) * (1.05 - 0.78 * t)
-                        };
+                        let tier_flare = (1.0 - tier_local * 0.45) * (1.05 - 0.78 * t);
                         let r_row = ((max_r as f32) * tier_flare).round() as i32;
                         let py = by - trunk_h - dy;
                         if py < 0 || (py as usize) >= canvas_h {
@@ -3324,8 +3311,84 @@ mod tests {
         assert_ne!(f_150.hash(), f_50.hash());
     }
 
+    fn encode_test_elev(w: usize, h: usize) -> Value {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut raw = Vec::with_capacity(w * h * 2);
+        let mut last = 0i64;
+        for y in 0..h {
+            for x in 0..w {
+                let cm = if y >= 22 {
+                    ((y as i64 - 21) * 180) + ((x as i64 % 5) * 40)
+                } else if y <= 6 {
+                    -200
+                } else {
+                    ((x as i64 + y as i64) % 4) * 35
+                };
+                let delta = cm - last;
+                last = cm;
+                let mut zig = ((delta << 1) ^ (delta >> 63)) as u64;
+                loop {
+                    let mut b = (zig & 0x7f) as u8;
+                    zig >>= 7;
+                    if zig != 0 {
+                        b |= 0x80;
+                    }
+                    raw.push(b);
+                    if zig == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        let mut b64 = String::with_capacity(raw.len().div_ceil(3) * 4);
+        let mut i = 0;
+        while i < raw.len() {
+            let b0 = u32::from(raw.get(i).copied().unwrap_or(0));
+            let b1 = u32::from(raw.get(i + 1).copied().unwrap_or(0));
+            let b2 = u32::from(raw.get(i + 2).copied().unwrap_or(0));
+            let triple = (b0 << 16) | (b1 << 8) | b2;
+            let rem = raw.len() - i;
+            b64.push(char::from(
+                TABLE
+                    .get(((triple >> 18) & 0x3f) as usize)
+                    .copied()
+                    .unwrap_or(b'A'),
+            ));
+            b64.push(char::from(
+                TABLE
+                    .get(((triple >> 12) & 0x3f) as usize)
+                    .copied()
+                    .unwrap_or(b'A'),
+            ));
+            if rem > 1 {
+                b64.push(char::from(
+                    TABLE
+                        .get(((triple >> 6) & 0x3f) as usize)
+                        .copied()
+                        .unwrap_or(b'A'),
+                ));
+            } else {
+                b64.push('=');
+            }
+            if rem > 2 {
+                b64.push(char::from(
+                    TABLE.get((triple & 0x3f) as usize).copied().unwrap_or(b'A'),
+                ));
+            } else {
+                b64.push('=');
+            }
+            i += 3;
+        }
+        json!({
+            "encoding": "zigzag-leb128-delta",
+            "unit_cm": 1,
+            "data": b64,
+        })
+    }
+
     #[test]
-    fn multi_biome_and_procedural_relief_render_across_all_three_views() {
+    fn multi_biome_and_supplied_relief_render_across_all_three_views() {
         use crate::cockpit::CockpitPicture;
         use crate::overhead::OverheadPicture;
         use std::collections::HashMap;
@@ -3365,16 +3428,17 @@ mod tests {
         let mut fp_hashes = Vec::new();
         let mut ov_hashes = Vec::new();
         let mut iso_hashes = Vec::new();
+        let elev = encode_test_elev(32, 32);
 
         for (match_id, biome) in [(1, "temperate"), (2, "mars"), (3, "lunar"), (4, "ice")] {
             let map_json = json!({
                 "match": match_id,
                 "surface": format!("sector_{biome}"),
                 "biome": biome,
-                "procedural_relief": true,
                 "width": 32,
                 "height": 32,
                 "cell_cm": 1000,
+                "elev": elev,
                 "legend": [
                     ["\"", "grass"],
                     ["~", "water"],
@@ -3394,12 +3458,12 @@ mod tests {
                 }).collect::<Vec<_>>()
             });
 
-            let terrain = terrain_from_feed(&map_json).expect("procedural biome terrain");
+            let terrain = terrain_from_feed(&map_json).expect("supplied biome terrain");
             assert!(terrain.is_baked());
             let has_non_zero = (0..32)
                 .flat_map(|y| (0..32).map(move |x| (x, y)))
                 .any(|(x, y)| terrain.elev_cm(x, y) != 0);
-            assert!(has_non_zero, "procedural relief synthesized for {biome}");
+            assert!(has_non_zero, "supplied relief decoded for {biome}");
 
             let mut feeds = MapFeeds(HashMap::new());
             feeds.0.insert(COCKPIT_FEED.to_string(), cockpit.clone());
@@ -3464,10 +3528,10 @@ mod tests {
         let map_json = json!({
             "surface": "tacsim.arena.mars_canyon",
             "biome": "mars",
-            "procedural_relief": true,
             "width": 16,
             "height": 16,
             "cell_cm": 1000,
+            "elev": encode_test_elev(16, 16),
             "legend": [["\"", "grass"]],
             "rows": (0..16).map(|_| json!([["\"", 16]])).collect::<Vec<_>>()
         });

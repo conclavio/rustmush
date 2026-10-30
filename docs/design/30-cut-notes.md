@@ -21,3 +21,12 @@ The document ([30-world-generator-v2.md](30-world-generator-v2.md), Draft 0.1 �
 - **Checked-in draft and two-half pin** (`crates/tacsim/content/ground/proving_ground.draft.json`, `crates/tacsim/tests/shard_2/content.rs`):
   - Replaced `the_shipped_atlas_pack_is_this_generators_output` with `the_shipped_draft_is_this_generators_output` (`preset → draft`) and `every_shipped_ground_pack_is_the_writers_output_over_its_draft` (`draft → packs`).
   - Both shipped packs (`content/atlas/proving_ground.json` and `content/arenas/proving_ground.json`) and their pinned digests (`c7202e25…` and `74f4bd85…`) are reproduced byte for byte without modification.
+
+## WG.2
+
+Picture hygiene in `mush-pixel`: retire `synthesize_relief`, exact-match biome names, and render `rock` as a surface material rather than an extruded wall block.
+
+- Removed `Terrain::synthesize_relief` from [`crates/mush-pixel/src/heightfield.rs`](../../crates/mush-pixel/src/heightfield.rs) and the `procedural_wanted` / `all_flat` fallback from `terrain_from_feed` in [`crates/mush-pixel/src/cockpit.rs`](../../crates/mush-pixel/src/cockpit.rs): no `mush-pixel` path writes an `elev_cm` the `arena.map` feed did not carry (D-30-1, D-30-6).
+- Tightened `Biome::from_name` in [`crates/mush-pixel/src/raycast.rs`](../../crates/mush-pixel/src/raycast.rs) and `map_from_feed` in [`crates/mush-pixel/src/cockpit.rs`](../../crates/mush-pixel/src/cockpit.rs) to an exact match on the four biome words (`temperate | mars | lunar | ice`), retiring `surface` substring and legend-word sniffing (D-30-5).
+- Implemented D-30-10 (`rock` as a surface material, not an extruded `Wall` block): added `Ground::Rock` in [`crates/mush-pixel/src/raycast.rs`](../../crates/mush-pixel/src/raycast.rs) so `"rock"` and `"cliff"` render with distinct mineral surface shading and zero obstacle height, removed `"building"` from `Ground::from_legend_name`'s `Ground::Wall` arm, and retired the `is_rock_spire` woods-as-spires branch on Mars/Lunar in [`crates/mush-pixel/src/heightfield.rs`](../../crates/mush-pixel/src/heightfield.rs) and [`crates/mush-pixel/src/iso25d.rs`](../../crates/mush-pixel/src/iso25d.rs).
+- Added `a_flat_field_draws_flat_under_every_biome` and `a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture` to [`crates/mush-contract-tests/tests/pixel_relief.rs`](../../crates/mush-contract-tests/tests/pixel_relief.rs), and updated the 4-biome × 3-view distinctness test in [`crates/mush-pixel/src/iso25d.rs`](../../crates/mush-pixel/src/iso25d.rs) to supply explicit `elev` data.
