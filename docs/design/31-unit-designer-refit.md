@@ -1,5 +1,10 @@
 # 31. The unit designer and the refit bay
 
+**Draft 0.2 — 2026-10-30, the questions ruled.** The owner ruled both questions on PR #191 the
+same day: Q-31-1 at the restart for now, with live catalogue extension deferred for its cost and
+made a prerequisite of player designs; Q-31-2 at the default. The document carries no open
+question (§10).
+
 **Draft 0.1 — 2026-10-30, docs only.** What comes after doc 22. The owner asked for a unit creator
 and editor that also does repairs, "like the map editor", with every Mech Constructor assembly
 pre-baked and pushed to a client only when a unit drawn from it is on that client's map. The owner
@@ -172,7 +177,7 @@ that catalogue from the shipped content plus the ledgered designs of that genera
 versions never leave Redis while a record names them (backup and restore of the instance are
 doc 16c T-112's; designs are now part of what it must keep).
 
-When a published design becomes fieldable is Q-31-1 (§10).
+A published design becomes fieldable at the next server restart (Q-31-1, ruled, §10).
 
 ## 5. Delivery — the overhead is disk and editor bandwidth
 
@@ -286,28 +291,33 @@ runs compress it well) and a section-to-part map on the look. Not built, not sch
 - **The bake queue**: a staff request for an assembly not in the catalogue lands as a model config
   in a PR; the bake runs on the owner's Windows box (Unity and the packs are there and nowhere
   else) by hand or by a self-hosted Windows runner; the model ships with the next build.
-- **Player designs** (D-22-7): the same studio and validator, ungated, with what staff designs do
-  not need — who may design, what a design costs to register and to build (doc 08), who may field
+- **Player designs** (D-22-7): the same studio and validator, ungated, on live catalogue extension
+  (Q-31-1: a player cannot wait for a staff restart), with what staff designs do not need — who may design, what a design costs to register and to build (doc 08), who may field
   it, a review step before a design reaches a match, and limits on the registry's growth.
 - **A repair-training simulator** (R4): a pod scenario that puts a virtual damaged hull in a
   virtual bay.
-- **Live catalogue extension**, if Q-31-1 rules for the restart.
+- **Live catalogue extension** (Q-31-1, deferred for cost): a published design fieldable without a
+  restart. Required before player designs.
 
 ## 10. Questions
 
-- **Q-31-1 When does a published design become fieldable?** The catalogue is frozen at the
-  composition root, and three readings of it (the unit catalogue, the registry descriptors, the
-  arena applier's bindings) agree only because they are one freeze. **Default: at the next
-  mush-server restart** — the gateway's hot restart (M16a–M18) keeps every session — so publishing
-  is "publish, then a hot restart of the server half" (the gateway's supervisor relaunching
-  mush-server), and the freeze stays an invariant. The alternative, appending to a
-  live catalogue between matches, is a change to three owners and doc 16 §9's extension rule; it
-  waits for a reason.
-- **Q-31-2 May an IC hull be built on a design that exists only in the registry?** **Default:
-  yes** — the registry is as durable as a ledger row and the design is checked by the same code as
-  shipped content — but a design must be committed to the repo before a release that resets the
-  instance's Redis (pre-launch; backup and restore are doc 16c T-112's). The stricter reading (IC only from shipped content;
-  the registry for arena and test play) is one line in the hull builder if the owner prefers it.
+**Both ruled 2026-10-30** (Draft 0.2, the owner on PR #191).
+
+- **Q-31-1 When does a published design become fieldable?** **Ruled: at the next mush-server
+  restart, for now.** The catalogue is frozen at the composition root, and three readings of it (the
+  unit catalogue, the registry descriptors, the arena applier's bindings) agree only because they
+  are one freeze; the gateway's hot restart (M16a–M18) keeps every session, so publishing is
+  "publish, then a hot restart of the server half" (the gateway's supervisor relaunching
+  mush-server). The owner: live publishing is **deferred for its cost, not because it is
+  uninteresting** — *"we'll need live catalogue modifications to support player-based designs but
+  for now with them being staff-only its temporarily acceptable to require the restart"*. Live
+  catalogue extension (appending to the fielded catalogue between matches: a change to the three
+  readings' owners and to doc 16 §9's extension rule) is therefore a **prerequisite of player
+  designs** (§9), not an optional extra.
+- **Q-31-2 May an IC hull be built on a design that exists only in the registry?** **Ruled at the
+  default: yes** — the registry is as durable as a ledger row and the design is checked by the same
+  code as shipped content — but a design must be committed to the repo before a release that resets
+  the instance's Redis (pre-launch; backup and restore are doc 16c T-112's).
 
 ## 11. Cuts
 
@@ -316,7 +326,7 @@ runs compress it well) and a section-to-part map on the look. Not built, not sch
 | **UD.0** | this document and its README row | — |
 | **UD.1** | the model catalogue (D-31-1..5): bake configs under `scripts/unit-bake/models/`, per-model `.mupk` files and `models/index.json` (format 3, keyed by model id), `"model"` on the six looks, the matrix check a model at a time and the look-against-model check, native binaries embedding every model by build script, the web's fetch by roster and on first sight with the text-sheet fallback (D-31-11), immutable content-named files; `units.bin` deleted | the six U.6 models ship as six files; a web client in a match of tanks fetches the tank's file and no other; a contact whose model has not arrived draws its text sheet and then its bake; no change to any picture once loaded |
 | **UD.2** | the staff designer v0 (D-31-6..8, §6): the engine and studio, the chassis templates, the model preview through `mush-pixel-wasm`, the rules and look panes, the validator in wasm, export to the two repo files | staff draw a biped variant with a different weapon fit from the catalogue, the studio refuses a broken one with the server's reason, and the exported files pass `cargo test` unchanged when committed |
-| **UD.3** | the runtime design registry (D-31-9, D-31-10): `tacsim:design:` rows on the pack ledger, the design namespace, Publish, `@unit/design`, the catalogue generation on the match record and its replay, Q-31-1 as ruled | a published design is fielded in an arena match after the restart, the match replays bit for bit, and committing the design leaves the catalogue's digests unchanged |
+| **UD.3** | the runtime design registry (D-31-9, D-31-10): `tacsim:design:` rows on the pack ledger, the design namespace, Publish, `@unit/design`, the catalogue generation on the match record and its replay, fieldable after a restart (Q-31-1) | a published design is fielded in an arena match after the restart, the match replays bit for bit, and committing the design leaves the catalogue's digests unchanged |
 | **UD.4** | the refit and repair bay on IC hulls (D-31-13, D-31-14): the bay view on a hull, quotes, the workshop orders through doc 08's driver at a facility, refit families and the refit adapter, the arena refusal | an IC hull back from a sortie with a destroyed cannon is stripped, refitted with a stored like-for-like part, repaired and rearmed over IC time at a priced quote, or refitted to a family variant; a simulator unit has no bay |
 
 UD.1 stands alone and could follow U.6 directly. UD.2 needs UD.1's index; UD.3 needs UD.2's
@@ -347,3 +357,7 @@ neither, and could go first once IC hulls return damaged, doc 27 H2).
 - **D-31-13** Repair is work orders over doc 27's workshop and doc 08's driver on IC hulls, quoted,
   timed and priced; never a free edit; arena units have no bay.
 - **D-31-14** A refit is a change of registered design within the hull's declared refit family.
+- **Q-31-1** (ruled 2026-10-30) A published design is fieldable after the next server restart;
+  live catalogue extension is deferred for cost and is a prerequisite of player designs.
+- **Q-31-2** (ruled 2026-10-30) IC hulls may be built on registry-only designs; commit before any
+  Redis reset.
