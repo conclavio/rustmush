@@ -283,40 +283,7 @@ pub fn map_from_feed(map: &Value) -> Map {
         .get("biome")
         .and_then(Value::as_str)
         .and_then(Biome::from_name)
-        .or_else(|| {
-            map.get("surface")
-                .and_then(Value::as_str)
-                .and_then(Biome::from_name)
-        })
-        .unwrap_or_else(|| {
-            let mut has_ice = false;
-            let mut has_regolith = false;
-            let mut has_sand = false;
-            for pair in map
-                .get("legend")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if let Some(name) = pair.get(1).and_then(Value::as_str) {
-                    match name {
-                        "ice" => has_ice = true,
-                        "regolith" => has_regolith = true,
-                        "sand" => has_sand = true,
-                        _ => {}
-                    }
-                }
-            }
-            if has_ice {
-                Biome::Ice
-            } else if has_regolith {
-                Biome::Lunar
-            } else if has_sand {
-                Biome::Mars
-            } else {
-                Biome::Temperate
-            }
-        });
+        .unwrap_or(Biome::Temperate);
     out.set_biome(biome);
     let rows = map.get("rows").and_then(Value::as_array);
     for y in 0..height {
@@ -375,22 +342,7 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
     if cells.width() == 0 || cells.height() == 0 {
         return None;
     }
-    let procedural_wanted = map
-        .get("procedural_relief")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || map.get("biome").is_some()
-        || cells.biome() != Biome::Temperate;
-
-    let Some(elev) = map.get("elev") else {
-        if !procedural_wanted {
-            return None;
-        }
-        let mut terrain = Terrain::new(cells);
-        terrain.synthesize_relief(seed);
-        terrain.bake(seed);
-        return Some(terrain);
-    };
+    let elev = map.get("elev")?;
     if elev.get("encoding").and_then(Value::as_str) != Some("zigzag-leb128-delta") {
         return None;
     }
@@ -420,15 +372,10 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
     if at != bytes.len() {
         return None;
     }
-    let all_flat = heights.iter().all(|&cm| cm == 0);
     let mut terrain = Terrain::new(cells);
-    if all_flat && procedural_wanted {
-        terrain.synthesize_relief(seed);
-    } else {
-        for (i, cm) in heights.into_iter().enumerate() {
-            let cm = i32::try_from(cm.saturating_mul(unit)).ok()?;
-            terrain.set_elev_cm(i % w.max(1), i / w.max(1), cm);
-        }
+    for (i, cm) in heights.into_iter().enumerate() {
+        let cm = i32::try_from(cm.saturating_mul(unit)).ok()?;
+        terrain.set_elev_cm(i % w.max(1), i / w.max(1), cm);
     }
     terrain.bake(seed);
     Some(terrain)

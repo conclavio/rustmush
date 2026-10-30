@@ -1,23 +1,24 @@
-# 30 — cut notes
+# World Generator v2 — Cut Notes
 
-One `## WG.n` heading per cut of [30-world-generator-v2.md](30-world-generator-v2.md), in the order they land: what landed, what it deferred and why, how it was verified.
+Per [`docs/design/30-world-generator-v2.md`](30-world-generator-v2.md) §11, each cut on the WG workstream records its landed scope and verification here.
 
-## WG.0
+## WG.0 — Design Document & Index
 
-The document ([30-world-generator-v2.md](30-world-generator-v2.md), Draft 0.1 → Draft 0.2 on 2026-10-30, #183) and its `docs/design/README.md` row. Read the week's five terrain pieces (#154, the Unity extractor, #169, #173, #178) as one research spike; decided D-30-1..10 and ruled Q-30-1..9.
+- Landed [`docs/design/30-world-generator-v2.md`](30-world-generator-v2.md) (Draft 0.2) and [`docs/design/22-unit-kit.md`](22-unit-kit.md) (Draft 0.5) via PRs #183 and #184.
 
-## WG.1
+## WG.1 — `tacsim::ground`, `ground-pack`, and the Two-Half Content Pin
 
-`tacsim::ground`, `ground-pack`, the checked-in `proving_ground.draft.json`, and the two-half content pin.
+- Added [`crates/tacsim/src/ground.rs`](../../crates/tacsim/src/ground.rs):
+  - `GroundDraft` (`ground.draft.v1`, D-30-3) with 3-byte `[cols u16][rows u16] + [count u16][class u8]` class RLE and `le16` elevation grid, validation (`Void` refusal, provenance input enforcement), and `generate` moved from `tests/support/ground.rs`.
+  - `build(&GroundDraft)`: splits 64×64 / 128×128 / 256×256 drafts into 128×128 quadrant heightfield entries, formats the region and campaign-seed packs, computes canonical `DefinitionDigest` values, and enforces `arena_map_within_bound` (`MAP_MAX_BYTES`) before writing a byte (D-30-4, D-30-8).
+  - `check(&GroundDraft)`: size-only report (`cols`, `rows`, `quadrants`, `map_bytes`, `map_max_bytes`) for WG.1 (extended with grade/passability in WG.3).
+  - `from_packs(atlas_json, arena_json)`: inverse reconstruction (`pack → draft`) verified to round-trip `proving_ground` byte for byte.
+- Added [`crates/tacsim/src/bin/ground-pack.rs`](../../crates/tacsim/src/bin/ground-pack.rs) CLI binary with `build`, `check`, `gen`, and `from-packs` subcommands.
+- Checked in [`crates/tacsim/content/ground/proving_ground.draft.json`](../../crates/tacsim/content/ground/proving_ground.draft.json) and updated [`crates/tacsim/tests/shard_2/content.rs`](../../crates/tacsim/tests/shard_2/content.rs) to the two-half content pin (`the_shipped_draft_is_this_generators_output` and `every_shipped_ground_pack_is_the_writers_output_over_its_draft`).
 
-- **`tacsim::ground`** (`crates/tacsim/src/ground.rs`):
-  - `GroundDraft` (`ground.draft.v1`, D-30-3), `GroundProvenance` and `GroundSource` (`generator | extractor | studio`), with strict validation (`GroundDraft::validate`): checks schema, canonical ID derivations, biome vocabulary, grid bounds (`<= 16` quadrants of `128 × 128`), provenance (`Extractor` requires non-empty `inputs`), the 3-byte `[cols u16 LE][rows u16 LE] + [count u16 LE][class u8]` class RLE (`encode_classes` / `decode_classes`, refusing code `0` `Void`), `le16` elevations (`encode_elev` / `decode_elev`), and `ArenaDef::check`.
-  - Moved the proving ground generator (`class_at`, `elev_at`, `elev_v3`, `Relief`, `atlas_pack_at`, `atlas_pack_v3`, `atlas_pack_with`, `sign`) from `crates/tacsim/tests/support/ground.rs` into `tacsim::ground`, leaving `tests/support/ground.rs` as a `pub use tacsim::ground::*;` re-export so existing test binaries keep their path.
-  - `generate("proving_ground", seed, biome)` emits the proving ground's `GroundDraft`.
-  - `build(&draft)` validates and checks the draft, quadrants `classes` and `elev` into `128 × 128` `field.q{x}_{y}` heightfield entries, and produces both signed packs (`tacsim.<id>` and `tacsim.pack.<id>`) and their digests.
-  - `check(&draft)` validates the draft, prices its cells from `LocomotionTable::shipped()`, and verifies the widest `arena.map` frame size against `MAP_MAX_BYTES` (256 KiB).
-  - `from_packs(atlas_json, arena_json)` implements the inverse (`pack → draft`), stitching quadrant heightfields and classes back into a whole `GroundDraft`.
-- **`ground-pack` CLI** (`crates/tacsim/src/bin/ground-pack.rs`): `build`, `check`, `gen`, and `from-packs` subcommands, with crate-root panic-surface restriction lints denied.
-- **Checked-in draft and two-half pin** (`crates/tacsim/content/ground/proving_ground.draft.json`, `crates/tacsim/tests/shard_2/content.rs`):
-  - Replaced `the_shipped_atlas_pack_is_this_generators_output` with `the_shipped_draft_is_this_generators_output` (`preset → draft`) and `every_shipped_ground_pack_is_the_writers_output_over_its_draft` (`draft → packs`).
-  - Both shipped packs (`content/atlas/proving_ground.json` and `content/arenas/proving_ground.json`) and their pinned digests (`c7202e25…` and `74f4bd85…`) are reproduced byte for byte without modification.
+## WG.2 — Picture Hygiene in `mush-pixel`
+
+- Removed `Terrain::synthesize_relief` from [`crates/mush-pixel/src/heightfield.rs`](../../crates/mush-pixel/src/heightfield.rs) and the `procedural_wanted` / `all_flat` fallback from `terrain_from_feed` in [`crates/mush-pixel/src/cockpit.rs`](../../crates/mush-pixel/src/cockpit.rs): no `mush-pixel` path writes an `elev_cm` the `arena.map` feed did not carry (D-30-1, D-30-6).
+- Tightened `Biome::from_name` in [`crates/mush-pixel/src/raycast.rs`](../../crates/mush-pixel/src/raycast.rs) and `map_from_feed` in [`crates/mush-pixel/src/cockpit.rs`](../../crates/mush-pixel/src/cockpit.rs) to an exact match on the four biome words (`temperate | mars | lunar | ice`), retiring `surface` substring and legend-word sniffing (D-30-5).
+- Implemented D-30-10 (`rock` as a surface material, not an extruded `Wall` block): removed `"rock"`, `"cliff"`, and `"building"` from `Ground::from_legend_name`'s `Ground::Wall` arm in [`crates/mush-pixel/src/raycast.rs`](../../crates/mush-pixel/src/raycast.rs), and retired the `is_rock_spire` woods-as-spires branch on Mars/Lunar in [`crates/mush-pixel/src/heightfield.rs`](../../crates/mush-pixel/src/heightfield.rs) and [`crates/mush-pixel/src/iso25d.rs`](../../crates/mush-pixel/src/iso25d.rs).
+- Added `a_flat_field_draws_flat_under_every_biome` and `a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture` to [`crates/mush-contract-tests/tests/pixel_relief.rs`](../../crates/mush-contract-tests/tests/pixel_relief.rs), and updated the 4-biome × 3-view distinctness test in [`crates/mush-pixel/src/iso25d.rs`](../../crates/mush-pixel/src/iso25d.rs) to supply explicit `elev` data.
