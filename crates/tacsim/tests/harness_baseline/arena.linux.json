@@ -307,6 +307,22 @@
       ],
       "reason": "Doc 17h cut M8a adds the seal's licence state to every arena mind_sealed ledger line (\"licence_state\":\"doctrine\" after \"licence\"). On DT.1b's tree the bytes the arena lane streams grow by 8100 (1642833 to 1650933, the same growth M8a measured alone over the API 5 tree), which now carries the ledger over one more chunk boundary (103 to 104). Every minds block (stock_ci, stock_authored, fill_authored, ceiling_authored) is equal to DT.1b's values, as is every other deterministic field; this Linux run so reproduces DT.1b's four final_substep_hash leaves. The licence state is the line's parameter, never a seal field, so no seal digest or state hash moved.",
       "timing_policy": "Original VPS timings and host retained; no threshold or host comparison changed."
+    },
+    "d22_9_deterministic_update": {
+      "cut": "doc 22 D-22-9 (PR #88), the eight-way contact facing",
+      "recorded_utc": "2026-10-30T06:00:00+00:00",
+      "measured_revision": "bfd8af44 (main); first moved at b1ed214f, the merge of PR #88 (bisected first-parent over 26c2a98e..e2e95512)",
+      "fields": [
+        "counters.frames_per_pulse_mean"
+      ],
+      "previous": {
+        "counters.frames_per_pulse_mean": 21.25
+      },
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev"
+      ],
+      "reason": "PR #88 (D-22-9) adds FrameContact::facing, the eight-way sprite sector a contact's plot presents (facing_band_seen), and compares it in FrameContact::same_as. frames_per_pulse_mean is the mean count of changed frames per pulse (Frame::same_as decides whether a pilot is sent one), so a contact crossing a 45-degree sector inside one armour quadrant now sends a fresh frame, which the cockpit's diagonal sprite needs: 21.25 to 21.292. Every other deterministic field and every minds block (stock_ci, stock_authored, fill_authored, ceiling_authored) is equal at main bfd8af44 on this Linux run.",
+      "timing_policy": "Original VPS timings and host retained; no threshold or host comparison changed."
     }
   },
   "classes": {
@@ -349,7 +365,7 @@
     "blocked_interior_passable": 9,
     "blocked_ring_passable": 0,
     "ended": null,
-    "frames_per_pulse_mean": 21.25,
+    "frames_per_pulse_mean": 21.292,
     "held_at_end": 7,
     "lagged_pulses": 0,
     "ledger_bytes_streamed": 1650933,
