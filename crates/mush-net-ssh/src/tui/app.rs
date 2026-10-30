@@ -4594,6 +4594,7 @@ impl TuiApp {
                 "match": picture.map_or(0, |p| p.match_id),
                 "t_ms": pixel.replay().t_ms,
                 "focus": picture.map_or(0, |p| p.focus),
+                "view": pixel.replay().view.as_str(),
             });
             let feeds = super::pixel::WithFeed {
                 base: &*panels,

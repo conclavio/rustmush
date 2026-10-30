@@ -141,6 +141,25 @@ describe("ReplayScreen mounted", () => {
       vi.useRealTimers();
     }
   });
+
+  it("cycles between overview, tactical, and cockpit views via v key and buttons", async () => {
+    await opened();
+    const viewBtns = [...document.querySelectorAll("button.view-btn")];
+    expect(viewBtns.map((b) => b.textContent)).toEqual(["overview", "tactical", "cockpit"]);
+    expect(viewBtns[0]?.classList.contains("active")).toBe(true);
+
+    await fireEvent.keyDown(window, { key: "v" });
+    await tick();
+    expect(viewBtns[1]?.classList.contains("active")).toBe(true);
+
+    await fireEvent.keyDown(window, { key: "v" });
+    await tick();
+    expect(viewBtns[2]?.classList.contains("active")).toBe(true);
+
+    await fireEvent.click(viewBtns[0]!);
+    await tick();
+    expect(viewBtns[0]?.classList.contains("active")).toBe(true);
+  });
 });
 
 // The live picture (16b cut I.4; 16c N10): the same screen in LIVE mode — no

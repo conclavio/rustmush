@@ -31,6 +31,8 @@ pub trait Det: Sized {
     fn det_ln(self) -> Self;
     /// `sqrt(self² + other²)` without the overflow.
     fn det_hypot(self, other: Self) -> Self;
+    /// Four-quadrant arctangent of `self` (`y`) and `other` (`x`), radians.
+    fn det_atan2(self, other: Self) -> Self;
 }
 
 impl Det for f32 {
@@ -52,6 +54,9 @@ impl Det for f32 {
     fn det_hypot(self, other: f32) -> f32 {
         libm::hypotf(self, other)
     }
+    fn det_atan2(self, other: f32) -> f32 {
+        libm::atan2f(self, other)
+    }
 }
 
 impl Det for f64 {
@@ -72,6 +77,9 @@ impl Det for f64 {
     }
     fn det_hypot(self, other: f64) -> f64 {
         libm::hypot(self, other)
+    }
+    fn det_atan2(self, other: f64) -> f64 {
+        libm::atan2(self, other)
     }
 }
 

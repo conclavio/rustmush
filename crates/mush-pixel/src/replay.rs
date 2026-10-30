@@ -28,19 +28,74 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::Frame;
-use crate::cockpit::{ARENA_MAP_FEED, map_from_feed};
+use crate::cockpit::{
+    ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture, map_from_feed, terrain_from_feed,
+};
 use crate::frame::Rgb;
-use crate::overlay::{BLUE_TEAM, DIM, PANEL, RED_TEAM, TEXT, WRECK, YOU, draw_card, ground_rgb};
+use crate::iso25d::Iso25DPicture;
+use crate::math::Det as _;
+use crate::overhead::{biome_ground_rgb, relief, shade};
+use crate::overlay::{
+    BLUE_TEAM, DIM, PANEL, RED_TEAM, TEXT, WRECK, YOU, draw_card, fill_rect, text,
+};
 use crate::picture::{BUCKET_B_INTERVAL, Feeds, Look, Picture};
 use crate::scene::{Anchor, Item, Scene, Shape, Transform, Viewport};
 
 /// The replay document's feed (16b cut I.1's `arena_bridge::REPLAY_FEED`).
 pub const REPLAY_FEED: &str = "arena.replay";
 
-/// The viewer's cursor over the held document: `{"match", "t_ms", "focus"}`.
+/// The live staff watcher's feed (16b cut I.4's `arena_bridge::OBSERVER_FEED`).
+pub const OBSERVER_FEED: &str = "arena.observer";
+
+/// The viewer's cursor over the held document: `{"match", "t_ms", "focus", "view"}`.
 /// Client-local — the TUI writes it from its own state for each draw, and no
 /// server sends it.
 pub const REPLAY_CURSOR_FEED: &str = "replay.cursor";
+
+/// Which camera a match replay or live `@arena/watch` picture draws, cycled by `v`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReplayCamera {
+    /// Full-arena north-up overview with trails, shots, and timeline (default).
+    #[default]
+    Overview,
+    /// 2.5D tactical follow-cam centred on the focused unit.
+    Iso25d,
+    /// First-person ride-along camera from inside the focused unit's cockpit.
+    FirstPerson,
+}
+
+impl ReplayCamera {
+    /// Parse a camera mode name from `replay.cursor`'s `"view"` field.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<ReplayCamera> {
+        match name.trim() {
+            "overview" | "overhead" => Some(ReplayCamera::Overview),
+            "iso25d" | "2.5d" | "tactical" => Some(ReplayCamera::Iso25d),
+            "first_person" | "cockpit" | "fp" => Some(ReplayCamera::FirstPerson),
+            _ => None,
+        }
+    }
+
+    /// Canonical wire string for `replay.cursor`'s `"view"` field.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplayCamera::Overview => "overview",
+            ReplayCamera::Iso25d => "iso25d",
+            ReplayCamera::FirstPerson => "first_person",
+        }
+    }
+
+    /// Cycle to the next replay camera (`Overview -> Iso25d -> FirstPerson -> Overview`).
+    #[must_use]
+    pub fn next(self) -> ReplayCamera {
+        match self {
+            ReplayCamera::Overview => ReplayCamera::Iso25d,
+            ReplayCamera::Iso25d => ReplayCamera::FirstPerson,
+            ReplayCamera::FirstPerson => ReplayCamera::Overview,
+        }
+    }
+}
 
 /// How long a shot's line stays drawn after it was fired, arena ms.
 pub const SHOT_SHOWN_MS: i64 = 1_500;
@@ -60,10 +115,14 @@ const FIELD_EDGE: Rgb = [96, 104, 120];
 
 /// The replay as a [`Picture`]: drawn from the held document, the ground and
 /// the cursor, on bucket B's clock (on change; the TUI runs it faster while
-/// playing). Keeps the ground drawn at the size it was last drawn at.
+/// playing). Keeps the ground drawn at the size it was last drawn at, plus
+/// follow-cam instances for [`ReplayCamera::Iso25d`] and [`ReplayCamera::FirstPerson`].
 #[derive(Debug, Default)]
 pub struct ReplayPicture {
     ground: Option<(GroundKey, Frame)>,
+    camera: ReplayCamera,
+    iso25d: Iso25DPicture,
+    cockpit: CockpitPicture,
 }
 
 /// What a drawn ground was drawn from.
@@ -75,11 +134,45 @@ struct GroundKey {
     px: (i64, i64),
 }
 
+/// Minimal [`Feeds`] adapter for feeding synthesized `arena.cockpit` and
+/// `arena.map` payloads into [`Iso25DPicture`] and [`CockpitPicture`].
+struct FollowFeeds<'a> {
+    cockpit: Value,
+    map: Option<&'a Value>,
+}
+
+impl Feeds for FollowFeeds<'_> {
+    fn feed(&self, name: &str) -> Option<&Value> {
+        match name {
+            COCKPIT_FEED => Some(&self.cockpit),
+            ARENA_MAP_FEED => self.map,
+            _ => None,
+        }
+    }
+}
+
 impl ReplayPicture {
     /// A replay picture.
     #[must_use]
     pub fn new() -> ReplayPicture {
         ReplayPicture::default()
+    }
+
+    /// Current replay camera mode.
+    #[must_use]
+    pub fn camera(&self) -> ReplayCamera {
+        self.camera
+    }
+
+    /// Set the replay camera mode (`Overview`, `Iso25d`, or `FirstPerson`).
+    pub fn set_camera(&mut self, camera: ReplayCamera) {
+        self.camera = camera;
+    }
+
+    /// Cycle to the next replay camera mode.
+    pub fn cycle_camera(&mut self) -> ReplayCamera {
+        self.camera = self.camera.next();
+        self.camera
     }
 }
 
@@ -92,8 +185,12 @@ impl Picture for ReplayPicture {
         BUCKET_B_INTERVAL
     }
 
-    fn draw(&mut self, frame: &mut Frame, feeds: &dyn Feeds, _look: &Look) -> bool {
-        let Some(doc) = feeds.feed(REPLAY_FEED).and_then(Replay::of) else {
+    fn draw(&mut self, frame: &mut Frame, feeds: &dyn Feeds, look: &Look) -> bool {
+        let Some(doc) = feeds
+            .feed(REPLAY_FEED)
+            .and_then(Replay::of)
+            .or_else(|| feeds.feed(OBSERVER_FEED).and_then(Replay::from_observer))
+        else {
             draw_card(frame, "WAITING FOR THE REPLAY");
             return true;
         };
@@ -107,12 +204,58 @@ impl Picture for ReplayPicture {
             .and_then(Value::as_u64)
             .and_then(|f| usize::try_from(f).ok())
             .unwrap_or(0);
+        let camera = cursor
+            .and_then(|c| c.get("view"))
+            .and_then(Value::as_str)
+            .and_then(ReplayCamera::from_name)
+            .unwrap_or(self.camera);
         let ground = feeds
             .feed(ARENA_MAP_FEED)
             .filter(|m| m.get("seated").and_then(Value::as_bool) != Some(false))
             .filter(|m| m.get("match").and_then(Value::as_i64) == Some(doc.match_id));
-        let scene = replay_scene(frame, &doc, ground, t_ms, focus, &mut self.ground);
-        scene.draw(frame);
+        match camera {
+            ReplayCamera::Overview => {
+                let scene = replay_scene(frame, &doc, ground, t_ms, focus, &mut self.ground);
+                scene.draw(frame);
+            }
+            ReplayCamera::Iso25d | ReplayCamera::FirstPerson => {
+                let cell_cm = ground
+                    .and_then(|m| m.get("cell_cm"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1_000)
+                    .max(100);
+                if let Some(cockpit) = doc.cockpit_at(t_ms, focus, cell_cm) {
+                    let fallback_map;
+                    let map_val = if let Some(g) = ground {
+                        Some(g)
+                    } else {
+                        let (cw, ch) = (doc.cells.0.max(16), doc.cells.1.max(16));
+                        fallback_map = serde_json::json!({
+                            "match": doc.match_id,
+                            "width": cw,
+                            "height": ch,
+                            "cell_cm": cell_cm,
+                            "legend": { ".": "grass" },
+                            "rows": vec![format!("{cw}."); ch],
+                        });
+                        Some(&fallback_map)
+                    };
+                    let follow = FollowFeeds {
+                        cockpit,
+                        map: map_val,
+                    };
+                    if camera == ReplayCamera::Iso25d {
+                        let _ = self.iso25d.draw(frame, &follow, look);
+                    } else {
+                        let _ = self.cockpit.draw(frame, &follow, look);
+                    }
+                    draw_follow_banner(frame, &doc, t_ms, focus, camera);
+                } else {
+                    let scene = replay_scene(frame, &doc, ground, t_ms, focus, &mut self.ground);
+                    scene.draw(frame);
+                }
+            }
+        }
         true
     }
 }
@@ -222,15 +365,29 @@ impl Replay {
         let keyframes = list("keyframes")
             .iter()
             .filter_map(|kf| {
-                let t_ms = kf.get(0)?.as_i64()?;
-                let units = kf
-                    .get(1)?
-                    .as_array()?
+                let t_ms = kf
+                    .get(0)
+                    .or_else(|| kf.get("t_ms"))
+                    .and_then(Value::as_i64)?;
+                let raw_units = kf
+                    .get(1)
+                    .or_else(|| kf.get("units"))
+                    .and_then(Value::as_array)?;
+                let units = raw_units
                     .iter()
                     .map(|slot| {
-                        let row = slot.as_array()?;
-                        let n = |i: usize| row.get(i).and_then(Value::as_f64);
-                        Some((n(0)?, n(1)?, n(2)?.rem_euclid(360.0)))
+                        if let Some(row) = slot.as_array() {
+                            let n = |i: usize| row.get(i).and_then(Value::as_f64);
+                            Some((n(0)?, n(1)?, n(2)?.rem_euclid(360.0)))
+                        } else {
+                            let x = slot.get("x").and_then(Value::as_f64)?;
+                            let y = slot.get("y").and_then(Value::as_f64)?;
+                            let h = slot
+                                .get("heading_deg")
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0);
+                            Some((x, y, h.rem_euclid(360.0)))
+                        }
                     })
                     .collect();
                 Some(Keyframe { t_ms, units })
@@ -239,11 +396,19 @@ impl Replay {
         let shots = list("shots")
             .iter()
             .filter_map(|s| {
+                let t_ms = s.get(0).or_else(|| s.get("t_ms")).and_then(Value::as_i64)?;
+                let shooter = index(s.get(1).or_else(|| s.get("shooter")))?;
+                let target = index(s.get(2).or_else(|| s.get("target")))?;
+                let hit = s
+                    .get(3)
+                    .or_else(|| s.get("outcome"))
+                    .and_then(Value::as_str)?
+                    == "hit";
                 Some(Shot {
-                    t_ms: s.get(0)?.as_i64()?,
-                    shooter: index(s.get(1))?,
-                    target: index(s.get(2))?,
-                    hit: s.get(3)?.as_str()? == "hit",
+                    t_ms,
+                    shooter,
+                    target,
+                    hit,
                 })
             })
             .collect();
@@ -265,6 +430,170 @@ impl Replay {
                 .unwrap_or("")
                 .to_string(),
         })
+    }
+
+    /// Build a one-keyframe [`Replay`] from a live `@arena/watch` (`arena.observer`)
+    /// payload so live matches can be rendered across all three views.
+    #[must_use]
+    pub fn from_observer(value: &Value) -> Option<Replay> {
+        if value.get("watching").and_then(Value::as_bool) == Some(false) {
+            return None;
+        }
+        let match_id = value.get("match").and_then(Value::as_i64)?;
+        let now_ms = value.get("now_ms").and_then(Value::as_i64).unwrap_or(0);
+        let size = |key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(0)
+        };
+        let rows = value
+            .get("units")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        let mut roster = Vec::with_capacity(rows.len());
+        let mut slots = Vec::with_capacity(rows.len());
+        let mut destroyed = Vec::new();
+        for (idx, row) in rows.iter().enumerate() {
+            let callsign = row
+                .get(0)
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .chars()
+                .take(8)
+                .collect();
+            let blue = row.get(1).and_then(Value::as_str) == Some("B");
+            let x = row.get(2).and_then(Value::as_f64);
+            let y = row.get(3).and_then(Value::as_f64);
+            let heading = row
+                .get(4)
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .rem_euclid(360.0);
+            let flags = row.get(6).and_then(Value::as_str).unwrap_or("");
+            if flags.contains('w') {
+                destroyed.push((now_ms, idx));
+            }
+            roster.push(Unit { callsign, blue });
+            slots.push(x.zip(y).map(|(x, y)| (x, y, heading)));
+        }
+        Some(Replay {
+            match_id,
+            cells: (size("width"), size("height")),
+            roster,
+            keyframes: vec![Keyframe {
+                t_ms: now_ms,
+                units: slots,
+            }],
+            shots: Vec::new(),
+            destroyed,
+            end_ms: now_ms,
+            outcome: String::new(),
+        })
+    }
+
+    /// Synthesize an `arena.cockpit` frame at `t_ms` from the perspective of
+    /// roster unit `focus` (`cell_cm` is the arena cell size in centimetres).
+    #[must_use]
+    pub fn cockpit_at(&self, t_ms: i64, focus: usize, cell_cm: i64) -> Option<Value> {
+        let idx = if focus < self.roster.len() { focus } else { 0 };
+        let focus_unit = self.roster.get(idx)?;
+        let at = self.frame_at(t_ms);
+        let (fx, fy, fheading) = at.units.get(idx).copied().flatten()?;
+        let cell_m = (cell_cm.max(1) as f64) / 100.0;
+        let x_cm = ((fx + 0.5) * cell_cm as f64).round() as i64;
+        let y_cm = ((fy + 0.5) * cell_cm as f64).round() as i64;
+        let heading_mdeg = (fheading * 1_000.0).round() as i64;
+
+        // Estimate ground speed in kph from positional change over a 1s window.
+        let at_next = self.frame_at((t_ms + 1_000).min(self.end_ms.max(t_ms)));
+        let speed_kph = if let Some((nx, ny, _)) = at_next.units.get(idx).copied().flatten() {
+            let dist_m = ((nx - fx) * cell_m).det_hypot((ny - fy) * cell_m);
+            (dist_m * 3.6).round() as i64
+        } else {
+            0
+        };
+
+        // Find any recent shot fired by the focused unit so 2.5D & First-Person
+        // views render live weapon tracers and target lock boxes.
+        let recent_shot = self
+            .shots
+            .iter()
+            .rev()
+            .find(|s| s.shooter == idx && s.t_ms <= t_ms && t_ms - s.t_ms < SHOT_SHOWN_MS);
+        let lock_designator = recent_shot
+            .and_then(|s| self.roster.get(s.target))
+            .map(|u| u.callsign.clone());
+
+        let mut contacts = Vec::new();
+        for (i, u) in self.roster.iter().enumerate() {
+            if i == idx {
+                continue;
+            }
+            let Some((ux, uy, uheading)) = at.units.get(i).copied().flatten() else {
+                continue;
+            };
+            let dx_m = (ux - fx) * cell_m;
+            let dy_m = (uy - fy) * cell_m;
+            let range_m = dx_m.det_hypot(dy_m).round() as i64;
+            let bearing_deg = dx_m.det_atan2(dy_m).to_degrees().rem_euclid(360.0).round() as i64;
+            let wrecked = self.wrecked_by(i, t_ms);
+            let iff = if wrecked {
+                "wreck"
+            } else if u.blue == focus_unit.blue {
+                "friendly"
+            } else {
+                "hostile"
+            };
+            let hits_taken = self
+                .shots
+                .iter()
+                .filter(|s| s.target == i && s.hit && s.t_ms <= t_ms)
+                .count();
+            let health_pct = if wrecked {
+                0
+            } else {
+                100i64.saturating_sub((hits_taken as i64) * 25).max(15)
+            };
+            contacts.push(serde_json::json!({
+                "designator": u.callsign,
+                "iff": iff,
+                "quality": "identified",
+                "unit_type": "tacsim.unit.line_tank",
+                "bearing_deg": bearing_deg,
+                "range_m": range_m.max(1),
+                "heading_deg": uheading.round() as i64,
+                "health_pct": health_pct,
+            }));
+        }
+
+        let weapon_state = if recent_shot.is_some() {
+            "cycling"
+        } else {
+            "ready"
+        };
+        Some(serde_json::json!({
+            "seated": true,
+            "match": self.match_id,
+            "t_ms": t_ms,
+            "callsign": focus_unit.callsign,
+            "team": if focus_unit.blue { "blue" } else { "red" },
+            "unit_type": "tacsim.unit.line_tank",
+            "x_cm": x_cm,
+            "y_cm": y_cm,
+            "heading_deg": fheading.round() as i64,
+            "heading_mdeg": heading_mdeg,
+            "speed_kph": speed_kph,
+            "max_speed_kph": 60,
+            "sight_m": 600.0,
+            "lock_designator": lock_designator,
+            "weapons_free": true,
+            "weapons": [
+                { "name": "cannon", "state": weapon_state, "ammo": 40, "max_ammo": 40 }
+            ],
+            "contacts": contacts,
+        }))
     }
 
     /// Whether roster unit `unit` was a wreck by arena millisecond `t_ms`.
@@ -443,12 +772,19 @@ fn replay_scene(
             px: (fw, fh),
         };
         if cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            let biome = map.biome();
+            let terrain = terrain_from_feed(ground);
             let mut image = Frame::new(fw.max(0) as usize, fh.max(0) as usize);
             for py in 0..fh.max(0) {
                 let cy = ch as i64 - 1 - (py as f64 / px_per_cell) as i64;
                 for px in 0..fw.max(0) {
                     let cx = (px as f64 / px_per_cell) as i64;
-                    image.put(px as usize, py as usize, ground_rgb(map.get(cx, cy)));
+                    let base = biome_ground_rgb(biome, map.get(cx, cy));
+                    let rgb = match terrain.as_ref() {
+                        Some(t) => shade(base, relief(t, cx, cy)),
+                        None => base,
+                    };
+                    image.put(px as usize, py as usize, rgb);
                 }
             }
             *cache = Some((key, image));
@@ -713,11 +1049,62 @@ fn replay_scene(
     scene
 }
 
+/// Overlay a compact replay timeline and focus indicator along the bottom edge
+/// of a 2.5D or First-Person follow-cam frame.
+fn draw_follow_banner(
+    frame: &mut Frame,
+    doc: &Replay,
+    t_ms: i64,
+    focus: usize,
+    camera: ReplayCamera,
+) {
+    let (w, h) = (frame.width() as i64, frame.height() as i64);
+    let s: i64 = if w.min(h) >= 360 { 2 } else { 1 };
+    let bar_h = 16 * s;
+    let y0 = (h - bar_h).max(0);
+    fill_rect(frame, 0, y0, w, bar_h, PANEL);
+    let mode_label = match camera {
+        ReplayCamera::Iso25d => "2.5D FOLLOW",
+        ReplayCamera::FirstPerson => "1ST-PERSON",
+        ReplayCamera::Overview => "OVERVIEW",
+    };
+    let focus_call = doc
+        .roster
+        .get(focus)
+        .map_or("?", |u| u.callsign.as_str())
+        .to_ascii_uppercase();
+    let label = format!(
+        "REPLAY {} [{}] FOCUS {}  {} / {}",
+        doc.match_id,
+        mode_label,
+        focus_call,
+        clock(t_ms),
+        clock(doc.end_ms)
+    );
+    text(frame, 4 * s, y0 + 2 * s, &label, TEXT, s as usize);
+    let ty = y0 + 11 * s;
+    let (tx0, tx1) = (4 * s, (w - 4 * s).max(4 * s + 1));
+    let span = doc
+        .end_ms
+        .max(doc.keyframes.last().map_or(0, |k| k.t_ms))
+        .max(1);
+    let x_of = |t: i64| tx0 + (tx1 - tx0) * t.clamp(0, span) / span;
+    fill_rect(frame, tx0, ty, tx1 - tx0, 2 * s, TRACK);
+    fill_rect(frame, tx0, ty, x_of(t_ms) - tx0, 2 * s, PLAYED);
+    for shot in &doc.shots {
+        let blue = doc.roster.get(shot.shooter).is_some_and(|u| u.blue);
+        let c = if blue { BLUE_TEAM } else { RED_TEAM };
+        fill_rect(frame, x_of(shot.t_ms), ty - 2 * s, s, 2 * s, c);
+    }
+    fill_rect(frame, x_of(t_ms) - s / 2, ty - 3 * s, s.max(1), 6 * s, YOU);
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::overlay::ground_rgb;
 
     fn fixture(name: &str) -> Value {
         let text = match name {
@@ -862,5 +1249,58 @@ mod tests {
         let mut small = Frame::new(320, 220);
         picture.draw(&mut small, &f, &Look::default());
         assert_ne!(picture.ground.as_ref().map(|(k, _)| k.clone()), Some(key));
+    }
+
+    #[test]
+    fn replay_three_views_and_live_observer_render() {
+        let mut f = feeds(Some(6_100), true);
+        let overview = draw(&f, 640, 400);
+
+        f.insert(
+            REPLAY_CURSOR_FEED.into(),
+            serde_json::json!({"match": 7, "t_ms": 6_100, "focus": 0, "view": "iso25d"}),
+        );
+        let iso = draw(&f, 640, 400);
+        assert_ne!(
+            overview.hash(),
+            iso.hash(),
+            "2.5D follow-cam differs from overview"
+        );
+
+        f.insert(
+            REPLAY_CURSOR_FEED.into(),
+            serde_json::json!({"match": 7, "t_ms": 6_100, "focus": 0, "view": "first_person"}),
+        );
+        let fp = draw(&f, 640, 400);
+        assert_ne!(
+            overview.hash(),
+            fp.hash(),
+            "1st-person ride-along differs from overview"
+        );
+        assert_ne!(iso.hash(), fp.hash(), "1st-person differs from 2.5D");
+
+        // Live observer feed renders across all three views.
+        let mut live_feeds: HashMap<String, Value> = HashMap::new();
+        live_feeds.insert(
+            OBSERVER_FEED.into(),
+            serde_json::json!({
+                "watching": true,
+                "match": 7,
+                "now_ms": 90_000,
+                "width": 96,
+                "height": 64,
+                "units": [
+                    ["RA", "R", 6, 4, 90, 301, "pm"],
+                    ["BA", "B", 20, 14, 270, 302, "ph"],
+                ],
+            }),
+        );
+        live_feeds.insert(ARENA_MAP_FEED.into(), fixture("map"));
+        live_feeds.insert(
+            REPLAY_CURSOR_FEED.into(),
+            serde_json::json!({"match": 7, "t_ms": 90_000, "focus": 0, "view": "iso25d"}),
+        );
+        let live_frame = draw(&live_feeds, 320, 220);
+        assert!(live_frame.count_colours(256) > 8);
     }
 }
