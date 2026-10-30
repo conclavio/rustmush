@@ -258,6 +258,8 @@ pub struct ArenaTerrain {
     /// (16b cut AE.1), at least `1`, in [`CostRow::index`] order — computed
     /// once at construction, because the grid never changes after it.
     min_cost: [u32; 3],
+    /// The ground biome from the region record (doc 30 §6, `D-30-5`; default `"temperate"`).
+    biome: SmolStr,
 }
 
 impl ArenaTerrain {
@@ -292,6 +294,7 @@ impl ArenaTerrain {
                     // cell's own number (see the field).
                     row_costs: None,
                     min_cost: [1; 3],
+                    biome: SmolStr::new_static("temperate"),
                 };
                 terrain.min_cost = terrain.cheapest();
                 Ok(terrain)
@@ -547,6 +550,19 @@ impl ArenaTerrain {
     #[must_use]
     pub const fn cell_cm(&self) -> u16 {
         self.cell_cm
+    }
+
+    /// The ground biome from the region record (doc 30 §6, `D-30-5`).
+    #[must_use]
+    pub fn biome(&self) -> &str {
+        &self.biome
+    }
+
+    /// Set the ground biome on this terrain (doc 30 §6, `D-30-5`).
+    #[must_use]
+    pub fn with_biome(mut self, biome: impl Into<SmolStr>) -> Self {
+        self.biome = biome.into();
+        self
     }
 
     /// Every cell, row-major — the read [`ArenaDefinition::digest`] and cut A.2's

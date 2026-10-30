@@ -21,6 +21,12 @@ of the port where it is cradled:
   +ship/leave   in the Airlock, while the ship is docked: cycle out into the
                 berth gallery
 
+A prospector refit also has a vehicle bay. From the cargo hold, use
+`+tv/bay in` to enter it and `+tv/bay out` to return to the hold. Rig boarding
+and leaving use `+tv/<n> board` and `+tv/<n> leave` inside that bay.
+Sailing and supplies count people currently inside the carrier, including
+operators in its rigs. A plan read ashore includes the captain as well.
+
 Every room aboard shows the ship's status line when you look: docked and where,
 cleared for a port, or under way with the leg and the time it is due. The rooms
 with instruments show their readings as well.

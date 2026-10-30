@@ -444,6 +444,7 @@ fn create_entry(
                 ground: Vec::new(),
                 ground_resolution_cm: def.ground_resolution_cm,
                 theme,
+                biome: def.biome,
                 revision: revision_after(previous),
             };
             rec.validate().map_err(|e| format!("{id}: {e}"))?;

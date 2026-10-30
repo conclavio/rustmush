@@ -891,6 +891,7 @@ pub fn map_frame(
         },
         "match": match_id.0,
         "surface": surface,
+        "biome": terrain.biome(),
         "cell_cm": terrain.cell_cm(),
         "width": terrain.width(),
         "height": terrain.height(),

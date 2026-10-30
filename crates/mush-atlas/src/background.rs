@@ -109,6 +109,7 @@ mod tests {
             ground: Vec::new(),
             ground_resolution_cm: 1000,
             theme: None,
+            biome: None,
             revision: 1,
         }
     }

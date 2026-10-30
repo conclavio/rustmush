@@ -1,0 +1,738 @@
+# 32. The IC combat field — requirements survey
+
+Draft 0.2, 2026-10-30, docs only. Surveyed against `origin/main` at `2b2930c9`. Draft 0.1, the
+same day, was the survey; Draft 0.2 records the owner's rulings of 2026-10-30 on every question,
+the consequences of the amended ones (§4a), the follow-ups they opened (§5a) and the proposed
+cuts (§6).
+
+## 1. Why this document exists
+
+The owner pinned the Codex field-combat plan (doc 27b, [PR #195](https://github.com/conclavio/rustmush/pull/195),
+not yet on main) on 2026-10-30 before it started. The plan reuses the arena engine as the host for IC combat,
+and the arena is the OOC simulator: two teams, a lobby, elimination, stock units, practice
+reset. An IC field is none of those things. It is a piece of ground that several independent
+parties share: a mining roster and its escort, a raider, a bystander working the next block,
+and whatever the last fight left lying there. The owner's direction:
+
+> Build the IC combat field requirements and engine first, cleanly, without bleedover from the
+> arena; when it is done, update the plan to use it.
+
+This document is the survey that comes before that engine. It does three things: records what
+earlier documents already decided so nobody re-asks it (§2); records what the tree has today in
+the words that matter for the design (§3); and asks the owner the questions that are open, each
+with a proposed default and an alternative, in the form doc 27 §7 used (§4). Draft 0.1 planned no cuts; with the rulings in, §6 proposes them.
+
+**The one boundary to state up front.** "Without bleedover from the arena" is read here as a
+clean *host and relation model*, not a second simulation. The ground, motion, sensors and
+contacts, weapons, damage, heat, the deterministic step, the tape and snapshot, the cockpit
+frame, the mind host and doctrine are the kernel 16b built and tested; the field runs on them.
+What must not leak is the match wrapper: `Team { Red, Blue }`, the lobby, the entry zones, the
+elimination end, stock units and the simulator centre, the practice reset, the `SIM` verbs.
+Q-CF-1 asks the owner to confirm that reading, because every later answer depends on it.
+
+## 2. Already decided; not asked again
+
+| Decision | Where | What it fixes for the field |
+|---|---|---|
+| Detachment is a command group, not a team; relations and known hostility decide targeting; neutral crews and a third force can exist; reinforcement by physical entry; withdrawal through reachable exits; cross-boundary fire must be specified | doc 27 Q-H3 | The field is multi-party. This survey asks *how*, never *whether* |
+| A hostile act promotes the affected field; arriving with a different faction does not force a lobby or match; core-crime and safe-storage rules stay | doc 27 Q-H2 | Promotion is triggered, not ambient (Q-CF-14 asks what the trigger is) |
+| Demote only when impacts, hostile interactions and boundary handoffs are settled; individual withdrawal need not wait; disabled units remain obstacles and future salvage; an empty unattended field may sleep cheaply | doc 27 Q-H4 | The demotion rule's shape; salvage persists |
+| Engaged motion runs on wall time; unengaged field motion and towing stay on the IC tick; the handoff for a unit mid-drive is the host's to define; mining on engaged units pauses | doc 27 Q-H1, Q-R3; doc 20 D-20-1 | The clock discontinuity is accepted; Q-CF-31 asks only the handoff |
+| Link loss: no sealed mind means hold the last safe posture, no fire, no motion, after `[tacsim.match].reclaim_min_ms`'s shape | doc 27 Q-H5, P-2 | Not re-asked |
+| Post-battle information is observer-bounded; no objective arena tape to players | doc 27 Q-H6 | Salvage knowledge and digests follow it (Q-CF-28) |
+| A disabled unit can be attacked again; recoverable states keep the hull epoch open; only irrecoverable closes it destroyed | doc 27 Q-H8, Q-H9; 27a H1-A | Casualties are live targets; epochs are the unit's, not the field's |
+| The carrier may leave units behind after an explicit confirmation that recalls nothing and closes nothing | doc 27 Q-H10 | Not re-asked |
+| No player permadeath; crew status modelled separately; bounded NPC extraction to a known safe port | doc 27 Q-H12, FO-12, Q-F4, P-5 | Q-CF-38/39 ask only the minimal model |
+| Outage: silent re-anchor under the threshold, else a five-minute frozen countdown; no catch-up | doc 27 FO-11, Q-H11, Q-R4; built as PR #137 | The field resumes after unfreeze (Q-CF-33) |
+| The arena is an authority that shares no state and no lock with the world; four messages each way | doc 16 D-16-1 | The field keeps the seam; one task per site |
+| The arena window and the site are one grid of 10 m cells, 256 a side **today** (`ARENA_CELLS`, `SITE_CELLS`, `MAX_TILE_SIDE`, unchanged since 16b T.3 and SM.1); doc 30 Q-30-6 ruled the biggest authored map 512 a side with WG.6 (the frame window, unbuilt) to play it; the 10 km path is doc 16 D-16-5's recorded addition, not yet scheduled. Docs 16 and 20 do not yet carry the doc 30 amendment | doc 16 D-16-5, §11; doc 20 §3.1; doc 30 D-30-7, Q-30-6, WG.6 | One field per site (Q-CF-13); the field never names a side (Q-CF-51) |
+| A match is a simulator concept, not an IC one; an IC epoch never shares the match id packing | doc 23 D-23-10 | The field is not a match and must not borrow its identifiers |
+| Sprites, not models; bodies in team colour with friend or foe left to the markers; three team palette slots | doc 22 D-22-9, D-22-10 | Q-CF-12 asks how colour follows relation |
+| The weapons-free gate defaults FREE in the simulator | doc 21 Q-21-9 (G.12) | Q-CF-41 asks the IC default |
+| Scale target: 100+ units, 12 v 12 mostly AI, scale-tested early; a sim task per region; two-layer AI | owner direction 2026-09 (combat scale targets) | Q-CF-45 sets the first budget under it |
+| Economy and content numbers are provisional; take defaults, tune later, flag the expensive-to-reverse ones | owner rule 2026-10-24 | Every number below is provisional unless marked |
+
+## 3. What the tree has (checked at `2b2930c9`)
+
+- **The kernel** (`crates/tacsim/src/arena/`): ground from the atlas window, motion, perception
+  with per-viewer contact scopes (`ContactId` re-keyed per hull), weapons, section and
+  component damage, heat, a deterministic step with a chunked ack-gated ledger (E0), a periodic
+  snapshot and boot resume that rewinds to the last snapshot (16b AF.3), the stock mind and the
+  Rhai mind host (17b M7), the DT.1b order adapter (`arena/detachment.rs`) that applies roster
+  orders with contact re-keying. All of it is reusable as is.
+- **The match wrapper, two-sided by type**: `arena/state.rs:636 enum Team { Red, Blue }`; the
+  callsign letter is a `const fn` over it and its own comment says a third side is a compile
+  error; `Classification::Classified { team }`; `EntryZone.team`;
+  `EndReason::Elimination { winner: Option<Team> }`; hostile means `team != viewer.team` in
+  perception, conditions, the stock mind, motor, frames, view, profile rules and
+  `state::hostile_in_weapons_range`; friendly-fire checks in `damage.rs`; the DT.1b adapter
+  fences by team; the mind API and mind card expose `team`. About 940 occurrences in 36 files.
+- **The custody seam** (16b T.3): `@arena/start` checks real `unit:<obj>` records out through
+  `mush_tactics::custody::check_out` (a `deployed` marker, placement frozen), `match_::custody_in`
+  diffs what the arena changed back on check-in, a void restores the check-out snapshot. The
+  IC field keeps the seam and changes the void rule.
+- **The campaign surface** (`crates/tacsim/src/surface/`, doc 20): the site's geology and
+  ground, the IC-clock drive at five IC seconds a cell, mining, the rig record and excursion,
+  `+tv` and the DT.3 launch/recover flights onto it. It has no sensors, contacts or weapons.
+- **The DT line, complete through DT.3 and DT.5** (PRs #149–#185): hire, board, plan,
+  activate, preflight, seat, launch, field orders over real transport
+  (`sortie/field_orders.rs FieldObjective`: Hold, Advance, Engage, Withdraw, Screen, Support,
+  Mine), the NPC mining executor on the surface tick, IC detachment chat. The field-ops helper
+  library (`tacsim/src/field_ops.rs`, `mush_tactics::field_ops::*`) has one live caller,
+  `assess_tacsim_unit`; everything else in it is uncalled.
+- **W-clock** is built (PR #137). The arena task and the match resume do not consult it.
+- **No armed IC hull, no combat contract**: the only leasable rig is the unarmed prospector;
+  the armed designs are arena stock; both shipped crew offers carry mining and recovery duties.
+- **Doc 22's looks** carry three team palette slots and the unit type; doc 31's model
+  catalogue keys bakes by model.
+- **The ground's side is a constant in three places**: `match_/arena_def.rs ARENA_CELLS = 256`
+  (unchanged since 16b T.3), `surface/ground.rs SITE_CELLS = 256` (since SM.1) and
+  `mush-atlas/src/cells.rs MAX_TILE_SIDE = 256`; the surface address scheme
+  (`CELLS_PER_BLOCK` 64) and the site ground cache are sized from it. The WG.1 ground writer
+  already accepts drafts to 512 a side (`MAX_ARENA_TILES` 16 quadrants of 128), and doc 30's
+  D-30-7 puts the `window` on the frame, not in the sim. Nothing in the tree plays a 512 map yet.
+
+## 4. Owner survey
+
+**Ruled 2026-10-30.** The owner amended Q-CF-7, Q-CF-14, Q-CF-17 and Q-CF-19; refined Q-CF-2,
+Q-CF-4, Q-CF-5, Q-CF-8, Q-CF-11 and Q-CF-12; confirmed Q-CF-1, Q-CF-3 and Q-CF-6 in their own
+words; and accepted every other default as written, through Q-CF-51. Each question keeps its
+proposed text under the decision for rationale and history. Numbers stay provisional (§2, last
+row); Q-CF-19 was the one default marked expensive to reverse, and the owner reversed it knowingly.
+
+### A. The boundary with the simulator
+
+**Q-CF-1 — One kernel or two?**
+- **Decision (owner ruling, 2026-10-30):** one kernel shared between IC and OOC, with the OOC
+  concepts (red team, blue team, matches) extracted from it and layered separately on top. The
+  default below, in the owner's words.
+- **Proposed default (as written):** one kernel. The field and the OOC range share `tacsim::arena`'s state,
+  step, perception, weapons, damage, motion, heat, tape, snapshot, cockpit frame and mind host.
+  The OOC range becomes a field with two parties that happen to be named red and blue. The match
+  wrapper (lobby, elimination, stock units and the simulator centre, practice reset, the `SIM`
+  verbs) stays OOC-only and the IC host never references it.
+- **Alternative:** fork the kernel into a field engine and leave the arena untouched.
+- **Why:** 16b's test estate, the deterministic replay gates, the TUI/web/pixel cockpits, the
+  bot's pilot and the mind API all target the kernel. A fork doubles every future weapon, sensor
+  and damage change and guarantees the two drift. The cost of one kernel is a single
+  generalization pass (Q-CF-3) and one rebless of the practice hashes.
+
+**Q-CF-2 — Names and module.**
+- **Decision (owner ruling):** *field*, not *engagement*, because the engagement is optional: a
+  field can exist with no engagement in it. *Party*, not *side*, because side reads as a hit
+  location. The vocabulary this fixes for the rest of the document: a **site** is the ground and
+  its persistent record (Q-CF-24); a **field** is the site while it is promoted, the wall-time
+  host with every party on the ground admitted; an **engagement** is a Hostile pair actually
+  fighting inside a field, and a field may hold none (a leader marks a party Hostile and nobody
+  fires; the field demotes under Q-CF-20). A field is identified by its site and an ordinal
+  (`FieldId { site, ordinal }`); *match* stays the OOC word and identifier (D-23-10).
+- **Proposed default (as written):** *field* for a site's engagement (`tacsim::field`); *party*
+  for an independent side in it; *relation* for one party's view of another.
+- **Alternative:** *engagement* and *side*.
+- **Why:** doc 27 already says field and party-like things; D-23-10 already separated match from
+  IC; *side* collides with the kernel's left/right `Side`.
+
+**Q-CF-3 — Which parts of the wrapper are kernel-shaped and get generalized rather than excluded?**
+- **Decision (owner ruling):** agreed. Red and blue are two parties; the simulator happens to
+  run with only two, on a field layer that supports any number.
+- **Proposed default (as written):** generalize in place, in one cut, with one mind-API, snapshot-format and
+  replay-hash bump: `Team` becomes a party id (`PartyId`, small integer, allocated per field);
+  `Classification::Classified` carries the party; every `team != mine` becomes a relation test
+  (Q-CF-5); `EntryZone` becomes a per-party entry (Q-CF-17); `Elimination` becomes an end
+  condition the host supplies (the OOC host keeps elimination, the IC host uses Q-CF-20); the
+  callsign letter comes from the party (Q-CF-11); the cockpit frame's team field becomes the
+  viewer's relation to the unit; the mind API exposes relation, not party. OOC practice hashes
+  are reblessed exactly once, at that cut.
+- **Alternative:** keep `Team` in the kernel and have the IC host map parties onto two teams.
+- **Why:** the alternative cannot express three parties, which Q-H3 requires. Doing the pass
+  once, before any IC host code exists, is the owner's stated reason for pinning the plan.
+
+### B. Parties and relations
+
+**Q-CF-4 — What is a party?**
+- **Decision (owner ruling):** a party is a detachment. Several parties may share an
+  organization; that shapes their relation (Q-CF-5) and does not merge them. One reading is
+  recorded for the owner to object to (F-5): a rig launched with no roster at all is admitted as
+  a one-unit party, the degenerate detachment, so the designator and relation machinery has one
+  shape. The carrier belongs to the party of the roster it launched (Q-CF-19 makes it a unit).
+- **Proposed default (as written):** an accepted detachment roster (one activation) is a party;
+  a unit on the site with no roster is a party of one; the carrier's organizer or crew is not a
+  party by itself.
+- **Alternative:** the organization or faction is the party.
+- **Why:** rosters already carry identities, leadership, orders and the IC chat channel.
+  Organization membership is an input to relations (Q-CF-5), not the identity of a side.
+
+**Q-CF-5 — How is one party's relation to another derived?**
+- **Decision (owner ruling):** the default stands, with follow-up F-1: relations between
+  organizations, so that organizations can declare on each other and establish alliances, as a
+  further input to the same function. Q-CF-7's marks sit above everything derived.
+- **Proposed default (as written):** a per-viewer relation with four values: *Friend*, *Hostile*,
+  *Neutral*, *Unknown*. Friend: the same roster, or two rosters under the same organizer, or
+  rosters whose organizers share an organization, or an explicit alliance declared for the
+  operation. Hostile: a declaration (Q-CF-7) by or against them, or they fired on me or on a
+  Friend of mine in this field and I or a Friend observed it. Neutral: a classified party that is
+  neither. Unknown: not yet classified. No `mush-faction` reputation lookup in the first version.
+- **Alternative:** faction reputation sets the default relation; declarations and fire override.
+- **Why:** everything in the default is derivable from facts the field already holds. Reputation
+  is a later input to the same function, not a different function.
+
+**Q-CF-6 — Is hostility a fact or a belief?**
+- **Decision (owner ruling):** a belief.
+- **Proposed default (as written):** a belief, held per party. A's declaration against B makes B Hostile in
+  A's book. B learns of it when the declaration is open (Q-CF-7) or when A's fire on B or on B's
+  Friends is observed. Two parties can hold different relations toward each other for a while.
+- **Alternative:** one symmetric, global relation per pair.
+- **Why:** ambush, hidden theft and mistaken identity are the interesting cases, and doc 27's
+  Q-H6 and Q-S4 already treat battlefield knowledge as per-observer. This is the Epistemic Engine
+  applied to one fact.
+
+**Q-CF-7 — How does a party become hostile without firing first?**
+- **Decision (owner ruling; supersedes the default):** a detachment leader can explicitly mark
+  another party Friendly or Hostile. The mark is private: the other party is not told of the
+  transition. A Friendly mark is also how a leader cancels an automatic hostility that friendly
+  fire produced. Marks sit at the top of the party's own book: explicit mark, then fire-derived
+  hostility, then roster and organization, then Neutral or Unknown. The promotion a Hostile mark
+  causes (Q-CF-14) is a physical fact everyone on the site observes; who marked whom is not.
+- **Proposed default (superseded):** an explicit declaration verb by any armed unit, open to the
+  target party at once.
+- **Alternative:** declarations are private and only the first shot reveals intent.
+- **Why:** a declaration exists to admit combat deliberately (Q-H2) and to warn. Hiding it buys
+  nothing an ambush does not already provide, and it would make promotion invisible to its victim.
+
+**Q-CF-8 — Does hostility outlive the field?**
+- **Decision (owner ruling):** for now hostility is a temporal function of the field and ends
+  with it, roster and organization relations aside. Follow-up F-2: hostility should be able to
+  affect faction relations later.
+- **Proposed default (as written):** no, in the first version. Relations reset at demotion except Friend by
+  roster or organization. A durable per-character and per-organization "known hostiles" memory is
+  a later Epistemic Engine cut on top of the same relation function.
+- **Alternative:** persist hostile relations per party pair indefinitely.
+- **Why:** scope. The persistent half needs the NPC knowledge model and the canon ledger, which
+  have their own owners.
+
+**Q-CF-9 — Friendly fire, and a neutral under fire.**
+- **Decision (accepted default):** physically always possible; the kernel never refuses a shot by relation.
+  Doctrine and NPC pilots never target Friend, Neutral or Unknown unless a delivered order names
+  a specific contact, and refuse that order for a Friend with an honest NEGATIVE. A Neutral that
+  is fired on becomes Hostile to the shooter's party in its own book; the shooter's Friends do not
+  automatically become Hostile to it.
+- **Alternative:** fire on a neutral makes the shooter's whole alliance hostile to it.
+- **Why:** per-pair relations are what make a bystander a bystander. Escalation by alliance is a
+  later political rule, not an engine rule.
+
+**Q-CF-10 — How does a viewer learn a contact's party?**
+- **Decision (accepted default):** as perception works today: a contact starts Unknown and is classified by
+  the sensor rules over time; the classification carries the party id; a classified contact's
+  relation is then the viewer's (Q-CF-5). No transponders or IFF squawk in the first version.
+- **Alternative:** an IFF transponder that friends read instantly and hostiles can spoof.
+- **Why:** the perception model is built and tested, and the lore line already says ECM is what
+  kills long-range certainty. IFF is a later unit-kit component, not a field rule.
+
+**Q-CF-11 — Callsigns and designators under parties.**
+- **Decision (owner ruling):** two letters, unique across the field: the party first, the unit
+  second. Today the second letter is the slot in bijective base-26 (`arena/state.rs:2481`), which
+  would make every leader `?A` and leak the slot; so the unit letter is drawn at random per unit
+  per field from A–Z less the confusable I and O and the provisional X, and is stable for the
+  field. The party letter comes from the same alphabet in admission order. A viewer learns
+  nothing about slots from a designator.
+- **Proposed default (as written):** one letter per party from a fixed alphabet in admission
+  order; the second letter as today; the Designator test extended to N letters.
+- **Alternative:** relation-relative designators (own units always `A…`, hostiles `H…`).
+- **Why:** two viewers must be able to talk about `CB` and mean the same hull; a relative scheme
+  breaks the moment they are in different parties.
+
+**Q-CF-12 — Colour and markers on the clients.**
+- **Decision (owner ruling):** colour by relation, not by party; and draw the party letter beside
+  the health bar so parties stay visually distinct inside one relation colour.
+- **Proposed default (as written):** body colour by the viewer's relation to the unit: own, Friend, Hostile,
+  Neutral/Unknown. Doc 22's three team palette slots become four relation slots (own may share
+  Friend's palette). The pixel, TUI and web cockpits take the relation from the frame (Q-CF-3).
+- **Alternative:** one palette per party.
+- **Why:** D-22-10 already said friend or foe is a marker, not a body fact, and a per-party
+  palette needs N palettes nobody can tell apart at 96 px.
+
+### C. The field: extent, admission, lifecycle
+
+**Q-CF-13 — The extent of a field.**
+- **Decision (accepted default):** one field per site, the whole site window on the site's own ground,
+  whatever the window's side is (Q-CF-51). A field never spans sites and a site never holds two
+  fields.
+- **Alternative:** a smaller engagement window inside the site around the participants.
+- **Why:** the ground, the geology, the rig records and the claims are all per site; a sub-window
+  would need its own edge rules (Q-CF-22) for nothing.
+
+**Q-CF-14 — What promotes a site?**
+- **Decision (owner ruling):** two doors. A detachment leader marking another party Hostile
+  (Q-CF-7), or a unit firing at another party. Co-presence, launch, arrival and mining never
+  promote. Consequence (§4a): a fire order given on the unpromoted surface is aimed at a
+  presence-picture contact (Q-CF-15); it promotes the site, and the shot resolves in the field's
+  first pulse under the normal lock rules, so it may well miss or never leave the barrel.
+- **Proposed default (as written):** a declaration by a unit on the site as the one door, since
+  weapons and contacts exist only in the field.
+- **Alternative:** two non-Friend parties on one site promote it automatically (always-on fields).
+- **Why:** Q-H2 ruled that arriving with a different faction does not start a match, and an
+  always-on field costs an arena task for every shared site, most of which are peaceful.
+
+**Q-CF-15 — What does a unit on the surface know about other flights on its site before promotion?**
+- **Decision (accepted default):** a coarse presence picture published by the surface tick: for each other
+  flight on the site, a bearing and a range band at cell resolution and, once within a short
+  visual range, its hull class. No identity, no party, no damage. It is what a declaration can
+  name. It is not a sensor contact and carries no `ContactId`.
+- **Alternative:** nothing until promotion; declarations name a party blind.
+- **Why:** a raider has to see the miners to decide to raid them, and the miners' escort has to
+  see something coming. Without this the field can only start by surprise. This is the one new
+  surface-side mechanism in the survey and the owner should rule it knowingly.
+
+**Q-CF-16 — Who is admitted at promotion?**
+- **Decision (accepted default):** every flight physically on the site, at its exact surface pose, rigs
+  mid-drive and mid-mining included, whatever its party or relation. The carriers on the pads are
+  present per Q-CF-19. Nobody on the ground is outside the field.
+- **Alternative:** only the declaring and the declared parties; others stay on the campaign
+  surface and cannot be targeted.
+- **Why:** a bystander that cannot be shot is not in the world. Q-H3 asked for neutrals that
+  exist.
+
+**Q-CF-17 — Entry during a field (reinforcement).**
+- **Decision (owner ruling; supersedes the default):** refuse launches while the site is
+  promoted. The field runs at human speed and the world outside it at 24×, so a fight is over
+  before anyone outside could reasonably reinforce. A reinforcement system is reserved for later
+  (F-4). Consequences (§4a): entry zones leave the field layer entirely; promotion is the only
+  entry; recovery at the ramp (Q-CF-18) still works; a carrier arriving by voyage mid-field is
+  F-6.
+- **Proposed default (superseded):** launches from any carrier on the site enter at its ramp
+  pose; a carrier arriving mid-field settles and may launch.
+- **Alternative:** refuse launches while the site is promoted.
+- **Why:** reinforcement is in Q-H3, and refusing launches would let a raider lock a carrier's
+  bay by declaring.
+
+**Q-CF-18 — Leaving a field.**
+- **Decision (accepted default):** recover at the own carrier's ramp (`+sortie/recover` as it stands),
+  individually and at any time if mobile and the ramp is reachable. No edge exit in the first
+  version. A unit left behind stays per Q-H10.
+- **Alternative:** site-edge withdrawal that removes the unit to the campaign surface.
+- **Why:** there is nowhere beyond the edge to go until cross-site surface travel exists.
+
+**Q-CF-19 — The carrier on its pad.**
+- **Decision (owner ruling; supersedes the default):** the carrier is attackable on the ground,
+  because the carrier is the ship, the ship leaves the map to fly in space and can be attacked
+  there, and what can be attacked in space can be attacked on a planet. It is admitted as a unit
+  at its pad pose with its real sections (the Dray, Dray-P and Halcyon already have unit specs
+  with sections and facet bands under `crates/tacsim/content/units/`). Its damage persists like
+  any unit's. What a hit does to lift, sailing, the bay and the hold, the loss story, and parity
+  with space combat are F-3. The owner took this knowing it was the survey's one
+  expensive-to-reverse default.
+- **Proposed default (superseded):** a static, non-targetable structure with its real footprint,
+  its party's entry and exit; no damage or boarding in the first version.
+- **Alternative:** the carrier is a unit with sections, targetable from the start.
+- **Why:** carrier damage, boarding and loss are a design of their own (doc 20 D-20-7's lift and
+  doc 23's ship passages touch it) and should not ride in on the first field.
+
+**Q-CF-20 — The demotion rule.**
+- **Decision (accepted default):** a field demotes when, for `[tacsim.field].disengage_s` (provisionally
+  120), no Hostile pair has fired or held a lock, no projectile is in flight and no entry or exit
+  is mid-handoff (Q-H4). Demotion writes every unit's pose and condition back to the surface and
+  the site record (Q-CF-24), leaves disabled units at their poses, and ends the task. It never
+  ends on a "winner". A field whose only remaining units are Friends of each other demotes after
+  the same interval.
+- **Alternative:** stay tactical while any two non-Friend parties remain on the site.
+- **Why:** Q-H4's letter; and an escort standing guard over miners for an hour is not a fight.
+
+**Q-CF-21 — Capacity and refusal.**
+- **Decision (accepted default):** one cap, `[tacsim.field].max_units` (provisionally 24), enforced at the
+  surface: the site's existing per-site flight cap (32 in the excursion rules) is lowered to the
+  field cap, so a promotion can always admit everyone on the ground. A launch that would exceed it
+  is refused at the ramp with the reason, during a field or not. No partial admission ever.
+- **Alternative:** admit in party order until full; the rest stay on the surface untargetable.
+- **Why:** Q-CF-16. A unit that is on the ground and not in the field is the one state the
+  design forbids, and refusing at the ramp is the only place with a player to tell.
+
+**Q-CF-22 — Edges: fire and pursuit at the site boundary.**
+- **Decision (accepted default):** the site boundary is impassable ground inside the field, exactly as it
+  is on the campaign surface. A shot that leaves the window is lost; nothing is beyond it to hit
+  or to flee to; no immunity question arises.
+- **Alternative:** open edges with units leaving to an adjacent site.
+- **Why:** sites are islands; the day they are not, this answer changes with the surface's, not
+  on its own.
+
+**Q-CF-23 — Tempo when nobody is watching.**
+- **Decision (accepted default):** the kernel's adaptive tempo; with no player connected to any unit in
+  the field, the coarse floor; a field eligible to demote does so (Q-CF-20) rather than idling.
+  An all-NPC field (raider against hired escorts after the players disconnect) runs to its own
+  demotion.
+- **Alternative:** pause a field with no players.
+- **Why:** pausing would make disconnecting a shield. Q-H5 already says the hull stays at risk.
+
+### D. Persistent ground state: salvage, remains, cargo
+
+**Q-CF-24 — The site record.**
+- **Decision (accepted default):** one durable record per site on the authoritative lane
+  (`tacsim.field.<site>`): the field ordinal, the units left on the ground with their poses and
+  the epoch they were in when left, the non-unit objects (Q-CF-25) with poses and manifests, and
+  the last demotion's IC instant. Every promotion loads it into the kernel; every demotion writes
+  it. It survives restart, the carriers' departure and any number of later fields. The unit
+  records themselves stay where they are (`unit:<obj>` under tactics custody); the site record
+  indexes them and owns only the non-unit objects.
+- **Alternative:** no site record; rebuild the ground state at promotion by scanning every unit
+  whose placement is on the site.
+- **Why:** dropped cargo, ore and the remains of an irrecoverable hull have no unit record, and a
+  promotion should be a read of one document, not a scan.
+
+**Q-CF-25 — What counts as salvage on the ground, and what is each thing?**
+- **Decision (accepted default):** four kinds. (a) *Casualties*: disabled, immobile or unarmed units with
+  their full unit record and an open epoch; towable (H2). (b) *Wrecks*: units in the Wreck state,
+  same record, open epoch. (c) *Remains*: the site-record object an irrecoverable unit leaves
+  after its epoch closes destroyed: a footprint, a mass and a manifest of nothing in the first
+  version (H3 decides whether anything strips). (d) *Dropped cargo*: ore and goods containers as
+  site-record objects with a manifest, left by a destroyed hopper or an explicit dump. Crew are
+  never a ground object; crew state lives on the character (Q-CF-38).
+- **Alternative:** everything on the ground is a unit record, remains and cargo included.
+- **Why:** unit records are heavy and owned by tactics custody; a crate is not a tank. Keeping
+  non-units as site-record objects also keeps the field cap (Q-CF-21) about things that act.
+
+**Q-CF-26 — How ground salvage behaves inside a field.**
+- **Decision (accepted default):** casualties and wrecks are units in the kernel: targetable (Q-H8), they
+  block movement and give cover by the existing section and line-of-sight rules, and they do
+  not count against the field cap. Remains and cargo are static obstacles with cover by their
+  footprint, and are sensor contacts, so a scavenger can find them.
+- **Alternative:** ground salvage is decoration in the field; only H2's recovery sortie sees it.
+- **Why:** a wreck you can hide behind and shoot through is the whole reason a field remembers.
+
+**Q-CF-27 — Decay and limits.**
+- **Decision (accepted default):** no decay in the first version. A per-site cap on non-unit objects
+  (provisionally 64); when it is reached, the oldest remains merge into one object at the
+  centroid under a published rule; cargo and units are never dropped by the cap.
+- **Alternative:** time decay of remains and cargo after N IC days.
+- **Why:** persistence is the point. The cap exists only for memory and for the M7 gate.
+
+**Q-CF-28 — Who knows what lies on a site?**
+- **Decision (accepted default):** per observer (Q-H6). A party knows the salvage it saw in a field it was
+  in, and what a later surface scan or survey on the site reveals; the site record is objective
+  but is never published whole. There is no global wreck map and no registry of casualties. The
+  owner of a left-behind unit knows where they left it (Q-H10's confirmation names it).
+- **Alternative:** a public list per site, since the ground is physical and anyone could look.
+- **Why:** "anyone could look" is a survey action, which is exactly the mechanism the default
+  names. Q-S4 already keeps hidden theft hidden until evidence exists.
+
+**Q-CF-29 — Salvage on claimed ground.**
+- **Decision (accepted default):** physical presence is unaffected by mining claims; a casualty on a claimed
+  block blocks nothing but the cells it occupies; entitlement to recover it is H2-B's and is not
+  decided here.
+- **Alternative:** a claim holder may have salvage cleared or claims the salvage.
+- **Why:** doc 27 §D settled recovery entitlement; the field only has to remember the thing.
+
+**Q-CF-30 — Surface work during and after a field.**
+- **Decision (accepted default):** every surface act on a promoted site is refused for the field's
+  duration (Q-H1); a rig mid-act at promotion keeps the distance it completed and the ore it
+  extracted, is charged for that, and the act's remainder is cancelled without duplicate yield.
+  Work resumes on demotion by a fresh act. Fill plans (doc 20 SM.11) pause and resume.
+- **Alternative:** an unengaged party inside a field may keep mining.
+- **Why:** Q-H1's letter, and the clock discontinuity makes a mining cycle inside a wall-time
+  field meaningless.
+
+### E. Time
+
+**Q-CF-31 — The handoff for a unit mid-drive at promotion and demotion.**
+- **Decision (accepted default):** at promotion the drive is settled at the cell it completed: charge is
+  spent for the completed cells, the remaining leg is dropped, the field pose is the cell pose.
+  At demotion the surface pose is the field's exact pose (`FieldPose`, which the surface already
+  accepts); any intent the unit had in the field is dropped; a new drive is a new act.
+- **Alternative:** finish the leg instantly at promotion.
+- **Why:** no duplicate motion and no free distance in either direction.
+
+**Q-CF-32 — IC time inside a field.**
+- **Decision (accepted default):** the field runs on wall time (Q-R3); the world's IC clock keeps its rate;
+  the field stamps its black-box lines and notices with the world's IC instant at the pulse, so
+  they sort with everything else; messages and arrivals from outside admit at pulse boundaries.
+  The compression is accepted (Q-H1: a ten-minute fight is four campaign hours at rate 24).
+- **Alternative:** hold the site's IC time still for the field.
+- **Why:** Q-R3 is ruled; holding one site's IC time would desynchronize its claims and deadlines.
+
+**Q-CF-33 — The outage freeze.**
+- **Decision (accepted default):** a field in progress at an outage resumes from its last snapshot after
+  the countdown ends, not at boot; a field whose resume is refused demotes from that snapshot
+  (Q-CF-35). The snapshot cadence is the kernel's.
+- **Alternative:** resume at boot and let the countdown pass unnoticed inside the field.
+- **Why:** FO-11's "no unseen shooting during the countdown". This is the one W-clock integration.
+
+### F. Custody and durability
+
+**Q-CF-34 — What "committed" means.**
+- **Decision (accepted default):** an outcome is committed when it is in the last snapshot the world
+  acknowledged. A resume rewinds to it and every pilot reads the existing resume line.
+- **Alternative:** per-chunk durability so no acknowledged shot is ever rewound.
+- **Why:** D-16-1's seam and 16c Q-AF4 already chose the rewind; per-chunk durability means
+  custody writes on the hot path.
+
+**Q-CF-35 — The void rule for IC units.**
+- **Decision (accepted default):** a voided field (panic, stall, ledger overflow, refused resume) demotes
+  every unit from the last snapshot. It never restores the pre-field check-out snapshot, which is
+  the OOC rule and stays the OOC rule.
+- **Alternative:** restore, as the OOC range does.
+- **Why:** FO-1: restart does not heal.
+
+**Q-CF-36 — The check-in plan.**
+- **Decision (accepted default):** the IC condition plan (27a H1-A: only the custody vocabulary, the blanket
+  wreck stamp stripped from sections with internals left) through tactics custody; poses to the
+  surface; epochs untouched (Q-H9); cargo and ammunition cells as the kernel left them.
+- **Alternative:** the OOC diff as it stands.
+- **Why:** the OOC diff can mark a mission-killed hull wrecked in every section.
+
+**Q-CF-37 — Who may read a field's tape.**
+- **Decision (accepted default):** staff, through the existing `@arena/report`; players and the bot get
+  observer-bounded digests and their own black-box lines (Q-H6, doc 23); no replay is published.
+- **Alternative:** a public replay per field.
+- **Why:** Q-H6.
+
+### G. Crew and control
+
+**Q-CF-38 — The minimal crew model.**
+- **Decision (accepted default):** two fields on the character: a location (aboard a unit, stranded on a
+  site, aboard a carrier, at a port) and a condition (fit, injured, incapacitated), set at
+  check-in and immediately on a control-section kill, so the player learns it when it happens.
+  No treatment, no ejection, no capture in the first version.
+- **Alternative:** a richer injury model with compartments and treatment.
+- **Why:** FO-12 and Q-H12 want survival and extraction to exist, not medicine.
+
+**Q-CF-39 — Dismounting and extraction.**
+- **Decision (accepted default):** a character cannot leave a hull on foot inside a field (no infantry
+  yet, Q-D1); a stranded or incapacitated character requests extraction (`+sortie/extract` or the
+  cut's name) and after a configured IC delay is at the nearest known safe port under Q-F4/P-5,
+  deferred only while a Friend's recovery flight is physically on the site within the published
+  bound. The hull, its cargo and its epoch stay.
+- **Alternative:** on-foot movement in the field and a rescue vehicle to reach.
+- **Why:** the infantry group of Q-D1 is future work; extraction as a bounded teleport-with-delay
+  is what P-5 accepted.
+
+**Q-CF-40 — Link loss.** Ruled (Q-H5, P-2). Not asked.
+
+**Q-CF-41 — The weapons-free gate in IC.**
+- **Decision (accepted default):** HOLD at launch in IC fields; the pilot sets FREE; doctrine and NPC pilots
+  obey a delivered HOLD FIRE over their own gate. The OOC range keeps FREE (Q-21-9).
+- **Alternative:** FREE everywhere.
+- **Why:** an accidental first shot in IC declares hostility (Q-CF-5) and has consequences; the
+  gate is the core-crime guard Q-H2 kept.
+
+### H. NPCs, minds and opposing forces
+
+**Q-CF-42 — Hired human NPC pilots in a field.**
+- **Decision (accepted default):** their units fly the kernel's doctrine under their delivered standing
+  order through the DT.1b adapter, with relation-aware targeting (Q-CF-9); the reply travels back
+  on the field-orders transport; the surface NPC executor stays surface-only. No new AI.
+- **Alternative:** extend the surface executor to drive the unit from the campaign tick.
+- **Why:** combat decisions happen at wall time inside the task; the surface tick cannot see
+  contacts and should not try.
+
+**Q-CF-43 — Licensed Rhai minds in IC fields.**
+- **Decision (accepted default):** deferred to doc 23 S.4b and the M8 line; the mind-API bump that exposes
+  relation lands with Q-CF-3 so S.4b inherits it and no second bump follows.
+- **Alternative:** host minds in the first field.
+- **Why:** the claim, pool and resume rules are their own programme.
+
+**Q-CF-44 — Opposing forces, for test and for play.**
+- **Decision (accepted default):** fixture-seeded NPC parties at named frontier sites: a raider roster of
+  N armed hulls with a doctrine preset, present on the site or launched from a fixture carrier,
+  authored as content like the Slack Line crew. No generator, no respawn, no patrol logic. The
+  same fixture is the bot's opponent.
+- **Alternative:** a population or mission generator.
+- **Why:** repeatable tests first; a generator is a content system with its own survey.
+
+### I. Scale
+
+**Q-CF-45 — The first field budget.**
+- **Decision (accepted default):** 24 units a field (two full rosters, a raider party of six, six
+  bystanders), one task per site, the M7 memory gate extended with one full-field fixture, and a
+  measured run at 24 before the cap is raised toward the 100-unit target. Ground salvage does not
+  count against it (Q-CF-26).
+- **Alternative:** 12, the two-roster minimum.
+- **Why:** the escort flow needs three parties on one site from the first acceptance; 12 cannot
+  hold it.
+
+### J. Acceptance
+
+**Q-CF-46 — The engine gate, on the OOC range.**
+- **Decision (accepted default):** before any IC host code, a three-party practice on the simulator
+  centre proves parties, per-viewer relations, N designators, relation colouring in all three
+  cockpits, demotion in place of elimination, the mind-API bump and the single rebless of the
+  practice hashes. The bot's arena pilot runs against it unchanged except for the frame field.
+- **Alternative:** prove parties only in the IC field.
+- **Why:** the kernel change is testable without any of the IC seams, and gating it there keeps
+  the IC host's own gate about the IC host.
+
+**Q-CF-47 — The field story that accepts the engine.**
+- **Decision (accepted default):** at a named frontier site, a mining roster works a block with an
+  escort of two armed hulls; a bystander rig from another captain works the next block; a raider
+  party launches from a fixture carrier, is seen on the presence picture (Q-CF-15), declares,
+  and the site promotes with everyone at their poses; the miners see the raiders as contacts on
+  the quarry screen and the escort sees the worked block on its map (Q-CF-48); the escort
+  fights under delivered orders while the miners hold; the bystander is fired on by a raider and
+  becomes hostile to that party only; one escort is mission-killed by an engine hit and one raider by a control-section hit;
+  the raiders withdraw to their ramp; the field demotes; the miners resume their fill plan; the
+  casualty and the raider wreck are on the site record; the server restarts; the carrier
+  departs with the leave-behind confirmation; a second visit finds both where they fell; a second
+  field at the same site uses the wreck as cover. Run through production composition over SSH,
+  then by the bot with the raider as the fixture opponent.
+- **Alternative:** the two-player duel of doc 27b as the first acceptance.
+- **Why:** the duel proves a two-party host; this story is the flow the owner named, and it
+  exercises every area above once.
+
+### K. The picture: one map for mining and fighting
+
+The owner's addition on 2026-10-30: the mining view and the field view have to be one view.
+Today they are two pictures of the same ground. `+tv/map` and the TUI quarry screen (`q`, doc
+20 SM.9) draw the site as cells, blocks, pockets, claims and the rig's own state, on the
+campaign clock; the cockpit (doc 21: the TUI, the web, the pixel compositor and its map window,
+doc 30's tiles) draws contacts, locks and poses, on wall time. A miner cannot see a raider
+coming and an escort cannot see which block it is guarding.
+
+**Q-CF-48 — One picture of the site.**
+- **Decision (accepted default):** one site map at one cell grid, with two layers. The *campaign layer*
+  is always drawn: ground and biome, blocks and claims, the pockets the party has read, the
+  salvage the party knows (Q-CF-28), the presence picture (Q-CF-15), the carriers and their
+  ramps. The *field layer* is drawn while the site is promoted: contacts coloured by relation
+  (Q-CF-12), locks, own and Friend units, fire. `+tv/map` and the quarry screen become the text
+  renderings of that one map; the cockpit's map window is its graphic rendering; the web studio
+  stays an authoring tool and not a play view. D-21-14 holds throughout: the picture draws what
+  the frame says and invents nothing.
+- **Alternative:** two views that share the ground data and nothing else.
+- **Why:** the escort flow is the acceptance story (Q-CF-47); it needs the escort to see the
+  worked block and the miner to see the threat. Two pictures of one world will diverge.
+
+**Q-CF-49 — The rig's cab is a cockpit.**
+- **Decision (accepted default):** a mining rig inside a field has the same cockpit frame as an armed
+  hull: its visual sensor gives it contacts, it has no weapons, and the quarry screen's rig state
+  (hopper, charge, plan, the drive view) becomes a panel on that frame rather than a separate
+  screen. `+tv` status keeps answering for the rig's own state inside a field. The escort's
+  cockpit shows the claims, blocks and ore markers its party knows.
+- **Alternative:** rigs have no cockpit in a field; only `+tv` and the quarry screen.
+- **Why:** the miner's one combat action is to see the raider and drive to the ramp, and the
+  escort's one mining question is what it is standing over. Both are the same frame.
+
+**Q-CF-50 — Frame plumbing.**
+- **Decision (accepted default):** one frame family carries both layers. The cockpit frame gains the
+  campaign layer as a slowly changing block (ground, claims, known salvage, presence) beside the
+  existing per-pulse field block. On an unpromoted site the surface host sends the frame at the
+  surface tick's cadence with an empty field layer; inside a field the task sends it at the
+  arena's. Click-to-lock works on the field layer only. The overview, 2.5D and first-person views
+  draw ground salvage as the kernel holds it (Q-CF-26). This rides the same format bump as Q-CF-3.
+- **Alternative:** the surface sends a frame kind of its own and the clients grow a second
+  renderer.
+- **Why:** the three clients already draw one frame; a second kind is a second renderer in each
+  of them, and the two would disagree about the same cell.
+
+### L. The size of the ground
+
+The owner asked on 2026-10-30 whether the field should wait for the window to grow. The facts
+(§3): the sim's window and the site are 256 a side by constant and nothing in the tree has
+changed that; doc 30 ruled 512-a-side *maps* and owes WG.6 to play them, with the window on the
+frame; doc 16 D-16-5 records the 10 km path (a thousand cells, 1024 in its power-of-two form) as
+an addition never scheduled; docs 16 and 20 were not amended when doc 30 ruled.
+
+**Q-CF-51 — Does the field wait for the bigger ground, and what does it assume meanwhile?**
+- **Decision (accepted default):** the field does not wait, and it never names a side. In the kernel pass
+  of Q-CF-3 the three constants become one per-region value read from the region's window
+  (the `ArenaDef`'s tiles already say how big it is), with 256 the shipped default; every number
+  in this survey is per cell, per area or per unit, never per window; the presence picture's
+  range bands (Q-CF-15), the per-site caps (Q-CF-21, Q-CF-27) and the field budget (Q-CF-45)
+  are tuned at 256 and re-measured at 512. WG.6 (the frame window and the tiles) runs beside
+  the field as the client cut it is; the field's acceptance story (Q-CF-47) runs once at 256
+  and again at 512 when WG.6 lands, and the second run is WG.6's gate as much as the field's.
+  The 10 km path stays a separate scale programme: it changes the line-of-sight index, path
+  search, the snapshot and the memory gate, and it belongs with the 100-unit target, not here.
+  As part of this ruling, doc 16 §11 and doc 20 §3.1 gain one amendment row each pointing at
+  doc 30 Q-30-6 and WG.6, so the three documents agree on what "the window" means today.
+- **Alternative:** land WG.6 and lift the sim to 512 first, then build the field on it.
+- **Why:** the field model has no size dependence once the constants are parameters, and the
+  owner's reason for pinning doc 27b (no assumptions baked in that have to be undone) is met by
+  parameterizing, not by waiting. Serializing the two programmes buys nothing the second
+  acceptance run does not, and costs the field the weeks WG.6 and the 10 km work take.
+
+## 4a. Consequences of the amended rulings
+
+- **Vocabulary (Q-CF-2).** *Site*, *field*, *engagement* as defined there. Promotion opens a
+  field on a site; demotion closes it; the site record (Q-CF-24) outlives every field. Where
+  this document said "field" before Draft 0.2 it meant the promoted host, which is still what it
+  means.
+- **Private marks, visible promotion (Q-CF-7, Q-CF-14).** A Hostile mark by a leader promotes
+  the site. Everyone on the ground observes the promotion: their clock changes, contacts appear.
+  Nobody is told who marked whom. A party that finds itself in a field with no shot fired knows
+  only that someone on the site considers someone hostile.
+- **Fire as a door (Q-CF-14).** The campaign surface gains exactly one weapon-shaped act: a fire
+  order at a presence-picture contact. It is a promotion trigger, not a shot; the shot resolves in
+  the field's first pulse under the normal lock rules. With HOLD at launch (Q-CF-41) the pilot has
+  set FREE first. Doctrine runs only inside a field, so an NPC can never open one by itself; a
+  delivered ENGAGE received on the surface is treated as its leader's Hostile mark (Q-CF-7) and
+  promotes that way.
+- **Who may mark.** A detachment leader (doc 26's slot-order leader, doc 27 Q-D4). The pilot of a
+  one-unit party is its leader.
+- **No launches while promoted (Q-CF-17).** Entry zones leave the field layer; the OOC layer keeps
+  two for its two parties. `+sortie/launch` and `+tv/launch` refuse with the reason. A departure
+  already on the ramp at promotion completes into the field at the ramp pose, because the hull is
+  physically committed (Q-H4's handoffs settle). Rigs still in a bay are inside the hull and not
+  in the field.
+- **The carrier is a unit (Q-CF-19).** Admitted at its pad pose with its sections; everyone
+  aboard carries crew state "aboard the carrier" (Q-CF-38); its damage persists through the same
+  custody; it is beyond FO-13's twice-own-tonnage tow rule and so never towed. Whether it may depart during
+  a field, under Q-H10's confirmation, and what a drive hit does to that, are F-3 and F-6.
+- **Designators (Q-CF-11).** The Designator keeps its two-letter shape (16b Q.1); the OOC host
+  names its two parties red and blue and so keeps `R` and `B`; the IC host assigns party letters in
+  admission order and unit letters at random. The Designator test grows the alphabet and the
+  no-slot-leak property.
+- **Party = detachment (Q-CF-4).** The party id is the activation reference; relations are kept
+  per activation; the organization reaches the relation through Q-CF-5 only.
+- **The ground's side (Q-CF-51, accepted).** `ARENA_CELLS`, `SITE_CELLS` and `MAX_TILE_SIDE`
+  become one per-region value in cut CF.0. The amendment rows for doc 16 D-16-5/§11 and doc 20
+  §3.1/§11 ship with this draft.
+
+## 5a. Follow-ups opened by the rulings
+
+| # | Follow-up | Opened by |
+|---|---|---|
+| F-1 | Relations between organizations: declare on each other, establish alliances, as an input to the relation function | Q-CF-5 |
+| F-2 | Hostility in a field affecting faction relations afterwards | Q-CF-8 |
+| F-3 | The carrier under fire: what a hit does to lift, sailing, the bay and the hold; the loss story for a destroyed carrier with crew and rigs aboard; parity with attack in space | Q-CF-19 |
+| F-4 | A reinforcement system for a promoted site | Q-CF-17 |
+| F-5 | The one-unit party reading: a rig launched with no roster is admitted as the degenerate detachment | Q-CF-4 |
+| F-6 | A carrier arriving by voyage during a field (admitted at its pad as a unit at the next pulse boundary, may not launch) and a carrier departing during one | Q-CF-17, Q-CF-19 |
+| F-7 | Persistent known-hostile memory per character and organization, the Epistemic Engine cut | Q-CF-8 |
+
+## 5. Out of scope for this survey
+
+Towing, recovery operations and salvage entitlement (27a H2, doc 27 §D); workshop restoration
+(H3); DT.4 subset delegation; licensed minds in the field (S.4b); infantry and battle armor
+groups; carrier damage, boarding and loss; cross-site surface travel and open edges; facility
+assault; faction reputation as a relation input; a mission or population generator; wages;
+persistent hostility memory. Each is named above where a default touches it, and each keeps its
+own owner.
+
+## 6. Proposed cuts
+
+`CF.*` names the field engine's cuts. Each is independently reviewable with its gate shown before
+the next starts; the lanes below say what runs beside what. Ordering is the owner's to change.
+
+| Cut | Content | Gate | Depends on |
+|---|---|---|---|
+| CF.0 — parties in the kernel | `PartyId` replaces `Team`; per-viewer relations and the leader's marks; unit letters at random, party letters in order; relation colour and the party letter on the health bar; the end condition supplied by the host; the window side as a per-region value; the mind API, snapshot, hash and frame bump taken once; the OOC range as a two-party field named red and blue | Q-CF-46: a three-party OOC practice; practice hashes reblessed once; the bot's arena pilot unchanged but for the frame field | nothing |
+| CF.1 — the site record and the presence picture | the per-site record (units left, remains, cargo); the surface tick's presence picture; surface acts refused while promoted; the per-site flight cap lowered to the field cap | a staff fixture leaves a wreck and a crate on a site; restart; `+tv/map` shows presence bands; refusals name the fight | nothing; runs beside CF.0 |
+| CF.2 — the field host | promotion by mark or fire order; admission of everyone at surface poses through custody; launch refusal; recovery as exit; demotion by disengagement; the IC void rule and resume after unfreeze; the IC check-in plan; the clock handoff mid-drive; the site record loaded and written | two players in fixture-seeded armed rigs fight over SSH; the loser stays where it fell; restart mid-fight; a bystander rig reads as an Unknown contact and is shootable | CF.0, CF.1 |
+| CF.3 — the carrier as a unit | admitted at its pad with its sections; crew aboard; damage persists; departure during a field under Q-H10; F-3 scoped | a carrier takes a hit and the damage shows in port | CF.2 |
+| CF.4 — one picture | the campaign and field layers in one frame; the quarry screen as a panel; the rig's cab as a cockpit; `+tv/map` and the map window from the same frame | Q-CF-48 and Q-CF-49's statements over the TUI, the web and the pixel cockpit | CF.1, CF.2 (the frame bump rides CF.0) |
+| CF.5 — crew and exit | crew state; `+sortie/extract`; the leave-behind confirmation on departure | a stranded player is at port after the delay; departure with units out is refused without the confirmation | the verbs: nothing; the derivation at check-in: CF.2 |
+| CF.6 — NPC pilots and raiders | hired NPC units on doctrine under delivered orders in the field (the DT.1b adapter on the IC host); relation-aware targeting; HOLD FIRE; ENGAGE on the surface as the leader's mark; the fixture raider party as content; the combat-duty offer; the armed rig lease (doc 27b FC.1's content, unchanged) | ENGAGE through jamming arrives late and the WILCO later; HOLD FIRE within a pulse; NEGATIVE on a lost contact; the raider party fights to its own demotion with no player connected | CF.0, CF.2 |
+| CF.7 — the field story | Q-CF-47 over SSH, then the bot against the fixture raider | the story as written at 256 a side; again at 512 when WG.6 lands | all of the above |
+
+```
+day 0:   CF.0 parties ──────┐
+         CF.1 site record ──┼─▶ CF.2 field host ─┬─▶ CF.3 carrier ────┐
+         CF.5 verbs ────────┤                    ├─▶ CF.4 picture ────┼─▶ CF.7 story + bot ─▶ doc 27b revised
+         CF.6 content ──────┘                    ├─▶ CF.5 derivation ─┤
+                                                 └─▶ CF.6 execution ──┘
+```
+
+Four lanes open on day one: CF.0 and CF.1 are the two halves of the engine and touch disjoint
+code; CF.5's verbs and CF.6's content (the offer, the lease, the raider pack) need no engine.
+CF.2 is the spine and should get the strongest session. WG.6 (doc 30) runs beside all of it and
+meets CF.7 at the 512 run.
+
+When CF.7 passes, doc 27b is revised to sit on the engine: its seven steps stand, its FC.1
+content work has already landed as CF.6's content, and its FC.2 through FC.5 become the field
+story's slices. Doc 27 §5 gains one row for the field engine and marks W-clock built.

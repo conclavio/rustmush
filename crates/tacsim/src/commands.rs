@@ -275,6 +275,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                     "unload",
                     "plan",
                     "show",
+                    "bay",
                     "permissions",
                     "board",
                     "leave",

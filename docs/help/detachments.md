@@ -33,6 +33,10 @@ OperateCrew through the printed operating loan ID using
 `@unitgrant/issue #unit=#npc operate_crew parent=<loan>`. See
 [unit permissions](unit-grants.md) for delegation and revocation.
 
+From the carrier's cargo hold, use `+tv/bay in` to reach its vehicle bay.
+After returning and leaving your rig, `+tv/bay out` takes you back to the hold.
+This access stays inside the actual carrier and does not cross its ramp.
+
 A player can take their own rental's physical helm with `+tv/<n> board` while
 standing in the carrier's vehicle bay. This requires current OperateCrew permission
 and a vacant billet. It prints the real unit ID and the `+focus` and

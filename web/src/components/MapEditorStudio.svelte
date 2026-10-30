@@ -1,1161 +1,1524 @@
 <script lang="ts">
-  // Unity-style Terrain & Arena Map Studio: interactive 2D grid with brush
-  // footprints, elevation sculpting (raise, lower, flatten, smooth, linear ramp),
-  // line/rectangle/flood-fill tools, muster & spot placement, undo/redo stack,
-  // live 3-view `mush-pixel-wasm` (1st-person 3D, 2.5D, overhead) preview, and
-  // `ArenaDef` / `mush_atlas::Cells` base64 import & export.
-  import { onMount } from "svelte";
-  import type { GameApp } from "$lib/game.svelte";
+  import { onMount, untrack } from 'svelte';
+  import type { GameApp } from '../lib/game.svelte';
+  import { pixelModule } from '../lib/pixel/local';
   import {
-    applyBrushDab,
-    applyFloodFill,
-    applyLineStroke,
-    applyRampStroke,
-    applyRectStroke,
-    bresenhamCells,
-    brushFootprint,
-    cloneMapState,
-    EDITOR_TERRAINS,
+    FEED_COCKPIT,
+    FEED_MAP,
+    KIND_COCKPIT,
+    KIND_ISO25D,
+    KIND_OVERHEAD,
+    type PixelModule
+  } from '../lib/pixel/wasm';
+  import {
+    BIOME_OPTIONS,
+    TERRAIN_PALETTE,
+    DEFAULT_SLIDER_MIN_ELEV_CM,
+    DEFAULT_SLIDER_MAX_ELEV_CM,
+    DEFAULT_HULL_SIZE_CM,
+    createEditorMap,
+    cloneEditorMap,
+    EditorUndoStack,
+    paintTerrainBrush,
+    paintTerrainLine,
+    floodFillTerrain,
+    applySculptBrush,
+    exportGroundDraftJson,
+    importGroundDraftJson,
     editorToPictureFeeds,
-    encodeTileCellsBase64,
-    exportArenaDefJson,
-    generatePresetMap,
-    importArenaDefJson,
-    terrainByCode,
-    type BiomeId,
+    computePassabilityOverlay,
+    computeViewshed,
+    checkEditorMap,
+    routeEditorMap,
+    relaxEditorSlopes,
+    despeckleEditorMap,
+    markStudioEdited,
+    type BiomeName,
     type BrushShape,
+    type DriveName,
+    type EditorCameraPin,
     type EditorMapState,
     type EditorTool,
-    type PresetTemplateId,
-  } from "$lib/map-editor";
-  import { biomeTerrainColours } from "$lib/stores/map.svelte";
-  import type { PictureKind } from "$lib/picture";
-  import {
-    FRAME_H,
-    FRAME_W,
-    LocalPicture,
-    localCapable,
-    pixelModule,
-  } from "$lib/pixel/local";
+    type GroundCheckReport,
+    type GroundDraftJson,
+    type SculptMode,
+    type StudioOverlayMode,
+    type TerrainClassCode
+  } from '../lib/map-editor';
 
-  let { app }: { app: GameApp } = $props();
+  interface Props {
+    app?: GameApp;
+    game?: GameApp;
+  }
 
-  const MAX_UNDO = 35;
+  let { app, game }: Props = $props();
+  const controller = $derived(app ?? game);
 
-  let mapState = $state<EditorMapState>(generatePresetMap("proving_ground", 64, 64, 42));
-  let undoStack = $state<EditorMapState[]>([]);
-  let redoStack = $state<EditorMapState[]>([]);
+  let gridSize = $state<64 | 128 | 256>(64);
+  let editorState = $state<EditorMapState>(createEditorMap(64, 64, 'temperate', 3));
+  let undoStack = new EditorUndoStack(40);
+  let canUndo = $state(false);
+  let canRedo = $state(false);
 
-  let preset = $state<PresetTemplateId>("proving_ground");
-  let presetSize = $state<number>(64);
-  let seed = $state<number>(42);
+  // Active Tool & Brush State
+  let activeTool = $state<EditorTool>('paint');
+  let selectedClass = $state<TerrainClassCode>(2);
+  let sculptMode = $state<SculptMode>('raise');
+  let brushShape = $state<BrushShape>('circle');
+  let brushRadius = $state(3);
+  let brushStrengthCm = $state(120);
+  let brushTargetElevCm = $state(0);
+  let brushFalloff = $state(0.5);
+  let relaxToPassable = $state(false);
 
-  let tool = $state<EditorTool>("paint");
-  let brushShape = $state<BrushShape>("circle");
-  let brushRadius = $state<number>(2);
-  let terrainCode = $state<number>(3); // Grass
-  let densityPct = $state<number>(100);
-  let elevStepCm = $state<number>(35);
-  let targetElevCm = $state<number>(200);
-  let hollowRect = $state<boolean>(false);
-  let rampPavesRoad = $state<boolean>(true);
-  let spotLetter = $state<string>("C");
-  let spotName = $state<string>("High Ridge");
+  // Overlays & Viewshed
+  let showContours = $state(true);
+  let showGridLines = $state(true);
+  let overlayMode = $state<StudioOverlayMode>('none');
+  let overlayDrive = $state<DriveName>('tracked');
+  let viewshedSizeCm = $state(DEFAULT_HULL_SIZE_CM);
+  let highlightedCells = $state<number[]>([]);
+  let lastRepairNotice = $state<string | null>(null);
 
-  let showGridLines = $state<boolean>(true);
-  let showContours = $state<boolean>(true);
-  let showExportDrawer = $state<boolean>(false);
-  let jsonBuffer = $state<string>("");
-  let statusMsg = $state<string>("");
+  // Camera Pin for Live 3D / 2.5D / Overhead Preview
+  let previewPin = $state<EditorCameraPin>({ x: 16, y: 32, headingDeg: 90 });
+  let previewSubMode = $state<'3d' | '25d' | 'overhead' | 'split'>('split');
 
+  // Canvas Interaction State
+  let gridCanvas = $state<HTMLCanvasElement | null>(null);
+  let previewFpCanvas = $state<HTMLCanvasElement | null>(null);
+  let preview25dCanvas = $state<HTMLCanvasElement | null>(null);
+  let previewOverheadCanvas = $state<HTMLCanvasElement | null>(null);
+
+  let isDragging = $state(false);
+  let dragStartCell = $state<[number, number] | null>(null);
   let hoverCell = $state<[number, number] | null>(null);
-  let isDragging = $state<boolean>(false);
-  let dragStart = $state<[number, number] | null>(null);
-  let strokeSeed = $state<number>(101);
+  let selectedWaypointIdx = $state<number | null>(null);
+  let draggingWaypointIdx = $state<number | null>(null);
+  let statusNotice = $state<string | null>(null);
 
-  let gridCanvas: HTMLCanvasElement | undefined = $state();
-  let previewCanvas: HTMLCanvasElement | undefined = $state();
-  let renderer = $state<LocalPicture | null>(null);
-  let previewView = $state<PictureKind>("cockpit");
+  // WASM Engine for Live Preview
+  let engine = $state<PixelModule | null>(null);
+  let renderTick = $state(0);
+  let matchRev = 1;
+  let lastLoadedDraftFrame: Record<string, unknown> | null = null;
 
-  const GRID_MAX_PX = 540;
-
-  const cellPx = $derived(
-    Math.max(4, Math.min(14, Math.floor(GRID_MAX_PX / Math.max(mapState.width, mapState.height, 1)))),
-  );
-
-  const hoveredInfo = $derived.by(() => {
-    if (!hoverCell) return null;
-    const [x, y] = hoverCell;
-    if (x < 0 || x >= mapState.width || y < 0 || y >= mapState.height) return null;
-    const idx = y * mapState.width + x;
-    const code = mapState.classes[idx] ?? 0;
-    const elev = mapState.elevCm[idx] ?? 0;
-    const left = x > 0 ? (mapState.elevCm[idx - 1] ?? elev) : elev;
-    const down = y > 0 ? (mapState.elevCm[idx - mapState.width] ?? elev) : elev;
-    const maxDelta = Math.max(Math.abs(elev - left), Math.abs(elev - down));
-    const gradePct = (maxDelta / (mapState.cellCm || 1000)) * 100;
-    return {
-      x,
-      y,
-      terrain: terrainByCode(code),
-      elevM: (elev / 100).toFixed(2),
-      gradePct: gradePct.toFixed(1),
-    };
+  let checkReport = $derived.by<GroundCheckReport>(() => {
+    void renderTick;
+    return checkEditorMap(editorState);
   });
 
+  function syncUndoFlags() {
+    canUndo = undoStack.canUndo;
+    canRedo = undoStack.canRedo;
+  }
+
+  function pushSnapshot() {
+    undoStack.push(editorState);
+    syncUndoFlags();
+  }
+
+  function handleUndo() {
+    const prev = undoStack.undo(editorState);
+    if (prev) {
+      editorState = prev;
+      highlightedCells = [];
+      syncUndoFlags();
+      refreshPreview();
+    }
+  }
+
+  function handleRedo() {
+    const next = undoStack.redo(editorState);
+    if (next) {
+      editorState = next;
+      highlightedCells = [];
+      syncUndoFlags();
+      refreshPreview();
+    }
+  }
+
+  function handleNewMap(size: 64 | 128 | 256, biome: BiomeName) {
+    pushSnapshot();
+    gridSize = size;
+    const defaultClass: TerrainClassCode =
+      biome === 'mars' ? 8 : biome === 'lunar' ? 17 : biome === 'ice' ? 16 : 3;
+    editorState = createEditorMap(size, size, biome, defaultClass);
+    highlightedCells = [];
+    previewPin = {
+      x: Math.floor(size * 0.2),
+      y: Math.floor(size * 0.5),
+      headingDeg: 90
+    };
+    refreshPreview();
+  }
+
+  function handleBiomeChange(biome: BiomeName) {
+    pushSnapshot();
+    editorState.biome = biome;
+    markStudioEdited(editorState);
+    refreshPreview();
+  }
+
+  function handleLoadServerDraft() {
+    statusNotice = `Requesting draft "${editorState.id || 'proving_ground'}" from server...`;
+    controller?.requestGroundDraft?.(editorState.id || 'proving_ground');
+  }
+
+  $effect(() => {
+    const frame = controller?.groundDraftFrame ?? null;
+    if (!frame || frame === lastLoadedDraftFrame) return;
+    lastLoadedDraftFrame = frame;
+    untrack(() => {
+      if (typeof frame.error === 'string') {
+        statusNotice = `Server draft error: ${frame.error}`;
+        return;
+      }
+      try {
+        const imported = importGroundDraftJson(frame as unknown as GroundDraftJson);
+        pushSnapshot();
+        editorState = imported;
+        if (imported.width === 64 || imported.width === 128 || imported.width === 256) {
+          gridSize = imported.width;
+        }
+        highlightedCells = [];
+        const firstSpot = imported.keySpots[0];
+        previewPin = firstSpot
+          ? { x: firstSpot.x, y: firstSpot.y, headingDeg: 90 }
+          : { x: Math.floor(imported.width / 2), y: Math.floor(imported.height / 2), headingDeg: 90 };
+        statusNotice = `Loaded server draft "${imported.id}" (${imported.width}x${imported.height})`;
+        refreshPreview();
+      } catch (err) {
+        statusNotice = `Failed to load server draft: ${(err as Error).message}`;
+      }
+    });
+  });
+
+  function handleRelaxSlopes() {
+    pushSnapshot();
+    const changed = relaxEditorSlopes(editorState, 45);
+    highlightedCells = changed;
+    lastRepairNotice = `Relaxed ${changed.length} steep cell${changed.length === 1 ? '' : 's'}`;
+    refreshPreview();
+  }
+
+  function handleDespeckle() {
+    pushSnapshot();
+    const changed = despeckleEditorMap(editorState, 3);
+    highlightedCells = changed;
+    lastRepairNotice = `Despeckled ${changed.length} cell${changed.length === 1 ? '' : 's'}`;
+    refreshPreview();
+  }
+
+  function handleAutoRoute() {
+    pushSnapshot();
+    const graph = routeEditorMap(editorState);
+    lastRepairNotice = `Routed ${graph.nodes.length} nodes, ${graph.edges.length} edges`;
+    refreshPreview();
+  }
+
+  function cellFromPointerEvent(e: MouseEvent): [number, number] | null {
+    if (!gridCanvas) return null;
+    const rect = gridCanvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const u = (e.clientX - rect.left) / rect.width;
+    const v = 1 - (e.clientY - rect.top) / rect.height; // South-up: y=0 at bottom
+    const x = Math.max(0, Math.min(editorState.width - 1, Math.floor(u * editorState.width)));
+    const y = Math.max(0, Math.min(editorState.height - 1, Math.floor(v * editorState.height)));
+    return [x, y];
+  }
+
+  function applyToolAt(x: number, y: number, isStart: boolean, shiftKey = false) {
+    if (activeTool === 'paint') {
+      if (isStart) pushSnapshot();
+      if (paintTerrainBrush(editorState, x, y, brushRadius, brushShape, selectedClass)) {
+        highlightedCells = [];
+        refreshPreview();
+      }
+    } else if (activeTool === 'sculpt') {
+      if (isStart) pushSnapshot();
+      if (
+        applySculptBrush(editorState, x, y, {
+          mode: sculptMode,
+          shape: brushShape,
+          radius: brushRadius,
+          strengthCm: brushStrengthCm,
+          targetElevCm: brushTargetElevCm,
+          falloff: brushFalloff,
+          relaxToPassable
+        })
+      ) {
+        highlightedCells = [];
+        refreshPreview();
+      }
+    } else if (activeTool === 'fill' && isStart) {
+      pushSnapshot();
+      if (floodFillTerrain(editorState, x, y, selectedClass) > 0) {
+        highlightedCells = [];
+        refreshPreview();
+      }
+    } else if (activeTool === 'camera_pin') {
+      if (isStart) {
+        previewPin = { ...previewPin, x, y };
+      } else {
+        const dx = x - previewPin.x;
+        const dy = y - previewPin.y;
+        if (dx !== 0 || dy !== 0) {
+          const deg = Math.round(((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360);
+          previewPin = { ...previewPin, headingDeg: deg };
+        }
+      }
+      refreshPreview();
+    } else if (activeTool === 'spot' && isStart) {
+      pushSnapshot();
+      const existingIdx = editorState.keySpots.findIndex(
+        (s) => Math.abs(s.x - x) <= 1 && Math.abs(s.y - y) <= 1
+      );
+      if (existingIdx >= 0) {
+        editorState.keySpots.splice(existingIdx, 1);
+        markStudioEdited(editorState);
+      } else if (editorState.keySpots.length < 12) {
+        const letter = String.fromCharCode(65 + editorState.keySpots.length);
+        editorState.keySpots.push({ name: `Point ${letter}`, x, y });
+        markStudioEdited(editorState);
+      }
+      refreshPreview();
+    } else if (activeTool === 'waypoint') {
+      if (isStart) {
+        const hitIdx = editorState.waypoints.nodes.findIndex(
+          (n) => Math.abs(n.x - x) <= 2 && Math.abs(n.y - y) <= 2
+        );
+        if (hitIdx >= 0) {
+          if (shiftKey && selectedWaypointIdx !== null && selectedWaypointIdx !== hitIdx) {
+            const nodeA = editorState.waypoints.nodes[selectedWaypointIdx];
+            const nodeB = editorState.waypoints.nodes[hitIdx];
+            if (nodeA && nodeB) {
+              pushSnapshot();
+              const a = nodeA.id;
+              const b = nodeB.id;
+              const existingEdgeIdx = editorState.waypoints.edges.findIndex(
+                ([e0, e1]) => (e0 === a && e1 === b) || (e0 === b && e1 === a)
+              );
+              if (existingEdgeIdx >= 0) {
+                editorState.waypoints.edges.splice(existingEdgeIdx, 1);
+              } else if (editorState.waypoints.edges.length < 1024) {
+                editorState.waypoints.edges.push([a, b]);
+              }
+              markStudioEdited(editorState);
+              selectedWaypointIdx = hitIdx;
+              refreshPreview();
+            }
+          } else {
+            pushSnapshot();
+            selectedWaypointIdx = hitIdx;
+            draggingWaypointIdx = hitIdx;
+          }
+        } else if (editorState.waypoints.nodes.length < 256) {
+          pushSnapshot();
+          let seq = editorState.waypoints.nodes.length;
+          let id = `wp_${String(seq).padStart(3, '0')}`;
+          while (editorState.waypoints.nodes.some((n) => n.id === id)) {
+            seq++;
+            id = `wp_${String(seq).padStart(3, '0')}`;
+          }
+          editorState.waypoints.nodes.push({ id, x, y });
+          const newIdx = editorState.waypoints.nodes.length - 1;
+          if (shiftKey && selectedWaypointIdx !== null) {
+            const prevNode = editorState.waypoints.nodes[selectedWaypointIdx];
+            if (prevNode) {
+              editorState.waypoints.edges.push([prevNode.id, id]);
+            }
+          }
+          markStudioEdited(editorState);
+          selectedWaypointIdx = newIdx;
+          draggingWaypointIdx = newIdx;
+          refreshPreview();
+        }
+      } else if (draggingWaypointIdx !== null) {
+        const node = editorState.waypoints.nodes[draggingWaypointIdx];
+        if (node && (node.x !== x || node.y !== y)) {
+          node.x = x;
+          node.y = y;
+          markStudioEdited(editorState);
+          refreshPreview();
+        }
+      }
+    }
+  }
+
+  function onCanvasPointerDown(e: MouseEvent) {
+    if (e.button !== 0) return;
+    const cell = cellFromPointerEvent(e);
+    if (!cell) return;
+    isDragging = true;
+    dragStartCell = cell;
+    hoverCell = cell;
+    if (activeTool === 'line' || activeTool === 'zone_red' || activeTool === 'zone_blue') {
+      pushSnapshot();
+    } else {
+      applyToolAt(cell[0], cell[1], true, e.shiftKey);
+    }
+  }
+
+  function onCanvasPointerMove(e: MouseEvent) {
+    const cell = cellFromPointerEvent(e);
+    hoverCell = cell;
+    if (!isDragging || !cell) return;
+    if (activeTool === 'paint' || activeTool === 'sculpt' || activeTool === 'camera_pin' || activeTool === 'waypoint') {
+      applyToolAt(cell[0], cell[1], false, e.shiftKey);
+    }
+  }
+
+  function onCanvasPointerUp(e: MouseEvent) {
+    if (!isDragging) return;
+    const cell = cellFromPointerEvent(e) ?? hoverCell;
+    if (cell && dragStartCell) {
+      if (activeTool === 'line') {
+        paintTerrainLine(
+          editorState,
+          dragStartCell[0],
+          dragStartCell[1],
+          cell[0],
+          cell[1],
+          brushRadius,
+          brushShape,
+          selectedClass
+        );
+        refreshPreview();
+      } else if (activeTool === 'zone_red' || activeTool === 'zone_blue') {
+        const team = activeTool === 'zone_red' ? 'red' : 'blue';
+        const x0 = Math.min(dragStartCell[0], cell[0]);
+        const x1 = Math.max(dragStartCell[0], cell[0]);
+        const y0 = Math.min(dragStartCell[1], cell[1]);
+        const y1 = Math.max(dragStartCell[1], cell[1]);
+        const idx = editorState.entryZones.findIndex((z) => z.team === team);
+        const zone = { team: team as 'red' | 'blue', x0, y0, x1, y1 };
+        if (idx >= 0) {
+          editorState.entryZones[idx] = zone;
+        } else {
+          editorState.entryZones.push(zone);
+        }
+        markStudioEdited(editorState);
+        refreshPreview();
+      }
+    }
+    isDragging = false;
+    dragStartCell = null;
+    draggingWaypointIdx = null;
+  }
+
+  function refreshPreview() {
+    renderTick += 1;
+    if (!engine) return;
+    const feeds = editorToPictureFeeds(editorState, previewPin);
+    (feeds.arenaMap as Record<string, unknown>).match = -matchRev;
+    matchRev += 1;
+    engine.feed(FEED_MAP, JSON.stringify(feeds.arenaMap));
+    engine.feed(FEED_COCKPIT, JSON.stringify(feeds.arenaCockpit));
+  }
+
+  function draw2DGridCanvas() {
+    if (!gridCanvas) return;
+    const ctx = gridCanvas.getContext('2d');
+    if (!ctx) return;
+
+    const w = editorState.width;
+    const h = editorState.height;
+    const cw = gridCanvas.width;
+    const ch = gridCanvas.height;
+    const cellW = cw / w;
+    const cellH = ch / h;
+
+    ctx.fillStyle = '#0d1016';
+    ctx.fillRect(0, 0, cw, ch);
+
+    const swatchByCode = new Map<number, string>();
+    for (const s of TERRAIN_PALETTE) {
+      swatchByCode.set(s.code, s.color);
+    }
+
+    const passability =
+      overlayMode === 'passability'
+        ? computePassabilityOverlay(editorState, overlayDrive)
+        : null;
+    const viewshed =
+      overlayMode === 'viewshed'
+        ? computeViewshed(editorState, previewPin.x, previewPin.y, viewshedSizeCm)
+        : null;
+
+    // 1. Draw cells with elevation hillshading + active overlay
+    for (let y = 0; y < h; y++) {
+      const py = ch - (y + 1) * cellH;
+      for (let x = 0; x < w; x++) {
+        const px = x * cellW;
+        const idx = y * w + x;
+        const code = editorState.classes[idx] ?? 2;
+        const baseHex = swatchByCode.get(code) ?? '#4a6b3b';
+        const elev = editorState.elevCm[idx] ?? 0;
+        const eastElev = x + 1 < w ? (editorState.elevCm[y * w + (x + 1)] ?? elev) : elev;
+        const northElev = y + 1 < h ? (editorState.elevCm[(y + 1) * w + x] ?? elev) : elev;
+        const slopeShade = ((eastElev - elev) + (northElev - elev)) / 900;
+
+        ctx.fillStyle = baseHex;
+        ctx.fillRect(px, py, Math.ceil(cellW), Math.ceil(cellH));
+
+        if (elev !== 0 || slopeShade !== 0) {
+          const lum = Math.max(-0.35, Math.min(0.35, elev / 8000 + slopeShade * 0.25));
+          if (lum > 0) {
+            ctx.fillStyle = `rgba(255, 248, 220, ${lum.toFixed(2)})`;
+            ctx.fillRect(px, py, Math.ceil(cellW), Math.ceil(cellH));
+          } else if (lum < 0) {
+            ctx.fillStyle = `rgba(8, 12, 20, ${(-lum).toFixed(2)})`;
+            ctx.fillRect(px, py, Math.ceil(cellW), Math.ceil(cellH));
+          }
+        }
+
+        if (passability) {
+          const stateCode = passability[idx];
+          if (stateCode === 0) {
+            ctx.fillStyle = 'rgba(180, 28, 28, 0.62)';
+          } else if (stateCode === 2) {
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.72)';
+          } else {
+            ctx.fillStyle = 'rgba(34, 197, 94, 0.22)';
+          }
+          ctx.fillRect(px, py, Math.ceil(cellW), Math.ceil(cellH));
+        } else if (viewshed) {
+          const vs = viewshed[idx];
+          if (vs === 0) {
+            ctx.fillStyle = 'rgba(10, 12, 18, 0.68)';
+          } else if (vs === 2) {
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.58)';
+          } else if (vs === 3) {
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.45)';
+          } else {
+            ctx.fillStyle = 'rgba(74, 222, 128, 0.28)';
+          }
+          ctx.fillRect(px, py, Math.ceil(cellW), Math.ceil(cellH));
+        }
+      }
+    }
+
+    // 2. Contour lines every 500 cm (5 m)
+    if (showContours) {
+      ctx.strokeStyle = 'rgba(255, 230, 160, 0.32)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let y = 0; y < h - 1; y++) {
+        const py = ch - (y + 1) * cellH;
+        for (let x = 0; x < w - 1; x++) {
+          const px = x * cellW;
+          const b0 = Math.floor((editorState.elevCm[y * w + x] ?? 0) / 500);
+          const bE = Math.floor((editorState.elevCm[y * w + (x + 1)] ?? 0) / 500);
+          const bN = Math.floor((editorState.elevCm[(y + 1) * w + x] ?? 0) / 500);
+          if (b0 !== bE) {
+            ctx.moveTo(px + cellW, py);
+            ctx.lineTo(px + cellW, py + cellH);
+          }
+          if (b0 !== bN) {
+            ctx.moveTo(px, py);
+            ctx.lineTo(px + cellW, py);
+          }
+        }
+      }
+      ctx.stroke();
+    }
+
+    // 3. Highlighted cells from Relax Slopes / Despeckle
+    if (highlightedCells.length > 0) {
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.48)';
+      for (const idx of highlightedCells) {
+        const x = idx % w;
+        const y = (idx - x) / w;
+        const px = x * cellW;
+        const py = ch - (y + 1) * cellH;
+        ctx.fillRect(px, py, Math.max(2, Math.ceil(cellW)), Math.max(2, Math.ceil(cellH)));
+      }
+    }
+
+    // 4. Grid lines
+    if (showGridLines && cellW >= 4) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 8) {
+        ctx.moveTo(x * cellW, 0);
+        ctx.lineTo(x * cellW, ch);
+      }
+      for (let y = 0; y <= h; y += 8) {
+        ctx.moveTo(0, y * cellH);
+        ctx.lineTo(cw, y * cellH);
+      }
+      ctx.stroke();
+    }
+
+    // 5. Entry Zones (Red & Blue)
+    for (const z of editorState.entryZones) {
+      const x0 = Math.min(z.x0, z.x1);
+      const x1 = Math.max(z.x0, z.x1);
+      const y0 = Math.min(z.y0, z.y1);
+      const y1 = Math.max(z.y0, z.y1);
+      const rx = x0 * cellW;
+      const ry = ch - (y1 + 1) * cellH;
+      const rw = (x1 - x0 + 1) * cellW;
+      const rh = (y1 - y0 + 1) * cellH;
+
+      ctx.fillStyle = z.team === 'red' ? 'rgba(220, 60, 60, 0.20)' : 'rgba(60, 140, 240, 0.20)';
+      ctx.strokeStyle = z.team === 'red' ? '#ef4444' : '#3b82f6';
+      ctx.lineWidth = 2;
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeRect(rx, ry, rw, rh);
+    }
+
+    // 6. Waypoint Graph (Edges & Nodes)
+    if (editorState.waypoints.nodes.length > 0) {
+      const nodeById = new Map<string, { x: number; y: number }>();
+      for (const n of editorState.waypoints.nodes) {
+        nodeById.set(n.id, n);
+      }
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.78)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      for (const [aId, bId] of editorState.waypoints.edges) {
+        const a = nodeById.get(aId);
+        const b = nodeById.get(bId);
+        if (!a || !b) continue;
+        ctx.moveTo((a.x + 0.5) * cellW, ch - (a.y + 0.5) * cellH);
+        ctx.lineTo((b.x + 0.5) * cellW, ch - (b.y + 0.5) * cellH);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      editorState.waypoints.nodes.forEach((n, idx) => {
+        const nx = (n.x + 0.5) * cellW;
+        const ny = ch - (n.y + 0.5) * cellH;
+        ctx.fillStyle = idx === selectedWaypointIdx ? '#facc15' : '#38bdf8';
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(nx, ny, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      });
+    }
+
+    // 7. Key Spots
+    editorState.keySpots.forEach((spot, idx) => {
+      const sx = (spot.x + 0.5) * cellW;
+      const sy = ch - (spot.y + 0.5) * cellH;
+      const letter = String.fromCharCode(65 + idx);
+      ctx.fillStyle = '#facc15';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(letter, sx, sy);
+    });
+
+    // 8. Camera Pin + FOV Wedge
+    const camX = (previewPin.x + 0.5) * cellW;
+    const camY = ch - (previewPin.y + 0.5) * cellH;
+    const rad = ((previewPin.headingDeg - 90) * Math.PI) / 180;
+    const fovHalf = (30 * Math.PI) / 180;
+    const rayLen = 42;
+
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.22)';
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(camX, camY);
+    ctx.lineTo(camX + Math.cos(rad - fovHalf) * rayLen, camY + Math.sin(rad - fovHalf) * rayLen);
+    ctx.lineTo(camX + Math.cos(rad + fovHalf) * rayLen, camY + Math.sin(rad + fovHalf) * rayLen);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(camX, camY, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 9. Hover Brush Outline
+    if (hoverCell) {
+      const [hx, hy] = hoverCell;
+      const r = activeTool === 'paint' || activeTool === 'sculpt' || activeTool === 'line' ? brushRadius : 0;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = 1.5;
+      if (brushShape === 'circle' && r > 0) {
+        ctx.beginPath();
+        ctx.arc((hx + 0.5) * cellW, ch - (hy + 0.5) * cellH, (r + 0.5) * cellW, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        const bx = (hx - r) * cellW;
+        const by = ch - (hy + r + 1) * cellH;
+        const bw = (r * 2 + 1) * cellW;
+        const bh = (r * 2 + 1) * cellH;
+        ctx.strokeRect(bx, by, bw, bh);
+      }
+    }
+  }
+
+  function renderWasmToCanvas(canvas: HTMLCanvasElement | null, kind: 'cockpit' | 'iso25d' | 'overhead') {
+    if (!engine || !canvas) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w <= 0 || h <= 0) return;
+    const wasmKind =
+      kind === 'overhead' ? KIND_OVERHEAD : kind === 'iso25d' ? KIND_ISO25D : KIND_COCKPIT;
+    const drawn = engine.render(w, h, { offsetMdeg: 0, zoomPermille: 1000 }, wasmKind);
+    if (!drawn) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.putImageData(engine.image(), 0, 0);
+  }
+
+  $effect(() => {
+    void renderTick;
+    void hoverCell;
+    void showContours;
+    void showGridLines;
+    void brushRadius;
+    void brushShape;
+    void activeTool;
+    void overlayMode;
+    void overlayDrive;
+    void viewshedSizeCm;
+    void highlightedCells;
+    draw2DGridCanvas();
+  });
+
+  $effect(() => {
+    void renderTick;
+    void previewSubMode;
+    if (!engine) return;
+    if (previewSubMode === '3d' || previewSubMode === 'split') {
+      renderWasmToCanvas(previewFpCanvas, 'cockpit');
+    }
+    if (previewSubMode === '25d' || previewSubMode === 'split') {
+      renderWasmToCanvas(preview25dCanvas, 'iso25d');
+    }
+    if (previewSubMode === 'overhead' || previewSubMode === 'split') {
+      renderWasmToCanvas(previewOverheadCanvas, 'overhead');
+    }
+  });
+
+  function handleExportDraftJson() {
+    const payload = exportGroundDraftJson(editorState);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${editorState.id || 'custom_arena'}.draft.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    statusNotice = `Exported ${editorState.id || 'custom_arena'}.draft.json (ground.draft.v1)`;
+  }
+
+  function handleImportDraftJson(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result)) as GroundDraftJson;
+        pushSnapshot();
+        editorState = importGroundDraftJson(parsed);
+        if (
+          editorState.width === 64 ||
+          editorState.width === 128 ||
+          editorState.width === 256
+        ) {
+          gridSize = editorState.width;
+        }
+        highlightedCells = [];
+        statusNotice = `Imported ${file.name} (${editorState.width}x${editorState.height})`;
+        refreshPreview();
+      } catch (err) {
+        statusNotice = `Import failed: ${(err as Error).message}`;
+      }
+    };
+    reader.readAsText(file);
+  }
+
   onMount(() => {
-    if (!localCapable()) return;
     let cancelled = false;
-    void pixelModule()
-      .then((m) => {
-        if (!cancelled) renderer = new LocalPicture(m);
+    pixelModule()
+      .then((loaded) => {
+        if (cancelled) return;
+        engine = loaded;
+        refreshPreview();
       })
       .catch(() => {
-        // Ignore in headless test environments without WASM.
+        // Fallback: 2D canvas editor still works if WASM fails to load
       });
     return () => {
       cancelled = true;
     };
   });
-
-  function pushUndo(): void {
-    undoStack = [...undoStack.slice(-(MAX_UNDO - 1)), cloneMapState(mapState)];
-    redoStack = [];
-  }
-
-  function undo(): void {
-    const prev = undoStack[undoStack.length - 1];
-    if (!prev) return;
-    redoStack = [...redoStack, cloneMapState(mapState)];
-    undoStack = undoStack.slice(0, -1);
-    mapState = prev;
-  }
-
-  function redo(): void {
-    const next = redoStack[redoStack.length - 1];
-    if (!next) return;
-    undoStack = [...undoStack, cloneMapState(mapState)];
-    redoStack = redoStack.slice(0, -1);
-    mapState = next;
-  }
-
-  function applyPreset(): void {
-    pushUndo();
-    mapState = generatePresetMap(preset, presetSize, presetSize, seed);
-    statusMsg = `Generated ${mapState.label} (${mapState.width}×${mapState.height}, seed ${seed}).`;
-  }
-
-  function setBiome(biome: BiomeId): void {
-    mapState = { ...mapState, biome };
-  }
-
-  function rotateCamera(deltaDeg: number): void {
-    const next = (mapState.camera.headingDeg + deltaDeg + 360) % 360;
-    mapState = {
-      ...mapState,
-      camera: { ...mapState.camera, headingDeg: next },
-    };
-  }
-
-  function cyclePreviewView(): void {
-    previewView =
-      previewView === "cockpit"
-        ? "iso25d"
-        : previewView === "iso25d"
-          ? "overhead"
-          : "cockpit";
-  }
-
-  function cellFromMouse(ev: MouseEvent): [number, number] | null {
-    const c = gridCanvas;
-    const px = cellPx;
-    if (!c || px <= 0) return null;
-    const rect = c.getBoundingClientRect();
-    const scaleX = rect.width > 0 ? c.width / rect.width : 1;
-    const scaleY = rect.height > 0 ? c.height / rect.height : 1;
-    const mx = (ev.clientX - rect.left) * scaleX;
-    const my = (ev.clientY - rect.top) * scaleY;
-    const col = Math.floor(mx / px);
-    const rowFromNorth = Math.floor(my / px);
-    const y = mapState.height - 1 - rowFromNorth;
-    if (col < 0 || col >= mapState.width || y < 0 || y >= mapState.height) return null;
-    return [col, y];
-  }
-
-  function applySingleCellAction(x: number, y: number): void {
-    if (tool === "eyedrop") {
-      const idx = y * mapState.width + x;
-      terrainCode = mapState.classes[idx] ?? 3;
-      targetElevCm = mapState.elevCm[idx] ?? 0;
-      statusMsg = `Sampled ${terrainByCode(terrainCode).label} at (${x}, ${y}), elev ${(targetElevCm / 100).toFixed(2)} m.`;
-      return;
-    }
-    if (tool === "camera") {
-      mapState = {
-        ...mapState,
-        camera: { ...mapState.camera, x, y },
-      };
-      return;
-    }
-    if (tool === "spot") {
-      const letter = spotLetter.trim().slice(0, 1).toUpperCase() || "A";
-      const name = spotName.trim() || `Spot ${letter}`;
-      const existing = mapState.spots.filter(
-        (s) => s.letter !== letter && (s.cell[0] !== x || s.cell[1] !== y),
-      );
-      mapState = {
-        ...mapState,
-        spots: [...existing, { letter, name, cell: [x, y] }],
-      };
-      statusMsg = `Placed spot ${letter} (${name}) at (${x}, ${y}).`;
-      return;
-    }
-    if (tool === "fill") {
-      const next = cloneMapState(mapState);
-      applyFloodFill(next, x, y, terrainCode);
-      mapState = next;
-      return;
-    }
-    if (
-      tool === "paint" ||
-      tool === "raise" ||
-      tool === "lower" ||
-      tool === "flatten" ||
-      tool === "smooth"
-    ) {
-      const next = cloneMapState(mapState);
-      applyBrushDab(next, x, y, {
-        tool,
-        terrainCode,
-        radius: brushRadius,
-        shape: brushShape,
-        densityPct,
-        elevStepCm,
-        targetElevCm,
-        strokeSeed,
-      });
-      mapState = next;
-    }
-  }
-
-  function onCanvasPointerDown(ev: MouseEvent): void {
-    const cell = cellFromMouse(ev);
-    if (!cell) return;
-    hoverCell = cell;
-    // Shift+Click anywhere moves/aims the 3D preview camera pin immediately.
-    if (ev.shiftKey) {
-      mapState = {
-        ...mapState,
-        camera: { ...mapState.camera, x: cell[0], y: cell[1] },
-      };
-      return;
-    }
-    if (ev.altKey) {
-      const idx = cell[1] * mapState.width + cell[0];
-      terrainCode = mapState.classes[idx] ?? 3;
-      targetElevCm = mapState.elevCm[idx] ?? 0;
-      return;
-    }
-    if (tool !== "eyedrop" && tool !== "camera") {
-      pushUndo();
-    }
-    strokeSeed = (strokeSeed + 37) % 10000;
-    isDragging = true;
-    dragStart = cell;
-    if (
-      tool === "paint" ||
-      tool === "raise" ||
-      tool === "lower" ||
-      tool === "flatten" ||
-      tool === "smooth" ||
-      tool === "fill" ||
-      tool === "eyedrop" ||
-      tool === "spot" ||
-      tool === "camera"
-    ) {
-      applySingleCellAction(cell[0], cell[1]);
-    }
-  }
-
-  function onCanvasPointerMove(ev: MouseEvent): void {
-    const cell = cellFromMouse(ev);
-    hoverCell = cell;
-    if (!isDragging || !cell) return;
-    if (
-      tool === "paint" ||
-      tool === "raise" ||
-      tool === "lower" ||
-      tool === "flatten" ||
-      tool === "smooth" ||
-      tool === "camera"
-    ) {
-      strokeSeed = (strokeSeed + 13) % 10000;
-      applySingleCellAction(cell[0], cell[1]);
-    }
-  }
-
-  function onCanvasPointerUp(ev: MouseEvent): void {
-    if (!isDragging) return;
-    const endCell = cellFromMouse(ev) ?? hoverCell;
-    const start = dragStart;
-    isDragging = false;
-    dragStart = null;
-    if (!start || !endCell) return;
-
-    if (tool === "line") {
-      const next = cloneMapState(mapState);
-      applyLineStroke(next, start[0], start[1], endCell[0], endCell[1], {
-        tool: "paint",
-        terrainCode,
-        radius: brushRadius,
-        shape: brushShape,
-        densityPct: 100,
-        elevStepCm,
-        targetElevCm,
-      });
-      mapState = next;
-    } else if (tool === "ramp") {
-      const next = cloneMapState(mapState);
-      applyRampStroke(
-        next,
-        start[0],
-        start[1],
-        endCell[0],
-        endCell[1],
-        brushRadius,
-        rampPavesRoad ? 7 : null,
-      );
-      mapState = next;
-      statusMsg = `Carved graded ramp from (${start[0]}, ${start[1]}) to (${endCell[0]}, ${endCell[1]}).`;
-    } else if (tool === "rect") {
-      const next = cloneMapState(mapState);
-      applyRectStroke(
-        next,
-        start[0],
-        start[1],
-        endCell[0],
-        endCell[1],
-        terrainCode,
-        hollowRect,
-      );
-      mapState = next;
-    } else if (tool === "muster_red" || tool === "muster_blue") {
-      const x0 = Math.min(start[0], endCell[0]);
-      const y0 = Math.min(start[1], endCell[1]);
-      const x1 = Math.max(start[0], endCell[0]);
-      const y1 = Math.max(start[1], endCell[1]);
-      if (tool === "muster_red") {
-        mapState = {
-          ...mapState,
-          redMuster: { ...mapState.redMuster, rect: [x0, y0, x1, y1] },
-        };
-      } else {
-        mapState = {
-          ...mapState,
-          blueMuster: { ...mapState.blueMuster, rect: [x0, y0, x1, y1] },
-        };
-      }
-    }
-  }
-
-  function adjustLightness(hex: string, delta: number): string {
-    if (!hex.startsWith("#") || hex.length !== 7 || delta === 0) return hex;
-    const r = Math.max(0, Math.min(255, parseInt(hex.slice(1, 3), 16) + delta));
-    const g = Math.max(0, Math.min(255, parseInt(hex.slice(3, 5), 16) + delta));
-    const b = Math.max(0, Math.min(255, parseInt(hex.slice(5, 7), 16) + delta));
-    return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
-  }
-
-  // Draw the 2D Editing Grid + Elevation Shading + Muster/Spot overlays + Unity Brush Gizmo.
-  $effect(() => {
-    const c = gridCanvas;
-    const st = mapState;
-    const px = cellPx;
-    if (!c || px <= 0) return;
-    c.width = st.width * px;
-    c.height = st.height * px;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, c.width, c.height);
-
-    const palette = biomeTerrainColours(st.biome);
-    for (let y = 0; y < st.height; y += 1) {
-      const screenRow = st.height - 1 - y;
-      const py = screenRow * px;
-      for (let x = 0; x < st.width; x += 1) {
-        const idx = y * st.width + x;
-        const code = st.classes[idx] ?? 0;
-        const glyph = terrainByCode(code).glyph;
-        const base = palette[glyph] ?? "#22262c";
-        if (base === "transparent") continue;
-        let fill = base;
-        if (showContours) {
-          const elev = st.elevCm[idx] ?? 0;
-          const west = x > 0 ? (st.elevCm[idx - 1] ?? elev) : elev;
-          const north = y + 1 < st.height ? (st.elevCm[idx + st.width] ?? elev) : elev;
-          const slopeShade = Math.round(((west - elev) + (elev - north)) * 0.35);
-          const heightShade = Math.round(elev * 0.04);
-          fill = adjustLightness(base, slopeShade + heightShade);
-        }
-        ctx.fillStyle = fill;
-        ctx.fillRect(x * px, py, px, px);
-
-        // Contour line on 100cm (1m) boundaries when showContours is active.
-        if (showContours) {
-          const elev = st.elevCm[idx] ?? 0;
-          const band = Math.floor(elev / 100);
-          const eastBand = x + 1 < st.width ? Math.floor((st.elevCm[idx + 1] ?? elev) / 100) : band;
-          const northBand =
-            y + 1 < st.height ? Math.floor((st.elevCm[idx + st.width] ?? elev) / 100) : band;
-          if (band !== eastBand || band !== northBand) {
-            ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
-            ctx.fillRect(x * px, py, px, 1);
-          }
-        }
-      }
-    }
-
-    // Grid lines
-    if (showGridLines && px >= 5) {
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
-      ctx.lineWidth = 1;
-      for (let x = 0; x <= st.width; x += 1) {
-        if (x % 8 === 0) continue;
-        ctx.beginPath();
-        ctx.moveTo(x * px, 0);
-        ctx.lineTo(x * px, c.height);
-        ctx.stroke();
-      }
-      for (let y = 0; y <= st.height; y += 1) {
-        if (y % 8 === 0) continue;
-        ctx.beginPath();
-        ctx.moveTo(0, y * px);
-        ctx.lineTo(c.width, y * px);
-        ctx.stroke();
-      }
-      // 8-cell sector lines
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
-      for (let x = 0; x <= st.width; x += 8) {
-        ctx.beginPath();
-        ctx.moveTo(x * px, 0);
-        ctx.lineTo(x * px, c.height);
-        ctx.stroke();
-      }
-      for (let y = 0; y <= st.height; y += 8) {
-        ctx.beginPath();
-        ctx.moveTo(0, y * px);
-        ctx.lineTo(c.width, y * px);
-        ctx.stroke();
-      }
-    }
-
-    // Muster boxes
-    const drawMuster = (rect: [number, number, number, number], colour: string, tag: string) => {
-      const [x0, y0, x1, y1] = rect;
-      const left = Math.min(x0, x1) * px;
-      const top = (st.height - 1 - Math.max(y0, y1)) * px;
-      const w = (Math.abs(x1 - x0) + 1) * px;
-      const h = (Math.abs(y1 - y0) + 1) * px;
-      ctx.strokeStyle = colour;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(left + 1, top + 1, Math.max(2, w - 2), Math.max(2, h - 2));
-      ctx.fillStyle = colour;
-      ctx.font = "bold 10px ui-monospace, monospace";
-      ctx.fillText(tag, left + 4, top + 11);
-    };
-    drawMuster(st.redMuster.rect, "#e05a5a", "RED");
-    drawMuster(st.blueMuster.rect, "#4f7fd1", "BLUE");
-
-    // Named spots
-    for (const spot of st.spots) {
-      const cx = spot.cell[0] * px + px / 2;
-      const cy = (st.height - 1 - spot.cell[1]) * px + px / 2;
-      const side = Math.max(5, px * 0.9);
-      ctx.strokeStyle = "#d8c8a0";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(cx - side / 2, cy - side / 2, side, side);
-      ctx.fillStyle = "#d8c8a0";
-      ctx.font = "10px ui-monospace, monospace";
-      ctx.fillText(`${spot.letter}:${spot.name}`, cx + side * 0.7, cy + 3);
-    }
-
-    // 3D Preview Camera Pin (`@`) + FOV wedge
-    {
-      const cx = st.camera.x * px + px / 2;
-      const cy = (st.height - 1 - st.camera.y) * px + px / 2;
-      const rad = (st.camera.headingDeg * Math.PI) / 180;
-      const coneLen = Math.max(18, px * 3.5);
-      const halfFov = 0.52;
-      ctx.strokeStyle = "rgba(242, 201, 76, 0.75)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.sin(rad - halfFov) * coneLen, cy - Math.cos(rad - halfFov) * coneLen);
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.sin(rad + halfFov) * coneLen, cy - Math.cos(rad + halfFov) * coneLen);
-      ctx.stroke();
-
-      ctx.fillStyle = "#f2c94c";
-      ctx.beginPath();
-      ctx.arc(cx, cy, Math.max(3.5, px * 0.55), 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Live Brush / Drag Gizmo Overlay
-    if (hoverCell) {
-      const [hx, hy] = hoverCell;
-      ctx.strokeStyle = "#56ccf2";
-      ctx.lineWidth = 1.5;
-      if (isDragging && dragStart && (tool === "line" || tool === "ramp")) {
-        for (const [lx, ly] of bresenhamCells(dragStart[0], dragStart[1], hx, hy)) {
-          const sy = st.height - 1 - ly;
-          ctx.strokeRect(lx * px, sy * px, px, px);
-        }
-      } else if (
-        isDragging &&
-        dragStart &&
-        (tool === "rect" || tool === "muster_red" || tool === "muster_blue")
-      ) {
-        const minX = Math.min(dragStart[0], hx);
-        const maxX = Math.max(dragStart[0], hx);
-        const minY = Math.min(dragStart[1], hy);
-        const maxY = Math.max(dragStart[1], hy);
-        const top = (st.height - 1 - maxY) * px;
-        ctx.strokeRect(
-          minX * px,
-          top,
-          (maxX - minX + 1) * px,
-          (maxY - minY + 1) * px,
-        );
-      } else {
-        const pts = brushFootprint(hx, hy, brushRadius, brushShape, st.width, st.height);
-        for (const p of pts) {
-          const sy = st.height - 1 - p.y;
-          ctx.strokeRect(p.x * px + 0.5, sy * px + 0.5, Math.max(1, px - 1), Math.max(1, px - 1));
-        }
-      }
-    }
-  });
-
-  // Render the live 3D / 2.5D / Overhead preview via `mush-pixel-wasm`.
-  $effect(() => {
-    const r = renderer;
-    const c = previewCanvas;
-    const st = mapState;
-    const mode = previewView;
-    if (!r || !c) return;
-    const feeds = editorToPictureFeeds(st);
-    r.forget();
-    if (!r.draw(feeds.cockpit, feeds.map, 0, mode)) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    ctx.putImageData(r.image(), 0, 0);
-  });
-
-  function openExportDrawer(): void {
-    jsonBuffer = JSON.stringify(exportArenaDefJson(mapState), null, 2);
-    showExportDrawer = !showExportDrawer;
-  }
-
-  function importFromBuffer(): void {
-    try {
-      const parsed = JSON.parse(jsonBuffer) as unknown;
-      const loaded = importArenaDefJson(parsed, mapState.id);
-      if (!loaded) {
-        statusMsg = "Invalid ArenaDef JSON or tile base64 payload.";
-        return;
-      }
-      pushUndo();
-      mapState = loaded;
-      statusMsg = `Imported ${loaded.label} (${loaded.width}×${loaded.height}, biome ${loaded.biome}).`;
-    } catch {
-      statusMsg = "Could not parse JSON.";
-    }
-  }
-
-  function prefillAtlasWindow(): void {
-    app.focusComposer(`@atlas/window open 0,0,${mapState.width * 10},${mapState.height * 10}=${mapState.cellCm}`);
-  }
 </script>
 
-<div class="studio" aria-label="terrain and arena studio">
-  <!-- Top Control Bar -->
-  <div class="studio-bar">
-    <label class="field">
-      <span>Preset</span>
-      <select bind:value={preset} aria-label="map preset">
-        <option value="proving_ground">Proving Ground (Temperate)</option>
-        <option value="mars_canyon">Ares Canyon (Mars)</option>
-        <option value="lunar_crater">Tycho Crater (Lunar)</option>
-        <option value="ice_glacier">Europa Shelf (Ice)</option>
-        <option value="urban_compound">Forward Compound (Urban)</option>
-        <option value="blank">Blank Grid</option>
-      </select>
-    </label>
-    <label class="field">
-      <span>Size</span>
-      <select bind:value={presetSize} aria-label="grid size">
-        <option value={32}>32×32</option>
-        <option value={64}>64×64</option>
-        <option value={96}>96×96</option>
-      </select>
-    </label>
-    <label class="field">
-      <span>Seed</span>
-      <input type="number" class="num" bind:value={seed} aria-label="generator seed" />
-    </label>
-    <button type="button" class="btn primary" onclick={applyPreset}>Generate Base</button>
+<div class="studio-shell" data-testid="map-editor-studio">
+  <!-- Top Toolbar -->
+  <header class="studio-header">
+    <div class="studio-brand">
+      <span class="studio-badge">GROUND.DRAFT.V1</span>
+      <input
+        class="studio-title-input"
+        type="text"
+        bind:value={editorState.label}
+        aria-label="Arena label"
+      />
+      <input
+        class="studio-id-input"
+        type="text"
+        bind:value={editorState.id}
+        aria-label="Arena ID"
+        title="Arena ID"
+      />
+    </div>
 
-    <span class="sep"></span>
+    <div class="studio-controls">
+      <label class="ctrl-item">
+        <span>Biome</span>
+        <select
+          value={editorState.biome}
+          onchange={(e) => handleBiomeChange((e.currentTarget as HTMLSelectElement).value as BiomeName)}
+        >
+          {#each BIOME_OPTIONS as b (b)}
+            <option value={b}>{b.toUpperCase()}</option>
+          {/each}
+        </select>
+      </label>
 
-    <label class="field">
-      <span>Biome</span>
-      <select
-        value={mapState.biome}
-        aria-label="biome palette"
-        onchange={(ev) => setBiome((ev.currentTarget as HTMLSelectElement).value as BiomeId)}
-      >
-        <option value="temperate">Temperate</option>
-        <option value="mars">Mars</option>
-        <option value="lunar">Lunar</option>
-        <option value="ice">Ice</option>
-      </select>
-    </label>
+      <label class="ctrl-item">
+        <span>Grid</span>
+        <select
+          value={gridSize}
+          onchange={(e) =>
+            handleNewMap(
+              Number((e.currentTarget as HTMLSelectElement).value) as 64 | 128 | 256,
+              editorState.biome
+            )}
+        >
+          <option value={64}>64×64 (640m)</option>
+          <option value={128}>128×128 (1.28km)</option>
+          <option value={256}>256×256 (2.56km)</option>
+        </select>
+      </label>
 
-    <label class="chk">
-      <input type="checkbox" bind:checked={showGridLines} />
-      Grid
-    </label>
-    <label class="chk">
-      <input type="checkbox" bind:checked={showContours} />
-      Relief Shading
-    </label>
+      <button type="button" class="btn" disabled={!canUndo} onclick={handleUndo} title="Undo">
+        Undo
+      </button>
+      <button type="button" class="btn" disabled={!canRedo} onclick={handleRedo} title="Redo">
+        Redo
+      </button>
 
-    <span class="grow"></span>
+      <button type="button" class="btn" onclick={handleLoadServerDraft} title="Load draft from server">
+        Load Server Draft
+      </button>
 
-    <button type="button" class="btn" disabled={undoStack.length === 0} onclick={undo}>
-      Undo ({undoStack.length})
-    </button>
-    <button type="button" class="btn" disabled={redoStack.length === 0} onclick={redo}>
-      Redo ({redoStack.length})
-    </button>
-    <button type="button" class="btn" onclick={openExportDrawer}>
-      {showExportDrawer ? "Hide JSON" : "Import / Export JSON"}
-    </button>
-    <button type="button" class="btn" onclick={prefillAtlasWindow}>
-      @atlas/window
-    </button>
-  </div>
+      <button type="button" class="btn btn-primary" onclick={handleExportDraftJson}>
+        Export Draft
+      </button>
+      <label class="btn file-btn">
+        Import Draft
+        <input type="file" accept=".json" onchange={handleImportDraftJson} hidden />
+      </label>
+    </div>
+  </header>
 
-  {#if statusMsg}
-    <p class="status-banner">{statusMsg}</p>
-  {/if}
-
-  <div class="studio-main">
-    <!-- Left Dock: Unity-style Toolbrushes & Terrain Palette -->
-    <aside class="dock-left" aria-label="brush tools">
-      <section class="panel-box">
-        <h4>Toolbrushes</h4>
+  <div class="studio-body">
+    <!-- Left Dock: Tools, Brushes, Overlays & Terrain Swatches -->
+    <aside class="studio-dock-left">
+      <section class="dock-section">
+        <h3>Tools</h3>
         <div class="tool-grid">
-          <button type="button" class:active={tool === "paint"} onclick={() => (tool = "paint")}>
-            🖌 Paint
-          </button>
-          <button type="button" class:active={tool === "raise"} onclick={() => (tool = "raise")}>
-            ▲ Raise Elev
-          </button>
-          <button type="button" class:active={tool === "lower"} onclick={() => (tool = "lower")}>
-            ▼ Lower Elev
-          </button>
-          <button type="button" class:active={tool === "flatten"} onclick={() => (tool = "flatten")}>
-            ▬ Flatten Mesa
-          </button>
-          <button type="button" class:active={tool === "smooth"} onclick={() => (tool = "smooth")}>
-            ≈ Smooth
-          </button>
-          <button type="button" class:active={tool === "ramp"} onclick={() => (tool = "ramp")}>
-            ⟋ Carve Ramp
-          </button>
-          <button type="button" class:active={tool === "line"} onclick={() => (tool = "line")}>
-            ╱ Line / Road
-          </button>
-          <button type="button" class:active={tool === "rect"} onclick={() => (tool = "rect")}>
-            ▭ Rectangle
-          </button>
-          <button type="button" class:active={tool === "fill"} onclick={() => (tool = "fill")}>
-            ▣ Flood Fill
-          </button>
-          <button type="button" class:active={tool === "eyedrop"} onclick={() => (tool = "eyedrop")}>
-            ⌖ Eyedropper
-          </button>
-          <button type="button" class:active={tool === "spot"} onclick={() => (tool = "spot")}>
-            ⚑ Place Spot
+          <button
+            type="button"
+            class="tool-btn"
+            class:active={activeTool === 'paint'}
+            onclick={() => (activeTool = 'paint')}
+          >
+            Paint
           </button>
           <button
             type="button"
-            class:active={tool === "muster_red"}
-            onclick={() => (tool = "muster_red")}
+            class="tool-btn"
+            class:active={activeTool === 'line'}
+            onclick={() => (activeTool = 'line')}
           >
-            R Red Muster
+            Line
           </button>
           <button
             type="button"
-            class:active={tool === "muster_blue"}
-            onclick={() => (tool = "muster_blue")}
+            class="tool-btn"
+            class:active={activeTool === 'fill'}
+            onclick={() => (activeTool = 'fill')}
           >
-            B Blue Muster
+            Fill
           </button>
-          <button type="button" class:active={tool === "camera"} onclick={() => (tool = "camera")}>
-            @ 3D Camera
+          <button
+            type="button"
+            class="tool-btn"
+            class:active={activeTool === 'sculpt'}
+            onclick={() => (activeTool = 'sculpt')}
+          >
+            Sculpt
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
+            class:active={activeTool === 'spot'}
+            onclick={() => (activeTool = 'spot')}
+          >
+            Key Spot
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
+            class:active={activeTool === 'waypoint'}
+            onclick={() => (activeTool = 'waypoint')}
+          >
+            Waypoints
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
+            class:active={activeTool === 'camera_pin'}
+            onclick={() => (activeTool = 'camera_pin')}
+          >
+            3D Pin
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
+            class:active={activeTool === 'zone_red'}
+            onclick={() => (activeTool = 'zone_red')}
+          >
+            Red Zone
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
+            class:active={activeTool === 'zone_blue'}
+            onclick={() => (activeTool = 'zone_blue')}
+          >
+            Blue Zone
           </button>
         </div>
       </section>
 
-      <section class="panel-box">
-        <h4>Brush Settings</h4>
-        <div class="shape-row">
-          <span>Shape:</span>
-          <button
-            type="button"
-            class:active={brushShape === "circle"}
-            onclick={() => (brushShape = "circle")}>● Circle</button
-          >
-          <button
-            type="button"
-            class:active={brushShape === "square"}
-            onclick={() => (brushShape = "square")}>■ Square</button
-          >
-          <button
-            type="button"
-            class:active={brushShape === "diamond"}
-            onclick={() => (brushShape = "diamond")}>◆ Diamond</button
-          >
-        </div>
-        <label class="slider-row">
-          <span>Brush Radius: <strong>{brushRadius}</strong> ({brushRadius * 2 - 1}×{brushRadius * 2 - 1})</span>
-          <input type="range" min="1" max="8" bind:value={brushRadius} aria-label="brush radius" />
-        </label>
-        {#if tool === "paint"}
-          <label class="slider-row">
-            <span>Scatter Density: <strong>{densityPct}%</strong></span>
-            <input type="range" min="10" max="100" step="5" bind:value={densityPct} />
-          </label>
-        {/if}
-        {#if tool === "raise" || tool === "lower"}
-          <label class="slider-row">
-            <span>Sculpt Step: <strong>{(elevStepCm / 100).toFixed(2)} m</strong></span>
-            <input type="range" min="10" max="100" step="5" bind:value={elevStepCm} />
-          </label>
-        {/if}
-        {#if tool === "flatten"}
-          <label class="slider-row">
-            <span>Mesa Target: <strong>{(targetElevCm / 100).toFixed(2)} m</strong></span>
-            <input type="range" min="-300" max="800" step="20" bind:value={targetElevCm} />
-          </label>
-        {/if}
-        {#if tool === "rect"}
-          <label class="chk">
-            <input type="checkbox" bind:checked={hollowRect} />
-            Hollow perimeter walls only
-          </label>
-        {/if}
-        {#if tool === "ramp"}
-          <label class="chk">
-            <input type="checkbox" bind:checked={rampPavesRoad} />
-            Pave ramp with Road (`=`)
-          </label>
-        {/if}
-        {#if tool === "spot"}
-          <div class="spot-inputs">
-            <input
-              type="text"
-              maxlength="1"
-              class="spot-letter"
-              bind:value={spotLetter}
-              aria-label="spot letter"
-            />
-            <input
-              type="text"
-              maxlength="32"
-              class="spot-name"
-              bind:value={spotName}
-              placeholder="Spot name"
-              aria-label="spot name"
-            />
-          </div>
-        {/if}
-      </section>
-
-      <section class="panel-box">
-        <h4>Terrain Palette</h4>
-        <div class="swatch-grid">
-          {#each EDITOR_TERRAINS.filter((t) => t.code !== 0) as t (t.code)}
-            {@const col = biomeTerrainColours(mapState.biome)[t.glyph] ?? "#333"}
+      <section class="dock-section">
+        <h3>Brush Settings</h3>
+        <div class="brush-row">
+          <span>Shape</span>
+          <div class="pill-group">
             <button
               type="button"
-              class="swatch-btn"
-              class:active={terrainCode === t.code}
+              class="pill"
+              class:active={brushShape === 'circle'}
+              onclick={() => (brushShape = 'circle')}
+            >
+              Circle
+            </button>
+            <button
+              type="button"
+              class="pill"
+              class:active={brushShape === 'square'}
+              onclick={() => (brushShape = 'square')}
+            >
+              Square
+            </button>
+          </div>
+        </div>
+        <label class="slider-row">
+          <span>Radius: {brushRadius} cells</span>
+          <input type="range" min="0" max="16" step="1" bind:value={brushRadius} />
+        </label>
+
+        {#if activeTool === 'sculpt'}
+          <div class="brush-row">
+            <span>Mode</span>
+            <select bind:value={sculptMode}>
+              <option value="raise">Raise (+)</option>
+              <option value="lower">Lower (-)</option>
+              <option value="smooth">Smooth</option>
+              <option value="flatten">Flatten to Target</option>
+            </select>
+          </div>
+          <label class="slider-row">
+            <span>Step: {(brushStrengthCm / 100).toFixed(1)} m</span>
+            <input type="range" min="25" max="1000" step="25" bind:value={brushStrengthCm} />
+          </label>
+          {#if sculptMode === 'flatten'}
+            <label class="slider-row">
+              <span>Target: {(brushTargetElevCm / 100).toFixed(1)} m</span>
+              <input
+                type="range"
+                min={DEFAULT_SLIDER_MIN_ELEV_CM}
+                max={DEFAULT_SLIDER_MAX_ELEV_CM}
+                step="100"
+                bind:value={brushTargetElevCm}
+              />
+            </label>
+          {/if}
+          <label class="check-row">
+            <input type="checkbox" bind:checked={relaxToPassable} />
+            <span>Relax stroke to passable (≤45%)</span>
+          </label>
+        {/if}
+
+        <label class="check-row">
+          <input type="checkbox" bind:checked={showContours} />
+          <span>Show 5m Contour Lines</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={showGridLines} />
+          <span>Show Sector Grid</span>
+        </label>
+      </section>
+
+      <section class="dock-section">
+        <h3>Canvas Overlays & Repair</h3>
+        <div class="brush-row">
+          <span>Overlay</span>
+          <select bind:value={overlayMode}>
+            <option value="none">None</option>
+            <option value="passability">Passability (§5)</option>
+            <option value="viewshed">Viewshed (Camera Pin)</option>
+          </select>
+        </div>
+        {#if overlayMode === 'passability'}
+          <div class="brush-row">
+            <span>Drive</span>
+            <select bind:value={overlayDrive}>
+              <option value="tracked">Tracked (≤45%)</option>
+              <option value="wheeled">Wheeled (≤25%)</option>
+              <option value="legged">Legged (≤70%)</option>
+            </select>
+          </div>
+        {:else if overlayMode === 'viewshed'}
+          <label class="slider-row">
+            <span>Target Hull: {(viewshedSizeCm / 100).toFixed(1)} m</span>
+            <input type="range" min="50" max="600" step="25" bind:value={viewshedSizeCm} />
+          </label>
+        {/if}
+
+        <div class="repair-btn-row">
+          <button
+            type="button"
+            class="btn"
+            onclick={handleRelaxSlopes}
+            title="Pull steep orthogonal edges down to ≤45% (roads ≤20%)"
+          >
+            Relax Slopes
+          </button>
+          <button
+            type="button"
+            class="btn"
+            onclick={handleDespeckle}
+            title="Replace non-built class islands under 3 cells with their majority neighbour"
+          >
+            Despeckle
+          </button>
+          <button
+            type="button"
+            class="btn"
+            onclick={handleAutoRoute}
+            title="Synthesize patrol waypoints over the tracked cost grid"
+          >
+            Auto-Route
+          </button>
+        </div>
+        {#if lastRepairNotice}
+          <div class="repair-notice">{lastRepairNotice}</div>
+        {/if}
+      </section>
+
+      <section class="dock-section swatch-section">
+        <h3>Terrain Palette</h3>
+        <div class="swatch-list">
+          {#each TERRAIN_PALETTE as swatch (swatch.code)}
+            <button
+              type="button"
+              class="swatch-item"
+              class:active={selectedClass === swatch.code}
               onclick={() => {
-                terrainCode = t.code;
-                if (
-                  tool !== "paint" &&
-                  tool !== "line" &&
-                  tool !== "rect" &&
-                  tool !== "fill"
-                ) {
-                  tool = "paint";
+                selectedClass = swatch.code;
+                if (activeTool !== 'paint' && activeTool !== 'line' && activeTool !== 'fill') {
+                  activeTool = 'paint';
                 }
               }}
             >
-              <span class="swatch-chip" style="background: {col}">{t.glyph}</span>
-              <span class="swatch-label">{t.label}</span>
+              <span class="swatch-color" style:background={swatch.color}>{swatch.glyph}</span>
+              <span class="swatch-label">{swatch.label}</span>
             </button>
           {/each}
         </div>
       </section>
     </aside>
 
-    <!-- Center Viewport: 2D Editing Grid -->
-    <section class="grid-pane" aria-label="editing grid">
-      <header class="pane-head">
-        <strong>{mapState.label}</strong>
-        <span class="muted">
-          {mapState.width}×{mapState.height} cells ({(mapState.width * mapState.cellCm) / 100}m ×
-          {(mapState.height * mapState.cellCm) / 100}m) · {mapState.biome}
-        </span>
-      </header>
-      <div class="grid-scroll">
+    <!-- Center: Interactive 2D Grid & Elevation Canvas -->
+    <main class="studio-canvas-stage">
+      <div class="canvas-frame">
         <canvas
           bind:this={gridCanvas}
+          width={512}
+          height={512}
+          class="editor-grid-canvas"
           aria-label="map editor canvas"
-          style="width: {mapState.width * cellPx}px; height: {mapState.height * cellPx}px"
           onmousedown={onCanvasPointerDown}
           onmousemove={onCanvasPointerMove}
           onmouseup={onCanvasPointerUp}
-          onmouseleave={() => {
-            hoverCell = null;
-            isDragging = false;
-          }}
+          onmouseleave={onCanvasPointerUp}
         ></canvas>
       </div>
-      <footer class="cell-readout">
-        {#if hoveredInfo}
-          <span>Cell <strong>({hoveredInfo.x}, {hoveredInfo.y})</strong></span>
-          <span>Terrain: <code>{hoveredInfo.terrain.glyph}</code> {hoveredInfo.terrain.label}</span>
-          <span>Elev: <strong>{hoveredInfo.elevM} m</strong></span>
-          <span>Grade: <strong>{hoveredInfo.gradePct}%</strong></span>
+      <footer class="canvas-hud">
+        {#if hoverCell}
+          {@const idx = hoverCell[1] * editorState.width + hoverCell[0]}
+          {@const code = editorState.classes[idx] ?? 2}
+          {@const elev = editorState.elevCm[idx] ?? 0}
+          {@const swatch = TERRAIN_PALETTE.find((s) => s.code === code)}
+          <span>Cell ({hoverCell[0]}, {hoverCell[1]})</span>
+          <span>Class: {swatch?.label ?? 'Ground'}</span>
+          <span>Elev: {(elev / 100).toFixed(2)} m</span>
         {:else}
-          <span class="muted">
-            Hover or drag on the grid to paint/sculpt · Shift+Click moves the @ 3D camera · Alt+Click samples cell
-          </span>
+          <span>Drag on canvas to paint or sculpt; Shift-click waypoints to connect edges.</span>
+        {/if}
+        {#if statusNotice}
+          <span class="status-notice">{statusNotice}</span>
         {/if}
       </footer>
-    </section>
+    </main>
 
-    <!-- Right Dock: Live 3D / 2.5D / Overhead Preview -->
-    <aside class="dock-right" aria-label="live 3d preview">
-      <section class="panel-box">
-        <header class="preview-head">
-          <h4>Live 3D / 2.5D Preview</h4>
-          <button type="button" class="btn small" onclick={cyclePreviewView}>
-            View: {previewView === "cockpit"
-              ? "1st-Person 3D"
-              : previewView === "iso25d"
-                ? "2.5D Tactical"
-                : "Overhead"}
+    <!-- Right Dock: Live 3D / 2.5D / Overhead WASM Preview & §5 Check Report -->
+    <aside class="studio-dock-right">
+      <div class="preview-header">
+        <h3>Live Engine Preview</h3>
+        <div class="pill-group">
+          <button
+            type="button"
+            class="pill"
+            class:active={previewSubMode === 'split'}
+            onclick={() => (previewSubMode = 'split')}
+          >
+            All
           </button>
-        </header>
-        <canvas
-          bind:this={previewCanvas}
-          width={FRAME_W}
-          height={FRAME_H}
-          class="preview-canvas"
-          aria-label="live 3d preview canvas"
-        ></canvas>
-        <div class="cam-controls">
-          <span class="muted">
-            Cam @ ({mapState.camera.x}, {mapState.camera.y}) · {mapState.camera.headingDeg}°
-          </span>
-          <span class="grow"></span>
-          <button type="button" class="btn small" onclick={() => rotateCamera(-22)}>↺ -22°</button>
-          <button type="button" class="btn small" onclick={() => rotateCamera(22)}>↻ +22°</button>
           <button
             type="button"
-            class="btn small"
-            onclick={() => (mapState = { ...mapState, camera: { ...mapState.camera, headingDeg: 0 } })}
-            >N</button
+            class="pill"
+            class:active={previewSubMode === '3d'}
+            onclick={() => (previewSubMode = '3d')}
           >
+            1st-Person
+          </button>
           <button
             type="button"
-            class="btn small"
-            onclick={() => (mapState = { ...mapState, camera: { ...mapState.camera, headingDeg: 90 } })}
-            >E</button
+            class="pill"
+            class:active={previewSubMode === '25d'}
+            onclick={() => (previewSubMode = '25d')}
           >
+            2.5D
+          </button>
           <button
             type="button"
-            class="btn small"
-            onclick={() =>
-              (mapState = { ...mapState, camera: { ...mapState.camera, headingDeg: 180 } })}
-            >S</button
+            class="pill"
+            class:active={previewSubMode === 'overhead'}
+            onclick={() => (previewSubMode = 'overhead')}
           >
-          <button
-            type="button"
-            class="btn small"
-            onclick={() =>
-              (mapState = { ...mapState, camera: { ...mapState.camera, headingDeg: 270 } })}
-            >W</button
-          >
+            Overhead
+          </button>
         </div>
+      </div>
+
+      <div class="camera-pin-bar">
+        <span>Pin ({previewPin.x}, {previewPin.y})</span>
+        <label>
+          <span>Hdg {previewPin.headingDeg}°</span>
+          <input
+            type="range"
+            min="0"
+            max="359"
+            step="5"
+            value={previewPin.headingDeg}
+            oninput={(e) => {
+              previewPin = {
+                ...previewPin,
+                headingDeg: Number((e.currentTarget as HTMLInputElement).value)
+              };
+              refreshPreview();
+            }}
+          />
+        </label>
+      </div>
+
+      <div class="preview-stack" class:single={previewSubMode !== 'split'}>
+        {#if previewSubMode === '3d' || previewSubMode === 'split'}
+          <div class="preview-card">
+            <span class="preview-tag">1ST-PERSON COCKPIT (WASM)</span>
+            <canvas
+              bind:this={previewFpCanvas}
+              width={320}
+              height={180}
+              aria-label="live 3d preview canvas"
+            ></canvas>
+          </div>
+        {/if}
+        {#if previewSubMode === '25d' || previewSubMode === 'split'}
+          <div class="preview-card">
+            <span class="preview-tag">2.5D ISOMETRIC TACTICAL (WASM)</span>
+            <canvas bind:this={preview25dCanvas} width={320} height={180}></canvas>
+          </div>
+        {/if}
+        {#if previewSubMode === 'overhead' || previewSubMode === 'split'}
+          <div class="preview-card">
+            <span class="preview-tag">OVERHEAD SATELLITE (WASM)</span>
+            <canvas bind:this={previewOverheadCanvas} width={320} height={180}></canvas>
+          </div>
+        {/if}
+      </div>
+
+      <section class="dock-section check-report-panel" data-testid="ground-check-report">
+        <div class="report-title-row">
+          <h3>§5 Check Report</h3>
+          <span class="verdict-badge" class:pass={checkReport.passed} class:fail={!checkReport.passed}>
+            {checkReport.passed ? 'PASS' : 'FAIL'}
+          </span>
+        </div>
+        <div class="report-grid">
+          <span>Wire Size</span>
+          <span class:bad={checkReport.map_bytes > checkReport.map_max_bytes}>
+            {(checkReport.map_bytes / 1024).toFixed(1)} / {(checkReport.map_max_bytes / 1024).toFixed(0)} KiB
+          </span>
+          <span>Tracked / Legged</span>
+          <span class:bad={checkReport.tracked_passable_pct < 90 || checkReport.legged_passable_pct < 95}>
+            {checkReport.tracked_passable_pct}% / {checkReport.legged_passable_pct}%
+          </span>
+          <span>Wheeled Reach</span>
+          <span>
+            {checkReport.wheeled_passable_pct}% (Spots: {checkReport.key_spots_wheeled_reachable ? 'OK' : 'FAIL'})
+          </span>
+          <span>Zones Mutual</span>
+          <span class:bad={!checkReport.zones_reachable_tracked || !checkReport.zones_reachable_legged}>
+            T:{checkReport.zones_reachable_tracked ? 'Y' : 'N'} W:{checkReport.zones_reachable_wheeled ? 'Y' : 'N'} L:{checkReport.zones_reachable_legged ? 'Y' : 'N'}
+          </span>
+          <span>Max / Road Grade</span>
+          <span class:bad={checkReport.max_road_grade_pct > 20}>
+            {checkReport.max_grade_pct}% / {checkReport.max_road_grade_pct}% (≤20%)
+          </span>
+          <span>Muster Step</span>
+          <span>{checkReport.max_entry_zone_step_cm} cm</span>
+          <span>Waypoints</span>
+          <span class:bad={!checkReport.waypoints_reachable}>
+            {editorState.waypoints.nodes.length} nodes / {editorState.waypoints.edges.length} edges
+          </span>
+        </div>
+        {#if checkReport.failures.length > 0}
+          <ul class="failure-list">
+            {#each checkReport.failures as fail (fail)}
+              <li>{fail}</li>
+            {/each}
+          </ul>
+        {/if}
       </section>
 
-      {#if showExportDrawer}
-        <section class="panel-box">
-          <h4>ArenaDef JSON &amp; Base64 Tile (`mush_atlas::Cells`)</h4>
-          <div class="meta-inputs">
-            <input
-              type="text"
-              bind:value={mapState.label}
-              placeholder="Arena label"
-              aria-label="arena label"
-            />
-            <input
-              type="text"
-              bind:value={mapState.id}
-              placeholder="arena_id"
-              aria-label="arena id"
-            />
-          </div>
-          <textarea
-            rows="8"
-            class="json-box"
-            bind:value={jsonBuffer}
-            aria-label="arena json buffer"
-          ></textarea>
-          <div class="cam-controls">
-            <button
-              type="button"
-              class="btn"
-              onclick={() => {
-                jsonBuffer = JSON.stringify(exportArenaDefJson(mapState), null, 2);
-                statusMsg = "Refreshed ArenaDef JSON from current grid.";
-              }}>Refresh JSON</button
-            >
-            <button
-              type="button"
-              class="btn"
-              onclick={() => {
-                jsonBuffer = encodeTileCellsBase64(mapState);
-                statusMsg = "Encoded raw mush_atlas::Cells base64 tile string.";
-              }}>Tile Base64 Only</button
-            >
-            <button type="button" class="btn primary" onclick={importFromBuffer}>
-              Load JSON into Editor
-            </button>
-          </div>
-        </section>
-      {/if}
+      <section class="dock-section spots-panel">
+        <h3>Key Spots ({editorState.keySpots.length})</h3>
+        <div class="spots-list">
+          {#each editorState.keySpots as spot, i (i)}
+            <div class="spot-row">
+              <span class="spot-badge">{String.fromCharCode(65 + i)}</span>
+              <input
+                type="text"
+                bind:value={spot.name}
+                oninput={() => {
+                  markStudioEdited(editorState);
+                  refreshPreview();
+                }}
+                aria-label="Spot name"
+              />
+              <span class="spot-coords">({spot.x},{spot.y})</span>
+              <button
+                type="button"
+                class="spot-Jump"
+                onclick={() => {
+                  previewPin = { ...previewPin, x: spot.x, y: spot.y };
+                  refreshPreview();
+                }}
+                title="Jump camera pin here"
+              >
+                Cam
+              </button>
+            </div>
+          {/each}
+        </div>
+      </section>
     </aside>
   </div>
 </div>
 
 <style>
-  .studio {
+  .studio-shell {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
-    font-size: 0.8rem;
+    height: 100%;
+    width: 100%;
+    background: var(--bg, #0b0e14);
+    color: var(--fg, #e2e8f0);
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    overflow: hidden;
   }
 
-  .studio-bar {
+  .studio-header {
     display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 14px;
+    background: rgba(15, 20, 28, 0.95);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
     flex-wrap: wrap;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.4rem 0.6rem;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-panel);
   }
 
-  .field {
-    display: inline-flex;
+  .studio-brand {
+    display: flex;
     align-items: center;
-    gap: 0.3rem;
-    color: var(--fg-muted);
+    gap: 8px;
   }
 
-  .field select,
-  .field input,
-  .spot-inputs input,
-  .meta-inputs input {
-    background: var(--bg-input);
-    color: var(--fg);
-    border: 1px solid var(--border);
+  .studio-badge {
+    padding: 2px 6px;
+    background: #1d4ed8;
+    color: #fff;
+    font-weight: 700;
+    font-size: 10px;
+    border-radius: 3px;
+    letter-spacing: 0.06em;
+  }
+
+  .studio-title-input,
+  .studio-id-input {
+    background: rgba(30, 41, 59, 0.7);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    color: inherit;
+    padding: 4px 8px;
     border-radius: 4px;
-    padding: 0.2rem 0.4rem;
-    font: inherit;
+    font-family: inherit;
+    font-weight: 600;
   }
 
-  .num {
-    width: 4rem;
+  .studio-id-input {
+    width: 120px;
+    font-weight: 400;
+    color: #94a3b8;
   }
 
-  .chk {
-    display: inline-flex;
+  .studio-controls {
+    display: flex;
     align-items: center;
-    gap: 0.25rem;
-    color: var(--fg-muted);
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .ctrl-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .ctrl-item select {
+    background: #1e293b;
+    color: inherit;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-family: inherit;
+    font-size: 11px;
+  }
+
+  .btn {
+    background: #1e293b;
+    color: #e2e8f0;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 4px;
+    padding: 4px 9px;
+    font-family: inherit;
+    font-size: 11px;
     cursor: pointer;
   }
 
-  .sep {
-    width: 1px;
-    height: 1.2rem;
-    background: var(--border);
+  .btn:hover:not(:disabled) {
+    background: #334155;
   }
 
-  .grow {
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .btn-primary {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #fff;
+  }
+
+  .studio-body {
     flex: 1;
-  }
-
-  .status-banner {
-    margin: 0;
-    padding: 0.25rem 0.6rem;
-    background: var(--bg-panel);
-    border-left: 3px solid var(--accent);
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 0.76rem;
-  }
-
-  .studio-main {
     display: grid;
-    grid-template-columns: 16.5rem minmax(20rem, 1fr) 23rem;
-    gap: 0.5rem;
-    align-items: start;
+    grid-template-columns: 240px 1fr 340px;
+    min-height: 0;
+    overflow: hidden;
   }
 
-  @media (max-width: 1180px) {
-    .studio-main {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .dock-left,
-  .dock-right {
+  .studio-dock-left,
+  .studio-dock-right {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
+    gap: 10px;
+    padding: 10px;
+    background: rgba(13, 17, 24, 0.92);
+    border-right: 1px solid rgba(148, 163, 184, 0.15);
+    overflow-y: auto;
   }
 
-  .panel-box {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-panel);
-    padding: 0.45rem 0.55rem;
+  .studio-dock-right {
+    border-right: none;
+    border-left: 1px solid rgba(148, 163, 184, 0.15);
+  }
+
+  .dock-section {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 6px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
   }
 
-  .panel-box h4 {
+  .dock-section h3,
+  .preview-header h3 {
     margin: 0;
-    font-size: 0.72rem;
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--fg-muted);
+    color: #94a3b8;
   }
 
   .tool-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.25rem;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
   }
 
-  .tool-grid button,
-  .shape-row button,
-  .btn {
-    background: var(--bg-input);
-    color: var(--fg);
-    border: 1px solid var(--border);
+  .tool-btn {
+    background: #161f2e;
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.22);
     border-radius: 4px;
-    padding: 0.24rem 0.45rem;
-    font: inherit;
-    font-size: 0.75rem;
+    padding: 5px 4px;
+    font-family: inherit;
+    font-size: 10px;
     cursor: pointer;
-    text-align: left;
   }
 
-  .tool-grid button.active,
-  .shape-row button.active,
-  .swatch-btn.active {
-    border-color: var(--accent);
-    background: var(--accent-dim);
+  .tool-btn.active {
+    background: #0369a1;
+    border-color: #38bdf8;
+    color: #fff;
     font-weight: 600;
   }
 
-  .btn.primary {
-    background: var(--accent-dim);
-    border-color: var(--accent);
-  }
-
-  .btn.small {
-    padding: 0.15rem 0.4rem;
-    font-size: 0.72rem;
-  }
-
-  .btn:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-
-  .shape-row {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    flex-wrap: wrap;
-  }
-
-  .slider-row {
+  .brush-row,
+  .slider-row,
+  .check-row {
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
-    font-size: 0.75rem;
-    color: var(--fg-muted);
+    gap: 3px;
+    font-size: 11px;
   }
 
-  .swatch-grid {
+  .check-row {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .repair-btn-row {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-top: 2px;
+  }
+
+  .repair-notice {
+    font-size: 10px;
+    color: #facc15;
+  }
+
+  .pill-group {
+    display: flex;
+    gap: 4px;
+  }
+
+  .pill {
+    flex: 1;
+    background: #161f2e;
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-family: inherit;
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .pill.active {
+    background: #0284c7;
+    color: #fff;
+    border-color: #38bdf8;
+  }
+
+  .swatch-list {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.22rem;
-    max-height: 15rem;
-    overflow-y: auto;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
   }
 
-  .swatch-btn {
+  .swatch-item {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
-    background: var(--bg-input);
-    color: var(--fg);
-    border: 1px solid var(--border);
+    gap: 6px;
+    padding: 4px 6px;
+    background: #131b28;
+    border: 1px solid rgba(148, 163, 184, 0.18);
     border-radius: 4px;
-    padding: 0.18rem 0.35rem;
-    font: inherit;
-    font-size: 0.73rem;
+    color: #e2e8f0;
+    font-family: inherit;
+    font-size: 10px;
     cursor: pointer;
     text-align: left;
   }
 
-  .swatch-chip {
+  .swatch-item.active {
+    border-color: #38bdf8;
+    background: #1e293b;
+  }
+
+  .swatch-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.25rem;
-    height: 1.25rem;
-    border-radius: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    font-family: var(--font-mono);
     font-weight: 700;
     color: #fff;
     text-shadow: 0 1px 2px #000;
@@ -1168,91 +1531,198 @@
     white-space: nowrap;
   }
 
-  .grid-pane {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-panel);
-    padding: 0.45rem 0.6rem;
+  .studio-canvas-stage {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
-    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background: #07090e;
+    min-height: 0;
   }
 
-  .pane-head,
-  .preview-head,
-  .cam-controls {
+  .canvas-frame {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 100%;
+    max-height: calc(100% - 28px);
+    aspect-ratio: 1 / 1;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+  }
+
+  .editor-grid-canvas {
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+    image-rendering: pixelated;
+  }
+
+  .canvas-hud {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    color: #94a3b8;
+    font-size: 11px;
+  }
+
+  .status-notice {
+    color: #38bdf8;
+  }
+
+  .preview-header {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .camera-pin-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.35rem;
-    flex-wrap: wrap;
-  }
-
-  .grid-scroll {
-    overflow: auto;
-    max-height: 62vh;
-    display: flex;
-    justify-content: center;
-    background: var(--bg);
-    border: 1px solid var(--border);
+    gap: 8px;
+    padding: 4px 8px;
+    background: #161f2e;
     border-radius: 4px;
-    padding: 0.25rem;
+    font-size: 11px;
   }
 
-  canvas {
-    image-rendering: pixelated;
+  .camera-pin-bar label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .preview-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .preview-card {
+    position: relative;
+    background: #05070b;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .preview-card canvas {
     display: block;
-    cursor: crosshair;
-  }
-
-  .preview-canvas {
     width: 100%;
     height: auto;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: #0d121a;
-    cursor: default;
+    image-rendering: pixelated;
   }
 
-  .cell-readout {
+  .preview-tag {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    padding: 1px 5px;
+    background: rgba(0, 0, 0, 0.68);
+    color: #38bdf8;
+    font-size: 9px;
+    border-radius: 2px;
+    pointer-events: none;
+  }
+
+  .report-title-row {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
+    align-items: center;
+    justify-content: space-between;
   }
 
-  .spot-inputs,
-  .meta-inputs {
+  .verdict-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 700;
+    font-size: 10px;
+  }
+
+  .verdict-badge.pass {
+    background: rgba(22, 163, 74, 0.25);
+    color: #4ade80;
+    border: 1px solid #22c55e;
+  }
+
+  .verdict-badge.fail {
+    background: rgba(220, 38, 38, 0.25);
+    color: #f87171;
+    border: 1px solid #ef4444;
+  }
+
+  .report-grid {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 3px 8px;
+    font-size: 10px;
+    color: #cbd5e1;
+  }
+
+  .report-grid .bad {
+    color: #f87171;
+    font-weight: 600;
+  }
+
+  .failure-list {
+    margin: 4px 0 0;
+    padding-left: 16px;
+    color: #f87171;
+    font-size: 10px;
+  }
+
+  .spots-list {
     display: flex;
-    gap: 0.3rem;
+    flex-direction: column;
+    gap: 4px;
   }
 
-  .spot-letter {
-    width: 2.2rem;
-    text-align: center;
-    font-family: var(--font-mono);
+  .spot-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
-  .spot-name {
+  .spot-badge {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #facc15;
+    color: #000;
+    font-weight: 700;
+    font-size: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .spot-row input {
     flex: 1;
-    min-width: 0;
+    background: #161f2e;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    color: inherit;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 11px;
   }
 
-  .json-box {
-    width: 100%;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    background: var(--bg-input);
-    color: var(--fg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.35rem;
-    resize: vertical;
+  .spot-coords {
+    color: #64748b;
+    font-size: 10px;
   }
 
-  .muted {
-    color: var(--fg-muted);
+  .spot-Jump {
+    background: #1e293b;
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 3px;
+    padding: 2px 5px;
+    font-size: 10px;
+    cursor: pointer;
   }
 </style>

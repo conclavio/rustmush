@@ -177,7 +177,12 @@ fn path(w: &World, from: ObjId, to: ObjId, allowed: &BTreeSet<ObjId>) -> Option<
     None
 }
 
-fn walk(ctx: &mut Ctx<'_>, npc: ObjId, to: ObjId, allowed: &BTreeSet<ObjId>) -> Result<(), String> {
+pub(crate) fn walk(
+    ctx: &mut Ctx<'_>,
+    npc: ObjId,
+    to: ObjId,
+    allowed: &BTreeSet<ObjId>,
+) -> Result<(), String> {
     let from = ctx
         .w
         .get(npc)
