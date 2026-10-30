@@ -928,6 +928,11 @@ This closes **17g §4's first deferral**.
   now steps into the next IC month after listing (a follow-up PR).
   **Lead's default (the owner's provisional economy rule): a month closed for "nothing listed"
   stays closed.** A House shops once per IC month and sees a new listing the next month.
+  A second cause followed: the story listed its minds only at the House counter, and
+  procurement reads only player-market entitlement listings (P5). The story now files and
+  publishes the rated lines on the player market. That fix is test-only.
+  **Owner ruling, 2026-10-29: procurement reads player-market listings only. House counter
+  lines stay out of it.**
 - **Still owed:**
   - **To S.4b:** the pending-transfer refusal and the IC audit over a draft claim.
   - **Blocked:** the heirloom over the launch world, because the launch composes no core3
