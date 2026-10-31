@@ -70,6 +70,15 @@ pub fn check(config: &Config) -> Vec<String> {
     if let Err(error) = config.game.game_clock() {
         refusals.push(error.to_string());
     }
+    // Doc 29a §9: the SSH port's gates. A cap of zero or an unparsable
+    // exempt network is a lockout the operator should hear about here, not
+    // from the first player who cannot get in.
+    if let Err(error) = config.ssh_auth_deadline() {
+        refusals.push(error.to_string());
+    }
+    if let Err(error) = config.ipguard.guard_config() {
+        refusals.push(error.to_string());
+    }
     refusals
 }
 

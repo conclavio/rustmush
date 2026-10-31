@@ -244,6 +244,7 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
 
 mod net {
     use futures::future::BoxFuture;
+    use mush_config::ipguard;
     use mush_net_ssh as net_ssh;
 
     use super::*;
@@ -475,6 +476,35 @@ mod net {
             self.metrics.ssh_connection_closed();
         }
 
+        // Doc 29a §9: the public port's accept gates — the guard's rate,
+        // global and /48 caps and its exempt networks, answered before any
+        // handshake. The gauge counts admitted connections only, as above.
+        fn admit_connection(&self, addr: IpAddr) -> net_ssh::Admission {
+            match self.core.guard.admit(addr) {
+                ipguard::Admission::Admit => {
+                    self.metrics.ssh_connection_opened();
+                    net_ssh::Admission::Admit
+                }
+                ipguard::Admission::OverCap => net_ssh::Admission::OverCap,
+                ipguard::Admission::Drop(reason) => {
+                    tracing::debug!(%addr, ?reason, "SSH connection dropped at accept");
+                    net_ssh::Admission::Drop
+                }
+            }
+        }
+
+        fn release_connection(&self, addr: IpAddr, admission: net_ssh::Admission) {
+            let held = match admission {
+                net_ssh::Admission::Admit => ipguard::Admission::Admit,
+                net_ssh::Admission::OverCap => ipguard::Admission::OverCap,
+                net_ssh::Admission::Drop => return,
+            };
+            self.core.guard.release(addr, held);
+            if held == ipguard::Admission::Admit {
+                self.metrics.ssh_connection_closed();
+            }
+        }
+
         fn caps_changed(&self, conn: u64, caps: ClientCaps) {
             self.caps_changed(ConnId(conn), caps);
         }
@@ -519,23 +549,50 @@ impl SshListener {
     }
 }
 
-/// Bind the SSH listener and start serving on a background task.
+/// Bind the SSH listener and start serving on a background task, with the
+/// default accept-time deadline ([`mush_net_ssh::DEFAULT_AUTH_DEADLINE`]).
+/// The gateway proper reads its deadline from `[ssh]` and calls
+/// [`start_listener_with`]; the all-in-one and the test fixtures take the
+/// default.
 pub async fn start_listener<A: AuthBackend + 'static>(
     listen: std::net::SocketAddr,
     data_dir: &std::path::Path,
     banner: String,
     bridge: Arc<SshBridge<A>>,
 ) -> Result<SshListener, String> {
+    start_listener_with(
+        listen,
+        data_dir,
+        banner,
+        mush_net_ssh::DEFAULT_AUTH_DEADLINE,
+        bridge,
+    )
+    .await
+}
+
+/// [`start_listener`] with an explicit `[ssh].auth_deadline_s` (doc 29a
+/// §9): how long an accepted connection has to authenticate, and then to
+/// open a channel, before it is cut.
+pub async fn start_listener_with<A: AuthBackend + 'static>(
+    listen: std::net::SocketAddr,
+    data_dir: &std::path::Path,
+    banner: String,
+    auth_deadline: std::time::Duration,
+    bridge: Arc<SshBridge<A>>,
+) -> Result<SshListener, String> {
     let cfg = mush_net_ssh::SshConfig {
         listen,
         host_key_path: data_dir.join("ssh_host_ed25519"),
         banner,
+        auth_deadline,
     };
     let hooks: Arc<dyn mush_net_ssh::SshHooks> = bridge;
     let bound = mush_net_ssh::SshServer::bind(cfg, hooks)
         .await
         .map_err(|e| e.to_string())?;
     let addr = bound.local_addr();
+    // The loop survives accept errors on its own (doc 29a §8 B-2); it only
+    // ends with this task.
     let accept_loop = tokio::spawn(async move {
         if let Err(e) = bound.run().await {
             tracing::error!(error = %e, "SSH accept loop failed");

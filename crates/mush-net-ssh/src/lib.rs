@@ -11,7 +11,12 @@
 //! - **[`SshServer`]** — ed25519 host key generated on first boot
 //!   ([`SshConfig::host_key_path`]), keepalives 30 s × 3, no inactivity
 //!   timeout (idlers are furniture). PTY required; `exec`/`subsystem`
-//!   refused.
+//!   refused. Its own accept loop gates every connection at accept
+//!   ([`SshHooks::admit_connection`]) and survives accept errors; every
+//!   accepted stream sits in a [`kill::KillSwitch`], cut at the
+//!   [`SshConfig::auth_deadline`] deadlines and a few seconds after any
+//!   server-initiated disconnect, so a stalled or half-closed client can
+//!   never hold a slot (doc 29a §9).
 //! - **Username routing** (M1 subset): `ssh play@host` (and `guest`/`new`,
 //!   aliases for now) is accepted with no SSH auth and lands on the classic
 //!   welcome screen with in-band `connect <account> <password>` /
@@ -47,6 +52,7 @@ mod caps;
 mod editor;
 mod hooks;
 mod hostkey;
+pub mod kill;
 mod line;
 mod mind_exec;
 mod server;
@@ -56,9 +62,12 @@ mod welcome;
 pub use caps::{DEFAULT_HEIGHT, DEFAULT_WIDTH, detect_caps, detect_color_depth, detect_utf8};
 pub use editor::{EchoMode, EditorAction, HISTORY_CAP, LineEditor, MAX_LINE_CHARS};
 pub use hooks::{
-    AuthResult, BlockReason, CharSummary, CreateErr, LocalReply, NewConn, PixelEvent, SshHooks,
+    Admission, AuthResult, BlockReason, CharSummary, CreateErr, LocalReply, NewConn, PixelEvent,
+    SshHooks,
 };
 pub use line::LineBuffer;
-pub use server::{BoundSshServer, SshConfig, SshError, SshServer};
+pub use server::{
+    BoundSshServer, DEFAULT_AUTH_DEADLINE, DISCONNECT_GRACE, SshConfig, SshError, SshServer,
+};
 pub use tui::pixel::PixelConfig;
 pub use welcome::{WelcomeCmd, parse_welcome};

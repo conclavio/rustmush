@@ -46,6 +46,45 @@
 //! (default /64, the smallest unit anyone is routed), and an IPv4-mapped v6
 //! address folds as the IPv4 address it is.
 //!
+//! ## The accept gates (doc 29a §9)
+//!
+//! The public SSH port asks [`IpGuard::admit_at`] about every accepted TCP
+//! connection before any SSH byte is exchanged, because each connection
+//! that gets a handshake costs a key exchange. Four answers, in the order
+//! they are checked: a network over its **rate**
+//! ([`IpGuardConfig::per_ip_new_per_minute`] new connections per
+//! [`RATE_WINDOW`]), the process over its **global** cap
+//! ([`IpGuardConfig::global_connections`]), an IPv6 **/48** over its
+//! aggregate cap ([`IpGuardConfig::per_v6_48_connections`], across its /64s
+//! — one customer allocation is exactly 65,536 /64s, each of which would
+//! otherwise buy a full budget) are dropped with no handshake; a network over
+//! its **concurrency** cap ([`IpGuardConfig::max_conns`]) is admitted
+//! [`Admission::OverCap`], to be told and refused in SSH, at most
+//! [`MAX_UNCOUNTED_PER_KEY`] of those at once per network so a key cannot
+//! hold global capacity in that state. Everything the gates hold is released
+//! by [`IpGuard::release`] with the same answer.
+//!
+//! Every table is **bounded and evicts**; none ever fails closed. The rate
+//! table holds at most [`MAX_TRACKED`] networks: past that it is swept of
+//! stale windows at most once per [`SWEEP_EVERY`], and if still full one
+//! entry is evicted to make room. Refusing new networks instead would let a
+//! single /48, connecting once from each of its 65,536 /64s and closing at
+//! once, lock every new player out in under a minute (doc 29a §8 F-5). The
+//! global and /48 caps are checked before a new network is inserted, so a
+//! flood that would be dropped anyway does not fill the table. The
+//! failure/connection map is bounded the same way: swept of idle entries,
+//! then one idle entry evicted; a live connection or an active ban is never
+//! evicted.
+//!
+//! Networks in [`IpGuardConfig::exempt_nets`] (default: loopback) skip the
+//! per-network caps — the concurrency cap, the rate and the /48 aggregate;
+//! the owner's bot fleet runs from one address, which trips a per-address
+//! cap of eight — but **not** the global cap, which bounds the process
+//! rather than the player (the doorway's semantics, so the two halves
+//! match), and **never** the password tempban or the sitebans: an exempt
+//! address that guesses passwords is banned like any other. Exempt
+//! admissions are counted (`exempt`), not logged one by one.
+//!
 //! Sitebans are different: they are staff-set, persisted in the store
 //! (`ban:{ip}`, native TTL on Redis), and expressed in **unix seconds** so
 //! they survive restarts. The guard only mirrors them: the world task loads
@@ -61,10 +100,192 @@
 //! quote it: the gateway to schedule the refresh, the server to tell staff
 //! how long their `@siteban` takes to bite).
 
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+
+/// The accept-rate window ([`IpGuardConfig::per_ip_new_per_minute`]).
+pub const RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Most networks the rate table — and the failure/connection map — track at
+/// once. Exactly the /64s of one IPv6 /48, which is why a full table evicts
+/// rather than refuses (module docs).
+pub const MAX_TRACKED: usize = 65_536;
+
+/// How often a full table may be swept: the sweep is O(table) under a lock,
+/// so it must not run on every accept (doc 29a §7 "Splice and DoS" 8).
+pub const SWEEP_EVERY: Duration = Duration::from_secs(1);
+
+/// Most simultaneous over-cap ([`Admission::OverCap`]) connections admitted
+/// per network solely to be told "too many connections" in SSH. Further ones
+/// are dropped at accept, so one network cannot hold global capacity in the
+/// banner state (doc 29a §8 F-1).
+pub const MAX_UNCOUNTED_PER_KEY: u32 = 2;
+
+/// A network in CIDR notation (`10.0.0.0/8`, `2001:db8::/32`) or one
+/// address (`192.0.2.7`, a /32; `::1`, a /128): the shape of
+/// [`IpGuardConfig::exempt_nets`]. Host bits are zeroed on construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct IpNet {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+/// Why a string is not an [`IpNet`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct IpNetError(String);
+
+impl IpNet {
+    /// `addr/prefix`, or `None` when the prefix is longer than the address
+    /// family allows (32 for IPv4, 128 for IPv6).
+    #[must_use]
+    pub fn new(addr: IpAddr, prefix: u8) -> Option<IpNet> {
+        let addr = match addr.to_canonical() {
+            IpAddr::V4(v4) if prefix <= 32 => IpAddr::V4(mask_v4(v4, prefix)),
+            IpAddr::V6(v6) if prefix <= 128 => IpAddr::V6(mask_v6(v6, prefix)),
+            _ => return None,
+        };
+        Some(IpNet { addr, prefix })
+    }
+
+    /// The network address (host bits zero).
+    #[must_use]
+    pub fn addr(&self) -> IpAddr {
+        self.addr
+    }
+
+    /// The prefix length.
+    #[must_use]
+    pub fn prefix(&self) -> u8 {
+        self.prefix
+    }
+
+    /// Whether `ip` is inside this network. An IPv4-mapped IPv6 address is
+    /// the IPv4 address it carries; otherwise the families must match.
+    #[must_use]
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr, ip.to_canonical()) {
+            (IpAddr::V4(net), IpAddr::V4(v4)) => mask_v4(v4, self.prefix) == net,
+            (IpAddr::V6(net), IpAddr::V6(v6)) => mask_v6(v6, self.prefix) == net,
+            _ => false,
+        }
+    }
+}
+
+impl FromStr for IpNet {
+    type Err = IpNetError;
+
+    fn from_str(s: &str) -> Result<IpNet, IpNetError> {
+        let s = s.trim();
+        let (addr, prefix) = match s.split_once('/') {
+            Some((addr, prefix)) => {
+                let prefix: u8 = prefix
+                    .parse()
+                    .map_err(|_| IpNetError(format!("{s:?}: bad prefix length {prefix:?}")))?;
+                (addr, Some(prefix))
+            }
+            None => (s, None),
+        };
+        let addr: IpAddr = addr
+            .parse()
+            .map_err(|_| IpNetError(format!("{s:?}: not an IP address or CIDR network")))?;
+        let prefix = prefix.unwrap_or(if addr.to_canonical().is_ipv4() {
+            32
+        } else {
+            128
+        });
+        IpNet::new(addr, prefix).ok_or_else(|| {
+            IpNetError(format!(
+                "{s:?}: prefix length {prefix} is longer than the address"
+            ))
+        })
+    }
+}
+
+impl std::fmt::Display for IpNet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.addr, self.prefix)
+    }
+}
+
+/// The top 48 bits of a native IPv6 address: one customer's typical
+/// allocation, capped in aggregate over its /64s. `None` for IPv4 and for an
+/// IPv4-mapped address.
+fn v6_48(ip: IpAddr) -> Option<u64> {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => Some((u128::from(v6) >> 80) as u64),
+        IpAddr::V4(_) => None,
+    }
+}
+
+/// What the accept gates say about one connection ([`IpGuard::admit_at`]).
+/// Every `Admit` and `OverCap` is released once with [`IpGuard::release`]
+/// and the same value; a `Drop` holds nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// Serve it: it holds a per-network slot, a global slot and (IPv6) a /48
+    /// slot.
+    Admit,
+    /// Over the network's concurrency cap: serve it only far enough to say
+    /// so, then refuse. Holds an uncounted per-network slot, a global slot
+    /// and (IPv6) a /48 slot, for the few seconds that takes.
+    OverCap,
+    /// Close the TCP connection now, with no handshake.
+    Drop(DropReason),
+}
+
+/// Why a connection is dropped at accept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DropReason {
+    /// Over the network's rate of new connections per [`RATE_WINDOW`].
+    Rate,
+    /// Over the global cap.
+    Global,
+    /// Over the IPv6 /48 aggregate cap.
+    Prefix48,
+    /// Over the network's concurrency cap with [`MAX_UNCOUNTED_PER_KEY`]
+    /// banner slots already in flight.
+    PerIp,
+}
+
+impl DropReason {
+    /// The counter this reason is tallied under ([`IpGuard::take_counters`]).
+    #[must_use]
+    pub fn counter(self) -> &'static str {
+        match self {
+            DropReason::Rate => "rate",
+            DropReason::Global => "global",
+            DropReason::Prefix48 => "per-48",
+            DropReason::PerIp => "per-ip",
+        }
+    }
+}
+
+/// Count a refusal and answer it.
+fn refuse(gates: &mut Gates, reason: DropReason) -> Admission {
+    *gates.counters.entry(reason.counter()).or_default() += 1;
+    Admission::Drop(reason)
+}
+
+/// The accept gates' own state, under one lock: the rate table, the /48
+/// aggregates, the refusal counters and the sweep clock.
+#[derive(Debug, Default)]
+struct Gates {
+    /// Network → (window start, connections in the window).
+    rate: HashMap<IpAddr, (Instant, u32)>,
+    /// IPv6 /48 → live connections across its /64s.
+    concurrent48: HashMap<u64, u32>,
+    /// Refusals since the counters were last taken.
+    counters: BTreeMap<&'static str, u64>,
+    last_rate_sweep: Option<Instant>,
+    last_map_sweep: Option<Instant>,
+}
 
 /// How often a connection-owning gateway re-reads the persisted siteban set
 /// into its [`IpGuard`] mirror, and therefore the worst-case latency between
@@ -74,8 +295,9 @@ use dashmap::DashMap;
 /// not so short that a fleet of gateways becomes a poll storm.
 pub const SITEBAN_REFRESH: Duration = Duration::from_secs(10);
 
-/// Tunables for [`IpGuard`].
-#[derive(Clone, Copy, Debug)]
+/// Tunables for [`IpGuard`]. `[ipguard]` in `mushd.toml`
+/// (`mush_config::config::IpGuardCfg`) is its serialised form.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IpGuardConfig {
     /// Auth failures within [`IpGuardConfig::window`] that trigger a ban.
     pub max_failures: u32,
@@ -101,6 +323,21 @@ pub struct IpGuardConfig {
     /// Default 64: the smallest block anyone is routed, so a client cannot
     /// buy a fresh budget by moving one address to the left.
     pub v6_prefix: u8,
+    /// New SSH connections one network may open per [`RATE_WINDOW`]; the
+    /// rest are dropped at accept with no handshake. Default 20.
+    pub per_ip_new_per_minute: u32,
+    /// SSH connections live at once in the whole process, admitted and
+    /// over-cap together; past it new ones are dropped at accept. Default
+    /// 2048.
+    pub global_connections: u32,
+    /// SSH connections live at once from one IPv6 /48, across all its
+    /// /64s. Default 64.
+    pub per_v6_48_connections: u32,
+    /// Networks exempt from the per-network caps (the concurrency cap, the
+    /// rate and the /48 aggregate) — not from the global cap, and never
+    /// from the password tempban or the sitebans. Default: `127.0.0.0/8`
+    /// and `::1/128`.
+    pub exempt_nets: Vec<IpNet>,
 }
 
 impl Default for IpGuardConfig {
@@ -115,8 +352,23 @@ impl Default for IpGuardConfig {
             max_conns: 8,
             v4_prefix: 32,
             v6_prefix: 64,
+            per_ip_new_per_minute: 20,
+            global_connections: 2048,
+            per_v6_48_connections: 64,
+            exempt_nets: default_exempt_nets(),
         }
     }
+}
+
+/// Loopback, both families: the box's own bots and probes.
+fn default_exempt_nets() -> Vec<IpNet> {
+    [
+        IpNet::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8),
+        IpNet::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 128),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// `addr` with everything below `prefix` bits zeroed (prefix clamped to 32).
@@ -150,6 +402,9 @@ struct IpEntry {
     token_cooloff_until: Option<Instant>,
     /// Live connections from this IP.
     conns: u32,
+    /// Live over-cap connections from this IP, admitted only to be told
+    /// ([`Admission::OverCap`]); at most [`MAX_UNCOUNTED_PER_KEY`].
+    uncounted: u32,
 }
 
 impl IpEntry {
@@ -159,6 +414,29 @@ impl IpEntry {
             && self.token_failures.is_empty()
             && self.token_cooloff_until.is_none()
             && self.conns == 0
+            && self.uncounted == 0
+    }
+
+    /// Forget what the windows have outlived, as the recording paths do
+    /// lazily, so an untouched entry can be seen to be idle.
+    fn prune(&mut self, cfg: &IpGuardConfig, now: Instant) {
+        self.failures
+            .retain(|&t| now.saturating_duration_since(t) < cfg.window);
+        self.token_failures
+            .retain(|&t| now.saturating_duration_since(t) < cfg.token_window);
+        if self.banned_until.is_some_and(|until| until <= now) {
+            self.banned_until = None;
+            self.banned_at = None;
+        }
+        if self.token_cooloff_until.is_some_and(|until| until <= now) {
+            self.token_cooloff_until = None;
+        }
+    }
+
+    /// Whether evicting this entry loses nothing that matters: no live
+    /// connection and no active ban.
+    fn evictable(&self) -> bool {
+        self.conns == 0 && self.uncounted == 0 && self.banned_until.is_none()
     }
 }
 
@@ -176,6 +454,12 @@ pub struct IpGuard {
     /// Lift identifiers retained until their store TTL expires. Never evicted
     /// early: that would permit a refresh to apply an old pardon twice.
     tempban_lifts: std::sync::Mutex<std::collections::HashMap<String, i64>>,
+    /// The accept gates (module docs). Locked before `map` wherever both are
+    /// touched, so [`IpGuard::admit_at`] and [`IpGuard::release`] cannot
+    /// deadlock against each other.
+    gates: Mutex<Gates>,
+    /// SSH connections live at once, admitted and over-cap together.
+    global: AtomicUsize,
 }
 
 impl IpGuard {
@@ -193,13 +477,240 @@ impl IpGuard {
             map: DashMap::new(),
             sitebans: DashMap::new(),
             tempban_lifts: std::sync::Mutex::default(),
+            gates: Mutex::default(),
+            global: AtomicUsize::new(0),
         }
     }
 
     /// The active configuration.
     #[must_use]
-    pub fn config(&self) -> IpGuardConfig {
-        self.cfg
+    pub fn config(&self) -> &IpGuardConfig {
+        &self.cfg
+    }
+
+    /// Whether `ip` is in [`IpGuardConfig::exempt_nets`]: no concurrency
+    /// cap, no rate, no /48 aggregate. The global cap and the bans still
+    /// apply.
+    #[must_use]
+    pub fn is_exempt(&self, ip: IpAddr) -> bool {
+        self.cfg.exempt_nets.iter().any(|net| net.contains(ip))
+    }
+
+    fn gates(&self) -> std::sync::MutexGuard<'_, Gates> {
+        self.gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Keep the failure/connection map under [`MAX_TRACKED`] entries before
+    /// an insert: sweep it of idle entries at most once per [`SWEEP_EVERY`],
+    /// and if it is still full evict one entry that holds no live connection
+    /// and no active ban. Never refuses (module docs).
+    fn bound_map(&self, now: Instant) {
+        if self.map.len() < MAX_TRACKED {
+            return;
+        }
+        let mut gates = self.gates();
+        self.bound_map_locked(&mut gates, now);
+    }
+
+    /// Gate one accepted SSH connection at `now`, before any handshake
+    /// (module docs: the order is rate, global, /48, concurrency). The
+    /// caller releases an `Admit` or `OverCap` with [`IpGuard::release`].
+    pub fn admit_at(&self, ip: IpAddr, now: Instant) -> Admission {
+        let global_cap = self.cfg.global_connections as usize;
+        if self.is_exempt(ip) {
+            // Exempt from every per-network cap, not from the process's:
+            // an exempt address holds a global slot like any other, and is
+            // refused by the global cap like any other.
+            let mut gates = self.gates();
+            if self.global.load(Ordering::SeqCst) >= global_cap {
+                return refuse(&mut gates, DropReason::Global);
+            }
+            self.global.fetch_add(1, Ordering::SeqCst);
+            *gates.counters.entry("exempt").or_default() += 1;
+            return Admission::Admit;
+        }
+        let net = self.key(ip);
+        let prefix = v6_48(ip);
+        let mut gates = self.gates();
+        if let Some(entry) = gates.rate.get_mut(&net) {
+            // A known network: its rate window first, so a flooder is told
+            // off as `Rate` before anything else is spent on it.
+            if now.saturating_duration_since(entry.0) >= RATE_WINDOW {
+                *entry = (now, 0);
+            }
+            entry.1 = entry.1.saturating_add(1);
+            if entry.1 > self.cfg.per_ip_new_per_minute {
+                return refuse(&mut gates, DropReason::Rate);
+            }
+        } else {
+            // A new network: the global and /48 caps are checked before it
+            // is inserted, so a flood that would be dropped anyway cannot
+            // fill the table against everyone else (doc 29a §8 F-5).
+            if self.global.load(Ordering::SeqCst) >= global_cap {
+                return refuse(&mut gates, DropReason::Global);
+            }
+            if let Some(p) = prefix
+                && gates.concurrent48.get(&p).copied().unwrap_or(0)
+                    >= self.cfg.per_v6_48_connections
+            {
+                return refuse(&mut gates, DropReason::Prefix48);
+            }
+            if self.cfg.per_ip_new_per_minute == 0 {
+                return refuse(&mut gates, DropReason::Rate);
+            }
+            if gates.rate.len() >= MAX_TRACKED
+                && gates
+                    .last_rate_sweep
+                    .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY)
+            {
+                gates.last_rate_sweep = Some(now);
+                gates
+                    .rate
+                    .retain(|_, (start, _)| now.saturating_duration_since(*start) < RATE_WINDOW);
+            }
+            if gates.rate.len() >= MAX_TRACKED {
+                // Still full of live windows: make room rather than refuse.
+                // A flood that fills the table owns almost every entry, so
+                // the victim almost always is its own; a legitimate network
+                // that is evicted merely starts a fresh window.
+                let victim = gates.rate.keys().next().copied();
+                if let Some(v) = victim {
+                    gates.rate.remove(&v);
+                }
+                *gates.counters.entry("rate-evict").or_default() += 1;
+            }
+            gates.rate.insert(net, (now, 1));
+        }
+        if self.global.load(Ordering::SeqCst) >= global_cap {
+            return refuse(&mut gates, DropReason::Global);
+        }
+        if let Some(p) = prefix
+            && gates.concurrent48.get(&p).copied().unwrap_or(0) >= self.cfg.per_v6_48_connections
+        {
+            return refuse(&mut gates, DropReason::Prefix48);
+        }
+        self.bound_map_locked(&mut gates, now);
+        let admission = {
+            let mut e = self.map.entry(net).or_default();
+            if e.conns < self.cfg.max_conns {
+                e.conns += 1;
+                Admission::Admit
+            } else if e.uncounted < MAX_UNCOUNTED_PER_KEY {
+                e.uncounted += 1;
+                *gates.counters.entry("per-ip").or_default() += 1;
+                Admission::OverCap
+            } else {
+                Admission::Drop(DropReason::PerIp)
+            }
+        };
+        if let Admission::Drop(reason) = admission {
+            self.map.remove_if(&net, |_, e| e.is_idle());
+            return refuse(&mut gates, reason);
+        }
+        if let Some(p) = prefix {
+            *gates.concurrent48.entry(p).or_default() += 1;
+        }
+        self.global.fetch_add(1, Ordering::SeqCst);
+        admission
+    }
+
+    /// [`IpGuard::bound_map`] with the gates already locked.
+    fn bound_map_locked(&self, gates: &mut Gates, now: Instant) {
+        if self.map.len() < MAX_TRACKED {
+            return;
+        }
+        if gates
+            .last_map_sweep
+            .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY)
+        {
+            gates.last_map_sweep = Some(now);
+            self.map.retain(|_, e| {
+                e.prune(&self.cfg, now);
+                !e.is_idle()
+            });
+        }
+        if self.map.len() < MAX_TRACKED {
+            return;
+        }
+        let victim = self
+            .map
+            .iter()
+            .find(|e| e.value().evictable())
+            .map(|e| *e.key());
+        if let Some(net) = victim {
+            self.map.remove_if(&net, |_, e| e.evictable());
+            *gates.counters.entry("map-evict").or_default() += 1;
+        }
+    }
+
+    /// [`IpGuard::admit_at`] with `Instant::now()`.
+    pub fn admit(&self, ip: IpAddr) -> Admission {
+        self.admit_at(ip, Instant::now())
+    }
+
+    /// Release what [`IpGuard::admit_at`] held for `ip`, given the answer it
+    /// gave. A `Drop` held nothing; an exempt address held a global slot
+    /// only. Saturates at zero everywhere; idle entries are dropped.
+    pub fn release(&self, ip: IpAddr, admission: Admission) {
+        if matches!(admission, Admission::Drop(_)) {
+            return;
+        }
+        let mut gates = self.gates();
+        let _ = self
+            .global
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                Some(n.saturating_sub(1))
+            });
+        if self.is_exempt(ip) {
+            return;
+        }
+        let net = self.key(ip);
+        if let Some(p) = v6_48(ip)
+            && let Some(n) = gates.concurrent48.get_mut(&p)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                gates.concurrent48.remove(&p);
+            }
+        }
+        let remove = match self.map.get_mut(&net) {
+            Some(mut e) => {
+                match admission {
+                    Admission::Admit => e.conns = e.conns.saturating_sub(1),
+                    Admission::OverCap => e.uncounted = e.uncounted.saturating_sub(1),
+                    Admission::Drop(_) => {}
+                }
+                e.is_idle()
+            }
+            None => false,
+        };
+        if remove {
+            self.map.remove_if(&net, |_, e| e.is_idle());
+        }
+    }
+
+    /// SSH connections live at once through the accept gates (admitted and
+    /// over-cap together, exempt addresses included: the global cap bounds
+    /// the process).
+    #[must_use]
+    pub fn live(&self) -> usize {
+        self.global.load(Ordering::SeqCst)
+    }
+
+    /// Take the counters (a per-minute summary resets them): the
+    /// [`DropReason::counter`] names, `per-ip` for over-cap admissions,
+    /// `exempt` for admissions the allow-list waved through, `rate-evict`
+    /// and `map-evict` for table evictions.
+    pub fn take_counters(&self) -> BTreeMap<&'static str, u64> {
+        std::mem::take(&mut self.gates().counters)
+    }
+
+    /// Networks in the rate table (tests, diagnostics).
+    #[must_use]
+    pub fn rate_tracked(&self) -> usize {
+        self.gates().rate.len()
     }
 
     /// The accounting key for `ip`: the address folded to its configured
@@ -277,6 +788,7 @@ impl IpGuard {
     /// [`IpGuard::is_blocked_at`].
     pub fn record_token_failure_at(&self, ip: IpAddr, now: Instant) -> bool {
         let net = self.key(ip);
+        self.bound_map(now);
         let mut e = self.map.entry(net).or_default();
         let window = self.cfg.token_window;
         e.token_failures
@@ -332,6 +844,7 @@ impl IpGuard {
     /// blocks every address in that network, not just this one.
     pub fn record_failure_at(&self, ip: IpAddr, now: Instant) -> bool {
         let net = self.key(ip);
+        self.bound_map(now);
         let mut e = self.map.entry(net).or_default();
         let window = self.cfg.window;
         e.failures
@@ -417,10 +930,17 @@ impl IpGuard {
         false
     }
 
-    /// Count a new connection from `ip`. Returns `false` (and does not
-    /// count it) when `ip`'s network is already at its cap — the cap is
-    /// shared by every address behind one prefix.
+    /// Count a new connection from `ip` against the concurrency cap only
+    /// (the web ingress and the trusted ingress, which the rate and global
+    /// caps do not apply to). Returns `false` (and does not count it) when
+    /// `ip`'s network is already at its cap — the cap is shared by every
+    /// address behind one prefix, and by its SSH connections. An exempt
+    /// address is always admitted and never counted.
     pub fn conn_opened(&self, ip: IpAddr) -> bool {
+        if self.is_exempt(ip) {
+            return true;
+        }
+        self.bound_map(Instant::now());
         let mut e = self.map.entry(self.key(ip)).or_default();
         if e.conns >= self.cfg.max_conns {
             return false;
@@ -433,6 +953,9 @@ impl IpGuard {
     /// a connection that was never counted — e.g. rejected at the cap — is
     /// harmless). Idle entries are dropped.
     pub fn conn_closed(&self, ip: IpAddr) {
+        if self.is_exempt(ip) {
+            return;
+        }
         let net = self.key(ip);
         let remove = match self.map.get_mut(&net) {
             Some(mut e) => {
@@ -874,5 +1397,343 @@ mod tests {
             mask_v6(a, 64),
             "2001:db8::".parse().unwrap_or(Ipv6Addr::UNSPECIFIED)
         );
+    }
+
+    // ---- the accept gates (doc 29a §9) ----
+
+    fn gated(cfg: IpGuardConfig) -> IpGuard {
+        IpGuard::with_config(IpGuardConfig {
+            // Nothing in these tests comes from loopback.
+            exempt_nets: Vec::new(),
+            ..cfg
+        })
+    }
+
+    fn admitted(a: Admission) -> Admission {
+        assert!(
+            matches!(a, Admission::Admit | Admission::OverCap),
+            "dropped: {a:?}"
+        );
+        a
+    }
+
+    fn net(s: &str) -> IpNet {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn ipnet_parses_cidr_and_bare_addresses_and_contains_mapped_v4() {
+        let v4 = net("10.0.0.0/8");
+        assert_eq!(v4.addr(), IpAddr::from([10, 0, 0, 0]));
+        assert_eq!(v4.prefix(), 8);
+        assert!(v4.contains(ip(7)));
+        assert!(v4.contains("::ffff:10.9.9.9".parse().unwrap()));
+        assert!(!v4.contains("11.0.0.1".parse().unwrap()));
+        assert!(!v4.contains(ip6(1, 1)));
+        // Host bits are dropped, and a bare address is a host route.
+        assert_eq!(net("10.1.2.3/8"), v4);
+        assert_eq!(net("192.0.2.7"), net("192.0.2.7/32"));
+        assert_eq!(net("::1"), net("::1/128"));
+        assert_eq!(net("2001:db8:1:2::9/48"), net("2001:db8:1::/48"));
+        // `ip6(n, h)` is `2001:db8:0:n::h`: inside the /48 `2001:db8::/48`
+        // whichever /64 it is in, outside the next /48 over.
+        assert!(net("2001:db8::/48").contains(ip6(1, 1)));
+        assert!(net("2001:db8::/48").contains(ip6(2, 1)));
+        assert!(!net("2001:db8:1::/48").contains(ip6(1, 1)));
+        assert_eq!(net("2001:db8::/32").to_string(), "2001:db8::/32");
+        for bad in [
+            "",
+            "10.0.0.0/33",
+            "::1/129",
+            "10.0.0.0/x",
+            "not an ip",
+            "10.0.0/8",
+        ] {
+            assert!(bad.parse::<IpNet>().is_err(), "{bad:?} parsed");
+        }
+        let defaults = IpGuardConfig::default().exempt_nets;
+        assert!(
+            defaults
+                .iter()
+                .any(|n| n.contains(Ipv4Addr::LOCALHOST.into()))
+        );
+        assert!(
+            defaults
+                .iter()
+                .any(|n| n.contains(Ipv6Addr::LOCALHOST.into()))
+        );
+        assert!(!defaults.iter().any(|n| n.contains(ip(1))));
+    }
+
+    #[test]
+    fn the_rate_window_drops_the_twenty_first_and_resets() {
+        let g = gated(IpGuardConfig::default());
+        let t0 = Instant::now();
+        for _ in 0..20 {
+            g.release(ip(1), admitted(g.admit_at(ip(1), t0)));
+        }
+        assert_eq!(
+            g.admit_at(ip(1), t0 + Duration::from_secs(30)),
+            Admission::Drop(DropReason::Rate)
+        );
+        // Another network is unaffected; the window resets after a minute.
+        g.release(ip(2), admitted(g.admit_at(ip(2), t0)));
+        g.release(ip(1), admitted(g.admit_at(ip(1), t0 + RATE_WINDOW)));
+        assert_eq!(g.take_counters().get("rate"), Some(&1));
+        assert!(g.take_counters().is_empty());
+    }
+
+    #[test]
+    fn the_global_cap_counts_admitted_and_over_cap_alike_and_releases() {
+        let g = gated(IpGuardConfig {
+            max_conns: 1,
+            global_connections: 3,
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        assert_eq!(g.admit_at(ip(1), t0), Admission::Admit);
+        assert_eq!(g.admit_at(ip(1), t0), Admission::OverCap);
+        assert_eq!(g.admit_at(ip(2), t0), Admission::Admit);
+        assert_eq!(g.live(), 3);
+        assert_eq!(g.admit_at(ip(3), t0), Admission::Drop(DropReason::Global));
+        // A drop holds nothing and its release is a no-op.
+        g.release(ip(3), Admission::Drop(DropReason::Global));
+        assert_eq!(g.live(), 3);
+        g.release(ip(1), Admission::OverCap);
+        assert_eq!(g.live(), 2);
+        assert_eq!(g.admit_at(ip(3), t0), Admission::Admit);
+        g.release(ip(1), Admission::Admit);
+        g.release(ip(2), Admission::Admit);
+        g.release(ip(3), Admission::Admit);
+        assert_eq!(g.live(), 0);
+        assert_eq!(g.tracked(), 0, "idle entries are dropped on release");
+    }
+
+    #[test]
+    fn over_cap_banner_slots_are_bounded_per_network() {
+        let g = gated(IpGuardConfig {
+            max_conns: 1,
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        assert_eq!(g.admit_at(ip(1), t0), Admission::Admit);
+        for _ in 0..MAX_UNCOUNTED_PER_KEY {
+            assert_eq!(g.admit_at(ip(1), t0), Admission::OverCap);
+        }
+        assert_eq!(g.admit_at(ip(1), t0), Admission::Drop(DropReason::PerIp));
+        assert_eq!(g.live(), 1 + MAX_UNCOUNTED_PER_KEY as usize);
+        g.release(ip(1), Admission::OverCap);
+        assert_eq!(g.admit_at(ip(1), t0), Admission::OverCap);
+        let counters = g.take_counters();
+        assert_eq!(counters.get("per-ip"), Some(&4), "{counters:?}");
+    }
+
+    #[test]
+    fn a_v6_48_is_capped_across_its_64s_and_released() {
+        let g = gated(IpGuardConfig {
+            per_v6_48_connections: 3,
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        for n in 0..3 {
+            assert_eq!(g.admit_at(ip6(n, 1), t0), Admission::Admit);
+        }
+        assert_eq!(
+            g.admit_at(ip6(9, 1), t0),
+            Admission::Drop(DropReason::Prefix48)
+        );
+        // Another /48 is unaffected, and a release frees a place.
+        let other: IpAddr = "2001:db8:1::1".parse().unwrap();
+        assert_eq!(g.admit_at(other, t0), Admission::Admit);
+        g.release(ip6(0, 1), Admission::Admit);
+        assert_eq!(g.admit_at(ip6(9, 1), t0), Admission::Admit);
+        assert_eq!(g.take_counters().get("per-48"), Some(&1));
+    }
+
+    #[test]
+    fn the_rate_table_is_bounded_and_evicts_rather_than_refuse() {
+        let g = gated(IpGuardConfig {
+            per_ip_new_per_minute: 1,
+            global_connections: u32::MAX,
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        for i in 0..(MAX_TRACKED as u32) {
+            let addr = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i));
+            g.release(addr, admitted(g.admit_at(addr, t0)));
+        }
+        assert_eq!(g.rate_tracked(), MAX_TRACKED);
+        // Full of live windows: a new network is still admitted (one entry
+        // is evicted for it), the table stays bounded, and the new network
+        // is tracked — its second connection in the window is over its rate.
+        let extra = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + MAX_TRACKED as u32));
+        g.release(extra, admitted(g.admit_at(extra, t0)));
+        assert_eq!(g.rate_tracked(), MAX_TRACKED);
+        assert_eq!(g.admit_at(extra, t0), Admission::Drop(DropReason::Rate));
+        // Later, the stale windows are swept and new networks are tracked
+        // again.
+        let later = t0 + RATE_WINDOW;
+        let fresh: IpAddr = "198.18.0.1".parse().unwrap();
+        g.release(fresh, admitted(g.admit_at(fresh, later)));
+        assert!(g.rate_tracked() <= MAX_TRACKED);
+        assert_eq!(g.admit_at(fresh, later), Admission::Drop(DropReason::Rate));
+        assert_eq!(g.take_counters().get("rate-evict"), Some(&1));
+    }
+
+    #[test]
+    fn one_v6_48_cannot_fill_the_rate_table_against_everyone_else() {
+        // One /48 holds exactly MAX_TRACKED /64s. Connecting once from each
+        // and closing at once (so the /48 cap never trips) fills the table;
+        // a player from anywhere else must still get in (doc 29a §8 F-5).
+        let g = gated(IpGuardConfig::default());
+        let t0 = Instant::now();
+        for i in 0..MAX_TRACKED as u128 {
+            let v6 = Ipv6Addr::from((0x2001_0db8_0001u128 << 80) | (i << 64) | 1);
+            g.release(IpAddr::V6(v6), admitted(g.admit_at(IpAddr::V6(v6), t0)));
+        }
+        assert_eq!(g.rate_tracked(), MAX_TRACKED);
+        g.release(ip(7), admitted(g.admit_at(ip(7), t0)));
+        let other: IpAddr = "2001:db8:2::1".parse().unwrap();
+        g.release(other, admitted(g.admit_at(other, t0)));
+        assert_eq!(g.rate_tracked(), MAX_TRACKED);
+    }
+
+    #[test]
+    fn global_and_prefix48_drops_do_not_pollute_the_rate_table() {
+        let g = gated(IpGuardConfig {
+            global_connections: 1,
+            per_v6_48_connections: 1,
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        assert_eq!(g.admit_at(ip6(1, 1), t0), Admission::Admit);
+        assert_eq!(g.rate_tracked(), 1);
+        assert_eq!(g.admit_at(ip(99), t0), Admission::Drop(DropReason::Global));
+        assert_eq!(g.rate_tracked(), 1);
+        g.release(ip6(1, 1), Admission::Admit);
+    }
+
+    #[test]
+    fn the_failure_map_is_bounded_and_evicts_idle_entries_only() {
+        let g = gated(IpGuardConfig::default());
+        let t0 = Instant::now();
+        // A live connection and an active ban must survive the eviction.
+        assert_eq!(g.admit_at(ip(1), t0), Admission::Admit);
+        for _ in 0..5 {
+            g.record_failure_at(ip(2), t0);
+        }
+        assert!(g.is_blocked_at(ip(2), t0));
+        for i in 0..(MAX_TRACKED as u32) {
+            let addr = IpAddr::V4(Ipv4Addr::from(0x0b00_0000 + i));
+            g.record_failure_at(addr, t0);
+        }
+        assert!(g.tracked() <= MAX_TRACKED, "{}", g.tracked());
+        assert!(g.is_blocked_at(ip(2), t0), "the ban survived the eviction");
+        assert!(
+            g.tracked() <= MAX_TRACKED,
+            "a failure never grows the map past its bound: {}",
+            g.tracked()
+        );
+        g.release(ip(1), Admission::Admit);
+        // Two entries were there before the flood (the live connection and
+        // the ban), so the last two inserts each had to evict one idle entry
+        // to stay under the bound.
+        assert_eq!(g.take_counters().get("map-evict"), Some(&2));
+        // The sweep is lazy: it runs before an insert that finds the map at
+        // its bound (the release above left it one short). A window later
+        // the next such insert drops the stale entries wholesale, keeping
+        // the ban and the fresh failure.
+        let later = t0 + Duration::from_secs(601);
+        g.record_failure_at(ip(3), later);
+        assert_eq!(g.tracked(), MAX_TRACKED, "one short, so no sweep yet");
+        g.record_failure_at(ip(4), later);
+        assert_eq!(g.tracked(), 3, "the ban, and the two fresh failures");
+        assert!(g.is_blocked_at(ip(2), later));
+    }
+
+    #[test]
+    fn exempt_networks_skip_the_per_network_caps_but_never_the_global_cap_or_the_bans() {
+        let g = IpGuard::with_config(IpGuardConfig {
+            max_conns: 1,
+            per_ip_new_per_minute: 1,
+            per_v6_48_connections: 1,
+            global_connections: 6,
+            exempt_nets: vec![
+                net("127.0.0.0/8"),
+                net("203.0.113.0/24"),
+                net("2001:db8::/32"),
+            ],
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        let home: IpAddr = "203.0.113.9".parse().unwrap();
+        let localhost = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        // Three at once from one exempt address — past its concurrency cap
+        // of one and its rate of one a minute — and two /64s of one exempt
+        // /48 past its aggregate of one: all admitted, none counted against
+        // any network, every one counted against the process.
+        for _ in 0..3 {
+            assert_eq!(g.admit_at(home, t0), Admission::Admit);
+            assert!(g.conn_opened(home));
+        }
+        assert_eq!(g.admit_at(ip6(1, 1), t0), Admission::Admit);
+        assert_eq!(g.admit_at(ip6(2, 1), t0), Admission::Admit);
+        assert_eq!(g.tracked(), 0, "nothing per network");
+        assert_eq!(g.rate_tracked(), 0, "nothing in the rate table");
+        assert_eq!(g.live(), 5, "every exempt admission holds a global slot");
+        // The global cap bounds the process, not the player: the last slot
+        // goes to whoever asks, and past it exempt and not are refused
+        // alike (the doorway's semantics).
+        assert_eq!(g.admit_at(ip(1), t0), Admission::Admit);
+        assert_eq!(g.admit_at(home, t0), Admission::Drop(DropReason::Global));
+        assert_eq!(
+            g.admit_at(localhost, t0),
+            Admission::Drop(DropReason::Global)
+        );
+        assert_eq!(g.admit_at(ip(2), t0), Admission::Drop(DropReason::Global));
+        // Exempt admissions are counted, not logged one by one.
+        let counters = g.take_counters();
+        assert_eq!(counters.get("exempt"), Some(&5));
+        assert_eq!(counters.get("global"), Some(&3));
+        // A release gives the global slot back; the concurrency-only close
+        // for an exempt address touches nothing.
+        g.release(home, Admission::Admit);
+        g.conn_closed(home);
+        assert_eq!(g.live(), 5);
+        assert_eq!(g.admit_at(localhost, t0), Admission::Admit);
+        assert_eq!(g.live(), 6);
+        // But the password tempban bites an exempt address like any other,
+        // and so does a siteban.
+        for _ in 0..5 {
+            g.record_failure_at(home, t0);
+        }
+        assert!(g.is_blocked_at(home, t0));
+        g.set_siteban(localhost, None);
+        assert!(g.is_blocked_at(localhost, t0));
+    }
+
+    #[test]
+    fn the_concurrency_only_pair_is_untouched_by_the_rate_and_global_caps() {
+        // The web and trusted ingresses count against the concurrency cap
+        // alone: a browser tab's reconnect storm must never meet the SSH
+        // rate (the 2026-09-20 lesson in the module docs).
+        let g = gated(IpGuardConfig {
+            per_ip_new_per_minute: 1,
+            global_connections: 1,
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        assert_eq!(g.admit_at(ip(1), t0), Admission::Admit);
+        for _ in 0..50 {
+            assert!(g.conn_opened(ip(2)));
+            g.conn_closed(ip(2));
+        }
+        // And the two pairs share one concurrency count per network.
+        for _ in 0..7 {
+            assert!(g.conn_opened(ip(1)));
+        }
+        assert!(!g.conn_opened(ip(1)));
+        g.release(ip(1), Admission::Admit);
+        assert!(g.conn_opened(ip(1)));
     }
 }

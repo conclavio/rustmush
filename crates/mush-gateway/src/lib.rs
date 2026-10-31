@@ -68,7 +68,7 @@ use tokio::task::JoinHandle;
 
 use crate::accounts::Accounts;
 use crate::delivery::{SessionDelivery, char_key, char_key_obj};
-use crate::ssh_bridge::{SshBridge, start_listener};
+use crate::ssh_bridge::{SshBridge, start_listener_with};
 use crate::web_bridge::WebBridge;
 
 pub mod accounts;
@@ -873,6 +873,26 @@ impl SitebanMirror {
             tracing::info!(dropped, "siteban refresh ejected live connections");
         }
         dropped
+    }
+}
+
+/// Log the SSH accept gates' counters once a minute, when there are any
+/// (doc 29a §9; the doorway's `summarize_forever`): the refusals by reason,
+/// the evictions and the exempt admissions. Taking them resets them, so
+/// each line is that minute's.
+async fn accept_refusal_summary_loop(guard: Arc<IpGuard>) {
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        let counters = guard.take_counters();
+        if !counters.is_empty() {
+            tracing::info!(
+                ?counters,
+                live = guard.live(),
+                "SSH accept refusals in the last minute"
+            );
+        }
     }
 }
 
@@ -2665,7 +2685,15 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         None => open_store(&config).await?,
     };
 
-    let guard = Arc::new(IpGuard::new());
+    // The guard from `[ipguard]` (doc 29a §9), validated at the preflight
+    // and again here: a zero cap or a bad exempt network is a lockout.
+    let guard = Arc::new(IpGuard::with_config(
+        config.ipguard.guard_config().map_err(|e| e.to_string())?,
+    ));
+    let auth_deadline = config.ssh_auth_deadline().map_err(|e| e.to_string())?;
+    // The accept gates' refusals, once a minute, so a flood shows up as one
+    // line rather than one per dropped connection (the doorway's summary).
+    let refusal_summary = tokio::spawn(accept_refusal_summary_loop(Arc::clone(&guard)));
     // Seed the siteban mirror, then keep seeding it. `@siteban` lands in the
     // SERVER half's guard, which admits nothing in a forked deployment; this
     // task is the only thing that carries a staff ban across the fork without
@@ -2701,9 +2729,15 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("cannot create data dir {}: {e}", data_dir.display()))?;
     let ssh_listen = config.ssh_listen().map_err(|e| e.to_string())?;
-    let listener = start_listener(ssh_listen, &data_dir, banner(&config.server.name), bridge)
-        .await
-        .map_err(|e| format!("SSH listener on {ssh_listen}: {e}"))?;
+    let listener = start_listener_with(
+        ssh_listen,
+        &data_dir,
+        banner(&config.server.name),
+        auth_deadline,
+        bridge,
+    )
+    .await
+    .map_err(|e| format!("SSH listener on {ssh_listen}: {e}"))?;
     let addr = listener.addr();
     tracing::info!(%addr, "gateway SSH listener up");
     if let Some(tx) = opts.ssh_ready {
@@ -2896,6 +2930,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             }
             sup.abort();
             siteban_task.abort();
+            refusal_summary.abort();
             if let Some(reason) = abandoned {
                 return Err(format!(
                     "{SUPERVISION_ABANDONED_MARKER}: supervision abandoned ({reason}); \
@@ -2916,6 +2951,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             stop_web(web_stop, web_join).await;
             discord.stop().await;
             siteban_task.abort();
+            refusal_summary.abort();
         }
     }
     Ok(())

@@ -25,12 +25,28 @@
 //! so a wedged client (e.g. `^S` flow control) is disconnected rather than
 //! parking the pump forever (design 02 §8.4).
 //!
-//! Abuse gates: every accepted connection claims a per-IP slot via
-//! [`SshHooks::connection_opened`] **before any auth** (released exactly
-//! once on handler drop), in-band welcome `connect`/`create` re-check
-//! [`SshHooks::is_ip_blocked`] on every attempt (so a tempban armed
-//! mid-connection stops further guessing), and a connection that has not
-//! reached a character within [`PREAUTH_TIMEOUT`] is dropped.
+//! Abuse gates (doc 29a §9, the sshdoorway reviews applied here): the
+//! listener runs its **own accept loop** ([`serve_accepts`]), which survives
+//! an accept error (an `EMFILE` burst used to end russh's loop and take the
+//! port down until a restart) and asks [`SshHooks::admit_connection`] about
+//! every accepted TCP connection **before any SSH byte**: a refused rate,
+//! global or /48 cap closes the socket with no handshake, an over-cap
+//! address is told in the authentication banner and cut within five
+//! seconds, and an admitted one holds its slot until the handler drops
+//! (released exactly once, [`SshHooks::release_connection`]). Every accepted
+//! stream sits in a [`crate::kill::KillSwitch`]: a connection must
+//! authenticate within [`SshConfig::auth_deadline`] of accept and open a
+//! channel within another, or it is disconnected and, [`DISCONNECT_GRACE`]
+//! later, cut — russh cannot abort its own session task, so a client stalled
+//! in the key exchange or ignoring the disconnect would otherwise hold its
+//! slot and descriptor forever. Every other server-initiated disconnect (the
+//! welcome screen's farewell, the pre-auth watchdog, the pump's close after
+//! the game ended the session) arms the same cut. In-game connections are
+//! never touched by any of it: there is no inactivity timeout, by design.
+//! In-band welcome `connect`/`create` re-check [`SshHooks::is_ip_blocked`]
+//! on every attempt (so a tempban armed mid-connection stops further
+//! guessing), and a connection that has not reached a character within
+//! [`PREAUTH_TIMEOUT`] of its channel open is dropped.
 //!
 //! A blocked address is **told**. SSH has exactly one place to put words in
 //! front of a client it is refusing — the authentication banner, sent before
@@ -50,7 +66,7 @@
 //! with the M2 account wizard.
 
 use std::borrow::Cow;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,14 +76,17 @@ use mush_ansi::AnsiTheme;
 use mush_pixel::caps::{CellSize, Encoder, EncoderChoice};
 use mush_proto::{ClientCaps, InputMode, OutputEvent, PanelFrameKind, RichText};
 use mush_session::{FloodBucket, FloodVerdict, sanitize_line};
-use russh::server::{Auth, Config, Handler, Msg, Response, Server as _, Session};
+use russh::server::{Auth, Config, Handler, Msg, Response, Session};
 use russh::{Channel, ChannelId, Disconnect, MethodKind, MethodSet};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 
 use crate::editor::{EchoMode, EditorAction, LineEditor};
-use crate::hooks::{AuthResult, BlockReason, CharSummary, NewConn, PixelEvent, SshHooks};
+use crate::hooks::{
+    Admission, AuthResult, BlockReason, CharSummary, NewConn, PixelEvent, SshHooks,
+};
+use crate::kill::{KillSwitch, Killable};
 use crate::tui::{TuiManifest, TuiSession};
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
@@ -84,6 +103,41 @@ const PREAUTH_FLOOD_BURST: f64 = 5.0;
 /// dropped (design 02 §8.2: pre-auth phase timeout). A fixed deadline from
 /// channel-open, not an idle timer — in-game idlers are never affected.
 const PREAUTH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The default [`SshConfig::auth_deadline`]: a freshly accepted connection
+/// must authenticate within this, and then open a session channel within
+/// another, or it is disconnected and cut (doc 29a §7 F1, §9). Before this
+/// nothing bounded a connection until it opened a channel: a client stalled
+/// in the key exchange, or authenticated and idle, held its task and
+/// descriptor forever. The doorway's `auth_deadline_secs` has the same
+/// default.
+pub const DEFAULT_AUTH_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Grace after a server-initiated `SSH_MSG_DISCONNECT` before the TCP stream
+/// is cut through its [`KillSwitch`]. russh half-closes the write side on a
+/// disconnect and then reads until the client's EOF — which a half-open
+/// client never sends, and `inactivity_timeout` is `None` on purpose — so
+/// without the cut a disconnected connection could hold its slot and
+/// descriptor for ever (doc 29a §8 F-1). Five seconds is long enough for a
+/// slow link to see the farewell (§8 A-5).
+pub const DISCONNECT_GRACE: Duration = Duration::from_secs(5);
+
+/// An over-cap connection ([`Admission::OverCap`]) is told in the
+/// authentication banner and refused at its first auth method; one that
+/// never tries a method is disconnected at this deadline from accept and
+/// cut [`OVER_CAP_GRACE`] later — five seconds in all, so over-cap churn
+/// cannot hold global capacity (doc 29a §7 "Splice and DoS" 3). Capped by
+/// the configured `auth_deadline` when that is shorter.
+const OVER_CAP_DEADLINE: Duration = Duration::from_secs(3);
+const OVER_CAP_GRACE: Duration = Duration::from_secs(2);
+
+/// After an accept error, how long the loop waits before accepting again.
+/// The listener itself is still valid after `EMFILE` and friends; the pause
+/// keeps a descriptor-exhausted process from spinning (doc 29a §8 B-2).
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// What an over-cap connection is told in the authentication banner.
+const OVER_CAP_NOTICE: &str = "Too many connections from your address; try again later.";
 
 /// Cap on one output-pump write to the transport (design 02 §8.4: "try 5 s
 /// then disconnect"). A client that stops reading (terminal `^S`, dead
@@ -136,6 +190,10 @@ pub struct SshConfig {
     pub host_key_path: PathBuf,
     /// Welcome-screen banner (LF line endings fine; converted to CRLF).
     pub banner: String,
+    /// How long a connection has to authenticate after accept, and then to
+    /// open a session channel after that, before it is disconnected and cut
+    /// ([`DEFAULT_AUTH_DEADLINE`]). Never applied to an in-game connection.
+    pub auth_deadline: Duration,
 }
 
 /// Errors from binding or running the SSH server.
@@ -197,26 +255,7 @@ impl SshServer {
         cfg: SshConfig,
         hooks: Arc<dyn SshHooks>,
     ) -> Result<BoundSshServer, SshError> {
-        let key = hostkey::load_or_generate(&cfg.host_key_path)?;
-        let mut methods = MethodSet::empty();
-        methods.push(MethodKind::None);
-        methods.push(MethodKind::PublicKey);
-        methods.push(MethodKind::Password);
-        methods.push(MethodKind::KeyboardInteractive);
-        let config = Arc::new(Config {
-            server_id: russh::SshId::Standard(Cow::Borrowed("SSH-2.0-rustmush_0.1")),
-            methods,
-            keys: vec![key],
-            // Idlers are furniture (design 02 §5.6): no inactivity timeout;
-            // dead links are caught by keepalives instead.
-            inactivity_timeout: None,
-            keepalive_interval: Some(Duration::from_secs(30)),
-            keepalive_max: 3,
-            auth_rejection_time: Duration::from_secs(1),
-            auth_rejection_time_initial: Some(Duration::ZERO),
-            nodelay: true,
-            ..Config::default()
-        });
+        let config = server_config(&cfg.host_key_path)?;
         let listener = TcpListener::bind(cfg.listen)
             .await
             .map_err(|source| SshError::Bind {
@@ -229,13 +268,35 @@ impl SshServer {
             addr,
             listener,
             config,
-            ingress: Ingress {
-                hooks,
-                banner: Arc::from(cfg.banner.as_str()),
-                next_conn: Arc::new(AtomicU64::new(1)),
-            },
+            ingress: Ingress::new(hooks, &cfg.banner),
+            auth_deadline: cfg.auth_deadline,
         })
     }
+}
+
+/// The russh configuration every rustmush listener shares.
+pub(crate) fn server_config(host_key_path: &std::path::Path) -> Result<Arc<Config>, SshError> {
+    let key = hostkey::load_or_generate(host_key_path)?;
+    let mut methods = MethodSet::empty();
+    methods.push(MethodKind::None);
+    methods.push(MethodKind::PublicKey);
+    methods.push(MethodKind::Password);
+    methods.push(MethodKind::KeyboardInteractive);
+    let config = Arc::new(Config {
+        server_id: russh::SshId::Standard(Cow::Borrowed("SSH-2.0-rustmush_0.1")),
+        methods,
+        keys: vec![key],
+        // Idlers are furniture (design 02 §5.6): no inactivity timeout;
+        // dead links are caught by keepalives instead.
+        inactivity_timeout: None,
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 3,
+        auth_rejection_time: Duration::from_secs(1),
+        auth_rejection_time_initial: Some(Duration::ZERO),
+        nodelay: true,
+        ..Config::default()
+    });
+    Ok(config)
 }
 
 /// A bound-but-not-yet-serving SSH server.
@@ -244,6 +305,7 @@ pub struct BoundSshServer {
     listener: TcpListener,
     config: Arc<Config>,
     ingress: Ingress,
+    auth_deadline: Duration,
 }
 
 impl BoundSshServer {
@@ -252,36 +314,199 @@ impl BoundSshServer {
         self.addr
     }
 
-    /// Serve until the accept loop fails.
-    pub async fn run(mut self) -> Result<(), SshError> {
-        self.ingress
-            .run_on_socket(self.config, &self.listener)
-            .await
-            .map_err(SshError::Server)
+    /// Serve until the task is dropped. The loop itself never ends: an
+    /// accept error is logged and retried (`serve_accepts`), so the
+    /// `Result` is kept only for the signature's sake.
+    pub async fn run(self) -> Result<(), SshError> {
+        let BoundSshServer {
+            listener,
+            config,
+            ingress,
+            auth_deadline,
+            ..
+        } = self;
+        serve_accepts(listener, |stream, peer| {
+            ingress.handle(stream, peer, Arc::clone(&config), auth_deadline);
+        })
+        .await;
+        Ok(())
+    }
+}
+
+/// Where accepted connections come from: the bound listener, or a test's
+/// script of errors and streams.
+trait Acceptor {
+    async fn accept(&mut self) -> std::io::Result<(TcpStream, SocketAddr)>;
+}
+
+impl Acceptor for TcpListener {
+    async fn accept(&mut self) -> std::io::Result<(TcpStream, SocketAddr)> {
+        TcpListener::accept(self).await
+    }
+}
+
+/// Accept for ever. An accept error — `EMFILE` under a descriptor burst, a
+/// transient network error — is logged and retried after
+/// [`ACCEPT_BACKOFF`]: the listener itself is still valid, and russh's own
+/// `run_on_socket` returned on the first such error, which took the whole
+/// SSH port down until a restart while the web side kept serving (doc 29a
+/// §8 B-2, applied here in §9).
+async fn serve_accepts<A: Acceptor>(
+    mut listener: A,
+    mut on_accept: impl FnMut(TcpStream, SocketAddr),
+) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer)) => on_accept(stream, peer),
+            Err(error) => {
+                tracing::warn!(%error, "SSH accept failed; retrying");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+            }
+        }
     }
 }
 
 // ---- per-connection machinery ------------------------------------------
 
-struct Ingress {
-    hooks: Arc<dyn SshHooks>,
+#[derive(Clone)]
+pub(crate) struct Ingress {
+    pub(crate) hooks: Arc<dyn SshHooks>,
     banner: Arc<str>,
     next_conn: Arc<AtomicU64>,
 }
 
-impl russh::server::Server for Ingress {
-    type Handler = ConnHandler;
+impl Ingress {
+    pub(crate) fn new(hooks: Arc<dyn SshHooks>, banner: &str) -> Ingress {
+        Ingress::with_base(hooks, banner, 1)
+    }
 
-    fn new_client(&mut self, peer: Option<SocketAddr>) -> ConnHandler {
+    /// An ingress whose connection ids start at `base`. Every listener in one
+    /// process must allocate from a disjoint range: the ids key the session
+    /// manager, and two listeners both counting from 1 would hand two players
+    /// the same id (doc 29a §8 B-1). The public port starts at 1; the web
+    /// side starts at 2^32 and Discord at 2^48.
+    pub(crate) fn with_base(hooks: Arc<dyn SshHooks>, banner: &str, base: u64) -> Ingress {
+        Ingress {
+            hooks,
+            banner: Arc::from(banner),
+            next_conn: Arc::new(AtomicU64::new(base)),
+        }
+    }
+
+    /// Run one accepted TCP connection: ask the hooks whether to serve it
+    /// at all, and if so run SSH on a killable stream under the two
+    /// deadlines (authenticate within `auth_deadline`, open a channel
+    /// within another) that end in a cut, so no connection can hold its
+    /// slot and descriptor without earning them.
+    pub(crate) fn handle(
+        &self,
+        stream: TcpStream,
+        peer: SocketAddr,
+        config: Arc<Config>,
+        auth_deadline: Duration,
+    ) {
+        let addr = peer.ip();
+        let admission = self.hooks.admit_connection(addr);
+        if admission == Admission::Drop {
+            // Closed with no handshake: a flood pays for no key exchange.
+            tracing::debug!(%peer, "SSH connection dropped at accept");
+            return;
+        }
+        let _ = stream.set_nodelay(true);
+        let handler = self.handler_for_admission(addr, admission, auth_deadline);
+        let conn_id = handler.conn_id;
+        let switch = Arc::clone(&handler.kill);
+        let authed = Arc::clone(&handler.authed);
+        let opened = Arc::clone(&handler.opened);
+        let (deadline, grace) = if admission == Admission::OverCap {
+            (OVER_CAP_DEADLINE.min(auth_deadline), OVER_CAP_GRACE)
+        } else {
+            (auth_deadline, DISCONNECT_GRACE)
+        };
+        let stream = Killable::new(stream, Arc::clone(&switch));
+        tokio::spawn(async move {
+            // `run_stream` exchanges version lines and spawns the session
+            // task; a client that never sends its line is dropped here
+            // (dropping the future drops the stream and the handler).
+            let session = match tokio::time::timeout(
+                deadline,
+                russh::server::run_stream(config, stream, handler),
+            )
+            .await
+            {
+                Ok(Ok(session)) => session,
+                Ok(Err(error)) => {
+                    tracing::debug!(conn = conn_id, %error, "SSH start failed");
+                    return;
+                }
+                Err(_) => {
+                    tracing::debug!(conn = conn_id, "SSH version exchange timed out");
+                    return;
+                }
+            };
+            let handle = session.handle();
+            // Two deadlines, so nothing holds a slot for ever: authenticate
+            // within `deadline`, open a channel within another. The
+            // disconnect is polite; the cut after `grace` is not, and it is
+            // unconditional: a client stalled in the key exchange never even
+            // has the disconnect processed (russh takes no message while a
+            // kex is active), and one that ignores it holds the read until
+            // EOF (doc 29a §8 F-1, F-3).
+            let watchdog = tokio::spawn(async move {
+                tokio::time::sleep(deadline).await;
+                let why = if !authed.load(Ordering::SeqCst) {
+                    "authentication timed out"
+                } else {
+                    tokio::time::sleep(deadline).await;
+                    if opened.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    "no session was opened"
+                };
+                tracing::info!(conn = conn_id, "{why}; disconnecting");
+                let _ = tokio::time::timeout(
+                    grace,
+                    handle.disconnect(Disconnect::ByApplication, why.into(), String::new()),
+                )
+                .await;
+                tokio::time::sleep(grace).await;
+                switch.kill();
+            });
+            if let Err(error) = session.await {
+                tracing::debug!(conn = conn_id, %error, "SSH session ended with error");
+            }
+            watchdog.abort();
+        });
+    }
+
+    /// One connection's handler, for an address whose per-IP slot has
+    /// already been asked for with [`SshHooks::connection_opened`]:
+    /// `counted` is its answer, and the handler's `Drop` calls
+    /// [`SshHooks::connection_closed`] exactly when it is `true`. Kept for
+    /// ingresses that gate elsewhere (the doc 29 trusted ingress asks at its
+    /// preamble, for the address the doorway names); the public port uses
+    /// [`Ingress::handler_for_admission`].
+    #[allow(dead_code)] // The trusted ingress (doc 29) is its caller.
+    pub(crate) fn handler_for(&self, addr: IpAddr, counted: bool) -> ConnHandler {
+        self.handler_with(addr, Slot::Counted(counted), DEFAULT_AUTH_DEADLINE)
+    }
+
+    /// One connection's handler for an [`SshHooks::admit_connection`]
+    /// answer; its `Drop` releases it with
+    /// [`SshHooks::release_connection`]. `admission` is never
+    /// [`Admission::Drop`]: that connection got no handler.
+    pub(crate) fn handler_for_admission(
+        &self,
+        addr: IpAddr,
+        admission: Admission,
+        auth_deadline: Duration,
+    ) -> ConnHandler {
+        self.handler_with(addr, Slot::Gated(admission), auth_deadline)
+    }
+
+    fn handler_with(&self, addr: IpAddr, slot: Slot, auth_deadline: Duration) -> ConnHandler {
         let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed);
-        let addr = peer
-            .map(|p| p.ip())
-            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-        // Claim the per-IP slot at accept time, before any auth, so
-        // welcome-screen squatters count against the cap too. An over-cap
-        // connection is dropped at its first auth message.
-        let counted = self.hooks.connection_opened(addr);
-        if !counted {
+        if slot.refused() {
             tracing::info!(conn = conn_id, %addr, "per-IP connection cap hit; will refuse");
         }
         tracing::debug!(conn = conn_id, %addr, "SSH connection");
@@ -327,13 +552,35 @@ impl russh::server::Server for Ingress {
             preauth_watchdog: None,
             commands: None,
             command_task: None,
-            counted,
+            slot,
+            authed: Arc::new(AtomicBool::new(false)),
+            opened: Arc::new(AtomicBool::new(false)),
+            kill: KillSwitch::new(),
+            auth_deadline,
             flood: FloodBucket::new(PREAUTH_FLOOD_RATE, PREAUTH_FLOOD_BURST, Instant::now()),
         }
     }
+}
 
-    fn handle_session_error(&mut self, error: russh::Error) {
-        tracing::debug!(%error, "SSH session ended with error");
+/// How a connection's per-address accounting was claimed, so `Drop`
+/// releases it the same way.
+#[derive(Clone, Copy, Debug)]
+enum Slot {
+    /// [`SshHooks::connection_opened`] answered (`true` = counted; released
+    /// with [`SshHooks::connection_closed`]).
+    Counted(bool),
+    /// [`SshHooks::admit_connection`] answered; released with
+    /// [`SshHooks::release_connection`].
+    Gated(Admission),
+}
+
+impl Slot {
+    /// Over the address's cap: told, and refused at the first auth method.
+    fn refused(self) -> bool {
+        matches!(
+            self,
+            Slot::Counted(false) | Slot::Gated(Admission::OverCap | Admission::Drop)
+        )
     }
 }
 
@@ -471,7 +718,7 @@ impl Shared {
     }
 }
 
-struct ConnHandler {
+pub(crate) struct ConnHandler {
     auth_method: AuthMethod,
     exec_input: Option<crate::mind_exec::ExecInput>,
     exec_submitted: bool,
@@ -502,10 +749,24 @@ struct ConnHandler {
     /// Bounded typed-command queue; the SSH event loop must remain free to write.
     commands: Option<mpsc::Sender<String>>,
     command_task: Option<tokio::task::JoinHandle<()>>,
-    /// Whether this connection claimed a per-IP slot at accept time
-    /// (`SshHooks::connection_opened`); released exactly once in `Drop`.
-    /// `false` means over-cap: refused at the first auth message.
-    counted: bool,
+    /// What this connection claimed at accept, released exactly once in
+    /// `Drop`. A refused slot means over-cap: told in the banner, refused at
+    /// the first auth method.
+    slot: Slot,
+    /// Set by russh once any auth method succeeded; read by the accept-time
+    /// watchdog's first deadline.
+    authed: Arc<AtomicBool>,
+    /// Set when the first session channel opens; read by the watchdog's
+    /// second deadline.
+    opened: Arc<AtomicBool>,
+    /// The switch on this connection's TCP stream (doc 29a §9). Armed after
+    /// every server-initiated disconnect, so a client that ignores it cannot
+    /// keep the connection half-open; unattached (and harmless) for a
+    /// handler that was not made by [`Ingress::handle`].
+    kill: Arc<KillSwitch>,
+    /// [`SshConfig::auth_deadline`]: also the grace a client gets to answer
+    /// the server's channel close with its own before it is disconnected.
+    auth_deadline: Duration,
     flood: FloodBucket,
 }
 
@@ -517,11 +778,13 @@ impl Drop for ConnHandler {
         if let Some(task) = self.command_task.take() {
             task.abort();
         }
-        // Release the per-IP slot symmetrically with new_client — every
+        // Release the per-IP slot symmetrically with the admission — every
         // path (auth refused, welcome squatter, mid-connect teardown, clean
-        // quit) comes through here exactly once.
-        if self.counted {
-            self.hooks.connection_closed(self.addr);
+        // quit, a cut) comes through here exactly once.
+        match self.slot {
+            Slot::Counted(true) => self.hooks.connection_closed(self.addr),
+            Slot::Counted(false) => {}
+            Slot::Gated(admission) => self.hooks.release_connection(self.addr, admission),
         }
         if self.connected.swap(false, Ordering::SeqCst) {
             let hooks = Arc::clone(&self.hooks);
@@ -789,7 +1052,8 @@ impl ConnHandler {
         session.data(ch, bytes)
     }
 
-    /// Farewell + close channel + disconnect.
+    /// Farewell + close channel + disconnect, and the cut [`DISCONNECT_GRACE`]
+    /// later for a client that does not take the disconnect for an answer.
     fn close_polite(&mut self, session: &mut Session, msg: &str) -> Result<(), russh::Error> {
         if !msg.is_empty() {
             self.write_text(session, msg)?;
@@ -798,6 +1062,7 @@ impl ConnHandler {
             let _ = session.close(ch);
         }
         let _ = session.disconnect(Disconnect::ByApplication, "goodbye", "");
+        self.kill.arm(DISCONNECT_GRACE);
         Ok(())
     }
 
@@ -1225,6 +1490,7 @@ impl ConnHandler {
                     self.conn_id,
                     repaint,
                     Arc::clone(&self.connected),
+                    self.cut(),
                 );
                 Ok(())
             }
@@ -1313,9 +1579,19 @@ impl ConnHandler {
             Arc::clone(&self.hooks),
             self.conn_id,
             Arc::clone(&self.connected),
+            self.cut(),
         );
         self.hooks.invoke(self.conn_id, 1, request).await;
         Ok(())
+    }
+
+    /// What a pump needs to cut this connection once it has closed the
+    /// session's channel.
+    fn cut(&self) -> Cut {
+        Cut {
+            kill: Arc::clone(&self.kill),
+            close_grace: self.auth_deadline,
+        }
     }
 
     // ---- quit confirmation ----------------------------------------------
@@ -1377,16 +1653,28 @@ impl Handler for ConnHandler {
     /// gets [`block_notice`]; everyone else gets nothing, so the front door
     /// is unchanged.
     async fn authentication_banner(&mut self) -> Result<Option<String>, Self::Error> {
+        // Banners are displayed verbatim: one line, CRLF-terminated the way
+        // every other line this transport writes is.
+        if self.slot.refused() {
+            // Over the address's cap: the one thing this connection gets is
+            // the reason (doc 29a §9), before its first method is refused.
+            return Ok(Some(format!("{OVER_CAP_NOTICE}\r\n")));
+        }
         let Some(reason) = self.hooks.block_reason(self.addr) else {
             return Ok(None);
         };
-        // Banners are displayed verbatim: one line, CRLF-terminated the way
-        // every other line this transport writes is.
         Ok(Some(format!("{}\r\n", block_notice(reason))))
     }
 
+    /// Any method accepted: the accept-time watchdog's first deadline is
+    /// met, and its second (a channel within another `auth_deadline`) starts.
+    async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
+        self.authed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
     async fn auth_none(&mut self, user: &str) -> Result<Auth, Self::Error> {
-        if !self.counted {
+        if self.slot.refused() {
             // Over the per-IP connection cap: shed the connection outright.
             return Err(russh::Error::Disconnect);
         }
@@ -1402,7 +1690,7 @@ impl Handler for ConnHandler {
     }
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
-        if !self.counted {
+        if self.slot.refused() {
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
@@ -1421,7 +1709,7 @@ impl Handler for ConnHandler {
         _submethods: &str,
         response: Option<Response<'a>>,
     ) -> Result<Auth, Self::Error> {
-        if !self.counted {
+        if self.slot.refused() {
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
@@ -1457,7 +1745,7 @@ impl Handler for ConnHandler {
         // decides whether to ask the client to sign this key (`Auth::Accept`)
         // or to fall toward password (`reject_toward_interactive`). Access is
         // granted only in `auth_publickey`, after the signature is verified.
-        if !self.counted {
+        if self.slot.refused() {
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
@@ -1489,7 +1777,7 @@ impl Handler for ConnHandler {
         // The AUTHORITATIVE callback (M19): russh has ALREADY verified the
         // signature, so this is the only place public-key access is granted.
         // Same pre-checks as the password path.
-        if !self.counted {
+        if self.slot.refused() {
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
@@ -1553,13 +1841,16 @@ impl Handler for ConnHandler {
             return Ok(());
         }
         self.channel = Some(channel.id());
+        self.opened.store(true, Ordering::SeqCst);
         reply.accept().await;
         // Pre-auth watchdog (design 02 §8.2): a connection that has not
         // reached a character within the timeout is dropped, so idle
         // welcome-screen squatters cannot hold slots forever. In-game
-        // idlers are untouched (`connected` is set by then).
+        // idlers are untouched (`connected` is set by then). The cut after
+        // the disconnect is for a client that ignores it (doc 29a §9).
         let handle = session.handle();
         let connected = Arc::clone(&self.connected);
+        let kill = Arc::clone(&self.kill);
         let channel_id = channel.id();
         let conn_id = self.conn_id;
         self.preauth_watchdog = Some(tokio::spawn(async move {
@@ -1573,6 +1864,8 @@ impl Handler for ConnHandler {
                 let _ = handle
                     .disconnect(Disconnect::ByApplication, "login timeout".into(), "".into())
                     .await;
+                tokio::time::sleep(DISCONNECT_GRACE).await;
+                kill.kill();
             }
         }));
         Ok(())
@@ -2510,6 +2803,40 @@ fn render_history_page(
 /// after the lock drops (invariant T2). Ends when the sender is dropped
 /// (session closed) or after a [`OutputEvent::Disconnect`], restoring the
 /// terminal first if a TUI was active (invariant T5).
+/// The cut a pump arms after it has closed the session's channel (doc 29a
+/// §8 A-3, applied in §9): a client that never answers the server's channel
+/// close with its own would keep the connection, and its slot, with nothing
+/// open. It gets `close_grace` to close, then a disconnect, then — a
+/// [`DISCONNECT_GRACE`] later — the stream is cut. Harmless when the
+/// connection has already ended: the disconnect fails to send and the
+/// switch cuts a stream that is gone.
+struct Cut {
+    kill: Arc<KillSwitch>,
+    close_grace: Duration,
+}
+
+impl Cut {
+    fn after_close(self, handle: russh::server::Handle) {
+        tokio::spawn(async move {
+            tokio::time::sleep(self.close_grace).await;
+            if self.kill.is_killed() {
+                return;
+            }
+            let _ = tokio::time::timeout(
+                WRITE_TIMEOUT,
+                handle.disconnect(
+                    Disconnect::ByApplication,
+                    "session ended".into(),
+                    String::new(),
+                ),
+            )
+            .await;
+            tokio::time::sleep(DISCONNECT_GRACE).await;
+            self.kill.kill();
+        });
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Both legacy and stamped adapters share one output pump.
 fn spawn_output_pump(
     mut rx: mpsc::Receiver<Arc<OutputEvent>>,
@@ -2521,6 +2848,7 @@ fn spawn_output_pump(
     conn_id: u64,
     repaint: Arc<Notify>,
     connected: Arc<AtomicBool>,
+    cut: Cut,
 ) {
     tokio::spawn(async move {
         let theme = AnsiTheme::default();
@@ -2890,6 +3218,7 @@ fn spawn_output_pump(
         if connected.swap(false, Ordering::SeqCst) {
             hooks.disconnected(conn_id).await;
         }
+        cut.after_close(handle);
     });
 }
 
@@ -2908,6 +3237,7 @@ fn spawn_exec_pump(
     hooks: Arc<dyn SshHooks>,
     conn: u64,
     connected: Arc<AtomicBool>,
+    cut: Cut,
 ) {
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(125);
@@ -2961,6 +3291,7 @@ fn spawn_exec_pump(
         if connected.swap(false, Ordering::SeqCst) {
             hooks.disconnected(conn).await;
         }
+        cut.after_close(handle);
     });
 }
 
@@ -3286,5 +3617,70 @@ mod tests {
             written.ends_with("> fire"),
             "and the prompt and the draft redrawn: {written:?}"
         );
+    }
+
+    /// A scripted [`Acceptor`]: a run of errors, then real accepted
+    /// streams, then pending for ever (a quiet listener).
+    struct Scripted {
+        errors: u32,
+        listener: TcpListener,
+        accepted: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl Acceptor for Scripted {
+        async fn accept(&mut self) -> std::io::Result<(TcpStream, SocketAddr)> {
+            if self.errors > 0 {
+                self.errors -= 1;
+                return Err(std::io::Error::other("Too many open files (os error 24)"));
+            }
+            let accepted = TcpListener::accept(&self.listener).await?;
+            self.accepted.fetch_add(1, Ordering::SeqCst);
+            Ok(accepted)
+        }
+    }
+
+    /// Doc 29a §8 B-2 applied to the public port: an accept error (an
+    /// `EMFILE` burst) is logged and retried, and the connections that
+    /// follow it are still served. russh's own loop returned on the first
+    /// error, which took the SSH port down until a restart.
+    #[tokio::test]
+    async fn the_accept_loop_survives_accept_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let served = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let served_by_loop = std::sync::Arc::clone(&served);
+        let scripted = Scripted {
+            errors: 3,
+            listener,
+            accepted: std::sync::Arc::clone(&accepted),
+        };
+        let serving = tokio::spawn(serve_accepts(scripted, move |_stream, _peer| {
+            served_by_loop.fetch_add(1, Ordering::SeqCst);
+        }));
+        // The errors cost three backoffs; a client that connects meanwhile
+        // waits in the backlog and is served once the loop gets past them.
+        let _client = TcpStream::connect(addr).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while served.load(Ordering::SeqCst) == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the loop never served the connection after the accept errors"
+            );
+            assert!(!serving.is_finished(), "the accept loop ended on an error");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        let _second = TcpStream::connect(addr).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while served.load(Ordering::SeqCst) < 2 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "second connection unserved"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!serving.is_finished());
+        serving.abort();
     }
 }

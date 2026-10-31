@@ -2361,6 +2361,57 @@ CSP's `script-src` carries `'wasm-unsafe-eval'` for it (WebAssembly only) and
 `rustup target add wasm32-unknown-unknown`; the box does not, while the
 bundle is shipped (`deploy/README.md`).
 
+## The SSH port's gates: `[ipguard]` and `[ssh].auth_deadline_s` (doc 29a §9)
+
+The public SSH port runs its own accept loop and asks the guard about every
+TCP connection **before any SSH byte**, because each connection that gets a
+handshake costs a key exchange. This is the sshdoorway reviews (doc 29a §7,
+§8) applied to the instance's own port; the configuration is `[ipguard]`,
+every key defaulting, and one `[ssh]` key:
+
+| key | default | what it does |
+|---|---|---|
+| `[ssh].auth_deadline_s` | `30` | seconds to authenticate after accept, then as many again to open a channel; past either the connection is disconnected and, 5 s later, cut |
+| `max_failures` / `window_s` / `ban_s` | `5` / `600` / `900` | wrong passwords in the window that tempban the network, and for how long |
+| `max_token_failures` / `token_window_s` / `token_cooloff_s` | `30` / `600` / `60` | refused web bearer tokens that start a cool-off (never a ban; the 2026-09-20 lesson) |
+| `max_conns` | `8` | concurrent connections per network, SSH and web together; over it a connection is told why in the auth banner, refused, and cut within 5 s |
+| `v4_prefix` / `v6_prefix` | `32` / `64` | the network an address is folded to before anything is counted |
+| `per_ip_new_per_minute` | `20` | new SSH connections per network per minute; the rest are dropped at accept with no handshake |
+| `global_connections` | `2048` | SSH connections live at once in the whole process; past it, dropped at accept |
+| `per_v6_48_connections` | `64` | SSH connections live at once from one IPv6 /48 across its /64s (one customer allocation is exactly 65,536 /64s) |
+| `exempt_nets` | `["127.0.0.0/8", "::1/128"]` | networks (CIDR or one address) exempt from the per-network caps: `max_conns`, the rate and the /48 aggregate — **never** from `global_connections`, which bounds the process rather than the player, and never from the tempban or the sitebans (the doorway's semantics, so the two halves match) |
+
+**Why the deadlines.** russh cannot abort its own session task, and
+`inactivity_timeout` is off by design (in-game idlers are furniture). Before
+this a connection was only put on a clock when it opened a channel: one that
+stalled in the key exchange, or authenticated and never opened a channel, or
+ignored the server's disconnect (russh then half-closes and reads until the
+client's EOF) held its task and descriptor for ever. Now every accepted
+stream sits in a kill switch that is tripped at the deadlines and 5 s after
+every server-initiated disconnect, so the slot and the descriptor are always
+released. Nothing here touches a connection once it is in the game.
+
+**Every table is bounded and evicts; none fails closed.** A rate table that
+refused new networks once full would let one IPv6 /48, connecting once from
+each of its 65,536 /64s, lock every new player out in under a minute (doc 29a
+§8 F-5). The accept loop also survives an accept error (`EMFILE` under a
+descriptor burst): it logs, waits 100 ms and goes on, where russh's own loop
+ended and took the port down until a restart while the web side kept
+serving.
+
+**The bot fleet.** The owner's `mush-bot` clients run from one address, which
+trips a per-address cap of eight; that address belongs in `exempt_nets`. An
+exempt address that guesses passwords is still tempbanned like any other.
+
+**Seeing it work.** Refusals are counted, not logged one by one; once a
+minute the gateway writes one line when there were any:
+`journalctl -u dev1mush-gateway | grep 'SSH accept refusals'` carries the
+counters (`rate`, `global`, `per-48`, `per-ip`, `rate-evict`, `map-evict`,
+and `exempt` for the admissions the allow-list waved through) and the live
+connection count. A typo in `[ipguard]`, a cap of zero or an
+unparsable exempt network refuses the boot and the `--check-config`
+preflight.
+
 ## Sounds and the asset pack (doc 21 G.10, G.11)
 
 **Sounds.** In `@tui` each seated cockpit frame sounds one name: the most

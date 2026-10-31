@@ -46,6 +46,23 @@ pub enum AuthResult {
     Banned,
 }
 
+/// What the embedder's guard says about a freshly accepted TCP connection
+/// ([`SshHooks::admit_connection`]), before any SSH byte is exchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// Serve it. Holds a per-address slot until
+    /// [`SshHooks::release_connection`] with `Admit`.
+    Admit,
+    /// Over the address's concurrency cap: SSH runs only far enough to tell
+    /// the client why (the authentication banner), every auth method is
+    /// refused, and the connection is cut within five seconds of accept.
+    /// Released with `OverCap`.
+    OverCap,
+    /// Over the rate, the global cap or the IPv6 /48 cap: the TCP connection
+    /// is closed without a handshake. Nothing is held, nothing is released.
+    Drop,
+}
+
 /// Why an address is being refused, so the transport can say so in words
 /// instead of leaving an OpenSSH client to guess at a password prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,6 +276,36 @@ pub trait SshHooks: Send + Sync {
     /// Release the slot claimed by
     /// [`connection_opened`](Self::connection_opened). Default: no-op.
     fn connection_closed(&self, _addr: IpAddr) {}
+
+    /// Gate a **freshly accepted** TCP connection on the public port, before
+    /// any SSH byte is exchanged (doc 29a §9): the per-address concurrency
+    /// cap, the per-address rate, the global cap and the IPv6 /48 cap all
+    /// answer here, where a refusal costs no key exchange. Every
+    /// [`Admission::Admit`] and [`Admission::OverCap`] is balanced by exactly
+    /// one [`release_connection`](Self::release_connection) with the same
+    /// value when the handler drops; an [`Admission::Drop`] gets no handler
+    /// and is never released.
+    ///
+    /// Default: [`connection_opened`](Self::connection_opened)'s answer,
+    /// mapped (`true` is `Admit`, `false` is `OverCap`), so an embedder with
+    /// only the per-address cap keeps exactly what it had.
+    fn admit_connection(&self, addr: IpAddr) -> Admission {
+        if self.connection_opened(addr) {
+            Admission::Admit
+        } else {
+            Admission::OverCap
+        }
+    }
+
+    /// Release what [`admit_connection`](Self::admit_connection) claimed.
+    /// Default: [`connection_closed`](Self::connection_closed) for an
+    /// `Admit`, nothing otherwise (the default `admit_connection` holds
+    /// nothing for an `OverCap`).
+    fn release_connection(&self, addr: IpAddr, admission: Admission) {
+        if admission == Admission::Admit {
+            self.connection_closed(addr);
+        }
+    }
 
     /// Terminal resize / capability renegotiation for a connected
     /// connection (the binary typically forwards to
