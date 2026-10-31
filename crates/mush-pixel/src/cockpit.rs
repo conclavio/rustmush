@@ -340,7 +340,29 @@ impl Picture for CockpitPicture {
                 let tr = (p.height * 0.35).round().clamp(8.0, 24.0) as i32;
                 Some((tx, ty, tr))
             });
+            if let Some((rel_mdeg, severe)) =
+                crate::fx::resolve_threat_arc_mdeg(cockpit, &self.active_fx, cam.heading_mdeg)
+            {
+                let arc_r = (w.min(h) as i32 / 4).clamp(20, 56);
+                let w_i = w as i32;
+                let h_i = h as i32;
+                crate::fx::draw_threat_arc(
+                    w_i / 2,
+                    h_i / 2,
+                    arc_r,
+                    rel_mdeg,
+                    severe,
+                    &mut |x, y, col| {
+                        if x >= 0 && x < w_i && y >= 0 && y < h_i {
+                            frame.put(x as usize, y as usize, crate::fx::rgba_to_frame_rgb(col));
+                        }
+                    },
+                );
+            }
             crate::fx::step_combat_fx(&mut self.active_fx);
+        }
+        if look.zoom_permille > 1000 {
+            magnify_frame_center(frame, look.zoom_permille);
         }
         match overlay {
             // The inset first, the HUD over it (G.13): the tape, the lock's
@@ -350,7 +372,20 @@ impl Picture for CockpitPicture {
                     self.inset
                         .draw_inset(frame, cockpit, map, look, rect, INSET_UP);
                 }
-                overlay::draw_hud(frame, &hud(frame, arena, terrain, eye, cockpit, look, &cam))
+                let mut hud_model = hud(frame, arena, terrain, eye, cockpit, look, &cam);
+                if self.contact_tracker.anim_tick() > 0
+                    && let Some(lock) = hud_model.lock.as_mut()
+                {
+                    let lock_id = cockpit.get("lock").and_then(Value::as_str);
+                    if let Some((ci, c)) = contacts_arr.iter().enumerate().find(|(_, c)| {
+                        lock_id.is_some() && c.get("id").and_then(Value::as_str) == lock_id
+                    }) {
+                        lock.lead_px =
+                            self.contact_tracker
+                                .contact_lateral_lead_px(c, ci, cam.heading_mdeg);
+                    }
+                }
+                overlay::draw_hud(frame, &hud_model)
             }
             // The owner's 640x480 target of 2026-10-21: minimap, heat,
             // weapons, the armour doll and the status strip, all from the
@@ -757,10 +792,20 @@ pub fn hud(
     };
     let place = |c: &Value| {
         let sprite = contact_sprite(c, &base_cam, 0);
-        match terrain {
+        let mut proj = match terrain {
             Some(terrain) => heightfield::project(terrain, cam, eye_cm, w, h, &sprite),
             None => project_from(arena, cam, sensor_eye, w, h, &sprite),
+        }?;
+        if look.zoom_permille > 1000 {
+            let zf = f32::from(look.zoom_permille.clamp(1000, 2000)) * 0.001;
+            let cx = w as f32 * 0.5;
+            let cy = h as f32 * 0.5;
+            proj.screenx = cx + (proj.screenx - cx) * zf;
+            proj.bottom = cy + (proj.bottom - cy) * zf;
+            proj.width *= zf;
+            proj.height *= zf;
         }
+        Some(proj)
     };
     // G.14: a gauge over each contact in the view's columns with any of its
     // sprite in the view, where the frame gives a word for it.
@@ -831,6 +876,7 @@ pub fn hud(
                     .unwrap_or(range_m.round() as i64),
                 percent: cockpit.get("lock_percent").and_then(Value::as_i64),
                 at,
+                lead_px: 0,
             }
         });
     Hud {
@@ -841,6 +887,27 @@ pub fn hud(
         marks,
         lock,
         health,
+        zoom_permille: look.zoom_permille,
+    }
+}
+
+fn magnify_frame_center(frame: &mut Frame, zoom_permille: u16) {
+    if zoom_permille <= 1000 {
+        return;
+    }
+    let z = i64::from(zoom_permille.clamp(1000, 2000));
+    let w = frame.width();
+    let h = frame.height();
+    let src = frame.clone();
+    let cx = w as i64 / 2;
+    let cy = h as i64 / 2;
+    for y in 0..h {
+        let sy = (cy + ((y as i64 - cy) * 1000) / z).clamp(0, h.saturating_sub(1) as i64) as usize;
+        for x in 0..w {
+            let sx =
+                (cx + ((x as i64 - cx) * 1000) / z).clamp(0, w.saturating_sub(1) as i64) as usize;
+            frame.put(x, y, src.get(sx, sy));
+        }
     }
 }
 
@@ -898,17 +965,37 @@ pub fn sections_from(cockpit: &Value) -> Vec<Section> {
 /// and the camera's signed look offset (`look_mdeg`).
 #[must_use]
 pub fn canopy_glass_from(cockpit: &Value, look_mdeg: i64) -> CanopyGlass {
+    canopy_glass_from_with_zoom(cockpit, look_mdeg, 1000)
+}
+
+/// Build the [`CanopyGlass`] overlay inputs from a held `arena.cockpit` frame,
+/// the camera's signed look offset (`look_mdeg`), and the optical gunner scope
+/// magnification (`zoom_permille`).
+#[must_use]
+pub fn canopy_glass_from_with_zoom(
+    cockpit: &Value,
+    look_mdeg: i64,
+    zoom_permille: u16,
+) -> CanopyGlass {
     let sections = sections_from(cockpit);
     let wreck = cockpit.get("wreck").and_then(Value::as_bool) == Some(true);
     let mut has_damaged = false;
     let mut has_destroyed = false;
     let mut low_core = false;
     let mut low_armour = false;
+    let mut total_hp = 0i64;
+    let mut total_max = 0i64;
     for sec in &sections {
         if sec.condition == "destroyed" {
             has_destroyed = true;
         } else if sec.condition != "intact" {
             has_damaged = true;
+        }
+        if sec.internals_max > 0 {
+            total_max += sec.internals_max;
+            if sec.condition != "destroyed" {
+                total_hp += sec.internals.clamp(0, sec.internals_max);
+            }
         }
         if sec.internals_max > 0
             && matches!(sec.id.as_str(), "hull" | "turret" | "head" | "torso")
@@ -917,8 +1004,12 @@ pub fn canopy_glass_from(cockpit: &Value, look_mdeg: i64) -> CanopyGlass {
             low_core = true;
         }
         for f in &sec.facets {
-            if f.armor_max > 0 && f.armor * 100 < f.armor_max * 65 {
-                low_armour = true;
+            if f.armor_max > 0 {
+                total_max += f.armor_max;
+                total_hp += f.armor.clamp(0, f.armor_max);
+                if f.armor * 100 < f.armor_max * 65 {
+                    low_armour = true;
+                }
             }
         }
     }
@@ -929,6 +1020,59 @@ pub fn canopy_glass_from(cockpit: &Value, look_mdeg: i64) -> CanopyGlass {
     } else {
         0
     };
+    let hull_pct = if wreck {
+        0
+    } else if total_max > 0 {
+        u8::try_from(((total_hp.clamp(0, total_max) * 100) / total_max).clamp(0, 100))
+            .unwrap_or(100)
+    } else {
+        100
+    };
+    let heat_obj = cockpit.get("heat").filter(|h| !h.is_null());
+    let overheated = heat_obj
+        .and_then(|h| h.get("overheated"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let heat_pct = heat_obj.and_then(|h| {
+        let max = num(h.get("max"));
+        (max > 0).then(|| {
+            let cur = num(h.get("heat")).clamp(0, max);
+            u8::try_from((cur * 100) / max).unwrap_or(0)
+        })
+    });
+    let weapon_pips: Vec<(bool, u8)> = cockpit
+        .get("weapons")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(4)
+        .map(|w| {
+            let ready = w.get("ready").and_then(Value::as_bool) == Some(true);
+            let rounds = w.get("rounds").and_then(Value::as_i64).unwrap_or(1);
+            let rounds_max = w.get("rounds_max").and_then(Value::as_i64).unwrap_or(0);
+            let ready_in_ms = w
+                .get("ready_in_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                .max(0);
+            let cd_ms = w
+                .get("cooldown_ms")
+                .or_else(|| w.get("cycle_ms"))
+                .and_then(Value::as_i64)
+                .unwrap_or(3_000)
+                .max(500);
+            let has_ammo = rounds_max <= 0 || rounds > 0;
+            let fill_pct = if !has_ammo {
+                0
+            } else if ready || ready_in_ms == 0 {
+                100
+            } else {
+                u8::try_from((((cd_ms - ready_in_ms.min(cd_ms)) * 100) / cd_ms).clamp(10, 95))
+                    .unwrap_or(50)
+            };
+            (ready && has_ammo, fill_pct)
+        })
+        .collect();
     CanopyGlass {
         look_mdeg,
         power_on: cockpit.get("power").and_then(Value::as_str) != Some("off"),
@@ -938,6 +1082,11 @@ pub fn canopy_glass_from(cockpit: &Value, look_mdeg: i64) -> CanopyGlass {
             .and_then(Value::as_str)
             .map(str::to_string),
         damage,
+        hull_pct,
+        heat_pct,
+        overheated,
+        weapon_pips,
+        zoom_permille,
     }
 }
 
@@ -945,6 +1094,20 @@ pub fn canopy_glass_from(cockpit: &Value, look_mdeg: i64) -> CanopyGlass {
 /// and `look_mdeg`.
 pub fn draw_canopy_glass(frame: &mut Frame, cockpit: &Value, look_mdeg: i64) {
     overlay::draw_canopy_glass(frame, &canopy_glass_from(cockpit, look_mdeg));
+}
+
+/// Draw the cockpit canopy glass overlay directly onto `frame` from `cockpit`,
+/// `look_mdeg`, and `zoom_permille`.
+pub fn draw_canopy_glass_with_zoom(
+    frame: &mut Frame,
+    cockpit: &Value,
+    look_mdeg: i64,
+    zoom_permille: u16,
+) {
+    overlay::draw_canopy_glass(
+        frame,
+        &canopy_glass_from_with_zoom(cockpit, look_mdeg, zoom_permille),
+    );
 }
 
 /// **The campaign layer an IC field's cockpit frame carries** (doc 32 cut
@@ -1828,5 +1991,17 @@ mod tests {
             with_glass.count_colours(256) <= 256,
             "canopy glass stays inside the 256-colour indexed palette"
         );
+        assert!(glass.hull_pct > 0 && glass.hull_pct < 100);
+        assert!(!glass.weapon_pips.is_empty());
+
+        // Optical zoom (`zoom_permille = 1500`) modifies the rendered frame and stays inside the palette.
+        let mut zoomed = Frame::new(640, 276);
+        let zoom_look = Look {
+            zoom_permille: 1500,
+            ..Look::default()
+        };
+        assert!(CockpitPicture::new().draw(&mut zoomed, &feeds, &zoom_look));
+        assert_ne!(plain.hash(), zoomed.hash(), "1.5x scope zoom modifies view");
+        assert!(zoomed.count_colours(256) <= 256);
     }
 }
