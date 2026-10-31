@@ -1277,11 +1277,12 @@ fn ic1_a_fresh_world_boots_the_stations() {
         .filter(|o| o.kind == ObjKind::Npc && o.location.is_some_and(|l| rooms.contains_key(&l)))
         .map(|o| o.id)
         .collect();
-    // Doc 19 cut A.8: the moon stations' 30 (cast and principals) joined the 22.
+    // Doc 19 cut A.8: the moon stations' 30 (cast and principals) joined the 22; doc 32 cut
+    // CF.6 added the Slack Line's third crew member, the combat-duty escort.
     assert_eq!(
         npcs.len(),
-        56,
-        "the station cast, two independent travellers and two permanent crew"
+        57,
+        "the station cast, two independent travellers and three permanent crew"
     );
     let leila = obj(&tw, "tacsim.passengers.stickney", "npc.leila_mensah_kovacs");
     assert_eq!(
@@ -1421,9 +1422,10 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         after.get("tacsim.passengers.stickney").map(|l| l.0),
         Some(2)
     );
+    // Doc 32 cut CF.6: the crew pack's version 2 adds the combat-duty escort offer.
+    assert_eq!(after.get("tacsim.crew.ceres").map(|l| l.0), Some(2));
     for name in [
         "tacsim.passengers.ceres",
-        "tacsim.crew.ceres",
         "tacsim.quests.first_steps",
         "tacsim.quests.leila_followup",
         "tacsim.quests.port_connections",
