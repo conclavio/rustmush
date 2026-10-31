@@ -1078,7 +1078,7 @@ pub fn from_pack(
 /// `mush_atlas::physics::Cost` is a `u32` of hundredths of a cell; the arena
 /// stores a `u16`, which is 655 cells of cost and two orders of magnitude past
 /// the shipped table's worst row.
-fn move_cost_of(table: &LocomotionTable, class: TerrainClass) -> u16 {
+pub(crate) fn move_cost_of(table: &LocomotionTable, class: TerrainClass) -> u16 {
     match table.cost(class.label(), TRACKED, &[]) {
         Some(cost) => u16::try_from(cost).unwrap_or(u16::MAX),
         None => 0,

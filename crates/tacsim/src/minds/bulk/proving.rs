@@ -501,7 +501,9 @@ fn outcome(reason: EndReason, swapped: bool) -> Result<Outcome, BulkError> {
         EndReason::Hold { winner } => Some(winner),
         EndReason::Conceded { winner } => winner,
         EndReason::Spent => None,
-        EndReason::Timeout | EndReason::Unattended => return Ok(Outcome::Timeout),
+        EndReason::Timeout | EndReason::Unattended | EndReason::Disengaged => {
+            return Ok(Outcome::Timeout);
+        }
         EndReason::Abort | EndReason::Void | EndReason::LedgerOverflow => {
             return Err(invalid("proving stopped without a valid game outcome"));
         }

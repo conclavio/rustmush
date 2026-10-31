@@ -2699,6 +2699,7 @@ async fn r7_custody_void_and_checked_return_use_the_same_loss_writer() {
         let mark = mush_sim::deployed::DeployedMark {
             match_id: 777,
             arena: "test.custody".into(),
+            field: None,
         };
         mush_tactics::custody::check_out(&mut ctx, node, mark.clone()).unwrap();
         let back = mush_tactics::custody::check_in(&mut ctx, node, None).unwrap();

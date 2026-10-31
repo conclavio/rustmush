@@ -129,7 +129,7 @@ impl SitePose {
     }
 
     /// On the site's grid with a heading below a full turn.
-    fn on_site(&self) -> bool {
+    pub(crate) fn on_site(&self) -> bool {
         let edge = i64::from(SITE_CELLS) * i64::from(SITE_CELL_CM);
         (0..edge).contains(&self.x_cm)
             && (0..edge).contains(&self.y_cm)
@@ -238,7 +238,8 @@ pub struct GroundObject {
     pub left_ic: i64,
 }
 
-/// **Who opened the field now open.**
+/// **Who opened the field now open.** Staff truth: the record is never published whole
+/// (Q-CF-28), so who marked whom stays private (Q-CF-7) while the promotion itself is physical.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum PromotedBy {
@@ -247,6 +248,62 @@ pub enum PromotedBy {
         /// The staff member.
         staff: ObjId,
     },
+    /// **A detachment leader's Hostile mark** (doc 32 cut CF.2; Q-CF-7, Q-CF-14): the leader,
+    /// a unit of the marking party, and the presence row's unit, whose party is marked.
+    Mark {
+        /// The leader who marked.
+        leader: ObjId,
+        /// A unit of the marking party (the one it was seen from).
+        by: ObjId,
+        /// The unit seen, whose party is marked Hostile.
+        of: ObjId,
+    },
+    /// **A fire order on the unpromoted surface** (doc 32 cut CF.2; Q-CF-14): the pilot, the
+    /// unit ordered to fire, and the presence row's unit it fires at. The shot resolves in the
+    /// field's first pulses under the normal lock rules.
+    Fire {
+        /// The pilot who ordered it.
+        pilot: ObjId,
+        /// The unit that fires.
+        shooter: ObjId,
+        /// The unit fired at.
+        target: ObjId,
+    },
+}
+
+impl PromotedBy {
+    /// Whether a field host stands behind the flag (every door but the staff fixture's).
+    #[must_use]
+    pub const fn hosted(&self) -> bool {
+        !matches!(self, PromotedBy::Staff { .. })
+    }
+
+    /// The staff line's words for who opened it.
+    #[must_use]
+    pub fn words(&self) -> String {
+        match self {
+            PromotedBy::Staff { staff } => format!("staff #{} fixture", staff.0),
+            PromotedBy::Mark { leader, by, of } => {
+                format!("#{}'s mark from #{} on #{}'s party", leader.0, by.0, of.0)
+            }
+            PromotedBy::Fire {
+                pilot,
+                shooter,
+                target,
+            } => format!("#{}'s fire order, #{} at #{}", pilot.0, shooter.0, target.0),
+        }
+    }
+}
+
+/// **A rig a promotion settled mid-drive** (doc 32 cut CF.2; Q-CF-31): the cell it completed,
+/// where the field host places it before admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettledRig {
+    /// The rig.
+    pub tv: ObjId,
+    /// Its settled pose.
+    pub pose: SitePose,
 }
 
 /// **The field open on a site** (doc 32 Q-CF-14): while it is `Some`, every surface act there is
@@ -260,6 +317,9 @@ pub struct Promotion {
     pub at_ic: i64,
     /// Who opened it.
     pub by: PromotedBy,
+    /// **The rigs the promotion settled mid-drive** (doc 32 cut CF.2; Q-CF-31), in rig order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settled: Vec<SettledRig>,
 }
 
 /// **One site's record in `tacsim.field`** (doc 32 Q-CF-24).
@@ -385,7 +445,12 @@ impl SiteRecord {
         }
         let ordinal = self.ordinal.checked_add(1).ok_or(SiteRefused::Exhausted)?;
         self.ordinal = ordinal;
-        self.promoted = Some(Promotion { ordinal, at_ic, by });
+        self.promoted = Some(Promotion {
+            ordinal,
+            at_ic,
+            by,
+            settled: Vec::new(),
+        });
         Ok(FieldId {
             site: self.site.clone(),
             ordinal,
@@ -591,6 +656,19 @@ impl SiteRecord {
         {
             return Err("an open field is the site's last ordinal".to_owned());
         }
+        if let Some(open) = &self.promoted
+            && (open.settled.len() > usize::try_from(FIELD_MAX_UNITS).unwrap_or(usize::MAX)
+                || open.settled.windows(2).any(|pair| match pair {
+                    [a, b] => a.tv >= b.tv,
+                    _ => false,
+                })
+                || open.settled.iter().any(|rig| !rig.pose.on_site()))
+        {
+            return Err(
+                "a promotion settles at most the field cap of rigs, in order, on the site's ground"
+                    .to_owned(),
+            );
+        }
         if self.units.len() > MAX_LEFT_UNITS {
             return Err(format!(
                 "a site record indexes at most {MAX_LEFT_UNITS} units"
@@ -652,6 +730,10 @@ fn kind_ok(kind: &GroundKind) -> bool {
 /// the fight named, never who marked whom (Q-CF-7).
 pub const FIELD_OPEN: &str =
     "Field {ordinal} is being fought on {site}. Surface work there waits until it settles.";
+/// **A launch onto a promoted site** (doc 32 cut CF.2; Q-CF-17): `{site}`, `{ordinal}`. The field
+/// runs at human speed and the world outside it at the campaign's, so a fight is over before
+/// anyone launched now could reach it; launches wait for it to settle.
+pub const FIELD_LAUNCH: &str = "Field {ordinal} is being fought on {site}. No launch goes down      onto it until it settles: the fight runs at human speed and will be over before you could      join it.";
 /// The start's message for the same refusal (the prepare cannot name the site's display name).
 pub const FIELD_OPEN_CODE: &str = "a field is being fought on that site; surface work waits";
 /// `+tv/map`'s line on a promoted site: `{site}`, `{ordinal}`.
@@ -1093,13 +1175,12 @@ pub fn record_lines(name: &str, site: &CanonicalId, record: Option<&SiteRecord>)
         )];
     };
     let field = match (&record.promoted, record.demoted_ic) {
-        (Some(open), _) => {
-            let PromotedBy::Staff { staff } = &open.by;
-            format!(
-                "field {} open since IC {} (staff #{} fixture)",
-                open.ordinal, open.at_ic, staff.0
-            )
-        }
+        (Some(open), _) => format!(
+            "field {} open since IC {} ({})",
+            open.ordinal,
+            open.at_ic,
+            open.by.words()
+        ),
         (None, Some(at)) => format!(
             "no field open; {} so far, the last closed at IC {at}",
             record.ordinal

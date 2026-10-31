@@ -3644,6 +3644,11 @@ pub enum StopReason {
     /// walked out of otherwise runs to `match.max_duration_ms` — a quarter-hour
     /// of machines driving at each other in a centre nobody can claim a slot in.
     Unattended,
+    /// **The field has disengaged** (doc 32 cut CF.2, Q-CF-20): the IC host's
+    /// demotion — for `[tacsim.field].disengage_s` no hostile pair fired, held
+    /// another in weapons range or had a round in flight. Sent by the arena task
+    /// itself under the field's terms, never by a lobby.
+    Disengaged,
 }
 
 /// How a match ended (doc 16 §4 "The result record").
@@ -3699,6 +3704,10 @@ pub enum EndReason {
     /// this is not a seventh), and not a void: the match really ran and what its
     /// machines did to each other is evidence like any other.
     Unattended,
+    /// **The field disengaged and demotes** (doc 32 cut CF.2, Q-CF-20): an IC
+    /// field's own end, never a winner. Committed like a timeout: what the
+    /// units did to each other stands.
+    Disengaged,
     /// `match.max_duration_ms`, or `ledger.max_bytes` reached (doc 16 §4).
     Timeout,
     /// `SIM ABORT`.
@@ -4866,7 +4875,12 @@ impl Arena {
         // **Doc 18 cut IC2** (doc 18 §4.2, D-18-29): first, a class no arena
         // fields at all — the first such unit in id order — is refused outright;
         // a hauler is never capped, it is never fielded.
-        if let Some(state) = states.iter().find(|state| !state.class.fieldable()) {
+        //
+        // **Doc 32 cut CF.2**: the class rules are the OOC roster's; the IC host admits
+        // every unit on the ground ([`crate::arena::party::FieldHost::every_class`]).
+        if !host.every_class
+            && let Some(state) = states.iter().find(|state| !state.class.fieldable())
+        {
             return Err(ArenaError::UnfieldableClass {
                 team: state.team.as_str(),
                 class: state.class.as_str(),
@@ -4877,13 +4891,17 @@ impl Arena {
             let count = fielded.entry((state.team, state.class)).or_insert(0);
             *count = count.saturating_add(1);
         }
-        if let Some(((team, class), count, cap)) = fielded.iter().find_map(|(key, count)| {
-            arena_cfg
-                .max_units_by_class
-                .get(&key.1)
-                .filter(|cap| *count > **cap)
-                .map(|cap| (*key, *count, *cap))
-        }) {
+        if let Some(((team, class), count, cap)) = fielded
+            .iter()
+            .filter(|_| !host.every_class)
+            .find_map(|(key, count)| {
+                arena_cfg
+                    .max_units_by_class
+                    .get(&key.1)
+                    .filter(|cap| *count > **cap)
+                    .map(|cap| (*key, *count, *cap))
+            })
+        {
             return Err(ArenaError::ClassCap {
                 team: team.as_str(),
                 class: class.as_str(),
@@ -5404,6 +5422,21 @@ impl Arena {
         if self.stop.is_none() {
             self.stop = Some(reason);
         }
+    }
+
+    /// **Whether a stop is waiting for the next pulse** (doc 32 cut CF.2).
+    #[must_use]
+    pub const fn stopping(&self) -> bool {
+        self.stop.is_some()
+    }
+
+    /// **Whether any round is in flight** — an impact still due (doc 32 cut
+    /// CF.2; Q-CF-20: a field never demotes with a shot on its way).
+    #[must_use]
+    pub fn round_in_flight(&self) -> bool {
+        self.due
+            .iter()
+            .any(|event| matches!(event.kind, DueKind::Impact { .. }))
     }
 
     /// **The speed ceiling of the match**, cm/s — the divisor of the substep

@@ -130,6 +130,8 @@ pub enum Refusal {
         cap: CapRefused,
         /// The site's name.
         site: String,
+        /// The cap's figure (the site's is the configured field cap, doc 32 cut CF.2).
+        figure: u32,
     },
     /// `LEARN_NOTHING` (doc 20 cut SM.4a; §5, D4).
     NothingNew,
@@ -683,14 +685,14 @@ impl Refusal {
                 .replace("{now}", &now.to_string())
                 .replace("{after}", &after.to_string())
                 .replace("{floor}", &floor.to_string()),
-            Refusal::Cap { cap, site } => {
+            Refusal::Cap { cap, site, figure } => {
                 let template = match cap {
                     CapRefused::Operator => tv::CAP_OPERATOR,
                     CapRefused::Site => tv::CAP_SITE,
                     CapRefused::World => tv::CAP_WORLD,
                 };
                 template
-                    .replace("{cap}", &cap.cap().to_string())
+                    .replace("{cap}", &figure.to_string())
                     .replace("{site}", site)
             }
             Refusal::NothingNew => tv::LEARN_NOTHING.to_owned(),
@@ -894,6 +896,7 @@ pub(crate) fn refusal_samples() -> Vec<Refusal> {
         Refusal::Cap {
             cap: CapRefused::Operator,
             site: String::new(),
+            figure: 4,
         },
         Refusal::NothingNew,
         Refusal::ChartFull {

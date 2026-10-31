@@ -29,6 +29,8 @@ mod vertex;
 mod coop;
 #[path = "shard_1/driving.rs"]
 mod driving;
+#[path = "shard_1/field_host.rs"]
+mod field_host;
 #[path = "shard_1/hulls.rs"]
 mod hulls;
 #[path = "shard_1/knowing.rs"]

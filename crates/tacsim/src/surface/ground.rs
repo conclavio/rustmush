@@ -57,7 +57,12 @@ use super::{GeologyState, body_geology, live};
 use crate::arena::digest_text;
 
 /// A site's cells along one side (§3.1: 256 × 256 at 10 m, D-16-5's arena window).
-pub const SITE_CELLS: u16 = 256;
+///
+/// **Doc 32 cut CF.2** (Q-CF-51): the shipped default of CF.0's per-region window side
+/// ([`crate::definitions::arena::DEFAULT_WINDOW_SIDE`]), not a side of its own. The site's
+/// address scheme and ground cache are sized from it; the field a site promotes into reads the
+/// side off the composite's own grid (`crate::field`), never this constant.
+pub const SITE_CELLS: u16 = crate::definitions::arena::DEFAULT_WINDOW_SIDE;
 /// A site cell's edge, centimetres.
 pub const SITE_CELL_CM: u16 = 1_000;
 /// Pockets along one side of a site: 64 × 64 pockets of 4 × 4 cells.
@@ -482,6 +487,20 @@ fn site_composite(input: &CompositeInput, body: &CanonicalId) -> Result<Composit
 ///
 /// Not a lane site, its window does not form, the capture's or the composite's refusal.
 pub fn site_terrain(w: &World, entry: &CanonicalId) -> Result<Composite, String> {
+    site_terrain_and_biome(w, entry).map(|(composite, _)| composite)
+}
+
+/// **[`site_terrain`] and its region's biome** (doc 32 cut CF.2): the field a site promotes into
+/// is built from exactly this ground, on keyless terrain, so a dark geology layer never stops a
+/// fight.
+///
+/// # Errors
+///
+/// As [`site_terrain`]'s.
+pub fn site_terrain_and_biome(
+    w: &World,
+    entry: &CanonicalId,
+) -> Result<(Composite, String), String> {
     let site = crate::surface::chart::lane_sites(w)
         .into_iter()
         .find(|site| &site.entry == entry)
@@ -489,7 +508,8 @@ pub fn site_terrain(w: &World, entry: &CanonicalId) -> Result<Composite, String>
     let frame = crate::surface::chart::site_frame(&site.location)
         .ok_or_else(|| format!("{entry}'s window does not form"))?;
     let input = capture_site(w, &frame)?;
-    site_composite(&input, &site.body)
+    let biome = input.region.biome_str().to_owned();
+    site_composite(&input, &site.body).map(|composite| (composite, biome))
 }
 
 /// One cached site: its key, its ground, what its revision was computed over (the captured input

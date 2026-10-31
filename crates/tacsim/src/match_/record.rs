@@ -166,6 +166,7 @@ impl From<EndReason> for MatchState {
             | EndReason::Hold { .. }
             | EndReason::Conceded { .. }
             | EndReason::Unattended
+            | EndReason::Disengaged
             | EndReason::Timeout => MatchState::Ended,
             EndReason::Abort => MatchState::Aborted,
             // A ledger overflow is a void by doc 16 §3.1's own words: *on `Void`
@@ -244,7 +245,9 @@ impl From<EndReason> for MatchOutcome {
             // And a match every pilot had left is a `timeout`: doc 16 §4's
             // vocabulary is six words, and this is the one that means *the clock
             // ended it and nobody was eliminated*.
-            EndReason::Unattended | EndReason::Timeout => MatchOutcome::Timeout,
+            EndReason::Unattended | EndReason::Disengaged | EndReason::Timeout => {
+                MatchOutcome::Timeout
+            }
             EndReason::Abort => MatchOutcome::Abort,
             EndReason::Void | EndReason::LedgerOverflow => MatchOutcome::Void,
             // Doc 32 cut CF.0: a winner the centre does not field (it fields red
@@ -971,6 +974,8 @@ pub(crate) const fn reason_word(reason: EndReason) -> &'static str {
         // outcome beside them already names the winner.
         EndReason::Conceded { .. } => "conceded",
         EndReason::Unattended => "unattended",
+        // Doc 32 cut CF.2: an IC field's demotion; never a match's.
+        EndReason::Disengaged => "disengaged",
         EndReason::Timeout => "timeout",
         EndReason::Abort => "abort",
         EndReason::Void => "void",

@@ -62,10 +62,27 @@ use crate::data::DomainId;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployedMark {
-    /// The match holding the unit.
+    /// The match holding the unit; `0` for an IC field, which is not a match and never
+    /// borrows a match's number (doc 32 Q-CF-2, D-23-10).
     pub match_id: u64,
-    /// The arena definition that match is running on.
+    /// The arena definition that match is running on; an IC field's site.
     pub arena: SmolStr,
+    /// **The IC field holding the unit** (doc 32 cut CF.2), when it is one: its site and its
+    /// ordinal. A field's units are never voided to their check-out snapshot (Q-CF-35), so the
+    /// boot resume of matches leaves every mark that carries one to the field host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<DeployedField>,
+}
+
+/// **An IC field, as a custody mark names it** (doc 32 cut CF.2): the site's port entry and the
+/// field's ordinal on it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeployedField {
+    /// The site's port entry.
+    pub site: SmolStr,
+    /// The field's ordinal on the site, from 1.
+    pub ordinal: u32,
 }
 
 impl DeployedMark {
@@ -75,6 +92,18 @@ impl DeployedMark {
         DeployedMark {
             match_id,
             arena: arena.into(),
+            field: None,
+        }
+    }
+
+    /// **A mark for field `ordinal` on `site`** (doc 32 cut CF.2): no match number.
+    #[must_use]
+    pub fn field(site: impl Into<SmolStr>, ordinal: u32) -> DeployedMark {
+        let site = site.into();
+        DeployedMark {
+            match_id: 0,
+            arena: site.clone(),
+            field: Some(DeployedField { site, ordinal }),
         }
     }
 }
@@ -86,17 +115,35 @@ impl DeployedMark {
 /// six sites, and the sentence names the match so the next thing to try
 /// (`@arena/abort <match>`) is obvious.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "{unit} is deployed in arena match {match_id} ({arena}); the arena holds it until the match \
-     ends."
-)]
+#[error("{}", deployed_words(*.unit, *.match_id, .arena, .field.as_ref()))]
 pub struct UnitDeployed {
     /// The unit under custody.
     pub unit: ObjId,
-    /// The match holding it.
+    /// The match holding it (`0` for a field).
     pub match_id: u64,
     /// The arena that match runs on.
     pub arena: SmolStr,
+    /// The IC field holding it, when it is one (doc 32 cut CF.2).
+    pub field: Option<DeployedField>,
+}
+
+/// [`UnitDeployed`]'s sentence: the match's, or the field's (doc 32 cut CF.2).
+fn deployed_words(
+    unit: ObjId,
+    match_id: u64,
+    arena: &str,
+    field: Option<&DeployedField>,
+) -> String {
+    match field {
+        Some(field) => format!(
+            "{unit} is in field {} on {}; the field holds it until it settles.",
+            field.ordinal, field.site
+        ),
+        None => format!(
+            "{unit} is deployed in arena match {match_id} ({arena}); the arena holds it until the \
+             match ends."
+        ),
+    }
 }
 
 /// The world-side index of units under a simulation authority's custody.
@@ -183,6 +230,7 @@ pub fn refuse_if_deployed(w: &World, unit: ObjId) -> Result<(), UnitDeployed> {
             unit,
             match_id: mark.match_id,
             arena: mark.arena.clone(),
+            field: mark.field.clone(),
         }),
     }
 }

@@ -1944,6 +1944,68 @@ pub struct TacsimConfig {
     /// **Doc 17h cut M8f** — `[tacsim.procurement]`: a procurement policy's defaults.
     /// **Live** (`crate::procurement`).
     pub procurement: ProcurementConfig,
+    /// **Doc 32 cut CF.2** — `[tacsim.field]`: the IC field host's demotion interval and the
+    /// field cap. **Live** (`crate::field`).
+    pub field: FieldConfig,
+}
+
+/// **The shortest and longest demotion interval a server may set** (doc 32 cut CF.2): ten
+/// seconds, so a field is never demoted between two volleys, and an hour.
+pub const FIELD_DISENGAGE_S: std::ops::RangeInclusive<u32> = 10..=3_600;
+
+/// **`[tacsim.field]`** (doc 32 cut CF.2; Q-CF-20, Q-CF-21, Q-CF-45): provisional (the owner's
+/// economy-defaults rule).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldConfig {
+    /// Seconds of arena time a field runs with no hostile pair firing, within weapons range or
+    /// with a round in flight before it demotes (120).
+    pub disengage_s: u32,
+    /// The field cap (24): the most units one field admits, and so the most flights one site's
+    /// surface takes (Q-CF-21). Never above the record's own bound
+    /// ([`crate::surface::site_record::FIELD_MAX_UNITS`]).
+    pub max_units: u32,
+}
+
+impl Default for FieldConfig {
+    fn default() -> Self {
+        Self {
+            disengage_s: 120,
+            max_units: crate::surface::site_record::FIELD_MAX_UNITS,
+        }
+    }
+}
+
+impl FieldConfig {
+    /// **Check `[tacsim.field]`**: the interval within [`FIELD_DISENGAGE_S`], the cap 2 to
+    /// [`crate::surface::site_record::FIELD_MAX_UNITS`].
+    ///
+    /// # Errors
+    ///
+    /// The sentence naming the key.
+    pub fn validate(&self) -> Result<(), String> {
+        if !FIELD_DISENGAGE_S.contains(&self.disengage_s) {
+            return Err(format!(
+                "[tacsim.field].disengage_s must be {} to {} (it is {})",
+                FIELD_DISENGAGE_S.start(),
+                FIELD_DISENGAGE_S.end(),
+                self.disengage_s
+            ));
+        }
+        let cap = crate::surface::site_record::FIELD_MAX_UNITS;
+        if !(2..=cap).contains(&self.max_units) {
+            return Err(format!(
+                "[tacsim.field].max_units must be 2 to {cap} (it is {})",
+                self.max_units
+            ));
+        }
+        Ok(())
+    }
+
+    /// The interval in arena milliseconds.
+    #[must_use]
+    pub const fn disengage_ms(&self) -> u32 {
+        self.disengage_s.saturating_mul(1_000)
+    }
 }
 
 /// **The largest monthly budget a procurement policy may name** (doc 17h cut M8f): a bound on

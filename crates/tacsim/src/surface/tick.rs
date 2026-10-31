@@ -2575,6 +2575,7 @@ fn mine_line(
             RefusedCode::LeftBay => tv::WHY_LEFT_BAY.to_owned(),
             RefusedCode::HoldRefused => tv::WHY_HOLD_REFUSED.to_owned(),
             RefusedCode::MarkersFull => tv::WHY_MARKERS_FULL.to_owned(),
+            RefusedCode::FieldOpened => tv::WHY_FIELD_OPENED.to_owned(),
         };
         return tv::CYCLE_FAILED
             .replace("{n}", &n)
@@ -3082,6 +3083,7 @@ fn completion_line(
                     tv::WHY_MARKERS_QUEUED.to_owned()
                 }
                 RefusedCode::MarkersFull => tv::WHY_MARKERS_FULL.to_owned(),
+                RefusedCode::FieldOpened => tv::WHY_FIELD_OPENED.to_owned(),
             };
             tv::ACT_FAILED
                 .replace("{n}", &n)

@@ -130,6 +130,7 @@ pub mod design;
 pub mod detachment;
 pub mod economy;
 pub mod ephemeris;
+pub mod field;
 pub mod field_ops;
 pub mod fixture;
 pub mod ground;
@@ -1011,6 +1012,8 @@ impl GameModule for TacsimRuleset {
         // exits and aliases still work). Beside the lobby and for the same
         // reason.
         match_::cockpit::register(reg)?;
+        // Doc 32 cut CF.2: the IC field host — `+field`, its tick and its clock observer.
+        field::register(reg)?;
         detachment::live::register(reg)?;
         // 16b cut AH.1 (16c N18): the first-time hints — `@tutorial` and the
         // lobby's `Moved` observer, under the `LegacyPostImage` classification
@@ -1250,6 +1253,9 @@ impl GameModule for TacsimRuleset {
         // floors too — a resumed match's log tail is restored from them.
         minds::bulk::publication::hydrate(ctx, &kv, minds::bulk::world::now_ms())
             .map_err(|e| ModError::msg(e.to_string()))?;
+        // Doc 32 cut CF.2: the fields' own documents, before the match resume takes the
+        // custody marks (it hands every field's to the field host).
+        field::boot::read(ctx, &kv);
         boot_matches(ctx, &kv, &data.ledger, &data.omitted);
         boot_reconcile(ctx)
     }
@@ -1321,6 +1327,9 @@ impl GameModule for TacsimRuleset {
             tracing::warn!(%error, "proving content unavailable; live arena boot continues");
         }
         match_::resume::phase_b(ctx);
+        // Doc 32 cut CF.2 (Q-CF-33): every field the boot found, resumed — or held while the
+        // W-clock is frozen, until the world's clock resumes.
+        field::boot::phase(ctx);
         match_::selection_refs::reconcile(ctx);
         let ejected = match_::cockpit::eject_all_at_boot(ctx);
         if !ejected.is_empty() {

@@ -102,6 +102,8 @@
 //! | `[tacsim.command].orders_per_minute` | `12` | **16b cut Y.2** (W8's human trigger): the most `ORDER`s one commander may give in sixty world seconds; `1` to `600` |
 //! | `[tacsim.procurement].budget_minor_per_ic_month` | `200000` | **Doc 17h cut M8f** (Q-M8-6, provisional): a House procurement policy's monthly budget, minor credits per IC calendar month, when its deployment row names none; `1` to `100000000` |
 //! | `[tacsim.procurement].cap_permille` | `400` | **Doc 17h cut M8f** (D-UM-54's diversity cap, provisional): the most of an organisation's titled hulls one charter's licences may cover, per mille, when its row names none; `1` to `1000` |
+//! | `[tacsim.field].disengage_s` | `120` | **Doc 32 cut CF.2** (Q-CF-20, provisional): seconds of arena time an IC field runs with no hostile pair firing, in weapons range or with a round in flight before it demotes; `10` to `3600` |
+//! | `[tacsim.field].max_units` | `24` | **Doc 32 cut CF.2** (Q-CF-21, Q-CF-45, provisional): the field cap, enforced at the surface as the per-site flight cap; `2` to `24` |
 //! | `[tacsim.minds].fill_class` | `"I"` | Default AI fill class cap when its lead has selected none; pilot minds use `max_class` independently, and every seal also respects its rating and chassis core |
 //! | `[tacsim.minds].max_class` | `"III"` | Operator maximum for pilot and AI fill minds; `0`, `I`, `II` or `III` |
 //! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out; 17b cut M5.1 lets a principal choose a lawful preset with `SIM MIND`, sealed from 17b cut M5.2) |
@@ -851,6 +853,29 @@ pub struct TacsimCfg {
     /// `[tacsim.procurement]` — **doc 17h cut M8f**: the defaults of a House's procurement
     /// policy (the monthly budget and the diversity cap).
     pub procurement: TacsimProcurementCfg,
+    /// `[tacsim.field]` — **doc 32 cut CF.2**: the IC field host's demotion interval and cap.
+    pub field: TacsimFieldCfg,
+}
+
+/// `[tacsim.field]` — doc 32 cut CF.2 (Q-CF-20, Q-CF-21; provisional, the owner's
+/// economy-defaults rule): how long an IC field stays quiet before it demotes, and the field cap
+/// the surface enforces as its per-site flight cap. The host bands both (`config_ext`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimFieldCfg {
+    /// Seconds of arena time with no hostile pair engaged before a field demotes (120).
+    pub disengage_s: u32,
+    /// The most units one field holds, and so the most flights one site takes (24).
+    pub max_units: u32,
+}
+
+impl Default for TacsimFieldCfg {
+    fn default() -> Self {
+        Self {
+            disengage_s: 120,
+            max_units: 24,
+        }
+    }
 }
 
 /// `[tacsim.procurement]` — doc 17h cut M8f (Q-M8-6; D-UM-54): the provisional defaults a
@@ -1043,6 +1068,7 @@ impl Default for TacsimCfg {
             geology: TacsimGeologyCfg::default(),
             surface: TacsimSurfaceCfg::default(),
             procurement: TacsimProcurementCfg::default(),
+            field: TacsimFieldCfg::default(),
         }
     }
 }

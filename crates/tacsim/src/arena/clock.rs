@@ -411,6 +411,14 @@ impl Clock {
         self.tempo_since_ms
     }
 
+    /// **The arena millisecond an `Engaged` trigger was last seen** (a shot fired, an impact
+    /// scheduled, hostiles within weapons range of each other), `None` before the first — the
+    /// IC host's demotion clock reads it (doc 32 cut CF.2, Q-CF-20).
+    #[must_use]
+    pub const fn last_engaged_signal_ms(&self) -> Option<i64> {
+        self.last_engaged_signal_ms
+    }
+
     /// Whether the last [`Clock::advance`] clamped.
     #[must_use]
     pub const fn lagged(&self) -> bool {

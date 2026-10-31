@@ -117,6 +117,11 @@ category = "read-only"
 note = "Player faction directory (+factions): lists factions visible to the acting character with publicly known member counts; no durable mutation."
 
 [[handler]]
+name = "+field"
+category = "authoritative"
+note = "doc 32 cut CF.2 (Q-CF-7, Q-CF-14, Q-CF-15): the IC field host's verb. A bare +field is a pure read of the actor's own party in a running field. /mark <bearing> [band]=hostile and /fire <bearing> [band] on the open surface each stage exactly one Ctx::submit_authoritative of the tacsim-owned tacsim_field with op open (keyed tacsim.field/<actor>/<site>/open/<ordinal>/<now_ic>), whose prepare promotes the site's tacsim.field record (PromotedBy Mark or Fire) and settles the site's in-flight surface acts in their tacsim.excursion records in one bundle; admission, check-out and the task are the tacsim.field tick's. /mark <letter>=hostile|friendly|clear inside a field offers one ArenaMsg::Mark to the field's arena task (kernel state, no document). The host's close (op close) is submitted by the tick as the character who opened the field, its unit index fixed into the offer from the host's RAM."
+
+[[handler]]
 name = "+focus"
 category = "legacy-post-image"
 family = "sim.control_gen"

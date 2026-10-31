@@ -408,6 +408,8 @@ pub const NO_FOOTING: &str =
 pub const CHART_FULL: &str = "Your chart of {body} is full; +tv/forget <site> frees room.";
 /// `ACT_FAILED`'s `{why}` for a scan or a sounding whose rig was moved.
 pub const WHY_MOVED: &str = "it was moved before it finished";
+/// A refusal's reason (doc 32 cut CF.2): the site promoted while the act ran.
+pub const WHY_FIELD_OPENED: &str = "the field opened on the site; it stopped where it stood";
 /// The forget's preview: `{what}`, `{fields}`, `{pockets}`, `{arg}`.
 pub const FORGET_PREVIEW: &str = "You would strike {what} from your chart: {fields} fields scanned and {pockets} pockets sounded. It cannot be undone. +tv/forget {arg} go strikes it.";
 /// The forget, done: `{what}`.

@@ -613,6 +613,10 @@ pub struct PortHandles {
     /// `tacsim.field` (`crate::surface::site_record::SiteRecordProvider`); registered on every
     /// roster (it needs only its family).
     pub site_record: Option<mush_core::DefinitionRef>,
+    /// **Doc 32 cut CF.2**: the registered `tacsim_field` action, the IC field host's open and
+    /// close over `tacsim.field` (`crate::field::provider::FieldProvider`); registered on every
+    /// roster (it needs only its two families).
+    pub field: Option<mush_core::DefinitionRef>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {
