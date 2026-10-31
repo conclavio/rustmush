@@ -1633,13 +1633,13 @@ fn clamp_profile_map(
     }
 }
 
-/// Validate and clamp a candidate `Assist` patch against [`AgentProfile`] byte/count
+/// Validate and clamp a candidate `Assist` patch against `mush_npc::AgentProfile` byte/count
 /// caps and the live reference catalog (`stations`, `ports`, `interfaces`,
 /// `command_refs`).
 ///
 /// # Errors
 ///
-/// Returns a human-readable error message suitable for [`mush_llm::call_structured`]'s
+/// Returns a human-readable error message suitable for `mush_llm::call_structured`'s
 /// repair turn when required scope keys are missing or when `room_pack`, `room`, or
 /// `terms.port` names a non-existent catalog entry.
 pub fn validate_and_clamp_assist_patch(
