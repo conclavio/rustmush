@@ -73,6 +73,8 @@ pub mod bake;
 pub mod caps;
 pub mod chart;
 pub mod cockpit;
+#[cfg(feature = "encode")]
+pub mod cockpit_kitty;
 pub mod design;
 pub mod doll;
 pub mod frame;

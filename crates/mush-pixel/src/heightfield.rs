@@ -557,12 +557,27 @@ impl View {
     /// `eye_cm` over the datum when given, else 1.5 m (the stock sensor
     /// height) above the ground under the camera.
     fn new(terrain: &Terrain, cam: &Camera, eye_cm: Option<i64>, w: usize, h: usize) -> View {
+        Self::panoramic(terrain, cam, eye_cm, w, h, w)
+    }
+
+    /// An overscanned panoramic view into a `canvas_w` by `h` frame whose
+    /// focal length and projection scale match a `vp_w` wide viewport.
+    fn panoramic(
+        terrain: &Terrain,
+        cam: &Camera,
+        eye_cm: Option<i64>,
+        canvas_w: usize,
+        h: usize,
+        vp_w: usize,
+    ) -> View {
         let cell = terrain.map.cell_cm() as f32;
         let posx = cam.x_cm as f32 / cell;
         let posy = cam.y_cm as f32 / cell;
         let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
         let (dirx, diry) = heading.to_radians().det_sin_cos();
-        let (planex, planey) = (diry * PLANE, -dirx * PLANE);
+        let scale = canvas_w as f32 / vp_w.max(1) as f32;
+        let plane = PLANE * scale;
+        let (planex, planey) = (diry * plane, -dirx * plane);
         let eye = eye_cm.map_or_else(
             || terrain.height(posx, posy) + EYE_HEIGHT_CM as f32 / cell,
             |z| z as f32 / cell,
@@ -576,9 +591,9 @@ impl View {
             planex,
             planey,
             eye,
-            hf: focal(w),
+            hf: focal(vp_w),
             horizon: (h / 2) as f32,
-            halfw: w as f32 / 2.0,
+            halfw: canvas_w as f32 / 2.0,
             invdet: 1.0 / (planex * diry - dirx * planey),
         }
     }
@@ -631,6 +646,41 @@ pub(crate) fn project(
     sprite: &Sprite,
 ) -> Option<SpriteAt> {
     View::new(terrain, cam, eye_cm, w, h).place(terrain, sprite)
+}
+
+/// Project `sprite` into an overscanned `canvas_w` by `h` panoramic frame
+/// whose focal length matches `vp_w`.
+#[cfg_attr(not(feature = "encode"), allow(dead_code))]
+pub(crate) fn project_panoramic(
+    terrain: &Terrain,
+    cam: &Camera,
+    eye_cm: Option<i64>,
+    canvas_w: usize,
+    vp_w: usize,
+    h: usize,
+    sprite: &Sprite,
+) -> Option<SpriteAt> {
+    View::panoramic(terrain, cam, eye_cm, canvas_w, h, vp_w).place(terrain, sprite)
+}
+
+/// Render an overscanned panoramic ground, sky, 3D conifer trees, and outpost
+/// structures into `frame` (without unit sprites) and return the per-pixel
+/// depth buffer for retained Kitty billboard occlusion.
+#[cfg_attr(not(feature = "encode"), allow(dead_code))]
+pub(crate) fn render_panoramic_ground(
+    frame: &mut Frame,
+    terrain: &Terrain,
+    cam: &Camera,
+    eye_cm: Option<i64>,
+    vp_w: usize,
+) -> Vec<f32> {
+    let (w, h) = (frame.width(), frame.height());
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let view = View::panoramic(terrain, cam, eye_cm, w, h, vp_w);
+    let shades = Shades::for_biome(terrain.map.biome());
+    draw_ground(frame, terrain, &view, &shades)
 }
 
 /// Draw `terrain` from `cam` into `frame`, with `sprites` standing on it.

@@ -784,6 +784,16 @@ struct Eye {
 impl Eye {
     /// See [`project_from`].
     fn project(&self, w: usize, h: usize, s: &Sprite) -> Option<SpriteAt> {
+        self.project_panoramic(w, w, h, s)
+    }
+
+    fn project_panoramic(
+        &self,
+        canvas_w: usize,
+        vp_w: usize,
+        h: usize,
+        s: &Sprite,
+    ) -> Option<SpriteAt> {
         let invdet = 1.0 / (self.planex * self.diry - self.dirx * self.planey);
         let relx = s.x_cm as f32 / self.cell - self.posx;
         let rely = s.y_cm as f32 / self.cell - self.posy;
@@ -792,10 +802,10 @@ impl Eye {
         if ty <= 0.05 {
             return None;
         }
-        let hf = focal(w);
+        let hf = focal(vp_w);
         let (wcm, hcm) = s.size_cm();
         Some(SpriteAt {
-            screenx: (w as f32 / 2.0) * (1.0 + tx / ty),
+            screenx: (canvas_w as f32 / 2.0) * (1.0 + tx / ty),
             bottom: (h / 2) as f32 + self.eye * hf / ty,
             depth: ty,
             fog_depth: ty,
@@ -808,18 +818,30 @@ impl Eye {
     }
 
     fn with_height(map: &Map, cam: &Camera, eye_cm: Option<i64>) -> Eye {
+        Self::panoramic_with_height(map, cam, eye_cm, 1, 1)
+    }
+
+    fn panoramic_with_height(
+        map: &Map,
+        cam: &Camera,
+        eye_cm: Option<i64>,
+        canvas_w: usize,
+        vp_w: usize,
+    ) -> Eye {
         let cell = map.cell_cm() as f32;
         let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
         let (dirx, diry) = heading.to_radians().det_sin_cos();
         let eye_cm = eye_cm.unwrap_or(i64::from(EYE_HEIGHT_CM)).max(1) as f32;
+        let scale = canvas_w as f32 / vp_w.max(1) as f32;
+        let plane = PLANE * scale;
         Eye {
             cell,
             posx: cam.x_cm as f32 / cell,
             posy: cam.y_cm as f32 / cell,
             dirx,
             diry,
-            planex: diry * PLANE,
-            planey: -dirx * PLANE,
+            planex: diry * plane,
+            planey: -dirx * plane,
             eye: eye_cm / cell,
         }
     }
@@ -975,6 +997,124 @@ pub(crate) fn project_from(
     sprite: &Sprite,
 ) -> Option<SpriteAt> {
     Eye::with_height(map, cam, eye_cm).project(w, h, sprite)
+}
+
+/// Project `sprite` into an overscanned `canvas_w` by `h` panoramic frame of
+/// flat `map` whose focal length matches `vp_w`.
+#[cfg_attr(not(feature = "encode"), allow(dead_code))]
+pub(crate) fn project_panoramic_from(
+    map: &Map,
+    cam: &Camera,
+    eye_cm: Option<i64>,
+    canvas_w: usize,
+    vp_w: usize,
+    h: usize,
+    sprite: &Sprite,
+) -> Option<SpriteAt> {
+    Eye::panoramic_with_height(map, cam, eye_cm, canvas_w, vp_w)
+        .project_panoramic(canvas_w, vp_w, h, sprite)
+}
+
+/// Render an overscanned panoramic flat `map` ground, sky, and blocking spans
+/// into `frame` (without unit sprites) and return the per-pixel depth buffer.
+#[cfg_attr(not(feature = "encode"), allow(dead_code))]
+pub(crate) fn render_panoramic_ground(
+    frame: &mut Frame,
+    map: &Map,
+    cam: &Camera,
+    eye_cm: Option<i64>,
+    vp_w: usize,
+) -> Vec<f32> {
+    let (w, h) = (frame.width(), frame.height());
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let e = Eye::panoramic_with_height(map, cam, eye_cm, w, vp_w);
+    let hf = focal(vp_w);
+    let horizon = h / 2;
+    let hz = horizon as f32;
+    let shades = Shades::for_biome(map.biome());
+    let horizon_rgb = map.biome().horizon_rgb();
+
+    let mut columns = Vec::with_capacity(w);
+    for x in 0..w {
+        let camx = 2.0 * x as f32 / w as f32 - 1.0;
+        let rdx = e.dirx + e.planex * camx;
+        let rdy = e.diry + e.planey * camx;
+        let mut col = Column {
+            rdx,
+            rdy,
+            spans: [Span::default(); MAX_SPANS],
+            n: 0,
+            sky_end: horizon,
+        };
+        let mut min_top = f32::INFINITY;
+        cast(map, e.posx, e.posy, rdx, rdy, |perp, side, ground| {
+            let block = ground.height_cm() as f32 / e.cell;
+            let top = hz - (block - e.eye) * hf / perp;
+            if top >= min_top {
+                return true;
+            }
+            let end = if col.n == 0 {
+                (hz + e.eye * hf / perp).min(h as f32) as usize
+            } else {
+                min_top.max(0.0) as usize
+            };
+            let top_row = top.max(0.0) as usize;
+            if let Some(span) = col.spans.get_mut(col.n) {
+                *span = Span {
+                    top: top_row,
+                    end: end.max(top_row),
+                    px: shades.shade(block_base(ground, side), fog_step(perp)),
+                    perp,
+                };
+                col.n += 1;
+            }
+            min_top = top;
+            top > 0.0 && col.n < MAX_SPANS
+        });
+        if col.n > 0 {
+            col.sky_end = min_top.max(0.0) as usize;
+        }
+        columns.push(col);
+    }
+
+    let mut depth = vec![f32::INFINITY; w * h];
+    for (y, row) in frame.rgb_mut().chunks_exact_mut(w * 3).enumerate() {
+        let sky_px = shades.sky(y * SKY_STEPS / horizon.max(1));
+        let floor = (y > horizon).then(|| {
+            let dist = e.eye * hf / (y - horizon) as f32;
+            (dist, fog_step(dist))
+        });
+        for ((x, px), c) in row
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .enumerate()
+            .zip(&columns)
+        {
+            if y < c.sky_end && y < horizon {
+                *px = sky_px;
+            } else if let Some(span) = c.span_at(y) {
+                *px = span.px;
+                if let Some(d) = depth.get_mut(y * w + x) {
+                    *d = span.perp;
+                }
+            } else if let Some((dist, step)) = floor {
+                let fx = e.posx + c.rdx * dist;
+                let fy = e.posy + c.rdy * dist;
+                let ground = map.get(fx.floor() as i64, fy.floor() as i64);
+                let line = fx.fract().abs() < LINE || fy.fract().abs() < LINE;
+                *px = shades.shade(Base::floor(ground, line), step);
+                if let Some(d) = depth.get_mut(y * w + x) {
+                    *d = dist;
+                }
+            } else {
+                *px = horizon_rgb;
+            }
+        }
+    }
+    depth
 }
 
 /// A sprite placed on the screen: its centre column, the row its base

@@ -560,10 +560,11 @@ mod tests {
         let bytes = sess.pixel_frame();
         let text = String::from_utf8_lossy(&bytes);
         assert!(
-            text.contains("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=120,r=26,m="),
-            "the 640x276 frame scaled into the top two-thirds, 120 by 26 cells: {text:?}"
+            text.contains("\x1b_Ga=t,f=100,t=d,i=140")
+                && text.contains("a=p,i=140,p=40,x=320,y=0,w=640,h=276,c=120,r=26"),
+            "the 640x276 fallback frame scaled into the top two-thirds, 120 by 26 cells: {text:?}"
         );
-        assert!(text.ends_with("\x1b[?2026l\x1b8"));
+        assert!(text.ends_with("\x1b8\x1b[?2026l"));
         // The same picture is not sent twice — and an idle frame tick writes
         // NOTHING, not even a cursor move: twenty small writes a second would
         // fill a stalled client's SSH window (dev2's first live smoke).
@@ -572,16 +573,21 @@ mod tests {
         assert!(again.is_empty(), "{:?}", String::from_utf8_lossy(&again));
         let repaint = String::from_utf8_lossy(&sess.paint()).into_owned();
         assert!(
-            !repaint.contains("\x1b_Ga=T"),
+            !repaint.contains("\x1b_Ga=T") && !repaint.contains("\x1b_Ga=t"),
             "an event repaint re-sends no picture"
         );
-        // A turn, a tick with time on the clock, a new picture.
+        // A turn, a tick with time on the clock, a new picture panned via `a=p`.
         let r = sess.feed_input(b"\x1b[C");
         assert!(r.submit.iter().all(|l| l.starts_with("HEADING ")) && r.submit.len() == 1);
         std::thread::sleep(std::time::Duration::from_millis(80));
         sess.pixel_tick();
         let turned = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
-        assert!(turned.contains("\x1b_Ga=T"), "{turned:?}");
+        assert!(
+            turned.contains("p=40,x=320,y=0,w=640,h=276,c=120,r=26")
+                && turned.contains("\x1b_Ga=p,i=144,p=44")
+                && !turned.contains("\x1b_Ga=t,f=100,t=d,i=144"),
+            "{turned:?}"
+        );
         // Leaving the TUI with the view open frees the image first.
         assert_eq!(
             sess.pixel_close_bytes(),
@@ -601,10 +607,11 @@ mod tests {
         );
         let closed = String::from_utf8_lossy(&sess.paint()).into_owned();
         assert!(
-            closed.contains("\x1b_Ga=d,d=I,i=1,q=2;\x1b\\"),
+            closed.contains("\x1b_Ga=d,d=I,i=140,q=2;\x1b\\")
+                && closed.contains("\x1b_Ga=d,d=I,i=1,q=2;\x1b\\"),
             "{closed:?}"
         );
-        assert!(!closed.contains("\x1b_Ga=T"));
+        assert!(!closed.contains("\x1b_Ga=T") && !closed.contains("\x1b_Ga=t"));
         assert!(sess.pixel_close_bytes().is_empty());
         // `0`: back, the helm's order intact, the picture sent again.
         let r = sess.feed_input(b"0");
@@ -614,7 +621,7 @@ mod tests {
         let _ = sess.paint();
         sess.pixel_tick();
         assert!(
-            String::from_utf8_lossy(&sess.pixel_frame()).contains("\x1b_Ga=T"),
+            String::from_utf8_lossy(&sess.pixel_frame()).contains("\x1b_Ga=p,i=140,p=40"),
             "shown again"
         );
         // A terminal that answers DA1 first never draws the picture.
