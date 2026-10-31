@@ -889,7 +889,7 @@ the arena map's walls, which an object's footprint now is; the legend names both
 
 ## 10. CF.5 as built (crew and exit)
 
-Built 2026-10-31 on `main` at `d4d81c89`. The kernel's exit is `crates/tacsim/src/arena/withdraw.rs`
+Built 2026-10-31 on `main` at `02ccdffc` (after CF.3). The kernel's exit is `crates/tacsim/src/arena/withdraw.rs`
 and `ArenaMsg::Withdraw` / `ArenaOut::Withdrawn`; the host's half is `crates/tacsim/src/field/exit.rs`;
 crew state and extraction are `crates/tacsim/src/field/crew.rs`; the leave-behind confirmation is
 the bay gate's (`crate::port::voyage::bay_gate_leaving`). What the cut had to decide where the
@@ -924,6 +924,10 @@ rulings left it open, for the owner to object to:
   damaged injures, else fit; a remote pilot is fit. A character the field engine never touched has
   no record. The record is `tacsim:crew:<character>` on the module's lane (a workflow document,
   like the field's live record).
+- **CF.3's marker is replaced.** `tacsim::field::crew_location` now answers CF.5's `CrewLocation`:
+  `Carrier { hull }` while a running field lists the character on a carrier's row (CF.3's
+  `FieldUnit::aboard`), else the character's crew record. At the carrier's check-in each soul on
+  that row still aboard is recorded aboard it, so the location outlives the field.
 - **Immediately on a control-section kill** is the pilot's own frame: the pulse a frame shows a
   control section destroyed around a pilot inside the hull, the pilot is incapacitated and told.
 - **Extraction** (Q-CF-39, P-5): `+sortie/extract`, by a stranded or incapacitated character

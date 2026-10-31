@@ -163,10 +163,28 @@ impl CrewRecord {
 #[derive(Clone, Debug, Default)]
 pub struct CrewBook(BTreeMap<ObjId, CrewRecord>);
 
-/// **A character's crew record** — the reader CF.3 and CF.7 call.
+/// **A character's crew record** — the reader CF.7 calls.
 #[must_use]
 pub fn crew_of(w: &World, who: ObjId) -> Option<&CrewRecord> {
     w.module_state::<CrewBook>()?.0.get(&who)
+}
+
+/// **Where a character is** (Q-CF-38): aboard a carrier while a running field lists them on the
+/// carrier's row (doc 32 cut CF.3's rows, `FieldUnit::aboard`), else their crew record's
+/// location; `None` for a character the field engine never touched.
+#[must_use]
+pub fn crew_location(w: &World, who: ObjId) -> Option<CrewLocation> {
+    let aboard = w.module_state::<super::FieldBook>().and_then(|book| {
+        book.running().find_map(|(_, hosted)| {
+            hosted
+                .live
+                .units
+                .iter()
+                .find(|row| row.aboard.contains(&who))
+                .map(|row| CrewLocation::Carrier { hull: row.unit })
+        })
+    });
+    aboard.or_else(|| crew_of(w, who).map(|record| record.location.clone()))
 }
 
 /// **Read the boot's crew records** (`on_world_loaded`).
@@ -252,6 +270,32 @@ fn condition_of<'a>(
     worst
 }
 
+/// **The crew's condition in `unit`** as its checked-in record stands ([`condition_of`] over its
+/// sections and their internals).
+fn unit_condition(w: &World, unit: ObjId) -> CrewCondition {
+    let Some(cells) = mush_tactics::module::unit_of(w, unit) else {
+        return CrewCondition::Fit;
+    };
+    let internals_cell = mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL).ok();
+    condition_of(cells.sections().map(|(id, section)| {
+        let internals = internals_cell
+            .as_ref()
+            .and_then(|cell| {
+                cells.cell(&mush_tactics::CellAddr::Section {
+                    section: id.clone(),
+                    cell: cell.clone(),
+                })
+            })
+            .map(|cell| {
+                (
+                    cell.current.saturating_sub(cell.min),
+                    cell.max.saturating_sub(cell.min),
+                )
+            });
+        (id.as_str(), section.condition.as_str(), internals)
+    }))
+}
+
 /// The hull whose rooms `who` stands in, if any.
 fn carrier_of(w: &World, who: ObjId) -> Option<ObjId> {
     let room = w.get(who)?.location?;
@@ -289,30 +333,21 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
     let now = ctx.w.world_ic_now().at;
     let organizer = organizer_of(ctx.w, site, unit)
         .or_else(|| crew_of(ctx.w, pilot).and_then(|record| record.organizer));
-    let (location, condition) = if inside(ctx.w, pilot, unit) {
+    let (location, condition) = if super::carrier::is_carrier(ctx.w, unit) {
+        // A carrier (doc 32 cut CF.3) is a hull its crew stand aboard, never a cockpit.
+        if !inside(ctx.w, pilot, unit) {
+            return;
+        }
+        (
+            CrewLocation::Carrier { hull: unit },
+            unit_condition(ctx.w, unit),
+        )
+    } else if inside(ctx.w, pilot, unit) {
         let Some(cells) = mush_tactics::module::unit_of(ctx.w, unit) else {
             return;
         };
         let assessment = crate::field_ops::assess_tacsim_unit(cells, None).ok();
-        let internals_cell =
-            mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL).ok();
-        let condition = condition_of(cells.sections().map(|(id, section)| {
-            let internals = internals_cell
-                .as_ref()
-                .and_then(|cell| {
-                    cells.cell(&mush_tactics::CellAddr::Section {
-                        section: id.clone(),
-                        cell: cell.clone(),
-                    })
-                })
-                .map(|cell| {
-                    (
-                        cell.current.saturating_sub(cell.min),
-                        cell.max.saturating_sub(cell.min),
-                    )
-                });
-            (id.as_str(), section.condition.as_str(), internals)
-        }));
+        let condition = unit_condition(ctx.w, unit);
         let home = assessment.as_ref().is_some_and(|c| {
             c.has_power
                 && c.has_control
@@ -356,6 +391,19 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
             .replace("{unit}", &unit.0.to_string())
             .replace("{site}", &super::admit::site_name(ctx, site));
         ctx.out.sys_to_actor(pilot, "tacsim.field", line);
+    }
+}
+
+/// **Everyone a carrier's row listed aboard** (doc 32 cut CF.3's rows), as the carrier checks in:
+/// each soul still aboard is recorded aboard it ([`check_in`]'s carrier branch).
+pub(crate) fn check_in_aboard(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    carrier: ObjId,
+    aboard: &[ObjId],
+) {
+    for who in aboard {
+        check_in(ctx, site, carrier, Some(*who));
     }
 }
 

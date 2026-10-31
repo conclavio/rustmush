@@ -100,10 +100,7 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
     assert_eq!(mark.field.as_ref().map(|field| field.ordinal), Some(1));
     assert_eq!(
         tacsim::field::crew_location(rig.tw.world(), a),
-        Some(CrewLocation::AboardCarrier {
-            carrier,
-            site: cid(crate::driving::AHUNA),
-        }),
+        Some(CrewLocation::Carrier { hull: carrier }),
         "A, aboard, is aboard the carrier (Q-CF-38)"
     );
 
@@ -172,8 +169,8 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
     );
     assert_eq!(
         tacsim::field::crew_location(rig.tw.world(), a),
-        None,
-        "no field holds A any more"
+        Some(CrewLocation::Carrier { hull: carrier }),
+        "A's crew record keeps them aboard the carrier after the field (doc 32 cut CF.5)"
     );
     assert_eq!(
         mush_sim::pose_of(rig.tw.world(), carrier),

@@ -290,6 +290,7 @@ fn submit_owed(ctx: &mut Ctx<'_>) -> BTreeSet<ObjId> {
             key,
         );
         ctx.actor = saved;
+        busy.insert(actor);
     }
     busy
 }

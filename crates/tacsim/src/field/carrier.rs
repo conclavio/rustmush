@@ -13,15 +13,15 @@
 //!   ([`crate::port::coop::helm_holder`]). One commander behind the carrier and its rigs makes
 //!   them Friends through the field's standing-friendship rule (Q-CF-5).
 //! - **Its crew** (Q-CF-38): everyone physically aboard at admission is "aboard the carrier"
-//!   for the field's life ([`CrewLocation::AboardCarrier`]). This is the minimal marker CF.3
-//!   keeps on the field's live record until doc 32 cut CF.5's character-borne crew state lands;
-//!   CF.5 replaces [`crew_location`] with its own read and sets its location from the same rows.
+//!   for the field's life, listed on the carrier's row of the live record; doc 32 cut CF.5's crew
+//!   state reads those rows (`crate::field::crew::crew_location`) and sets each soul's record
+//!   from them at the carrier's check-in.
 //! - **It is never towed** (FO-13): the twice-own-tonnage rule already puts a carrier beyond any
 //!   tug, and [`refuse_tow`] says so by name before the tonnage is read.
 //! - **It does not depart mid-field without the leave-behind confirmation** (Q-H10):
 //!   [`departure_refusal`] is the departure's gate.
 
-use mush_core::{CanonicalId, Ctx, ObjId, World};
+use mush_core::{Ctx, ObjId, World};
 
 use super::FieldBook;
 
@@ -34,18 +34,6 @@ pub const DEPART_IN_FIELD: &str = "The {name} is in the field on {site}: lifting
 /// **A tow naming a carrier** (FO-13): `{name}`.
 pub const TOW_CARRIER: &str =
     "The {name} is a carrier: past twice any tug's own tonnage, it is never towed.";
-
-/// **Where a character stands in a field** (Q-CF-38's location, the one CF.3 sets).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CrewLocation {
-    /// Aboard a carrier admitted to the field on `site`.
-    AboardCarrier {
-        /// The carrier.
-        carrier: ObjId,
-        /// The promoted site.
-        site: CanonicalId,
-    },
-}
 
 /// Whether `unit` is a programme hull — a carrier (Dray, Dray-P, Halcyon).
 #[must_use]
@@ -62,25 +50,6 @@ pub(crate) fn souls_aboard(w: &World, carrier: ObjId) -> Vec<ObjId> {
         return Vec::new();
     };
     crate::port::voyage::souls_aboard(w, airlock)
-}
-
-/// **Where `who` stands in a running field** (Q-CF-38): aboard an admitted carrier, when a
-/// field's live record lists them aboard one. `None` anywhere else — CF.5 owns the rest of the
-/// location vocabulary (aboard a unit, stranded, at a port).
-#[must_use]
-pub fn crew_location(w: &World, who: ObjId) -> Option<CrewLocation> {
-    let book = w.module_state::<FieldBook>()?;
-    book.running().find_map(|(site, hosted)| {
-        hosted
-            .live
-            .units
-            .iter()
-            .find(|row| row.aboard.contains(&who))
-            .map(|row| CrewLocation::AboardCarrier {
-                carrier: row.unit,
-                site: site.clone(),
-            })
-    })
 }
 
 /// **The carrier's open hull epoch** (doc 23 S.2), through the command lens.

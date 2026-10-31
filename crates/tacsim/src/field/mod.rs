@@ -76,9 +76,8 @@ use mush_core::module::{ModError, Registrar};
 use mush_core::{ArgShape, CanonicalId, CommandSpec, Ctx, ObjId, TickCadence, World};
 
 use crate::arena_task::MatchId;
-pub use carrier::{CrewLocation, crew_location};
 pub use commands::mark_from_order;
-pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_of};
+pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_location, crew_of};
 pub use provider::{FIELD_ACTION, FIELD_OUTCOME};
 pub use record::{FieldLive, FieldParty, FieldUnit, PartyKey};
 

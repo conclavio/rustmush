@@ -222,6 +222,7 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
                 row.unit,
                 row.pilot.as_ref().map(|(pilot, _)| *pilot),
             );
+            super::crew::check_in_aboard(ctx, site, row.unit, &row.aboard);
         }
     }
     super::record::delete(ctx, site);
