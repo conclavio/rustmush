@@ -590,7 +590,8 @@ jobs:
       # so and skips that one check. The sysctl is the ephemeral VM's.
       - name: Let reuseport listeners migrate queued connections (gateway generations)
         if: matrix.shard == 'rest-gateway'
-        run: sudo sysctl -w net.ipv4.tcp_migrate_req=1 || echo "tcp_migrate_req stays off: the generations story skips its migration check"
+        run: |
+          sudo sysctl -w net.ipv4.tcp_migrate_req=1 || echo "tcp_migrate_req stays off; the generations story skips its migration check"
       - name: Test
         # lint runs no tests; the bot cells' lines are their own named steps below.
         if: matrix.shard != 'lint' && !startsWith(matrix.shard, 'bot')
