@@ -2425,7 +2425,16 @@ fn production_files(dir: &str) -> Vec<(String, String)> {
         .into_iter()
         .map(|path| {
             let text = std::fs::read_to_string(&path).expect("readable source");
+            // A file whose first item is `#![cfg(test)]` is test code throughout (the
+            // hardware flow rig's fixtures); otherwise production text ends at the first
+            // `#[cfg(test)]`.
+            let whole_test = text
+                .lines()
+                .map(str::trim_start)
+                .find(|line| !line.is_empty() && !line.starts_with("//"))
+                .is_some_and(|line| line.starts_with("#![cfg(test)]"));
             let production = match text.find("#[cfg(test)]") {
+                _ if whole_test => "",
                 Some(at) => &text[..at],
                 None => text.as_str(),
             };
