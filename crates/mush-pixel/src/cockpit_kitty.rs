@@ -455,6 +455,7 @@ pub(crate) struct CockpitKittyState {
     last_glass_sig: u64,
     last_glass_placement: Option<Placement>,
     fx_uploaded: bool,
+    last_fx_sig: u64,
     last_fx_placement: Option<Placement>,
 }
 
@@ -491,6 +492,7 @@ impl CockpitKittyState {
             last_glass_sig: 0,
             last_glass_placement: None,
             fx_uploaded: false,
+            last_fx_sig: 0,
             last_fx_placement: None,
         }
     }
@@ -1004,6 +1006,11 @@ impl CockpitPicture {
             center_sx
         };
 
+        let jolt_scale = if vp.width_px >= 960 { 2 } else { 1 };
+        let (jolt_dx, jolt_dy) = fx::combat_jolt_px(&self.active_fx, jolt_scale);
+        let src_x =
+            u32::try_from((src_x as i32 + jolt_dx).clamp(0, vp.width_px as i32)).unwrap_or(src_x);
+
         let world_p = Placement {
             image_id: self.kitty.world_image_id,
             placement_id: PLACEMENT_FP_WORLD,
@@ -1028,6 +1035,7 @@ impl CockpitPicture {
         let mut next_placements = BTreeMap::new();
         let mut faint_brackets = Vec::new();
         let mut vis_targets = Vec::new();
+        let mut plume_targets = Vec::new();
         let lock_id = cockpit.get("lock").and_then(Value::as_str);
         let lock_desig = cockpit.get("lock_designator").and_then(Value::as_str);
         let contacts = cockpit
@@ -1099,6 +1107,15 @@ impl CockpitPicture {
                     (at.bottom - at.height * 0.5).round() as i32,
                     (at.height * 0.35).round().clamp(8.0, 26.0) as i32,
                 ));
+                let (is_wreck, has_low_hp, is_crippled) = fx::contact_damage_state(c);
+                if (is_wreck || has_low_hp || is_crippled) && at.height >= 6.0 {
+                    plume_targets.push((
+                        vp_screenx.round() as i32,
+                        (at.bottom - at.height).round() as i32,
+                        at.height.round() as i32,
+                        is_wreck,
+                    ));
+                }
 
                 // Check hull-down depth occlusion against `world.depth`.
                 let cx0 = ((at.screenx - at.width * 0.35).floor().max(0.0) as usize)
@@ -1389,7 +1406,8 @@ impl CockpitPicture {
 
         // 6. Layer 6: Retained RGBA Canopy Glass Overlay (`IMAGE_ID_FP_GLASS = 145`, `z = -1`).
         if glass_on {
-            let glass = canopy_glass_from(cockpit, look_mdeg);
+            let jolted_look = look_mdeg + i64::from(jolt_dx - jolt_dy) * 1_500;
+            let glass = canopy_glass_from(cockpit, jolted_look);
             let (glass_sig, glass_rgba) =
                 render_canopy_glass_rgba(vp.width_px, vp.height_px, &glass);
             if !self.kitty.glass_uploaded || self.kitty.last_glass_sig != glass_sig {
@@ -1421,8 +1439,8 @@ impl CockpitPicture {
             kitty::delete_placement_bytes(&mut ops, IMAGE_ID_FP_GLASS, PLACEMENT_FP_GLASS);
         }
 
-        // 7. Layer 7: Transient FORGE3D Combat FX Overlay (`IMAGE_ID_FP_FX = 146`, `z = -4`).
-        if !self.active_fx.is_empty() {
+        // 7. Layer 7: Transient FORGE3D Combat FX & Damage Plumes Overlay (`IMAGE_ID_FP_FX = 146`, `z = -4`).
+        if !self.active_fx.is_empty() || !plume_targets.is_empty() {
             let gun_x = (vp.width_px / 2) as i32;
             let gun_y = ((vp.height_px * 6) / 7) as i32;
             let struck_x = (vp.width_px / 2) as i32;
@@ -1443,10 +1461,17 @@ impl CockpitPicture {
                     .map(|t| (t.3, t.4, t.5))
             };
 
-            let mut min_x = (gun_x - 36).min(struck_x - 36).max(0);
-            let mut max_x = (gun_x + 36).max(struck_x + 36).min(vp.width_px as i32 - 1);
-            let mut min_y = (gun_y - 36).min(struck_y - 36).max(0);
-            let mut max_y = (gun_y + 36).max(struck_y + 36).min(vp.height_px as i32 - 1);
+            let mut min_x = vp.width_px as i32;
+            let mut max_x = 0i32;
+            let mut min_y = vp.height_px as i32;
+            let mut max_y = 0i32;
+
+            if !self.active_fx.is_empty() {
+                min_x = min_x.min((gun_x - 36).min(struck_x - 36).max(0));
+                max_x = max_x.max((gun_x + 36).max(struck_x + 36).min(vp.width_px as i32 - 1));
+                min_y = min_y.min((gun_y - 36).min(struck_y - 36).max(0));
+                max_y = max_y.max((gun_y + 36).max(struck_y + 36).min(vp.height_px as i32 - 1));
+            }
 
             for fx_item in &self.active_fx {
                 if let CombatFxKind::Fire { target_key, .. } = &fx_item.kind
@@ -1458,6 +1483,13 @@ impl CockpitPicture {
                     min_y = min_y.min(ty - pad).max(0);
                     max_y = max_y.max(ty + pad).min(vp.height_px as i32 - 1);
                 }
+            }
+            for &(px, top_y, sh, _) in &plume_targets {
+                let pad = (sh / 3).clamp(16, 36);
+                min_x = min_x.min((px - pad).max(0));
+                max_x = max_x.max((px + pad).min(vp.width_px as i32 - 1));
+                min_y = min_y.min((top_y - pad * 2).max(0));
+                max_y = max_y.max((top_y + 8).min(vp.height_px as i32 - 1));
             }
 
             let cw = i32::from(vp.cell_w.max(1));
@@ -1485,6 +1517,9 @@ impl CockpitPicture {
                         }
                     }
                 };
+                for &(px, top_y, sh, is_wreck) in &plume_targets {
+                    fx::paint_damage_plume(px, top_y, sh, step as u32, is_wreck, &mut put);
+                }
                 for fx_item in &self.active_fx {
                     let target_xy = match &fx_item.kind {
                         CombatFxKind::Fire { target_key, .. } => find_target(target_key.as_deref()),
@@ -1500,8 +1535,7 @@ impl CockpitPicture {
                 }
             }
 
-            let png = png::encode_rgba(fx_w, fx_h, &fx_rgba);
-            kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FP_FX);
+            let fx_sig = fnv1a(&fx_rgba);
             let fx_p = Placement {
                 image_id: IMAGE_ID_FP_FX,
                 placement_id: PLACEMENT_FP_FX,
@@ -1517,13 +1551,22 @@ impl CockpitPicture {
                 src_h: u32::try_from(fx_h).unwrap_or(64),
                 z: Z_FP_FX,
             };
-            kitty::place_bytes(&mut ops, &fx_p);
-            self.kitty.fx_uploaded = true;
-            self.kitty.last_fx_placement = Some(fx_p);
+            if !self.kitty.fx_uploaded || self.kitty.last_fx_sig != fx_sig {
+                let png = png::encode_rgba(fx_w, fx_h, &fx_rgba);
+                kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FP_FX);
+                kitty::place_bytes(&mut ops, &fx_p);
+                self.kitty.fx_uploaded = true;
+                self.kitty.last_fx_sig = fx_sig;
+                self.kitty.last_fx_placement = Some(fx_p);
+            } else if self.kitty.last_fx_placement != Some(fx_p) {
+                kitty::place_bytes(&mut ops, &fx_p);
+                self.kitty.last_fx_placement = Some(fx_p);
+            }
             fx::step_combat_fx(&mut self.active_fx);
         } else if self.kitty.last_fx_placement.take().is_some() || self.kitty.fx_uploaded {
             kitty::delete_image_bytes(&mut ops, IMAGE_ID_FP_FX);
             self.kitty.fx_uploaded = false;
+            self.kitty.last_fx_sig = 0;
         }
 
         if ops.is_empty() {

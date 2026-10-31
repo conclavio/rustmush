@@ -827,8 +827,8 @@ mod tests {
         sess.pixel_tick();
         let picture = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
         assert!(
-            picture.contains("\x1b_Ga=T"),
-            "the chart's picture, in kitty"
+            picture.contains("\x1b_Ga=t") && picture.contains("a=p,i=180,p=80"),
+            "the chart's picture, in retained kitty"
         );
     }
 

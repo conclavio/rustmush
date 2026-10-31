@@ -386,6 +386,10 @@ pub struct PixelView {
     iso25d: Iso25DPicture,
     /// The match replay / live observer picture and retained Kitty compositor.
     replay_pic: ReplayPicture,
+    /// The orbital sky chart picture and retained Kitty compositor.
+    chart_pic: ChartPicture,
+    /// The armour doll picture and retained Kitty compositor.
+    doll_pic: DollPicture,
     /// Dynamic pixel dimensions of the last rendered retained Kitty viewport (up to 1280×720).
     last_25d_size: Option<(usize, usize)>,
     /// The other orders the flight keys made (`FIRE …`, `LOCK …`), oldest
@@ -504,6 +508,8 @@ impl PixelView {
             overhead: OverheadPicture::new(),
             iso25d: Iso25DPicture::new(),
             replay_pic: ReplayPicture::new(),
+            chart_pic: ChartPicture::new(),
+            doll_pic: DollPicture::new(),
             last_25d_size: None,
             orders: Vec::new(),
             detachment: None,
@@ -630,9 +636,7 @@ impl PixelView {
     /// next frame).
     #[must_use]
     pub fn size(&self) -> (usize, usize) {
-        if matches!(self.kind, PictureKind::Cockpit | PictureKind::Replay)
-            && let Some(sz) = self.last_25d_size
-        {
+        if let Some(sz) = self.last_25d_size {
             return sz;
         }
         (self.frame.width(), self.frame.height())
@@ -702,16 +706,20 @@ impl PixelView {
         self.overhead.invalidate_image(image_id);
         self.iso25d.invalidate_image(image_id);
         self.replay_pic.invalidate_image(image_id);
+        self.chart_pic.invalidate_image(image_id);
+        self.doll_pic.invalidate_image(image_id);
         self.last_sent = None;
     }
 
     /// Emit Kitty delete commands for all retained images and placements owned
-    /// by the first-person, overhead, 2.5D, and replay compositors.
+    /// by the first-person, overhead, 2.5D, replay, chart, and doll compositors.
     pub fn cleanup_25d_bytes(&mut self) -> Vec<u8> {
         let mut out = self.cockpit_fp.cleanup_kitty_bytes();
         out.extend(self.overhead.cleanup_kitty_bytes());
         out.extend(self.iso25d.cleanup_kitty_bytes());
         out.extend(self.replay_pic.cleanup_kitty_bytes());
+        out.extend(self.chart_pic.cleanup_kitty_bytes());
+        out.extend(self.doll_pic.cleanup_kitty_bytes());
         out
     }
 
@@ -1000,6 +1008,14 @@ impl PixelView {
         let cleanup_rp = self.replay_pic.cleanup_kitty_bytes();
         if !cleanup_rp.is_empty() {
             self.term_bytes.extend_from_slice(&cleanup_rp);
+        }
+        let cleanup_ch = self.chart_pic.cleanup_kitty_bytes();
+        if !cleanup_ch.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_ch);
+        }
+        let cleanup_dl = self.doll_pic.cleanup_kitty_bytes();
+        if !cleanup_dl.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_dl);
         }
         self.last_25d_size = None;
         self.letters_held = false;
@@ -1334,6 +1350,8 @@ impl PixelView {
                 self.iso25d.invalidate_placements();
                 self.overhead.invalidate_placements();
                 self.replay_pic.invalidate_placements();
+                self.chart_pic.invalidate_placements();
+                self.doll_pic.invalidate_placements();
             }
             Key::Char('+' | '=') if self.camera == CockpitCamera::Tactical25D => {
                 let next = self.iso25d.zoom_permille().saturating_add(250).min(2000);
@@ -1458,16 +1476,20 @@ impl PixelView {
             dy_cm,
             zoom_permille: self.iso25d.zoom_permille(),
         };
-        if matches!(self.kind, PictureKind::Cockpit | PictureKind::Replay)
-            && encoder == Encoder::Kitty
-        {
+        if encoder == Encoder::Kitty {
             let step_down = self.stepped_down || self.want == FRAME_W_LO;
             let t0 = Instant::now();
-            let drawn = if self.kind == PictureKind::Replay {
-                self.replay_pic
-                    .draw_kitty(feeds, &look, area, self.cell, step_down)
-            } else {
-                match self.camera {
+            let drawn = match self.kind {
+                PictureKind::Replay => self
+                    .replay_pic
+                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                PictureKind::Chart => self
+                    .chart_pic
+                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                PictureKind::Doll => self
+                    .doll_pic
+                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                PictureKind::Cockpit => match self.camera {
                     CockpitCamera::FirstPerson => self
                         .cockpit_fp
                         .draw_kitty(feeds, &look, area, self.cell, step_down, self.glass),
@@ -1477,7 +1499,7 @@ impl PixelView {
                     CockpitCamera::Tactical25D => self
                         .iso25d
                         .draw_kitty(feeds, &look, area, self.cell, step_down),
-                }
+                },
             };
             let Some((vp, wire)) = drawn else {
                 return Vec::new();
@@ -1534,6 +1556,12 @@ impl PixelView {
         } else if self.kind == PictureKind::Replay {
             self.last_25d_size = None;
             self.replay_pic.draw(&mut self.frame, feeds, &look)
+        } else if self.kind == PictureKind::Chart {
+            self.last_25d_size = None;
+            self.chart_pic.draw(&mut self.frame, feeds, &look)
+        } else if self.kind == PictureKind::Doll {
+            self.last_25d_size = None;
+            self.doll_pic.draw(&mut self.frame, feeds, &look)
         } else {
             self.last_25d_size = None;
             self.picture.draw(&mut self.frame, feeds, &look)

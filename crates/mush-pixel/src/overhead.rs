@@ -238,9 +238,14 @@ pub struct OverheadPicture {
     last_fx_t_ms: Option<i64>,
     /// Active transient FORGE3D combat FX bursts.
     active_fx: Vec<CombatFx>,
+    /// Persistent ground scorch / blast craters accumulated during the match.
+    scorches: Vec<fx::ScorchMark>,
     /// Retained Kitty panning ground cache key (`2×` viewport around `origin_you`).
     #[cfg(feature = "encode")]
     kitty_ground_key: Option<KittyGroundKey>,
+    /// Cached `2×` ground canvas for in-place `a=f` scorch patching.
+    #[cfg(feature = "encode")]
+    kitty_ground_canvas: Option<Frame>,
     /// Active Kitty image ID (`160` or `161`) for the retained ground canvas.
     #[cfg(feature = "encode")]
     kitty_ground_id: u32,
@@ -316,6 +321,7 @@ impl OverheadPicture {
         #[cfg(feature = "encode")]
         {
             self.kitty_ground_key = None;
+            self.kitty_ground_canvas = None;
             self.kitty_ground_placement = None;
         }
     }
@@ -331,6 +337,7 @@ impl OverheadPicture {
             }
         }
         self.kitty_ground_key = None;
+        self.kitty_ground_canvas = None;
         self.kitty_ground_id = 0;
         self.kitty_ground_placement = None;
         self.kitty_hud_hash = None;
@@ -343,6 +350,7 @@ impl OverheadPicture {
     pub fn invalidate_image(&mut self, image_id: u32) {
         if image_id == IMAGE_ID_OH_GROUND_A || image_id == IMAGE_ID_OH_GROUND_B {
             self.kitty_ground_key = None;
+            self.kitty_ground_canvas = None;
             self.kitty_ground_placement = None;
         } else if image_id == IMAGE_ID_OH_HUD {
             self.kitty_hud_hash = None;
@@ -425,6 +433,16 @@ impl OverheadPicture {
             num(cockpit.get("x_cm")) / 100.0,
             num(cockpit.get("y_cm")) / 100.0,
         );
+        self.contact_tracker
+            .step_frame(cockpit, base_you.0 as f32, base_you.1 as f32);
+        let new_scorches = fx::sync_scorch_marks(
+            &mut self.scorches,
+            cockpit,
+            &self.active_fx,
+            &self.contact_tracker,
+            base_you.0 as f32,
+            base_you.1 as f32,
+        );
         let you = (
             base_you.0 + look.dx_cm as f64 / 100.0,
             base_you.1 + look.dy_cm as f64 / 100.0,
@@ -491,12 +509,39 @@ impl OverheadPicture {
             }
             self.kitty_ground_id = next_id;
             self.kitty_ground_key = Some(new_key);
+            self.kitty_ground_canvas = Some(ground_canvas);
             self.kitty_ground_placement = Some((placed_area, sx, sy));
         } else if let Some(k) = self.kitty_ground_key.as_ref() {
-            let dx_px = ((you.0 - k.origin_you.0) * px_per_m).round() as i64;
-            let dy_px = ((k.origin_you.1 - you.1) * px_per_m).round() as i64;
+            let origin_you = k.origin_you;
+            let dx_px = ((you.0 - origin_you.0) * px_per_m).round() as i64;
+            let dy_px = ((origin_you.1 - you.1) * px_per_m).round() as i64;
             let sx = (vw as i64 / 2 + dx_px).clamp(0, vw as i64) as u32;
             let sy = (vh as i64 / 2 + dy_px).clamp(0, vh as i64) as u32;
+            if !new_scorches.is_empty()
+                && self.kitty_ground_id != 0
+                && let Some(canvas) = self.kitty_ground_canvas.as_mut()
+            {
+                for sc in &new_scorches {
+                    if let Some((rx, ry, rw, rh)) =
+                        stamp_scorch_on_overhead_canvas(canvas, origin_you, px_per_m, sc)
+                    {
+                        let mut sub = Frame::new(rw, rh);
+                        for r in 0..rh {
+                            for c in 0..rw {
+                                sub.put(c, r, canvas.get(rx + c, ry + r));
+                            }
+                        }
+                        let png = crate::png::encode(&sub);
+                        crate::kitty::patch_frame_bytes(
+                            &mut ops,
+                            &png,
+                            self.kitty_ground_id,
+                            rx as u32,
+                            ry as u32,
+                        );
+                    }
+                }
+            }
             if self.kitty_ground_placement != Some((placed_area, sx, sy))
                 && self.kitty_ground_id != 0
             {
@@ -616,6 +661,29 @@ impl Picture for OverheadPicture {
         let held = feeds.feed(ARENA_MAP_FEED);
         self.ensure_map(held);
         fx::sync_combat_fx(&mut self.last_fx_t_ms, &mut self.active_fx, cockpit);
+        let base_you = (
+            num(cockpit.get("x_cm")) / 100.0,
+            num(cockpit.get("y_cm")) / 100.0,
+        );
+        self.contact_tracker
+            .step_frame(cockpit, base_you.0 as f32, base_you.1 as f32);
+        let new_scorches = fx::sync_scorch_marks(
+            &mut self.scorches,
+            cockpit,
+            &self.active_fx,
+            &self.contact_tracker,
+            base_you.0 as f32,
+            base_you.1 as f32,
+        );
+        if !new_scorches.is_empty()
+            && let (Some(map), Some((gkey, gimg))) = (self.map.as_ref(), self.ground.as_mut())
+        {
+            let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
+            let mh = map.height() as f64 * cell_m;
+            for sc in &new_scorches {
+                stamp_scorch_on_map_ground(gimg, mh, gkey.px_per_m, sc);
+            }
+        }
         let scene = overhead_scene(frame, cockpit, held, look, self, Dress::Camera);
         scene.draw(frame);
         if !self.active_fx.is_empty() {
@@ -722,10 +790,6 @@ fn overhead_scene(
         num(cockpit.get("x_cm")) / 100.0,
         num(cockpit.get("y_cm")) / 100.0,
     );
-    if dress.is_camera_scale() {
-        pic.contact_tracker
-            .step_frame(cockpit, base_you.0 as f32, base_you.1 as f32);
-    }
     let you = (
         base_you.0 + look.dx_cm as f64 / 100.0,
         base_you.1 + look.dy_cm as f64 / 100.0,
@@ -807,7 +871,10 @@ fn overhead_scene(
                     px_per_m,
                 };
                 if pic.ground.as_ref().is_none_or(|(k, _)| *k != key) {
-                    let image = ground_image(map, pic.terrain.as_ref(), px_per_m);
+                    let mut image = ground_image(map, pic.terrain.as_ref(), px_per_m);
+                    for sc in &pic.scorches {
+                        stamp_scorch_on_map_ground(&mut image, mh, px_per_m, sc);
+                    }
                     pic.ground = Some((key, image));
                 }
                 if let Some((_, image)) = pic.ground.as_ref() {
@@ -1134,7 +1201,66 @@ fn build_kitty_ground_canvas(
     }
     let mut canvas = Frame::new(gw, gh);
     scene.draw(&mut canvas);
+    for sc in &pic.scorches {
+        let _ = stamp_scorch_on_overhead_canvas(&mut canvas, origin_you, px_per_m, sc);
+    }
     canvas
+}
+
+fn stamp_scorch_on_map_ground(
+    image: &mut Frame,
+    map_height_m: f64,
+    px_per_m: f64,
+    sc: &fx::ScorchMark,
+) {
+    let cx = (f64::from(sc.x_m) * px_per_m).round() as i32;
+    let cy = ((map_height_m - f64::from(sc.y_m)) * px_per_m).round() as i32;
+    let r = if sc.large { 5 } else { 3 };
+    let w = image.width() as i32;
+    let h = image.height() as i32;
+    fx::stamp_scorch_mark(cx, cy, r, sc.large, &mut |x, y, rgb| {
+        if x >= 0 && x < w && y >= 0 && y < h {
+            image.put(x as usize, y as usize, rgb);
+        }
+    });
+}
+
+#[cfg(feature = "encode")]
+fn stamp_scorch_on_overhead_canvas(
+    canvas: &mut Frame,
+    origin_you: (f64, f64),
+    px_per_m: f64,
+    sc: &fx::ScorchMark,
+) -> Option<(usize, usize, usize, usize)> {
+    let cw = canvas.width();
+    let ch = canvas.height();
+    let cx = (cw as i32 / 2) + ((f64::from(sc.x_m) - origin_you.0) * px_per_m).round() as i32;
+    let cy = (ch as i32 / 2) - ((f64::from(sc.y_m) - origin_you.1) * px_per_m).round() as i32;
+    let r = if sc.large { 6 } else { 4 };
+    let mut min_x = cw;
+    let mut min_y = ch;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    let mut touched = false;
+    fx::stamp_scorch_mark(cx, cy, r, sc.large, &mut |x, y, rgb| {
+        if x >= 0 && y >= 0 {
+            let ux = x as usize;
+            let uy = y as usize;
+            if ux < cw && uy < ch {
+                canvas.put(ux, uy, rgb);
+                min_x = min_x.min(ux);
+                min_y = min_y.min(uy);
+                max_x = max_x.max(ux);
+                max_y = max_y.max(uy);
+                touched = true;
+            }
+        }
+    });
+    if touched {
+        Some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
+    } else {
+        None
+    }
 }
 
 #[cfg(feature = "encode")]
