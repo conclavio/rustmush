@@ -2485,6 +2485,9 @@ fn shipped_draft(short_id: &str) -> Option<Result<GroundDraft, GroundError>> {
         "winter_valley" => Some(GroundDraft::from_json(include_str!(
             "../content/ground/winter_valley.draft.json"
         ))),
+        "mars_canyon" => Some(GroundDraft::from_json(include_str!(
+            "../content/ground/mars_canyon.draft.json"
+        ))),
         _ => None,
     }
 }
@@ -3335,6 +3338,12 @@ fn generate_biome_preset(
         }
     }
 
+    let preset_origin_m = match default_biome {
+        "mars" => 40_000_i64,
+        "lunar" => 50_000_i64,
+        "ice" => 60_000_i64,
+        _ => ORIGIN_M,
+    };
     let base = proving_ground_draft()?;
     let mut draft = GroundDraft {
         schema: DRAFT_SCHEMA.to_owned(),
@@ -3342,7 +3351,7 @@ fn generate_biome_preset(
         label: label.to_owned(),
         biome: default_biome.to_owned(),
         body: body.to_owned(),
-        origin_m: [ORIGIN_M, ORIGIN_M],
+        origin_m: [preset_origin_m, preset_origin_m],
         cell_cm: CELL_CM,
         cols: SIDE,
         rows: SIDE,
@@ -4310,15 +4319,34 @@ mod tests {
         check_eq!(reassembled_wv, wv);
 
         // 3. Procedural biome presets (`mars_canyon`, `lunar_crater`, `ice_shelf`)
-        //    meet §5 check and author only their §6 per-biome class vocabularies.
-        for (preset, expected_biome, expected_body) in [
-            ("mars_canyon", "mars", "mars"),
-            ("lunar_crater", "lunar", "luna"),
-            ("ice_shelf", "ice", "europa"),
+        //    meet §5 check, carry disjoint `origin_m`, and author only their §6 per-biome class vocabularies.
+        let mc = draft_from_world(&world, "mars_canyon")?;
+        check_eq!(mc.id, "mars_canyon");
+        check_eq!(mc.biome, "mars");
+        check_eq!(mc.body, "mars");
+        check_eq!(mc.origin_m, [40_000, 40_000]);
+        check_eq!(mc, generate("mars_canyon", 2350, None)?);
+        let built_mc = build(&mc)?;
+        check_eq!(built_mc.draft, mc);
+        check_eq!(
+            built_mc.atlas_json.replace("\r\n", "\n"),
+            content::MARS_CANYON_ATLAS_JSON.replace("\r\n", "\n")
+        );
+        check_eq!(
+            built_mc.arena_json.replace("\r\n", "\n"),
+            content::MARS_CANYON_JSON.replace("\r\n", "\n")
+        );
+        check_eq!(content::mars_canyon_packs()?.len(), 2);
+
+        for (preset, expected_biome, expected_body, expected_origin) in [
+            ("mars_canyon", "mars", "mars", 40_000_i64),
+            ("lunar_crater", "lunar", "luna", 50_000_i64),
+            ("ice_shelf", "ice", "europa", 60_000_i64),
         ] {
             let d = generate(preset, 42, None)?;
             check_eq!(d.biome, expected_biome);
             check_eq!(d.body, expected_body);
+            check_eq!(d.origin_m, [expected_origin, expected_origin]);
             check_eq!(d.provenance.source, GroundSource::Generator);
             check_eq!(d.provenance.seed, Some(42));
             let rep = check(&d)?;

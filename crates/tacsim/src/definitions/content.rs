@@ -220,6 +220,25 @@ pub const EXTENSIONS_WINTER_VALLEY: [(&str, &str); 1] = [(
     WINTER_VALLEY_JSON,
 )];
 
+/// `crates/tacsim/content/ground/mars_canyon.draft.json` (doc 30 §9, Q-30-7).
+pub const MARS_CANYON_DRAFT_JSON: &str =
+    include_str!("../../content/ground/mars_canyon.draft.json");
+/// `crates/tacsim/content/arenas/mars_canyon.json` (doc 30 §9, Q-30-7).
+pub const MARS_CANYON_JSON: &str = include_str!("../../content/arenas/mars_canyon.json");
+/// `crates/tacsim/content/atlas/mars_canyon.json` — the first non-temperate biome
+/// arena's ground, as an ordinary atlas region pack (doc 30 §9, Q-30-7).
+pub const MARS_CANYON_ATLAS_JSON: &str = include_str!("../../content/atlas/mars_canyon.json");
+/// The `mars_canyon` arena's atlas pack id.
+pub const MARS_CANYON_ATLAS_PACK: &str = "tacsim.mars_canyon";
+/// The `mars_canyon` arena's campaign-seed pack id.
+pub const MARS_CANYON_PACK: &str = "tacsim.pack.mars_canyon";
+/// The first non-temperate biome arena definition (`tacsim.arena.mars_canyon`, doc 30 Q-30-7).
+pub const MARS_CANYON: &str = "tacsim.arena.mars_canyon";
+/// **The first non-temperate biome arena** (doc 30 §9, Q-30-7): the generator's
+/// `mars_canyon` draft built through `ground-pack build`.
+pub const EXTENSIONS_MARS_CANYON: [(&str, &str); 1] =
+    [("tacsim/content/arenas/mars_canyon.json", MARS_CANYON_JSON)];
+
 // ---------------------------------------------------------------------------
 // The trade run's five IC stations (doc 18 §4.5, §4.7; cut IC1; doc 19 cut A.8)
 // ---------------------------------------------------------------------------
@@ -1021,6 +1040,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
             include_str!("../../content/units/relay_station.json"),
         )],
         EXTENSIONS_WINTER_VALLEY.as_slice(),
+        EXTENSIONS_MARS_CANYON.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),
@@ -1071,6 +1091,27 @@ pub fn winter_valley_packs() -> Result<Vec<mush_content::Pack>, String> {
             "tacsim/content/arenas/winter_valley.json",
             WINTER_VALLEY_JSON,
         ),
+    ]
+    .iter()
+    .map(|(name, json)| mush_content::load_pack(json).map_err(|error| format!("{name}: {error}")))
+    .collect()
+}
+
+/// The two packs of the first non-temperate biome arena (`mars_canyon`, doc 30 Q-30-7),
+/// in apply order: the atlas region pack (`tacsim.mars_canyon`), then the
+/// campaign-seed arena pack (`tacsim.pack.mars_canyon`).
+///
+/// # Errors
+///
+/// A message naming the file when a shipped pack does not verify — a build
+/// error, since `crates/tacsim/tests/shard_2/content.rs` pins both digests.
+pub fn mars_canyon_packs() -> Result<Vec<mush_content::Pack>, String> {
+    [
+        (
+            "tacsim/content/atlas/mars_canyon.json",
+            MARS_CANYON_ATLAS_JSON,
+        ),
+        ("tacsim/content/arenas/mars_canyon.json", MARS_CANYON_JSON),
     ]
     .iter()
     .map(|(name, json)| mush_content::load_pack(json).map_err(|error| format!("{name}: {error}")))
