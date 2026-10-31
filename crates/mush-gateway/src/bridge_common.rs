@@ -234,6 +234,15 @@ pub enum ConnectErr {
     /// The split boundary is live, but bounded lifecycle/IPC custody is full.
     #[error("the game is busy; please try again in a moment")]
     Busy,
+    /// The boundary is live and the server answered, but did not bind this
+    /// connection to the character: a hard boot or recovery mode refusing
+    /// connection hooks, or (doc 33 GG.2) a connection id another gateway
+    /// already holds, which the server log names under
+    /// `IPC-DUPLICATE-CONN-ID`.
+    #[error(
+        "the server did not admit this connection; try again, and tell staff if it keeps happening"
+    )]
+    NotAdmitted,
 }
 
 /// What the transport should do after feeding a line.
@@ -951,6 +960,18 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         }
     }
 
+    /// The server answered the readiness probe with "not bound": the boundary
+    /// is live, so this is a refusal, not a gap or a shutdown (which [`gone`]
+    /// still names when the boundary went away under the probe).
+    ///
+    /// [`gone`]: GameBridge::gone
+    fn not_admitted(&self) -> ConnectErr {
+        match self.gone() {
+            ConnectErr::WorldGone => ConnectErr::NotAdmitted,
+            other => other,
+        }
+    }
+
     pub async fn enter_game(
         &self,
         handle: ConnectionHandle,
@@ -1027,7 +1048,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         ) {
             self.compensate_announced_attach(conn_id, actor, from_linkdead)
                 .await;
-            return Err(self.gone());
+            return Err(self.not_admitted());
         }
 
         send_event_to_conn(

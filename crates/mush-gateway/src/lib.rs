@@ -47,6 +47,7 @@ use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use mush_config::config::Config;
+use mush_config::generation::Generation;
 use mush_config::ipguard::{IpGuard, SITEBAN_REFRESH};
 use mush_config::metrics::Metrics;
 use mush_core::DisconnectKind;
@@ -115,6 +116,12 @@ pub struct GatewayOptions {
     /// `SERVER_UNREACHABLE_AFTER` (production: the server unit's start-limit
     /// bound, doc 33 Q-33-5). Tests shorten it.
     pub give_up_after: Option<Duration>,
+    /// Which of the two gateway generations this process is (doc 33 §4.3,
+    /// `--generation a|b`). Generation `b` sets bit 62 on every connection id
+    /// it allocates, across all four transports, so two gateways serving one
+    /// server never hand the server the same id; `a` sets none. `None` (the
+    /// tests, `mushd`) is `a` for this purpose and says nothing else.
+    pub generation: Option<Generation>,
 }
 
 /// The bounded shared table of parked service-request waiters, plus a `down`
@@ -1613,9 +1620,14 @@ struct WiredBoundary {
     /// Bye) — the keeper's cue to enter the gap (D1a).
     down: JoinHandle<()>,
     /// Fire to close the boundary writer: at the gateway's own stop, and to
-    /// abandon an attempt whose resync failed. The server sees EOF (until doc
-    /// 33 GG.2 it exits on that, and its unit brings it back).
+    /// abandon an attempt whose resync failed. The server sees EOF and
+    /// detaches this gateway's connections (doc 33 GG.2); the world runs on.
     close: oneshot::Sender<()>,
+    /// The writer task: awaited (bounded) after `close` fires and before the
+    /// next dial, so the old socket's FIN is on the wire before the new SYN
+    /// (doc 33 §4.3: the server must see this link end before it sees the
+    /// next one re-announce the same connections).
+    writer: JoinHandle<()>,
 }
 
 /// The M18 IPC-bounding knobs + shared metrics threaded into every (re)wired
@@ -1794,7 +1806,7 @@ async fn connect_and_wire(
     let transport = SessionDelivery::new(Arc::clone(sessions), to_server_tx.clone())
         .with_controls(Arc::clone(&env.controls));
     let (close_tx, close_rx) = oneshot::channel();
-    tokio::spawn(gateway_writer(
+    let writer = tokio::spawn(gateway_writer(
         writer_half,
         to_server_rx,
         close_rx,
@@ -1816,6 +1828,7 @@ async fn connect_and_wire(
         conn,
         down,
         close: close_tx,
+        writer,
     })
 }
 
@@ -2052,8 +2065,14 @@ async fn resync_boundary(
 /// it. A version-skewed server is reachable, so a skew streak never gives up.
 ///
 /// `stop` is the gateway's own shutdown: the keeper closes the boundary so the
-/// server sees EOF (until doc 33 GG.2 it exits on that, and its unit brings it
-/// back) and returns. `first_wired` is `None` for a boot into the gap.
+/// server sees EOF, detaches this gateway's connections and runs on (doc 33
+/// GG.2), and returns. `first_wired` is `None` for a boot into the gap.
+///
+/// Before every redial the old boundary's writer is awaited (bounded by
+/// [`KEEPER_STOP_WAIT`]) so its socket's FIN is on the wire before the new
+/// SYN: the server must see the old link end before the new link re-announces
+/// the same connections, or it reads them as a duplicate across two live links
+/// (doc 33 §4.3).
 #[allow(clippy::too_many_arguments)]
 async fn keep_boundary(
     endpoint: IpcEndpoint,
@@ -2090,8 +2109,11 @@ async fn keep_boundary(
             boundary.enter_gap();
             broadcast(&sessions, restarting_notice());
             // The reader is already gone (that is what resolved `down`); close
-            // the writer too so nothing of the old boundary lingers.
+            // the writer too so nothing of the old boundary lingers, and wait
+            // for it: its socket half drops when it returns, and that FIN has
+            // to precede the dial below (doc 33 §4.3).
             let _ = w.close.send(());
+            let _ = tokio::time::timeout(KEEPER_STOP_WAIT, &mut w.writer).await;
         }
         // A boot into the gap arrives here with the handle already in its gap
         // and nobody connected yet to tell.
@@ -2141,6 +2163,7 @@ async fn keep_boundary(
                         tracing::error!(error = %e, "post-reconnect resync failed; retrying");
                         let _ = w.close.send(());
                         let _ = tokio::time::timeout(KEEPER_STOP_WAIT, &mut w.down).await;
+                        let _ = tokio::time::timeout(KEEPER_STOP_WAIT, &mut w.writer).await;
                         tokio::time::sleep(backoff(failures)).await;
                     }
                 },
@@ -2254,6 +2277,13 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // web ingress serves over `/metrics` + `/healthz` and the SSH/web bridges
     // count connections into.
     let metrics = Arc::new(Metrics::new());
+    // The generation's connection-id bit (doc 33 §4.3): set on every id the
+    // SSH, trusted, web and Discord transports allocate, so the two gateways
+    // of a swap never hand the server the same id. None without the flag.
+    let conn_id_bit = opts.generation.map_or(0, Generation::conn_id_bit);
+    if let Some(generation) = opts.generation {
+        tracing::info!(%generation, conn_id_bit, "gateway generation");
+    }
     let lifecycle = Arc::new(Mutex::new(LifecycleCustody::new(
         config.ipc_to_server_cap(),
     )));
@@ -2362,7 +2392,8 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             Arc::clone(&guard),
         )
         .with_metrics(Arc::clone(&metrics))
-        .with_pixel(&config.pixel),
+        .with_pixel(&config.pixel)
+        .with_conn_id_bit(conn_id_bit),
     );
 
     let data_dir = config.server.data_dir.clone();
@@ -2425,7 +2456,8 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                         Arc::clone(&store),
                         panels,
                     )
-                    .with_metrics(Arc::clone(&metrics)),
+                    .with_metrics(Arc::clone(&metrics))
+                    .with_conn_id_bit(conn_id_bit),
                 );
                 let (web_stop, web_stop_rx) = oneshot::channel::<()>();
                 let web_ready = opts.web_ready;
@@ -2457,7 +2489,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // link, guard and store the SSH and web paths use — a Discord follow is a
     // structured connection of the character's own session, attached through
     // the same `GameBridge` core. Loud but non-fatal, like the web listener.
-    let discord = discord_bridge::spawn_bot(
+    let discord = discord_bridge::spawn_bot_with_conn_id_bit(
         &config,
         Arc::clone(&accounts),
         Arc::clone(&sessions),
@@ -2465,6 +2497,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         Arc::clone(&guard),
         Arc::clone(&store),
         &controls,
+        conn_id_bit,
     );
 
     // SIGHUP is reserved (doc 33 §4.5): logged, nothing else. A deploy of the
@@ -4241,9 +4274,11 @@ mod tests {
                 ..
             }))
         ));
+        // The boundary is live and the server said "not bound": a refusal
+        // in its own words, not a shutdown (doc 33 GG.2).
         assert_eq!(
             entered.await.expect("enter task panicked"),
-            Err(ConnectErr::WorldGone)
+            Err(ConnectErr::NotAdmitted)
         );
         assert_eq!(sessions.connection_count(), 0);
         assert_eq!(sessions.session_count(), 0);

@@ -97,7 +97,9 @@ pub struct NewConn {
     /// Connection id, unique per process: the public port allocates from 1,
     /// the trusted ingress from [`crate::trusted::TRUSTED_CONN_ID_BASE`]
     /// (2^31); the web side starts at 2^32 and Discord at 2^48, so the four
-    /// ranges never meet.
+    /// ranges never meet. A process of gateway generation `b` (doc 33 §4.3)
+    /// also sets [`SshHooks::conn_id_bit`] on every id, so two gateways of
+    /// one server never allocate the same one.
     pub id: u64,
     /// Peer address.
     pub addr: IpAddr,
@@ -279,6 +281,14 @@ pub trait SshHooks: Send + Sync {
     /// Release the slot claimed by
     /// [`connection_opened`](Self::connection_opened). Default: no-op.
     fn connection_closed(&self, _addr: IpAddr) {}
+
+    /// The bit this process sets on every connection id it allocates (doc 33
+    /// §4.3): a gateway of generation `b` sets bit 62 on the ids of all its
+    /// transports, so two gateways serving one server never hand out the same
+    /// id. The transport ORs it into its base. Default: none.
+    fn conn_id_bit(&self) -> u64 {
+        0
+    }
 
     /// Gate a **freshly accepted** TCP connection on the public port, before
     /// any SSH byte is exchanged (doc 29a §9): the per-address concurrency

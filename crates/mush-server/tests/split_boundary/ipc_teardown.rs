@@ -13,8 +13,9 @@
 //! everyday slow client is policed by the gateway's `SessionManager`); the
 //! bounded-channel overflow (B) and the metric/counter wiring are proven
 //! deterministically by the in-crate unit tests, and the *survival* that rides
-//! this teardown (supervise -> relaunch -> ReAnnounce -> re-attach) by the
-//! gateway `restart_survival` suite — a teardown is just a boundary EOF.
+//! this teardown (gap -> reconnect -> ReAnnounce -> re-attach) by the gateway
+//! `restart_survival` suite — a teardown is just a link EOF, and since doc 33
+//! GG.2 the server runs on through it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -234,7 +235,8 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
         "the world produced output before the boundary was torn down"
     );
 
-    // Closing our side lets the server's reader EOF and the process exit cleanly.
+    // Closing our side lets the server's reader EOF; the link is closed, the
+    // server runs on (doc 33 GG.2) until the test process ends.
     drop(writer);
     drop(frames);
 }

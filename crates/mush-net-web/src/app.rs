@@ -31,7 +31,8 @@ pub(crate) struct AppState {
     pub config: Arc<WebConfig>,
     /// Server start, for `/healthz` uptime.
     pub started: Instant,
-    /// Next WS conn id (starts at [`WEB_CONN_ID_BASE`]).
+    /// Next WS conn id (starts at [`WEB_CONN_ID_BASE`], with the hooks'
+    /// generation bit set, doc 33 §4.3).
     pub next_conn: Arc<AtomicU64>,
     /// The shared metrics registry (from [`WebHooks::metrics`]) read by
     /// `/healthz` and `/metrics`.
@@ -54,12 +55,13 @@ type LimiterGc = Box<dyn Fn() + Send + Sync>;
 
 pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Option<LimiterGc>) {
     let metrics = hooks.metrics();
+    let first_conn = WEB_CONN_ID_BASE | hooks.conn_id_bit();
     let metrics_enabled = config.metrics_enabled;
     let state = AppState {
         hooks,
         config: Arc::new(config),
         started: Instant::now(),
-        next_conn: Arc::new(AtomicU64::new(WEB_CONN_ID_BASE)),
+        next_conn: Arc::new(AtomicU64::new(first_conn)),
         metrics,
     };
 

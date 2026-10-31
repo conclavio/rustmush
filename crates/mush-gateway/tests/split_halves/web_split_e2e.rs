@@ -120,6 +120,7 @@ async fn boot_split_web(
                 web_ready: Some(web_tx),
                 siteban_refresh: None,
                 give_up_after: None,
+                generation: None,
             },
         ))
         .unwrap();

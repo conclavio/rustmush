@@ -4,10 +4,11 @@
 //! resolved server-side) plus fire-and-forget session control, and hands them to
 //! a [`GatewaySink`]. Two implementors exist:
 //!
-//! - [`SocketSink`] (here, forked server): serializes every message as a
-//!   [`ToGateway`] frame onto the boundary writer. It owns no `SessionManager` —
-//!   the gateway process does — so it never polices and the session-walk /
-//!   count methods are empty.
+//! - [`SocketSink`] (here, forked server): routes every message to the gateway
+//!   links that should see it (doc 33 §4.3, cut GG.2) and serializes each as a
+//!   [`ToGateway`] frame onto that link's writer through its [`LinkSink`]. It
+//!   owns no `SessionManager` — the gateway processes do — so it never polices
+//!   and the session-walk / count methods are empty.
 //! - the in-process sink (in `mushd`, the all-in-one): routes each pair onto the
 //!   shared `mush_session::SessionManager` with `Arc` fan-out
 //!   (zero-copy), self-polices slow clients back into the world loop, and
@@ -16,6 +17,18 @@
 //! The trait is defined here (server-side) so the world loop names no
 //! `mush-session` type; its in-process implementor lives in `mushd`, which
 //! depends on both halves.
+//!
+//! # Routing by target (doc 33 §4.3)
+//!
+//! A frame addressed to one connection — a `Deliver` to [`SendTarget::Conn`],
+//! `SetOutputBrackets` — goes to the link that owns the connection and nowhere
+//! else; one addressed to a character, a room, the world or a relay —
+//! `Deliver` to `Char`/`All`/`Relay`, `SetFloodExempt`, `CloseSession`,
+//! `CloseWebSessions`, `DiscordControl` — goes to every link, and a gateway
+//! that holds no connection of the character ignores it, as it already does
+//! for a character it never saw. The owner of a connection is the link that
+//! announced it (`ConnUp`, `Attach`, `ReAnnounce`); a connection no live link
+//! owns has nobody to deliver to, so its frame is dropped and said so at debug.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -26,6 +39,8 @@ use mush_proto::OutputEvent;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TrySendError;
+
+use crate::links::LinkRegistry;
 
 /// The world loop's output + session-control sink (see the module docs).
 ///
@@ -97,17 +112,19 @@ pub trait GatewaySink: Send + Sync {
     fn session_counts(&self) -> (i64, i64);
 }
 
-/// The forked-server sink: serialize every server → gateway message as a
-/// [`ToGateway`] frame onto `tx`, drained to the boundary socket by the writer
-/// task. Holds no `SessionManager` (the gateway process owns it), so it never
-/// polices and the session-walk / count methods are empty.
+/// One gateway link's outbox: every server → gateway frame for THAT gateway is
+/// queued here and drained to its socket by the link's writer task. Before
+/// GG.2 this was the whole `SocketSink` (there was one link); now the
+/// [`SocketSink`] the world holds routes each message to one or every link's
+/// `LinkSink`, and the link's reader uses its own for correlated replies and
+/// request dispositions, so a reply goes back on the link that asked.
 ///
 /// # Bounded delivery (M18)
 ///
 /// `tx` is a **bounded** channel ([`Config::ipc_to_gw_cap`]). Every `ToGateway`
 /// frame is must-deliver (a `Deliver` keyframe, a correlated `Reply`, sticky
 /// `SetFloodExempt` state, or a security `CloseSession`/`CloseWebSessions`), so
-/// there is NEVER a per-message drop: on a `Full` channel the whole boundary is
+/// there is NEVER a per-message drop: on a `Full` channel the whole link is
 /// torn down instead (the gateway's re-attach re-renders every session,
 /// healing the loss). The world loop is the producer and must never `.await`
 /// the boundary (D4), so `send` uses `try_send` and the
@@ -116,15 +133,15 @@ pub trait GatewaySink: Send + Sync {
 ///
 /// [`Config::ipc_to_gw_cap`]: mush_config::config::Config::ipc_to_gw_cap
 #[derive(Clone)]
-pub struct SocketSink {
+pub struct LinkSink {
     tx: Sender<ToGateway>,
     /// Shared metrics registry — the same one the world loop reads for `@stats`.
     /// Records the `to_gw` queue high-water on every send.
     metrics: Arc<Metrics>,
     /// One-shot teardown trigger the writer task waits on. Notified the first
     /// time (and every subsequent time) `try_send` sees a `Full` channel; the
-    /// writer returns, drops its socket half, and the boundary EOFs — the
-    /// gap → unit restart → reconnect → ReAnnounce → re-attach path heals it.
+    /// writer returns, drops its socket half, and the link EOFs — the gateway's
+    /// gap → reconnect → ReAnnounce → re-attach path heals it.
     teardown: Arc<Notify>,
     /// Count of frames that hit a full `to_gw` and forced a teardown. Drives the
     /// warn-once-per-crossing latch and gives tests a deterministic handle.
@@ -139,10 +156,11 @@ pub struct SocketSink {
     high_water_pct: u8,
 }
 
-impl SocketSink {
-    /// Wrap the boundary writer's inbox. `tx` is the bounded `to_gw` sender;
-    /// `teardown` is the SAME [`Notify`] the writer task waits on; `metrics` is
-    /// the world loop's registry; `cap`/`high_water_pct` come from `[ipc]`.
+impl LinkSink {
+    /// Wrap one link's writer inbox. `tx` is the bounded `to_gw` sender;
+    /// `teardown` is the SAME [`Notify`] the link's writer task waits on;
+    /// `metrics` is the process's registry; `cap`/`high_water_pct` come from
+    /// `[ipc]`.
     #[must_use]
     pub fn new(
         tx: Sender<ToGateway>,
@@ -150,8 +168,8 @@ impl SocketSink {
         teardown: Arc<Notify>,
         cap: usize,
         high_water_pct: u8,
-    ) -> SocketSink {
-        SocketSink {
+    ) -> LinkSink {
+        LinkSink {
             tx,
             metrics,
             teardown,
@@ -166,11 +184,11 @@ impl SocketSink {
     /// blocks, never awaits — D4). On success it observes the queue depth for
     /// the high-water gauge + edge-gated warn. On `Full` it never drops-and-
     /// continues: it counts the overflow, records the high-water at `cap`, logs
-    /// a warn once per crossing, and notifies the writer to TEAR THE BOUNDARY
-    /// DOWN (the re-attach heals the lost frame). On `Closed` the boundary is
+    /// a warn once per crossing, and notifies the writer to TEAR THE LINK
+    /// DOWN (the re-attach heals the lost frame). On `Closed` the link is
     /// already gone (the writer returned and dropped the receiver), so it is
     /// silently ignored — matching the pre-M18 `let _ = send(..)`.
-    pub(crate) fn send(&self, msg: ToGateway) {
+    pub fn send(&self, msg: ToGateway) {
         match self.tx.try_send(msg) {
             Ok(()) => {
                 let depth = self.cap.saturating_sub(self.tx.capacity()) as u64;
@@ -197,13 +215,13 @@ impl SocketSink {
                     tracing::warn!(
                         dir = "to_gw",
                         cap = self.cap,
-                        "ipc queue overflow; tearing down boundary"
+                        "ipc queue overflow; tearing down the link"
                     );
                 }
                 self.teardown.notify_one();
             }
             Err(TrySendError::Closed(_)) => {
-                // The boundary is already torn down; the gateway's re-attach
+                // The link is already torn down; the gateway's re-attach
                 // re-renders every session, so a frame lost here is recovered.
             }
         }
@@ -219,25 +237,75 @@ impl SocketSink {
     }
 }
 
+/// The forked-server sink the world loop holds: route each server → gateway
+/// message to the link(s) that should see it (module docs) and serialize it as
+/// a [`ToGateway`] frame on each one's [`LinkSink`]. Holds no `SessionManager`
+/// (the gateway processes own theirs), so it never polices and the
+/// session-walk / count methods are empty.
+///
+/// Every send is `try_send` through the link's bounded outbox (D4: the world
+/// loop never awaits the boundary); a full outbox tears THAT link down, never
+/// the others and never the world.
+#[derive(Clone)]
+pub struct SocketSink {
+    links: Arc<LinkRegistry>,
+}
+
+impl SocketSink {
+    /// A sink over the server's link registry.
+    #[must_use]
+    pub fn new(links: Arc<LinkRegistry>) -> SocketSink {
+        SocketSink { links }
+    }
+
+    /// The registry this sink routes over.
+    #[must_use]
+    pub fn links(&self) -> &Arc<LinkRegistry> {
+        &self.links
+    }
+
+    /// A connection-addressed frame: the owning link only. A connection no
+    /// live link owns has nobody to deliver to; the frame is dropped and the
+    /// drop said at debug (a connection that went down a moment ago is the
+    /// ordinary case).
+    fn to_conn(&self, conn: u64, msg: ToGateway) {
+        if !self.links.send_to_conn(conn, msg) {
+            tracing::debug!(conn, "frame for a connection no link owns dropped");
+        }
+    }
+
+    /// A character-, room-, world- or relay-addressed frame: every link.
+    fn to_every_link(&self, msg: &ToGateway) {
+        self.links.broadcast(msg);
+    }
+}
+
 impl GatewaySink for SocketSink {
     fn set_output_brackets(&self, conn: u64, brackets: mush_proto::OutputBrackets) {
-        self.send(ToGateway::SetOutputBrackets { conn, brackets });
+        self.to_conn(conn, ToGateway::SetOutputBrackets { conn, brackets });
     }
+
     fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
         for (target, ev) in sends {
-            self.send(ToGateway::Deliver {
-                target,
+            let msg = ToGateway::Deliver {
+                target: target.clone(),
                 event: (*ev).clone(),
-            });
+            };
+            match target {
+                SendTarget::Conn(conn) => self.to_conn(conn, msg),
+                SendTarget::Char(_) | SendTarget::All | SendTarget::Relay(_) => {
+                    self.to_every_link(&msg);
+                }
+            }
         }
     }
 
     fn set_flood_exempt(&self, char: u64, exempt: bool) {
-        self.send(ToGateway::SetFloodExempt { char, exempt });
+        self.to_every_link(&ToGateway::SetFloodExempt { char, exempt });
     }
 
     fn discord_control(&self, char: u64, op: DiscordControlOp) {
-        self.send(ToGateway::DiscordControl { char, op });
+        self.to_every_link(&ToGateway::DiscordControl { char, op });
     }
 
     fn is_socket(&self) -> bool {
@@ -245,11 +313,11 @@ impl GatewaySink for SocketSink {
     }
 
     fn close_session(&self, char: u64, cause: DetachCause) {
-        self.send(ToGateway::CloseSession { char, cause });
+        self.to_every_link(&ToGateway::CloseSession { char, cause });
     }
 
     fn close_web_sessions(&self, chars: Vec<u64>, notice: Option<OutputEvent>, cause: DetachCause) {
-        self.send(ToGateway::CloseWebSessions {
+        self.to_every_link(&ToGateway::CloseWebSessions {
             chars,
             notice,
             cause,
@@ -274,17 +342,19 @@ impl GatewaySink for SocketSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_ipc::ServiceResp;
+    use mush_core::ObjId;
+    use mush_ipc::{LinkVersion, ServiceResp};
+    use mush_proto::RichText;
     use tokio::sync::mpsc;
 
-    /// A sink over a fresh bounded channel whose receiver is NEVER polled — so
-    /// the channel fills at exactly `cap` and the next send overflows. Returns
-    /// the held receiver (keep it alive to stay `Full`, not `Closed`), the
-    /// shared teardown the writer would wait on, and the metrics registry.
+    /// A link sink over a fresh bounded channel whose receiver is NEVER polled —
+    /// so the channel fills at exactly `cap` and the next send overflows.
+    /// Returns the held receiver (keep it alive to stay `Full`, not `Closed`),
+    /// the shared teardown the writer would wait on, and the metrics registry.
     fn sink(
         cap: usize,
     ) -> (
-        SocketSink,
+        LinkSink,
         mpsc::Receiver<ToGateway>,
         Arc<Notify>,
         Arc<Metrics>,
@@ -292,7 +362,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<ToGateway>(cap);
         let metrics = Arc::new(Metrics::new());
         let teardown = Arc::new(Notify::new());
-        let s = SocketSink::new(tx, Arc::clone(&metrics), Arc::clone(&teardown), cap, 80);
+        let s = LinkSink::new(tx, Arc::clone(&metrics), Arc::clone(&teardown), cap, 80);
         (s, rx, teardown, metrics)
     }
 
@@ -305,7 +375,7 @@ mod tests {
 
     /// A full `to_gw` NEVER silently drops (I1): the overflowing frame counts,
     /// records the high-water at cap, and signals the writer to tear the
-    /// boundary down — the writer's `teardown.notified()` becomes ready.
+    /// link down — the writer's `teardown.notified()` becomes ready.
     #[tokio::test]
     async fn full_to_gw_tears_down_never_drops_silently() {
         let cap = 4;
@@ -325,7 +395,7 @@ mod tests {
         // The high-water reached cap and surfaces via @stats / /metrics.
         assert_eq!(metrics.snapshot().ipc_queue_high_water_to_gw, cap as u64);
         // The overflow is counted in the shared registry (surfaced via @stats /
-        // /metrics), not only in the SocketSink's local latch counter.
+        // /metrics), not only in the LinkSink's local latch counter.
         assert_eq!(metrics.snapshot().ipc_to_gw_overflow_total, 1);
     }
 
@@ -347,7 +417,7 @@ mod tests {
             .expect("a full channel must tear down rather than drop a Reply");
     }
 
-    /// After the boundary is torn down the receiver is dropped, so `try_send`
+    /// After the link is torn down the receiver is dropped, so `try_send`
     /// returns `Closed`: that is silently ignored (the re-attach heals the loss)
     /// and is NOT counted as an overflow nor a fresh teardown.
     #[tokio::test]
@@ -383,5 +453,95 @@ mod tests {
             metrics.snapshot().ipc_queue_high_water_to_gw,
             (cap - 1) as u64
         );
+    }
+
+    // ---- routing by target (doc 33 §4.3) ----------------------------------
+
+    /// Two links with one connection each, and the world's sink over them.
+    fn two_links() -> (
+        SocketSink,
+        mpsc::Receiver<ToGateway>,
+        mpsc::Receiver<ToGateway>,
+    ) {
+        let registry = Arc::new(LinkRegistry::new(Arc::new(Metrics::new())));
+        let open = |conn: u64, actor: u32| {
+            let (tx, rx) = mpsc::channel::<ToGateway>(16);
+            let link = registry.open_link(
+                LinkSink::new(
+                    tx,
+                    Arc::new(Metrics::new()),
+                    Arc::new(Notify::new()),
+                    16,
+                    80,
+                ),
+                LinkVersion::unknown(),
+            );
+            assert_eq!(link.claim(conn, ObjId(actor)), crate::links::Claim::Owned);
+            rx
+        };
+        let ra = open(1, 10);
+        let rb = open(2, 20);
+        (SocketSink::new(registry), ra, rb)
+    }
+
+    fn line(text: &str) -> Arc<OutputEvent> {
+        Arc::new(OutputEvent::Sys(RichText::plain(text)))
+    }
+
+    fn drain(rx: &mut mpsc::Receiver<ToGateway>) -> Vec<ToGateway> {
+        let mut out = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            out.push(m);
+        }
+        out
+    }
+
+    /// A `Deliver` to a connection reaches the link that owns it and no other;
+    /// one to a character, to all, or to a relay reaches every link.
+    #[tokio::test]
+    async fn deliveries_route_by_target() {
+        let (sink, mut ra, mut rb) = two_links();
+        sink.transmit(vec![
+            (SendTarget::Conn(1), line("to a's connection")),
+            (SendTarget::Conn(2), line("to b's connection")),
+            (SendTarget::Char(10), line("to the character")),
+            (SendTarget::All, line("to the world")),
+        ]);
+        let a = drain(&mut ra);
+        let b = drain(&mut rb);
+        assert_eq!(
+            a.len(),
+            3,
+            "a: its connection, the character, the world: {a:?}"
+        );
+        assert_eq!(
+            b.len(),
+            3,
+            "b: its connection, the character, the world: {b:?}"
+        );
+        assert!(format!("{a:?}").contains("to a's connection"));
+        assert!(!format!("{a:?}").contains("to b's connection"));
+        assert!(format!("{b:?}").contains("to b's connection"));
+        assert!(!format!("{b:?}").contains("to a's connection"));
+    }
+
+    /// Connection settings follow the connection; character-addressed control
+    /// goes everywhere. A connection nobody owns is dropped, not misrouted.
+    #[tokio::test]
+    async fn control_frames_route_by_target() {
+        let (sink, mut ra, mut rb) = two_links();
+        sink.set_output_brackets(2, mush_proto::OutputBrackets::default());
+        assert!(drain(&mut ra).is_empty(), "a owns no connection 2");
+        assert_eq!(drain(&mut rb).len(), 1);
+        sink.set_flood_exempt(10, true);
+        sink.close_session(10, DetachCause::Booted);
+        sink.close_web_sessions(vec![10, 20], None, DetachCause::Booted);
+        sink.discord_control(10, DiscordControlOp::Unfollow);
+        assert_eq!(drain(&mut ra).len(), 4);
+        assert_eq!(drain(&mut rb).len(), 4);
+        sink.set_output_brackets(99, mush_proto::OutputBrackets::default());
+        sink.deliver(SendTarget::Conn(99), line("nobody"));
+        assert!(drain(&mut ra).is_empty());
+        assert!(drain(&mut rb).is_empty());
     }
 }

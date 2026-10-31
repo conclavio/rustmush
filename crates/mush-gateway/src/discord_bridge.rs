@@ -72,7 +72,8 @@ use crate::poison::locked;
 
 /// Discord connection ids start here: disjoint from SSH (allocated from 1)
 /// and web (`WEB_CONN_ID_BASE = 1 << 32`), so a follow can never collide with
-/// a terminal in the shared session table.
+/// a terminal in the shared session table. A gateway of generation `b` (doc
+/// 33 §4.3) sets its bit on these too ([`DiscordBridge::with_conn_id_bit`]).
 pub const DISCORD_CONN_ID_BASE: u64 = 1 << 48;
 
 /// The structured sink's capacity for one follow. The DM writer drains it
@@ -143,6 +144,24 @@ pub fn spawn_bot<A: AuthBackend + 'static>(
     store: Arc<dyn ObjectStore>,
     controls: &GatewayControls,
 ) -> DiscordTask {
+    spawn_bot_with_conn_id_bit(config, accounts, sessions, link, guard, store, controls, 0)
+}
+
+/// [`spawn_bot`] for a gateway of a generation (doc 33 §4.3): `conn_id_bit`
+/// is set on every follow's connection id, as the SSH and web transports set
+/// it on theirs. The all-in-one and the tests call [`spawn_bot`] (no bit).
+// The bot's eight inputs meet here and nowhere else; the count is the shape.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_bot_with_conn_id_bit<A: AuthBackend + 'static>(
+    config: &Config,
+    accounts: Arc<A>,
+    sessions: Arc<SessionManager>,
+    link: Arc<dyn GatewayLink>,
+    guard: Arc<IpGuard>,
+    store: Arc<dyn ObjectStore>,
+    controls: &GatewayControls,
+    conn_id_bit: u64,
+) -> DiscordTask {
     let mut dc = match DiscordConfig::deserialize(config.discord.clone()) {
         Ok(dc) => dc,
         Err(e) => {
@@ -179,15 +198,18 @@ pub fn spawn_bot<A: AuthBackend + 'static>(
         intents |= Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
     }
     let events = Box::new(TwilightEvents::new(token, intents));
-    let bridge = Arc::new(DiscordBridge::with_link(
-        accounts,
-        sessions,
-        link,
-        guard,
-        store,
-        Arc::clone(&api),
-        &dc,
-    ));
+    let bridge = Arc::new(
+        DiscordBridge::with_link(
+            accounts,
+            sessions,
+            link,
+            guard,
+            store,
+            Arc::clone(&api),
+            &dc,
+        )
+        .with_conn_id_bit(conn_id_bit),
+    );
     bridge.install_auto_follow();
     // The server's `ToGateway::DiscordControl` (the in-game `@discord/follow`
     // family) reaches the bridge through the process's control registry.
@@ -363,6 +385,16 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             relay_limiter: Mutex::new(HashMap::new()),
             staff_channel_id: config.staff_channel_id,
         }
+    }
+
+    /// Start the follow connection ids at [`DISCORD_CONN_ID_BASE`] with
+    /// `bit` set (doc 33 §4.3: the gateway generation's
+    /// `mush_config::generation::Generation::conn_id_bit`). Before any follow
+    /// is attached, which is where [`spawn_bot_with_conn_id_bit`] calls it.
+    #[must_use]
+    pub fn with_conn_id_bit(mut self, bit: u64) -> DiscordBridge<A> {
+        self.next_conn = AtomicU64::new(DISCORD_CONN_ID_BASE | bit);
+        self
     }
 
     /// The character `user_id` is following, if any.
@@ -2038,19 +2070,28 @@ mod tests {
     }
 
     async fn rig_with(config: DiscordConfig) -> Rig {
+        rig_of_generation(config, 0).await
+    }
+
+    /// A rig whose bridge sets `conn_id_bit` on every follow's connection id
+    /// (doc 33 §4.3; `0` is a gateway of no generation).
+    async fn rig_of_generation(config: DiscordConfig, conn_id_bit: u64) -> Rig {
         let store = store_with("Nick").await;
         let api = FakeApi::new();
         let link = Arc::new(AutoLink::default());
         let sessions = Arc::new(SessionManager::with_config(SessionConfig::default()));
-        let bridge = Arc::new(DiscordBridge::with_link(
-            Arc::new(FakeAuth),
-            Arc::clone(&sessions),
-            Arc::clone(&link) as Arc<dyn GatewayLink>,
-            Arc::new(IpGuard::new()),
-            Arc::clone(&store) as Arc<dyn ObjectStore>,
-            Arc::clone(&api) as Arc<dyn DiscordApi>,
-            &config,
-        ));
+        let bridge = Arc::new(
+            DiscordBridge::with_link(
+                Arc::new(FakeAuth),
+                Arc::clone(&sessions),
+                Arc::clone(&link) as Arc<dyn GatewayLink>,
+                Arc::new(IpGuard::new()),
+                Arc::clone(&store) as Arc<dyn ObjectStore>,
+                Arc::clone(&api) as Arc<dyn DiscordApi>,
+                &config,
+            )
+            .with_conn_id_bit(conn_id_bit),
+        );
         Rig {
             bridge,
             store,
@@ -2058,6 +2099,34 @@ mod tests {
             link,
             sessions,
         }
+    }
+
+    /// Doc 33 §4.3: a gateway of generation `b` sets its bit on every
+    /// follow's connection id, the Discord range's base intact beneath it.
+    #[tokio::test]
+    async fn a_generation_bit_rides_every_follow_connection_id() {
+        const BIT: u64 = 1 << 62;
+        let r = rig_of_generation(
+            DiscordConfig {
+                dm_coalesce_ms: 50,
+                ..DiscordConfig::default()
+            },
+            BIT,
+        )
+        .await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        assert!(matches!(
+            r.bridge.follow(USER, None).await,
+            FollowOutcome::Following { .. }
+        ));
+        let ups = conn_ups(&r.link);
+        assert_eq!(ups.len(), 1);
+        assert_eq!(ups[0].0 & BIT, BIT, "the generation bit is set");
+        assert_eq!(
+            ups[0].0 & !BIT,
+            DISCORD_CONN_ID_BASE,
+            "the base survives it"
+        );
     }
 
     fn dm_sends(api: &FakeApi) -> Vec<String> {

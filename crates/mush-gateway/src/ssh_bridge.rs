@@ -80,6 +80,10 @@ pub struct SshBridge<A: AuthBackend + 'static> {
     /// The terminal picture's knobs from `[pixel]` (doc 21 cut G.1b); the
     /// built-in defaults until [`SshBridge::with_pixel`] sets them.
     pixel: mush_net_ssh::PixelConfig,
+    /// The bit set on every connection id the SSH transports allocate (doc 33
+    /// §4.3): the gateway generation's, none until
+    /// [`SshBridge::with_conn_id_bit`] sets it.
+    conn_id_bit: u64,
 }
 
 impl<A: AuthBackend + 'static> SshBridge<A> {
@@ -107,7 +111,18 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
             core: GameBridge::with_link(accounts, sessions, link, guard),
             metrics: Arc::new(mush_net_web::Metrics::new()),
             pixel: mush_net_ssh::PixelConfig::default(),
+            conn_id_bit: 0,
         }
+    }
+
+    /// The bit every connection id this bridge's transports allocate carries
+    /// (doc 33 §4.3): the gateway generation's
+    /// (`mush_config::generation::Generation::conn_id_bit`). The split gateway
+    /// sets it from `--generation`; `mushd` and the tests leave it at none.
+    #[must_use]
+    pub fn with_conn_id_bit(mut self, bit: u64) -> SshBridge<A> {
+        self.conn_id_bit = bit;
+        self
     }
 
     /// Point SSH connection counters at the shared metrics registry (the
@@ -474,6 +489,10 @@ mod net {
         fn connection_closed(&self, addr: IpAddr) {
             self.core.guard.conn_closed(addr);
             self.metrics.ssh_connection_closed();
+        }
+
+        fn conn_id_bit(&self) -> u64 {
+            self.conn_id_bit
         }
 
         // Doc 29a §9: the public port's accept gates — the guard's rate,

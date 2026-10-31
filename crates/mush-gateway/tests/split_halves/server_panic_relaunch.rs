@@ -383,6 +383,7 @@ async fn start_split(unit: &ServerUnit) -> SocketAddr {
                 web_ready: None,
                 siteban_refresh: None,
                 give_up_after: None,
+                generation: None,
             },
         ))
         .unwrap();

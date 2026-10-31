@@ -179,6 +179,7 @@ async fn start_split(store: Arc<dyn ObjectStore>) -> SocketAddr {
                 web_ready: None,
                 siteban_refresh: None,
                 give_up_after: None,
+                generation: None,
             },
         ));
     });

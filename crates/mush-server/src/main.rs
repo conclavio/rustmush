@@ -38,6 +38,7 @@ const CLI: CliSpec = CliSpec {
     repl: false,
     check_config: true,
     bootstrap_staff: true,
+    generation: false,
 };
 
 /// How long a booting server waits for the quarantine spool's lifetime lock

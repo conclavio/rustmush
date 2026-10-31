@@ -6,7 +6,9 @@
 //! deps in through them:
 //!
 //! - [`cli`] — the shared command line
-//!   (`--config`/`--ipc`/`--repl`/`--check-config`) all three binaries parse, and the one place an explicit config path is stat'ed.
+//!   (`--config`/`--ipc`/`--repl`/`--check-config`/`--generation`) all three binaries parse, and the one place an explicit config path is stat'ed.
+//! - [`generation`] — the gateway generation (`--generation a|b`, doc 33 §4.3)
+//!   and the connection-id bit generation `b` sets.
 //! - [`config`] — `mushd.toml` parsing/validation (the `[llm]`/`[web]` sections
 //!   are captured raw as [`toml::Value`] and deserialized into their typed
 //!   forms by the crate that owns them, so `mush-config` needs neither
@@ -47,6 +49,7 @@ pub mod decision_keys;
 pub mod discord;
 mod durable_keys;
 pub mod exit;
+pub mod generation;
 pub mod geology_keys;
 pub mod ipguard;
 pub mod logging;

@@ -203,6 +203,7 @@ async fn start_split_with(gw_store: Arc<dyn ObjectStore>, unit: &ServerUnit) -> 
                 web_ready: None,
                 siteban_refresh: None,
                 give_up_after: None,
+                generation: None,
             },
         ));
     });

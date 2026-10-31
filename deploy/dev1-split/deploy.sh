@@ -154,8 +154,8 @@ if [ -f "$ROOT/dev1.env" ]; then chown root:mush "$ROOT/dev1.env"; chmod 640 "$R
 #    one half nothing says so. Connections drop once; that is the price of the
 #    half that holds them having moved.
 #
-#    Until doc 33 GG.2 lands, a gateway restart still bounces the server too:
-#    the server exits on the gateway's EOF, and its unit brings it back.
+#    The server is left alone by a gateway restart (doc 33 GG.2): the
+#    gateway's connections go link-dead in the world and nothing else happens.
 systemctl daemon-reload
 systemctl enable --now redis-dev1mush.service
 sleep 1

@@ -2,9 +2,11 @@
 //! `systemctl restart` reach it as `SIGTERM` directly — until GG.1 the signal
 //! went to the gateway, which closed the boundary, and the server only ever
 //! saw EOF. A real `mush-server` process with a gateway attached must answer
-//! the signal the way it answers that EOF: drain the world, exit zero, say
-//! so. Before the signal arm the default action killed the process mid-write,
-//! and the unit read that as a failure.
+//! the signal the way it used to answer that EOF: drain the world, exit zero,
+//! say so. Before the signal arm the default action killed the process
+//! mid-write, and the unit read that as a failure. (Since GG.2 the EOF no
+//! longer ends the server at all — a link's end detaches that link's
+//! connections and the world runs on — so the signal is how a unit stops it.)
 //!
 //! Unix only: Windows has no `SIGTERM` for a console process spawned this
 //! way, and the unit does not run there.
@@ -124,7 +126,7 @@ fn sigterm_with_a_gateway_attached_drains_the_world_and_exits_zero() {
         .spawn()
         .expect("spawn mush-server");
     child
-        .await_log("awaiting gateway", TIMEOUT)
+        .await_log("accepting gateways", TIMEOUT)
         .expect("the server bound its endpoint");
 
     // The gateway side lives on this runtime's workers for the rest of the
