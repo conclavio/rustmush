@@ -337,6 +337,26 @@ fn shipped_docs() -> Vec<DocSpec> {
             bytes,
         });
     }
+    // Station neighborhood packs (`atlas/neighborhood.*.json`, cut CS.5d: room details & features).
+    for (pack_id, bytes) in STATION_SOURCES {
+        if !pack_id.starts_with("neighborhood.") {
+            continue;
+        }
+        let repo_path = match pack_id {
+            "neighborhood.ceres_freeport" => "atlas/neighborhood.ceres_freeport.json",
+            "neighborhood.stickney_yards" => "atlas/neighborhood.stickney_yards.json",
+            "neighborhood.aitken_highport" => "atlas/neighborhood.aitken_highport.json",
+            "neighborhood.voltaire_anchorage" => "atlas/neighborhood.voltaire_anchorage.json",
+            "neighborhood.ligeia_terminal" => "atlas/neighborhood.ligeia_terminal.json",
+            _ => "atlas/neighborhood.json",
+        };
+        docs.push(DocSpec {
+            id: pack_id,
+            repo_path,
+            family: "corridor",
+            bytes,
+        });
+    }
     docs
 }
 
@@ -346,6 +366,9 @@ fn infer_repo_path(id: &str) -> String {
         .find(|d| d.id == id || d.repo_path == id)
     {
         return doc.repo_path.to_string();
+    }
+    if let Some(slug) = id.strip_prefix("neighborhood.") {
+        return format!("atlas/neighborhood.{slug}.json");
     }
     if let Some(slug) = id.strip_prefix("tacsim.cast.") {
         return format!("cast/{slug}.json");
@@ -500,8 +523,17 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
         if !pack_id.starts_with("neighborhood.") {
             continue;
         }
-        let Ok(doc) = serde_json::from_str::<Value>(bytes) else {
-            continue;
+        let doc = if let Some(atlas) = atlas_state
+            && let Ok(cid) = CanonicalId::new(pack_id)
+            && let Some(pack) = atlas.shelf.get(&cid)
+            && let Ok(val) = serde_json::to_value(pack)
+        {
+            val
+        } else {
+            let Ok(val) = serde_json::from_str::<Value>(bytes) else {
+                continue;
+            };
+            val
         };
         let version = doc
             .get("manifest")
@@ -2194,6 +2226,7 @@ mod tests {
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)
         for doc_id in [
+            "neighborhood.ceres_freeport",
             "tacsim.cast.ceres_freeport",
             "tacsim.crew.ceres",
             "market/goods.json",

@@ -12,6 +12,8 @@
     type RelayNodeDraft,
     type RelayPairDraft,
     type RelayRecipeDraft,
+    type StationFeatureDraft,
+    type StationRoomDraft,
     addPortOrg,
     addPortVendor,
     extractCorridorEntries,
@@ -21,8 +23,11 @@
     extractRelayNodes,
     extractRelayPairs,
     extractRelayRecipe,
+    extractStationFeature,
+    extractStationRoom,
     removePortOrg,
     removePortVendor,
+    removeRoomDetail,
     updateCorridorEntryDef,
     updatePortOrg,
     updatePortSiteBlock,
@@ -31,6 +36,9 @@
     updateRelayNode,
     updateRelayPair,
     updateRelayRecipe,
+    updateStationFeature,
+    updateStationRoom,
+    upsertRoomDetail,
   } from "$lib/content/corridor-editor";
 
   let {
@@ -97,6 +105,19 @@
     activeEntry?.kind === "relay" ? extractRelayRecipe(activeEntry.def) : null,
   );
 
+  const stationRoom = $derived<StationRoomDraft | null>(
+    activeEntry?.kind === "room" ? extractStationRoom(activeEntry.def) : null,
+  );
+
+  const stationFeature = $derived<StationFeatureDraft | null>(
+    activeEntry?.kind === "feature"
+      ? extractStationFeature(activeEntry.def)
+      : null,
+  );
+
+  let newDetailKeyword = $state("");
+  let newDetailProse = $state("");
+
   const catalogGoods = $derived<string[]>(
     catalog?.goods && catalog.goods.length > 0
       ? catalog.goods.map((g) => g.id)
@@ -160,6 +181,8 @@
       ["port", "Ports (11)"],
       ["route", "Routes (20)"],
       ["location", "Locations (12)"],
+      ["room", "Station Rooms & Details"],
+      ["feature", "Station Features"],
       ["body", "Ephemeris Bodies (16, read-only)"],
       ["relay", "Relays & Manufacture"],
     ] as [id, label] (id)}
@@ -839,6 +862,249 @@
               />
             </label>
           </div>
+        {:else if activeEntry.kind === "room" && stationRoom}
+          <div class="field-grid">
+            <label>
+              <span>Room Name</span>
+              <input
+                type="text"
+                value={stationRoom.name}
+                oninput={(e) =>
+                  commitDef(
+                    updateStationRoom(activeEntry.def, {
+                      name: (e.currentTarget as HTMLInputElement).value,
+                    }),
+                  )}
+              />
+            </label>
+            <label>
+              <span>Room Kind (<code>indoor | outdoor</code>)</span>
+              <select
+                value={stationRoom.kind}
+                onchange={(e) =>
+                  commitDef(
+                    updateStationRoom(activeEntry.def, {
+                      kind: (e.currentTarget as HTMLSelectElement).value,
+                    }),
+                  )}
+              >
+                <option value="indoor">indoor</option>
+                <option value="outdoor">outdoor</option>
+              </select>
+            </label>
+            <label>
+              <span>Site Ref</span>
+              <input
+                type="text"
+                value={stationRoom.site}
+                oninput={(e) =>
+                  commitDef(
+                    updateStationRoom(activeEntry.def, {
+                      site: (e.currentTarget as HTMLInputElement).value,
+                    }),
+                  )}
+              />
+            </label>
+            <label>
+              <span>Markers (comma-separated, e.g. <code>port.dock</code>)</span>
+              <input
+                type="text"
+                value={stationRoom.markers.join(", ")}
+                onchange={(e) =>
+                  commitDef(
+                    updateStationRoom(activeEntry.def, {
+                      markers: (e.currentTarget as HTMLInputElement).value
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    }),
+                  )}
+              />
+            </label>
+          </div>
+          <label class="sub-editor">
+            <span>Short Description (<code>short_desc</code>)</span>
+            <input
+              type="text"
+              value={stationRoom.short_desc}
+              oninput={(e) =>
+                commitDef(
+                  updateStationRoom(activeEntry.def, {
+                    short_desc: (e.currentTarget as HTMLInputElement).value,
+                  }),
+                )}
+            />
+          </label>
+          <label class="sub-editor">
+            <span>Room Prose Description (<code>desc</code>)</span>
+            <textarea
+              rows="4"
+              value={stationRoom.desc}
+              oninput={(e) =>
+                commitDef(
+                  updateStationRoom(activeEntry.def, {
+                    desc: (e.currentTarget as HTMLTextAreaElement).value,
+                  }),
+                )}
+            ></textarea>
+          </label>
+
+          <!-- Observation Details (`atlas:detail:<kw>`) Builder -->
+          <div class="builder-section">
+            <div class="section-head">
+              <strong>
+                Observation Details ({stationRoom.details.length}) — <code>atlas:detail:&lt;kw&gt;</code>
+              </strong>
+              <span class="hint">
+                Targetable by <code>look &lt;keyword&gt;</code> and Quest Studio <code>observed</code> objectives
+              </span>
+            </div>
+
+            {#each stationRoom.details as detail (detail.keyword)}
+              <div class="sub-card">
+                <div class="sub-card-head">
+                  <code>atlas:detail:{detail.keyword}</code>
+                  <button
+                    type="button"
+                    class="danger-btn"
+                    onclick={() => commitDef(removeRoomDetail(activeEntry.def, detail.keyword))}
+                  >
+                    Remove
+                  </button>
+                </div>
+                <div class="field-grid">
+                  <label>
+                    <span>Detail Keyword</span>
+                    <input
+                      type="text"
+                      value={detail.keyword}
+                      onchange={(e) =>
+                        commitDef(
+                          upsertRoomDetail(
+                            activeEntry.def,
+                            (e.currentTarget as HTMLInputElement).value,
+                            detail.prose,
+                            detail.keyword,
+                          ),
+                        )}
+                    />
+                  </label>
+                </div>
+                <label class="sub-editor">
+                  <span>Inspection Prose</span>
+                  <textarea
+                    rows="3"
+                    value={detail.prose}
+                    oninput={(e) =>
+                      commitDef(
+                        upsertRoomDetail(
+                          activeEntry.def,
+                          detail.keyword,
+                          (e.currentTarget as HTMLTextAreaElement).value,
+                        ),
+                      )}
+                  ></textarea>
+                </label>
+              </div>
+            {/each}
+
+            <div class="sub-card">
+              <div class="sub-card-head">
+                <strong>Add New Observation Detail Keyword</strong>
+              </div>
+              <div class="field-grid">
+                <label>
+                  <span>Keyword (e.g. <code>maintenance hatch</code>)</span>
+                  <input
+                    type="text"
+                    bind:value={newDetailKeyword}
+                    placeholder="keyword"
+                  />
+                </label>
+              </div>
+              <label class="sub-editor">
+                <span>Inspection Prose</span>
+                <textarea
+                  rows="2"
+                  bind:value={newDetailProse}
+                  placeholder="What the player sees when inspecting this detail..."
+                ></textarea>
+              </label>
+              <button
+                type="button"
+                class="mini-btn"
+                disabled={!newDetailKeyword.trim() || !newDetailProse.trim()}
+                onclick={() => {
+                  commitDef(
+                    upsertRoomDetail(
+                      activeEntry.def,
+                      newDetailKeyword.trim(),
+                      newDetailProse.trim(),
+                    ),
+                  );
+                  newDetailKeyword = "";
+                  newDetailProse = "";
+                }}
+              >
+                + Add Detail (`atlas:detail:{newDetailKeyword.trim() || "..."}`)
+              </button>
+            </div>
+          </div>
+        {:else if activeEntry.kind === "feature" && stationFeature}
+          <div class="field-grid">
+            <label>
+              <span>Feature Name</span>
+              <input
+                type="text"
+                value={stationFeature.name}
+                oninput={(e) =>
+                  commitDef(
+                    updateStationFeature(activeEntry.def, {
+                      name: (e.currentTarget as HTMLInputElement).value,
+                    }),
+                  )}
+              />
+            </label>
+            <label>
+              <span>Feature Kind</span>
+              <input
+                type="text"
+                value={stationFeature.kind}
+                oninput={(e) =>
+                  commitDef(
+                    updateStationFeature(activeEntry.def, {
+                      kind: (e.currentTarget as HTMLInputElement).value,
+                    }),
+                  )}
+              />
+            </label>
+            <label>
+              <span>Site Ref</span>
+              <input
+                type="text"
+                value={stationFeature.site}
+                oninput={(e) =>
+                  commitDef(
+                    updateStationFeature(activeEntry.def, {
+                      site: (e.currentTarget as HTMLInputElement).value,
+                    }),
+                  )}
+              />
+            </label>
+          </div>
+          <label class="sub-editor">
+            <span>Feature Description (optional)</span>
+            <textarea
+              rows="3"
+              value={stationFeature.desc}
+              oninput={(e) =>
+                commitDef(
+                  updateStationFeature(activeEntry.def, {
+                    desc: (e.currentTarget as HTMLTextAreaElement).value,
+                  }),
+                )}
+            ></textarea>
+          </label>
         {:else}
           <!-- Relays (`network` nodes & pairs, `private_pair` manufacture recipe, or `sol` region) -->
           {#if relayNodes.length > 0 || relayPairs.length > 0}

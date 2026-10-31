@@ -9,7 +9,9 @@ export type CorridorFilter =
   | "route"
   | "location"
   | "body"
-  | "relay";
+  | "relay"
+  | "room"
+  | "feature";
 
 export interface CorridorEntrySummary {
   id: string;
@@ -206,6 +208,29 @@ export function extractCorridorEntries(
         label: id,
         subtitle: `JPL Horizons ephemeris (${elements} epochs, read-only)`,
         readOnly: true,
+        def,
+      });
+    } else if (kind === "room") {
+      const name = typeof def.name === "string" ? def.name : id;
+      const detailCount = Object.keys(asRecord(def.details)).length;
+      const roomKind = typeof def.kind === "string" ? def.kind : "indoor";
+      out.push({
+        id,
+        kind: "room",
+        label: name,
+        subtitle: `${detailCount} details (atlas:detail:<kw>) · ${roomKind}`,
+        readOnly: false,
+        def,
+      });
+    } else if (kind === "feature") {
+      const name = typeof def.name === "string" ? def.name : id;
+      const featKind = typeof def.kind === "string" ? def.kind : "wall";
+      out.push({
+        id,
+        kind: "feature",
+        label: name,
+        subtitle: `feature · ${featKind}`,
+        readOnly: false,
         def,
       });
     } else {
@@ -756,5 +781,136 @@ export function updateRelayRecipe(
   if (patch.requires !== undefined) next.requires = patch.requires;
   if (patch.inputs !== undefined) next.inputs = patch.inputs;
   if (patch.outputs !== undefined) next.outputs = patch.outputs;
+  return next;
+}
+
+export interface RoomDetailDraft {
+  keyword: string;
+  prose: string;
+}
+
+export interface StationRoomDraft {
+  name: string;
+  short_desc: string;
+  desc: string;
+  kind: string;
+  site: string;
+  markers: string[];
+  details: RoomDetailDraft[];
+}
+
+export interface StationFeatureDraft {
+  name: string;
+  kind: string;
+  desc: string;
+  site: string;
+}
+
+/** Extract a station room (`room.*`) and its `details` (`atlas:detail:<kw>`) from `atlas/neighborhood.*.json`. */
+export function extractStationRoom(
+  def: Record<string, unknown>,
+): StationRoomDraft {
+  const rawDetails = asRecord(def.details);
+  const details: RoomDetailDraft[] = Object.entries(rawDetails).map(
+    ([keyword, prose]) => ({
+      keyword,
+      prose: typeof prose === "string" ? prose : "",
+    }),
+  );
+  const markers = Array.isArray(def.markers)
+    ? def.markers.filter((m): m is string => typeof m === "string")
+    : [];
+  return {
+    name: typeof def.name === "string" ? def.name : "",
+    short_desc: typeof def.short_desc === "string" ? def.short_desc : "",
+    desc: typeof def.desc === "string" ? def.desc : "",
+    kind: typeof def.kind === "string" ? def.kind : "indoor",
+    site: typeof def.site === "string" ? def.site : "",
+    markers,
+    details,
+  };
+}
+
+/** Update top-level metadata (`name`, `short_desc`, `desc`, `kind`, `markers`) on a station room `def`. */
+export function updateStationRoom(
+  def: Record<string, unknown>,
+  patch: Partial<Omit<StationRoomDraft, "details">>,
+): Record<string, unknown> {
+  const next = JSON.parse(JSON.stringify(def)) as Record<string, unknown>;
+  if (patch.name !== undefined) next.name = patch.name;
+  if (patch.short_desc !== undefined) next.short_desc = patch.short_desc;
+  if (patch.desc !== undefined) next.desc = patch.desc;
+  if (patch.kind !== undefined) next.kind = patch.kind;
+  if (patch.site !== undefined) next.site = patch.site;
+  if (patch.markers !== undefined) {
+    if (patch.markers.length > 0) {
+      next.markers = patch.markers;
+    } else {
+      delete next.markers;
+    }
+  }
+  return next;
+}
+
+/** Insert or update an observation detail (`atlas:detail:<kw>`) on a station room `def`. */
+export function upsertRoomDetail(
+  def: Record<string, unknown>,
+  keyword: string,
+  prose: string,
+  oldKeyword?: string,
+): Record<string, unknown> {
+  const next = JSON.parse(JSON.stringify(def)) as Record<string, unknown>;
+  const details = asRecord(next.details);
+  if (oldKeyword && oldKeyword !== keyword) {
+    delete details[oldKeyword];
+  }
+  const cleanKey = keyword.trim();
+  if (cleanKey) {
+    details[cleanKey] = prose;
+  }
+  next.details = details;
+  return next;
+}
+
+/** Remove an observation detail (`atlas:detail:<kw>`) from a station room `def`. */
+export function removeRoomDetail(
+  def: Record<string, unknown>,
+  keyword: string,
+): Record<string, unknown> {
+  const next = JSON.parse(JSON.stringify(def)) as Record<string, unknown>;
+  const details = asRecord(next.details);
+  delete details[keyword];
+  next.details = details;
+  return next;
+}
+
+/** Extract a station feature (`feature.*`) from `atlas/neighborhood.*.json`. */
+export function extractStationFeature(
+  def: Record<string, unknown>,
+): StationFeatureDraft {
+  return {
+    name: typeof def.name === "string" ? def.name : "",
+    kind: typeof def.kind === "string" ? def.kind : "wall",
+    desc: typeof def.desc === "string" ? def.desc : "",
+    site: typeof def.site === "string" ? def.site : "",
+  };
+}
+
+/** Update a station feature (`feature.*`) inside `atlas/neighborhood.*.json`. */
+export function updateStationFeature(
+  def: Record<string, unknown>,
+  patch: Partial<StationFeatureDraft>,
+): Record<string, unknown> {
+  const next = JSON.parse(JSON.stringify(def)) as Record<string, unknown>;
+  if (patch.name !== undefined) next.name = patch.name;
+  if (patch.kind !== undefined) next.kind = patch.kind;
+  if (patch.desc !== undefined) {
+    if (patch.desc.trim()) {
+      next.desc = patch.desc;
+    } else {
+      delete next.desc;
+    }
+  }
+  if (patch.site !== undefined) next.site = patch.site;
   return next;
 }

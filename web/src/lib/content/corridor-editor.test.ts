@@ -9,8 +9,11 @@ import {
   extractRelayNodes,
   extractRelayPairs,
   extractRelayRecipe,
+  extractStationFeature,
+  extractStationRoom,
   removePortOrg,
   removePortVendor,
+  removeRoomDetail,
   updateCorridorEntryDef,
   updatePortOrg,
   updatePortSiteBlock,
@@ -19,6 +22,9 @@ import {
   updateRelayNode,
   updateRelayPair,
   updateRelayRecipe,
+  updateStationFeature,
+  updateStationRoom,
+  upsertRoomDetail,
 } from "./corridor-editor";
 
 describe("corridor-editor (CS.4 & CS.5b)", () => {
@@ -251,5 +257,86 @@ describe("corridor-editor (CS.4 & CS.5b)", () => {
       workUnits: 4800,
     });
     expect(extractRelayRecipe(updatedRecipe)?.workUnits).toBe(4800);
+  });
+
+  it("extracts and updates station rooms, observation details (atlas:detail:<kw>), and features (CS.5d)", () => {
+    const sampleStation = {
+      manifest: { id: "neighborhood.ceres_freeport", version: 4 },
+      entries: {
+        "room.c01_berth_gallery": {
+          kind: "room",
+          def: {
+            name: "Visiting Berth Gallery",
+            short_desc: "A long armourglass gallery over the visiting berths.",
+            desc: "The gallery runs the length of the visiting berths.",
+            kind: "indoor",
+            site: "site.freeport_hub",
+            markers: ["port.dock"],
+            details: {
+              "berth board": "Cradle numbers down one side.",
+            },
+          },
+        },
+        "feature.bulkhead_north": {
+          kind: "feature",
+          def: {
+            name: "North Bulkhead",
+            kind: "wall",
+            site: "site.freeport_hub",
+          },
+        },
+      },
+    };
+
+    const entries = extractCorridorEntries(sampleStation);
+    expect(entries).toHaveLength(2);
+    const roomEntry = entries.find((e) => e.id === "room.c01_berth_gallery")!;
+    expect(roomEntry.kind).toBe("room");
+    expect(roomEntry.subtitle).toContain("1 details");
+
+    const room = extractStationRoom(roomEntry.def);
+    expect(room.name).toBe("Visiting Berth Gallery");
+    expect(room.details).toHaveLength(1);
+    expect(room.details[0]?.keyword).toBe("berth board");
+
+    const withAddedDetail = upsertRoomDetail(
+      roomEntry.def,
+      "maintenance hatch",
+      "A sealed access hatch leading to the freight deck.",
+    );
+    expect(extractStationRoom(withAddedDetail).details).toHaveLength(2);
+
+    const withRenamedDetail = upsertRoomDetail(
+      withAddedDetail,
+      "freight hatch",
+      "A sealed access hatch leading to the freight deck.",
+      "maintenance hatch",
+    );
+    expect(
+      extractStationRoom(withRenamedDetail).details.some(
+        (d) => d.keyword === "freight hatch",
+      ),
+    ).toBe(true);
+
+    const withRemovedDetail = removeRoomDetail(withRenamedDetail, "freight hatch");
+    expect(extractStationRoom(withRemovedDetail).details).toHaveLength(1);
+
+    const withUpdatedRoom = updateStationRoom(withRemovedDetail, {
+      name: "Berth Observation Gallery",
+    });
+    expect(extractStationRoom(withUpdatedRoom).name).toBe(
+      "Berth Observation Gallery",
+    );
+
+    const featEntry = entries.find((e) => e.id === "feature.bulkhead_north")!;
+    expect(featEntry.kind).toBe("feature");
+    const feat = extractStationFeature(featEntry.def);
+    expect(feat.name).toBe("North Bulkhead");
+    const updatedFeat = updateStationFeature(featEntry.def, {
+      desc: "Solid pressure bulkhead.",
+    });
+    expect(extractStationFeature(updatedFeat).desc).toBe(
+      "Solid pressure bulkhead.",
+    );
   });
 });
