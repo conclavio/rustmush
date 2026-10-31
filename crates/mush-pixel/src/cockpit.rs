@@ -21,8 +21,8 @@ use crate::heightfield::{self, Terrain};
 use crate::look::{self, Facing};
 use crate::overhead::{OverheadPicture, Up};
 use crate::overlay::{
-    self, Facet, Health, HealthMark, Heat, Hud, HudLock, LockAt, MapGlyph, MapMark, Section, Spot,
-    Status, TapeMark, WeaponRow,
+    self, CanopyGlass, Facet, Health, HealthMark, Heat, Hud, HudLock, LockAt, MapGlyph, MapMark,
+    Section, Spot, Status, TapeMark, WeaponRow,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::raycast::{
@@ -761,6 +761,59 @@ pub fn sections_from(cockpit: &Value) -> Vec<Section> {
                 .collect(),
         })
         .collect()
+}
+
+/// Build the [`CanopyGlass`] overlay inputs from a held `arena.cockpit` frame
+/// and the camera's signed look offset (`look_mdeg`).
+#[must_use]
+pub fn canopy_glass_from(cockpit: &Value, look_mdeg: i64) -> CanopyGlass {
+    let sections = sections_from(cockpit);
+    let wreck = cockpit.get("wreck").and_then(Value::as_bool) == Some(true);
+    let mut has_damaged = false;
+    let mut has_destroyed = false;
+    let mut low_core = false;
+    let mut low_armour = false;
+    for sec in &sections {
+        if sec.condition == "destroyed" {
+            has_destroyed = true;
+        } else if sec.condition != "intact" {
+            has_damaged = true;
+        }
+        if sec.internals_max > 0
+            && matches!(sec.id.as_str(), "hull" | "turret" | "head" | "torso")
+            && sec.internals * 10 < sec.internals_max * 6
+        {
+            low_core = true;
+        }
+        for f in &sec.facets {
+            if f.armor_max > 0 && f.armor * 100 < f.armor_max * 65 {
+                low_armour = true;
+            }
+        }
+    }
+    let damage = if wreck || has_destroyed || low_core {
+        2
+    } else if has_damaged || low_armour {
+        1
+    } else {
+        0
+    };
+    CanopyGlass {
+        look_mdeg,
+        power_on: cockpit.get("power").and_then(Value::as_str) != Some("off"),
+        weapons_free: cockpit.get("weapons_free").and_then(Value::as_bool) != Some(false),
+        lock_designator: cockpit
+            .get("lock_designator")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        damage,
+    }
+}
+
+/// Draw the cockpit canopy glass overlay directly onto `frame` from `cockpit`
+/// and `look_mdeg`.
+pub fn draw_canopy_glass(frame: &mut Frame, cockpit: &Value, look_mdeg: i64) {
+    overlay::draw_canopy_glass(frame, &canopy_glass_from(cockpit, look_mdeg));
 }
 
 /// **The campaign layer an IC field's cockpit frame carries** (doc 32 cut
@@ -1616,6 +1669,33 @@ mod tests {
             low_frame.hash(),
             high_frame.hash(),
             "flat-map CockpitPicture renders from the unit's sensor_height_cm"
+        );
+    }
+
+    #[test]
+    fn canopy_glass_draws_struts_and_cracks_within_palette_budget() {
+        let cockpit = parsed(COCKPIT);
+        let glass = canopy_glass_from(&cockpit, 0);
+        assert_eq!(glass.damage, 2, "fixture has destroyed right_track");
+        assert!(glass.power_on);
+        assert!(glass.weapons_free);
+        assert_eq!(glass.lock_designator.as_deref(), Some("BA"));
+
+        let mut feeds = std::collections::HashMap::new();
+        feeds.insert(COCKPIT_FEED.to_string(), cockpit.clone());
+        feeds.insert(ARENA_MAP_FEED.to_string(), parsed(MAP));
+        let mut plain = Frame::new(640, 276);
+        assert!(CockpitPicture::new().draw(&mut plain, &feeds, &Look::default()));
+        let mut with_glass = plain.clone();
+        draw_canopy_glass(&mut with_glass, &cockpit, 0);
+        assert_ne!(
+            plain.hash(),
+            with_glass.hash(),
+            "canopy glass modifies the frame"
+        );
+        assert!(
+            with_glass.count_colours(256) <= 256,
+            "canopy glass stays inside the 256-colour indexed palette"
         );
     }
 }

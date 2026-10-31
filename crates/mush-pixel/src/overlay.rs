@@ -1155,6 +1155,179 @@ fn draw_speed(frame: &mut Frame, speed_kph: i64, s: i64, w: i64, h: i64) {
     );
 }
 
+// ---- cockpit canopy glass overlay ------------------------------------------
+
+/// Inputs for the first-person cockpit canopy glass and strut overlay.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CanopyGlass {
+    /// Camera look offset from the hull heading, millidegrees (`-180_000..180_000`).
+    pub look_mdeg: i64,
+    /// Hull power is online (`power != "off"`).
+    pub power_on: bool,
+    /// Master weapons gate is free (`weapons_free != false`).
+    pub weapons_free: bool,
+    /// Locked contact designator, when locked.
+    pub lock_designator: Option<String>,
+    /// Canopy glass damage tier: `0` intact, `1` starred, `2` spiderwebbed.
+    pub damage: u8,
+}
+
+/// Draw a stepped pixel line of thickness `thick` from `(x0, y0)` to `(x1, y1)`.
+/// When `stipple > 1`, only every `stipple`-th step is drawn (for glass sheen).
+fn draw_line_steps(
+    frame: &mut Frame,
+    (x0, y0): (i64, i64),
+    (x1, y1): (i64, i64),
+    thick: i64,
+    stipple: i64,
+    px: Rgb,
+) {
+    let steps = (x1 - x0).abs().max((y1 - y0).abs()).max(1);
+    let step_by = stipple.max(1);
+    let mut i = 0;
+    while i <= steps {
+        let x = x0 + (x1 - x0) * i / steps;
+        let y = y0 + (y1 - y0) * i / steps;
+        fill_rect(frame, x, y, thick, thick, px);
+        i += step_by;
+    }
+}
+
+/// Draw the MechWarrior-style cockpit canopy glass, angled mullions, lower
+/// glacis cowling, status lamps, etched collimator brackets, and ballistic
+/// glass cracks into `frame` using only the HUD's indexed palette colours.
+pub fn draw_canopy_glass(frame: &mut Frame, glass: &CanopyGlass) {
+    let s = scale_for(frame) as i64;
+    let (w, h) = (frame.width() as i64, frame.height() as i64);
+    if w < 120 || h < 80 {
+        return;
+    }
+    let shift = -(glass.look_mdeg.clamp(-90_000, 90_000) * 6 * s) / 90_000;
+
+    // 1. Stippled diagonal specular glass reflection bands.
+    draw_line_steps(
+        frame,
+        (w / 4 + shift, 24 * s),
+        (w / 6 + shift, h - 14 * s),
+        s,
+        3 * s,
+        DIM,
+    );
+    draw_line_steps(
+        frame,
+        (w / 4 + 8 * s + shift, 24 * s),
+        (w / 6 + 8 * s + shift, h - 14 * s),
+        s,
+        4 * s,
+        DIM,
+    );
+
+    // 2. Etched HUD collimator brackets around the centre sightline.
+    let (cx, cy) = (w / 2, h / 2);
+    let col_rgb = if glass.power_on { DIM } else { WARN };
+    let (bx, by) = (44 * s, (h / 5).clamp(14 * s, 32 * s));
+    fill_rect(frame, cx - bx, cy - by, 4 * s, s, col_rgb);
+    fill_rect(frame, cx - bx, cy - by, s, 2 * by, col_rgb);
+    fill_rect(frame, cx - bx, cy + by - s, 4 * s, s, col_rgb);
+    fill_rect(frame, cx + bx - 3 * s, cy - by, 4 * s, s, col_rgb);
+    fill_rect(frame, cx + bx, cy - by, s, 2 * by, col_rgb);
+    fill_rect(frame, cx + bx - 3 * s, cy + by - s, 4 * s, s, col_rgb);
+    // Pitch ladder ticks inside the collimator brackets.
+    fill_rect(frame, cx - bx + s, cy, 3 * s, s, col_rgb);
+    fill_rect(frame, cx + bx - 3 * s, cy, 3 * s, s, col_rgb);
+
+    // 3. Reactive ballistic glass cracks when the hull is damaged or crippled.
+    if glass.damage >= 1 {
+        let (sx, sy) = (w * 3 / 4 - 6 * s, h / 3);
+        outline_rect(frame, sx - 2 * s, sy - 2 * s, 4 * s, 4 * s, TEXT);
+        draw_line_steps(frame, (sx, sy), (sx - 14 * s, sy - 10 * s), s, 1, TEXT);
+        draw_line_steps(frame, (sx, sy), (sx + 16 * s, sy - 8 * s), s, 1, TEXT);
+        draw_line_steps(frame, (sx, sy), (sx + 12 * s, sy + 11 * s), s, 1, DIM);
+        draw_line_steps(frame, (sx, sy), (sx - 11 * s, sy + 9 * s), s, 1, DIM);
+    }
+    if glass.damage >= 2 {
+        let (wx, wy) = (w / 7 + 8 * s, h * 2 / 3);
+        outline_rect(frame, wx - 2 * s, wy - 2 * s, 5 * s, 5 * s, TEXT);
+        outline_rect(frame, wx - 7 * s, wy - 6 * s, 15 * s, 13 * s, DIM);
+        draw_line_steps(frame, (wx, wy), (wx - 18 * s, wy - 14 * s), s, 1, TEXT);
+        draw_line_steps(frame, (wx, wy), (wx + 18 * s, wy - 12 * s), s, 1, TEXT);
+        draw_line_steps(frame, (wx, wy), (wx + 20 * s, wy + 10 * s), s, 1, TEXT);
+        draw_line_steps(frame, (wx, wy), (wx - 16 * s, wy + 12 * s), s, 1, DIM);
+    }
+
+    // 4. Angled canopy mullions (clear of the top-left inset, tape, reticle, and KPH bar).
+    let left_top = (3 * s + shift / 2, h / 2 + 4 * s);
+    let left_bot = (w / 5 + shift, h - 6 * s);
+    draw_line_steps(frame, left_top, left_bot, 3 * s, 1, PANEL);
+    draw_line_steps(
+        frame,
+        (left_top.0 + 3 * s, left_top.1),
+        (left_bot.0 + 3 * s, left_bot.1),
+        s,
+        1,
+        BORDER,
+    );
+
+    let right_top = (w * 4 / 5 + 4 * s + shift / 2, 22 * s);
+    let right_bot = (w * 3 / 4 + 6 * s + shift, h - 6 * s);
+    draw_line_steps(frame, right_top, right_bot, 3 * s, 1, PANEL);
+    draw_line_steps(
+        frame,
+        (right_top.0 - s, right_top.1),
+        (right_bot.0 - s, right_bot.1),
+        s,
+        1,
+        BORDER,
+    );
+
+    // 5. Outer canopy perimeter frame & lower armoured glacis cowling.
+    fill_rect(frame, 0, 0, w, 2 * s, PANEL);
+    fill_rect(frame, 0, h / 2, 3 * s, h - h / 2, PANEL);
+    fill_rect(frame, w - 3 * s, 0, 3 * s, h, PANEL);
+    // Lower cowling flanks & centre sill.
+    let flank_w = w / 5;
+    panel(frame, 0, h - 9 * s, flank_w, 9 * s);
+    panel(frame, w - flank_w, h - 9 * s, flank_w, 9 * s);
+    panel(
+        frame,
+        flank_w - s,
+        h - 6 * s,
+        w - 2 * flank_w + 2 * s,
+        6 * s,
+    );
+    // Center look-angle indicator bar on the lower sill.
+    let bar_w = 32 * s;
+    let bar_x = cx - bar_w / 2;
+    let bar_y = h - 5 * s;
+    outline_rect(frame, bar_x, bar_y, bar_w, 4 * s, BORDER);
+    fill_rect(frame, cx, bar_y, s, 4 * s, DIM);
+    let look_px = (cx - shift * 2).clamp(bar_x + 2 * s, bar_x + bar_w - 3 * s);
+    let look_col = if glass.look_mdeg == 0 { GOOD } else { WARN };
+    fill_rect(frame, look_px - s, bar_y + s, 2 * s, 2 * s, look_col);
+
+    // 6. Upper-right canopy status gusset (PWR / WPN / LCK lamps).
+    let gx = w * 4 / 5 + 4 * s;
+    let gw = (w - gx).max(0);
+    let gh = 22 * s;
+    if gw >= 44 * s {
+        panel(frame, gx, 0, gw, gh);
+        let pwr_col = if glass.power_on { GOOD } else { WARN };
+        fill_rect(frame, gx + 3 * s, 3 * s, 3 * s, 3 * s, pwr_col);
+        text(frame, gx + 8 * s, 2 * s, "PWR", TEXT, s as usize);
+
+        let wpn_col = if glass.weapons_free { GOOD } else { WARN };
+        fill_rect(frame, gx + 28 * s, 3 * s, 3 * s, 3 * s, wpn_col);
+        text(frame, gx + 33 * s, 2 * s, "WPN", TEXT, s as usize);
+
+        let (lck_col, lck_txt) = match &glass.lock_designator {
+            Some(d) => (BAD, format!("LCK {}", d.to_ascii_uppercase())),
+            None => (GONE, "NO LCK".to_string()),
+        };
+        fill_rect(frame, gx + 3 * s, 12 * s, 3 * s, 3 * s, lck_col);
+        text(frame, gx + 8 * s, 11 * s, &lck_txt, TEXT, s as usize);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
