@@ -33,6 +33,9 @@ mush-net-ssh.workspace = true
 mush-net-web.workspace = true
 # D1: the Discord transport; the bridge here implements its hooks.
 mush-net-discord.workspace = true
+# Doc 33 §4.5 (GG.4): the two-generation drain shared with sshdoorway — the
+# reuseport listeners, the signal lifecycle, the marker, sd_notify.
+mush-drain.workspace = true
 # Public-key auth (M19): parse offered/stored OpenSSH public keys and compare
 # by key material for `verify_pubkey`. russh re-exports the `ssh-key` types.
 russh.workspace = true
@@ -76,6 +79,9 @@ reqwest.workspace = true
 tokio-tungstenite.workspace = true
 axum.workspace = true
 fred.workspace = true
+# Doc 33 GG.4: the two-generation story dials the trusted ingress the way the
+# doorway does (Hello/Begin over the per-generation socket, then SSH).
+mush-sshdoorway-proto.workspace = true
 
 [lints]
 workspace = true

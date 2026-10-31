@@ -30,7 +30,9 @@
 //     Because 4401 destroys a credential the player cannot get back, the
 //     server spends it ONLY on a refusal it has actually checked. Everything
 //     transient gets a shape this loop retries: 503 on the upgrade (the token
-//     store could not answer), 1012 (the game half is restarting), 1013
+//     store could not answer), 1012 (the game half is restarting, or the
+//     gateway generation that held us drained — doc 33 Q-33-4: reconnect by
+//     ourselves, show the frame's reason only if that fails), 1013
 //     (admission full). A store outage or an ordinary server-half reload must
 //     never log a web player out, so do not widen the fatal branch below.
 //   - clean close: `close()` never triggers a reconnect
@@ -69,6 +71,15 @@ export const CLOSE_BAD_SESSION = 4401;
 /** Temporary network token cool-off. Keep credentials and retry after a minute. */
 export const CLOSE_TOKEN_COOLOFF = 4429;
 
+/**
+ * The gateway generation that held this connection is going away (doc 33
+ * §4.5, Q-33-4): a drain's deadline, or a finish. Transient like any other
+ * close — the client reconnects by itself with its resume point and lands
+ * on the new generation through the same port — but the frame carries a
+ * reason, which is shown only if that reconnect fails.
+ */
+export const CLOSE_SERVICE_RESTART = 1012;
+
 /** Subprotocol prefix carrying the auth token (mush-net-web/src/ws.rs). */
 export const SUBPROTO_PREFIX = "rustmush.v1.";
 
@@ -84,7 +95,7 @@ export interface WebSocketLike {
   send(data: string): void;
   close(code?: number, reason?: string): void;
   onopen: (() => void) | null;
-  onclose: ((ev: { code: number; wasClean: boolean }) => void) | null;
+  onclose: ((ev: { code: number; wasClean: boolean; reason?: string }) => void) | null;
   onerror: (() => void) | null;
   onmessage: ((ev: { data: unknown }) => void) | null;
 }
@@ -139,6 +150,14 @@ export interface WsClientOptions {
   onSessionExpired?: () => void;
   /** A network token cool-off; the client retains its token and waits a minute. */
   onTokenCooloff?: () => void;
+  /**
+   * The server closed with 1012 and a reason (the gateway generation that
+   * held this connection drained, doc 33 Q-33-4), the client reconnected by
+   * itself with its resume point, and THAT connection failed. Called once
+   * per such close, with the reason, for the app to show; the client keeps
+   * retrying. A reconnect that succeeds shows nothing.
+   */
+  onRestartReconnectFailed?: (reason: string) => void;
   /** Connection lifecycle notifications (drive a status indicator). */
   onStatus?: (status: ConnStatus) => void;
   /**
@@ -184,6 +203,9 @@ export class WsClient {
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #intentionalClose = false;
   #status: ConnStatus = "idle";
+  /** The reason of the last 1012 close, until a reconnect opens (then it
+   * was nothing to show) or fails (then it is shown). */
+  #restartReason: string | null = null;
 
   constructor(opts: WsClientOptions = {}) {
     this.#opts = opts;
@@ -325,8 +347,11 @@ export class WsClient {
     const ws = this.#makeSocket(url, protocols);
     ws.binaryType = "blob";
     this.#ws = ws;
+    let opened = false;
     ws.onopen = () => {
+      opened = true;
       this.#attempt = 0;
+      this.#restartReason = null;
       this.#setStatus("connected");
     };
     ws.onmessage = (ev) => this.#onMessage(ev.data);
@@ -350,6 +375,15 @@ export class WsClient {
         this.#setStatus("closed");
         this.#opts.onSessionExpired?.();
         return;
+      }
+      if (ev.code === CLOSE_SERVICE_RESTART && ev.reason) {
+        // The generation that held us is going away; reconnect as for any
+        // drop, and keep the reason in case the reconnect fails.
+        this.#restartReason = ev.reason;
+      } else if (!opened && this.#restartReason !== null) {
+        const reason = this.#restartReason;
+        this.#restartReason = null;
+        this.#opts.onRestartReconnectFailed?.(reason);
       }
       if (ev.code === CLOSE_TOKEN_COOLOFF) {
         this.#opts.onTokenCooloff?.();

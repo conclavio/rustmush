@@ -33,6 +33,10 @@
 #   --drain-note <text>     said when the old generation is told to drain
 #   --force                 see above
 #
+# $SWAP_STAY_UP_SECS (default 5) is how long the new generation must stay
+# `active` after READY before the old one is drained; the shell tests set it
+# to 0. Nothing on a box sets it.
+#
 # At most two generations ever run. A drain does not change the unit's state
 # (it stays "active"), so "both active" means one is still draining. Only one
 # swap of a unit runs at a time (flock).
@@ -126,7 +130,7 @@ echo "starting $unit@$new"
 systemctl start "$unit@$new"
 # A generation that crashes right after READY must not take the old one down
 # with it: confirm it is still serving before draining its predecessor.
-sleep 5
+sleep "${SWAP_STAY_UP_SECS:-5}"
 if [[ "$(state "$new")" != active ]]; then
     echo "$unit@$new did not stay up; the old generation keeps serving" >&2
     put_down "$new"

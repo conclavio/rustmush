@@ -15,8 +15,17 @@ use tokio::net::TcpListener;
 /// The accept backlog.
 pub const BACKLOG: i32 = 1024;
 
-/// Bind one address.
+/// Bind one address, as a tokio listener (the doorway's shape).
 pub fn bind(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    TcpListener::from_std(bind_std(addr)?)
+}
+
+/// Bind one address, as a non-blocking `std` listener: the form a transport
+/// crate takes pre-bound (doc 33 §4.4: the gateway binds every public port
+/// here, so the reuseport recipe lives once, and hands the listener to
+/// `mush-net-ssh` or `mush-net-web`). Non-blocking already, so
+/// `tokio::net::TcpListener::from_std` accepts it as is.
+pub fn bind_std(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
     let domain = if addr.is_ipv6() {
         Domain::IPV6
     } else {
@@ -34,7 +43,7 @@ pub fn bind(addr: SocketAddr) -> std::io::Result<TcpListener> {
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
     socket.listen(BACKLOG)?;
-    TcpListener::from_std(socket.into())
+    Ok(socket.into())
 }
 
 /// Whether `net.ipv4.tcp_migrate_req` is on. `None` when the file is absent

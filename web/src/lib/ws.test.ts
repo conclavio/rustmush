@@ -9,6 +9,7 @@ import type { ClientCaps, Envelope, OutputEvent } from "./proto";
 import {
   backoffDelay,
   CLOSE_BAD_SESSION,
+  CLOSE_SERVICE_RESTART,
   CLOSE_TOKEN_COOLOFF,
   DEFAULT_BACKOFF,
   WsClient,
@@ -24,7 +25,7 @@ class MockWebSocket implements WebSocketLike {
   binaryType?: string;
   sent: string[] = [];
   onopen: (() => void) | null = null;
-  onclose: ((ev: { code: number; wasClean: boolean }) => void) | null = null;
+  onclose: ((ev: { code: number; wasClean: boolean; reason?: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
 
@@ -69,9 +70,9 @@ class MockWebSocket implements WebSocketLike {
   }
 
   /** Simulates a server-initiated close with an application code. */
-  serverClose(code: number): void {
+  serverClose(code: number, reason?: string): void {
     this.readyState = 3;
-    this.onclose?.({ code, wasClean: true });
+    this.onclose?.({ code, wasClean: true, reason });
   }
 
   /** Commands the client sent, parsed. */
@@ -405,6 +406,57 @@ describe("WsClient", () => {
     vi.advanceTimersByTime(1);
     expect(MockWebSocket.instances).toHaveLength(2);
     expect(lastSocket().protocols).toEqual(["rustmush.v1.still-valid"]);
+  });
+
+  it("close 1012 reconnects by itself with the resume point and shows nothing when that works", () => {
+    const failed = vi.fn();
+    const client = makeClient({ onRestartReconnectFailed: failed });
+    client.connect("tok", "7");
+    const ws1 = lastSocket();
+    ws1.open();
+    ws1.deliver(env(0, HELLO));
+    ws1.deliver(env(1, { t: "sys", d: [] }));
+    ws1.serverClose(CLOSE_SERVICE_RESTART, "This gateway is restarting.");
+    expect(client.status).toBe("reconnecting");
+    expect(failed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(500);
+    const ws2 = lastSocket();
+    expect(ws2.url).toBe("ws://test/ws?char=7&resume=1");
+    expect(ws2.protocols).toEqual(["rustmush.v1.tok"]);
+    ws2.open();
+    expect(client.status).toBe("connected");
+    expect(failed).not.toHaveBeenCalled();
+    // A later drop is not a restart: still nothing to show.
+    ws2.drop();
+    vi.advanceTimersByTime(500);
+    lastSocket().drop();
+    expect(failed).not.toHaveBeenCalled();
+  });
+
+  it("close 1012 shows its reason once, only when the reconnect fails", () => {
+    const failed = vi.fn();
+    const client = makeClient({ onRestartReconnectFailed: failed });
+    client.connect("tok", "7");
+    const ws1 = lastSocket();
+    ws1.open();
+    ws1.deliver(env(0, HELLO));
+    ws1.deliver(env(4, { t: "sys", d: [] }));
+    ws1.serverClose(CLOSE_SERVICE_RESTART, "This gateway is restarting.");
+    expect(failed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(500);
+    const ws2 = lastSocket();
+    expect(ws2.url).toBe("ws://test/ws?char=7&resume=4");
+    ws2.drop(); // the reconnect failed: now the reason is worth showing
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(failed).toHaveBeenCalledWith("This gateway is restarting.");
+    expect(client.status).toBe("reconnecting");
+    // The client keeps retrying, and the reason is shown once.
+    vi.advanceTimersByTime(1000);
+    lastSocket().drop();
+    expect(failed).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(2000);
+    lastSocket().open();
+    expect(client.status).toBe("connected");
   });
 
   it("req() assigns increasing correlation ids and frames the query", () => {

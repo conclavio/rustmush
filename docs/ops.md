@@ -2660,11 +2660,13 @@ Set it up per instance with `deploy/<name>-split/` (the reference is
 It runs **two** services: `<name>mush-server` (`Type=notify`, READY=1 once the
 socket is bound; `Restart=on-failure`, `RestartSec=2`, `StartLimitBurst=5` in
 `StartLimitIntervalSec=60`; the LLM key `EnvironmentFile`, the `[ipc]` socket's
-`RuntimeDirectory`) and `<name>mush-gateway` (`Wants=` + `After=` the server
-unit, never `Requires=`: a server that is down is a gap the gateway serves, not
-a reason for the gateway to stop; no `EnvironmentFile`, no `ExecReload`). The
-gateway's `SIGHUP` is reserved (doc 33 §4.5): logged, ignored. Full walkthrough
-(first switch, redeploy, switch back, adapting to another instance) is in
+`RuntimeDirectory`) and the gateway template `<name>mush-gateway@.service`,
+run as two generations `@a` and `@b` of which one serves at a time (`Type=notify`;
+`Wants=` + `After=` the server unit, never `Requires=`: a server that is down is
+a gap the gateway serves, not a reason for the gateway to stop; a shared
+`StateDirectory`; no `EnvironmentFile`, no `ExecReload`). The gateway's
+`SIGHUP` is reserved (doc 33 §4.5): logged, ignored. Full walkthrough (first
+switch, redeploy, the swap, switch back, adapting to another instance) is in
 `deploy/dev1-split/README.md`.
 
 **Stopping one half stops that half.** `systemctl stop <name>mush-gateway`
@@ -2686,11 +2688,41 @@ start, and a 35 s detour through `Restart=on-failure`. The server still
 before refusing, inside its unit's `TimeoutStartSec`; a second LIVE server on
 the same data directory is still refused.
 
-**On Windows** there is no `SIGHUP` or `SIGTERM` handling; the handlers are
-`cfg(unix)`-gated and compiled out. Restarts there are driven by the test rig
-(`crates/mush-gateway/tests/split_halves/harness.rs`, which stands in for the
-server unit). Production is Linux, where `systemctl restart <name>mush-server`
-is the deploy.
+**The gateway moves by a swap, not a restart** (doc 33 GG.4, §4.4–§4.7). A
+gateway change — the embedded web client, an ingress, the session layer, the
+renderer, the wire types — is deployed by `deploy/<name>-split/gateway-swap.sh
+<name>` (which `deploy.sh` runs when the built gateway binary differs from the
+running one's, Q-33-6): the idle generation is started on the same public ports
+(`SO_REUSEPORT`; `net.ipv4.tcp_migrate_req = 1` so queued connections move
+rather than reset) and its own trusted socket `<stem>.<gen>.sock`; after
+`READY=1` and a 5 s stay-up check the trusted symlink `<stem>.sock` the doorway
+dials is re-pointed at it, it is enabled, the old generation is disabled and
+sent `SIGUSR1`. The old generation **drains**: it closes its listeners, keeps
+every session, warns them on the doorway's schedule (12h/6h/2h/1h/15m/1m
+remaining) as `GAME:` lines on their own transport, closes at the 24 h
+deadline or as soon as it is empty — SSH with the reason, web with a `1012`
+close frame the client answers by reconnecting with its resume point onto the
+new generation, showing the reason only if that fails — exits 0 and leaves
+`draining-<gen>` in the `StateDirectory`. A generation that starts and finds
+its own marker reports `READY=1` and exits 0 without binding anything, so a
+`Restart=on-failure` restart of a drained generation never serves beside the
+live one; only the swap script clears the marker. `SIGTERM` (`systemctl
+stop`) is a **finish**: one warning, 30 s, close, exit 0, no marker. The swap
+is refused while the idle generation is still draining from the last one
+unless `--force` finishes it first; a server deploy that bumps `IPC_VERSION`
+(both binaries print theirs with `--ipc-version`) is refused by `deploy.sh`
+while a generation drains, for the same reason: its held players could not
+re-attach to the new server. The Discord bridge runs in exactly one generation,
+under an `flock` on the `StateDirectory`'s `discord.lock`; the draining one
+stops its bot at `SIGUSR1` and writes its follows down, the new one takes the
+lock and re-follows them.
+
+**On Windows** there is no `SIGHUP`, `SIGTERM` or `SIGUSR1` handling; the
+handlers are `cfg(unix)`-gated and compiled out. Restarts there are driven by
+the test rig (`crates/mush-gateway/tests/split_halves/harness.rs`, which stands
+in for the server unit and sends the generations' signals in-process).
+Production is Linux, where `systemctl restart <name>mush-server` and
+`gateway-swap.sh` are the deploy.
 
 ### Web client (M16d): served by the gateway + survives the hot restart
 

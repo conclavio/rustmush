@@ -7,7 +7,10 @@
 //! the gateway dials the same address. `--ipc <addr>` overrides the listen
 //! address for tests and hand runs. SIGTERM is an orderly stop.
 //!
-//! Usage: `mush-server [--check-config] [--config <path>] [--ipc <addr>]`.
+//! Usage: `mush-server [--check-config] [--ipc-version] [--config <path>] [--ipc <addr>]`.
+//! `--ipc-version` prints the `IPC_VERSION` this binary speaks and exits (doc
+//! 33 §4.7: `deploy.sh` compares the new binary's against the running one's
+//! and refuses a bump while a gateway generation is draining).
 //! `--check-config` loads the config, reports the refusals on the preflight
 //! list — `mush_server::boot::check_config` (which is
 //! `mush_config::preflight::check` plus the world half's own), and this
@@ -33,12 +36,13 @@ use mush_config::exit::{ExitClass, ExitFailure};
 /// the socket — and is applied by `Cli::load_config`.
 const CLI: CliSpec = CliSpec {
     program: "mush-server",
-    usage: "Usage: mush-server [--check-config] [--bootstrap-staff <account>] [--config <path>] [--ipc <addr>]",
+    usage: "Usage: mush-server [--check-config] [--ipc-version] [--bootstrap-staff <account>] [--config <path>] [--ipc <addr>]",
     ipc: true,
     repl: false,
     check_config: true,
     bootstrap_staff: true,
     generation: false,
+    ipc_version: true,
 };
 
 /// How long a booting server waits for the quarantine spool's lifetime lock
@@ -72,6 +76,12 @@ fn main() -> ExitCode {
     };
     if cli.help {
         println!("{}", CLI.usage);
+        return ExitClass::Ok.exit_code();
+    }
+    // Doc 33 §4.7: the boundary version this binary speaks, for deploy.sh's
+    // "does this server upgrade bump IPC_VERSION" check. No config is read.
+    if cli.ipc_version {
+        println!("{}", mush_ipc::IPC_VERSION);
         return ExitClass::Ok.exit_code();
     }
     let config = match cli.load_config() {

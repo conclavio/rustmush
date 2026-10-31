@@ -71,6 +71,13 @@ pub trait Host {
     fn reopen_logs(&mut self) {
         tracing::warn!("SIGUSR2 received; no log file to reopen");
     }
+
+    /// Called once, when a drain or a finish begins: the generation has
+    /// stopped accepting ([`Drain::begin`] ran) and the daemon closes what
+    /// it accepts on and gives up what exactly one generation may hold (the
+    /// gateway's listeners and its Discord bot, doc 33 §4.5). The doorway's
+    /// accept loops watch the phase instead and need nothing here.
+    fn stopped_accepting(&mut self) {}
 }
 
 /// How long after the drain's close (or a finish's grace) the process exits
@@ -124,26 +131,63 @@ pub fn finish<S: Session>(
     }));
 }
 
-/// The signal streams.
-#[cfg(unix)]
-pub struct Signals {
-    hup: tokio::signal::unix::Signal,
-    usr1: tokio::signal::unix::Signal,
-    usr2: tokio::signal::unix::Signal,
-    term: tokio::signal::unix::Signal,
-    int: tokio::signal::unix::Signal,
+/// What a signal (or a [`Trigger`]) asks of the lifecycle. `Reload` and
+/// `ReopenLogs` come from `SIGHUP` and `SIGUSR2`, which only Unix has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(unix), allow(dead_code))]
+enum Event {
+    Reload,
+    ReopenLogs,
+    Drain,
+    Finish,
 }
 
-#[cfg(unix)]
+/// An in-process stand-in for `SIGUSR1` or `SIGTERM`: the tests' seam. A
+/// process signal names the whole process, and the gateway's two-generation
+/// tests run both generations in one test process, so [`run_with_trigger`]
+/// also listens on a channel of these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    /// As `SIGUSR1`: drain.
+    Drain,
+    /// As `SIGTERM`: finish now.
+    Finish,
+}
+
+/// The signal streams. On Unix: `SIGHUP`, `SIGUSR1`, `SIGUSR2`, `SIGTERM`
+/// and `SIGINT`. Elsewhere only Ctrl-C exists, and it finishes; nothing
+/// drains (there is no second generation to swap to on Windows, and the
+/// gateway's tests there exercise the trigger instead).
+pub struct Signals {
+    #[cfg(unix)]
+    hup: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    usr1: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    usr2: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    int: tokio::signal::unix::Signal,
+    #[cfg(not(unix))]
+    _ctrl_c_only: (),
+}
+
 impl std::fmt::Debug for Signals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Signals { HUP, USR1, USR2, TERM, INT }")
+        if cfg!(unix) {
+            f.write_str("Signals { HUP, USR1, USR2, TERM, INT }")
+        } else {
+            f.write_str("Signals { Ctrl-C }")
+        }
     }
 }
 
-#[cfg(unix)]
 impl Signals {
-    /// Install the handlers. Call this first.
+    /// Install the handlers. Call this first: before anything slow, so a
+    /// default `SIGHUP` or `SIGUSR2` never kills a generation that is still
+    /// starting (29a §7 M4).
+    #[cfg(unix)]
     pub fn install() -> Result<Signals, String> {
         use tokio::signal::unix::{SignalKind, signal};
         let sig = |k: SignalKind| signal(k).map_err(|e| format!("signal handler: {e}"));
@@ -155,21 +199,66 @@ impl Signals {
             int: sig(SignalKind::interrupt())?,
         })
     }
+
+    /// Install the handlers: nothing to install off Unix (Ctrl-C is
+    /// registered on first use).
+    #[cfg(not(unix))]
+    pub fn install() -> Result<Signals, String> {
+        Ok(Signals { _ctrl_c_only: () })
+    }
+
+    #[cfg(unix)]
+    async fn next(&mut self) -> Event {
+        tokio::select! {
+            _ = self.hup.recv() => Event::Reload,
+            _ = self.usr2.recv() => Event::ReopenLogs,
+            _ = self.usr1.recv() => Event::Drain,
+            _ = self.term.recv() => Event::Finish,
+            _ = self.int.recv() => Event::Finish,
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn next(&mut self) -> Event {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => Event::Finish,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot listen for Ctrl-C");
+                std::future::pending().await
+            }
+        }
+    }
 }
 
 /// Serve the signals until the generation should exit: when its last session
 /// ends after a drain or finish began, or [`HARD_EXIT_AFTER`] after the
 /// close. `marker` is this generation's drain marker (see [`crate::marker`]);
 /// a drain leaves it and nothing here removes it.
-#[cfg(unix)]
 pub async fn run<S: Session>(
     sigs: &mut Signals,
     drain: &Arc<Drain<S>>,
     marker: &std::path::Path,
     host: &mut impl Host,
 ) {
+    // A sender that is never used and never dropped: the channel stays open,
+    // so the trigger arm below pends instead of reading a close.
+    let (_never_sent, mut never) = tokio::sync::mpsc::unbounded_channel::<Trigger>();
+    run_with_trigger(sigs, &mut never, drain, marker, host).await;
+}
+
+/// [`run`], also answering [`Trigger`]s sent on `trigger` exactly as it
+/// answers the corresponding signals. A closed channel is ignored.
+pub async fn run_with_trigger<S: Session>(
+    sigs: &mut Signals,
+    trigger: &mut tokio::sync::mpsc::UnboundedReceiver<Trigger>,
+    drain: &Arc<Drain<S>>,
+    marker: &std::path::Path,
+    host: &mut impl Host,
+) {
     let mut work: Option<tokio::task::JoinHandle<()>> = None;
     let mut finishing = false;
+    let mut told_host = false;
+    let mut trigger_open = true;
     let mut hard_exit: Option<tokio::time::Instant> = None;
     loop {
         let stopping = work.is_some();
@@ -194,17 +283,45 @@ pub async fn run<S: Session>(
                 None => std::future::pending::<()>().await,
             }
         };
-        tokio::select! {
-            _ = sigs.hup.recv() => host.reload(),
-            _ = sigs.usr2.recv() => host.reopen_logs(),
-            _ = sigs.usr1.recv() => {
-                if work.is_none() {
-                    crate::marker::leave(marker);
-                    work = Some(start_drain(drain, host.drain_config()));
-                }
+        let event = async {
+            tokio::select! {
+                e = sigs.next() => Some(e),
+                t = async {
+                    if trigger_open {
+                        trigger.recv().await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => t.map(|t| match t {
+                    Trigger::Drain => Event::Drain,
+                    Trigger::Finish => Event::Finish,
+                }),
             }
-            _ = sigs.term.recv() => finish(drain, host.drain_config(), &mut work, &mut finishing),
-            _ = sigs.int.recv() => finish(drain, host.drain_config(), &mut work, &mut finishing),
+        };
+        tokio::select! {
+            ev = event => match ev {
+                Some(Event::Reload) => host.reload(),
+                Some(Event::ReopenLogs) => host.reopen_logs(),
+                Some(Event::Drain) => {
+                    if work.is_none() {
+                        crate::marker::leave(marker);
+                        work = Some(start_drain(drain, host.drain_config()));
+                        if !told_host {
+                            told_host = true;
+                            host.stopped_accepting();
+                        }
+                    }
+                }
+                Some(Event::Finish) => {
+                    finish(drain, host.drain_config(), &mut work, &mut finishing);
+                    if !told_host {
+                        told_host = true;
+                        host.stopped_accepting();
+                    }
+                }
+                // The trigger channel closed: only the signals from here on.
+                None => trigger_open = false,
+            },
             () = work_done => {
                 // The deadline (or the grace) has closed everything it could;
                 // whatever has not finished closing gets a minute.
@@ -288,6 +405,116 @@ mod tests {
         assert!(s.is_closed());
     }
 
+    /// The in-process seam: a `Trigger::Drain` leaves the marker, tells the
+    /// host once, warns and closes on the schedule, and the run ends when the
+    /// last session's guard drops; a second trigger changes nothing.
+    #[tokio::test]
+    async fn a_trigger_drains_like_sigusr1_and_the_run_ends_when_empty() {
+        struct Counting {
+            stopped: usize,
+        }
+        impl Host for Counting {
+            fn drain_config(&self) -> DrainConfig {
+                short()
+            }
+            fn stopped_accepting(&mut self) {
+                self.stopped += 1;
+            }
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mush-drain-trigger-{}-{}",
+            std::process::id(),
+            rand_tag()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("draining-a");
+        let drain = Drain::<Rec>::new();
+        let s = Arc::new(Recorded::default());
+        let guard = drain.enter(1);
+        drain.register(1, Rec(Arc::clone(&s)));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut sigs = Signals::install().unwrap();
+        let mut host = Counting { stopped: 0 };
+        tx.send(Trigger::Drain).unwrap();
+        tx.send(Trigger::Drain).unwrap();
+        // The session's close drops its guard, as a real transport's would.
+        let closer = tokio::spawn(async move {
+            while !s.is_closed() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            drop(guard);
+            s
+        });
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            run_with_trigger(&mut sigs, &mut rx, &drain, &marker, &mut host),
+        )
+        .await
+        .unwrap();
+        let s = closer.await.unwrap();
+        assert_eq!(s.lines(), ["W soon"]);
+        assert!(marker.exists(), "the drain leaves its marker");
+        assert_eq!(host.stopped, 1, "the host hears it once");
+        assert_eq!(drain.phase(), crate::drain::Phase::Draining);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A closed trigger channel is not an event: the run keeps serving the
+    /// signals (here: until a finish trigger sent before the close).
+    #[tokio::test]
+    async fn a_closed_trigger_channel_is_ignored() {
+        struct Bare;
+        impl Host for Bare {
+            fn drain_config(&self) -> DrainConfig {
+                short()
+            }
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mush-drain-trigger-closed-{}-{}",
+            std::process::id(),
+            rand_tag()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let drain = Drain::<Rec>::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut sigs = Signals::install().unwrap();
+        // Nothing live: a finish with no sessions ends the run at once, but
+        // only once the finish arrives; the close of the channel before it
+        // must not end (or spin) the run.
+        let sender = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            tx.send(Trigger::Finish).unwrap();
+            drop(tx);
+        });
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            run_with_trigger(
+                &mut sigs,
+                &mut rx,
+                &drain,
+                &dir.join("draining-a"),
+                &mut Bare,
+            ),
+        )
+        .await
+        .unwrap();
+        sender.await.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert!(
+            !dir.join("draining-a").exists(),
+            "a finish leaves no marker"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn rand_tag() -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    }
+
     #[test]
     fn a_host_with_nothing_to_reload_takes_the_defaults() {
         struct Bare;
@@ -299,6 +526,7 @@ mod tests {
         let mut h = Bare;
         h.reload();
         h.reopen_logs();
+        h.stopped_accepting();
         assert_eq!(h.drain_config(), DrainConfig::default());
     }
 }

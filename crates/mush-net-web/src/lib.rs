@@ -83,11 +83,14 @@ mod ws;
 /// public `mush_net_web::Metrics` path keep resolving unchanged.
 pub use mush_config::metrics;
 
-pub use app::{router, serve, serve_with_shutdown, serve_with_shutdown_bound};
+pub use app::{
+    router, serve, serve_with_shutdown, serve_with_shutdown_bound, serve_with_shutdown_bound_on,
+};
 pub use config::{TlsConfig, WebConfig};
 pub use hooks::{
     AttachErr, CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk,
     SessionStart, TokenIdentity, TokenVerdict, WEB_CONN_ID_BASE, WebHooks,
 };
+pub use hooks::{CloseRequest, ConnCloser};
 pub use metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, MetricsSnapshot, WorldSample};
 pub use ws::{SESSION_ENDED, TOKEN_COOLOFF};

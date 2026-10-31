@@ -12,8 +12,9 @@
 //! authoritative process-kill proofs (PROCESS_LOCK: they run alone,
 //! .config/nextest.toml), the command line, the front door, restart survival
 //! over SSH and over the web, the server unit's gap and give-up, the TUI,
-//! the two-process e2e and LLM journeys, and two gateways on one server
-//! (doc 33 GG.2).
+//! the two-process e2e and LLM journeys, two gateways on one server
+//! (doc 33 GG.2), and the two-generation drain (doc 33 GG.4: the in-process
+//! story and the real binary's signals and marker, both Linux-only).
 //! `authoritative_process_kill` and `server_panic_relaunch` re-exec this
 //! binary for their workers, by the full `<module>::<fn>` ids. One allowed
 //! exception to the suffix rule below: `restart_survival` is a suffix of
@@ -38,6 +39,12 @@ mod authoritative_process_kill;
 mod cli_args;
 #[path = "split_halves/front_door_split.rs"]
 mod front_door_split;
+#[cfg(unix)]
+#[path = "split_halves/gateway_generations.rs"]
+mod gateway_generations;
+#[cfg(unix)]
+#[path = "split_halves/gateway_generations_unit.rs"]
+mod gateway_generations_unit;
 #[path = "split_halves/harness.rs"]
 mod harness;
 #[path = "split_halves/restart_survival.rs"]

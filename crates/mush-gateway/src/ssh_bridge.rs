@@ -44,6 +44,8 @@ use mush_session::{ConnId, ConnectionHandle, SessionManager};
 use smol_str::SmolStr;
 use tokio::sync::mpsc;
 
+use crate::drain::{CloseWay, GatewayDrain};
+
 // The shared bridge vocabulary lives in bridge_common; re-exported here so
 // existing SSH-side imports (`mushd::ssh_bridge::{AuthResult, ...}`) keep
 // working unchanged.
@@ -125,6 +127,15 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         self
     }
 
+    /// Count this bridge's attached connections (public and trusted) into
+    /// the generation's drain (doc 33 §4.5). The split gateway sets it;
+    /// `mushd` and the tests leave the bridge without one.
+    #[must_use]
+    pub fn with_drain(mut self, drain: Arc<GatewayDrain>) -> SshBridge<A> {
+        self.core.set_drain(drain);
+        self
+    }
+
     /// Point SSH connection counters at the shared metrics registry (the
     /// same one the web ingress serves over `/metrics`). Called by `mushd`.
     #[must_use]
@@ -196,19 +207,23 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
             return Err(ConnectErr::NotYourCharacter);
         };
         let caps_structured = conn.caps.structured;
+        let conn_id = conn.id;
         let handle = match conn.stamped_tx {
             Some(tx) => ConnectionHandle::new_with_sink_at(
-                conn.id,
+                conn_id,
                 conn.addr,
                 conn.caps,
                 mush_session::Sink::AnsiStamped(tx),
                 std::time::Instant::now(),
             ),
-            None => ConnectionHandle::new(conn.id, conn.addr, conn.caps, conn.tx),
+            None => ConnectionHandle::new(conn_id, conn.addr, conn.caps, conn.tx),
         };
         self.core
             .enter_game(handle, actor, account, &char_name, caps_structured)
             .await?;
+        // Doc 33 §4.6: attached, so one of the generation's live connections,
+        // closed at a drain's deadline by the `Disconnect` its pump ends on.
+        self.core.watch_connection(conn_id, CloseWay::Disconnect);
         Ok(())
     }
 
@@ -553,6 +568,9 @@ pub struct SshListener {
     accept_loop: tokio::task::JoinHandle<()>,
     /// Doc 29: the trusted ingress's accept loop, when one is bound.
     trusted_loop: Option<tokio::task::JoinHandle<()>>,
+    /// Whether [`SshListener::stop_accepting`] has run (it is asked twice on
+    /// a drain: by the lifecycle, then by the shutdown tail).
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 impl SshListener {
@@ -565,6 +583,9 @@ impl SshListener {
     /// Stop accepting new connections. Established sessions are untouched —
     /// they belong to their own per-connection tasks.
     pub fn stop_accepting(&self) {
+        if self.stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         self.accept_loop.abort();
         if let Some(trusted) = &self.trusted_loop {
             trusted.abort();
@@ -583,13 +604,30 @@ impl SshListener {
         banner: String,
         bridge: Arc<SshBridge<A>>,
     ) -> Result<(), String> {
+        self.start_trusted_with(socket_path, data_dir, banner, bridge, false)
+            .await
+    }
+
+    /// [`start_trusted`](SshListener::start_trusted) with the trusted
+    /// ingress's `allow_own_group` knob (`TrustedConfig::allow_own_group`):
+    /// `true` serves from a directory that is not setgid, which admits every
+    /// process of the gateway's own user. **Tests only**; production passes
+    /// `false`.
+    pub async fn start_trusted_with<A: AuthBackend + 'static>(
+        &mut self,
+        socket_path: std::path::PathBuf,
+        data_dir: &std::path::Path,
+        banner: String,
+        bridge: Arc<SshBridge<A>>,
+        allow_own_group: bool,
+    ) -> Result<(), String> {
         #[cfg(unix)]
         {
             let cfg = mush_net_ssh::TrustedConfig {
                 socket_path,
                 host_key_path: data_dir.join("ssh_host_ed25519"),
                 banner,
-                allow_own_group: false,
+                allow_own_group,
             };
             let hooks: Arc<dyn mush_net_ssh::SshHooks> = bridge;
             let bound = mush_net_ssh::SshServer::bind_trusted(cfg, hooks)
@@ -604,7 +642,7 @@ impl SshListener {
         }
         #[cfg(not(unix))]
         {
-            let _ = (data_dir, banner, bridge);
+            let _ = (data_dir, banner, bridge, allow_own_group);
             Err(format!(
                 "[ssh] trusted_socket = {} needs a Unix platform (sshdoorway is Linux-only)",
                 socket_path.display()
@@ -644,6 +682,25 @@ pub async fn start_listener_with<A: AuthBackend + 'static>(
     auth_deadline: std::time::Duration,
     bridge: Arc<SshBridge<A>>,
 ) -> Result<SshListener, String> {
+    let listener =
+        std::net::TcpListener::bind(listen).map_err(|e| format!("binding {listen}: {e}"))?;
+    start_listener_on(listener, data_dir, banner, auth_deadline, bridge).await
+}
+
+/// [`start_listener_with`] on a listener the caller bound (doc 33 §4.4): the
+/// split gateway binds its public port through `mush_drain::listen::bind_std`
+/// (`SO_REUSEPORT`, so the two generations of a swap share it) and hands it
+/// here; `mushd` and the fixtures bind plainly through the functions above.
+pub async fn start_listener_on<A: AuthBackend + 'static>(
+    listener: std::net::TcpListener,
+    data_dir: &std::path::Path,
+    banner: String,
+    auth_deadline: std::time::Duration,
+    bridge: Arc<SshBridge<A>>,
+) -> Result<SshListener, String> {
+    let listen = listener
+        .local_addr()
+        .map_err(|e| format!("the bound SSH listener has no address: {e}"))?;
     let cfg = mush_net_ssh::SshConfig {
         listen,
         host_key_path: data_dir.join("ssh_host_ed25519"),
@@ -651,9 +708,8 @@ pub async fn start_listener_with<A: AuthBackend + 'static>(
         auth_deadline,
     };
     let hooks: Arc<dyn mush_net_ssh::SshHooks> = bridge;
-    let bound = mush_net_ssh::SshServer::bind(cfg, hooks)
-        .await
-        .map_err(|e| e.to_string())?;
+    let bound =
+        mush_net_ssh::SshServer::bind_listener(cfg, listener, hooks).map_err(|e| e.to_string())?;
     let addr = bound.local_addr();
     // The loop survives accept errors on its own (doc 29a §8 B-2); it only
     // ends with this task.
@@ -666,5 +722,6 @@ pub async fn start_listener_with<A: AuthBackend + 'static>(
         addr,
         accept_loop,
         trusted_loop: None,
+        stopped: std::sync::atomic::AtomicBool::new(false),
     })
 }

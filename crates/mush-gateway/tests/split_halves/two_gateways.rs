@@ -32,6 +32,10 @@
 //!   second announcement is refused (`IPC-DUPLICATE-CONN-ID` in the server
 //!   log, the newer connection closed on its own link) and the owner keeps
 //!   playing on the first.
+//!
+//! The SSH client helpers here (`Term`, `play_client`, `god_on`, ...) are
+//! `pub(super)`: the two-generation story (`gateway_generations`, doc 33
+//! GG.4) drives the same clients against the same rig.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -53,13 +57,13 @@ use russh::ChannelMsg;
 
 use super::harness::{GatewayUnit, ServerUnit};
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
-const GM_PASSWORD: &str = "gm-secret-1";
+pub(super) const STEP_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) const GM_PASSWORD: &str = "gm-secret-1";
 /// The server's own link-dead grace (`[game].linkdead_grace_s`): short, so the
 /// server-side reaper for a dead link's actors is seen inside the proof.
 const SERVER_LINKDEAD_GRACE_S: u64 = 2;
 
-fn scratch_dir(tag: &str) -> PathBuf {
+pub(super) fn scratch_dir(tag: &str) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("mush-2gw-{tag}-{}-{n}", std::process::id()));
@@ -69,7 +73,7 @@ fn scratch_dir(tag: &str) -> PathBuf {
 }
 
 /// Everything in memory, every listener ephemeral, no simulator.
-fn test_config(tag: &str) -> Config {
+pub(super) fn test_config(tag: &str) -> Config {
     let mut cfg = Config::default();
     cfg.store.store = "memory".to_string();
     cfg.server.data_dir = scratch_dir(tag);
@@ -79,7 +83,7 @@ fn test_config(tag: &str) -> Config {
 }
 
 /// A gateway's config, aimed at `unit`: SSH only.
-fn gateway_config(unit: &ServerUnit) -> Config {
+pub(super) fn gateway_config(unit: &ServerUnit) -> Config {
     let mut cfg = test_config("gateway");
     unit.aim(&mut cfg);
     cfg
@@ -87,7 +91,7 @@ fn gateway_config(unit: &ServerUnit) -> Config {
 
 /// The gateways' shared KV store (accounts), seeded with the God wizard. Both
 /// gateways of a swap read the same Redis; here they share the one map.
-async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
+pub(super) async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
     let gw_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     gw_store
         .create_account(AccountRec {
@@ -108,7 +112,7 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
 }
 
 /// A booted unit over its own world store, with the short server-side grace.
-async fn booted_unit() -> ServerUnit {
+pub(super) async fn booted_unit() -> ServerUnit {
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let unit = ServerUnit::new(server_store, || {
         let mut cfg = test_config("server");
@@ -127,7 +131,7 @@ async fn gateway(
     GatewayUnit::start(gateway_config(unit), Arc::clone(store), generation).await
 }
 
-struct AcceptAll;
+pub(super) struct AcceptAll;
 
 impl russh::client::Handler for AcceptAll {
     type Error = russh::Error;
@@ -140,7 +144,7 @@ impl russh::client::Handler for AcceptAll {
     }
 }
 
-fn strip_ansi(s: &str) -> String {
+pub(super) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -160,26 +164,35 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-struct Term {
+pub(super) struct Term {
     channel: russh::Channel<russh::client::Msg>,
     seen: String,
 }
 
 impl Term {
-    fn mark(&self) -> usize {
+    /// A terminal over an opened channel (a shell with a pty requested).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(super) fn new(channel: russh::Channel<russh::client::Msg>) -> Term {
+        Term {
+            channel,
+            seen: String::new(),
+        }
+    }
+
+    pub(super) fn mark(&self) -> usize {
         self.seen.len()
     }
 
     /// Everything seen since `mark`, ANSI stripped.
-    fn since(&self, mark: usize) -> String {
+    pub(super) fn since(&self, mark: usize) -> String {
         strip_ansi(&self.seen[mark..])
     }
 
-    async fn expect(&mut self, needle: &str) {
+    pub(super) async fn expect(&mut self, needle: &str) {
         self.expect_after(0, needle).await;
     }
 
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
+    pub(super) async fn expect_after(&mut self, mark: usize, needle: &str) {
         let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
         while !strip_ansi(&self.seen[mark..]).contains(needle) {
             let msg = tokio::time::timeout_at(deadline, self.channel.wait())
@@ -200,7 +213,7 @@ impl Term {
         }
     }
 
-    async fn send_line(&mut self, line: &str) {
+    pub(super) async fn send_line(&mut self, line: &str) {
         let bytes = format!("{line}\r").into_bytes();
         self.channel.data(&bytes[..]).await.expect("send line");
     }
@@ -208,14 +221,14 @@ impl Term {
     /// `say` something and wait for the echo: the player is live, and every
     /// frame the server addressed to this connection before the say has
     /// arrived (one FIFO per link).
-    async fn say_and_hear(&mut self, text: &str) -> usize {
+    pub(super) async fn say_and_hear(&mut self, text: &str) -> usize {
         let mark = self.mark();
         self.send_line(&format!("say {text}")).await;
         self.expect_after(mark, &format!(" says, \"{text}\"")).await;
         mark
     }
 
-    async fn expect_close(&mut self) {
+    pub(super) async fn expect_close(&mut self) {
         let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
         loop {
             let msg = tokio::time::timeout_at(deadline, self.channel.wait())
@@ -232,7 +245,7 @@ impl Term {
     }
 }
 
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
+pub(super) async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
     let config = Arc::new(russh::client::Config::default());
     let mut handle = russh::client::connect(config, addr, AcceptAll)
         .await
@@ -255,7 +268,7 @@ async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Ter
 }
 
 /// God logs in on `addr` and is shown Limbo.
-async fn god_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
+pub(super) async fn god_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
     let (handle, mut god) = play_client(addr).await;
     god.expect("connect <account> <password>").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
@@ -266,7 +279,7 @@ async fn god_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
 }
 
 /// Alice creates her account on `addr` and is shown Limbo.
-async fn alice_creates_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
+pub(super) async fn alice_creates_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
     let (handle, mut alice) = play_client(addr).await;
     alice.expect("connect <account> <password>").await;
     alice.send_line("create Alice secret123").await;
@@ -278,7 +291,7 @@ async fn alice_creates_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>
 }
 
 /// Alice logs back in on `addr` (her account exists in the shared store).
-async fn alice_returns_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
+pub(super) async fn alice_returns_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
     let (handle, mut alice) = play_client(addr).await;
     alice.expect("connect <account> <password>").await;
     alice.send_line("connect Alice secret123").await;

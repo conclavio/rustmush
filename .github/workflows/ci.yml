@@ -582,6 +582,15 @@ jobs:
       # nothing but a quiet machine in its last sample before the loss
       # (1.2 GB of memory, 81 GB free), which is why the counts and the
       # pressure gauges are here. The shard's own cargo line follows.
+      #
+      # Doc 33 GG.4: the gateway generations' story proves that connections
+      # queued on the draining generation's listener are moved to the new one
+      # only under net.ipv4.tcp_migrate_req = 1 (the deploy installs it on
+      # the box); the hosted runner's default is 0, and the story then says
+      # so and skips that one check. The sysctl is the ephemeral VM's.
+      - name: Let reuseport listeners migrate queued connections (gateway generations)
+        if: matrix.shard == 'rest-gateway'
+        run: sudo sysctl -w net.ipv4.tcp_migrate_req=1 || echo "tcp_migrate_req stays off: the generations story skips its migration check"
       - name: Test
         # lint runs no tests; the bot cells' lines are their own named steps below.
         if: matrix.shard != 'lint' && !startsWith(matrix.shard, 'bot')
@@ -889,6 +898,14 @@ jobs:
           bash -n deploy/instance/render.sh
           bash -n deploy/dev1/deploy.sh
           bash -n deploy/dev1-split/deploy.sh
+          bash -n deploy/dev2-split/deploy.sh
+          # Doc 33 GG.4: the gateway generations' swap and the deploy's
+          # binary comparison, run against a stub systemctl.
+          bash -n deploy/drain/swap.sh
+          bash -n deploy/drain/binary-changed.sh
+          bash -n deploy/dev1-split/gateway-swap.sh
+          bash -n deploy/dev2-split/gateway-swap.sh
+          bash scripts/tests/gateway-swap.sh
           bash scripts/tests/check-web-bundle.sh
 
   kernel-contracts:

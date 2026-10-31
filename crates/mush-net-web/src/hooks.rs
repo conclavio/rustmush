@@ -27,7 +27,7 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use mush_proto::{Envelope, ProjectedCommitToken, Query, RespondChoice};
 use serde::Serialize;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::metrics::Metrics;
 
@@ -155,6 +155,92 @@ pub struct NewWebConn {
     /// Bounded output queue of session-stamped envelopes; the WS output
     /// pump consumes the other end.
     pub tx: mpsc::Sender<Arc<Envelope>>,
+    /// The game side's handle on this connection's close (doc 33 §4.5): a
+    /// draining gateway closes its web connections with it, and a reason.
+    pub closer: ConnCloser,
+}
+
+/// The close the game side asks the transport for (doc 33 §4.5): a close
+/// frame with this code and reason, written by the pump between envelopes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloseRequest {
+    /// The RFC 6455 close code.
+    pub code: u16,
+    /// The reason, shown by the client only if its reconnect fails.
+    pub reason: String,
+}
+
+/// The game side's handle on one WebSocket's close (doc 33 §4.5).
+///
+/// Dropping a connection's envelope sender closes it with "going away"
+/// (1001), which the client reads as the session ending. A gateway that is
+/// draining closes with [`ConnCloser::service_restart`] instead: 1012, the
+/// code the client already treats as transient (`web/src/lib/ws.ts`), so it
+/// reconnects at once with its resume sequence and lands on the new
+/// generation. Cloneable; the pump holds the receiving end and acts on the
+/// first request. One made with [`ConnCloser::detached`] has no pump and
+/// closes nothing: the tests' and in-process transports' value.
+#[derive(Clone, Debug)]
+pub struct ConnCloser {
+    tx: Arc<watch::Sender<Option<CloseRequest>>>,
+}
+
+impl Default for ConnCloser {
+    fn default() -> Self {
+        ConnCloser::detached()
+    }
+}
+
+impl ConnCloser {
+    /// A closer and the receiver its pump watches.
+    #[must_use]
+    pub fn new() -> (ConnCloser, watch::Receiver<Option<CloseRequest>>) {
+        let (tx, rx) = watch::channel(None);
+        (ConnCloser { tx: Arc::new(tx) }, rx)
+    }
+
+    /// A closer nothing watches.
+    #[must_use]
+    pub fn detached() -> ConnCloser {
+        ConnCloser {
+            tx: Arc::new(watch::channel(None).0),
+        }
+    }
+
+    /// Ask for a 1012 "service restart" close with `reason`: the gateway is
+    /// restarting, the client should reconnect.
+    pub fn service_restart(&self, reason: &str) {
+        self.tx.send_replace(Some(CloseRequest {
+            code: crate::ws::close_code::SERVICE_RESTART,
+            reason: reason.to_owned(),
+        }));
+    }
+
+    /// What has been asked for, if anything.
+    #[must_use]
+    pub fn requested(&self) -> Option<CloseRequest> {
+        self.tx.borrow().clone()
+    }
+}
+
+#[cfg(test)]
+mod closer_tests {
+    use super::*;
+
+    #[test]
+    fn a_service_restart_is_1012_with_its_reason_and_a_detached_closer_closes_nothing() {
+        let (closer, rx) = ConnCloser::new();
+        assert_eq!(closer.requested(), None);
+        assert!(rx.borrow().is_none());
+        closer.clone().service_restart("moving to the new gateway");
+        let asked = rx.borrow().clone().expect("the pump sees the request");
+        assert_eq!(asked.code, 1012);
+        assert_eq!(asked.reason, "moving to the new gateway");
+        assert_eq!(closer.requested(), Some(asked));
+        let lone = ConnCloser::detached();
+        lone.service_restart("nobody listens");
+        assert_eq!(lone.requested().map(|r| r.code), Some(1012));
+    }
 }
 
 /// Result of a successful fresh attach.

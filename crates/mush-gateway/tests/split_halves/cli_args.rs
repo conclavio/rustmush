@@ -158,3 +158,22 @@ fn help_exits_zero_with_the_usage() {
     assert!(log.contains("Usage: mush-gateway"), "output:\n{log}");
     assert!(log.contains("--generation a|b"), "output:\n{log}");
 }
+
+/// Doc 33 §4.7: `--ipc-version` prints the boundary version this binary
+/// speaks and exits 0 without reading a config or binding anything, so
+/// `deploy.sh` can compare a new server binary's against the running one's.
+#[test]
+fn ipc_version_prints_the_boundary_version_and_boots_nothing() {
+    let (status, log) = run(&["--ipc-version"]);
+    assert!(
+        status.success(),
+        "mush-gateway --ipc-version exited {status}; output:\n{log}"
+    );
+    assert_eq!(
+        log.trim(),
+        mush_ipc::IPC_VERSION.to_string(),
+        "output:\n{log}"
+    );
+    // Alone: it is an operation, not a modifier of one.
+    assert_refused(&["--ipc-version", "--check-config"], "--ipc-version");
+}

@@ -291,6 +291,32 @@ impl SshServer {
                 addr: cfg.listen,
                 source,
             })?;
+        Self::bound(cfg, config, listener, hooks)
+    }
+
+    /// [`bind`](SshServer::bind) on a listener the caller bound (doc 33
+    /// §4.4). The split gateway binds its public port through
+    /// `mush_drain::listen::bind_std`, with `SO_REUSEPORT`, so two
+    /// generations share the port while one drains, and that recipe lives
+    /// in one place; this crate only puts the listener in non-blocking mode
+    /// and serves it. `cfg.listen` is not consulted.
+    pub fn bind_listener(
+        cfg: SshConfig,
+        listener: std::net::TcpListener,
+        hooks: Arc<dyn SshHooks>,
+    ) -> Result<BoundSshServer, SshError> {
+        let config = server_config(&cfg.host_key_path)?;
+        listener.set_nonblocking(true).map_err(SshError::Server)?;
+        let listener = TcpListener::from_std(listener).map_err(SshError::Server)?;
+        Self::bound(cfg, config, listener, hooks)
+    }
+
+    fn bound(
+        cfg: SshConfig,
+        config: Arc<Config>,
+        listener: TcpListener,
+        hooks: Arc<dyn SshHooks>,
+    ) -> Result<BoundSshServer, SshError> {
         let addr = listener.local_addr().map_err(SshError::Server)?;
         tracing::info!(%addr, "SSH server listening");
         Ok(BoundSshServer {

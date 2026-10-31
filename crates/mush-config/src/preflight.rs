@@ -41,6 +41,7 @@ use std::path::Path;
 
 use crate::config::{Config, ConfigError};
 use crate::exit::ExitClass;
+use crate::generation::Generation;
 
 /// The boot refusals every binary can raise from the parsed config alone,
 /// collected rather than short-circuited: an operator fixing a config wants the
@@ -122,6 +123,36 @@ pub fn check_ipc(config: &Config) -> Vec<String> {
     }
 }
 
+/// The gateway half's refusal of a trusted socket it must not bind (doc 33
+/// §4.4): under the two-generation deploy, `[ssh].trusted_socket` is a
+/// **symlink** the swap script re-points at the serving generation's own
+/// `<stem>.<gen>.sock`, and no gateway binds the symlink name. A gateway
+/// started without `--generation` would bind exactly that name (replacing the
+/// link with a socket of its own and cutting the doorway off from the
+/// generations), so `--check-config` refuses it. With a generation the
+/// gateway derives its own path ([`Generation::socket_path`]) and the link is
+/// not its business; without a trusted socket there is nothing to check. A
+/// configured path that does not exist yet, or is a socket, is no refusal:
+/// the bind probe at boot has the last word on those.
+#[must_use]
+pub fn check_trusted_socket_link(config: &Config, generation: Option<Generation>) -> Vec<String> {
+    if generation.is_some() {
+        return Vec::new();
+    }
+    let Some(path) = config.ssh.trusted_socket_path() else {
+        return Vec::new();
+    };
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => vec![format!(
+            "[ssh].trusted_socket = {} is a symlink: the generations' handoff link (doc 33 \
+             §4.4), which no gateway binds. Start this gateway as a generation \
+             (--generation a|b) so it binds its own socket beside it",
+            path.display()
+        )],
+        _ => Vec::new(),
+    }
+}
+
 /// Spend a set of refusals as this process's ending: each one on stderr, the
 /// verdict in the shared exit vocabulary.
 ///
@@ -147,9 +178,12 @@ pub fn verdict(program: &str, path: &Path, refusals: &[String]) -> ExitClass {
 
 #[cfg(test)]
 mod tests {
-    use super::{check, check_ipc, verdict};
+    use std::path::Path;
+
+    use super::{check, check_ipc, check_trusted_socket_link, verdict};
     use crate::config::Config;
     use crate::exit::ExitClass;
+    use crate::generation::Generation;
 
     /// The failure `--check-config` exists for: a typo in a boot-fatal key.
     /// The refusal has to NAME the offending value, or a preflight that says
@@ -276,5 +310,63 @@ mod tests {
         let mut config = Config::default();
         config.ipc.listen = String::new();
         assert!(check(&config).is_empty(), "{:?}", check(&config));
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mush-preflight-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn with_trusted_socket(path: &Path) -> Config {
+        let mut config = Config::default();
+        config.ssh.trusted_socket = path.display().to_string();
+        config
+    }
+
+    /// No trusted socket, a path that does not exist, or a plain file there:
+    /// not this check's business, with or without a generation.
+    #[test]
+    fn a_trusted_socket_that_is_not_a_symlink_is_no_refusal() {
+        let dir = scratch("plain");
+        let none = Config::default();
+        assert!(check_trusted_socket_link(&none, None).is_empty());
+        let missing = with_trusted_socket(&dir.join("missing.sock"));
+        assert!(check_trusted_socket_link(&missing, None).is_empty());
+        let file = dir.join("file.sock");
+        std::fs::write(&file, b"").expect("a file");
+        let plain = with_trusted_socket(&file);
+        assert!(check_trusted_socket_link(&plain, None).is_empty());
+        assert!(check_trusted_socket_link(&plain, Some(Generation::A)).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A symlinked trusted socket is refused without a generation, by its
+    /// path, and accepted with one (the generation binds beside it).
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_trusted_socket_is_refused_without_a_generation() {
+        let dir = scratch("link");
+        let link = dir.join("dev1.sock");
+        std::os::unix::fs::symlink(dir.join("dev1.a.sock"), &link).expect("a symlink");
+        let config = with_trusted_socket(&link);
+        let refusals = check_trusted_socket_link(&config, None);
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert!(
+            refusals
+                .first()
+                .is_some_and(|r| r.contains("dev1.sock") && r.contains("symlink")),
+            "{refusals:?}"
+        );
+        assert!(check_trusted_socket_link(&config, Some(Generation::B)).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

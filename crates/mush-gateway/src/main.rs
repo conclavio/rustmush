@@ -5,11 +5,19 @@
 //! server at `[ipc].listen`, holds every connection while the server is away,
 //! and re-attaches them when it answers. It never starts or stops the server.
 //!
-//! Usage: `mush-gateway [--check-config] [--generation a|b] [--config <path>]`.
+//! Usage: `mush-gateway [--check-config] [--ipc-version] [--generation a|b] [--config <path>]`.
+//! `--ipc-version` prints the `IPC_VERSION` this binary speaks and exits (doc
+//! 33 §4.7: `deploy.sh` compares the new server binary's against the running
+//! one's before a server deploy, and refuses a bump while a gateway
+//! generation is draining).
 //! `--generation a|b` names this gateway's generation (doc 33 §4.3): a `b`
 //! gateway sets bit 62 on every connection id it allocates, so the two
-//! gateways of a swap never hand the server the same id. Optional; absent is
-//! `a` for that purpose.
+//! gateways of a swap never hand the server the same id, and the gateway runs
+//! the two-generation lifecycle (doc 33 §4.5, cut GG.4): `READY=1` once it
+//! serves, the `draining-<gen>` marker in `$STATE_DIRECTORY`, its own trusted
+//! socket beside the configured one, `SIGUSR1` to drain (the swap script
+//! only) and `SIGTERM` to finish. Optional; absent is `a` for the id bit and
+//! the gateway stops on `SIGTERM` as it always did.
 //! `--check-config` loads the config, reports the refusals on the preflight
 //! list — `mush_config::preflight::check`, plus `preflight::check_ipc` for the
 //! boundary this half also dies on — and exits. Those functions are the list of
@@ -40,12 +48,13 @@ use mush_gateway::{GatewayOptions, serve};
 /// is its alone (doc 33 §4.3).
 const CLI: CliSpec = CliSpec {
     program: "mush-gateway",
-    usage: "Usage: mush-gateway [--check-config] [--generation a|b] [--config <path>]",
+    usage: "Usage: mush-gateway [--check-config] [--ipc-version] [--generation a|b] [--config <path>]",
     ipc: false,
     repl: false,
     check_config: true,
     bootstrap_staff: false,
     generation: true,
+    ipc_version: true,
 };
 
 fn main() -> ExitCode {
@@ -61,6 +70,12 @@ fn main() -> ExitCode {
         println!("{}", CLI.usage);
         return ExitCode::SUCCESS;
     }
+    // Doc 33 §4.7: the boundary version this binary speaks, for deploy.sh's
+    // "does this server upgrade bump IPC_VERSION" check. No config is read.
+    if cli.ipc_version {
+        println!("{}", mush_ipc::IPC_VERSION);
+        return ExitCode::SUCCESS;
+    }
     let config = match cli.load_config() {
         Ok(c) => c,
         Err(e) => {
@@ -74,6 +89,12 @@ fn main() -> ExitCode {
     if cli.check_config {
         let mut refusals = mush_config::preflight::check(&config);
         refusals.extend(mush_config::preflight::check_ipc(&config));
+        // Doc 33 §4.4: a symlinked trusted socket is the generations' link;
+        // a gateway without `--generation` must not bind it.
+        refusals.extend(mush_config::preflight::check_trusted_socket_link(
+            &config,
+            cli.generation,
+        ));
         return mush_config::preflight::verdict(CLI.program, &cli.config, &refusals).exit_code();
     }
 
@@ -90,12 +111,8 @@ fn main() -> ExitCode {
         }
     };
     let opts = GatewayOptions {
-        store: None,
-        ssh_ready: None,
-        web_ready: None,
-        siteban_refresh: None,
-        give_up_after: None,
         generation: cli.generation,
+        ..GatewayOptions::default()
     };
     match runtime.block_on(serve(config, opts)) {
         Ok(()) => ExitCode::SUCCESS,

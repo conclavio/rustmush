@@ -98,12 +98,20 @@ fi
 # The binaries' own preflight (WS04-S3). `--check-config` opens neither the
 # store, nor a socket, nor the quarantine spool's lifetime lock, so it is safe
 # to run beside the instance this render is about to replace the config of.
-for binary in "$@"; do
+#
+# A trailing argument may carry the binary's own flags after its path, split
+# on whitespace ("<path>/mush-gateway --generation a"): the split deploys
+# preflight the gateway AS a generation (doc 33 §4.4), because without
+# `--generation` a symlinked [ssh].trusted_socket — the generations' handoff
+# link — is a refusal. No path under /opt/rustmush has a space.
+for spec in "$@"; do
+  read -r -a words <<<"$spec"
+  binary="${words[0]}"
   if [ ! -x "$binary" ]; then
     echo "$0: $binary is not built yet — skipping its preflight" >&2
     continue
   fi
-  if ! "$binary" --check-config --config "$STAGED"; then
+  if ! "${words[@]}" --check-config --config "$STAGED"; then
     echo "$0: $binary refuses the render; $OUT is untouched and nothing was started" >&2
     rm -f "$STAGED"
     exit 1
