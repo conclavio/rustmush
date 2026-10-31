@@ -311,6 +311,26 @@ jobs:
     # longer runs on pull requests, and the root-disk step (0.8-3.0 min a
     # cell) runs in the background of checkout, the toolchain install and
     # the cache restore. Measured on the cut's own PR run.
+    #
+    # 2026-10-31: SIXTEEN CELLS, mush-server in two. Over main's eight green
+    # runs of 2026-10-31 (41204275956 .. 41207833055) `test (rest-server)`
+    # was the job's wall at 27-34 min, 5-10 ahead of the next cell (the
+    # tacsim-integration shards at 17-24 and the release job at 18-28): its
+    # Test step was 4.4 min of build and 26 of tests, 105 summed test-minutes
+    # at nextest's full parallelism of four, so the only lever left was the
+    # cell. The DT line's 47 PRs and the IC sorties had landed in it: by the
+    # JUnit report of run 41207463088, split_boundary was 48.4 summed minutes
+    # (relay_registry 13.7, dt_preparation_plans 9.7, dt_window_scenes 6.1,
+    # the other nine dt_* modules 17), commerce_composition 41.7
+    # (ic_buyout_dormancy 20.1, ic_slice_loop 17.6, sm_story 2.6), the lib
+    # 14.4 (world_task's 160 unit tests 13.9) and the world_task and bin
+    # targets under a minute. So the split_boundary binary is a cell of its
+    # own (rest-server-boundary, 48 summed minutes) and rest-server keeps the
+    # lib, the bins, commerce_composition and world_task (56 summed, with the
+    # doc-tests); both compile against one `rest-server` cache key, like the
+    # two bot cells. Expected: about 18-21 min each, level with the tacsim
+    # shards. mushd (32 summed, sim_lenses 28) and the gateway (4) stay one
+    # cell each.
     strategy:
       fail-fast: false
       matrix:
@@ -345,9 +365,14 @@ jobs:
           # the Test step, with mushd's 44 integration binaries the largest
           # share. Each shard compiles its own package's test targets only,
           # so each is nearer still to that server's production build (see
-          # the Test step). The panic hook rides with mushd.
+          # the Test step). The panic hook rides with mushd. mush-server is
+          # two cells since 2026-10-31: `rest-server` builds and runs its lib,
+          # bins, commerce_composition and world_task targets and the
+          # doc-tests; `rest-server-boundary` the split_boundary binary alone
+          # (48 of the package's 105 summed test-minutes; see the note above).
           - rest-mushd
           - rest-server
+          - rest-server-boundary
           - rest-gateway
           # (f) the bot on its own feature set: two cells since 2026-10-27.
           # In main's run 40428411078 the one cell was 21.6 min, 4.3 of build
@@ -440,8 +465,10 @@ jobs:
           # integration shard starts warm. Every other shard builds a different
           # set (lint only checks, rest-libs and the three server shards split
           # the workspace) and keeps its own key, for the subset reason above;
-          # the two bot cells build the bot's own feature set and share `bot`.
-          key: ${{ startsWith(matrix.shard, 'tacsim') && 'tacsim' || startsWith(matrix.shard, 'bot') && 'bot' || matrix.shard }}
+          # the two bot cells build the bot's own feature set and share `bot`,
+          # and the two mush-server cells (2026-10-31) build mush-server's test
+          # targets with one dependency set and share `rest-server`.
+          key: ${{ startsWith(matrix.shard, 'tacsim') && 'tacsim' || startsWith(matrix.shard, 'bot') && 'bot' || startsWith(matrix.shard, 'rest-server') && 'rest-server' || matrix.shard }}
       # 2026-10-26 (cut T.1): the runner, pinned to the version the box and
       # the VPS have (one tarball, one binary into cargo's bin; ~2 s). The
       # version is also .config/nextest.toml's `nextest-version`, which fails
@@ -641,7 +668,7 @@ jobs:
               cargo nextest run -P ci --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --build-jobs 2
               cargo test --doc --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --no-fail-fast -j 2
               ;;
-            rest-mushd|rest-server|rest-gateway)
+            rest-mushd|rest-gateway)
               # One server package a shard (2026-10-26, cut T.0; one line for
               # all three until then). What the libs' own dev-dependencies add
               # (mush-sim/testkit's seat helpers, wider hyper and regex feature
@@ -654,11 +681,27 @@ jobs:
               # compiled under their owners' and rest-libs' tests.
               case "$SHARD" in
                 rest-mushd) pkg=mushd ;;
-                rest-server) pkg=mush-server ;;
                 rest-gateway) pkg=mush-gateway ;;
               esac
               cargo nextest run -P ci -p "$pkg" --build-jobs 2
               cargo test -p "$pkg" --doc --no-fail-fast -j 2
+              ;;
+            rest-server)
+              # mush-server, in two cells since 2026-10-31 (see the job's
+              # note): this one builds and runs the lib's unit tests, the
+              # bins' tests, the commerce_composition and world_task group
+              # binaries and the doc-tests; split_boundary is the next cell's.
+              # The same package and features as the one-cell run, so the
+              # dependency set is the same and both cells share one cache key.
+              cargo nextest run -P ci -p mush-server --test commerce_composition --test world_task --lib --bins --build-jobs 2
+              cargo test -p mush-server --doc --no-fail-fast -j 2
+              ;;
+            rest-server-boundary)
+              # mush-server's split_boundary group binary alone: 48 of the
+              # package's 105 summed test-minutes (relay_registry and the
+              # eleven dt_* modules of the DT line, 2026-10-31). The lib it
+              # links is built here too, as its dependency, never tested twice.
+              cargo nextest run -P ci -p mush-server --test split_boundary --build-jobs 2
               ;;
             *)
               echo "no test line for shard $SHARD" >&2
