@@ -114,7 +114,9 @@ fn register_origin_owner(
             .map_err(mod_error)?,
         None => pd,
     };
-    exact(reg, "owner_participant", std::slice::from_ref(&pd))?;
+    let mut participants = vec![pd.clone()];
+    participants.extend(config.further_participants.iter().cloned());
+    exact(reg, "owner_participant", &participants)?;
     let participant = reg.definition(pd)?;
     let mut allowed: BTreeSet<_> = actions.iter().cloned().collect();
     if let Some(r) = integration {

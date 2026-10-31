@@ -76,6 +76,9 @@ pub struct CoreOriginConfig {
     /// Doc 17h cut M8a fix round 1 (F6): the one other owner granted a read of the retained
     /// die certificates (tacsim's provenance read), when the composition names one.
     pub(crate) certificate_reader: Option<String>,
+    /// Doc 31 UD.4b: further Industry owner participants composed beside the
+    /// Origin's (the bay refit's), admitted by the same exact validator.
+    pub(crate) further_participants: Vec<mush_core::DefinitionDescriptor>,
 }
 impl CoreOriginConfig {
     pub fn new(policy: OriginPolicy, mode: CoreOriginMode) -> Result<Self, ModError> {
@@ -84,6 +87,7 @@ impl CoreOriginConfig {
             policy,
             mode,
             certificate_reader: None,
+            further_participants: Vec::new(),
         })
     }
     pub fn policy(&self) -> &OriginPolicy {

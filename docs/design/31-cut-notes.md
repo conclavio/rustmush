@@ -366,3 +366,55 @@ joins (PR-B's wire).
   every part custody to its order and refuses orphans; an Inventory reconcile like the core
   input's lands with PR-D if the rig shows it is needed.
 
+
+## UD.4b PR-D (2026-10-31) — the Industry bay refit: offer, accept, work, install, cancel
+
+Built on `claude/ud4b-industry-provider`, stacked on PR-C (#216). The Industry owner that composes
+PR-C's two owners with the kernel's `bay_refit` protocol and PR-A's Tactics `component_refit`
+participant, and the first end-to-end run of the whole bay.
+
+- **The records** (`bay_refit::records`), in the kernel's wire: `BayOffer` (the supplier's offer
+  for one hull at one bay — the target root, what comes out and goes in, the part's lot and the lot
+  the part taken out becomes, the work, the quoted fee; it stands 300 s), `BayIntent`, `BayOrder`
+  (the kernel's sponsor row, with Economy's funding and terminal receipts), `RefitEvidence` and
+  `BayInstallation`, and `BayIndex`, the admission census.
+- **The owner** (`industry/bay_refit` v1): Initialize, Offer, Accept, Advance and Cancel prepare
+  here and publish the census as its native image; Install has no Industry request (its images are
+  Economy's and Tactics'), as the core refit's has none.
+- **The providers** (the six actions): Offer reads the live bay (an open, unquarantined facility of
+  the provider's organization holding the `bay_refit` word), the requester and the hull at it, the
+  hull's idle unit within the configured refit family, and derives what comes out and what goes in
+  from the two registered specs; the part is a one-unit lot of the fitted component's commodity in
+  the bay's stores, and the returned lot's id is derived from the offer so the kernel reserves its
+  key at Accept. Accept reserves the bay slot under the kernel's bay holder, holds the fee, holds
+  the hull in the bay and the part's lot, and publishes the schedule. Advance runs on the IC clock
+  through the `bay.refit` schedule source. Install prepares Tactics' refit and Economy's capture,
+  releases the slot and the hull, consumes the part's lot and returns the part taken out (its
+  commodity and grade from the ruleset's `BayPartCatalog`). Cancel releases the fee, the slot, the
+  hull and the lot.
+- **The composition**: `BayRefitConfig` (the fee terms, each bay's stores, the refit family's
+  roots, the ruleset's derivable cells and part catalogue, the work units, the Economy owner) gives
+  each owner its piece: `economy_config()` for `EconomyModule::with_bay_refit`, `part_binding()`
+  for `InventoryModule::with_bay_parts`, `tactics_policy()` with `action(INSTALL)`, `roots()` and
+  `derived()` for `TacticsModule::with_component_refit`, and the config itself for
+  `IndustryModule::with_bay_refit`. `fresh()` gives one boot its own definitions cell. Industry's
+  one exact `action`, `outcome` and `owner_participant` validators admit the bay's definitions
+  beside the core refit's (one validator per owner and kind); the core refit's own definitions are
+  unchanged.
+- **The boot**: the census loads from its module key; the projection is rebuilt from the typed
+  orders and offers, each order joined to Economy's complete fee history; the kernel independently
+  audits slots, hull heads, schedules and part custody.
+- **Tests** (`bay_refit::rig_tests`, the real Org, Economy, Inventory, Industry, Sim and Tactics
+  owners): the laser refit end to end — the fee held, the hull held, no install before the work is
+  done, two IC hours of scheduled work, Install refitting the hull to the laser variant at revision
+  +1, the fee captured exactly and paid to the bay, the laser lot consumed and the cannon returned to
+  stores — then a cold boot; and Cancel releasing the fee, the hull and the lot.
+
+**Not done here, and why.**
+
+- **TacSim's composition** (the bay kind and recipe content, the part catalogue over the shipped
+  units, `tacsim::refit::family` as the configured roots, the heat pair as the derived cells, the
+  launch-only composition, a hull in a bay refused at launch): the next PR, per the owner's order.
+- **The bay view and the player commands**: UD.4c.
+- **A hull in a bay held against ordinary moves**: the core refit's custody hook refuses carrying a
+  retained core; the bay's hull head is not yet consulted by a move or carry hook.

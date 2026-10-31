@@ -4274,6 +4274,7 @@ pub fn register(
         },
         None,
         None,
+        None,
     )
 }
 
@@ -4293,6 +4294,7 @@ pub(crate) fn register_with_core_origins(
     seams: Seams,
     origins: Option<&crate::core_production::CoreOriginConfig>,
     factory: Option<&crate::core_production::integration::CoreFactoryConfig>,
+    bay: Option<&crate::bay_refit::BayRefitConfig>,
 ) -> Result<(), ModError> {
     let Seams {
         opener,
@@ -4313,6 +4315,9 @@ pub(crate) fn register_with_core_origins(
     }
     if factory.and_then(|c| c.refit.as_ref()).is_some() {
         outcomes.push(crate::core_production::refit::runtime::outcome_descriptor()?);
+    }
+    if bay.is_some() {
+        outcomes.push(crate::bay_refit::runtime::outcome_descriptor()?);
     }
     reg.definition_validator(
         DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
@@ -4368,6 +4373,9 @@ pub(crate) fn register_with_core_origins(
                     .map_err(|e| ModError::msg(e.to_string()))?,
             );
         }
+    }
+    if let Some(config) = bay {
+        action_shapes.extend(crate::bay_refit::runtime::action_descriptors(config)?);
     }
     reg.definition_validator(
         DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
