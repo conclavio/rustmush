@@ -134,6 +134,9 @@ toml = "0.8"
 # serde_json::Value payloads (Inbound::Query, OutputEvent::Panel) that need a
 # self-describing format; rmp-serde is compact and version-tolerant.
 rmp-serde = "1"
+# Doc 29: explicit SO_REUSEPORT + IPV6_V6ONLY listeners for sshdoorway (already in the
+# lockfile through tokio).
+socket2 = { version = "0.6", features = ["all"] }
 # workspace-internal
 mush-config = { path = "crates/mush-config" }
 mush-proto = { path = "crates/mush-proto" }
@@ -143,6 +146,10 @@ mush-ansi = { path = "crates/mush-ansi" }
 mush-store = { path = "crates/mush-store" }
 mush-session = { path = "crates/mush-session" }
 mush-net-ssh = { path = "crates/mush-net-ssh" }
+# Doc 29: the sshdoorway preamble (doorway <-> trusted SSH ingress), serde + rmp only,
+# and the port-22 doorway itself.
+mush-sshdoorway-proto = { path = "crates/mush-sshdoorway-proto" }
+mush-sshdoorway = { path = "crates/mush-sshdoorway" }
 # 2026-10-21 pixel cockpit spike: the raycaster, the PNG encoder and the kitty
 # graphics framing the SSH TUI streams a first-person view with.
 mush-pixel = { path = "crates/mush-pixel" }

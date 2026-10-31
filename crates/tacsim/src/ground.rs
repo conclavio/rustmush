@@ -1315,8 +1315,8 @@ pub fn build_with_options(
 ) -> Result<BuiltPacks, GroundError> {
     let mut working = draft.clone();
     if repair || working.provenance.source == GroundSource::Extractor {
-        let _ = relax_slopes(&mut working)?;
         let _ = despeckle(&mut working, DEFAULT_SPECKLE_MIN_CELLS)?;
+        let _ = relax_slopes(&mut working)?;
     }
     if working.waypoints.nodes.is_empty() {
         route(&mut working)?;
@@ -1758,7 +1758,16 @@ pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
                 | TerrainClass::WoodsHeavy
         )
     };
-    let is_road = |c: TerrainClass| matches!(c, TerrainClass::Road | TerrainClass::Paved);
+    let is_road = |c: TerrainClass| {
+        matches!(
+            c,
+            TerrainClass::Road
+                | TerrainClass::Paved
+                | TerrainClass::Water
+                | TerrainClass::Floor
+                | TerrainClass::Door
+        )
+    };
     let table = LocomotionTable::shipped();
     let tracked_limit =
         i32::try_from(table.max_slope_pct("tracked", &[]).unwrap_or(45)).unwrap_or(45);
@@ -1767,6 +1776,86 @@ pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
     let road_limit = wheeled_limit.saturating_sub(5);
     let road_max_rise = (i32::from(draft.cell_cm) * road_limit) / 100;
     let ground_max_rise = (i32::from(draft.cell_cm) * tracked_limit) / 100;
+
+    let relax_edge = |elev: &mut [i16], a: usize, b: usize, max_rise: i32| -> bool {
+        let mut ea = i32::from(elev.get(a).copied().unwrap_or(0));
+        let mut eb = i32::from(elev.get(b).copied().unwrap_or(0));
+        if (ea - eb).abs() <= max_rise {
+            return false;
+        }
+        let za = in_zone.get(a).copied().unwrap_or(false);
+        let zb = in_zone.get(b).copied().unwrap_or(false);
+        if za && zb {
+            return false;
+        }
+        let mut changed = false;
+        if ea > eb {
+            if ea > 0 && !za {
+                let next_a = (eb + max_rise)
+                    .max(0)
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                if next_a != ea {
+                    ea = next_a;
+                    if let Some(slot) = elev.get_mut(a) {
+                        *slot = i16::try_from(ea).unwrap_or(0);
+                    }
+                    changed = true;
+                }
+            }
+            if ea - eb > max_rise && !zb {
+                let next_b = (ea - max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                if next_b != eb {
+                    eb = next_b;
+                    if let Some(slot) = elev.get_mut(b) {
+                        *slot = i16::try_from(eb).unwrap_or(0);
+                    }
+                    changed = true;
+                }
+            }
+            if ea - eb > max_rise && !za {
+                let next_a = (eb + max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                if next_a != ea {
+                    if let Some(slot) = elev.get_mut(a) {
+                        *slot = i16::try_from(next_a).unwrap_or(0);
+                    }
+                    changed = true;
+                }
+            }
+        } else {
+            if eb > 0 && !zb {
+                let next_b = (ea + max_rise)
+                    .max(0)
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                if next_b != eb {
+                    eb = next_b;
+                    if let Some(slot) = elev.get_mut(b) {
+                        *slot = i16::try_from(eb).unwrap_or(0);
+                    }
+                    changed = true;
+                }
+            }
+            if eb - ea > max_rise && !za {
+                let next_a = (eb - max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                if next_a != ea {
+                    ea = next_a;
+                    if let Some(slot) = elev.get_mut(a) {
+                        *slot = i16::try_from(ea).unwrap_or(0);
+                    }
+                    changed = true;
+                }
+            }
+            if eb - ea > max_rise && !zb {
+                let next_b = (ea + max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                if next_b != eb {
+                    if let Some(slot) = elev.get_mut(b) {
+                        *slot = i16::try_from(next_b).unwrap_or(0);
+                    }
+                    changed = true;
+                }
+            }
+        }
+        changed
+    };
 
     for _ in 0..64 {
         let mut changed_iter = false;
@@ -1786,68 +1875,40 @@ pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
                     if !is_passable(cb) {
                         continue;
                     }
-                    let max_rise = if is_road(ca) && is_road(cb) {
+                    let max_rise = if is_road(ca) || is_road(cb) {
                         road_max_rise
                     } else {
                         ground_max_rise
                     };
-                    let ea = i32::from(elev.get(a).copied().unwrap_or(0));
-                    let eb = i32::from(elev.get(b).copied().unwrap_or(0));
-                    let diff = (ea - eb).abs();
-                    if diff <= max_rise {
+                    if relax_edge(&mut elev, a, b, max_rise) {
+                        changed_iter = true;
+                    }
+                }
+            }
+        }
+        for y in (0..h).rev() {
+            for x in (0..w).rev() {
+                let a = y * w + x;
+                let ca = classes.get(a).copied().unwrap_or(TerrainClass::Void);
+                if !is_passable(ca) {
+                    continue;
+                }
+                for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+                    if nx >= w || ny >= h {
                         continue;
                     }
-                    let za = in_zone.get(a).copied().unwrap_or(false);
-                    let zb = in_zone.get(b).copied().unwrap_or(false);
-                    if za && zb {
+                    let b = ny * w + nx;
+                    let cb = classes.get(b).copied().unwrap_or(TerrainClass::Void);
+                    if !is_passable(cb) {
                         continue;
                     }
-                    if ea > eb {
-                        if !za {
-                            let target = i16::try_from(
-                                (eb + max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX)),
-                            )
-                            .unwrap_or(0);
-                            if let Some(slot) = elev.get_mut(a)
-                                && *slot != target
-                            {
-                                *slot = target;
-                                changed_iter = true;
-                            }
-                        } else if !zb {
-                            let target = i16::try_from(
-                                (ea - max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX)),
-                            )
-                            .unwrap_or(0);
-                            if let Some(slot) = elev.get_mut(b)
-                                && *slot != target
-                            {
-                                *slot = target;
-                                changed_iter = true;
-                            }
-                        }
-                    } else if !zb {
-                        let target = i16::try_from(
-                            (ea + max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX)),
-                        )
-                        .unwrap_or(0);
-                        if let Some(slot) = elev.get_mut(b)
-                            && *slot != target
-                        {
-                            *slot = target;
-                            changed_iter = true;
-                        }
-                    } else if !za {
-                        let target = i16::try_from(
-                            (eb - max_rise).clamp(i32::from(i16::MIN), i32::from(i16::MAX)),
-                        )
-                        .unwrap_or(0);
-                        if let Some(slot) = elev.get_mut(a)
-                            && *slot != target
-                        {
-                            *slot = target;
-                            changed_iter = true;
-                        }
+                    let max_rise = if is_road(ca) || is_road(cb) {
+                        road_max_rise
+                    } else {
+                        ground_max_rise
+                    };
+                    if relax_edge(&mut elev, a, b, max_rise) {
+                        changed_iter = true;
                     }
                 }
             }
@@ -1908,89 +1969,99 @@ pub fn despeckle(draft: &mut GroundDraft, min_region: usize) -> Result<usize, Gr
     let mut component = Vec::new();
     let mut queue = VecDeque::new();
 
-    for y in 0..h {
-        for x in 0..w {
-            let start = y * w + x;
-            if visited.get(start).copied().unwrap_or(true) {
-                continue;
-            }
-            let target_class = classes.get(start).copied().unwrap_or(TerrainClass::Ground);
-            if let Some(v) = visited.get_mut(start) {
-                *v = true;
-            }
-            if is_exempt_class(target_class) {
-                continue;
-            }
-            component.clear();
-            queue.clear();
-            component.push((x, y));
-            queue.push_back((x, y));
-            let mut has_spot = spot_cells.contains(&(x, y));
+    for _ in 0..8 {
+        let mut changed_iter = false;
+        visited.fill(false);
+        for y in 0..h {
+            for x in 0..w {
+                let start = y * w + x;
+                if visited.get(start).copied().unwrap_or(true) {
+                    continue;
+                }
+                let target_class = classes.get(start).copied().unwrap_or(TerrainClass::Ground);
+                if let Some(v) = visited.get_mut(start) {
+                    *v = true;
+                }
+                if is_exempt_class(target_class) {
+                    continue;
+                }
+                component.clear();
+                queue.clear();
+                component.push((x, y));
+                queue.push_back((x, y));
+                let mut has_spot = spot_cells.contains(&(x, y));
 
-            while let Some((cx, cy)) = queue.pop_front() {
-                for (dx, dy) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
-                    let (Some(nx), Some(ny)) =
-                        (cx.checked_add_signed(dx), cy.checked_add_signed(dy))
-                    else {
-                        continue;
-                    };
-                    if nx >= w || ny >= h {
-                        continue;
-                    }
-                    let n_idx = ny * w + nx;
-                    if visited.get(n_idx).copied().unwrap_or(true) {
-                        continue;
-                    }
-                    if classes.get(n_idx).copied() == Some(target_class) {
-                        if let Some(v) = visited.get_mut(n_idx) {
-                            *v = true;
+                while let Some((cx, cy)) = queue.pop_front() {
+                    for (dx, dy) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
+                        let (Some(nx), Some(ny)) =
+                            (cx.checked_add_signed(dx), cy.checked_add_signed(dy))
+                        else {
+                            continue;
+                        };
+                        if nx >= w || ny >= h {
+                            continue;
                         }
-                        if spot_cells.contains(&(nx, ny)) {
-                            has_spot = true;
+                        let n_idx = ny * w + nx;
+                        if visited.get(n_idx).copied().unwrap_or(true) {
+                            continue;
                         }
-                        component.push((nx, ny));
-                        queue.push_back((nx, ny));
+                        if classes.get(n_idx).copied() == Some(target_class) {
+                            if let Some(v) = visited.get_mut(n_idx) {
+                                *v = true;
+                            }
+                            if spot_cells.contains(&(nx, ny)) {
+                                has_spot = true;
+                            }
+                            component.push((nx, ny));
+                            queue.push_back((nx, ny));
+                        }
                     }
                 }
-            }
 
-            if has_spot || component.len() >= min_region {
-                continue;
-            }
-
-            let comp_set: BTreeSet<(usize, usize)> = component.iter().copied().collect();
-            let mut neighbour_counts: BTreeMap<u8, (usize, TerrainClass)> = BTreeMap::new();
-            for &(cx, cy) in &component {
-                for (dx, dy) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
-                    let (Some(nx), Some(ny)) =
-                        (cx.checked_add_signed(dx), cy.checked_add_signed(dy))
-                    else {
-                        continue;
-                    };
-                    if nx >= w || ny >= h || comp_set.contains(&(nx, ny)) {
-                        continue;
-                    }
-                    if let Some(&nc) = classes.get(ny * w + nx)
-                        && nc != TerrainClass::Void
-                    {
-                        let entry = neighbour_counts.entry(nc.code()).or_insert((0, nc));
-                        entry.0 += 1;
-                    }
+                if has_spot || component.len() >= min_region {
+                    continue;
                 }
-            }
-            if let Some((_, &(_, replacement))) =
-                neighbour_counts
-                    .iter()
-                    .max_by(|(code_a, (cnt_a, _)), (code_b, (cnt_b, _))| {
-                        cnt_a.cmp(cnt_b).then_with(|| code_b.cmp(code_a))
-                    })
-            {
+
+                let comp_set: BTreeSet<(usize, usize)> = component.iter().copied().collect();
+                let mut neighbour_counts: BTreeMap<u8, (usize, TerrainClass)> = BTreeMap::new();
                 for &(cx, cy) in &component {
-                    if let Some(slot) = classes.get_mut(cy * w + cx) {
-                        *slot = replacement;
+                    for (dx, dy) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
+                        let (Some(nx), Some(ny)) =
+                            (cx.checked_add_signed(dx), cy.checked_add_signed(dy))
+                        else {
+                            continue;
+                        };
+                        if nx >= w || ny >= h || comp_set.contains(&(nx, ny)) {
+                            continue;
+                        }
+                        if let Some(&nc) = classes.get(ny * w + nx)
+                            && nc != TerrainClass::Void
+                        {
+                            let entry = neighbour_counts.entry(nc.code()).or_insert((0, nc));
+                            entry.0 += 1;
+                        }
+                    }
+                }
+                if let Some((_, &(_, replacement))) =
+                    neighbour_counts
+                        .iter()
+                        .max_by(|(code_a, (cnt_a, _)), (code_b, (cnt_b, _))| {
+                            cnt_a.cmp(cnt_b).then_with(|| code_b.cmp(code_a))
+                        })
+                {
+                    for &(cx, cy) in &component {
+                        if let Some(slot) = classes.get_mut(cy * w + cx)
+                            && *slot != replacement
+                        {
+                            *slot = replacement;
+                            changed_iter = true;
+                        }
                     }
                 }
             }
+        }
+        if !changed_iter {
+            break;
         }
     }
 
@@ -2375,12 +2446,24 @@ pub fn viewshed(
     Ok(out)
 }
 
-/// **Serve an arena draft from a running world** (doc 30 §8 & §11 WG.4):
+fn shipped_draft(short_id: &str) -> Option<Result<GroundDraft, GroundError>> {
+    match short_id {
+        "proving_ground" => Some(GroundDraft::from_json(include_str!(
+            "../content/ground/proving_ground.draft.json"
+        ))),
+        "winter_valley" => Some(GroundDraft::from_json(include_str!(
+            "../content/ground/winter_valley.draft.json"
+        ))),
+        _ => None,
+    }
+}
+
+/// **Serve an arena draft from a running world** (doc 30 §8 & §11 WG.4 / WG.5):
 /// reconstructs the [`GroundDraft`] from the world's [`crate::store::TacsimStore`]
 /// and [`mush_atlas::AtlasState`] when the arena is loaded there (preserving the
-/// checked-in `proving_ground.draft.json` metadata when the cells and furniture
-/// match it), or serves the checked-in `proving_ground.draft.json` directly when
-/// the world has not composed its content store yet.
+/// checked-in `<id>.draft.json` metadata when the cells and furniture match it),
+/// or serves the checked-in `<id>.draft.json` directly when the world has not
+/// composed its content store yet.
 ///
 /// # Errors
 ///
@@ -2388,8 +2471,6 @@ pub fn viewshed(
 pub fn draft_from_world(w: &mush_core::World, id: &str) -> Result<GroundDraft, GroundError> {
     let short_id = id.strip_prefix("tacsim.arena.").unwrap_or(id);
     let entry_str = format!("tacsim.arena.{short_id}");
-    let shipped_pg =
-        || GroundDraft::from_json(include_str!("../content/ground/proving_ground.draft.json"));
     let Some(arena_def) = w
         .module_state::<crate::store::TacsimStore>()
         .and_then(|slot| {
@@ -2398,8 +2479,8 @@ pub fn draft_from_world(w: &mush_core::World, id: &str) -> Result<GroundDraft, G
                 .and_then(|entry| slot.definitions().arenas.get(&entry).cloned())
         })
     else {
-        if short_id == "proving_ground" {
-            return shipped_pg();
+        if let Some(shipped) = shipped_draft(short_id) {
+            return shipped;
         }
         return Err(GroundError::Invalid {
             id: short_id.to_owned(),
@@ -2410,8 +2491,8 @@ pub fn draft_from_world(w: &mush_core::World, id: &str) -> Result<GroundDraft, G
         .module_state::<mush_atlas::AtlasState>()
         .map(|state| &state.records)
     else {
-        if short_id == "proving_ground" {
-            return shipped_pg();
+        if let Some(shipped) = shipped_draft(short_id) {
+            return shipped;
         }
         return Err(GroundError::Invalid {
             id: short_id.to_owned(),
@@ -2434,8 +2515,6 @@ pub fn draft_from_records(
 ) -> Result<GroundDraft, GroundError> {
     let short_id = short_id.strip_prefix("tacsim.arena.").unwrap_or(short_id);
     let entry_str = format!("tacsim.arena.{short_id}");
-    let shipped_pg =
-        || GroundDraft::from_json(include_str!("../content/ground/proving_ground.draft.json"));
     let region_key = arena_def.region_key();
     let region_rec = records.regions.get(&region_key).ok_or_else(|| {
         GroundError::ArenaBuild(ArenaBuildError::NoRegion {
@@ -2506,8 +2585,7 @@ pub fn draft_from_records(
     }
     let classes_b64 = encode_classes(arena_def.cols, arena_def.rows, &classes);
     let elev_b64 = encode_elev(&elev);
-    if short_id == "proving_ground"
-        && let Ok(shipped) = shipped_pg()
+    if let Some(Ok(shipped)) = shipped_draft(short_id)
         && shipped.classes == classes_b64
         && shipped.elev == elev_b64
         && shipped.key_spots == arena_def.key_spots
@@ -2742,8 +2820,277 @@ pub fn proving_ground_draft() -> Result<GroundDraft, GroundError> {
     })
 }
 
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+fn generate_biome_preset(
+    preset: &str,
+    default_biome: &str,
+    body: &str,
+    label: &str,
+    seed: u64,
+    biome_override: Option<&str>,
+) -> Result<GroundDraft, GroundError> {
+    if let Some(b) = biome_override
+        && b != default_biome
+    {
+        return Err(GroundError::Invalid {
+            id: preset.to_owned(),
+            detail: format!(
+                "preset `{preset}` requires biome `{default_biome}`; got `--biome {b}`"
+            ),
+        });
+    }
+    let phase = (seed % 10_000) as f64 * 0.017_453_292_519_943_295;
+    let shift_x = 6.0 * libm::sin(phase);
+    let shift_y = 6.0 * libm::cos(phase * 1.3);
+    let road_class = if default_biome == "lunar" {
+        TerrainClass::Paved
+    } else {
+        TerrainClass::Road
+    };
+
+    let mut classes = Vec::with_capacity(usize::from(SIDE) * usize::from(SIDE));
+    let mut elev = Vec::with_capacity(usize::from(SIDE) * usize::from(SIDE));
+
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let fx = f64::from(x);
+            let fy = f64::from(y);
+
+            // 1. Author per-biome surface class (doc 30 §6: no grass or woods on mars/lunar/ice).
+            let class = if within(x, y, BLUFF_TOP) {
+                match default_biome {
+                    "mars" => TerrainClass::Sand,
+                    "lunar" => TerrainClass::Regolith,
+                    _ => TerrainClass::Ice,
+                }
+            } else if BLUFF_RAMP.iter().any(|(b, _)| within(x, y, *b)) {
+                TerrainClass::Ground
+            } else if let Some(b) = BUILDINGS.iter().copied().find(|b| within(x, y, *b)) {
+                let door_x = (b.0 + b.1) / 2;
+                if y == b.2 && x == door_x {
+                    TerrainClass::Door
+                } else if x == b.0 || x == b.1 || y == b.2 || y == b.3 {
+                    TerrainClass::Wall
+                } else {
+                    TerrainClass::Floor
+                }
+            } else if (y >= ROAD_EW.0 && y <= ROAD_EW.1)
+                || (x >= ROAD_NS.0 && x <= ROAD_NS.1)
+                || ((106..=128).contains(&x) && (184..=185).contains(&y))
+                || ((207..=209).contains(&x) && (99..=139).contains(&y))
+            {
+                road_class
+            } else if x >= RIVER.0 && x <= RIVER.1 {
+                if y >= FORD.0 && y <= FORD.1 {
+                    if default_biome == "ice" {
+                        TerrainClass::Ice
+                    } else {
+                        TerrainClass::Ground
+                    }
+                } else if default_biome == "ice" {
+                    TerrainClass::WaterDeep
+                } else {
+                    TerrainClass::Ground
+                }
+            } else {
+                let n = libm::sin((fx + shift_x) * 0.09 + phase)
+                    * libm::cos((fy + shift_y) * 0.08 - phase * 0.5)
+                    + 0.5 * libm::sin((fx - fy) * 0.05 + phase);
+                let dist_road = (fx - 129.0).abs().min((fy - 97.0).abs());
+                let in_entry = x <= 18 || x >= 237;
+                if !in_entry && dist_road >= 8.0 && within(x, y, RUBBLE[0]) {
+                    TerrainClass::Rubble
+                } else if !in_entry
+                    && dist_road >= 10.0
+                    && (within(x, y, (24, 52, 156, 192)) || within(x, y, (168, 202, 46, 74)))
+                {
+                    if n > 0.35 {
+                        TerrainClass::Rubble
+                    } else {
+                        TerrainClass::Rock
+                    }
+                } else {
+                    match default_biome {
+                        "mars" => {
+                            if n > 0.45 {
+                                TerrainClass::Regolith
+                            } else if n < -0.35 {
+                                TerrainClass::Ground
+                            } else {
+                                TerrainClass::Sand
+                            }
+                        }
+                        "lunar" => {
+                            if n > 0.30 {
+                                TerrainClass::Ground
+                            } else {
+                                TerrainClass::Regolith
+                            }
+                        }
+                        _ => {
+                            if n > 0.35 {
+                                TerrainClass::Ground
+                            } else {
+                                TerrainClass::Ice
+                            }
+                        }
+                    }
+                }
+            };
+            classes.push(class);
+
+            // 2. Author per-biome relief at §5 amplitudes, keeping entry zones flat at 0 cm
+            //    and keeping roads smooth (<= 20% grade).
+            if within(x, y, BLUFF_TOP) {
+                elev.push(BLUFF_TOP_CM);
+                continue;
+            }
+            if let Some((_, ramp_cm)) = BLUFF_RAMP.iter().copied().find(|(b, _)| within(x, y, *b)) {
+                elev.push(ramp_cm);
+                continue;
+            }
+
+            let edge_dist = f64::from(x.saturating_sub(15).min(240_u16.saturating_sub(x)));
+            let edge_w = smoothstep(edge_dist / 16.0);
+            let corridor = f64::from(
+                V3_CORRIDOR
+                    .0
+                    .saturating_sub(y)
+                    .max(y.saturating_sub(V3_CORRIDOR.1)),
+            );
+            let road_ns = f64::from(x.abs_diff(ROAD_NS.0 + 1)) - 1.0;
+            let spur_barn = box_distance(x, y, (104, 130, 182, 204));
+            let spur_comp = box_distance(x, y, (198, 218, 96, 158));
+            let keep = corridor
+                .min(road_ns.max(0.0))
+                .min(spur_barn)
+                .min(spur_comp)
+                .min(box_distance(x, y, V3_BLUFF_KEEP));
+            let w = smoothstep(keep / V3_BLEND) * edge_w;
+
+            let base_wave = edge_w
+                * (160.0 * libm::sin((fx + shift_x) / 42.0)
+                    + 120.0 * libm::cos((fy + shift_y) / 52.0));
+
+            let raw_feature = match default_biome {
+                "mars" => {
+                    // Canyon wadi trough along x = 64, stepped shelves north/south, and Olympus Spur summit.
+                    let wadi = -450.0 * libm::exp(-sq((fx - 64.0) / 11.0));
+                    let north_shelf = 3_200.0 * smoothstep((fy - 122.0) / 36.0);
+                    let south_shelf = 2_200.0 * smoothstep((72.0 - fy) / 28.0);
+                    let spur_peak = 6_200.0
+                        * gauss(
+                            fx - (184.0 + shift_x * 0.5),
+                            fy - (214.0 + shift_y * 0.5),
+                            22.0,
+                        );
+                    let crater_r = libm::hypot(fx - 88.0, fy - 38.0);
+                    let crater = if crater_r < 16.0 {
+                        -900.0 + 2_200.0 * sq(crater_r / 16.0)
+                    } else {
+                        1_300.0 * libm::exp(-sq((crater_r - 16.0) / 8.0))
+                    };
+                    wadi + north_shelf + south_shelf + spur_peak + crater
+                }
+                "lunar" => {
+                    // Two ringed impact craters with central uplift and northern highland massif.
+                    let r1 = libm::hypot(fx - (86.0 + shift_x * 0.4), fy - (40.0 + shift_y * 0.4));
+                    let c1 = if r1 < 18.0 {
+                        -1_100.0 + 2_900.0 * sq(r1 / 18.0)
+                    } else {
+                        1_800.0 * libm::exp(-sq((r1 - 18.0) / 8.5))
+                    };
+                    let r2 =
+                        libm::hypot(fx - (182.0 - shift_x * 0.4), fy - (210.0 - shift_y * 0.4));
+                    let c2 = if r2 < 22.0 {
+                        -1_200.0
+                            + 3_600.0 * sq(r2 / 22.0)
+                            + 1_400.0 * gauss(fx - 182.0, fy - 210.0, 5.0)
+                    } else {
+                        2_400.0 * libm::exp(-sq((r2 - 22.0) / 9.5))
+                    };
+                    let highlands = 2_800.0 * smoothstep((fy - 135.0) / 42.0);
+                    c1 + c2 + highlands
+                }
+                _ => {
+                    // Glacial shelf, pressure ridges, and ice dome.
+                    let shelf = 2_900.0 * smoothstep((fy - 125.0) / 40.0);
+                    let lead = -380.0 * libm::exp(-sq((fx - 64.0) / 10.0));
+                    let ridge_a = 2_400.0
+                        * libm::exp(-sq((fy - 58.0 - 5.0 * libm::sin(fx / 24.0)) / 9.0))
+                        * smoothstep((fx - 30.0) / 14.0)
+                        * smoothstep((225.0 - fx) / 14.0);
+                    let dome = 5_200.0
+                        * gauss(
+                            fx - (186.0 + shift_x * 0.4),
+                            fy - (214.0 + shift_y * 0.4),
+                            21.0,
+                        );
+                    shelf + lead + ridge_a + dome
+                }
+            };
+
+            let mut feature = raw_feature;
+            for b in BUILDINGS {
+                let near = box_distance(
+                    x,
+                    y,
+                    (
+                        b.0.saturating_sub(2),
+                        b.1 + 2,
+                        b.2.saturating_sub(2),
+                        b.3 + 2,
+                    ),
+                );
+                let t = smoothstep(near / 6.0);
+                feature *= t;
+            }
+            let cm = if x <= 15 || x >= 240 {
+                0_i16
+            } else {
+                let v = ((base_wave + w * feature) / 10.0).round() * 10.0;
+                v.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
+            };
+            elev.push(cm);
+        }
+    }
+
+    let base = proving_ground_draft()?;
+    let mut draft = GroundDraft {
+        schema: DRAFT_SCHEMA.to_owned(),
+        id: preset.to_owned(),
+        label: label.to_owned(),
+        biome: default_biome.to_owned(),
+        body: body.to_owned(),
+        origin_m: [ORIGIN_M, ORIGIN_M],
+        cell_cm: CELL_CM,
+        cols: SIDE,
+        rows: SIDE,
+        classes: encode_classes(SIDE, SIDE, &classes),
+        elev: encode_elev(&elev),
+        entry_zones: base.entry_zones,
+        key_spots: base.key_spots,
+        waypoints: base.waypoints,
+        modes: base.modes,
+        tanks: base.tanks,
+        atlas_version: 1,
+        arena_version: 1,
+        provenance: GroundProvenance {
+            source: GroundSource::Generator,
+            version: "v1".to_owned(),
+            seed: Some(seed),
+            inputs: Vec::new(),
+        },
+        note: String::new(),
+    };
+    let _ = despeckle(&mut draft, DEFAULT_SPECKLE_MIN_CELLS)?;
+    let report = check(&draft)?;
+    draft.note = report.summary_note();
+    Ok(draft)
+}
+
 /// **The generator** (doc 30 §4 & §9, D-30-9): generate a [`GroundDraft`] for a
-/// named preset (`"proving_ground"` in WG.1; biome presets join in WG.3/WG.5).
+/// named preset (`"proving_ground"`, `"mars_canyon"`, `"lunar_crater"`, `"ice_shelf"`).
 ///
 /// # Errors
 ///
@@ -2779,11 +3126,283 @@ pub fn generate(preset: &str, seed: u64, biome: Option<&str>) -> Result<GroundDr
             }
             proving_ground_draft()
         }
+        "mars_canyon" => {
+            generate_biome_preset("mars_canyon", "mars", "mars", "Mars Canyon", seed, biome)
+        }
+        "lunar_crater" => {
+            generate_biome_preset("lunar_crater", "lunar", "luna", "Lunar Crater", seed, biome)
+        }
+        "ice_shelf" => {
+            generate_biome_preset("ice_shelf", "ice", "europa", "Ice Shelf", seed, biome)
+        }
         other => Err(GroundError::Invalid {
             id: other.to_owned(),
-            detail: format!("unknown generator preset `{other}` (expected `proving_ground`)"),
+            detail: format!(
+                "unknown generator preset `{other}` (expected `proving_ground`, `mars_canyon`, `lunar_crater`, or `ice_shelf`)"
+            ),
         }),
     }
+}
+
+fn png_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn write_png_chunk(out: &mut Vec<u8>, tag: [u8; 4], data: &[u8]) {
+    let len = u32::try_from(data.len()).unwrap_or(0);
+    out.extend_from_slice(&len.to_be_bytes());
+    let crc_start = out.len();
+    out.extend_from_slice(&tag);
+    out.extend_from_slice(data);
+    let crc = png_crc32(out.get(crc_start..).unwrap_or(&[]));
+    out.extend_from_slice(&crc.to_be_bytes());
+}
+
+fn biome_class_rgb(biome: &str, class: TerrainClass) -> [u8; 3] {
+    match biome {
+        "mars" => match class {
+            TerrainClass::Sand => [194, 108, 68],
+            TerrainClass::Regolith => [156, 82, 52],
+            TerrainClass::Ground => [138, 70, 44],
+            TerrainClass::Road | TerrainClass::Paved => [168, 124, 96],
+            TerrainClass::Rock => [112, 58, 42],
+            TerrainClass::Rubble => [128, 66, 48],
+            TerrainClass::Wall => [212, 180, 152],
+            TerrainClass::Floor => [118, 92, 78],
+            TerrainClass::Door => [230, 176, 80],
+            _ => [164, 90, 56],
+        },
+        "lunar" => match class {
+            TerrainClass::Regolith => [142, 144, 150],
+            TerrainClass::Ground => [118, 120, 126],
+            TerrainClass::Paved | TerrainClass::Road => [176, 178, 184],
+            TerrainClass::Rock => [94, 96, 104],
+            TerrainClass::Rubble => [108, 110, 118],
+            TerrainClass::Wall => [216, 218, 224],
+            TerrainClass::Floor => [124, 126, 132],
+            TerrainClass::Door => [224, 188, 88],
+            _ => [134, 136, 142],
+        },
+        "ice" => match class {
+            TerrainClass::Ice => [206, 228, 244],
+            TerrainClass::Ground => [132, 148, 166],
+            TerrainClass::Road | TerrainClass::Paved => [162, 178, 194],
+            TerrainClass::Rock => [96, 110, 128],
+            TerrainClass::Rubble => [116, 132, 150],
+            TerrainClass::WaterDeep | TerrainClass::Water => [28, 64, 112],
+            TerrainClass::Wall => [232, 240, 248],
+            TerrainClass::Floor => [138, 150, 164],
+            TerrainClass::Door => [232, 190, 86],
+            _ => [190, 214, 232],
+        },
+        _ => match class {
+            TerrainClass::Grass => [78, 124, 68],
+            TerrainClass::Ground => [134, 110, 82],
+            TerrainClass::Road | TerrainClass::Paved => [164, 152, 132],
+            TerrainClass::WoodsLight => [52, 94, 48],
+            TerrainClass::WoodsHeavy => [32, 66, 32],
+            TerrainClass::Rubble => [118, 112, 104],
+            TerrainClass::Rock => [104, 100, 96],
+            TerrainClass::Water => [58, 124, 168],
+            TerrainClass::WaterDeep => [28, 76, 122],
+            TerrainClass::Wall => [208, 200, 188],
+            TerrainClass::Floor => [128, 122, 114],
+            TerrainClass::Door => [228, 182, 78],
+            TerrainClass::Sand => [194, 174, 128],
+            TerrainClass::Ice => [206, 228, 244],
+            TerrainClass::Regolith => [142, 144, 150],
+            _ => [96, 96, 96],
+        },
+    }
+}
+
+/// **Render an overhead PNG of a [`GroundDraft`]** (doc 30 §4 `D-30-2` & §8):
+/// draws a `2 × 2`-pixel-per-cell 24-bit RGB PNG with biome-keyed surface colors,
+/// NW hillshading from `elev_cm`, 10 m contour lines, entry-zone borders,
+/// waypoint edges/nodes, key-spot markers, and an optional [`viewshed`] overlay.
+///
+/// # Errors
+///
+/// [`GroundError`] if `draft` fails validation or `viewshed_origin` is out of bounds.
+pub fn render_png(
+    draft: &GroundDraft,
+    viewshed_origin: Option<(u16, u16)>,
+    size_cm: i32,
+) -> Result<Vec<u8>, GroundError> {
+    use std::io::Write as _;
+
+    let (classes, elev) = draft.validate()?;
+    let vs = if let Some((ox, oy)) = viewshed_origin {
+        Some(viewshed(draft, ox, oy, size_cm)?)
+    } else {
+        None
+    };
+
+    let scale = 2_usize;
+    let w = usize::from(draft.cols);
+    let h = usize::from(draft.rows);
+    let img_w = w * scale;
+    let img_h = h * scale;
+    let mut rgb = vec![0_u8; img_w * img_h * 3];
+
+    let elev_at_cell =
+        |cx: usize, cy: usize| -> i32 { i32::from(elev.get(cy * w + cx).copied().unwrap_or(0)) };
+
+    for cy in 0..h {
+        let py_base = (h - 1 - cy) * scale;
+        for cx in 0..w {
+            let idx = cy * w + cx;
+            let class = classes.get(idx).copied().unwrap_or(TerrainClass::Ground);
+            let base = biome_class_rgb(&draft.biome, class);
+
+            let e_here = elev_at_cell(cx, cy);
+            let e_w = elev_at_cell(cx.saturating_sub(1), cy);
+            let e_e = elev_at_cell((cx + 1).min(w - 1), cy);
+            let e_s = elev_at_cell(cx, cy.saturating_sub(1));
+            let e_n = elev_at_cell(cx, (cy + 1).min(h - 1));
+            let dx = e_e - e_w;
+            let dy = e_n - e_s;
+            let shade = ((-dx + dy) / 22).clamp(-42, 42);
+            let contour = (e_here / 1_000 != e_e / 1_000) || (e_here / 1_000 != e_n / 1_000);
+            let contour_bias = if contour { -16 } else { 0 };
+
+            let mut r = (i32::from(base[0]) + shade + contour_bias).clamp(0, 255);
+            let mut g = (i32::from(base[1]) + shade + contour_bias).clamp(0, 255);
+            let mut b = (i32::from(base[2]) + shade + contour_bias).clamp(0, 255);
+
+            if let Some(vs_grid) = &vs {
+                match vs_grid.get(idx).copied().unwrap_or(0) {
+                    1 => {
+                        r = (r * 3 + 70) / 4;
+                        g = (g * 3 + 220) / 4;
+                        b = (b * 3 + 90) / 4;
+                    }
+                    2 => {
+                        r = (r * 3 + 235) / 4;
+                        g = (g * 3 + 180) / 4;
+                        b = (b * 3 + 50) / 4;
+                    }
+                    3 => {
+                        r = (r * 3 + 70) / 4;
+                        g = (g * 3 + 190) / 4;
+                        b = (b * 3 + 225) / 4;
+                    }
+                    _ => {
+                        r = (r * 2) / 3;
+                        g = (g * 2) / 3;
+                        b = (b * 2) / 3;
+                    }
+                }
+            }
+
+            let pixel = [
+                u8::try_from(r).unwrap_or(0),
+                u8::try_from(g).unwrap_or(0),
+                u8::try_from(b).unwrap_or(0),
+            ];
+            for sy in 0..scale {
+                for sx in 0..scale {
+                    let px = cx * scale + sx;
+                    let py = py_base + sy;
+                    let p_idx = (py * img_w + px) * 3;
+                    if let Some(dst) = rgb.get_mut(p_idx..p_idx + 3) {
+                        dst.copy_from_slice(&pixel);
+                    }
+                }
+            }
+        }
+    }
+
+    let put_px = |buf: &mut [u8], px: usize, py: usize, c: [u8; 3]| {
+        if px < img_w && py < img_h {
+            let p_idx = (py * img_w + px) * 3;
+            if let Some(dst) = buf.get_mut(p_idx..p_idx + 3) {
+                dst.copy_from_slice(&c);
+            }
+        }
+    };
+
+    // Entry zone outlines
+    for z in &draft.entry_zones {
+        let color = match z.team {
+            Team::Red => [225, 72, 64],
+            Team::Blue => [68, 142, 235],
+        };
+        let x0 = usize::from(z.x0) * scale;
+        let x1 = ((usize::from(z.x1) + 1) * scale)
+            .saturating_sub(1)
+            .min(img_w - 1);
+        let y0 = (h.saturating_sub(1 + usize::from(z.y1))) * scale;
+        let y1 = ((h - usize::from(z.y0)) * scale)
+            .saturating_sub(1)
+            .min(img_h - 1);
+        for px in x0..=x1 {
+            put_px(&mut rgb, px, y0, color);
+            put_px(&mut rgb, px, y1, color);
+        }
+        for py in y0..=y1 {
+            put_px(&mut rgb, x0, py, color);
+            put_px(&mut rgb, x1, py, color);
+        }
+    }
+
+    // Waypoint nodes and key spots
+    for n in &draft.waypoints.nodes {
+        let px = usize::from(n.x) * scale;
+        let py = (h.saturating_sub(1 + usize::from(n.y))) * scale;
+        put_px(&mut rgb, px, py, [80, 220, 245]);
+    }
+    for spot in &draft.key_spots {
+        let cx = usize::from(spot.x) * scale;
+        let cy = (h.saturating_sub(1 + usize::from(spot.y))) * scale;
+        for dy in 0..=2_usize {
+            for dx in 0..=2_usize {
+                put_px(
+                    &mut rgb,
+                    cx.saturating_add(dx).saturating_sub(1),
+                    cy.saturating_add(dy).saturating_sub(1),
+                    [255, 225, 64],
+                );
+            }
+        }
+    }
+
+    let mut raw_scanlines = Vec::with_capacity((img_w * 3 + 1) * img_h);
+    for py in 0..img_h {
+        raw_scanlines.push(0_u8);
+        let row_start = py * img_w * 3;
+        if let Some(row_bytes) = rgb.get(row_start..row_start + img_w * 3) {
+            raw_scanlines.extend_from_slice(row_bytes);
+        }
+    }
+
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&raw_scanlines)
+        .map_err(|e| GroundError::Pack(format!("png zlib encode failed: {e}")))?;
+    let idat = encoder
+        .finish()
+        .map_err(|e| GroundError::Pack(format!("png zlib finish failed: {e}")))?;
+
+    let mut png = Vec::with_capacity(idat.len() + 64);
+    png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut ihdr = [0_u8; 13];
+    ihdr[0..4].copy_from_slice(&u32::try_from(img_w).unwrap_or(0).to_be_bytes());
+    ihdr[4..8].copy_from_slice(&u32::try_from(img_h).unwrap_or(0).to_be_bytes());
+    ihdr[8] = 8; // 8 bits per channel
+    ihdr[9] = 2; // RGB truecolor
+    write_png_chunk(&mut png, *b"IHDR", &ihdr);
+    write_png_chunk(&mut png, *b"IDAT", &idat);
+    write_png_chunk(&mut png, *b"IEND", &[]);
+    Ok(png)
 }
 
 #[cfg(test)]
@@ -3250,6 +3869,204 @@ mod tests {
         let disk_parity: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&parity_path)?)?;
         check_eq!(disk_parity, parity_doc);
+        Ok(())
+    }
+
+    #[test]
+    fn wg5_winter_valley_and_biome_presets_and_render_png_meet_acceptance()
+    -> Result<(), Box<dyn Error>> {
+        // 1. Checked-in winter_valley draft builds the shipped packs byte for byte,
+        //    carries extractor provenance naming the Unity packs and versions, and passes §5 check.
+        let world = mush_core::World::default();
+        let wv = draft_from_world(&world, "winter_valley")?;
+        check_eq!(wv.id, "winter_valley");
+        check_eq!(wv.provenance.source, GroundSource::Extractor);
+        check_eq!(wv.provenance.inputs.len(), 3);
+        check!(
+            wv.provenance
+                .inputs
+                .iter()
+                .any(|s| s.contains("Winter Pack v1.0"))
+        );
+        check!(
+            wv.provenance
+                .inputs
+                .iter()
+                .any(|s| s.contains("Arcane Forest Environment v1.0"))
+        );
+        check!(
+            wv.provenance
+                .inputs
+                .iter()
+                .any(|s| s.contains("Wasteland Environment v1.0"))
+        );
+        let wv_report = check(&wv)?;
+        check!(wv_report.passed);
+        check!(wv_report.tracked_passable_pct >= 90);
+        check!(wv_report.legged_passable_pct >= 95);
+        check!(wv_report.zones_reachable_tracked);
+        check!(wv_report.zones_reachable_wheeled);
+        check!(wv_report.zones_reachable_legged);
+        check!(wv_report.key_spots_wheeled_reachable);
+        check!(wv_report.waypoints_reachable);
+        check!(wv_report.max_road_grade_pct <= 20);
+        check_eq!(wv_report.max_entry_zone_step_cm, 0);
+
+        let built_wv = build(&wv)?;
+        check_eq!(built_wv.draft, wv);
+        check_eq!(
+            built_wv.atlas_json.replace("\r\n", "\n"),
+            content::WINTER_VALLEY_ATLAS_JSON.replace("\r\n", "\n")
+        );
+        check_eq!(
+            built_wv.arena_json.replace("\r\n", "\n"),
+            content::WINTER_VALLEY_JSON.replace("\r\n", "\n")
+        );
+
+        // 2. winter_valley boots from the tree's packs into Records and ArenaDefinition.
+        let packs = content::winter_valley_packs()?;
+        check_eq!(packs.len(), 2);
+        let atlas_pack = packs.first().ok_or("missing winter_valley atlas pack")?;
+        let arena_pack = packs.get(1).ok_or("missing winter_valley arena pack")?;
+        let mut records = mush_atlas::record::Records::default();
+        let pack_id = CanonicalId::new(content::WINTER_VALLEY_ATLAS_PACK)?;
+        let region_id = CanonicalId::new("region.winter_valley")?;
+        let region_raw = atlas_pack
+            .entries()
+            .get(&region_id)
+            .ok_or("missing region.winter_valley")?;
+        let region_def: RegionDef =
+            serde_json::from_value(serde_json::Value::Object(region_raw.def().clone()))?;
+        let region_key = mush_atlas::RecordKey::new(pack_id.clone(), region_id);
+        records.regions.insert(
+            region_key.clone(),
+            mush_atlas::RegionRec {
+                key: region_key.clone(),
+                name: region_def.name.clone(),
+                kind: region_def.region_kind()?,
+                frame: None,
+                parent: None,
+                extent: region_def.extent,
+                datum_cm: 0,
+                background: region_def.background,
+                ground: Vec::new(),
+                ground_resolution_cm: region_def.ground_resolution_cm,
+                theme: None,
+                biome: region_def.biome,
+                revision: 1,
+            },
+        );
+        for (entry_id, raw) in atlas_pack.entries() {
+            if raw.kind().as_str() == "heightfield" {
+                let hf: HeightfieldDef =
+                    serde_json::from_value(serde_json::Value::Object(raw.def().clone()))?;
+                let samples = hf.samples()?;
+                let authored = hf.class_grid()?;
+                let mut cells = mush_atlas::Cells::filled(
+                    hf.cols,
+                    hf.rows,
+                    mush_atlas::Cell::default(),
+                    mush_atlas::MAX_TILE_CELLS,
+                )?;
+                for y in 0..hf.rows {
+                    for x in 0..hf.cols {
+                        let at = usize::from(y) * usize::from(hf.cols) + usize::from(x);
+                        let elev_cm = samples.get(at).copied().unwrap_or(0);
+                        let class = authored
+                            .as_ref()
+                            .and_then(|g| g.get(at).copied().flatten())
+                            .unwrap_or(TerrainClass::Ground);
+                        cells.set(
+                            x,
+                            y,
+                            mush_atlas::Cell {
+                                class,
+                                elev_cm,
+                                cover: 0,
+                                room: 0,
+                            },
+                        );
+                    }
+                }
+                let tile_id = CanonicalId::new(format!("{entry_id}.tile.0"))?;
+                let tile_key = mush_atlas::RecordKey::new(pack_id.clone(), tile_id);
+                let step_m = f64::from(hf.resolution_cm) / 100.0;
+                let bbox = mush_atlas::Rect2(
+                    mush_atlas::Point2(hf.origin.0, hf.origin.1),
+                    mush_atlas::Point2(
+                        hf.origin.0 + f64::from(hf.cols) * step_m,
+                        hf.origin.1 + f64::from(hf.rows) * step_m,
+                    ),
+                );
+                records.tiles.insert(
+                    tile_key.clone(),
+                    mush_atlas::TileRec {
+                        key: tile_key,
+                        region: region_key.clone(),
+                        surface: mush_atlas::SurfaceRef::Ground,
+                        owner: mush_atlas::record::TileOwner::Heightfield,
+                        bbox,
+                        resolution_cm: hf.resolution_cm,
+                        cells,
+                        rooms: Vec::new(),
+                        revision: 1,
+                    },
+                );
+            }
+        }
+        let arena_id = CanonicalId::new(content::WINTER_VALLEY)?;
+        let arena_raw = arena_pack
+            .entries()
+            .get(&arena_id)
+            .ok_or("missing tacsim.arena.winter_valley")?;
+        let arena_def: ArenaDef =
+            serde_json::from_value(serde_json::Value::Object(arena_raw.def().clone()))?;
+        let loaded_wv =
+            crate::definitions::arena::from_pack(content::WINTER_VALLEY, &arena_def, &records)?;
+        check_eq!(loaded_wv.terrain.width(), 256);
+        check_eq!(loaded_wv.terrain.height(), 256);
+        check_eq!(loaded_wv.key_spots.len(), 5);
+        let reassembled_wv = draft_from_records("winter_valley", &arena_def, &records)?;
+        check_eq!(reassembled_wv, wv);
+
+        // 3. Procedural biome presets (`mars_canyon`, `lunar_crater`, `ice_shelf`)
+        //    meet §5 check and author only their §6 per-biome class vocabularies.
+        for (preset, expected_biome, expected_body) in [
+            ("mars_canyon", "mars", "mars"),
+            ("lunar_crater", "lunar", "luna"),
+            ("ice_shelf", "ice", "europa"),
+        ] {
+            let d = generate(preset, 42, None)?;
+            check_eq!(d.biome, expected_biome);
+            check_eq!(d.body, expected_body);
+            check_eq!(d.provenance.source, GroundSource::Generator);
+            check_eq!(d.provenance.seed, Some(42));
+            let rep = check(&d)?;
+            check!(rep.passed);
+            let cls = decode_classes(&d.id, d.cols, d.rows, &d.classes)?;
+            // None of the non-temperate presets may author grass or woods (§6).
+            check!(!cls.iter().any(|c| matches!(
+                c,
+                TerrainClass::Grass | TerrainClass::WoodsLight | TerrainClass::WoodsHeavy
+            )));
+            if expected_biome != "ice" {
+                check!(
+                    !cls.iter()
+                        .any(|c| matches!(c, TerrainClass::Water | TerrainClass::WaterDeep))
+                );
+            } else {
+                check!(cls.contains(&TerrainClass::Ice));
+                check!(cls.contains(&TerrainClass::WaterDeep));
+            }
+        }
+
+        // 4. `render_png` emits a valid PNG both plain and with a viewshed overlay.
+        let png_plain = render_png(&wv, None, 300)?;
+        check!(png_plain.starts_with(b"\x89PNG\r\n\x1a\n"));
+        check!(png_plain.len() > 1_000);
+        let png_vs = render_png(&wv, Some((144, 111)), 300)?;
+        check!(png_vs.starts_with(b"\x89PNG\r\n\x1a\n"));
+        check_ne!(png_plain, png_vs);
         Ok(())
     }
 }

@@ -166,15 +166,13 @@ const Z_HUD: i32 = -1;
 /// Off-map void colour.
 const OFF_MAP_RGB: Rgb = [10, 12, 16];
 
-/// The shipped look (its index in [`crate::look::shipped`]) a 2.5D unit is
+/// The look (its index, [`crate::look::by_index`]) a 2.5D unit is
 /// drawn with: its classified `unit_type`'s, else the `unknown` look's (an
 /// unclassified contact, or a type with no look).
 fn look_index(unit_type: Option<&str>) -> usize {
-    let looks = crate::look::shipped();
-    let find = |unit: &str| looks.iter().position(|l| l.units.iter().any(|u| u == unit));
     unit_type
-        .and_then(find)
-        .or_else(|| find(crate::look::UNKNOWN))
+        .and_then(crate::look::index_for_unit)
+        .or_else(|| crate::look::index_for_unit(crate::look::UNKNOWN))
         .unwrap_or(0)
 }
 
@@ -237,7 +235,7 @@ impl SheetKey {
     }
 }
 
-fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
+pub(crate) fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
     // Unfogged RGB colours matching raycast::Paint's sprite palette.
     let (td, tm, tl) = match kind {
         SpriteKind::Hostile => ([120, 36, 32], [178, 54, 48], [214, 98, 84]),

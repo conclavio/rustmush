@@ -2701,9 +2701,20 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("cannot create data dir {}: {e}", data_dir.display()))?;
     let ssh_listen = config.ssh_listen().map_err(|e| e.to_string())?;
-    let listener = start_listener(ssh_listen, &data_dir, banner(&config.server.name), bridge)
-        .await
-        .map_err(|e| format!("SSH listener on {ssh_listen}: {e}"))?;
+    let mut listener = start_listener(
+        ssh_listen,
+        &data_dir,
+        banner(&config.server.name),
+        Arc::clone(&bridge),
+    )
+    .await
+    .map_err(|e| format!("SSH listener on {ssh_listen}: {e}"))?;
+    if let Some(path) = config.ssh.trusted_socket_path() {
+        listener
+            .start_trusted(path.clone(), &data_dir, banner(&config.server.name), bridge)
+            .await
+            .map_err(|e| format!("SSH trusted ingress {}: {e}", path.display()))?;
+    }
     let addr = listener.addr();
     tracing::info!(%addr, "gateway SSH listener up");
     if let Some(tx) = opts.ssh_ready {

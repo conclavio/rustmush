@@ -85,6 +85,14 @@ const PREAUTH_FLOOD_BURST: f64 = 5.0;
 /// channel-open, not an idle timer — in-game idlers are never affected.
 const PREAUTH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Pre-connect input is echoed, so a client that stops reading could make the
+/// server queue its own keystrokes without bound. Input that arrives while
+/// the channel's window is exhausted is dropped instead of echoed, and this
+/// many such arrivals in a row close the connection. One coincidence does
+/// not: a typist whose window refills within a round trip is left alone
+/// (doc 29a §7, round 2).
+const PENDING_STRIKES: u8 = 3;
+
 /// Cap on one output-pump write to the transport (design 02 §8.4: "try 5 s
 /// then disconnect"). A client that stops reading (terminal `^S`, dead
 /// peer behind a live TCP window) stalls `handle.data` on SSH window
@@ -157,6 +165,13 @@ pub enum SshError {
     },
     /// The accept loop failed.
     Server(std::io::Error),
+    /// Could not bind the doc 29 trusted ingress socket.
+    BindTrusted {
+        /// The socket path that failed.
+        path: String,
+        /// The underlying error.
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for SshError {
@@ -167,6 +182,9 @@ impl std::fmt::Display for SshError {
             }
             SshError::Bind { addr, source } => write!(f, "binding {addr}: {source}"),
             SshError::Server(e) => write!(f, "SSH server: {e}"),
+            SshError::BindTrusted { path, source } => {
+                write!(f, "binding the SSH trusted ingress {path}: {source}")
+            }
         }
     }
 }
@@ -174,7 +192,9 @@ impl std::fmt::Display for SshError {
 impl std::error::Error for SshError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            SshError::Bind { source, .. } | SshError::Server(source) => Some(source),
+            SshError::Bind { source, .. }
+            | SshError::Server(source)
+            | SshError::BindTrusted { source, .. } => Some(source),
             SshError::HostKey { .. } => None,
         }
     }
@@ -191,32 +211,23 @@ impl SshServer {
         Self::bind(cfg, hooks).await?.run().await
     }
 
+    /// Bind the doc 29 trusted ingress (a Unix socket only sshdoorway can
+    /// reach) without accepting yet. See [`crate::trusted`].
+    #[cfg(unix)]
+    pub async fn bind_trusted(
+        cfg: crate::trusted::TrustedConfig,
+        hooks: Arc<dyn SshHooks>,
+    ) -> Result<crate::trusted::BoundTrustedServer, SshError> {
+        crate::trusted::BoundTrustedServer::bind(cfg, hooks).await
+    }
+
     /// Load/generate the host key and bind the listener without accepting
     /// yet.
     pub async fn bind(
         cfg: SshConfig,
         hooks: Arc<dyn SshHooks>,
     ) -> Result<BoundSshServer, SshError> {
-        let key = hostkey::load_or_generate(&cfg.host_key_path)?;
-        let mut methods = MethodSet::empty();
-        methods.push(MethodKind::None);
-        methods.push(MethodKind::PublicKey);
-        methods.push(MethodKind::Password);
-        methods.push(MethodKind::KeyboardInteractive);
-        let config = Arc::new(Config {
-            server_id: russh::SshId::Standard(Cow::Borrowed("SSH-2.0-rustmush_0.1")),
-            methods,
-            keys: vec![key],
-            // Idlers are furniture (design 02 §5.6): no inactivity timeout;
-            // dead links are caught by keepalives instead.
-            inactivity_timeout: None,
-            keepalive_interval: Some(Duration::from_secs(30)),
-            keepalive_max: 3,
-            auth_rejection_time: Duration::from_secs(1),
-            auth_rejection_time_initial: Some(Duration::ZERO),
-            nodelay: true,
-            ..Config::default()
-        });
+        let config = server_config(&cfg.host_key_path)?;
         let listener = TcpListener::bind(cfg.listen)
             .await
             .map_err(|source| SshError::Bind {
@@ -229,13 +240,35 @@ impl SshServer {
             addr,
             listener,
             config,
-            ingress: Ingress {
-                hooks,
-                banner: Arc::from(cfg.banner.as_str()),
-                next_conn: Arc::new(AtomicU64::new(1)),
-            },
+            ingress: Ingress::new(hooks, &cfg.banner),
         })
     }
+}
+
+/// The russh configuration every rustmush listener shares (the public TCP
+/// port and the doc 29 trusted ingress alike).
+pub(crate) fn server_config(host_key_path: &std::path::Path) -> Result<Arc<Config>, SshError> {
+    let key = hostkey::load_or_generate(host_key_path)?;
+    let mut methods = MethodSet::empty();
+    methods.push(MethodKind::None);
+    methods.push(MethodKind::PublicKey);
+    methods.push(MethodKind::Password);
+    methods.push(MethodKind::KeyboardInteractive);
+    let config = Arc::new(Config {
+        server_id: russh::SshId::Standard(Cow::Borrowed("SSH-2.0-rustmush_0.1")),
+        methods,
+        keys: vec![key],
+        // Idlers are furniture (design 02 §5.6): no inactivity timeout;
+        // dead links are caught by keepalives instead.
+        inactivity_timeout: None,
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 3,
+        auth_rejection_time: Duration::from_secs(1),
+        auth_rejection_time_initial: Some(Duration::ZERO),
+        nodelay: true,
+        ..Config::default()
+    });
+    Ok(config)
 }
 
 /// A bound-but-not-yet-serving SSH server.
@@ -263,8 +296,9 @@ impl BoundSshServer {
 
 // ---- per-connection machinery ------------------------------------------
 
-struct Ingress {
-    hooks: Arc<dyn SshHooks>,
+#[derive(Clone)]
+pub(crate) struct Ingress {
+    pub(crate) hooks: Arc<dyn SshHooks>,
     banner: Arc<str>,
     next_conn: Arc<AtomicU64>,
 }
@@ -273,7 +307,6 @@ impl russh::server::Server for Ingress {
     type Handler = ConnHandler;
 
     fn new_client(&mut self, peer: Option<SocketAddr>) -> ConnHandler {
-        let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed);
         let addr = peer
             .map(|p| p.ip())
             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
@@ -281,6 +314,40 @@ impl russh::server::Server for Ingress {
         // welcome-screen squatters count against the cap too. An over-cap
         // connection is dropped at its first auth message.
         let counted = self.hooks.connection_opened(addr);
+        self.handler_for(addr, counted)
+    }
+
+    fn handle_session_error(&mut self, error: russh::Error) {
+        tracing::debug!(%error, "SSH session ended with error");
+    }
+}
+
+impl Ingress {
+    pub(crate) fn new(hooks: Arc<dyn SshHooks>, banner: &str) -> Ingress {
+        Ingress::with_base(hooks, banner, 1)
+    }
+
+    /// An ingress whose connection ids start at `base`. Every listener in one
+    /// process must allocate from a disjoint range: the ids key the session
+    /// manager, and two listeners both counting from 1 would hand two players
+    /// the same id (adversarial review, round 2). The public port starts at
+    /// 1, the trusted ingress at [`crate::trusted::TRUSTED_CONN_ID_BASE`];
+    /// the web side starts at 2^32 and Discord at 2^48.
+    pub(crate) fn with_base(hooks: Arc<dyn SshHooks>, banner: &str, base: u64) -> Ingress {
+        Ingress {
+            hooks,
+            banner: Arc::from(banner),
+            next_conn: Arc::new(AtomicU64::new(base)),
+        }
+    }
+
+    /// One connection's handler, for an address whose per-IP slot has
+    /// already been asked for: `counted` is `connection_opened`'s answer, and
+    /// the handler's `Drop` releases the slot exactly when it is `true`. The
+    /// public TCP port asks at accept; the trusted ingress asks at the
+    /// preamble's `Hello`, for the address the doorway names.
+    pub(crate) fn handler_for(&self, addr: IpAddr, counted: bool) -> ConnHandler {
+        let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed);
         if !counted {
             tracing::info!(conn = conn_id, %addr, "per-IP connection cap hit; will refuse");
         }
@@ -329,11 +396,17 @@ impl russh::server::Server for Ingress {
             command_task: None,
             counted,
             flood: FloodBucket::new(PREAUTH_FLOOD_RATE, PREAUTH_FLOOD_BURST, Instant::now()),
+            pending_strikes: 0,
+            attested: None,
         }
     }
+}
 
-    fn handle_session_error(&mut self, error: russh::Error) {
-        tracing::debug!(%error, "SSH session ended with error");
+impl ConnHandler {
+    /// This connection's id (tests).
+    #[cfg(test)]
+    pub(crate) fn conn_id(&self) -> u64 {
+        self.conn_id
     }
 }
 
@@ -471,14 +544,14 @@ impl Shared {
     }
 }
 
-struct ConnHandler {
+pub(crate) struct ConnHandler {
     auth_method: AuthMethod,
     exec_input: Option<crate::mind_exec::ExecInput>,
     exec_submitted: bool,
     hooks: Arc<dyn SshHooks>,
     banner: Arc<str>,
     conn_id: u64,
-    addr: IpAddr,
+    pub(crate) addr: IpAddr,
     shared: Arc<Mutex<Shared>>,
     route: Route,
     channel: Option<ChannelId>,
@@ -507,6 +580,25 @@ struct ConnHandler {
     /// `false` means over-cap: refused at the first auth message.
     counted: bool,
     flood: FloodBucket,
+    /// Consecutive pre-connect inputs that arrived while the channel's window
+    /// was exhausted (see [`PENDING_STRIKES`]).
+    pending_strikes: u8,
+    /// Doc 29: the account the trusted ingress's preamble bound to this
+    /// connection, after the doorway attested the player holds a key that
+    /// [`SshHooks::auth_account_key`] accepted. `auth_none` for exactly
+    /// `user` then logs in as a public-key login. Always `None` on the public
+    /// TCP port, which never reads a preamble.
+    pub(crate) attested: Option<Attested>,
+}
+
+/// What a doc 29 `Begin` with an attested key bound (see
+/// [`ConnHandler::attested`]).
+#[derive(Clone, Debug)]
+pub(crate) struct Attested {
+    /// The exact upstream username the doorway will authenticate as.
+    pub(crate) user: String,
+    pub(crate) account: String,
+    pub(crate) characters: Vec<CharSummary>,
 }
 
 impl Drop for ConnHandler {
@@ -692,7 +784,7 @@ fn parse_history(line: &str) -> Option<HistoryReq> {
 /// a trailing/empty character part (`account+`) is treated as no request.
 /// The returned account part is what all auth uses; the character part only
 /// ever selects a character the authenticated account *owns*.
-fn split_account_user(user: &str) -> (&str, Option<&str>) {
+pub(crate) fn split_account_user(user: &str) -> (&str, Option<&str>) {
     match user.split_once('+') {
         Some((account, character)) if !character.is_empty() => (account, Some(character)),
         Some((account, _)) => (account, None),
@@ -702,7 +794,7 @@ fn split_account_user(user: &str) -> (&str, Option<&str>) {
 
 /// `play` / `guest` / `new` — the auth-none front door (M1: all three
 /// alias to the welcome screen).
-fn is_front_door(user: &str) -> bool {
+pub(crate) fn is_front_door(user: &str) -> bool {
     user.eq_ignore_ascii_case("play")
         || user.eq_ignore_ascii_case("guest")
         || user.eq_ignore_ascii_case("new")
@@ -751,7 +843,7 @@ fn reject_blocked() -> Auth {
 /// What a refused address is told, in one sentence. The tempban names a
 /// deadline the player can act on; the siteban deliberately does not (it may
 /// be permanent, and staff, not a countdown, lift it).
-fn block_notice(reason: BlockReason) -> String {
+pub(crate) fn block_notice(reason: BlockReason) -> String {
     match reason {
         BlockReason::Siteban => "Connections from your address are not permitted.".to_owned(),
         BlockReason::TooManyFailures { remaining } => {
@@ -766,7 +858,8 @@ fn block_notice(reason: BlockReason) -> String {
 
 /// The wording for a refusal whose reason the hooks did not report (an
 /// embedder that has not implemented [`SshHooks::block_reason`]).
-const BLOCKED_FALLBACK: &str = "Too many failed logins from your address; try again later.";
+pub(crate) const BLOCKED_FALLBACK: &str =
+    "Too many failed logins from your address; try again later.";
 
 impl ConnHandler {
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
@@ -1393,6 +1486,18 @@ impl Handler for ConnHandler {
         if self.hooks.is_ip_blocked(self.addr) {
             return Ok(reject_blocked());
         }
+        if let Some(attested) = self.attested.as_ref().filter(|a| a.user == user) {
+            // Doc 29: the doorway proved possession of a key the account has
+            // registered (the preamble's `Begin`); this is that login.
+            let route = Route::Account {
+                account: attested.account.clone(),
+                characters: attested.characters.clone(),
+                requested_char: split_account_user(user).1.map(str::to_owned),
+            };
+            self.auth_method = AuthMethod::PublicKey;
+            self.route = route;
+            return Ok(Auth::Accept);
+        }
         if is_front_door(user) {
             self.route = Route::Welcome;
             Ok(Auth::Accept)
@@ -1824,6 +1929,17 @@ impl Handler for ConnHandler {
         // hotkeys), not the line editor (design M15 D4).
         if matches!(self.lock().mode, Mode::Tui) {
             return self.tui_data(data, session).await;
+        }
+        if !self.connected.load(Ordering::SeqCst) {
+            if session.has_pending_data(channel) {
+                self.pending_strikes = self.pending_strikes.saturating_add(1);
+                if self.pending_strikes >= PENDING_STRIKES {
+                    return Err(russh::Error::Disconnect);
+                }
+                // Not echoed into a window the client is not draining.
+                return Ok(());
+            }
+            self.pending_strikes = 0;
         }
         let (echo, actions) = {
             let mut sh = self.lock();

@@ -42,6 +42,19 @@
 //! - `mp_wanted() -> len` — the model files the held feeds need and the
 //!   module lacks, one file name a line (`models/index.json`'s `file`), into
 //!   the output buffer `mp_output()` points at; `0` when nothing is wanted.
+//! - `mp_wanted_looks() -> len` — the unit types the held feeds name that have
+//!   no look yet (doc 31 cut UD.3b: published designs'), a JSON array into
+//!   the output buffer: what the page asks the `unit.looks` feed for.
+//! - `mp_looks(len) -> u32` — install a `unit.looks` keyframe's looks (the
+//!   input buffer's first `len` bytes): how many were installed.
+//! - `mp_check_look(len) -> len` — the staff unit designer's look check (doc
+//!   31 cut UD.2): the input buffer's first `len` bytes are
+//!   `{"look": <look JSON>, "rules": <the unit's def>}`; the answer,
+//!   `{"refusals": [...], "notes": [...]}`, goes into the output buffer.
+//! - `mp_preview(len) -> side` — the designer's model preview: the input
+//!   buffer holds `{"model", "view": "fp"|"iso", "size", "facing", "pose",
+//!   "team": "red"|"blue"}`; the frame, `side` x `side` RGBA, is what
+//!   `mp_pixels()` then points at; `0` for a model the catalogue lacks.
 //!
 //! A buffer the module hands out moves when its memory grows, so the caller
 //! takes a fresh view of `memory.buffer` after every call that may allocate.
@@ -360,7 +373,136 @@ pub extern "C" fn mp_wanted() -> u32 {
     })
 }
 
-/// The output buffer `mp_wanted` wrote.
+/// The unit types the held feeds name that have no look yet (see the crate's
+/// ABI, `mp_wanted_looks`).
+#[must_use]
+pub fn wanted_looks() -> Vec<String> {
+    with(|s| {
+        let mut types = Vec::new();
+        let mut names: Vec<&String> = s.feeds.keys().collect();
+        names.sort();
+        for name in names {
+            if let Some(feed) = s.feeds.get(name) {
+                mush_pixel::model::unit_types_in(feed, &mut types);
+            }
+        }
+        mush_pixel::model::wanted_looks(types)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    })
+}
+
+/// Install a `unit.looks` keyframe's looks (see the crate's ABI, `mp_looks`):
+/// how many were installed.
+#[must_use]
+pub fn looks(frame: &[u8]) -> u32 {
+    let Ok(v) = serde_json::from_slice::<Value>(frame) else {
+        return 0;
+    };
+    let mut installed = 0;
+    for (unit, look) in v
+        .get("looks")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        if mush_pixel::look::install(unit, &look.to_string()).unwrap_or(false) {
+            installed += 1;
+        }
+    }
+    installed
+}
+
+/// Write the types still wanting a look into the output buffer: its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_wanted_looks() -> u32 {
+    let text = serde_json::to_string(&wanted_looks()).unwrap_or_else(|_| "[]".into());
+    with(|s| {
+        s.output = text.into_bytes();
+        u32::try_from(s.output.len()).unwrap_or(0)
+    })
+}
+
+/// Install the looks in the input buffer's first `len` bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_looks(len: u32) -> u32 {
+    let input = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec)).unwrap_or_default();
+    looks(&input)
+}
+
+/// The staff unit designer's look check (see the crate's ABI,
+/// `mp_check_look`): the answer's JSON.
+#[must_use]
+pub fn check_look(input: &[u8]) -> String {
+    let answer = match serde_json::from_slice::<Value>(input) {
+        Ok(v) => {
+            let look = v.get("look").map(Value::to_string).unwrap_or_default();
+            let rules = v.get("rules").cloned().unwrap_or(Value::Null);
+            let found = mush_pixel::design::check_draft(&look, &rules);
+            serde_json::json!({ "refusals": found.refusals, "notes": found.notes })
+        }
+        Err(e) => serde_json::json!({ "refusals": [format!("not JSON: {e}")], "notes": [] }),
+    };
+    answer.to_string()
+}
+
+/// The designer's model preview (see the crate's ABI, `mp_preview`): the
+/// frame's side, with the RGBA kept for `mp_pixels`.
+#[must_use]
+pub fn preview(input: &[u8]) -> u32 {
+    let Ok(v) = serde_json::from_slice::<Value>(input) else {
+        return 0;
+    };
+    let word = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+    let view = mush_pixel::bake::View::named(word("view")).unwrap_or(mush_pixel::bake::View::Fp);
+    let facing = mush_pixel::look::Facing::named(word("facing"))
+        .unwrap_or(mush_pixel::look::Facing::FrontRight);
+    let kind = if word("team") == "blue" {
+        mush_pixel::raycast::SpriteKind::Blue
+    } else {
+        mush_pixel::raycast::SpriteKind::Red
+    };
+    let size = v
+        .get("size")
+        .and_then(Value::as_u64)
+        .and_then(|n| u16::try_from(n).ok())
+        .unwrap_or(96);
+    let pose = v
+        .get("pose")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0)
+        .min(mush_pixel::bake::POSE_WRECK);
+    match mush_pixel::design::preview_rgba(word("model"), view, size, facing, pose, kind) {
+        Some((side, rgba)) => with(|s| {
+            s.rgba = rgba;
+            u32::try_from(side).unwrap_or(0)
+        }),
+        None => 0,
+    }
+}
+
+/// Run the look check on the input buffer's first `len` bytes; the answer's
+/// length in the output buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_check_look(len: u32) -> u32 {
+    let input = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec)).unwrap_or_default();
+    let answer = check_look(&input);
+    with(|s| {
+        s.output = answer.into_bytes();
+        u32::try_from(s.output.len()).unwrap_or(0)
+    })
+}
+
+/// Draw the preview the input buffer's first `len` bytes ask for: its side.
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_preview(len: u32) -> u32 {
+    let input = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec)).unwrap_or_default();
+    preview(&input)
+}
+
+/// The output buffer `mp_wanted` or `mp_check_look` wrote.
 #[unsafe(no_mangle)]
 pub extern "C" fn mp_output() -> *const u8 {
     with(|s| s.output.as_ptr())
@@ -672,5 +814,65 @@ mod tests {
         assert!(wanted().is_empty(), "every model on the map is installed");
         assert_eq!(mp_wanted(), 0);
         assert_eq!(mp_units(u32::MAX), 0, "past the input buffer");
+    }
+
+    /// Doc 31 cut UD.3b: a feed naming a type with no look asks for it; a
+    /// `unit.looks` answer installs it, and the type is drawn from it after.
+    #[test]
+    fn a_published_designs_look_is_asked_for_and_installed() {
+        let unit = "tacsim.unit.design.wasm_probe";
+        assert!(feed(
+            FEED_COCKPIT,
+            serde_json::json!({ "seated": true, "unit_type": unit, "contacts": [] })
+                .to_string()
+                .as_bytes()
+        ));
+        assert!(wanted_looks().iter().any(|t| t == unit));
+        let look = serde_json::json!({
+            "units": [unit], "label": "Probe", "short": "PR",
+            "model": "mc.st.tank_lvl2", "size_cm": [700, 250],
+        });
+        let frame = serde_json::json!({ "looks": { unit: look } }).to_string();
+        assert_eq!(looks(frame.as_bytes()), 1);
+        assert_eq!(looks(frame.as_bytes()), 0, "installed once");
+        assert!(!wanted_looks().iter().any(|t| t == unit));
+        assert_eq!(
+            mush_pixel::look::for_unit(unit).map(|l| l.label.as_str()),
+            Some("Probe")
+        );
+        assert!(feed(FEED_COCKPIT, b""));
+    }
+
+    /// Doc 31 cut UD.2: the designer's look check and preview answer through
+    /// the module.
+    #[test]
+    fn the_designer_checks_a_look_and_previews_a_model() {
+        let look: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../mush-pixel/looks/tracked_tank.json"),
+            )
+            .expect("the tank's look"),
+        )
+        .expect("JSON");
+        let answer: Value = serde_json::from_str(&check_look(
+            serde_json::json!({ "look": look, "rules": { "sections": [], "components": [] } })
+                .to_string()
+                .as_bytes(),
+        ))
+        .expect("JSON");
+        assert!(
+            !answer["refusals"].as_array().expect("refusals").is_empty(),
+            "a doll naming sections the unit lacks"
+        );
+        let id = mush_pixel::model::index()[0].id.clone();
+        let side = preview(
+            serde_json::json!({ "model": id, "view": "iso", "size": 64, "facing": "front_right", "pose": 0, "team": "blue" })
+                .to_string()
+                .as_bytes(),
+        );
+        assert_eq!(side, 64);
+        assert_eq!(with(|s| s.rgba.len()), 64 * 64 * 4);
+        assert_eq!(preview(br#"{"model":"mc.nobody"}"#), 0);
     }
 }

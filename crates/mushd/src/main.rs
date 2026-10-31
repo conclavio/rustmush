@@ -488,9 +488,20 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         .with_metrics(Arc::clone(&metrics))
         .with_pixel(&config.pixel),
     );
-    let listener = start_listener(listen, &data_dir, banner(&config.server.name), bridge)
-        .await
-        .map_err(|e| format!("SSH listener on {listen}: {e}"))?;
+    let mut listener = start_listener(
+        listen,
+        &data_dir,
+        banner(&config.server.name),
+        Arc::clone(&bridge),
+    )
+    .await
+    .map_err(|e| format!("SSH listener on {listen}: {e}"))?;
+    if let Some(path) = config.ssh.trusted_socket_path() {
+        listener
+            .start_trusted(path.clone(), &data_dir, banner(&config.server.name), bridge)
+            .await
+            .map_err(|e| format!("SSH trusted ingress {}: {e}", path.display()))?;
+    }
 
     // The web ingress (M4): same accounts, same session manager, same
     // world handle, same guard — plus the token store and the panel

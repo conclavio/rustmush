@@ -50,6 +50,7 @@ mod hostkey;
 mod line;
 mod mind_exec;
 mod server;
+pub mod trusted;
 pub mod tui;
 mod welcome;
 
@@ -60,5 +61,8 @@ pub use hooks::{
 };
 pub use line::LineBuffer;
 pub use server::{BoundSshServer, SshConfig, SshError, SshServer};
+#[cfg(unix)]
+pub use trusted::BoundTrustedServer;
+pub use trusted::{TrustedConfig, TrustedIngress};
 pub use tui::pixel::PixelConfig;
 pub use welcome::{WelcomeCmd, parse_welcome};

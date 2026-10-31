@@ -288,6 +288,10 @@ const LOCAL_COMMANDS: [(&str, &str); 5] = [
 
 /// Per-connection ratatui application state.
 pub struct TuiApp {
+    /// The unit types this connection asked `unit.looks` for (doc 31 cut
+    /// UD.3b): each asked once; the looks themselves are process-wide
+    /// (`mush_pixel::look::install`).
+    looks_asked: BTreeSet<String>,
     caps: ClientCaps,
     theme: AnsiTheme,
     clock: fn() -> i64,
@@ -676,6 +680,25 @@ mod m6_workshop_tests {
     }
 }
 
+/// The pulled feed of published unit designs' looks (doc 31 cut UD.3b,
+/// `tacsim::design::LOOKS_FEED`).
+pub const UNIT_LOOKS_FEED: &str = "unit.looks";
+
+/// Install a `unit.looks` keyframe's looks into the process's look table, so
+/// every picture this gateway draws finds them (`mush_pixel::look::install`).
+fn install_looks(data: &Value) {
+    for (unit, look) in data
+        .get("looks")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        if let Err(error) = mush_pixel::look::install(unit, &look.to_string()) {
+            tracing::warn!(%unit, %error, "a published design's look did not install");
+        }
+    }
+}
+
 impl TuiApp {
     /// A fresh app sized for `caps`, with the built-in screens.
     ///
@@ -684,6 +707,27 @@ impl TuiApp {
     /// Never for the built-ins: their table passes [`validate_screens`], and
     /// a test pins it.
     #[must_use]
+    /// The `unit.looks` asks a frame needs (doc 31 cut UD.3b): the types it
+    /// names with no look, not asked before, at most eight an ask.
+    fn ask_looks(&mut self, data: &Value) -> Vec<(String, Value)> {
+        let mut types = Vec::new();
+        mush_pixel::model::unit_types_in(data, &mut types);
+        let fresh: Vec<String> = mush_pixel::model::wanted_looks(types)
+            .into_iter()
+            .filter(|t| !self.looks_asked.contains(*t))
+            .map(str::to_string)
+            .collect();
+        let mut asks = Vec::new();
+        for batch in fresh.chunks(8) {
+            self.looks_asked.extend(batch.iter().cloned());
+            asks.push((
+                UNIT_LOOKS_FEED.to_string(),
+                serde_json::json!({ "types": batch }),
+            ));
+        }
+        asks
+    }
+
     pub fn new(caps: ClientCaps) -> TuiApp {
         TuiApp::with_screens(caps, builtin_screens()).expect("built-in screens are valid")
     }
@@ -697,6 +741,7 @@ impl TuiApp {
         validate_screens(&screens)?;
         let active = screens.first().map_or(ScreenId(1), |s| s.id);
         Ok(TuiApp {
+            looks_asked: BTreeSet::new(),
             caps,
             theme: AnsiTheme::default(),
             clock: system_clock,
@@ -1959,6 +2004,9 @@ impl TuiApp {
                         self.workshop.accept(*id, result);
                         self.market.accept(*id, result);
                     }
+                    // Doc 31 cut UD.2: the unit designer is the web studio's;
+                    // the TUI never asks, so an answer is not its.
+                    mush_proto::InvokeResult::UnitDesign(_) => {}
                 }
                 queries.extend(self.market.take_queries());
                 return queries; // private source never enters scrollback
@@ -2000,6 +2048,20 @@ impl TuiApp {
                 self.exit_keys = exit_keys(&view.exits);
             }
             OutputEvent::Panel { feed, kind, data } => {
+                // Doc 31 cut UD.3b (D-31-16): published designs' looks. The
+                // answer installs them for the pictures this gateway draws; a
+                // frame naming a type with no look asks for it once.
+                if feed.as_str() == UNIT_LOOKS_FEED {
+                    if *kind == PanelFrameKind::Keyframe {
+                        install_looks(data);
+                    }
+                    return queries;
+                }
+                if *kind == PanelFrameKind::Keyframe
+                    && matches!(feed.as_str(), COCKPIT_FEED | REPLAY_FEED | OBSERVER_FEED)
+                {
+                    queries.extend(self.ask_looks(data));
+                }
                 if feed.as_str() == "arena.mind" {
                     if *kind == PanelFrameKind::Keyframe {
                         self.workshop.trace_feed(data);

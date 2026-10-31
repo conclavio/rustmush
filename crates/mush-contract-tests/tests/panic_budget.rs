@@ -99,7 +99,7 @@ const NEEDLES: [&str; 6] = [
 ];
 
 /// The pre-auth network half, whose budgets may only fall.
-const RATCHET_CRATES: [&str; 9] = [
+const RATCHET_CRATES: [&str; 11] = [
     "mush-ansi",
     "mush-config",
     "mush-gateway",
@@ -109,6 +109,9 @@ const RATCHET_CRATES: [&str; 9] = [
     "mush-privileges",
     "mush-proto",
     "mush-session",
+    // Doc 29: the port-22 doorway faces every scanner on the internet before auth.
+    "mush-sshdoorway",
+    "mush-sshdoorway-proto",
 ];
 
 /// Crates excluded wholesale, by name: the test harnesses, and `mush-bot`, the

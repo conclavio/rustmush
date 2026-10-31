@@ -202,6 +202,12 @@ pub struct TacsimStore {
     pub(crate) published: BTreeMap<(CanonicalId, u32), PackRecord>,
     /// Every `(id, version)` a `tacsim:pack:` **key** claimed, loaded or not (R8).
     pub(crate) published_keys: BTreeSet<(CanonicalId, u32)>,
+    /// `tacsim:design:{id}@{version}` — the in-instance design registry (doc 31
+    /// cut UD.3, D-31-9): each published design's pack and look. The host reads
+    /// the same rows before this module registers and hands the packs in as
+    /// operator packs, so a design is fieldable after the restart that follows
+    /// its publication (Q-31-1).
+    pub(crate) designs: BTreeMap<(String, u32), crate::design::DesignRecord>,
     /// `tacsim:seed:{pack}@{version}` — the idempotency latches.
     pub(crate) seeded: BTreeMap<(CanonicalId, u32), SeedApplication>,
     /// Every `(pack, version)` a `tacsim:seed:` **key** claimed, loaded or not (R8).
@@ -792,6 +798,20 @@ impl TacsimStore {
     /// The published-version ledger.
     pub fn published(&self) -> impl Iterator<Item = &PackRecord> {
         self.published.values()
+    }
+
+    /// The design registry (doc 31 cut UD.3), in `(id, version)` order.
+    pub fn designs(&self) -> impl Iterator<Item = &crate::design::DesignRecord> {
+        self.designs.values()
+    }
+
+    /// Whether unit `id` is a design every published version of which is
+    /// withdrawn: loaded, so a hull built on it still resolves, but never
+    /// offered to a new match (D-31-9).
+    #[must_use]
+    pub fn design_withdrawn(&self, id: &str) -> bool {
+        let mut versions = self.designs.values().filter(|d| d.id == id).peekable();
+        versions.peek().is_some() && versions.all(|d| d.withdrawn)
     }
 
     /// **The digest this world published one version under**, if it can still read the
@@ -1429,6 +1449,22 @@ pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
         ns: SmolStr::new_static(NS),
         op,
     }));
+}
+
+/// Install a design registry row into RAM and queue its document — the single
+/// write path (doc 31 cut UD.3).
+pub(crate) fn put_design(ctx: &mut Ctx<'_>, record: crate::design::DesignRecord) {
+    let key = crate::design::design_key(&record.id, record.version);
+    let Ok(value) = serde_json::to_value(&record) else {
+        tracing::error!(%key, "tacsim: a design row did not serialize");
+        return;
+    };
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store
+            .designs
+            .insert((record.id.clone(), record.version), record);
+    }
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
 /// Install a ledger row into RAM and queue its document — the single write path.
@@ -2205,6 +2241,17 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 serde_json::from_value::<crate::relay_foundry::Foundry>(value.clone())
                     .ok()
                     .filter(|f| f.check().is_ok());
+        } else if let Some(rest) = key.strip_prefix(crate::design::DESIGN_PREFIX) {
+            // Doc 31 cut UD.3: a design registry row. One that will not read is
+            // skipped loudly; the host skips it too, so it is not loaded.
+            match serde_json::from_value::<crate::design::DesignRecord>(value.clone()) {
+                Ok(record) if crate::design::design_key(&record.id, record.version) == key => {
+                    store
+                        .designs
+                        .insert((record.id.clone(), record.version), record);
+                }
+                _ => tracing::warn!(%key, rest, "tacsim: a design row is unreadable; skipped"),
+            }
         } else if let Some(rest) = key.strip_prefix("tacsim:pack:") {
             let Some((id, version)) = split_versioned(rest) else {
                 tracing::warn!(%key, "tacsim: a pack ledger row has an unreadable key; skipped");

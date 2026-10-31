@@ -67,6 +67,26 @@ interface PixelExports {
   mp_units?(len: number): number;
   mp_wanted?(): number;
   mp_output?(): number;
+  mp_check_look?(len: number): number;
+  mp_wanted_looks?(): number;
+  mp_looks?(len: number): number;
+  mp_preview?(len: number): number;
+}
+
+/** The look check's answer (`mush_pixel::design::LookCheck`). */
+export interface LookCheck {
+  refusals: string[];
+  notes: string[];
+}
+
+/** What the designer's preview draws (`mp_preview`). */
+export interface PreviewSpec {
+  model: string;
+  view: "fp" | "iso";
+  size: number;
+  facing: string;
+  pose: number;
+  team: "red" | "blue";
 }
 
 const EXPORTS: (keyof PixelExports)[] = [
@@ -90,6 +110,8 @@ export class PixelModule {
   #height = 0;
   #modelUrl: ModelUrl | null = null;
   readonly #requested = new Set<string>();
+  #askLooks: ((types: string[]) => void) | null = null;
+  readonly #looksAsked = new Set<string>();
 
   constructor(instance: WebAssembly.Instance) {
     const x = instance.exports as unknown as PixelExports;
@@ -113,8 +135,50 @@ export class PixelModule {
     const ptr = this.#x.mp_input(bytes.length);
     new Uint8Array(this.#x.memory.buffer, ptr, bytes.length).set(bytes);
     const kept = this.#x.mp_feed(feed, bytes.length) === 1;
-    if (kept) this.#fetchWanted();
+    if (kept) {
+      this.#fetchWanted();
+      this.#askWantedLooks();
+    }
     return kept;
+  }
+
+  /** **Ask for published designs' looks through `ask`** (doc 31 cut UD.3b,
+   * D-31-16): after every feed kept, each unit type the held feeds name
+   * that has no look yet is asked for once, at most eight a call (the
+   * `unit.looks` query's bound); the answer comes back through
+   * {@link installLooks}. Until it does the unit draws as `unknown`. */
+  askLooksWith(ask: (types: string[]) => void): void {
+    this.#askLooks = ask;
+    this.#askWantedLooks();
+  }
+
+  /** The unit types the held feeds name that have no look (`mp_wanted_looks`). */
+  wantedLooks(): string[] {
+    if (typeof this.#x.mp_wanted_looks !== "function" || typeof this.#x.mp_output !== "function") return [];
+    const len = this.#x.mp_wanted_looks();
+    const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
+    try {
+      return JSON.parse(text) as string[];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Install a `unit.looks` keyframe's looks: how many were new. */
+  installLooks(frame: unknown): number {
+    if (typeof this.#x.mp_looks !== "function") return 0;
+    return this.#x.mp_looks(this.#write(JSON.stringify(frame)));
+  }
+
+  #askWantedLooks(): void {
+    const ask = this.#askLooks;
+    if (ask === null) return;
+    const fresh = this.wantedLooks().filter((t) => !this.#looksAsked.has(t));
+    for (let i = 0; i < fresh.length; i += 8) {
+      const batch = fresh.slice(i, i + 8);
+      for (const t of batch) this.#looksAsked.add(t);
+      ask(batch);
+    }
   }
 
   /** **Fetch model files from `resolve` as the feeds need them** (doc 31
@@ -135,6 +199,35 @@ export class PixelModule {
     if (len === 0) return [];
     const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
     return text.split("\n").filter((f) => f.length > 0);
+  }
+
+  #write(text: string): number {
+    const bytes = new TextEncoder().encode(text);
+    const ptr = this.#x.mp_input(bytes.length);
+    new Uint8Array(this.#x.memory.buffer, ptr, bytes.length).set(bytes);
+    return bytes.length;
+  }
+
+  /** **The staff unit designer's look check** (doc 31 cut UD.2): `look`
+   * against the unit `rules` (its `def`) and the model it names. A module
+   * without the export answers one refusal saying so. */
+  checkLook(look: unknown, rules: unknown): LookCheck {
+    if (typeof this.#x.mp_check_look !== "function" || typeof this.#x.mp_output !== "function") {
+      return { refusals: ["This picture module has no look check; rebuild it."], notes: [] };
+    }
+    const len = this.#x.mp_check_look(this.#write(JSON.stringify({ look, rules })));
+    const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
+    return JSON.parse(text) as LookCheck;
+  }
+
+  /** **The designer's model preview**: one frame of a model's chain, a
+   * `side` x `side` RGBA copy, or `null` for a model the catalogue lacks. */
+  preview(spec: PreviewSpec): { side: number; rgba: Uint8ClampedArray<ArrayBuffer> } | null {
+    if (typeof this.#x.mp_preview !== "function") return null;
+    const side = this.#x.mp_preview(this.#write(JSON.stringify(spec)));
+    if (side === 0) return null;
+    const rgba = new Uint8ClampedArray(this.#x.memory.buffer, this.#x.mp_pixels(), side * side * 4).slice();
+    return { side, rgba };
   }
 
   #fetchWanted(): void {

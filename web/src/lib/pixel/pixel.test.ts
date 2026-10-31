@@ -44,6 +44,35 @@ async function load(): Promise<PixelModule> {
 }
 
 describe("the picture module", () => {
+  it("asks for a published design's look once and draws from it (doc 31 cut UD.3b)", async () => {
+    const { instance } = await WebAssembly.instantiate(readFileSync(WASM), {});
+    const m = new PixelModule(instance);
+    const asked: string[][] = [];
+    m.askLooksWith((types) => asked.push(types));
+    const unit = "tacsim.unit.design.web_probe";
+    expect(m.feed(FEED_COCKPIT, JSON.stringify({ seated: true, unit_type: unit, contacts: [] }))).toBe(true);
+    expect(asked).toEqual([[unit]]);
+    expect(m.feed(FEED_COCKPIT, JSON.stringify({ seated: true, unit_type: unit, contacts: [] }))).toBe(true);
+    expect(asked).toHaveLength(1);
+    const look = { units: [unit], label: "Probe", short: "PR", model: "mc.st.tank_lvl2", size_cm: [700, 250] };
+    expect(m.installLooks({ looks: { [unit]: look } })).toBe(1);
+    expect(m.wantedLooks()).toEqual([]);
+  });
+
+  it("checks a draft look and previews a model for the unit designer (doc 31 cut UD.2)", async () => {
+    const m = await load();
+    const look = JSON.parse(readFileSync(new URL("../../../../crates/mush-pixel/looks/tracked_tank.json", import.meta.url), "utf8"));
+    const pack = JSON.parse(readFileSync(new URL("../../../../crates/tacsim/content/units/line_tank.json", import.meta.url), "utf8"));
+    const rules = pack.entries["tacsim.unit.line_tank"].def;
+    const found = m.checkLook(look, rules);
+    expect(found.refusals).toEqual(["Tracked tank: weapon laser is fitted to none of its units"]);
+    expect(m.checkLook(look, { sections: [], components: [] }).refusals.length).toBeGreaterThan(1);
+    const img = m.preview({ model: "mc.st.tank_lvl2", view: "iso", size: 64, facing: "front_right", pose: 0, team: "red" });
+    expect(img?.side).toBe(64);
+    expect(img?.rgba.some((v, i) => i % 4 === 3 && v === 255)).toBe(true);
+    expect(m.preview({ model: "mc.nobody", view: "fp", size: 64, facing: "front", pose: 0, team: "red" })).toBeNull();
+  });
+
   it("names the model files a feed needs, and none once they are in (doc 31 D-31-11)", async () => {
     const { instance } = await WebAssembly.instantiate(readFileSync(WASM), {});
     const m = new PixelModule(instance);

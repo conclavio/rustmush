@@ -22,7 +22,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use tacsim::ground::{
-    GroundDraft, build_with_options, check, from_packs, generate, route, viewshed,
+    GroundDraft, build_with_options, check, from_packs, generate, render_png, route, viewshed,
 };
 
 fn usage() -> &'static str {
@@ -30,7 +30,7 @@ fn usage() -> &'static str {
      ground-pack build <draft.json> --out <dir> [--repair] [--force]\n  \
      ground-pack check <draft.json>\n  \
      ground-pack route <draft.json> [--out <draft.json>]\n  \
-     ground-pack render <draft.json> --viewshed <x>,<y> [--size-cm <cm>] [--out <file>]\n  \
+     ground-pack render <draft.json> [--viewshed <x>,<y>] [--size-cm <cm>] [--out <file>]\n  \
      ground-pack gen <preset> [--seed <N>] [--biome <B>] [--out <draft.json>]\n  \
      ground-pack from-packs <atlas.json> <arena.json> [--out <draft.json>]"
 }
@@ -200,12 +200,31 @@ fn run() -> Result<(), String> {
                     None => break,
                 }
             }
-            let Some((ox, oy)) = origin else {
-                return Err(format!("missing `--viewshed <x>,<y>`\n{}", usage()));
-            };
             let raw = fs::read_to_string(draft_path)
                 .map_err(|e| format!("failed to read `{draft_path}`: {e}"))?;
             let draft = GroundDraft::from_json(&raw).map_err(|e| e.to_string())?;
+            if let Some(path) = out_path
+                && (Path::new(path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+                    || origin.is_none())
+            {
+                let png = render_png(&draft, origin, size_cm).map_err(|e| e.to_string())?;
+                if let Some(parent) = Path::new(path).parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create `{}`: {e}", parent.display()))?;
+                }
+                fs::write(path, &png).map_err(|e| format!("failed to write `{path}`: {e}"))?;
+                return Ok(());
+            }
+            let Some((ox, oy)) = origin else {
+                return Err(format!(
+                    "missing `--out <file.png>` or `--viewshed <x>,<y>`\n{}",
+                    usage()
+                ));
+            };
             let cells = viewshed(&draft, ox, oy, size_cm).map_err(|e| e.to_string())?;
             let payload = serde_json::json!({
                 "id": draft.id,

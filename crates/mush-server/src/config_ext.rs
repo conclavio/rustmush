@@ -534,6 +534,36 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     Ok(typed)
 }
 
+/// **[`tacsim_config`] with the published unit designs** (doc 31 cut UD.3,
+/// D-31-9): each design's pack, read from the store by the host before the
+/// module registers, joins `[tacsim].pack_paths`' packs — but only when the
+/// whole set still verifies with it. A design that no longer verifies (a
+/// pack it requires moved) is skipped with a warning naming it: a registry
+/// row never fails a boot. With the layer off, no design is added.
+///
+/// # Errors
+///
+/// As [`tacsim_config`]; a design never adds an error.
+pub fn tacsim_config_with_designs(
+    cfg: &TacsimCfg,
+    designs: Vec<tacsim::PackSource>,
+) -> Result<tacsim::TacsimConfig, String> {
+    let mut typed = tacsim_config(cfg)?;
+    if !typed.enabled || designs.is_empty() {
+        return Ok(typed);
+    }
+    let game = tacsim::definitions::content::game_seed_sources();
+    for design in designs {
+        let name = design.name.clone();
+        typed.packs.push(design);
+        if let Err(error) = tacsim::verify_sources_with(&typed, &game) {
+            typed.packs.pop();
+            tracing::warn!(design = %name, %error, "tacsim: a published unit design no longer verifies; not loaded");
+        }
+    }
+    Ok(typed)
+}
+
 /// The module-facing [`mush_atlas::AtlasConfig`] (S1, 14-spatial-implementation-plan
 /// §3.1): `[atlas]`'s limits, and its `pack_paths` read **host-side** exactly as
 /// `[tacsim].pack_paths` are, so an unreadable, oversized or mis-digested pack is a
@@ -995,6 +1025,39 @@ mod tests {
         assert!(typed.packs.is_empty() && !typed.enabled);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Doc 31 cut UD.3** (D-31-9): a published design joins the packs when the
+    /// set verifies with it; one that does not — here, bytes that are no pack —
+    /// is skipped and the boot goes on; with the layer off, none is added.
+    #[test]
+    fn ud3_a_design_that_no_longer_verifies_never_fails_the_boot() {
+        let laser: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tacsim/content/units/line_tank_laser.json"
+        ))
+        .expect("JSON");
+        let rules = &laser["entries"]["tacsim.unit.line_tank_laser"]["def"];
+        let checked = tacsim::design::check("tacsim.unit.design_srv", 1, rules);
+        let pack = checked.pack.expect("the design holds");
+        let good = tacsim::PackSource {
+            name: "<design tacsim.unit.design_srv@1>".into(),
+            bytes: serde_json::to_string_pretty(&pack).expect("text"),
+        };
+        let bad = tacsim::PackSource {
+            name: "<design tacsim.unit.design_bad@1>".into(),
+            bytes: "{\"manifest\": {}}".into(),
+        };
+        let on = TacsimCfg {
+            enabled: true,
+            ..TacsimCfg::default()
+        };
+        let typed = tacsim_config_with_designs(&on, vec![bad.clone(), good.clone()])
+            .expect("a bad design never fails the boot");
+        let names: Vec<&str> = typed.packs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec![good.name.as_str()]);
+        let off = tacsim_config_with_designs(&TacsimCfg::default(), vec![good])
+            .expect("an off layer reads nothing");
+        assert!(off.packs.is_empty());
     }
 
     /// **Doc 20 cut SM.10 (§9.4; lead ruling 9, D16)**: `[tacsim.surface].registry_interlock =

@@ -9,11 +9,12 @@
   // renders against and web/README.md for the full writeup.
   import type { GameApp } from "$lib/game.svelte";
   import MapEditorStudio from "./MapEditorStudio.svelte";
+  import UnitDesignerStudio from "./UnitDesignerStudio.svelte";
 
   let { app }: { app: GameApp } = $props();
 
   const wg = $derived(app.worldgen);
-  let buildTab = $state<"studio" | "drafts">("studio");
+  let buildTab = $state<"studio" | "units" | "drafts">("studio");
 
   let retrying = $state(false);
   let guidance = $state("");
@@ -59,6 +60,16 @@
     <button
       type="button"
       role="tab"
+      aria-selected={buildTab === "units"}
+      class="subnav-tab"
+      class:active={buildTab === "units"}
+      onclick={() => (buildTab = "units")}
+    >
+      Unit Designer
+    </button>
+    <button
+      type="button"
+      role="tab"
       aria-selected={buildTab === "drafts"}
       class="subnav-tab"
       class:active={buildTab === "drafts"}
@@ -74,6 +85,11 @@
   {#if buildTab === "studio"}
     <div class="studio-wrap">
       <MapEditorStudio {app} />
+    </div>
+  {:else if buildTab === "units"}
+    <!-- Doc 31 cut UD.2: staff only — the server refuses anyone else's check. -->
+    <div class="studio-wrap">
+      <UnitDesignerStudio {app} />
     </div>
   {:else}
 <div class="worldgen">
