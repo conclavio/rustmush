@@ -1646,10 +1646,7 @@ mod tests {
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)
         for doc_id in [
-<<<<<<< HEAD
             "tacsim.cast.ceres_freeport",
-=======
->>>>>>> feat/cs-0a-content-studio-seam
             "tacsim.crew.ceres",
             "market/goods.json",
             "tacsim.pack.cannon_105",
