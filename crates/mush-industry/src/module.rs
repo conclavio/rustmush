@@ -82,6 +82,9 @@ pub struct IndustryModule {
     core_origins: Option<Box<crate::core_production::CoreOriginConfig>>,
     core_origin_runtime: Option<Box<crate::core_production::Runtime>>,
     core_factory: Option<Box<crate::core_production::integration::CoreFactoryConfig>>,
+    /// Doc 31 UD.4b: the composed bay refit, and its registered runtime.
+    bay_refit: Option<Box<crate::bay_refit::BayRefitConfig>>,
+    bay_runtime: Option<std::sync::Arc<crate::bay_refit::runtime::BayRuntime>>,
     /// Doc 20 cut SM.6: the composition root's cell this module fills.
     cell: Option<crate::seams::IndustryHandleCell>,
     /// Doc 20 cut SM.6 (§3.4): the composed system opener.
@@ -123,6 +126,8 @@ impl IndustryModule {
             core_origins: None,
             core_origin_runtime: None,
             core_factory: None,
+            bay_refit: None,
+            bay_runtime: None,
             cell: None,
             opener: None,
             draws: None,
@@ -242,6 +247,15 @@ impl IndustryModule {
     /// and the extraction provider needs them then. The composition root fills
     /// the cell by composing `mush-inventory` first, which is the order the
     /// boot pin already fixes.
+    #[must_use]
+    /// Doc 31 UD.4b: compose the bay refit. Inventory must be composed with
+    /// `with_bay_parts` (its [`crate::bay_refit::BayRefitConfig::part_binding`]),
+    /// Economy with `with_bay_refit` and Tactics with `with_component_refit`.
+    pub fn with_bay_refit(mut self, config: crate::bay_refit::BayRefitConfig) -> Self {
+        self.bay_refit = Some(Box::new(config));
+        self
+    }
+
     #[must_use]
     pub fn with_inventory(mut self, cell: mush_inventory::InventoryHandleCell) -> Self {
         self.inventory = Some(cell);
@@ -753,7 +767,23 @@ impl IndustryModule {
             },
             self.core_origins.as_deref(),
             self.core_factory.as_deref(),
+            self.bay_refit.as_deref(),
         )?;
+        // Doc 31 UD.4b: one exact owner-participant validator per owner. With
+        // the Origin composed it admits the bay owner too; alone, the bay's.
+        if let Some(bay) = self.bay_refit.as_deref() {
+            let descriptor = bay
+                .participant_descriptor()
+                .map_err(|e| ModError::msg(e.to_string()))?;
+            match self.core_origins.as_deref_mut() {
+                Some(origins) => origins.further_participants.push(descriptor),
+                None => crate::core_production::provider::exact(
+                    reg,
+                    "owner_participant",
+                    std::slice::from_ref(&descriptor),
+                )?,
+            }
+        }
         if let Some(config) = self.core_origins.as_deref().cloned() {
             self.core_origin_runtime = Some(crate::core_production::Runtime::register(
                 reg,
@@ -855,6 +885,14 @@ impl GameModule for IndustryModule {
 
         self.register_prepared_paths(reg, &families)?;
 
+        if let Some(config) = self.bay_refit.as_deref().cloned() {
+            self.bay_runtime = Some(crate::bay_refit::runtime::register(
+                reg,
+                config,
+                families.clone(),
+            )?);
+        }
+
         let mut store = IndustryStore::default();
         store.set_licence(self.licence.clone());
         reg.state(store);
@@ -921,6 +959,17 @@ impl GameModule for IndustryModule {
         let Some(families) = self.families.clone() else {
             return Err(ModError::msg("industry: register did not run"));
         };
+        if let Some(runtime) = &self.bay_runtime {
+            runtime.load(ctx, &data)?;
+        } else if data
+            .kv
+            .iter()
+            .any(|(key, _)| key.as_str() == crate::bay_refit::records::INDEX_KEY)
+        {
+            return Err(ModError::msg(
+                "bay refit history requires its configured owner",
+            ));
+        }
         if let Some(runtime) = &self.core_origin_runtime {
             runtime.load(ctx, &data)?;
         } else if data.kv.iter().any(|(key, _)| {
@@ -949,6 +998,9 @@ impl GameModule for IndustryModule {
 
     fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
         if let Some(runtime) = &self.core_origin_runtime {
+            runtime.finalize(ctx)?;
+        }
+        if let Some(runtime) = &self.bay_runtime {
             runtime.finalize(ctx)?;
         }
         Ok(())

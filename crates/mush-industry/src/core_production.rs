@@ -12,7 +12,7 @@ mod authority;
 mod config;
 pub mod integration;
 mod participant;
-mod provider;
+pub(crate) mod provider;
 mod records;
 pub mod uncertified;
 pub use config::{

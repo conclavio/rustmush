@@ -16,9 +16,24 @@
 //! ([`mush_core::bay_refit_protocol`]) pins the four paid actions, their
 //! participants and every family's descriptor, and audits each action's
 //! exact write set ([`WRITE_SETS`]); this module declares the Industry side
-//! of the same flow. The typed order, the provider and the schedule source
-//! land with the Economy and Inventory owners that fill them.
+//! of the same flow: its typed records, its owner participant, its six
+//! providers, its schedule source and its boot audit.
+mod audit;
+mod authority;
+mod config;
+mod owner;
+mod progress;
+mod provider;
+pub(crate) mod records;
+#[cfg(test)]
+mod rig_tests;
+pub(crate) mod runtime;
+mod schedule;
+pub(crate) mod state;
 use crate::workorder::{PRODUCTION_CADENCE_SECS, WorkOrderId};
+pub use authority::BAY_CAPABILITY;
+pub use config::{BayPartCatalog, BayRefitConfig, BayTacticsPolicy};
+use mush_core::ActionTxn;
 use mush_core::{
     CommitToken, DefinitionDescriptor, DefinitionDigest, DefinitionRef, DurableSchedule, ModError,
     ObjId, Registrar, ScheduleId, StateFamilyDescriptor, StateFamilyHandle,
@@ -69,6 +84,14 @@ pub enum BayRefitError {
     Policy(String),
     #[error("bay refit record identity")]
     Integrity,
+    #[error("bay refit request is malformed")]
+    Invalid,
+    #[error("bay refit authority is unavailable")]
+    Unavailable,
+    #[error("bay refit offer or reservation has expired")]
+    Expired,
+    #[error("bay refit capacity is exhausted")]
+    Capacity,
 }
 
 impl BayRefitPolicy {
@@ -105,6 +128,20 @@ impl BayRefitPolicy {
     /// # Errors
     ///
     /// An unknown action, or a policy the kernel refuses.
+    /// The exact reference of `action`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::action_descriptor`].
+    pub fn action_ref(&self, action: &str) -> Result<DefinitionRef, BayRefitError> {
+        let err = |e: &dyn std::fmt::Display| BayRefitError::Policy(e.to_string());
+        mush_core::DefinitionRegistryBuilder::new()
+            .register(
+                mush_core::OwnerId::new(crate::NS).map_err(|e| err(&e))?,
+                self.action_descriptor(action)?,
+            )
+            .map_err(|e| err(&e))
+    }
     pub fn action_descriptor(&self, action: &str) -> Result<DefinitionDescriptor, BayRefitError> {
         let policy =
             serde_json::to_value(self).map_err(|e| BayRefitError::Policy(e.to_string()))?;
@@ -188,23 +225,55 @@ fn descriptor(name: &str) -> Result<StateFamilyDescriptor, ModError> {
     kernel::family_descriptor(name).map_err(|e| ModError::msg(e.to_string()))
 }
 
-/// The Industry families the bay flow holds of its own: the hull heads, the
-/// work schedule and its order index. (The shared facility slots and book
-/// are [`crate::IndustryFamilies`]'; the order, offer and admission-census
-/// families arrive with their typed records.)
+/// The Industry families the bay flow holds of its own: the orders, the
+/// supplier offers, the admission census, the hull heads, the work schedule
+/// and its order index. (The shared facility slots and book are the
+/// [`crate::IndustryFamilies`] ones.)
 #[derive(Clone)]
 pub struct BayFamilies {
+    pub(crate) orders: StateFamilyHandle<WorkOrderId, records::BayOrder>,
+    pub(crate) offers: StateFamilyHandle<CommitToken, records::BayOffer>,
+    pub(crate) deployment: StateFamilyHandle<(), records::BayIndex>,
     hulls: StateFamilyHandle<ObjId, BayHullHead>,
     schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
     jobs: StateFamilyHandle<ScheduleId, WorkOrderId>,
 }
 impl BayFamilies {
-    /// Register them, each under the kernel's exact descriptor.
+    /// Register them, each under the kernel's exact descriptor (the offers,
+    /// which the kernel does not reserve, under Industry's own).
     ///
     /// # Errors
     ///
     /// The registrar's.
     pub fn register(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
+        use records::{BayIndex, BayOffer, BayOrder, INDEX_BYTES, OFFER_BYTES, ORDER_BYTES};
+        let orders = reg.state_family(
+            descriptor("industry_bay_orders")?,
+            |k: &WorkOrderId| Ok(format!("{:016x}", k.0)),
+            |v: &serde_json::Value| {
+                records::decode::<BayOrder>(v, ORDER_BYTES).map_err(|e| e.to_string())
+            },
+            |r: &BayOrder| r.validate().map_err(|e| e.to_string()),
+            |r: &BayOrder| records::encode(r, ORDER_BYTES).map_err(|e| e.to_string()),
+        )?;
+        let offers = reg.state_family(
+            crate::core_production::integration::families::descriptor(OFFERS, OFFER_BYTES + 1024)?,
+            |k: &CommitToken| Ok(k.to_hex()),
+            |v: &serde_json::Value| {
+                records::decode::<BayOffer>(v, OFFER_BYTES).map_err(|e| e.to_string())
+            },
+            |r: &BayOffer| r.validate().map_err(|e| e.to_string()),
+            |r: &BayOffer| records::encode(r, OFFER_BYTES).map_err(|e| e.to_string()),
+        )?;
+        let deployment = reg.state_family(
+            descriptor("industry_bay_deployment")?,
+            |_: &()| Ok("registry".into()),
+            |v: &serde_json::Value| {
+                records::decode::<BayIndex>(v, INDEX_BYTES).map_err(|e| e.to_string())
+            },
+            |r: &BayIndex| r.validate().map_err(|e| e.to_string()),
+            |r: &BayIndex| records::encode(r, INDEX_BYTES).map_err(|e| e.to_string()),
+        )?;
         let hulls = reg.state_family(
             descriptor("industry_bay_hulls")?,
             |k: &ObjId| Ok(k.0.to_string()),
@@ -231,6 +300,9 @@ impl BayFamilies {
             |r: &WorkOrderId| serde_json::to_value(r).map_err(|e| e.to_string()),
         )?;
         Ok(Self {
+            orders,
+            offers,
+            deployment,
             hulls,
             schedules,
             jobs,
@@ -250,6 +322,68 @@ impl BayFamilies {
     #[must_use]
     pub fn jobs(&self) -> &StateFamilyHandle<ScheduleId, WorkOrderId> {
         &self.jobs
+    }
+    /// Accept: the hull is held in the bay for the order.
+    pub(crate) fn accept_heads(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        row: &records::BayOrder,
+    ) -> Result<(), BayRefitError> {
+        let o = &row.intent.offer;
+        let head = txn
+            .get(&self.hulls, &o.hull)
+            .map_err(|_| BayRefitError::Integrity)?
+            .cloned();
+        if head.as_ref().is_some_and(|h| h.pending.is_some()) {
+            return Err(BayRefitError::Unavailable);
+        }
+        let next = BayHullHead::held(o.hull, row.accepted, row.intent.order);
+        if head.is_some() {
+            txn.replace(&self.hulls, &o.hull, next)
+        } else {
+            txn.insert(&self.hulls, &o.hull, next)
+        }
+        .map_err(|_| BayRefitError::Integrity)
+    }
+    /// Install or Cancel: the hull is released and the schedule retired.
+    pub(crate) fn terminal_heads(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        row: &records::BayOrder,
+    ) -> Result<(), BayRefitError> {
+        let o = &row.intent.offer;
+        let t = row.terminal.as_ref().ok_or(BayRefitError::Integrity)?;
+        let head = txn
+            .get(&self.hulls, &o.hull)
+            .map_err(|_| BayRefitError::Integrity)?
+            .cloned()
+            .ok_or(BayRefitError::Integrity)?;
+        if head.pending != Some(row.intent.order) {
+            return Err(BayRefitError::Integrity);
+        }
+        txn.replace(
+            &self.hulls,
+            &o.hull,
+            BayHullHead::released(o.hull, t.commit()),
+        )
+        .map_err(|_| BayRefitError::Integrity)?;
+        let id = schedule_id(row.intent.order).map_err(|_| BayRefitError::Integrity)?;
+        txn.remove(&self.schedules, &id)
+            .map_err(|_| BayRefitError::Integrity)?;
+        txn.remove(&self.jobs, &id)
+            .map_err(|_| BayRefitError::Integrity)
+    }
+    /// Accept: the work's schedule and its order index.
+    pub(crate) fn publish_schedule(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        row: &records::BayOrder,
+    ) -> Result<(), BayRefitError> {
+        let id = schedule_id(row.intent.order).map_err(|_| BayRefitError::Integrity)?;
+        txn.insert(&self.schedules, &id, row.progress.cursor().clone())
+            .map_err(|_| BayRefitError::Integrity)?;
+        txn.insert(&self.jobs, &id, row.intent.order)
+            .map_err(|_| BayRefitError::Integrity)
     }
 }
 
