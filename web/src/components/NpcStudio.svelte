@@ -261,7 +261,9 @@
       return;
     }
     if (res.status === "assisted") {
-      onStatus(res.summary);
+      onStatus(
+        `Assisted ${scope} (${res.model}, prompt ${res.prompt_hash.slice(0, 8)}…)`,
+      );
       if (createNew || !activeNpc) {
         const patchObj = res.patch as Record<string, unknown>;
         const slug =

@@ -49,7 +49,7 @@
   let canUndo = $state<boolean>(false);
   let canRedo = $state<boolean>(false);
 
-  let rpc: ContentStudioRpc | null = null;
+  let rpc = $state<ContentStudioRpc | null>(null);
 
   const filteredPacks = $derived<PackSummary[]>(
     catalog.packs.filter((p) => {

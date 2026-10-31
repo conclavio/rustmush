@@ -166,7 +166,9 @@
       return;
     }
     if (res.status === "assisted") {
-      onStatus(res.summary);
+      onStatus(
+        `Assisted ${scope} (${res.model}, prompt ${res.prompt_hash.slice(0, 8)}…)`,
+      );
       commitQuest(applyAssistPatchToQuest(activeQuest, scope, res.patch));
     }
   }
