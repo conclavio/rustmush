@@ -51,6 +51,7 @@ use mush_config::ipguard::IpGuard;
 
 use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
 use crate::delivery::{char_key, char_key_obj, send_event_to_conn};
+use crate::drain::{CloseWay, GatewayDrain, GatewaySession, LiveGuard};
 use crate::poison::locked;
 
 /// QUIT/boot may wait briefly for an exact delivery acknowledgement, but a
@@ -286,6 +287,13 @@ pub struct GameBridge<A: AuthBackend + 'static> {
     /// connection, keeping projection bookkeeping bounded by live transport
     /// state rather than historical connection IDs.
     view_sequences: Mutex<HashMap<(u64, &'static str), u64>>,
+    /// The generation's drain (doc 33 §4.5), when the gateway has one: every
+    /// attached connection is counted and registered there, so a drain can
+    /// warn it, close it, and know when the generation is empty.
+    drain: Option<Arc<GatewayDrain>>,
+    /// The live guards of this bridge's attached connections, dropped with
+    /// the connection ([`GameBridge::disconnected`]).
+    live: Mutex<HashMap<ConnId, LiveGuard>>,
 }
 
 impl<A: AuthBackend + 'static> GameBridge<A> {
@@ -319,7 +327,39 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             guard,
             view_generation: (rand::random::<u64>() & MAX_VIEW_WIRE_INTEGER).max(1),
             view_sequences: Mutex::new(HashMap::new()),
+            drain: None,
+            live: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Count and reach this bridge's attached connections through `drain`
+    /// (doc 33 §4.5). The split gateway hands every bridge the one drain of
+    /// its generation; `mushd` and the tests have none.
+    pub(crate) fn set_drain(&mut self, drain: Arc<GatewayDrain>) {
+        self.drain = Some(drain);
+    }
+
+    /// An attached connection joins the generation's live set (doc 33 §4.6:
+    /// the connection is the unit): counted until it disconnects, reachable
+    /// for the drain's warnings and closed its transport's way at the
+    /// deadline. Nothing without a drain. Called by the transports once
+    /// `enter_game` (or a web resume) has succeeded; a connection still at
+    /// the login prompt is not live.
+    pub(crate) fn watch_connection(&self, conn: ConnId, close: CloseWay) {
+        let Some(drain) = &self.drain else {
+            return;
+        };
+        let guard = drain.enter(conn.0);
+        drain.register(
+            conn.0,
+            GatewaySession::new(conn, Arc::clone(&self.sessions), close),
+        );
+        let mut live = locked(&self.live, "live connections");
+        live.insert(conn, guard);
+        // Some server-initiated closes bypass `disconnected` (the note on
+        // the view-sequence table): prune against the authoritative session
+        // table so no guard outlives its connection and holds the drain open.
+        live.retain(|c, _| *c == conn || self.sessions.conn_handle(*c).is_some());
     }
 
     fn next_view_sequence(&self, conn: ConnId, view: &'static str) -> Option<u64> {
@@ -1444,6 +1484,8 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         let actor = self.actor_of(conn);
         let outcome = self.sessions.detach(conn, DetachReason::Lost);
         self.forget_view_sequences(conn);
+        // Doc 33 §4.6: no longer one of the generation's live connections.
+        drop(locked(&self.live, "live connections").remove(&conn));
         let (Some(actor), Some(outcome)) = (actor, outcome) else {
             // Already detached (QUIT raced the transport teardown) or never
             // attached: nothing game-side.

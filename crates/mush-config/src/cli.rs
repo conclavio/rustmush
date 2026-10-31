@@ -62,6 +62,10 @@ pub struct CliSpec {
     /// Accept `--generation <a|b>` (the gateway half, doc 33 §4.3: which of
     /// the two gateway generations this process is).
     pub generation: bool,
+    /// Accept `--ipc-version` (the two split halves, doc 33 §4.7): print the
+    /// binary's `IPC_VERSION` and exit, so a deploy can tell a server upgrade
+    /// that bumps the boundary's version from one that does not.
+    pub ipc_version: bool,
 }
 
 /// A parsed command line.
@@ -86,6 +90,9 @@ pub struct Cli {
     /// The `--generation <a|b>` value, when given (doc 33 §4.3). `None` is
     /// generation `a` for the connection-id bit and says nothing else.
     pub generation: Option<Generation>,
+    /// `--ipc-version` was given: the caller prints its `IPC_VERSION` and
+    /// exits successfully without touching the config (doc 33 §4.7).
+    pub ipc_version: bool,
     /// `--help`/`-h` was given; the caller prints [`CliSpec::usage`] and exits
     /// successfully without touching the config.
     pub help: bool,
@@ -102,6 +109,7 @@ impl Cli {
             check_config: false,
             bootstrap_staff: None,
             generation: None,
+            ipc_version: false,
             help: false,
         }
     }
@@ -245,6 +253,7 @@ where
     let mut check_config = false;
     let mut bootstrap_staff = None;
     let mut generation: Option<String> = None;
+    let mut ipc_version = false;
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -270,6 +279,14 @@ where
             "--generation" if spec.generation => {
                 take_once(&mut generation, "--generation", rest.next())?;
             }
+            "--ipc-version" if spec.ipc_version => {
+                if ipc_version {
+                    return Err(CliError::Repeated {
+                        flag: "--ipc-version",
+                    });
+                }
+                ipc_version = true;
+            }
             _ => return Err(CliError::UnknownArg { arg }),
         }
     }
@@ -288,6 +305,9 @@ where
     if bootstrap_staff.is_some() && (check_config || repl || ipc.is_some()) {
         return Err(CliError::ConflictingOperations);
     }
+    if ipc_version && (bootstrap_staff.is_some() || check_config || repl) {
+        return Err(CliError::ConflictingOperations);
+    }
 
     Ok(Cli {
         config_explicit: config.is_some(),
@@ -297,6 +317,7 @@ where
         check_config,
         bootstrap_staff,
         generation,
+        ipc_version,
         help: false,
     })
 }
@@ -322,6 +343,7 @@ mod tests {
         check_config: true,
         bootstrap_staff: true,
         generation: false,
+        ipc_version: false,
     };
     const SERVER: CliSpec = CliSpec {
         program: "mush-server",
@@ -331,6 +353,7 @@ mod tests {
         check_config: true,
         bootstrap_staff: true,
         generation: false,
+        ipc_version: true,
     };
     const GATEWAY: CliSpec = CliSpec {
         program: "mush-gateway",
@@ -340,6 +363,7 @@ mod tests {
         check_config: true,
         bootstrap_staff: false,
         generation: true,
+        ipc_version: true,
     };
     /// A spec that declares NOTHING beyond the universal flags, so the
     /// opt-in-ness of `--check-config` is provable rather than assumed.
@@ -351,7 +375,39 @@ mod tests {
         check_config: false,
         bootstrap_staff: false,
         generation: false,
+        ipc_version: false,
     };
+
+    /// Doc 33 §4.7: `--ipc-version` is the two split halves' flag, once,
+    /// alone (it prints and exits, so it conflicts with every other
+    /// operation); `mushd` and a bare spec refuse it.
+    #[test]
+    fn ipc_version_belongs_to_the_split_halves_and_stands_alone() {
+        for spec in [&SERVER, &GATEWAY] {
+            let cli = parse(["--ipc-version"], spec).unwrap();
+            assert!(cli.ipc_version);
+            assert!(!cli.check_config);
+            let err = parse(["--ipc-version", "--ipc-version"], spec).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    CliError::Repeated {
+                        flag: "--ipc-version"
+                    }
+                ),
+                "{err:?}"
+            );
+            let err = parse(["--ipc-version", "--check-config"], spec).unwrap_err();
+            assert!(matches!(err, CliError::ConflictingOperations), "{err:?}");
+        }
+        for spec in [&MUSHD, &BARE] {
+            let err = parse(["--ipc-version"], spec).unwrap_err();
+            assert!(
+                matches!(&err, CliError::UnknownArg { arg } if arg == "--ipc-version"),
+                "{err:?}"
+            );
+        }
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("mush-cli-{tag}-{}", std::process::id()));

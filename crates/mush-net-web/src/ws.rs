@@ -112,12 +112,14 @@ use axum::extract::{ConnectInfo, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use mush_proto::{ClientCommand, Envelope, OutputEvent, PROTO_VERSION};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 
 use crate::app::AppState;
 use crate::config::WebConfig;
-use crate::hooks::{AttachErr, NewWebConn, ResumeErr, TokenVerdict, WebHooks};
+use crate::hooks::{
+    AttachErr, CloseRequest, ConnCloser, NewWebConn, ResumeErr, TokenVerdict, WebHooks,
+};
 use crate::ip::client_ip;
 
 /// Subprotocol prefix carrying the auth token.
@@ -143,7 +145,7 @@ const SERVER_BUSY: &str = "server busy; try again";
 const GAME_RESTARTING: &str = "game restarting; reconnect shortly";
 
 /// Close codes used by this module.
-mod close_code {
+pub(crate) mod close_code {
     /// RFC 6455 policy violation — protocol errors (mid-connection resume,
     /// malformed/binary/oversize frames).
     pub const PROTOCOL: u16 = 1008;
@@ -364,10 +366,15 @@ async fn handle_socket(
     let hooks = Arc::clone(&state.hooks);
     let conn_id = state.next_conn.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = mpsc::channel::<Arc<Envelope>>(cfg.send_queue.max(1));
+    // The closer stays alive here for the pump's whole run: a game side that
+    // dropped its clones must read as "no close asked", never as a closed
+    // channel the pump would spin on.
+    let (closer, close_rx) = ConnCloser::new();
     let new_conn = || NewWebConn {
         id: conn_id,
         addr: ip,
         tx: tx.clone(),
+        closer: closer.clone(),
     };
 
     let handshake = if let Some(last_seq) = resume {
@@ -418,7 +425,8 @@ async fn handle_socket(
     drop(tx);
 
     tracing::info!(conn = conn_id, %ip, resumed = resume.is_some(), "web connection attached");
-    pump(&cfg, &*hooks, &mut socket, rx, conn_id, handshake).await;
+    pump(&cfg, &*hooks, &mut socket, rx, close_rx, conn_id, handshake).await;
+    drop(closer);
     // Attached connections always report exactly one disconnect.
     hooks.disconnected(conn_id).await;
     tracing::info!(conn = conn_id, "web connection closed");
@@ -431,6 +439,7 @@ async fn pump(
     hooks: &dyn WebHooks,
     socket: &mut WebSocket,
     mut rx: mpsc::Receiver<Arc<Envelope>>,
+    mut close_rx: watch::Receiver<Option<CloseRequest>>,
     conn_id: u64,
     handshake: Option<Handshake>,
 ) {
@@ -483,6 +492,18 @@ async fn pump(
                     return;
                 }
             },
+            changed = close_rx.changed() => {
+                // Doc 33 §4.5: the game side asked for a close with a code
+                // of its own (a draining gateway's 1012). `Err` is every
+                // sender gone, which the owner of this connection never
+                // lets happen while the pump runs; it is not a close.
+                let asked = changed.ok().and_then(|()| close_rx.borrow_and_update().clone());
+                if let Some(req) = asked {
+                    tracing::info!(conn = conn_id, code = req.code, "closing web client as the game side asked");
+                    close(socket, req.code, &req.reason).await;
+                    return;
+                }
+            }
             msg = socket.recv() => match msg {
                 None => return, // transport gone
                 Some(Err(err)) => {

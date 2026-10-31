@@ -40,6 +40,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -51,6 +52,8 @@ use mush_config::generation::Generation;
 use mush_config::ipguard::{IpGuard, SITEBAN_REFRESH};
 use mush_config::metrics::Metrics;
 use mush_core::DisconnectKind;
+use mush_drain::lifecycle::{DrainConfig, Signals, Trigger};
+use mush_drain::{listen, marker, notify};
 use mush_ipc::{
     ActionSend, AttachRec, BoxRead, BoxWrite, ConnectionAdmission, DetachCause, FrameReader,
     GatewayAction, GatewayInput, GatewayLink, GatewayRequest, GatewayRequestDisposition,
@@ -70,7 +73,9 @@ use tokio::task::JoinHandle;
 
 use crate::accounts::Accounts;
 use crate::delivery::{SessionDelivery, char_key, char_key_obj};
-use crate::ssh_bridge::{SshBridge, start_listener_with};
+use crate::discord_bridge::DiscordRun;
+use crate::drain::{GatewayDrain, GatewayHost};
+use crate::ssh_bridge::{SshBridge, start_listener_on};
 use crate::web_bridge::WebBridge;
 
 pub mod accounts;
@@ -79,6 +84,7 @@ pub mod composing;
 pub mod controls;
 pub mod delivery;
 pub mod discord_bridge;
+pub mod drain;
 pub mod ssh_bridge;
 pub mod web_bridge;
 
@@ -119,9 +125,60 @@ pub struct GatewayOptions {
     /// Which of the two gateway generations this process is (doc 33 §4.3,
     /// `--generation a|b`). Generation `b` sets bit 62 on every connection id
     /// it allocates, across all four transports, so two gateways serving one
-    /// server never hand the server the same id; `a` sets none. `None` (the
-    /// tests, `mushd`) is `a` for this purpose and says nothing else.
+    /// server never hand the server the same id; `a` sets none. With a
+    /// generation the gateway also runs the two-generation lifecycle (doc 33
+    /// §4.5): the signal streams first, the drain marker, `READY=1`, the
+    /// per-generation trusted socket, `SIGUSR1` draining and `SIGTERM`
+    /// finishing, the Discord lock. `None` (the tests, `mushd`) is `a` for
+    /// the id bit and changes nothing else: the gateway stops on `SIGTERM`
+    /// and Ctrl-C as it always did.
     pub generation: Option<Generation>,
+    /// Where this generation's drain marker, Discord lock and follow
+    /// handover live (doc 33 §4.5): the unit's `StateDirectory`, shared by
+    /// both generations. `None` reads `$STATE_DIRECTORY`, and without that
+    /// uses the data dir. Tests give each rig its own directory.
+    pub state_dir: Option<PathBuf>,
+    /// The drain's deadline, warnings and grace (doc 33 §4.5). `None` is the
+    /// doorway's (24 h, warnings at 12h/6h/2h/1h/15m/1m, a 30 s grace on a
+    /// finish; Q-33-2). Tests shorten it.
+    pub drain: Option<DrainConfig>,
+    /// An in-process stand-in for `SIGUSR1` and `SIGTERM` (the tests, which
+    /// run two generations in one process). Only read with a generation.
+    pub drain_trigger: Option<mpsc::UnboundedReceiver<Trigger>>,
+    /// Serve the trusted ingress from a directory that is not setgid
+    /// (`TrustedConfig::allow_own_group`): every process of the gateway's
+    /// own user could then connect and forge a login. **Tests only**; the
+    /// binary passes `false`.
+    pub trusted_allow_own_group: bool,
+}
+
+impl Default for GatewayOptions {
+    /// Production's shape with no store, no readiness channels and no
+    /// generation: what the binary builds, with the fields it sets on top.
+    fn default() -> GatewayOptions {
+        GatewayOptions {
+            store: None,
+            ssh_ready: None,
+            web_ready: None,
+            siteban_refresh: None,
+            give_up_after: None,
+            generation: None,
+            state_dir: None,
+            drain: None,
+            drain_trigger: None,
+            trusted_allow_own_group: false,
+        }
+    }
+}
+
+/// Where a generation keeps its marker, lock and handover (doc 33 §4.5):
+/// the explicit directory, else `$STATE_DIRECTORY`, else beside the data.
+#[must_use]
+pub fn state_directory(explicit: Option<&Path>, data_dir: &Path) -> PathBuf {
+    explicit.map_or_else(
+        || marker::dir(std::env::var_os("STATE_DIRECTORY").as_deref(), data_dir),
+        Path::to_path_buf,
+    )
 }
 
 /// The bounded shared table of parked service-request waiters, plus a `down`
@@ -2263,6 +2320,28 @@ fn banner(name: &str) -> String {
 /// A bad `[ipc]` or `[ipguard]` config, a store open failure, or the SSH bind
 /// failing. A server that does not answer is NOT an error.
 pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
+    // Doc 33 §4.5: with `--generation`, the signal streams first, before
+    // anything slow (29a §7 M4), then the marker, before anything is bound: a
+    // generation that drained and was not swapped back in says READY=1 and
+    // exits 0 instead of serving beside its successor (`marker::found`;
+    // the swap script clears the marker). Without the flag (the tests,
+    // `mushd`) none of this exists and the gateway stops as it always did.
+    let mut sigs = match opts.generation {
+        Some(_) => Some(Signals::install()?),
+        None => None,
+    };
+    let state_dir = state_directory(opts.state_dir.as_deref(), &config.server.data_dir);
+    let marker = opts
+        .generation
+        .map(|g| state_dir.join(marker::file_name(g.letter())));
+    if let Some(marker) = &marker
+        && marker::found(marker)
+    {
+        return Ok(());
+    }
+    // The generation's drain (`crate::drain`): one registry the SSH, trusted
+    // and web bridges count their attached connections into.
+    let drain: Arc<GatewayDrain> = GatewayDrain::new();
     // The stable, restart-surviving core: the boundary handle (swapped per
     // connection), the link the bridges hold, and the session manager. None of
     // these are torn down across a server restart.
@@ -2393,15 +2472,26 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         )
         .with_metrics(Arc::clone(&metrics))
         .with_pixel(&config.pixel)
-        .with_conn_id_bit(conn_id_bit),
+        .with_conn_id_bit(conn_id_bit)
+        .with_drain(Arc::clone(&drain)),
     );
 
     let data_dir = config.server.data_dir.clone();
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("cannot create data dir {}: {e}", data_dir.display()))?;
+    // Doc 33 §4.4: every public port is bound HERE, through mush-drain's
+    // reuseport recipe, and handed to its transport pre-bound, so the two
+    // generations of a swap share the port while one drains. Without
+    // `net.ipv4.tcp_migrate_req = 1` the connections queued on the draining
+    // generation's listener are reset when it closes; the warning names it.
+    if opts.generation.is_some() {
+        listen::warn_if_migrate_req_off();
+    }
     let ssh_listen = config.ssh_listen().map_err(|e| e.to_string())?;
-    let mut listener = start_listener_with(
-        ssh_listen,
+    let ssh_socket =
+        listen::bind_std(ssh_listen).map_err(|e| format!("SSH listener on {ssh_listen}: {e}"))?;
+    let mut listener = start_listener_on(
+        ssh_socket,
         &data_dir,
         banner(&config.server.name),
         auth_deadline,
@@ -2409,12 +2499,26 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     )
     .await
     .map_err(|e| format!("SSH listener on {ssh_listen}: {e}"))?;
-    if let Some(path) = config.ssh.trusted_socket_path() {
+    if let Some(configured) = config.ssh.trusted_socket_path() {
+        // Per generation (doc 33 §4.4): `<stem>.<gen>.sock` beside the
+        // configured name, which is then the symlink only the swap script
+        // re-points and no gateway binds. Without the flag, the configured
+        // name itself, as before.
+        let path = opts
+            .generation
+            .map_or_else(|| configured.clone(), |g| g.socket_path(&configured));
         listener
-            .start_trusted(path.clone(), &data_dir, banner(&config.server.name), bridge)
+            .start_trusted_with(
+                path.clone(),
+                &data_dir,
+                banner(&config.server.name),
+                bridge,
+                opts.trusted_allow_own_group,
+            )
             .await
             .map_err(|e| format!("SSH trusted ingress {}: {e}", path.display()))?;
     }
+    let listener = Arc::new(listener);
     let addr = listener.addr();
     tracing::info!(%addr, "gateway SSH listener up");
     if let Some(tx) = opts.ssh_ready {
@@ -2430,7 +2534,10 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // features/panels the all-in-one advertises. A web bind/serve failure is
     // loud but NON-FATAL (W4): SSH players keep playing and the keeper keeps
     // running while the operator fixes the [web] config.
-    let (web_stop, web_join) = {
+    // The web stop is a `Notify`: the drain's host and the shutdown tail may
+    // both ask, and the second ask is nothing.
+    let web_stop = Arc::new(tokio::sync::Notify::new());
+    let web_join = {
         let (features, panels) = {
             let m = locked(&manifest, "manifest cache");
             (m.features.clone(), m.panels.clone())
@@ -2447,40 +2554,55 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 // Doc 21 cut G.11: the hello names the pack the SSH side serves.
                 web_config.asset_pack = mush_net_ssh::assets::AssetPack::shipped()
                     .map(mush_net_ssh::assets::AssetPack::hello_info);
-                let web_bridge: Arc<dyn WebHooks> = Arc::new(
-                    WebBridge::with_link(
-                        Arc::clone(&accounts),
-                        Arc::clone(&sessions),
-                        Arc::clone(&link_dyn),
-                        Arc::clone(&guard),
-                        Arc::clone(&store),
-                        panels,
-                    )
-                    .with_metrics(Arc::clone(&metrics))
-                    .with_conn_id_bit(conn_id_bit),
-                );
-                let (web_stop, web_stop_rx) = oneshot::channel::<()>();
-                let web_ready = opts.web_ready;
-                let join = tokio::spawn(async move {
-                    if let Err(e) = mush_net_web::serve_with_shutdown_bound(
-                        web_bridge,
-                        web_config,
-                        web_ready,
-                        async move {
-                            let _ = web_stop_rx.await;
-                        },
-                    )
-                    .await
-                    {
-                        // Non-fatal: log and let SSH + the keeper carry on.
-                        tracing::error!(error = %e, "web server failed; SSH continues");
+                // Bound here (doc 33 §4.4), like the SSH port: reuseport, so
+                // the generations share it; the transport serves it pre-bound.
+                match listen::bind_std(web_config.listen) {
+                    Ok(web_socket) => {
+                        let web_bridge: Arc<dyn WebHooks> = Arc::new(
+                            WebBridge::with_link(
+                                Arc::clone(&accounts),
+                                Arc::clone(&sessions),
+                                Arc::clone(&link_dyn),
+                                Arc::clone(&guard),
+                                Arc::clone(&store),
+                                panels,
+                            )
+                            .with_metrics(Arc::clone(&metrics))
+                            .with_conn_id_bit(conn_id_bit)
+                            .with_drain(Arc::clone(&drain)),
+                        );
+                        let web_ready = opts.web_ready;
+                        let stop = Arc::clone(&web_stop);
+                        Some(tokio::spawn(async move {
+                            if let Err(e) = mush_net_web::serve_with_shutdown_bound_on(
+                                web_bridge,
+                                web_config,
+                                web_socket,
+                                web_ready,
+                                async move {
+                                    stop.notified().await;
+                                },
+                            )
+                            .await
+                            {
+                                // Non-fatal: log and let SSH + the keeper carry on.
+                                tracing::error!(error = %e, "web server failed; SSH continues");
+                            }
+                        }))
                     }
-                });
-                (Some(web_stop), Some(join))
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            listen = %web_config.listen,
+                            "web listener bind failed; web client disabled (SSH continues)"
+                        );
+                        None
+                    }
+                }
             }
             Err(e) => {
                 tracing::error!(error = %e, "[web] config invalid; web client disabled (SSH continues)");
-                (None, None)
+                None
             }
         }
     };
@@ -2489,20 +2611,52 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // link, guard and store the SSH and web paths use — a Discord follow is a
     // structured connection of the character's own session, attached through
     // the same `GameBridge` core. Loud but non-fatal, like the web listener.
-    let discord = discord_bridge::spawn_bot_with_conn_id_bit(
-        &config,
-        Arc::clone(&accounts),
-        Arc::clone(&sessions),
-        Arc::clone(&link_dyn),
-        Arc::clone(&guard),
-        Arc::clone(&store),
-        &controls,
-        conn_id_bit,
-    );
+    // Under a generation it runs in exactly one of the two (doc 33 §4.5): the
+    // bot starts once this process holds the flock on `<state dir>/discord.lock`,
+    // and a draining generation stops its bot, ends its follows and hands them
+    // over through `<state dir>/discord-follows.json` for the new one.
+    let discord = {
+        let under_lock = opts.generation.is_some() && discord_bridge::configured(&config);
+        let config = config.clone();
+        let accounts = Arc::clone(&accounts);
+        let sessions = Arc::clone(&sessions);
+        let link = Arc::clone(&link_dyn);
+        let guard = Arc::clone(&guard);
+        let store = Arc::clone(&store);
+        let controls = Arc::clone(&controls);
+        let start = move || {
+            discord_bridge::spawn_bot_with_conn_id_bit(
+                &config,
+                accounts,
+                sessions,
+                link,
+                guard,
+                store,
+                &controls,
+                conn_id_bit,
+            )
+        };
+        if under_lock {
+            DiscordRun::under_lock(state_dir.clone(), start)
+        } else {
+            DiscordRun::immediate(start())
+        }
+    };
 
     // SIGHUP is reserved (doc 33 §4.5): logged, nothing else. A deploy of the
-    // server half is `systemctl restart <inst>mush-server`.
-    install_sighup_handler();
+    // server half is `systemctl restart <inst>mush-server`. Under a generation
+    // the lifecycle below owns the stream (`GatewayHost::reload`).
+    if opts.generation.is_none() {
+        install_sighup_handler();
+    }
+
+    // READY=1 (doc 33 §4.5): the listeners are bound and the boundary is
+    // either wired or serving its gap, so the swap script may drain the old
+    // generation now. A no-op outside systemd.
+    notify::ready();
+    if let Some(generation) = opts.generation {
+        tracing::info!(%generation, "gateway generation ready");
+    }
 
     // The keeper (doc 33 GG.1): holds the connections across every server
     // restart from here until the gateway stops. `stop_tx` asks it to close
@@ -2518,13 +2672,51 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         siteban_mirror,
         opts.give_up_after.unwrap_or(SERVER_UNREACHABLE_AFTER),
     ));
+    // Doc 33 §4.5: what this generation does when it stops accepting — at a
+    // drain or a finish, or in the tail below. The SSH listeners close (the
+    // kernel moves their queues to the other generation), the web server
+    // stops accepting and keeps its sockets, the Discord bot stops (and,
+    // under a generation, hands its follows over and releases the lock).
+    let mut host = GatewayHost::new(opts.drain.clone().unwrap_or_default(), {
+        let listener = Arc::clone(&listener);
+        let web_stop = Arc::clone(&web_stop);
+        let discord_stop = discord.stop_handle();
+        Box::new(move || {
+            listener.stop_accepting();
+            web_stop.notify_one();
+            discord_stop.notify_one();
+        })
+    });
+    // The in-process stand-in for the signals (the tests); otherwise a
+    // channel nobody sends on, whose sender lives to the end of `serve`.
+    let (_never_triggered, never) = mpsc::unbounded_channel::<Trigger>();
+    let mut trigger = opts.drain_trigger.unwrap_or(never);
+    // Under a generation the lifecycle serves the signals (and the trigger)
+    // until the generation should exit: its last session gone after a drain
+    // or finish began, or the hard exit a minute after the close. Without
+    // one, SIGTERM and Ctrl-C stop the gateway at once, as they always did.
+    let lifecycle = async {
+        match (sigs.as_mut(), marker.as_ref()) {
+            (Some(sigs), Some(marker)) => {
+                mush_drain::lifecycle::run_with_trigger(
+                    sigs,
+                    &mut trigger,
+                    &drain,
+                    marker,
+                    &mut host,
+                )
+                .await;
+            }
+            _ => shutdown_signal().await,
+        }
+    };
     // The keeper never returns on its own: it serves, waits and dials for as
     // long as the gateway lives. If it does end — it must never panic — the
     // gateway would go on holding sessions nothing will ever heal, so that is
     // a gateway that exits non-zero for its unit to restart.
     let mut keeper_done = false;
     let keeper_ended = tokio::select! {
-        () = shutdown_signal() => None,
+        () = lifecycle => None,
         joined = &mut keeper => {
             keeper_done = true;
             Some(match joined {
@@ -2534,8 +2726,8 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         }
     };
     tracing::info!("gateway shutting down");
-    listener.stop_accepting();
-    stop_web(web_stop, web_join).await;
+    host.stop_now();
+    stop_web(&web_stop, web_join).await;
     discord.stop().await;
     // A keeper still serving closes the boundary (bounded inside it); one
     // caught mid-dial returns at once. Either way it is aborted after.
@@ -2564,10 +2756,8 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
 /// bounded window for the serve task to finish (in-flight requests drain). A
 /// no-op when the web listener never started (`[web]` config error / bind
 /// failure).
-async fn stop_web(web_stop: Option<oneshot::Sender<()>>, web_join: Option<JoinHandle<()>>) {
-    if let Some(stop) = web_stop {
-        let _ = stop.send(());
-    }
+async fn stop_web(web_stop: &tokio::sync::Notify, web_join: Option<JoinHandle<()>>) {
+    web_stop.notify_one();
     if let Some(join) = web_join
         && tokio::time::timeout(Duration::from_secs(5), join)
             .await

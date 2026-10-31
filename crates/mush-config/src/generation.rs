@@ -19,6 +19,7 @@
 //! wired to another player's character.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// Which of the two gateway generations a process is.
@@ -65,6 +66,26 @@ impl Generation {
             Generation::A => "a",
             Generation::B => "b",
         }
+    }
+
+    /// This generation's trusted-ingress socket, beside the configured one
+    /// (doc 33 §4.4): `<stem>.<gen>.sock` for a `<stem>.sock`, so
+    /// `/run/rustmush-ssh/dev1.sock` is bound as `dev1.a.sock` or `dev1.b.sock`
+    /// and the configured name is the symlink the swap script re-points. A
+    /// name without an extension takes the letter as one (`dev2` →
+    /// `dev2.a`); only the last extension is moved past.
+    #[must_use]
+    pub fn socket_path(self, configured: &Path) -> PathBuf {
+        let stem = configured
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut name = format!("{stem}.{}", self.letter());
+        if let Some(ext) = configured.extension() {
+            name.push('.');
+            name.push_str(&ext.to_string_lossy());
+        }
+        configured.with_file_name(name)
     }
 }
 
@@ -146,5 +167,28 @@ mod tests {
                 "an id stays positive when widened"
             );
         }
+    }
+
+    /// `<stem>.<gen>.sock` beside the configured `<stem>.sock`; a bare name
+    /// takes the letter as its extension; an inner dot stays where it is.
+    #[test]
+    fn the_trusted_socket_is_named_for_its_generation_beside_the_configured_one() {
+        let configured = Path::new("/run/rustmush-ssh/dev1.sock");
+        assert_eq!(
+            Generation::A.socket_path(configured),
+            PathBuf::from("/run/rustmush-ssh/dev1.a.sock")
+        );
+        assert_eq!(
+            Generation::B.socket_path(configured),
+            PathBuf::from("/run/rustmush-ssh/dev1.b.sock")
+        );
+        assert_eq!(
+            Generation::A.socket_path(Path::new("dev2")),
+            PathBuf::from("dev2.a")
+        );
+        assert_eq!(
+            Generation::B.socket_path(Path::new("relative/x.y.sock")),
+            PathBuf::from("relative/x.y.b.sock")
+        );
     }
 }

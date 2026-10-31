@@ -122,6 +122,7 @@ async fn start_split(unit: &ServerUnit) -> SocketAddr {
                 siteban_refresh: None,
                 give_up_after: None,
                 generation: None,
+                ..Default::default()
             },
         ))
         .unwrap();
@@ -327,6 +328,7 @@ async fn server_restart_keeps_connections_and_world() {
                 siteban_refresh: None,
                 give_up_after: None,
                 generation: None,
+                ..Default::default()
             },
         ))
         .unwrap();

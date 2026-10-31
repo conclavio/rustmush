@@ -17,7 +17,7 @@
 //! | [`listen`] | `SO_REUSEPORT` / `IPV6_V6ONLY` listeners and the `tcp_migrate_req` check |
 //! | [`notify`] | `sd_notify` |
 //! | [`marker`] | the `draining-<gen>` marker that keeps a drained generation from serving again |
-//! | [`lifecycle`] | the signals: `SIGUSR1` drain, `SIGTERM`/`SIGINT` finish, `SIGHUP`/`SIGUSR2` hooks, the hard exit |
+//! | [`lifecycle`] | the signals: `SIGUSR1` drain, `SIGTERM`/`SIGINT` finish, `SIGHUP`/`SIGUSR2` hooks, the hard exit; a [`Trigger`] channel stands in for the signals in-process |
 //!
 //! The deploy half, `deploy/drain/swap.sh`, is parameterised by unit stem,
 //! marker directory, a pre-start check and an optional symlink to re-point.
@@ -46,4 +46,4 @@ pub mod marker;
 pub mod notify;
 
 pub use drain::{Drain, LiveGuard, Phase, Session, Warning, schedule};
-pub use lifecycle::{DrainConfig, Host};
+pub use lifecycle::{DrainConfig, Host, Signals, Trigger};

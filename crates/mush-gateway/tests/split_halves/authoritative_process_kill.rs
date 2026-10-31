@@ -314,6 +314,7 @@ async fn start_gateway(root: &Path, endpoint: SocketAddr) -> SocketAddr {
                 siteban_refresh: None,
                 give_up_after: None,
                 generation: None,
+                ..Default::default()
             },
         ));
     });

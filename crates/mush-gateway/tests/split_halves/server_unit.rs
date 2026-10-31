@@ -133,6 +133,7 @@ async fn start_gateway(
                 siteban_refresh: None,
                 give_up_after,
                 generation: None,
+                ..Default::default()
             },
         ));
     });

@@ -71,6 +71,7 @@ use mush_config::unix_now_s;
 use crate::accounts::{AuthBackend, CreateErr};
 use crate::bridge_common::{AuthResult, ConnectErr, GameBridge};
 use crate::delivery::{char_key, send_event_to_conn};
+use crate::drain::{CloseWay, GatewayDrain};
 use crate::poison::locked;
 
 /// Web session lifetime: 7 days, sliding (each successful validation
@@ -172,6 +173,15 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
     #[must_use]
     pub fn with_conn_id_bit(mut self, bit: u64) -> WebBridge<A> {
         self.conn_id_bit = bit;
+        self
+    }
+
+    /// Count this bridge's attached connections into the generation's drain
+    /// (doc 33 §4.5). The split gateway sets it; `mushd` and the tests leave
+    /// the bridge without one.
+    #[must_use]
+    pub fn with_drain(mut self, drain: Arc<GatewayDrain>) -> WebBridge<A> {
+        self.core.set_drain(drain);
         self
     }
 
@@ -506,6 +516,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     "That is not your character.".to_string(),
                 ));
             };
+            let closer = conn.closer.clone();
             let handle = ConnectionHandle::new_structured(
                 ConnId(conn.id),
                 conn.addr,
@@ -545,6 +556,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     });
                 }
             };
+            // Doc 33 §4.6: attached, so one of the generation's live
+            // connections, closed at a drain's deadline with a 1012 frame.
+            self.core
+                .watch_connection(ConnId(conn_id), CloseWay::Web(closer));
             let _ = self.core.sessions.redeliver_unacknowledged(ConnId(conn_id));
             Ok(SessionStart {
                 resume_from: entered.resume_from,
@@ -588,6 +603,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                 }
             };
             let conn_id = ConnId(conn.id);
+            let closer = conn.closer.clone();
             let handle =
                 ConnectionHandle::new_structured(conn_id, conn.addr, Self::web_caps(), conn.tx);
             match self.core.link.try_reserve_connection(conn_id.0, actor) {
@@ -636,6 +652,8 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                 live_from,
                 "web session resumed"
             );
+            // Doc 33 §4.6: a resumed connection is as live as a fresh one.
+            self.core.watch_connection(conn_id, CloseWay::Web(closer));
             let _ = self.core.sessions.redeliver_unacknowledged(conn_id);
             Ok(ResumeOk {
                 replayed,
@@ -1163,6 +1181,7 @@ mod tests {
                         id: 1,
                         addr: "127.0.0.1".parse().unwrap(),
                         tx,
+                        closer: mush_net_web::ConnCloser::detached(),
                     },
                     token,
                     7,
@@ -1204,6 +1223,7 @@ mod tests {
                         id: 2,
                         addr: "127.0.0.1".parse().unwrap(),
                         tx,
+                        closer: mush_net_web::ConnCloser::detached(),
                     },
                     token,
                     7,
@@ -1313,6 +1333,7 @@ mod tests {
                     id: new_conn.0,
                     addr: "127.0.0.2".parse().unwrap(),
                     tx: new_tx,
+                    closer: mush_net_web::ConnCloser::detached(),
                 },
                 token,
                 u64::from(actor.0),

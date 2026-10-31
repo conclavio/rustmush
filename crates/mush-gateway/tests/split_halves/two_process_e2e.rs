@@ -226,6 +226,7 @@ async fn two_process_connect_play_boot_disconnect() {
                 siteban_refresh: None,
                 give_up_after: None,
                 generation: None,
+                ..Default::default()
             },
         ))
         .unwrap();
@@ -337,6 +338,7 @@ async fn boot_split(
                 siteban_refresh: None,
                 give_up_after: None,
                 generation: None,
+                ..Default::default()
             },
         ))
         .unwrap();
@@ -527,6 +529,7 @@ async fn boot_split_sharing_store(
                 siteban_refresh: Some(refresh),
                 give_up_after: None,
                 generation: None,
+                ..Default::default()
             },
         ))
         .unwrap();

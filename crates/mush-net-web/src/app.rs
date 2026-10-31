@@ -294,7 +294,26 @@ pub async fn serve_with_shutdown_bound(
     bound: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    let listen = config.listen;
+    let listener = std::net::TcpListener::bind(config.listen)?;
+    serve_with_shutdown_bound_on(hooks, config, listener, bound, shutdown).await
+}
+
+/// [`serve_with_shutdown_bound`] on a listener the caller bound (doc 33
+/// §4.4): the split gateway binds its web port through
+/// `mush_drain::listen::bind_std`, with `SO_REUSEPORT`, so two generations
+/// share the port while one drains, and the recipe lives in one place.
+/// `config.listen` is not consulted; the listener is put in non-blocking
+/// mode here. With `[web.tls]` the listener is handed to `axum-server`
+/// (`from_tcp_rustls`), so TLS and plain HTTP take the same socket.
+pub async fn serve_with_shutdown_bound_on(
+    hooks: Arc<dyn WebHooks>,
+    config: WebConfig,
+    listener: std::net::TcpListener,
+    bound: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    listener.set_nonblocking(true)?;
+    let actual = listener.local_addr()?;
     let tls = config.tls.clone();
     let (app, limiter_gc) = build(hooks, config);
 
@@ -314,8 +333,7 @@ pub async fn serve_with_shutdown_bound(
 
     let result = match tls {
         None => {
-            let listener = tokio::net::TcpListener::bind(listen).await?;
-            let actual = listener.local_addr().unwrap_or(listen);
+            let listener = tokio::net::TcpListener::from_std(listener)?;
             tracing::info!(listen = %actual, "web server listening (http)");
             if let Some(tx) = bound {
                 let _ = tx.send(actual);
@@ -329,9 +347,9 @@ pub async fn serve_with_shutdown_bound(
         }
         Some(tls_config) => {
             if let Some(tx) = bound {
-                let _ = tx.send(listen);
+                let _ = tx.send(actual);
             }
-            serve_tls(listen, tls_config, app, shutdown).await
+            serve_tls(listener, actual, tls_config, app, shutdown).await
         }
     };
     let _ = stop_gc.send(true);
@@ -340,6 +358,7 @@ pub async fn serve_with_shutdown_bound(
 
 #[cfg(feature = "tls")]
 async fn serve_tls(
+    listener: std::net::TcpListener,
     listen: SocketAddr,
     tls: crate::config::TlsConfig,
     app: Router,
@@ -360,7 +379,7 @@ async fn serve_tls(
         });
     }
     tracing::info!(%listen, "web server listening (https)");
-    axum_server::bind_rustls(listen, rustls_config)
+    axum_server::from_tcp_rustls(listener, rustls_config)?
         .handle(handle)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
@@ -368,6 +387,7 @@ async fn serve_tls(
 
 #[cfg(not(feature = "tls"))]
 async fn serve_tls(
+    _listener: std::net::TcpListener,
     _listen: SocketAddr,
     _tls: crate::config::TlsConfig,
     _app: Router,

@@ -1,0 +1,118 @@
+# dev2mush-gateway generation %i (a or b) — doc 33 §4.5–§4.7, cut GG.4.
+# Two generations alternate. `gateway-swap.sh` starts the idle one and waits
+# for READY=1 (its listeners bound, its link to dev2mush-server up or its boot
+# gap serving), confirms it stays up for 5 s, re-points the doorway's trusted
+# socket /run/rustmush-ssh/dev2.sock at it, then sends SIGUSR1 to the one that
+# was serving, which DRAINS: it closes its listeners (the kernel migrates the
+# connections queued on them to the new generation under
+# net.ipv4.tcp_migrate_req = 1), keeps every session it holds, tells each
+# player when 12h, 6h, 2h, 1h, 15m and 1m remain, and exits 0 when its last
+# session ends or at 24 h. A draining generation leaves
+# /var/lib/dev2mush-gateway/draining-%i, so a crash-restart does not bring it
+# back into service beside its successor (it says READY=1 and exits 0);
+# gateway-swap.sh clears the marker when it starts that generation again.
+[Unit]
+Description=rustmush dev2 (TacSim) — the GATEWAY half (SSH 6792 + web 6793), generation %i, in front of dev2mush-server
+# The server unit is WANTED, never required (doc 33 §4.2): a server that is
+# down or crash-looping must not take the gateway — and every player
+# connection it holds — down with it. The gateway serves its "restarting"
+# notice and keeps dialing until the server is back.
+After=network-online.target redis-dev2mush.service dev2mush-server.service
+Wants=network-online.target dev2mush-server.service
+Requires=redis-dev2mush.service
+Documentation=file:/opt/rustmush/dev2/build/deploy/dev2-split/README.md
+
+[Service]
+# READY=1 (mush_drain::notify) goes out once the SSH and web listeners are
+# bound and the boundary is wired or serving its gap, so `systemctl start`
+# returns when the swap script may drain the old generation. A generation
+# that finds its drain marker also says READY=1, then exits 0: a Type=notify
+# process that exits before READY is a protocol failure Restart=on-failure
+# would restart (doc 29a §7).
+Type=notify
+NotifyAccess=main
+User=mush
+Group=mush
+# The trusted ingress (doc 29) accepts a doorway connection before the
+# instance's own per-IP cap is applied at Hello, and the systemd default of
+# 1024 descriptors is below sshdoorway's global cap (2048): an EMFILE burst
+# must not starve the public port (doc 29a section 7, round 2).
+LimitNOFILE=65536
+WorkingDirectory=/opt/rustmush/dev2
+# No EnvironmentFile: the LLM keys in dev2.env belong to dev2mush-server
+# (doc 33 GG.1). The gateway makes no LLM call and reads nothing from them.
+#
+# The GATEWAY owns the SSH + WEB (HTTPS :6793) connections and DIALS the
+# server at [ipc].listen, read from the same rendered mushd.toml the server
+# binds it from. It does not start, stop or restart the server: that is
+# systemd's job (`systemctl restart dev2mush-server`), and a server that is
+# down is a gap the gateway rides out holding every connection, not a reason
+# to exit. Booted with no server up, it binds its listeners and waits.
+# The gateway binary must be built with `--features tls` to serve HTTPS here.
+#
+# `--generation %i` (doc 33 §4.3–§4.5): generation b sets bit 62 on every
+# connection id it allocates, so the two generations never hand the server
+# the same id; the public ports are bound with SO_REUSEPORT so both
+# generations share them during a swap; the trusted socket is this
+# generation's own, /run/rustmush-ssh/dev2.%i.sock, beside the configured
+# /run/rustmush-ssh/dev2.sock, which is a symlink only gateway-swap.sh
+# re-points and which no gateway binds (`--check-config` without the flag
+# refuses a symlink there).
+ExecStart=/opt/rustmush/dev2/build/target/release/mush-gateway --config /opt/rustmush/dev2/mushd.toml --generation %i
+# No ExecReload: SIGHUP is reserved (doc 33 §4.5) — logged at info and
+# otherwise ignored. A deploy of the SERVER half is
+# `systemctl restart dev2mush-server` (connections held, players see
+# "restarting" then "Reconnected"); a deploy of the GATEWAY half is
+# `gateway-swap.sh` (deploy.sh runs it when the gateway binary changed),
+# which drops nobody.
+#
+# SIGTERM means FINISH: stop accepting, one 30 s warning, close every
+# connection, exit 0. So `systemctl stop`/`restart`, needrestart and a reboot
+# never become a 24 h drain. The drain is SIGUSR1, sent only by
+# gateway-swap.sh once the successor is serving; it does not change the
+# unit's state (still "active"), which is how the swap script sees that a
+# generation is still draining. (Doc 29a §7 H2/H3.)
+KillMode=mixed
+KillSignal=SIGTERM
+# A finish is 30 s of warning, the close, and a hard exit 60 s after that.
+TimeoutStopSec=120
+# Restart the gateway only if the gateway itself dies (that DOES drop its
+# players: it owns the SSH + web sockets). A server death never reaches here.
+Restart=on-failure
+RestartSec=2
+# The drain marker, the Discord bot's flock and the follow handover file live
+# here, shared by BOTH generations of this instance: one directory for the
+# template, /var/lib/dev2mush-gateway, which systemd creates and keeps
+# writable inside the ProtectSystem=strict namespace below. The gateway reads
+# it from $STATE_DIRECTORY.
+StateDirectory=dev2mush-gateway
+StateDirectoryMode=0700
+# `systemctl stop dev2mush-gateway@a` stops ONLY that generation; the server
+# keeps running under its own unit, and the world with it (doc 33 GG.2: that
+# generation's connections go link-dead there, nothing else happens).
+
+# No RuntimeDirectory: /run/rustmush-dev2 and the IPC socket in it belong to
+# dev2mush-server.service. Connecting to a unix socket needs no write access
+# to its directory, so the read-only /run that ProtectSystem=strict leaves
+# this service is enough for the IPC socket.
+
+# Hardening: the service needs only its own tree, the loopback Redis, its
+# state directory and the sockets it reaches. Every path the RENDERED
+# mushd.toml has the gateway write to is inside the one ReadWritePaths tree:
+# the data dir and, under it, logs/ (gateway.log) — provisioned by deploy.sh.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/rustmush/dev2
+# Doc 29: the trusted-ingress sockets sshdoorway connects to. This generation
+# BINDS /run/rustmush-ssh/dev2.%i.sock there (so write access is needed); the
+# configured /run/rustmush-ssh/dev2.sock is the symlink the swap script owns.
+# The "-" keeps the unit starting on a box without the directory (tmpfiles
+# deploy/sshdoorway/sshdoorway.conf creates it setgid, group sshdoorway).
+# Never RuntimeDirectory= for it: that would reset the setgid bit and remove
+# the directory when the unit stops.
+ReadWritePaths=-/run/rustmush-ssh
+
+[Install]
+WantedBy=multi-user.target

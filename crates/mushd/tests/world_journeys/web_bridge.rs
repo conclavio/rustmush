@@ -146,6 +146,7 @@ fn web_conn(id: u64, last_octet: u8) -> (NewWebConn, EnvRx) {
             id,
             addr: ip(last_octet),
             tx,
+            closer: mush_net_web::ConnCloser::detached(),
         },
         rx,
     )

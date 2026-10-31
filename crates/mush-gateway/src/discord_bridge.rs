@@ -32,6 +32,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -60,8 +61,8 @@ use mush_proto::{
 };
 use mush_session::{CharKey, ConnId, ConnectionHandle, SessionManager};
 use mush_store::{AccountRec, CharacterRef, DiscordLinkRec, ObjectStore};
-use serde::Deserialize;
-use tokio::sync::{mpsc, oneshot};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::accounts::AuthBackend;
@@ -89,6 +90,45 @@ pub struct DiscordTask {
     stop: Option<oneshot::Sender<()>>,
     join: Option<JoinHandle<()>>,
     sweeper: Option<JoinHandle<()>>,
+    /// The bridge's follows, for the generation handover (doc 33 §4.5).
+    handover: Option<Arc<dyn FollowHandover>>,
+}
+
+/// One follow as it crosses a gateway swap (doc 33 §4.5): the draining
+/// generation writes these to `<state dir>/discord-follows.json` as it ends
+/// its follows; the new generation reads the file once its bot is up and
+/// attaches each again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowRecord {
+    /// The Discord user.
+    pub user_id: u64,
+    /// The followed character.
+    pub character: ObjId,
+    /// Its name, which is how a follow is asked for.
+    pub name: String,
+}
+
+/// The handover file inside a generation's state directory.
+pub const FOLLOWS_HANDOVER_FILE: &str = "discord-follows.json";
+
+/// The lock file inside a generation's state directory: whichever generation
+/// holds the `flock` runs the bot.
+pub const BOT_LOCK_FILE: &str = "discord.lock";
+
+/// What the new generation's follows are told as they come back.
+const HANDOVER_INTRO: &str = "The game's gateway restarted; your follow is back where it was.";
+
+/// The bridge's side of the follow handover across a gateway swap (doc 33
+/// §4.5): end every follow and say which they were, or attach a set again.
+pub trait FollowHandover: Send + Sync {
+    /// End every follow (a clean QUIT of each follow connection, so the
+    /// draining generation holds nothing for them) and return what they
+    /// were, for the successor.
+    fn end_follows(&self) -> BoxFuture<'_, Vec<FollowRecord>>;
+
+    /// Attach the follows the predecessor handed over; returns how many
+    /// attached (a user who unlinked or got banned in between does not).
+    fn restore_follows(&self, records: Vec<FollowRecord>) -> BoxFuture<'_, usize>;
 }
 
 impl DiscordTask {
@@ -99,6 +139,85 @@ impl DiscordTask {
             stop: None,
             join: None,
             sweeper: None,
+            handover: None,
+        }
+    }
+
+    /// Where a generation's handover file lives.
+    #[must_use]
+    pub fn handover_file(state_dir: &Path) -> PathBuf {
+        state_dir.join(FOLLOWS_HANDOVER_FILE)
+    }
+
+    /// The new generation's half of the handover: attach the follows the
+    /// predecessor wrote to its file (removed first, so a crash mid-way
+    /// never replays it) and say how many came back. Nothing without a file,
+    /// a bot, or a handover.
+    pub async fn restore_follows_from(&self, state_dir: &Path) {
+        let Some(handover) = &self.handover else {
+            return;
+        };
+        let file = Self::handover_file(state_dir);
+        let Ok(bytes) = std::fs::read(&file) else {
+            return;
+        };
+        if let Err(e) = std::fs::remove_file(&file) {
+            tracing::warn!(error = %e, file = %file.display(), "cannot remove the follow handover file");
+        }
+        let records: Vec<FollowRecord> = match serde_json::from_slice(&bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, file = %file.display(), "the follow handover file is unreadable; no follows restored");
+                return;
+            }
+        };
+        let wanted = records.len();
+        let restored = handover.restore_follows(records).await;
+        tracing::info!(
+            wanted,
+            restored,
+            "discord follows restored after the gateway swap"
+        );
+    }
+
+    /// The draining generation's half (doc 33 §4.5): stop the bot (so no
+    /// follow attaches during the handover), end every follow, and leave
+    /// what they were in the handover file for the successor. A stop with no
+    /// bot leaves no file.
+    pub async fn stop_and_hand_over(self, state_dir: &Path) {
+        let DiscordTask {
+            stop,
+            join,
+            sweeper,
+            handover,
+        } = self;
+        let had_bot = join.is_some();
+        stop_bot(stop, join, sweeper).await;
+        let Some(handover) = handover else {
+            return;
+        };
+        if !had_bot {
+            return;
+        }
+        let records = handover.end_follows().await;
+        let file = Self::handover_file(state_dir);
+        if records.is_empty() {
+            let _ = std::fs::remove_file(&file);
+            return;
+        }
+        let count = records.len();
+        let written = serde_json::to_vec(&records)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| {
+                let tmp = file.with_extension("json.tmp");
+                std::fs::write(&tmp, bytes)?;
+                std::fs::rename(&tmp, &file)
+            });
+        match written {
+            Ok(()) => tracing::info!(count, file = %file.display(), "discord follows handed over"),
+            Err(e) => {
+                tracing::error!(error = %e, count, file = %file.display(), "cannot write the follow handover file; the follows end here")
+            }
         }
     }
 
@@ -113,20 +232,160 @@ impl DiscordTask {
     /// world task's shutdown notice reaches their sessions like every other
     /// connection's, and the process is ending.
     pub async fn stop(self) {
-        if let Some(sweeper) = self.sweeper {
-            sweeper.abort();
+        stop_bot(self.stop, self.join, self.sweeper).await;
+    }
+}
+
+/// Fire the bot's stop and wait a bounded time (the shape of
+/// [`DiscordTask::stop`], shared with the handover).
+async fn stop_bot(
+    stop: Option<oneshot::Sender<()>>,
+    join: Option<JoinHandle<()>>,
+    sweeper: Option<JoinHandle<()>>,
+) {
+    if let Some(sweeper) = sweeper {
+        sweeper.abort();
+    }
+    if let Some(stop) = stop {
+        let _ = stop.send(());
+    }
+    if let Some(join) = join
+        && tokio::time::timeout(Duration::from_secs(5), join)
+            .await
+            .is_err()
+    {
+        tracing::warn!("discord bot did not stop in time; continuing shutdown");
+    }
+}
+
+/// Whether `[discord]` is enabled at all: what decides if a generation takes
+/// the bot lock before starting (doc 33 §4.5). The full validation (ids, the
+/// token) is [`spawn_bot`]'s.
+#[must_use]
+pub fn configured(config: &Config) -> bool {
+    DiscordConfig::deserialize(config.discord.clone()).is_ok_and(|dc| dc.enabled)
+}
+
+/// The bot's run inside one gateway process (doc 33 §4.5): started at once
+/// (`mushd`, a gateway with no generation), or, under a generation, once this
+/// process holds the `flock` on `<state dir>/discord.lock`, so exactly one of
+/// the two generations runs the bot. The run's stop is a [`Notify`], so the
+/// drain's host and the shutdown tail may both ask and the second ask is
+/// nothing. A stopped generation-run hands its follows over
+/// ([`DiscordTask::stop_and_hand_over`]) before it releases the lock.
+pub struct DiscordRun {
+    stop: Arc<Notify>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for DiscordRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscordRun")
+            .field("running", &self.join.is_some())
+            .finish()
+    }
+}
+
+impl DiscordRun {
+    /// The bot `task` already started; stopping the run stops it.
+    #[must_use]
+    pub fn immediate(task: DiscordTask) -> DiscordRun {
+        let stop = Arc::new(Notify::new());
+        let asked = Arc::clone(&stop);
+        let join = tokio::spawn(async move {
+            asked.notified().await;
+            task.stop().await;
+        });
+        DiscordRun {
+            stop,
+            join: Some(join),
         }
-        if let Some(stop) = self.stop {
-            let _ = stop.send(());
+    }
+
+    /// Start the bot with `start` once this process holds the lock in
+    /// `state_dir` (blocking, off the runtime, for as long as the other
+    /// generation holds it), then restore any follows it handed over; on
+    /// stop, hand this generation's follows over and release the lock. A
+    /// stop while still waiting for the lock starts no bot.
+    pub fn under_lock(
+        state_dir: PathBuf,
+        start: impl FnOnce() -> DiscordTask + Send + 'static,
+    ) -> DiscordRun {
+        let stop = Arc::new(Notify::new());
+        let asked = Arc::clone(&stop);
+        let join = tokio::spawn(async move {
+            let lock_path = state_dir.join(BOT_LOCK_FILE);
+            let lock = tokio::select! {
+                taken = take_bot_lock(lock_path.clone()) => match taken {
+                    Ok(file) => Some(file),
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            path = %lock_path.display(),
+                            "cannot take the discord bot lock; starting the bot without it"
+                        );
+                        None
+                    }
+                },
+                () = asked.notified() => {
+                    tracing::info!("stopping before the discord bot lock was ours; no bot started");
+                    return;
+                }
+            };
+            let task = start();
+            task.restore_follows_from(&state_dir).await;
+            asked.notified().await;
+            task.stop_and_hand_over(&state_dir).await;
+            drop(lock);
+        });
+        DiscordRun {
+            stop,
+            join: Some(join),
         }
-        if let Some(join) = self.join
-            && tokio::time::timeout(Duration::from_secs(5), join)
+    }
+
+    /// The run's stop, for the drain's host: one `notify_one` stops it.
+    #[must_use]
+    pub fn stop_handle(&self) -> Arc<Notify> {
+        Arc::clone(&self.stop)
+    }
+
+    /// Stop the run and wait a bounded time for the bot (and, under a
+    /// generation, the handover) to finish.
+    pub async fn stop(mut self) {
+        self.stop.notify_one();
+        if let Some(join) = self.join.take()
+            && tokio::time::timeout(Duration::from_secs(15), join)
                 .await
                 .is_err()
         {
-            tracing::warn!("discord bot did not stop in time; continuing shutdown");
+            tracing::warn!("the discord run did not stop in time; continuing shutdown");
         }
     }
+}
+
+/// Take the bot lock: an exclusive advisory lock on `path`, held for as long
+/// as the returned file lives. Waits on a blocking thread while the other
+/// generation holds it.
+async fn take_bot_lock(path: PathBuf) -> std::io::Result<std::fs::File> {
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)?;
+        if file.try_lock().is_err() {
+            tracing::info!(
+                path = %path.display(),
+                "the other generation runs the discord bot; waiting for its lock"
+            );
+            file.lock()?;
+        }
+        tracing::info!(path = %path.display(), "discord bot lock taken");
+        Ok(file)
+    })
+    .await
+    .map_err(|e| std::io::Error::other(e.to_string()))?
 }
 
 /// Start the Discord bot from `[discord]` if it is enabled and usable: the
@@ -215,6 +474,8 @@ pub fn spawn_bot_with_conn_id_bit<A: AuthBackend + 'static>(
     // family) reaches the bridge through the process's control registry.
     bridge.install_controls(controls);
     let sweeper = tokio::spawn(idle_sweeper(Arc::clone(&bridge)));
+    let handover_bridge = Arc::clone(&bridge);
+    let handover: Arc<dyn FollowHandover> = handover_bridge;
     let hooks: Arc<dyn DiscordHooks> = bridge;
     let (stop, stop_rx) = oneshot::channel::<()>();
     let join = tokio::spawn(async move {
@@ -231,6 +492,50 @@ pub fn spawn_bot_with_conn_id_bit<A: AuthBackend + 'static>(
         stop: Some(stop),
         join: Some(join),
         sweeper: Some(sweeper),
+        handover: Some(handover),
+    }
+}
+
+impl<A: AuthBackend + 'static> FollowHandover for DiscordBridge<A> {
+    fn end_follows(&self) -> BoxFuture<'_, Vec<FollowRecord>> {
+        Box::pin(async move {
+            let ended: Vec<(u64, Follow)> = locked(&self.follows, "follows").drain().collect();
+            let mut records = Vec::with_capacity(ended.len());
+            for (user_id, follow) in ended {
+                follow.state.cancelled.cancel();
+                // A clean QUIT, not a lost link: the linkdead hook would
+                // otherwise auto-follow the character right back onto this
+                // draining generation.
+                self.core.quit(follow.conn).await;
+                records.push(FollowRecord {
+                    user_id,
+                    character: follow.character,
+                    name: follow.name,
+                });
+            }
+            records
+        })
+    }
+
+    fn restore_follows(&self, records: Vec<FollowRecord>) -> BoxFuture<'_, usize> {
+        Box::pin(async move {
+            let mut restored = 0;
+            for record in records {
+                match self
+                    .follow_impl(record.user_id, Some(&record.name), Some(HANDOVER_INTRO))
+                    .await
+                {
+                    FollowOutcome::Following { .. } => restored += 1,
+                    other => tracing::info!(
+                        user = record.user_id,
+                        character = %record.character,
+                        ?other,
+                        "discord follow not restored after the gateway swap"
+                    ),
+                }
+            }
+            restored
+        })
     }
 }
 
@@ -3334,5 +3639,183 @@ mod tests {
         settle().await;
         assert!(r.bridge.follow_of(USER).is_none());
         assert!(r.sessions.session_of_char(char_key(NICKY)).is_none());
+    }
+
+    fn scratch_state_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("mush-discord-gen-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    async fn wait_for(what: &str, cond: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !cond() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Doc 33 §4.5: one bot per instance. A generation's bot does not start
+    /// until the other generation's run has stopped and released the lock in
+    /// the shared state directory; a run stopped while still waiting for the
+    /// lock starts no bot at all.
+    #[tokio::test]
+    async fn the_bot_lock_admits_one_generation_at_a_time() {
+        let dir = scratch_state_dir("lock");
+        let started: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let s = Arc::clone(&started);
+        let run_a = DiscordRun::under_lock(dir.clone(), move || {
+            s.lock().unwrap().push("a");
+            DiscordTask::none()
+        });
+        wait_for("a to start", || started.lock().unwrap().as_slice() == ["a"]).await;
+        let s = Arc::clone(&started);
+        let run_b = DiscordRun::under_lock(dir.clone(), move || {
+            s.lock().unwrap().push("b");
+            DiscordTask::none()
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(*started.lock().unwrap(), vec!["a"], "b waits for a's lock");
+        run_a.stop().await;
+        wait_for("b to start", || {
+            started.lock().unwrap().as_slice() == ["a", "b"]
+        })
+        .await;
+        run_b.stop().await;
+
+        let s = Arc::clone(&started);
+        let holder = DiscordRun::under_lock(dir.clone(), move || {
+            s.lock().unwrap().push("c");
+            DiscordTask::none()
+        });
+        wait_for("c to start", || started.lock().unwrap().len() == 3).await;
+        let s = Arc::clone(&started);
+        let waiter = DiscordRun::under_lock(dir.clone(), move || {
+            s.lock().unwrap().push("d");
+            DiscordTask::none()
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        waiter.stop().await;
+        holder.stop().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            *started.lock().unwrap(),
+            vec!["a", "b", "c"],
+            "a run stopped while waiting for the lock starts no bot"
+        );
+    }
+
+    struct FakeHandover {
+        ended: Vec<FollowRecord>,
+        restored: Mutex<Vec<FollowRecord>>,
+    }
+
+    impl FollowHandover for FakeHandover {
+        fn end_follows(&self) -> BoxFuture<'_, Vec<FollowRecord>> {
+            Box::pin(async move { self.ended.clone() })
+        }
+
+        fn restore_follows(&self, records: Vec<FollowRecord>) -> BoxFuture<'_, usize> {
+            Box::pin(async move {
+                let n = records.len();
+                self.restored.lock().unwrap().extend(records);
+                n
+            })
+        }
+    }
+
+    /// Doc 33 §4.5: the draining generation writes what its follows were;
+    /// the successor reads the file once and attaches them; a generation
+    /// that never ran the bot leaves no file.
+    #[tokio::test]
+    async fn the_handover_file_carries_the_follows_to_the_next_generation_once() {
+        let dir = scratch_state_dir("handover");
+        let records = vec![FollowRecord {
+            user_id: USER,
+            character: NICKY,
+            name: "Nick".to_string(),
+        }];
+        let old = Arc::new(FakeHandover {
+            ended: records.clone(),
+            restored: Mutex::new(Vec::new()),
+        });
+        let draining = DiscordTask {
+            stop: None,
+            join: Some(tokio::spawn(async {})),
+            sweeper: None,
+            handover: Some(Arc::clone(&old) as Arc<dyn FollowHandover>),
+        };
+        draining.stop_and_hand_over(&dir).await;
+        let file = DiscordTask::handover_file(&dir);
+        assert!(file.exists(), "the records were written");
+
+        let new = Arc::new(FakeHandover {
+            ended: Vec::new(),
+            restored: Mutex::new(Vec::new()),
+        });
+        let successor = DiscordTask {
+            stop: None,
+            join: None,
+            sweeper: None,
+            handover: Some(Arc::clone(&new) as Arc<dyn FollowHandover>),
+        };
+        successor.restore_follows_from(&dir).await;
+        assert_eq!(*new.restored.lock().unwrap(), records);
+        assert!(!file.exists(), "the file is consumed");
+        successor.restore_follows_from(&dir).await;
+        assert_eq!(
+            new.restored.lock().unwrap().len(),
+            1,
+            "a second read finds nothing"
+        );
+
+        let idle = DiscordTask {
+            stop: None,
+            join: None,
+            sweeper: None,
+            handover: Some(Arc::clone(&old) as Arc<dyn FollowHandover>),
+        };
+        idle.stop_and_hand_over(&dir).await;
+        assert!(
+            !file.exists(),
+            "a generation with no bot hands nothing over"
+        );
+    }
+
+    /// Doc 33 §4.5: the draining generation's bridge ends its follows with a
+    /// clean QUIT and says what they were; the successor's bridge attaches
+    /// them again from the records; a user unlinked in between is not.
+    #[tokio::test]
+    async fn a_bridge_ends_its_follows_for_the_handover_and_restores_them() {
+        let old = rig(|_| {}).await;
+        linked(&old.store, "Nick", USER, |_| {}).await;
+        assert!(matches!(
+            old.bridge.follow(USER, None).await,
+            FollowOutcome::Following { .. }
+        ));
+        let records = old.bridge.end_follows().await;
+        assert_eq!(records.len(), 1, "{records:?}");
+        let record = records.first().expect("one record");
+        assert_eq!(record.user_id, USER);
+        assert_eq!(record.character, NICKY);
+        assert_eq!(record.name, "Nicky", "the character, not the account");
+        assert_eq!(
+            old.bridge.dm_line(USER, "say gone").await,
+            LineOutcome::NotFollowing
+        );
+        assert!(old.bridge.end_follows().await.is_empty(), "ended once");
+
+        let new = rig(|_| {}).await;
+        linked(&new.store, "Nick", USER, |_| {}).await;
+        assert_eq!(new.bridge.restore_follows(records.clone()).await, 1);
+        assert_ne!(
+            new.bridge.dm_line(USER, "say back").await,
+            LineOutcome::NotFollowing
+        );
+
+        let unlinked = rig(|_| {}).await;
+        assert_eq!(unlinked.bridge.restore_follows(records).await, 0);
     }
 }

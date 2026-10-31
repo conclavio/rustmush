@@ -237,6 +237,7 @@ const CLI: CliSpec = CliSpec {
     check_config: true,
     bootstrap_staff: true,
     generation: false,
+    ipc_version: false,
 };
 
 fn main() -> ExitCode {

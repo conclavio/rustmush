@@ -369,6 +369,12 @@ export class GameApp {
       onTokenCooloff: () => {
         this.#localNotice("Too many reconnects from this network; retrying in one minute.");
       },
+      onRestartReconnectFailed: (reason) => {
+        // Doc 33 Q-33-4: the gateway generation that held us closed with a
+        // reason; the reconnect it expected of us failed, so the reason is
+        // worth a line. The client is still retrying.
+        this.#localNotice(reason);
+      },
       onBinary: (data) => this.picture.receive(data),
       onFullRehydrate: () => {
         // Resume gap outgrew the ring: the server fell back to a fresh
