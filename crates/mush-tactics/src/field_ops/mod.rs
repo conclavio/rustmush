@@ -19,28 +19,25 @@
 //!   `Q-R2`, `Q-R5`, `P-1`): detachment sortie staging, partial-launch persistence,
 //!   carrier personnel embarkation manifests, NPC crew contracts/wages, unit expense
 //!   policies, bounded mission-leader succession, and field-to-roster availability sync.
-//! - [`clock`] (`W-clock`, `FO-11`, `Q-H11`, `Q-F3`, `Q-F4`, `Q-R4`, `P-4`): global outage
-//!   freeze, 5-minute recovery countdown (`5m`, `2m`, `1m`, unfreeze), sub-threshold silent
-//!   re-anchor, incompatible-state quarantine, and salvage contest deadline extension.
+//! - [`quarantine`] (`W-clock` consumer, `Q-H11`, `P-4`): post-outage audit quarantine of
+//!   field units whose persisted state disagrees with their site books, stamped from the
+//!   kernel's `WorldClockResumed` event. The clock itself — the durable checkpoint, the
+//!   outage evaluation, the countdown and its broadcasts — is the kernel's
+//!   (`mush_core::clock::WorldTimeline`); the salvage contest windows pause and extend from
+//!   the same events (`salvage`, `Q-F3`).
 //! - [`engineering`] (`H1-A`, `H2-A`, `H3` Field vs. Workshop Boundary): mobile field
 //!   engineering tenders, in-field weapon unjamming, damaged-section stabilization, field
 //!   ammo/charge resupply, and workshop-boundary enforcement.
 
-pub mod clock;
 pub mod condition;
 pub mod engagement;
 pub mod engineering;
+pub mod quarantine;
 pub mod recovery;
 pub mod salvage;
 pub mod sortie;
 pub mod workshop;
 
-pub use clock::{
-    ActiveFieldFreeze, AdjustedSalvageClaimDeadline, ClockFreezeError,
-    DEFAULT_OUTAGE_COUNTDOWN_REAL_S, DEFAULT_OUTAGE_FREEZE_THRESHOLD_REAL_S, FieldClockCoordinator,
-    FieldOutageResolution, MAX_QUARANTINED_UNITS, OutageBroadcastMilestone, OutageFreezeConfig,
-    OutageReconnectBanner, OutageUnfreezeReport, QuarantinedUnitRecord,
-};
 pub use condition::{
     AuthorityHandoffRequest, ComponentCondition, ConditionError, FieldAuthorityKind,
     FieldCloseOutcome, FieldCustodyLedger, FieldCustodyRecord, FieldEpochDisposition,
@@ -63,6 +60,9 @@ pub use engineering::{
     FieldEngineeringError, FieldEngineeringLogEntry, FieldTenderState, MAX_FIELD_ENGINEERING_LOGS,
     MAX_FIELD_TENDERS,
 };
+pub use quarantine::{
+    MAX_QUARANTINED_UNITS, OutageQuarantineBook, QuarantineError, QuarantinedUnitRecord,
+};
 pub use recovery::{
     AttachTowRequest, BayCapacitySpec, DEFAULT_MAX_ATTACH_DISTANCE_CM, FieldInspectionReport,
     FieldPose, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_RECOVERY_OPERATIONS,
@@ -71,13 +71,14 @@ pub use recovery::{
     inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille, tow_speed_factor_permille,
 };
 pub use salvage::{
-    AtRiskRepairEntry, AuthoritativeRecoveryRecord, BlackBoxFlightEntry, BlackBoxForensicReport,
-    CONTEST_WINDOW_AVAILABLE_REAL_SECS, ContestGround, ContestSuccessReason, CustodyAction,
-    CustodyTitleStatus, GroundTenure, MAX_AUTHORITATIVE_RECOVERY_RECORDS,
-    MAX_BLACK_BOX_ENTRIES_PER_HULL, MAX_CLAIM_ENTRIES, MAX_SALVAGE_CLAIMS,
-    RecoveryAuthorityContext, RecoveryEntitlement, SalvageClaim, SalvageClaimBook, SalvageClaimId,
-    SalvageClaimState, SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord,
-    SalvageSubject, check_custody_action_allowed, evaluate_recovery_entitlement,
+    AdjustedSalvageClaimDeadline, AtRiskRepairEntry, AuthoritativeRecoveryRecord,
+    BlackBoxFlightEntry, BlackBoxForensicReport, CONTEST_WINDOW_AVAILABLE_REAL_SECS, ContestGround,
+    ContestSuccessReason, CustodyAction, CustodyTitleStatus, GroundTenure,
+    MAX_AUTHORITATIVE_RECOVERY_RECORDS, MAX_BLACK_BOX_ENTRIES_PER_HULL, MAX_CLAIM_ENTRIES,
+    MAX_SALVAGE_CLAIMS, RecoveryAuthorityContext, RecoveryEntitlement, SalvageClaim,
+    SalvageClaimBook, SalvageClaimId, SalvageClaimState, SalvageContest, SalvageError,
+    SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject, check_custody_action_allowed,
+    evaluate_recovery_entitlement,
 };
 pub use sortie::{
     ActiveFieldSortie, CarrierPersonnelManifest, CrewMemberKind, EmbarkationOrigin,
@@ -101,7 +102,7 @@ mod tests {
 
     use mush_core::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, ObjId,
-        OwnerId,
+        OwnerId, WorldEvent,
     };
     use smol_str::SmolStr;
 
@@ -1051,15 +1052,9 @@ mod tests {
     }
 
     #[test]
-    fn w_clock_freeze_countdown_silent_reanchor_quarantine_and_claim_deadline_adjustment()
-    -> TestResult {
-        let mut clock = FieldClockCoordinator::new(
-            OutageFreezeConfig {
-                freeze_threshold_real_s: 30,
-                countdown_duration_real_s: 300,
-            },
-            IC_SURFACE_CLOCK_RATE,
-        )?;
+    fn w_clock_events_quarantine_mismatched_units_and_extend_salvage_claim_deadlines() -> TestResult
+    {
+        let mut quarantine = OutageQuarantineBook::new();
         let mut salvage_book = SalvageClaimBook::new();
         let mut custody_ledger = FieldCustodyLedger::new();
         let mut site_book = FieldSiteEngagementBook::new(ObjId(900))?;
@@ -1095,36 +1090,16 @@ mod tests {
             1_000,
         )?;
 
-        // Seed initial checkpoint at real=10_000, ic=50_000.
-        clock.record_checkpoint(10_000, 50_000)?;
-
-        // Sub-threshold restart (< 30s lost wall time): silent re-anchor with no freeze (`Q-R4`).
-        let silent = clock.evaluate_restart_gap(10_020, &mut salvage_book)?;
-        check_eq!(
-            silent,
-            FieldOutageResolution::SilentReanchor {
-                lost_real_s: 20,
-                anchored_real_s: 10_020,
-                anchored_ic_s: 50_000,
-            }
-        );
-        check!(!clock.is_frozen());
-
         // File a pending salvage claim before the outage (`Q-F3`).
+        let authority = RecoveryAuthorityContext {
+            recoverer: ObjId(50),
+            unit_title_holder: ObjId(60),
+            has_owner_authorization: false,
+            has_landholder_authorization: false,
+            ground_tenure_at_attach: GroundTenure::Unclaimed,
+        };
         let op_id = RecoveryOpId::new(1)?;
-        salvage_book.record_physical_attach(
-            op_id,
-            ObjId(201),
-            ObjId(300),
-            &RecoveryAuthorityContext {
-                recoverer: ObjId(50),
-                unit_title_holder: ObjId(60),
-                has_owner_authorization: false,
-                has_landholder_authorization: false,
-                ground_tenure_at_attach: GroundTenure::Unclaimed,
-            },
-            50_000,
-        )?;
+        salvage_book.record_physical_attach(op_id, ObjId(201), ObjId(300), &authority, 50_000)?;
         salvage_book.record_bay_load(op_id, ObjId(800), 50_010)?;
         let custody_status = salvage_book.resolve_hull_recovery_custody(op_id, 10_020)?;
         let (claim_id, initial_deadline) = match custody_status {
@@ -1136,29 +1111,32 @@ mod tests {
             other => return Err(format!("expected pending salvage claim, got {other:?}").into()),
         };
 
-        // Outage restart >= 30s (600s outage from 10_020 to 10_620): freezes clock & starts 5m countdown (`FO-11`, `Q-H11`).
-        let frozen_res = clock.evaluate_restart_gap(10_620, &mut salvage_book)?;
+        // The kernel froze the world at its pre-outage checkpoint (real 10_020, ic 50_000) and
+        // the boot re-emits `WorldClockFrozen`: the contest window pauses there (`Q-F3`).
+        let frozen = WorldEvent::WorldClockFrozen {
+            real_unix: 10_020,
+            ic_unix: 50_000,
+        };
+        check!(salvage_book.apply_world_clock_event(&frozen).is_empty());
         check_eq!(
-            frozen_res,
-            FieldOutageResolution::OutageCountdownStarted {
-                lost_real_s: 600,
-                frozen_at_real_s: 10_020,
-                frozen_ic_s: 50_000,
-                countdown_started_real_s: 10_620,
-                unfreeze_at_real_s: 10_920,
-                initial_milestones: vec![OutageBroadcastMilestone::FiveMinutes {
-                    remaining_real_s: 300,
-                }],
-            }
+            salvage_book.claim(claim_id).map(|c| c.paused_at_real_s),
+            Some(Some(10_020))
         );
-        check!(clock.is_frozen());
-
-        // Reconnect banner shows frozen status and remaining countdown (`Q-H11`).
-        let banner = clock
-            .reconnect_banner(10_700)
-            .ok_or("expected reconnect banner")?;
-        check_eq!(banner.frozen_ic_s, 50_000);
-        check_eq!(banner.remaining_countdown_real_s, Some(220));
+        check!(matches!(
+            salvage_book.adjudicate_claim(claim_id, initial_deadline + 1),
+            Err(SalvageError::ClaimPausedForOutage(id)) if id == claim_id
+        ));
+        // A freeze audits nothing: quarantine is decided when the world comes back (`Q-H11`).
+        check!(
+            quarantine
+                .audit_site_units_on_world_clock_resumed(
+                    &frozen,
+                    &site_book,
+                    &custody_ledger,
+                    [&fixture.unit, &fixture_mismatch.unit],
+                )?
+                .is_empty()
+        );
 
         // Mutate fixture_mismatch's unit revision outside site_book/custody_ledger to simulate an
         // incompatible post-outage persisted revision (`Q-H11`).
@@ -1176,79 +1154,96 @@ mod tests {
         let (bumped_202, _) = apply(&fixture_mismatch.unit, &bump_plan, 50_000)?;
         fixture_mismatch.unit = bumped_202;
 
-        // Audit site units: ObjId(201) is clean; ObjId(202) has a revision mismatch and is quarantined (`Q-H11`).
-        check_eq!(
-            clock.audit_or_quarantine_site_unit(
-                &site_book,
-                &custody_ledger,
-                &fixture.unit,
-                10_700
-            )?,
-            None
-        );
-        let q_rec = clock
-            .audit_or_quarantine_site_unit(
-                &site_book,
-                &custody_ledger,
-                &fixture_mismatch.unit,
-                10_700,
-            )?
+        // The world task resumes the clock 900 s later (a 600 s outage plus the 300 s countdown)
+        // and emits `WorldClockResumed` with the frozen IC second as the resumed one.
+        let resumed = WorldEvent::WorldClockResumed {
+            frozen_real_unix: 10_020,
+            resumed_real_unix: 10_920,
+            unavailable_secs: 900,
+            ic_unix: 50_000,
+        };
+
+        // Audit on resume: ObjId(201) is clean; ObjId(202) has a revision mismatch and is
+        // quarantined, stamped from the event (`Q-H11`, `P-4`).
+        let quarantined = quarantine.audit_site_units_on_world_clock_resumed(
+            &resumed,
+            &site_book,
+            &custody_ledger,
+            [&fixture.unit, &fixture_mismatch.unit],
+        )?;
+        check_eq!(quarantined.len(), 1);
+        let q_rec = quarantined
+            .first()
             .ok_or("expected ObjId(202) to be quarantined")?;
         check_eq!(q_rec.unit, ObjId(202));
-        check_eq!(
-            clock.ensure_unfrozen(),
-            Err(ClockFreezeError::WorldClockFrozen {
-                frozen_at_real_s: 10_020,
-                frozen_ic_s: 50_000,
-            })
-        );
-
-        // Advance countdown milestones: 2m at 10_800 (120s left), 1m at 10_860 (60s left) (`FO-11`, `Q-H11`).
-        let (m2, rep2) = clock.step_countdown(10_800, &mut salvage_book)?;
-        check_eq!(rep2, None);
-        check_eq!(
-            m2,
-            vec![OutageBroadcastMilestone::TwoMinutes {
-                remaining_real_s: 120
-            }]
-        );
-        // Stepping again in the same window does not duplicate the broadcast.
-        let (m2_dup, _) = clock.step_countdown(10_810, &mut salvage_book)?;
-        check!(m2_dup.is_empty());
-
-        let (m1, rep1) = clock.step_countdown(10_860, &mut salvage_book)?;
-        check_eq!(rep1, None);
-        check_eq!(
-            m1,
-            vec![OutageBroadcastMilestone::OneMinute {
-                remaining_real_s: 60
-            }]
-        );
-
-        // Complete countdown at 10_920: unfreezes and extends salvage claim deadline by 900s (600s outage + 300s countdown) (`Q-F3`, `P-4`).
-        let (m_unfreeze, report_opt) = clock.step_countdown(10_920, &mut salvage_book)?;
-        check_eq!(m_unfreeze, vec![OutageBroadcastMilestone::Unfrozen]);
-        let report = report_opt.ok_or("expected unfreeze report")?;
-        check!(!clock.is_frozen());
-        check_eq!(report.unavailable_real_s, 900);
-        check_eq!(report.adjusted_salvage_claims.len(), 1);
-        check_eq!(report.adjusted_salvage_claims[0].claim_id, claim_id);
-        check_eq!(
-            report.adjusted_salvage_claims[0].adjusted_deadline_real_s,
-            initial_deadline + 900
-        );
-
-        // Quarantined unit remains blocked until staff releases it (`Q-H11`).
+        check_eq!(q_rec.site, ObjId(900));
+        check_eq!(q_rec.reason, SmolStr::new("custody_revision_mismatch"));
+        check_eq!(q_rec.preserved_revision, fixture_mismatch.unit.revision());
+        check_eq!(q_rec.quarantined_at_real_s, 10_920);
+        check_eq!(q_rec.quarantined_at_ic_s, 50_000);
+        check_eq!(quarantine.ensure_unit_not_quarantined(ObjId(201)), Ok(()));
         check!(matches!(
-            clock.ensure_unit_not_quarantined(ObjId(202)),
-            Err(ClockFreezeError::UnitQuarantined {
+            quarantine.ensure_unit_not_quarantined(ObjId(202)),
+            Err(QuarantineError::UnitQuarantined {
                 unit: ObjId(202),
                 ..
             })
         ));
-        clock.release_quarantined_unit(ObjId(202));
-        clock.ensure_unit_not_quarantined(ObjId(202))?;
+        check_eq!(quarantine.quarantined_units().len(), 1);
 
+        // The same event extends the paused contest window by the 900 s the world was away.
+        let adjusted = salvage_book.apply_world_clock_event(&resumed);
+        check_eq!(adjusted.len(), 1);
+        let adj = adjusted.first().ok_or("expected one adjusted claim")?;
+        check_eq!(adj.claim_id, claim_id);
+        check_eq!(adj.previous_deadline_real_s, initial_deadline);
+        check_eq!(adj.adjusted_deadline_real_s, initial_deadline + 900);
+        check_eq!(adj.total_paused_real_s, 900);
+        check_eq!(
+            salvage_book.claim(claim_id).map(|c| c.paused_at_real_s),
+            Some(None)
+        );
+
+        // A claim the freeze event never reached is still extended by the unavailable time: the
+        // resume event pauses it at `frozen_real_unix` first (the economy's rule for a window it
+        // finds open at the freeze).
+        let op_2 = RecoveryOpId::new(2)?;
+        salvage_book.record_physical_attach(op_2, ObjId(202), ObjId(300), &authority, 50_000)?;
+        salvage_book.record_bay_load(op_2, ObjId(800), 50_010)?;
+        let (claim_2, deadline_2) = match salvage_book
+            .resolve_hull_recovery_custody(op_2, 10_920)?
+        {
+            CustodyTitleStatus::PendingSalvageClaim {
+                claim_id,
+                deadline_real_s,
+                ..
+            } => (claim_id, deadline_real_s),
+            other => return Err(format!("expected pending salvage claim, got {other:?}").into()),
+        };
+        let resumed_again = WorldEvent::WorldClockResumed {
+            frozen_real_unix: 11_000,
+            resumed_real_unix: 11_300,
+            unavailable_secs: 300,
+            ic_unix: 50_000,
+        };
+        let adjusted_again = salvage_book.apply_world_clock_event(&resumed_again);
+        check_eq!(adjusted_again.len(), 2);
+        check_eq!(
+            salvage_book.claim(claim_id).map(|c| c.deadline_real_s),
+            Some(initial_deadline + 900 + 300)
+        );
+        check_eq!(
+            salvage_book.claim(claim_2).map(|c| c.deadline_real_s),
+            Some(deadline_2 + 300)
+        );
+
+        // Quarantine holds until staff releases it (`Q-H11`).
+        check!(quarantine.release_quarantined_unit(ObjId(202)).is_some());
+        quarantine.ensure_unit_not_quarantined(ObjId(202))?;
+
+        let encoded = serde_json::to_string(&quarantine)?;
+        let decoded: OutageQuarantineBook = serde_json::from_str(&encoded)?;
+        check_eq!(decoded, quarantine);
         Ok(())
     }
 
