@@ -2,9 +2,13 @@
 
 import { describe, expect, it } from "vitest";
 
-import { isThemeChoice, resolveTheme, toggledTheme } from "./theme";
+import { isThemeChoice, loadThemeChoice, resolveTheme, toggledTheme } from "./theme";
 
 describe("theme", () => {
+  it("defaults to dark when no choice is stored", () => {
+    expect(loadThemeChoice()).toBe("dark");
+  });
+
   it("resolves system by preference and explicit choices as-is", () => {
     expect(resolveTheme("system", false)).toBe("dark");
     expect(resolveTheme("system", true)).toBe("light");

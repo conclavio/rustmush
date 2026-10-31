@@ -323,7 +323,7 @@ export class GameApp {
   toasts = $state<Toast[]>([]);
   /** Server-initiated disconnect (boot/QUIT/shutdown) → modal. */
   disconnectReason = $state<string | null>(null);
-  theme = $state<ThemeChoice>("system");
+  theme = $state<ThemeChoice>("dark");
 
   readonly client: WsClient;
   #token: string | null = null;

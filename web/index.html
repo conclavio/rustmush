@@ -1,25 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <title>rustmush</title>
     <script>
-      // Stamp the stored theme choice before first paint so a dark-choosing
-      // user on a light-OS (or vice versa) never sees a flash of the wrong
-      // theme while the bundle loads — mirrors $lib/theme.ts's
-      // loadThemeChoice/applyTheme (same storage key, same values, same
-      // `data-theme` attribute); "system" stores nothing, so no attribute is
-      // set and the prefers-color-scheme media query in app.css decides.
+      // Stamp the stored theme choice before first paint. Dark is the default
+      // when no choice is stored; "system" removes `data-theme` so the
+      // prefers-color-scheme media query in app.css decides.
       (function () {
         try {
           var v = localStorage.getItem("rustmush.theme");
           if (v === "dark" || v === "light") {
             document.documentElement.dataset.theme = v;
+          } else if (v === "system") {
+            delete document.documentElement.dataset.theme;
+          } else {
+            document.documentElement.dataset.theme = "dark";
           }
         } catch (e) {
-          // Storage blocked/unavailable: fall back to system preference.
+          document.documentElement.dataset.theme = "dark";
         }
       })();
     </script>

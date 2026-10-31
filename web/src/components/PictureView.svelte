@@ -109,7 +109,7 @@
   let zoomPermille = $state(ZOOM_DEFAULT_PERMILLE);
 
   const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
-  const DEFAULT_PICTURE_W = 520;
+  const DEFAULT_PICTURE_W = 780;
   const MIN_PICTURE_W = 280;
   const MAX_PICTURE_W = 1120;
 
@@ -573,9 +573,104 @@
     }
   }
 
-  // A step still waiting when the view goes (the screen changed) is sent, not
-  // lost: the speed stands across screens, only the turn and the look stop.
+  /** A step still waiting when the view goes (the screen changed) is sent, not
+   * lost: the speed stands across screens, only the turn and the look stop. */
   $effect(() => () => flushSpeed());
+
+  // -- weapons free auto-fire rule controls ----------------------------------
+
+  let fireRuleWeapon = $state("ALL");
+  let fireRuleOdds = $state(60);
+  let fireRuleArmed = $state(false);
+
+  $effect(() => {
+    const f = frame;
+    if (!f) {
+      fireRuleArmed = false;
+      return;
+    }
+    if (fireRuleWeapon !== "ALL" && !f.weapons.some((w) => w.id === fireRuleWeapon)) {
+      fireRuleWeapon = "ALL";
+    }
+  });
+
+  function sendFireRule(): void {
+    fireRuleArmed = true;
+    if (frame?.weapons_free === false) {
+      app.helm("FIRE FREE");
+    }
+    app.helm(`FIRE ${fireRuleWeapon} WHEN odds >= ${fireRuleOdds}`);
+  }
+
+  function onFireWeaponChange(ev: Event): void {
+    fireRuleWeapon = (ev.currentTarget as HTMLSelectElement).value || "ALL";
+    sendFireRule();
+  }
+
+  function onFireOddsChange(ev: Event): void {
+    const raw = Number((ev.currentTarget as HTMLInputElement).value);
+    if (Number.isFinite(raw)) {
+      fireRuleOdds = Math.max(10, Math.min(100, Math.round(raw)));
+    }
+    sendFireRule();
+  }
+
+  function toggleFireRule(): void {
+    if (fireRuleArmed) {
+      fireRuleArmed = false;
+      app.helm(`FIRE ${fireRuleWeapon} OFF`);
+    } else {
+      sendFireRule();
+    }
+  }
+
+  // -- HUD speed bar pointer drag --------------------------------------------
+
+  let hudSpeedDragging = $state(false);
+
+  function hudSpeedFromNormY(normY: number): number {
+    // In `overlay.rs`, `draw_speed` places the bar at y = 0.30..0.70 of canvas height.
+    // Above 0.70 (0.30..0.70) maps 0..maxKph; below 0.70 (0.70..0.78) maps 0..-reverseKph.
+    if (normY <= 0.7) {
+      const frac = Math.max(0, Math.min(1, (0.7 - normY) / 0.4));
+      return Math.round(frac * maxKph);
+    }
+    const revFrac = Math.max(0, Math.min(1, (normY - 0.7) / 0.08));
+    return -Math.round(revFrac * reverseKph);
+  }
+
+  function applyHudSpeed(normY: number): void {
+    const next = hudSpeedFromNormY(normY);
+    orderedKph = next;
+    pendingKph = next;
+    speedTimer ??= setTimeout(flushSpeed, SPEED_COALESCE_MS);
+  }
+
+  function onCanvasPointerDown(ev: PointerEvent): void {
+    if (viewKind !== "cockpit" || !active || frame === null) return;
+    const coords = canvasNormCoords(ev);
+    if (!coords) return;
+    if (coords.normX >= 0.88 && coords.normY >= 0.24 && coords.normY <= 0.78) {
+      ev.preventDefault();
+      hudSpeedDragging = true;
+      (ev.currentTarget as HTMLElement | null)?.setPointerCapture?.(ev.pointerId);
+      applyHudSpeed(coords.normY);
+    }
+  }
+
+  function onCanvasPointerMove(ev: PointerEvent): void {
+    if (!hudSpeedDragging) return;
+    const coords = canvasNormCoords(ev);
+    if (!coords) return;
+    applyHudSpeed(coords.normY);
+  }
+
+  function onCanvasPointerUp(ev: PointerEvent): void {
+    if (!hudSpeedDragging) return;
+    hudSpeedDragging = false;
+    (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
+    flushSpeed();
+  }
 
   // -- the lock cycle (doc 21 cut G.12c) -------------------------------------
 
@@ -765,7 +860,43 @@
         <span class="readout" aria-label="speed ordered">spd {frameKph}→{outstandingKph}</span>
       {/if}
       {#if frame !== null}
-        <span class="readout">{gateWord(frame.weapons_free)}</span>
+        <span class="wf-controls" aria-label="picture weapons free controls">
+          <button
+            type="button"
+            class="toggle wf-btn"
+            class:armed={fireRuleArmed}
+            aria-pressed={fireRuleArmed}
+            title={fireRuleArmed
+              ? `FIRE ${fireRuleWeapon} OFF`
+              : `FIRE ${fireRuleWeapon} WHEN odds >= ${fireRuleOdds}`}
+            onclick={toggleFireRule}
+          >{gateWord(frame.weapons_free)}</button>
+          {#if frame.weapons.length > 0}
+            <select
+              class="wf-select"
+              aria-label="picture auto-fire weapon"
+              value={fireRuleWeapon}
+              onchange={onFireWeaponChange}
+            >
+              <option value="ALL">ALL</option>
+              {#each frame.weapons as w (w.id)}
+                <option value={w.id}>{w.id}</option>
+              {/each}
+            </select>
+            <input
+              type="range"
+              class="wf-slider"
+              aria-label="picture auto-fire odds"
+              min="10"
+              max="100"
+              step="5"
+              value={fireRuleOdds}
+              oninput={onFireOddsChange}
+              onchange={onFireOddsChange}
+            />
+            <span class="readout wf-odds">&gt;={fireRuleOdds}%</span>
+          {/if}
+        </span>
         {#if frame.mode === "range"}
           <!-- 16c Q-PT1: a range says so beside the gate, as the TUI's top line does. -->
           <span class="readout" aria-label="match mode">RANGE</span>
@@ -824,6 +955,10 @@
         onwheel={onCanvasWheel}
         onclick={onCanvasClick}
         ondblclick={onCanvasDblClick}
+        onpointerdown={onCanvasPointerDown}
+        onpointermove={onCanvasPointerMove}
+        onpointerup={onCanvasPointerUp}
+        onpointercancel={onCanvasPointerUp}
       ></canvas>
       {#if !drawnHere}
         <p class="muted waiting">
@@ -901,6 +1036,39 @@
 
   .toggle:hover {
     color: var(--fg);
+  }
+
+  .wf-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .wf-btn.armed {
+    border-color: var(--accent, #6aa0ff);
+    color: var(--fg);
+    background: var(--bg-input);
+  }
+
+  .wf-select {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.05rem 0.25rem;
+  }
+
+  .wf-slider {
+    width: 4.5rem;
+    accent-color: var(--accent, #6aa0ff);
+    cursor: pointer;
+  }
+
+  .wf-odds {
+    font-size: 0.75rem;
+    min-width: 2.8rem;
   }
 
   .zoom-controls {
