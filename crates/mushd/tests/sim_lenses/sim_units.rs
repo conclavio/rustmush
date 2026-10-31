@@ -674,9 +674,14 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
     // it byte-identical whoever asks and whatever they guessed, because a
     // refusal that varied would itself be a probe. So the two answers are
     // compared to each other, not merely to the needle they were waited on.
+    //
+    // Doc 32 cut CF.0 (Q-CF-11): unit letters are drawn at check-out, so the
+    // guess is a red callsign the match's record did not draw.
+    let nobody = support::undrawn_callsign(&support::drawn_callsigns(&server.store, 1).await, 'R');
+    let lock_nobody = format!("LOCK {nobody}");
     let mut refusals = Vec::new();
     for term in [&mut ada, &mut bo] {
-        let seen = ask(term, "LOCK RD", "No such contact.").await;
+        let seen = ask(term, &lock_nobody, "No such contact.").await;
         refusals.push(
             seen.lines()
                 .find(|line| line.contains("No such contact."))
@@ -1351,15 +1356,23 @@ async fn ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds
 
     // The rack.
     let contact = wait_for_contact(&mut ada).await;
-    assert_eq!(contact, "BA", "the target answers to its pod's callsign");
+    // Doc 32 cut CF.0 (Q-CF-11): the target's unit letter is drawn at
+    // check-out; "its callsign" is the one the match's record kept for it.
+    let target = support::party_callsign(&server.store, 1, 'B').await;
+    assert_eq!(
+        contact, target,
+        "the target answers to its tank's drawn callsign"
+    );
     let locking = ada.mark();
-    say(&mut ada, "LOCK BA", "Locking").await;
-    ada.expect_after(locking, "Locked on BA").await;
+    say(&mut ada, &format!("LOCK {target}"), "Locking").await;
+    ada.expect_after(locking, &format!("Locked on {target}"))
+        .await;
     let fired = ada.mark();
     framed_line(&mut ada, "FIRE missiles").await;
     ada.expect_after(fired, "Firing missiles.").await;
+    let (hit_on, miss_on) = (format!("Hit on {target}"), format!("Miss on {target}"));
     let outcome = ada
-        .expect_one_of_after(fired, &["Hit on BA", "Miss on BA", "refused"])
+        .expect_one_of_after(fired, &[hit_on.as_str(), miss_on.as_str(), "refused"])
         .await;
     assert_ne!(
         outcome,

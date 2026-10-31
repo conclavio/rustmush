@@ -1109,6 +1109,11 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         named, contact,
         "the classified row still reads as the provisional number:\n{classified}"
     );
+    // Doc 32 cut CF.0 (Q-CF-11): the public callsign is the party's letter and
+    // a unit letter drawn at check-out; the match's record keeps both tanks'.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (red_callsign, blue_callsign) = (drawn[&red].clone(), drawn[&blue].clone());
+    assert_eq!(named, blue_callsign, "the rename is to the drawn callsign");
 
     // -----------------------------------------------------------------
     // (6) Close and halt, nose to nose.
@@ -1795,15 +1800,18 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // `BA` — and the ledger object counts the tape's chunks.
     assert_eq!(
         row_of(red).get("callsign").and_then(Value::as_str),
-        Some("RA"),
+        Some(red_callsign.as_str()),
         "{result}"
     );
     assert_eq!(
         row_of(blue).get("callsign").and_then(Value::as_str),
-        Some("BA"),
+        Some(blue_callsign.as_str()),
         "{result}"
     );
-    for (team, pilot, callsign) in [("red", ADA, "RA"), ("blue", BO, "BA")] {
+    for (team, pilot, callsign) in [
+        ("red", ADA, red_callsign.as_str()),
+        ("blue", BO, blue_callsign.as_str()),
+    ] {
         let row = result
             .get("teams")
             .and_then(Value::as_array)
@@ -1858,9 +1866,10 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     } else {
         "'s turret destroyed".to_owned()
     };
+    let flew = format!("You flew {red_callsign}: ");
     for want in [
         "red won (blue eliminated)",
-        "You flew RA: ",
+        flew.as_str(),
         "cannon at ",
         finished.as_str(),
         "the match ended: blue eliminated.",

@@ -1004,14 +1004,17 @@ async fn z3_a_side_takes_six_claims_and_the_fill_is_one_to_six() {
 
     let status = ask(ada, "SIM STATUS", "AI fill: each side fields").await;
     let status = one_line(&status);
+    // Doc 32 cut CF.0 (Q-CF-11): before a match has checked a tank out its
+    // unit letter is not drawn, so the board prints the side's letter and a
+    // dash beside every index.
     for row in [
-        "1 (RA): Ada",
-        "2 (RB): Bo",
-        "3 (RC): Cy",
-        "4 (RD): Dee",
-        "5 (RE): Eli",
-        "6 (RF): Fay",
-        "1 (BA): Gus",
+        "1 (R-): Ada",
+        "2 (R-): Bo",
+        "3 (R-): Cy",
+        "4 (R-): Dee",
+        "5 (R-): Eli",
+        "6 (R-): Fay",
+        "1 (B-): Gus",
     ] {
         assert!(status.contains(row), "{row}: {status}");
     }
@@ -1053,6 +1056,18 @@ async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
 
     // A running match has no replay: its one answer.
     say(&mut cy, "SIM REPLAY 1", "Match 1 is still running.").await;
+    // Doc 32 cut CF.0 (Q-CF-11): each tank's unit letter is drawn at
+    // check-out; each pilot reads their own off `STATUS`.
+    let red_callsign = support::own_callsign(&mut ada).await;
+    let blue_callsign = support::own_callsign(&mut bo).await;
+    assert!(
+        support::is_callsign_of(&red_callsign, 'R'),
+        "{red_callsign}"
+    );
+    assert!(
+        support::is_callsign_of(&blue_callsign, 'B'),
+        "{blue_callsign}"
+    );
 
     // Let the arena clock run past a second, so the tape holds keyframes after
     // the opening at the 100 ms summaries this lens runs.
@@ -1080,7 +1095,7 @@ async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
             "{who}: {said}"
         );
         assert!(said.contains("blue won (red conceded)"), "{who}: {said}");
-        for callsign in ["RA", "BA"] {
+        for callsign in [red_callsign.as_str(), blue_callsign.as_str()] {
             assert!(
                 said.split(|c: char| !c.is_ascii_alphanumeric())
                     .any(|word| word == callsign),
@@ -1090,7 +1105,10 @@ async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
     }
     // A pilot's own replay is centred on their own tank.
     let said = one_line(&ask(&mut bo, "SIM REPLAY 1", "Next: SIM REPLAY 1 next").await);
-    assert!(said.contains(", around BA."), "{said}");
+    assert!(
+        said.contains(&format!(", around {blue_callsign}.")),
+        "{said}"
+    );
 
     // `next` moves the keyframe.
     say(&mut cy, "SIM REPLAY 1 next", ", keyframe 2 of ").await;
