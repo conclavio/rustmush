@@ -445,6 +445,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         Arc::clone(&sessions),
         deps,
         booted.decision_workers,
+        booted.world_clock_checkpoint_s,
         Arc::clone(&controls),
     )?;
     let persistence_integrity = handles.persistence_integrity.clone();

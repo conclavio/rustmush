@@ -168,12 +168,14 @@ impl Rig {
         );
         let llm = Some(Arc::clone(&booted.llm));
         let workers = booted.decision_workers;
+        let checkpoint_s = booted.world_clock_checkpoint_s;
         let sink_sessions = sessions.clone();
         let handles = spawn_persist_with_gateway_production(
             booted.engine,
             deps,
             llm,
             workers,
+            checkpoint_s,
             move |weak| Arc::new(mushd::inprocess::InProcessSink::new(sink_sessions, weak)),
         )?;
         let link = Arc::new(Link {

@@ -190,6 +190,7 @@ pub type Gateway = std::sync::Arc<dyn GatewaySink>;
 /// The longest relayed line the server speaks (programme D4), characters. The
 /// bridge bounds its lines the same way; this is the server's own guard.
 pub const MAX_RELAY_LINE_CHARS: usize = 1_000;
+pub use mush_config::config::DEFAULT_WORLD_CLOCK_CHECKPOINT_S;
 use mush_config::{unix_now_ms, unix_now_s};
 
 /// How long the world loop gives an already-dequeued exact commit to reach its
@@ -1453,9 +1454,31 @@ struct DecisionRuntime {
 pub fn spawn_persist_with_gateway_and_decisions(
     engine: Engine,
     deps: ServerDeps,
+    durable_outbox: DurableOutboxRegistry,
+    providers: DecisionProviderRegistry,
+    worker_limit: usize,
+    make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
+) -> Result<PersistHandles, String> {
+    spawn_persist_with_gateway_and_decisions_at(
+        engine,
+        deps,
+        durable_outbox,
+        providers,
+        worker_limit,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
+        make_gateway,
+    )
+}
+
+/// [`spawn_persist_with_gateway_and_decisions`] with the `W-clock` checkpoint
+/// cadence (`[game].world_clock_checkpoint_s`) the production spawn carries.
+fn spawn_persist_with_gateway_and_decisions_at(
+    engine: Engine,
+    deps: ServerDeps,
     mut durable_outbox: DurableOutboxRegistry,
     providers: DecisionProviderRegistry,
     worker_limit: usize,
+    world_clock_checkpoint_s: u64,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> Result<PersistHandles, String> {
     let sources = engine
@@ -1492,6 +1515,7 @@ pub fn spawn_persist_with_gateway_and_decisions(
             completions,
         }),
         None,
+        world_clock_checkpoint_s,
         make_gateway,
     ))
 }
@@ -1505,6 +1529,11 @@ pub fn spawn_persist_with_gateway_and_decisions(
 /// [`spawn_persist_with_gateway_and_decisions`], which audits every durable
 /// decision record before the world task exists (K7.4).
 ///
+/// `world_clock_checkpoint_s` is `[game].world_clock_checkpoint_s`, the cadence
+/// of the running world's durable IC-clock checkpoint (`W-clock` / `Q-R4`,
+/// [`WorldClockCheckpointState`]); the plain spawns use
+/// [`DEFAULT_WORLD_CLOCK_CHECKPOINT_S`].
+///
 /// # Errors
 /// A composed source owner with no production provider; a `decision_workers`
 /// outside `1..=MAX_DECISION_PROVIDER_WORKERS`; a malformed durable decision
@@ -1514,6 +1543,7 @@ pub fn spawn_persist_with_gateway_production(
     deps: ServerDeps,
     llm: Option<Arc<LlmService>>,
     decision_workers: usize,
+    world_clock_checkpoint_s: u64,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> Result<PersistHandles, String> {
     let composed = engine
@@ -1521,7 +1551,16 @@ pub fn spawn_persist_with_gateway_production(
         .decision_sources()
         .is_some_and(|sources| !sources.is_empty());
     if !composed {
-        return Ok(spawn_persist_with_gateway(engine, deps, make_gateway));
+        let registry = Arc::new(outbox_registry(&deps));
+        return Ok(spawn_persist_with_gateway_mode(
+            engine,
+            deps,
+            registry,
+            None,
+            None,
+            world_clock_checkpoint_s,
+            make_gateway,
+        ));
     }
     if !engine.has_decision_keys() {
         // A composition with sources but no key ring (a test rig built
@@ -1538,17 +1577,19 @@ pub fn spawn_persist_with_gateway_production(
             registry,
             None,
             None,
+            world_clock_checkpoint_s,
             make_gateway,
         ));
     }
     let providers = production_decision_providers(&engine, llm)?;
     let registry = outbox_registry(&deps);
-    spawn_persist_with_gateway_and_decisions(
+    spawn_persist_with_gateway_and_decisions_at(
         engine,
         deps,
         registry,
         providers,
         decision_workers,
+        world_clock_checkpoint_s,
         make_gateway,
     )
 }
@@ -1635,7 +1676,15 @@ pub fn spawn_persist_with_gateway_and_outbox(
             .is_none_or(mush_core::DecisionSourceRegistry::is_empty),
         "composed decision sources require spawn_persist_with_gateway_and_decisions"
     );
-    spawn_persist_with_gateway_mode(engine, deps, durable_outbox, None, None, make_gateway)
+    spawn_persist_with_gateway_mode(
+        engine,
+        deps,
+        durable_outbox,
+        None,
+        None,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
+        make_gateway,
+    )
 }
 
 /// Shared spawn implementation. Unit tests can start the real loop in a hard
@@ -1646,6 +1695,7 @@ fn spawn_persist_with_gateway_mode(
     durable_outbox: Arc<DurableOutboxRegistry>,
     decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
+    world_clock_checkpoint_s: u64,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
     engine.use_gateway_reply_framing();
@@ -1764,6 +1814,7 @@ fn spawn_persist_with_gateway_mode(
         initial_mode,
         outbox_lifetime,
         arenas.clone(),
+        world_clock_checkpoint_s,
     ));
     PersistHandles {
         handle,
@@ -3198,6 +3249,70 @@ pub fn step_outage_countdown(
     false
 }
 
+/// The running world's periodic durable checkpoint of its IC clock (`W-clock` /
+/// `Q-R4`).
+///
+/// The boot policy measures an outage from the last durable checkpoint, so a
+/// world that wrote none after booting measured every restart from its previous
+/// boot (doc 33 GG.5: `boot_outage=NoPriorCheckpoint` on every boot of both
+/// boxes). The world task writes one every `cadence_s` of wall clock
+/// (`[game].world_clock_checkpoint_s`) while the clock is unfrozen; a frozen
+/// timeline must not advance its checkpoint, because the checkpoint is the
+/// pre-outage moment the countdown holds the world at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldClockCheckpointState {
+    cadence_s: i64,
+    next_due_unix: i64,
+}
+
+impl WorldClockCheckpointState {
+    /// Start the cadence at `now_unix`: the boot just wrote its own checkpoint,
+    /// so the first periodic one is due a full cadence later. A `cadence_s` of
+    /// `0` is treated as `1`.
+    #[must_use]
+    pub fn new(cadence_s: u64, now_unix: i64) -> Self {
+        let cadence_s = i64::try_from(cadence_s).unwrap_or(i64::MAX).max(1);
+        Self {
+            cadence_s,
+            next_due_unix: now_unix.saturating_add(cadence_s),
+        }
+    }
+
+    /// Wall-clock millisecond at which the next checkpoint is due — the idle
+    /// loop's wake hint; whether to write is [`step_world_clock_checkpoint`]'s.
+    #[must_use]
+    pub fn next_due_unix_ms(&self) -> i64 {
+        self.next_due_unix.saturating_mul(1_000)
+    }
+}
+
+/// Record the world-clock checkpoint at `now_unix` when one is due and queue
+/// its state op on the deferred persistence path (`W-clock` / `Q-R4`): one
+/// comparison per call, one small [`mush_core::Deferred::Persist`] per cadence,
+/// the same path the countdown's unfreeze writes through. Nothing is recorded
+/// or queued while the clock is frozen; an overdue checkpoint is written on the
+/// first unfrozen call, and the next is a full cadence after that write.
+///
+/// Returns the checkpoint recorded, if one was.
+pub fn step_world_clock_checkpoint(
+    engine: &mut Engine,
+    state: &mut WorldClockCheckpointState,
+    now_unix: i64,
+    out: &mut Outbox,
+) -> Option<mush_core::WorldClockCheckpoint> {
+    if now_unix < state.next_due_unix || engine.world.world_timeline().is_frozen() {
+        return None;
+    }
+    engine.set_now(now_unix);
+    let checkpoint = engine.world.record_world_clock_checkpoint();
+    match mush_core::world_timeline_state_op(engine.world.world_timeline()) {
+        Ok(op) => out.defer(mush_core::Deferred::Persist(op)),
+        Err(error) => tracing::error!(%error, "world clock checkpoint not encoded"),
+    }
+    state.next_due_unix = now_unix.saturating_add(state.cadence_s);
+    Some(checkpoint)
+}
+
 #[allow(clippy::too_many_lines)] // the world loop is one cohesive state machine
 #[allow(clippy::too_many_arguments)] // the world loop threads its whole context
 async fn run(
@@ -3218,6 +3333,7 @@ async fn run(
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
     arenas: Option<Arc<dyn mush_core::OffLoopSimulationHost>>,
+    world_clock_checkpoint_s: u64,
 ) -> WorldOutcome {
     tracing::info!("world task running");
     // 16b cut T.2 (T4): the one receiver of every running match's egress. Taken
@@ -3346,6 +3462,11 @@ async fn run(
     // `None` forces a sample on the first iteration.
     let mut last_sample: Option<Instant> = None;
     let mut outage_countdown = OutageCountdownState::default();
+    // W-clock / Q-R4: the running world's periodic durable checkpoint. The boot
+    // policy wrote the checkpoint at boot, so the first periodic one is due a
+    // full cadence from now.
+    let mut world_clock_checkpoint =
+        WorldClockCheckpointState::new(world_clock_checkpoint_s, unix_now_s());
     // Top-level shutdown has a priority watch lane, so it cannot be trapped
     // behind the bounded world queue while a commit holds one deferred message.
     let mut shutdown_requested = false;
@@ -3423,7 +3544,15 @@ async fn run(
         let next_due = if clock_frozen {
             outage_wake_due
         } else {
-            engine.sched.next_due()
+            // W-clock: the periodic checkpoint is a timer wake too, so an idle
+            // world still writes it on the cadence.
+            let checkpoint_due = world_clock_checkpoint.next_due_unix_ms();
+            Some(
+                engine
+                    .sched
+                    .next_due()
+                    .map_or(checkpoint_due, |due| due.min(checkpoint_due)),
+            )
         };
         // Arm the E0 re-emit nudge while any sealed chunk is unacked, so an idle
         // world still re-flushes a dropped seal. A bare `Timer` wake just runs
@@ -3616,6 +3745,24 @@ async fn run(
             WorldMode::Writable | WorldMode::StoreReadOnly { .. }
         ) {
             engine.set_now(now_unix);
+        }
+        // W-clock / Q-R4: the periodic durable checkpoint, only where a timer
+        // may write, and never while the clock is frozen (the step checks). The
+        // deferred op is drained into the engine's module ops at once, so it
+        // rides this iteration's foot-of-loop batch whatever the wake was.
+        if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
+            let recorded = guarded!(
+                "step_world_clock_checkpoint",
+                step_world_clock_checkpoint(
+                    &mut engine,
+                    &mut world_clock_checkpoint,
+                    now_unix,
+                    &mut out,
+                )
+            );
+            if recorded.is_some() {
+                engine.finish_external_step(&mut out, &mut fx);
+            }
         }
         // Liveness heartbeat (PLAN "Observability"): stamp the loop's most
         // recent iteration start every iteration, before the (possibly slow)

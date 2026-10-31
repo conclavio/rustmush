@@ -273,11 +273,13 @@ pub async fn boot(miners: &[Miner]) -> arena::Rig {
         Vec::new(),
     );
     let workers = booted.decision_workers;
+    let checkpoint_s = booted.world_clock_checkpoint_s;
     let handles = spawn_persist_with_decision_workers(
         booted.engine,
         Arc::clone(&sessions),
         deps,
         workers,
+        checkpoint_s,
         Arc::new(GatewayControls::default()),
     )
     .unwrap_or_else(|error| panic!("the world task spawns: {error}"));

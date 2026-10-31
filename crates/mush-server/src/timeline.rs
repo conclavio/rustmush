@@ -214,8 +214,20 @@ pub fn evaluate_boot_outage(
     }
 }
 
-/// Apply [`evaluate_boot_outage`] to `world`'s hydrated timeline and persist
-/// the updated state when a prior checkpoint or freeze was present (`W-clock`).
+/// Apply [`evaluate_boot_outage`] to `world`'s hydrated timeline and durably
+/// persist the result (`W-clock`).
+///
+/// Every evaluation records the boot as the timeline's checkpoint (a clock that
+/// did not advance is the one exception, and re-writing the unchanged state is
+/// harmless), and that checkpoint is what the next boot measures its outage
+/// from — so the state is written unconditionally, one small durable op. On a
+/// fresh store this is the world's first durable checkpoint. Until 2026-10-31
+/// `NoPriorCheckpoint` was the one evaluation that did not persist, so a world
+/// seeded from configuration never wrote a checkpoint and every later restart
+/// was a first boot to the policy (doc 33 GG.5: `boot_outage=NoPriorCheckpoint`
+/// on every boot of both boxes). While the server runs, the world task moves the
+/// checkpoint forward every `[game].world_clock_checkpoint_s`
+/// ([`crate::world_task::step_world_clock_checkpoint`]).
 pub async fn apply_boot_outage_policy(
     world: &mut World,
     store: &dyn ObjectStore,
@@ -223,32 +235,30 @@ pub async fn apply_boot_outage_policy(
     policy: OutagePolicy,
 ) -> Result<OutageEvaluation, String> {
     let mut timeline = world.world_timeline().clone();
-    let had_persisted_state = !timeline.state().is_empty();
     let evaluation = evaluate_boot_outage(&mut timeline, boot_unix, policy)?;
-    let should_persist = had_persisted_state
-        || matches!(
-            evaluation,
-            OutageEvaluation::OutageFreeze { .. } | OutageEvaluation::DeliberateFreeze { .. }
-        );
-    if should_persist {
-        let op = world_timeline_state_op(&timeline)
-            .map_err(|error| format!("encoding world timeline state: {error}"))?;
-        store
-            .write(WriteBatch {
-                serial: BOOT_SERIAL,
-                module_ops: vec![op],
-                durable: true,
-                ..WriteBatch::default()
-            })
-            .await
-            .map_err(|error| format!("persisting world timeline outage state: {error}"))?;
-    }
+    let op = world_timeline_state_op(&timeline)
+        .map_err(|error| format!("encoding world timeline state: {error}"))?;
+    store
+        .write(WriteBatch {
+            serial: BOOT_SERIAL,
+            module_ops: vec![op],
+            durable: true,
+            ..WriteBatch::default()
+        })
+        .await
+        .map_err(|error| format!("persisting world timeline outage state: {error}"))?;
     world.set_world_timeline(timeline);
     world.set_now(boot_unix);
     Ok(evaluation)
 }
 
-/// Record and durably persist a world-IC clock checkpoint at `real_unix` (`W-clock` / `Q-R4`).
+/// Record and durably persist a world-IC clock checkpoint at `real_unix`,
+/// awaiting the store inline (`W-clock` / `Q-R4`).
+///
+/// The live world does not checkpoint through here: the world task records the
+/// checkpoint on its cadence and queues the same state op on its deferred
+/// persistence path ([`crate::world_task::step_world_clock_checkpoint`]). This
+/// inline writer is the boot-path tests' way of planting a checkpoint.
 pub async fn persist_world_clock_checkpoint(
     world: &mut World,
     store: &dyn ObjectStore,
@@ -646,5 +656,85 @@ mod tests {
         // Reloading from the store preserves the persisted outage freeze state.
         let reloaded = load_or_seed_world_timeline(&store, clock).await.unwrap();
         assert_eq!(reloaded.freeze(), Some(freeze));
+    }
+
+    /// Doc 33 GG.5, as seen on both boxes on 2026-10-31: the first boot on an empty
+    /// store and the hot restart minutes later both logged
+    /// `boot_outage=NoPriorCheckpoint`, because the fresh store's first checkpoint
+    /// was recorded in memory and never written. A fresh store's first boot now
+    /// persists its checkpoint, and every later boot evaluates against the one the
+    /// boot before it left: a short gap re-anchors silently, a long one freezes.
+    #[tokio::test]
+    async fn w_clock_fresh_store_first_boot_persists_its_checkpoint_and_later_boots_measure_from_it()
+     {
+        let store = InMemoryStore::new();
+        let clock = GameClock {
+            ic_ratio: 4,
+            epoch_offset: 1_000,
+        };
+        let policy = OutagePolicy::default();
+
+        // First boot at real 1_000 on an empty store: no prior checkpoint, and the
+        // one it records is on the store, not only in RAM.
+        let mut first = World::new_minimal();
+        hydrate_world_timeline(&mut first, &store, clock)
+            .await
+            .unwrap();
+        let eval = apply_boot_outage_policy(&mut first, &store, 1_000, policy)
+            .await
+            .unwrap();
+        assert_eq!(eval, OutageEvaluation::NoPriorCheckpoint);
+        let persisted = load_or_seed_world_timeline(&store, clock).await.unwrap();
+        assert_eq!(
+            persisted.checkpoint().map(|cp| (cp.real_unix, cp.ic_unix)),
+            Some((1_000, 5_000)),
+            "the fresh world's first checkpoint must be durable"
+        );
+        assert!(!persisted.is_frozen());
+
+        // A hot restart 4 s later measures from that checkpoint (< 30 s): a silent
+        // re-anchor with zero catch-up, and its own checkpoint persisted in turn.
+        let mut second = World::new_minimal();
+        hydrate_world_timeline(&mut second, &store, clock)
+            .await
+            .unwrap();
+        let eval = apply_boot_outage_policy(&mut second, &store, 1_004, policy)
+            .await
+            .unwrap();
+        assert_eq!(eval, OutageEvaluation::SilentReanchor { lost_secs: 4 });
+        assert!(!second.world_timeline().is_frozen());
+        assert_eq!(second.world_ic_now().at, 5_000);
+        let persisted = load_or_seed_world_timeline(&store, clock).await.unwrap();
+        assert_eq!(
+            persisted.checkpoint().map(|cp| cp.real_unix),
+            Some(1_004),
+            "the second boot's checkpoint must be durable too"
+        );
+
+        // The boxes' case: a restart four minutes after the previous boot is an
+        // outage (>= 30 s), frozen at that boot's checkpoint for the countdown.
+        let mut third = World::new_minimal();
+        hydrate_world_timeline(&mut third, &store, clock)
+            .await
+            .unwrap();
+        let eval = apply_boot_outage_policy(&mut third, &store, 1_244, policy)
+            .await
+            .unwrap();
+        let OutageEvaluation::OutageFreeze { lost_secs, freeze } = eval else {
+            panic!("expected OutageFreeze, got {eval:?}");
+        };
+        assert_eq!(lost_secs, 240);
+        assert_eq!(freeze.frozen_real_unix, 1_004);
+        assert_eq!(freeze.frozen_ic_unix, 5_000);
+        assert_eq!(
+            freeze.kind,
+            WorldClockFreezeKind::OutageCountdown {
+                countdown_started_real_unix: 1_244,
+                unfreeze_at_real_unix: 1_544,
+            }
+        );
+        assert!(third.world_timeline().is_frozen());
+        let persisted = load_or_seed_world_timeline(&store, clock).await.unwrap();
+        assert_eq!(persisted.freeze(), Some(freeze));
     }
 }

@@ -5208,6 +5208,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
         Arc::new(DurableOutboxRegistry::new()),
         None,
         Some(mode),
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         move |_| -> Gateway { sink },
     );
     let PersistHandles {
@@ -7169,6 +7170,7 @@ async fn held_receipt_rig() -> HeldReceiptRig {
         // 16b cut T.2: this rig composes no game layer, so there is no arena
         // table and the egress arm stays disarmed.
         None,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
     ));
     let mut rig = HeldReceiptRig {
         handle,
@@ -10846,6 +10848,7 @@ async fn h2a_the_production_spawn_composes_the_npc_adapter() {
         ServerDeps::in_memory(),
         None,
         DEFAULT_DECISION_PROVIDER_WORKERS,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         |_| Arc::new(BlackholeGateway),
     )
     .expect("production spawn");
@@ -10857,6 +10860,7 @@ async fn h2a_the_production_spawn_composes_the_npc_adapter() {
         ServerDeps::in_memory(),
         None,
         DEFAULT_DECISION_PROVIDER_WORKERS,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         |_| Arc::new(BlackholeGateway),
     )
     .expect("an unkeyed composition still spawns");
@@ -10868,6 +10872,7 @@ async fn h2a_the_production_spawn_composes_the_npc_adapter() {
         ServerDeps::in_memory(),
         None,
         mush_core::MAX_DECISION_PROVIDER_WORKERS + 1,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         |_| Arc::new(BlackholeGateway),
     );
     assert!(refused.is_err(), "33 workers must refuse");
@@ -11708,6 +11713,174 @@ fn w_clock_outage_countdown_broadcasts_5_2_1_minutes_and_unfreezes_without_catch
     engine.set_now(510);
     assert_eq!(engine.world.world_ic_now().at, 1_440);
     assert_eq!(engine.world.game_now_unix(), 1_440);
+}
+
+/// `W-clock` / `Q-R4` (doc 33 GG.5): the running world moves its durable checkpoint
+/// forward on the cadence through the deferred-persist path, writes an overdue one
+/// at once, and never advances it while the clock is frozen.
+#[tokio::test]
+async fn w_clock_periodic_checkpoint_advances_the_persisted_real_unix_and_holds_while_frozen() {
+    use crate::timeline::{
+        OutagePolicy, apply_boot_outage_policy, hydrate_world_timeline, load_or_seed_world_timeline,
+    };
+    use mush_store::{InMemoryStore, WriteBatch};
+
+    /// Persist whatever the step deferred, exactly as the loop's foot does: drain
+    /// the outbox into the engine's module ops and hand them to the store.
+    async fn flush(
+        engine: &mut Engine,
+        out: &mut Outbox,
+        fx: &mut Effects,
+        store: &InMemoryStore,
+        serial: u64,
+    ) -> usize {
+        engine.finish_external_step(out, fx);
+        let module_ops = engine.take_module_ops();
+        let count = module_ops.len();
+        if count > 0 {
+            store
+                .write(WriteBatch {
+                    serial,
+                    module_ops,
+                    durable: true,
+                    ..WriteBatch::default()
+                })
+                .await
+                .unwrap();
+        }
+        count
+    }
+    async fn persisted_real_unix(
+        store: &InMemoryStore,
+        clock: mush_core::GameClock,
+    ) -> Option<i64> {
+        load_or_seed_world_timeline(store, clock)
+            .await
+            .unwrap()
+            .checkpoint()
+            .map(|cp| cp.real_unix)
+    }
+
+    let store = InMemoryStore::new();
+    let clock = mush_core::GameClock {
+        ic_ratio: 4,
+        epoch_offset: 1_000,
+    };
+    let mut world = World::new_minimal();
+    hydrate_world_timeline(&mut world, &store, clock)
+        .await
+        .unwrap();
+    apply_boot_outage_policy(&mut world, &store, 1_000, OutagePolicy::default())
+        .await
+        .unwrap();
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_000));
+    let mut engine = Engine::new(world, base_registry());
+    let mut state = WorldClockCheckpointState::new(10, 1_000);
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    assert_eq!(state.next_due_unix_ms(), 1_010_000);
+
+    // Before the cadence: nothing recorded, nothing queued.
+    assert_eq!(
+        step_world_clock_checkpoint(&mut engine, &mut state, 1_005, &mut out),
+        None
+    );
+    assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 1).await, 0);
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_000));
+
+    // On the cadence: one checkpoint, one op, the persisted real_unix moved.
+    let cp = step_world_clock_checkpoint(&mut engine, &mut state, 1_010, &mut out).expect("due");
+    assert_eq!((cp.real_unix, cp.ic_unix), (1_010, 5_040));
+    assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 2).await, 1);
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_010));
+    assert_eq!(state.next_due_unix_ms(), 1_020_000);
+
+    // A late wake writes at once, and the next is a full cadence after the write.
+    assert!(step_world_clock_checkpoint(&mut engine, &mut state, 1_033, &mut out).is_some());
+    assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 3).await, 1);
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_033));
+    assert_eq!(state.next_due_unix_ms(), 1_043_000);
+
+    // Frozen: nothing is recorded or queued, however overdue.
+    let mut frozen = engine.world.world_timeline().clone();
+    let _ = frozen.freeze_for_outage(1_033, 5_132, 1_040, 1_340);
+    engine.world.set_world_timeline(frozen);
+    for now in [1_043, 1_100, 1_339] {
+        assert_eq!(
+            step_world_clock_checkpoint(&mut engine, &mut state, now, &mut out),
+            None,
+            "frozen at {now}"
+        );
+        assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 4).await, 0);
+    }
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_033));
+
+    // Unfrozen again: the overdue checkpoint is written on the first step.
+    let mut resumed = engine.world.world_timeline().clone();
+    resumed.resume_at(1_340).expect("resumes");
+    engine.world.set_world_timeline(resumed);
+    let cp = step_world_clock_checkpoint(&mut engine, &mut state, 1_340, &mut out).expect("due");
+    assert_eq!(cp.real_unix, 1_340);
+    assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 5).await, 1);
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_340));
+}
+
+/// The live loop: an idle world task with a one-second cadence writes its
+/// checkpoint to the store with no other wake, so a restart measures its outage
+/// from the last second the world ran rather than from the previous boot.
+#[tokio::test]
+async fn w_clock_live_world_task_writes_its_checkpoint_on_the_cadence() {
+    use crate::timeline::{
+        OutagePolicy, apply_boot_outage_policy, hydrate_world_timeline, load_or_seed_world_timeline,
+    };
+
+    let deps = ServerDeps::in_memory();
+    let store = Arc::clone(&deps.store);
+    let clock = mush_core::GameClock::default();
+    let boot = unix_now_s();
+    let mut world = World::new_minimal();
+    hydrate_world_timeline(&mut world, &*store, clock)
+        .await
+        .unwrap();
+    apply_boot_outage_policy(&mut world, &*store, boot, OutagePolicy::default())
+        .await
+        .unwrap();
+    let handles = spawn_persist_with_gateway_production(
+        Engine::new(world, base_registry()),
+        deps,
+        None,
+        DEFAULT_DECISION_PROVIDER_WORKERS,
+        1,
+        |_| Arc::new(BlackholeGateway),
+    )
+    .expect("production spawn");
+
+    let mut advanced = None;
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let real = load_or_seed_world_timeline(&*store, clock)
+            .await
+            .unwrap()
+            .checkpoint()
+            .map(|cp| cp.real_unix);
+        if real.is_some_and(|real| real > boot) {
+            advanced = real;
+            break;
+        }
+    }
+    assert!(
+        advanced.is_some(),
+        "the idle world task wrote no checkpoint past the boot's within eight seconds"
+    );
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Control(ControlMsg::Shutdown))
+            .await
+    );
+    handles.world_join.await.unwrap();
+    handles.writer_join.await.unwrap();
+    handles.outbox_join.await.unwrap();
 }
 
 #[test]

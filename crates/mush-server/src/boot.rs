@@ -532,6 +532,10 @@ pub struct BootedEngine {
     /// `[llm].decision_workers`, read once here so the serving half never
     /// re-parses the stanza to find it.
     pub decision_workers: usize,
+    /// `[game].world_clock_checkpoint_s`, read once here for the same reason:
+    /// the cadence at which the world task durably checkpoints the IC clock
+    /// (`W-clock` / `Q-R4`).
+    pub world_clock_checkpoint_s: u64,
     /// Every composed module's namespace — the list the J5 nightly pass walks,
     /// which only the booted engine knows.
     pub archive_namespaces: Vec<String>,
@@ -716,8 +720,20 @@ async fn build_engine_inner(
         generation = world.world_timeline().current().generation,
         ic_rate = world.world_timeline().current().rate,
         ?boot_outage,
+        checkpoint_cadence_s = config.game.world_clock_checkpoint_s,
         "world timeline installed",
     );
+    // W-clock: the next boot measures its outage from the last checkpoint the
+    // running world wrote, so the measured downtime over-reads by up to one
+    // cadence. A cadence at or above the threshold turns every restart into an
+    // outage, however short.
+    if config.game.world_clock_checkpoint_s >= config.game.outage_freeze_threshold_s {
+        tracing::warn!(
+            world_clock_checkpoint_s = config.game.world_clock_checkpoint_s,
+            outage_freeze_threshold_s = config.game.outage_freeze_threshold_s,
+            "[game].world_clock_checkpoint_s is not below outage_freeze_threshold_s: a restart of any length will read as an outage"
+        );
+    }
     let mut engine = Engine::from_composition(world, composition);
     engine.set_offer_keys(offer_keys);
     engine.set_resolution_keys(resolution_keys);
@@ -846,6 +862,7 @@ async fn build_engine_inner(
         staff,
         llm,
         decision_workers: llm_config.decision_workers,
+        world_clock_checkpoint_s: config.game.world_clock_checkpoint_s,
         archive_namespaces,
     })
 }

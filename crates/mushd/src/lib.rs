@@ -109,13 +109,15 @@ pub mod world_task {
             sessions,
             deps,
             mush_server::decision_dispatch::DEFAULT_DECISION_PROVIDER_WORKERS,
+            mush_server::world_task::DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
             // No Discord bridge in the convenience spawn: controls are dropped.
             Arc::new(mush_gateway::controls::GatewayControls::default()),
         )
         .unwrap_or_else(|error| panic!("world task spawn: {error}"))
     }
 
-    /// H2a: [`spawn_persist`] with an explicit `[llm].decision_workers`. The
+    /// H2a: [`spawn_persist`] with an explicit `[llm].decision_workers` and
+    /// `[game].world_clock_checkpoint_s` (the `W-clock` checkpoint cadence). The
     /// all-in-one binary calls this; a composition with decision sources
     /// spawns through the production decision runtime over `deps.llm`.
     ///
@@ -126,6 +128,7 @@ pub mod world_task {
         sessions: Arc<SessionManager>,
         deps: ServerDeps,
         decision_workers: usize,
+        world_clock_checkpoint_s: u64,
         controls: Arc<mush_gateway::controls::GatewayControls>,
     ) -> Result<PersistHandles, String> {
         let llm = deps.llm.clone();
@@ -134,6 +137,7 @@ pub mod world_task {
             deps,
             llm,
             decision_workers,
+            world_clock_checkpoint_s,
             move |weak_inbound| {
                 Arc::new(InProcessSink::new(sessions, weak_inbound).with_controls(controls))
             },

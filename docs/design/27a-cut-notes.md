@@ -91,3 +91,105 @@ record the twin's retirement. The `field_ops` module docs in both crates say the
 - No live holder for either book, so no subscription: that is the field-ops wiring question
   doc 32 §3 records, not this cut's.
 - No deploy.
+
+## 2026-10-31 — W-clock: the checkpoint is written (the outage policy arms on a live world)
+
+Doc 33 GG.5 found, on both boxes the day they were switched to the gateway generations, that
+every boot — the first on each wiped store and the hot restart one to four minutes later —
+logged `boot_outage=NoPriorCheckpoint`, and that neither store held a world-timeline state
+key afterwards. The IC clock itself was never wrong (`ic = epoch + rate × real`); what was
+inert was the whole of W-clock / Q-R4: no restart could be measured, so no restart could
+freeze the world or re-anchor it.
+
+**What was inert, and why.** Two writers in `crates/mush-server/src/timeline.rs`, neither of
+which wrote on a live world:
+
+- `apply_boot_outage_policy` evaluated the hydrated timeline against the boot and persisted
+  the result only when state was already on the store or a freeze had been decided
+  (`had_persisted_state || OutageFreeze || DeliberateFreeze`). A fresh store takes the
+  `NoPriorCheckpoint` branch, which records the first checkpoint in memory — and was the one
+  branch the condition excluded. So the world seeded from `[game]` never wrote its first
+  checkpoint, and every later restart found an empty state and was a first boot again.
+- `persist_world_clock_checkpoint`, the inline writer meant to move the checkpoint forward
+  while the server runs, had no caller outside its own two tests. Even a world with persisted
+  state would therefore have measured an outage from its previous *boot*, not from the moment
+  it went down: a world up for a day and restarted in two seconds would have read a day lost.
+
+**What now writes.**
+
+- The boot persists its evaluation unconditionally: one small durable `WriteBatch`
+  (`serial: BOOT_SERIAL`, one `world_timeline_state_op`), the shape the conditional write
+  already had. Every evaluation records the boot as the checkpoint (`record_checkpoint`,
+  `reanchor_from_checkpoint`, `resume_at` and `freeze_for_outage` all set it; a clock that did
+  not advance is the one exception, and re-writing the unchanged state is harmless), so on a
+  fresh store the write is the world's first durable checkpoint. The `had_persisted_state`
+  test is gone.
+- The world task checkpoints the running world every `[game].world_clock_checkpoint_s` (new;
+  default **10 s**, `mush_config::config::DEFAULT_WORLD_CLOCK_CHECKPOINT_S`; `0` is treated as
+  `1`): `WorldClockCheckpointState` and `step_world_clock_checkpoint` in
+  `crates/mush-server/src/world_task.rs`. The step runs once per loop iteration, right after
+  the loop stamps `engine.set_now`, only where a timer may write (`admission_for(…, Timer) ==
+  Allow`: never while booting, recovering, commit-pending, store-read-only or
+  integrity-frozen) and never while the clock is frozen — a frozen timeline must not advance
+  its checkpoint, because the checkpoint is the pre-outage moment the countdown holds the
+  world at. When due it records the checkpoint, queues one `Deferred::Persist` of the
+  timeline state op (the path the countdown's unfreeze already uses) and drains it into the
+  engine's module ops with `finish_external_step`, so the op rides that iteration's
+  foot-of-loop batch whatever the wake was. The due time is folded into the loop's timer wake
+  (`next_due = min(sched.next_due(), checkpoint due)`), so an idle world still writes it on
+  the cadence; the cost is one `i64` comparison per iteration and one small JSON document (the
+  timeline state) per cadence. An overdue checkpoint — after a long turn, or at the end of a
+  freeze — is written on the first eligible iteration, and the next is a full cadence after
+  that write. `persist_world_clock_checkpoint` stays as the boot-path tests' inline planter,
+  and its doc now says so.
+- The cadence travels the way `[llm].decision_workers` does: `BootedEngine::
+  world_clock_checkpoint_s`, read once in `build_engine`, into
+  `spawn_persist_with_gateway_production` (and `mushd`'s `spawn_persist_with_decision_workers`)
+  as a parameter, through `spawn_persist_with_gateway_mode` into `run`. The plain spawns
+  (`spawn_persist_with_gateway`, `…_and_outbox`, `…_and_decisions`) use the default, so no test
+  rig changed shape but the handful that call the production or mode spawn directly.
+  `ServerDeps` is untouched: forty-odd hand-built literals in the `mushd` stories would have
+  had to grow a field.
+
+**Why 10 s and not 60.** The next boot measures its outage from the last checkpoint, so the
+measured downtime over-reads by up to one cadence. Under the default threshold of 30 s a 60 s
+cadence would have turned roughly half of all two-second hot restarts (`SERVER_RESTART=1
+deploy.sh` on either box) into five-minute freezes. At 10 s a restart reads as at most ten
+seconds longer than it was. `build_engine` warns when the cadence is not below the threshold
+(`[game].world_clock_checkpoint_s is not below outage_freeze_threshold_s`), and the boot's
+`world timeline installed` line now carries `checkpoint_cadence_s`. `mushd.toml.example`,
+`docs/ops.md` and doc 27a §7 document the three knobs together.
+
+**Verified.** `rustfmt --edition 2024 --check` on every changed `.rs` file; `cargo clippy -p
+mush-config -p mush-server -p mushd -p mush-bot --all-targets -- -D warnings` clean (every
+test target of the four crates, so every caller of the changed spawn signatures compiles);
+`RUSTDOCFLAGS=-D warnings cargo doc --no-deps -p mush-config -p mush-server -p mushd` clean.
+`cargo test -p mush-server --lib -- w_clock timeline:: h2a_the_production_spawn`: 12 passed, 1
+ignored (the Redis round trip, as always without `REDIS_URL`) — the three new stories among
+them, the live-loop one in well under a second. `cargo test -p mush-server --test
+split_boundary -- boot_parity`: 23 passed, `the_engine_knobs_reach_the_booted_world` now
+asserting `[game].world_clock_checkpoint_s = 3` reaches `BootedEngine`.
+`live_hard_modes_block_every_mutating_execution_seam` (the one test that calls the mode spawn
+directly) passed. `cargo test -p mush-config --lib -- defaults_when_missing` passed with the
+new default and the cadence-under-threshold assertion. The four `mush-contract-tests` guards
+`feature_matrix_inventory`, `panic_budget`, `restriction_lints` and `ci_gated_test_inventory`:
+31 passed; no row moved, because the new code adds no panic needle, no feature and no lint
+allowance. Not run: the `mushd` stories (clippy compiled them; their spawn calls use the default
+cadence and no behaviour of theirs changed), and anything on a box.
+
+**Not done here, and why.**
+
+- **No checkpoint at a clean shutdown.** A `ControlMsg::Shutdown` steps through three sites in
+  the loop (the console path, the deferred-behind-a-commit path and the in-game `@shutdown`),
+  and the final batch is assembled after them; a checkpoint written there would make a clean
+  restart's measured outage exact instead of "the real downtime plus up to one cadence". With
+  a 10 s cadence under a 30 s threshold the difference never changes the decision, so it is a
+  follow-up rather than a change to the shutdown tail.
+- **A restart during a countdown still restarts the countdown in full**, as doc 27a §7
+  states: the checkpoint does not advance while frozen, so a hot restart two minutes into the
+  five is measured from the pre-outage checkpoint and read as a further outage. That is the
+  documented rule; whether a sub-threshold restart mid-countdown should instead resume the
+  running countdown is the owner's ruling, not this cut's.
+- **No deploy.** Both boxes run `d4d81c89` on fresh stores whose namespaces hold no state
+  key, so the first boot on this code logs `NoPriorCheckpoint` once more — and writes it; every
+  boot after that measures a real gap.
