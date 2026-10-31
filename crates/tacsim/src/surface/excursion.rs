@@ -2504,7 +2504,7 @@ mod tests {
             "then site"
         );
         assert_eq!(CapRefused::Operator.cap(), 4);
-        assert_eq!(CapRefused::Site.cap(), 32);
+        assert_eq!(CapRefused::Site.cap(), 24, "the field cap (doc 32 Q-CF-21)");
         assert_eq!(CapRefused::World.cap(), 1_024);
     }
 
