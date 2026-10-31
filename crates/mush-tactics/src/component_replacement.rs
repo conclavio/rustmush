@@ -133,14 +133,17 @@ pub struct ReplacementPatch<R> {
     choice: ReplacementChoice,
 }
 #[derive(Clone, PartialEq)]
-struct ObjectFence {
+pub(crate) struct ObjectFence {
     owner: ObjId,
     location: Option<ObjId>,
     kind: ObjKind,
     flags: Flags,
     binding: mush_core::BehaviorBinding,
 }
-fn object_fence(world: &mush_core::World, object: ObjId) -> Result<ObjectFence, ParticipantError> {
+pub(crate) fn object_fence(
+    world: &mush_core::World,
+    object: ObjId,
+) -> Result<ObjectFence, ParticipantError> {
     let row = world.get(object).ok_or_else(refused)?;
     let key = mush_core::BehaviorId::new(crate::module::UNIT_BEHAVIOR).map_err(|_| refused())?;
     let binding = row.behaviors.get(&key).ok_or_else(refused)?;
@@ -224,11 +227,14 @@ pub fn current_refit_unit(
     let (_, unit, _) = active(state, object, record)?;
     Ok(unit)
 }
-fn world_ready(context: &OwnerPrepareContext<'_>, object: ObjId) -> Result<(), ParticipantError> {
+pub(crate) fn world_ready(
+    context: &OwnerPrepareContext<'_>,
+    object: ObjId,
+) -> Result<(), ParticipantError> {
     current_refit_unit(context.world(), context.invocation().actor(), object).map(|_| ())
 }
 
-fn active<'a>(
+pub(crate) fn active<'a>(
     state: &'a UnitStore,
     object: ObjId,
     record: &DefinitionRef,
