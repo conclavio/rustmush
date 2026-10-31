@@ -17,13 +17,15 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_net_ssh::{
-    AuthResult, BlockReason, CharSummary, CreateErr, NewConn, SshConfig, SshHooks, SshServer,
+    Admission, AuthResult, BlockReason, CharSummary, CreateErr, NewConn, SshConfig, SshHooks,
+    SshServer,
 };
 use mush_proto::{
     InputMode, NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec, RichText, SmolStr,
     WhoEntry,
 };
 use russh::ChannelMsg;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -54,6 +56,13 @@ struct MockHooks {
     /// Set to stand in for a persisted siteban on the peer's address (the
     /// guard's other reason for blocking one).
     sitebanned: AtomicBool,
+    /// What the accept gate answers (doc 29a §9); `None` admits everyone.
+    admission: Mutex<Option<Admission>>,
+    /// Every accepted connection the gate was asked about.
+    admitted: AtomicUsize,
+    /// Every release, with the admission it balanced — proof that the slot
+    /// a connection took is given back when it ends, however it ends.
+    released: Mutex<Vec<Admission>>,
 }
 
 impl MockHooks {
@@ -77,6 +86,15 @@ impl MockHooks {
 
     fn tx_of(&self, conn: u64) -> Option<mpsc::Sender<Arc<OutputEvent>>> {
         self.txs.lock().unwrap().get(&conn).cloned()
+    }
+
+    /// Make the accept gate answer `admission` for every connection.
+    fn admit_with(&self, admission: Admission) {
+        *self.admission.lock().unwrap() = Some(admission);
+    }
+
+    fn releases(&self) -> Vec<Admission> {
+        self.released.lock().unwrap().clone()
     }
 
     /// Every `narrative.backlog` query seen so far, with its arguments.
@@ -464,6 +482,15 @@ impl SshHooks for MockHooks {
     fn auth_failed(&self, _addr: IpAddr) {
         self.auth_failures.fetch_add(1, Ordering::Relaxed);
     }
+
+    fn admit_connection(&self, _addr: IpAddr) -> Admission {
+        self.admitted.fetch_add(1, Ordering::Relaxed);
+        self.admission.lock().unwrap().unwrap_or(Admission::Admit)
+    }
+
+    fn release_connection(&self, _addr: IpAddr, admission: Admission) {
+        self.released.lock().unwrap().push(admission);
+    }
 }
 
 // ---- client-side plumbing ----------------------------------------------
@@ -637,10 +664,21 @@ fn getrandom_u64() -> u64 {
 }
 
 async fn start_server(tag: &str, hooks: Arc<MockHooks>) -> std::net::SocketAddr {
+    start_server_with(tag, hooks, mush_net_ssh::DEFAULT_AUTH_DEADLINE).await
+}
+
+/// [`start_server`] with an explicit accept-time deadline (the tests of the
+/// doc 29a §9 gates run it at a second).
+async fn start_server_with(
+    tag: &str,
+    hooks: Arc<MockHooks>,
+    auth_deadline: Duration,
+) -> std::net::SocketAddr {
     let cfg = SshConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
         host_key_path: unique_key_path(tag).join("host_ed25519"),
         banner: "Welcome to rustmush!\nA MUSH over SSH.".to_owned(),
+        auth_deadline,
     };
     let bound = SshServer::bind(cfg, hooks).await.expect("bind");
     let addr = bound.local_addr();
@@ -670,6 +708,37 @@ async fn open_shell_sized(
         .expect("pty");
     channel.request_shell(true).await.expect("shell");
     channel
+}
+
+/// Poll `cond` every 25 ms until it holds or `within` elapses; the
+/// elapsed time, so a test can also say *when* something happened.
+async fn wait_until(what: &str, within: Duration, cond: impl Fn() -> bool) -> Duration {
+    let started = tokio::time::Instant::now();
+    loop {
+        if cond() {
+            return started.elapsed();
+        }
+        assert!(
+            started.elapsed() < within,
+            "{what} did not happen within {within:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Read from a raw TCP client until the server ends the connection (EOF or
+/// a reset), returning everything it sent first.
+async fn read_to_end_or_reset(stream: &mut tokio::net::TcpStream, within: Duration) -> Vec<u8> {
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 1024];
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match tokio::time::timeout_at(deadline, stream.read(&mut buf)).await {
+            Ok(Ok(0)) | Ok(Err(_)) => return seen,
+            Ok(Ok(n)) => seen.extend_from_slice(&buf[..n]),
+            Err(_) => panic!("the server never ended the connection within {within:?}"),
+        }
+    }
 }
 
 // ---- the tests ----------------------------------------------------------
@@ -2618,4 +2687,277 @@ async fn delayed_command_progress_flushes_before_completion_and_queued_local_rep
     let text = strip_ansi(&term.seen[mark..]);
     assert!(text.find("reply-complete").unwrap() < text.find("Sounds are off").unwrap());
     assert!(text.find("Sounds are off").unwrap() < text.find("Nick says").unwrap());
+}
+
+// ---- doc 29a §9: the accept-time gates ----------------------------------
+
+/// The deadline the gate tests run at: a second, so a test takes seconds,
+/// not the production thirty.
+const GATE_DEADLINE: Duration = Duration::from_secs(1);
+
+/// A client that completed the key exchange and never authenticates is
+/// disconnected at the deadline — politely, so a cooperative client sees
+/// its handle close at once, well before the cut — and its slot is
+/// released then.
+#[tokio::test]
+async fn a_connection_that_never_authenticates_is_cut_at_the_deadline() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server_with("auth-deadline", Arc::clone(&hooks), GATE_DEADLINE).await;
+
+    let started = tokio::time::Instant::now();
+    let config = Arc::new(russh::client::Config::default());
+    let handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert_eq!(hooks.admitted.load(Ordering::Relaxed), 1);
+    assert!(!handle.is_closed(), "open until the deadline");
+
+    // Closed by the disconnect at the deadline, not by the cut five seconds
+    // later: the bound is well inside the grace.
+    wait_until("the disconnect at the deadline", GATE_DEADLINE * 4, || {
+        handle.is_closed()
+    })
+    .await;
+    assert!(
+        started.elapsed() >= GATE_DEADLINE,
+        "cut before its deadline, after {:?}",
+        started.elapsed()
+    );
+    wait_until("the slot's release", GATE_DEADLINE * 4, || {
+        hooks.releases() == [Admission::Admit]
+    })
+    .await;
+}
+
+/// A client that connects and never sends its version line never reaches
+/// the session task: `run_stream` itself runs under the deadline, and
+/// dropping it drops the stream and the handler — the slot is released and
+/// the client sees the connection end.
+#[tokio::test]
+async fn a_client_silent_before_its_version_line_is_cut() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server_with("silent-version", Arc::clone(&hooks), GATE_DEADLINE).await;
+
+    let started = tokio::time::Instant::now();
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let _seen = read_to_end_or_reset(&mut stream, GATE_DEADLINE * 4).await;
+    assert!(
+        started.elapsed() >= GATE_DEADLINE,
+        "cut before its deadline, after {:?}",
+        started.elapsed()
+    );
+    wait_until("the slot's release", GATE_DEADLINE * 4, || {
+        hooks.releases() == [Admission::Admit]
+    })
+    .await;
+}
+
+/// The half-open hole the doorway reviews found (doc 29a §8 F-1, F-3), on
+/// this port: a client that sent its version line and then stalls in the
+/// key exchange never has the server's disconnect processed — russh takes
+/// no message from its handle while a key exchange is active — so the
+/// disconnect at the deadline frees nothing. The cut, a grace later, does.
+#[tokio::test]
+async fn a_client_stalled_in_the_key_exchange_is_released_by_the_cut() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server_with("stalled-kex", Arc::clone(&hooks), GATE_DEADLINE).await;
+
+    let started = tokio::time::Instant::now();
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"SSH-2.0-stall\r\n")
+        .await
+        .expect("version line");
+
+    // Past the deadline: the disconnect has been sent, and the slot is
+    // still held, because a client stalled here never processes it.
+    tokio::time::sleep(GATE_DEADLINE * 2).await;
+    assert!(
+        hooks.releases().is_empty(),
+        "the disconnect alone must not be what frees the slot"
+    );
+
+    let grace = mush_net_ssh::DISCONNECT_GRACE;
+    let seen =
+        read_to_end_or_reset(&mut stream, GATE_DEADLINE + grace + Duration::from_secs(4)).await;
+    assert!(
+        seen.starts_with(b"SSH-2.0-"),
+        "the server's version line was exchanged: {seen:?}"
+    );
+    assert!(
+        started.elapsed() >= GATE_DEADLINE + grace,
+        "cut before the grace ran out, after {:?}",
+        started.elapsed()
+    );
+    wait_until("the release by the cut", Duration::from_secs(2), || {
+        hooks.releases() == [Admission::Admit]
+    })
+    .await;
+}
+
+/// Authentication meets the first deadline and starts the second: a client
+/// that authenticates and never opens a session channel is disconnected a
+/// deadline after it authenticated, and its slot released.
+#[tokio::test]
+async fn an_authenticated_connection_that_opens_no_channel_is_cut() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server_with("no-channel", Arc::clone(&hooks), GATE_DEADLINE).await;
+
+    let started = tokio::time::Instant::now();
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    let auth = handle.authenticate_none("play").await.expect("auth-none");
+    assert!(auth.success(), "play is accepted with no auth");
+
+    // Past the first deadline, and short of the second: still open.
+    tokio::time::sleep(GATE_DEADLINE).await;
+    assert!(
+        !handle.is_closed(),
+        "an authenticated connection must outlive the first deadline"
+    );
+
+    wait_until(
+        "the disconnect at the second deadline",
+        GATE_DEADLINE * 4,
+        || handle.is_closed(),
+    )
+    .await;
+    assert!(
+        started.elapsed() >= GATE_DEADLINE * 2,
+        "cut before the second deadline, after {:?}",
+        started.elapsed()
+    );
+    wait_until("the slot's release", GATE_DEADLINE * 4, || {
+        hooks.releases() == [Admission::Admit]
+    })
+    .await;
+}
+
+/// Over the address's cap (doc 29a §7 "Splice and DoS"): the connection is
+/// told why in the one place an SSH client shows before giving up, every
+/// method is refused, and one that never tries a method is gone within
+/// five seconds of accept — on its own clock, whatever `auth_deadline` is.
+/// Either way the over-cap slot it held is given back.
+#[tokio::test]
+async fn an_over_cap_connection_is_told_refused_and_cut_within_five_seconds() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.admit_with(Admission::OverCap);
+    // The production deadline: the over-cap clock must not depend on it.
+    let addr = start_server("over-cap", Arc::clone(&hooks)).await;
+
+    // One that tries: told, refused, shed.
+    let banners = BannerRecorder::default();
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(Arc::clone(&config), addr, banners.clone())
+        .await
+        .expect("connect");
+    let auth = handle.authenticate_none("play").await;
+    assert!(
+        !matches!(auth, Ok(russh::client::AuthResult::Success)),
+        "an over-cap connection must not be admitted: {auth:?}"
+    );
+    assert_eq!(
+        banners.text(),
+        "Too many connections from your address; try again later.\r\n"
+    );
+    wait_until(
+        "the shed connection's release",
+        Duration::from_secs(5),
+        || hooks.releases() == [Admission::OverCap],
+    )
+    .await;
+
+    // One that never tries a method: cut within five seconds of accept (a
+    // second's slack for the box), and released.
+    let started = tokio::time::Instant::now();
+    let idle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    wait_until("the over-cap cut", Duration::from_secs(6), || {
+        idle.is_closed()
+    })
+    .await;
+    assert!(
+        started.elapsed() >= Duration::from_secs(3),
+        "an over-cap connection gets three seconds to try a method, got {:?}",
+        started.elapsed()
+    );
+    wait_until(
+        "the idle connection's release",
+        Duration::from_secs(5),
+        || hooks.releases() == [Admission::OverCap, Admission::OverCap],
+    )
+    .await;
+    assert_eq!(hooks.admitted.load(Ordering::Relaxed), 2);
+}
+
+/// A connection the gate drops pays for no key exchange: it is closed with
+/// no byte sent — not even the version line — and, holding nothing, is
+/// never released.
+#[tokio::test]
+async fn a_dropped_connection_gets_no_handshake() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.admit_with(Admission::Drop);
+    let addr = start_server("dropped", Arc::clone(&hooks)).await;
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let seen = read_to_end_or_reset(&mut stream, Duration::from_secs(5)).await;
+    assert!(
+        seen.is_empty(),
+        "a dropped connection must get no handshake: {seen:?}"
+    );
+    wait_until("the gate's answer", Duration::from_secs(2), || {
+        hooks.admitted.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    assert!(
+        hooks.releases().is_empty(),
+        "nothing was held, so nothing is released: {:?}",
+        hooks.releases()
+    );
+}
+
+/// The one thing the deadlines must never do: touch a connection that is
+/// in the game. With both deadlines and the grace long gone, the player is
+/// still there and still heard.
+#[tokio::test]
+async fn an_in_game_connection_outlives_every_deadline() {
+    let deadline = Duration::from_millis(500);
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server_with("in-game", Arc::clone(&hooks), deadline).await;
+
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    let auth = handle.authenticate_none("play").await.expect("auth-none");
+    assert!(auth.success());
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("connect <account> <password>").await;
+    term.send_line("create nick s3cretpw").await;
+    term.expect("Welcome, nick!").await;
+
+    // Both deadlines, and the grace that would have followed them, are past.
+    tokio::time::sleep(deadline * 2 + mush_net_ssh::DISCONNECT_GRACE + Duration::from_secs(1))
+        .await;
+    assert!(
+        !handle.is_closed(),
+        "an in-game connection is never put on a clock"
+    );
+    term.send_line("say hi").await;
+    term.expect("Nick says, \"hi\"").await;
+    assert!(
+        hooks.releases().is_empty(),
+        "an in-game connection keeps its slot: {:?}",
+        hooks.releases()
+    );
+
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
 }

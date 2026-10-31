@@ -59,11 +59,66 @@ pub enum Overlay {
 /// carries heights (the heightfield over its baked colour map, doc 21 cut
 /// G.7b) and by the raycaster where it does not, the contacts as billboards,
 /// its [`Overlay`] drawn into the frame.
+/// Identity of a held `arena.map` frame: `(match_id, origin_cell, window_size)`.
+///
+/// Keying the cached map and baked relief on `(match_id, origin_cell, size)`
+/// rather than `match_id` alone ensures all three views rebake when a windowed
+/// `arena.map` shifts its `origin_cell` (doc 30 §7, §11 WG.6; `D-30-7`).
+pub type MapStamp = (Option<i64>, (usize, usize), (usize, usize));
+
+/// Extract the [`MapStamp`] of an optional `arena.map` feed value.
+#[must_use]
+pub fn map_stamp(map: Option<&Value>) -> MapStamp {
+    let Some(m) = map else {
+        return (None, (0, 0), (0, 0));
+    };
+    let match_id = m.get("match").and_then(Value::as_i64);
+    let (win_w, win_h, ox, oy, _, _) = map_window_geometry(m);
+    (match_id, (ox, oy), (win_w, win_h))
+}
+
+/// Extract `(win_w, win_h, ox, oy, ext_w, ext_h)` in cells from an `arena.map`
+/// value, honoring `"origin_cell"` and optional `"extent"`.
+fn map_window_geometry(map: &Value) -> (usize, usize, usize, usize, usize, usize) {
+    let size = |key: &str| {
+        map.get(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(0)
+    };
+    let (win_w, win_h) = (size("width"), size("height"));
+    let origin = map.get("origin_cell").and_then(Value::as_array);
+    let ox = origin
+        .and_then(|a| a.first())
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0);
+    let oy = origin
+        .and_then(|a| a.get(1))
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0);
+    let extent = map.get("extent").and_then(Value::as_array);
+    let ext_w = extent
+        .and_then(|a| a.first())
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or_else(|| ox.saturating_add(win_w))
+        .max(ox.saturating_add(win_w));
+    let ext_h = extent
+        .and_then(|a| a.get(1))
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or_else(|| oy.saturating_add(win_h))
+        .max(oy.saturating_add(win_h));
+    (win_w, win_h, ox, oy, ext_w, ext_h)
+}
+
 #[derive(Debug)]
 pub struct CockpitPicture {
     /// What `arena` was built from: `None` before the first draw, then the
-    /// held `arena.map`'s match (itself `None` for open ground).
-    built_for: Option<Option<i64>>,
+    /// held `arena.map`'s [`MapStamp`].
+    built_for: Option<MapStamp>,
     /// The arena map, open ground until an `arena.map` is held.
     arena: Map,
     /// The same map with its heights, baked, when the feed carries them
@@ -110,8 +165,8 @@ impl CockpitPicture {
 
     /// Build (or keep) the arena map from the held `arena.map`.
     fn ensure_map(&mut self, map: Option<&Value>) -> &Map {
-        let wanted = map.and_then(|m| m.get("match").and_then(Value::as_i64));
-        let keep = self.built_for == Some(wanted) && (map.is_some() || wanted.is_none());
+        let wanted = map_stamp(map);
+        let keep = self.built_for == Some(wanted) && (map.is_some() || wanted.0.is_none());
         if !keep {
             self.arena = map.map_or_else(
                 || Map::new(OPEN_MAP_CELLS, OPEN_MAP_CELLS, 1000),
@@ -249,13 +304,7 @@ pub fn camera(cockpit: &Value, look: &Look) -> Camera {
 /// text renderers' `mush_ansi::window_rows` reads the same rows by.
 #[must_use]
 pub fn map_from_feed(map: &Value) -> Map {
-    let size = |key: &str| {
-        map.get(key)
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())
-            .unwrap_or(0)
-    };
-    let (width, height) = (size("width"), size("height"));
+    let (width, height, ox, oy, ext_w, ext_h) = map_window_geometry(map);
     let cell_cm = map
         .get("cell_cm")
         .and_then(Value::as_u64)
@@ -278,7 +327,7 @@ pub fn map_from_feed(map: &Value) -> Map {
             .find(|(c, _)| *c == g)
             .map_or(Ground::Open, |(_, ground)| *ground)
     };
-    let mut out = Map::new(width, height, cell_cm);
+    let mut out = Map::new(ext_w, ext_h, cell_cm);
     let biome = map
         .get("biome")
         .and_then(Value::as_str)
@@ -307,14 +356,29 @@ pub fn map_from_feed(map: &Value) -> Map {
             let end = col.saturating_add(n).min(width);
             let ground = ground_of(glyph);
             for x in col..end {
-                out.set(x, y, ground);
+                out.set(ox + x, oy + y, ground);
             }
             col = end;
         }
         // The rest of a short row, and a missing row, is spaces.
         let rest = ground_of(' ');
         for x in col..width {
-            out.set(x, y, rest);
+            out.set(ox + x, oy + y, rest);
+        }
+    }
+    if width > 0 && height > 0 && (ox != 0 || oy != 0 || ext_w != width || ext_h != height) {
+        let x_max = (ox + width).saturating_sub(1);
+        let y_max = (oy + height).saturating_sub(1);
+        for y in 0..ext_h {
+            let sy = y.clamp(oy, y_max);
+            for x in 0..ext_w {
+                if (ox..ox + width).contains(&x) && (oy..oy + height).contains(&y) {
+                    continue;
+                }
+                let sx = x.clamp(ox, x_max);
+                let g = out.get(sx as i64, sy as i64);
+                out.set(x, y, g);
+            }
         }
     }
     out
@@ -338,8 +402,9 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
         .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
             (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
         });
+    let (w, h, ox, oy, ext_w, ext_h) = map_window_geometry(map);
     let cells = map_from_feed(map);
-    if cells.width() == 0 || cells.height() == 0 {
+    if w == 0 || h == 0 || cells.width() == 0 || cells.height() == 0 {
         return None;
     }
     let elev = map.get("elev")?;
@@ -348,7 +413,6 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
     }
     let unit = elev.get("unit_cm").and_then(Value::as_i64).unwrap_or(1);
     let bytes = base64_decode(elev.get("data")?.as_str()?)?;
-    let (w, h) = (cells.width(), cells.height());
     let mut heights = Vec::with_capacity(w * h);
     let (mut at, mut last) = (0usize, 0i64);
     while heights.len() < w * h {
@@ -375,9 +439,24 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
     let mut terrain = Terrain::new(cells);
     for (i, cm) in heights.into_iter().enumerate() {
         let cm = i32::try_from(cm.saturating_mul(unit)).ok()?;
-        terrain.set_elev_cm(i % w.max(1), i / w.max(1), cm);
+        terrain.set_elev_cm(ox + (i % w.max(1)), oy + (i / w.max(1)), cm);
     }
-    terrain.bake(seed);
+    if ox != 0 || oy != 0 || ext_w != w || ext_h != h {
+        let x_max = (ox + w).saturating_sub(1);
+        let y_max = (oy + h).saturating_sub(1);
+        for y in 0..ext_h {
+            let sy = y.clamp(oy, y_max);
+            for x in 0..ext_w {
+                if (ox..ox + w).contains(&x) && (oy..oy + h).contains(&y) {
+                    continue;
+                }
+                let sx = x.clamp(ox, x_max);
+                let cm = terrain.elev_cm(sx as i64, sy as i64);
+                terrain.set_elev_cm(x, y, cm);
+            }
+        }
+    }
+    terrain.bake_window(seed, ox, oy, w, h);
     Some(terrain)
 }
 

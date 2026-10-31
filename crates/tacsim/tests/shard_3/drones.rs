@@ -2889,7 +2889,7 @@ fn sm12b_the_dispatcher_rearms_only_on_its_rule() {
 #[allow(clippy::too_many_lines)]
 fn sm12b_four_excursions_bind_the_dispatcher() {
     assert_eq!(tacsim::surface::MAX_EXCURSIONS_PER_OPERATOR, 4);
-    assert_eq!(tacsim::surface::MAX_EXCURSIONS_PER_SITE, 32);
+    assert_eq!(tacsim::surface::MAX_EXCURSIONS_PER_SITE, 24);
     assert_eq!(tacsim::surface::MAX_EXCURSIONS_WORLD, 1_024);
     let mut rig = yard_world();
     let d = dispatcher(&rig.tw);

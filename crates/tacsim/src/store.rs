@@ -391,7 +391,19 @@ pub struct TacsimStore {
     /// history holds is ever overwritten by a fresh chunk 0 (a corrupt stored row fails closed,
     /// never re-creates). Staff repair the `log:hull.*` documents and restart.
     pub(crate) black_box_dark: bool,
+    /// **Doc 30 §8 (`Q-30-5`)** — RAM-only per-actor staging buffer for multi-chunk
+    /// `@ground/stage/begin` .. `/chunk` .. `/end` commands over the gateway's 8 KiB
+    /// line cap.
+    pub(crate) ground_stage_buffers: BTreeMap<ObjId, String>,
+    /// **Doc 30 §8 (`Q-30-5`)** — RAM-only index of operator-staged [`crate::ground::GroundDraft`]s
+    /// keyed by short arena ID (`proving_ground`, `mars_canyon`, ...), preserving full
+    /// provenance and serving [`crate::ground::draft_from_world`] both before and after
+    /// `@atlas/pack apply`.
+    pub(crate) staged_drafts: BTreeMap<String, crate::ground::GroundDraft>,
 }
+
+/// Maximum bytes one staffer's `@ground/stage` chunk buffer may hold in RAM (2 MiB).
+pub const MAX_GROUND_STAGE_BYTES: usize = 2 * 1024 * 1024;
 
 impl TacsimStore {
     /// The frozen `[tacsim]` block.
@@ -1242,6 +1254,39 @@ impl TacsimStore {
             );
             self.loaded.insert(key, loaded);
         }
+    }
+
+    /// **Doc 30 §8 (`Q-30-5`)** — hot-shelve one verified pack into the runtime store
+    /// and re-bind [`Self::definitions`] without requiring a server restart.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::definitions::DefinitionError`] if the updated pack set fails to bind.
+    pub fn stage_pack(
+        &mut self,
+        loaded: LoadedPack,
+    ) -> Result<(), crate::definitions::DefinitionError> {
+        let key = (
+            loaded.pack.manifest().id().clone(),
+            loaded.pack.manifest().version(),
+        );
+        let mut candidate: Vec<LoadedPack> = self
+            .loaded
+            .iter()
+            .filter(|(k, _)| **k != key)
+            .map(|(_, pack)| pack.clone())
+            .collect();
+        candidate.push(loaded.clone());
+        candidate.sort_by(|a, b| {
+            let ka = (a.pack.manifest().id(), a.pack.manifest().version());
+            let kb = (b.pack.manifest().id(), b.pack.manifest().version());
+            ka.cmp(&kb)
+        });
+        let catalog = crate::definitions::Catalog::build_fielded(&candidate, crate::NS)?;
+        self.definitions = std::sync::Arc::new(catalog);
+        self.loaded.insert(key, loaded);
+        self.reindex();
+        Ok(())
     }
 
     /// **16b cut C.2** — the bound game definitions.

@@ -40,8 +40,14 @@ use crate::definitions::DefinitionError;
 use crate::definitions::unit::TRACKED;
 
 /// The most heightfield entries one arena may name. Four tile the 256 by 256
-/// window at C.1's 128 by 128 quadrants; sixteen is the same window at 64.
+/// window at C.1's 128 by 128 quadrants; sixteen tile a 512 by 512 ground at
+/// the same 128 by 128 quadrant side (doc 30 §7, §11 WG.6).
 pub const MAX_ARENA_TILES: usize = 16;
+
+/// The widest or tallest an arena's ground may be, cells (doc 30 §7, §11 WG.6;
+/// `D-30-7`): four 128-cell quadrants a side (`4 × 128 = 512`, matching
+/// [`MAX_ARENA_TILES`] and [`crate::ground::QUAD`]).
+pub const MAX_ARENA_SIDE: u16 = 512;
 
 /// The most named key spots one arena may carry (doc 16 §3.2: *three or four*).
 ///
@@ -279,16 +285,14 @@ impl ArenaDef {
         crate::definitions::check_note(entry, &self.note)?;
         if self.cols == 0
             || self.rows == 0
-            || self.cols > mush_atlas::cells::MAX_TILE_SIDE
-            || self.rows > mush_atlas::cells::MAX_TILE_SIDE
+            || self.cols > MAX_ARENA_SIDE
+            || self.rows > MAX_ARENA_SIDE
         {
             return Err(DefinitionError::value(
                 entry,
                 format!(
-                    "an arena window is 1 to {} cells a side; {}×{} is not",
-                    mush_atlas::cells::MAX_TILE_SIDE,
-                    self.cols,
-                    self.rows
+                    "an arena window is 1 to {MAX_ARENA_SIDE} cells a side; {}×{} is not",
+                    self.cols, self.rows
                 ),
             ));
         }
@@ -835,7 +839,8 @@ pub fn arena_map_within_bound(
     terrain: &ArenaTerrain,
     spots: &[ArenaKeySpot],
 ) -> Result<usize, ArenaBuildError> {
-    let frame = crate::match_::cockpit::map_frame(WIDEST_MATCH, entry, terrain, spots);
+    let frame =
+        crate::match_::cockpit::map_frame_for_focus(WIDEST_MATCH, entry, terrain, spots, None);
     // A `Value` always encodes; `usize::MAX` would refuse rather than pass, which
     // is the fail-closed direction if it ever did not.
     let bytes = serde_json::to_vec(&frame).map_or(usize::MAX, |encoded| encoded.len());

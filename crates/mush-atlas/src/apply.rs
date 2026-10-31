@@ -165,6 +165,20 @@ pub fn retire_record(ctx: &mut Ctx<'_>, kind: &str, key: &RecordKey) -> Result<(
     })
 }
 
+/// WG.7: stage a verified [`Pack`] onto the atlas shelf (`AtlasState.shelf`) so
+/// `@atlas/pack list`, `@atlas/pack plan`, and `@atlas/pack apply` can inspect
+/// and apply it without a server restart.
+///
+/// # Errors
+///
+/// The atlas not being composed.
+pub fn stage_pack(ctx: &mut Ctx<'_>, pack: Pack) -> Result<(), String> {
+    with_atlas(ctx, |_ctx, state| {
+        state.shelf.insert(pack.manifest().id().clone(), pack);
+        Ok(())
+    })
+}
+
 /// One kind's applier.
 struct KindApplier {
     kind: CanonicalId,

@@ -802,14 +802,17 @@ fn compose_map(
         Some((w, h)) => (w, h.max(1), false, false),
         None => (COCKPIT_MAP_FALLBACK.0, COCKPIT_MAP_FALLBACK.1, true, true),
     };
-    let (x0, y0, w, h) = mush_ansi::viewport(
+    let (ox, oy) = cell_pair(map.get("origin_cell")).unwrap_or((0, 0));
+    let local_focus = focus.map(|(fx, fy)| (fx.saturating_sub(ox), fy.saturating_sub(oy)));
+    let (lx0, ly0, w, h) = mush_ansi::viewport(
         width,
         height,
-        focus,
+        local_focus,
         usize::from(grid_w),
         usize::from(grid_h),
     );
-    let mut grid = mush_ansi::window_rows(rows, width, height, x0, y0, w, h);
+    let mut grid = mush_ansi::window_rows(rows, width, height, lx0, ly0, w, h);
+    let (x0, y0) = (ox.saturating_add(lx0), oy.saturating_add(ly0));
     // Which marker wrote each window cell LAST: a lookup only, never iterated,
     // so the legend's order is the drawing's and nothing else.
     let mut owner: HashMap<(usize, usize), Owner> = HashMap::new();
