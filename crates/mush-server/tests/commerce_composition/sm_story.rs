@@ -44,6 +44,7 @@ use mush_server::action_coordinator::{
 use mush_server::boot;
 use mush_server::persist;
 use mush_server::quarantine::QuarantineSpool;
+use mush_server::timeline;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use mush_testkit::TestWorld;
 use tacsim::TacsimStore;
@@ -271,9 +272,15 @@ async fn flush(rig: &mut Rig) {
 async fn restart(rig: &mut Rig, probe: impl FnOnce(&mut TestWorld) -> bool) {
     flush(rig).await;
     let now = rig.tw.world().now();
+    // The rig is the world task here (W-clock): checkpoint the clock at the
+    // rig's own `now` and boot at that same second, so the restart measures no
+    // outage and the IC clock continues exactly where the stamps left it.
+    timeline::persist_world_clock_checkpoint(rig.tw.world_mut(), &*rig.store, now)
+        .await
+        .expect("the restart checkpoints the world clock");
     let old = std::mem::replace(&mut rig.tw, TestWorld::new());
     drop(old);
-    let booted = boot::build_engine(&rig.cfg, &rig.store, &rig.spool)
+    let booted = boot::build_engine_at(&rig.cfg, &rig.store, &rig.spool, now)
         .await
         .expect("the restart boots over the kept store");
     rig.tw = TestWorld::from_engine(booted.engine);

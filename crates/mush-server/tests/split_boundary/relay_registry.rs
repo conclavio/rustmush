@@ -2,7 +2,7 @@
 //! is recorded separately in doc 15b; these tests require no external service.
 use mush_config::config::Config;
 use mush_core::{CanonicalId, GOD, LIMBO, ModuleOp, ModuleWrite};
-use mush_server::{boot, persist, quarantine::QuarantineSpool};
+use mush_server::{boot, persist, quarantine::QuarantineSpool, timeline};
 use mush_sim::relay::{
     KEY, LinkState, MAX_COVERAGE, MAX_NODES, MAX_PAIRS, RelayRegistry, RelayStore,
 };
@@ -460,7 +460,12 @@ impl Rig {
     }
     async fn restart(&mut self) -> Result<(), String> {
         let previous_now = self.tw.world().now();
-        let engine = boot::build_engine(&self.cfg, &self.store, &self.spool)
+        // The rig is the world task here (W-clock): checkpoint the clock at the
+        // rig's own `now` and boot at that same second, so the restart measures
+        // no outage and the IC clock continues exactly where the stamps left it.
+        timeline::persist_world_clock_checkpoint(self.tw.world_mut(), &*self.store, previous_now)
+            .await?;
+        let engine = boot::build_engine_at(&self.cfg, &self.store, &self.spool, previous_now)
             .await
             .map_err(|e| e.to_string())?
             .engine;

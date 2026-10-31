@@ -200,6 +200,51 @@ write's IC second (without the rider: 19 s lost, and 28 IC seconds *before* the 
 frozen clock's batch carries none. The periodic test now also covers the derived due time:
 after a resume the step is due a cadence later, not at once, since the resume is a checkpoint.
 
+**The second CI run: the engine-only rigs measured their own run time as an outage (fixed
+here, same PR).** Once the boot persists its evaluation, a `TestWorld` rig that restarts over
+its kept store with `boot::build_engine` finds the previous boot's checkpoint at the restart.
+Fourteen tests do: eleven in `split_boundary/relay_registry.rs` (`r2_*` ×2, `r3_*`, `r4_*`,
+`r6a_*`, `r8a_*` ×2, `r8b_*`, `pb_*` ×2, `ap_*`) and the three restart stories of
+`commerce_composition` (`ic_slice_loop::r9a_*`, `ic_buyout_dormancy::ic13_*`,
+`sm_story::sm8_*`). None of them runs the world task or `flush_dirty`, so neither the rider
+nor the cadence ever wrote for them; and they boot at the wall clock while driving the engine
+on their own synthetic `now`. A restart therefore read `SilentReanchor { lost_secs: <the
+test's run time so far> }` and shifted the IC mapping back by that many seconds — the delivery
+gate `advance_ic_to(now + 1)` no longer reached an envelope's arrival, a receipt read
+`queued > transmitted` and the next module boot refused the relay service state (`invalid or
+over-bound relay service state`), a reservation stayed `Reserved` instead of `Consumed` — or,
+once a test had run 30 s and more (the three commerce stories, 68–100 s on the hosted
+runner), `OutageFreeze`, after which `@tacsim/time rate=` refused with `world timeline is
+frozen; resume the clock before changing its rate`. All fourteen failed identically in the
+first two runs, inside the K8 story's cell before PR #244 split it. Nothing in the policy is
+wrong here: the rigs were restarting a world whose clock nobody had checkpointed since boot.
+
+The fix gives the rigs the live world's guarantee. `boot::build_engine_at(config, store,
+spool, boot_unix)` is `build_engine` with the boot's wall clock injected (`build_engine`
+delegates with `mush_config::unix_now_s()`; `build_engine_inner` takes the second). Each rig's
+restart helper now plants `timeline::persist_world_clock_checkpoint(world, store, now)` at
+the rig's own `now` — the planter had been the boot-path tests' tool only — and boots with
+`build_engine_at(.., now)`. The evaluation then reads `SilentReanchor { lost_secs: 0 }`
+through the `boot_unix <= cp.real_unix` branch, which leaves the hydrated timeline exactly as
+the old engine persisted it: the IC mapping before and after the restart is identical, as it
+is for a live world whose last batch carried its checkpoint. Four rigs changed:
+`relay_registry.rs`'s `restart`, `ic_slice_loop.rs` and `ic_buyout_dormancy.rs`
+(`boxed_boot_engine` gains the second; their first boots pass the wall clock) and
+`sm_story.rs`'s restart. The other callers of `build_engine` that restart over a kept store
+(`content_studio.rs`, `provisioning_smoke`, `player_market`, mushd's `relay_bridge` and
+`mind_market_web`, `boot_parity`) passed both runs and stay on `build_engine`; a rig that
+fails the same way later takes the same two lines.
+
+**Verified, the rig commit.** `rustfmt --edition 2024 --check` on the six changed `.rs` files; `cargo
+clippy -p mush-server --all-targets -- -D warnings` clean; `RUSTDOCFLAGS=-D warnings cargo doc
+--no-deps -p mush-server` clean. `cargo test -p mush-server --test split_boundary -- relay_registry
+boot_parity`: 88 passed, 0 failed (the eleven relay rigs among them, all of which failed on CI);
+`--test commerce_composition -- ic_buyout_dormancy::ic13 ic_slice_loop::r9a sm_story::sm8`: 10
+passed, 0 failed (the three restart stories among them, 79 s); `--lib -- w_clock timeline::`: 12
+passed, 1 ignored. The four contract guards: 31 passed. Not run: the other `build_engine` callers
+(unchanged; they passed both CI runs), the K8 story again (its path did not change), anything on a
+box's live instance.
+
 **Verified.** `rustfmt --edition 2024 --check` on every changed `.rs` file; `cargo clippy -p
 mush-config -p mush-server -p mushd -p mush-bot --all-targets -- -D warnings` clean (every
 test target of the four crates, so every caller of the changed spawn signatures compiles);

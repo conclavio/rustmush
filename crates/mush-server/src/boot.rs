@@ -562,18 +562,47 @@ pub fn build_engine<'a>(
     store: &'a Arc<dyn ObjectStore>,
     validated_spool: &'a QuarantineSpool,
 ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<BootedEngine, String>> + 'a>> {
+    build_engine_at(config, store, validated_spool, mush_config::unix_now_s())
+}
+
+/// [`build_engine`] with the boot's wall clock injected (`W-clock` / `Q-R4`).
+///
+/// The outage policy measures the restart from the store's last world-clock
+/// checkpoint against `boot_unix`. Production boots at the wall clock through
+/// [`build_engine`]; a rig that drives the engine on its own clock and restarts
+/// it over a kept store (the `TestWorld` rigs of the commerce and relay
+/// stories) plants [`crate::timeline::persist_world_clock_checkpoint`] at its
+/// `now` and boots here at that same second, so the restart measures no outage
+/// and the IC clock continues exactly where its stamps left it — what the world
+/// task's per-batch checkpoint guarantees a live world.
+///
+/// # Errors
+///
+/// As [`build_engine`].
+pub fn build_engine_at<'a>(
+    config: &'a Config,
+    store: &'a Arc<dyn ObjectStore>,
+    validated_spool: &'a QuarantineSpool,
+    boot_unix: i64,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<BootedEngine, String>> + 'a>> {
     // Boot retains the composed engine and registry across store awaits. Keep
     // that state on the heap so each caller's async frame does not embed it
     // again. Nested boot/logging futures otherwise exhaust a normal thread's
     // stack in debug builds. Construction remains lazy: no boot work runs until
     // the returned future is polled, and the validated spool stays borrowed.
-    Box::pin(build_engine_inner(config, store, validated_spool))
+    Box::pin(build_engine_inner(
+        config,
+        store,
+        validated_spool,
+        boot_unix,
+    ))
 }
 
 async fn build_engine_inner(
     config: &Config,
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,
+    boot_unix: i64,
 ) -> Result<BootedEngine, String> {
     let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
         .load_or_create()
@@ -705,7 +734,7 @@ async fn build_engine_inner(
     let boot_outage = timeline::apply_boot_outage_policy(
         &mut world,
         &**store,
-        mush_config::unix_now_s(),
+        boot_unix,
         timeline::OutagePolicy {
             freeze_threshold_s: config.game.outage_freeze_threshold_s,
             countdown_s: config.game.outage_countdown_s,

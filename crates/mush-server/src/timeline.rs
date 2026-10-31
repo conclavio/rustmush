@@ -255,10 +255,15 @@ pub async fn apply_boot_outage_policy(
 /// Record and durably persist a world-IC clock checkpoint at `real_unix`,
 /// awaiting the store inline (`W-clock` / `Q-R4`).
 ///
-/// The live world does not checkpoint through here: the world task records the
-/// checkpoint on its cadence and queues the same state op on its deferred
-/// persistence path ([`crate::world_task::step_world_clock_checkpoint`]). This
-/// inline writer is the boot-path tests' way of planting a checkpoint.
+/// The live world does not checkpoint through here: every authoritative batch
+/// carries the checkpoint of its second
+/// ([`crate::world_task::world_clock_checkpoint_rider`]) and the world task
+/// checkpoints an idle world on its cadence
+/// ([`crate::world_task::step_world_clock_checkpoint`]). This inline writer is
+/// how the boot-path tests plant a checkpoint, and how an engine-only rig (one
+/// that drives the engine on its own clock, with no world task) checkpoints at
+/// its `now` before restarting over its kept store with
+/// [`crate::boot::build_engine_at`].
 pub async fn persist_world_clock_checkpoint(
     world: &mut World,
     store: &dyn ObjectStore,
