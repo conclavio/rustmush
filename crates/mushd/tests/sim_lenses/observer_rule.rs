@@ -4517,7 +4517,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         objective: None,
         motor: None,
         own_last_hit_ms: None,
-        team: tacsim::arena::state::PartyId::RED,
+        party: tacsim::arena::state::PartyId::RED,
         pose: mush_sim::data::Pose::at(6_500, 4_500, 0, posture),
         speed_cms: 0,
         power: tacsim::arena::state::Power::Online,

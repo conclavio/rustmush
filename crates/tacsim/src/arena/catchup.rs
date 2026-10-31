@@ -509,11 +509,13 @@ mod tests {
         }
     }
 
-    fn slot(slot: u16) -> Designator {
-        Designator::Unit {
-            party: PartyId::BLUE,
-            letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
-        }
+    /// The callsign the arena drew for the `n`-th blue (`#9 + n`): since doc 32
+    /// cut CF.0 a unit letter is drawn, not spelled from a slot.
+    fn slot(arena: &Arena, n: u32) -> Designator {
+        arena
+            .unit(ObjId(9 + n))
+            .map(|unit| unit.callsign)
+            .expect("a blue")
     }
 
     #[test]
@@ -539,10 +541,10 @@ mod tests {
         arena.now_ms = 42_500;
         let report = arena.catchup_since(RED, &then, None);
         assert_eq!(report.away_ms, 42_500);
-        assert_eq!(report.contacts_new, vec![slot(3)]);
+        assert_eq!(report.contacts_new, vec![slot(&arena, 3)]);
         assert_eq!(
             report.contacts_lost,
-            vec![slot(1), Designator::Provisional(1)],
+            vec![slot(&arena, 1), Designator::Provisional(1)],
             "the slot names first, then the numbers"
         );
         assert_eq!(report.contacts_more, 0);
@@ -572,7 +574,7 @@ mod tests {
                 .iter()
                 .map(|(_, designator)| *designator)
                 .collect::<Vec<_>>(),
-            vec![slot(1)],
+            vec![slot(&arena, 1)],
             "the snapshot is the frame's scope: {:?}",
             then.contacts
         );
@@ -599,7 +601,7 @@ mod tests {
                 .iter()
                 .map(|row| row.designator)
                 .collect::<Vec<_>>(),
-            vec![slot(1)]
+            vec![slot(&arena, 1)]
         );
     }
 
@@ -613,8 +615,11 @@ mod tests {
         }
         let report = arena.catchup_since(RED, &then, None);
         assert_eq!(report.contacts_new.len(), MAX_CATCHUP_CONTACTS);
-        assert_eq!(report.contacts_new.first(), Some(&slot(1)));
-        assert_eq!(report.contacts_new.last(), Some(&slot(12)));
+        // Said in designator order: the twelve least of the sixteen drawn.
+        let mut drawn: Vec<Designator> = (1..=16).map(|n| slot(&arena, n)).collect();
+        drawn.sort();
+        drawn.truncate(MAX_CATCHUP_CONTACTS);
+        assert_eq!(report.contacts_new, drawn);
         assert_eq!(report.contacts_more, 4);
         assert!(report.contacts_lost.is_empty());
     }
@@ -929,7 +934,7 @@ mod tests {
             .get(&PILOT)
             .expect("the pilot's report");
         assert_eq!(report.away_ms, 8_500, "counted from the Linkdead");
-        assert_eq!(report.contacts_new, vec![slot(2)]);
+        assert_eq!(report.contacts_new, vec![slot(&arena, 2)]);
         assert_eq!(report.machine, machine, "read before the row went");
     }
 

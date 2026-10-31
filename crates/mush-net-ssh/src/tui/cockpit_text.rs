@@ -658,8 +658,9 @@ pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'
                 .collect();
             let colour = match mush_pixel::cockpit::contact_kind(c) {
                 mush_pixel::raycast::SpriteKind::Wreck => Color::DarkGray,
-                mush_pixel::raycast::SpriteKind::Blue => Color::LightBlue,
-                mush_pixel::raycast::SpriteKind::Red => Color::LightRed,
+                // Doc 32 cut CF.0, Q-CF-12: by the viewer's relation.
+                mush_pixel::raycast::SpriteKind::Friend => Color::LightBlue,
+                mush_pixel::raycast::SpriteKind::Hostile => Color::LightRed,
                 mush_pixel::raycast::SpriteKind::Unknown => Color::Gray,
             };
             let best = c

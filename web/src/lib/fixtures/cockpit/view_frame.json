@@ -47,8 +47,10 @@
           "weapon": "machine_gun"
         }
       ],
+      "party": "B",
       "range_m": 450,
       "reads_dead": false,
+      "relation": "hostile",
       "relative_deg": 0,
       "unit_type": "tacsim.unit.line_tank"
     },
@@ -73,8 +75,10 @@
       "id": "2222222222222222",
       "moving": false,
       "odds": [],
+      "party": "R",
       "range_m": 100,
       "reads_dead": false,
+      "relation": "own",
       "relative_deg": 225,
       "unit_type": "tacsim.unit.line_tank"
     },
@@ -99,8 +103,10 @@
       "id": "3333333333333333",
       "moving": false,
       "odds": [],
+      "party": null,
       "range_m": 200,
       "reads_dead": false,
+      "relation": "unknown",
       "relative_deg": 270,
       "unit_type": null
     },
@@ -125,8 +131,10 @@
       "id": "4444444444444444",
       "moving": false,
       "odds": [],
+      "party": null,
       "range_m": 600,
       "reads_dead": false,
+      "relation": "unknown",
       "relative_deg": 345,
       "unit_type": null
     }
@@ -643,6 +651,7 @@
     0,
     0
   ],
+  "party": "R",
   "power": "online",
   "receiver": null,
   "reverse_kph": 27,
@@ -860,7 +869,7 @@
     "id": "arena.cockpit",
     "retain": "latest",
     "shape": "grid",
-    "version": 8
+    "version": 9
   },
   "scope": "hostile",
   "sections": [
@@ -938,7 +947,6 @@
   "speed_kph": 43,
   "surface": "fixture_yard",
   "t_ms": 61250,
-  "team": "red",
   "tempo": "engaged",
   "title": "Arena window",
   "unit": 101,

@@ -794,6 +794,13 @@ thread_local! {
 ///     presence byte and the team byte (`0` red, `1` blue) in one call, then the
 ///     `i64` arena millisecond it opened at — `[0]` alone for no hold, and `[0]`
 ///     alone for a hold nobody holds.
+/// 13. **The parties** (doc 32 cut CF.0), after the detachment authority:
+///     every party's relation book by its serde walk
+///     ([`crate::arena::party::Relations`] — the host's opening marks and
+///     friendships, every leader's mark since and the hostility fire produced),
+///     then the end condition's code byte. Both decide what a hull targets and
+///     when the field ends, and the marks move with no ledger line (Q-CF-7:
+///     a mark is private), so cut D.4's rule folds them.
 ///
 /// **Why the Hold clock is in it** (16b cut O.1), under cut D.4's one rule —
 /// *persistent state that decides an end is hashed*. `held_by` moves with **no
@@ -1411,6 +1418,10 @@ pub fn state_hash(arena: &Arena) -> u64 {
         fold.bytes(b"detachment-authority-v1\0");
         fold_value(fold, &arena.detachment_commands);
     }
+    // **Doc 32 cut CF.0** (item 13): every party's relation books and the
+    // host's end condition.
+    fold_value(fold, &arena.relations);
+    fold.bytes(&[arena.end.code()]);
     fold.finish()
 }
 
@@ -2615,9 +2626,13 @@ mod tests {
         // so the complete fixture hash intentionally differs from M5r. This
         // reviewed pin detects even a constant byte added to the default branch;
         // the probes below continue to distinguish every nondefault value.
+        // **Doc 32 cut CF.0's one re-bless**: item 13 folds every party's
+        // relation books and the host's end condition, so the fixture's hash
+        // moved and nothing in sub-item 20 did: `0x99b0_6f95_df11_70eb` became
+        // `0x63ea_08cd_caf1_ab0e`.
         assert_eq!(
-            base, 0x99b0_6f95_df11_70eb,
-            "the M6 canonical-profile two_tanks hash (M5r: 0588c49e80b6962c)"
+            base, 0x63ea_08cd_caf1_ab0e,
+            "the CF.0 two_tanks hash (M6: 99b06f95df1170eb; M5r: 0588c49e80b6962c)"
         );
         let probe = |profile: ActiveProfile| {
             let mut arena = two_tanks();

@@ -435,29 +435,70 @@ impl FieldHost {
     }
 }
 
-/// **Draw every unit's letter** (Q-CF-11): per party, in unit-id order, each
+impl crate::arena::state::Arena {
+    /// **A detachment leader's mark** (Q-CF-7): `by`'s book marks `of`
+    /// Friendly or Hostile, or `None` clears the mark. Private kernel state: no
+    /// ledger line, no notice, nothing in `of`'s book or frame; a Friendly mark
+    /// is how a leader cancels the hostility friendly fire produced. The IC
+    /// verbs that set it are the host's (doc 32 cut CF.2); the kernel holds it,
+    /// folds it into the state hash and honours it from the next frame and the
+    /// next think.
+    pub fn mark_party(&mut self, by: PartyId, of: PartyId, mark: Option<Mark>) {
+        self.relations.mark(by, of, mark);
+    }
+
+    /// **What `viewer`'s party believes `other` is** (Q-CF-5 to Q-CF-7).
+    #[must_use]
+    pub fn relation(&self, viewer: PartyId, other: PartyId) -> Relation {
+        self.relations.relation(viewer, other)
+    }
+}
+
+/// **What a unit is called within its party** (Q-CF-11): one letter of
+/// [`LETTERS`], or — past a party's twenty-third unit, which no field inside
+/// doc 32's budget reaches — a pair, `first * 23 + second`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitName {
+    /// One letter: every unit of a party of at most twenty-three.
+    Letter(u8),
+    /// A pair, index `0..529`.
+    Pair(u16),
+}
+
+/// The most units one party may field: twenty-three letters, then the 529
+/// pairs.
+pub const MAX_PARTY_UNITS: usize = 23 + 23 * 23;
+
+/// **Draw every unit's name** (Q-CF-11): per party, in unit-id order, each
 /// unit takes a letter of [`LETTERS`] its party has not given, picked by a
 /// keyed mix of the seed, the party and the unit id — random to a viewer,
 /// stable for the field, and a function of nothing a viewer could read a slot
-/// from. `units` is `(party, unit id)` in unit-id order; answers each unit's
-/// letter in the same order, or the first party with more units than letters.
+/// from. A party's twenty-fourth unit on draws from the pairs the same way.
+/// `units` is `(party, unit id)` in unit-id order; answers each unit's name in
+/// the same order.
 ///
 /// # Errors
 ///
-/// The party that fields more than twenty-three units.
-pub fn draw_unit_letters(seed: u64, units: &[(PartyId, u32)]) -> Result<Vec<u8>, PartyId> {
-    let mut free: BTreeMap<PartyId, Vec<u8>> = BTreeMap::new();
+/// The first party that fields more than [`MAX_PARTY_UNITS`].
+pub fn draw_unit_letters(seed: u64, units: &[(PartyId, u32)]) -> Result<Vec<UnitName>, PartyId> {
+    let mut letters: BTreeMap<PartyId, Vec<u8>> = BTreeMap::new();
+    let mut pairs: BTreeMap<PartyId, Vec<u16>> = BTreeMap::new();
     let mut out = Vec::with_capacity(units.len());
     for (party, id) in units {
-        let left = free.entry(*party).or_insert_with(|| LETTERS.to_vec());
-        if left.is_empty() {
+        let key = crate::arena::rng::splitmix64(seed ^ (u64::from(party.code()) << 40) ^ u64::from(*id));
+        let pick = |len: usize| usize::try_from(key % len.max(1) as u64).unwrap_or(0);
+        let left = letters.entry(*party).or_insert_with(|| LETTERS.to_vec());
+        if !left.is_empty() {
+            let at = pick(left.len()).min(left.len() - 1);
+            out.push(UnitName::Letter(left.remove(at)));
+            continue;
+        }
+        let wide = pairs.entry(*party).or_insert_with(|| (0..23 * 23).collect());
+        if wide.is_empty() {
             return Err(*party);
         }
-        let key = seed ^ (u64::from(party.code()) << 40) ^ u64::from(*id);
-        let at = usize::try_from(crate::arena::rng::splitmix64(key) % left.len() as u64)
-            .unwrap_or(0)
-            .min(left.len() - 1);
-        out.push(left.remove(at));
+        let at = pick(wide.len()).min(wide.len() - 1);
+        out.push(UnitName::Pair(wide.remove(at)));
     }
     Ok(out)
 }
@@ -540,14 +581,24 @@ mod tests {
         let blue = PartyId::from_letter('B').unwrap();
         let units: Vec<(PartyId, u32)> =
             (1..=23).map(|id| (red, id)).chain((24..=30).map(|id| (blue, id))).collect();
-        let letters = draw_unit_letters(7, &units).unwrap();
-        assert_eq!(letters, draw_unit_letters(7, &units).unwrap(), "stable");
-        let mut reds: Vec<u8> = letters[..23].to_vec();
+        let names = draw_unit_letters(7, &units).unwrap();
+        assert_eq!(names, draw_unit_letters(7, &units).unwrap(), "stable");
+        let mut reds: Vec<u8> = names[..23]
+            .iter()
+            .map(|name| match name {
+                UnitName::Letter(letter) => *letter,
+                UnitName::Pair(_) => 0,
+            })
+            .collect();
         reds.sort_unstable();
         assert_eq!(reds, LETTERS.to_vec(), "every letter once");
-        assert_ne!(letters, draw_unit_letters(8, &units).unwrap(), "keyed on the seed");
-        let mut full = units.clone();
-        full.push((red, 99));
+        assert_ne!(names, draw_unit_letters(8, &units).unwrap(), "keyed on the seed");
+        // A party's twenty-fourth unit draws a pair; past the pairs, a refusal.
+        let mut wide = units.clone();
+        wide.push((red, 99));
+        assert!(matches!(draw_unit_letters(7, &wide).unwrap()[30], UnitName::Pair(_)));
+        let full: Vec<(PartyId, u32)> =
+            (0..u32::try_from(MAX_PARTY_UNITS).unwrap() + 1).map(|id| (red, id)).collect();
         assert_eq!(draw_unit_letters(7, &full), Err(red));
     }
 }

@@ -1629,7 +1629,9 @@ mod tests {
         };
         let text = round_trip(&watch);
         assert!(
-            text.contains(r#"[[{"team":"red","index":1},"#),
+            // Doc 32 cut CF.0: a party sorts by its letter, so blue (`B`) is
+            // written before red (`R`).
+            text.contains(r#"[[{"team":"blue","index":2},"#),
             "a pair of the squad and its watch: {text}"
         );
         let epochs = Paired {

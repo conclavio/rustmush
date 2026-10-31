@@ -672,9 +672,39 @@ mod tests {
         }
     }
 
+    /// The frame at `power` carrying `notices`, and (doc 32 cut CF.0) a held
+    /// row for each contact notice, related as the OOC host relates it: its
+    /// own party own, any other hostile.
     fn with(frame: &Frame, power: Power, notices: Vec<FrameNotice>) -> Frame {
         let mut frame = frame.clone();
         frame.power = power;
+        for notice in &notices {
+            if let FrameNotice::Contact { contact, class, .. } = notice {
+                let relation = match class.party() {
+                    None => crate::arena::party::Relation::Unknown,
+                    Some(party) if party == frame.party => crate::arena::party::Relation::Own,
+                    Some(_) => crate::arena::party::Relation::Hostile,
+                };
+                frame.contacts.push(crate::arena::perception::FrameContact {
+                    id: contact.id,
+                    designator: contact.designator,
+                    alias: None,
+                    class: *class,
+                    relation,
+                    moving: false,
+                    bearing_mdeg: 0,
+                    range_cm: 10_000,
+                    age_ms: 0,
+                    cell: None,
+                    condition: None,
+                    aspect: crate::arena::perception::Aspect::Front,
+                    facing: crate::arena::perception::ContactFacing::Front,
+                    reads_dead: None,
+                    fatal: None,
+                    unit_type: None,
+                });
+            }
+        }
         frame.notices = notices;
         frame
     }

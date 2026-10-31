@@ -99,6 +99,11 @@ export type MarkerKind =
   | "blue"
   | "wreck";
 
+/** **The viewer's relation to a contact** (doc 32 cut CF.0, Q-CF-12; frame
+ * 9): what the body is coloured by, never its party. `own` and `friend` share
+ * the friend slot, `neutral` and `unknown` the unknown one. */
+export type ContactRelation = "own" | "friend" | "hostile" | "neutral" | "unknown";
+
 export interface CockpitCondition {
   /** The index into the frame's `scan_tables`. */
   table: number;
@@ -124,6 +129,15 @@ export interface CockpitContact {
   /** The ABSOLUTE arena cell the contact last plotted at, or `null`. */
   cell: [number, number] | null;
   friendly: boolean;
+  /** The viewer's relation to it (doc 32 cut CF.0, Q-CF-12). From a server
+   * that does not send the word (before frame 9), the old rule's reading:
+   * `unknown` for an unclassified `class`, else `friend` or `hostile` by
+   * `friendly`. */
+  relation: ContactRelation;
+  /** Its party's letter (`R`, `B`, …), drawn beside its health gauge so
+   * parties stay distinct inside one relation colour; `null` while
+   * unclassified, and from a server that does not send it. */
+  party: string | null;
   condition: CockpitCondition | null;
   /** The FACET word the contact's plot was showing — `front`, `left`, `right`
    * or `rear` (17b cut M1a.3); `front` from a server that does not send it. The
@@ -587,6 +601,26 @@ function decodeCondition(raw: unknown): CockpitCondition | null {
     : { table: Math.max(0, int(raw.table, 0)), bands, age_ms: int(raw.age_ms, 0) };
 }
 
+const RELATIONS: readonly ContactRelation[] = ["own", "friend", "hostile", "neutral", "unknown"];
+
+/** A contact row's `relation` (doc 32 cut CF.0), or the old rule's reading of
+ * `class` and `friendly` where the word is missing or not one of the five. */
+function decodeRelation(raw: Record<string, unknown>): ContactRelation {
+  const word = RELATIONS.find((r) => r === raw.relation);
+  if (word !== undefined) {
+    return word;
+  }
+  if (raw.class === "unknown" || typeof raw.class !== "string") {
+    return "unknown";
+  }
+  return raw.friendly === true ? "friend" : "hostile";
+}
+
+/** A party letter: one ASCII letter, upper-cased, or `null`. */
+function decodeParty(raw: unknown): string | null {
+  return typeof raw === "string" && /^[A-Za-z]$/.test(raw) ? raw.toUpperCase() : null;
+}
+
 function decodeContact(raw: unknown): CockpitContact | null {
   if (!isObj(raw)) {
     return null;
@@ -606,6 +640,8 @@ function decodeContact(raw: unknown): CockpitContact | null {
     moving: raw.moving === true,
     cell: cellPair(raw.cell),
     friendly: raw.friendly === true,
+    relation: decodeRelation(raw),
+    party: decodeParty(raw.party),
     condition: decodeCondition(raw.condition),
     // 17b cut M1a.3: every one tolerant of absence (an older server).
     aspect: clean(raw.aspect, "front", 8),
@@ -1107,14 +1143,27 @@ export function decodeArenaMap(data: unknown): ArenaMap | null {
 // The one composition (doc 16 §5)
 // ---------------------------------------------------------------------------
 
-/** A contact's glyph: `?` nothing has classified, `+` your side, `x` theirs. */
+/** A contact's glyph, by the viewer's relation (doc 32 cut CF.0, Q-CF-12; the
+ * server's `ContactRow::glyph`): `+` own or friend, `x` hostile, `?` neutral
+ * or not yet classified. */
 export function contactGlyph(contact: CockpitContact): string {
-  return contact.class === "unknown" ? "?" : contact.friendly ? "+" : "x";
+  const kind = contactKind(contact);
+  return kind === "friendly" ? "+" : kind === "hostile" ? "x" : "?";
 }
 
-/** The same fact as a kind, which is what the canvas colours by. */
+/** The same fact as a kind, which is what the canvas colours by: the four
+ * relation slots folded to three colours — own shares the friend's, neutral
+ * the unknown's (Q-CF-12). */
 export function contactKind(contact: CockpitContact): MarkerKind {
-  return contact.class === "unknown" ? "unknown" : contact.friendly ? "friendly" : "hostile";
+  switch (contact.relation) {
+    case "own":
+    case "friend":
+      return "friendly";
+    case "hostile":
+      return "hostile";
+    default:
+      return "unknown";
+  }
 }
 
 /**

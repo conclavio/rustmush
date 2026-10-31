@@ -210,6 +210,7 @@ fn team_member_rows(
     units.sort_by_key(|unit| {
         let slot = match callsigns.get(unit) {
             Some(Designator::Unit { letter, .. }) => u32::from(*letter),
+            Some(Designator::Wide { index, .. }) => 0x1_0000 + u32::from(*index),
             _ => u32::MAX,
         };
         (slot, *unit)

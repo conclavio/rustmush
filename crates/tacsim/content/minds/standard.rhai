@@ -1,4 +1,4 @@
-// Standard Doctrine — the combat role's stock mind (doc 17 §11, §17; 17b cut M2.5). name: Standard Doctrine; role: combat; api: 6; stock: 3; rated: class I (1,500 ops a think). Ported arm for arm from crates/tacsim/src/arena/stock_mind.rs: T1 is the oracle (Gate A).
+// Standard Doctrine — the combat role's stock mind (doc 17 §11, §17; 17b cut M2.5). name: Standard Doctrine; role: combat; api: 7; stock: 3; rated: class I (1,500 ops a think). Ported arm for arm from crates/tacsim/src/arena/stock_mind.rs: T1 is the oracle (Gate A).
 //
 // `decide_on_card`, re-expressed over the TacSim API (17b cuts M2.3 and
 // M2.4): the SAME order, edges, clocks and fifteen memory keys as the native

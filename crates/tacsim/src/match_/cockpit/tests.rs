@@ -3592,7 +3592,7 @@ fn ap3_watch_lines_are_the_three_lines_within_120_columns() {
         designator: Designator::Unit { party: PartyId::RED, letter: 'B' },
         alias: Some(2),
         class: Classification::Classified { party: PartyId::RED },
-        relation: crate::arena::party::Relation::Hostile,
+        relation: crate::arena::party::Relation::Own,
         moving: false,
         bearing_mdeg: 180_000,
         range_cm: 12_000,

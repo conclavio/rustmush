@@ -199,7 +199,7 @@ pub const STOCK_VERSION: u32 = 3;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] â€” `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=6;stock=3";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=7;stock=3";
 
 /// **The stock class's op ceiling per think** (doc 17 Â§9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -891,7 +891,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=6;stock=3");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=7;stock=3");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -1023,7 +1023,6 @@ mod tests {
         "type Predicate",
         "View.unit",
         "View.callsign",
-        "View.team",
         "View.cell",
         "View.mode",
         "View.objective",
@@ -1061,6 +1060,7 @@ mod tests {
         "Contact.alias",
         "Contact.identified",
         "Contact.friendly",
+        "Contact.relation",
         "Contact.bearing_deg",
         "Contact.relative_deg",
         "Contact.range_m",
@@ -1293,7 +1293,6 @@ mod tests {
     const CALLS: [(&str, &str); 245] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
-        ("View.team", "v.team"),
         ("View.cell", "v.cell"),
         ("View.mode", "v.mode"),
         ("View.objective", "v.objective"),
@@ -1332,6 +1331,7 @@ mod tests {
         ("Contact.identified", "v.contacts[0].identified"),
         ("Contact.moving", "v.contacts[0].moving"),
         ("Contact.friendly", "v.contacts[0].friendly"),
+        ("Contact.relation", "v.contacts[0].relation"),
         ("Contact.bearing_deg", "v.contacts[0].bearing_deg"),
         ("Contact.relative_deg", "v.contacts[0].relative_deg"),
         ("Contact.range_m", "v.contacts[0].range_m"),

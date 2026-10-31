@@ -1472,7 +1472,6 @@ mod tests {
         let reads: Vec<(&str, String)> = vec![
             ("v.unit", "4".into()),
             ("v.callsign", "\"RA\"".into()),
-            ("v.team", "\"red\"".into()),
             ("v.cell", "[1, 4]".into()),
             ("v.mode", "\"hold\"".into()),
             ("type_of(v.objective)", "\"Objective\"".into()),
@@ -1516,6 +1515,9 @@ mod tests {
             ("v.contacts[2].identified", "false".into()),
             ("v.contacts[0].friendly", "false".into()),
             ("v.contacts[1].friendly", "true".into()),
+            ("v.contacts[0].relation", "\"hostile\"".into()),
+            ("v.contacts[1].relation", "\"friend\"".into()),
+            ("v.contacts[2].relation", "\"unknown\"".into()),
             ("v.contacts[0].bearing_deg", "90".into()),
             ("v.contacts[1].relative_deg", "270".into()),
             ("v.contacts[0].range_m", "300".into()),

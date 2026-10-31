@@ -2449,6 +2449,19 @@ pub enum Designator {
         /// The unit's letter within its party.
         letter: char,
     },
+    /// **A unit past its party's twenty-third** (doc 32 cut CF.0): the party
+    /// letter and a drawn *pair* of letters (`RKQ`), index `0..529` into the
+    /// alphabet squared. No field inside doc 32's budget (Q-CF-21, Q-CF-45: 24
+    /// units a field) ever names one; the kernel's scale harnesses, which field
+    /// three hundred hulls on two parties, do. The owner's ruling (Q-CF-11)
+    /// says two letters; this is the overflow it did not rule, flagged in the
+    /// cut's PR rather than refused.
+    Wide {
+        /// The party.
+        party: PartyId,
+        /// The pair, `first * 23 + second` over [`crate::arena::party::LETTERS`].
+        index: u16,
+    },
 }
 
 impl Designator {
@@ -2457,7 +2470,7 @@ impl Designator {
     pub const fn party(&self) -> Option<PartyId> {
         match self {
             Designator::Provisional(_) => None,
-            Designator::Unit { party, .. } => Some(*party),
+            Designator::Unit { party, .. } | Designator::Wide { party, .. } => Some(*party),
         }
     }
 }
@@ -2467,6 +2480,12 @@ impl std::fmt::Display for Designator {
         match self {
             Designator::Provisional(n) => write!(f, "{PROVISIONAL_PREFIX}{n}"),
             Designator::Unit { party, letter } => write!(f, "{}{letter}", party.letter()),
+            Designator::Wide { party, index } => {
+                let letters = crate::arena::party::LETTERS;
+                let at = |n: usize| letters.get(n).copied().map_or('?', char::from);
+                let index = usize::from(*index);
+                write!(f, "{}{}{}", party.letter(), at(index / 23), at(index % 23))
+            }
         }
     }
 }
@@ -2549,10 +2568,16 @@ fn resolve_callsigns(seed: u64, states: &mut [UnitState]) -> Result<(), ArenaErr
             party: party.as_str(),
         }
     })?;
-    for (state, letter) in states.iter_mut().zip(letters) {
-        state.callsign = Designator::Unit {
-            party: state.team,
-            letter: char::from(letter),
+    for (state, name) in states.iter_mut().zip(letters) {
+        state.callsign = match name {
+            crate::arena::party::UnitName::Letter(letter) => Designator::Unit {
+                party: state.team,
+                letter: char::from(letter),
+            },
+            crate::arena::party::UnitName::Pair(index) => Designator::Wide {
+                party: state.team,
+                index,
+            },
         };
     }
     Ok(())
@@ -3790,8 +3815,8 @@ pub enum ArenaError {
     /// **Doc 32 Q-CF-11** — a party fields more units than
     /// [`crate::arena::party::LETTERS`] has letters, so one would have no name.
     #[error(
-        "the {party} party fields more than 23 units: a unit letter is one of 23, and a callsign \
-         is one unit's name"
+        "the {party} party fields more than 552 units: a unit is named by one of 23 letters or \
+         529 pairs, and a callsign is one unit's name"
     )]
     PartyFull {
         /// The party.

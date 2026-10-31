@@ -66,8 +66,11 @@ pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/stand
 /// `NativeStockMind::decide` and pinned by Gate A; M2.6's was `8b3ec78c…d74996`.
 /// API 6/stock 3 adds an optional command identity so a replacement standing
 /// detachment order is distinct from an earlier completed goal with no expiry.
+/// **Re-blessed by doc 32 cut CF.0** for the header's `api: 7` alone (the mind
+/// API bump that took `View.team` for `Contact.relation`); DT.1b's was
+/// `c0737fdc…e76100`.
 pub const STANDARD_SHA256: &str =
-    "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100";
+    "a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the

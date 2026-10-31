@@ -815,7 +815,9 @@ impl Arena {
     #[must_use]
     pub fn alias_for(&self, viewer: ObjId, held: &ShadowContact) -> Option<u16> {
         match self.designator_for(viewer, held) {
-            Designator::Unit { .. } => self.designators.provisional(viewer, held.target),
+            Designator::Unit { .. } | Designator::Wide { .. } => {
+                self.designators.provisional(viewer, held.target)
+            }
             Designator::Provisional(_) => None,
         }
     }

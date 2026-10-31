@@ -235,7 +235,7 @@ fn frame() -> Frame {
         objective: None,
         motor: None,
         own_last_hit_ms: None,
-        team: PartyId::RED,
+        party: PartyId::RED,
         pose: mush_sim::data::Pose {
             x_cm: 100_000,
             y_cm: 97_500,

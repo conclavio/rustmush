@@ -1121,6 +1121,7 @@ mod tests {
         for row in &mut seen.contacts {
             if row.id == BLIP {
                 row.class = Classification::Classified { party: PartyId::BLUE };
+                row.relation = crate::arena::party::Relation::Hostile;
                 row.reads_dead = Some(false);
             }
         }

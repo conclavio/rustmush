@@ -2359,7 +2359,8 @@ fn a_callsign_is_the_party_letter_and_a_drawn_unit_letter_that_leaks_no_slot() {
         assert_eq!(named(&slotted, id), named(&arena, id), "{id:?}");
     }
 
-    // Twenty-four in one party is one more than there are letters: a refusal.
+    // Twenty-four in one party is one more than there are letters: the
+    // twenty-third letter goes, and the twenty-fourth unit draws a pair.
     let full: Vec<CustodyUnit> = (0..24_u32)
         .map(|n| {
             tank(
@@ -2370,27 +2371,15 @@ fn a_callsign_is_the_party_letter_and_a_drawn_unit_letter_that_leaks_no_slot() {
             )
         })
         .collect();
-    let refused = Arena::new(
-        CustodyOut {
-            definition: (*arena.definition).clone(),
-            units: full,
-            pilots: Vec::new(),
-            resolution: tacsim::match_::stock_resolution(),
-            seed: 2_350,
-            mode: tacsim::arena::MatchMode::Skirmish,
-            host: tacsim::arena::FieldHost::all_hostile(),
-        },
-        &ArenaConfig::default(),
-        &MatchConfig::default(),
-        &SensorsConfig::default(),
-    );
-    assert!(
-        matches!(
-            refused,
-            Err(tacsim::arena::state::ArenaError::PartyFull { party: "red" })
-        ),
-        "twenty-four in one party: {refused:?}"
-    );
+    let full = arena_of(full, &[]);
+    let mut widths: Vec<usize> = full
+        .units
+        .iter()
+        .map(|state| state.callsign.to_string().len())
+        .collect();
+    widths.sort_unstable();
+    assert_eq!(widths.iter().filter(|w| **w == 2).count(), 23, "{widths:?}");
+    assert_eq!(widths.last(), Some(&3), "the overflow is a pair: {widths:?}");
 }
 
 #[test]

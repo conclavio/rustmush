@@ -2236,9 +2236,15 @@ mod tests {
             }
         });
         assert_eq!(best(&dead, None), Some(ContactId(0x30)));
-        let unknown = with(&|row| row.class = Classification::Unknown);
+        let unknown = with(&|row| {
+            row.class = Classification::Unknown;
+            row.relation = crate::arena::party::Relation::Unknown;
+        });
         assert_eq!(best(&unknown, None), None);
-        let friends = with(&|row| row.class = Classification::Classified { party: PartyId::RED });
+        let friends = with(&|row| {
+            row.class = Classification::Classified { party: PartyId::RED };
+            row.relation = crate::arena::party::Relation::Own;
+        });
         assert_eq!(best(&friends, None), None);
         let faces = with(&|row| {
             if row.id == ContactId(0x30) {
