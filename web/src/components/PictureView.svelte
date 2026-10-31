@@ -173,6 +173,10 @@
   const drawnHere = $derived(painted !== null && painted === canvas);
   /** Which camera is chosen (`cockpit`, `overhead`, or `iso25d`). */
   const viewKind = $derived(app.picture.kind);
+  /** Effective zoom in permille (`1000..=2000` in first-person, `500..=2000` in overhead/2.5D). */
+  const effectiveZoomPermille = $derived(
+    viewKind === "cockpit" ? Math.max(ZOOM_DEFAULT_PERMILLE, zoomPermille) : zoomPermille,
+  );
   /** Whether the picture is up: wanted, visible, and not failed. */
   const active = $derived(wanted && visible && localFailed === null);
 
@@ -424,7 +428,7 @@
             orderedMdeg,
             dxCm,
             dyCm,
-            zoomPermille,
+            effectiveZoomPermille,
             targetW,
             targetH,
           )
@@ -771,13 +775,17 @@
       case "volley":
         if (!ev.repeat) app.helm("FIRE ALL");
         break;
+      case "fireSlot":
+        if (!ev.repeat) {
+          const w = frame?.weapons[key.slot];
+          if (w?.id) app.helm(`FIRE ${w.id}`);
+        }
+        break;
       case "lock":
         if (!ev.repeat) cycleLock(key.dir);
         break;
       case "zoom":
-        if (viewKind === "iso25d") {
-          zoomPermille = stepZoomPermille(zoomPermille, key.dir);
-        }
+        zoomPermille = stepZoomPermille(zoomPermille, key.dir, viewKind);
         break;
     }
   }
@@ -794,25 +802,35 @@
   }
 
   function onCanvasWheel(ev: WheelEvent): void {
-    if (viewKind !== "iso25d" || !active) return;
+    if (!active) return;
     ev.preventDefault();
     const dir = ev.deltaY < 0 ? 1 : -1;
-    zoomPermille = stepZoomPermille(zoomPermille, dir);
+    zoomPermille = stepZoomPermille(zoomPermille, dir, viewKind);
   }
 
   function onCanvasClick(ev: MouseEvent): void {
-    if ((viewKind !== "iso25d" && viewKind !== "overhead") || !active || frame === null) return;
+    if (!active || frame === null) return;
     const coords = canvasNormCoords(ev);
     if (!coords) return;
+    if (
+      viewKind === "cockpit" &&
+      coords.normX >= 0.88 &&
+      coords.normY >= 0.24 &&
+      coords.normY <= 0.78
+    ) {
+      return;
+    }
     const rawCockpit = app.picture.cockpitData as { sight_m?: unknown } | null;
     const sightM = typeof rawCockpit?.sight_m === "number" ? rawCockpit.sight_m : 600;
+    const camDeg = (predictedHeadingMdeg(Date.now()) + app.picture.lookMdeg) / 1_000;
     const desig = pickCanvasContact(
       frame.contacts,
       viewKind,
       coords.normX,
       coords.normY,
-      zoomPermille,
+      effectiveZoomPermille,
       sightM,
+      camDeg,
     );
     if (desig !== null) {
       lockAsked = { designator: desig, at: Date.now() };
@@ -912,34 +930,45 @@
             <span class="readout wf-odds">&gt;={fireRuleOdds}%</span>
           {/if}
         </span>
+        {#if frame.weapons.length > 0}
+          <span class="wpn-slots" aria-label="weapon quick-fire slots">
+            {#each frame.weapons.slice(0, 4) as w, idx (w.id)}
+              <button
+                type="button"
+                class="toggle zoom-btn wpn-slot-btn"
+                class:armed={w.ready}
+                title={`Fire ${w.id} (Shift+${idx + 1})`}
+                onclick={() => app.helm(`FIRE ${w.id}`)}>{idx + 1}:{w.id}</button
+              >
+            {/each}
+          </span>
+        {/if}
         {#if frame.mode === "range"}
           <!-- 16c Q-PT1: a range says so beside the gate, as the TUI's top line does. -->
           <span class="readout" aria-label="match mode">RANGE</span>
         {/if}
       {/if}
-      {#if viewKind === "iso25d"}
-        <span class="zoom-controls" aria-label="2.5D zoom">
-          <button
-            type="button"
-            class="toggle zoom-btn"
-            title="Zoom out (-)"
-            onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, -1))}>−</button
-          >
-          <button
-            type="button"
-            class="toggle zoom-btn"
-            title="Reset zoom"
-            onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, 0))}
-            >{Math.round(zoomPermille / 10)}%</button
-          >
-          <button
-            type="button"
-            class="toggle zoom-btn"
-            title="Zoom in (+)"
-            onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, 1))}>+</button
-          >
-        </span>
-      {/if}
+      <span class="zoom-controls" aria-label="camera zoom">
+        <button
+          type="button"
+          class="toggle zoom-btn"
+          title="Zoom out (-)"
+          onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, -1, viewKind))}>−</button
+        >
+        <button
+          type="button"
+          class="toggle zoom-btn"
+          title="Reset zoom"
+          onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, 0, viewKind))}
+          >{Math.round(effectiveZoomPermille / 10)}%</button
+        >
+        <button
+          type="button"
+          class="toggle zoom-btn"
+          title="Zoom in (+)"
+          onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, 1, viewKind))}>+</button
+        >
+      </span>
       <button
         type="button"
         class="toggle wf-btn"
@@ -1096,7 +1125,8 @@
     min-width: 2.8rem;
   }
 
-  .zoom-controls {
+  .zoom-controls,
+  .wpn-slots {
     display: inline-flex;
     align-items: center;
     gap: 0.15rem;

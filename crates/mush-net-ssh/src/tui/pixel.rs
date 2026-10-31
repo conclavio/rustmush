@@ -478,6 +478,12 @@ pub struct PixelView {
     auto_lock_armed: bool,
     /// Standing auto-fire rule (`FIRE ALL WHEN odds >= 60`) armed by `F`.
     auto_fire_armed: bool,
+    /// Weapon IDs in the held cockpit frame's slot order (`Shift+1`..`Shift+4`
+    /// -> `!`, `@`, `#`, `$`).
+    weapon_ids: Vec<String>,
+    /// When the current `seen_t_ms` cockpit frame was first observed, for
+    /// sub-pulse smooth weapon cooldown countdowns.
+    frame_arrived_at: Option<Instant>,
     /// Counters.
     pub stats: Stats,
 }
@@ -546,6 +552,8 @@ impl PixelView {
             ecm: None,
             auto_lock_armed: false,
             auto_fire_armed: false,
+            weapon_ids: Vec::new(),
+            frame_arrived_at: None,
             stats: Stats::default(),
         }
     }
@@ -894,14 +902,39 @@ impl PixelView {
                 "off" => Some(false),
                 _ => None,
             });
+        self.weapon_ids = cockpit
+            .get("weapons")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|w| w.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
         let t_ms = cockpit.get("t_ms").and_then(Value::as_i64);
         if t_ms.is_none() || t_ms != self.seen_t_ms {
             self.seen_t_ms = t_ms;
+            self.frame_arrived_at = Some(now);
             self.weapons_free = cockpit
                 .get("weapons_free")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
         }
+    }
+
+    /// Milliseconds elapsed since the current `arena.cockpit` frame arrived,
+    /// clamped to `0..=950` for sub-pulse smooth weapon cooldown countdowns.
+    #[must_use]
+    pub fn frame_elapsed_ms(&self, now: Instant) -> i64 {
+        self.frame_arrived_at.map_or(0, |at| {
+            i64::try_from(now.saturating_duration_since(at).as_millis())
+                .unwrap_or(0)
+                .clamp(0, 950)
+        })
+    }
+
+    /// Current optical/radar/tactical zoom factor in permille (`1000` = `1.0x`).
+    #[must_use]
+    pub fn zoom_permille(&self) -> u16 {
+        self.iso25d.zoom_permille()
     }
 
     /// Whether the first-person cockpit canopy glass overlay is enabled.
@@ -1255,6 +1288,17 @@ impl PixelView {
                 self.weapons_free = !self.weapons_free;
             }
             Key::Char('g') => self.orders.push("FIRE ALL".to_string()),
+            Key::Char(c @ ('!' | '@' | '#' | '$')) => {
+                let slot = match c {
+                    '!' => 0,
+                    '@' => 1,
+                    '#' => 2,
+                    _ => 3,
+                };
+                if let Some(id) = self.weapon_ids.get(slot).filter(|s| !s.is_empty()) {
+                    self.orders.push(format!("FIRE {id}"));
+                }
+            }
             Key::Char('b') => {
                 self.glass = !self.glass;
                 self.last_sent = None;
@@ -1353,13 +1397,23 @@ impl PixelView {
                 self.chart_pic.invalidate_placements();
                 self.doll_pic.invalidate_placements();
             }
-            Key::Char('+' | '=') if self.camera == CockpitCamera::Tactical25D => {
-                let next = self.iso25d.zoom_permille().saturating_add(250).min(2000);
+            Key::Char('+' | '=') => {
+                let base = if self.camera == CockpitCamera::FirstPerson {
+                    self.iso25d.zoom_permille().max(1000)
+                } else {
+                    self.iso25d.zoom_permille()
+                };
+                let next = base.saturating_add(250).min(2000);
                 self.iso25d.set_zoom_permille(next);
                 self.last_sent = None;
             }
-            Key::Char('-' | '_') if self.camera == CockpitCamera::Tactical25D => {
-                let next = self.iso25d.zoom_permille().saturating_sub(250).max(500);
+            Key::Char('-' | '_') => {
+                let floor = if self.camera == CockpitCamera::FirstPerson {
+                    1000
+                } else {
+                    500
+                };
+                let next = self.iso25d.zoom_permille().saturating_sub(250).max(floor);
                 self.iso25d.set_zoom_permille(next);
                 self.last_sent = None;
             }
@@ -1550,7 +1604,12 @@ impl PixelView {
                 && let Some(c) = cockpit
             {
                 let look_mdeg = self.look_mdeg();
-                mush_pixel::cockpit::draw_canopy_glass(&mut self.frame, c, look_mdeg);
+                mush_pixel::cockpit::draw_canopy_glass_with_zoom(
+                    &mut self.frame,
+                    c,
+                    look_mdeg,
+                    look.zoom_permille,
+                );
             }
             ok
         } else if self.kind == PictureKind::Replay {
@@ -3179,5 +3238,40 @@ mod tests {
         v.key(Key::Char('y'), t0);
         v.key(Key::Char('N'), t0);
         assert_eq!(v.take_orders(), ["WILCO DT:7:8 3", "NEGATIVE DT:7:8 3"]);
+
+        // `Shift+1`..`Shift+4` (`!`, `@`, `#`, `$`) fire individual weapon slots.
+        v.key(Key::Char('!'), t0);
+        v.key(Key::Char('@'), t0);
+        v.key(Key::Char('#'), t0);
+        assert_eq!(v.take_orders(), ["FIRE cannon", "FIRE machine_gun"]);
+
+        // `+`/`-` zoom in FirstPerson (`1000..=2000`) and Overhead (`500..=2000`).
+        assert_eq!(v.zoom_permille(), 1000);
+        v.key(Key::Char('-'), t0);
+        assert_eq!(
+            v.zoom_permille(),
+            1000,
+            "first-person zoom clamps at 1.0x floor"
+        );
+        v.key(Key::Char('+'), t0);
+        v.key(Key::Char('='), t0);
+        assert_eq!(v.zoom_permille(), 1500);
+        v.key(Key::Char('v'), t0);
+        assert_eq!(v.camera(), CockpitCamera::Overhead);
+        v.key(Key::Char('-'), t0);
+        v.key(Key::Char('-'), t0);
+        v.key(Key::Char('-'), t0);
+        assert_eq!(
+            v.zoom_permille(),
+            750,
+            "overhead zoom steps below 1000 down toward 500"
+        );
+
+        // `frame_elapsed_ms` tracks sub-pulse elapsed time and resets on a new pulse.
+        assert_eq!(v.frame_elapsed_ms(t0 + Duration::from_millis(420)), 420);
+        let mut next_pulse = cockpit.clone();
+        next_pulse["t_ms"] = 63_000.into();
+        v.observe(&next_pulse, t0 + Duration::from_millis(1_000));
+        assert_eq!(v.frame_elapsed_ms(t0 + Duration::from_millis(1_000)), 0);
     }
 }

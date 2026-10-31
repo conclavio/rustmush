@@ -514,7 +514,7 @@ pub fn combat_jolt_px(active_fx: &[CombatFx], scale: i32) -> (i32, i32) {
     let mut dy = 0i32;
     for fx in active_fx {
         match &fx.kind {
-            CombatFxKind::Struck { severe } => {
+            CombatFxKind::Struck { severe, .. } => {
                 let amp = if *severe { 3 } else { 2 };
                 match fx.ticks_left {
                     FX_DURATION_TICKS => {
@@ -613,6 +613,8 @@ pub enum CombatFxKind {
     Struck {
         /// Whether an armour section was lost (`"section_lost"`).
         severe: bool,
+        /// Optional attacker contact `"id"` or `"designator"`, if reported by the notice.
+        attacker_key: Option<String>,
     },
 }
 
@@ -697,14 +699,36 @@ pub fn sync_combat_fx(
                 });
             }
             "struck" | "struck_spent" => {
+                let attacker_key = n
+                    .get("by")
+                    .or_else(|| n.get("attacker"))
+                    .or_else(|| n.get("contact"))
+                    .or_else(|| n.get("from"))
+                    .or_else(|| n.get("designator"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 active_fx.push(CombatFx {
-                    kind: CombatFxKind::Struck { severe: false },
+                    kind: CombatFxKind::Struck {
+                        severe: false,
+                        attacker_key,
+                    },
                     ticks_left: FX_DURATION_TICKS,
                 });
             }
             "section_lost" => {
+                let attacker_key = n
+                    .get("by")
+                    .or_else(|| n.get("attacker"))
+                    .or_else(|| n.get("contact"))
+                    .or_else(|| n.get("from"))
+                    .or_else(|| n.get("designator"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 active_fx.push(CombatFx {
-                    kind: CombatFxKind::Struck { severe: true },
+                    kind: CombatFxKind::Struck {
+                        severe: true,
+                        attacker_key,
+                    },
                     ticks_left: FX_DURATION_TICKS,
                 });
             }
@@ -809,7 +833,7 @@ pub fn paint_single_fx<F>(
                 }
             }
         }
-        CombatFxKind::Struck { severe } => {
+        CombatFxKind::Struck { severe, .. } => {
             let r_ring = if *severe { 22 } else { 16 };
             let ramp = if *severe {
                 &FX_STRUCK_RGBA_RAMP
@@ -817,6 +841,139 @@ pub fn paint_single_fx<F>(
                 &FX_RGBA_RAMP
             };
             stamp_fx_sprite(&RING_FRAME, struck_x, struck_y, r_ring, ramp, put);
+        }
+    }
+}
+
+/// Resolve the signed relative bearing in millidegrees (`-180_000..=180_000`) and
+/// severity (`severe`) of an active incoming-fire hit (`CombatFxKind::Struck`)
+/// relative to `cam_heading_mdeg`. Returns `None` when no `Struck` FX is active.
+#[must_use]
+pub fn resolve_threat_arc_mdeg(
+    cockpit: &Value,
+    active_fx: &[CombatFx],
+    cam_heading_mdeg: u32,
+) -> Option<(i64, bool)> {
+    let mut chosen: Option<(&Option<String>, bool)> = None;
+    for fx in active_fx {
+        if let CombatFxKind::Struck {
+            severe,
+            attacker_key,
+        } = &fx.kind
+        {
+            match chosen {
+                None => chosen = Some((attacker_key, *severe)),
+                Some((_, false)) if *severe => chosen = Some((attacker_key, true)),
+                _ => {}
+            }
+        }
+    }
+    let (attacker_key, severe) = chosen?;
+    let contacts = cockpit
+        .get("contacts")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let matched_contact = attacker_key
+        .as_deref()
+        .and_then(|ak| {
+            contacts.iter().find(|c| {
+                c.get("id").and_then(Value::as_str) == Some(ak)
+                    || c.get("designator").and_then(Value::as_str) == Some(ak)
+            })
+        })
+        .or_else(|| {
+            contacts
+                .iter()
+                .filter(|c| {
+                    matches!(
+                        c.get("relation")
+                            .or_else(|| c.get("iff"))
+                            .and_then(Value::as_str),
+                        Some("hostile")
+                    ) && c.get("reads_dead").and_then(Value::as_bool) != Some(true)
+                })
+                .min_by(|a, b| {
+                    let ra = a.get("range_m").and_then(Value::as_f64).unwrap_or(f64::MAX);
+                    let rb = b.get("range_m").and_then(Value::as_f64).unwrap_or(f64::MAX);
+                    ra.total_cmp(&rb)
+                })
+        })
+        .or_else(|| contacts.first());
+    let rel_mdeg = if let Some(c) = matched_contact
+        && let Some(b_deg) = c.get("bearing_deg").and_then(Value::as_f64)
+    {
+        let b_mdeg = (b_deg * 1_000.0).round() as i64;
+        (b_mdeg - i64::from(cam_heading_mdeg) + 180_000).rem_euclid(360_000) - 180_000
+    } else {
+        0
+    };
+    Some((rel_mdeg, severe))
+}
+
+/// Paint a directional incoming-fire / RWR threat double-chevron arc around
+/// `(cx, cy)` at `radius_px` on the quadrant (`Front`, `Right`, `Rear`, `Left`)
+/// indicated by signed relative bearing `rel_mdeg` (`-180_000..=180_000`).
+pub fn draw_threat_arc<F>(
+    cx: i32,
+    cy: i32,
+    radius_px: i32,
+    rel_mdeg: i64,
+    severe: bool,
+    put: &mut F,
+) where
+    F: FnMut(i32, i32, [u8; 4]),
+{
+    let r = radius_px.clamp(16, 80);
+    let span = (r / 2).clamp(8, 28);
+    let [_, _, c_outer, c_mid, c_inner, c_hot, c_core] = if severe {
+        FX_STRUCK_RGBA_RAMP
+    } else {
+        FX_RGBA_RAMP
+    };
+    let core = if severe { c_core } else { c_hot };
+    let mid = if severe { c_hot } else { c_inner };
+    let rim = if severe { c_mid } else { c_outer };
+
+    for t in -span..=span {
+        let bend = t.abs() / 3;
+        let main_col = if t.abs() <= span / 3 { core } else { mid };
+        if (-45_000..=45_000).contains(&rel_mdeg) {
+            // Front (Top) quadrant
+            let x = cx + t;
+            let y0 = cy - r + bend;
+            put(x, y0, main_col);
+            put(x, y0 + 1, mid);
+            if severe || (t & 1) == 0 {
+                put(x, y0 - 4, rim);
+            }
+        } else if (45_001..=135_000).contains(&rel_mdeg) {
+            // Right quadrant
+            let x0 = cx + r - bend;
+            let y = cy + t;
+            put(x0, y, main_col);
+            put(x0 - 1, y, mid);
+            if severe || (t & 1) == 0 {
+                put(x0 + 4, y, rim);
+            }
+        } else if (-135_000..=-45_001).contains(&rel_mdeg) {
+            // Left quadrant
+            let x0 = cx - r + bend;
+            let y = cy + t;
+            put(x0, y, main_col);
+            put(x0 + 1, y, mid);
+            if severe || (t & 1) == 0 {
+                put(x0 - 4, y, rim);
+            }
+        } else {
+            // Rear (Bottom) quadrant
+            let x = cx + t;
+            let y0 = cy + r - bend;
+            put(x, y0, main_col);
+            put(x, y0 - 1, mid);
+            if severe || (t & 1) == 0 {
+                put(x, y0 + 4, rim);
+            }
         }
     }
 }
@@ -1041,6 +1198,40 @@ impl ContactTracker {
         let new_b = wx.det_atan2(wy).to_degrees().rem_euclid(360.0);
         (f64::from(new_b), f64::from(new_r))
     }
+
+    /// Compute the lateral screen-space target lead offset in `1x` HUD pixels
+    /// (`-18..=18`, `0` when stationary or on the initial single-frame render
+    /// where `anim_tick == 0`) for contact `c` relative to `cam_heading_mdeg`.
+    #[must_use]
+    pub fn contact_lateral_lead_px(&self, c: &Value, ci: usize, cam_heading_mdeg: u32) -> i64 {
+        if self.anim_tick == 0 {
+            return 0;
+        }
+        let moving = c.get("moving").and_then(Value::as_bool) == Some(true)
+            && c.get("reads_dead").and_then(Value::as_bool) != Some(true);
+        if !moving {
+            return 0;
+        }
+        let key = contact_track_key(c, ci);
+        let (vx_mps, vy_mps) = if let Some(track) = self.tracks.get(&key) {
+            (track.vx_mps, track.vy_mps)
+        } else {
+            let bearing_deg = c.get("bearing_deg").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+            heading_velocity_mps(c, bearing_deg)
+        };
+        let cam_rad = ((cam_heading_mdeg as f32) * 0.001).to_radians();
+        let (sin_cam, cos_cam) = cam_rad.det_sin_cos();
+        let v_lat = vx_mps * cos_cam - vy_mps * sin_cam;
+        if v_lat.abs() < 0.5 {
+            return 0;
+        }
+        let raw = (v_lat * 1.2).round() as i64;
+        if raw == 0 {
+            if v_lat > 0.0 { 2 } else { -2 }
+        } else {
+            raw.clamp(-18, 18)
+        }
+    }
 }
 
 fn contact_track_key(c: &Value, ci: usize) -> String {
@@ -1094,7 +1285,10 @@ mod tests {
                 ticks_left: FX_DURATION_TICKS,
             },
             CombatFx {
-                kind: CombatFxKind::Struck { severe: true },
+                kind: CombatFxKind::Struck {
+                    severe: true,
+                    attacker_key: None,
+                },
                 ticks_left: FX_DURATION_TICKS - 1,
             },
         ];
@@ -1225,10 +1419,36 @@ mod tests {
         assert_eq!(combat_jolt_px(&fire_fx, 2), (0, 4));
 
         let struck_fx = vec![CombatFx {
-            kind: CombatFxKind::Struck { severe: true },
+            kind: CombatFxKind::Struck {
+                severe: true,
+                attacker_key: Some("BA".to_string()),
+            },
             ticks_left: FX_DURATION_TICKS,
         }];
         assert_eq!(combat_jolt_px(&struck_fx, 1), (-3, 3));
         assert_eq!(combat_jolt_px(&[], 2), (0, 0));
+
+        let cockpit = json!({
+            "t_ms": 1000,
+            "contacts": [
+                {
+                    "id": "BA",
+                    "bearing_deg": 90.0,
+                    "range_m": 120.0,
+                    "relation": "hostile",
+                    "facing": "right",
+                    "moving": true
+                }
+            ]
+        });
+        assert_eq!(
+            resolve_threat_arc_mdeg(&cockpit, &struck_fx, 0),
+            Some((90_000, true))
+        );
+        let mut arc_px = 0usize;
+        draw_threat_arc(80, 60, 28, 90_000, true, &mut |_x, _y, _col| {
+            arc_px += 1;
+        });
+        assert!(arc_px > 20, "expected threat arc pixels, got {arc_px}");
     }
 }

@@ -4523,6 +4523,7 @@ impl TuiApp {
                 &cockpit_text::Panel {
                     cockpit: cockpit.as_ref(),
                     camera_mdeg,
+                    elapsed_ms: self.pixel.frame_elapsed_ms(now),
                     utf8: self.caps.utf8,
                 },
                 &|w, h| {

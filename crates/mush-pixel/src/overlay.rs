@@ -757,6 +757,9 @@ pub struct HudLock {
     pub percent: Option<i64>,
     /// Where it is drawn.
     pub at: LockAt,
+    /// Lateral screen-space lead offset in `1x` pixels (`0` when stationary
+    /// or on a single-frame render).
+    pub lead_px: i64,
 }
 
 /// **A contact's health, as the frame's one word says it** (doc 21 cut
@@ -847,6 +850,8 @@ pub struct Hud {
     /// The health gauges (G.14), one over each identified contact in view
     /// the frame gives a word for, the lock's among them.
     pub health: Vec<HealthMark>,
+    /// Optical gunner scope magnification in permille (`0` or `1000` = `1.0×`).
+    pub zoom_permille: u16,
 }
 
 /// The signed arc from `from` to `to`, millidegrees in `-180_000..180_000`.
@@ -885,6 +890,16 @@ pub fn draw_hud(frame: &mut Frame, hud: &Hud) {
     let label = draw_reticle(frame, hud.lock.as_ref(), s, w, h);
     draw_health(frame, &hud.health, label, s, w, h);
     draw_speed(frame, hud.speed_kph, s, w, h);
+    if hud.zoom_permille > 1000 {
+        let whole = hud.zoom_permille / 1000;
+        let tenth = (hud.zoom_permille % 1000 + 50) / 100;
+        let scope_txt = format!("SCOPE {whole}.{tenth}X");
+        let sw = scope_txt.len() as i64 * 6 * s - s;
+        let sx = w / 2 - sw / 2;
+        let sy = (h / 2 - 20 * s).max(24 * s);
+        panel(frame, sx - 2 * s, sy - s, sw + 4 * s, 9 * s);
+        text(frame, sx, sy, &scope_txt, GOOD, s as usize);
+    }
 }
 
 /// A small triangle `size` rows deep with its point at `apex`, pointing up
@@ -1011,6 +1026,14 @@ fn draw_reticle(
             let (bw, bh) = ((bw + 2 * m).max(8 * s), (bh + 2 * m).max(8 * s));
             outline_rect(frame, bx, by, bw, bh, LOCK);
             outline_rect(frame, bx + 1, by + 1, bw - 2, bh - 2, LOCK);
+            if lock.lead_px != 0 {
+                let mid_x = bx + bw / 2;
+                let mid_y = by + bh / 2;
+                let pip_x = (mid_x + lock.lead_px * s).clamp(3 * s, w - 4 * s);
+                line(frame, mid_x, mid_y, pip_x, mid_y, LOCK);
+                outline_rect(frame, pip_x - 2 * s, mid_y - 2 * s, 5 * s, 5 * s, LOCK);
+                fill_rect(frame, pip_x, mid_y, s, s, YOU);
+            }
             let lx = (bx + bw / 2 - lw / 2).clamp(0, (w - lw).max(0));
             let under = by + bh + 2 * s;
             let ly = if under + 7 * s <= h {
@@ -1170,6 +1193,16 @@ pub struct CanopyGlass {
     pub lock_designator: Option<String>,
     /// Canopy glass damage tier: `0` intact, `1` starred, `2` spiderwebbed.
     pub damage: u8,
+    /// Overall hull / armour integrity percentage (`0..=100`).
+    pub hull_pct: u8,
+    /// Reactor heat percentage (`0..=100`), or `None` when the unit has no heat model.
+    pub heat_pct: Option<u8>,
+    /// Whether the unit is currently overheated.
+    pub overheated: bool,
+    /// Up to 4 weapon recycle pips `(ready, fill_pct_0_to_100)`.
+    pub weapon_pips: Vec<(bool, u8)>,
+    /// Optical gunner zoom in permille (`0` or `1000` = `1.0×`).
+    pub zoom_permille: u16,
 }
 
 /// Draw a stepped pixel line of thickness `thick` from `(x0, y0)` to `(x1, y1)`.
@@ -1235,6 +1268,19 @@ pub fn draw_canopy_glass(frame: &mut Frame, glass: &CanopyGlass) {
     // Pitch ladder ticks inside the collimator brackets.
     fill_rect(frame, cx - bx + s, cy, 3 * s, s, col_rgb);
     fill_rect(frame, cx + bx - 3 * s, cy, 3 * s, s, col_rgb);
+    if glass.zoom_permille > 1000 {
+        let whole = glass.zoom_permille / 1000;
+        let tenth = (glass.zoom_permille % 1000 + 50) / 100;
+        let z_txt = format!("{whole}.{tenth}X");
+        text(
+            frame,
+            cx + bx - 22 * s,
+            cy - by - 8 * s,
+            &z_txt,
+            GOOD,
+            s as usize,
+        );
+    }
 
     // 3. Reactive ballistic glass cracks when the hull is damaged or crippled.
     if glass.damage >= 1 {
@@ -1295,6 +1341,55 @@ pub fn draw_canopy_glass(frame: &mut Frame, glass: &CanopyGlass) {
         w - 2 * flank_w + 2 * s,
         6 * s,
     );
+    // Diegetic lower-cowling gauges on the left flank (HUL & HT bars) and
+    // right flank (WPN recycle pips).
+    if flank_w >= 48 * s {
+        text(frame, 2 * s, h - 8 * s, "HUL", DIM, s as usize);
+        let (hx, hy, hw, hh) = (21 * s, h - 7 * s, 12 * s, 5 * s);
+        outline_rect(frame, hx, hy, hw, hh, BORDER);
+        let h_pct = i64::from(glass.hull_pct.min(100));
+        let h_fill = ((hw - 2) * h_pct) / 100;
+        fill_rect(frame, hx + 1, hy + 1, h_fill, hh - 2, ramp(h_pct, 100));
+
+        let ht_lbl_col = if glass.overheated { BAD } else { DIM };
+        text(frame, 35 * s, h - 8 * s, "HT", ht_lbl_col, s as usize);
+        let (kx, ky, kh) = (48 * s, h - 7 * s, 5 * s);
+        let kw = (flank_w - kx - 2 * s).max(8 * s);
+        let ht_bdr = if glass.overheated { BAD } else { BORDER };
+        outline_rect(frame, kx, ky, kw, kh, ht_bdr);
+        if let Some(hp) = glass.heat_pct {
+            let hp_i = i64::from(hp.min(100));
+            let k_fill = ((kw - 2) * hp_i) / 100;
+            let k_col = if glass.overheated || hp_i >= 80 {
+                BAD
+            } else if hp_i >= 50 {
+                WARN
+            } else {
+                GOOD
+            };
+            fill_rect(frame, kx + 1, ky + 1, k_fill, kh - 2, k_col);
+        }
+
+        let rx0 = w - flank_w;
+        text(frame, rx0 + 2 * s, h - 8 * s, "WPN", DIM, s as usize);
+        let slot_w = ((flank_w - 24 * s) / 4).max(8 * s);
+        for (idx, &(ready, fill_pct)) in glass.weapon_pips.iter().take(4).enumerate() {
+            let wx = rx0 + 22 * s + (idx as i64) * slot_w;
+            let wy = h - 7 * s;
+            let bw = (slot_w - 2 * s).max(6 * s);
+            outline_rect(frame, wx, wy, bw, 5 * s, BORDER);
+            let p_i = i64::from(fill_pct.min(100));
+            let w_fill = ((bw - 2) * p_i) / 100;
+            let w_col = if ready {
+                GOOD
+            } else if p_i > 0 {
+                WARN
+            } else {
+                GONE
+            };
+            fill_rect(frame, wx + 1, wy + 1, w_fill, 5 * s - 2, w_col);
+        }
+    }
     // Center look-angle indicator bar on the lower sill.
     let bar_w = 32 * s;
     let bar_x = cx - bar_w / 2;

@@ -311,6 +311,53 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     expect(helm.mock.calls).toEqual([["FIRE ALL"]]);
   });
 
+  it("Shift+1..Shift+4 (!, @, #, $) and quick-fire buttons fire individual weapon slots", async () => {
+    const { helm, frame } = mount(fixtureFrame());
+    await tick();
+    await press(frame, "!", { shiftKey: true });
+    await press(frame, "@", { shiftKey: true });
+    await press(frame, "#", { shiftKey: true });
+    expect(helm.mock.calls).toEqual([["FIRE cannon"], ["FIRE machine_gun"]]);
+    const slotBtn = screen.getByRole("button", { name: "1:cannon" });
+    await fireEvent.click(slotBtn);
+    expect(helm.mock.calls.at(-1)).toEqual(["FIRE cannon"]);
+  });
+
+  it("supports zoom in all three cameras and click-to-lock in first-person", async () => {
+    const { helm, picture, frame } = mount(fixtureFrame());
+    await tick();
+    // In first-person, zoom floors at 100% and steps up to 200%.
+    await press(frame, "-");
+    expect(screen.getByTitle("Reset zoom").textContent).toBe("100%");
+    await press(frame, "+");
+    expect(screen.getByTitle("Reset zoom").textContent).toBe("125%");
+    // In overhead, zoom can step below 100%.
+    picture.kind = "overhead";
+    await tick();
+    await press(frame, "-");
+    await press(frame, "-");
+    expect(screen.getByTitle("Reset zoom").textContent).toBe("75%");
+    picture.kind = "cockpit";
+    await tick();
+    expect(screen.getByTitle("Reset zoom").textContent).toBe("100%");
+
+    // Clicking dead ahead on the first-person canvas locks contact BA (bearing 45°, camera 45°).
+    const c = document.querySelector("canvas") as HTMLCanvasElement;
+    vi.spyOn(c, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 640,
+      height: 480,
+      right: 640,
+      bottom: 480,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    await fireEvent.click(c, { clientX: 320, clientY: 240 });
+    expect(helm.mock.calls).toEqual([["LOCK BA"]]);
+  });
+
   it("t walks the fixture's contacts hostiles first, then unidentified, then the rest, wrapping", async () => {
     const { helm, frame } = mount(fixtureFrame());
     await tick();

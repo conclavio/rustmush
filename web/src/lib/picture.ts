@@ -158,9 +158,11 @@ export type PictureKey =
   | { kind: "gate" }
   /** One volley (`FIRE ALL`). */
   | { kind: "volley" }
+  /** Fire an individual weapon slot `0..=3` (`Shift+1`..`Shift+4` -> `!`, `@`, `#`, `$`). */
+  | { kind: "fireSlot"; slot: 0 | 1 | 2 | 3 }
   /** The next (`1`) or previous (`-1`) contact locked (`LOCK`). */
   | { kind: "lock"; dir: -1 | 1 }
-  /** Zoom in (`1`) or out (`-1`) on the 2.5D tactical camera. */
+  /** Zoom in (`1`) or out (`-1`) on the active cockpit camera. */
   | { kind: "zoom"; dir: -1 | 1 }
   /** The chat line opened with an `ORDER` ready. */
   | { kind: "order"; slot: OrderSlot };
@@ -214,6 +216,14 @@ export function pictureKey(key: string): PictureKey | null {
     case "g":
     case "G":
       return { kind: "volley" };
+    case "!":
+      return { kind: "fireSlot", slot: 0 };
+    case "@":
+      return { kind: "fireSlot", slot: 1 };
+    case "#":
+      return { kind: "fireSlot", slot: 2 };
+    case "$":
+      return { kind: "fireSlot", slot: 3 };
     case "t":
       return { kind: "lock", dir: 1 };
     case "T":
@@ -361,18 +371,24 @@ export const ZOOM_MAX_PERMILLE = 2_000;
 export const ZOOM_DEFAULT_PERMILLE = 1_000;
 export const ZOOM_STEP_PERMILLE = 250;
 
-/** Step the 2.5D camera zoom in permille (`500..=2000`, `1000` = 1.0x), or reset on `0`. */
-export function stepZoomPermille(current: number, dir: -1 | 0 | 1): number {
+/** Step the camera zoom in permille (`1000..=2000` in first-person `cockpit`, `500..=2000`
+ * in `overhead` / `iso25d`, `1000` = 1.0x), or reset on `0`. */
+export function stepZoomPermille(
+  current: number,
+  dir: -1 | 0 | 1,
+  kind: PictureKind = "iso25d",
+): number {
   if (dir === 0) return ZOOM_DEFAULT_PERMILLE;
-  const base = Number.isFinite(current) && current > 0 ? Math.round(current) : ZOOM_DEFAULT_PERMILLE;
-  return Math.min(
-    ZOOM_MAX_PERMILLE,
-    Math.max(ZOOM_MIN_PERMILLE, base + dir * ZOOM_STEP_PERMILLE),
-  );
+  const minZoom = kind === "cockpit" ? ZOOM_DEFAULT_PERMILLE : ZOOM_MIN_PERMILLE;
+  const base =
+    Number.isFinite(current) && current > 0
+      ? Math.max(minZoom, Math.round(current))
+      : ZOOM_DEFAULT_PERMILLE;
+  return Math.min(ZOOM_MAX_PERMILLE, Math.max(minZoom, base + dir * ZOOM_STEP_PERMILLE));
 }
 
-/** Pick the nearest contact on the `iso25d` or `overhead` canvas at normalized `[0, 1]`
- * coordinates `(normX, normY)`, returning its `designator` when within the hit radius. */
+/** Pick the nearest contact on the `cockpit`, `overhead`, or `iso25d` canvas at normalized
+ * `[0, 1]` coordinates `(normX, normY)`, returning its `designator` when within the hit radius. */
 export function pickCanvasContact(
   contacts: readonly CockpitContact[],
   kind: PictureKind,
@@ -380,11 +396,40 @@ export function pickCanvasContact(
   normY: number,
   zoomPermille = ZOOM_DEFAULT_PERMILLE,
   sightM = 600,
+  cameraHeadingDeg = 0,
 ): string | null {
-  if (kind !== "iso25d" && kind !== "overhead") return null;
   if (!Number.isFinite(normX) || !Number.isFinite(normY)) return null;
   const px = normX * 640;
   const py = normY * 480;
+  if (kind === "cockpit") {
+    const z =
+      Math.min(
+        ZOOM_MAX_PERMILLE,
+        Math.max(ZOOM_DEFAULT_PERMILLE, zoomPermille > 0 ? zoomPermille : ZOOM_DEFAULT_PERMILLE),
+      ) / 1_000;
+    let bestDesig: string | null = null;
+    let bestDistSq = 44 * 44;
+    for (const c of contacts) {
+      if (!c.designator) continue;
+      const relDeg = ((((c.bearing_deg - cameraHeadingDeg + 180) % 360) + 360) % 360) - 180;
+      if (Math.abs(relDeg) > 36) continue;
+      const rad = (relDeg * Math.PI) / 180;
+      const depth = c.range_m * Math.cos(rad);
+      if (depth <= 1) continue;
+      const planeX = (c.range_m * Math.sin(rad)) / (depth * 0.66);
+      const cx = 320 + planeX * 320 * z;
+      const cy = 240;
+      if (cx < -32 || cx > 672) continue;
+      const dx = px - cx;
+      const dy = (py - cy) * 0.65;
+      const distSq = dx * dx + dy * dy;
+      if (distSq <= bestDistSq) {
+        bestDistSq = distSq;
+        bestDesig = c.designator;
+      }
+    }
+    return bestDesig;
+  }
   let pxPerMX: number;
   let pxPerMY: number;
   if (kind === "iso25d") {
@@ -397,7 +442,13 @@ export function pickCanvasContact(
     pxPerMX = 1.15 * scale;
     pxPerMY = 0.78 * scale;
   } else {
-    const reach = Math.min(3_000, Math.max(150, (sightM > 0 ? sightM : 600) * 1.15));
+    const z =
+      Math.min(
+        ZOOM_MAX_PERMILLE,
+        Math.max(ZOOM_MIN_PERMILLE, zoomPermille > 0 ? zoomPermille : ZOOM_DEFAULT_PERMILLE),
+      ) / 1_000;
+    const baseReach = Math.min(3_000, Math.max(150, (sightM > 0 ? sightM : 600) * 1.15));
+    const reach = Math.min(6_000, Math.max(75, baseReach / z));
     const pxPerM = 240 / reach;
     pxPerMX = pxPerM;
     pxPerMY = pxPerM;

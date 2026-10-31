@@ -452,7 +452,7 @@ impl OverheadPicture {
             .and_then(Value::as_f64)
             .filter(|m| *m > 0.0)
             .unwrap_or(DEFAULT_SIGHT_M);
-        let reach = (sight * VIEW_MARGIN).clamp(VIEW_BAND_M.0, VIEW_BAND_M.1);
+        let reach = effective_reach(sight, look.zoom_permille);
         let px_per_m = (vw.min(vh) as f64 / 2.0) / reach;
         let px_per_m_milli = (px_per_m * 1_000.0).round() as i64;
 
@@ -701,7 +701,7 @@ impl Picture for OverheadPicture {
                 .and_then(Value::as_f64)
                 .filter(|m| *m > 0.0)
                 .unwrap_or(DEFAULT_SIGHT_M);
-            let reach = (sight * VIEW_MARGIN).clamp(VIEW_BAND_M.0, VIEW_BAND_M.1);
+            let reach = effective_reach(sight, look.zoom_permille);
             let px_per_m = (w.min(h) as f64 / 2.0) / reach;
             let cx = (w / 2) as i32;
             let cy = (h / 2) as i32;
@@ -769,6 +769,19 @@ pub fn band_rings(cockpit: &Value, reach: f64) -> Vec<f64> {
     rings
 }
 
+/// Compute the overhead radar reach in metres, scaled inversely by `zoom_permille`
+/// (`500..=2000`; `0` or `1000` leaves the stock reach untouched).
+#[must_use]
+fn effective_reach(sight: f64, zoom_permille: u16) -> f64 {
+    let base = (sight * VIEW_MARGIN).clamp(VIEW_BAND_M.0, VIEW_BAND_M.1);
+    if zoom_permille == 0 || zoom_permille == 1000 {
+        base
+    } else {
+        let z = f64::from(zoom_permille.clamp(500, 2000));
+        (base * 1000.0 / z).clamp(75.0, 6_000.0)
+    }
+}
+
 /// The overhead's scene for `frame`: `cockpit` drawn over `held` (the
 /// `arena.map` keyframe, with `pic`'s map and heights built from it), the
 /// tank turned and the look swung by `look`, dressed as `dress` says.
@@ -802,7 +815,11 @@ fn overhead_scene(
         .and_then(Value::as_f64)
         .filter(|m| *m > 0.0)
         .unwrap_or(DEFAULT_SIGHT_M);
-    let reach = (sight * VIEW_MARGIN).clamp(VIEW_BAND_M.0, VIEW_BAND_M.1);
+    let reach = if dress.is_camera_scale() {
+        effective_reach(sight, look.zoom_permille)
+    } else {
+        (sight * VIEW_MARGIN).clamp(VIEW_BAND_M.0, VIEW_BAND_M.1)
+    };
     // The view: `reach` metres from the tank to the frame's nearer edge, the
     // frame's own shape.
     let px_per_m = (w.min(h) as f64 / 2.0) / reach;
@@ -1741,5 +1758,14 @@ mod tests {
             .draw_kitty(&f, &Look::default(), area, None, false)
             .expect("fallback rendered");
         assert_eq!(vp_fb.width_px, 640);
+
+        // 5. Overhead radar zoom changes reach in both software and retained Kitty.
+        let norm_frame = draw(&f, &Look::default(), 640, 276);
+        let zoom_in_look = Look {
+            zoom_permille: 2000,
+            ..Look::default()
+        };
+        let zoomed_frame = draw(&f, &zoom_in_look, 640, 276);
+        assert_ne!(norm_frame.hash(), zoomed_frame.hash());
     }
 }
