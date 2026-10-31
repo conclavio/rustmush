@@ -2984,6 +2984,12 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                 digest,
                 units,
             } => on_ended(ctx, match_id, end, digest, &units),
+            // Doc 32 cut CF.5: a unit leaving a field at its carrier's ramp.
+            ArenaOut::Withdrawn {
+                match_id,
+                unit,
+                outcome,
+            } => crate::field::exit::on_withdrawn(ctx, match_id, unit, outcome),
         }
     }
     // **16b cut N.2** (doc 16 §6 "Provider failure"): the one in-world sentence, said

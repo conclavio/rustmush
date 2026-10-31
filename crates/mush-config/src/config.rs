@@ -104,6 +104,8 @@
 //! | `[tacsim.procurement].cap_permille` | `400` | **Doc 17h cut M8f** (D-UM-54's diversity cap, provisional): the most of an organisation's titled hulls one charter's licences may cover, per mille, when its row names none; `1` to `1000` |
 //! | `[tacsim.field].disengage_s` | `120` | **Doc 32 cut CF.2** (Q-CF-20, provisional): seconds of arena time an IC field runs with no hostile pair firing, in weapons range or with a round in flight before it demotes; `10` to `3600` |
 //! | `[tacsim.field].max_units` | `24` | **Doc 32 cut CF.2** (Q-CF-21, Q-CF-45, provisional): the field cap, enforced at the surface as the per-site flight cap; `2` to `24` |
+//! | `[tacsim.field].extract_s` | `21600` | **Doc 32 cut CF.5** (Q-CF-39, provisional): IC seconds from a stranded character's `+sortie/extract` to their arrival at the safe port; `60` to `604800` |
+//! | `[tacsim.field].rescue_bound_s` | `7200` | **Doc 32 cut CF.5** (Q-CF-39, provisional): the published bound — IC seconds past the due instant an extraction waits while a Friend's recovery flight is on the site; `0` to `86400` |
 //! | `[tacsim.minds].fill_class` | `"I"` | Default AI fill class cap when its lead has selected none; pilot minds use `max_class` independently, and every seal also respects its rating and chassis core |
 //! | `[tacsim.minds].max_class` | `"III"` | Operator maximum for pilot and AI fill minds; `0`, `I`, `II` or `III` |
 //! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out; 17b cut M5.1 lets a principal choose a lawful preset with `SIM MIND`, sealed from 17b cut M5.2) |
@@ -867,6 +869,12 @@ pub struct TacsimFieldCfg {
     pub disengage_s: u32,
     /// The most units one field holds, and so the most flights one site takes (24).
     pub max_units: u32,
+    /// Doc 32 cut CF.5 (Q-CF-39): IC seconds from a stranded character's extraction request to
+    /// their arrival at the safe port (21600).
+    pub extract_s: u32,
+    /// Doc 32 cut CF.5 (Q-CF-39): IC seconds past the due instant an extraction waits while a
+    /// Friend's recovery flight is on the site (7200).
+    pub rescue_bound_s: u32,
 }
 
 impl Default for TacsimFieldCfg {
@@ -874,6 +882,8 @@ impl Default for TacsimFieldCfg {
         Self {
             disengage_s: 120,
             max_units: 24,
+            extract_s: 21_600,
+            rescue_bound_s: 7_200,
         }
     }
 }

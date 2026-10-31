@@ -136,8 +136,19 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
         |store| store.config().arena.snapshot_max_bytes,
     );
     let head = crate::arena::Snapshot::head(&document).map_err(|error| error.to_string())?;
-    let arena = crate::arena::Snapshot::decode_with_limit(&document, ground, limit)
+    let mut arena = crate::arena::Snapshot::decode_with_limit(&document, ground, limit)
         .map_err(|error| error.to_string())?;
+    // Doc 32 cut CF.5 (Q-CF-18): a unit that left at the ramp after this snapshot was taken is
+    // checked in already and out of the live record; the arena drops it.
+    let gone: Vec<ObjId> = arena
+        .units
+        .iter()
+        .map(|state| state.id)
+        .filter(|id| !units.contains(id))
+        .collect();
+    for unit in gone {
+        arena.remove_unit(unit);
+    }
     let task = ctx
         .w
         .module_state_mut::<FieldBook>()
@@ -202,6 +213,18 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
     let returns =
         super::close::snapshot_returns(ctx, site, held.docs.snapshot.as_ref()).unwrap_or_default();
     let left = super::close::demote_units(ctx, site, &units, &returns);
+    // Doc 32 cut CF.5 (Q-CF-38): the crew of every unit the live record seated.
+    if let Some(live) = &held.docs.live {
+        for row in &live.units {
+            super::crew::check_in(
+                ctx,
+                site,
+                row.unit,
+                row.pilot.as_ref().map(|(pilot, _)| *pilot),
+            );
+            super::crew::check_in_aboard(ctx, site, row.unit, &row.aboard);
+        }
+    }
     super::record::delete(ctx, site);
     if let Some(record) = super::close::site_record(ctx, site)
         && record

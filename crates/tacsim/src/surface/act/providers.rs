@@ -861,10 +861,13 @@ impl SurfaceActProvider {
         // Doc 32 cut CF.1 (Q-CF-30): every act on a promoted site is refused for the field's
         // duration — a hand's, a plan's step, a queued unload, the idle return, a field crew's —
         // read from the site's record in this very transaction.
+        // Doc 32 cut CF.5 (Q-CF-18): save one — the recover of a rig that left the field at its
+        // carrier's ramp, which the record names.
         if let Some(site) = plan.site.as_ref()
-            && crate::surface::site_record::open_field(
+            && crate::surface::site_record::open_field_except(
                 |key| txn.get(&self.sites, key).map(|found| found.cloned()),
                 site,
+                (kind == ActKind::Recover).then_some(tv),
             )
             .map_err(|_| {
                 port_error(

@@ -505,6 +505,8 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         field: tacsim::config::FieldConfig {
             disengage_s: cfg.field.disengage_s,
             max_units: cfg.field.max_units,
+            extract_s: cfg.field.extract_s,
+            rescue_bound_s: cfg.field.rescue_bound_s,
         },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.

@@ -94,8 +94,8 @@ pub struct FieldUnit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<SortieId>,
     /// **Everyone aboard it at admission**, when it is a carrier (doc 32 cut CF.3; Q-CF-38's
-    /// "aboard the carrier", [`super::carrier::crew_location`]): CF.5's crew state replaces
-    /// this marker.
+    /// "aboard the carrier", `super::crew::crew_location`): doc 32 cut CF.5's crew state reads
+    /// it, and sets each soul's record from it at the carrier's check-in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aboard: Vec<ObjId>,
 }

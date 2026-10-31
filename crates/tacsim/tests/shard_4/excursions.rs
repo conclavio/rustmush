@@ -49,7 +49,9 @@ use tacsim::port::tv::{
     TV_NOT_ABOARD, TV_UNWIRED, TvLeaseStatus, WHERE_AWAY, WHICH_RIG_ACT, WHY_HOPPER_CHANGED,
     WHY_NEVER_LEFT, WHY_NOT_BESIDE, WHY_SPOIL_GONE,
 };
-use tacsim::port::voyage::{HOPPER_LOADED, TV_AWAY, TV_BUSY, TV_OUT, Voyage, VoyageState};
+use tacsim::port::voyage::{
+    HOPPER_LOADED, LEAVE_HINT, TV_AWAY, TV_BUSY, TV_OUT, Voyage, VoyageState,
+};
 use tacsim::port::{HullRow, PortHandles, PortMap, PortMapState, Ticket, TicketId, room_key};
 use tacsim::surface::{
     Act, ActKind, ActParams, ActResult, Charge, Excursion, ExcursionId, RefusedCode, RigKey,
@@ -2015,7 +2017,11 @@ fn sm3b_departure_is_refused_with_a_rig_out_or_a_loaded_hopper() {
     let plan = run(&mut rig.tw, pilot, "+ship/plan ceres");
     assert_eq!(plan.lines().nth(1), Some(out_line.as_str()), "{plan}");
     let (out, queued) = command(&mut rig, pilot, "+ship/lift ceres");
-    assert_eq!(out.trim(), out_line);
+    // Doc 32 cut CF.5 (Q-H10): a live departure names the confirmation it needs.
+    assert_eq!(
+        out.trim(),
+        format!("{out_line}{}", LEAVE_HINT.replace("{list}", "1"))
+    );
     assert!(queued.is_empty());
     assert!(voyage(&rig.tw, hull).and_then(|v| v.pending).is_none());
     // The queue's depart: the dry run, then the hold when it falls due.
@@ -3039,10 +3045,14 @@ fn sm3b_a_rig_a_staff_move_left_out_of_place_can_still_come_home() {
     let (out, queued) = command(&mut rig, pilot, "+ship/lift ceres");
     assert_eq!(
         out.trim(),
-        TV_OUT
-            .replace("{n}", "1")
-            .replace("{site}", "Ahuna Flank")
-            .replace("{name}", "Salt Moth")
+        format!(
+            "{}{}",
+            TV_OUT
+                .replace("{n}", "1")
+                .replace("{site}", "Ahuna Flank")
+                .replace("{name}", "Salt Moth"),
+            LEAVE_HINT.replace("{list}", "1")
+        )
     );
     assert!(queued.is_empty());
     let (out, queued) = command(&mut rig, pilot, "+tv/1 launch");
@@ -3606,7 +3616,10 @@ fn sm3b_a_rig_still_logged_out_holds_the_return_and_the_hull_at_a_port() {
         .replace("{where}", "on Ahuna Flank")
         .replace("{name}", "Salt Moth");
     let (out, queued) = command(&mut rig, pilot, "+ship/undock ahuna");
-    assert_eq!(out.trim(), away);
+    assert_eq!(
+        out.trim(),
+        format!("{away}{}", LEAVE_HINT.replace("{list}", "1"))
+    );
     assert!(queued.is_empty());
     let plan = run(&mut rig.tw, pilot, "+ship/plan ahuna");
     assert_eq!(plan.lines().nth(1), Some(away.as_str()), "{plan}");
@@ -3618,10 +3631,14 @@ fn sm3b_a_rig_still_logged_out_holds_the_return_and_the_hull_at_a_port() {
     let (out, queued) = command(&mut rig, pilot, "+ship/undock ahuna");
     assert_eq!(
         out.trim(),
-        TV_AWAY
-            .replace("{n}", "1")
-            .replace("{where}", "away from her bay")
-            .replace("{name}", "Salt Moth")
+        format!(
+            "{}{}",
+            TV_AWAY
+                .replace("{n}", "1")
+                .replace("{where}", "away from her bay")
+                .replace("{name}", "Salt Moth"),
+            LEAVE_HINT.replace("{list}", "1")
+        )
     );
     assert!(queued.is_empty());
     staff_bay(&mut rig, tv, &row);

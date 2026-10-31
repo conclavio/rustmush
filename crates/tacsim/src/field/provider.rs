@@ -1,5 +1,5 @@
 //! **`tacsim_field`** — the field host's writes to the site record (doc 32 cut CF.2), one
-//! authoritative action with two operations.
+//! authoritative action with three operations.
 //!
 //! - **`open`** (Q-CF-14, Q-CF-30, Q-CF-31): the promotion. In one bundle the site's next field
 //!   opens on the record, `PromotedBy::Mark` or `PromotedBy::Fire`, and every surface act in
@@ -12,6 +12,9 @@
 //!   before it admits anyone. A launch, a recover from beside the ramp, a drive from the bay and
 //!   an unload are ramp handoffs (Q-H4): they finish as they would, and the host admits once they
 //!   have — a departure on the ramp completes into the field at the ramp pose (§4a).
+//! - **`exit`** (doc 32 cut CF.5; Q-CF-18): a unit that left the running field at its carrier's
+//!   ramp, recorded on the open promotion so its recover into the bay is the one surface act the
+//!   promoted site takes (`SiteRecord::exited`).
 //! - **`close`** (Q-CF-20, Q-CF-35): the demotion. The record's unit index becomes every unit the
 //!   field leaves on the ground at its field pose; the flag clears; the instant is kept.
 //!
@@ -19,7 +22,7 @@
 //! state; the verbs (`+field/mark`, `+field/fire`) decide who leads. `close` closes only what the
 //! host owes: the offer fixes the host's owed closes — each site's ordinal and the units it
 //! leaves, from the host's RAM — into the invocation, so no player can demote a field, or write
-//! a unit index, by submitting it.
+//! a unit index, by submitting it. `exit` writes only the host's owed exits, fixed the same way.
 
 use std::collections::BTreeSet;
 
@@ -266,8 +269,8 @@ impl ActionProvider for FieldProvider {
         parameters
             .get("op")
             .and_then(Value::as_str)
-            .filter(|op| matches!(*op, "open" | "close"))
-            .ok_or_else(|| invalid("a field write opens or closes"))?;
+            .filter(|op| matches!(*op, "open" | "close" | "exit"))
+            .ok_or_else(|| invalid("a field write opens, closes or exits"))?;
         Ok(())
     }
 
@@ -310,6 +313,20 @@ impl ActionProvider for FieldProvider {
                     .collect()
             })
             .unwrap_or_default();
+        // Doc 32 cut CF.5: the host's owed exits, fixed the same way: only these units may be
+        // written out of a field at the ramp.
+        let exiting: Map<String, Value> = w
+            .module_state::<super::exit::OwedExits>()
+            .map(|owed| {
+                owed.0
+                    .iter()
+                    .map(|(site, units)| {
+                        let units: Vec<u32> = units.keys().map(|unit| unit.0).collect();
+                        (site.to_string(), json!(units))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let integer =
             |minimum: i64, maximum: i64| ProjectedParameterKind::Integer { minimum, maximum };
         let text = ProjectedParameterKind::Text {
@@ -325,7 +342,7 @@ impl ActionProvider for FieldProvider {
                 "op",
                 true,
                 ProjectedParameterKind::Choice {
-                    choices: vec!["open".to_owned(), "close".to_owned()],
+                    choices: vec!["open".to_owned(), "close".to_owned(), "exit".to_owned()],
                 },
             )?,
             crate::surface::act::parameter(
@@ -338,16 +355,17 @@ impl ActionProvider for FieldProvider {
             crate::surface::act::parameter("from", false, integer(1, i64::from(u32::MAX)))?,
             crate::surface::act::parameter("at", false, integer(1, i64::from(u32::MAX)))?,
             crate::surface::act::parameter("rigs", false, text)?,
+            crate::surface::act::parameter("unit", false, integer(1, i64::from(u32::MAX)))?,
         ];
         crate::surface::act::offer_draft(
             action,
             engine,
-            json!({ "now": w.world_ic_now().at, "closing": closing }),
+            json!({ "now": w.world_ic_now().at, "closing": closing, "exiting": exiting }),
             parameters,
             (
                 "tacsim-field",
-                "Open or close a field",
-                "The IC field host: promote a site by a leader's mark or a fire order, or demote it.",
+                "Open, close or leave a field",
+                "The IC field host: promote a site by a leader's mark or a fire order, record a unit's exit at its carrier's ramp, or demote it.",
             ),
         )
         .map(Some)
@@ -382,6 +400,21 @@ impl ActionProvider for FieldProvider {
         let mut record = found.unwrap_or_else(|| SiteRecord::new(key.0.clone()));
         let said = match op {
             "open" => self.open(txn, &mut record, parameters, (invocation.actor(), now))?,
+            "exit" => {
+                let unit = obj(parameters, "unit")?;
+                let owed = parameters
+                    .get("exiting")
+                    .and_then(|exiting| exiting.get(key.0.as_str()))
+                    .and_then(Value::as_array)
+                    .is_some_and(|units| {
+                        units.iter().any(|n| n.as_u64() == Some(u64::from(unit.0)))
+                    });
+                if !owed {
+                    return Err(rejected("only the field host writes a unit out of a field"));
+                }
+                record.exit(unit).map_err(|why| rejected(why.sentence()))?;
+                format!("#{} left field {} at the ramp", unit.0, record.ordinal)
+            }
             _ => {
                 let owed = parameters
                     .get("closing")

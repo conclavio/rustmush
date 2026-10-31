@@ -216,6 +216,11 @@ pub struct PendingVoyage {
     /// when empty, so no pending filed before the cut re-encodes differently.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub carried: Vec<crate::port::passage::CarriedRig>,
+    /// **Doc 32 cut CF.5 (doc 27 Q-H10)** — the units the pilot confirmed leaving behind at
+    /// filing (`leave=`), the decision's record: departure does not recall, delete, release or
+    /// close any of them. Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_behind: Vec<ObjId>,
 }
 
 impl Voyage {
@@ -447,6 +452,19 @@ pub const TV_OUT: &str = "Rig {n} is out on {site}; the {name} lifts only with e
 /// cannot reach (only a staff move gets it there): `{n}`, `{where}` (`on {site}`, or `away
 /// from her bay` when no site can be named), `{name}`. Under the same `DepartRefusalKind::TvOut`.
 pub const TV_AWAY: &str = "Rig {n} is logged out {where}; the {name} lifts only with every rig in her bay: staff must bring it in.";
+/// **Doc 32 cut CF.5 (doc 27 Q-H10)**: a detachment unit out in the field: `{unit}`, `{site}`, `{name}`.
+pub const UNIT_OUT: &str = "Unit #{unit} is out on {site}; the {name} lifts only with every unit aboard: +sortie/recover brings it in.";
+/// **Doc 32 cut CF.5**: a detachment unit on the ramp, going or coming: `{unit}`, `{name}`.
+pub const UNIT_BUSY: &str =
+    "Unit #{unit} is on the {name}'s ramp; she lifts once it is aboard or away.";
+/// **Doc 32 cut CF.5 (Q-H10)**: appended to a live departure's refusal for units out: `{list}`.
+pub const LEAVE_HINT: &str = " To lift without them, add leave={list}: a unit left behind stays where it stands, still yours, its log open, and nothing recalls it.";
+/// **Doc 32 cut CF.5**: `leave=`'s usage.
+pub const LEAVE_USAGE: &str =
+    "leave= names the units to leave behind: bay slots and #units, comma-separated (leave=1,#345).";
+/// **Doc 32 cut CF.5 (Q-H10)**: the filing's note when it leaves units behind: `{list}`.
+pub const LEFT_BEHIND: &str =
+    "Left behind by your order: {list}. They stay where they stand, still yours.";
 /// **Doc 20 cut SM.3b**: a rig mid-act: `{n}`, `{doing}`, `{name}`. A rig mid-run (doc 20 cut
 /// SM.7) uses it too, `{doing}` from `crate::surface::act::drilling_words` and
 /// `crate::port::tv::RUN_STOP_REMEDY` appended; and (doc 20 cut SM.11) a rig working a plan,
@@ -1022,6 +1040,8 @@ pub struct PassageOptions {
     pub policy: RoutePolicy,
     /// The lane place the route must call at before its destination.
     pub via: Option<CanonicalId>,
+    /// **Doc 32 cut CF.5 (Q-H10)**: the units a live departure confirms leaving behind.
+    pub leave: LeaveBehind,
 }
 
 impl Default for PassageOptions {
@@ -1030,6 +1050,7 @@ impl Default for PassageOptions {
             throttle_permille: DEFAULT_THROTTLE_PERMILLE,
             policy: RoutePolicy::default(),
             via: None,
+            leave: LeaveBehind::default(),
         }
     }
 }
@@ -1043,6 +1064,7 @@ impl PassageOptions {
             throttle_permille: throttle_permille.unwrap_or(DEFAULT_THROTTLE_PERMILLE),
             policy: RoutePolicy::default(),
             via,
+            leave: LeaveBehind::default(),
         }
     }
 }
@@ -1135,6 +1157,8 @@ struct PlanArgs {
     policy: Option<RoutePolicy>,
     /// `via=<place>`, unresolved.
     via: Option<String>,
+    /// `leave=<units>` (doc 32 cut CF.5).
+    leave: Option<LeaveBehind>,
 }
 
 /// The arguments `+ship/plan` and `+ship/undock` take: a destination word (a
@@ -1172,6 +1196,13 @@ fn parse_args(raw: &str) -> Result<PlanArgs, CmdError> {
             args.policy = Some(policy);
             continue;
         }
+        if let Some(value) = lower.strip_prefix("leave=") {
+            if args.leave.is_some() {
+                return Err(CmdError::msg(LEAVE_USAGE));
+            }
+            args.leave = Some(LeaveBehind::parse(value).map_err(CmdError::msg)?);
+            continue;
+        }
         if let Some(at) = lower.strip_prefix("at=") {
             if at != "now" {
                 return Err(CmdError::msg(AT_NOT_YET));
@@ -1195,6 +1226,7 @@ fn options_of(w: &World, args: &PlanArgs) -> Result<PassageOptions, CmdError> {
         throttle_permille: args.throttle.unwrap_or(DEFAULT_THROTTLE_PERMILLE),
         policy: args.policy.unwrap_or_default(),
         via,
+        leave: args.leave.clone().unwrap_or_default(),
     })
 }
 
@@ -2696,13 +2728,114 @@ pub(crate) enum RigSkip {
 /// # Errors
 ///
 /// As [`bay_gate`].
-#[allow(clippy::too_many_lines)] // one ordered walk of the rigs, then the hoppers
 pub(crate) fn bay_gate_with(
     ctx: &Ctx<'_>,
     view: &HullView<'_>,
     name: &str,
     skip: RigSkip,
 ) -> Result<(), DepartRefusal> {
+    bay_gate_leaving(ctx, view, name, skip, None).map(|_| ())
+}
+
+/// **The units a live departure confirms leaving behind** (doc 32 cut CF.5; doc 27 Q-H10): the
+/// rigs by bay slot, the detachment's units by number — `leave=1,2,#345` on `+ship/undock` or
+/// `+ship/lift`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LeaveBehind {
+    /// Rigs, by bay slot.
+    pub slots: std::collections::BTreeSet<u8>,
+    /// Detachment units, by number.
+    pub units: std::collections::BTreeSet<ObjId>,
+}
+
+impl LeaveBehind {
+    /// Whether it names nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty() && self.units.is_empty()
+    }
+
+    /// `leave=`'s value: bay slots and `#`-numbered units, comma-separated.
+    ///
+    /// # Errors
+    ///
+    /// [`LEAVE_USAGE`].
+    pub fn parse(value: &str) -> Result<LeaveBehind, String> {
+        let mut leave = LeaveBehind::default();
+        for word in value.split(',').map(str::trim) {
+            if let Some(number) = word.strip_prefix('#') {
+                let unit = crate::port::families::strict_decimal_u32(number)
+                    .filter(|n| *n != 0)
+                    .ok_or_else(|| LEAVE_USAGE.to_owned())?;
+                leave.units.insert(ObjId(unit));
+            } else {
+                let slot = word
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|n| *n != 0)
+                    .ok_or_else(|| LEAVE_USAGE.to_owned())?;
+                leave.slots.insert(slot);
+            }
+        }
+        if leave.is_empty() {
+            return Err(LEAVE_USAGE.to_owned());
+        }
+        Ok(leave)
+    }
+}
+
+/// **The detachment's units out from `hull`** (doc 32 cut CF.5; Q-H10): every open DT flight the
+/// hull launched that is not one of its rigs, with its phase.
+fn detachment_out(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    rigs: &[(u8, ObjId)],
+) -> Result<Vec<(ObjId, crate::detachment::sortie::Phase, CanonicalId)>, ()> {
+    let Some(h) = ctx
+        .w
+        .module_state::<crate::detachment::sortie::SortieHandles>()
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(index) = ctx.action_state(&h.index, &()).map_err(|_| ())? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for unit in &index.units {
+        if rigs.iter().any(|(_, tv)| tv == unit) {
+            continue;
+        }
+        let Some(head) = ctx.action_state(&h.heads, unit).map_err(|_| ())? else {
+            continue;
+        };
+        let Some(flight) = ctx.action_state(&h.flights, &head.flight).map_err(|_| ())? else {
+            continue;
+        };
+        if flight.carrier == hull && flight.phase.open() && flight.key.unit == *unit {
+            out.push((*unit, flight.phase, flight.site.clone()));
+        }
+    }
+    Ok(out)
+}
+
+/// [`bay_gate_with`] for a live departure (doc 32 cut CF.5; doc 27 Q-H10), answering the units
+/// it leaves behind. With `leave` `None` (the plan, the queue) every unit out refuses as it
+/// always has; with `Some` (`+ship/undock`, `+ship/lift`) a unit out — a rig out on the ground or
+/// logged out elsewhere, or a detachment unit in the field — passes when `leave` names it, and
+/// the refusal for any it does not name carries [`LEAVE_HINT`] listing every one. A unit mid-act
+/// or on the ramp never passes. A rig left behind is not read for its hopper.
+///
+/// # Errors
+///
+/// As [`bay_gate`].
+#[allow(clippy::too_many_lines)] // one ordered walk of the rigs, then the hoppers
+pub(crate) fn bay_gate_leaving(
+    ctx: &Ctx<'_>,
+    view: &HullView<'_>,
+    name: &str,
+    skip: RigSkip,
+    leave: Option<&LeaveBehind>,
+) -> Result<Vec<ObjId>, DepartRefusal> {
     use crate::port::tv::RigFlight;
     use crate::surface::act::{
         Where, doing_words, drilling_words, ramp_label, site_name, site_of_domain, where_is,
@@ -2711,6 +2844,9 @@ pub(crate) fn bay_gate_with(
     let w: &World = ctx.w;
     let hull = view.hull();
     let dark = || refusal(K::PlanDark, PLAN_DARK.replace("{name}", name));
+    let mut left: Vec<ObjId> = Vec::new();
+    // Each unit out the departure does not name: its label and its own refusal line.
+    let mut unnamed: Vec<(String, String)> = Vec::new();
     let inert: std::collections::BTreeSet<_> = crate::port::vehicle::rigs_in_bay(w, view)
         .into_iter()
         .filter(|r| crate::relay_foundry::cargo(w, r.tv))
@@ -2726,8 +2862,32 @@ pub(crate) fn bay_gate_with(
             rigs.push((record.slot, record.tv));
         }
     }
+    // Doc 32 cut CF.5 (doc 27 Q-H10): the detachment's units out from this hull hold it as a rig
+    // does, and a live departure may leave them as it may leave a rig.
+    for (unit, phase, site) in detachment_out(ctx, hull, &rigs).map_err(|()| dark())? {
+        if phase != crate::detachment::sortie::Phase::Field {
+            return Err(refusal(
+                K::TvOut,
+                UNIT_BUSY
+                    .replace("{unit}", &unit.0.to_string())
+                    .replace("{name}", name),
+            ));
+        }
+        if leave.is_some_and(|leave| leave.units.contains(&unit)) {
+            left.push(unit);
+            continue;
+        }
+        let line = UNIT_OUT
+            .replace("{unit}", &unit.0.to_string())
+            .replace("{site}", &site_name(w, &site))
+            .replace("{name}", name);
+        if leave.is_none() {
+            return Err(refusal(K::TvOut, line));
+        }
+        unnamed.push((format!("#{}", unit.0), line));
+    }
     if rigs.is_empty() {
-        return Ok(());
+        return left_or_refused(left, &unnamed);
     }
     rigs.sort_by_key(|(slot, tv)| (*slot == 0, *slot, *tv));
     if w.module_state::<PortHandles>().is_none() {
@@ -2846,11 +3006,19 @@ pub(crate) fn bay_gate_with(
                     )
                     .replace("{name}", name),
             };
-            return Err(refusal(K::TvOut, line));
+            // Doc 32 cut CF.5 (Q-H10): a live departure may leave it behind, by name.
+            match leave {
+                Some(leave) if leave.slots.contains(slot) => left.push(*tv),
+                Some(_) => unnamed.push((n_of(*slot), line)),
+                None => return Err(refusal(K::TvOut, line)),
+            }
         }
     }
+    if !unnamed.is_empty() {
+        return left_or_refused(left, &unnamed);
+    }
     for (slot, tv) in &rigs {
-        if inert.contains(tv) {
+        if inert.contains(tv) || left.contains(tv) {
             continue;
         }
         let (kg, _) = crate::port::tv::hopper_load_of(ctx, *tv).map_err(|error| {
@@ -2876,7 +3044,23 @@ pub(crate) fn bay_gate_with(
             ));
         }
     }
-    Ok(())
+    Ok(left)
+}
+
+/// **The bay gate's answer for the units out** (doc 32 cut CF.5): the units left behind, or the
+/// first unnamed unit's own line with [`LEAVE_HINT`] listing every one.
+fn left_or_refused(
+    left: Vec<ObjId>,
+    unnamed: &[(String, String)],
+) -> Result<Vec<ObjId>, DepartRefusal> {
+    let Some((_, line)) = unnamed.first() else {
+        return Ok(left);
+    };
+    let list: Vec<&str> = unnamed.iter().map(|(label, _)| label.as_str()).collect();
+    Err(refusal(
+        DepartRefusalKind::TvOut,
+        format!("{line}{}", LEAVE_HINT.replace("{list}", &list.join(","))),
+    ))
 }
 
 /// **A planner refusal the departure names** (doc 20 cut SM.2, D-20-3; doc 18 cut IC9):
@@ -3109,8 +3293,15 @@ pub(crate) fn prepare_departure(
     if let Some(line) = crate::field::carrier::departure_refusal(w, hull) {
         return Err(refusal(K::InField, line));
     }
-    // Doc 20 cut SM.3b (lead ruling 7): every rig in the bay, every hopper empty.
-    bay_gate(ctx, &view, &name)?;
+    // Doc 20 cut SM.3b (lead ruling 7): every rig in the bay, every hopper empty. Doc 32 cut CF.5
+    // (doc 27 Q-H10): or, live, every unit out named by the pilot's `leave=`.
+    let left_behind = bay_gate_leaving(
+        ctx,
+        &view,
+        &name,
+        RigSkip::None,
+        matches!(queued, Queued::Live).then_some(&options.leave),
+    )?;
     // Lead ruling L13: promised goods hold the hull.
     if let Some(vault) = hold_vault(w, &view) {
         match goods_pending_aboard(w, EndpointRef(vault)) {
@@ -3236,6 +3427,7 @@ pub(crate) fn prepare_departure(
         filed_at: w.now(),
         arrival,
         carried: basis.carried.clone(),
+        left_behind,
     };
     let voyage = Voyage {
         schema: VOYAGE_SCHEMA,
@@ -3329,6 +3521,33 @@ pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         None => base.replace(", about {hhmm} UTC {day}", ""),
     };
     ctx.out.sys_to_actor(actor, "tacsim", reply);
+    // Doc 32 cut CF.5 (doc 27 Q-H10): the decision is on the filed voyage; the pilot and every
+    // left unit's operator hear it.
+    if !pending.left_behind.is_empty() {
+        let list: Vec<String> = pending
+            .left_behind
+            .iter()
+            .map(|unit| format!("#{}", unit.0))
+            .collect();
+        let line = LEFT_BEHIND.replace("{list}", &list.join(", "));
+        ctx.out.sys_to_actor(actor, "tacsim", line.clone());
+        let mut told = std::collections::BTreeSet::from([actor]);
+        for unit in &pending.left_behind {
+            let operator = crate::port::yard::rig_lease(ctx.w, *unit)
+                .map(|lease| lease.pilot)
+                .or_else(|| crate::field::parties::seated(ctx.w, *unit).map(|(pilot, _)| pilot));
+            if let Some(operator) = operator
+                && told.insert(operator)
+            {
+                ctx.out.sys_to_actor(operator, "tacsim", line.clone());
+            }
+        }
+        tracing::info!(
+            hull = charter.hull.0,
+            units = ?pending.left_behind,
+            "tacsim: a departure left units behind on the pilot's confirmation"
+        );
+    }
     Ok(())
 }
 
@@ -3981,6 +4200,7 @@ mod tests {
             filed_at: 1_700_000_000,
             arrival: None,
             carried: Vec::new(),
+            left_behind: Vec::new(),
         }
     }
 

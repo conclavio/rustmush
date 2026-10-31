@@ -784,7 +784,7 @@ had to decide where the rulings left it open, for the owner to object to:
 
 Not built in CF.2, each for a reason stated in its PR: **recovery as exit** (Q-CF-18: the kernel
 has no way for a unit to leave a running arena, and the surface recover is itself refused while
-the site is promoted); the site record's **objects as sensor contacts** and cover beyond their
+the site is promoted; built by CF.5, §8); the site record's **objects as sensor contacts** and cover beyond their
 cells (they are impassable cells, Q-CF-26); **remains and crates dropped at demotion** (an
 irrecoverable hull's remains wait for the epoch close-destroyed rule, 27a H3, and a hopper's
 crate for the inventory transfer that empties it); a hull under **dedicated IC custody** (a
@@ -886,3 +886,73 @@ no ruling states; **NPC scavengers** finding objects (objects are not in the min
 **web's own pixel map window** draws the campaign layer through the same `mush-pixel` code as the
 TUI's, so it needs no second change. The cockpit map's `#` for a claim's edge shares its glyph with
 the arena map's walls, which an object's footprint now is; the legend names both.
+
+## 10. CF.5 as built (crew and exit)
+
+Built 2026-10-31 on `main` at `02ccdffc` (after CF.3). The kernel's exit is `crates/tacsim/src/arena/withdraw.rs`
+and `ArenaMsg::Withdraw` / `ArenaOut::Withdrawn`; the host's half is `crates/tacsim/src/field/exit.rs`;
+crew state and extraction are `crates/tacsim/src/field/crew.rs`; the leave-behind confirmation is
+the bay gate's (`crate::port::voyage::bay_gate_leaving`). What the cut had to decide where the
+rulings left it open, for the owner to object to:
+
+- **Where a withdrawing unit must be** (Q-CF-18, doc 27 Q-H3/Q-H4). Beside its own carrier's
+  ramp: its cell within one cell of the ramp's, Chebyshev — the surface recover's rule (doc 20
+  SM.3b) and the DT recover's (`at_ramp`), so the field adds no third reach. The kernel decides it
+  on its own live pose; a unit elsewhere is refused "drive it there first" and fights on. Q-CF-18's
+  "if the ramp is reachable" is therefore the pilot's drive to the ramp inside the field, not a
+  path search at the verb.
+- **Under its own power** is the DT recover's own test (power, control, and locomotion where the
+  hull has a mobility profile), read by the kernel on the live cells, plus the kernel's own wreck,
+  motion-disabled and disabled flags; so the recover the host submits next cannot refuse what
+  the kernel let go. A hull that cannot come in stays, and its crew's way home is extraction.
+- **The exit is checked in when it happens**, through the same IC plan as a demotion (Q-CF-36:
+  only the custody vocabulary, no blanket wreck stamp, never the check-out snapshot), and the unit
+  stands at its field pose beside the ramp. A later void of the field does not rewind it: an IC
+  field never restores (Q-CF-35), and the unit is in no later snapshot. A boot resuming from a
+  snapshot taken before the exit drops the unit from the arena (the live record no longer holds it).
+- **The record**: the open promotion names each unit that left (`Promotion::exits`, written by
+  `tacsim_field op=exit`, the host's own write like `close`); the site's unit index never holds
+  a unit that left, since a demotion indexes only the units still in the field. CF.1's refusal of
+  surface work on a promoted site stands, save exactly one act: the recover of a unit the
+  promotion names (`open_field_except`), so the verb that asked runs again as its player once the
+  record shows the exit — the rig's recover from beside the ramp, or the DT recover.
+- **Crew location** (Q-CF-38) is physical: a pilot inside the hull (the hull's location chain, or
+  the spatial graph) is aboard that unit, or **stranded** on the site when the checked-in hull
+  cannot return under its own power or is a wreck; a pilot at a remote console aboard a carrier is
+  aboard that carrier; an extracted character is at the port. **Crew condition** reads the control
+  sections the anatomy names (`head`, `cockpit`, `bridge`): one destroyed incapacitates, one
+  damaged injures, else fit; a remote pilot is fit. A character the field engine never touched has
+  no record. The record is `tacsim:crew:<character>` on the module's lane (a workflow document,
+  like the field's live record).
+- **CF.3's marker is replaced.** `tacsim::field::crew_location` now answers CF.5's `CrewLocation`:
+  `Carrier { hull }` while a running field lists the character on a carrier's row (CF.3's
+  `FieldUnit::aboard`), else the character's crew record. At the carrier's check-in each soul on
+  that row still aboard is recorded aboard it, so the location outlives the field.
+- **Immediately on a control-section kill** is the pilot's own frame: the pulse a frame shows a
+  control section destroyed around a pilot inside the hull, the pilot is incapacitated and told.
+- **Extraction** (Q-CF-39, P-5): `+sortie/extract`, by a stranded or incapacitated character
+  still inside the hull; never automatic. The **known safe port** is the one the game records a
+  character knowing — the IC-return stamp's port (where they last stood) — else **Stickney Yards
+  on Phobos**, the fallback doc 27 names. The delay is `[tacsim.field].extract_s` of IC time
+  (provisional 21,600: six IC hours); a W-clock freeze pauses it because no tick runs a frozen
+  world. On landing the seat is vacated (and the pilot unbound from any field still running), the
+  character stands in the port's arrival room, and the hull, its cargo and its epoch stay.
+- **A Friend's recovery flight** (Q-CF-39's deferral) is an open DT flight on the site, of an
+  activation on `recovery` duty, under the same organizer as the stranded character's own party
+  (Q-CF-5's Friend: same roster or same organizer). It defers the landing at most
+  `[tacsim.field].rescue_bound_s` past the due instant (provisional 7,200), the published bound.
+- **The leave-behind confirmation** (Q-H10) is `leave=<units>` on a live `+ship/undock` or
+  `+ship/lift`: rigs by bay slot, the detachment's units by `#number`. A rig out on the ground or
+  logged out elsewhere, or a DT unit in the field, refuses the live departure with its own line and
+  the confirmation listing every unit out; named, it is left — the filed voyage records it
+  (`PendingVoyage::left_behind`), the pilot and each left unit's operator are told, and nothing is
+  recalled, released or closed. A unit mid-act or on the ramp never passes; a queued departure
+  keeps the old refusal (no confirmation is ever presumed, and an embarked crew cannot be presumed
+  to consent for another carrier's operator). The bay gate now also counts the DT units out from
+  the hull, which held no departure before.
+
+No snapshot, hash or frame bump: the withdrawal removes a unit from the arena and adds no field to
+any encoded state; the site record and the voyage document gain optional fields, empty by default.
+
+Not built in CF.5: **towing** a casualty home (FO-13; 27a H2); **ejection, capture and treatment**
+(Q-CF-38 rules them out of the first version); a carrier departing **during** a field (F-6; CF.3 refuses it, `InField`, and that refusal stands ahead of the bay gate).

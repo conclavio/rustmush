@@ -326,6 +326,11 @@ pub struct Promotion {
     /// **The rigs the promotion settled mid-drive** (doc 32 cut CF.2; Q-CF-31), in rig order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settled: Vec<SettledRig>,
+    /// **The units that left this field at their carrier's ramp** (doc 32 cut CF.5; Q-CF-18), in
+    /// unit order: checked in when they left, and the one surface act a promoted site still
+    /// takes is each one's recover into its bay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exits: Vec<ObjId>,
 }
 
 /// **What a remembered thing on the ground was** (doc 32 cut CF.4; Q-CF-25's four kinds, as the
@@ -623,6 +628,7 @@ impl SiteRecord {
             at_ic,
             by,
             settled: Vec::new(),
+            exits: Vec::new(),
         });
         Ok(FieldId {
             site: self.site.clone(),
@@ -655,6 +661,31 @@ impl SiteRecord {
         self.promoted = None;
         self.demoted_ic = Some(at_ic);
         Ok(field)
+    }
+
+    /// **Record `unit`'s exit at the ramp from the open field** (doc 32 cut CF.5; Q-CF-18): kept in
+    /// unit order, once.
+    ///
+    /// # Errors
+    ///
+    /// [`SiteRefused::NotPromoted`]; [`SiteRefused::UnitsFull`] past the field cap.
+    pub fn exit(&mut self, unit: ObjId) -> Result<(), SiteRefused> {
+        let open = self.promoted.as_mut().ok_or(SiteRefused::NotPromoted)?;
+        if let Err(at) = open.exits.binary_search(&unit) {
+            if open.exits.len() >= usize::try_from(FIELD_MAX_UNITS).unwrap_or(usize::MAX) {
+                return Err(SiteRefused::UnitsFull);
+            }
+            open.exits.insert(at, unit);
+        }
+        Ok(())
+    }
+
+    /// Whether `unit` left the open field at its carrier's ramp ([`SiteRecord::exit`]).
+    #[must_use]
+    pub fn exited(&self, unit: ObjId) -> bool {
+        self.promoted
+            .as_ref()
+            .is_some_and(|open| open.exits.binary_search(&unit).is_ok())
     }
 
     /// **Leave `unit` on the ground** (or move its entry): kept in unit order.
@@ -842,6 +873,15 @@ impl SiteRecord {
                     .to_owned(),
             );
         }
+        if let Some(open) = &self.promoted
+            && (open.exits.len() > usize::try_from(FIELD_MAX_UNITS).unwrap_or(usize::MAX)
+                || open.exits.windows(2).any(|pair| match pair {
+                    [a, b] => a >= b,
+                    _ => false,
+                }))
+        {
+            return Err("a field's exits are at most the field cap of units, in order".to_owned());
+        }
         if self.units.len() > MAX_LEFT_UNITS {
             return Err(format!(
                 "a site record indexes at most {MAX_LEFT_UNITS} units"
@@ -934,9 +974,21 @@ pub(crate) fn open_field<E>(
     read: impl FnOnce(&SiteKey) -> Result<Option<SiteRecord>, E>,
     site: &CanonicalId,
 ) -> Result<Option<FieldId>, E> {
+    open_field_except(read, site, None)
+}
+
+/// **[`open_field`], passing the one act a promoted site still takes** (doc 32 cut CF.5;
+/// Q-CF-18): with `recover` naming a unit that left the open field at its carrier's ramp
+/// ([`SiteRecord::exited`]), the field does not hold that unit's recover into its bay.
+pub(crate) fn open_field_except<E>(
+    read: impl FnOnce(&SiteKey) -> Result<Option<SiteRecord>, E>,
+    site: &CanonicalId,
+    recover: Option<ObjId>,
+) -> Result<Option<FieldId>, E> {
     let key = SiteKey(site.clone());
     Ok(read(&key)?
         .filter(|record| record.key() == key)
+        .filter(|record| recover.is_none_or(|unit| !record.exited(unit)))
         .and_then(|record| record.open_field()))
 }
 
@@ -957,18 +1009,33 @@ pub fn promoted_refusal(field: &FieldId, site_name: &str) -> String {
 ///
 /// The [`FIELD_OPEN`] line.
 pub(crate) fn field_gate(ctx: &mush_core::Ctx<'_>, hull: ObjId) -> Result<(), mush_core::CmdError> {
+    field_gate_except(ctx, hull, None)
+}
+
+/// **[`field_gate`], passing a recover of a unit that left the field at the ramp** (doc 32 cut
+/// CF.5; [`open_field_except`]).
+///
+/// # Errors
+///
+/// The [`FIELD_OPEN`] line.
+pub(crate) fn field_gate_except(
+    ctx: &mush_core::Ctx<'_>,
+    hull: ObjId,
+    recover: Option<ObjId>,
+) -> Result<(), mush_core::CmdError> {
     let Some((entry, _)) = crate::surface::hull_home(ctx.w, hull) else {
         return Ok(());
     };
     let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() else {
         return Ok(());
     };
-    let field = open_field(
+    let field = open_field_except(
         |key| {
             ctx.action_state(&handles.families.sites, key)
                 .map(|found| found.cloned())
         },
         &entry,
+        recover,
     )
     .ok()
     .flatten();
