@@ -217,7 +217,7 @@ impl Picture for CockpitPicture {
             return true;
         }
         let map = feeds.feed(ARENA_MAP_FEED);
-        let cam = camera(cockpit, look);
+        let mut cam = camera(cockpit, look);
         let base_cam = Camera {
             x_cm: num(cockpit.get("x_cm")),
             y_cm: num(cockpit.get("y_cm")),
@@ -231,6 +231,13 @@ impl Picture for CockpitPicture {
             base_cam.y_cm as f32 * 0.01,
         );
         crate::fx::sync_combat_fx(&mut self.last_fx_t_ms, &mut self.active_fx, cockpit);
+        if !self.active_fx.is_empty() {
+            let (jolt_dx, _jolt_dy) = crate::fx::combat_jolt_px(&self.active_fx, 1);
+            if jolt_dx != 0 {
+                cam.heading_mdeg = (i64::from(cam.heading_mdeg) + i64::from(jolt_dx) * 350)
+                    .rem_euclid(360_000) as u32;
+            }
+        }
         let sprites: Vec<Sprite> = cockpit
             .get("contacts")
             .and_then(Value::as_array)
@@ -255,16 +262,52 @@ impl Picture for CockpitPicture {
             Some(terrain) => heightfield::render(frame, terrain, &cam, eye, &sprites),
             None => render_from(frame, arena, &cam, sensor_eye, &sprites),
         }
+        let w = frame.width();
+        let h = frame.height();
+        let contacts_arr = cockpit
+            .get("contacts")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let anim_tick = self.contact_tracker.anim_tick();
+        for (ci, c) in contacts_arr.iter().enumerate() {
+            let (is_wreck, has_low_hp, is_crippled) = crate::fx::contact_damage_state(c);
+            let show_plume = has_low_hp || ((is_wreck || is_crippled) && anim_tick > 0);
+            if !show_plume {
+                continue;
+            }
+            let (b_deg, r_m) = self.contact_tracker.contact_bearing_range(c, ci);
+            let sp = contact_sprite_at_bearing_range(c, &base_cam, 0, b_deg, r_m);
+            let Some(p) = (match terrain {
+                Some(t) => heightfield::project(t, &cam, eye, w, h, &sp),
+                None => project_from(arena, &cam, sensor_eye, w, h, &sp),
+            }) else {
+                continue;
+            };
+            if p.screenx < 0.0 || p.screenx >= w as f32 || p.height < 6.0 {
+                continue;
+            }
+            let tx = p.screenx.round() as i32;
+            let top_y = (p.bottom - p.height).round() as i32;
+            let sprite_h = p.height.round() as i32;
+            let w_i = w as i32;
+            let h_i = h as i32;
+            crate::fx::paint_damage_plume(
+                tx,
+                top_y,
+                sprite_h,
+                anim_tick,
+                is_wreck,
+                &mut |x, y, col| {
+                    if x >= 0 && x < w_i && y >= 0 && y < h_i {
+                        frame.put(x as usize, y as usize, crate::fx::rgba_to_frame_rgb(col));
+                    }
+                },
+            );
+        }
         if !self.active_fx.is_empty() {
-            let w = frame.width();
-            let h = frame.height();
             let gun_xy = (w as i32 / 2, (h as i32 * 6) / 7);
             let struck_xy = (w as i32 / 2, h as i32 / 2);
-            let contacts_arr = cockpit
-                .get("contacts")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
             let lock_id = cockpit.get("lock").and_then(Value::as_str);
             let lock_desig = cockpit.get("lock_designator").and_then(Value::as_str);
             crate::fx::draw_fx_on_frame(frame, &self.active_fx, gun_xy, struck_xy, |target_key| {

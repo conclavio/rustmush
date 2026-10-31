@@ -1114,6 +1114,61 @@ impl TerrainCanvas {
             u32::try_from(top.max(0)).unwrap_or(0),
         ))
     }
+
+    /// Stamp a world-space [`fx::ScorchMark`] onto `self.ground_frame` (respecting
+    /// `occluder_base_y` so craters sit on the ground beneath trees and walls) and
+    /// return the affected bounding rectangle `(dst_x, dst_y, w, h)` in canvas pixels.
+    fn stamp_scorch(
+        &mut self,
+        map: &Map,
+        terrain: Option<&Terrain>,
+        scorch: &fx::ScorchMark,
+    ) -> Option<(usize, usize, usize, usize)> {
+        let ref_z_m = ground_z_m(
+            map,
+            terrain,
+            self.origin_x_cm as f32 * 0.01,
+            self.origin_y_cm as f32 * 0.01,
+        );
+        let dz_m = ground_z_m(map, terrain, scorch.x_m, scorch.y_m) - ref_z_m;
+        let (cx, cy) = self.proj.world_to_canvas(
+            ((scorch.x_m * 100.0) as i64, (scorch.y_m * 100.0) as i64),
+            dz_m,
+            (self.origin_x_cm, self.origin_y_cm),
+            (self.canvas_w, self.canvas_h),
+        );
+        let r_m = if scorch.large { 3.6 } else { 2.4 };
+        let r_px = ((r_m * self.proj.px_per_m_x).round() as i32).clamp(4, 24);
+        let base_u16 = u16::try_from(cy.clamp(0, u16::MAX as i32)).unwrap_or(0);
+        let cw = self.canvas_w;
+        let ch = self.canvas_h;
+        let mut min_x = cw;
+        let mut min_y = ch;
+        let mut max_x = 0usize;
+        let mut max_y = 0usize;
+        let mut touched = false;
+        let gf = &mut self.ground_frame;
+        let occ = &self.occluder_base_y;
+        fx::stamp_scorch_mark(cx, cy, r_px, scorch.large, &mut |px, py, rgb| {
+            if px >= 0 && py >= 0 {
+                let ux = px as usize;
+                let uy = py as usize;
+                if ux < cw && uy < ch && occ.get(uy * cw + ux).copied().unwrap_or(0) <= base_u16 {
+                    gf.put(ux, uy, rgb);
+                    min_x = min_x.min(ux);
+                    min_y = min_y.min(uy);
+                    max_x = max_x.max(ux);
+                    max_y = max_y.max(uy);
+                    touched = true;
+                }
+            }
+        });
+        if touched {
+            Some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
+        } else {
+            None
+        }
+    }
 }
 
 // ---- Cockpit Pose Helper & Visible Unit Descriptor -------------------------
@@ -1255,6 +1310,8 @@ pub struct Iso25DPicture {
     #[cfg(feature = "encode")]
     fx_uploaded: bool,
     #[cfg(feature = "encode")]
+    last_fx_signature: u64,
+    #[cfg(feature = "encode")]
     last_fx_placement: Option<Placement>,
     #[cfg(feature = "encode")]
     last_viewport: Option<Viewport25D>,
@@ -1268,6 +1325,8 @@ pub struct Iso25DPicture {
     last_fx_t_ms: Option<i64>,
     /// Active transient combat FX (weapon tracers, muzzle flash, hit burst, struck ring).
     active_fx: Vec<CombatFx>,
+    /// Persistent ground scorch / blast craters accumulated during the current match.
+    scorches: Vec<fx::ScorchMark>,
     /// Sub-pulse 20 Hz contact dead-reckoning tracker.
     contact_tracker: ContactTracker,
     anim_tick: usize,
@@ -1309,6 +1368,8 @@ impl Iso25DPicture {
             #[cfg(feature = "encode")]
             fx_uploaded: false,
             #[cfg(feature = "encode")]
+            last_fx_signature: 0,
+            #[cfg(feature = "encode")]
             last_fx_placement: None,
             #[cfg(feature = "encode")]
             last_viewport: None,
@@ -1318,6 +1379,7 @@ impl Iso25DPicture {
             zoom_permille: 1000,
             last_fx_t_ms: None,
             active_fx: Vec::new(),
+            scorches: Vec::new(),
             contact_tracker: ContactTracker::new(),
             anim_tick: 0,
         }
@@ -1371,6 +1433,7 @@ impl Iso25DPicture {
                 self.next_contact_pid = PLACEMENT_UNIT_BASE + 1;
                 self.last_fx_t_ms = None;
                 self.active_fx.clear();
+                self.scorches.clear();
             }
             #[cfg(feature = "encode")]
             {
@@ -1412,6 +1475,7 @@ impl Iso25DPicture {
         self.canvas = None;
         self.contact_pids.clear();
         self.next_contact_pid = PLACEMENT_UNIT_BASE + 1;
+        self.scorches.clear();
         #[cfg(feature = "encode")]
         {
             self.terrain_uploaded = false;
@@ -1707,10 +1771,23 @@ impl Iso25DPicture {
         units
     }
 
-    /// Ingest any new combat `notices` from `frame` into `self.active_fx` when a new
-    /// keyframe pulse arrives (`t_ms` advances beyond the previously seen pulse).
-    fn sync_combat_fx(&mut self, frame: &Value) {
+    /// Ingest any new combat `notices` and persistent ground scorches from `frame`
+    /// when a new keyframe pulse arrives (`t_ms` advances beyond the previously seen pulse).
+    fn sync_combat_fx(
+        &mut self,
+        frame: &Value,
+        base_x_m: f32,
+        base_y_m: f32,
+    ) -> Vec<fx::ScorchMark> {
         fx::sync_combat_fx(&mut self.last_fx_t_ms, &mut self.active_fx, frame);
+        fx::sync_scorch_marks(
+            &mut self.scorches,
+            frame,
+            &self.active_fx,
+            &self.contact_tracker,
+            base_x_m,
+            base_y_m,
+        )
     }
 
     fn step_combat_fx(&mut self) {
@@ -1888,10 +1965,20 @@ impl Iso25DPicture {
     }
 
     /// Render active combat FX (weapon tracers, muzzle flash, impact burst, struck ring)
-    /// into a bounded RGBA overlay for the retained Kitty compositor (`IMAGE_ID_FX`).
+    /// and rising smoke/fire plumes on crippled/wrecked units into a bounded RGBA
+    /// overlay for the retained Kitty compositor (`IMAGE_ID_FX`).
     #[cfg(feature = "encode")]
-    fn render_combat_fx_rgba(&self, units: &[Unit25D], vp: &Viewport25D) -> Option<FxOverlayRgba> {
-        if self.active_fx.is_empty() {
+    fn render_combat_fx_rgba(
+        &self,
+        units: &[Unit25D],
+        vp: &Viewport25D,
+        step: usize,
+    ) -> Option<FxOverlayRgba> {
+        let plume_units: Vec<&Unit25D> = units
+            .iter()
+            .filter(|u| u.kind == SpriteKind::Wreck || u.health == Some(Health::Crippled))
+            .collect();
+        if self.active_fx.is_empty() && plume_units.is_empty() {
             return None;
         }
         let vcx = (vp.width_px / 2) as i32;
@@ -1899,10 +1986,17 @@ impl Iso25DPicture {
         let gun_x = vcx;
         let gun_y = vcy - 14;
 
-        let mut min_x = (gun_x - 28).max(0);
-        let mut max_x = (gun_x + 28).min(vp.width_px as i32 - 1);
-        let mut min_y = (gun_y - 28).max(0);
-        let mut max_y = (gun_y + 28).min(vp.height_px as i32 - 1);
+        let mut min_x = vp.width_px as i32;
+        let mut max_x = 0i32;
+        let mut min_y = vp.height_px as i32;
+        let mut max_y = 0i32;
+
+        if !self.active_fx.is_empty() {
+            min_x = min_x.min((gun_x - 28).max(0));
+            max_x = max_x.max((gun_x + 28).min(vp.width_px as i32 - 1));
+            min_y = min_y.min((gun_y - 28).max(0));
+            max_y = max_y.max((gun_y + 28).min(vp.height_px as i32 - 1));
+        }
 
         for fx in &self.active_fx {
             if let CombatFxKind::Fire { target_key, .. } = &fx.kind
@@ -1913,6 +2007,15 @@ impl Iso25DPicture {
                 min_y = min_y.min(tu.screen_y - 36).max(0);
                 max_y = max_y.max(tu.screen_y + 20).min(vp.height_px as i32 - 1);
             }
+        }
+        for pu in &plume_units {
+            min_x = min_x.min((pu.screen_x - 22).max(0));
+            max_x = max_x.max((pu.screen_x + 22).min(vp.width_px as i32 - 1));
+            min_y = min_y.min((pu.screen_y - 44).max(0));
+            max_y = max_y.max((pu.screen_y + 6).min(vp.height_px as i32 - 1));
+        }
+        if min_x > max_x || min_y > max_y {
+            return None;
         }
 
         let cw = i32::from(vp.cell_w.max(1));
@@ -1940,6 +2043,16 @@ impl Iso25DPicture {
             }
         };
 
+        for pu in &plume_units {
+            fx::paint_damage_plume(
+                pu.screen_x,
+                pu.screen_y - 14,
+                24,
+                step as u32,
+                pu.kind == SpriteKind::Wreck,
+                &mut put,
+            );
+        }
         Self::paint_combat_fx(&self.active_fx, units, (gun_x, gun_y), &mut put);
 
         Some(FxOverlayRgba {
@@ -2045,7 +2158,9 @@ impl Iso25DPicture {
         if ego_moving || any_contact_moving {
             self.anim_tick = self.anim_tick.wrapping_add(1);
         }
-        self.sync_combat_fx(frame);
+        let base_x_m = pose.x_cm as f32 * 0.01;
+        let base_y_m = pose.y_cm as f32 * 0.01;
+        let new_scorches = self.sync_combat_fx(frame, base_x_m, base_y_m);
 
         let base_col = area_col.saturating_add(vp.col_offset);
         let base_row = area_row.saturating_add(vp.row_offset);
@@ -2061,7 +2176,7 @@ impl Iso25DPicture {
             .is_none();
 
         if needs_rebake {
-            let new_canvas = TerrainCanvas::bake(
+            let mut new_canvas = TerrainCanvas::bake(
                 &self.map,
                 self.terrain.as_ref(),
                 ego_x_cm,
@@ -2070,6 +2185,9 @@ impl Iso25DPicture {
                 vp.height_px,
                 self.zoom_permille,
             );
+            for s in &self.scorches {
+                new_canvas.stamp_scorch(&self.map, self.terrain.as_ref(), s);
+            }
             let old_id = self.terrain_image_id;
             let new_id = if self.terrain_uploaded && old_id == IMAGE_ID_TERRAIN_A {
                 IMAGE_ID_TERRAIN_B
@@ -2085,13 +2203,27 @@ impl Iso25DPicture {
             self.terrain_uploaded = true;
             self.last_terrain_placement = None;
             self.canvas = Some(new_canvas);
-        } else if !self.terrain_uploaded
-            && let Some(canvas) = &self.canvas
-        {
-            let png = png::encode(&canvas.ground_frame);
-            kitty::transmit_bytes(&mut ops, &png, self.terrain_image_id);
-            self.terrain_uploaded = true;
-            self.last_terrain_placement = None;
+        } else {
+            let mut patch_rects = Vec::new();
+            if let Some(canvas) = &mut self.canvas {
+                for s in &new_scorches {
+                    if let Some(rect) = canvas.stamp_scorch(&self.map, self.terrain.as_ref(), s) {
+                        patch_rects.push(rect);
+                    }
+                }
+            }
+            if !self.terrain_uploaded {
+                if let Some(canvas) = &self.canvas {
+                    let png = png::encode(&canvas.ground_frame);
+                    kitty::transmit_bytes(&mut ops, &png, self.terrain_image_id);
+                    self.terrain_uploaded = true;
+                    self.last_terrain_placement = None;
+                }
+            } else {
+                for (rx, ry, rw, rh) in patch_rects {
+                    self.patch_terrain_rect(&mut ops, rx, ry, rw, rh);
+                }
+            }
         }
 
         let (cam_x, cam_y) = self
@@ -2355,10 +2487,12 @@ impl Iso25DPicture {
             kitty::delete_placement_bytes(&mut ops, IMAGE_ID_LOCK, PLACEMENT_LOCK);
         }
 
-        // 5. Transient combat FX overlay (`IMAGE_ID_FX`, `placement_id = PLACEMENT_FX`).
-        if let Some(fx) = self.render_combat_fx_rgba(&units, &vp) {
-            let png = png::encode_rgba(fx.width_px, fx.height_px, &fx.rgba);
-            kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FX);
+        // 5. Transient combat FX & rising damage plumes overlay (`IMAGE_ID_FX`, `placement_id = PLACEMENT_FX`).
+        if let Some(fx) = self.render_combat_fx_rgba(&units, &vp, step) {
+            let mut fx_sig = ((fx.width_px as u64) << 32) ^ (fx.height_px as u64);
+            for &b in fx.rgba.iter().step_by(7) {
+                fx_sig = (fx_sig ^ u64::from(b)).wrapping_mul(0x0100_0000_01B3);
+            }
             let fx_p = Placement {
                 image_id: IMAGE_ID_FX,
                 placement_id: PLACEMENT_FX,
@@ -2374,13 +2508,22 @@ impl Iso25DPicture {
                 src_h: u32::try_from(fx.height_px).unwrap_or(64),
                 z: Z_HUD,
             };
-            kitty::place_bytes(&mut ops, &fx_p);
-            self.fx_uploaded = true;
-            self.last_fx_placement = Some(fx_p);
+            if !self.fx_uploaded || self.last_fx_signature != fx_sig {
+                let png = png::encode_rgba(fx.width_px, fx.height_px, &fx.rgba);
+                kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FX);
+                kitty::place_bytes(&mut ops, &fx_p);
+                self.fx_uploaded = true;
+                self.last_fx_signature = fx_sig;
+                self.last_fx_placement = Some(fx_p);
+            } else if self.last_fx_placement != Some(fx_p) {
+                kitty::place_bytes(&mut ops, &fx_p);
+                self.last_fx_placement = Some(fx_p);
+            }
             self.step_combat_fx();
         } else if self.last_fx_placement.take().is_some() || self.fx_uploaded {
             kitty::delete_image_bytes(&mut ops, IMAGE_ID_FX);
             self.fx_uploaded = false;
+            self.last_fx_signature = 0;
         }
 
         if ops.is_empty() {
@@ -2430,7 +2573,9 @@ impl Iso25DPicture {
         if ego_moving || any_contact_moving {
             self.anim_tick = self.anim_tick.wrapping_add(1);
         }
-        self.sync_combat_fx(frame);
+        let base_x_m = pose.x_cm as f32 * 0.01;
+        let base_y_m = pose.y_cm as f32 * 0.01;
+        let new_scorches = self.sync_combat_fx(frame, base_x_m, base_y_m);
 
         let needs_rebake = self
             .canvas
@@ -2441,7 +2586,7 @@ impl Iso25DPicture {
             .and_then(|c| c.camera_window(ego_x_cm, ego_y_cm))
             .is_none();
         if needs_rebake {
-            self.canvas = Some(TerrainCanvas::bake(
+            let mut new_canvas = TerrainCanvas::bake(
                 &self.map,
                 self.terrain.as_ref(),
                 ego_x_cm,
@@ -2449,7 +2594,15 @@ impl Iso25DPicture {
                 width,
                 height,
                 self.zoom_permille,
-            ));
+            );
+            for s in &self.scorches {
+                new_canvas.stamp_scorch(&self.map, self.terrain.as_ref(), s);
+            }
+            self.canvas = Some(new_canvas);
+        } else if let Some(canvas) = &mut self.canvas {
+            for s in &new_scorches {
+                canvas.stamp_scorch(&self.map, self.terrain.as_ref(), s);
+            }
         }
 
         let mut units = self.collect_units(frame, &pose, hull_offset_mdeg, width, height, step);
@@ -2608,34 +2761,26 @@ impl Iso25DPicture {
             }
         }
 
-        // 4. Rising smoke + ember plumes on wrecks, on-unit callsign & health
-        //    badges on live contacts, and target-lock bracket + readout on locked unit.
+        // 4. Rising FORGE3D smoke + ember plumes on wrecks & crippled units,
+        //    on-unit callsign & health badges on live contacts, and target-lock
+        //    bracket + readout on locked unit.
         for u in &units {
-            if u.kind == SpriteKind::Wreck {
-                for p in 0..5i32 {
-                    let phase = ((step as i32) + p * 2) & 7;
-                    let sx = u.screen_x + ((p & 1) * 2 - 1) * ((phase + 1) / 3);
-                    let sy = u.screen_y - 14 - p * 4 - (phase / 2);
-                    let r_smoke = (1 + p / 2).min(3);
-                    let col: Rgb = if p == 0 && (phase & 1 == 0) {
-                        [235, 118, 42]
-                    } else if p <= 1 {
-                        [56, 50, 48]
-                    } else {
-                        [38, 38, 42]
-                    };
-                    for dy in -r_smoke..=r_smoke {
-                        for dx in -r_smoke..=r_smoke {
-                            if dx * dx + dy * dy <= r_smoke * r_smoke
-                                && let (Ok(ux), Ok(uy)) =
-                                    (usize::try_from(sx + dx), usize::try_from(sy + dy))
-                            {
-                                out.put(ux, uy, col);
-                            }
+            if u.kind == SpriteKind::Wreck || u.health == Some(Health::Crippled) {
+                fx::paint_damage_plume(
+                    u.screen_x,
+                    u.screen_y - 14,
+                    24,
+                    step as u32,
+                    u.kind == SpriteKind::Wreck,
+                    &mut |x, y, col| {
+                        if let (Ok(ux), Ok(uy)) = (usize::try_from(x), usize::try_from(y)) {
+                            out.put(ux, uy, fx::rgba_to_frame_rgb(col));
                         }
-                    }
+                    },
+                );
+                if u.kind == SpriteKind::Wreck {
+                    continue;
                 }
-                continue;
             }
             if u.placement_id == PLACEMENT_UNIT_BASE || u.locked {
                 continue;
@@ -3159,6 +3304,25 @@ mod tests {
         pic.set_offset_cm(0, 0);
         let f_fx = pic.render_frame(&fx_frame, 0, 0, 640, 480);
         assert_ne!(f0.hash(), f_fx.hash());
+        assert_eq!(pic.scorches.len(), 1);
+
+        #[cfg(feature = "encode")]
+        {
+            let mut kpic = Iso25DPicture::new();
+            kpic.set_map(Map::new(128, 128, 1000));
+            let cell = Some(CellSize {
+                width: 8,
+                height: 16,
+            });
+            let _ = kpic.render_kitty_bytes(&base_frame, (0, 0), (1, 1, 80, 24), cell, false);
+            let (_vp, patch_bytes) =
+                kpic.render_kitty_bytes(&fx_frame, (0, 0), (1, 1, 80, 24), cell, false);
+            let s_patch = String::from_utf8_lossy(&patch_bytes);
+            assert!(
+                s_patch.contains("a=f,f=100,t=d,i=100,r=1,x="),
+                "expected Kitty a=f terrain scorch patch on hit: {s_patch}"
+            );
+        }
     }
 
     #[test]

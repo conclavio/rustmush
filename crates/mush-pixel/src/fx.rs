@@ -258,6 +258,293 @@ pub const FX_FRAME_RAMP: [Rgb; 7] = [
     overlay::YOU,     // 7 '#'
 ];
 
+/// Truecolor RGBA ramp for rising damage smoke and ember plumes on crippled or
+/// wrecked units.
+pub const SMOKE_RGBA_RAMP: [[u8; 4]; 7] = [
+    [36, 34, 34, 145],   // 1 '.' outer dark soot
+    [52, 46, 44, 170],   // 2 ':' billow smoke
+    [76, 60, 52, 195],   // 3 '-' warm smoke
+    [124, 68, 40, 210],  // 4 '=' smouldering ash
+    [192, 78, 32, 228],  // 5 '+' deep ember
+    [238, 134, 42, 242], // 6 '*' orange lick
+    [252, 202, 92, 252], // 7 '#' bright spark
+];
+
+/// Persistent ground scorch / blast crater mark recorded at a world coordinate
+/// `(x_m, y_m)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScorchMark {
+    /// Arena match ID (`None` if absent); scorches reset when the match changes.
+    pub match_id: Option<i64>,
+    /// World X coordinate in metres.
+    pub x_m: f32,
+    /// World Y coordinate in metres.
+    pub y_m: f32,
+    /// `true` for a kill/wreck blast crater; `false` for a standard weapon hit scorch.
+    pub large: bool,
+}
+
+/// Inspect `cockpit["contacts"]` and `active_fx` to record persistent ground
+/// [`ScorchMark`]s at the world position of any wrecked contact or freshly hit
+/// target (`ticks_left == FX_DURATION_TICKS`). Returns the newly added or
+/// upgraded marks on this tick so retained Kitty ground canvases can patch
+/// (`a=f`) only the affected sub-rectangles.
+pub fn sync_scorch_marks(
+    scorches: &mut Vec<ScorchMark>,
+    cockpit: &Value,
+    active_fx: &[CombatFx],
+    tracker: &ContactTracker,
+    base_x_m: f32,
+    base_y_m: f32,
+) -> Vec<ScorchMark> {
+    let match_id = cockpit.get("match").and_then(Value::as_i64);
+    if scorches.first().is_some_and(|s| s.match_id != match_id) {
+        scorches.clear();
+    }
+    let Some(contacts) = cockpit.get("contacts").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut added = Vec::new();
+    for (ci, c) in contacts.iter().enumerate() {
+        let is_wreck = tracker.anim_tick() > 0
+            && (c.get("reads_dead").and_then(Value::as_bool) == Some(true)
+                || c.get("iff").and_then(Value::as_str) == Some("wreck"));
+        let cid = c.get("id").and_then(Value::as_str);
+        let cdes = c.get("designator").and_then(Value::as_str);
+        let mut hit_now = false;
+        let mut kill_now = false;
+        for fx in active_fx {
+            if fx.ticks_left != FX_DURATION_TICKS {
+                continue;
+            }
+            if let CombatFxKind::Fire {
+                target_key: Some(tk),
+                hit: true,
+                kill,
+            } = &fx.kind
+                && (cid == Some(tk.as_str()) || cdes == Some(tk.as_str()))
+            {
+                hit_now = true;
+                kill_now |= *kill;
+            }
+        }
+        if !is_wreck && !hit_now {
+            continue;
+        }
+        let Some(_b) = c.get("bearing_deg").and_then(Value::as_f64) else {
+            continue;
+        };
+        let Some(_r) = c.get("range_m").and_then(Value::as_f64) else {
+            continue;
+        };
+        let (bearing_deg, range_m) = tracker.contact_bearing_range(c, ci);
+        let rad = (bearing_deg as f32).to_radians();
+        let (sin_b, cos_b) = rad.det_sin_cos();
+        let r_f = range_m as f32;
+        let x_m = base_x_m + r_f * sin_b;
+        let y_m = base_y_m + r_f * cos_b;
+        let large = is_wreck || kill_now;
+
+        if let Some(existing) = scorches
+            .iter_mut()
+            .find(|s| (s.x_m - x_m).det_hypot(s.y_m - y_m) <= 3.0)
+        {
+            if large && !existing.large {
+                existing.large = true;
+                added.push(*existing);
+            }
+            continue;
+        }
+        if scorches.len() < 64 {
+            let mark = ScorchMark {
+                match_id,
+                x_m,
+                y_m,
+                large,
+            };
+            scorches.push(mark);
+            added.push(mark);
+        }
+    }
+    added
+}
+
+/// Stamp a charred blast crater / scorch mark centred at `(cx, cy)` with
+/// `radius_px` onto a ground canvas using existing HUD dark palette entries
+/// ([`overlay::BORDER`], [`overlay::GONE`], [`overlay::PANEL`]).
+pub fn stamp_scorch_mark<F>(cx: i32, cy: i32, radius_px: i32, large: bool, put_px: &mut F)
+where
+    F: FnMut(i32, i32, Rgb),
+{
+    let r = radius_px.clamp(3, 48);
+    let [hit0, _] = &HIT_FRAMES;
+    let mut stamp_grid = |grid: &[&str; FX_GRID_SIDE], rad: i32, pit_core: bool| {
+        let diam = (rad * 2).max(1);
+        for dy in -rad..=rad {
+            let gy = (((dy + rad) * (FX_GRID_SIDE as i32 - 1)) / diam)
+                .clamp(0, FX_GRID_SIDE as i32 - 1) as usize;
+            let Some(row) = grid.get(gy).map(|s| s.as_bytes()) else {
+                continue;
+            };
+            for dx in -rad..=rad {
+                let gx = (((dx + rad) * (FX_GRID_SIDE as i32 - 1)) / diam)
+                    .clamp(0, FX_GRID_SIDE as i32 - 1) as usize;
+                let Some(&ch) = row.get(gx) else {
+                    continue;
+                };
+                let lvl = fx_char_level(ch);
+                if lvl == 0 {
+                    continue;
+                }
+                let rgb = if pit_core && lvl >= 5 {
+                    overlay::PANEL
+                } else if lvl >= 3 {
+                    overlay::WRECK
+                } else {
+                    overlay::BORDER
+                };
+                put_px(cx + dx, cy + dy, rgb);
+            }
+        }
+    };
+    if large {
+        stamp_grid(&RING_FRAME, r, false);
+        stamp_grid(hit0, (r * 3 / 4).max(2), true);
+    } else {
+        stamp_grid(hit0, r, true);
+    }
+}
+
+/// Inspect a contact JSON object to classify whether it is a wreck, has explicit
+/// `health_pct <= 33`, or carries a crippled health string.
+#[must_use]
+pub fn contact_damage_state(c: &Value) -> (bool, bool, bool) {
+    let is_wreck = c.get("reads_dead").and_then(Value::as_bool) == Some(true)
+        || c.get("iff").and_then(Value::as_str) == Some("wreck");
+    let has_low_hp = c
+        .get("health_pct")
+        .and_then(Value::as_u64)
+        .is_some_and(|hp| hp <= 33);
+    let is_crippled = matches!(
+        c.get("health").and_then(Value::as_str),
+        Some("crippled" | "critical" | "red" | "destroyed" | "wreck")
+    );
+    (is_wreck, has_low_hp, is_crippled)
+}
+
+/// Stamp a rising dark smoke and glowing ember plume above a crippled or
+/// wrecked unit at `(cx, top_y)` with unit sprite height `sprite_h`.
+pub fn paint_damage_plume<F>(
+    cx: i32,
+    top_y: i32,
+    sprite_h: i32,
+    anim_tick: u32,
+    is_wreck: bool,
+    put: &mut F,
+) where
+    F: FnMut(i32, i32, [u8; 4]),
+{
+    let base_r = (sprite_h / 3).clamp(4, 14);
+    let puff_r = if is_wreck { base_r + 2 } else { base_r };
+    let idx0 = (anim_tick as usize / 2) % FIRE_FRAMES.len();
+    let idx1 = (idx0 + 1) % FIRE_FRAMES.len();
+    let phase = (anim_tick % 6) as i32;
+    let drift = match (anim_tick / 2) % 4 {
+        0 => -1,
+        1 => 0,
+        2 => 1,
+        _ => 0,
+    };
+
+    let [s0, s1, s2, _, s4, _, _] = SMOKE_RGBA_RAMP;
+
+    // Upper billowing dark smoke puff (levels capped to dark/warm smoke).
+    if let Some(upper_grid) = FIRE_FRAMES.get(idx1) {
+        let upper_y = top_y - puff_r - phase;
+        let upper_r = (puff_r + 1).clamp(4, 16);
+        let mut smoke_put = |x: i32, y: i32, col: [u8; 4]| {
+            // Map bright fire levels down to dark smoke levels for the upper cloud.
+            let mapped = if col[0] > 180 {
+                s2
+            } else if col[0] > 110 {
+                s1
+            } else {
+                s0
+            };
+            put(x, y, mapped);
+        };
+        stamp_fx_sprite(
+            upper_grid,
+            cx + drift,
+            upper_y,
+            upper_r,
+            &SMOKE_RGBA_RAMP,
+            &mut smoke_put,
+        );
+    }
+
+    // Lower ember/flame core right at the top of the chassis.
+    if let Some(lower_grid) = FIRE_FRAMES.get(idx0) {
+        let lower_y = top_y - (puff_r / 3);
+        let mut core_put = |x: i32, y: i32, col: [u8; 4]| {
+            if !is_wreck && col[0] > 230 {
+                put(x, y, s4);
+            } else {
+                put(x, y, col);
+            }
+        };
+        stamp_fx_sprite(
+            lower_grid,
+            cx,
+            lower_y,
+            puff_r,
+            &SMOKE_RGBA_RAMP,
+            &mut core_put,
+        );
+    }
+}
+
+/// Compute a damped `(dx, dy)` pixel recoil / impact jolt offset for
+/// First-Person views when an outgoing shot or incoming hull hit is in its
+/// opening ticks.
+#[must_use]
+pub fn combat_jolt_px(active_fx: &[CombatFx], scale: i32) -> (i32, i32) {
+    let s = scale.clamp(1, 4);
+    let mut dx = 0i32;
+    let mut dy = 0i32;
+    for fx in active_fx {
+        match &fx.kind {
+            CombatFxKind::Struck { severe } => {
+                let amp = if *severe { 3 } else { 2 };
+                match fx.ticks_left {
+                    FX_DURATION_TICKS => {
+                        dx -= amp * s;
+                        dy += amp * s;
+                    }
+                    t if t == FX_DURATION_TICKS - 1 => {
+                        dx += (amp - 1).max(1) * s;
+                        dy -= (amp - 1).max(1) * s;
+                    }
+                    t if t == FX_DURATION_TICKS - 2 => {
+                        dx -= s;
+                    }
+                    _ => {}
+                }
+            }
+            CombatFxKind::Fire { .. } => match fx.ticks_left {
+                FX_DURATION_TICKS => {
+                    dy += 2 * s;
+                }
+                t if t == FX_DURATION_TICKS - 1 => {
+                    dy -= s;
+                }
+                _ => {}
+            },
+        }
+    }
+    (dx.clamp(-8 * s, 8 * s), dy.clamp(-6 * s, 6 * s))
+}
+
 /// Map a sprite grid character from `' .:-=+*#'` to intensity `0..=7`.
 #[must_use]
 pub const fn fx_char_level(b: u8) -> u8 {
@@ -611,6 +898,7 @@ struct ContactTrack {
 pub struct ContactTracker {
     last_t_ms: Option<i64>,
     sub_pulse_ticks: u16,
+    anim_tick: u32,
     tracks: BTreeMap<String, ContactTrack>,
 }
 
@@ -628,9 +916,19 @@ impl ContactTracker {
         self.sub_pulse_ticks
     }
 
+    /// Monotonically advancing animation tick (`0` on the very first frame,
+    /// `1, 2, ...` on subsequent frames).
+    #[must_use]
+    pub fn anim_tick(&self) -> u32 {
+        self.anim_tick
+    }
+
     /// Update the tracker for one render tick of `cockpit` given the ego
     /// vehicle's keyframe world position `(base_x_m, base_y_m)`.
     pub fn step_frame(&mut self, cockpit: &Value, base_x_m: f32, base_y_m: f32) {
+        if self.last_t_ms.is_some() {
+            self.anim_tick = self.anim_tick.wrapping_add(1);
+        }
         let Some(t_ms) = cockpit.get("t_ms").and_then(Value::as_i64) else {
             self.sub_pulse_ticks = 0;
             return;
@@ -853,5 +1151,84 @@ mod tests {
             tracker.contact_offset_m(&frame_t1["contacts"][0], 0),
             (0.0, 0.0)
         );
+    }
+
+    #[test]
+    fn scorch_marks_record_hits_and_wrecks_and_deduplicate() {
+        let mut tracker = ContactTracker::new();
+        let mut scorches = Vec::new();
+        let cockpit = json!({
+            "match": 7,
+            "t_ms": 1000,
+            "contacts": [
+                {
+                    "id": "BA",
+                    "bearing_deg": 90.0,
+                    "range_m": 50.0,
+                    "reads_dead": false
+                },
+                {
+                    "id": "BB",
+                    "bearing_deg": 0.0,
+                    "range_m": 40.0,
+                    "reads_dead": true
+                }
+            ]
+        });
+        tracker.step_frame(&cockpit, 100.0, 100.0);
+        tracker.step_frame(&cockpit, 100.0, 100.0);
+        let active_fx = vec![CombatFx {
+            kind: CombatFxKind::Fire {
+                target_key: Some("BA".to_string()),
+                hit: true,
+                kill: false,
+            },
+            ticks_left: FX_DURATION_TICKS,
+        }];
+        let added = sync_scorch_marks(&mut scorches, &cockpit, &active_fx, &tracker, 100.0, 100.0);
+        assert_eq!(added.len(), 2);
+        assert_eq!(scorches.len(), 2);
+        assert!(!scorches[0].large);
+        assert!(scorches[1].large);
+
+        // Upgrading BA from hit to kill upgrades `.large` in place without duplicating.
+        let kill_fx = vec![CombatFx {
+            kind: CombatFxKind::Fire {
+                target_key: Some("BA".to_string()),
+                hit: true,
+                kill: true,
+            },
+            ticks_left: FX_DURATION_TICKS,
+        }];
+        let upgraded = sync_scorch_marks(&mut scorches, &cockpit, &kill_fx, &tracker, 100.0, 100.0);
+        assert_eq!(upgraded.len(), 1);
+        assert_eq!(scorches.len(), 2);
+        assert!(scorches[0].large);
+    }
+
+    #[test]
+    fn damage_plume_and_combat_jolt_behave_deterministically() {
+        let mut pixels = 0usize;
+        paint_damage_plume(50, 50, 18, 3, true, &mut |_x, _y, _col| {
+            pixels += 1;
+        });
+        assert!(pixels > 20, "expected plume pixels, got {pixels}");
+
+        let fire_fx = vec![CombatFx {
+            kind: CombatFxKind::Fire {
+                target_key: None,
+                hit: true,
+                kill: false,
+            },
+            ticks_left: FX_DURATION_TICKS,
+        }];
+        assert_eq!(combat_jolt_px(&fire_fx, 2), (0, 4));
+
+        let struck_fx = vec![CombatFx {
+            kind: CombatFxKind::Struck { severe: true },
+            ticks_left: FX_DURATION_TICKS,
+        }];
+        assert_eq!(combat_jolt_px(&struck_fx, 1), (-3, 3));
+        assert_eq!(combat_jolt_px(&[], 2), (0, 0));
     }
 }

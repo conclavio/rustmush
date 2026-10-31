@@ -159,6 +159,9 @@ export class LocalReplayPicture {
     focus: number,
     view: ReplayCameraMode,
     zoomPermille = 1000,
+    lookMdeg = 0,
+    width = FRAME_W,
+    height = FRAME_H,
   ): boolean {
     this.#m.setKind(KIND_REPLAY);
     const replayPayload =
@@ -181,7 +184,7 @@ export class LocalReplayPicture {
       FEED_REPLAY_CURSOR,
       JSON.stringify({ match: matchId, t_ms: tMs, focus, view }),
     );
-    if (!this.#m.render(FRAME_W, FRAME_H, { offsetMdeg: 0, zoomPermille })) {
+    if (!this.#m.render(width, height, { offsetMdeg: lookMdeg, zoomPermille })) {
       this.#shown = null;
       return false;
     }
