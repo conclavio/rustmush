@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { FEED_COCKPIT, FEED_MAP, KIND_COCKPIT, PixelModule } from "./pixel/wasm";
 import {
   applySculptBrush,
+  autoMusterTanks,
   checkEditorMap,
   computePassabilityOverlay,
   computeViewshed,
@@ -18,13 +19,18 @@ import {
   encodeElevZigzagDelta,
   exportGroundDraftJson,
   floodFillTerrain,
+  generatePresetMap,
+  getHoldObjective,
   type GroundDraftJson,
   importGroundDraftJson,
   markStudioEdited,
+  moveTankSlot,
   paintTerrainBrush,
   paintTerrainLine,
   relaxEditorSlopes,
   routeEditorMap,
+  setHoldObjective,
+  setTankHeadingDeg,
   TERRAIN_PALETTE,
 } from "./map-editor";
 import pgParityFixture from "./fixtures/proving_ground_wg4_parity.json";
@@ -292,5 +298,94 @@ describe("map-editor WG.4 (ground.draft.v1 & parity with tacsim::ground)", () =>
     modServer.feed(FEED_COCKPIT, JSON.stringify(serverCockpit));
     expect(modServer.render(640, 480, { offsetMdeg: 0 }, KIND_COCKPIT)).toBe(true);
     expect(studioBluffHash).toBe(modServer.hash());
+  });
+
+  it("supports 512x512 (5.12km) maps with 16 quadrants and automatic 256x256 camera-centered arena.map windowing", () => {
+    const state = createEditorMap(512, 512, "mars", 8);
+    const report = checkEditorMap(state);
+    expect(report.passed).toBe(true);
+    expect(report.quadrants).toBe(16);
+    expect(report.map_bytes).toBeLessThanOrEqual(report.map_max_bytes);
+
+    const pin = { x: 300, y: 400, headingDeg: 90 };
+    const { arenaMap, arenaCockpit } = editorToPictureFeeds(state, pin);
+    expect(arenaMap.width).toBe(256);
+    expect(arenaMap.height).toBe(256);
+    expect(arenaMap.origin_cell).toEqual([172, 256]);
+    expect(arenaMap.extent).toEqual([512, 512]);
+    expect(JSON.stringify(arenaMap).length).toBeLessThanOrEqual(report.map_max_bytes);
+    expect(arenaCockpit.x_cm).toBe(300 * 1000 + 500);
+    expect(arenaCockpit.y_cm).toBe(400 * 1000 + 500);
+  });
+
+  it("generates valid procedural biome presets (proving_ground, mars_canyon, lunar_crater, ice_shelf) that pass §5 check", () => {
+    const presets = [
+      { id: "proving_ground" as const, biome: "temperate", allowFlora: true },
+      { id: "mars_canyon" as const, biome: "mars", allowFlora: false },
+      { id: "lunar_crater" as const, biome: "lunar", allowFlora: false },
+      { id: "ice_shelf" as const, biome: "ice", allowFlora: false },
+    ];
+
+    for (const preset of presets) {
+      const state = generatePresetMap(preset.id, 4242);
+      expect(state.width).toBe(256);
+      expect(state.height).toBe(256);
+      expect(state.biome).toBe(preset.biome);
+      expect(state.keySpots.length).toBeGreaterThanOrEqual(5);
+      expect(state.tanks).toHaveLength(12);
+
+      if (!preset.allowFlora) {
+        // Flora codes in mush_atlas: 3 (grass), 13 (woods_light), 14 (woods_heavy)
+        const hasFlora = state.classes.some((c) => c === 3 || c === 13 || c === 14);
+        expect(hasFlora).toBe(false);
+      }
+
+      const report = checkEditorMap(state);
+      expect(report.passed).toBe(true);
+    }
+  });
+
+  it("edits 12-slot tank roster (autoMusterTanks, moveTankSlot, setTankHeadingDeg) and Hold objective with Rust TankDef parity", () => {
+    const state = createEditorMap(128, 128, "temperate", 3);
+    expect(state.tanks).toHaveLength(12);
+    expect(state.tanks[0]).toMatchObject({
+      id: "red_1",
+      team: "red",
+      unit: "tacsim.unit.line_tank",
+    });
+    expect(typeof state.tanks[0]!.heading_mdeg).toBe("number");
+
+    expect(moveTankSlot(state, 0, 10, 60)).toBe(true);
+    expect(state.tanks[0]!.x).toBe(10);
+    expect(state.tanks[0]!.y).toBe(60);
+
+    setTankHeadingDeg(state, 0, 135);
+    expect(state.tanks[0]!.heading_mdeg).toBe(135_000);
+
+    autoMusterTanks(state);
+    const redZone = state.entryZones.find((z) => z.team === "red")!;
+    expect(state.tanks[0]!.x).toBeGreaterThanOrEqual(redZone.x0);
+    expect(state.tanks[0]!.x).toBeLessThanOrEqual(redZone.x1);
+
+    const hold0 = getHoldObjective(state);
+    expect(hold0).not.toBeNull();
+    expect(hold0?.spot).toBe("Crossroads");
+
+    setHoldObjective(state, {
+      enabled: true,
+      spot: "North Bridge",
+      radius_cells: 9,
+      hold_ms: 180_000,
+    });
+    const hold1 = getHoldObjective(state);
+    expect(hold1).toEqual({
+      mode: "hold",
+      spot: "North Bridge",
+      radius_cells: 9,
+      hold_ms: 180_000,
+    });
+
+    setHoldObjective(state, { enabled: false });
+    expect(getHoldObjective(state)).toBeNull();
   });
 });
