@@ -508,6 +508,21 @@ fn launch(
         }))
     }
     let berth = facts::berth(world, roster.plan.carrier)?;
+    // Doc 32 cut CF.2 (Q-CF-17): no launch onto a promoted site, with the reason.
+    if let Some(field) = read
+        .get(
+            &h.ports.sites,
+            &crate::surface::site_record::SiteKey(berth.entry.clone()),
+        )?
+        .and_then(|record| record.open_field())
+    {
+        return Err(crate::surface::site_record::FIELD_LAUNCH
+            .replace("{ordinal}", &field.ordinal.to_string())
+            .replace(
+                "{site}",
+                &crate::surface::act::site_name(world, &berth.entry),
+            ));
+    }
     let ship = read.get(
         &h.ports.epochs,
         &crate::port::epoch::EpochKey(roster.plan.carrier),

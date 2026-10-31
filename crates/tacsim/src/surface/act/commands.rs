@@ -180,11 +180,17 @@ pub(super) fn launch_half(
             }
         }
     }
-    if let Some(cap) = cap_refusal(&counts) {
+    // Doc 32 cut CF.2 (Q-CF-21): the site's cap is the configured field cap.
+    let site_cap = crate::field::config(w).max_units;
+    if let Some(cap) = crate::surface::excursion::cap_refusal_at(&counts, site_cap) {
         return Err(CmdError::msg(
             Refusal::Cap {
                 cap,
                 site: site_name(w, site),
+                figure: match cap {
+                    CapRefused::Site => site_cap.min(cap.cap()),
+                    CapRefused::Operator | CapRefused::World => cap.cap(),
+                },
             }
             .line(),
         ));

@@ -396,6 +396,11 @@ pub struct FieldHost {
     pub friends: Vec<(PartyId, PartyId)>,
     /// How the field ends.
     pub end: EndCondition,
+    /// **Every unit on the ground is admitted, whatever its class** (doc 32 cut CF.2;
+    /// Q-CF-16, Q-CF-49): the IC host's rule, so a prospector or a hauler standing on a site
+    /// is in its field. `false` is the OOC range's roster rule: a match fields armour, walkers
+    /// and drones only (doc 18 D-18-29), capped per side by `[tacsim.arena].max_units_by_class`.
+    pub every_class: bool,
 }
 
 impl FieldHost {
@@ -408,6 +413,7 @@ impl FieldHost {
             marks: Vec::new(),
             friends: Vec::new(),
             end: EndCondition::Elimination,
+            every_class: false,
         }
     }
 

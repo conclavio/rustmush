@@ -500,6 +500,12 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             budget_minor_per_ic_month: cfg.procurement.budget_minor_per_ic_month,
             cap_permille: cfg.procurement.cap_permille,
         },
+        // Doc 32 cut CF.2: the field host's interval and cap, mapped straight across and banded
+        // by `validate` below.
+        field: tacsim::config::FieldConfig {
+            disengage_s: cfg.field.disengage_s,
+            max_units: cfg.field.max_units,
+        },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
     // Each answers one sentence naming the TOML key and the value it was given,
@@ -521,6 +527,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     // Doc 23 cut S.1: `[tacsim.surface].black_box_max_lines`, in the same pattern.
     typed.surface.validate()?;
     typed.procurement.validate()?;
+    typed.field.validate()?;
     // Verify here, at the host, so the boot fails with the file's name in the message.
     // The check is pure and the module repeats it at wiring over the same operator
     // sources and the same game seed sources (the lane, when the layer is on — the

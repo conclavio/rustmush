@@ -87,18 +87,23 @@ pub(crate) fn cid(word: &str) -> CanonicalId {
 
 /// The composition: `commerce.rs`'s bare roster (no sheet, the test world's layer, the
 /// shipped game content).
-#[derive(Clone, Copy, Default)]
-struct Roster;
+#[derive(Clone, Default)]
+struct Roster(TacsimConfig);
+
+/// The `[tacsim]` every keyed rig boots under: the layer on, everything else the default.
+fn rig_config() -> TacsimConfig {
+    TacsimConfig {
+        enabled: true,
+        ..TacsimConfig::default()
+    }
+}
 
 impl Roster {
     fn modules(self) -> Vec<Box<dyn mush_core::GameModule>> {
         use tacsim::composition as comp;
 
         let game = tacsim::GameEconomyConfig::default();
-        let cfg = TacsimConfig {
-            enabled: true,
-            ..TacsimConfig::default()
-        };
+        let cfg = self.0;
         let (mut mods, inventory) = comp::domain_modules_with_economy(
             EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
@@ -124,6 +129,8 @@ impl AccountIdentity for MapOracle {
 /// A booted world, its oracle and the cumulative store.
 pub(crate) struct Rig {
     pub(crate) tw: TestWorld,
+    /// The `[tacsim]` it boots and reboots under (doc 32 cut CF.2: a field test tunes it).
+    cfg: TacsimConfig,
     oracle: Arc<MapOracle>,
     store: HashMap<SmolStr, mush_core::ModuleBootData>,
     typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
@@ -156,9 +163,10 @@ fn boot_over(
     world: World,
     store: HashMap<SmolStr, mush_core::ModuleBootData>,
     keyed: bool,
+    cfg: &TacsimConfig,
 ) -> TestWorld {
     let (_, registry) = mush_testkit::boot_world();
-    let mut engine = mush_core::Engine::with_modules(world, registry, Roster.modules())
+    let mut engine = mush_core::Engine::with_modules(world, registry, Roster(cfg.clone()).modules())
         .expect("the roster composes");
     if keyed {
         assert!(tacsim::surface::install_geology(
@@ -177,13 +185,26 @@ fn boot_over(
 
 /// Boot (keyed or not), settle and stock every port, at world rate 1.
 fn stocked_with(keyed: bool) -> Rig {
+    stocked_under(keyed, rig_config())
+}
+
+/// **The keyed rig under a tuned `[tacsim]`** (doc 32 cut CF.2): `tune` edits the layer's
+/// config before the first boot, and every reboot keeps it.
+pub(crate) fn stocked_tuned(tune: impl FnOnce(&mut TacsimConfig)) -> Rig {
+    let mut cfg = rig_config();
+    tune(&mut cfg);
+    stocked_under(true, cfg)
+}
+
+fn stocked_under(keyed: bool, cfg: TacsimConfig) -> Rig {
     let (world, _) = mush_testkit::boot_world();
-    let mut tw = boot_over(world, HashMap::new(), keyed);
+    let mut tw = boot_over(world, HashMap::new(), keyed, &cfg);
     with_offer_keys(&mut tw);
     let oracle = Arc::new(MapOracle::default());
     install_oracle(&mut tw, &oracle);
     let mut rig = Rig {
         tw,
+        cfg,
         oracle,
         store: HashMap::new(),
         typed: BTreeMap::new(),
@@ -209,6 +230,7 @@ pub(crate) fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {
 fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
     let Rig {
         mut tw,
+        cfg,
         oracle,
         mut store,
         typed,
@@ -223,7 +245,7 @@ fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
     for id in connected {
         world.set_connected(id, false);
     }
-    let mut tw = boot_over(world, store.clone(), keyed);
+    let mut tw = boot_over(world, store.clone(), keyed, &cfg);
     tw.engine_mut()
         .hydrate_action_state(
             typed
@@ -241,6 +263,7 @@ fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
     }
     Rig {
         tw,
+        cfg,
         oracle,
         store,
         typed,
@@ -408,7 +431,7 @@ pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), St
 
 /// Every queued submission of the port's lanes, dropping other modules'; asserts none kept of
 /// tacsim's is GOD's.
-fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
+pub(crate) fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     let mut kept = Vec::new();
     while let Some(submit) = tw.engine_mut().take_authoritative_submit() {
         let owner = submit.action.key().owner.as_str();
@@ -792,7 +815,7 @@ fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
 }
 
 /// Ahuna Flank's passive domain.
-fn ahuna_domain(tw: &TestWorld) -> mush_sim::DomainId {
+pub(crate) fn ahuna_domain(tw: &TestWorld) -> mush_sim::DomainId {
     mush_sim::DomainId(port_map(tw, AHUNA).domain.expect("a domain"))
 }
 
@@ -886,6 +909,37 @@ fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
     let staff = support::place_cm_keeping(&mut rig.tw, domain, tv, (x, y));
     fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
     fold_module_ops_into(&mut rig.store, staff);
+}
+
+/// **Staff's hand on the world** (doc 32 cut CF.2's fixtures): `f` runs with a `Ctx` as GOD and
+/// every durable write it defers is folded into the store, so a reboot finds what it made.
+pub(crate) fn staff_hand<T>(rig: &mut Rig, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
+    let mut out = mush_core::Outbox::new();
+    let answer = {
+        let engine = rig.tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        f(&mut ctx)
+    };
+    let ops: Vec<mush_core::ModuleOp> = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, ops);
+    answer
 }
 
 /// Staff move `tv` to the centre of site cell `(x, y)` (the placement seam).
@@ -1269,7 +1323,7 @@ fn on_pad_at(
 /// A world booted without the geology key (the census reads no key), its ticks swept once.
 fn booted() -> TestWorld {
     let (world, _) = mush_testkit::boot_world();
-    let mut tw = boot_over(world, HashMap::new(), false);
+    let mut tw = boot_over(world, HashMap::new(), false, &rig_config());
     sweep(&mut tw, 120);
     tw
 }

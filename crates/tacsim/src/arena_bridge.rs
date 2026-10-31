@@ -1422,6 +1422,14 @@ impl ArenaRegistry {
         self.matches.iter().map(|(id, mirror)| (*id, mirror))
     }
 
+    /// **A snapshot reached the world** at `at_ms` (doc 32 cut CF.2: the field host's
+    /// snapshot path, which writes no match record).
+    pub fn note_snapshot(&mut self, match_id: MatchId, at_ms: i64) {
+        if let Some(mirror) = self.matches.get_mut(&match_id) {
+            mirror.snapshot_at_ms = Some(at_ms);
+        }
+    }
+
     /// Bind a unit to the match that holds it (cut T.3's check-out).
     pub fn bind_unit(&mut self, unit: ObjId, match_id: MatchId) {
         self.units.insert(unit, match_id);
@@ -1784,6 +1792,59 @@ pub fn open_match(
     match_cfg: &crate::config::MatchConfig,
     sensors_cfg: &crate::config::SensorsConfig,
 ) -> Result<crate::arena_task::Callsigns, OpenMatchError> {
+    open_task(
+        ctx,
+        match_id,
+        custody,
+        (arena_cfg, match_cfg, sensors_cfg),
+        None,
+    )
+}
+
+/// **The longest an IC field may run before the kernel's duration bound ends it** (doc 32 cut
+/// CF.2): four hours of wall time. A backstop, never the demotion rule (Q-CF-20: the field
+/// disengages); an end by it is committed and demotes like a disengagement.
+pub const FIELD_MAX_DURATION_MS: u32 = 14_400_000;
+
+/// **Open one IC field's task and register it** (doc 32 cut CF.2): [`open_match`]'s registry
+/// half over [`crate::arena_task::spawn_field`], under the field's
+/// [`crate::arena_task::FieldTerms`] and the server's own blocks with
+/// [`FIELD_MAX_DURATION_MS`]. No match record is written — the field host keeps its own
+/// (`crate::field::record`).
+///
+/// # Errors
+///
+/// As [`open_match`]'s.
+pub fn open_field_task(
+    ctx: &mut Ctx<'_>,
+    task: MatchId,
+    custody: crate::arena::state::CustodyOut,
+    terms: crate::arena_task::FieldTerms,
+) -> Result<crate::arena_task::Callsigns, OpenMatchError> {
+    let (arena_cfg, mut match_cfg, sensors_cfg) =
+        crate::match_::lobby::configs(ctx.w).ok_or(OpenMatchError::Unavailable)?;
+    match_cfg.max_duration_ms = FIELD_MAX_DURATION_MS;
+    open_task(
+        ctx,
+        task,
+        custody,
+        (&arena_cfg, &match_cfg, &sensors_cfg),
+        Some(terms),
+    )
+}
+
+/// [`open_match`] and [`open_field_task`]'s one body.
+fn open_task(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    custody: crate::arena::state::CustodyOut,
+    (arena_cfg, match_cfg, sensors_cfg): (
+        &crate::config::ArenaConfig,
+        &crate::config::MatchConfig,
+        &crate::config::SensorsConfig,
+    ),
+    terms: Option<crate::arena_task::FieldTerms>,
+) -> Result<crate::arena_task::Callsigns, OpenMatchError> {
     let tasks = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -1849,18 +1910,30 @@ pub fn open_match(
     // one think pool, sized once from `[tacsim.minds].workers` by whichever
     // match opens first.
     let pool = crate::minds::MindPool::shared(minds_cfg.workers);
-    let (handle, join, callsigns) = crate::arena_task::spawn_arena(
-        &runtime,
-        match_id,
-        custody,
-        arena_cfg,
-        match_cfg,
-        sensors_cfg,
-        &minds_cfg,
-        &sources,
-        pool,
-        egress,
-    )?;
+    let (handle, join, callsigns) = match terms {
+        None => crate::arena_task::spawn_arena(
+            &runtime,
+            match_id,
+            custody,
+            arena_cfg,
+            match_cfg,
+            sensors_cfg,
+            &minds_cfg,
+            &sources,
+            pool,
+            egress,
+        )?,
+        Some(terms) => crate::arena_task::spawn_field(
+            &runtime,
+            match_id,
+            custody,
+            (arena_cfg, match_cfg, sensors_cfg, &minds_cfg),
+            &sources,
+            pool,
+            egress,
+            terms,
+        )?,
+    };
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
         // Cannot happen (the id was checked above), and if it did, the old task
         // is stopped rather than leaked.
@@ -2052,6 +2125,98 @@ pub fn resume_match(
         mirror.armed = armed;
     }
     Ok(roster)
+}
+
+/// **Re-open one IC field's task from its decoded snapshot and register it** (doc 32 cut CF.2;
+/// Q-CF-33): [`resume_match`]'s registry half over [`crate::arena_task::resume_field`], with no
+/// match record and no mind tape. **No pilot is bound** here; the field host rebinds every pilot
+/// still sitting in its unit. The resumed ledger owes the world nothing below its last closed
+/// chunk, and the host writes this segment's chunks to a log of its own, so no tail is restored.
+///
+/// # Errors
+///
+/// [`OpenMatchError`]: no registry, no runtime, a duplicate key, a seal's runner.
+pub fn resume_field_task(
+    ctx: &mut Ctx<'_>,
+    task: MatchId,
+    mut arena: crate::arena::Arena,
+    terms: crate::arena_task::FieldTerms,
+) -> Result<(), OpenMatchError> {
+    let tasks = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks.clone())
+        .ok_or(OpenMatchError::Unavailable)?;
+    if tasks.live_ids().contains(&task) {
+        return Err(OpenMatchError::Duplicate(task));
+    }
+    let egress = tasks.egress_sender().ok_or(OpenMatchError::Unavailable)?;
+    let runtime = tokio::runtime::Handle::try_current().map_err(|_| OpenMatchError::NoRuntime)?;
+    let arena_cfg = crate::match_::lobby::configs(ctx.w)
+        .map(|(arena_cfg, _, _)| arena_cfg)
+        .ok_or(OpenMatchError::Unavailable)?;
+    arena.reset_detachment_commands();
+    let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
+    let epochs: Vec<((ObjId, Channel), u64)> = arena.epochs.rows().collect();
+    let at_ms = arena.now_ms;
+    let state_hash = crate::arena::hash::state_hash(&arena);
+    let controllers: BTreeMap<ObjId, Controller> = arena
+        .units
+        .iter()
+        .map(|unit| (unit.id, unit.controller))
+        .collect();
+    let armed: BTreeSet<ObjId> = arena
+        .units
+        .iter()
+        .filter(|unit| !unit.weapons.is_empty())
+        .map(|unit| unit.id)
+        .collect();
+    let ground = Arc::clone(&arena.definition);
+    arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+    let workers = crate::match_::lobby::minds_config(ctx.w)
+        .unwrap_or_default()
+        .workers;
+    let pool = crate::minds::MindPool::shared(workers);
+    let (handle, join) = crate::arena_task::resume_field(
+        &runtime,
+        task,
+        arena,
+        &arena_cfg,
+        &BTreeMap::new(),
+        pool,
+        egress,
+        terms,
+    )
+    .map_err(OpenMatchError::Mind)?;
+    if let Some((old, old_join)) = tasks.insert(task, handle, join) {
+        old.signal_stop();
+        old_join.abort();
+    }
+    let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() else {
+        if let Some((handle, join)) = tasks.remove(task) {
+            handle.signal_stop();
+            join.abort();
+        }
+        return Err(OpenMatchError::Unavailable);
+    };
+    registry.track(task);
+    registry.arenas.insert(task, ground);
+    for unit in units {
+        registry.bind_unit(unit, task);
+    }
+    for ((unit, channel), epoch) in epochs {
+        registry.set_epoch(unit, channel, epoch);
+    }
+    if let Some(mirror) = registry.matches.get_mut(&task) {
+        mirror.arena_ms = at_ms;
+        mirror.now_ms = at_ms;
+        mirror.snapshot_at_ms = Some(at_ms);
+        mirror.snapshot_hash = Some(state_hash);
+        mirror.resumed_from_ms = Some(at_ms);
+        mirror.controllers = controllers;
+        mirror.armed = armed;
+    }
+    Ok(())
 }
 
 /// **Restore the ledger tails of the logs a boot resumes** (16b cut AF.3) — the
@@ -2852,6 +3017,10 @@ fn on_frames(
     if let Some(observer) = observer {
         on_observer(ctx, match_id, observer);
     }
+    // Doc 32 cut CF.2 (Q-CF-14): a fire order waiting on its shooter's sensors.
+    if crate::field::hosts(ctx.w, match_id) {
+        crate::field::on_frames(ctx, match_id, &frames, now_ms);
+    }
     let Some(feed) = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -3470,7 +3639,9 @@ fn note_cards_from_tape(ctx: &mut Ctx<'_>, match_id: MatchId, events: &[LedgerEv
 /// anyway, because a black box that lost a page is not a reason to wedge the
 /// match that is still running.
 fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
-    let log_id = match_log_id(match_id);
+    // Doc 32 cut CF.2: a field's black box is its own log, never `log:match.<id>`.
+    let log_id =
+        crate::field::log_of_task(ctx.w, match_id).unwrap_or_else(|| match_log_id(match_id));
     let Ok(lines) = std::str::from_utf8(bytes) else {
         tracing::error!(
             %match_id,
@@ -3637,6 +3808,11 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
 /// not hold live (an end already processed, a staff reset) is dropped with a
 /// `debug` line: its result has deleted, or is about to delete, both documents.
 fn on_snapshot(ctx: &mut Ctx<'_>, match_id: MatchId, snapshot: Arc<crate::arena::Snapshot>) {
+    // Doc 32 cut CF.2: a field's snapshot is its host's, beside its live record.
+    if crate::field::hosts(ctx.w, match_id) {
+        crate::field::on_snapshot(ctx, match_id, snapshot);
+        return;
+    }
     let live = ctx
         .w
         .module_state::<crate::match_::MatchBook>()
@@ -3787,6 +3963,11 @@ fn on_ended(
     // and final poses back through `apply` and `mush_sim::place`, the markers
     // cleared, the seats released, the match untracked and the result written,
     // all in this one re-entry's authoritative step.
+    // Doc 32 cut CF.2: a field's end is its host's demotion, never a match's finish.
+    if crate::field::hosts(ctx.w, match_id) {
+        crate::field::close::on_ended(ctx, match_id, end, units);
+        return;
+    }
     say_due_orders(ctx, Some(match_id));
     let checked_in = crate::match_::finish(ctx, match_id, end, digest.clone(), units);
     notify_staff(

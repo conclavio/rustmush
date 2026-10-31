@@ -1686,6 +1686,12 @@ impl Arena {
                 },
                 EndReason::Unattended,
             ),
+            StopReason::Disengaged => (
+                EventKind::MatchEnded {
+                    reason: EndReason::Disengaged,
+                },
+                EndReason::Disengaged,
+            ),
         };
         // **17b cut M3.6** (doc 17 §13): every open sortie closes before the
         // stop's own line, under the stop pulse's one hash — after any
@@ -1742,6 +1748,11 @@ impl Arena {
     }
 
     fn journal_sortie_closes(&mut self, t_ms: i64, hash: u64) -> bool {
+        // **Doc 32 cut CF.2** (Q-H9, Q-CF-36): an IC field closes no hull's epoch — the hull
+        // goes home from the field with its epoch open, and only its own host closes it.
+        if self.end == crate::arena::party::EndCondition::Host {
+            return true;
+        }
         let mut recorded = true;
         for (at, kind, draws) in self.close_open_sorties(t_ms, SORTIE_MATCH_END) {
             recorded &= self.journal_drawn(at, kind, draws, hash);

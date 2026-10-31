@@ -604,7 +604,9 @@ fn outcome(reason: EndReason, swapped: bool) -> Result<TrialOutcome, RatingError
         EndReason::Hold { winner } => Some(winner),
         EndReason::Conceded { winner } => winner,
         EndReason::Spent => None,
-        EndReason::Timeout | EndReason::Unattended => return Ok(TrialOutcome::Timeout),
+        EndReason::Timeout | EndReason::Unattended | EndReason::Disengaged => {
+            return Ok(TrialOutcome::Timeout);
+        }
         EndReason::Abort | EndReason::Void | EndReason::LedgerOverflow => {
             return Err(RatingError::Invalid);
         }

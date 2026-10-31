@@ -671,6 +671,11 @@ pub enum RefusedCode {
     /// Nothing moved; the ore stays in the hopper until older markers age out. The ring is the
     /// hopper vault's — Occator's rig's — so it outlives a lease.
     MarkersFull,
+    /// **The site promoted while it ran** (doc 32 cut CF.2; Q-CF-30, Q-CF-31): a drive stopped at
+    /// the point its leg had reached and paid for the share it drove; a scan, a sounding or a dump
+    /// was cancelled and paid for the share of its time that ran. Work resumes after the field by
+    /// a fresh act.
+    FieldOpened,
 }
 
 /// **How an act finished.**
@@ -1750,9 +1755,19 @@ impl CapRefused {
 /// the world's; each refuses at or past its cap (a new launch would make one more).
 #[must_use]
 pub fn cap_refusal(counts: &ExcursionCounts) -> Option<CapRefused> {
+    cap_refusal_at(counts, MAX_EXCURSIONS_PER_SITE)
+}
+
+/// **[`cap_refusal`] under a site cap of `site_cap`** (doc 32 cut CF.2; Q-CF-21): the
+/// configured `[tacsim.field].max_units`, never above [`MAX_EXCURSIONS_PER_SITE`]. The command
+/// refuses at the configured cap; the start's prepare and the fill plan keep the ceiling as their
+/// backstop.
+#[must_use]
+pub fn cap_refusal_at(counts: &ExcursionCounts, site_cap: u32) -> Option<CapRefused> {
+    let site_cap = site_cap.min(MAX_EXCURSIONS_PER_SITE);
     if counts.operator >= MAX_EXCURSIONS_PER_OPERATOR {
         Some(CapRefused::Operator)
-    } else if counts.site >= MAX_EXCURSIONS_PER_SITE {
+    } else if counts.site >= site_cap {
         Some(CapRefused::Site)
     } else if counts.world >= MAX_EXCURSIONS_WORLD {
         Some(CapRefused::World)

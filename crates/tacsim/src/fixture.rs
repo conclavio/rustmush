@@ -150,6 +150,7 @@ pub fn config() -> TacsimConfig {
         surface: crate::config::SurfaceConfig::default(),
         // Doc 17h cut M8f: the procurement defaults.
         procurement: crate::config::ProcurementConfig::default(),
+        field: crate::config::FieldConfig::default(),
     }
 }
 

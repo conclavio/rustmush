@@ -237,7 +237,20 @@ pub fn publish(w: &World, records: &[RigRecord], now: i64) -> PresenceBook {
         return book;
     }
     let by_tv: BTreeMap<ObjId, &RigRecord> = records.iter().map(|r| (r.tv, r)).collect();
-    for tv in crate::surface::act::world_rigs(w) {
+    // Doc 32 cut CF.2 (Q-CF-15, Q-CF-16): every flight on the ground, not only the lane's rigs —
+    // whatever stands on a site's domain is what a field would admit, so it is what the picture
+    // shows. A programme hull on its pad is the carrier, drawn by the map as the pad (CF.3).
+    let mut flights: BTreeSet<ObjId> = crate::surface::act::world_rigs(w).into_iter().collect();
+    if let Some(units) = w.module_state::<mush_tactics::module::UnitStore>() {
+        flights.extend(units.units.keys().copied().filter(|unit| {
+            crate::port::ship::hull_view(w, *unit).is_none()
+                && matches!(
+                    crate::surface::act::where_is(w, *unit),
+                    crate::surface::act::Where::Ground { domain, .. } if domains.contains_key(&domain)
+                )
+        }));
+    }
+    for tv in flights {
         let crate::surface::act::Where::Ground { domain, .. } =
             crate::surface::act::where_is(w, tv)
         else {

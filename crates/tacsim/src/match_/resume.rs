@@ -291,6 +291,12 @@ pub(crate) fn phase_a(
 ) -> BTreeSet<ObjId> {
     let mut by_match: BTreeMap<MatchId, Vec<ObjId>> = BTreeMap::new();
     for (unit, marker) in mush_tactics::custody::take_boot_deployed(ctx.w) {
+        // Doc 32 cut CF.2 (Q-CF-35): an IC field's unit is never voided to its check-out
+        // snapshot; the field host resumes it or demotes it from the field's last snapshot.
+        if let Some(field) = &marker.mark.field {
+            crate::field::boot::adopt_mark(ctx.w, field.site.as_str(), unit);
+            continue;
+        }
         by_match
             .entry(MatchId(marker.match_id()))
             .or_default()

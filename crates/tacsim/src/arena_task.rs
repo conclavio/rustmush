@@ -244,6 +244,31 @@ pub enum ArenaMsg {
         /// The change.
         change: CardChange,
     },
+    /// **A detachment leader's mark** (doc 32 cut CF.2; Q-CF-7): `by`'s book
+    /// marks `of` Friendly or Hostile, or `None` clears it. Buffered latest-wins
+    /// per pair and applied through `Arena::mark_party` at the next pulse's
+    /// head, before the step, so a mark lands at a pulse boundary like an
+    /// order. Private kernel state: nothing is journalled. Only the IC field
+    /// host sends it; held to the intent reserve at [`ArenaHandle::offer`].
+    Mark {
+        /// The marking party.
+        by: crate::arena::PartyId,
+        /// The party marked.
+        of: crate::arena::PartyId,
+        /// The mark, or `None` to clear it.
+        mark: Option<crate::arena::party::Mark>,
+    },
+}
+
+/// **The IC field host's terms** (doc 32 cut CF.2; Q-CF-20): what the task
+/// enforces on the host's behalf so the demotion lands at an arena millisecond.
+/// The OOC host passes none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldTerms {
+    /// `[tacsim.field].disengage_s`, in arena milliseconds: once no `Engaged`
+    /// trigger has been seen for this long and no round is in flight, the task
+    /// stops its own arena with [`StopReason::Disengaged`].
+    pub disengage_ms: u32,
 }
 
 /// **Arena to world** (doc 16 §3.1's last three messages, plus the end).
@@ -516,6 +541,7 @@ impl ArenaHandle {
                 | ArenaMsg::TempoFloor { .. }
                 | ArenaMsg::Watch { .. }
                 | ArenaMsg::MindCard { .. }
+                | ArenaMsg::Mark { .. }
         ) && self.inbox.capacity() <= self.reserve
         {
             return Err(msg);
@@ -630,9 +656,82 @@ pub fn spawn_arena(
         arena_cfg.tape_max_bytes,
     );
     let (handle, join) = spawn(
-        runtime, match_id, arena, arena_cfg, pool, egress, false, tape,
+        runtime, match_id, arena, arena_cfg, pool, egress, false, tape, None,
     );
     Ok((handle, join, callsigns))
+}
+
+/// **Open one IC field's task** (doc 32 cut CF.2): [`spawn_arena`] over a
+/// field host's check-out, under its [`FieldTerms`], with no mind tape (an IC
+/// field carries no licensed mind until doc 23 S.4b, Q-CF-43).
+///
+/// # Errors
+///
+/// As [`spawn_arena`]'s.
+#[allow(clippy::too_many_arguments)] // spawn_arena's inputs plus the host's terms.
+pub fn spawn_field(
+    runtime: &tokio::runtime::Handle,
+    task_id: MatchId,
+    custody: CustodyOut,
+    cfgs: (&ArenaConfig, &MatchConfig, &SensorsConfig, &MindsConfig),
+    sources: &BTreeMap<[u8; 32], String>,
+    pool: Arc<MindPool>,
+    egress: mpsc::Sender<ArenaOut>,
+    terms: FieldTerms,
+) -> Result<(ArenaHandle, JoinHandle<()>, Callsigns), SpawnError> {
+    let (arena_cfg, match_cfg, sensors_cfg, minds_cfg) = cfgs;
+    let mut arena = Arena::new_with_minds(custody, arena_cfg, match_cfg, sensors_cfg, minds_cfg)?;
+    // A hull standing on IC ground is running (it drove or mined there a moment ago): the
+    // simulator's cold start (`STARTUP`, `match.startup_ms`) is the OOC range's, not the field's.
+    for unit in &mut arena.units {
+        unit.power = crate::arena::state::Power::Online;
+    }
+    install_runners(&mut arena, sources)?;
+    let callsigns = arena.callsigns();
+    let (handle, join) = spawn(
+        runtime,
+        task_id,
+        arena,
+        arena_cfg,
+        pool,
+        egress,
+        false,
+        (None, Vec::new()),
+        Some(terms),
+    );
+    Ok((handle, join, callsigns))
+}
+
+/// **Re-open one IC field's task from its snapshot** (doc 32 cut CF.2;
+/// Q-CF-33): [`resume_arena`] under the field's [`FieldTerms`]. The quiet
+/// interval restarts at the snapshot's moment.
+///
+/// # Errors
+///
+/// As [`resume_arena`]'s.
+#[allow(clippy::too_many_arguments)] // resume_arena's inputs plus the host's terms.
+pub fn resume_field(
+    runtime: &tokio::runtime::Handle,
+    task_id: MatchId,
+    mut arena: Arena,
+    arena_cfg: &ArenaConfig,
+    sources: &BTreeMap<[u8; 32], String>,
+    pool: Arc<MindPool>,
+    egress: mpsc::Sender<ArenaOut>,
+    terms: FieldTerms,
+) -> Result<(ArenaHandle, JoinHandle<()>), crate::minds::InstallError> {
+    install_runners(&mut arena, sources)?;
+    Ok(spawn(
+        runtime,
+        task_id,
+        arena,
+        arena_cfg,
+        pool,
+        egress,
+        true,
+        (None, Vec::new()),
+        Some(terms),
+    ))
 }
 
 /// **Re-open one match from a decoded snapshot** (16b cut AF.3; 16c N16; doc 16
@@ -694,7 +793,7 @@ pub fn resume_arena_recorded(
     install_runners(&mut arena, sources)?;
     let tape = tape::resumed(&mut arena, match_id, tape_resume);
     Ok(spawn(
-        runtime, match_id, arena, arena_cfg, pool, egress, true, tape,
+        runtime, match_id, arena, arena_cfg, pool, egress, true, tape, None,
     ))
 }
 
@@ -735,6 +834,7 @@ fn spawn(
     egress: mpsc::Sender<ArenaOut>,
     resumed: bool,
     tape_start: tape::Start,
+    terms: Option<FieldTerms>,
 ) -> (ArenaHandle, JoinHandle<()>) {
     // T-106 is opt-in: the dev1 cohorts did not demonstrate a timing gain.
     // This host-only policy is deliberately absent from arena snapshots/hashes.
@@ -747,6 +847,8 @@ fn spawn(
     arena.set_frame_workers(frame_workers);
     let (tape, tape_writes) = tape_start;
     let units = arena.units.len();
+    // Doc 32 cut CF.2: the quiet interval runs from the task's first moment.
+    let arena_now = arena.now_ms;
     // **16b cut AF.3**: a resumed task has already snapshotted the period its
     // arena stands in — that period's snapshot is the one it was decoded from.
     let last_snapshot_period = if resumed {
@@ -802,6 +904,8 @@ fn spawn(
         pool_wait_us: 0,
         tape,
         tape_cards: Vec::new(),
+        quiet_from_ms: arena_now,
+        terms,
     }));
     (
         ArenaHandle {
@@ -914,6 +1018,12 @@ struct Task {
     /// (17b cut M4.1: `pool_wait_us`, logged per wait; a saturated pool is
     /// seen here and as late wakes, never as a different result).
     pool_wait_us: u64,
+    /// **Doc 32 cut CF.2**: the arena millisecond the quiet interval runs from
+    /// when no `Engaged` trigger has been seen — the task's first moment (a
+    /// resumed field's snapshot moment, so a restart restarts the interval).
+    quiet_from_ms: i64,
+    /// **Doc 32 cut CF.2**: the IC field host's terms, `None` for every match.
+    terms: Option<FieldTerms>,
 }
 
 /// **One entry of the task's retry queue** (16b cut AF.2): a closed chunk, or
@@ -1254,6 +1364,12 @@ struct PrePulse {
     discrete: Discrete,
     /// **17b cut M1b.5**: the card changes, per unit in arrival order.
     cards: BTreeMap<ObjId, Vec<CardChange>>,
+    /// **Doc 32 cut CF.2**: the leaders' marks, latest-wins per `(by, of)`, so
+    /// bounded by the parties' square.
+    marks: BTreeMap<
+        (crate::arena::PartyId, crate::arena::PartyId),
+        Option<crate::arena::party::Mark>,
+    >,
 }
 
 impl PrePulse {
@@ -1590,6 +1706,10 @@ async fn arena_loop(mut task: Task) {
                             task.match_id,
                         );
                     }
+                    // Doc 32 cut CF.2: a mark waits for the pulse too.
+                    Some(ArenaMsg::Mark { by, of, mark }) => {
+                        waiting.marks.insert((by, of), mark);
+                    }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
                     // same reason the stop signal does.
@@ -1617,9 +1737,21 @@ async fn arena_loop(mut task: Task) {
                         task.arena.stage_card(unit, change);
                     }
                 }
+                // Doc 32 cut CF.2: the leaders' marks, before the step.
+                for ((by, of), mark) in std::mem::take(&mut waiting.marks) {
+                    task.arena.mark_party(by, of, mark);
+                }
                 match task.pulse(wall, &controls, &intents).await {
                     // 16b cut U.1: from the base, never from now.
-                    Pulse::Again(next_due_ms) => due = deadline(base, next_due_ms),
+                    Pulse::Again(next_due_ms) => {
+                        due = deadline(base, next_due_ms);
+                        // Doc 32 cut CF.2 (Q-CF-20): a field that has been
+                        // quiet long enough stops itself at the next pulse.
+                        if task.disengaged() {
+                            task.arena.stop(StopReason::Disengaged);
+                            due = pulled_in(due);
+                        }
+                    }
                     Pulse::Done => return,
                 }
             }
@@ -1628,6 +1760,29 @@ async fn arena_loop(mut task: Task) {
 }
 
 impl Task {
+    /// **Whether the IC field this task hosts has disengaged** (doc 32 cut
+    /// CF.2; Q-CF-20): under [`FieldTerms`], not yet ended or stopping, no round
+    /// in flight, and no `Engaged` trigger for `disengage_ms` of arena time —
+    /// counted from the later of the last trigger and the task's first moment.
+    /// Never for a match.
+    fn disengaged(&self) -> bool {
+        let Some(terms) = self.terms else {
+            return false;
+        };
+        if self.arena.ended.is_some()
+            || self.arena.stopping()
+            || self.arena.round_in_flight()
+        {
+            return false;
+        }
+        let since = self
+            .arena
+            .clock
+            .last_engaged_signal_ms()
+            .map_or(self.quiet_from_ms, |last| last.max(self.quiet_from_ms));
+        self.arena.now_ms.saturating_sub(since) >= i64::from(terms.disengage_ms)
+    }
+
     /// **One pulse**: the unwind boundary, the watchdog, and the publication of
     /// whatever the pulse produced.
     async fn pulse(&mut self, wall_now_ms: i64, controls: &[Control], intents: &[Intent]) -> Pulse {

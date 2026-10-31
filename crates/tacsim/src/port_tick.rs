@@ -275,6 +275,11 @@ pub(crate) fn register_with_coverage(
         .get(crate::surface::site_record::SITE_RECORD_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the site record's outcome did not register"))?;
+    // Doc 32 cut CF.2: the field host's open or close.
+    let field_outcome = outcome_refs
+        .get(crate::field::FIELD_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the field's outcome did not register"))?;
     let passenger_outcome = outcome_refs
         .get(crate::port::passenger::store::OUTCOME)
         .cloned()
@@ -293,7 +298,12 @@ pub(crate) fn register_with_coverage(
         &recovery_outcome,
         &survey_outcome,
         &survey_cancel_outcome,
-        (&passenger_outcome, &epoch_outcome, &site_record_outcome),
+        (
+            &passenger_outcome,
+            &epoch_outcome,
+            &site_record_outcome,
+            &field_outcome,
+        ),
     )?;
     actions.push(crate::quest::registration::action(&outcome_refs)?);
     actions.push(crate::detachment::planning::action_descriptor(
@@ -466,6 +476,22 @@ pub(crate) fn register_with_coverage(
         }
         None => None,
     };
+    // Doc 32 cut CF.2: `tacsim_field`, the field host's open and close, needs its two families.
+    let field = match action_refs.get(crate::field::FIELD_ACTION).cloned() {
+        Some(action) => {
+            reg.action_provider(
+                action.clone(),
+                crate::field::provider::FieldProvider {
+                    action: action.clone(),
+                    outcome: field_outcome.clone(),
+                    sites: port_families.sites.clone(),
+                    excursions: port_families.excursions.clone(),
+                },
+            )?;
+            Some(action)
+        }
+        None => None,
+    };
     // Doc 20 cut SM.6 (§3.4): `tacsim_site_work`, the site clerk's worked transfer —
     // registered when the inventory cell is filled (the transfer rides the delegated
     // families; the stock provider's rule); the definitions register regardless.
@@ -537,6 +563,7 @@ pub(crate) fn register_with_coverage(
         site_work,
         dispatch: dispatch_action.clone(),
         site_record,
+        field,
     });
     reg.state(PortTickState::new(
         probe_action,
@@ -600,7 +627,12 @@ fn append_receipt_actions(
     recovery: &DefinitionRef,
     survey_accept: &DefinitionRef,
     survey_cancel: &DefinitionRef,
-    (passenger, epoch, site_record): (&DefinitionRef, &DefinitionRef, &DefinitionRef),
+    (passenger, epoch, site_record, field): (
+        &DefinitionRef,
+        &DefinitionRef,
+        &DefinitionRef,
+        &DefinitionRef,
+    ),
 ) -> Result<(), ModError> {
     actions.push(
         descriptor(
@@ -652,6 +684,19 @@ fn append_receipt_actions(
             }),
         )?
         .with_references(vec![site_record.clone()]),
+    );
+    // Doc 32 cut CF.2: the field host writes the site record and settles the rigs on it.
+    actions.push(
+        descriptor(
+            "action",
+            crate::field::FIELD_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::site_record::SITE_RECORD_FAMILY,
+            }),
+        )?
+        .with_references(vec![field.clone()]),
     );
     Ok(())
 }
@@ -1181,6 +1226,12 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
         descriptor(
             "outcome",
             crate::surface::site_record::SITE_RECORD_OUTCOME,
+            json!({ "fields": ["actor", "said", "site"] }),
+        )?,
+        // Doc 32 cut CF.2: the field host's open or close of a site's field.
+        descriptor(
+            "outcome",
+            crate::field::FIELD_OUTCOME,
             json!({ "fields": ["actor", "said", "site"] }),
         )?,
     ];
