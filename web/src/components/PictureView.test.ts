@@ -588,4 +588,56 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     expect(helm.mock.calls.at(-1)).toEqual(["HEADING 60 QUIET"]);
     unmount();
   });
+
+  it("switches camera modes via header pills and orders HEADING on HUD compass tape click", async () => {
+    const { picture, helm, unmount } = mount(fixtureFrame({ heading_deg: 90, power: "online" }));
+    await settle();
+    await frameTime();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Overhead" }));
+    expect(picture.kind).toBe("overhead");
+    await fireEvent.click(screen.getByRole("button", { name: "2.5D" }));
+    expect(picture.kind).toBe("iso25d");
+    await fireEvent.click(screen.getByRole("button", { name: "1st" }));
+    expect(picture.kind).toBe("cockpit");
+
+    const canvas = document.querySelector("canvas") as HTMLCanvasElement;
+    canvas.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        width: 1000,
+        height: 500,
+      }) as DOMRect;
+    // normX = 0.65 (halfway right on the 0.20..0.80 tape => +15° from HEADING=45° = 60°), normY = 0.05
+    await fireEvent.click(canvas, { clientX: 650, clientY: 25 });
+    expect(helm).toHaveBeenLastCalledWith("HEADING 60 QUIET");
+    unmount();
+  });
+
+  it("renders the cockpit glass overlay in 1st-person view, toggles it via the Glass button, and shows ballistic cracks when damaged", async () => {
+    localStorage.removeItem("rustmush.cockpit_glass");
+    const damagedFrame = fixtureFrame();
+    const { unmount } = mount(damagedFrame);
+    await settle();
+    await frameTime();
+
+    const overlay = screen.getByLabelText("cockpit glass overlay");
+    expect(overlay).toBeTruthy();
+    // Fixture frame has destroyed right_track, so glassDamageLevel is 2.
+    expect(overlay.getAttribute("data-damage")).toBe("2");
+    expect(overlay.querySelector(".glass-cracks")).not.toBeNull();
+    expect(overlay.querySelector(".glass-cracks-heavy")).not.toBeNull();
+
+    const glassBtn = screen.getByRole("button", { name: "cockpit glass" });
+    await fireEvent.click(glassBtn);
+    expect(screen.queryByLabelText("cockpit glass overlay")).toBeNull();
+    expect(localStorage.getItem("rustmush.cockpit_glass")).toBe("off");
+
+    await fireEvent.click(glassBtn);
+    expect(screen.getByLabelText("cockpit glass overlay")).toBeTruthy();
+    expect(localStorage.getItem("rustmush.cockpit_glass")).toBe("on");
+    localStorage.removeItem("rustmush.cockpit_glass");
+    unmount();
+  });
 });

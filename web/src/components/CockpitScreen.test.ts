@@ -179,7 +179,7 @@ function zoomButton(label: "zoom in" | "zoom out"): HTMLElement {
 }
 
 describe("CockpitScreen mounted", () => {
-  it("shows numbered detachment orders and prefills acknowledgements without sending", async () => {
+  it("shows numbered detachment orders, prefills order slots, and sends acknowledgements", async () => {
     const { cockpit, focusComposer, app } = await seated();
     cockpit.applyFrame({ ...json("cockpit_frame.json"), detachment: {
       id: "7", revision: "8", term: "9", leader_slot: 2,
@@ -199,10 +199,9 @@ describe("CockpitScreen mounted", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Order ALL" }));
     expect(focusComposer).toHaveBeenLastCalledWith("ORDER DT:7:8:9 ALL ");
     await fireEvent.click(screen.getByRole("button", { name: "WILCO" }));
-    expect(focusComposer).toHaveBeenLastCalledWith("WILCO DT:7:8 10");
+    expect(app.helm).toHaveBeenLastCalledWith("WILCO DT:7:8 10");
     await fireEvent.click(screen.getByRole("button", { name: "NEGATIVE" }));
-    expect(focusComposer).toHaveBeenLastCalledWith("NEGATIVE DT:7:8 10");
-    expect(app.helm).not.toHaveBeenCalled();
+    expect(app.helm).toHaveBeenLastCalledWith("NEGATIVE DT:7:8 10");
   });
 
   it("reads `Not in a cockpit.` before any frame", () => {
@@ -221,8 +220,8 @@ describe("CockpitScreen mounted", () => {
     expect(screen.queryByText(NOT_IN_A_COCKPIT)).toBeNull();
   });
 
-  it("locks a contact on click and prefills `scan` from the scan button", async () => {
-    const { focusComposer, app } = await seated();
+  it("locks a contact on click and sends `SCAN` from the scan button", async () => {
+    const { app } = await seated();
     const desigs = [...document.querySelectorAll("button.desig")];
     expect(desigs.map((b) => b.textContent)).toEqual(["BA", "RB", "X3", "X4"]);
     await fireEvent.click(desigs[0]!);
@@ -230,8 +229,7 @@ describe("CockpitScreen mounted", () => {
     const scans = [...document.querySelectorAll("button.scanbtn")];
     expect(scans).toHaveLength(4);
     await fireEvent.click(scans[0]!);
-    expect(focusComposer).toHaveBeenLastCalledWith("scan BA");
-    expect(focusComposer).toHaveBeenCalledTimes(1);
+    expect(app.helm).toHaveBeenLastCalledWith("SCAN BA");
   });
 
   it("locks `<designator>` when a contact marker is clicked on the arena window canvas", async () => {
@@ -494,16 +492,15 @@ describe("CockpitScreen, 17b cut M5.5", () => {
     expect(buttons.map((b) => b.getAttribute("title"))).toEqual(["MIND PROFILE Line"]);
   });
 
-  it("puts `MIND PROFILE <name>` in the box from a profile, and sends nothing", async () => {
-    const { focusComposer } = await seated();
+  it("sends `MIND PROFILE <name>` directly when a sealed profile is clicked", async () => {
+    const { focusComposer, app } = await seated();
     const buttons = [...document.querySelectorAll("button.profile")];
     await fireEvent.click(buttons[0]!);
-    expect(focusComposer).toHaveBeenLastCalledWith("MIND PROFILE Line");
-    // The flown profile offers nothing: a click on it fills no box.
+    expect(app.helm).toHaveBeenLastCalledWith("MIND PROFILE Line");
+    expect(focusComposer).not.toHaveBeenCalled();
+    // The flown profile offers nothing: a click on it triggers no command.
     await fireEvent.click(document.querySelector("p.profiles span.flown")!);
-    // The composer is filled and nothing else: the screen reaches for no other
-    // method of the app, so no line is sent until Enter.
-    expect(focusComposer).toHaveBeenCalledTimes(1);
+    expect(app.helm).toHaveBeenCalledTimes(1);
   });
 
   it("m5_the_mind_tail_takes_the_weapons_place_on_an_unarmed_hull", async () => {
@@ -619,10 +616,63 @@ describe("interactive cockpit controls", () => {
     const { app } = await seated();
     const weaponBtns = [...document.querySelectorAll("button.weapon-btn")];
     expect(weaponBtns).toHaveLength(2);
+    expect(weaponBtns[0]?.classList.contains("ready")).toBe(true);
+    expect(weaponBtns[1]?.classList.contains("cycling")).toBe(true);
     await fireEvent.click(weaponBtns[0]!);
     expect(app.helm).toHaveBeenLastCalledWith("FIRE cannon");
     await fireEvent.click(weaponBtns[1]!);
     expect(app.helm).toHaveBeenLastCalledWith("FIRE machine_gun");
+  });
+
+  it("sends SPEED 0 QUIET from Stop button and FIRE ALL from Volley button", async () => {
+    const { app } = await seated();
+    await fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(app.helm).toHaveBeenLastCalledWith("SPEED 0 QUIET");
+    await fireEvent.click(screen.getByRole("button", { name: "Volley" }));
+    expect(app.helm).toHaveBeenLastCalledWith("FIRE ALL");
+  });
+
+  it("clears a standing rule slot when its rule pill is clicked and toggles EMCON on ECM hulls", async () => {
+    const { cockpit, app } = await seated();
+    const rulePills = [...document.querySelectorAll("button.rule-pill")];
+    expect(rulePills.map((b) => b.textContent?.replace(/\s+/g, " ").trim())).toEqual([
+      "S1 fire ×",
+    ]);
+    await fireEvent.click(rulePills[0]!);
+    expect(app.helm).toHaveBeenLastCalledWith("MIND RULE 1 OFF");
+
+    expect(screen.queryByRole("button", { name: "EMCON" })).toBeNull();
+    cockpit.applyFrame({ ...json("cockpit_frame.json"), ecm: "off" });
+    await tick();
+    const emconBtn = screen.getByRole("button", { name: "EMCON" });
+    await fireEvent.click(emconBtn);
+    expect(app.helm).toHaveBeenLastCalledWith("EMCON on");
+    cockpit.applyFrame({ ...json("cockpit_frame.json"), ecm: "on" });
+    await tick();
+    await fireEvent.click(screen.getByRole("button", { name: "EMCON" }));
+    expect(app.helm).toHaveBeenLastCalledWith("EMCON off");
+  });
+
+  it("highlights the locked contact row and drives to spots or double-clicked map cells", async () => {
+    const { app } = await seated();
+    const contacts = [...document.querySelectorAll(".contact")];
+    expect(contacts[0]?.classList.contains("locked")).toBe(true);
+    expect(contacts[1]?.classList.contains("locked")).toBe(false);
+
+    const spotBtn = screen.getByRole("button", { name: "A The Ford" });
+    await fireEvent.click(spotBtn);
+    expect(app.helm).toHaveBeenLastCalledWith("DRIVE A");
+
+    const canvas = document.querySelector("canvas") as HTMLCanvasElement;
+    canvas.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        width: canvas.width,
+        height: canvas.height,
+      }) as DOMRect;
+    await fireEvent.dblClick(canvas, { clientX: 60 * 5 + 2, clientY: (64 - 1 - 40) * 5 + 2 });
+    expect(app.helm).toHaveBeenLastCalledWith("DRIVE 60,40");
   });
 });
 

@@ -44,6 +44,7 @@
     terrainCacheKey,
     WAITING_FOR_THE_MAP,
     type ArenaMap,
+    type CockpitWeapon,
     type ComposedWindow,
     type Marker,
   } from "$lib/cockpit";
@@ -157,6 +158,11 @@
     app.helm(speedLine(clamped));
   }
 
+  function stopSpeed(): void {
+    sliderKph = 0;
+    app.helm(speedLine(0));
+  }
+
   let autoTargetArmed = $state(false);
 
   $effect(() => {
@@ -226,10 +232,26 @@
     }
   }
 
-  function weaponForLine(line: string): string | null {
+  function weaponForLine(line: string): CockpitWeapon | null {
     if (!frame) return null;
-    const found = frame.weapons.find((w) => line === w.id || line.startsWith(`${w.id}  `));
-    return found ? found.id : null;
+    return frame.weapons.find((w) => line === w.id || line.startsWith(`${w.id}  `)) ?? null;
+  }
+
+  function legendParts(
+    legend: string,
+    w: ComposedWindow | null,
+  ): { text: string; cmd: string | null; kind: "spot" | "contact" | "plain" }[] {
+    if (!legend) return [];
+    return legend.split("  ").map((part) => {
+      const marker = w?.markers.find((m) => `${m.glyph} ${m.designator}` === part);
+      if (marker?.kind === "spot") {
+        return { text: part, cmd: `DRIVE ${marker.glyph}`, kind: "spot" };
+      }
+      if (marker && marker.kind !== "you" && marker.kind !== "campaign") {
+        return { text: part, cmd: `LOCK ${marker.designator}`, kind: "contact" };
+      }
+      return { text: part, cmd: null, kind: "plain" };
+    });
   }
 
   /** Clicking a contact marker on the arena window locks that contact. */
@@ -260,6 +282,24 @@
     if (best !== null) {
       app.helm(`LOCK ${best.designator}`);
     }
+  }
+
+  /** Double-clicking a cell on the arena window drives to that arena coordinate. */
+  function onMapDblClick(ev: MouseEvent): void {
+    const w = win;
+    const c = canvas;
+    const px = cellPx;
+    if (!w || !c || px <= 0) return;
+    const rect = c.getBoundingClientRect();
+    const scaleX = rect.width > 0 ? c.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? c.height / rect.height : 1;
+    const mx = (ev.clientX - rect.left) * scaleX;
+    const my = (ev.clientY - rect.top) * scaleY;
+    const col = Math.max(0, Math.min(w.w - 1, Math.floor(mx / px)));
+    const row = Math.max(0, Math.min(w.h - 1, Math.floor(my / px)));
+    const cellX = w.x0 + col;
+    const cellY = w.y0 + (w.h - 1 - row);
+    app.helm(`DRIVE ${cellX},${cellY}`);
   }
 
   $effect(() => {
@@ -420,10 +460,16 @@
                 aria-label="arena window"
                 style="max-width: min(100%, {win.w * cellPx}px); max-height: 240px; aspect-ratio: {win.w} / {win.h}"
                 onclick={onMapClick}
+                ondblclick={onMapDblClick}
               ></canvas>
             </div>
             {#if view.legend.length > 0}
-              <p class="legendline">{view.legend}</p>
+              <p class="legendline">{#each legendParts(view.legend, win) as item, idx (idx)}{#if idx > 0}{"  "}{/if}{#if item.cmd}<button
+                      type="button"
+                      class="legend-btn"
+                      data-kind={item.kind}
+                      title={item.cmd}
+                      onclick={() => app.helm(item.cmd!)}>{item.text}</button>{:else}<span>{item.text}</span>{/if}{/each}</p>
             {/if}
           {/if}
         </section>
@@ -431,7 +477,11 @@
         <section class="pane contacts-pane" aria-label="contacts">
           <h4 class="pt">contacts</h4>
           {#each view.contacts as row, i (i)}
-            <div class="contact">
+            <div
+              class="contact"
+              class:locked={row.designator === frame.lock_designator}
+              data-locked={row.designator === frame.lock_designator ? "true" : undefined}
+            >
               <button
                 type="button"
                 class="desig"
@@ -439,8 +489,11 @@
                 onclick={() => app.helm(`LOCK ${row.designator}`)}>{row.designator}</button
               >
               <span class="detail">{row.detail}</span>
-              <button type="button" class="scanbtn" onclick={() => prefill(`scan ${row.designator}`)}
-                >scan</button
+              <button
+                type="button"
+                class="scanbtn"
+                title={`SCAN ${row.designator}`}
+                onclick={() => app.helm(`SCAN ${row.designator}`)}>scan</button
               >
             </div>
             {#if row.chips.length > 0}
@@ -471,10 +524,10 @@
               <button type="button" onclick={() => prefill(slot.order_prefill)}>Order {slot.slot}</button>
             {/each}
             {#if frame.detachment.wilco_command}
-              <button type="button" onclick={() => prefill(frame!.detachment!.wilco_command!)}>WILCO</button>
+              <button type="button" onclick={() => app.helm(frame!.detachment!.wilco_command!)}>WILCO</button>
             {/if}
             {#if frame.detachment.negative_command}
-              <button type="button" onclick={() => prefill(frame!.detachment!.negative_command!)}>NEGATIVE</button>
+              <button type="button" onclick={() => app.helm(frame!.detachment!.negative_command!)}>NEGATIVE</button>
             {/if}
           </div>
         </section>
@@ -490,6 +543,15 @@
                 class="inline-btn"
                 onclick={() => app.helm("STARTUP")}>Startup</button
               >
+            {:else if i === view.status.length - 2 && frame.ecm !== null}
+              <button
+                type="button"
+                class="inline-btn"
+                class:active={frame.ecm === "on"}
+                aria-pressed={frame.ecm === "on"}
+                title={`EMCON ${frame.ecm === "on" ? "off" : "on"}`}
+                onclick={() => app.helm(`EMCON ${frame.ecm === "on" ? "off" : "on"}`)}
+              >EMCON</button>
             {:else if i === view.status.length - 1}
               <button
                 type="button"
@@ -514,6 +576,12 @@
                 oninput={onSpeedSlider}
                 onchange={onSpeedSlider}
               />
+              <button
+                type="button"
+                class="inline-btn stop-btn"
+                title="SPEED 0 QUIET"
+                onclick={stopSpeed}>Stop</button
+              >
             </div>
           {/if}
         {/each}
@@ -586,26 +654,50 @@
               onchange={onFireOddsChange}
             />
             <span class="wf-odds">&gt;={fireRuleOdds}%</span>
+            <button
+              type="button"
+              class="inline-btn volley-btn"
+              title="FIRE ALL"
+              onclick={() => app.helm("FIRE ALL")}>Volley</button
+            >
+          </div>
+        {/if}
+        {#if frame.seated && frame.rules.length > 0}
+          <div class="rule-pills" aria-label="active rules">
+            {#each frame.rules as rule (rule.slot)}
+              <button
+                type="button"
+                class="inline-btn rule-pill"
+                title={`MIND RULE ${rule.slot} OFF`}
+                onclick={() => app.helm(`MIND RULE ${rule.slot} OFF`)}
+              >S{rule.slot} {rule.action} ×</button>
+            {/each}
           </div>
         {/if}
         {#each view.weapons as line, i (i)}
-          {@const weaponId = weaponForLine(line)}
-          {#if weaponId !== null}
+          {@const weapon = weaponForLine(line)}
+          {#if weapon !== null}
             <p class="line"><button
                 type="button"
                 class="weapon-btn"
-                title={`FIRE ${weaponId}`}
-                onclick={() => app.helm(`FIRE ${weaponId}`)}>{line}</button></p>
+                class:ready={weapon.ready}
+                class:cycling={!weapon.ready}
+                data-ready={weapon.ready ? "true" : "false"}
+                style={!weapon.ready && weapon.ready_in_ms > 0
+                  ? `--cooldown-pct: ${Math.min(100, Math.max(10, Math.round((weapon.ready_in_ms / 5000) * 100)))}%`
+                  : undefined}
+                title={`FIRE ${weapon.id}`}
+                onclick={() => app.helm(`FIRE ${weapon.id}`)}>{line}</button></p>
           {:else}
             <p class="line">{line}</p>
           {/if}
         {/each}
         <!-- 17b cut M5.5: the mind's four lines, the section's tail (in
              `(no weapon)`'s place on an unarmed hull). On the profile row each
-             sealed profile the mind is NOT flying is a button that puts `MIND
-             PROFILE <name>` in the box and sends nothing (its title says so);
-             the flown one is plain text, since the cockpit refuses a switch to
-             it (the review's D4); the row's text is `mindLines`' own. -->
+             sealed profile the mind is NOT flying is a button that switches to
+             `MIND PROFILE <name>`; the flown one is plain text, since the
+             cockpit refuses a switch to it (the review's D4); the row's text
+             is `mindLines`' own. -->
         {#each view.mind as line, i (i)}
           {#if i === 1 && view.profiles.length > 0}
             <p class="line mind profiles" title={line}>{#each view.profiles as profile, p (p)}<span
@@ -615,7 +707,7 @@
                     type="button"
                     class="profile"
                     title={`MIND PROFILE ${profile.name}`}
-                    onclick={() => prefill(`MIND PROFILE ${profile.name}`)}>{profile.name}</button
+                    onclick={() => app.helm(`MIND PROFILE ${profile.name}`)}>{profile.name}</button
                   >{/if}{/each}</p>
           {:else}
             <p class="line mind">{line}</p>
@@ -719,6 +811,21 @@
     font-family: var(--font-mono);
     font-size: 0.78rem;
     color: var(--fg-muted);
+    white-space: pre-wrap;
+  }
+
+  .legend-btn {
+    background: none;
+    border: none;
+    border-bottom: 1px dotted var(--border);
+    color: var(--fg-muted);
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+
+  .legend-btn:hover {
+    color: var(--accent, #6aa0ff);
   }
 
   .panes {
@@ -804,6 +911,7 @@
   .speed-control {
     display: flex;
     align-items: center;
+    gap: 0.35rem;
     margin: 0.05rem 0 0.1rem;
   }
 
@@ -821,6 +929,18 @@
     margin: 0.1rem 0 0.2rem;
     font-family: var(--font-mono);
     font-size: 0.75rem;
+  }
+
+  .rule-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin: 0.05rem 0 0.15rem;
+  }
+
+  .rule-pill:hover {
+    color: var(--error);
+    border-color: var(--error);
   }
 
   .wf-select {
@@ -851,9 +971,26 @@
     color: var(--fg);
     cursor: pointer;
     font: inherit;
-    padding: 0;
+    padding: 0.05rem 0.2rem;
+    border-radius: 3px;
     text-align: left;
     white-space: pre;
+    display: inline-block;
+  }
+
+  .weapon-btn.ready {
+    border-left: 2px solid var(--success);
+    padding-left: 0.3rem;
+  }
+
+  .weapon-btn.cycling {
+    border-left: 2px solid var(--warn);
+    padding-left: 0.3rem;
+    background: linear-gradient(
+      90deg,
+      rgba(232, 194, 104, 0.18) var(--cooldown-pct, 30%),
+      transparent var(--cooldown-pct, 30%)
+    );
   }
 
   .weapon-btn:hover {
@@ -923,6 +1060,14 @@
     display: flex;
     align-items: baseline;
     gap: 0.4rem;
+    padding: 0.05rem 0.2rem;
+    border-radius: 3px;
+  }
+
+  .contact.locked {
+    border-left: 2px solid var(--accent, #6aa0ff);
+    background: rgba(110, 168, 254, 0.12);
+    padding-left: 0.35rem;
   }
 
   .desig {
