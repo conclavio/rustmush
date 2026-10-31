@@ -231,6 +231,9 @@ pub enum GroundError {
         /// Failure descriptions.
         failures: Vec<String>,
     },
+    /// Live staging (`@ground/stage`) refusal.
+    #[error("ground stage failed: {0}")]
+    Stage(String),
 }
 
 /// Output of [`build`]: the post-route/post-repair [`GroundDraft`], the two
@@ -249,6 +252,35 @@ pub struct BuiltPacks {
     pub arena_json: String,
     /// Computed digest of `arena_json`.
     pub arena_digest: DefinitionDigest,
+}
+
+/// Outcome of [`stage_in_world`] (`@ground/stage`; doc 30 §8, `Q-30-5`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedGround {
+    /// Arena short slug (e.g. `"proving_ground"` or `"mars_canyon"`).
+    pub id: String,
+    /// Atlas pack ID (`tacsim.<id>`).
+    pub atlas_pack_id: CanonicalId,
+    /// Atlas pack version shelved (and applied when `applied` is `true`).
+    pub atlas_version: u32,
+    /// Atlas pack SHA-256 digest (hex).
+    pub atlas_digest: String,
+    /// Campaign-seed arena pack ID (`tacsim.pack.<id>`).
+    pub arena_pack_id: CanonicalId,
+    /// Campaign-seed arena pack version shelved (and applied when `applied` is `true`).
+    pub arena_version: u32,
+    /// Campaign-seed arena pack SHA-256 digest (hex).
+    pub arena_digest: String,
+    /// Grid dimensions `(cols, rows)`.
+    pub dims: (u16, u16),
+    /// Number of `<= 128 x 128` heightfield quadrant entries.
+    pub quadrants: usize,
+    /// Whether the two packs were also applied through the content latch (`@ground/stage/apply`).
+    pub applied: bool,
+    /// `@atlas/pack plan` fingerprint for the shelved atlas pack (when not yet applied).
+    pub atlas_plan_fingerprint: Option<String>,
+    /// `@atlas/pack plan` fingerprint for the shelved arena pack (when not yet applied).
+    pub arena_plan_fingerprint: Option<String>,
 }
 
 /// Output of [`check`]: wire size, grid shape, grade, and passability report
@@ -2457,10 +2489,230 @@ fn shipped_draft(short_id: &str) -> Option<Result<GroundDraft, GroundError>> {
     }
 }
 
-/// **Serve an arena draft from a running world** (doc 30 §8 & §11 WG.4 / WG.5):
+/// **Hot-shelve (and optionally apply) a [`GroundDraft`] into a running world**
+/// (doc 30 §8, §13 `Q-30-5`):
+///
+/// 1. Validates `draft`, auto-bumps `atlas_version` and `arena_version` past any
+///    already-published or already-applied version whose digest differs from the
+///    candidate build, and builds + signs both packs (`tacsim.<id>` and
+///    `tacsim.pack.<id>`).
+/// 2. Hot-loads `tacsim.pack.<id>` into [`crate::store::TacsimStore`] via
+///    [`crate::store::TacsimStore::stage_pack`] and records its ledger row via
+///    `crate::store::put_pack`.
+/// 3. Places both packs onto the [`mush_atlas::AtlasState`] shelf via
+///    [`mush_atlas::stage_pack`] and computes their [`mush_content::plan`]
+///    fingerprints.
+/// 4. When `apply` is `true` (`@ground/stage/apply`), checks that no match is
+///    running on the simulator centre and applies `tacsim.<id>` followed by
+///    `tacsim.pack.<id>` via [`mush_content::apply_pack`].
+///
+/// # Errors
+///
+/// [`GroundError`] if validation, pack signing, store binding, or pack
+/// application fails.
+pub fn stage_in_world(
+    ctx: &mut mush_core::Ctx<'_>,
+    draft: &GroundDraft,
+    apply: bool,
+) -> Result<StagedGround, GroundError> {
+    if apply && crate::match_::lobby::centre(ctx.w).is_some_and(|centre| centre.state.is_live()) {
+        return Err(GroundError::Stage(
+            "cannot apply a ground draft while a match is running on the simulator centre"
+                .to_owned(),
+        ));
+    }
+
+    let mut working = draft.clone();
+    let mut built = build(&working)?;
+    let mut atlas_pack =
+        mush_content::load_pack(&built.atlas_json).map_err(|e| GroundError::Pack(e.to_string()))?;
+    let mut arena_rules_pack =
+        crate::pack::load_pack(&built.arena_json).map_err(|e| GroundError::Pack(e.to_string()))?;
+    let atlas_id = atlas_pack.manifest().id().clone();
+    let rules_id = arena_rules_pack.pack().manifest().id().clone();
+
+    if let Some(content) = ctx.w.module_state::<mush_content::ContentState>() {
+        if let Some(applied) = content.latches.applied(&atlas_id)
+            && (applied.version() > working.atlas_version
+                || (applied.version() == working.atlas_version
+                    && applied.digest() != atlas_pack.manifest().digest()))
+        {
+            working.atlas_version = applied.version().saturating_add(1);
+        }
+        if let Some(applied) = content.latches.applied(&rules_id)
+            && (applied.version() > working.arena_version
+                || (applied.version() == working.arena_version
+                    && applied.digest() != arena_rules_pack.pack().manifest().digest()))
+        {
+            working.arena_version = applied.version().saturating_add(1);
+        }
+    }
+
+    if let Some(atlas) = ctx.w.module_state::<mush_atlas::AtlasState>() {
+        if let Some(shelved) = atlas.shelf.get(&atlas_id) {
+            let m = shelved.manifest();
+            if m.version() > working.atlas_version
+                || (m.version() == working.atlas_version
+                    && m.digest() != atlas_pack.manifest().digest())
+            {
+                working.atlas_version = m.version().saturating_add(1);
+            }
+        }
+        if let Some(shelved) = atlas.shelf.get(&rules_id) {
+            let m = shelved.manifest();
+            if m.version() > working.arena_version
+                || (m.version() == working.arena_version
+                    && m.digest() != arena_rules_pack.pack().manifest().digest())
+            {
+                working.arena_version = m.version().saturating_add(1);
+            }
+        }
+    }
+
+    if let Some(store) = ctx.w.module_state::<crate::store::TacsimStore>() {
+        let candidate_digest = arena_rules_pack.pack().manifest().digest();
+        let mut max_v = 0_u32;
+        let mut collision = false;
+        for ((id, v), row) in &store.published {
+            if id == &rules_id {
+                max_v = max_v.max(*v);
+                if *v == working.arena_version && row.digest() != candidate_digest {
+                    collision = true;
+                }
+            }
+        }
+        for ((id, v), loaded) in &store.loaded {
+            if id == &rules_id {
+                max_v = max_v.max(*v);
+                if *v == working.arena_version
+                    && loaded.pack.manifest().digest() != candidate_digest
+                {
+                    collision = true;
+                }
+            }
+        }
+        if max_v > working.arena_version || collision {
+            working.arena_version = max_v.max(working.arena_version).saturating_add(1);
+        }
+    }
+
+    if working.atlas_version != draft.atlas_version || working.arena_version != draft.arena_version
+    {
+        built = build(&working)?;
+        atlas_pack = mush_content::load_pack(&built.atlas_json)
+            .map_err(|e| GroundError::Pack(e.to_string()))?;
+        arena_rules_pack = crate::pack::load_pack(&built.arena_json)
+            .map_err(|e| GroundError::Pack(e.to_string()))?;
+    }
+
+    let atlas_digest = atlas_pack.manifest().digest().to_hex();
+    let arena_digest = arena_rules_pack.pack().manifest().digest().to_hex();
+    let quadrants =
+        usize::from(working.cols.div_ceil(QUAD)) * usize::from(working.rows.div_ceil(QUAD));
+
+    // Hot-shelve into TacsimStore and re-bind definitions.
+    let loaded = crate::LoadedPack {
+        pack: arena_rules_pack.clone(),
+        source: format!("staged:{}", working.id),
+    };
+    let need_ledger_row = {
+        let store = ctx
+            .w
+            .module_state_mut::<crate::store::TacsimStore>()
+            .ok_or_else(|| {
+                GroundError::Stage("the TacSim store is not composed on this world".to_owned())
+            })?;
+        store
+            .stage_pack(loaded)
+            .map_err(|e| GroundError::Stage(e.to_string()))?;
+        store
+            .staged_drafts
+            .insert(working.id.clone(), working.clone());
+        let key = (rules_id.clone(), working.arena_version);
+        !store.published.contains_key(&key)
+    };
+    if need_ledger_row {
+        let manifest = arena_rules_pack.pack().manifest();
+        let entries = u32::try_from(arena_rules_pack.pack().entries().len())
+            .map_err(|_| GroundError::Stage("arena pack entry count overflow".to_owned()))?;
+        let first_seen = ctx.world_ic_now();
+        let record = crate::record::PackRecord::new(
+            manifest.id().clone(),
+            manifest.version(),
+            manifest.kind(),
+            manifest.digest(),
+            entries,
+            first_seen,
+        )
+        .map_err(|e| GroundError::Stage(e.to_string()))?;
+        crate::store::put_pack(ctx, record);
+        crate::store::persist_meta(ctx);
+    }
+
+    // Place both packs onto the atlas shelf.
+    mush_atlas::stage_pack(ctx, atlas_pack.clone()).map_err(GroundError::Stage)?;
+    mush_atlas::stage_pack(ctx, arena_rules_pack.pack().clone()).map_err(GroundError::Stage)?;
+
+    let (atlas_plan, rules_plan) = {
+        let content = ctx
+            .w
+            .module_state::<mush_content::ContentState>()
+            .ok_or_else(|| {
+                GroundError::Stage("the content module is not composed on this world".to_owned())
+            })?;
+        let ap = mush_content::plan(&atlas_pack, content.latches.applied(&atlas_id))
+            .map_err(|e| GroundError::Stage(e.to_string()))?;
+        let rp = mush_content::plan(arena_rules_pack.pack(), content.latches.applied(&rules_id))
+            .map_err(|e| GroundError::Stage(e.to_string()))?;
+        (ap, rp)
+    };
+    let atlas_fingerprint = atlas_plan.fingerprint();
+    let arena_fingerprint = rules_plan.fingerprint();
+
+    if apply {
+        if !atlas_plan.is_noop() {
+            let (_applied, report) = mush_content::apply_pack(ctx, &atlas_pack)
+                .map_err(|e| GroundError::Stage(e.to_string()))?;
+            if let Some(anomaly) = report.anomaly {
+                return Err(GroundError::Stage(format!(
+                    "{atlas_id} apply stopped part way: {anomaly}"
+                )));
+            }
+        }
+        if !rules_plan.is_noop() {
+            let (_applied, report) = mush_content::apply_pack(ctx, arena_rules_pack.pack())
+                .map_err(|e| GroundError::Stage(e.to_string()))?;
+            if let Some(anomaly) = report.anomaly {
+                return Err(GroundError::Stage(format!(
+                    "{rules_id} apply stopped part way: {anomaly}"
+                )));
+            }
+        }
+        let arena_entry = smol_str::SmolStr::new(format!("tacsim.arena.{}", working.id));
+        let _ = crate::match_::definition_for(ctx.w, &arena_entry).map_err(GroundError::Stage)?;
+    }
+
+    Ok(StagedGround {
+        id: working.id,
+        atlas_pack_id: atlas_id,
+        atlas_version: working.atlas_version,
+        atlas_digest,
+        arena_pack_id: rules_id,
+        arena_version: working.arena_version,
+        arena_digest,
+        dims: (working.cols, working.rows),
+        quadrants,
+        applied: apply,
+        atlas_plan_fingerprint: Some(atlas_fingerprint),
+        arena_plan_fingerprint: Some(arena_fingerprint),
+    })
+}
+
+/// **Serve an arena draft from a running world** (doc 30 §8 & §11 WG.4 / WG.5 / WG.7):
 /// reconstructs the [`GroundDraft`] from the world's [`crate::store::TacsimStore`]
 /// and [`mush_atlas::AtlasState`] when the arena is loaded there (preserving the
-/// checked-in `<id>.draft.json` metadata when the cells and furniture match it),
+/// staged or checked-in `<id>.draft.json` metadata when the cells and furniture
+/// match it), falls back to an operator-staged draft on the shelf before apply,
 /// or serves the checked-in `<id>.draft.json` directly when the world has not
 /// composed its content store yet.
 ///
@@ -2470,6 +2722,9 @@ fn shipped_draft(short_id: &str) -> Option<Result<GroundDraft, GroundError>> {
 pub fn draft_from_world(w: &mush_core::World, id: &str) -> Result<GroundDraft, GroundError> {
     let short_id = id.strip_prefix("tacsim.arena.").unwrap_or(id);
     let entry_str = format!("tacsim.arena.{short_id}");
+    let staged = w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|slot| slot.staged_drafts.get(short_id).cloned());
     let Some(arena_def) = w
         .module_state::<crate::store::TacsimStore>()
         .and_then(|slot| {
@@ -2478,6 +2733,9 @@ pub fn draft_from_world(w: &mush_core::World, id: &str) -> Result<GroundDraft, G
                 .and_then(|entry| slot.definitions().arenas.get(&entry).cloned())
         })
     else {
+        if let Some(staged) = staged {
+            return Ok(staged);
+        }
         if let Some(shipped) = shipped_draft(short_id) {
             return shipped;
         }
@@ -2490,6 +2748,9 @@ pub fn draft_from_world(w: &mush_core::World, id: &str) -> Result<GroundDraft, G
         .module_state::<mush_atlas::AtlasState>()
         .map(|state| &state.records)
     else {
+        if let Some(staged) = staged {
+            return Ok(staged);
+        }
         if let Some(shipped) = shipped_draft(short_id) {
             return shipped;
         }
@@ -2498,7 +2759,27 @@ pub fn draft_from_world(w: &mush_core::World, id: &str) -> Result<GroundDraft, G
             detail: "atlas state is not composed on this world".to_owned(),
         });
     };
-    draft_from_records(short_id, &arena_def, records)
+    match draft_from_records(short_id, &arena_def, records) {
+        Ok(rebuilt) => {
+            if let Some(staged) = staged
+                && staged.classes == rebuilt.classes
+                && staged.elev == rebuilt.elev
+                && staged.key_spots == rebuilt.key_spots
+                && staged.waypoints == rebuilt.waypoints
+                && staged.entry_zones == rebuilt.entry_zones
+                && staged.biome == rebuilt.biome
+            {
+                return Ok(staged);
+            }
+            Ok(rebuilt)
+        }
+        Err(err) => {
+            if let Some(staged) = staged {
+                return Ok(staged);
+            }
+            Err(err)
+        }
+    }
 }
 
 /// Reassemble a [`GroundDraft`] from an [`ArenaDef`] and loaded atlas [`mush_atlas::record::Records`].
@@ -4302,6 +4583,130 @@ mod tests {
         check!(
             arena_map_within_bound("tacsim.arena.steep", &steep_terrain, &[]).is_ok(),
             "arena_map_within_bound accepts the windowed steep 256x256 ground"
+        );
+        Ok(())
+    }
+
+    fn booted_test_world() -> Result<mush_testkit::TestWorld, Box<dyn std::error::Error>> {
+        use crate::composition as comp;
+        let cfg = crate::TacsimConfig {
+            enabled: true,
+            ..crate::TacsimConfig::default()
+        };
+        let onboarding = mush_core::OnboardingConfig::default();
+        let game = crate::GameEconomyConfig::default();
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
+            mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &game,
+        );
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        mods.extend(comp::sheet_modules(&onboarding, &game));
+        mods.push(comp::tacsim_module_wired(cfg, true, inventory));
+        mods.push(comp::content_module_with(false, true)?);
+        Ok(mush_testkit::TestWorld::with_modules(mods))
+    }
+
+    #[test]
+    fn wg7_live_staging_hot_shelves_and_applies_ground_drafts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut tw = booted_test_world()?;
+        let god = mush_core::GOD;
+
+        // 1. `@ground/check proving_ground` and `@ground/draft proving_ground`.
+        let ev = tw.run(god, "@ground/check proving_ground");
+        let check_out = tw.seen_by(&ev, god).join("\n");
+        check!(
+            check_out.contains("[PASS] ground `proving_ground`"),
+            "unexpected @ground/check output: {check_out}"
+        );
+
+        let ev = tw.run(god, "@ground/draft proving_ground");
+        let draft_out = tw.seen_by(&ev, god).join("\n");
+        check!(
+            draft_out.contains("GroundDraft `proving_ground`"),
+            "unexpected @ground/draft output: {draft_out}"
+        );
+
+        // 2. `@ground/stage mars_canyon` hot-shelves onto `TacsimStore` and `AtlasState.shelf`
+        //    without applying yet, and prints the `@atlas/pack apply` fingerprints.
+        let ev = tw.run(god, "@ground/stage mars_canyon");
+        let stage_out = tw.seen_by(&ev, god).join("\n");
+        check!(
+            stage_out.contains("Staged ground `mars_canyon` on shelf"),
+            "unexpected @ground/stage output: {stage_out}"
+        );
+
+        // Even before `@atlas/pack apply`, `draft_from_world` serves the staged draft.
+        let shelved_draft = draft_from_world(tw.world(), "mars_canyon")?;
+        check_eq!(shelved_draft.id, "mars_canyon");
+        check_eq!(shelved_draft.biome, "mars");
+
+        // Now apply `mars_canyon` via `@ground/stage/apply mars_canyon` and verify
+        // `definition_for` and its 12 roster tanks are live.
+        let ev = tw.run(god, "@ground/stage/apply mars_canyon");
+        let apply_out = tw.seen_by(&ev, god).join("\n");
+        check!(
+            apply_out.contains("Staged and applied ground `mars_canyon`"),
+            "unexpected @ground/stage/apply output: {apply_out}"
+        );
+        let mars_id = smol_str::SmolStr::new("tacsim.arena.mars_canyon");
+        let mars_loaded = crate::match_::definition_for(tw.world(), &mars_id)?
+            .ok_or("missing tacsim.arena.mars_canyon")?;
+        check_eq!(mars_loaded.terrain.width(), 256);
+        check_eq!(mars_loaded.terrain.height(), 256);
+        let mars_entry = CanonicalId::new("tacsim.arena.mars_canyon")?;
+        let mars_roster_len = tw
+            .world()
+            .module_state::<crate::store::TacsimStore>()
+            .and_then(|s| s.arena_roster(&mars_entry))
+            .map_or(0, |r| r.units.len());
+        check_eq!(mars_roster_len, 12);
+
+        // 3. Multi-chunk streaming (`@ground/stage/begin` .. `/chunk` .. `/end/apply`) on an
+        //    edited `proving_ground` draft auto-bumps `atlas_version` (3 -> 4) and
+        //    `arena_version` (5 -> 6) and updates the live world in place.
+        let mut edited = proving_ground_draft()?;
+        let mut elev = decode_elev(&edited.id, edited.cols, edited.rows, &edited.elev)?;
+        elev[120 * usize::from(edited.cols) + 129] += 50;
+        edited.elev = encode_elev(&elev);
+        edited.key_spots.push(KeySpot {
+            name: "Studio Ridge".to_owned(),
+            x: 129,
+            y: 120,
+        });
+        let json = serde_json::to_string(&edited)?;
+        let _ = tw.run(god, "@ground/stage/begin");
+        for chunk in json.as_bytes().chunks(4000) {
+            let s = std::str::from_utf8(chunk)?;
+            let _ = tw.run(god, &format!("@ground/stage/chunk {s}"));
+        }
+        let ev = tw.run(god, "@ground/stage/end/apply");
+        let end_out = tw.seen_by(&ev, god).join("\n");
+        check!(
+            end_out.contains("Staged and applied ground `proving_ground`: tacsim.proving_ground@4")
+                && end_out.contains("tacsim.pack.proving_ground@6"),
+            "expected version auto-bump to @4 / @6, got: {end_out}"
+        );
+
+        let pg_id = smol_str::SmolStr::new("tacsim.arena.proving_ground");
+        let updated_loaded = crate::match_::definition_for(tw.world(), &pg_id)?
+            .ok_or("missing tacsim.arena.proving_ground")?;
+        check!(
+            updated_loaded
+                .key_spots
+                .iter()
+                .any(|s| s.name == "Studio Ridge" && s.x == 129 && s.y == 120),
+            "live proving_ground should include newly staged key spot Studio Ridge"
+        );
+        let round_trip = draft_from_world(tw.world(), "proving_ground")?;
+        check_eq!(round_trip.atlas_version, 4);
+        check_eq!(round_trip.arena_version, 6);
+        check!(
+            round_trip
+                .key_spots
+                .iter()
+                .any(|s| s.name == "Studio Ridge")
         );
         Ok(())
     }

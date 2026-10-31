@@ -423,6 +423,28 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::ship::ship_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 30 §8, §13 Q-30-5 (cut WG.7): `@ground`, live ground draft staging ----
+    //
+    // Staff-only verb that signs and hot-shelves a `GroundDraft` (`tacsim.<id>` +
+    // `tacsim.pack.<id>`) into the running `TacsimStore` and `AtlasState.shelf`,
+    // and optionally applies both packs immediately (`/stage/apply`). Supports
+    // multi-chunk streaming (`/stage/begin`, `/stage/chunk`, `/stage/end[/apply]`)
+    // so full 256×256 and 512×512 drafts from the Web Map Studio fit under the
+    // gateway's 8 KiB line cap.
+    reg.command(
+        CommandSpec {
+            name: "@ground".into(),
+            shape: ArgShape::Raw,
+            switches: ["stage", "apply", "begin", "chunk", "end", "check", "draft"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: GROUND_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(ground_cmd),
+    )?;
     Ok(())
 }
 
@@ -1661,4 +1683,252 @@ fn pin_clear(ctx: &mut Ctx<'_>, subject: &CanonicalId) -> Result<(), CmdError> {
         format!("{subject} is no longer pinned; it resolves by the ordinary rule again."),
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// @ground — Doc 30 §8, §13 Q-30-5 (cut WG.7): live ground draft staging
+// ---------------------------------------------------------------------------
+
+const GROUND_HELP: &str = "\
+@ground/stage[/apply] <draft_json | id | preset[:seed][:id]>
+@ground/stage/begin .. @ground/stage/chunk <slice> .. @ground/stage/end[/apply]
+@ground/check <draft_json | id | preset[:seed][:id]>
+@ground/draft <id>
+
+Staff-only live ground draft staging (doc 30 §8, Q-30-5). Signs and hot-shelves
+a GroundDraft (`tacsim.<id>` + `tacsim.pack.<id>`) into the running TacSim store
+and Atlas shelf without a server restart; `/apply` applies both packs immediately
+when the simulator centre is idle.";
+
+fn resolve_ground_draft(w: &World, raw: &str) -> Result<crate::ground::GroundDraft, CmdError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(CmdError::msg(
+            "Usage: @ground/stage[/apply] <draft_json | id | preset[:seed][:id]>",
+        ));
+    }
+    if trimmed.starts_with('{') {
+        return crate::ground::GroundDraft::from_json(trimmed)
+            .map_err(|e| CmdError::msg(format!("Invalid ground draft JSON: {e}")));
+    }
+    if let Ok(draft) = crate::ground::draft_from_world(w, trimmed) {
+        return Ok(draft);
+    }
+    // Parse `<preset>[:<seed>][:<id>]` (e.g. `mars_canyon` or `mars_canyon:42:red_gulch`).
+    let mut parts = trimmed.split(':');
+    let preset = parts.next().unwrap_or(trimmed);
+    let seed = match parts.next() {
+        Some(s) if !s.is_empty() => s
+            .parse::<u64>()
+            .map_err(|_| CmdError::msg(format!("Invalid seed `{s}` in `{trimmed}`.")))?,
+        _ => 2350,
+    };
+    let custom_id = parts.next().filter(|s| !s.is_empty());
+    let mut draft =
+        crate::ground::generate(preset, seed, None).map_err(|e| CmdError::msg(e.to_string()))?;
+    if let Some(id) = custom_id {
+        draft.id = id.to_owned();
+    }
+    Ok(draft)
+}
+
+fn report_staged(ctx: &mut Ctx<'_>, staged: &crate::ground::StagedGround) {
+    let short_atlas: String = staged.atlas_digest.chars().take(12).collect();
+    let short_arena: String = staged.arena_digest.chars().take(12).collect();
+    if staged.applied {
+        info(
+            ctx,
+            format!(
+                "Staged and applied ground `{}`: {}@{} (digest {}…) and {}@{} (digest {}…). \
+                 Arena tacsim.arena.{} is live.",
+                staged.id,
+                staged.atlas_pack_id,
+                staged.atlas_version,
+                short_atlas,
+                staged.arena_pack_id,
+                staged.arena_version,
+                short_arena,
+                staged.id,
+            ),
+        );
+    } else {
+        let atlas_fp = staged.atlas_plan_fingerprint.as_deref().unwrap_or("");
+        let arena_fp = staged.arena_plan_fingerprint.as_deref().unwrap_or("");
+        info(
+            ctx,
+            format!(
+                "Staged ground `{}` on shelf: {}@{} (digest {}…, fingerprint {}) and {}@{} \
+                 (digest {}…, fingerprint {}). Next: `@atlas/pack plan {}` / `@atlas/pack apply \
+                 {} {}` then `@atlas/pack plan {}` / `@atlas/pack apply {} {}` (or \
+                 `@ground/stage/apply`).",
+                staged.id,
+                staged.atlas_pack_id,
+                staged.atlas_version,
+                short_atlas,
+                atlas_fp,
+                staged.arena_pack_id,
+                staged.arena_version,
+                short_arena,
+                arena_fp,
+                staged.atlas_pack_id,
+                staged.atlas_pack_id,
+                atlas_fp,
+                staged.arena_pack_id,
+                staged.arena_pack_id,
+                arena_fp,
+            ),
+        );
+    }
+}
+
+fn ground_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    require_staff(ctx)?;
+    require_enabled(ctx)?;
+
+    let has_stage = ctx.switches.has("stage");
+    let has_apply = ctx.switches.has("apply");
+    let has_begin = ctx.switches.has("begin");
+    let has_chunk = ctx.switches.has("chunk");
+    let has_end = ctx.switches.has("end");
+    let has_check = ctx.switches.has("check");
+    let has_draft = ctx.switches.has("draft");
+
+    if has_draft {
+        let id = ctx.args.raw().trim().to_owned();
+        if id.is_empty() {
+            return Err(CmdError::msg("Usage: @ground/draft <arena_id>"));
+        }
+        let draft = crate::ground::draft_from_world(ctx.w, &id)
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+        let json = draft
+            .to_json_pretty()
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+        info(
+            ctx,
+            format!(
+                "GroundDraft `{}` ({}×{}, biome `{}`, v{}/v{}, {} bytes):\n{}",
+                draft.id,
+                draft.cols,
+                draft.rows,
+                draft.biome,
+                draft.atlas_version,
+                draft.arena_version,
+                json.len(),
+                json,
+            ),
+        );
+        return Ok(());
+    }
+
+    if has_check {
+        let raw = ctx.args.raw().to_owned();
+        let draft = resolve_ground_draft(ctx.w, &raw)?;
+        let report = crate::ground::check(&draft).map_err(|e| CmdError::msg(e.to_string()))?;
+        let status = if report.passed { "PASS" } else { "FAIL" };
+        let mut msg = format!(
+            "[{status}] ground `{}` ({}×{}, {} quadrants, map {}/{} B): tracked {}%, \
+             wheeled {}%, legged {}%, max grade {}%, max road grade {}%, entry step {} cm.",
+            report.id,
+            report.cols,
+            report.rows,
+            report.quadrants,
+            report.map_bytes,
+            report.map_max_bytes,
+            report.tracked_passable_pct,
+            report.wheeled_passable_pct,
+            report.legged_passable_pct,
+            report.max_grade_pct,
+            report.max_road_grade_pct,
+            report.max_entry_zone_step_cm,
+        );
+        if !report.failures.is_empty() {
+            msg.push_str(" Failures: ");
+            msg.push_str(&report.failures.join("; "));
+        }
+        info(ctx, msg);
+        return Ok(());
+    }
+
+    if has_begin {
+        let actor = ctx.actor;
+        let store = ctx
+            .w
+            .module_state_mut::<TacsimStore>()
+            .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+        store.ground_stage_buffers.insert(actor, String::new());
+        info(
+            ctx,
+            format!(
+                "Ground stage buffer opened (max {} bytes). Send @ground/stage/chunk <slice> \
+                 and finish with @ground/stage/end or @ground/stage/end/apply.",
+                crate::store::MAX_GROUND_STAGE_BYTES,
+            ),
+        );
+        return Ok(());
+    }
+
+    if has_chunk {
+        let actor = ctx.actor;
+        let slice = ctx.args.raw().to_owned();
+        let total = {
+            let store = ctx
+                .w
+                .module_state_mut::<TacsimStore>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let Some(buf) = store.ground_stage_buffers.get_mut(&actor) else {
+                return Err(CmdError::msg(
+                    "No open ground stage buffer; run @ground/stage/begin first.",
+                ));
+            };
+            if buf.len().saturating_add(slice.len()) > crate::store::MAX_GROUND_STAGE_BYTES {
+                store.ground_stage_buffers.remove(&actor);
+                return Err(CmdError::msg(format!(
+                    "Ground stage buffer exceeded {} bytes; buffer cleared.",
+                    crate::store::MAX_GROUND_STAGE_BYTES,
+                )));
+            }
+            buf.push_str(&slice);
+            buf.len()
+        };
+        info(
+            ctx,
+            format!("Ground stage chunk appended ({total} bytes buffered)."),
+        );
+        return Ok(());
+    }
+
+    if has_end {
+        let actor = ctx.actor;
+        let buffered = {
+            let store = ctx
+                .w
+                .module_state_mut::<TacsimStore>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            store.ground_stage_buffers.remove(&actor)
+        };
+        let Some(json) = buffered else {
+            return Err(CmdError::msg(
+                "No open ground stage buffer; run @ground/stage/begin first.",
+            ));
+        };
+        let draft = crate::ground::GroundDraft::from_json(json.trim())
+            .map_err(|e| CmdError::msg(format!("Buffered ground draft JSON is invalid: {e}")))?;
+        let staged = crate::ground::stage_in_world(ctx, &draft, has_apply)
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+        report_staged(ctx, &staged);
+        return Ok(());
+    }
+
+    if has_stage || has_apply {
+        let raw = ctx.args.raw().to_owned();
+        let draft = resolve_ground_draft(ctx.w, &raw)?;
+        let staged = crate::ground::stage_in_world(ctx, &draft, has_apply)
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+        report_staged(ctx, &staged);
+        return Ok(());
+    }
+
+    Err(CmdError::msg(
+        "Usage: @ground/stage[/apply] <draft_json | id | preset[:seed][:id]> | @ground/check <...> | @ground/draft <id>",
+    ))
 }
