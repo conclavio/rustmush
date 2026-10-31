@@ -20,7 +20,8 @@
 //! the gateway stops on `SIGTERM` as it always did.
 //! `--check-config` loads the config, reports the refusals on the preflight
 //! list — `mush_config::preflight::check`, plus `preflight::check_ipc` for the
-//! boundary this half also dies on — and exits. Those functions are the list of
+//! boundary this half also dies on, plus the `[web]` table's shape, which this
+//! half is the one to read — and exits. Those functions are the list of
 //! record; the flag is not a claim that a boot raises nothing else. The
 //! world-half validations it cannot run (the `[tacsim]` pack block, the
 //! archive window) belong to `mush-server --check-config`, which reads the
@@ -41,6 +42,8 @@ use std::process::ExitCode;
 
 use mush_config::cli::CliSpec;
 use mush_gateway::{GatewayOptions, serve};
+use mush_net_web::WebConfig;
+use serde::Deserialize;
 
 /// This binary's half of the one command line the three binaries share
 /// (WS22-S1). The gateway takes neither `--ipc` (it reads `[ipc].listen` from
@@ -95,6 +98,15 @@ fn main() -> ExitCode {
             &config,
             cli.generation,
         ));
+        // The `[web]` table is opaque to mush-config (a raw `toml::Value`) and
+        // is deserialized by THIS binary at serve time, where a bad one is
+        // loud but non-fatal: the gateway keeps serving SSH with no web client
+        // at all. That is the wrong place to learn that
+        // `trusted_proxies = ["not-an-ip"]` does not parse. `render.sh`'s
+        // preflight is the right one, so the same deserialization runs here.
+        if let Err(e) = WebConfig::deserialize(config.web.clone()) {
+            refusals.push(format!("[web] config: {e}"));
+        }
         return mush_config::preflight::verdict(CLI.program, &cli.config, &refusals).exit_code();
     }
 

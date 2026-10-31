@@ -6,8 +6,11 @@ Each instance `<name>` gets:
 - systemd services `<name>mush.service` + `redis-<name>mush.service`
 - working tree `/opt/rustmush/<name>` (build under `.../build`)
 - its own Redis on its own localhost port (dev1 = **6788**)
-- its own SSH + HTTPS ports (dev1 = **6789** / **6790**), bound to the box's
-  **external IPv4 only** (not `0.0.0.0`, not the tailscale address)
+- its own SSH port (dev1 = **6789**), bound to the box's **external IPv4 only**
+  (not `0.0.0.0`, not the tailscale address)
+- its own web port (dev1 = **6790**), bound to **loopback** behind Caddy, which
+  terminates TLS for `dev1.conclav.io` on 443 (see *Behind Caddy* below); an
+  instance without a proxy binds it on the external IPv4 with native TLS instead
 
 The reference instance is **dev1** ([`dev1/`](dev1/)) — ports **6788/6789/6790**.
 The unused dev2 deployment lane has been removed. A second testing instance can
@@ -119,7 +122,9 @@ Each instance can run one of **two ways**:
 
 Each new external port must be opened in **BOTH** ufw (`ufw allow <port>/tcp`, done by
 this deploy) **and** the Hostinger network ACL (done in the Hostinger panel — ufw alone
-is not enough for external reachability).
+is not enough for external reachability). Since the boxes went behind Caddy the
+web port is **not** an external port: it is bound on loopback and only Caddy's
+443 is public (*Behind Caddy*, below).
 
 ## First deploy of dev1 (from the dev box, over SSH)
 
@@ -249,6 +254,93 @@ script ran, the config it would have run on was never re-rendered. On a box
 running the all-in-one instead (the single-process shape), the equivalent line is
 `cargo build --release -p mushd --features tls && bash …/deploy/dev1/deploy.sh`,
 which likewise re-renders before it restarts.
+
+## Behind Caddy: the web client on loopback
+
+Since 2026-10-31 the box runs **Caddy** on 80/443 ([`caddy/Caddyfile`](caddy/Caddyfile)
+is the source of truth for `/etc/caddy/Caddyfile`): `dev1.conclav.io` and
+`dev2.conclav.io` terminate TLS there and are proxied as **plain HTTP** to each
+gateway's web listener on **loopback**. The instance envs carry that shape as
+three keys, and the template renders them into the `[web]` table:
+
+| `instance.env` | renders | dev1 / dev2 | a box that terminates TLS itself |
+|---|---|---|---|
+| `WEB_BIND` | `[web].listen = "<WEB_BIND>:<WEB_PORT>"` | `127.0.0.1` | the external IPv4 (= `EXTERNAL_IP`) |
+| `WEB_TLS` | the whole `tls = { cert = …, key = … }` line, **or a `# comment`** that leaves the key out | `# no native tls: …` | `tls = { cert = "/opt/rustmush/<n>/tls/cert.pem", key = "…/key.pem" }` |
+| `WEB_TRUSTED_PROXIES` | `[web].trusted_proxies = <array>` | `["127.0.0.1"]` | `[]` |
+
+`WEB_TRUSTED_PROXIES` is what makes the proxy safe to sit behind: with it empty
+every web client is `127.0.0.1` to the IP guard, so **one address carries every
+ban and every `/api/auth/*` rate-limit bucket** — five wrong passwords from
+anyone tempban the whole web client for everyone. With Caddy listed, the
+gateway reads the client from `X-Forwarded-For`, and only when the direct peer
+IS Caddy (`crates/mush-net-web/src/ip.rs`; the rate limiter keys the same way).
+Never list an address that is not the proxy's own, and never trust a header on
+a listener that is reachable from outside: a listed peer is believed about who
+the client is. `mush-gateway --check-config` and `mushd --check-config` refuse a
+`[web]` table that does not deserialize (a malformed `trusted_proxies`, say), so
+a typo in the env stops `render.sh` before anything is installed;
+`crates/mush-config/tests/shipped_configs.rs` holds each box to the shape it
+chose (loopback ⇔ no `tls` key ⇔ a loopback-only trusted list).
+
+`render.sh` is unchanged: the three keys are ordinary `__KEY__` tokens, and a
+`WEB_TLS` value is dropped in as a whole line (a value may contain `=`; it may
+not contain `|`, `&` or `\`, which are sed's). An env that lacks any of the
+three fails the completeness grep by name — nothing defaults.
+
+### The switch, on the box (with the owner; nothing here is run by `deploy.sh`)
+
+Order matters: Caddy first (an upstream nothing listens on yet is a 502 on the
+name, not an outage), the gateway second (the new generation binds loopback
+while the draining one keeps the public port for the sessions it still holds),
+the firewall last (once the draining generation has exited).
+
+```bash
+VPS=root@conclav.io ; KEY=./hostinger
+# 1. Caddy: install the committed Caddyfile over the live one, validate, reload.
+#    Diff first — the only intended change against the 2026-10-31 file is the
+#    `(game)` snippet's upstream (`http://127.0.0.1:{args[0]}`, no `transport
+#    http` block, no `tls_insecure_skip_verify`); keep any global block the box has.
+scp -i $KEY deploy/caddy/Caddyfile $VPS:/etc/caddy/Caddyfile.new
+ssh -i $KEY $VPS 'diff -u /etc/caddy/Caddyfile /etc/caddy/Caddyfile.new; caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile && mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile && systemctl reload caddy && systemctl --no-pager status caddy | head -5'
+# 2. The gateway: ship the tree, build, deploy WITH A SWAP. The `[web]` block is
+#    read by the gateway at boot, and deploy.sh swaps only when the gateway BINARY
+#    changed — the config did, so say so. The server half is untouched.
+git archive HEAD | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build'
+npm --prefix web run build && tar -c -C web dist | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build/web'
+ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --release -p mush-gateway --features tls && ~/.cargo/bin/cargo build --release -p mush-server'
+ssh -i $KEY $VPS 'GATEWAY_SWAP=1 bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh'
+# 3. Verify, from the box. The serving generation listens on loopback, Caddy
+#    answers the name, and a web client's address in the journal is the
+#    CLIENT's, not 127.0.0.1 (the "web connection attached" line carries `ip=`).
+ssh -i $KEY $VPS 'grep -A3 "^\[web\]" /opt/rustmush/dev1/mushd.toml; ss -ltnp | grep -E ":(6790|6793) "'
+ssh -i $KEY $VPS 'curl -sk --resolve dev1.conclav.io:443:127.0.0.1 https://dev1.conclav.io/healthz; echo'
+#    …then sign in once from a browser at https://dev1.conclav.io and:
+ssh -i $KEY $VPS 'journalctl -u "dev1mush-gateway@*" --since -10min | grep "web connection attached"'
+# 4. The same for dev2 (ports 6793/6792, /opt/rustmush/dev2, deploy/dev2-split).
+# 5. Firewall + Hostinger ACL, once BOTH boxes' old generations have drained
+#    (`systemctl status dev1mush-gateway@a dev1mush-gateway@b` shows one serving,
+#    none draining): drop the two public game HTTPS ports. `ufw delete allow` on
+#    a `<port>/tcp` rule removes its v4 AND v6 rules; check `ufw status` after.
+ssh -i $KEY $VPS 'ufw status numbered'
+ssh -i $KEY $VPS 'ufw delete allow 6790/tcp && ufw delete allow 6793/tcp && ufw status'
+#    Then remove 6790 and 6793 from the Hostinger network ACL in the panel.
+#    80 and 443 must be allowed in BOTH places for Caddy (443 for players, 80 for
+#    Let's Encrypt validation once `tls internal` goes). The MUSH SSH ports 6789
+#    and 6792 are untouched by all of this.
+```
+
+What a player sees: a tab open on `https://31.220.52.183:6790` keeps its
+session on the draining generation until that generation exits (24 h at most,
+with the doorway's warnings), and its reconnects go to a port that no longer
+answers once step 5 is done — they sign in again at `https://dev1.conclav.io`
+(the token is a store row and survives, but the origin moved). Until port 80 is
+open and `tls internal` is deleted from the Caddyfile, the browser warning is
+Caddy's CA instead of the old self-signed cert's.
+
+The deploy's `openssl` step still generates a self-signed pair under
+`/opt/rustmush/<n>/tls` when none exists. Nothing reads it on these two boxes
+any more; it is left for an env that renders the native-TLS shape.
 
 ## Operate
 

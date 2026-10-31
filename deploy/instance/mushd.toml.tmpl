@@ -149,14 +149,25 @@ to_gw_cap = 8192
 write_timeout_ms = 5000
 high_water_warn_pct = 80
 
-# The web client. External IPv4 only — never 0.0.0.0, never the tailscale
-# address. Native HTTPS needs the `tls` cargo feature on the build.
+# The web client. Two shapes, chosen by three instance.env keys:
+#
+#   * NATIVE TLS — `WEB_BIND` is the external IPv4 (never 0.0.0.0, never the
+#     tailscale address), `WEB_TLS` is the whole `tls = { cert = ..., key = ... }`
+#     line, `WEB_TRUSTED_PROXIES` is `[]`. The gateway terminates HTTPS from the
+#     on-disk cert/key, which needs the `tls` cargo feature on the build.
+#   * BEHIND A REVERSE PROXY on the same box (Caddy on dev1/dev2) — `WEB_BIND` is
+#     `127.0.0.1`, `WEB_TLS` is a comment (the key is left out entirely: plain
+#     HTTP), and `WEB_TRUSTED_PROXIES` is `["127.0.0.1"]`, so the client address
+#     behind bans and the auth rate limit is the proxy's X-Forwarded-For and not
+#     the proxy. Only a direct peer on that list is believed; a header from any
+#     other peer is ignored (crates/mush-net-web/src/ip.rs).
+#
 # `features`/`panels` are filled from the module registry at boot: do not set
 # them here.
 [web]
-listen = "__EXTERNAL_IP__:__WEB_PORT__"
-tls = { cert = "__TLS_DIR__/cert.pem", key = "__TLS_DIR__/key.pem" }
-trusted_proxies = []
+listen = "__WEB_BIND__:__WEB_PORT__"
+__WEB_TLS__
+trusted_proxies = __WEB_TRUSTED_PROXIES__
 metrics_enabled = false
 
 # The Discord bot. Off on a fresh instance: it needs a token, an application id

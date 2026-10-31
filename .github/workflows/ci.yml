@@ -846,6 +846,7 @@ jobs:
           }
           render deploy/instance/instance.env.example reference
           render deploy/dev1/instance.env dev1
+          render deploy/dev2/instance.env dev2
       # The marker's own negative control. The step above renders from a COPY
       # with the address already resolved, exactly as a deploy does, so on its
       # own it can only say yes — and the case the rule exists for is a hand
@@ -881,6 +882,27 @@ jobs:
           for bin in mush-gateway mush-server mushd; do
             if "./target/debug/$bin" --check-config --config rendered/broken.toml; then
               echo "$bin accepted a typo'd receipt_policy"
+              exit 1
+            fi
+          done
+      # The `[web]` table's negative control. dev1 renders the behind-Caddy shape
+      # (loopback, no tls, `trusted_proxies = ["127.0.0.1"]`), and `[web]` is a
+      # raw table to mush-config: the two binaries that read it — the gateway
+      # and the all-in-one — deserialize it in their `--check-config`, so a
+      # malformed trusted proxy is refused before render.sh installs anything
+      # rather than at serve time, where the gateway logs it and runs with no
+      # web client. mush-server never reads `[web]` and is not asked.
+      - name: ...and a malformed [web].trusted_proxies is refused by the two that read it
+        run: |
+          set -euo pipefail
+          sed 's/trusted_proxies = \["127.0.0.1"\]/trusted_proxies = ["not-an-ip"]/' rendered/dev1.toml > rendered/badweb.toml
+          if diff -q rendered/dev1.toml rendered/badweb.toml > /dev/null; then
+            echo 'dev1 no longer renders trusted_proxies = ["127.0.0.1"]: this control tampers with nothing'
+            exit 1
+          fi
+          for bin in mush-gateway mushd; do
+            if "./target/debug/$bin" --check-config --config rendered/badweb.toml; then
+              echo "$bin accepted trusted_proxies = [\"not-an-ip\"]"
               exit 1
             fi
           done

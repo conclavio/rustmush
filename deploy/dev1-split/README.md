@@ -5,7 +5,8 @@ the forked pair instead of the all-in-one `mushd`, so a deploy can rebuild and
 restart the **game server** while the **player connections stay up** — players
 see a brief "restarting…" then "Reconnected" and a fresh room render, mid-scene,
 never a disconnect. As of **M16d this holds for WEB (WebSocket) players too**,
-not just SSH: the gateway now serves the web client (HTTPS :6790) itself. As of
+not just SSH: the gateway now serves the web client itself (HTTP on
+`127.0.0.1:6790`, behind Caddy's HTTPS at `dev1.conclav.io`). As of
 **doc 33 GG.4 the gateway itself moves without a drop too**: it runs as one of
 two *generations* (`dev1mush-gateway@a` / `@b`), and a gateway change is a
 *swap* — the idle generation starts on the same ports, the serving one drains
@@ -42,7 +43,7 @@ so a bad config is a failed deploy, not a crash-looping unit.
 
 ### Web (M16d): now served + hot-restart-surviving
 
-The gateway serves the **web client (HTTPS :6790)** itself — the axum web ingress
+The gateway serves the **web client** itself — the axum web ingress
 is wired into `mush-gateway::serve` on the SAME session layer as SSH. A WS player
 authenticates with a token, gets the same `hello` manifest the all-in-one
 advertises (who / channels / mail / `<ruleset>.sheet`), and plays over the split
@@ -54,9 +55,16 @@ from Redis, and keeps playing (proven by
 split no longer takes the web client offline, and web players get the same
 connection-holding hot-restart payoff SSH players do.
 
-The gateway reads the SAME `[web]` block (listen + `[web.tls]`) from `mushd.toml`
-that the all-in-one uses, so **the gateway must be built with `--features tls`**
-to serve HTTPS from the on-disk cert/key (see the build steps below).
+The gateway reads the SAME `[web]` block from `mushd.toml` that the all-in-one
+uses. On dev1 that block is the **behind-Caddy shape** since 2026-10-31
+(`deploy/README.md` → *Behind Caddy*): `listen = "127.0.0.1:6790"`, no `tls`
+key, `trusted_proxies = ["127.0.0.1"]` — Caddy terminates HTTPS for
+`dev1.conclav.io` and proxies plain HTTP to the gateway. `--features tls` is
+therefore no longer needed on this box's gateway build; it stays harmless on
+the build lines below, and it is required again by any env that renders a
+native `tls = { … }` line. A change to the `[web]` block is a **gateway**
+change: deploy with `GATEWAY_SWAP=1` (the config is read at boot, and
+`deploy.sh` swaps on its own only when the gateway binary changed).
 
 ## First switch to the split (from the dev box, over SSH)
 
@@ -74,8 +82,9 @@ git archive HEAD | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build'
 # on the dev box and ship it instead (see "Building the SPA elsewhere" below).
 ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build/web && npm ci && npm run build'
 # build the TWO split binaries (release). The gateway serves the web client
-# (HTTPS :6790) now, so it needs --features tls to terminate TLS from the on-disk
-# cert/key; the server is the game half (no web) and needs no tls.
+# (plain HTTP on loopback behind Caddy since 2026-10-31; --features tls is only
+# needed by an env that renders native TLS, and is harmless here); the server
+# is the game half (no web) and needs no tls.
 ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --release -p mush-gateway --features tls && ~/.cargo/bin/cargo build --release -p mush-server'
 # switch dev1 to the split (stops the all-in-one, starts the server unit, then the gateway)
 ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh'

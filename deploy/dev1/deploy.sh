@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Configure + (re)start the rustmush dev1 instance on this box. Run as root.
 # Assumes the source tree is at /opt/rustmush/dev1/build and the release binary
-# has been built there (cargo build --release --features tls). Idempotent:
+# has been built there (cargo build --release; --features tls only if the env
+# renders the native-TLS [web] shape — dev1 is behind Caddy and does not).
+# Idempotent:
 # safe to re-run for a redeploy (it will restart the services).
 set -euo pipefail
 
@@ -55,7 +57,7 @@ install -m 644 "$SELF/redis-dev1mush.service" /etc/systemd/system/redis-dev1mush
 #    pointed at, exactly as deploy/README.md promises for a rendered instance.
 EXT_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)"
 if [ -z "${EXT_IP:-}" ]; then echo "FATAL: could not resolve external IP" >&2; exit 1; fi
-echo "external IP: $EXT_IP  (ssh :6789, https :6790)"
+echo "external IP: $EXT_IP  (ssh :6789; web on 127.0.0.1:6790 behind Caddy)"
 #
 #    Staged the way render.sh stages the config it produces: the installed
 #    instance.env is what `scripts/reset-instance.sh` is pointed at, and a shell
@@ -78,8 +80,10 @@ bash "$INSTANCE_DIR/render.sh" \
   "$ROOT/instance.env" "$INSTANCE_DIR/mushd.toml.tmpl" "$ROOT/mushd.toml" \
   "$BUILD/target/release/mushd"
 
-# 5. Self-signed TLS cert for the web (6790) if absent. SANs cover the external
-#    IP and conclav.io so browsers at least match the host.
+# 5. Self-signed TLS cert if absent. Read only by an env that renders the
+#    native-TLS [web] shape; dev1 is behind Caddy (deploy/README.md → "Behind
+#    Caddy") and renders no `tls` key, so nothing reads it there. SANs cover the
+#    external IP and conclav.io so browsers at least match the host.
 if [ ! -f "$ROOT/tls/cert.pem" ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
     -keyout "$ROOT/tls/key.pem" -out "$ROOT/tls/cert.pem" \
@@ -113,4 +117,4 @@ systemctl enable dev1mush.service
 systemctl restart dev1mush.service
 sleep 2
 systemctl --no-pager --lines=0 status dev1mush.service | head -4 || true
-echo "== done. ssh -p 6789 play@$EXT_IP  |  https://$EXT_IP:6790 =="
+echo "== done. ssh -p 6789 play@$EXT_IP  |  https://dev1.conclav.io (Caddy -> 127.0.0.1:6790) =="
