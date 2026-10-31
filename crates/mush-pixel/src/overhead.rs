@@ -39,6 +39,9 @@ use crate::cockpit::{
     map_from_feed, map_stamp, terrain_from_feed,
 };
 use crate::frame::Rgb;
+#[cfg(feature = "encode")]
+use crate::fx::CombatFxKind;
+use crate::fx::{self, CombatFx, ContactTracker};
 use crate::heightfield::Terrain;
 use crate::math::Det as _;
 use crate::overlay::{
@@ -48,6 +51,31 @@ use crate::overlay::{
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::raycast::{Base, Biome, Ground, Map, SpriteKind};
 use crate::scene::{Anchor, Item, Scene, Shape, Transform, Viewport};
+
+/// Kitty image IDs (`160..=162`) and placement IDs (`60`, `62`) for the
+/// retained Overhead tactical map (`v` camera mode 2).
+#[cfg(feature = "encode")]
+pub const IMAGE_ID_OH_GROUND_A: u32 = 160;
+/// Alternate double-buffered ground image ID for seamless re-centring.
+#[cfg(feature = "encode")]
+pub const IMAGE_ID_OH_GROUND_B: u32 = 161;
+/// Retained RGBA overlay image ID for rings, wedge, contacts, and HUD label.
+#[cfg(feature = "encode")]
+pub const IMAGE_ID_OH_HUD: u32 = 162;
+
+/// Kitty placement ID for the panning ground layer (`z = -90`).
+#[cfg(feature = "encode")]
+pub const PLACEMENT_OH_GROUND: u32 = 60;
+/// Kitty placement ID for the tactical overlay layer (`z = -10`).
+#[cfg(feature = "encode")]
+pub const PLACEMENT_OH_HUD: u32 = 62;
+
+#[cfg(feature = "encode")]
+const Z_OH_GROUND: i32 = -90;
+#[cfg(feature = "encode")]
+const Z_OH_HUD: i32 = -10;
+#[cfg(feature = "encode")]
+const CHROMA_KEY_OH: Rgb = [1, 0, 1];
 
 /// The sight assumed when the frame names none (`sight_m`), metres: the
 /// stock tank's.
@@ -97,12 +125,19 @@ pub enum Up {
     Camera,
 }
 
-/// How a scene is dressed: the camera's own full frame, or the inset.
+/// How a scene is dressed: the camera's own full frame, the retained Kitty
+/// HUD overlay, or the inset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Dress {
     /// The full camera: north up on the world's own coordinates, the ground
     /// blitted from the cached image, the rings' metres and the strip.
     Camera,
+    /// Retained Kitty HUD overlay: same tactical markers, rings, wedge,
+    /// contacts, ego ray, and strip as [`Dress::Camera`], but over a
+    /// chroma-key background without ground/spots (which live on the panning
+    /// ground layer).
+    #[cfg(feature = "encode")]
+    CameraHud,
     /// The inset (G.13): `up` at the top about the tank, the ground sampled
     /// a pixel, markers at the small scale, `N` on the rim, the reach in the
     /// corner.
@@ -110,6 +145,17 @@ enum Dress {
         /// Which way is up.
         up: Up,
     },
+}
+
+impl Dress {
+    fn is_camera_scale(self) -> bool {
+        match self {
+            Dress::Camera => true,
+            #[cfg(feature = "encode")]
+            Dress::CameraHud => true,
+            Dress::Inset { .. } => false,
+        }
+    }
 }
 
 /// How world points land in a scene: as they are (the camera: north up on
@@ -158,6 +204,20 @@ impl Placing {
     }
 }
 
+/// Retained Kitty state for the oversized panning ground canvas.
+#[cfg(feature = "encode")]
+#[derive(Clone, Debug, PartialEq)]
+struct KittyGroundKey {
+    built_for: Option<MapStamp>,
+    vw: usize,
+    vh: usize,
+    px_per_m_milli: i64,
+    origin_you: (f64, f64),
+}
+
+#[cfg(feature = "encode")]
+type KittyGroundPlacement = ((u16, u16, u16, u16), u32, u32);
+
 /// The overhead as a [`Picture`]: drawn from the cockpit frame and the arena
 /// map on bucket A's clock (the tank moves; the frame hash keeps an idle
 /// picture off the wire). Keeps the map it built and the ground drawn at the
@@ -172,6 +232,27 @@ pub struct OverheadPicture {
     terrain: Option<Terrain>,
     /// The ground drawn at a scale, and what it was drawn from.
     ground: Option<(GroundKey, Frame)>,
+    /// 20 Hz sub-pulse contact dead-reckoning tracker.
+    contact_tracker: ContactTracker,
+    /// Last `t_ms` ingested into `active_fx`.
+    last_fx_t_ms: Option<i64>,
+    /// Active transient FORGE3D combat FX bursts.
+    active_fx: Vec<CombatFx>,
+    /// Retained Kitty panning ground cache key (`2×` viewport around `origin_you`).
+    #[cfg(feature = "encode")]
+    kitty_ground_key: Option<KittyGroundKey>,
+    /// Active Kitty image ID (`160` or `161`) for the retained ground canvas.
+    #[cfg(feature = "encode")]
+    kitty_ground_id: u32,
+    /// Last placed `(area, src_x, src_y)` for `PLACEMENT_OH_GROUND`.
+    #[cfg(feature = "encode")]
+    kitty_ground_placement: Option<KittyGroundPlacement>,
+    /// Hash of the last uploaded RGBA buffer for `IMAGE_ID_OH_HUD`.
+    #[cfg(feature = "encode")]
+    kitty_hud_hash: Option<u64>,
+    /// Last placed terminal area for `PLACEMENT_OH_HUD`.
+    #[cfg(feature = "encode")]
+    kitty_hud_area: Option<(u16, u16, u16, u16)>,
 }
 
 /// What a drawn ground image was drawn from.
@@ -232,6 +313,286 @@ impl OverheadPicture {
         self.terrain = map.and_then(terrain_from_feed);
         self.built_for = Some(wanted);
         self.ground = None;
+        #[cfg(feature = "encode")]
+        {
+            self.kitty_ground_key = None;
+            self.kitty_ground_placement = None;
+        }
+    }
+
+    /// Return Kitty Graphics escape bytes that delete all retained Overhead
+    /// image IDs (`160..=162`), and reset cached placement state.
+    #[cfg(feature = "encode")]
+    pub fn cleanup_kitty_bytes(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if self.kitty_ground_id != 0 || self.kitty_hud_hash.is_some() {
+            for id in [IMAGE_ID_OH_GROUND_A, IMAGE_ID_OH_GROUND_B, IMAGE_ID_OH_HUD] {
+                crate::kitty::delete_image_bytes(&mut out, id);
+            }
+        }
+        self.kitty_ground_key = None;
+        self.kitty_ground_id = 0;
+        self.kitty_ground_placement = None;
+        self.kitty_hud_hash = None;
+        self.kitty_hud_area = None;
+        out
+    }
+
+    /// Invalidate a specific retained Kitty image ID if the terminal evicted it.
+    #[cfg(feature = "encode")]
+    pub fn invalidate_image(&mut self, image_id: u32) {
+        if image_id == IMAGE_ID_OH_GROUND_A || image_id == IMAGE_ID_OH_GROUND_B {
+            self.kitty_ground_key = None;
+            self.kitty_ground_placement = None;
+        } else if image_id == IMAGE_ID_OH_HUD {
+            self.kitty_hud_hash = None;
+            self.kitty_hud_area = None;
+        }
+    }
+
+    /// Force all retained Kitty placements to re-emit on the next tick.
+    #[cfg(feature = "encode")]
+    pub fn invalidate_placements(&mut self) {
+        self.kitty_ground_placement = None;
+        self.kitty_hud_area = None;
+    }
+
+    /// Render the Overhead tactical map as a retained 2-layer Kitty Graphics
+    /// stream (`1280x` when `cell` is known and `!step_down`, `640x` fallback
+    /// otherwise):
+    /// - Layer 1 (`IMAGE_ID_OH_GROUND_A`/`B`, `PLACEMENT_OH_GROUND`, `z = -90`):
+    ///   oversized `2×` ground + named spots canvas that pans smoothly via
+    ///   sub-rectangle `a=p` as the player drives.
+    /// - Layer 2 (`IMAGE_ID_OH_HUD`, `PLACEMENT_OH_HUD`, `z = -10`):
+    ///   chroma-keyed RGBA tactical overlay (range rings, look wedge,
+    ///   dead-reckoned contacts, ego ray, strip, and FORGE3D combat FX).
+    #[cfg(feature = "encode")]
+    pub fn draw_kitty(
+        &mut self,
+        feeds: &dyn Feeds,
+        look: &Look,
+        area: (u16, u16, u16, u16),
+        cell: Option<crate::caps::CellSize>,
+        step_down: bool,
+    ) -> Option<(crate::iso25d::Viewport25D, Vec<u8>)> {
+        let cockpit = feeds.feed(COCKPIT_FEED)?;
+        let vp = crate::cockpit_kitty::viewport_fp(area.2, area.3, cell, step_down);
+        let (vw, vh) = (vp.width_px, vp.height_px);
+        let placed_area = (
+            area.0.saturating_add(vp.col_offset),
+            area.1.saturating_add(vp.row_offset),
+            vp.cols,
+            vp.rows,
+        );
+        let mut ops = Vec::new();
+
+        if cockpit.get("seated").and_then(Value::as_bool) == Some(false) {
+            if self.kitty_ground_id != 0 {
+                crate::kitty::delete_image_bytes(&mut ops, self.kitty_ground_id);
+                self.kitty_ground_id = 0;
+                self.kitty_ground_key = None;
+                self.kitty_ground_placement = None;
+            }
+            let mut card = Frame::new(vw, vh);
+            draw_card(&mut card, "NOT IN A COCKPIT");
+            let rgba = frame_to_rgba_opaque(&card);
+            let h = fnv1a_bytes(&rgba);
+            if self.kitty_hud_hash != Some(h) {
+                let png = crate::png::encode_rgba(vw, vh, &rgba);
+                crate::kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_OH_HUD);
+                self.kitty_hud_hash = Some(h);
+                self.kitty_hud_area = None;
+            }
+            if self.kitty_hud_area != Some(placed_area) {
+                place_kitty_subrect(
+                    &mut ops,
+                    IMAGE_ID_OH_HUD,
+                    PLACEMENT_OH_HUD,
+                    placed_area,
+                    (0, 0, vw as u32, vh as u32),
+                    Z_OH_HUD,
+                );
+                self.kitty_hud_area = Some(placed_area);
+            }
+            return Some((vp, wrap_kitty_sync(ops)));
+        }
+
+        let held = feeds.feed(ARENA_MAP_FEED);
+        self.ensure_map(held);
+        fx::sync_combat_fx(&mut self.last_fx_t_ms, &mut self.active_fx, cockpit);
+
+        let base_you = (
+            num(cockpit.get("x_cm")) / 100.0,
+            num(cockpit.get("y_cm")) / 100.0,
+        );
+        let you = (
+            base_you.0 + look.dx_cm as f64 / 100.0,
+            base_you.1 + look.dy_cm as f64 / 100.0,
+        );
+        let sight = cockpit
+            .get("sight_m")
+            .and_then(Value::as_f64)
+            .filter(|m| *m > 0.0)
+            .unwrap_or(DEFAULT_SIGHT_M);
+        let reach = (sight * VIEW_MARGIN).clamp(VIEW_BAND_M.0, VIEW_BAND_M.1);
+        let px_per_m = (vw.min(vh) as f64 / 2.0) / reach;
+        let px_per_m_milli = (px_per_m * 1_000.0).round() as i64;
+
+        // 1. Panning oversized 2x ground + spots canvas (`PLACEMENT_OH_GROUND`, z = -90).
+        let (gw, gh) = (vw * 2, vh * 2);
+        let need_ground_rebuild = match self.kitty_ground_key.as_ref() {
+            None => true,
+            Some(k) => {
+                if k.built_for != self.built_for
+                    || k.vw != vw
+                    || k.vh != vh
+                    || k.px_per_m_milli != px_per_m_milli
+                {
+                    true
+                } else {
+                    let dx_px = ((you.0 - k.origin_you.0) * px_per_m).round() as i64;
+                    let dy_px = ((k.origin_you.1 - you.1) * px_per_m).round() as i64;
+                    let sx = vw as i64 / 2 + dx_px;
+                    let sy = vh as i64 / 2 + dy_px;
+                    sx < 0 || sy < 0 || sx + vw as i64 > gw as i64 || sy + vh as i64 > gh as i64
+                }
+            }
+        };
+
+        if need_ground_rebuild {
+            let new_key = KittyGroundKey {
+                built_for: self.built_for,
+                vw,
+                vh,
+                px_per_m_milli,
+                origin_you: you,
+            };
+            let ground_canvas = build_kitty_ground_canvas(self, held, you, px_per_m, (vw, vh));
+            let next_id = if self.kitty_ground_id == IMAGE_ID_OH_GROUND_A {
+                IMAGE_ID_OH_GROUND_B
+            } else {
+                IMAGE_ID_OH_GROUND_A
+            };
+            let prev_id = self.kitty_ground_id;
+            let png = crate::png::encode(&ground_canvas);
+            crate::kitty::transmit_bytes(&mut ops, &png, next_id);
+            let sx = (vw / 2) as u32;
+            let sy = (vh / 2) as u32;
+            place_kitty_subrect(
+                &mut ops,
+                next_id,
+                PLACEMENT_OH_GROUND,
+                placed_area,
+                (sx, sy, vw as u32, vh as u32),
+                Z_OH_GROUND,
+            );
+            if prev_id != 0 && prev_id != next_id {
+                crate::kitty::delete_image_bytes(&mut ops, prev_id);
+            }
+            self.kitty_ground_id = next_id;
+            self.kitty_ground_key = Some(new_key);
+            self.kitty_ground_placement = Some((placed_area, sx, sy));
+        } else if let Some(k) = self.kitty_ground_key.as_ref() {
+            let dx_px = ((you.0 - k.origin_you.0) * px_per_m).round() as i64;
+            let dy_px = ((k.origin_you.1 - you.1) * px_per_m).round() as i64;
+            let sx = (vw as i64 / 2 + dx_px).clamp(0, vw as i64) as u32;
+            let sy = (vh as i64 / 2 + dy_px).clamp(0, vh as i64) as u32;
+            if self.kitty_ground_placement != Some((placed_area, sx, sy))
+                && self.kitty_ground_id != 0
+            {
+                place_kitty_subrect(
+                    &mut ops,
+                    self.kitty_ground_id,
+                    PLACEMENT_OH_GROUND,
+                    placed_area,
+                    (sx, sy, vw as u32, vh as u32),
+                    Z_OH_GROUND,
+                );
+                self.kitty_ground_placement = Some((placed_area, sx, sy));
+            }
+        }
+
+        // 2. Chroma-keyed tactical overlay + contacts + FX (`IMAGE_ID_OH_HUD`, z = -10).
+        let mut hud_frame = Frame::new(vw, vh);
+        let scene = overhead_scene(&hud_frame, cockpit, held, look, self, Dress::CameraHud);
+        scene.draw(&mut hud_frame);
+        let mut rgba = frame_to_rgba_chroma(&hud_frame, CHROMA_KEY_OH);
+        self.paint_overhead_fx_rgba(&mut rgba, (vw, vh), cockpit, base_you, you, px_per_m);
+
+        let hud_hash = fnv1a_bytes(&rgba);
+        if self.kitty_hud_hash != Some(hud_hash) {
+            let png = crate::png::encode_rgba(vw, vh, &rgba);
+            crate::kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_OH_HUD);
+            self.kitty_hud_hash = Some(hud_hash);
+            self.kitty_hud_area = None;
+        }
+        if self.kitty_hud_area != Some(placed_area) {
+            place_kitty_subrect(
+                &mut ops,
+                IMAGE_ID_OH_HUD,
+                PLACEMENT_OH_HUD,
+                placed_area,
+                (0, 0, vw as u32, vh as u32),
+                Z_OH_HUD,
+            );
+            self.kitty_hud_area = Some(placed_area);
+        }
+
+        fx::step_combat_fx(&mut self.active_fx);
+        Some((vp, wrap_kitty_sync(ops)))
+    }
+
+    #[cfg(feature = "encode")]
+    fn paint_overhead_fx_rgba(
+        &self,
+        rgba: &mut [u8],
+        (vw, vh): (usize, usize),
+        cockpit: &Value,
+        base_you: (f64, f64),
+        you: (f64, f64),
+        px_per_m: f64,
+    ) {
+        if self.active_fx.is_empty() {
+            return;
+        }
+        let cx = (vw / 2) as i32;
+        let cy = (vh / 2) as i32;
+        let contacts = cockpit
+            .get("contacts")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for fx_item in &self.active_fx {
+            let target_xy = match &fx_item.kind {
+                CombatFxKind::Fire { target_key, .. } => target_key.as_deref().and_then(|tk| {
+                    contacts.iter().enumerate().find_map(|(ci, c)| {
+                        let id = c.get("id").and_then(Value::as_str);
+                        let des = c.get("designator").and_then(Value::as_str);
+                        if id == Some(tk) || des == Some(tk) {
+                            let (b, r) = self.contact_tracker.contact_bearing_range(c, ci);
+                            let pos = at_bearing(base_you, b, r);
+                            let tx = cx + ((pos.0 - you.0) * px_per_m).round() as i32;
+                            let ty = cy - ((pos.1 - you.1) * px_per_m).round() as i32;
+                            Some((tx, ty, 12))
+                        } else {
+                            None
+                        }
+                    })
+                }),
+                CombatFxKind::Struck { .. } => None,
+            };
+            let w_i = vw as i32;
+            let h_i = vh as i32;
+            let mut put = |x: i32, y: i32, col: [u8; 4]| {
+                if x >= 0 && x < w_i && y >= 0 && y < h_i {
+                    let idx = (y as usize * vw + x as usize) * 4;
+                    if let Some(dst) = rgba.get_mut(idx..idx + 4) {
+                        dst.copy_from_slice(&col);
+                    }
+                }
+            };
+            fx::paint_single_fx(fx_item, (cx, cy), target_xy, (cx, cy), &mut put);
+        }
     }
 }
 
@@ -254,8 +615,52 @@ impl Picture for OverheadPicture {
         }
         let held = feeds.feed(ARENA_MAP_FEED);
         self.ensure_map(held);
+        fx::sync_combat_fx(&mut self.last_fx_t_ms, &mut self.active_fx, cockpit);
         let scene = overhead_scene(frame, cockpit, held, look, self, Dress::Camera);
         scene.draw(frame);
+        if !self.active_fx.is_empty() {
+            let (w, h) = (frame.width() as i64, frame.height() as i64);
+            let base_you = (
+                num(cockpit.get("x_cm")) / 100.0,
+                num(cockpit.get("y_cm")) / 100.0,
+            );
+            let you = (
+                base_you.0 + look.dx_cm as f64 / 100.0,
+                base_you.1 + look.dy_cm as f64 / 100.0,
+            );
+            let sight = cockpit
+                .get("sight_m")
+                .and_then(Value::as_f64)
+                .filter(|m| *m > 0.0)
+                .unwrap_or(DEFAULT_SIGHT_M);
+            let reach = (sight * VIEW_MARGIN).clamp(VIEW_BAND_M.0, VIEW_BAND_M.1);
+            let px_per_m = (w.min(h) as f64 / 2.0) / reach;
+            let cx = (w / 2) as i32;
+            let cy = (h / 2) as i32;
+            let contacts = cockpit
+                .get("contacts")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let tracker = &self.contact_tracker;
+            fx::draw_fx_on_frame(frame, &self.active_fx, (cx, cy), (cx, cy), |tk| {
+                let tk = tk?;
+                contacts.iter().enumerate().find_map(|(ci, c)| {
+                    let id = c.get("id").and_then(Value::as_str);
+                    let des = c.get("designator").and_then(Value::as_str);
+                    if id == Some(tk) || des == Some(tk) {
+                        let (b, r) = tracker.contact_bearing_range(c, ci);
+                        let pos = at_bearing(base_you, b, r);
+                        let tx = cx + ((pos.0 - you.0) * px_per_m).round() as i32;
+                        let ty = cy - ((pos.1 - you.1) * px_per_m).round() as i32;
+                        Some((tx, ty, 10))
+                    } else {
+                        None
+                    }
+                })
+            });
+            fx::step_combat_fx(&mut self.active_fx);
+        }
         true
     }
 }
@@ -308,14 +713,19 @@ fn overhead_scene(
     dress: Dress,
 ) -> Scene {
     let (w, h) = (frame.width() as i64, frame.height() as i64);
-    let s: i64 = match dress {
-        Dress::Camera if w.min(h) >= 360 => 2,
-        _ => 1,
+    let s: i64 = if dress.is_camera_scale() && w.min(h) >= 360 {
+        2
+    } else {
+        1
     };
     let base_you = (
         num(cockpit.get("x_cm")) / 100.0,
         num(cockpit.get("y_cm")) / 100.0,
     );
+    if dress.is_camera_scale() {
+        pic.contact_tracker
+            .step_frame(cockpit, base_you.0 as f32, base_you.1 as f32);
+    }
     let you = (
         base_you.0 + look.dx_cm as f64 / 100.0,
         base_you.1 + look.dy_cm as f64 / 100.0,
@@ -338,6 +748,8 @@ fn overhead_scene(
         you,
         turn: match dress {
             Dress::Camera => None,
+            #[cfg(feature = "encode")]
+            Dress::CameraHud => None,
             Dress::Inset { up } => {
                 let top = match up {
                     Up::North => 0.0,
@@ -349,9 +761,10 @@ fn overhead_scene(
     };
     // The scene's units and where the tank is in them: the camera's are
     // metres about the tank, north up; the inset's pixels about the origin.
-    let (half_w, half_h, centre) = match dress {
-        Dress::Camera => (w as f64 / 2.0 / px_per_m, h as f64 / 2.0 / px_per_m, you),
-        Dress::Inset { .. } => (w as f64 / 2.0, h as f64 / 2.0, (0.0, 0.0)),
+    let (half_w, half_h, centre) = if dress.is_camera_scale() {
+        (w as f64 / 2.0 / px_per_m, h as f64 / 2.0 / px_per_m, you)
+    } else {
+        (w as f64 / 2.0, h as f64 / 2.0, (0.0, 0.0))
     };
     let viewport = Viewport {
         world: (
@@ -364,16 +777,27 @@ fn overhead_scene(
         transform: Transform::Linear,
     };
     let mut scene = Scene::new(viewport);
+    let bg_fill = match dress {
+        #[cfg(feature = "encode")]
+        Dress::CameraHud => CHROMA_KEY_OH,
+        _ => OFF_MAP,
+    };
     scene.push(Item::Panel {
         rect: (0, 0, w, h),
-        fill: OFF_MAP,
+        fill: bg_fill,
         border: None,
     });
 
     // The ground: the camera's is the whole map drawn once at this scale,
     // placed by its north-west corner; the inset's is sampled a pixel,
-    // turned about the tank.
-    if let Some(map) = pic.map.as_ref() {
+    // turned about the tank. (Retained Kitty's `CameraHud` skips ground and
+    // spots because they live on the panning `IMAGE_ID_OH_GROUND` layer.)
+    let draw_ground_and_spots = match dress {
+        #[cfg(feature = "encode")]
+        Dress::CameraHud => false,
+        _ => true,
+    };
+    if draw_ground_and_spots && let Some(map) = pic.map.as_ref() {
         let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
         let mh = map.height() as f64 * cell_m;
         match pl.turn {
@@ -442,7 +866,7 @@ fn overhead_scene(
             colour: RING,
             dash: Some((2, 3)),
         });
-        if dress == Dress::Camera {
+        if dress.is_camera_scale() {
             scene.push(Item::Text {
                 at: (you.0, you.1 + r),
                 offset: (2 * s, -9 * s),
@@ -486,15 +910,14 @@ fn overhead_scene(
         .collect();
     let placed: Vec<((f64, f64), &Value)> = contacts
         .iter()
-        .map(|c| {
-            (
-                pl.place(at_bearing(
-                    base_you,
-                    num(c.get("bearing_deg")),
-                    num(c.get("range_m")),
-                )),
-                *c,
-            )
+        .enumerate()
+        .map(|(ci, c)| {
+            let (b_deg, r_m) = if dress.is_camera_scale() {
+                pic.contact_tracker.contact_bearing_range(c, ci)
+            } else {
+                (num(c.get("bearing_deg")), num(c.get("range_m")))
+            };
+            (pl.place(at_bearing(base_you, b_deg, r_m)), *c)
         })
         .collect();
     for (at, c) in &placed {
@@ -544,7 +967,7 @@ fn overhead_scene(
         // the picture itself. The party letter (doc 32 cut CF.0, Q-CF-12)
         // right of the pips, centred on them, in the relation's colour, so
         // parties stay distinct inside one relation colour.
-        if dress == Dress::Camera {
+        if dress.is_camera_scale() {
             scene.push(Item::Text {
                 at: *at,
                 offset: (6 * s, -10 * s),
@@ -600,35 +1023,193 @@ fn overhead_scene(
         colour: YOU,
     });
 
-    match dress {
-        // The strip: what this is, which way is north, the view's reach.
-        Dress::Camera => scene.push(Item::Label {
+    if dress.is_camera_scale() {
+        scene.push(Item::Label {
             at: (3 * s, 3 * s),
             text: format!("OVERHEAD  N UP  {} M", reach.round() as i64),
             colour: TEXT,
             scale: s as usize,
-        }),
-        // `N` on the rim where north lies, the reach in the corner.
-        Dress::Inset { .. } => {
-            let rim_m = (w.min(h) as f64 / 2.0 - RIM_INSET_PX) / px_per_m;
+        });
+    } else {
+        let rim_m = (w.min(h) as f64 / 2.0 - RIM_INSET_PX) / px_per_m;
+        scene.push(Item::Text {
+            at: pl.place((you.0, you.1 + rim_m)),
+            offset: (0, 0),
+            anchor: Anchor::Centre,
+            text: "N".to_string(),
+            colour: TEXT,
+            scale: 1,
+        });
+        let reach_m = format!("{}M", reach.round() as i64);
+        scene.push(Item::Label {
+            at: (w - reach_m.len() as i64 * 6 - 1, h - 9),
+            text: reach_m,
+            colour: TEXT,
+            scale: 1,
+        });
+    }
+    scene
+}
+
+/// Build the oversized `2 * vw × 2 * vh` ground + named spots canvas centred
+/// on `origin_you` for retained Kitty sub-rectangle `a=p` panning.
+#[cfg(feature = "encode")]
+fn build_kitty_ground_canvas(
+    pic: &mut OverheadPicture,
+    held: Option<&Value>,
+    origin_you: (f64, f64),
+    px_per_m: f64,
+    (vw, vh): (usize, usize),
+) -> Frame {
+    let (gw, gh) = (vw * 2, vh * 2);
+    let (w, h) = (gw as i64, gh as i64);
+    let s: i64 = if vw.min(vh) >= 360 { 2 } else { 1 };
+    let half_w = w as f64 / 2.0 / px_per_m;
+    let half_h = h as f64 / 2.0 / px_per_m;
+    let viewport = Viewport {
+        world: (
+            origin_you.0 - half_w,
+            origin_you.1 - half_h,
+            origin_you.0 + half_w,
+            origin_you.1 + half_h,
+        ),
+        frame: (0, 0, w, h),
+        transform: Transform::Linear,
+    };
+    let mut scene = Scene::new(viewport);
+    scene.push(Item::Panel {
+        rect: (0, 0, w, h),
+        fill: OFF_MAP,
+        border: None,
+    });
+    if let Some(map) = pic.map.as_ref() {
+        let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
+        let mh = map.height() as f64 * cell_m;
+        let key = GroundKey {
+            built_for: pic.built_for,
+            px_per_m,
+        };
+        if pic.ground.as_ref().is_none_or(|(k, _)| *k != key) {
+            let image = ground_image(map, pic.terrain.as_ref(), px_per_m);
+            pic.ground = Some((key, image));
+        }
+        if let Some((_, image)) = pic.ground.as_ref() {
+            let at = viewport.to_px((0.0, mh));
+            scene.push(Item::Image {
+                at,
+                frame: image.clone(),
+            });
+        }
+        for spot in held
+            .and_then(|m| m.get("spots"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let cell = spot.get("cell").and_then(Value::as_array);
+            let n = |i: usize| cell.and_then(|c| c.get(i)).and_then(Value::as_f64);
+            let (Some(x), Some(y)) = (n(0), n(1)) else {
+                continue;
+            };
+            let at = ((x + 0.5) * cell_m, (y + 0.5) * cell_m);
+            scene.push(Item::Marker {
+                at,
+                half: 5 * s,
+                shape: Shape::Ring,
+                colour: DIM,
+            });
             scene.push(Item::Text {
-                at: pl.place((you.0, you.1 + rim_m)),
+                at,
                 offset: (0, 0),
                 anchor: Anchor::Centre,
-                text: "N".to_string(),
+                text: spot
+                    .get("letter")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string(),
                 colour: TEXT,
-                scale: 1,
-            });
-            let reach_m = format!("{}M", reach.round() as i64);
-            scene.push(Item::Label {
-                at: (w - reach_m.len() as i64 * 6 - 1, h - 9),
-                text: reach_m,
-                colour: TEXT,
-                scale: 1,
+                scale: s as usize,
             });
         }
     }
-    scene
+    let mut canvas = Frame::new(gw, gh);
+    scene.draw(&mut canvas);
+    canvas
+}
+
+#[cfg(feature = "encode")]
+pub(crate) fn place_kitty_subrect(
+    ops: &mut Vec<u8>,
+    image_id: u32,
+    placement_id: u32,
+    (col, row, cols, rows): (u16, u16, u16, u16),
+    (src_x, src_y, src_w, src_h): (u32, u32, u32, u32),
+    z: i32,
+) {
+    crate::kitty::place_bytes(
+        ops,
+        &crate::kitty::Placement {
+            image_id,
+            placement_id,
+            col,
+            row,
+            cols,
+            rows,
+            cell_x: 0,
+            cell_y: 0,
+            src_x,
+            src_y,
+            src_w,
+            src_h,
+            z,
+        },
+    );
+}
+
+#[cfg(feature = "encode")]
+pub(crate) fn wrap_kitty_sync(ops: Vec<u8>) -> Vec<u8> {
+    if ops.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(ops.len() + 20);
+    out.extend_from_slice(crate::kitty::SYNC_BEGIN);
+    out.extend_from_slice(b"\x1b7");
+    out.extend_from_slice(&ops);
+    out.extend_from_slice(b"\x1b8");
+    out.extend_from_slice(crate::kitty::SYNC_END);
+    out
+}
+
+#[cfg(feature = "encode")]
+pub(crate) fn frame_to_rgba_chroma(frame: &Frame, key: Rgb) -> Vec<u8> {
+    let mut out = Vec::with_capacity(frame.width() * frame.height() * 4);
+    for &[r, g, b] in frame.rgb().as_chunks::<3>().0 {
+        if [r, g, b] == key {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+        } else {
+            out.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    out
+}
+
+#[cfg(feature = "encode")]
+pub(crate) fn frame_to_rgba_opaque(frame: &Frame) -> Vec<u8> {
+    let mut out = Vec::with_capacity(frame.width() * frame.height() * 4);
+    for &[r, g, b] in frame.rgb().as_chunks::<3>().0 {
+        out.extend_from_slice(&[r, g, b, 255]);
+    }
+    out
+}
+
+#[cfg(feature = "encode")]
+pub(crate) fn fnv1a_bytes(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
 }
 
 /// The inset's ground: a `(w, h)` image, every pixel the colour of the cell
@@ -982,5 +1563,57 @@ mod tests {
         assert_eq!(relief(&t, 1, 1), SHADES / 2, "a rise is lit");
         assert_eq!(relief(&t, 2, 0), -(SHADES / 2), "below it, shadow");
         assert_eq!(relief(&t, 0, 0), 0, "flat");
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn retained_kitty_overhead_scales_to_1280_and_pans_ground_via_subrect() {
+        use crate::caps::CellSize;
+        let f = feeds(true);
+        let mut pic = OverheadPicture::new();
+        let area = (1, 1, 128, 36);
+        let cell = Some(CellSize {
+            width: 10,
+            height: 20,
+        });
+
+        // 1. Known cell geometry -> 1280x viewport.
+        let (vp, bytes1) = pic
+            .draw_kitty(&f, &Look::default(), area, cell, false)
+            .expect("rendered");
+        assert_eq!(vp.width_px, 1280);
+        let s1 = String::from_utf8_lossy(&bytes1);
+        assert!(s1.contains("i=160"), "uploads ground canvas id=160");
+        assert!(s1.contains("p=60"), "places ground placement p=60");
+        assert!(s1.contains("i=162"), "uploads HUD overlay id=162");
+        assert!(s1.contains("p=62"), "places HUD overlay p=62");
+
+        // 2. Identical second tick -> zero bytes.
+        let (_, bytes2) = pic
+            .draw_kitty(&f, &Look::default(), area, cell, false)
+            .expect("rendered");
+        assert!(bytes2.is_empty(), "idle tick emits 0 bytes");
+
+        // 3. Driving offset -> pans ground via p=60 without re-uploading i=160/i=161.
+        let look_moved = Look {
+            dx_cm: 2_500,
+            dy_cm: 1_500,
+            ..Look::default()
+        };
+        let (_, bytes3) = pic
+            .draw_kitty(&f, &look_moved, area, cell, false)
+            .expect("rendered");
+        let s3 = String::from_utf8_lossy(&bytes3);
+        assert!(s3.contains("p=60"), "updates ground sub-rect placement");
+        assert!(
+            !s3.contains("a=t,f=100,t=d,i=160") && !s3.contains("a=t,f=100,t=d,i=161"),
+            "does not re-upload ground PNG while inside 2x margin"
+        );
+
+        // 4. Unknown cell geometry -> 640x fallback.
+        let (vp_fb, _) = pic
+            .draw_kitty(&f, &Look::default(), area, None, false)
+            .expect("fallback rendered");
+        assert_eq!(vp_fb.width_px, 640);
     }
 }

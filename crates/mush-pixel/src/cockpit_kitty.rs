@@ -54,9 +54,10 @@ use crate::bake::{self, material_from_code};
 use crate::caps::CellSize;
 use crate::cockpit::{
     ANIMATION_DRAWS, ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture, INSET_UP, camera,
-    canopy_glass_from, contact_sprite, eye_at_cam_cm, hud, sensor_height_cm,
+    canopy_glass_from, contact_sprite_at_bearing_range, eye_at_cam_cm, hud, sensor_height_cm,
 };
 use crate::frame::{Frame, Rgb};
+use crate::fx::{self, CombatFxKind};
 use crate::heightfield::{self, Terrain};
 use crate::iso25d::{Viewport25D, material_rgb, viewport_25d};
 use crate::kitty::{self, Placement};
@@ -94,6 +95,8 @@ pub const IMAGE_ID_FP_HUD: u32 = 143;
 pub const IMAGE_ID_FP_LOCK: u32 = 144;
 /// Image ID for the retained RGBA Canopy Glass overlay (`z = -1`).
 pub const IMAGE_ID_FP_GLASS: u32 = 145;
+/// Image ID for transient FORGE3D weapon tracer / muzzle flash / impact FX (`z = -4`).
+pub const IMAGE_ID_FP_FX: u32 = 146;
 /// Base image ID (`5000..`) for lazily uploaded `(View, Art, Paint, size)`
 /// First-Person unit sprite sheets.
 pub const IMAGE_ID_FP_SHEET_BASE: u32 = 5000;
@@ -108,6 +111,8 @@ pub const PLACEMENT_FP_HUD: u32 = 43;
 pub const PLACEMENT_FP_LOCK: u32 = 44;
 /// Placement ID (`p=45`) for the RGBA Canopy Glass overlay.
 pub const PLACEMENT_FP_GLASS: u32 = 45;
+/// Placement ID (`p=46`) for transient FORGE3D combat FX.
+pub const PLACEMENT_FP_FX: u32 = 46;
 /// Base placement ID (`p=101..`) for visible First-Person contact sprites.
 pub const PLACEMENT_FP_UNIT_BASE: u32 = 101;
 
@@ -115,6 +120,7 @@ const Z_FP_WORLD: i32 = -100;
 const Z_FP_WRECK_BASE: i32 = -85;
 const Z_FP_UNIT_BASE: i32 = -60;
 const Z_FP_INSET: i32 = -5;
+const Z_FP_FX: i32 = -4;
 const Z_FP_HUD: i32 = -3;
 const Z_FP_LOCK: i32 = -2;
 const Z_FP_GLASS: i32 = -1;
@@ -448,6 +454,8 @@ pub(crate) struct CockpitKittyState {
     glass_uploaded: bool,
     last_glass_sig: u64,
     last_glass_placement: Option<Placement>,
+    fx_uploaded: bool,
+    last_fx_placement: Option<Placement>,
 }
 
 impl Default for CockpitKittyState {
@@ -482,6 +490,8 @@ impl CockpitKittyState {
             glass_uploaded: false,
             last_glass_sig: 0,
             last_glass_placement: None,
+            fx_uploaded: false,
+            last_fx_placement: None,
         }
     }
 
@@ -498,6 +508,7 @@ impl CockpitKittyState {
         self.last_hud_placement = None;
         self.last_lock_placement = None;
         self.last_glass_placement = None;
+        self.last_fx_placement = None;
     }
 
     pub(crate) fn invalidate_image(&mut self, image_id: u32) {
@@ -519,6 +530,9 @@ impl CockpitKittyState {
         } else if image_id == IMAGE_ID_FP_GLASS {
             self.glass_uploaded = false;
             self.last_glass_placement = None;
+        } else if image_id == IMAGE_ID_FP_FX {
+            self.fx_uploaded = false;
+            self.last_fx_placement = None;
         } else {
             self.uploaded_sheets.remove(&image_id);
             self.active_unit_placements
@@ -558,6 +572,11 @@ impl CockpitKittyState {
             kitty::delete_image_bytes(&mut out, IMAGE_ID_FP_GLASS);
             self.glass_uploaded = false;
             self.last_glass_placement = None;
+        }
+        if self.fx_uploaded || self.last_fx_placement.is_some() {
+            kitty::delete_image_bytes(&mut out, IMAGE_ID_FP_FX);
+            self.fx_uploaded = false;
+            self.last_fx_placement = None;
         }
         for &sheet_id in &self.uploaded_sheets {
             kitty::delete_image_bytes(&mut out, sheet_id);
@@ -923,6 +942,12 @@ impl CockpitPicture {
             y_cm: cockpit.get("y_cm").and_then(Value::as_i64).unwrap_or(0),
             heading_mdeg: cam.heading_mdeg,
         };
+        self.contact_tracker.step_frame(
+            cockpit,
+            base_cam.x_cm as f32 * 0.01,
+            base_cam.y_cm as f32 * 0.01,
+        );
+        fx::sync_combat_fx(&mut self.last_fx_t_ms, &mut self.active_fx, cockpit);
         let arena = &self.arena;
         let terrain = self.terrain.as_ref();
         let eye = eye_at_cam_cm(cockpit, arena, terrain, look, &cam);
@@ -1002,6 +1027,9 @@ impl CockpitPicture {
         // 2. Layer 2: Retained First-Person Unit Billboard Sprites (`z = -85..-10`).
         let mut next_placements = BTreeMap::new();
         let mut faint_brackets = Vec::new();
+        let mut vis_targets = Vec::new();
+        let lock_id = cockpit.get("lock").and_then(Value::as_str);
+        let lock_desig = cockpit.get("lock_designator").and_then(Value::as_str);
         let contacts = cockpit
             .get("contacts")
             .and_then(Value::as_array)
@@ -1010,10 +1038,10 @@ impl CockpitPicture {
 
         if let Some(world) = &self.kitty.world {
             for (ci, c) in contacts.iter().enumerate() {
-                let id_str = c
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .or_else(|| c.get("designator").and_then(Value::as_str))
+                let cid = c.get("id").and_then(Value::as_str);
+                let cdes = c.get("designator").and_then(Value::as_str);
+                let id_str = cid
+                    .or(cdes)
                     .map_or_else(|| format!("idx:{ci}"), str::to_owned);
                 let pid = if let Some(&existing) = self.kitty.contact_pids.get(&id_str) {
                     existing
@@ -1029,7 +1057,8 @@ impl CockpitPicture {
                     y_cm: base_cam.y_cm,
                     heading_mdeg: world.origin_cam.heading_mdeg,
                 };
-                let sprite = contact_sprite(c, &origin_base_cam, step);
+                let (b_deg, r_m) = self.contact_tracker.contact_bearing_range(c, ci);
+                let sprite = contact_sprite_at_bearing_range(c, &origin_base_cam, step, b_deg, r_m);
                 let at_opt: Option<SpriteAt> = match terrain {
                     Some(t) => heightfield::project_panoramic(
                         t,
@@ -1060,6 +1089,16 @@ impl CockpitPicture {
                 {
                     continue;
                 }
+                let is_locked = (lock_id.is_some() && cid == lock_id)
+                    || (lock_desig.is_some() && cdes == lock_desig);
+                vis_targets.push((
+                    cid.map(str::to_owned),
+                    cdes.map(str::to_owned),
+                    is_locked,
+                    vp_screenx.round() as i32,
+                    (at.bottom - at.height * 0.5).round() as i32,
+                    (at.height * 0.35).round().clamp(8.0, 26.0) as i32,
+                ));
 
                 // Check hull-down depth occlusion against `world.depth`.
                 let cx0 = ((at.screenx - at.width * 0.35).floor().max(0.0) as usize)
@@ -1380,6 +1419,111 @@ impl CockpitPicture {
             }
         } else if self.kitty.last_glass_placement.take().is_some() {
             kitty::delete_placement_bytes(&mut ops, IMAGE_ID_FP_GLASS, PLACEMENT_FP_GLASS);
+        }
+
+        // 7. Layer 7: Transient FORGE3D Combat FX Overlay (`IMAGE_ID_FP_FX = 146`, `z = -4`).
+        if !self.active_fx.is_empty() {
+            let gun_x = (vp.width_px / 2) as i32;
+            let gun_y = ((vp.height_px * 6) / 7) as i32;
+            let struck_x = (vp.width_px / 2) as i32;
+            let struck_y = (vp.height_px / 2) as i32;
+
+            let find_target = |tk: Option<&str>| -> Option<(i32, i32, i32)> {
+                if let Some(k) = tk
+                    && let Some(t) = vis_targets
+                        .iter()
+                        .find(|t| t.0.as_deref() == Some(k) || t.1.as_deref() == Some(k))
+                {
+                    return Some((t.3, t.4, t.5));
+                }
+                vis_targets
+                    .iter()
+                    .find(|t| t.2)
+                    .or_else(|| vis_targets.first())
+                    .map(|t| (t.3, t.4, t.5))
+            };
+
+            let mut min_x = (gun_x - 36).min(struck_x - 36).max(0);
+            let mut max_x = (gun_x + 36).max(struck_x + 36).min(vp.width_px as i32 - 1);
+            let mut min_y = (gun_y - 36).min(struck_y - 36).max(0);
+            let mut max_y = (gun_y + 36).max(struck_y + 36).min(vp.height_px as i32 - 1);
+
+            for fx_item in &self.active_fx {
+                if let CombatFxKind::Fire { target_key, .. } = &fx_item.kind
+                    && let Some((tx, ty, tr)) = find_target(target_key.as_deref())
+                {
+                    let pad = tr + 24;
+                    min_x = min_x.min(tx - pad).max(0);
+                    max_x = max_x.max(tx + pad).min(vp.width_px as i32 - 1);
+                    min_y = min_y.min(ty - pad).max(0);
+                    max_y = max_y.max(ty + pad).min(vp.height_px as i32 - 1);
+                }
+            }
+
+            let cw = i32::from(vp.cell_w.max(1));
+            let ch = i32::from(vp.cell_h.max(1));
+            let c0 = (min_x / cw).clamp(0, i32::from(vp.cols).saturating_sub(1));
+            let r0 = (min_y / ch).clamp(0, i32::from(vp.rows).saturating_sub(1));
+            let c1 = ((max_x + cw) / cw).clamp(c0 + 1, i32::from(vp.cols));
+            let r1 = ((max_y + ch) / ch).clamp(r0 + 1, i32::from(vp.rows));
+            let cols = u16::try_from(c1 - c0).unwrap_or(1);
+            let rows = u16::try_from(r1 - r0).unwrap_or(1);
+            let ox = c0 * cw;
+            let oy = r0 * ch;
+            let fx_w = usize::from(cols) * usize::from(vp.cell_w.max(1));
+            let fx_h = usize::from(rows) * usize::from(vp.cell_h.max(1));
+            let mut fx_rgba = vec![0u8; fx_w * fx_h * 4];
+
+            {
+                let mut put = |x: i32, y: i32, col: [u8; 4]| {
+                    let lx = x - ox;
+                    let ly = y - oy;
+                    if lx >= 0 && lx < fx_w as i32 && ly >= 0 && ly < fx_h as i32 {
+                        let off = (ly as usize * fx_w + lx as usize) * 4;
+                        if let Some(dst) = fx_rgba.get_mut(off..off + 4) {
+                            dst.copy_from_slice(&col);
+                        }
+                    }
+                };
+                for fx_item in &self.active_fx {
+                    let target_xy = match &fx_item.kind {
+                        CombatFxKind::Fire { target_key, .. } => find_target(target_key.as_deref()),
+                        CombatFxKind::Struck { .. } => None,
+                    };
+                    fx::paint_single_fx(
+                        fx_item,
+                        (gun_x, gun_y),
+                        target_xy,
+                        (struck_x, struck_y),
+                        &mut put,
+                    );
+                }
+            }
+
+            let png = png::encode_rgba(fx_w, fx_h, &fx_rgba);
+            kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FP_FX);
+            let fx_p = Placement {
+                image_id: IMAGE_ID_FP_FX,
+                placement_id: PLACEMENT_FP_FX,
+                col: base_col.saturating_add(u16::try_from(c0).unwrap_or(0)),
+                row: base_row.saturating_add(u16::try_from(r0).unwrap_or(0)),
+                cols,
+                rows,
+                cell_x: 0,
+                cell_y: 0,
+                src_x: 0,
+                src_y: 0,
+                src_w: u32::try_from(fx_w).unwrap_or(64),
+                src_h: u32::try_from(fx_h).unwrap_or(64),
+                z: Z_FP_FX,
+            };
+            kitty::place_bytes(&mut ops, &fx_p);
+            self.kitty.fx_uploaded = true;
+            self.kitty.last_fx_placement = Some(fx_p);
+            fx::step_combat_fx(&mut self.active_fx);
+        } else if self.kitty.last_fx_placement.take().is_some() || self.kitty.fx_uploaded {
+            kitty::delete_image_bytes(&mut ops, IMAGE_ID_FP_FX);
+            self.kitty.fx_uploaded = false;
         }
 
         if ops.is_empty() {

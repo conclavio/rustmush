@@ -1173,26 +1173,7 @@ struct Unit25D {
     locked: bool,
 }
 
-/// Duration of transient combat FX in 20 Hz ticks (`8` ticks = `400 ms`).
-const FX_DURATION_TICKS: u8 = 8;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum CombatFxKind {
-    /// Outgoing weapon volley from player toward a target contact (`id` or `designator`).
-    Fire {
-        target_key: Option<String>,
-        hit: bool,
-        kill: bool,
-    },
-    /// Incoming weapon hit on the player's own hull.
-    Struck { severe: bool },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CombatFx25D {
-    kind: CombatFxKind,
-    ticks_left: u8,
-}
+use crate::fx::{self, CombatFx, CombatFxKind, ContactTracker};
 
 #[cfg(feature = "encode")]
 struct FxOverlayRgba {
@@ -1286,7 +1267,9 @@ pub struct Iso25DPicture {
     /// Last observed `t_ms` so combat FX only trigger on new keyframe pulses.
     last_fx_t_ms: Option<i64>,
     /// Active transient combat FX (weapon tracers, muzzle flash, hit burst, struck ring).
-    active_fx: Vec<CombatFx25D>,
+    active_fx: Vec<CombatFx>,
+    /// Sub-pulse 20 Hz contact dead-reckoning tracker.
+    contact_tracker: ContactTracker,
     anim_tick: usize,
 }
 
@@ -1335,6 +1318,7 @@ impl Iso25DPicture {
             zoom_permille: 1000,
             last_fx_t_ms: None,
             active_fx: Vec::new(),
+            contact_tracker: ContactTracker::new(),
             anim_tick: 0,
         }
     }
@@ -1628,6 +1612,7 @@ impl Iso25DPicture {
         let Some(contacts) = frame.get("contacts").and_then(Value::as_array) else {
             return units;
         };
+        self.contact_tracker.step_frame(frame, base_x_m, base_y_m);
 
         for (ci, c) in contacts.iter().enumerate() {
             let Some(bearing_deg) = c.get("bearing_deg").and_then(Value::as_f64) else {
@@ -1656,8 +1641,9 @@ impl Iso25DPicture {
             let rad = (bearing_deg as f32).to_radians();
             let (sin_b, cos_b) = rad.det_sin_cos();
             let r_f = range_m as f32;
-            let wx_m = base_x_m + r_f * sin_b;
-            let wy_m = base_y_m + r_f * cos_b;
+            let (dr_dx_m, dr_dy_m) = self.contact_tracker.contact_offset_m(c, ci);
+            let wx_m = base_x_m + r_f * sin_b + dr_dx_m;
+            let wy_m = base_y_m + r_f * cos_b + dr_dy_m;
             let dx_m = wx_m - ego_x_m;
             let dy_m = wy_m - ego_y_m;
             let dz_m = ground_z_m(&self.map, self.terrain.as_ref(), wx_m, wy_m) - ref_z_m;
@@ -1724,92 +1710,11 @@ impl Iso25DPicture {
     /// Ingest any new combat `notices` from `frame` into `self.active_fx` when a new
     /// keyframe pulse arrives (`t_ms` advances beyond the previously seen pulse).
     fn sync_combat_fx(&mut self, frame: &Value) {
-        let t_ms = frame.get("t_ms").and_then(Value::as_i64).unwrap_or(0);
-        let Some(prev_t) = self.last_fx_t_ms else {
-            self.last_fx_t_ms = Some(t_ms);
-            return;
-        };
-        if t_ms <= prev_t {
-            return;
-        }
-        self.last_fx_t_ms = Some(t_ms);
-
-        let Some(notices) = frame.get("notices").and_then(Value::as_array) else {
-            return;
-        };
-        if notices.is_empty() {
-            return;
-        }
-
-        let fallback_target = frame
-            .get("lock")
-            .and_then(Value::as_str)
-            .or_else(|| frame.get("lock_designator").and_then(Value::as_str))
-            .map(str::to_owned);
-
-        for n in notices {
-            let Some(kind_str) = n.get("kind").and_then(Value::as_str) else {
-                continue;
-            };
-            let target_key = n
-                .get("contact")
-                .and_then(Value::as_str)
-                .or_else(|| n.get("designator").and_then(Value::as_str))
-                .map(str::to_owned)
-                .or_else(|| fallback_target.clone());
-            match kind_str {
-                "hit" | "target_section_lost" => {
-                    self.active_fx.push(CombatFx25D {
-                        kind: CombatFxKind::Fire {
-                            target_key,
-                            hit: true,
-                            kill: false,
-                        },
-                        ticks_left: FX_DURATION_TICKS,
-                    });
-                }
-                "kill" => {
-                    self.active_fx.push(CombatFx25D {
-                        kind: CombatFxKind::Fire {
-                            target_key,
-                            hit: true,
-                            kill: true,
-                        },
-                        ticks_left: FX_DURATION_TICKS,
-                    });
-                }
-                "miss" | "slot_fired" => {
-                    self.active_fx.push(CombatFx25D {
-                        kind: CombatFxKind::Fire {
-                            target_key,
-                            hit: false,
-                            kill: false,
-                        },
-                        ticks_left: FX_DURATION_TICKS,
-                    });
-                }
-                "struck" | "struck_spent" => {
-                    self.active_fx.push(CombatFx25D {
-                        kind: CombatFxKind::Struck { severe: false },
-                        ticks_left: FX_DURATION_TICKS,
-                    });
-                }
-                "section_lost" => {
-                    self.active_fx.push(CombatFx25D {
-                        kind: CombatFxKind::Struck { severe: true },
-                        ticks_left: FX_DURATION_TICKS,
-                    });
-                }
-                _ => {}
-            }
-        }
+        fx::sync_combat_fx(&mut self.last_fx_t_ms, &mut self.active_fx, frame);
     }
 
     fn step_combat_fx(&mut self) {
-        for fx in &mut self.active_fx {
-            fx.ticks_left = fx.ticks_left.saturating_sub(1);
-        }
-        self.active_fx.retain(|fx| fx.ticks_left > 0);
+        fx::step_combat_fx(&mut self.active_fx);
     }
 
     /// Render the compact center tactical HUD overlay (`hud_w × hud_h` RGBA,
@@ -2064,108 +1969,22 @@ impl Iso25DPicture {
     }
 
     fn paint_combat_fx<F>(
-        active_fx: &[CombatFx25D],
+        active_fx: &[CombatFx],
         units: &[Unit25D],
         (gun_x, gun_y): (i32, i32),
         put: &mut F,
     ) where
         F: FnMut(i32, i32, [u8; 4]),
     {
-        for fx in active_fx {
-            let progress =
-                (FX_DURATION_TICKS.saturating_sub(fx.ticks_left)) as f32 / FX_DURATION_TICKS as f32;
-            match &fx.kind {
-                CombatFxKind::Fire {
-                    target_key,
-                    hit,
-                    kill,
-                } => {
-                    // 1. Muzzle flash at player's gun mount during the first half of the burst.
-                    if fx.ticks_left >= FX_DURATION_TICKS / 2 {
-                        let r_m = if fx.ticks_left >= FX_DURATION_TICKS - 2 {
-                            5i32
-                        } else {
-                            3i32
-                        };
-                        for dy in -r_m..=r_m {
-                            for dx in -r_m..=r_m {
-                                let d2 = dx * dx + dy * dy;
-                                if d2 <= 4 {
-                                    put(gun_x + dx, gun_y + dy, [255, 248, 196, 250]);
-                                } else if d2 <= r_m * r_m {
-                                    put(gun_x + dx, gun_y + dy, [248, 156, 48, 225]);
-                                }
-                            }
-                        }
-                    }
-
-                    let Some(tu) = Self::find_fx_target(units, target_key.as_deref()) else {
-                        continue;
-                    };
-                    let tx = tu.screen_x + if *hit { 0 } else { 14 };
-                    let ty = tu.screen_y - 14 + if *hit { 0 } else { -10 };
-
-                    // 2. Glowing weapon tracer line from ego gun mount to target.
-                    let steps = 48i32;
-                    let t_start = (progress * 0.35).clamp(0.0, 0.7);
-                    let t_end = (progress * 1.35 + 0.35).clamp(0.25, 1.0);
-                    let s0 = (t_start * steps as f32) as i32;
-                    let s1 = (t_end * steps as f32) as i32;
-                    let tracer_col = if *hit {
-                        [255, 226, 96, 245]
-                    } else {
-                        [214, 186, 118, 210]
-                    };
-                    for s in s0..=s1 {
-                        if !*hit && (s & 3) == 2 {
-                            continue;
-                        }
-                        let f = s as f32 / steps as f32;
-                        let px = gun_x + ((tx - gun_x) as f32 * f).round() as i32;
-                        let py = gun_y + ((ty - gun_y) as f32 * f).round() as i32;
-                        put(px, py, tracer_col);
-                        put(px + 1, py, tracer_col);
-                        put(px, py + 1, [245, 140, 42, 200]);
-                    }
-
-                    // 3. Target impact explosion burst on hit or kill.
-                    if *hit {
-                        let max_r = if *kill { 15i32 } else { 10i32 };
-                        let r_outer = ((0.45 + 0.55 * progress) * max_r as f32)
-                            .round()
-                            .clamp(4.0, max_r as f32) as i32;
-                        let r_core = (r_outer / 2).max(2);
-                        for dy in -r_outer..=r_outer {
-                            for dx in -r_outer..=r_outer {
-                                let d2 = dx * dx + dy * dy;
-                                if d2 <= r_core * r_core {
-                                    put(tx + dx, ty + dy, [255, 248, 192, 250]);
-                                } else if d2 <= (r_outer - 2) * (r_outer - 2) {
-                                    put(tx + dx, ty + dy, [246, 122, 36, 235]);
-                                } else if d2 <= r_outer * r_outer && ((dx ^ dy) & 1 == 0) {
-                                    put(tx + dx, ty + dy, [68, 54, 48, 210]);
-                                }
-                            }
-                        }
-                    }
+        for fx_item in active_fx {
+            let target_xy = match &fx_item.kind {
+                CombatFxKind::Fire { target_key, .. } => {
+                    Self::find_fx_target(units, target_key.as_deref())
+                        .map(|tu| (tu.screen_x, tu.screen_y - 14, 14))
                 }
-                CombatFxKind::Struck { severe } => {
-                    let r_ring = if *severe { 20i32 } else { 15i32 };
-                    let col = if *severe {
-                        [245, 68, 48, 240]
-                    } else {
-                        [248, 148, 48, 225]
-                    };
-                    for deg in (0..360).step_by(8) {
-                        let rad = (deg as f32).to_radians();
-                        let (s, c) = rad.det_sin_cos();
-                        let px = gun_x + (r_ring as f32 * s).round() as i32;
-                        let py = gun_y + (r_ring as f32 * 0.75 * c).round() as i32;
-                        put(px, py, col);
-                        put(px + 1, py, col);
-                    }
-                }
-            }
+                CombatFxKind::Struck { .. } => None,
+            };
+            fx::paint_single_fx(fx_item, (gun_x, gun_y), target_xy, (gun_x, gun_y), put);
         }
     }
 
