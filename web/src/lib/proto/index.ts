@@ -51,6 +51,8 @@ export type * from "./RichText";
 export type * from "./RoomView";
 export type * from "./Span";
 export type * from "./Style";
+export type * from "./UnitDesignRequest";
+export type * from "./UnitDesignResponse";
 export type * from "./ViewEnvelope";
 export type * from "./Vital";
 export type * from "./VitalRole";

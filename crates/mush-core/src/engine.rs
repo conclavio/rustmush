@@ -8887,6 +8887,32 @@ mod typed_invoke_tests {
             })
         }
     }
+    /// The module-owned invoke families are `mind` and, since doc 31 cut
+    /// UD.2, `unit_design`; the gateway's `legal_action` and anything else
+    /// are refused, and one family has one owner.
+    #[test]
+    fn only_the_module_invoke_families_register() {
+        let mut registry = Registry::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut reg = crate::module::Registrar::new(&mut registry, "test");
+        for family in crate::module::MODULE_INVOKE_FAMILIES {
+            reg.invoke_handler(family, Arc::new(Handler(calls.clone())))
+                .expect("a module family registers");
+        }
+        assert!(
+            reg.invoke_handler("unit_design", Arc::new(Handler(calls.clone())))
+                .is_err(),
+            "one owner a family"
+        );
+        for family in ["legal_action", "nonesuch"] {
+            assert!(
+                reg.invoke_handler(family, Arc::new(Handler(calls.clone())))
+                    .is_err(),
+                "{family} is not a module's"
+            );
+        }
+    }
+
     #[test]
     fn typed_mutation_dispatch_requires_fresh_connection_actor_and_preserves_owner() {
         let mut world = World::new_minimal();

@@ -138,6 +138,13 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// What an over-cap connection is told in the authentication banner.
 const OVER_CAP_NOTICE: &str = "Too many connections from your address; try again later.";
+/// Pre-connect input is echoed, so a client that stops reading could make the
+/// server queue its own keystrokes without bound. Input that arrives while
+/// the channel's window is exhausted is dropped instead of echoed, and this
+/// many such arrivals in a row close the connection. One coincidence does
+/// not: a typist whose window refills within a round trip is left alone
+/// (doc 29a §7, round 2).
+const PENDING_STRIKES: u8 = 3;
 
 /// Cap on one output-pump write to the transport (design 02 §8.4: "try 5 s
 /// then disconnect"). A client that stops reading (terminal `^S`, dead
@@ -215,6 +222,13 @@ pub enum SshError {
     },
     /// The accept loop failed.
     Server(std::io::Error),
+    /// Could not bind the doc 29 trusted ingress socket.
+    BindTrusted {
+        /// The socket path that failed.
+        path: String,
+        /// The underlying error.
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for SshError {
@@ -225,6 +239,9 @@ impl std::fmt::Display for SshError {
             }
             SshError::Bind { addr, source } => write!(f, "binding {addr}: {source}"),
             SshError::Server(e) => write!(f, "SSH server: {e}"),
+            SshError::BindTrusted { path, source } => {
+                write!(f, "binding the SSH trusted ingress {path}: {source}")
+            }
         }
     }
 }
@@ -232,7 +249,9 @@ impl std::fmt::Display for SshError {
 impl std::error::Error for SshError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            SshError::Bind { source, .. } | SshError::Server(source) => Some(source),
+            SshError::Bind { source, .. }
+            | SshError::Server(source)
+            | SshError::BindTrusted { source, .. } => Some(source),
             SshError::HostKey { .. } => None,
         }
     }
@@ -247,6 +266,16 @@ impl SshServer {
     /// Bind, then serve forever (or until the accept loop fails).
     pub async fn run(cfg: SshConfig, hooks: Arc<dyn SshHooks>) -> Result<(), SshError> {
         Self::bind(cfg, hooks).await?.run().await
+    }
+
+    /// Bind the doc 29 trusted ingress (a Unix socket only sshdoorway can
+    /// reach) without accepting yet. See [`crate::trusted`].
+    #[cfg(unix)]
+    pub async fn bind_trusted(
+        cfg: crate::trusted::TrustedConfig,
+        hooks: Arc<dyn SshHooks>,
+    ) -> Result<crate::trusted::BoundTrustedServer, SshError> {
+        crate::trusted::BoundTrustedServer::bind(cfg, hooks).await
     }
 
     /// Load/generate the host key and bind the listener without accepting
@@ -274,7 +303,8 @@ impl SshServer {
     }
 }
 
-/// The russh configuration every rustmush listener shares.
+/// The russh configuration every rustmush listener shares (the public TCP
+/// port and the doc 29 trusted ingress alike).
 pub(crate) fn server_config(host_key_path: &std::path::Path) -> Result<Arc<Config>, SshError> {
     let key = hostkey::load_or_generate(host_key_path)?;
     let mut methods = MethodSet::empty();
@@ -383,8 +413,9 @@ impl Ingress {
     /// An ingress whose connection ids start at `base`. Every listener in one
     /// process must allocate from a disjoint range: the ids key the session
     /// manager, and two listeners both counting from 1 would hand two players
-    /// the same id (doc 29a §8 B-1). The public port starts at 1; the web
-    /// side starts at 2^32 and Discord at 2^48.
+    /// the same id (doc 29a §8 B-1). The public port starts at 1, the trusted
+    /// ingress at [`crate::trusted::TRUSTED_CONN_ID_BASE`]; the web side
+    /// starts at 2^32 and Discord at 2^48.
     pub(crate) fn with_base(hooks: Arc<dyn SshHooks>, banner: &str, base: u64) -> Ingress {
         Ingress {
             hooks,
@@ -482,11 +513,10 @@ impl Ingress {
     /// One connection's handler, for an address whose per-IP slot has
     /// already been asked for with [`SshHooks::connection_opened`]:
     /// `counted` is its answer, and the handler's `Drop` calls
-    /// [`SshHooks::connection_closed`] exactly when it is `true`. Kept for
-    /// ingresses that gate elsewhere (the doc 29 trusted ingress asks at its
-    /// preamble, for the address the doorway names); the public port uses
-    /// [`Ingress::handler_for_admission`].
-    #[allow(dead_code)] // The trusted ingress (doc 29) is its caller.
+    /// [`SshHooks::connection_closed`] exactly when it is `true`. The doc 29
+    /// trusted ingress asks at its preamble's `Hello`, for the address the
+    /// doorway names, and builds its handler here; the public TCP port asks
+    /// at accept and uses [`Ingress::handler_for_admission`].
     pub(crate) fn handler_for(&self, addr: IpAddr, counted: bool) -> ConnHandler {
         self.handler_with(addr, Slot::Counted(counted), DEFAULT_AUTH_DEADLINE)
     }
@@ -558,6 +588,8 @@ impl Ingress {
             kill: KillSwitch::new(),
             auth_deadline,
             flood: FloodBucket::new(PREAUTH_FLOOD_RATE, PREAUTH_FLOOD_BURST, Instant::now()),
+            pending_strikes: 0,
+            attested: None,
         }
     }
 }
@@ -581,6 +613,14 @@ impl Slot {
             self,
             Slot::Counted(false) | Slot::Gated(Admission::OverCap | Admission::Drop)
         )
+    }
+}
+
+impl ConnHandler {
+    /// This connection's id (tests).
+    #[cfg(test)]
+    pub(crate) fn conn_id(&self) -> u64 {
+        self.conn_id
     }
 }
 
@@ -725,7 +765,7 @@ pub(crate) struct ConnHandler {
     hooks: Arc<dyn SshHooks>,
     banner: Arc<str>,
     conn_id: u64,
-    addr: IpAddr,
+    pub(crate) addr: IpAddr,
     shared: Arc<Mutex<Shared>>,
     route: Route,
     channel: Option<ChannelId>,
@@ -768,6 +808,25 @@ pub(crate) struct ConnHandler {
     /// the server's channel close with its own before it is disconnected.
     auth_deadline: Duration,
     flood: FloodBucket,
+    /// Consecutive pre-connect inputs that arrived while the channel's window
+    /// was exhausted (see [`PENDING_STRIKES`]).
+    pending_strikes: u8,
+    /// Doc 29: the account the trusted ingress's preamble bound to this
+    /// connection, after the doorway attested the player holds a key that
+    /// [`SshHooks::auth_account_key`] accepted. `auth_none` for exactly
+    /// `user` then logs in as a public-key login. Always `None` on the public
+    /// TCP port, which never reads a preamble.
+    pub(crate) attested: Option<Attested>,
+}
+
+/// What a doc 29 `Begin` with an attested key bound (see
+/// [`ConnHandler::attested`]).
+#[derive(Clone, Debug)]
+pub(crate) struct Attested {
+    /// The exact upstream username the doorway will authenticate as.
+    pub(crate) user: String,
+    pub(crate) account: String,
+    pub(crate) characters: Vec<CharSummary>,
 }
 
 impl Drop for ConnHandler {
@@ -955,7 +1014,7 @@ fn parse_history(line: &str) -> Option<HistoryReq> {
 /// a trailing/empty character part (`account+`) is treated as no request.
 /// The returned account part is what all auth uses; the character part only
 /// ever selects a character the authenticated account *owns*.
-fn split_account_user(user: &str) -> (&str, Option<&str>) {
+pub(crate) fn split_account_user(user: &str) -> (&str, Option<&str>) {
     match user.split_once('+') {
         Some((account, character)) if !character.is_empty() => (account, Some(character)),
         Some((account, _)) => (account, None),
@@ -965,7 +1024,7 @@ fn split_account_user(user: &str) -> (&str, Option<&str>) {
 
 /// `play` / `guest` / `new` — the auth-none front door (M1: all three
 /// alias to the welcome screen).
-fn is_front_door(user: &str) -> bool {
+pub(crate) fn is_front_door(user: &str) -> bool {
     user.eq_ignore_ascii_case("play")
         || user.eq_ignore_ascii_case("guest")
         || user.eq_ignore_ascii_case("new")
@@ -1014,7 +1073,7 @@ fn reject_blocked() -> Auth {
 /// What a refused address is told, in one sentence. The tempban names a
 /// deadline the player can act on; the siteban deliberately does not (it may
 /// be permanent, and staff, not a countdown, lift it).
-fn block_notice(reason: BlockReason) -> String {
+pub(crate) fn block_notice(reason: BlockReason) -> String {
     match reason {
         BlockReason::Siteban => "Connections from your address are not permitted.".to_owned(),
         BlockReason::TooManyFailures { remaining } => {
@@ -1029,7 +1088,8 @@ fn block_notice(reason: BlockReason) -> String {
 
 /// The wording for a refusal whose reason the hooks did not report (an
 /// embedder that has not implemented [`SshHooks::block_reason`]).
-const BLOCKED_FALLBACK: &str = "Too many failed logins from your address; try again later.";
+pub(crate) const BLOCKED_FALLBACK: &str =
+    "Too many failed logins from your address; try again later.";
 
 impl ConnHandler {
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
@@ -1681,6 +1741,18 @@ impl Handler for ConnHandler {
         if self.hooks.is_ip_blocked(self.addr) {
             return Ok(reject_blocked());
         }
+        if let Some(attested) = self.attested.as_ref().filter(|a| a.user == user) {
+            // Doc 29: the doorway proved possession of a key the account has
+            // registered (the preamble's `Begin`); this is that login.
+            let route = Route::Account {
+                account: attested.account.clone(),
+                characters: attested.characters.clone(),
+                requested_char: split_account_user(user).1.map(str::to_owned),
+            };
+            self.auth_method = AuthMethod::PublicKey;
+            self.route = route;
+            return Ok(Auth::Accept);
+        }
         if is_front_door(user) {
             self.route = Route::Welcome;
             Ok(Auth::Accept)
@@ -2117,6 +2189,17 @@ impl Handler for ConnHandler {
         // hotkeys), not the line editor (design M15 D4).
         if matches!(self.lock().mode, Mode::Tui) {
             return self.tui_data(data, session).await;
+        }
+        if !self.connected.load(Ordering::SeqCst) {
+            if session.has_pending_data(channel) {
+                self.pending_strikes = self.pending_strikes.saturating_add(1);
+                if self.pending_strikes >= PENDING_STRIKES {
+                    return Err(russh::Error::Disconnect);
+                }
+                // Not echoed into a window the client is not draining.
+                return Ok(());
+            }
+            self.pending_strikes = 0;
         }
         let (echo, actions) = {
             let mut sh = self.lock();

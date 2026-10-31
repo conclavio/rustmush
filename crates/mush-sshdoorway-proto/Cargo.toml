@@ -1,0 +1,20 @@
+[package]
+name = "mush-sshdoorway-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Doc 29: the sshdoorway preamble spoken on an instance's trusted SSH ingress before the SSH bytes"
+
+# Both ends link this crate: `mush-net-ssh` (the instance side) and
+# `mush-sshdoorway` (the doorway side). It is deliberately serde + rmp only — no
+# russh, no game crates — so the doorway's dependency surface stays small (doc 29
+# §9.5) and the instance gains no new transitive weight.
+[dependencies]
+serde.workspace = true
+rmp-serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

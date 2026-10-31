@@ -199,6 +199,27 @@ pub const PROVING_GROUND_PACK: &str = "tacsim.pack.proving_ground";
 /// The arena definition the shipped content declares.
 pub const PROVING_GROUND: &str = "tacsim.arena.proving_ground";
 
+/// `crates/tacsim/content/ground/winter_valley.draft.json` (doc 30 §9, Q-30-7; cut WG.5).
+pub const WINTER_VALLEY_DRAFT_JSON: &str =
+    include_str!("../../content/ground/winter_valley.draft.json");
+/// `crates/tacsim/content/arenas/winter_valley.json` (doc 30 §9, Q-30-7; cut WG.5).
+pub const WINTER_VALLEY_JSON: &str = include_str!("../../content/arenas/winter_valley.json");
+/// `crates/tacsim/content/atlas/winter_valley.json` — the second shipped arena's
+/// ground, as an ordinary atlas region pack (doc 30 §9, Q-30-7; cut WG.5).
+pub const WINTER_VALLEY_ATLAS_JSON: &str = include_str!("../../content/atlas/winter_valley.json");
+/// The second shipped arena's atlas pack id.
+pub const WINTER_VALLEY_ATLAS_PACK: &str = "tacsim.winter_valley";
+/// The second shipped arena's campaign-seed pack id.
+pub const WINTER_VALLEY_PACK: &str = "tacsim.pack.winter_valley";
+/// The second shipped arena definition (`tacsim.arena.winter_valley`, doc 30 cut WG.5).
+pub const WINTER_VALLEY: &str = "tacsim.arena.winter_valley";
+/// **The second shipped arena** (doc 30 §9, Q-30-7; cut WG.5): the Winter Pack
+/// valley draft (`winter_valley`) built through `ground-pack build`.
+pub const EXTENSIONS_WINTER_VALLEY: [(&str, &str); 1] = [(
+    "tacsim/content/arenas/winter_valley.json",
+    WINTER_VALLEY_JSON,
+)];
+
 // ---------------------------------------------------------------------------
 // The trade run's five IC stations (doc 18 §4.5, §4.7; cut IC1; doc 19 cut A.8)
 // ---------------------------------------------------------------------------
@@ -999,6 +1020,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
             "units/relay_station.json",
             include_str!("../../content/units/relay_station.json"),
         )],
+        EXTENSIONS_WINTER_VALLEY.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),
@@ -1024,6 +1046,30 @@ pub fn boot_packs() -> Result<Vec<mush_content::Pack>, String> {
         (
             "tacsim/content/arenas/proving_ground.json",
             PROVING_GROUND_JSON,
+        ),
+    ]
+    .iter()
+    .map(|(name, json)| mush_content::load_pack(json).map_err(|error| format!("{name}: {error}")))
+    .collect()
+}
+
+/// The two packs of the second shipped arena (`winter_valley`, doc 30 cut WG.5),
+/// in apply order: the atlas region pack (`tacsim.winter_valley`), then the
+/// campaign-seed arena pack (`tacsim.pack.winter_valley`).
+///
+/// # Errors
+///
+/// A message naming the file when a shipped pack does not verify — a build
+/// error, since `crates/tacsim/tests/shard_2/content.rs` pins both digests.
+pub fn winter_valley_packs() -> Result<Vec<mush_content::Pack>, String> {
+    [
+        (
+            "tacsim/content/atlas/winter_valley.json",
+            WINTER_VALLEY_ATLAS_JSON,
+        ),
+        (
+            "tacsim/content/arenas/winter_valley.json",
+            WINTER_VALLEY_JSON,
         ),
     ]
     .iter()

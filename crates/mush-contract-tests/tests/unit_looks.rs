@@ -15,6 +15,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use mush_pixel::design::{UnitShape, check_look};
 use mush_pixel::look::{self, Look};
 use serde_json::Value;
 
@@ -152,56 +153,31 @@ fn every_unit_type_has_a_look_and_every_look_fits_its_units() {
             assert!(look.doll.is_none(), "an unknown contact has no doll");
             continue;
         }
-        let mine: Vec<&Unit> = look
+        // The rules are `mush_pixel::design::check_look`'s, which the staff
+        // unit designer runs on a draft too (doc 31 cut UD.2): one
+        // implementation of doc 22 §6's look-against-unit check.
+        let shapes: Vec<(&str, UnitShape)> = look
             .units
             .iter()
             .map(|u| {
-                units.get(u).unwrap_or_else(|| {
+                let unit = units.get(u).unwrap_or_else(|| {
                     panic!("look {} names {u}, which is not shipped", look.label)
-                })
+                });
+                (
+                    u.as_str(),
+                    UnitShape {
+                        sections: unit
+                            .sections
+                            .iter()
+                            .map(|(s, f)| (s.clone(), f.clone()))
+                            .collect(),
+                        weapons: unit.weapons.clone(),
+                    },
+                )
             })
             .collect();
-        for (name, unit) in look.units.iter().zip(&mine) {
-            if let Some(doll) = &look.doll {
-                let drawn = doll.sections();
-                for section in unit.sections.keys() {
-                    assert!(
-                        drawn.contains(&section.as_str()),
-                        "{name}: section {section} is not in {}'s doll",
-                        look.label
-                    );
-                }
-                for part in &doll.parts {
-                    let facets = unit.sections.get(&part.section).unwrap_or_else(|| {
-                        panic!(
-                            "{name} has no section {} ({}'s doll)",
-                            part.section, look.label
-                        )
-                    });
-                    if let Some(facet) = &part.facet {
-                        assert!(
-                            facets.contains(facet),
-                            "{name}: section {} has no facet {facet} ({}'s doll)",
-                            part.section,
-                            look.label
-                        );
-                    }
-                }
-            }
-        }
-        // The muzzles of the sheet it draws: its own, else its model's (doc 31
-        // D-31-1).
-        let muzzles = look
-            .sheet()
-            .into_iter()
-            .flat_map(|sheet| sheet.facings.values())
-            .flat_map(|facing| facing.muzzles.keys());
-        for weapon in look.weapons.keys().chain(muzzles) {
-            assert!(
-                mine.iter().any(|u| u.weapons.contains(weapon)),
-                "{}: weapon {weapon} is fitted to none of its units",
-                look.label
-            );
-        }
+        let borrowed: Vec<(&str, &UnitShape)> = shapes.iter().map(|(u, s)| (*u, s)).collect();
+        let found = check_look(look, &borrowed);
+        assert_eq!(found.refusals, Vec::<String>::new(), "look {}", look.label);
     }
 }

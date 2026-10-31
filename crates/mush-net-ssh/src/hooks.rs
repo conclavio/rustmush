@@ -94,7 +94,10 @@ pub enum CreateErr {
 /// renders each event through `mush-ansi`.
 #[derive(Debug)]
 pub struct NewConn {
-    /// Connection id (unique per process, allocated by this crate).
+    /// Connection id, unique per process: the public port allocates from 1,
+    /// the trusted ingress from [`crate::trusted::TRUSTED_CONN_ID_BASE`]
+    /// (2^31); the web side starts at 2^32 and Discord at 2^48, so the four
+    /// ranges never meet.
     pub id: u64,
     /// Peer address.
     pub addr: IpAddr,

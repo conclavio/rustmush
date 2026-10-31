@@ -13,6 +13,8 @@ mush-ansi.workspace = true
 # TUI streams a first-person view with.
 mush-pixel.workspace = true
 mush-proto.workspace = true
+# Doc 29: the sshdoorway preamble read on the trusted ingress before SSH.
+mush-sshdoorway-proto.workspace = true
 russh.workspace = true
 # Doc 21 cut G.11: the asset pack over `sftp`, its files checked against the
 # manifest's SHA-256 at boot.
@@ -32,6 +34,7 @@ serde.workspace = true
 # Fuzz-style property tests for LineEditor::feed (hostile byte streams).
 mush-contract-tests.workspace = true
 proptest = { workspace = true }
+rmp-serde.workspace = true
 
 [lints]
 workspace = true

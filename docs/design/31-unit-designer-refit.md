@@ -1,5 +1,12 @@
 # 31. The unit designer and the refit bay
 
+**Draft 0.4 — 2026-10-30, D-31-7 amended in cut UD.2; UD.1's roster ruled.** Building UD.2
+found Draft 0.3's schema crate a tacsim refactor of about 1,500 lines with arena types in tow, and
+`mush-core` not building for `wasm32`; the owner ruled the rules be checked by a staff-only server
+query instead, the look checks and the preview staying in the editor (D-31-7). The owner also
+ruled the muster roster on PR #196: the pilot's own side only, the other side on first sight
+(D-31-11). UD.1 and UD.2 are built ([cut notes](31-cut-notes.md)).
+
 **Draft 0.3 — 2026-10-30, the PR #191 review folded.** A review against `origin/main` (PR #188
 merged) found six gaps, each confirmed in the code, and proposed three rulings, two taken whole and
 one in part (the owner: *"fold your edits into pr 191"*). The refit engine refuses the line tank
@@ -173,24 +180,34 @@ from the weapon catalogue (`content/weapons/`), sensors, cores, mobility within 
 — and never edits raw JSON in front of the user; the JSON is its output. A design is versioned
 (`id`, `version`) the way every pack is, and a version, once published, never changes (§2's gate).
 
-**D-31-7 One validator, run in the editor.** Every check a design meets on the server it meets in
-the editor first: `UnitSpec::check` and the catalogue build's cross-checks (the design's weapons,
-sensors and cores resolve), the look check (`mush-pixel`), the look-against-unit contract test's
-rules (every section in the doll, every weapon named, every muzzle a weapon), and the
-look-against-model check (D-31-5, the matrix check's height and width rule). The studio refuses a
-design with the server's own reason before export, and the server runs the same code at publish;
-nothing is checked twice by two implementations.
+**D-31-7 One validator — the rules on the server, the look in the editor** (amended 2026-10-30
+in cut UD.2; the owner: *"Use a staff-only server check query for the rules; keep the look checks
+and preview in wasm. Amend D-31-7 in the doc."*). Every check a design meets is run by the code the
+game itself runs, never by a second implementation:
 
-The checks cannot reach the browser through tacsim: tacsim depends on most of the server (the
-economy, industry, the LLM and NPC crates, the sim) and does not build for `wasm32`, and
-`mush-pixel` has no tacsim dependency at all. So (Draft 0.3, the review) the pure schema —
-`UnitSpec` and the weapon, sensor and core specs the cross-checks resolve, their `check`s and the
-binding rules that can refuse a unit — moves into a small dependency-light crate (`tacsim-schema`:
-serde and the definition types only, or `mush-tactics` if it stays wasm-clean; the builder's call),
-which tacsim and a `design` feature of `mush-pixel-wasm` both depend on. The same entry point also
-**computes the pack's manifest**: the canonical-JSON SHA-256 `digest` (`PACK_DIGEST_DOMAIN`) and the
-complete `requires` list (the weapon, sensor and core packs the design names), so an exported or
-published pack can never fail the loader on its own manifest.
+- **The rules are checked on the server.** The studio sends the design — its unit id, version and
+  `def` — as a staff-only `unit_design` invoke (`mush_proto::UnitDesignRequest`; refused for
+  anyone not staff). `tacsim::design::check` makes the one-entry pack the design would ship as,
+  **computes its manifest** — the `requires` (each shipped pack carrying a weapon, sensor or core
+  the `def` names) and the content layer's own `digest` — and runs it through `pack::load_pack`
+  and `Catalog::build_fielded`: every bound, every cross-check and the binding to a tactical unit,
+  as a boot would. The answer is the loader's or the build's own sentence, or the finished pack,
+  ready to commit; nothing is stored. A check takes well under a tenth of a second.
+- **The look is checked in the editor**, by `mush_pixel::design::check_look` in
+  `mush-pixel-wasm` (`mp_check_look`): every section of the unit in the doll, every doll part a
+  section and facet the unit has, every weapon name and sheet muzzle a weapon component of it, the
+  model in the catalogue and its height and width within the matrix check's bounds of the look's
+  `size_cm` (D-31-5; a weapon the model shows no muzzle for is a note, not a refusal). The
+  `unit_looks` contract test holds every shipped look to the same function. The model preview
+  (`mp_preview`) draws in the editor too.
+
+Why not a schema crate in the browser (Draft 0.3's plan): the unit types are tied to the arena —
+`UnitSpec` and its checks read `TrackedRules` and `Side` (`arena::state`), `MAX_SECTIONS`
+(`arena::condition`), `CostRow`, `HULL_SECTION` and the logistics, interior and stowage
+definitions — so the move was about 1,500 lines of tacsim with arena types in tow, against
+branches other sessions were working in; and `mush-core`, which the ids come from, does not build
+for `wasm32` (its request epoch reads `getrandom`). The server check costs a live connection, which
+publishing needs anyway.
 
 **D-31-8 Two exits: the repo and the instance.** Like the map editor, the studio exports files: a
 rules pack for `crates/tacsim/content/units/` and a look for `crates/mush-pixel/looks/`, downloaded
@@ -292,8 +309,8 @@ sits in (`WorldgenPanel.svelte`), shown to staff only. One screen, four panes:
 2. **Rules.** Sections and facets with armour and internals, consequences from the closed set,
    components on sections (weapons from the catalogue, sensors, ECM/ECCM, power, one core),
    mobility within the chassis's bounds, heat, silhouettes defaulted from the model's measured
-   size. Each field carries its server bound; the validator (D-31-7) runs on every change and lists
-   its refusals by field.
+   size. The look check (D-31-7) runs on every change; the rules check runs on the server when
+   staff press **Check on server**, and lists the loader's or the build's refusals.
 3. **Look.** Label, short name, weapon short names, the doll grid (generated from the sections and
    editable), `size_cm` and anchor defaulted from the model.
 4. **Compare.** The design beside a shipped unit: armour by facet, weapons by band, speed, heat —
@@ -440,7 +457,7 @@ runs compress it well) and a section-to-part map on the look. Not built, not sch
 |---|---|---|
 | **UD.0** | this document and its README row | — |
 | **UD.1** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the model catalogue (D-31-1..5): bake configs under `scripts/unit-bake/models/`, per-model `.mupk` files and `models/index.json` (format 3, keyed by model id), `"model"` on the six looks, `size_cm` on the look's top level, each model's fallback sheet, bakes keyed by model id (`bake_of_sheet`, `look_index` and the look-keyed `SheetKey` go), the installed pack and the fallback cache as tables that grow, the matrix check a model at a time and the look-against-model check, native binaries embedding every model by build script, the web's fetch by roster and on first sight with the text-sheet fallback (D-31-11), immutable content-named files; `units.bin` deleted | the six U.6 models ship as six files; a web client in a match of tanks fetches the tank's file and no other; a contact whose model has not arrived draws its text sheet and then its bake; no change to any picture once loaded |
-| **UD.2** | the staff designer v0 (D-31-6..8, §6): the schema crate out of tacsim, the engine and studio, the chassis templates, the model preview through `mush-pixel-wasm`, the rules and look panes, the validator and the manifest's digest and `requires` in wasm, undo/redo, the saved draft, the test hit, export to the two repo files | staff draw a biped variant with a different weapon fit from the catalogue, the studio refuses a broken one with the server's reason, and the exported files pass `cargo test` unchanged when committed |
+| **UD.2** (built 2026-10-30, [cut notes](31-cut-notes.md)) | the staff designer v0 (D-31-6..8, §6): the `unit_design` invoke and `tacsim::design` (the rules check, the manifest's digest and `requires`), the look check and model preview in `mush-pixel-wasm`, the engine and studio, the chassis templates, the rules and look panes, undo/redo, the saved draft, the test hit, export to the two repo files | staff draw a biped variant with a different weapon fit from the catalogue, the studio refuses a broken one with the server's reason, and the exported files pass `cargo test` unchanged when committed |
 | **UD.3** | the runtime design registry (D-31-9, D-31-10, D-31-16): `tacsim:design:` rows on the pack ledger read by the host before the module registers, the tactics module's catalogue fed from the fielded one, the design namespace, Publish, `@unit/design`, the generation on the match record and the input tape's rebuild, the `looks` map on the feeds and the runtime look table on the gateway and in wasm, fieldable after a restart (Q-31-1) | a published design is fielded in an arena match after the restart and drawn with its own label and doll over SSH, kitty and the web; its input tape re-executes bit for bit; committing the design leaves the catalogue's digests unchanged |
 | **UD.4** | the refit and repair bay on IC hulls (D-31-13..15): the bay view on a hull, quotes, the pending order state on the IC clock, the workshop orders through doc 08's driver at a `unit.maintain_refit` facility, refit families with slot-stable mount ids (the tank variants renamed), the refit transition, the arena refusal | an IC hull back from a sortie with a destroyed cannon is stripped, refitted with a stored like-for-like part, repaired and rearmed over IC time at a priced quote, or refitted to the laser variant and back, and a pod fitted and removed; a hull in the bay cannot launch; a simulator unit has no bay |
 
@@ -462,8 +479,10 @@ neither, and could go first once IC hulls return damaged, doc 27 H2).
 - **D-31-5** A model's mounts and muzzles bound which designs suit it (a look check, not a rule).
 - **D-31-6** A design is a rules pack and a look, composed from closed parts, versioned and never
   re-signed.
-- **D-31-7** The server's validators run in the editor through wasm; one implementation, in a
-  schema crate both depend on, which also stamps the manifest (Draft 0.3).
+- **D-31-7** (amended 2026-10-30, cut UD.2) The rules are checked by a staff-only `unit_design`
+  invoke running the server's own loader and catalogue build, which also computes the pack's
+  `requires` and `digest`; the look checks and the preview run in the editor through wasm, one
+  function shared with the contract test.
 - **D-31-8** Two exits: export to the repo, publish to the instance; the same bytes.
 - **D-31-9** The runtime registry rides the pack ledger, in its own id namespace; withdrawn, never
   deleted; read by the host before the module registers, and the tactics catalogue fed from the

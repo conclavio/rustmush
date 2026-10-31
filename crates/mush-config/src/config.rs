@@ -406,6 +406,12 @@ pub struct SshCfg {
     /// (doc 29a §9). Never applied to an in-game connection. Default `30`;
     /// `0` refuses the boot.
     pub auth_deadline_s: u64,
+    /// Doc 29: the **trusted ingress** socket sshdoorway connects to, e.g.
+    /// `"/run/rustmush-ssh/dev1.sock"`. Empty (the default) means no trusted
+    /// ingress. Unix only: a non-empty value on another platform is a boot
+    /// error. Its directory must exist (tmpfiles creates it setgid, group
+    /// `sshdoorway`, doc 29a A-1).
+    pub trusted_socket: String,
 }
 
 impl Default for SshCfg {
@@ -413,6 +419,7 @@ impl Default for SshCfg {
         SshCfg {
             listen: "0.0.0.0:2222".to_string(),
             auth_deadline_s: 30,
+            trusted_socket: String::new(),
         }
     }
 }
@@ -545,6 +552,15 @@ impl IpGuardCfg {
             per_v6_48_connections: self.per_v6_48_connections,
             exempt_nets,
         })
+    }
+}
+
+impl SshCfg {
+    /// The trusted-ingress socket path, when one is configured.
+    #[must_use]
+    pub fn trusted_socket_path(&self) -> Option<std::path::PathBuf> {
+        let path = self.trusted_socket.trim();
+        (!path.is_empty()).then(|| std::path::PathBuf::from(path))
     }
 }
 
