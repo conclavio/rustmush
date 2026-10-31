@@ -4,6 +4,7 @@
 
 use super::*;
 
+pub(super) mod bay_refit;
 mod charter_pending;
 mod conduct;
 mod core_integration;
@@ -22,6 +23,7 @@ mod paid_resale;
 mod registry;
 mod renewal;
 use crate::{CommitToken, DefinitionRef};
+pub(super) use bay_refit::{Protocol as BayRefitProtocol, bay_refit_change};
 pub(super) use charter_pending::{Protocol as CharterPendingProtocol, charter_pending_change};
 pub(super) use core_integration::{Protocol as CoreIntegrationProtocol, core_integration_change};
 pub(super) use core_refit::{Protocol as CoreRefitProtocol, refit_change};
@@ -268,6 +270,12 @@ impl Verifiers {
                 verify: core_refit::verify,
             });
         }
+        if let Some(protocol) = &registry.bay_refit {
+            rows.push(Verifier {
+                effect: protocol.admission_action().clone(),
+                verify: bay_refit::verify,
+            });
+        }
         if let Some(protocol) = &registry.hull_coverage {
             rows.push(Verifier {
                 effect: protocol.admission_action().clone(),
@@ -324,6 +332,7 @@ impl Verifiers {
                     })
                     || registry.core_integration.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
                     || registry.core_refit.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
+                    || registry.bay_refit.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
                     || registry.hull_coverage.as_ref().is_some_and(|protocol| {v.effect==*protocol.admission_action() && protocol.recognizes_historical(&reservation.effect)})
                     || registry.conduct_trial.as_ref().is_some_and(|p|{v.effect==*p.admission_action() && p.recognizes_historical(&reservation.effect)})
                     || registry.mind_renewal.as_ref().is_some_and(|protocol| {
@@ -546,6 +555,7 @@ pub(super) fn hydrate(
     ic_claim::audit_boot(&view, &records)?;
     core_integration::audit_boot(&view, &records)?;
     core_refit::audit_boot(&view, &records)?;
+    bay_refit::audit_boot(&view, &records)?;
     coverage::audit_boot(&view, &records)?;
     conduct::audit_boot(&view, &records)?;
     // 17g C2f: the four owner indexes against their heads, clock-free.
@@ -616,6 +626,7 @@ pub(super) fn prepare(
     ic_claim::validate_changes(store, mutations, &changes, identity)?;
     core_integration::validate_changes(store, mutations, &changes, identity)?;
     core_refit::validate_changes(store, mutations, &changes, identity)?;
+    bay_refit::validate_changes(store, mutations, &changes, identity)?;
     coverage::validate_changes(store, mutations, &changes, identity)?;
     conduct::validate_changes(store, mutations, &changes, identity)?;
     let mut replacement = None;

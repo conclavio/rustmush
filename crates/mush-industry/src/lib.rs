@@ -72,6 +72,7 @@
 #[macro_use]
 mod test_checks;
 
+pub mod bay_refit;
 pub mod commands;
 pub mod core_production;
 pub mod custody;

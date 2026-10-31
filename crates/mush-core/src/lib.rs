@@ -141,6 +141,7 @@ pub use action::{
     ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue, TriggerHandlerId,
     TriggerIdentity, TriggerWork,
 };
+pub use action_state::bay_refit_protocol;
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
     ActionTxn, ActionTxnLimits, CanonicalStateBytes, DetachedTypedState, MAX_ACTION_BUNDLE_BYTES,

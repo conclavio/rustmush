@@ -25,6 +25,15 @@ use thiserror::Error;
 
 mod terminal_capacity;
 
+/// **The closed bay refit's definitions** (doc 31 cut UD.4b): the pinned
+/// action ids and descriptors and every family's exact descriptor, so the
+/// Industry and Inventory owners register exactly what the kernel audits.
+pub mod bay_refit_protocol {
+    pub use super::terminal_capacity::bay_refit::{
+        ACTIONS, FAMILY_NAMES, action_descriptor, family_descriptor,
+    };
+}
+
 use crate::action::{MAX_CASCADE_OPERATIONS, ProviderRegistrationOrdinal};
 use crate::authoritative::{AuthoritativeKey, ReplayWrite};
 use crate::mechanics::{
@@ -771,6 +780,7 @@ pub struct StateFamilyRegistryBuilder {
     ic_mind_claim: Option<Box<terminal_capacity::IcClaimProtocol>>,
     core_integration: Option<Box<terminal_capacity::CoreIntegrationProtocol>>,
     core_refit: Option<Box<terminal_capacity::CoreRefitProtocol>>,
+    bay_refit: Option<Box<terminal_capacity::BayRefitProtocol>>,
     hull_coverage: Option<Box<terminal_capacity::CoverageProtocol>>,
     conduct_trial: Option<Box<terminal_capacity::ConductProtocol>>,
 }
@@ -1252,6 +1262,25 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn bay_refit_capacity(
+        &mut self,
+        owner: &OwnerId,
+        participants: [crate::DefinitionRef; 3],
+        actions: [crate::DefinitionRef; 4],
+    ) -> Result<(), ActionStateError> {
+        if self.bay_refit.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate bay refit protocol",
+            ));
+        }
+        self.bay_refit = Some(Box::new(terminal_capacity::BayRefitProtocol::new(
+            owner,
+            participants,
+            actions,
+        )?));
+        Ok(())
+    }
+
     pub(crate) fn core_integration_capacity(
         &mut self,
         owner: &OwnerId,
@@ -1455,6 +1484,7 @@ impl StateFamilyRegistryBuilder {
             self.core_refit.as_deref(),
             self.hull_coverage.as_deref(),
             self.conduct_trial.as_deref(),
+            self.bay_refit.as_deref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1469,6 +1499,7 @@ impl StateFamilyRegistryBuilder {
             ic_mind_claim: self.ic_mind_claim,
             core_integration: self.core_integration,
             core_refit: self.core_refit,
+            bay_refit: self.bay_refit,
             hull_coverage: self.hull_coverage,
             conduct_trial: self.conduct_trial,
             house_purchase: self.house_purchase,
@@ -1532,6 +1563,11 @@ impl StateFamilyRegistryBuilder {
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::CoreRefit(e.to_string()))?;
         }
+        if let Some(protocol) = &registry.bay_refit {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::BayRefit(e.to_string()))?;
+        }
         if let Some(protocol) = &registry.hull_coverage {
             protocol
                 .validate_families(&registry)
@@ -1565,6 +1601,7 @@ pub struct StateFamilyRegistry {
     ic_mind_claim: Option<Box<terminal_capacity::IcClaimProtocol>>,
     core_integration: Option<Box<terminal_capacity::CoreIntegrationProtocol>>,
     core_refit: Option<Box<terminal_capacity::CoreRefitProtocol>>,
+    bay_refit: Option<Box<terminal_capacity::BayRefitProtocol>>,
     hull_coverage: Option<Box<terminal_capacity::CoverageProtocol>>,
     conduct_trial: Option<Box<terminal_capacity::ConductProtocol>>,
     fingerprint: DefinitionDigest,
@@ -1621,6 +1658,9 @@ impl StateFamilyRegistry {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.core_refit {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.bay_refit {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.ic_mind_claim {
@@ -1769,6 +1809,7 @@ fn state_family_fingerprint<'a>(
     core_refit: Option<&terminal_capacity::CoreRefitProtocol>,
     hull_coverage: Option<&terminal_capacity::CoverageProtocol>,
     conduct_trial: Option<&terminal_capacity::ConductProtocol>,
+    bay_refit: Option<&terminal_capacity::BayRefitProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     let mut value = serde_json::Map::from_iter([
         (
@@ -1912,6 +1953,12 @@ fn state_family_fingerprint<'a>(
     } else {
         domain
     };
+    let domain = if let Some(protocol) = bay_refit {
+        value.insert("bay_refit".to_owned(), json!(protocol));
+        "state_family_registry.v18"
+    } else {
+        domain
+    };
     DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
@@ -1934,6 +1981,8 @@ pub enum StateFamilyRegistryError {
     CoreIntegration(String),
     #[error("Core refit capacity composition: {0}")]
     CoreRefit(String),
+    #[error("Bay refit capacity composition: {0}")]
+    BayRefit(String),
     #[error("IC mind claim capacity composition: {0}")]
     IcMindClaim(String),
     #[error("Mind renewal capacity composition: {0}")]
@@ -3224,6 +3273,26 @@ impl ActionTxn<'_> {
                 ActionStateError::TerminalCapacity("core refit transaction base differs")
             })?;
             terminal_capacity::refit_change(self, commit, order, admission)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
+    pub(crate) fn bay_refit_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        order: u64,
+        admission: bool,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("bay refit transaction base differs")
+            })?;
+            terminal_capacity::bay_refit_change(self, commit, order, admission)
         })();
         if let Err(error) = &result {
             self.poison(error);
