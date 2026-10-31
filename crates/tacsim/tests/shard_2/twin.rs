@@ -987,7 +987,7 @@ fn percentile(values: &mut [u128], p: usize) -> u128 {
 fn end_word(end: EndReason) -> String {
     match end {
         EndReason::Elimination { winner: Some(team) } => {
-            format!("elimination_{}", format!("{team:?}").to_lowercase())
+            format!("elimination_{}", team.as_str())
         }
         EndReason::Elimination { winner: None } => "elimination_draw".to_owned(),
         other => format!("{other:?}").to_lowercase(),

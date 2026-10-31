@@ -2312,7 +2312,8 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
             // Format 16 adds record-only accepted-order attribution (R4).
             // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-            assert_eq!(SNAPSHOT_FORMAT, 18);
+            // DT.1b: 18. Doc 32 cut CF.0: 19, with party ids and relation books.
+            assert_eq!(SNAPSHOT_FORMAT, 19);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -2852,9 +2853,12 @@ async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
          their minds.",
         blue.id
     );
+    // Lapses are told in party order, and parties sort by letter (doc 32 cut
+    // CF.0): blue's staff line comes before red's.
     assert_eq!(
         l2_lapses(&said),
         vec![
+            (Audience::Actor(GOD), blue_line),
             (
                 Audience::Actor(issuer),
                 "Squad red-1: your hold order has run out; back on their minds.".to_owned()
@@ -2866,7 +2870,6 @@ async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
                      on their minds."
                 )
             ),
-            (Audience::Actor(GOD), blue_line),
         ],
         "the issuer and staff, and nobody else: {said:?}"
     );
@@ -4858,7 +4861,7 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
         .notices
         .push(notice.clone());
     let snapshot = Snapshot::encode(&control).expect("new refusal encodes");
-    assert_eq!(snapshot.document["format"], 18);
+    assert_eq!(snapshot.document["format"], 19);
     let restored = Snapshot::decode(&snapshot.document, definition()).expect("new refusal decodes");
     assert_eq!(
         restored
@@ -4877,12 +4880,12 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
             Snapshot::head(&old).map(|head| head.format),
             Err(SnapshotError::Format {
                 found,
-                expected: 18
+                expected: tacsim::arena::snapshot::SNAPSHOT_FORMAT
             })
         );
         assert!(matches!(
             Snapshot::decode(&old, definition()),
-            Err(SnapshotError::Format { found: actual, expected: 18 }) if actual == found
+            Err(SnapshotError::Format { found: actual, expected: 19 }) if actual == found
         ));
     }
     assert_eq!(Refusal::NoCommander.as_str(), "no_commander");

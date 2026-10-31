@@ -61,3 +61,21 @@ mod tests {
         assert_eq!(PartyId::BLUE.ooc_other(), PartyId::RED);
     }
 }
+
+#[cfg(test)]
+mod slot_order_tests {
+    use crate::match_::Fielded;
+    use mush_core::ObjId;
+
+    /// Doc 32 cut CF.0: the roster's order is the pods' — explicit slots in
+    /// slot order, unslotted units at the lowest slot left in unit-id order.
+    #[test]
+    fn a_roster_is_in_pod_slot_order_whatever_the_callsigns_say() {
+        let at = |unit: u32, slot: u8| Fielded {
+            slot,
+            ..Fielded::unslotted(ObjId(unit))
+        };
+        let order = super::super::slot_order(&[at(30, 2), at(9, 0), at(12, 4), at(5, 0)]);
+        assert_eq!(order, vec![ObjId(5), ObjId(30), ObjId(9), ObjId(12)]);
+    }
+}

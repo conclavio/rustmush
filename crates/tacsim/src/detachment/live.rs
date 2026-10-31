@@ -17,7 +17,7 @@ use mush_tactics::detachment::roster::{
 use serde_json::{Value, json};
 
 use super::PracticeObjective;
-use crate::arena::state::{Designator, PartyId};
+use crate::arena::state::PartyId;
 use crate::arena_bridge::ArenaRegistry;
 use crate::arena_task::MatchId;
 use crate::deliberation::SquadId;
@@ -199,7 +199,7 @@ fn host_now(w: &World) -> Option<u64> {
 fn member_rows(record: &MatchRecord) -> Result<Vec<(GroupKey, Vec<Member>)>, LiveError> {
     let mut groups = Vec::new();
     for team in &record.teams {
-        groups.extend(team_member_rows(record.id, team, &record.callsigns)?);
+        groups.extend(team_member_rows(record.id, team)?);
     }
     Ok(groups)
 }
@@ -207,18 +207,12 @@ fn member_rows(record: &MatchRecord) -> Result<Vec<(GroupKey, Vec<Member>)>, Liv
 fn team_member_rows(
     match_id: MatchId,
     team: &crate::match_::TeamRoster,
-    callsigns: &BTreeMap<ObjId, Designator>,
 ) -> Result<Vec<(GroupKey, Vec<Member>)>, LiveError> {
     let mut groups = Vec::new();
-    let mut units = team.units.clone();
-    units.sort_by_key(|unit| {
-        let slot = match callsigns.get(unit) {
-            Some(Designator::Unit { letter, .. }) => u32::from(*letter),
-            Some(Designator::Wide { index, .. }) => 0x1_0000 + u32::from(*index),
-            _ => u32::MAX,
-        };
-        (slot, *unit)
-    });
+    // Doc 32 cut CF.0: the roster is in pod-slot order already
+    // (`match_::slot_order`); a drawn callsign says nothing about a slot, so
+    // the members are numbered in the roster's own order.
+    let units = team.units.clone();
     for (index, chunk) in units.chunks(GROUP_SIZE).enumerate() {
         let key = GroupKey {
             match_id,
@@ -1044,25 +1038,15 @@ mod tests {
 
     #[test]
     fn practice_groups_preserve_every_unit_and_original_player_assignment() -> TestResult {
-        let units: Vec<_> = (1..=13).rev().map(ObjId).collect();
-        let callsigns = units
-            .iter()
-            .map(|unit| {
-                (
-                    *unit,
-                    Designator::Unit {
-                        party: PartyId::RED,
-                        letter: char::from(b'A'.saturating_add(unit.0 as u8 % 23)),
-                    },
-                )
-            })
-            .collect();
+        // Doc 32 cut CF.0: the roster arrives in pod-slot order
+        // (`match_::slot_order`) and the members keep it.
+        let units: Vec<_> = (1..=13).map(ObjId).collect();
         let team = crate::match_::TeamRoster {
             team: PartyId::RED,
             units: units.clone(),
             pilots: vec![(ObjId(70), ObjId(7))],
         };
-        let groups = team_member_rows(MatchId(8), &team, &callsigns)?;
+        let groups = team_member_rows(MatchId(8), &team)?;
         check_eq!(
             groups
                 .iter()

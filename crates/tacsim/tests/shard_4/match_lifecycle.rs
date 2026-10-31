@@ -266,6 +266,39 @@ impl Rig {
             .clone()
     }
 
+    /// **The callsign the board prints for one slot** (doc 32 cut CF.0): the
+    /// unit letter is drawn at check-out, so it is read off the running match's
+    /// record, and before a match has checked the tank out it is the side's
+    /// letter and a dash.
+    fn slot_callsign(&self, team: PartyId, index: u8) -> String {
+        let w = self.tw.world();
+        match_::centre_of(w)
+            .and_then(|centre| centre.match_id)
+            .and_then(|match_id| w.module_state::<match_::MatchBook>()?.get(match_id))
+            .and_then(|record| {
+                let unit = match_::tank_for_slot(w, team, index)?;
+                record.callsigns.get(&unit).map(ToString::to_string)
+            })
+            .unwrap_or_else(|| format!("{}-", team.letter()))
+    }
+
+    /// **Every unit's callsign as the match record kept it** (doc 32 cut CF.0:
+    /// drawn at check-out), keyed by the unit's object number.
+    fn drawn_callsigns(&self, match_id: tacsim::arena_task::MatchId) -> BTreeMap<u64, String> {
+        self.tw
+            .world()
+            .module_state::<match_::MatchBook>()
+            .and_then(|book| book.get(match_id))
+            .map(|record| {
+                record
+                    .callsigns
+                    .iter()
+                    .map(|(unit, callsign)| (u64::from(unit.0), callsign.to_string()))
+                    .collect()
+            })
+            .expect("the match is on the book")
+    }
+
     /// The object one pilot's locked pod is.
     fn pod(&self, n: usize) -> Option<ObjId> {
         match_::pod_of(self.tw.world(), self.pilot(n))
@@ -1559,9 +1592,12 @@ async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
         Some("tacsim.unit.biped_mk1"),
         "the slot records the canonical id"
     );
+    // No match has checked the tank out, so the callsign is the side's letter
+    // and a dash (doc 32 cut CF.0).
+    let red_one = rig.slot_callsign(PartyId::RED, 1);
     let said = rig.say(1, "sim status");
     assert!(
-        said.contains("1 (RA): Pilot0 [biped_mk1]"),
+        said.contains(&format!("1 ({red_one}): Pilot0 [biped_mk1]")),
         "the board shows a non-default choice: {said}"
     );
     let said = rig.say(0, "sim unit");
@@ -1587,10 +1623,7 @@ async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
     assert!(said.contains("Slot red 1 will field line_tank."), "{said}");
     assert_eq!(rig.centre().slots[0].unit_type, None);
     let said = rig.say(1, "sim status");
-    assert!(
-        said.contains("1 (RA): Pilot0,") || said.contains("1 (RA): Pilot0"),
-        "{said}"
-    );
+    assert!(said.contains(&format!("1 ({red_one}): Pilot0")), "{said}");
     assert!(
         !said.contains('['),
         "a slot at its own type prints no bracket: {said}"
@@ -1841,7 +1874,10 @@ async fn q8_the_board_prints_a_chosen_type_only_during_selection() {
     assert_eq!(rig.state(), MatchState::Boarding);
     let said = rig.say(1, "sim status");
     assert!(
-        said.contains("1 (RA): Pilot0"),
+        said.contains(&format!(
+            "1 ({}): Pilot0",
+            rig.slot_callsign(PartyId::RED, 1)
+        )),
         "the row itself is unchanged: {said}"
     );
     assert!(
@@ -2286,9 +2322,12 @@ async fn d1_the_board_withholds_the_other_sides_standing_while_a_match_runs() {
         );
     }
 
-    // (2) `Running`.
+    // (2) `Running`. The board prints each pod's callsign as the running
+    // match's record drew it (doc 32 cut CF.0).
     assert!(rig.seat(1));
     assert_eq!(rig.state(), MatchState::Running);
+    let red_row = format!("({}): Pilot0", rig.slot_callsign(PartyId::RED, 1));
+    let blue_row = format!("({}): Pilot1", rig.slot_callsign(PartyId::BLUE, 1));
 
     // (a) the red pilot: red in full, blue reduced.
     let said = rig.say(0, "sim status");
@@ -2300,7 +2339,7 @@ async fn d1_the_board_withholds_the_other_sides_standing_while_a_match_runs() {
             "a red pilot read `{word}` on the blue row: {said}"
         );
     }
-    assert!(blue.contains("(BA): Pilot1"), "{said}");
+    assert!(blue.contains(&blue_row), "{said}");
 
     // (b) the blue pilot: the mirror image.
     let said = rig.say(1, "sim status");
@@ -2315,7 +2354,7 @@ async fn d1_the_board_withholds_the_other_sides_standing_while_a_match_runs() {
             "a blue pilot read `{word}` on the red row: {said}"
         );
     }
-    assert!(red.contains("(RA): Pilot0"), "{said}");
+    assert!(red.contains(&red_row), "{said}");
 
     // (c) a player in the centre holding no slot: both sides reduced.
     let said = rig.say(2, "sim status");
@@ -2328,10 +2367,7 @@ async fn d1_the_board_withholds_the_other_sides_standing_while_a_match_runs() {
             );
         }
     }
-    assert!(
-        red.contains("(RA): Pilot0") && blue.contains("(BA): Pilot1"),
-        "{said}"
-    );
+    assert!(red.contains(&red_row) && blue.contains(&blue_row), "{said}");
 
     // (d) staff: both sides in full, in the same state.
     let board = staff_board(&rig);
@@ -2392,7 +2428,7 @@ async fn d1_the_board_withholds_the_other_sides_standing_while_a_match_runs() {
             "a red pilot read `{word}` on the blue row with a stop in flight: {said}"
         );
     }
-    assert!(blue.contains("(BA): Pilot1"), "{said}");
+    assert!(blue.contains(&blue_row), "{said}");
     // And staff still read the whole of it.
     let board = staff_board(&rig);
     let (red, blue) = sides(&board);
@@ -4643,14 +4679,23 @@ async fn v2_the_result_names_every_unit_by_the_arenas_callsign_and_counts_its_ta
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert_eq!(flown.len(), 2, "the arena sent both pilots a frame");
-    assert_eq!(
-        flown
-            .values()
-            .map(|(_, callsign)| callsign.as_str())
-            .collect::<Vec<_>>(),
-        vec!["RA", "BA"],
-        "slot 1 of each side, by 16b cut Q.1's rule"
-    );
+    // Doc 32 cut CF.0: the unit letter is drawn at check-out, so each frame's
+    // callsign is the side's letter and a drawn unit letter, and it is the one
+    // the match record kept for that unit.
+    let drawn = rig.drawn_callsigns(match_id);
+    for ((_, (unit, callsign)), side) in flown.iter().zip(['R', 'B']) {
+        assert_eq!(drawn.get(unit), Some(callsign), "{drawn:?}");
+        let mut letters = callsign.chars();
+        assert_eq!(letters.next(), Some(side), "{callsign}");
+        assert!(
+            letters
+                .next()
+                .and_then(|letter| u8::try_from(letter).ok())
+                .is_some_and(|letter| tacsim::arena::PARTY_LETTERS.contains(&letter))
+                && letters.next().is_none(),
+            "a party letter and one drawn unit letter: {callsign}"
+        );
+    }
 
     // The end, through the arena.
     let said = rig.say(1, "sim abort");
@@ -4924,6 +4969,12 @@ async fn v3_a_finished_match_writes_one_report_per_pilot_and_the_result_names_th
         })
         .collect();
     assert_eq!(tanks.len(), 2, "both pilots were framed");
+    // The callsigns the arena drew at check-out (doc 32 cut CF.0).
+    let drawn = rig.drawn_callsigns(match_id);
+    assert!(
+        tanks.values().all(|unit| drawn.contains_key(unit)),
+        "every flown tank has a drawn callsign: {drawn:?}"
+    );
     let _ = rig.pump_ops();
 
     let said = rig.say(1, "sim abort");
@@ -4983,7 +5034,10 @@ async fn v3_a_finished_match_writes_one_report_per_pilot_and_the_result_names_th
             report.tail
         );
         if *pilot == u64::from(red.0) {
-            assert_eq!(document["callsign"], serde_json::json!("RA"));
+            assert_eq!(
+                document["callsign"].as_str(),
+                drawn.get(unit).map(String::as_str)
+            );
             assert!(
                 report
                     .lines
@@ -4993,7 +5047,10 @@ async fn v3_a_finished_match_writes_one_report_per_pilot_and_the_result_names_th
                 report.lines
             );
         } else {
-            assert_eq!(document["callsign"], serde_json::json!("BA"));
+            assert_eq!(
+                document["callsign"].as_str(),
+                drawn.get(unit).map(String::as_str)
+            );
             assert!(report.lines.is_empty(), "{:?}", report.lines);
         }
     }
@@ -5107,6 +5164,16 @@ async fn v3_sim_report_refuses_in_order_and_both_reads_complete_through_the_modu
         "{said}"
     );
     assert!(!said.contains("not one of them"), "{said}");
+    // Red's tank's callsign, as the arena drew it at check-out (doc 32 cut
+    // CF.0), read while the pod is still locked.
+    let red_tank = rig
+        .pod(0)
+        .and_then(|pod| match_::tank_of(rig.tw.world(), pod))
+        .expect("red's pod has its tank");
+    let red_callsign = rig
+        .drawn_callsigns(match_id)
+        .remove(&u64::from(red_tank.0))
+        .expect("red's tank has a drawn callsign");
 
     let said = rig.say(1, "sim abort");
     assert!(said.contains("aborts match"), "{said}");
@@ -5166,7 +5233,7 @@ async fn v3_sim_report_refuses_in_order_and_both_reads_complete_through_the_modu
     let whole = rig.complete(red, correlation, &serve(&kv, keys.clone()));
     for want in [
         format!("Match {id}"),
-        "You flew RA: intact; 0 shots, 0 hits.".to_owned(),
+        format!("You flew {red_callsign}: intact; 0 shots, 0 hits."),
         "You fired nothing.".to_owned(),
         "the match was aborted.".to_owned(),
     ] {
@@ -5248,14 +5315,17 @@ async fn z3_twelve_pilots_claim_six_a_side_start_and_board() {
     let centre = rig.centre();
     assert_eq!(centre.side_len(PartyId::RED), 6);
     assert_eq!(centre.side_len(PartyId::BLUE), 6);
+    // Selection: no tank is checked out, so every row reads the side's letter
+    // and a dash (doc 32 cut CF.0) — the slot index still says which row.
     let board = rig.say(0, "sim status");
-    for needle in [
-        "5 (RE): Pilot4",
-        "6 (RF): Pilot5",
-        "5 (BE): Pilot10",
-        "6 (BF): Pilot11",
+    for (index, team, pilot) in [
+        (5, PartyId::RED, "Pilot4"),
+        (6, PartyId::RED, "Pilot5"),
+        (5, PartyId::BLUE, "Pilot10"),
+        (6, PartyId::BLUE, "Pilot11"),
     ] {
-        assert!(board.contains(needle), "{needle}: {board}");
+        let needle = format!("{index} ({}): {pilot}", rig.slot_callsign(team, index));
+        assert!(board.contains(&needle), "{needle}: {board}");
     }
 
     let said = rig.say(0, "sim start");
@@ -11110,25 +11180,37 @@ async fn m5_the_board_names_a_slots_mind_to_its_own_character_alone_in_selection
     rig.say(bo, "sim team blue");
     rig.say(ada, "sim mind Standard PROFILE Sniper, Line");
     rig.say(ada, "sim ai mind Standard PROFILE Hunter");
+    // Selection: nothing is checked out, so each row reads the side's letter
+    // and a dash (doc 32 cut CF.0).
+    let red_one = rig.slot_callsign(PartyId::RED, 1);
+    let blue_one = rig.slot_callsign(PartyId::BLUE, 1);
 
     let board = rig.say(ada, "sim status");
     assert!(
-        board.contains("  red: 1 (RA): Pilot0, mind Standard Doctrine (Sniper, Line)\n"),
+        board.contains(&format!(
+            "  red: 1 ({red_one}): Pilot0, mind Standard Doctrine (Sniper, Line)\n"
+        )),
         "{board}"
     );
     assert!(
         board.contains("  red fill: Standard Doctrine (Hunter)\n"),
         "{board}"
     );
-    assert!(board.contains("  blue: 1 (BA): Pilot1\n"), "{board}");
+    assert!(
+        board.contains(&format!("  blue: 1 ({blue_one}): Pilot1\n")),
+        "{board}"
+    );
     for n in [bo, cy] {
         let board = rig.say(n, "sim status");
         assert!(
-            board.contains("  red: 1 (RA): Pilot0, a mind\n"),
+            board.contains(&format!("  red: 1 ({red_one}): Pilot0, a mind\n")),
             "{n}: {board}"
         );
         assert!(board.contains("  red fill: a mind\n"), "{n}: {board}");
-        assert!(board.contains("  blue: 1 (BA): Pilot1\n"), "{n}: {board}");
+        assert!(
+            board.contains(&format!("  blue: 1 ({blue_one}): Pilot1\n")),
+            "{n}: {board}"
+        );
         assert!(
             !board.contains("Sniper") && !board.contains("Hunter") && !board.contains("Doctrine"),
             "{n}: {board}"
@@ -11136,7 +11218,9 @@ async fn m5_the_board_names_a_slots_mind_to_its_own_character_alone_in_selection
     }
     let staff = rig.staff("@arena/status");
     assert!(
-        staff.contains("1 (RA): Pilot0, mind Standard Doctrine (Sniper, Line)"),
+        staff.contains(&format!(
+            "1 ({red_one}): Pilot0, mind Standard Doctrine (Sniper, Line)"
+        )),
         "{staff}"
     );
     assert!(

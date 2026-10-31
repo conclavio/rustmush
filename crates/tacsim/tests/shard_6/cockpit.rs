@@ -656,6 +656,27 @@ impl Rig {
             .expect("the match is on the book")
     }
 
+    /// **The tank behind one side's slot** (`slot` 1-based), whether a pilot
+    /// or a machine flies it.
+    fn slot_tank(&self, team: PartyId, slot: u8) -> ObjId {
+        match_::tank_for_slot(self.tw.world(), team, slot)
+            .unwrap_or_else(|| panic!("{team:?} slot {slot} has a tank"))
+    }
+
+    /// **A unit's callsign, as the running match drew it** (doc 32 cut CF.0,
+    /// Q-CF-11): the party letter and a unit letter drawn at check-out from the
+    /// seed, so a test reads it rather than spelling a slot's letter.
+    fn callsign(&self, unit: ObjId) -> String {
+        let word = self.record().callsign_word(unit).to_string();
+        assert!(!word.is_empty(), "#{} has a callsign", unit.0);
+        word
+    }
+
+    /// The callsign of the tank behind one side's slot.
+    fn slot_callsign(&self, team: PartyId, slot: u8) -> String {
+        self.callsign(self.slot_tank(team, slot))
+    }
+
     /// Pump until the tape holds a line `pick` answers, or give up (16b cut
     /// Y.1). A chunk closes at 16 KiB, which the fast summaries this rig runs
     /// fill in a few seconds.
@@ -1241,7 +1262,7 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
         live.get("schema"),
         Some(&serde_json::json!({
             "id": "arena.cockpit",
-            "version": 8,
+            "version": 9,
             "shape": "grid",
             "retain": "latest",
         }))
@@ -1591,13 +1612,16 @@ async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     let named = named.expect("the return is told apart");
+    // The other side's tank, by the callsign the check-out drew for it.
+    let blue = rig.callsign(rig.tank(1));
+    let blue_lower = blue.to_lowercase();
 
     // (1) The same contact, under a new name, with the lock untouched.
     assert_eq!(named.id, provisional.id, "a rename is not a new contact");
     assert_eq!(
         named.designator.to_string(),
-        "BA",
-        "the other side's first slot"
+        blue,
+        "the other side's tank, by its drawn callsign"
     );
     assert_eq!(
         named.alias,
@@ -1635,13 +1659,16 @@ async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
     //     The clock moves on every pulse that carries a frame and at least once
     //     an arena second regardless (16b cut D.1).
     let spoken = rig.log.len();
-    for word in ["BA", "ba", &number, "x1"] {
+    for word in [blue.as_str(), blue_lower.as_str(), &number, "x1"] {
         let said = rig.say(0, &format!("lock {word}"));
         assert!(
             !said.contains(cockpit::NO_SUCH_CONTACT),
             "LOCK {word} was refused after the rename: {said}"
         );
-        assert!(said.contains("Locking BA."), "LOCK {word}: {said}");
+        assert!(
+            said.contains(&format!("Locking {blue}.")),
+            "LOCK {word}: {said}"
+        );
         let before = rig.staged_now_ms;
         let mut pulsed = false;
         for _ in 0..600 {
@@ -1676,7 +1703,8 @@ async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
         "a repeated LOCK broke the lock: {told:?}"
     );
     assert!(
-        told.iter().any(|line| line.starts_with("Locked on BA,")),
+        told.iter()
+            .any(|line| line.starts_with(&format!("Locked on {blue},"))),
         "a repeated LOCK did not answer with the lock it already held: {told:?}"
     );
     // **16b cut B.1**: the two lines are told apart on the wire by their tag. The
@@ -1700,8 +1728,8 @@ async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
             .flatten()
             .collect()
     };
-    let reply = tags_of("Locking BA.");
-    let sentence = tags_of("Locked on BA,");
+    let reply = tags_of(&format!("Locking {blue}."));
+    let sentence = tags_of(&format!("Locked on {blue},"));
     assert!(!reply.is_empty() && !sentence.is_empty(), "{told:?}");
     assert!(
         reply
@@ -1720,7 +1748,7 @@ async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
     for verb in ["range", "bearing", "weaponstatus", "scan"] {
         let said = rig.say(0, verb);
         assert!(
-            said.contains("BA"),
+            said.contains(&blue),
             "{verb} did not answer for the locked contact under its new name: {said}"
         );
         assert!(
@@ -2616,7 +2644,7 @@ mod fixture {
                     class: Classification::Classified {
                         party: PartyId::RED,
                     },
-                    relation: tacsim::arena::Relation::Hostile,
+                    relation: tacsim::arena::Relation::Own,
                     moving: false,
                     bearing_mdeg: 270_000,
                     range_cm: 12_000,
@@ -3628,7 +3656,8 @@ async fn flying_names_the_seat_a_human_pilot_drives_themselves() {
     // The verbs read it: STATUS answers the pilot, off the pilot's own frame.
     assert!(rig.frame_for(0).await, "the arena sends a frame");
     let said = rig.say(0, "status");
-    assert!(said.contains("Callsign RA."), "{said}");
+    let callsign = rig.callsign(rig.tank(0));
+    assert!(said.contains(&format!("Callsign {callsign}.")), "{said}");
 }
 
 /// **A human driving an NPC's seat reads the NPC's cockpit** (16b cut U.4, 16c
@@ -3758,7 +3787,8 @@ async fn a_human_driving_an_npc_s_seat_reads_the_npc_s_cockpit() {
     // to the human.
     let theirs = npc_says(&mut rig, "status");
     let said = rig.say(2, "status");
-    assert!(said.contains("Callsign RA."), "{said}");
+    let callsign = rig.callsign(tank);
+    assert!(said.contains(&format!("Callsign {callsign}.")), "{said}");
     assert_eq!(
         said, theirs,
         "the driver read something other than the NPC's own cockpit"
@@ -3878,7 +3908,7 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
     assert_eq!(
         cockpit::cockpit_cleared(),
         serde_json::json!({
-            "schema": { "id": "arena.cockpit", "version": 8, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 9, "retain": "latest" },
             "seated": false,
         })
     );
@@ -4296,7 +4326,8 @@ async fn d1_the_other_sides_row_does_not_move_when_that_side_loses_a_pilot() {
             .to_owned()
     };
     let before = blue_row(&rig.say(0, "sim status"));
-    assert!(before.contains("(BA): Pilot1"), "{before}");
+    let blue = rig.callsign(rig.tank(1));
+    assert!(before.contains(&format!("({blue}): Pilot1")), "{before}");
 
     // The blue pilot climbs out, which mid-match is final.
     rig.say(1, "exit");
@@ -4952,13 +4983,27 @@ async fn d3_status_brackets_a_refitted_chassis_and_nothing_else() {
         "a stock tank grew a bracket: {said}"
     );
 
-    // **A designator that is not this pod's brackets nothing.** `resolve_callsigns`
-    // gives EVERY unit a `Designator::Slot` — a staff `@arena/start`'s two and the
-    // harness's three hundred included — so the designator alone says nothing
-    // about which pod a tank came out of. Here the refitted red tank is handed a
-    // frame carrying **blue 1's** slot: without the second question the line would
-    // bracket its chassis against the authored type of a pod it was never in.
+    // **The designator says nothing about the pod** (doc 32 cut CF.0, Q-CF-11):
+    // a callsign is drawn per unit, so the pod is found as the centre's own
+    // whose tank this is. A frame carrying another side's designator still
+    // brackets the refitted tank against its own pod.
+    let mut renamed = rig.held_frame(0);
+    renamed.callsign = tacsim::arena::state::Designator::Unit {
+        party: PartyId::BLUE,
+        letter: 'A',
+    };
+    rig.push_frame(0, renamed);
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains("Red Tank 1 [biped_mk1]: power "),
+        "the designator moved the bracket: {said}"
+    );
+
+    // **A frame on a side whose pods never held this tank brackets nothing.**
+    // Without the pod's own tank asked for by object, the line would bracket
+    // the chassis against the authored type of a pod it was never in.
     let mut stray = rig.held_frame(0);
+    stray.party = PartyId::BLUE;
     stray.callsign = tacsim::arena::state::Designator::Unit {
         party: PartyId::BLUE,
         letter: 'A',
@@ -6548,12 +6593,14 @@ async fn y1_a_pilot_orders_their_pod_pair_and_nothing_else() {
     let mut rig = Rig::boot_with(4, y1_config());
     rig.fly_with_ai(3, 1, 4).await;
     let record = rig.record();
-    let wingman = record
-        .callsigns
-        .iter()
-        .find(|(_, callsign)| callsign.to_string() == "RD")
-        .map(|(unit, _)| *unit)
-        .expect("red pod 4 is flown by a machine");
+    // Red pod 4 (`RD`, the pod label) is flown by a machine; its callsign is
+    // drawn at check-out (doc 32 Q-CF-11).
+    let wingman = rig.slot_tank(PartyId::RED, 4);
+    assert!(
+        record.callsigns.contains_key(&wingman),
+        "red pod 4 is flown by a machine"
+    );
+    let wingman_callsign = rig.callsign(wingman);
     let red: Vec<&tacsim::deliberation::SquadRoster> = record
         .squads
         .iter()
@@ -6565,7 +6612,10 @@ async fn y1_a_pilot_orders_their_pod_pair_and_nothing_else() {
     let said = rig.say(2, "ORDER red-1 HOLD");
     assert_eq!(
         said,
-        format!("Ordered RD to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+        format!(
+            "Ordered {wingman_callsign} to hold: it stops where it stands and fires nothing.\
+             {Y1_TAIL}"
+        )
     );
     let issuer = rig.tank(2);
     let from_slot_three = |event: &tacsim::arena::ledger::LedgerEvent| {
@@ -6744,15 +6794,20 @@ async fn y1_a_non_lead_reaches_their_wingman_and_not_the_rest_of_its_squad() {
     );
 
     let record = rig.record();
-    let unit_of = |word: &str| {
-        record
-            .callsigns
-            .iter()
-            .find(|(_, callsign)| callsign.to_string() == word)
-            .map(|(unit, _)| *unit)
-            .unwrap_or_else(|| panic!("{word} is fielded"))
-    };
-    let (rb, rd) = (unit_of("RB"), unit_of("RD"));
+    // Red pods 2 and 4 (the pod labels `RB` and `RD`) are flown by machines;
+    // their callsigns are drawn at check-out (doc 32 Q-CF-11).
+    let (rb, rd) = (
+        rig.slot_tank(PartyId::RED, 2),
+        rig.slot_tank(PartyId::RED, 4),
+    );
+    for unit in [rb, rd] {
+        assert!(
+            record.callsigns.contains_key(&unit),
+            "#{} is fielded",
+            unit.0
+        );
+    }
+    let rd_callsign = rig.callsign(rd);
     let red: Vec<&tacsim::deliberation::SquadRoster> = record
         .squads
         .iter()
@@ -6770,7 +6825,9 @@ async fn y1_a_non_lead_reaches_their_wingman_and_not_the_rest_of_its_squad() {
     let events = rig.events(2, "ORDER red-1 HOLD");
     assert_eq!(
         rig.tw.seen_by(&events, third).join("\n"),
-        format!("Ordered RD to hold: it stops where it stands and fires nothing.{Y1_TAIL}")
+        format!(
+            "Ordered {rd_callsign} to hold: it stops where it stands and fires nothing.{Y1_TAIL}"
+        )
     );
     assert!(
         events
@@ -6836,8 +6893,8 @@ async fn y1_a_non_lead_reaches_their_wingman_and_not_the_rest_of_its_squad() {
     assert_eq!(
         said,
         format!(
-            "Ordered RD to withdraw: it breaks for its entry zone and still fights inside its \
-             bands.{Y1_TAIL}"
+            "Ordered {rd_callsign} to withdraw: it breaks for its entry zone and still fights \
+             inside its bands.{Y1_TAIL}"
         )
     );
     let withdraws = |event: &tacsim::arena::ledger::LedgerEvent| {
@@ -6902,7 +6959,10 @@ async fn y1_an_engage_carries_the_pilots_own_row_and_an_own_side_row_is_no_targe
     rig.say(1, "startup");
     assert!(rig.powered(0).await, "the tank wakes up");
 
-    // Until the lead's panel holds BA and RB, each under its callsign.
+    // Until the lead's panel holds blue's tank and red pod 2's, each under its
+    // callsign — drawn at check-out (doc 32 Q-CF-11), so read off the record.
+    let ba_word = rig.callsign(rig.tank(1));
+    let rb_word = rig.callsign(rb);
     let lead = rig.pilot(0);
     let mut held = None;
     for _ in 0..1_500 {
@@ -6919,22 +6979,22 @@ async fn y1_an_engage_carries_the_pilots_own_row_and_an_own_side_row_is_no_targe
                 .find(|row| row.designator.to_string() == word)
                 .cloned()
         };
-        if let (Some(ba), Some(own)) = (row("BA"), row("RB")) {
+        if let (Some(ba), Some(own)) = (row(&ba_word), row(&rb_word)) {
             held = Some((ba, own));
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    let (ba, own) = held.expect("the lead's panel holds BA and RB");
-    assert!(!ba.friendly, "BA is blue");
-    assert!(own.friendly, "RB is the lead's own side");
+    let (ba, own) = held.expect("the lead's panel holds blue's tank and red pod 2's");
+    assert!(!ba.friendly, "{ba_word} is blue");
+    assert!(own.friendly, "{rb_word} is the lead's own side");
 
-    let said = rig.say(0, "ORDER red-1 ENGAGE BA");
+    let said = rig.say(0, &format!("ORDER red-1 ENGAGE {ba_word}"));
     assert_eq!(
         said,
         format!(
-            "Ordered red-1 to engage BA: it closes and fires on BA where it can see it, else on \
-             what it finds.{Y1_TAIL}"
+            "Ordered red-1 to engage {ba_word}: it closes and fires on {ba_word} where it can \
+             see it, else on what it finds.{Y1_TAIL}"
         )
     );
     let issuer = rig.tank(0);
@@ -6960,7 +7020,7 @@ async fn y1_an_engage_carries_the_pilots_own_row_and_an_own_side_row_is_no_targe
         );
     }
 
-    let said = rig.say(0, "ORDER red-1 ENGAGE RB");
+    let said = rig.say(0, &format!("ORDER red-1 ENGAGE {rb_word}"));
     assert_eq!(
         said,
         format!("Ordered red-1 to engage: it closes and fires on what it finds.{Y1_TAIL}"),
@@ -7218,15 +7278,19 @@ async fn l1_send_order_refuses_an_order_nobody_entitled_gave() {
 
     let record = rig.record();
     let match_id = record.id;
-    let unit_of = |word: &str| {
-        record
-            .callsigns
-            .iter()
-            .find(|(_, callsign)| callsign.to_string() == word)
-            .map(|(unit, _)| *unit)
-            .unwrap_or_else(|| panic!("{word} is fielded"))
-    };
-    let (rb, rd) = (unit_of("RB"), unit_of("RD"));
+    // Red pods 2 and 4 are flown by machines (the pod labels `RB` and `RD`;
+    // their callsigns are drawn, doc 32 Q-CF-11).
+    let (rb, rd) = (
+        rig.slot_tank(PartyId::RED, 2),
+        rig.slot_tank(PartyId::RED, 4),
+    );
+    for unit in [rb, rd] {
+        assert!(
+            record.callsigns.contains_key(&unit),
+            "#{} is fielded",
+            unit.0
+        );
+    }
     let red_one = SquadId {
         team: PartyId::RED,
         index: 1,
@@ -8278,10 +8342,11 @@ async fn y4_a_reclaim_s_first_frame_carries_the_catch_up_and_says_it_once() {
     }
 
     // The line client: exactly one block, tagged as a frame's own sentence.
+    let back_aboard = format!("Back aboard {}", rig.callsign(rig.tank(0)));
     let sys = y4_sys_lines(&rig, pilot, mark);
     let blocks: Vec<&(String, Vec<Option<String>>)> = sys
         .iter()
-        .filter(|(text, _)| text.starts_with("Back aboard RA"))
+        .filter(|(text, _)| text.starts_with(&back_aboard))
         .collect();
     assert_eq!(blocks.len(), 1, "one block: {sys:?}");
     let (block, tags) = blocks.first().copied().cloned().unwrap_or_default();
@@ -8328,7 +8393,7 @@ async fn y4_a_reclaim_s_first_frame_carries_the_catch_up_and_says_it_once() {
     let sys = y4_sys_lines(&rig, pilot, pushed);
     let at = sys
         .iter()
-        .position(|(text, _)| text.starts_with("Back aboard RA"));
+        .position(|(text, _)| text.starts_with(&back_aboard));
     let refusal = sys
         .iter()
         .position(|(text, _)| Some(text) == notice.first());
@@ -8669,6 +8734,22 @@ async fn z2_the_lead_screens_supports_and_releases_and_every_callsign_refusal_is
     let mut rig = Rig::boot_with(2, y1_config());
     rig.fly_with_ai(1, 1, 3).await;
     let issuer = rig.tank(0);
+    // The callsigns are drawn at check-out (doc 32 Q-CF-11): the lead's own,
+    // blue's, and a red one nothing in this field was drawn — the empty pod's
+    // stand-in, since no callsign spells a pod any more.
+    let own = rig.callsign(issuer);
+    let theirs = rig.callsign(rig.tank(1));
+    let drawn: Vec<String> = rig
+        .record()
+        .callsigns
+        .values()
+        .map(ToString::to_string)
+        .collect();
+    let undrawn = tacsim::arena::PARTY_LETTERS
+        .iter()
+        .map(|letter| format!("R{}", char::from(*letter)))
+        .find(|word| !drawn.contains(word))
+        .expect("a red letter nobody was drawn");
     // 17b cut M5.3: `to doctrine: it fights on its own reflexes …` until that
     // cut — a release names no mind, one word for every sealed mind.
     let release = "Released red-1 to its mind: it fights on its own until it is ordered again.";
@@ -8712,24 +8793,25 @@ async fn z2_the_lead_screens_supports_and_releases_and_every_callsign_refusal_is
     // 17b cut M5.6 (OQ-6; STOP D, the text made true): `… and fires first on
     // what RA is fighting.` until that cut.
     assert_eq!(
-        rig.say(0, "ORDER red-1 SUPPORT ra"),
+        rig.say(0, &format!("ORDER red-1 SUPPORT {}", own.to_lowercase())),
         format!(
-            "Ordered red-1 to support RA: it keeps within 150 m of RA and fights what it finds \
-             there.{Y1_TAIL}"
+            "Ordered red-1 to support {own}: it keeps within 150 m of {own} and fights what it \
+             finds there.{Y1_TAIL}"
         )
     );
-    // The other side's, nonsense, a provisional, an empty pod: one sentence.
+    // The other side's, nonsense, a provisional, a red letter nobody was
+    // drawn: one sentence.
     for line in [
-        "ORDER red-1 SUPPORT BA",
-        "ORDER red-1 SUPPORT ZZ",
-        "ORDER red-1 SUPPORT X1",
-        "ORDER red-1 SUPPORT RD",
+        format!("ORDER red-1 SUPPORT {theirs}"),
+        "ORDER red-1 SUPPORT ZZ".to_owned(),
+        "ORDER red-1 SUPPORT X1".to_owned(),
+        format!("ORDER red-1 SUPPORT {undrawn}"),
     ] {
-        assert_eq!(rig.say(0, line), cockpit::NO_SUCH_FRIENDLY, "{line}");
+        assert_eq!(rig.say(0, &line), cockpit::NO_SUCH_FRIENDLY, "{line}");
     }
     // Authority first: the other side's squad is refused before the callsign.
     assert_eq!(
-        rig.say(0, "ORDER blue-1 SUPPORT RA"),
+        rig.say(0, &format!("ORDER blue-1 SUPPORT {own}")),
         cockpit::NO_SUCH_SQUAD
     );
     for line in [
@@ -8867,13 +8949,14 @@ async fn z2_a_wingmans_release_is_their_one_machine_and_the_leads_order_stands()
     rig.say(1, "board");
     assert_eq!(rig.state(), MatchState::Running);
     let match_id = rig.centre().match_id.expect("a running match");
-    let rd = rig
-        .record()
-        .callsigns
-        .iter()
-        .find(|(_, callsign)| callsign.to_string() == "RD")
-        .map(|(unit, _)| *unit)
-        .expect("RD is fielded");
+    // Red pod 4 (the pod label `RD`) is flown by a machine; its callsign is
+    // drawn at check-out (doc 32 Q-CF-11).
+    let rd = rig.slot_tank(PartyId::RED, 4);
+    assert!(
+        rig.record().callsigns.contains_key(&rd),
+        "red pod 4 is fielded"
+    );
+    let rd_callsign = rig.callsign(rd);
     let red_one = tacsim::deliberation::SquadId {
         team: PartyId::RED,
         index: 1,
@@ -8891,7 +8974,9 @@ async fn z2_a_wingmans_release_is_their_one_machine_and_the_leads_order_stands()
     // 17b cut M5.3: `to doctrine: … own reflexes …` until that cut.
     assert_eq!(
         rig.say(2, "ORDER 1 RELEASE"),
-        "Released RD to its mind: it fights on its own until it is ordered again."
+        format!(
+            "Released {rd_callsign} to its mind: it fights on its own until it is ordered again."
+        )
     );
     let watch = rig
         .tw
@@ -9095,8 +9180,31 @@ fn z4_plant(rig: &mut Rig, n: usize, team: PartyId, alias: &str) {
     assert!(joined, "the plant took");
 }
 
-const RED_JOINED: &str = "You have been joined to channel RedNet (alias: ra).";
-const BLUE_JOINED: &str = "You have been joined to channel BlueNet (alias: ba).";
+/// The opening of comsys's join line for one side's net, whatever the alias.
+const RED_JOINED_PREFIX: &str = "You have been joined to channel RedNet (alias: ";
+
+/// **Pilot `n`'s membership as the join writes it** (16b cut Z.4): their
+/// tank's callsign lower-cased as the alias and the callsign as the title. The
+/// callsign is drawn at check-out (doc 32 Q-CF-11), so it is read off the
+/// running match's record.
+fn z4_callsign_membership(rig: &Rig, n: usize) -> (String, Option<String>) {
+    let callsign = rig.callsign(rig.tank(n));
+    (callsign.to_lowercase(), Some(callsign))
+}
+
+/// Comsys's join line for `net` under pilot `n`'s callsign alias.
+fn z4_joined(rig: &Rig, n: usize, net: &str) -> String {
+    let (alias, _) = z4_callsign_membership(rig, n);
+    format!("You have been joined to channel {net} (alias: {alias}).")
+}
+
+/// How many join lines for red's net `who` has been sent, under any alias.
+fn z4_red_joins(rig: &Rig, who: ObjId) -> usize {
+    z4_lines(rig, who)
+        .iter()
+        .filter(|seen| seen.starts_with(RED_JOINED_PREFIX))
+        .count()
+}
 const RED_REMOVED: &str = "You have been removed from channel RedNet.";
 const BLUE_REMOVED: &str = "You have been removed from channel BlueNet.";
 
@@ -9132,20 +9240,21 @@ async fn z4_the_last_board_puts_each_pilot_on_their_sides_net_under_their_callsi
     assert_eq!(z4_members(&rig, PartyId::BLUE), vec![rig.pilot(1)]);
     assert_eq!(
         z4_on(&rig, 0, PartyId::RED),
-        Some(("ra".to_owned(), Some("RA".to_owned())))
+        Some(z4_callsign_membership(&rig, 0))
     );
     assert_eq!(
         z4_on(&rig, 1, PartyId::BLUE),
-        Some(("ba".to_owned(), Some("BA".to_owned())))
+        Some(z4_callsign_membership(&rig, 1))
     );
-    assert_eq!(z4_count(&rig, rig.pilot(0), RED_JOINED), 1);
-    assert_eq!(z4_count(&rig, rig.pilot(1), BLUE_JOINED), 1);
-    assert_eq!(z4_count(&rig, rig.pilot(0), BLUE_JOINED), 0);
+    let (red_joined, blue_joined) = (z4_joined(&rig, 0, "RedNet"), z4_joined(&rig, 1, "BlueNet"));
+    assert_eq!(z4_count(&rig, rig.pilot(0), &red_joined), 1);
+    assert_eq!(z4_count(&rig, rig.pilot(1), &blue_joined), 1);
+    assert_eq!(z4_red_joins(&rig, rig.pilot(1)), 0);
     // In the last `BOARD`'s own answer, just ahead of the line that says the
     // match is running (which goes to the centre's rooms, so it is read off what
     // the pilot saw rather than off the actor-addressed log).
     let hunting = said.find("Good hunting").expect("the start is announced");
-    let joined = said.find(BLUE_JOINED).expect("the join is said");
+    let joined = said.find(&blue_joined).expect("the join is said");
     assert!(joined < hunting, "{said}");
 }
 
@@ -9158,19 +9267,21 @@ async fn z4_a_line_on_the_net_reaches_its_side_and_nobody_else() {
     let mut rig = Rig::boot(2);
     rig.fly().await;
     let (red, blue) = (rig.pilot(0), rig.pilot(1));
+    let (red_alias, red_title) = z4_callsign_membership(&rig, 0);
+    let (blue_alias, _) = z4_callsign_membership(&rig, 1);
 
-    let events = rig.events(0, "ra contact bearing 090");
+    let events = rig.events(0, &format!("{red_alias} contact bearing 090"));
     assert_eq!(
         z4_channel_frames(&events),
         vec![(
             red,
             "RedNet".to_owned(),
-            Some("RA".to_owned()),
+            red_title,
             "Pilot0".to_owned(),
             "contact bearing 090".to_owned()
         )]
     );
-    let events = rig.events(0, "ra :waves");
+    let events = rig.events(0, &format!("{red_alias} :waves"));
     let frames = z4_channel_frames(&events);
     assert_eq!(frames.len(), 1, "{frames:?}");
     assert!(events.iter().any(|(_, event)| matches!(
@@ -9181,7 +9292,7 @@ async fn z4_a_line_on_the_net_reaches_its_side_and_nobody_else() {
         }
     )));
     // Blue's own net is blue's.
-    let events = rig.events(1, "ba copy");
+    let events = rig.events(1, &format!("{blue_alias} copy"));
     assert_eq!(
         z4_channel_frames(&events)
             .iter()
@@ -9211,6 +9322,7 @@ async fn z4_exit_takes_the_pilot_off_their_net_once() {
     let mut rig = Rig::boot(2);
     rig.fly().await;
     let before = (rig.say(1, "clist"), rig.say(1, "@channel/who RedNet"));
+    let (red_alias, _) = z4_callsign_membership(&rig, 0);
     let said = rig.say(0, "exit");
     assert!(said.contains(RED_REMOVED), "{said}");
     assert!(said.contains("You climb out of"), "{said}");
@@ -9220,7 +9332,7 @@ async fn z4_exit_takes_the_pilot_off_their_net_once() {
     let after = (rig.say(1, "clist"), rig.say(1, "@channel/who RedNet"));
     assert_eq!(before, after, "the other side reads nothing of the leave");
     // Off the net, the alias means nothing any more.
-    let events = rig.events(0, "ra anybody");
+    let events = rig.events(0, &format!("{red_alias} anybody"));
     assert!(z4_channel_frames(&events).is_empty());
 }
 
@@ -9250,15 +9362,16 @@ async fn z4_the_check_in_takes_everybody_off_and_a_rematch_joins_them_again() {
     rig.walk_to(0, match_::LOBBY_ENTRY);
     rig.walk_to(1, match_::LOBBY_ENTRY);
     rig.fly().await;
+    // Under the callsigns the rematch drew (doc 32 Q-CF-11: drawn per field).
     assert_eq!(
         z4_on(&rig, 0, PartyId::RED),
-        Some(("ra".to_owned(), Some("RA".to_owned())))
+        Some(z4_callsign_membership(&rig, 0))
     );
     assert_eq!(
         z4_on(&rig, 1, PartyId::BLUE),
-        Some(("ba".to_owned(), Some("BA".to_owned())))
+        Some(z4_callsign_membership(&rig, 1))
     );
-    assert_eq!(z4_count(&rig, rig.pilot(0), RED_JOINED), 2, "one per match");
+    assert_eq!(z4_red_joins(&rig, rig.pilot(0)), 2, "one per match");
 }
 
 /// **A machine-only side has nobody on its net, and a stale member is swept**
@@ -9281,7 +9394,7 @@ async fn z4_a_machine_only_side_has_nobody_and_a_stale_member_is_swept() {
     assert_eq!(z4_count(&rig, rig.pilot(0), BLUE_REMOVED), 1);
     assert_eq!(
         z4_on(&rig, 0, PartyId::RED),
-        Some(("ra".to_owned(), Some("RA".to_owned())))
+        Some(z4_callsign_membership(&rig, 0))
     );
 }
 
@@ -9291,14 +9404,17 @@ async fn z4_a_machine_only_side_has_nobody_and_a_stale_member_is_swept() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn z4_a_pilot_on_their_net_under_a_stale_alias_is_joined_again_as_their_callsign() {
     let mut rig = Rig::boot(2);
-    z4_plant(&mut rig, 0, PartyId::RED, "rb");
+    // `zz`: a red alias no drawn callsign can be (`Z` is no party's letter
+    // here), so the stale alias is really stale.
+    z4_plant(&mut rig, 0, PartyId::RED, "zz");
     rig.fly().await;
     assert_eq!(
         z4_on(&rig, 0, PartyId::RED),
-        Some(("ra".to_owned(), Some("RA".to_owned())))
+        Some(z4_callsign_membership(&rig, 0))
     );
     assert_eq!(z4_count(&rig, rig.pilot(0), RED_REMOVED), 1);
-    assert_eq!(z4_count(&rig, rig.pilot(0), RED_JOINED), 1);
+    let red_joined = z4_joined(&rig, 0, "RedNet");
+    assert_eq!(z4_count(&rig, rig.pilot(0), &red_joined), 1);
 }
 
 /// **A staff `@arena/start` match joins nobody** (16b cut Z.4): it shares
@@ -9372,7 +9488,7 @@ async fn z4_a_staff_started_match_joins_nobody() {
     assert!(z4_members(&rig, PartyId::RED).is_empty());
     assert!(z4_members(&rig, PartyId::BLUE).is_empty());
     assert_eq!(z4_on(&rig, 0, PartyId::RED), None);
-    assert_eq!(z4_count(&rig, pilot, RED_JOINED), 0);
+    assert_eq!(z4_red_joins(&rig, pilot), 0);
     assert!(
         !rig.log
             .iter()
@@ -9402,10 +9518,10 @@ async fn z4_a_drop_past_the_grace_stays_on_the_net_through_the_reclaim() {
     assert!(said.contains("is yours again where it stands"), "{said}");
     assert_eq!(
         z4_on(&rig, 0, PartyId::RED),
-        Some(("ra".to_owned(), Some("RA".to_owned())))
+        Some(z4_callsign_membership(&rig, 0))
     );
     assert_eq!(z4_count(&rig, pilot, RED_REMOVED), 0);
-    assert_eq!(z4_count(&rig, pilot, RED_JOINED), 1);
+    assert_eq!(z4_red_joins(&rig, pilot), 1);
 }
 
 /// **A pilot who dropped and never came back is still taken off at the
@@ -9620,16 +9736,32 @@ async fn i1_sim_replay_prints_steps_centres_and_the_queries_read_the_cursor() {
         "every unit is in keyframe 0"
     );
     // And the roster: every unit the record names, once, each on the side its
-    // slot callsign says (`RA` red, `BA` blue) — not the side `start` read.
+    // callsign's party letter says (`R…` red, `B…` blue) — not the side `start`
+    // read. The unit letters are drawn at check-out (doc 32 Q-CF-11), so the
+    // names are the record's own.
     let callsigns: Vec<(String, &str)> = replay
         .roster
         .iter()
         .map(|unit| (unit.callsign.to_string(), unit.team.as_str()))
         .collect();
+    let expected: Vec<(String, &str)> = i1_record(&rig, match_id)
+        .callsigns
+        .values()
+        .map(|designator| {
+            (
+                designator.to_string(),
+                designator.party().expect("a unit's designator").as_str(),
+            )
+        })
+        .collect();
     assert_eq!(
-        callsigns,
-        vec![("RA".to_owned(), "red"), ("BA".to_owned(), "blue")],
+        callsigns, expected,
         "the roster in unit-id order, each on its own side"
+    );
+    assert_eq!(
+        callsigns.iter().map(|(_, side)| *side).collect::<Vec<_>>(),
+        vec!["red", "blue"],
+        "red's tank first, then blue's"
     );
     assert_eq!(
         replay.roster.len(),
@@ -10687,7 +10819,8 @@ async fn i4_arena_watch_sends_the_field_at_most_once_an_arena_second_and_off_end
     assert_eq!(picture["schema"]["id"], serde_json::json!("arena.observer"));
     assert_eq!(picture["match"], serde_json::json!(id));
     let rows = picture["units"].as_array().cloned().unwrap_or_default();
-    for (callsign, tank) in [("RA", rig.tank(0)), ("BA", rig.tank(1))] {
+    for tank in [rig.tank(0), rig.tank(1)] {
+        let callsign = rig.callsign(tank);
         assert!(
             rows.iter()
                 .any(|row| row[0] == serde_json::json!(callsign)
@@ -12261,7 +12394,9 @@ async fn o3_a_range_ends_when_its_target_is_out_of_action() {
     assert!(rig.frame_for(0).await, "the arena sends a frame");
     rig.say(0, "startup");
     assert!(rig.powered(0).await, "started up");
-    // The target, told apart: `BA`.
+    // The target, told apart: blue pod 1's tank, by its drawn callsign.
+    let target = rig.slot_callsign(PartyId::BLUE, 1);
+    let shooter = rig.callsign(rig.tank(0));
     let mut locked = false;
     for _ in 0..2_000 {
         rig.pump();
@@ -12269,11 +12404,11 @@ async fn o3_a_range_ends_when_its_target_is_out_of_action() {
             frame
                 .contacts
                 .iter()
-                .any(|contact| contact.designator.to_string() == "BA")
+                .any(|contact| contact.designator.to_string() == target)
         });
         if told {
-            let said = rig.say(0, "lock BA");
-            assert!(said.contains("Locking BA."), "{said}");
+            let said = rig.say(0, &format!("lock {target}"));
+            assert!(said.contains(&format!("Locking {target}.")), "{said}");
             locked = true;
             break;
         }
@@ -12342,9 +12477,9 @@ async fn o3_a_range_ends_when_its_target_is_out_of_action() {
     let flown = row
         .units
         .iter()
-        .find(|unit| unit.callsign == "RA")
+        .find(|unit| unit.callsign == shooter.as_str())
         .cloned()
-        .expect("RA's row");
+        .expect("the shooter's row");
     assert!(
         flown.shots >= 1 && flown.hits >= 1,
         "{} shots, {} hits",
@@ -12362,7 +12497,7 @@ async fn o3_a_range_ends_when_its_target_is_out_of_action() {
     assert!(
         header
             .iter()
-            .any(|line| line.starts_with("You flew RA: ")
+            .any(|line| line.starts_with(&format!("You flew {shooter}: "))
                 && line.ends_with(&format!(" ({per_cent}%)."))),
         "{header:?}"
     );
@@ -12854,10 +12989,11 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
         (since_snapshot - 1..=since_snapshot + 1).contains(&away),
         "away {away} s is counted from the snapshot's moment ({since_snapshot} s)"
     );
+    let red1_callsign = rig.callsign(tank0);
     assert!(
         af3_said(&rig, red1, mark)
             .iter()
-            .any(|line| line.starts_with("Back aboard RA after")),
+            .any(|line| line.starts_with(&format!("Back aboard {red1_callsign} after"))),
         "the line client reads the catch-up"
     );
     let said = rig.say(0, "heading 90");
@@ -13270,6 +13406,40 @@ async fn ah1_the_contact_hint_waits_for_an_enemy_a_gun_and_power_and_the_panel_h
         frame.power = power;
         if !gun {
             frame.weapons.clear();
+        }
+        // Doc 32 cut CF.0: the hint reads the relation of the row a contact
+        // notice names, so each notice's contact is held on the frame too,
+        // related as the OOC host relates it — its own party own, any other
+        // hostile.
+        for notice in &notices {
+            if let tacsim::arena::perception::FrameNotice::Contact { contact, class, .. } = notice {
+                let relation = match class.party() {
+                    None => tacsim::arena::Relation::Unknown,
+                    Some(party) if party == own => tacsim::arena::Relation::Own,
+                    Some(_) => tacsim::arena::Relation::Hostile,
+                };
+                frame.contacts.retain(|held| held.id != contact.id);
+                frame
+                    .contacts
+                    .push(tacsim::arena::perception::FrameContact {
+                        id: contact.id,
+                        designator: contact.designator,
+                        alias: None,
+                        class: *class,
+                        relation,
+                        moving: false,
+                        bearing_mdeg: 0,
+                        range_cm: 10_000,
+                        age_ms: 0,
+                        cell: None,
+                        condition: None,
+                        aspect: tacsim::arena::perception::Aspect::Front,
+                        facing: tacsim::arena::perception::ContactFacing::Front,
+                        reads_dead: None,
+                        fatal: None,
+                        unit_type: None,
+                    });
+            }
         }
         frame.notices = notices;
         frame
@@ -13969,11 +14139,12 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
     ))
     .expect("the fixture is JSON");
     assert_eq!(payload, committed, "the fixture round-trips with the keys");
-    // DT.1b adds opaque standing-order identity at version 8.
-    assert_eq!(cockpit::FRAME_VERSION, 8);
+    // DT.1b adds opaque standing-order identity at version 8; doc 32 cut CF.0
+    // (`party`, per-row `relation` and `party`) makes it 9.
+    assert_eq!(cockpit::FRAME_VERSION, 9);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(8))
+        Some(&serde_json::json!(9))
     );
     assert_eq!(payload.get("t_ms"), Some(&serde_json::json!(61_250)));
     assert_eq!(payload.get("order"), Some(&serde_json::Value::Null));
@@ -14558,10 +14729,10 @@ fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
     use tacsim::arena::weapons::FrameArming;
     let frame = fixture::frame();
     let payload = cockpit::status_frame(fixture::MATCH, &frame);
-    assert_eq!(cockpit::FRAME_VERSION, 8);
+    assert_eq!(cockpit::FRAME_VERSION, 9);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(8))
+        Some(&serde_json::json!(9))
     );
     assert_eq!(
         payload.pointer("/weapons/0/armed"),
@@ -18736,7 +18907,10 @@ async fn q_pt1_a_range_says_so_from_the_seat() {
     );
     let said = rig.say(0, "status");
     assert!(
-        said.contains("Callsign RA. On the range: targets on the blue side."),
+        said.contains(&format!(
+            "Callsign {}. On the range: targets on the blue side.",
+            rig.callsign(rig.tank(0))
+        )),
         "{said}"
     );
     let watch = cockpit::watch_lines(
@@ -19010,9 +19184,12 @@ async fn dt_live_opt_in_emits_versioned_roster_and_player_wilco_stays_advisory()
     assert_eq!(
         slots
             .iter()
-            .map(|slot| slot["callsign"].as_str())
+            .map(|slot| slot["callsign"].as_str().map(str::to_owned))
             .collect::<Vec<_>>(),
-        [Some("RA"), Some("RB"), Some("RC")]
+        (1..=3)
+            .map(|slot| Some(rig.slot_callsign(PartyId::RED, slot)))
+            .collect::<Vec<_>>(),
+        "each numbered slot carries its tank's drawn callsign"
     );
     assert_eq!(slots[0]["controller"], "player");
     assert_eq!(slots[1]["controller"], "player");
@@ -19114,12 +19291,12 @@ async fn dt_live_controller_delivery_is_journalled_and_stale_or_legacy_orders_re
         .expect("term")
         .parse::<u64>()
         .expect("numeric term");
-    let machine = rig
-        .record()
-        .callsigns
-        .iter()
-        .find_map(|(unit, callsign)| (callsign.to_string() == "RC").then_some(*unit))
-        .expect("red's third slot is its machine");
+    // Red's third slot is its machine.
+    let machine = rig.slot_tank(PartyId::RED, 3);
+    assert!(
+        rig.record().callsigns.contains_key(&machine),
+        "red's third slot is fielded"
+    );
     let issuer = rig.pilot(0);
     let issuer_unit = rig.tank(0);
     let order = format!("ORDER DT:{id}:{revision}:{term} 3 HOLD");

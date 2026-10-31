@@ -2911,7 +2911,8 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     // to 10; M5rules moves the ordered rule tree to 11, M5r motor state to 12.
     // Format 16 also carries record-only accepted-order attribution (R4).
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(snapshot.document["format"], 18);
+    // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
+    assert_eq!(snapshot.document["format"], 19);
     let mut resumed =
         Snapshot::decode(&snapshot.document, definition()).expect("the document decodes");
     resumed.mind_runner = Arc::new(tacsim::arena::mind::NoMind);
@@ -2982,14 +2983,14 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         Snapshot::head(&old).map(|head| head.format),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 18
+            expected: 19
         })
     );
     assert!(matches!(
         Snapshot::decode(&old, definition()),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 18
+            expected: 19
         })
     ));
 }

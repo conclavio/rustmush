@@ -4393,8 +4393,9 @@ fn one_meshed_engagement_at_three_cadences_is_one_set_of_gunners_words_and_readi
 
     // ---- the run really carried the five things this cut moved -------------
 
-    // 1. The section word, on a contact the shooter has told apart.
-    let named = "BA";
+    // 1. The section word, on a contact the shooter has told apart — named by
+    //    the callsign the arena drew for the target at check-out (doc 32 CF.0).
+    let named = callsign(&meshed_trio(), BLUE);
     assert!(
         shooter
             .iter()
@@ -5230,9 +5231,8 @@ fn d2_the_refusals_the_wreck_and_the_spent_section_are_one_list_at_three_cadence
     );
     // The victim's own line names nothing but his own tank.
     assert!(
-        !victim
-            .iter()
-            .any(|line| line.contains("already destroyed") && line.contains("BA")),
+        !victim.iter().any(|line| line.contains("already destroyed")
+            && line.contains(&callsign(&d2_arena(), BLUE))),
         "{victim:?}"
     );
     // And the first round on a FRESH section still says what it always did.

@@ -2160,6 +2160,15 @@ fn a_share_carries_the_sharers_own_plot_and_never_a_teammates() {
 // platform has just re-found.
 // ---------------------------------------------------------------------------
 
+/// The callsign the arena drew for a unit at check-out (CF.0: party letter
+/// and a drawn unit letter, never the slot).
+fn callsign(arena: &Arena, unit: ObjId) -> String {
+    arena
+        .unit(unit)
+        .map(|u| u.callsign.to_string())
+        .expect("the unit is in the arena")
+}
+
 /// What one viewer's frame calls a target right now.
 fn calls(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<String> {
     let id = draw_contact_id(arena.seed, viewer, target);
@@ -2230,7 +2239,7 @@ fn a_contact_is_named_by_its_live_class_across_a_loss_and_a_re_detection() {
         pass(&mut arena, EYE, seq, t_ms);
     }
     // Blue's only unit takes blue's first free slot, in unit-id order.
-    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+    assert_eq!(calls(&arena, EYE, MARK), Some(callsign(&arena, MARK)));
     assert_eq!(
         alias_of(&arena, EYE, MARK),
         Some(1),
@@ -2265,7 +2274,7 @@ fn a_contact_is_named_by_its_live_class_across_a_loss_and_a_re_detection() {
         );
     }
     pass(&mut arena, EYE, 11, 10_000);
-    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+    assert_eq!(calls(&arena, EYE, MARK), Some(callsign(&arena, MARK)));
 }
 
 #[test]
@@ -2295,7 +2304,7 @@ fn a_mesh_arrival_carries_the_slot_name_and_consumes_no_number() {
     // A mesh copy arrives classified, so it renders the slot name at once — and
     // no number was issued for it, which is what makes the sequence mean "things
     // my own sensors found, in order".
-    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+    assert_eq!(calls(&arena, EYE, MARK), Some(callsign(&arena, MARK)));
     assert_eq!(
         alias_of(&arena, EYE, MARK),
         None,
@@ -2431,7 +2440,7 @@ fn the_switch_names_a_contact_at_detection_and_issues_no_number() {
     assert_eq!(kinds(&journal), vec!["detected"]);
     // The team and the pod, at the first pass — `classify_after_ms` before doc 16
     // W5 says identification is earned, which is exactly what the key costs.
-    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+    assert_eq!(calls(&arena, EYE, MARK), Some(callsign(&arena, MARK)));
     assert_eq!(alias_of(&arena, EYE, MARK), None);
     assert_eq!(
         arena.designators.provisional(EYE, MARK),
@@ -2445,7 +2454,7 @@ fn the_switch_names_a_contact_at_detection_and_issues_no_number() {
     }
     let (_, journal) = pass(&mut arena, EYE, 4, 3_000);
     assert_eq!(kinds(&journal), vec!["classified"]);
-    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+    assert_eq!(calls(&arena, EYE, MARK), Some(callsign(&arena, MARK)));
 }
 
 // ---------------------------------------------------------------------------
@@ -2948,6 +2957,8 @@ fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column()
         first.notices
     );
     // The designator column really moved: `X1`, then the slot name, then nothing.
+    // The name is the callsign the arena drew for the target at check-out.
+    let mark = callsign(&designator_arena(), MARK);
     let watcher: Vec<(i64, Vec<String>)> = first
         .columns
         .iter()
@@ -2963,7 +2974,7 @@ fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column()
     assert!(
         watcher
             .iter()
-            .any(|(_, column)| column == &["BA".to_owned()]),
+            .any(|(_, column)| column == std::slice::from_ref(&mark)),
         "the scope never read the slot name: {watcher:?}"
     );
     assert!(
@@ -2983,16 +2994,18 @@ fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column()
         .cloned()
         .unwrap_or_default();
     assert!(
-        told.iter().any(|line| line.starts_with("Locked on BA")),
+        told.iter()
+            .any(|line| line.starts_with(&format!("Locked on {mark}"))),
         "the lock was never taken under the slot name: {told:?}"
     );
     assert!(
         told.iter()
-            .any(|line| line == "Lock on BA broken: contact gone."),
+            .any(|line| *line == format!("Lock on {mark} broken: contact gone.")),
         "the broken lock was said under the name the row had at the expiry: {told:?}"
     );
     assert!(
-        told.iter().any(|line| line == "Contact BA lost."),
+        told.iter()
+            .any(|line| *line == format!("Contact {mark} lost.")),
         "the loss was said under the name the row had at the expiry: {told:?}"
     );
 
@@ -3550,26 +3563,30 @@ fn scan_of_a_classified_contact_nobody_has_looked_at_says_to_close_the_range() {
     // Thirty cells: detected and classified, and outside the close look. The
     // sentence names the price, because a pilot who reads `No reading` has to be
     // told the answer is to drive closer.
-    let (_, frame) = scan_frame(FAR);
+    let (arena, frame) = scan_frame(FAR);
+    let mark = callsign(&arena, MARK);
     let row = scan_row(&frame);
-    assert_eq!(row.designator.to_string(), "BA");
+    assert_eq!(row.designator.to_string(), mark);
     assert_eq!(
         cockpit::scan_lines(&frame, &row),
-        vec!["No reading on BA yet: close the range for a look.".to_owned()]
+        vec![format!(
+            "No reading on {mark} yet: close the range for a look."
+        )]
     );
 }
 
 #[test]
 fn scan_of_a_contact_that_has_been_looked_at_prints_its_bands_and_the_looks_age() {
-    let (_, frame) = scan_frame(NEAR);
+    let (arena, frame) = scan_frame(NEAR);
+    let mark = callsign(&arena, MARK);
     let row = scan_row(&frame);
-    assert_eq!(row.designator.to_string(), "BA");
+    assert_eq!(row.designator.to_string(), mark);
     let lines = cockpit::scan_lines(&frame, &row);
     // The fixture tank has one section, `hull`, and it is whole.
     assert_eq!(
         lines,
         vec![
-            "Scan of BA, read 0 s ago:".to_owned(),
+            format!("Scan of {mark}, read 0 s ago:"),
             "  hull green".to_owned()
         ]
     );
@@ -3588,7 +3605,8 @@ fn a_scan_of_a_wide_chassis_wraps_at_the_damage_blocks_own_width() {
     // the game ships fills a line. The rule still has to hold for the sixteen a
     // unit may declare, which is what this builds: a real frame, with its one
     // row's reading replaced by sixteen sections of long names.
-    let (_, mut frame) = scan_frame(NEAR);
+    let (arena, mut frame) = scan_frame(NEAR);
+    let mark = callsign(&arena, MARK);
     let names: Vec<SmolStr> = (0..16)
         .map(|n| SmolStr::new(format!("left_forward_section_{n:02}")))
         .collect();
@@ -3607,8 +3625,8 @@ fn a_scan_of_a_wide_chassis_wraps_at_the_damage_blocks_own_width() {
     let row = scan_row(&frame);
     let lines = cockpit::scan_lines(&frame, &row);
     assert_eq!(
-        lines.first().map(String::as_str),
-        Some("Scan of BA, read 12 s ago:")
+        lines.first().cloned(),
+        Some(format!("Scan of {mark}, read 12 s ago:"))
     );
     let runs: Vec<&String> = lines.iter().skip(1).collect();
     assert!(
@@ -3644,7 +3662,8 @@ fn a_reading_whose_table_is_not_on_the_frame_names_no_section() {
     // cannot produce this — and the renderer answers with no sections rather
     // than with a guess, because a guessed chassis is the one thing the table's
     // whole shape exists to prevent.
-    let (_, mut frame) = scan_frame(NEAR);
+    let (arena, mut frame) = scan_frame(NEAR);
+    let mark = callsign(&arena, MARK);
     for row in &mut frame.contacts {
         row.condition = row
             .condition
@@ -3656,7 +3675,7 @@ fn a_reading_whose_table_is_not_on_the_frame_names_no_section() {
     let row = scan_row(&frame);
     assert_eq!(
         cockpit::scan_lines(&frame, &row),
-        vec!["Scan of BA, read 0 s ago:".to_owned()]
+        vec![format!("Scan of {mark}, read 0 s ago:")]
     );
 }
 
@@ -3829,6 +3848,7 @@ fn flicker_lines(
 #[test]
 fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
     let mut arena = arena_of(flicker_units(), &[]);
+    let mark = callsign(&arena, MARK);
     let _ = arena.step(0, &[] as &[Control], &[]);
     // EYE's passes fall at its seeded offset inside each second (4 under
     // `id % pass_ms` before 16b cut U.1), and the times below are
@@ -3854,7 +3874,7 @@ fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
     assert_eq!(
         lines
             .iter()
-            .filter(|line| *line == "BA is unidentified again: X2.")
+            .filter(|line| **line == format!("{mark} is unidentified again: X2."))
             .count(),
         1,
         "the regression was not said exactly once: {lines:?}"
@@ -3862,12 +3882,14 @@ fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
     // And nothing was said about the loss or the re-acquisition themselves: the
     // flicker is still a flicker.
     assert!(
-        !lines.iter().any(|line| line == "Contact BA lost."),
+        !lines
+            .iter()
+            .any(|line| *line == format!("Contact {mark} lost.")),
         "the cancelled loss was announced: {lines:?}"
     );
     let regression = lines
         .iter()
-        .position(|line| line == "BA is unidentified again: X2.")
+        .position(|line| *line == format!("{mark} is unidentified again: X2."))
         .unwrap_or_else(|| panic!("the regression was never said: {lines:?}"));
     assert!(
         !lines
@@ -3882,7 +3904,7 @@ fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
     assert_eq!(
         lines
             .iter()
-            .filter(|line| *line == "Contact X2 identified: BA, blue.")
+            .filter(|line| **line == format!("Contact X2 identified: {mark}, blue."))
             .count(),
         2,
         "once at {} and once at {}: {lines:?}",
@@ -3913,7 +3935,7 @@ fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
         "the row does not read X2 at all: {rows:?}"
     );
     assert_eq!(
-        cockpit::resolve_designator(&rows, "BA"),
+        cockpit::resolve_designator(&rows, &mark),
         None,
         "the old name resolved: {rows:?}"
     );
@@ -3997,13 +4019,16 @@ fn b1_the_published_old_name_is_a_name_the_pilot_was_sent() {
         .iter()
         .map(|(kind, was, now, friendly)| (kind.as_str(), was.as_str(), now.as_str(), *friendly))
         .collect();
+    // The names are the callsigns the arena drew at check-out.
+    let decoy = callsign(&arena, DECOY);
+    let mark = callsign(&arena, MARK);
     assert_eq!(
         quoted,
         [
-            ("classified", "X1", "RB", true),
-            ("classified", "X2", "BA", false),
-            ("unidentified", "BA", "X2", false),
-            ("classified", "X2", "BA", false),
+            ("classified", "X1", decoy.as_str(), true),
+            ("classified", "X2", mark.as_str(), false),
+            ("unidentified", mark.as_str(), "X2", false),
+            ("classified", "X2", mark.as_str(), false),
         ],
         "the flicker's renames, each quoting the name the pilot had"
     );
@@ -4069,9 +4094,10 @@ fn a_loss_that_outlasts_the_window_is_still_a_loss_and_then_a_new_contact() {
             None
         }
     });
+    let mark = callsign(&arena, MARK);
     let loss = lines
         .iter()
-        .position(|line| line == "Contact BA lost.")
+        .position(|line| *line == format!("Contact {mark} lost."))
         .unwrap_or_else(|| panic!("the loss was never said: {lines:?}"));
     // The LAST of them: the row was acquired once at the opening pass too, and
     // what this property is about is the acquisition after the loss.
@@ -4128,6 +4154,7 @@ fn numbered(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<bool> {
 #[test]
 fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() {
     let mut arena = mesh_rename_arena();
+    let mark = callsign(&arena, MARK);
     let _ = arena.step(0, &[] as &[Control], &[]);
     let mut tape: Vec<u8> = Vec::new();
     let mut said: Vec<String> = Vec::new();
@@ -4145,7 +4172,7 @@ fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() 
         "this platform's own sensors opened the hold"
     );
     assert!(
-        said.contains(&"Contact X1 identified: BA, blue.".to_owned()),
+        said.contains(&format!("Contact X1 identified: {mark}, blue.")),
         "a share that classified this platform's own row said no rename: {said:?}"
     );
 
@@ -4193,7 +4220,7 @@ fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() 
     assert_eq!(
         arrival
             .iter()
-            .filter(|line| line.starts_with("New contact BA"))
+            .filter(|line| line.starts_with(&format!("New contact {mark}")))
             .count(),
         1,
         "the mesh arrival was not one line: {arrival:?}"
@@ -4350,10 +4377,10 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
             kind: NoticeKind::Classified,
             contact: tacsim::arena::perception::Named {
                 id: draw_contact_id(arena.seed, EYE, MARK),
-                designator: Designator::Unit {
-                    party: PartyId::BLUE,
-                    letter: 'A'
-                },
+                designator: arena
+                    .unit(MARK)
+                    .map(|unit| unit.callsign)
+                    .expect("MARK is in the arena"),
             },
             class: Classification::Classified {
                 party: PartyId::BLUE
@@ -4393,9 +4420,10 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
     // column went from `X1` to `BA` with no line; the cancel arm now stages the
     // `classified` notice with the old name, the sentence a share that
     // classifies a still-held row says.
+    let mark = callsign(&arena, MARK);
     assert_eq!(
         after,
-        vec!["Contact X1 identified: BA, blue.".to_owned()],
+        vec![format!("Contact X1 identified: {mark}, blue.")],
         "the renamed row was not said as one identification: {after:?}"
     );
     // And the column reads the live name alone: the number is gone with the hold
@@ -4405,7 +4433,7 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
         .into_iter()
         .map(|row| row.designator.to_string())
         .collect();
-    assert!(column.contains(&"BA".to_owned()), "the column: {column:?}");
+    assert!(column.contains(&mark), "the column: {column:?}");
     assert!(!column.contains(&"X1".to_owned()), "the column: {column:?}");
 }
 
@@ -4502,7 +4530,9 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
         panic!("three replays");
     };
 
-    // The run is worth comparing: the pilot really did read the whole story.
+    // The run is worth comparing: the pilot really did read the whole story,
+    // under the callsign the arena drew for `MARK` at check-out.
+    let mark = callsign(&flicker_replay_arena(), MARK);
     let told = first
         .notices
         .get(&ObjId(1_000))
@@ -4512,9 +4542,9 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
         told,
         vec![
             "New contact X1: bearing 090°, effective.".to_owned(),
-            "Contact X1 identified: BA, blue.".to_owned(),
-            "BA is unidentified again: X1.".to_owned(),
-            "Contact X1 identified: BA, blue.".to_owned(),
+            format!("Contact X1 identified: {mark}, blue."),
+            format!("{mark} is unidentified again: X1."),
+            format!("Contact X1 identified: {mark}, blue."),
         ],
         "the flicker's own four lines, in order"
     );
@@ -4539,7 +4569,9 @@ fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() 
         .map(|(_, _, column)| column.clone())
         .collect();
     assert!(
-        watcher.iter().any(|column| column == &["BA".to_owned()]),
+        watcher
+            .iter()
+            .any(|column| column == std::slice::from_ref(&mark)),
         "the scope never read the slot name: {watcher:?}"
     );
     assert!(
@@ -5157,11 +5189,13 @@ fn m2_a_share_that_renames_a_held_loss_is_one_identification_at_every_cadence() 
         ),
         "the identification did not quote X1: {renamed:?}"
     );
-    // The share really landed inside the window, and the pilot read the rename.
+    // The share really landed inside the window, and the pilot read the rename
+    // under the callsign the arena drew for `MARK`.
+    let mark = callsign(&arena(), MARK);
     assert!(
         first.notices.get(&ObjId(1_000)).is_some_and(|lines| lines
             .iter()
-            .any(|line| line.as_str() == "Contact X1 identified: BA, blue.")),
+            .any(|line| *line == format!("Contact X1 identified: {mark}, blue."))),
         "the pilot did not read the identification: {:?}",
         first.notices.get(&ObjId(1_000))
     );

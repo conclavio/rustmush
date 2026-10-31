@@ -250,31 +250,7 @@ impl Branch {
                 self.pulse = Some(pulse);
                 return Ok(u64::from(slice.simulated_ms));
             }
-            let (mut arena, output) = pulse
-                .finish()
-                .map_err(|_| invalid("fork pulse incomplete"))?;
-            arena.settle_inline();
-            if let Some(chunk) = output.ledger_chunks.last() {
-                arena.ledger.mark_flushed(chunk.seq);
-            }
-            for (_, frame) in output
-                .frames
-                .into_iter()
-                .filter(|(_, f)| f.unit == self.unit)
-            {
-                for notice in frame.notices {
-                    if let crate::arena::perception::FrameNotice::Refused {
-                        order, refusal, ..
-                    } = notice
-                    {
-                        self.refusals.push(format!("{order} refused: {refusal}."));
-                    }
-                }
-            }
-            if self.refusals.len() > 8 {
-                self.refusals.drain(..self.refusals.len() - 8);
-            }
-            self.arena = Some(arena);
+            self.land(pulse)?;
             return Ok(u64::from(slice.simulated_ms));
         }
         let at = self.arena().ok_or(BulkError::Busy)?.now_ms;
@@ -294,6 +270,39 @@ impl Branch {
             .ok_or_else(|| invalid("fork clock exhausted"))?;
         self.pulse = Some(OwnedPulse::new(arena, self.wall, &[], &[]));
         Ok(0)
+    }
+
+    /// **Land a finished pulse** (split out of [`BranchRun::advance`] by doc 32
+    /// cut CF.0): the finished arena and its output live in this frame alone,
+    /// so `advance`'s frame never holds the in-flight pulse and the finished
+    /// arena at once (`clippy::large_stack_frames`, 64 KiB).
+    #[inline(never)]
+    fn land(&mut self, pulse: OwnedPulse) -> Result<(), BulkError> {
+        let (mut arena, output) = pulse
+            .finish()
+            .map_err(|_| invalid("fork pulse incomplete"))?;
+        arena.settle_inline();
+        if let Some(chunk) = output.ledger_chunks.last() {
+            arena.ledger.mark_flushed(chunk.seq);
+        }
+        for (_, frame) in output
+            .frames
+            .into_iter()
+            .filter(|(_, f)| f.unit == self.unit)
+        {
+            for notice in frame.notices {
+                if let crate::arena::perception::FrameNotice::Refused { order, refusal, .. } =
+                    notice
+                {
+                    self.refusals.push(format!("{order} refused: {refusal}."));
+                }
+            }
+        }
+        if self.refusals.len() > 8 {
+            self.refusals.drain(..self.refusals.len() - 8);
+        }
+        self.arena = Some(arena);
+        Ok(())
     }
 }
 

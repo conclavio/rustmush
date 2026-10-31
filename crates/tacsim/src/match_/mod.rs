@@ -760,6 +760,36 @@ pub struct Fielded {
     pub mind_class: Option<crate::arena::core::CoreClass>,
 }
 
+/// **A side's units in pod-slot order** (doc 32 cut CF.0): every unit at its
+/// centre slot, and every unslotted one (`0`: a staff `@arena/start`, a
+/// fixture) at the lowest slot left, in unit-id order — the order 16b cut
+/// Q.1's slot callsigns spelled. Since CF.0 a callsign is drawn and says
+/// nothing about a slot, so the roster carries the order instead, and the
+/// detachment adapter numbers its members by it (slot 1 leads).
+fn slot_order(units: &[Fielded]) -> Vec<ObjId> {
+    let mut placed: Vec<(u16, ObjId)> = units
+        .iter()
+        .filter(|fielded| fielded.slot != 0)
+        .map(|fielded| (u16::from(fielded.slot), fielded.unit))
+        .collect();
+    let mut unslotted: Vec<ObjId> = units
+        .iter()
+        .filter(|fielded| fielded.slot == 0)
+        .map(|fielded| fielded.unit)
+        .collect();
+    unslotted.sort_unstable();
+    let mut next: u16 = 1;
+    for unit in unslotted {
+        while placed.iter().any(|(slot, _)| *slot == next) {
+            next = next.saturating_add(1);
+        }
+        placed.push((next, unit));
+        next = next.saturating_add(1);
+    }
+    placed.sort_unstable();
+    placed.into_iter().map(|(_, unit)| unit).collect()
+}
+
 impl Fielded {
     /// A unit no lobby placed, with no cached class preview.
     #[must_use]
@@ -1193,7 +1223,7 @@ pub fn start(
     for side in sides {
         let mut roster = TeamRoster {
             team: side.team,
-            units: side.units.iter().map(|fielded| fielded.unit).collect(),
+            units: slot_order(&side.units),
             pilots: Vec::new(),
         };
         for fielded in &side.units {

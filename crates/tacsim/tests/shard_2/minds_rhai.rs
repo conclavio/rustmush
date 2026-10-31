@@ -3548,34 +3548,39 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `7b35b9ee…`, `47b8afcf…`; M8a alone over the API 5 tree had re-pinned
 /// `91c474d0…`, `929f1c49…`, `22d34325…`, `de7720f6…` to `a8ef4a30…`,
 /// `e1e7a26b…`, `b2c1dada…`, `2e9d2e80…`.
+// **Doc 32 cut CF.0's one re-bless** (an encoding re-bless, D-UM-28): the
+// state hash folds every party's relation books and the end condition (item
+// 13) and the Standard source moved with the API 7 header, so every ledger
+// line's hash moved with it. Every row's end millisecond is unchanged (170 250,
+// 192 500, 170 000, 900 000): the fights are the same fights.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         170250,
-        4036052986693953416,
-        "daa4e8666cd9bc4c45ac5173a0ad30e65007e6bed38ec1483078b3a010ba8e5f",
-        "442550cd793fa83e891dd464a7e3df7f5acf8b1ff093360f5685959adac86c64",
+        3226764797738367208,
+        "6f6a741fbddf0326b2a4da37e615da2ccf5a883b5b876555427bcda249378358",
+        "d5afe91b1f12a2f15f286a3f45c9959785dd988c3008198a9194190316828e4d",
     ),
     (
         2351,
         192500,
-        14776315943276034554,
-        "4d137f25c8106433355566b13b22bf111b9c1c1d0b1bb1e9e617fb2fb424d585",
-        "1db6e56d1d325ce14a473c418a1a28f9cd64d3f078b960febf3e9f46efed8dd9",
+        12250106977832258330,
+        "8e2eb0c3f1d2f60f1f7d068b7119c1a44f1fd4c1a9c8c9350384272658e0f735",
+        "af0ec279cc1a153bc4c5ed3a1c9b32ceb51d8fb66070bf86af1d0ef8372cb86e",
     ),
     (
         2352,
         170000,
-        714931300200473704,
-        "f74b2d5b90f5838ca03216ef0383efa77eddaac021757f026ffd44a3a7241fb7",
-        "3182ce00a314f9b409a1a448676f46127f719e154ffa7e5ab7c395b20c0fd840",
+        3632269934981072382,
+        "2a3b4b62e66285946347adfe6bba87c306daca8561645b18199c846ac94b02dc",
+        "0288486f88cc586d55bef4d54d08cc71dd4a8b63e19a608ab01fd1eedb065725",
     ),
     (
         2350,
         900000,
-        5234968803354853599,
-        "e2733d3bd2aa6a02eeededaf9256252c446a4b862e84227b33bc5194f28f6e2b",
-        "c26a43090e34bf2532990fe238ff9df9f150dce8ee86f5d0360aac3d73c756ec",
+        13918973238022319229,
+        "d7f6a735bdd09227055e1ad4602cc1c8a4bf184d92332e78f6c57e2a8821d19a",
+        "f479f87dabf782c0bd5357f643bac7947305e3afc92c64437f058adc23ffc1e9",
     ),
 ];
 

@@ -925,12 +925,21 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     };
     for want in [
         "red won (blue eliminated)",
-        "You flew RA: ",
         finished,
         "the match ended: blue eliminated.",
     ] {
         assert!(flat.contains(want), "{want:?} missing from:\n{report}");
     }
+    // Doc 32 cut CF.0 (Q-CF-11): red's letter is pinned, the unit letter is
+    // drawn at check-out from the seed and is one of the 23.
+    let flew = flat
+        .split("You flew R")
+        .nth(1)
+        .and_then(|rest| {
+            rest.strip_prefix(|c: char| tacsim::arena::PARTY_LETTERS.contains(&(c as u8)))
+        })
+        .is_some_and(|rest| rest.starts_with(": "));
+    assert!(flew, "\"You flew R<letter>: \" missing from:\n{report}");
     let said = ada.ask("SIM REPORT 9", "not one of them").await;
     assert!(
         said.contains("The centre remembers its last 20 matches; match 9 is not one of them."),
