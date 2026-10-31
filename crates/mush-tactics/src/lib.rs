@@ -61,6 +61,7 @@ use smol_str::SmolStr;
 #[macro_use]
 mod test_checks;
 
+pub mod component_refit;
 pub mod component_replacement;
 mod contact;
 /// 16b cut T.3: **handing a unit to a simulation authority, and taking it back**
