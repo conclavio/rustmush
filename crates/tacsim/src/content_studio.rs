@@ -344,7 +344,10 @@ fn shipped_docs() -> Vec<DocSpec> {
 }
 
 fn infer_repo_path(id: &str) -> String {
-    if let Some(doc) = shipped_docs().into_iter().find(|d| d.id == id || d.repo_path == id) {
+    if let Some(doc) = shipped_docs()
+        .into_iter()
+        .find(|d| d.id == id || d.repo_path == id)
+    {
         return doc.repo_path.to_string();
     }
     if let Some(slug) = id.strip_prefix("tacsim.cast.") {
@@ -415,14 +418,10 @@ fn code_bound_npcs() -> BTreeMap<(String, String), Vec<String>> {
                 .to_string();
             if let Some(vendors) = def.get("vendors").and_then(Value::as_array) {
                 for vendor in vendors {
-                    let v_id = vendor
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("vendor");
+                    let v_id = vendor.get("id").and_then(Value::as_str).unwrap_or("vendor");
                     if let Some(sig) = vendor.get("signatory").and_then(Value::as_str) {
-                        let reason = format!(
-                            "lane/ceres_phobos.json ({port_id} vendor `{v_id}` signatory)"
-                        );
+                        let reason =
+                            format!("lane/ceres_phobos.json ({port_id} vendor `{v_id}` signatory)");
                         bound
                             .entry((area.clone(), sig.to_string()))
                             .or_default()
@@ -531,9 +530,7 @@ fn build_catalog(ctx: &Ctx<'_>) -> InvokeResult {
                         if let Some(kw) = attr_name.as_str().strip_prefix("atlas:detail:")
                             && attr.owner == GOD
                             && !attr.flags.intersects(
-                                AttrFlags::WIZARD_ONLY
-                                    | AttrFlags::SELF_ONLY
-                                    | AttrFlags::HIDDEN,
+                                AttrFlags::WIZARD_ONLY | AttrFlags::SELF_ONLY | AttrFlags::HIDDEN,
                             )
                             && attr.as_text().is_some_and(|t| !t.trim().is_empty())
                         {
@@ -580,9 +577,7 @@ fn build_catalog(ctx: &Ctx<'_>) -> InvokeResult {
                         .and_then(Value::as_str)
                         .unwrap_or(spec.id)
                         .to_string();
-                    *quest_counts
-                        .entry((npc_pack, npc.to_string()))
-                        .or_insert(0) += 1;
+                    *quest_counts.entry((npc_pack, npc.to_string())).or_insert(0) += 1;
                 }
             }
         }
@@ -605,12 +600,7 @@ fn build_catalog(ctx: &Ctx<'_>) -> InvokeResult {
             .get("entries")
             .and_then(Value::as_object)
             .map(serde_json::Map::len)
-            .or_else(|| {
-                doc_val
-                    .get("goods")
-                    .and_then(Value::as_array)
-                    .map(Vec::len)
-            })
+            .or_else(|| doc_val.get("goods").and_then(Value::as_array).map(Vec::len))
             .or_else(|| {
                 doc_val
                     .get("resources")
@@ -772,10 +762,7 @@ fn build_catalog(ctx: &Ctx<'_>) -> InvokeResult {
     })
 }
 
-fn shelf_or_shipped_value(
-    atlas_state: Option<&mush_atlas::AtlasState>,
-    spec: &DocSpec,
-) -> Value {
+fn shelf_or_shipped_value(atlas_state: Option<&mush_atlas::AtlasState>, spec: &DocSpec) -> Value {
     if let Some(atlas) = atlas_state
         && let Ok(cid) = CanonicalId::new(spec.id)
         && let Some(pack) = atlas.shelf.get(&cid)
@@ -812,7 +799,10 @@ fn read_document(ctx: &Ctx<'_>, id: &str) -> InvokeResult {
         .find(|d| d.id == id || d.repo_path == id)
     {
         let Ok(content) = serde_json::from_str::<Value>(spec.bytes) else {
-            return error("corrupt_shipped", "Shipped content document failed to parse.");
+            return error(
+                "corrupt_shipped",
+                "Shipped content document failed to parse.",
+            );
         };
         let latch = CanonicalId::new(spec.id)
             .ok()
@@ -826,7 +816,17 @@ fn read_document(ctx: &Ctx<'_>, id: &str) -> InvokeResult {
         });
     }
 
-    error("not_found", format!("Unknown content studio document `{id}`."))
+    error(
+        "not_found",
+        format!("Unknown content studio document `{id}`."),
+    )
+}
+
+struct CheckedDocument {
+    pack: Option<mush_content::Pack>,
+    signed_doc: Value,
+    digest: Option<String>,
+    cascade: Vec<Value>,
 }
 
 /// Core validation + signing logic shared by `Check` and `Publish`.
@@ -835,7 +835,7 @@ fn validate_and_sign(
     id: &str,
     mut content: Value,
     live_check: bool,
-) -> Result<(Option<mush_content::Pack>, Value, Option<String>, Vec<Value>), Vec<String>> {
+) -> Result<CheckedDocument, Vec<String>> {
     let repo_path = infer_repo_path(id);
 
     // 1. Standalone tables (`market/goods.json`, `resources.json`, `tools/*.json`)
@@ -846,18 +846,33 @@ fn validate_and_sign(
             let digest = goods_digest(&encoded)
                 .map_err(|e| vec![e.to_string()])?
                 .to_hex();
-            return Ok((None, content, Some(digest), Vec::new()));
+            return Ok(CheckedDocument {
+                pack: None,
+                signed_doc: content,
+                digest: Some(digest),
+                cascade: Vec::new(),
+            });
         }
         if id == "resources.json" || repo_path == "resources.json" {
             ResourceTable::load("resources.json", &encoded).map_err(|e| vec![e.to_string()])?;
-            return Ok((None, content, None, Vec::new()));
+            return Ok(CheckedDocument {
+                pack: None,
+                signed_doc: content,
+                digest: None,
+                cascade: Vec::new(),
+            });
         }
         if id.starts_with("tools/") || repo_path.starts_with("tools/") {
             ToolDef::load(&repo_path, &encoded).map_err(|e| vec![e.to_string()])?;
             let digest = tool_digest(&encoded)
                 .map_err(|e| vec![e.to_string()])?
                 .to_hex();
-            return Ok((None, content, Some(digest), Vec::new()));
+            return Ok(CheckedDocument {
+                pack: None,
+                signed_doc: content,
+                digest: Some(digest),
+                cascade: Vec::new(),
+            });
         }
         return Err(vec![format!(
             "{id}: document has no `manifest` and is not a recognized standalone table"
@@ -969,7 +984,12 @@ fn validate_and_sign(
     }
 
     let cascade = compute_cascade(&pack);
-    Ok((Some(pack), content, Some(digest_hex), cascade))
+    Ok(CheckedDocument {
+        pack: Some(pack),
+        signed_doc: content,
+        digest: Some(digest_hex),
+        cascade,
+    })
 }
 
 /// Automatically ensure `manifest.requires` includes any `room_pack` or `npc_pack`
@@ -1052,10 +1072,7 @@ fn reconcile_requires(ctx: &Ctx<'_>, content: &mut Value) {
     }
 }
 
-fn resolve_pack_version(
-    content_state: Option<&mush_content::ContentState>,
-    pack_id: &str,
-) -> u32 {
+fn resolve_pack_version(content_state: Option<&mush_content::ContentState>, pack_id: &str) -> u32 {
     if let Some(cs) = content_state
         && let Ok(cid) = CanonicalId::new(pack_id)
         && let Some(latch) = cs.latches.applied(&cid)
@@ -1147,16 +1164,19 @@ fn compute_cascade(pack: &mush_content::Pack) -> Vec<Value> {
 fn check_document(ctx: &Ctx<'_>, id: &str, content: Value, live_check: bool) -> InvokeResult {
     let repo_path = infer_repo_path(id);
     match validate_and_sign(ctx, id, content, live_check) {
-        Ok((_, signed_doc, digest, cascade)) => {
-            InvokeResult::ContentStudio(ContentStudioResponse::Checked {
-                id: id.to_string(),
-                repo_path,
-                refusals: Vec::new(),
-                pack: Some(signed_doc),
-                digest,
-                cascade,
-            })
-        }
+        Ok(CheckedDocument {
+            signed_doc,
+            digest,
+            cascade,
+            ..
+        }) => InvokeResult::ContentStudio(ContentStudioResponse::Checked {
+            id: id.to_string(),
+            repo_path,
+            refusals: Vec::new(),
+            pack: Some(signed_doc),
+            digest,
+            cascade,
+        }),
         Err(refusals) => InvokeResult::ContentStudio(ContentStudioResponse::Checked {
             id: id.to_string(),
             repo_path,
@@ -1174,7 +1194,11 @@ fn publish_document(
     content: Value,
     relocate_npcs: &[String],
 ) -> InvokeResult {
-    let (maybe_pack, signed_doc, _, _) = match validate_and_sign(ctx, id, content, true) {
+    let CheckedDocument {
+        pack: maybe_pack,
+        signed_doc,
+        ..
+    } = match validate_and_sign(ctx, id, content, true) {
         Ok(res) => res,
         Err(refusals) => {
             return InvokeResult::ContentStudio(ContentStudioResponse::Published {
@@ -1210,9 +1234,9 @@ fn publish_document(
         PackKind::CampaignSeed | PackKind::Neighborhood | PackKind::Region | PackKind::Site => {
             let _ = mush_atlas::stage_pack(ctx, pack.clone());
             // If this is the lane pack, also install it into TacsimStore so `@tacsim/seed` and route reads see it
-            if let Ok(rules_pack) = crate::pack::load_pack(
-                &serde_json::to_string(&signed_doc).unwrap_or_default(),
-            ) && let Some(store) = ctx.state_mut::<TacsimStore>()
+            if let Ok(rules_pack) =
+                crate::pack::load_pack(&serde_json::to_string(&signed_doc).unwrap_or_default())
+                && let Some(store) = ctx.state_mut::<TacsimStore>()
             {
                 store.loaded.insert(
                     (
@@ -1269,9 +1293,9 @@ fn publish_document(
             }
         }
         PackKind::RulesDefinition => {
-            if let Ok(rules_pack) = crate::pack::load_pack(
-                &serde_json::to_string(&signed_doc).unwrap_or_default(),
-            ) && let Some(store) = ctx.state_mut::<TacsimStore>()
+            if let Ok(rules_pack) =
+                crate::pack::load_pack(&serde_json::to_string(&signed_doc).unwrap_or_default())
+                && let Some(store) = ctx.state_mut::<TacsimStore>()
             {
                 store.loaded.insert(
                     (
@@ -1342,9 +1366,10 @@ fn relocate_live_npcs(
             }),
         };
         if let Some(room_obj) = target_room
-            && ctx.w.get(room_obj).is_some_and(|o| {
-                o.kind == ObjKind::Room && !o.flags.contains(Flags::GOING)
-            })
+            && ctx
+                .w
+                .get(room_obj)
+                .is_some_and(|o| o.kind == ObjKind::Room && !o.flags.contains(Flags::GOING))
             && ctx.w.move_to(npc_obj, room_obj).is_ok()
         {
             moved = moved.saturating_add(1);
@@ -1402,44 +1427,43 @@ fn synthesize_assist_patch(family: &str, scope: &str, brief: &str, context: &Val
 }
 
 fn synthesize_npc_patch(scope: &str, brief: &str, lower: &str, context: &Value) -> Value {
-    let (port_id, room_pack, default_room, station_label) = if lower.contains("stickney")
-        || lower.contains("phobos")
-    {
-        (
-            "stickney_port",
-            "neighborhood.stickney_yards",
-            "room.visiting_berth_gallery",
-            "Stickney Yards",
-        )
-    } else if lower.contains("aitken") || lower.contains("luna") {
-        (
-            "luna_port",
-            "neighborhood.aitken_highport",
-            "room.arrivals_concourse",
-            "Aitken Highport",
-        )
-    } else if lower.contains("voltaire") || lower.contains("deimos") {
-        (
-            "deimos_port",
-            "neighborhood.voltaire_anchorage",
-            "room.docking_spine",
-            "Voltaire Anchorage",
-        )
-    } else if lower.contains("ligeia") || lower.contains("titan") {
-        (
-            "titan_port",
-            "neighborhood.ligeia_terminal",
-            "room.transfer_concourse",
-            "Ligeia Terminal",
-        )
-    } else {
-        (
-            "ceres_port",
-            "neighborhood.ceres_freeport",
-            "room.arrivals",
-            "Ceres Freeport",
-        )
-    };
+    let (port_id, room_pack, default_room, station_label) =
+        if lower.contains("stickney") || lower.contains("phobos") {
+            (
+                "stickney_port",
+                "neighborhood.stickney_yards",
+                "room.visiting_berth_gallery",
+                "Stickney Yards",
+            )
+        } else if lower.contains("aitken") || lower.contains("luna") {
+            (
+                "luna_port",
+                "neighborhood.aitken_highport",
+                "room.arrivals_concourse",
+                "Aitken Highport",
+            )
+        } else if lower.contains("voltaire") || lower.contains("deimos") {
+            (
+                "deimos_port",
+                "neighborhood.voltaire_anchorage",
+                "room.docking_spine",
+                "Voltaire Anchorage",
+            )
+        } else if lower.contains("ligeia") || lower.contains("titan") {
+            (
+                "titan_port",
+                "neighborhood.ligeia_terminal",
+                "room.transfer_concourse",
+                "Ligeia Terminal",
+            )
+        } else {
+            (
+                "ceres_port",
+                "neighborhood.ceres_freeport",
+                "room.arrivals",
+                "Ceres Freeport",
+            )
+        };
 
     let mut duties = Vec::new();
     if lower.contains("repair")
@@ -1620,7 +1644,11 @@ mod tests {
         );
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)
-        for doc_id in ["tacsim.crew.ceres", "market/goods.json", "tacsim.pack.cannon_105"] {
+        for doc_id in [
+            "tacsim.crew.ceres",
+            "market/goods.json",
+            "tacsim.pack.cannon_105",
+        ] {
             let read_res = read_document(&ctx, doc_id);
             let InvokeResult::ContentStudio(ContentStudioResponse::Document { content, .. }) =
                 read_res
