@@ -8,43 +8,19 @@
 //! needs-more-bytes, never a panic; and the version field must be present.
 
 use mush_core::{
-    AccountId, ActionOfferId, ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId,
-    PerceivedRef, ProjectedLegalAction, WorldCommand,
+    ActionOfferId, ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId, PerceivedRef,
+    WorldCommand,
 };
 use mush_ipc::codec::{decode_frame, encode_frame_into};
 use mush_ipc::{
-    AttachRec, CanonicalHash, CommitToken, CreatePlayerError, DetachCause, FrameDecoder,
-    GatewayAction, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
-    LegalActionsError, MAX_FRAME_LEN, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
-    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
+    AttachRec, CanonicalHash, FrameDecoder, GatewayAction, GatewayInput, IPC_MIN_PROTO,
+    IPC_VERSION, MAX_FRAME_LEN, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUTS,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ToGateway, ToServer,
     WireInbound, WireInboundError, encode_frame,
 };
-use mush_proto::{
-    ActionStatusId, OutputEvent, PanelFrameKind, ProjectedActionReceipt, ProjectedActionResult,
-    ProjectedActionStatus, RichText,
-};
 
-fn sample_status() -> ActionStatusId {
-    ActionStatusId::new("k5:toy:brace:0000000000001234:01010101010101010101010101010101")
-        .expect("sample action status")
-}
-
-fn sample_receipt() -> ProjectedActionReceipt {
-    ProjectedActionReceipt::new(
-        sample_status(),
-        CommitToken::from_bytes([2; 16]).to_string(),
-        Some(
-            ProjectedActionResult::new(
-                "brace",
-                "Brace committed.",
-                serde_json::json!({"braced": true}),
-            )
-            .expect("sample projected result"),
-        ),
-    )
-    .expect("sample projected receipt")
-}
+mod samples;
+use samples::{every_to_gateway, every_to_server};
 
 /// Encode one message and decode it back, asserting equality.
 fn round_trip_to_server(msg: &ToServer) {
@@ -65,378 +41,6 @@ fn round_trip_to_gateway(msg: &ToGateway) {
     assert_eq!(&got, msg, "ToGateway round-trips");
 }
 
-/// One of every `ToServer` variant, including the `serde_json::Value` arm.
-fn every_to_server() -> Vec<ToServer> {
-    let command = GatewayRequest::new(
-        0x1234,
-        7,
-        GatewayInput::Cmd {
-            conn: 7,
-            actor: ObjId(42),
-            line: "say replay me".to_string(),
-        },
-    );
-    vec![
-        ToServer::Inbound(WireInbound::Cmd {
-            conn: 7,
-            actor: ObjId(42),
-            line: "look".to_string(),
-        }),
-        // The serde_json::Value-carrying inbound.
-        ToServer::Inbound(WireInbound::Query {
-            conn: 9,
-            actor: ObjId(3),
-            id: 1234,
-            name: "who".into(),
-            args: serde_json::json!({ "filter": "connected", "limit": 20, "flags": [1, 2, 3] }),
-        }),
-        ToServer::Inbound(WireInbound::ConnUp {
-            conn: 1,
-            actor: ObjId(2),
-            caps_structured: true,
-            from_linkdead: false,
-        }),
-        ToServer::Inbound(WireInbound::ConnDown {
-            conn: 1,
-            actor: ObjId(2),
-            reason: DisconnectKind::Lost,
-        }),
-        ToServer::Inbound(WireInbound::SessionGone { actor: ObjId(2) }),
-        ToServer::Input(command.clone()),
-        ToServer::Input(GatewayRequest::new(
-            0x1234,
-            8,
-            GatewayInput::Query {
-                conn: 7,
-                actor: ObjId(42),
-                id: 55,
-                name: "who".into(),
-                args: serde_json::json!({"page": 2}),
-            },
-        )),
-        ToServer::Input(GatewayRequest::new(
-            0x1234,
-            9,
-            GatewayInput::Action(Box::new(GatewayAction {
-                conn: 7,
-                actor: ObjId(42),
-                offered_action: ActionOfferId(CanonicalHash::from_bytes([7; 32])),
-                subject: PerceivedRef::SelfActor,
-                targets: vec![],
-                parameters: serde_json::json!({}),
-            })),
-        )),
-        ToServer::GatewayReleased {
-            request: command.uid,
-        },
-        ToServer::Attach {
-            conn: 5,
-            actor: ObjId(11),
-            account: Some("nick".to_string()),
-            char_name: "Wraith".to_string(),
-            caps_structured: true,
-        },
-        ToServer::Attach {
-            conn: 6,
-            actor: ObjId(12),
-            account: None,
-            char_name: "Anon".to_string(),
-            caps_structured: false,
-        },
-        ToServer::Detach {
-            conn: 5,
-            actor: ObjId(11),
-            reason: DisconnectKind::Quit,
-        },
-        ToServer::ReAnnounce(vec![
-            AttachRec {
-                output_brackets: mush_proto::OutputBrackets {
-                    prefix: Some("begin".into()),
-                    suffix: Some("end".into()),
-                },
-                conn: 5,
-                actor: ObjId(11),
-                account: Some("nick".to_string()),
-                char_name: "Wraith".to_string(),
-                caps_structured: true,
-            },
-            AttachRec {
-                output_brackets: Default::default(),
-                conn: 6,
-                actor: ObjId(12),
-                account: None,
-                char_name: "Anon".to_string(),
-                caps_structured: false,
-            },
-        ]),
-        ToServer::ReAnnounce(vec![]),
-        // Each ServiceReq.
-        ToServer::Request {
-            id: 108,
-            req: ServiceReq::ReplyBarrier { conn: 5 },
-        },
-        ToServer::Request {
-            id: 100,
-            req: ServiceReq::CreatePlayer {
-                // 16b cut F.4: the account rides on the create, so the id has to
-                // survive the encoding like every other field of the frame.
-                name: "Newbie".to_string(),
-                account: AccountId::mint("Nick", 1_700_000_000).ok(),
-            },
-        },
-        ToServer::Request {
-            // 16b cut F.4: the compensating half of the create. It is the only
-            // thing that keeps the live oracle and the account documents in step
-            // when the gateway's own link write fails, so it has to cross.
-            id: 107,
-            req: ServiceReq::UnlinkPlayer {
-                character: ObjId(99),
-            },
-        },
-        ToServer::Request {
-            id: 101,
-            req: ServiceReq::NameFree {
-                name: "Wraith".to_string(),
-            },
-        },
-        ToServer::Request {
-            id: 102,
-            req: ServiceReq::InInputContext { actor: ObjId(11) },
-        },
-        ToServer::Request {
-            id: 103,
-            req: ServiceReq::ConnectionReady {
-                conn: 5,
-                actor: ObjId(11),
-            },
-        },
-        ToServer::Request {
-            id: 104,
-            req: ServiceReq::LegalActions {
-                conn: 5,
-                actor: ObjId(11),
-                subject: PerceivedRef::SelfActor,
-            },
-        },
-        ToServer::Request {
-            id: 105,
-            req: ServiceReq::ActionStatus {
-                conn: 5,
-                actor: ObjId(11),
-                status: sample_status(),
-            },
-        },
-        ToServer::Request {
-            id: 106,
-            req: ServiceReq::Barrier,
-        },
-        ToServer::Control(CoreControl::Shutdown),
-        ToServer::Control(CoreControl::Dump),
-    ]
-}
-
-/// One of every `ToGateway` variant, including the `serde_json::Value` arm.
-fn every_to_gateway() -> Vec<ToGateway> {
-    use mush_ipc::SendTarget;
-    let request = RequestUid::from_bytes([1; 16]);
-    let legal_offer: ProjectedLegalAction = serde_json::from_value(serde_json::json!({
-        "offer": "0707070707070707070707070707070707070707070707070707070707070707",
-        "subject": { "kind": "self_actor" },
-        "parameters": [],
-        "targets": { "kind": "none" },
-        "required_channels": [],
-        "expires": null,
-        "presentation": {
-            "verb": "brace",
-            "label": "Brace",
-            "help": "Adopt a braced tactical stance."
-        }
-    }))
-    .expect("sample legal offer");
-    vec![
-        ToGateway::SetOutputBrackets {
-            conn: 5,
-            brackets: mush_proto::OutputBrackets {
-                prefix: Some("begin".into()),
-                suffix: Some("end".into()),
-            },
-        },
-        ToGateway::SetOutputBrackets {
-            conn: 5,
-            brackets: Default::default(),
-        },
-        ToGateway::Deliver {
-            target: SendTarget::Char(42),
-            event: OutputEvent::Sys(RichText::plain("hello")),
-        },
-        ToGateway::Deliver {
-            target: SendTarget::Conn(7),
-            event: OutputEvent::Narrative {
-                kind: mush_proto::NarrativeKind::Say,
-                actor: None,
-                text: RichText::plain("boo"),
-            },
-        },
-        // The serde_json::Value-carrying delivery: a Panel keyframe.
-        ToGateway::Deliver {
-            target: SendTarget::All,
-            event: OutputEvent::Panel {
-                feed: "wod.roll".into(),
-                kind: PanelFrameKind::Keyframe,
-                data: serde_json::json!({
-                    "pool": 7,
-                    "successes": 3,
-                    "dice": [10, 8, 2, 6, 9, 1, 4],
-                    "botch": false,
-                }),
-            },
-        },
-        // Each ServiceResp.
-        ToGateway::Reply {
-            id: 100,
-            resp: ServiceResp::CreatePlayer(Ok(ObjId(99))),
-        },
-        ToGateway::Reply {
-            id: 100,
-            resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::NameTaken)),
-        },
-        ToGateway::Reply {
-            id: 100,
-            resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::World("boom".to_string()))),
-        },
-        ToGateway::Reply {
-            id: 100,
-            resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::WorldGone)),
-        },
-        ToGateway::Reply {
-            id: 100,
-            resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::StoreUnavailable)),
-        },
-        ToGateway::Reply {
-            id: 107,
-            resp: ServiceResp::UnlinkPlayer(true),
-        },
-        ToGateway::Reply {
-            id: 107,
-            resp: ServiceResp::UnlinkPlayer(false),
-        },
-        ToGateway::Reply {
-            id: 101,
-            resp: ServiceResp::NameFree(true),
-        },
-        ToGateway::Reply {
-            id: 102,
-            resp: ServiceResp::InInputContext(false),
-        },
-        ToGateway::Reply {
-            id: 103,
-            resp: ServiceResp::ConnectionReady(true),
-        },
-        ToGateway::Reply {
-            id: 104,
-            resp: ServiceResp::LegalActions(Ok(vec![legal_offer])),
-        },
-        ToGateway::Reply {
-            id: 104,
-            resp: ServiceResp::LegalActions(Err(LegalActionsError::InvalidSubject)),
-        },
-        ToGateway::Reply {
-            id: 105,
-            resp: ServiceResp::ActionStatus(ProjectedActionStatus::Pending {
-                reference: sample_status(),
-            }),
-        },
-        ToGateway::Reply {
-            id: 106,
-            resp: ServiceResp::Barrier,
-        },
-        ToGateway::Reply {
-            id: 104,
-            resp: ServiceResp::Busy,
-        },
-        ToGateway::Reply {
-            id: 105,
-            resp: ServiceResp::Unavailable,
-        },
-        ToGateway::RequestDisposition {
-            request,
-            disposition: GatewayRequestDisposition::Rejected { retryable: true },
-        },
-        ToGateway::RequestDisposition {
-            request,
-            disposition: GatewayRequestDisposition::Busy,
-        },
-        ToGateway::RequestDisposition {
-            request,
-            disposition: GatewayRequestDisposition::EphemeralFinished,
-        },
-        ToGateway::RequestDisposition {
-            request,
-            disposition: GatewayRequestDisposition::LegacyClaimed,
-        },
-        ToGateway::RequestDisposition {
-            request,
-            disposition: GatewayRequestDisposition::Owned {
-                token: CommitToken::from_bytes([2; 16]),
-                status: sample_status(),
-            },
-        },
-        ToGateway::RequestDisposition {
-            request,
-            disposition: GatewayRequestDisposition::Finished {
-                recipient: ObjId(42),
-                receipt: sample_receipt(),
-            },
-        },
-        // Server → gateway session control.
-        ToGateway::SetFloodExempt {
-            char: 42,
-            exempt: true,
-        },
-        ToGateway::SetFloodExempt {
-            char: 42,
-            exempt: false,
-        },
-        ToGateway::CloseSession {
-            char: 11,
-            cause: DetachCause::Booted,
-        },
-        ToGateway::Detach {
-            conn: 5,
-            cause: DetachCause::Booted,
-        },
-        ToGateway::Detach {
-            conn: 6,
-            cause: DetachCause::SlowClient,
-        },
-        ToGateway::CloseWebSessions {
-            chars: vec![11, 12, 13],
-            notice: Some(OutputEvent::Disconnect {
-                reason: RichText::tag("system", "log in again"),
-            }),
-            cause: DetachCause::Booted,
-        },
-        ToGateway::CloseWebSessions {
-            chars: vec![],
-            notice: None,
-            cause: DetachCause::Booted,
-        },
-        ToGateway::Hello {
-            proto: IPC_VERSION,
-            server: "mushd/0.1.0".to_string(),
-            features: vec!["reattach".to_string(), "compression".to_string()],
-            panels: vec!["who".to_string(), "mail".to_string()],
-        },
-        ToGateway::WorldHealth {
-            world_loop_unixtime: 1_700_000_000,
-            loop_lag_ms: 19,
-            store_ok: false,
-            integrity_ok: true,
-        },
-        ToGateway::Bye,
-    ]
-}
-
 #[test]
 fn every_to_server_variant_round_trips() {
     for msg in every_to_server() {
@@ -455,9 +59,11 @@ fn every_to_gateway_variant_round_trips() {
 fn version_is_present_and_travels_in_hello() {
     // Name-only attributed removal and its pending reply (9), authoritative
     // world health (10) and mirrored reply settings with reply-completion
-    // fences (11) extend the closed vocabulary. An older peer cannot decode or
-    // honor them; deploy both halves together.
-    assert_eq!(IPC_VERSION, 12, "the boundary protocol version is pinned");
+    // fences (11) extend the closed vocabulary; 13 (doc 33 GG.0) opens the
+    // one-step window, after which the server upgrades first and a gateway one
+    // step behind is served (the golden suite holds the recorded contract).
+    assert_eq!(IPC_VERSION, 13, "the boundary protocol version is pinned");
+    assert_eq!(IPC_MIN_PROTO, 12, "the window is exactly one step");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -470,6 +76,7 @@ fn version_is_present_and_travels_in_hello() {
     assert_eq!(MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, 8 * 1024 * 1024);
     let hello = ToGateway::Hello {
         proto: IPC_VERSION,
+        min_proto: IPC_MIN_PROTO,
         server: "mushd".to_string(),
         features: vec![],
         panels: vec![],
@@ -477,9 +84,66 @@ fn version_is_present_and_travels_in_hello() {
     let bytes = encode_frame(&hello).unwrap();
     let (got, _): (ToGateway, usize) = decode_frame(&bytes).unwrap().unwrap();
     match got {
-        ToGateway::Hello { proto, .. } => assert_eq!(proto, IPC_VERSION),
+        ToGateway::Hello {
+            proto, min_proto, ..
+        } => {
+            assert_eq!(proto, IPC_VERSION);
+            assert_eq!(min_proto, IPC_MIN_PROTO);
+        }
         other => panic!("expected Hello, got {other:?}"),
     }
+    // The gateway's half of the handshake (13) travels too.
+    let hello = ToServer::Hello {
+        proto: IPC_VERSION,
+        min_proto: IPC_MIN_PROTO,
+    };
+    let bytes = encode_frame(&hello).unwrap();
+    let (got, _): (ToServer, usize) = decode_frame(&bytes).unwrap().unwrap();
+    assert_eq!(got, hello);
+}
+
+/// A 12 server's Hello has no `min_proto`. Encoded by a 12-shaped mirror of
+/// the variant under the same codec, it decodes with `min_proto = 0`, which
+/// the window helper reads as "12 only" — so a 13 gateway refuses it.
+#[test]
+fn a_hello_without_min_proto_decodes_as_a_pre_window_server() {
+    #[derive(serde::Serialize)]
+    enum ToGatewayV12 {
+        Hello {
+            proto: u32,
+            server: String,
+            features: Vec<String>,
+            panels: Vec<String>,
+        },
+    }
+    let bytes = encode_frame(&ToGatewayV12::Hello {
+        proto: 12,
+        server: "mushd/12".to_string(),
+        features: vec!["channels".to_string()],
+        panels: vec!["who".to_string()],
+    })
+    .unwrap();
+    let (got, _): (ToGateway, usize) = decode_frame(&bytes).unwrap().unwrap();
+    let ToGateway::Hello {
+        proto,
+        min_proto,
+        server,
+        features,
+        panels,
+    } = got
+    else {
+        panic!("expected Hello, got {got:?}");
+    };
+    assert_eq!((proto, min_proto), (12, 0));
+    assert_eq!(server, "mushd/12");
+    assert_eq!(features, vec!["channels".to_string()]);
+    assert_eq!(panels, vec!["who".to_string()]);
+    let window = mush_ipc::ProtoWindow::announced(proto, min_proto);
+    assert!(window.contains(12));
+    assert!(
+        !window.contains(IPC_VERSION),
+        "a 13 gateway is outside a 12 server's window"
+    );
 }
 
 /// The lifecycle ceiling also bounds the one-frame restart snapshot. Account
@@ -782,7 +446,7 @@ fn licence_source_request_uses_v8_custody_and_closed_v7_request_cannot_decode_it
         serde_json::from_value::<OldMind>(value.get("request").expect("nested request").clone())
             .is_err()
     );
-    assert_eq!(IPC_VERSION, 12);
+    assert_eq!(IPC_VERSION, 13);
 }
 
 #[test]
@@ -820,6 +484,6 @@ fn attributed_remove_requires_new_closed_invoke_vocabulary()
         serde_json::from_slice::<mush_proto::InvokeResult>(&bytes)?,
         reply
     );
-    assert_eq!(IPC_VERSION, 12);
+    assert_eq!(IPC_VERSION, 13);
     Ok(())
 }

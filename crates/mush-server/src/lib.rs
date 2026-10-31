@@ -45,11 +45,13 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{ControlMsg, Inbound, OfferRouteTable, OfferSubmission};
 use mush_ipc::{
-    BoxWrite, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
-    IpcEndpoint, LegalActionsError, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    BoxWrite, EmissionGate, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition,
+    IPC_MIN_PROTO, IPC_PRE_HELLO_VERSION, IPC_VERSION, IPC_VERSION_SKEW_MARKER, IpcEndpoint,
+    LegalActionsError, LinkVersion, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
     MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
     MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, ProtoWindow, RequestUid, ServiceReq, ServiceResp, ToGateway,
+    ToServer,
 };
 use mush_store::{BundleStatus, InMemoryStore, ObjectStore, RedisStore};
 use tokio::sync::mpsc;
@@ -443,6 +445,11 @@ pub async fn serve_classified(
         .map_err(|e| format!("ipc accept: {e}"))?;
     tracing::info!("gateway connected");
 
+    // The protocol version this link's gateway announces (doc 33 §4.1): the
+    // reader records it from the first frame, the writer's emission gate reads
+    // it on every frame, so a frame the gateway cannot decode is never sent.
+    let link_version = LinkVersion::unknown();
+
     // Writer: greet (with the panel manifest), then drain the world's output to
     // the socket. Exits when every `to_gw_tx` (held by the world loop + request
     // handlers) is dropped, OR early on a per-frame write timeout / a `teardown`
@@ -451,6 +458,7 @@ pub async fn serve_classified(
     let ipc_writer_join = tokio::spawn(writer_loop(
         writer_half,
         to_gw_rx,
+        EmissionGate::new(link_version.clone()),
         features,
         panels,
         Arc::clone(&metrics),
@@ -477,6 +485,7 @@ pub async fn serve_classified(
         reply_sink,
         &metrics,
         world_exit,
+        link_version,
     ));
     let mut world_join = world_join;
 
@@ -611,9 +620,14 @@ fn world_exit_result(result: Result<WorldOutcome, tokio::task::JoinError>) -> Re
     }
 }
 
-/// The socket writer: send [`ToGateway::Hello`] (carrying the panel manifest),
-/// then forward each queued message. On the channel closing (world gone) it
-/// sends a final [`ToGateway::Bye`] and returns.
+/// The socket writer: send [`ToGateway::Hello`] (carrying the panel manifest
+/// and this build's protocol window), then forward each queued message through
+/// the link's [`EmissionGate`] (doc 33 §4.1: a frame the gateway's announced
+/// version cannot decode is withheld or downgraded, never sent). On the channel
+/// closing (world gone) it sends a final [`ToGateway::Bye`] and returns.
+///
+/// The greeting and the health tick bypass the gate: both predate the window,
+/// and the greeting goes out before the gateway has announced anything.
 ///
 /// Two M18 teardown paths return early, each dropping `w` (the boundary EOFs,
 /// which the gateway supervisor heals via relaunch → ReAnnounce → re-attach):
@@ -627,9 +641,13 @@ fn world_exit_result(result: Result<WorldOutcome, tokio::task::JoinError>) -> Re
 /// Never skip-a-message-and-continue: a full socket buffer means the next write
 /// blocks too, and skipping could drop a keyframe — the boundary teardown +
 /// re-attach is the correct heal.
+// GG.0 added the emission gate as the loop's eighth argument; the loop is the
+// one place these all meet, so the count is the shape, not a smell.
+#[allow(clippy::too_many_arguments)]
 async fn writer_loop(
     mut w: BoxWrite,
     mut rx: mpsc::Receiver<ToGateway>,
+    gate: EmissionGate,
     features: Vec<String>,
     panels: Vec<String>,
     metrics: Arc<Metrics>,
@@ -642,6 +660,7 @@ async fn writer_loop(
         &mut w,
         &ToGateway::Hello {
             proto: IPC_VERSION,
+            min_proto: IPC_MIN_PROTO,
             server: server_id(),
             features,
             panels,
@@ -672,6 +691,16 @@ async fn writer_loop(
             }
             msg = rx.recv() => match msg {
                 Some(msg) => {
+                    let introduced_at = msg.introduced_at();
+                    let Some(msg) = gate.admit(msg) else {
+                        tracing::debug!(
+                            introduced_at,
+                            link_version = gate.link().effective(),
+                            "frame withheld by the emission gate: the gateway on this link \
+                             predates it"
+                        );
+                        continue;
+                    };
                     if !write_or_teardown(
                         &mut w,
                         &msg,
@@ -1612,10 +1641,18 @@ fn world_is_gone(
 
 /// Pump the gateway's `ToServer` traffic into the world.
 ///
+/// The first frame decides the link's protocol version (doc 33 §4.1): a
+/// [`ToServer::Hello`] inside this server's window is admitted and recorded in
+/// `link` for the writer's emission gate; one outside it is refused with
+/// [`IPC_VERSION_SKEW_MARKER`]; any other first frame is a pre-window gateway
+/// ([`IPC_PRE_HELLO_VERSION`]), admitted while that version is in the window.
+/// See [`admit_gateway`].
+///
 /// **Exposed only so `tests/world_task/dead_world_reader.rs` can drive it against a world
 /// task it has already stopped.** Nothing outside this crate composes a
 /// boundary; [`serve`] is the entry point.
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)] // GG.0 added the link-version cell; see `writer_loop`
 pub async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
@@ -1624,6 +1661,7 @@ pub async fn reader_loop(
     reply_sink: SocketSink,
     metrics: &Arc<Metrics>,
     world_exit: WorldExitStatus,
+    link: LinkVersion,
 ) -> std::io::Result<()> {
     let mut reader = FrameReader::new(r);
     let service_requests = ServiceRequestLimiter::new();
@@ -1635,8 +1673,29 @@ pub async fn reader_loop(
     // Set the moment this reader forwards a `ControlMsg::Shutdown`, so the
     // closed channel that follows reads as the exit it asked for.
     let mut shutdown_seen = false;
+    // The first frame names the gateway's version, or its shape does.
+    let mut first_frame = true;
     while let Some(msg) = reader.read::<ToServer>().await? {
+        if first_frame {
+            first_frame = false;
+            if let ToServer::Hello { proto, min_proto } = &msg {
+                admit_gateway(&link, *proto, Some(*min_proto))?;
+                continue;
+            }
+            admit_gateway(&link, IPC_PRE_HELLO_VERSION, None)?;
+        }
         match msg {
+            ToServer::Hello { proto, min_proto } => {
+                tracing::error!(
+                    proto,
+                    min_proto,
+                    "a Hello after the first frame: the gateway's version was already settled"
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Hello is a link's first frame and never repeats",
+                ));
+            }
             ToServer::Inbound(wire) => {
                 if matches!(
                     wire,
@@ -1971,6 +2030,56 @@ pub async fn reader_loop(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Admit or refuse the gateway on a link from what its first frame said (doc
+/// 33 §4.1): `announced` is the `proto` of its [`ToServer::Hello`], or
+/// [`IPC_PRE_HELLO_VERSION`] for a link whose first frame was anything else
+/// (`min_proto` is then `None`). An announced version inside this server's
+/// window ([`ProtoWindow::OURS`]) is recorded in `link`, where the writer's
+/// emission gate reads it; one outside it is refused, logged with
+/// [`IPC_VERSION_SKEW_MARKER`], and the error carries the marker too, so the
+/// reader's exit line names it as well.
+fn admit_gateway(
+    link: &LinkVersion,
+    announced: u32,
+    min_proto: Option<u32>,
+) -> std::io::Result<()> {
+    let ours = ProtoWindow::OURS;
+    if !ours.contains(announced) {
+        tracing::error!(
+            marker = IPC_VERSION_SKEW_MARKER,
+            gateway_proto = announced,
+            gateway_min_proto = min_proto,
+            server_window = %ours,
+            "the gateway on this link speaks an ipc version outside this server's window; \
+             refusing the link (the server upgrades first and serves one version back, \
+             doc 33 §4.1)"
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{IPC_VERSION_SKEW_MARKER}: gateway speaks ipc v{announced}, this server serves \
+                 {ours}"
+            ),
+        ));
+    }
+    link.record(announced);
+    match min_proto {
+        Some(min_proto) => tracing::info!(
+            gateway_proto = announced,
+            gateway_min_proto = min_proto,
+            server_window = %ours,
+            "gateway hello; link version recorded"
+        ),
+        None => tracing::info!(
+            gateway_proto = announced,
+            server_window = %ours,
+            "gateway sent no Hello: a pre-window peer (doc 33 §4.1 bootstrap rule); link \
+             version recorded"
+        ),
     }
     Ok(())
 }
@@ -2726,7 +2835,11 @@ mod writer_tests {
 
     use tokio::io::AsyncWrite;
 
-    use super::{Arc, BoxWrite, Metrics, Notify, ToGateway, mpsc, writer_loop};
+    use super::{
+        Arc, BoxWrite, EmissionGate, IPC_MIN_PROTO, IPC_PRE_HELLO_VERSION, IPC_VERSION,
+        IPC_VERSION_SKEW_MARKER, LinkVersion, Metrics, Notify, ToGateway, admit_gateway, mpsc,
+        writer_loop,
+    };
 
     /// An [`AsyncWrite`] whose writes NEVER complete — a connected peer that is
     /// not draining. Every `write_frame` against it pends until the writer's
@@ -2773,6 +2886,7 @@ mod writer_tests {
         let join = tokio::spawn(writer_loop(
             w,
             rx,
+            EmissionGate::new(LinkVersion::unknown()),
             vec![],
             vec![],
             Arc::clone(&metrics),
@@ -2803,6 +2917,7 @@ mod writer_tests {
         let join = tokio::spawn(writer_loop(
             w,
             rx,
+            EmissionGate::new(LinkVersion::unknown()),
             vec![],
             vec![],
             Arc::clone(&metrics),
@@ -2818,5 +2933,148 @@ mod writer_tests {
             1,
             "the wedged write must be counted"
         );
+    }
+
+    /// The emission gate in the real writer (doc 33 §4.1), with the test hook
+    /// declaring `SetFloodExempt` a version-13 frame: a 12 link never receives
+    /// it while every other frame still flows, and once the shared link cell
+    /// records 13 the same writer lets it through. Nothing is gated for real
+    /// yet; this is the mechanism the next bump will lean on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_writer_withholds_a_frame_the_link_predates() {
+        use mush_ipc::{FrameReader, write_frame};
+
+        fn flood_exempt_is_new(msg: &ToGateway) -> u32 {
+            match msg {
+                ToGateway::SetFloodExempt { .. } => 13,
+                other => other.introduced_at(),
+            }
+        }
+        let (a, b) = tokio::io::duplex(64 * 1024);
+        let (tx, rx) = mpsc::channel::<ToGateway>(8);
+        let metrics = Arc::new(Metrics::new());
+        let teardown = Arc::new(Notify::new());
+        let link = LinkVersion::announced(12);
+        let w: BoxWrite = Box::new(a);
+        let join = tokio::spawn(writer_loop(
+            w,
+            rx,
+            EmissionGate::with_introduction_table(link.clone(), flood_exempt_is_new),
+            vec![],
+            vec![],
+            Arc::clone(&metrics),
+            Arc::clone(&teardown),
+            Duration::from_secs(30),
+        ));
+        let mut frames = FrameReader::new(b);
+        let gated = ToGateway::SetFloodExempt {
+            char: 7,
+            exempt: true,
+        };
+        let marker = ToGateway::Detach {
+            conn: 7,
+            cause: mush_ipc::DetachCause::Booted,
+        };
+        tx.send(gated.clone()).await.expect("queue the gated frame");
+        tx.send(marker.clone())
+            .await
+            .expect("queue the marker frame");
+        // Everything up to the marker, skipping the health ticks: the gated
+        // frame must not be among it.
+        let mut seen = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let frame = frames
+                    .read::<ToGateway>()
+                    .await
+                    .expect("read ok")
+                    .expect("a frame");
+                let done = frame == marker;
+                seen.push(frame);
+                if done {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the marker frame arrives");
+        assert!(
+            matches!(seen.first(), Some(ToGateway::Hello { .. })),
+            "the greeting is first: {seen:?}"
+        );
+        assert!(
+            !seen.contains(&gated),
+            "a 12 link must not receive a 13 frame: {seen:?}"
+        );
+        // The link announces 13 (the shared cell, as the reader would record
+        // it) and the same writer now passes the frame.
+        link.record(13);
+        tx.send(gated.clone()).await.expect("queue the frame again");
+        let passed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let frame = frames
+                    .read::<ToGateway>()
+                    .await
+                    .expect("read ok")
+                    .expect("a frame");
+                if frame == gated {
+                    break;
+                }
+                assert!(
+                    matches!(frame, ToGateway::WorldHealth { .. }),
+                    "only health ticks may precede it: {frame:?}"
+                );
+            }
+        })
+        .await;
+        assert!(passed.is_ok(), "a 13 link receives the 13 frame");
+        drop(tx);
+        // A clean close: the writer says Bye and returns.
+        let mut w_closed = false;
+        while let Ok(Some(frame)) = frames.read::<ToGateway>().await {
+            if frame == ToGateway::Bye {
+                w_closed = true;
+            }
+        }
+        assert!(w_closed, "the writer closes with Bye once the channel ends");
+        tokio::time::timeout(Duration::from_secs(5), join)
+            .await
+            .expect("writer returns")
+            .expect("writer join");
+        // Silence the unused-import lint for `write_frame` under every cfg.
+        let _ = write_frame::<tokio::io::DuplexStream, ToGateway>;
+    }
+
+    /// The link decision (doc 33 §4.1): a Hello inside this server's window is
+    /// recorded, a first frame that is not a Hello is a pre-window peer and is
+    /// recorded as such while that version is served, and a Hello outside the
+    /// window is refused with the `IPC-VERSION-SKEW` marker in the error and
+    /// the link left unannounced.
+    #[test]
+    fn admit_gateway_pins_the_window_and_the_marker() {
+        let link = LinkVersion::unknown();
+        admit_gateway(&link, IPC_VERSION, Some(IPC_MIN_PROTO)).expect("our own version");
+        assert_eq!(link.get(), Some(IPC_VERSION));
+
+        let link = LinkVersion::unknown();
+        admit_gateway(&link, IPC_MIN_PROTO, Some(IPC_MIN_PROTO - 1))
+            .expect("one step back, inside the window");
+        assert_eq!(link.get(), Some(IPC_MIN_PROTO));
+
+        let link = LinkVersion::unknown();
+        admit_gateway(&link, IPC_PRE_HELLO_VERSION, None).expect("the bootstrap rule");
+        assert_eq!(link.get(), Some(IPC_PRE_HELLO_VERSION));
+
+        for outside in [IPC_VERSION + 1, IPC_MIN_PROTO - 1] {
+            let link = LinkVersion::unknown();
+            let err = admit_gateway(&link, outside, Some(outside - 1))
+                .expect_err("outside the window is refused");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            assert!(
+                err.to_string().contains(IPC_VERSION_SKEW_MARKER),
+                "the marker names the refusal: {err}"
+            );
+            assert_eq!(link.get(), None, "a refused link is never announced");
+        }
     }
 }

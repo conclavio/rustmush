@@ -30,6 +30,9 @@ mush-testkit = { workspace = true, features = ["toy-ruleset"] }
 mush-config.workspace = true
 mush-llm.workspace = true
 mush-server.workspace = true
+# Doc 33 cut GG.0: the golden-set lint (tests/ipc_golden_frames.rs) reads the
+# boundary protocol's version to insist a set is recorded for it.
+mush-ipc.workspace = true
 # H3: the scale harness (tests/scale_harness.rs) seeds an economy world and drives
 # the real store writer.
 mush-economy.workspace = true

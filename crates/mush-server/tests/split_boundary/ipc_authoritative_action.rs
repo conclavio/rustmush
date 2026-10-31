@@ -1526,6 +1526,7 @@ fn an_early_reader_loop_error_does_not_leave_a_reaper_running() {
             sink,
             &metrics,
             world_exit,
+            mush_ipc::LinkVersion::unknown(),
         )
         .await
     });

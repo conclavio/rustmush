@@ -52,11 +52,11 @@ use mush_core::DisconnectKind;
 use mush_ipc::{
     ActionSend, AttachRec, BoxRead, BoxWrite, ConnectionAdmission, DetachCause, FrameReader,
     GatewayAction, GatewayInput, GatewayLink, GatewayRequest, GatewayRequestDisposition,
-    IPC_VERSION, InputSend, IpcEndpoint, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    IPC_MIN_PROTO, IPC_VERSION, InputSend, IpcEndpoint, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
     MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
     MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
-    WireInbound,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, ProtoWindow, RequestUid, ServiceReq, ServiceResp, ToGateway,
+    ToServer, WireInbound,
 };
 use mush_net_web::{WebConfig, WebHooks};
 use mush_proto::{OutputEvent, RichText};
@@ -780,10 +780,11 @@ impl BoundaryHandle {
 ///
 /// The fix is deliberately NOT a new `ToGateway` frame. An unknown enum arm is
 /// an rmp decode error, which [`gateway_reader`] maps to a boundary teardown
-/// that drops every player, and there is no gateway→server handshake to gate
-/// emission on ([`ToGateway::Hello`] carries `proto`/`features` one way only) —
-/// so a new frame would be an unavoidable deploy-order hazard. Both halves
-/// already share the store, so the gateway simply re-reads it: every
+/// that drops every player. Since doc 33 cut GG.0 a new frame can be gated by
+/// the link's announced version (`mush_ipc::EmissionGate`), so it is no longer
+/// a deploy-order hazard — but it is still a protocol bump and a deploy of
+/// both halves, where a fact both halves can read from the store needs
+/// neither. Both halves already share the store, so the gateway re-reads it: every
 /// [`SitebanMirror::interval`] it replaces the whole mirror from `ban:*`, which
 /// propagates a set, a clear and an expiry alike, and then drops any live
 /// connection whose peer address the refreshed mirror now blocks. It also reads
@@ -1460,6 +1461,7 @@ async fn gateway_reader(
             }
             ToGateway::Hello {
                 proto,
+                min_proto,
                 server,
                 features,
                 panels,
@@ -1471,6 +1473,7 @@ async fn gateway_reader(
                 // the gateway's view current for any later read.
                 tracing::info!(
                     proto,
+                    min_proto,
                     server,
                     "late Hello (already handshaked); refreshing manifest"
                 );
@@ -1764,10 +1767,12 @@ struct BoundaryEnv {
     controls: Arc<controls::GatewayControls>,
 }
 
-/// The fixed marker an operator greps the gateway log for when the halves were
-/// built at different [`IPC_VERSION`]s. Stable text, quoted by the proof in
-/// `tests/split_halves/server_panic_relaunch.rs`; do not reword it.
-pub const IPC_VERSION_SKEW_MARKER: &str = "IPC-VERSION-SKEW";
+/// The fixed marker an operator greps the gateway log for when the server's
+/// protocol window does not contain this gateway's [`IPC_VERSION`] (doc 33
+/// §4.1). Since cut GG.0 the text lives in `mush-ipc`, because both halves log
+/// it; it stays re-exported here because the proof in
+/// `tests/split_halves/server_panic_relaunch.rs` quotes it. Do not reword it.
+pub use mush_ipc::IPC_VERSION_SKEW_MARKER;
 
 /// The fixed marker an operator (or an alert rule) greps the gateway log
 /// for when the supervisor has GIVEN UP on the server half (WS22-S17).
@@ -1792,9 +1797,10 @@ enum BoundaryFailure {
     /// The boundary could not be established: connect, handshake, or the
     /// post-reconnect resync barrier. Counts against the crash-loop guard.
     Failed(String),
-    /// The server half completed its Hello but speaks a different
-    /// [`IPC_VERSION`]. An operator error, not a crash loop.
-    VersionSkew { server_proto: u32 },
+    /// The server half completed its Hello but the window it serves does not
+    /// contain this gateway's [`IPC_VERSION`] (doc 33 §4.1). An operator
+    /// error, not a crash loop.
+    VersionSkew { server_window: ProtoWindow },
 }
 
 impl From<String> for BoundaryFailure {
@@ -1807,17 +1813,19 @@ impl std::fmt::Display for BoundaryFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BoundaryFailure::Failed(e) => f.write_str(e),
-            BoundaryFailure::VersionSkew { server_proto } => write!(
+            BoundaryFailure::VersionSkew { server_window } => write!(
                 f,
-                "{IPC_VERSION_SKEW_MARKER}: server speaks ipc v{server_proto}, \
+                "{IPC_VERSION_SKEW_MARKER}: server serves ipc {server_window}, \
                  gateway speaks v{IPC_VERSION}"
             ),
         }
     }
 }
 
-/// Connect to a (freshly launched) server endpoint, run the [`ToGateway::Hello`]
-/// handshake + [`IPC_VERSION`] check, and wire up the per-connection boundary:
+/// Connect to a (freshly launched) server endpoint, run the handshake — read
+/// the server's [`ToGateway::Hello`], check that the window it serves contains
+/// this gateway's [`IPC_VERSION`] (doc 33 §4.1), answer with the gateway's own
+/// [`ToServer::Hello`] as the link's first frame — and wire up the boundary:
 /// a fresh `ToServer` channel + reply table, a writer task, and a reader task
 /// routing `ToGateway` onto the gateway's stable [`SessionManager`]. Returns the
 /// swappable unit plus the reader's completion handle (the boundary-down
@@ -1829,7 +1837,7 @@ async fn connect_and_wire(
     env: &BoundaryEnv,
 ) -> Result<WiredBoundary, BoundaryFailure> {
     let manifest = &env.manifest;
-    let (reader_half, writer_half) = connect_with_retry(endpoint, connect_timeout).await?;
+    let (reader_half, mut writer_half) = connect_with_retry(endpoint, connect_timeout).await?;
 
     // Handshake: the server greets with Hello before anything else. Capture its
     // panel manifest into the shared cache so `serve` can build the web client's
@@ -1842,24 +1850,41 @@ async fn connect_and_wire(
     {
         Some(ToGateway::Hello {
             proto,
+            min_proto,
             server,
             features,
             panels,
         }) => {
-            if proto != IPC_VERSION {
-                // Its own arm: the two halves were built at different commits,
-                // which no amount of respawning fixes and which the crash-loop
-                // guard must therefore not spend its budget on (WS22-S16).
-                return Err(BoundaryFailure::VersionSkew {
-                    server_proto: proto,
-                });
+            // Doc 33 §4.1: the server serves `[min_proto, proto]` and this
+            // gateway speaks exactly IPC_VERSION, which must lie inside. A
+            // server from before the window (12) announces no `min_proto`,
+            // which reads as "12 only".
+            let server_window = ProtoWindow::announced(proto, min_proto);
+            if !server_window.contains(IPC_VERSION) {
+                // Its own arm: the two halves were deployed out of step, which
+                // no amount of respawning fixes and which the crash-loop guard
+                // must therefore not spend its budget on (WS22-S16).
+                return Err(BoundaryFailure::VersionSkew { server_window });
             }
             *locked(manifest, "manifest cache") = HelloManifest { features, panels };
-            tracing::info!(proto, server, "handshake ok");
+            tracing::info!(proto, min_proto, server, "handshake ok");
         }
         Some(other) => return Err(format!("expected Hello, got {other:?}").into()),
         None => return Err("server closed the boundary before Hello".to_string().into()),
     }
+    // The gateway's own Hello is the link's first frame (version 13): written
+    // on the raw half before the writer task owns it, so nothing precedes it,
+    // and only after the window check, so a server this gateway refuses never
+    // receives a frame it may not decode.
+    mush_ipc::write_frame(
+        &mut writer_half,
+        &ToServer::Hello {
+            proto: IPC_VERSION,
+            min_proto: IPC_MIN_PROTO,
+        },
+    )
+    .await
+    .map_err(|e| format!("sending Hello: {e}"))?;
 
     let (raw_tx, to_server_rx) = mpsc::unbounded_channel::<ToServer>();
     // The shared external depth gauge for this boundary (M18): every producer
@@ -2500,21 +2525,22 @@ async fn supervise(
                         }
                     }
                 }
-                Err(BoundaryFailure::VersionSkew { server_proto }) => {
-                    // NOT a crash (WS22-S16): the halves were built at different
-                    // commits. Hand the attempt back to the guard so the retry
+                Err(BoundaryFailure::VersionSkew { server_window }) => {
+                    // NOT a crash (WS22-S16): the halves were deployed out of
+                    // step. Hand the attempt back to the guard so the retry
                     // loop outlives the mistake, name the operator action, and
                     // pace the next try.
                     let streak = guard.record_version_skew();
                     tracing::error!(
                         marker = IPC_VERSION_SKEW_MARKER,
-                        server_proto,
+                        server_window = %server_window,
                         gateway_proto = IPC_VERSION,
                         streak,
-                        "the launched server half speaks a different ipc version than this \
-                         gateway; rebuild and redeploy BOTH halves from the same commit — the \
+                        "the launched server half serves ipc versions that do not include this \
+                         gateway's; deploy a server whose window contains it (the server \
+                         upgrades first and serves one version back, doc 33 §4.1) — the \
                          gateway keeps retrying, and holds every session in the restart gap \
-                         until a matching server answers"
+                         until such a server answers"
                     );
                     if streak == 1 {
                         broadcast(&sessions, version_skew_notice());
