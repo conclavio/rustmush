@@ -268,8 +268,8 @@ impl Rig {
 
     /// **The callsign the board prints for one slot** (doc 32 cut CF.0): the
     /// unit letter is drawn at check-out, so it is read off the running match's
-    /// record, and before a match has checked the tank out it is the side's
-    /// letter and a dash.
+    /// record, and before a match has checked the tank out it is the pod's
+    /// own label (`RA`).
     fn slot_callsign(&self, team: PartyId, index: u8) -> String {
         let w = self.tw.world();
         match_::centre_of(w)
@@ -279,7 +279,14 @@ impl Rig {
                 let unit = match_::tank_for_slot(w, team, index)?;
                 record.callsigns.get(&unit).map(ToString::to_string)
             })
-            .unwrap_or_else(|| format!("{}-", team.letter()))
+            // Before a check-out the board names the pod by its own label.
+            .unwrap_or_else(|| {
+                format!(
+                    "{}{}",
+                    team.letter(),
+                    char::from(b'A'.saturating_add(index.saturating_sub(1)))
+                )
+            })
     }
 
     /// **Every unit's callsign as the match record kept it** (doc 32 cut CF.0:

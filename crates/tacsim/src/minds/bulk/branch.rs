@@ -272,7 +272,7 @@ impl Branch {
         Ok(0)
     }
 
-    /// **Land a finished pulse** (split out of [`BranchRun::advance`] by doc 32
+    /// **Land a finished pulse** (split out of `BranchRun::advance` by doc 32
     /// cut CF.0): the finished arena and its output live in this frame alone,
     /// so `advance`'s frame never holds the in-flight pulse and the finished
     /// arena at once (`clippy::large_stack_frames`, 64 KiB).

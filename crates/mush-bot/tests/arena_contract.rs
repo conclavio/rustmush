@@ -180,7 +180,7 @@ fn friendly_frame() -> Frame {
         class: Classification::Classified {
             party: PartyId::RED,
         },
-        relation: tacsim::arena::Relation::Hostile,
+        relation: tacsim::arena::Relation::Own,
         bearing_mdeg: 180_000,
         range_cm: 12_000,
         age_ms: 0,
@@ -1812,7 +1812,17 @@ async fn live_centre() {
     assert!(!picture.aboard, "the hatch opened");
 
     let own = &picture.own;
-    assert_eq!(own.callsign.as_deref(), Some("RA"));
+    // Doc 32 cut CF.0 (Q-CF-11): red's letter, then a drawn unit letter.
+    let callsign = own.callsign.as_deref().unwrap_or_default();
+    assert!(
+        callsign.len() == 2
+            && callsign.starts_with('R')
+            && callsign
+                .bytes()
+                .nth(1)
+                .is_some_and(|letter| tacsim::arena::PARTY_LETTERS.contains(&letter)),
+        "{callsign}"
+    );
     assert_eq!(own.name.as_deref(), Some("Red Tank 1"));
     assert_eq!(own.power, Power::Online);
     assert!(own.pos_m.is_some(), "a position");

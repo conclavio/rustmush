@@ -4226,8 +4226,10 @@ fn tell_seal_lines(ctx: &mut Ctx<'_>, match_id: MatchId, sides: &[Side]) {
 /// **The callsign a centre pod's tank answers to** (16b cut Q.1; doc 32 cut
 /// CF.0): read off the running match's record, because since CF.0 the unit
 /// letter is drawn at check-out and no longer spells the slot. Before a match
-/// has checked the tank out it is the side's letter and a dash (`R-`): the
-/// letter is not drawn yet.
+/// has checked the tank out there is no callsign yet, and the row names the
+/// pod by its own label (`RA`, [`super::parties::pod_label`]) — the shape the
+/// board has always printed, so a reader of the board (the bot's lobby) reads
+/// the same row before a match and a callsign of the same shape during one.
 fn slot_callsign(w: &World, team: PartyId, index: u8) -> String {
     let drawn = centre(w)
         .and_then(|centre| centre.match_id)
@@ -4236,7 +4238,7 @@ fn slot_callsign(w: &World, team: PartyId, index: u8) -> String {
             let unit = crate::match_::centre::tank_for_slot(w, team, index)?;
             record.callsigns.get(&unit).map(ToString::to_string)
         });
-    drawn.unwrap_or_else(|| format!("{}-", team.letter()))
+    drawn.unwrap_or_else(|| super::parties::pod_label(team, index))
 }
 
 /// **Put every human pilot of the match that just started on their side's net**

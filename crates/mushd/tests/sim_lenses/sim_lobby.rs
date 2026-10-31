@@ -1008,13 +1008,13 @@ async fn z3_a_side_takes_six_claims_and_the_fill_is_one_to_six() {
     // unit letter is not drawn, so the board prints the side's letter and a
     // dash beside every index.
     for row in [
-        "1 (R-): Ada",
-        "2 (R-): Bo",
-        "3 (R-): Cy",
-        "4 (R-): Dee",
-        "5 (R-): Eli",
-        "6 (R-): Fay",
-        "1 (B-): Gus",
+        "1 (RA): Ada",
+        "2 (RB): Bo",
+        "3 (RC): Cy",
+        "4 (RD): Dee",
+        "5 (RE): Eli",
+        "6 (RF): Fay",
+        "1 (BA): Gus",
     ] {
         assert!(status.contains(row), "{row}: {status}");
     }

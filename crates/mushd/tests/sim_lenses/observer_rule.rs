@@ -9071,12 +9071,11 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
     // The board, per reader: Ada's own names both of hers; Bo's and Cy's
     // mark them; nobody reads anything against Bo's unchosen row.
     // Doc 32 cut CF.0 (Q-CF-11): in `Selection` no tank is checked out, so the
-    // board prints each side's letter and a dash where the drawn unit letter
-    // will go.
-    let unchosen = "blue: 1 (B-): Bo";
+    // board names each pod by its own label (`BA`, `RA`) until one is.
+    let unchosen = "blue: 1 (BA): Bo";
     let rows = m5_fog_rows(&ask_whole(&mut ada, "SIM STATUS").await);
     assert!(
-        rows.contains(&"red: 1 (R-): Ada, mind Standard Doctrine (Sniper, Line)".to_owned())
+        rows.contains(&"red: 1 (RA): Ada, mind Standard Doctrine (Sniper, Line)".to_owned())
             && rows.contains(&"red fill: Standard Doctrine (Hunter)".to_owned())
             && rows.contains(&unchosen.to_owned()),
         "Ada's board: {rows:#?}"
@@ -9086,7 +9085,7 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
         assert_eq!(
             rows,
             vec![
-                "red: 1 (R-): Ada, a mind".to_owned(),
+                "red: 1 (RA): Ada, a mind".to_owned(),
                 unchosen.to_owned(),
                 "red fill: a mind".to_owned(),
             ],
@@ -9097,9 +9096,9 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
     let rows = m5_fog_rows(&staff);
     assert!(
         rows.iter()
-            .any(|row| row.ends_with("(R-): Ada, mind Standard Doctrine (Sniper, Line)"))
+            .any(|row| row.ends_with("(RA): Ada, mind Standard Doctrine (Sniper, Line)"))
             && rows.contains(&"red fill: Standard Doctrine (Hunter)".to_owned())
-            && rows.iter().any(|row| row.ends_with("(B-): Bo")),
+            && rows.iter().any(|row| row.ends_with("(BA): Bo")),
         "staff read both choices and nothing against Bo's row: {rows:#?}\n{staff}"
     );
 
