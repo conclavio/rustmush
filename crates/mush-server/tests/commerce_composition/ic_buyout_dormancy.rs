@@ -54,6 +54,7 @@ use mush_server::action_coordinator::{
 use mush_server::boot;
 use mush_server::persist;
 use mush_server::quarantine::QuarantineSpool;
+use mush_server::timeline;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use mush_testkit::TestWorld;
 use tacsim::TacsimStore;
@@ -158,17 +159,22 @@ fn boxed_boot_engine<'a>(
     cfg: &'a Config,
     store: &'a Arc<dyn ObjectStore>,
     spool: &'a QuarantineSpool,
+    boot_unix: i64,
 ) -> std::pin::Pin<
     Box<impl std::future::Future<Output = Result<Box<boot::BootedEngine>, String>> + 'a>,
 > {
-    Box::pin(async move { boot::build_engine(cfg, store, spool).await.map(Box::new) })
+    Box::pin(async move {
+        boot::build_engine_at(cfg, store, spool, boot_unix)
+            .await
+            .map(Box::new)
+    })
 }
 
 async fn boot(tag: &str) -> Rig {
     let cfg = config(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = QuarantineSpool::open(cfg.server.data_dir.join("quarantine")).expect("a spool");
-    let booted = boxed_boot_engine(&cfg, &store, &spool)
+    let booted = boxed_boot_engine(&cfg, &store, &spool, mush_config::unix_now_s())
         .await
         .expect("the split half boots");
     assert_eq!(
@@ -235,9 +241,15 @@ async fn flush(rig: &mut Rig) {
 async fn restart(rig: &mut Rig, probe: impl FnOnce(&mut TestWorld) -> bool) {
     flush(rig).await;
     let now = rig.tw.world().now();
+    // The rig is the world task here (W-clock): checkpoint the clock at the
+    // rig's own `now` and boot at that same second, so the restart measures no
+    // outage and the IC clock continues exactly where the stamps left it.
+    timeline::persist_world_clock_checkpoint(rig.tw.world_mut(), &*rig.store, now)
+        .await
+        .expect("the restart checkpoints the world clock");
     let old = std::mem::replace(&mut rig.tw, Box::new(TestWorld::new()));
     drop(old);
-    let booted = boxed_boot_engine(&rig.cfg, &rig.store, &rig.spool)
+    let booted = boxed_boot_engine(&rig.cfg, &rig.store, &rig.spool, now)
         .await
         .expect("the restart boots over the kept store");
     *rig.tw = TestWorld::from_engine(booted.engine);

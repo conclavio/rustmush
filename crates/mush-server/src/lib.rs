@@ -371,6 +371,7 @@ pub async fn serve_classified(
     let boot::BootedEngine {
         engine,
         decision_workers,
+        world_clock_checkpoint_s,
         archive_namespaces,
         ..
     } = booted;
@@ -411,6 +412,7 @@ pub async fn serve_classified(
         deps,
         deps_llm,
         decision_workers,
+        world_clock_checkpoint_s,
         move |_weak_inbound| {
             // The forked server never polices (it owns no connection buffers), so it
             // ignores the loop's inbound weak sender and just serializes to the links.

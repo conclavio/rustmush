@@ -532,6 +532,10 @@ pub struct BootedEngine {
     /// `[llm].decision_workers`, read once here so the serving half never
     /// re-parses the stanza to find it.
     pub decision_workers: usize,
+    /// `[game].world_clock_checkpoint_s`, read once here for the same reason:
+    /// the cadence at which the world task durably checkpoints the IC clock
+    /// (`W-clock` / `Q-R4`).
+    pub world_clock_checkpoint_s: u64,
     /// Every composed module's namespace — the list the J5 nightly pass walks,
     /// which only the booted engine knows.
     pub archive_namespaces: Vec<String>,
@@ -558,18 +562,47 @@ pub fn build_engine<'a>(
     store: &'a Arc<dyn ObjectStore>,
     validated_spool: &'a QuarantineSpool,
 ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<BootedEngine, String>> + 'a>> {
+    build_engine_at(config, store, validated_spool, mush_config::unix_now_s())
+}
+
+/// [`build_engine`] with the boot's wall clock injected (`W-clock` / `Q-R4`).
+///
+/// The outage policy measures the restart from the store's last world-clock
+/// checkpoint against `boot_unix`. Production boots at the wall clock through
+/// [`build_engine`]; a rig that drives the engine on its own clock and restarts
+/// it over a kept store (the `TestWorld` rigs of the commerce and relay
+/// stories) plants [`crate::timeline::persist_world_clock_checkpoint`] at its
+/// `now` and boots here at that same second, so the restart measures no outage
+/// and the IC clock continues exactly where its stamps left it — what the world
+/// task's per-batch checkpoint guarantees a live world.
+///
+/// # Errors
+///
+/// As [`build_engine`].
+pub fn build_engine_at<'a>(
+    config: &'a Config,
+    store: &'a Arc<dyn ObjectStore>,
+    validated_spool: &'a QuarantineSpool,
+    boot_unix: i64,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<BootedEngine, String>> + 'a>> {
     // Boot retains the composed engine and registry across store awaits. Keep
     // that state on the heap so each caller's async frame does not embed it
     // again. Nested boot/logging futures otherwise exhaust a normal thread's
     // stack in debug builds. Construction remains lazy: no boot work runs until
     // the returned future is polled, and the validated spool stays borrowed.
-    Box::pin(build_engine_inner(config, store, validated_spool))
+    Box::pin(build_engine_inner(
+        config,
+        store,
+        validated_spool,
+        boot_unix,
+    ))
 }
 
 async fn build_engine_inner(
     config: &Config,
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,
+    boot_unix: i64,
 ) -> Result<BootedEngine, String> {
     let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
         .load_or_create()
@@ -701,7 +734,7 @@ async fn build_engine_inner(
     let boot_outage = timeline::apply_boot_outage_policy(
         &mut world,
         &**store,
-        mush_config::unix_now_s(),
+        boot_unix,
         timeline::OutagePolicy {
             freeze_threshold_s: config.game.outage_freeze_threshold_s,
             countdown_s: config.game.outage_countdown_s,
@@ -716,8 +749,20 @@ async fn build_engine_inner(
         generation = world.world_timeline().current().generation,
         ic_rate = world.world_timeline().current().rate,
         ?boot_outage,
+        checkpoint_cadence_s = config.game.world_clock_checkpoint_s,
         "world timeline installed",
     );
+    // W-clock: the next boot measures its outage from the last checkpoint the
+    // running world wrote, so the measured downtime over-reads by up to one
+    // cadence. A cadence at or above the threshold turns every restart into an
+    // outage, however short.
+    if config.game.world_clock_checkpoint_s >= config.game.outage_freeze_threshold_s {
+        tracing::warn!(
+            world_clock_checkpoint_s = config.game.world_clock_checkpoint_s,
+            outage_freeze_threshold_s = config.game.outage_freeze_threshold_s,
+            "[game].world_clock_checkpoint_s is not below outage_freeze_threshold_s: a restart of any length will read as an outage"
+        );
+    }
     let mut engine = Engine::from_composition(world, composition);
     engine.set_offer_keys(offer_keys);
     engine.set_resolution_keys(resolution_keys);
@@ -846,6 +891,7 @@ async fn build_engine_inner(
         staff,
         llm,
         decision_workers: llm_config.decision_workers,
+        world_clock_checkpoint_s: config.game.world_clock_checkpoint_s,
         archive_namespaces,
     })
 }

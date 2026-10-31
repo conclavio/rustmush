@@ -303,6 +303,7 @@ impl Running {
             deps,
             Some(llm),
             2,
+            crate::world_task::DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
             move |_| -> Gateway { sink },
         )?;
         Ok(Self {
