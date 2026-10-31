@@ -3333,8 +3333,8 @@ pub fn render_png(
     // Entry zone outlines
     for z in &draft.entry_zones {
         let color = match z.team {
-            Team::Red => [225, 72, 64],
-            Team::Blue => [68, 142, 235],
+            PartyId::RED => [225, 72, 64],
+            _ => [68, 142, 235],
         };
         let x0 = usize::from(z.x0) * scale;
         let x1 = ((usize::from(z.x1) + 1) * scale)

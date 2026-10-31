@@ -458,10 +458,12 @@ pub fn preview(input: &[u8]) -> u32 {
     let view = mush_pixel::bake::View::named(word("view")).unwrap_or(mush_pixel::bake::View::Fp);
     let facing = mush_pixel::look::Facing::named(word("facing"))
         .unwrap_or(mush_pixel::look::Facing::FrontRight);
+    // Doc 32 cut CF.0: the preview's `team` word picks a relation palette --
+    // blue the friend's, anything else the hostile's.
     let kind = if word("team") == "blue" {
-        mush_pixel::raycast::SpriteKind::Blue
+        mush_pixel::raycast::SpriteKind::Friend
     } else {
-        mush_pixel::raycast::SpriteKind::Red
+        mush_pixel::raycast::SpriteKind::Hostile
     };
     let size = v
         .get("size")
