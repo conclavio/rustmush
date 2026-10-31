@@ -1,9 +1,10 @@
 # 33. Gateway generations: restarting mush-gateway without dropping players
 
-**Draft 0.1, 2026-10-30.** Based on `origin/main` at `2085d9f6`. Docs only: nothing in this
+**Draft 0.2, 2026-10-30.** Based on `origin/main` at `2085d9f6`. Docs only: nothing in this
 document is built. The doorway of doc 29 (PR #193) is on `main` as of `265629be`, so every
 doorway file cited here is cited from `main`. The decisions in §7 come from the owner's design
-conversation of 2026-10-30; the questions in §8 are open for the owner.
+conversation of 2026-10-30. Draft 0.2 records the owner's rulings of the same day: every
+question in §8 was accepted at its default, so the cut train can start at GG.0 and GG.3.
 
 ## 1. Goal
 
@@ -205,11 +206,12 @@ The two roles of §2.1 move as follows. The **exit confirmation** becomes system
 next start never begins until its main process is gone, which is the guarantee the launcher
 built by hand. The **lock handoff** is then ordinary: the old server releases the quarantine
 lock and the socket on exit, and the new one takes them; the server's existing 15 s wait for
-the lock at boot (`QUARANTINE_LOCK_WAIT` in `mush-server/src/main.rs`) stays as the backstop. The one hazard the gateway's comments record, that on
-conclav.io the control-group sweep fails with `EINVAL` and systemd starts the next instance
-while an orphan still holds the lock, applied to a **child** of the unit's main process. With
-the server as the main process there is no orphan to sweep. Q-33-5 asks the owner to confirm
-the unit values.
+the lock at boot (`QUARANTINE_LOCK_WAIT` in `mush-server/src/main.rs`) stays as the
+backstop. The one hazard the gateway's comments record, that on conclav.io the control-group
+sweep fails with `EINVAL` and systemd starts the next instance while an orphan still holds
+the lock, applied to a **child** of the unit's main process. With the server as the main
+process there is no orphan to sweep. Q-33-5 is ruled: `RestartSec=2`, five starts in 60 s,
+the give-up notice after the same bound, the 15 s lock wait kept.
 
 The gateway must also learn to boot with no server: today the first connect is boot-fatal
 after `INITIAL_CONNECT_TIMEOUT`. It becomes a gap from the start: the gateway binds its
@@ -245,7 +247,7 @@ keeps its `ConnId` keys, and the link layer keeps `link → set of conn` and `co
   its own session table before the server knows the connection exists, so it would need a
   provisional id and a rename, or a round trip before admission.
 
-Q-33-1 puts the choice to the owner with the bit recommended. Connection ids live in process
+Q-33-1 is ruled: the bit. Connection ids live in process
 memory on both halves; GG.2 confirms by grep that no store record carries one.
 
 **Takeover rules.** Any rule of the form "a new connection to this character takes over" is
@@ -293,8 +295,9 @@ know the frame; the gateway owns the frame, so its warnings are **`OutputEvent::
 through the normal delivery path, rendered by the line editor, the TUI and the compositor as
 the restarting notice is today, never a raw write into a kitty escape. Web connections get
 the same `Sys` lines and, at the deadline, a close frame with the existing
-`close_code::SERVICE_RESTART` and a reason the client can show (Q-33-4 asks what the client
-does with it). The Discord bridge is not connection-bound: exactly one generation runs the
+`close_code::SERVICE_RESTART` and a reason the client can show. Q-33-4 is ruled: the client
+reconnects by itself with its resume sequence once the warnings have been shown as `Sys`
+lines, and shows the reason only when the reconnect fails. The Discord bridge is not connection-bound: exactly one generation runs the
 bot, under an `flock` on `$STATE_DIRECTORY/discord.lock`; the draining generation stops its
 bot at `SIGUSR1` and the new one, blocked on the lock since its start, connects. Its follows
 are rebuilt by whichever generation holds the bot.
@@ -363,8 +366,8 @@ Once the doorway is live, closing 6789/6792 (Q-29-4, ruled "keep open; revisit a
 would leave the gateway with one TCP listener (web) and one Unix socket. It changes nothing
 in this design: the reuseport recipe is needed for the web port regardless, and the symlink
 handoff for the trusted socket regardless. It is worth doing on its own and is independent
-of every cut here. Q-33-3 re-asks it only because the swap script's listener list is shorter
-if the answer is yes.
+of every cut here. Q-33-3 re-asked it only because the swap script's listener list is shorter
+if the answer is yes; the owner kept the earlier ruling.
 
 ## 7. Decisions
 
@@ -373,15 +376,18 @@ if the answer is yes.
 | D-33-1 | The IPC window is one step, one direction: the server at N accepts gateways at N-1 and N; a gateway speaks only its own version. Hello both ways with `proto` and `min_proto`; additive-only inside the window; a removal waits one release; golden frames per version with a bump lint (§4.1). |
 | D-33-2 | The server is its own systemd unit and binds the IPC socket; gateways are clients. The gateway's supervisor, respawn and crash-loop guard retire in favour of `Restart=on-failure` and the existing reconnect, gap and `ReAnnounce` heal. A gateway boots with no server as a gap (§4.2). |
 | D-33-3 | The server accepts many links; its connection map is keyed by (link, connection); a link's EOF detaches that link's connections only and never stops the world; `Attach`/`ReAnnounce` are per link and additive; `Conn` output goes to the owning link, `Char`/`All`/`Relay` to every link (§4.3). |
-| D-33-4 | Connection ids are unique across generations by a generation bit (bit 62 for generation b), pending Q-33-1. Takeover rules go through the server's per-connection close (§4.3). |
+| D-33-4 | Connection ids are unique across generations by a generation bit (bit 62 for generation b; Q-33-1 ruled). Takeover rules go through the server's per-connection close (§4.3). |
 | D-33-5 | TCP listeners hand off with `SO_REUSEPORT` and the box-wide `tcp_migrate_req`; the trusted Unix socket is per generation (`<stem>.<gen>.sock`) behind a `<stem>.sock` symlink the swap script re-points with `rename`; socket activation rejected (§4.4). |
 | D-33-6 | A shared drain crate (`mush-drain`): `drain.rs`, `kill.rs`, `listen.rs`, `notify.rs`, the signal lifecycle, the marker and a parameterised `swap.sh`; the doorway is re-based on it unchanged (§4.5). |
 | D-33-7 | The connection is the unit. The gateway's drain warnings are `OutputEvent::Sys` events in its own frame; web connections close with `SERVICE_RESTART` and a reason; one generation runs the Discord bot under a lock (§4.5, §4.6). |
 | D-33-8 | Deploy order: server first, then the gateway swap; a bumped server upgrade waits for a finished drain. Rendering into the server, the doorway as holder, fd passing and a symmetric window are rejected (§4.7, §5). |
 
-## 8. Open questions for the owner
+## 8. Owner rulings (2026-10-30)
 
-| Id | Question | Default |
+The owner accepted all six defaults on 2026-10-30. Each default is now a decision; the table
+keeps the question for the record.
+
+| Id | Question | Ruling (default accepted) |
 |---|---|---|
 | Q-33-1 | Id scheme: a generation bit (bit 62 on generation b's ids) or server-assigned ids at `Attach`? | **The bit.** No round trip and no change to who allocates; the duplicate guard stays. |
 | Q-33-2 | The gateway's drain deadline and warning schedule: the doorway's 24 h with 12h/6h/2h/1h/15m/1m, or shorter, since gateway swaps will be frequent? | **Same as the doorway**, one config in the shared crate. The warnings mean a player is never surprised, and an empty generation exits at once. Revisit with data from dev2. |
