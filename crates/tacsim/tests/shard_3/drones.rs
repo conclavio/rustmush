@@ -3851,10 +3851,16 @@ fn lane_variant(version: u32, edit: impl FnOnce(&mut Value)) -> String {
 /// it is SM.12a's published v14, digest for digest; `strip_yard` is idempotent.
 #[test]
 fn sm12b_strip_yard_rebuilds_the_published_v14() {
-    assert_eq!(LANE_VERSION, 15, "lane v15 since doc 20 cut SM.12b");
-    let pack = load_pack(&lane_variant(14, support::drones::strip_yard)).expect("the v14 shape");
+    assert_eq!(LANE_VERSION, 16, "lane v16 since doc 32 cut CF.6c");
+    let pack = load_pack(&lane_variant(14, |doc| {
+        support::drones::strip_designs(doc);
+        support::drones::strip_yard(doc);
+    }))
+    .expect("the v14 shape");
     assert_eq!(pack.manifest().digest().to_hex(), LANE_V14_DIGEST);
-    let shipped: Value = serde_json::from_str(LANE_JSON).expect("JSON");
+    // Doc 32 cut CF.6c: the v15 shape, the shipped lane less its escort design.
+    let mut shipped: Value = serde_json::from_str(LANE_JSON).expect("JSON");
+    support::drones::strip_designs(&mut shipped);
     let mut stripped = shipped.clone();
     support::drones::strip_yard(&mut stripped);
     assert!(

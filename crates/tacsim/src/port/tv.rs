@@ -63,8 +63,9 @@ use crate::port::coop::{
     NO_CHARTER, NOT_OPEN_HERE, ProgrammePort, money_minor, name_of, office_of, port_name,
     programme_port, say,
 };
-use crate::port::def::VehiclesDef;
+use crate::port::def::{LeaseGate, VehiclesDef};
 use crate::port::ship::{Berth, HullView, berth_of, hull_view};
+use crate::port::vehicle::RigRows;
 use crate::port::vehicle::{RigInBay, hopper_of, occator_lease_on, rigs_in_bay};
 use crate::store::{TacsimStore, put_tv_lease};
 
@@ -78,8 +79,9 @@ pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain 
 +tv/<n> board  in the carrier's bay, take the rig's physical helm billet with current OperateCrew permission; then use +focus and @station/handoff yourself.
 +tv/<n> leave  step from a rig in the bay into the carrier and give back your billet. Field units must return first.
 +tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting licence in force or in its grace (+licence). Without go it shows the terms and signs nothing.
++tv/lease escort [go]  the same for an escort line tank, armed for escort work: 2500.00cr a term of 168 IC days and a 15000.00cr deposit. It needs the escort clearance: a prospecting licence in force (its grace does not serve), no lease of yours forfeit, no other armed lease of yours, and none written off in the last 28 IC days. Board it in the bay (+tv/<n> board) and fly it from its cab: its one console carries the helm, the sensors and the guns.
 +tv/<n>/permissions [go]  at Occator's counter: inspect or request an explicit operational loan for the actual rental. Operate/crew and command may be delegated within this lease; deploy and recover/load may not. No title or refit right, and no additional charge.
-+tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released.
++tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released. A rig wrecked out of the bay is written off instead: the lease ends, Occator keeps the deposit, and the wreck stays where it fell.
 A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
 +tv/<n> launch [mind=<mind>] [org=<org>] [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s). A rig with a core flies the mind you name sealed aboard, filed:<licence> for a licence you hold (org=<org> for one your organisation holds) or, on an ungoverned core, draft:<name>; without one it flies Standard Doctrine.
 +tv/<n> recover [go]  bring rig n up the ramp into the bay (300 IC s); a rig further off drives to the ramp first, even while the instruments are dark. With ore in its hopper it unloads into the hold next, on its own.
@@ -114,6 +116,32 @@ pub const BAY_FULL: &str = "The {name}'s bay is full.";
 pub const SLOT_TAKEN: &str = "Rig {n} is already in the {name}'s bay.";
 /// No rig in the shed: the pool is out.
 pub const NO_RIG_FREE: &str = "Occator has no rig free to lease.";
+/// **Doc 32 cut CF.6c**: a design word no design answers to: `{word}`, `{designs}`.
+pub const LEASE_NO_DESIGN: &str =
+    "Occator leases no {word}: +tv/lease for a prospecting rig, or {designs}.";
+/// **Doc 32 cut CF.6c**: the return's preview of a wreck out of the bay: `{n}`, `{mark}`.
+pub const WRITE_OFF_PREVIEW: &str = "Rig {n} ({mark}) is a wreck and will not come back: Occator writes it off, keeps your deposit and leaves it where it fell. +tv/{n} lease return go signs it.";
+/// **Doc 32 cut CF.6c**: a wreck written off, at its return or its charter's end: `{mark}`.
+pub const WRITTEN_OFF: &str =
+    "Occator writes {mark} off where it fell; the deposit is Occator's, and the lease is ended.";
+/// **Doc 32 cut CF.6c**, the escort clearance: the licence not in force.
+pub const ESCORT_LICENCE: &str = "Occator lets an armed hull only to a captain whose prospecting licence is in force, not in its grace (+licence).";
+/// The escort clearance: a lease of the lessee's forfeit: `{mark}`.
+pub const ESCORT_FORFEIT: &str =
+    "Occator lets no armed hull while a lease of yours is forfeit: return {mark} first.";
+/// The escort clearance: an armed lease of the lessee's still live: `{mark}`.
+pub const ESCORT_LIVE: &str = "Occator lets one armed hull at a time; {mark} is still yours.";
+/// The escort clearance: an armed hull written off within the bar: `{mark}`, `{days}`.
+pub const ESCORT_WRITTEN_OFF: &str =
+    "Occator lets you no armed hull for {days} IC days more: {mark} was written off.";
+/// **How long a written-off armed hull bars its lessee from the next** (doc 32 cut CF.6c),
+/// IC days. Provisional.
+pub const WRITE_OFF_BAR_IC_DAYS: i64 = 28;
+/// **The write-off rule** (doc 32 cut CF.6c), for the docs: a leased rig wrecked out of its
+/// carrier's bay is written off at its return or its charter's repossession — the lease ends,
+/// the deposit is captured to Occator whatever the term, and the wreck stays where it fell,
+/// Occator's title, never pulled back to the shed by the engine.
+pub const WRITE_OFF_RULE: &str = "written off";
 /// Short of funds: `{total}`, `{fee}`, `{deposit}`, `{available}`.
 pub const LEASE_FUNDS: &str = "The lease needs {total} available: {fee} for the term and {deposit} held as a deposit; you have {available}.";
 /// The take's preview: `{mark}`, `{name}`, `{n}`, `{fee}`, `{days}`, `{deposit}`.
@@ -1024,6 +1052,10 @@ pub struct TvLease {
     /// The rig went back by a repossession (a charter's end), not the lessee's own return.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub repossessed: bool,
+    /// **Doc 32 cut CF.6c**: the lease ended on a wreck — the deposit captured, the rig left
+    /// where it fell, Occator's ([`WRITE_OFF_RULE`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub written_off: bool,
 }
 
 /// The longest mark a record may carry, bytes.
@@ -1104,6 +1136,7 @@ impl TvLease {
             status: TvLeaseStatus::Active,
             ended_at_ic: None,
             repossessed: false,
+            written_off: false,
         }
     }
 
@@ -1154,6 +1187,63 @@ pub(crate) fn licence_check(w: &World, pilot: ObjId) -> Result<(), String> {
         }
         Err(_) => Err(LEASE_LICENCE.to_owned()),
     }
+}
+
+/// **The refusal of a design word no design of the pool answers to** (doc 32 cut CF.6c):
+/// `{word}` and the words it does answer to.
+fn no_design_line(pool: &VehiclesDef, word: &str) -> String {
+    let words: Vec<String> = pool
+        .designs
+        .iter()
+        .map(|design| format!("+tv/lease {}", design.word))
+        .collect();
+    LEASE_NO_DESIGN
+        .replace("{word}", word)
+        .replace("{designs}", &words.join(", "))
+}
+
+/// **The escort clearance** (doc 32 cut CF.6c; [`LeaseGate::Escort`]), after the licence check
+/// of every lease: the prospecting licence **in force** (its grace does not serve), no lease of
+/// the lessee's forfeit, no other armed lease of theirs live, and none written off within
+/// [`WRITE_OFF_BAR_IC_DAYS`]. Read-only, every fact from records the lease machinery keeps.
+///
+/// # Errors
+///
+/// The first clause that does not hold, as the counter says it.
+fn escort_check(w: &World, pilot: ObjId, now: i64) -> Result<(), String> {
+    if !matches!(
+        crate::port::licence::licence_standing(w, pilot, now),
+        crate::port::licence::LicenceStanding::InForce { .. }
+    ) {
+        return Err(ESCORT_LICENCE.to_owned());
+    }
+    let store = w
+        .module_state::<TacsimStore>()
+        .ok_or_else(|| LEASE_FAILED.to_owned())?;
+    let armed = |tv: ObjId| {
+        crate::port::vehicle::rig_terms(w, tv).is_some_and(|terms| terms.gate == LeaseGate::Escort)
+    };
+    let bar = WRITE_OFF_BAR_IC_DAYS.saturating_mul(DAY);
+    for record in store.tv_leases_of(pilot) {
+        if record.status == TvLeaseStatus::Forfeit {
+            return Err(ESCORT_FORFEIT.replace("{mark}", &record.mark));
+        }
+        if !armed(record.tv) {
+            continue;
+        }
+        if record.live() {
+            return Err(ESCORT_LIVE.replace("{mark}", &record.mark));
+        }
+        if let Some(at) = record.ended_at_ic.filter(|_| record.written_off)
+            && now < at.saturating_add(bar)
+        {
+            return Err(ESCORT_WRITTEN_OFF.replace("{mark}", &record.mark).replace(
+                "{days}",
+                &ic_days_until(now, at.saturating_add(bar)).to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// **A refusal after the first write** (reviewer F5; `buyout.rs`'s shape): the
@@ -1535,8 +1625,14 @@ fn dark_line(w: &World, store: &TacsimStore, actor: ObjId, charter_hull: Option<
 enum Act {
     /// The status.
     Status,
-    /// A take, committed or previewed.
-    Take { go: bool },
+    /// A take, committed or previewed; **doc 32 cut CF.6c**: of the design a word names
+    /// (`+tv/lease escort`), else the pool's own.
+    Take {
+        /// Committed.
+        go: bool,
+        /// The design's word, lowercased.
+        design: Option<String>,
+    },
     /// A return, committed or previewed.
     Return { go: bool },
     /// **Doc 20 cut SM.3b**: a launch, a recover or a dump — and since SM.4a a scan or a
@@ -1868,6 +1964,7 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
     }
     let mut back = false;
     let mut quiet = false;
+    let mut design: Option<String> = None;
     if act == "lease" {
         match next.as_deref() {
             Some("take") => next = words.next(),
@@ -1876,6 +1973,15 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                 next = words.next();
             }
             _ => {}
+        }
+        // Doc 32 cut CF.6c: `+tv/lease <design> [go]` — any word but `go` names a design.
+        if !back
+            && next
+                .as_deref()
+                .is_some_and(|word| word != "go" && !ACT_WORDS.contains(&word))
+        {
+            design = next.take();
+            next = words.next();
         }
     }
     if act == "sound" && next.as_deref() == Some("quiet") {
@@ -1927,7 +2033,7 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
     };
     let parsed = match word {
         "lease" if back => Act::Return { go },
-        "lease" => Act::Take { go },
+        "lease" => Act::Take { go, design },
         word => match crate::surface::excursion::ActKind::from_word(word) {
             Some(kind) => Act::Work {
                 kind,
@@ -2033,7 +2139,7 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     match act {
         Act::Status => status(ctx, slot),
-        Act::Take { go } => take(ctx, slot, go),
+        Act::Take { go, design } => take(ctx, slot, design.as_deref(), go),
         Act::Return { go } => give_back(ctx, slot, go),
         Act::Work {
             kind,
@@ -3272,6 +3378,8 @@ fn capture_deposit(
 /// Everything the take resolved before its first write.
 struct TakePlan {
     lessor: Lessor,
+    /// One term, IC days (doc 32 cut CF.6c: the design's).
+    term_days: u32,
     hull: ObjId,
     name: String,
     slot: u8,
@@ -3324,7 +3432,11 @@ fn minor(w: &World, major: u64) -> Option<i64> {
 /// **The take's checks, in order** (the `plan_buyout` order), read-only. `Err`
 /// carries the refusal.
 #[allow(clippy::too_many_lines)] // one ordered check list
-fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> {
+fn plan_take(
+    ctx: &Ctx<'_>,
+    named: Option<u8>,
+    design: Option<&str>,
+) -> Result<TakePlan, TakeRefusal> {
     let w: &World = ctx.w;
     let actor = ctx.actor;
     let port = programme_port(w).ok_or_else(|| NOT_OPEN_HERE.to_owned())?;
@@ -3336,6 +3448,15 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> 
         );
         LEASE_FAILED.to_owned()
     };
+    // 0. Doc 32 cut CF.6c: a design word no design answers to is the counter's first word.
+    if let Some(pool) = port.def.vehicles.as_deref()
+        && pool.by_word(design).is_none()
+    {
+        return Err(TakeRefusal::from(no_design_line(
+            pool,
+            design.unwrap_or_default(),
+        )));
+    }
     // 1. The current charter or title, never graduation alone.
     let hull = crate::port::coop::mining_hull(ctx)?;
     let name = hull_name(w, hull);
@@ -3358,6 +3479,25 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> 
         ));
     }
     let lessor = lessor_of(w, &port).ok_or_else(|| failed("the rig lessor"))?;
+    // 2b. Doc 32 cut CF.6c: the design the word names, else the pool's own.
+    let (which, unit_fee, unit_deposit, term_days, gate) = {
+        let terms = lessor
+            .pool
+            .by_word(design)
+            .ok_or_else(|| no_design_line(&lessor.pool, design.unwrap_or_default()))?;
+        (
+            terms.design,
+            terms.fee_major,
+            terms.deposit_major,
+            terms.term_ic_days,
+            terms.gate,
+        )
+    };
+    // 2c. Doc 32 cut CF.6c: an armed design's own gate, the escort clearance — the lessee's
+    // standing, read before anything about the hull.
+    if gate == LeaseGate::Escort {
+        escort_check(w, actor, w.world_ic_now().at)?;
+    }
     // 3. The berth.
     match berth_of(w, hull) {
         Berth::UnderWay => {
@@ -3445,12 +3585,8 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> 
         .module_state::<TacsimStore>()
         .ok_or_else(|| failed("the layer"))?;
     let shed = lessor.shed;
-    let rig = port
-        .map
-        .vehicles
-        .as_ref()
-        .into_iter()
-        .flat_map(|row| row.rigs.iter())
+    let rig = crate::port::vehicle::rig_rows(port.map, RigRows::of(which))
+        .iter()
         .filter(|rig| {
             let tv = ObjId(rig.tv);
             crate::port::hull::live(w, rig.tv)
@@ -3468,8 +3604,8 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> 
     // 9. The funds, after the settle a `go` would run first.
     let (pilot_account, available) =
         funds(w, actor).ok_or_else(|| failed("the pilot's account"))?;
-    let fee_minor = minor(w, lessor.pool.fee_major).ok_or_else(|| failed("the fee"))?;
-    let deposit_minor = minor(w, lessor.pool.deposit_major).ok_or_else(|| failed("the deposit"))?;
+    let fee_minor = minor(w, unit_fee).ok_or_else(|| failed("the fee"))?;
+    let deposit_minor = minor(w, unit_deposit).ok_or_else(|| failed("the deposit"))?;
     let now = w.world_ic_now().at;
     let (settle, left) = plan_settle(w, actor, &lessor.principal, now, available);
     let total = fee_minor
@@ -3502,10 +3638,11 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> 
     {
         return Err(TakeRefusal::from(failed("the rig's hopper vault")));
     }
-    let term_secs = i64::from(lessor.pool.term_ic_days)
+    let term_secs = i64::from(term_days)
         .checked_mul(DAY)
         .ok_or_else(|| failed("the term"))?;
     Ok(TakePlan {
+        term_days,
         hull,
         name,
         slot,
@@ -3530,7 +3667,7 @@ fn take_line(ctx: &Ctx<'_>, template: &str, plan: &TakePlan) -> String {
         .replace("{name}", &plan.name)
         .replace("{n}", &plan.slot.to_string())
         .replace("{fee}", &money(ctx, plan.fee_minor))
-        .replace("{days}", &plan.lessor.pool.term_ic_days.to_string())
+        .replace("{days}", &plan.term_days.to_string())
         .replace("{deposit}", &money(ctx, plan.deposit_minor))
 }
 
@@ -3555,11 +3692,16 @@ fn unwind_lease(ctx: &mut Ctx<'_>, lease: ContractId, lessor: &PrincipalId, tv: 
     }
 }
 
-/// **`+tv[/n]/lease [go]`** — the take (doc 20 §4.3).
+/// **`+tv[/n]/lease [design] [go]`** — the take (doc 20 §4.3; doc 32 cut CF.6c's design word).
 #[allow(clippy::too_many_lines)] // one ordered write list with each step's residue
-fn take(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdError> {
+fn take(
+    ctx: &mut Ctx<'_>,
+    named: Option<u8>,
+    design: Option<&str>,
+    go: bool,
+) -> Result<(), CmdError> {
     let now = ctx.w.world_ic_now().at;
-    let plan = match plan_take(ctx, named) {
+    let plan = match plan_take(ctx, named, design) {
         Ok(plan) => plan,
         Err(TakeRefusal::Line(line)) => return Err(CmdError::msg(line)),
         // Doc 20b RK-1: a lapsed licence refuses the lease, never the term settle (D8's
@@ -3762,6 +3904,7 @@ fn take(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdError> 
         status: TvLeaseStatus::Active,
         ended_at_ic: None,
         repossessed: false,
+        written_off: false,
     };
     if let Err(error) = record.check() {
         tracing::error!(lease = lease.0, %error, "tacsim: +tv/lease: the record does not check; it is written anyway so the lease is not lost");
@@ -3779,6 +3922,8 @@ fn take(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdError> 
 struct ReturnPlan {
     lessor: Lessor,
     record: TvLease,
+    /// **Doc 32 cut CF.6c**: the rig is a wreck out of the bay, so the return writes it off.
+    write_off: bool,
     settle: Vec<Settle>,
     pilot_account: Option<AccountId>,
 }
@@ -3859,14 +4004,12 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
     let lessor = lessor_of(w, &port).ok_or_else(|| failed("the rig lessor"))?;
     // 4. The economy lease is read, not checked (reviewer F15): live, or ended by
     // staff; either is returnable.
-    // 5. The rig is in this hull's bay.
-    let in_bay = crate::port::vehicle::bay_rooms(w, &view).iter().any(|room| {
-        w.module_state::<SpatialState>().is_some_and(|st| {
-            matches!(st.parent_of(record.tv), SpatialParent::Interior { space, .. } if space == *room)
-        })
-    });
+    // 5. The rig is in this hull's bay — or, doc 32 cut CF.6c, a wreck out of it, which the
+    // return writes off ([`WRITE_OFF_RULE`]) and leaves where it fell.
+    let in_bay = in_bay_of(w, &view, record.tv);
     let slot = record.slot.to_string();
-    if !in_bay {
+    let write_off = !in_bay && wrecked(w, record.tv);
+    if !in_bay && !write_off {
         return Err(RIG_OUT.replace("{n}", &slot).replace("{name}", &name));
     }
     if super::boarding::occupied(w, record.tv) {
@@ -3874,8 +4017,9 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
             "Crew are still inside this rig; have them step into the vehicle bay first.".into(),
         );
     }
-    // 6. The hopper is empty.
+    // 6. The hopper is empty (a wreck's hopper goes with it).
     match hopper_load(ctx, record.tv, Some(&lessor.pool.unit)) {
+        _ if write_off => {}
         Ok((0, _)) => {}
         Ok(_) => return Err(HOPPER_FULL.replace("{n}", &slot)),
         Err(error) => {
@@ -3883,8 +4027,10 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
             return Err(LEASE_FAILED.to_owned());
         }
     }
-    // 7. The berth.
+    // 7. The berth (doc 32 cut CF.6c: a write-off brings nothing back, so the hull may be
+    // anywhere — a lessee extracted from the wreck writes it off without their carrier).
     match berth_of(w, record.hull) {
+        _ if write_off => {}
         Berth::UnderWay => {
             return Err(LEASE_UNDER_WAY
                 .replace("{name}", &name)
@@ -3925,7 +4071,10 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
     // Ceres). Read through `rig_flight`, the reader `repossess` and the bay gate share, and
     // fail closed (the fixer round's item 1): a record that will not read refuses and pages,
     // so a rig never goes back to the shed with an excursion still counted against the caps.
+    // Doc 32 cut CF.6c: a wreck never goes back to the shed; its excursion stays on the site and
+    // stops counting against any cap once it is written off (`written_off`).
     match rig_flight(ctx, record.tv) {
+        _ if write_off => {}
         Ok(RigFlight::Idle) => {}
         Ok(RigFlight::Busy {
             kind,
@@ -3990,8 +4139,45 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
     Ok(ReturnPlan {
         lessor,
         record,
+        write_off,
         settle,
         pilot_account: funds.map(|(account, _)| account),
+    })
+}
+
+/// Whether `tv` stands in one of `view`'s bay rooms.
+fn in_bay_of(w: &World, view: &HullView<'_>, tv: ObjId) -> bool {
+    crate::port::vehicle::bay_rooms(w, view).iter().any(|room| {
+        w.module_state::<SpatialState>().is_some_and(|st| {
+            matches!(st.parent_of(tv), SpatialParent::Interior { space, .. } if space == *room)
+        })
+    })
+}
+
+/// **Whether a rig is a wreck** (doc 32 cut CF.6c): its unit record assessed as CF.3's field
+/// close assesses a returning unit — a wreck or irrecoverable.
+#[must_use]
+pub fn wrecked(w: &World, tv: ObjId) -> bool {
+    mush_tactics::module::unit_of(w, tv)
+        .and_then(|unit| crate::field_ops::assess_tacsim_unit(unit, None).ok())
+        .is_some_and(|assessment| {
+            matches!(
+                assessment.state,
+                crate::field_ops::OperationalState::Wreck
+                    | crate::field_ops::OperationalState::Irrecoverable
+            )
+        })
+}
+
+/// **Whether `tv`'s newest lease record wrote it off** (doc 32 cut CF.6c): a written-off wreck
+/// stays where it fell, and its open excursion no longer counts against any cap.
+#[must_use]
+pub fn written_off(w: &World, tv: ObjId) -> bool {
+    w.module_state::<TacsimStore>().is_some_and(|store| {
+        store
+            .tv_leases_on(tv)
+            .max_by_key(|record| record.lease)
+            .is_some_and(|record| record.written_off)
     })
 }
 
@@ -4014,7 +4200,9 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
             let line = settle_line(ctx, step, now);
             say(ctx, line);
         }
-        let template = if forfeit_now {
+        let template = if plan.write_off {
+            WRITE_OFF_PREVIEW
+        } else if forfeit_now {
             RETURN_PREVIEW_FORFEIT
         } else {
             RETURN_PREVIEW
@@ -4069,8 +4257,14 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
     // stays live and the next `+tv/lease return go` runs again — its lease answers
     // `AlreadyEnded` and the settle is idempotent. A `Returned` record over a `Held`
     // engine-owned deposit would strand it: nobody but this seam can move it.
+    // Doc 32 cut CF.6c: a write-off captures the deposit to Occator whatever the term.
+    let capture = plan
+        .lessor
+        .account
+        .filter(|_| plan.write_off)
+        .map(|account| (&plan.lessor.principal, account));
     let forfeit = match record.status {
-        TvLeaseStatus::Active => match settle_deposit(ctx, &record, None) {
+        TvLeaseStatus::Active => match settle_deposit(ctx, &record, capture) {
             Ok(deposit) => deposit == Deposit::Captured,
             Err(error) => {
                 tracing::error!(
@@ -4084,8 +4278,9 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
         },
         TvLeaseStatus::Forfeit | TvLeaseStatus::Returned => true,
     };
-    // c. The placement: back in the shed.
+    // c. The placement: back in the shed (a written-off wreck stays where it fell).
     match plan.lessor.shed {
+        _ if plan.write_off => {}
         Some(shed) => {
             if let Err(error) = mush_sim::place_interior(ctx, record.tv, shed, None) {
                 tracing::error!(tv = record.tv.0, %error, "tacsim: +tv/lease return: invariant breach: the rig could not go back to the shed; staff place it by hand");
@@ -4100,11 +4295,14 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
     let returned = TvLease {
         status: TvLeaseStatus::Returned,
         ended_at_ic: Some(now),
+        written_off: plan.write_off,
         ..record.clone()
     };
     put_tv_lease(ctx, &returned);
     // e. The reply.
-    let line = if forfeit {
+    let line = if plan.write_off {
+        WRITTEN_OFF.replace("{mark}", &record.mark)
+    } else if forfeit {
         RETURNED_FORFEIT.replace("{mark}", &record.mark)
     } else {
         RETURNED
@@ -4184,11 +4382,14 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
             return Err(format!("rig {} still contains crew", record.mark));
         }
         // Doc 20 cut SM.3b (decision 13): a rig out on a site or mid-act holds the hull
-        // (`BAY_PAGE`) rather than being pulled off the ground under a live record.
-        if rig_out_or_busy(ctx, record.tv) {
+        // (`BAY_PAGE`) rather than being pulled off the ground under a live record. Doc 32 cut
+        // CF.6c: a wreck out of the bay never comes back, so it is written off instead.
+        let wreck = !in_bay_of(w, &view, record.tv) && wrecked(w, record.tv);
+        if !wreck && rig_out_or_busy(ctx, record.tv) {
             return Err(format!("rig {} is out on a site or busy", record.mark));
         }
         match hopper_load(ctx, record.tv, Some(&lessor.pool.unit)) {
+            _ if wreck => {}
             Ok((0, _)) => {}
             Ok(_) => {
                 return Err(format!(
@@ -4233,12 +4434,15 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
     let mut done = 0_usize;
     for record in records {
         let now = ctx.w.world_ic_now().at;
-        // 1. The deposit, by the term (D16), before the lease ends.
+        let wreck = hull_view(ctx.w, hull).is_some_and(|view| !in_bay_of(ctx.w, &view, record.tv))
+            && wrecked(ctx.w, record.tv);
+        // 1. The deposit, by the term (D16), before the lease ends; doc 32 cut CF.6c: a wreck's
+        // captured whatever the term.
         let forfeit = match record.status {
             TvLeaseStatus::Forfeit | TvLeaseStatus::Returned => true,
             TvLeaseStatus::Active => {
                 let ended_by_staff = !economy_lease_live(ctx.w, &lessor.principal, &record);
-                let capture = (now >= record.term_ends_ic && !ended_by_staff)
+                let capture = ((wreck || now >= record.term_ends_ic) && !ended_by_staff)
                     .then_some((&lessor.principal, lessor_account));
                 match settle_deposit(ctx, &record, capture) {
                     Ok(deposit) => deposit == Deposit::Captured,
@@ -4269,7 +4473,10 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
         let in_shed = ctx.w.module_state::<SpatialState>().is_some_and(|st| {
             matches!(st.parent_of(record.tv), SpatialParent::Interior { space, .. } if space == shed)
         });
-        if !in_shed && let Err(error) = mush_sim::place_interior(ctx, record.tv, shed, None) {
+        if !in_shed
+            && !wreck
+            && let Err(error) = mush_sim::place_interior(ctx, record.tv, shed, None)
+        {
             tracing::error!(tv = record.tv.0, %error, "tacsim: a repossession: invariant breach: the rig could not go back to the shed; staff place it by hand");
         }
         // 4. The record.
@@ -4277,11 +4484,14 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
             status: TvLeaseStatus::Returned,
             ended_at_ic: Some(now),
             repossessed: true,
+            written_off: wreck,
             ..record.clone()
         };
         put_tv_lease(ctx, &returned);
         // 5. The pilot, told.
-        let line = if forfeit {
+        let line = if wreck {
+            WRITTEN_OFF.replace("{mark}", &record.mark)
+        } else if forfeit {
             REPOSSESSED_FORFEIT
                 .replace("{mark}", &record.mark)
                 .replace("{name}", &name)
@@ -4518,6 +4728,7 @@ mod tests {
             status: TvLeaseStatus::Active,
             ended_at_ic: None,
             repossessed: false,
+            written_off: false,
         }
     }
 

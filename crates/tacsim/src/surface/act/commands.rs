@@ -1580,12 +1580,9 @@ pub(super) fn reading_preview(
 pub(crate) fn rig_drill_id(w: &World, rig_tv: ObjId) -> Option<CanonicalId> {
     crate::port::vehicle::rig_row(w, rig_tv)?;
     let tools = w.module_state::<PortHandles>()?.surface_tools.clone()?;
-    let port = crate::port::coop::programme_port(w)?;
-    let pool = port.def.vehicles.as_deref()?;
-    pool.tools
-        .iter()
-        .find(|id| tools.get(*id).and_then(ToolDef::drill).is_some())
-        .cloned()
+    crate::port::vehicle::rig_tools(w, rig_tv)
+        .into_iter()
+        .find(|id| tools.get(id).and_then(ToolDef::drill).is_some())
 }
 
 /// **A drill's figures** by its id, from a tools table (`ToolDef::drill`).
@@ -3202,6 +3199,10 @@ pub(crate) fn excursion_counts(
 ) -> ExcursionCounts {
     let mut counts = ExcursionCounts::default();
     for tv in world_rigs(w) {
+        // Doc 32 cut CF.6c: a written-off wreck's excursion stays on its site, uncounted.
+        if crate::port::tv::written_off(w, tv) {
+            continue;
+        }
         if let Ok(Some(record)) = read_rig(tv)
             && let Some(excursion) = record.excursion.as_ref()
         {

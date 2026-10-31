@@ -40,7 +40,9 @@ pub(crate) fn console(
         .ok_or("Unit needs an authored physical helm console.")?;
     let mut found = Vec::new();
     for (id, spec) in &stations.stations {
-        if spec.channels.len() != 1 || !spec.channels.iter().any(|c| c.as_str() == "helm") {
+        // Doc 32 cut CF.6c: an armed rig's one console carries the cockpit's sensors and fire
+        // beside the helm, so it is the helm console that carries the helm.
+        if !spec.channels.iter().any(|c| c.as_str() == "helm") {
             continue;
         }
         let Some(room) = spec.space else { continue };

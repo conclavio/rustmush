@@ -1,0 +1,385 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.tv_escort",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "37d463b714d3e711cb49528883b7f0e08e2f90e1592a71ac38c243cddd1867ce",
+    "requires": [
+      {
+        "id": "tacsim.pack.cannon_105",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.mg_coax",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.cores",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.unit.tv_escort": {
+      "kind": "unit",
+      "def": {
+        "label": "Escort line tank",
+        "class": "vehicle",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              {
+                "id": "front",
+                "armor": 400
+              },
+              {
+                "id": "left",
+                "armor": 250
+              },
+              {
+                "id": "right",
+                "armor": 250
+              },
+              {
+                "id": "rear",
+                "armor": 150
+              },
+              {
+                "id": "top",
+                "armor": 100
+              }
+            ],
+            "internals": 200,
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ]
+          },
+          {
+            "id": "turret",
+            "facets": [
+              {
+                "id": "front",
+                "armor": 350
+              },
+              {
+                "id": "left",
+                "armor": 220
+              },
+              {
+                "id": "right",
+                "armor": 220
+              },
+              {
+                "id": "rear",
+                "armor": 140
+              }
+            ],
+            "internals": 150,
+            "consequences": [
+              {
+                "kind": "remove_weapons",
+                "section": "turret"
+              },
+              {
+                "kind": "destroy_core"
+              }
+            ]
+          },
+          {
+            "id": "left_track",
+            "facets": [
+              {
+                "id": "left",
+                "armor": 120
+              }
+            ],
+            "internals": 100,
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 50
+              },
+              {
+                "kind": "no_turn_toward",
+                "side": "left"
+              },
+              {
+                "kind": "disable_motion_when_all_of",
+                "sections": [
+                  "left_track",
+                  "right_track"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "right_track",
+            "facets": [
+              {
+                "id": "right",
+                "armor": 120
+              }
+            ],
+            "internals": 100,
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 50
+              },
+              {
+                "kind": "no_turn_toward",
+                "side": "right"
+              },
+              {
+                "kind": "disable_motion_when_all_of",
+                "sections": [
+                  "left_track",
+                  "right_track"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "engine",
+            "facets": [],
+            "internals": 120,
+            "consequences": [
+              {
+                "kind": "disable_motion"
+              }
+            ],
+            "struck_through": {
+              "section": "hull",
+              "facet": "rear"
+            }
+          }
+        ],
+        "components": [
+          {
+            "id": "cannon",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.cannon_105",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "machine_gun",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.mg_coax",
+              "coaxial": true
+            }
+          },
+          {
+            "id": "visual_sensor",
+            "section": "turret",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            }
+          },
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": [
+                "off",
+                "starting",
+                "online"
+              ],
+              "initial": "off"
+            }
+          },
+          {
+            "id": "core",
+            "section": "turret",
+            "role": {
+              "kind": "core",
+              "core": "tacsim.core.line"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 1500,
+            "accel_cms2": 100,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 30000,
+            "reverse_factor_pct": 50
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 50
+              },
+              {
+                "section": "turret",
+                "weight": 50
+              }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 40
+              },
+              {
+                "section": "left_track",
+                "weight": 30
+              },
+              {
+                "section": "turret",
+                "weight": 30
+              }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 40
+              },
+              {
+                "section": "right_track",
+                "weight": 30
+              },
+              {
+                "section": "turret",
+                "weight": 30
+              }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 40
+              },
+              {
+                "section": "engine",
+                "weight": 30
+              },
+              {
+                "section": "turret",
+                "weight": 30
+              }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 50
+              },
+              {
+                "section": "turret",
+                "weight": 50
+              }
+            ]
+          }
+        ],
+        "silhouettes": [
+          {
+            "band": "front",
+            "width_cm": 350,
+            "height_cm": 250
+          },
+          {
+            "band": "left",
+            "width_cm": 700,
+            "height_cm": 250
+          },
+          {
+            "band": "right",
+            "width_cm": 700,
+            "height_cm": 250
+          },
+          {
+            "band": "rear",
+            "width_cm": 350,
+            "height_cm": 250
+          },
+          {
+            "band": "top",
+            "width_cm": 700,
+            "height_cm": 350
+          }
+        ],
+        "sensor_height_cm": 150,
+        "logistics": {
+          "dry_mass_t": 8,
+          "stowage": {
+            "locker": {
+              "accepts": [
+                "stow.provisions"
+              ],
+              "limits": {
+                "si.mass_kg": 120,
+                "si.volume_l": 300
+              }
+            }
+          },
+          "berths": 1,
+          "occupant_allowance_kg": 100,
+          "payload_ceiling_kg": 220
+        },
+        "interior": {
+          "space": "cab",
+          "store": "locker",
+          "berths_slot": {
+            "id": "berths",
+            "maximum_items": 1
+          },
+          "rooms": [
+            {
+              "id": "cab",
+              "name": "Cab",
+              "kind": "walkable",
+              "short_desc": "A one-seat fighting cab under the turret ring, sight and trigger grips within reach.",
+              "desc": "A cramped one-seat cab slung under the turret ring, the line tank's own fighting compartment cut down for one: drive yokes at the knees, the gunner's sight hooded at the brow, and trigger grips for the long gun and the coaxial machine gun on either arm of the seat. An Occator Water & Propellant lease tag is riveted beside the sight, and under it a newer plate that says ESCORT DUTY ONLY. The air smells of propellant smoke and cold metal.",
+              "details": {
+                "sight": "A hooded periscope sight slaved to the turret. Its reticle reads range in metres and blinks red when the long gun is not laid.",
+                "grips": "Two trigger grips: the right for the 105 mm gun, the left for the coaxial machine gun. Both are dead until the console has power.",
+                "plate": "ESCORT DUTY ONLY, stamped by the Freeport Registry. An armed hull leased under escort clearance; the lessee answers for where it goes."
+              }
+            },
+            {
+              "id": "locker",
+              "name": "Locker",
+              "kind": "store",
+              "desc": "A bolted kit locker behind the seat: rations, a first-aid pack and a spare headset. Not a place anyone walks."
+            }
+          ],
+          "exits": [],
+          "gauges": {
+            "locker": [
+              "cab"
+            ]
+          }
+        },
+        "note": "Doc 32 cut CF.6c: the armed design Occator leases for escort work (+tv/lease escort). Its combat profile is the arena's stock line tank verbatim: the five sections, their facets and consequences, the 105 mm gun and the coaxial machine gun, the stock sight, the power plant, the line core and the tracked mode, so it fights exactly as the simulator's line tank and stands wherever a prospector can drive. What it adds is what a leased hull needs: class vehicle (never fielded in the simulator), an 8 t dry mass so it rides a Dray-P bay beside one prospector rig, and a one-seat cab whose pilot console carries the helm, the sensors and the fire channels. Its locker is a small kit store, never a hopper. Provisional."
+      }
+    }
+  }
+}

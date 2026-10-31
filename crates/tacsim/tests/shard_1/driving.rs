@@ -71,7 +71,7 @@ use tacsim::{TacsimConfig, TacsimStore};
 use geology_keyed::{KEY_1, mac, secret};
 
 /// The Dray-P's stern ramp on a site's grid.
-const RAMP: (i64, i64, u32) = (128_000, 124_500, 180_000);
+pub(crate) const RAMP: (i64, i64, u32) = (128_000, 124_500, 180_000);
 /// The ramp's cell.
 const RAMP_CELL: (i64, i64) = (128, 124);
 /// Ahuna Flank's port entry.
@@ -620,7 +620,7 @@ fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64, lot: u64) {
 }
 
 /// Board from C01.
-fn board(rig: &mut Rig, pilot: ObjId) {
+pub(crate) fn board(rig: &mut Rig, pilot: ObjId) {
     let gallery = station_room(&rig.tw, "ceres_port", "room.c01_berth_gallery");
     teleport(&mut rig.tw, pilot, gallery);
     let out = run(&mut rig.tw, pilot, "+ship/board");
@@ -644,7 +644,7 @@ fn ic_now(tw: &TestWorld) -> i64 {
 
 /// Sweep to the first real second whose IC instant is at or past `target`; the events and
 /// the submissions queued (not landed).
-fn advance_to(
+pub(crate) fn advance_to(
     rig: &mut Rig,
     target: i64,
 ) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
@@ -659,7 +659,7 @@ fn advance_to(
 }
 
 /// [`advance_to`], landing what it queued quietly.
-fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
+pub(crate) fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
     let (events, queued) = advance_to(rig, target);
     land_quietly(rig, &queued);
     events
@@ -685,7 +685,7 @@ pub(crate) fn command(rig: &mut Rig, who: ObjId, line: &str) -> (String, Vec<Aut
 }
 
 /// File a passage with `line`, land its burn, launch it on the next fire; the ticket.
-fn file_and_launch(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> Ticket {
+pub(crate) fn file_and_launch(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> Ticket {
     let (out, queued) = command(rig, pilot, line);
     assert!(out.contains("Clearance filed for "), "{line}: {out}");
     assert_eq!(queued.len(), 1, "one burn: {out}");
@@ -735,10 +735,33 @@ pub(crate) fn on_pad_as(
     name: &str,
     n_rigs: usize,
 ) -> (ObjId, HullRow, Vec<ObjId>) {
+    let (pilot, row, tvs) = on_pad_with(rig, who, seed, name, |rig, pilot| {
+        for _ in 0..n_rigs {
+            lease_one(rig, pilot);
+        }
+    });
+    assert_eq!(tvs.len(), n_rigs);
+    (pilot, row, tvs)
+}
+
+/// **Stand at Occator's counter** in the Exchange Hall (`+tv/lease`'s room).
+pub(crate) fn at_counter(rig: &mut Rig, pilot: ObjId) {
+    let counter = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
+    teleport(&mut rig.tw, pilot, counter);
+}
+
+/// **[`on_pad_as`] with the leases its pilot signs at Ceres given by `lease`** (doc 32 cut
+/// CF.6c): `lease` runs after the charter, the refit and the licence, before the hull is loaded
+/// and sails; the rigs are whatever it leased, by slot.
+pub(crate) fn on_pad_with(
+    rig: &mut Rig,
+    who: &str,
+    seed: i64,
+    name: &str,
+    lease: impl FnOnce(&mut Rig, ObjId),
+) -> (ObjId, HullRow, Vec<ObjId>) {
     let (pilot, row) = prospector(rig, who, seed, name);
-    for _ in 0..n_rigs {
-        lease_one(rig, pilot);
-    }
+    lease(rig, pilot);
     load(
         rig,
         &row,
@@ -762,7 +785,6 @@ pub(crate) fn on_pad_as(
     );
     warm(rig);
     let tvs = rigs_of(&rig.tw, pilot);
-    assert_eq!(tvs.len(), n_rigs);
     (pilot, row, tvs)
 }
 
@@ -808,7 +830,7 @@ fn cached(tw: &TestWorld) -> bool {
         .is_some_and(|state| !state.sites().is_empty())
 }
 
-fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
+pub(crate) fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
     tw.world()
         .module_state::<SpatialState>()
         .expect("the simulation")
@@ -821,7 +843,7 @@ pub(crate) fn ahuna_domain(tw: &TestWorld) -> mush_sim::DomainId {
 }
 
 /// Whether `tv` stands `Direct` on Ahuna's domain at `(x, y, heading)`.
-fn on_ground_at(tw: &TestWorld, tv: ObjId, at: (i64, i64, u32)) -> bool {
+pub(crate) fn on_ground_at(tw: &TestWorld, tv: ObjId, at: (i64, i64, u32)) -> bool {
     matches!(parent(tw, tv), SpatialParent::Direct { domain, pose }
         if domain == ahuna_domain(tw)
             && (pose.x_cm, pose.y_cm, pose.heading_mdeg) == at)
@@ -864,7 +886,7 @@ fn due_of(tw: &mut TestWorld, tv: ObjId) -> i64 {
 }
 
 /// **`line` as `who`, and exactly one start queued**, landed; the reply.
-fn act_go(rig: &mut Rig, who: ObjId, line: &str) -> String {
+pub(crate) fn act_go(rig: &mut Rig, who: ObjId, line: &str) -> String {
     let (out, queued) = command(rig, who, line);
     assert_eq!(queued.len(), 1, "{line}: one start: {out}");
     assert_eq!(queued[0].actor, who, "the start is the operator's");
@@ -895,7 +917,7 @@ fn finish_heard(rig: &mut Rig, tv: ObjId, who: &[ObjId]) -> Vec<String> {
 }
 
 /// [`finish_heard`] for one listener.
-fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
+pub(crate) fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
     finish_heard(rig, tv, &[who]).remove(0)
 }
 

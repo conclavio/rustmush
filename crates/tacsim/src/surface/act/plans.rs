@@ -782,12 +782,9 @@ pub(crate) fn sound_plan(
 pub(crate) fn rig_scanner_id(w: &World, rig_tv: ObjId) -> Option<CanonicalId> {
     crate::port::vehicle::rig_row(w, rig_tv)?;
     let tools = w.module_state::<PortHandles>()?.surface_tools.clone()?;
-    let port = crate::port::coop::programme_port(w)?;
-    let pool = port.def.vehicles.as_deref()?;
-    pool.tools
-        .iter()
-        .find(|id| tools.get(*id).and_then(ToolDef::scanner).is_some())
-        .cloned()
+    crate::port::vehicle::rig_tools(w, rig_tv)
+        .into_iter()
+        .find(|id| tools.get(id).and_then(ToolDef::scanner).is_some())
 }
 
 /// **A scanner's figures** by its id, from a tools table (`ToolDef::scanner`).
@@ -878,12 +875,9 @@ impl Reach {
 pub(crate) fn rig_battery_id(w: &World, rig_tv: ObjId) -> Option<CanonicalId> {
     crate::port::vehicle::rig_row(w, rig_tv)?;
     let tools = w.module_state::<PortHandles>()?.surface_tools.clone()?;
-    let port = crate::port::coop::programme_port(w)?;
-    let pool = port.def.vehicles.as_deref()?;
-    pool.tools
-        .iter()
-        .find(|id| tools.get(*id).and_then(ToolDef::battery).is_some())
-        .cloned()
+    crate::port::vehicle::rig_tools(w, rig_tv)
+        .into_iter()
+        .find(|id| tools.get(id).and_then(ToolDef::battery).is_some())
 }
 
 /// **A battery's figures** by its id, from a tools table (`ToolDef::battery`).
@@ -905,8 +899,8 @@ pub(crate) fn world_rigs(w: &World) -> Vec<ObjId> {
         .map(|store| {
             let mut rigs: Vec<ObjId> = store
                 .port_maps()
-                .filter_map(|map| map.vehicles.as_ref())
-                .flat_map(|row| row.rigs.iter().map(|rig| ObjId(rig.tv)))
+                .flat_map(crate::port::vehicle::lessor_rigs)
+                .map(|rig| ObjId(rig.tv))
                 .collect();
             rigs.extend(store.port_maps().flat_map(|map| {
                 crate::port::vehicle::rig_rows(map, crate::port::vehicle::RigRows::Yard)

@@ -1122,7 +1122,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 15, "lane v15 since doc 20 cut SM.12b");
+    assert_eq!(LANE_VERSION, 16, "lane v16 since doc 32 cut CF.6c");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1640,7 +1640,12 @@ fn sm12a_a_restart_between_the_batch_and_its_restock_restocks_once() {
 #[test]
 fn sm12a_a_first_listing_writes_no_counter() {
     // Both seeded, so both boot the same historical relay seed (`boot_packs_with_lane`).
-    let mut a = stocked_with(Roster::seeded(lane_variant(LANE_VERSION, |_| {})));
+    // Doc 32 cut CF.6c: `strip_mill` strips v16's escort design as well (its rigs are map
+    // rows), so A drops it too and the two worlds differ by the mills alone.
+    let mut a = stocked_with(Roster::seeded(lane_variant(
+        LANE_VERSION,
+        support::drones::strip_designs,
+    )));
     let mut b = stocked_with(Roster::seeded(lane_variant(LANE_VERSION, strip_mill)));
     let key = tacsim::port::port_map_key(&lane_id(), &cid("ceres_port"));
     let doc_a = stored(&mut a, &key).expect("A's map");

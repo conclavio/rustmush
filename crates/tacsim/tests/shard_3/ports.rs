@@ -1811,9 +1811,21 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 .iter()
                 .find(|o| o.id == vehicles.org)
                 .expect("the lessor org");
+            // Doc 32 cut CF.6c: each further design's own tally follows the pool's.
+            let designs: String = vehicles
+                .designs
+                .iter()
+                .map(|design| {
+                    format!(
+                        " {word}: {pool} of {pool} made; {pool} in the shed, 0 leased.",
+                        word = design.word,
+                        pool = design.pool
+                    )
+                })
+                .collect();
             want.push(format!(
                 "  {entry} vehicles: {pool} of {pool} made and titled to {}; {pool} in the shed, \
-                 0 leased. [ready]",
+                 0 leased.{designs} [ready]",
                 lessor.name,
                 pool = vehicles.pool
             ));

@@ -1457,7 +1457,7 @@ fn sm3a_the_apply_lays_up_occators_rigs_and_every_hulls_bay() {
     assert_eq!(
         line.text,
         "ceres_port vehicles: 8 of 8 made and titled to Occator Water & Propellant; 8 in the \
-         shed, 0 leased."
+         shed, 0 leased. escort: 2 of 2 made; 2 in the shed, 0 leased."
     );
     assert!(!tacsim::port::gated(Binding::Vehicles));
     assert!(tacsim::port::enrol_gate(&report).is_ok());
@@ -3388,7 +3388,6 @@ fn sm3a_the_tv_grammar_answers_lease_usage() {
         "+tv/1/2",
         "+tv/1/2/lease",
         "+tv sideways",
-        "+tv/lease sideways",
         "+tv/lease go now",
         "+tv lease return go twice",
         // Doc 20 cut SM.3b (review finding tests/T6): two act words, an act and a lease
@@ -3405,7 +3404,13 @@ fn sm3a_the_tv_grammar_answers_lease_usage() {
     ] {
         let out = run(&mut rig.tw, pilot, line);
         assert_eq!(out.trim(), TV_USAGE, "{line}");
-    }
+    } // Doc 32 cut CF.6c: a word after `lease` names a design; one no design answers to is the
+    // counter's refusal, naming the designs it does lease.
+    let out = run(&mut rig.tw, pilot, "+tv/lease sideways");
+    assert!(
+        out.contains("Occator leases no sideways") && out.contains("+tv/lease escort"),
+        "{out}"
+    );
 }
 
 /// **A return names no rig that is not there** (the pre-commit round, item 6): a Dray-P's
@@ -3750,7 +3755,7 @@ fn sm3a_the_rig_pools_preflight_refuses_each_recorded_breach() {
         &mut rig,
         "the block dropped",
         &[&format!(
-            "ceres_port: the port map {key} records 8 rigs but the entry has no vehicles \
+            "ceres_port: the port map {key} records 10 rigs but the entry has no vehicles \
              block; rigs are never retired by a port update"
         )],
     );

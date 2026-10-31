@@ -897,7 +897,7 @@ fn a_match_on_the_shipped_arena_is_fought_on_the_authored_ground() {
 /// Doc 16 §9's five items, the range's target (16b cut O.3), the three
 /// chassis (16b cut AE.1), the drone (16b cut AE.3) and (doc 18 cut IC2) the
 /// Dray, by the definition ids the extension packs declare.
-const FIELDED_EXTRAS: [&str; 15] = [
+const FIELDED_EXTRAS: [&str; 16] = [
     content::LINE_TANK_LASER,
     content::BIPED_MK1,
     content::LINE_TANK_THERMAL,
@@ -919,6 +919,9 @@ const FIELDED_EXTRAS: [&str; 15] = [
     "tacsim.unit.relay_station",
     // Doc 15 R9b: the Fleet capital hull adds a unit schema, without new weapons.
     tacsim::relay_mobile::UNIT,
+    // Doc 32 cut CF.6c: the leased escort adds one unit schema; it mounts the line
+    // tank's own weapons and sensor, so no new row comes with it.
+    content::TV_ESCORT,
 ];
 
 /// **The stock game is unmoved, and the fielded game is it plus the five** —

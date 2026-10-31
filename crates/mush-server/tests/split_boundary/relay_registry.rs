@@ -4260,7 +4260,9 @@ fn relay_v4() -> mush_content::Pack {
     let mut relay: serde_json::Value = serde_json::from_str(tacsim::relay_content::JSON).unwrap();
     relay["manifest"]["version"] = 4.into();
     for requirement in relay["manifest"]["requires"].as_array_mut().unwrap() {
-        if requirement["id"] == tacsim::definitions::content::CERES_PACK {
+        if requirement["id"] == tacsim::definitions::content::LANE_PACK {
+            requirement["version"] = 15.into();
+        } else if requirement["id"] == tacsim::definitions::content::CERES_PACK {
             requirement["version"] = 2.into();
         }
     }
@@ -4272,11 +4274,34 @@ fn relay_v4() -> mush_content::Pack {
     );
     pack
 }
+/// The published lane v15 (doc 20 cut SM.12b): the shipped lane less doc 32 cut CF.6c's
+/// escort design, at version 15, re-signed to its published digest.
+fn lane_v15() -> mush_content::Pack {
+    let mut lane: serde_json::Value =
+        serde_json::from_str(tacsim::definitions::content::LANE_JSON).unwrap();
+    lane["entries"]["ceres_port"]["def"]["vehicles"]
+        .as_object_mut()
+        .unwrap()
+        .remove("designs");
+    lane["manifest"]["version"] = 15.into();
+    let pack = resigned(lane);
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "eeb95c7adc4db753041722854fcc9e312bd8c69c620d86dba3217adf870829b3",
+        "the rebuild is the published lane v15"
+    );
+    pack
+}
 /// The published lane v13 (relay cut R9b): the shipped v15 less doc 20 cut SM.12b's yard and
 /// SM.12a's two `mill` rows, at version 13, re-signed to its published digest.
 fn lane_v13() -> mush_content::Pack {
     let mut lane: serde_json::Value =
         serde_json::from_str(tacsim::definitions::content::LANE_JSON).unwrap();
+    // Doc 32 cut CF.6c: the rig pool's further designs.
+    lane["entries"]["ceres_port"]["def"]["vehicles"]
+        .as_object_mut()
+        .unwrap()
+        .remove("designs");
     // Doc 20 cut SM.12b: Occator Rim's yard first (a yard names a mill row).
     lane["entries"]["occator_port"]["def"]["site"]
         .as_object_mut()
@@ -4391,7 +4416,7 @@ impl Rig {
 /// the operator org, the bindings, the Terms story and the money never move, across two
 /// restarts.
 #[tokio::test]
-async fn sm12b_a_kept_v13_star_takes_lane_v15_and_relay_v6() {
+async fn sm12b_a_kept_v13_star_takes_lane_v16_and_relay_v7() {
     let lane = tacsim::definitions::content::LANE_PACK;
     let relay = "tacsim.relay.luna_ceres";
     let mut rig = Rig::v13_star().await;
@@ -4420,41 +4445,41 @@ async fn sm12b_a_kept_v13_star_takes_lane_v15_and_relay_v6() {
         .to_owned();
     let applied = rig.run(GOD, &format!("@atlas/pack apply {fingerprint}"));
     assert!(
-        applied.contains(&format!("Applied {lane}@15: ")),
+        applied.contains(&format!("Applied {lane}@16: ")),
         "{plan}\n{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(rig.latched(lane), Some(15));
+    assert_eq!(rig.latched(lane), Some(16));
 
-    // Relay v6 differs from v2 only in its manifest: staff have nothing to apply.
+    // Relay v7 differs from v2 only in its manifest: staff have nothing to apply.
     let plan = rig.run(GOD, &format!("@atlas/pack plan {relay}"));
     assert!(plan.contains("Nothing to do."), "{plan}");
     rig.flush().await;
     rig.restart().await.unwrap();
-    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(15), Some(2)));
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(16), Some(2)));
     assert_eq!(rig.registry(), original);
     assert_eq!(
         rig.story(),
         story,
-        "relay v2 beside lane v15 is still the full star"
+        "relay v2 beside lane v16 is still the full star"
     );
 
-    // The operator's apply of the shipped seed latches v6 and changes nothing else.
+    // The operator's apply of the shipped seed latches v7 and changes nothing else.
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!(rig.latched(relay), Some(6));
+    assert_eq!(rig.latched(relay), Some(7));
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
-    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(15), Some(6)));
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(16), Some(7)));
     assert_eq!(rig.registry(), original);
     assert_eq!(rig.operator_org(), org);
     assert_eq!(
         rig.story(),
         story,
-        "relay v6 is the full star: the Terms story boots unchanged"
+        "relay v7 is the full star: the Terms story boots unchanged"
     );
     assert!(rig.run(GOD, "@relay/check").contains("Bindings OK"));
     assert_eq!(rig.money_total(), money);
@@ -4598,6 +4623,8 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     for pack in &mut packs {
         match pack.manifest().id().as_str() {
             tacsim::definitions::content::CERES_PACK => *pack = ceres_v2(),
+            // Doc 32 cut CF.6c: relay v4 requires the lane it was published against.
+            tacsim::definitions::content::LANE_PACK => *pack = lane_v15(),
             "tacsim.relay.luna_ceres" => *pack = relay_v4(),
             _ => {}
         }
@@ -4638,11 +4665,13 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
 
     // Only the manifest changed; applying the checked seed advances its latch
     // without replacing the operator, node/half objects or disabled link state.
+    // Doc 32 cut CF.6c: the shipped relay requires lane v16, so the lane comes first.
     rig.apply_content(vec![
+        mush_content::load_pack(tacsim::definitions::content::LANE_JSON).unwrap(),
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!((rig.latched(ceres), rig.latched(relay)), (Some(4), Some(6)));
+    assert_eq!((rig.latched(ceres), rig.latched(relay)), (Some(4), Some(7)));
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
@@ -4686,8 +4715,9 @@ fn r10_public_star_content_digests_are_pinned() {
             // Doc 20 cut SM.12a: v3, v2's star re-signed to require lane v14 (was
             // `6d99bd6f…` at v2, requiring lane v13). Doc 20 cut SM.12b: v4, re-signed to
             // require lane v15 (was `a9bf71ef…` at v3).
-            // Qureshi's trust service: v6 requires Ceres v4, with no entry changes.
-            "b8e247be72aa912b0e30767e0dd5efb1cf6f47faab5fc7a64e5ae507b9c8e277",
+            // Qureshi's trust service: v6 requires Ceres v4, with no entry changes (was
+            // `b8e247be…`). Doc 32 cut CF.6c: v7, re-signed to require lane v16.
+            "ed73b84d04efb9a0c8b41a7f6f9a32e4af24278d4b2088489dac0b57f29f047b",
         ),
     ];
     let packs = tacsim::relay_content::packs().unwrap();

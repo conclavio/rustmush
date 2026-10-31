@@ -5,7 +5,8 @@
     "tacsim.unit.line_tank_thermal",
     "tacsim.unit.line_tank_ecm",
     "tacsim.unit.line_tank_eccm",
-    "tacsim.unit.target_mk1"
+    "tacsim.unit.target_mk1",
+    "tacsim.unit.tv_escort"
   ],
   "label": "Tracked tank",
   "short": "TK",

@@ -192,14 +192,13 @@ fn ungoverned_note(w: &World, core: ObjId) -> Result<Option<UngovernedNote>, ()>
 /// the terrain vehicles the hull-row set leaves out.
 #[must_use]
 pub fn known(w: &World, hull: ObjId) -> bool {
-    use crate::port::vehicle::{RigRows, rig_rows};
+    use crate::port::vehicle::{RigRows, lessor_rigs, rig_rows};
     crate::surface::recovery::world_hulls(w).contains(&hull)
         || w.module_state::<crate::store::TacsimStore>()
             .is_some_and(|store| {
                 store.port_maps().any(|map| {
-                    [RigRows::Pool, RigRows::Yard]
-                        .into_iter()
-                        .flat_map(|which| rig_rows(map, which))
+                    lessor_rigs(map)
+                        .chain(rig_rows(map, RigRows::Yard))
                         .any(|rig| rig.tv == hull.0)
                 })
             })
@@ -209,13 +208,15 @@ pub fn known(w: &World, hull: ObjId) -> bool {
 /// port map's rig rows, for the boot passes that re-read each hull's rings.
 #[must_use]
 pub fn known_hulls(w: &World) -> std::collections::BTreeSet<ObjId> {
-    use crate::port::vehicle::{RigRows, rig_rows};
+    use crate::port::vehicle::{RigRows, lessor_rigs, rig_rows};
     let mut hulls = crate::surface::recovery::world_hulls(w);
     if let Some(store) = w.module_state::<crate::store::TacsimStore>() {
         for map in store.port_maps() {
-            for which in [RigRows::Pool, RigRows::Yard] {
-                hulls.extend(rig_rows(map, which).iter().map(|rig| ObjId(rig.tv)));
-            }
+            hulls.extend(
+                lessor_rigs(map)
+                    .chain(rig_rows(map, RigRows::Yard))
+                    .map(|rig| ObjId(rig.tv)),
+            );
         }
     }
     hulls

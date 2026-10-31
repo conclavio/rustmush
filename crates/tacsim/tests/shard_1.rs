@@ -31,6 +31,8 @@ mod coop;
 mod crew_exit;
 #[path = "shard_1/driving.rs"]
 mod driving;
+#[path = "shard_1/escort_lease.rs"]
+mod escort_lease;
 #[path = "shard_1/field_carrier.rs"]
 mod field_carrier;
 #[path = "shard_1/field_host.rs"]

@@ -203,13 +203,13 @@ pub use coop::{
     charter_tenant, enrol_gate, gated, helm_holder, helm_of, live_charter, programme_port, shuts,
 };
 pub use def::{
-    AskDef, BLOCK_LETTERS, BidDef, BlockDef, BlockTerms, EmergencyDef, LicenceDef,
-    MAX_CAPITAL_RAISES, MAX_EMERGENCY_GOODS, MAX_EMERGENCY_RATIO_PERMILLE, MAX_LICENCE_FEE_MAJOR,
-    MAX_LICENCE_TERM_IC_DAYS, MAX_MILL_RATIO, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR,
-    MAX_VENDOR_MILLS, MAX_YARD_REARM_IC_SECS, MillDef, MillRatio, PORT_MINT_CAP_MAJOR,
-    PORT_ROOM_ROLES, PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, RefreshDef,
-    SITE_BLOCK_COUNT, SiteDef, SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, YardDef,
-    Zone, capital_schedule, check_ports, room_key, tranches,
+    AskDef, BLOCK_LETTERS, BidDef, BlockDef, BlockTerms, Design, DesignTerms, EmergencyDef,
+    LeaseDesignDef, LeaseGate, LicenceDef, MAX_CAPITAL_RAISES, MAX_EMERGENCY_GOODS,
+    MAX_EMERGENCY_RATIO_PERMILLE, MAX_LICENCE_FEE_MAJOR, MAX_LICENCE_TERM_IC_DAYS, MAX_MILL_RATIO,
+    MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, MAX_VENDOR_MILLS, MAX_YARD_REARM_IC_SECS, MillDef,
+    MillRatio, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef, ProgrammeDef,
+    ReachPremiumDef, RefreshDef, SITE_BLOCK_COUNT, SiteDef, SiteTenureDef, StockRowDef, Tenure,
+    VehiclesDef, VendorDef, YardDef, Zone, capital_schedule, check_ports, room_key, tranches,
 };
 pub use epoch::{
     EPOCH_ACTION, EPOCH_FAMILY, EPOCH_OUTCOME, EpochKey, EpochLast, EpochOp, ShipEpoch,
@@ -231,8 +231,9 @@ pub use licence::{
     standing_at,
 };
 pub use map::{
-    BidRow, ClerkRow, HouseLicence, HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow,
-    RigRow, SiteRow, StockRow, TrancheRow, VehiclesRow, VendorRow, YardRow, port_map_key,
+    BidRow, ClerkRow, DesignRow, HouseLicence, HullRow, PORT_MAP_PREFIX, PortMap, PortMapState,
+    PortOrgRow, RigRow, SiteRow, StockRow, TrancheRow, VehiclesRow, VendorRow, YardRow,
+    port_map_key,
 };
 pub use market::{
     HOLD_CLEARED, HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_PAPERS_DARK, HOLD_UNDER_WAY, HoldPlan,

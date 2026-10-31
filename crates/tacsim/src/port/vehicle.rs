@@ -41,7 +41,7 @@ use mush_sim::data::{SpaceAnchor, SpatialParent, SpatialState};
 use smol_str::SmolStr;
 
 use crate::definitions::{GoodsTable, InteriorDef, LogisticsDef};
-use crate::port::def::{PortDef, VehiclesDef};
+use crate::port::def::{Design, PortDef, VehiclesDef};
 use crate::port::hull::{declare_space, dress, live, registry_mark, unit_record_claims};
 use crate::port::map::{PortMap, RigRow, VehiclesRow};
 use crate::port::passage::CarriedRig;
@@ -50,9 +50,26 @@ use crate::port::ship::HullView;
 use crate::port::site::VEHICLES_PRINCIPAL;
 use crate::store::{TacsimStore, put_port_map};
 
+/// **The channels a rig's pilot console carries** (doc 32 cut CF.6c): the helm alone, and an
+/// armed rig's (a unit with a weapon) every cockpit channel besides — sensors and fire — so the
+/// one seat a lessee boards into drives, locks and fires from the line cockpit.
+fn console_channels(w: &World, tv: ObjId) -> BTreeSet<mush_core::ChannelId> {
+    let armed = mush_tactics::module::unit_of(w, tv).is_some_and(|cells| {
+        w.module_state::<TacsimStore>().is_some_and(|store| {
+            !crate::match_::weapon_summaries(store.definitions(), cells).is_empty()
+        })
+    });
+    if armed {
+        crate::match_::cockpit::cockpit_channels()
+    } else {
+        mush_core::ChannelId::new("helm").into_iter().collect()
+    }
+}
+
 fn ensure_console(ctx: &mut Ctx<'_>, tv: ObjId, cab: ObjId) -> Result<(), String> {
     let pilot = mush_sim::StationId::new("pilot").ok_or("Invalid pilot station.")?;
     let helm = mush_core::ChannelId::new("helm").ok_or("Invalid helm channel.")?;
+    let channels = console_channels(ctx.w, tv);
     let spatial = ctx
         .w
         .module_state::<SpatialState>()
@@ -69,7 +86,10 @@ fn ensure_console(ctx: &mut Ctx<'_>, tv: ObjId, cab: ObjId) -> Result<(), String
         .get(&tv)
         .and_then(|s| s.stations.get(&pilot))
     {
-        return if existing.space == Some(cab) && existing.channels.contains(&helm) {
+        return if existing.space == Some(cab)
+            && existing.channels.contains(&helm)
+            && channels.is_subset(&existing.channels)
+        {
             Ok(())
         } else {
             Err("The pilot station changed; repair its cab and channels explicitly.".into())
@@ -82,17 +102,9 @@ fn ensure_console(ctx: &mut Ctx<'_>, tv: ObjId, cab: ObjId) -> Result<(), String
     {
         return Err("A missing pilot station has a stale assignment; repair it explicitly.".into());
     }
-    mush_sim::declare_station(
-        ctx,
-        tv,
-        &pilot,
-        "pilot",
-        &BTreeSet::from([helm]),
-        Some(cab),
-        0,
-    )
-    .map(|_| ())
-    .map_err(|e| e.to_string())
+    mush_sim::declare_station(ctx, tv, &pilot, "pilot", &channels, Some(cab), 0)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Install only the absent console on stock rigs created before physical crew.
@@ -107,7 +119,7 @@ pub(crate) fn boot_consoles(ctx: &mut Ctx<'_>) {
     let rigs: Vec<_> = store
         .port_maps()
         .flat_map(|map| {
-            map.vehicles.iter().flat_map(|v| v.rigs.iter()).chain(
+            lessor_rigs(map).chain(
                 map.site
                     .iter()
                     .filter_map(|s| s.yard.as_ref())
@@ -141,8 +153,26 @@ pub fn template<'a>(
     ),
     String,
 > {
-    let vid = &def.id;
-    let unit = &def.unit;
+    template_of(store, &def.id, &def.unit)
+}
+
+/// [`template`] for any design's unit (doc 32 cut CF.6c).
+///
+/// # Errors
+///
+/// A sentence naming the pool and what the catalog lacks.
+pub fn template_of<'a>(
+    store: &'a TacsimStore,
+    vid: &CanonicalId,
+    unit: &CanonicalId,
+) -> Result<
+    (
+        &'a InteriorDef,
+        &'a mush_tactics::UnitSpec,
+        &'a LogisticsDef,
+    ),
+    String,
+> {
     let spec = store
         .definitions()
         .specs
@@ -164,12 +194,15 @@ pub fn template<'a>(
 
 /// The cab's berths compartment as a simulation slot id (a template id
 /// `SlotId::new` refuses is a preflight refusal, never an `expect`).
-fn cab_slot(def: &VehiclesDef, interior: &InteriorDef) -> Result<mush_sim::SlotId, String> {
+fn cab_slot(
+    vid: &CanonicalId,
+    unit: &CanonicalId,
+    interior: &InteriorDef,
+) -> Result<mush_sim::SlotId, String> {
     let id = &interior.berths_slot.id;
     mush_sim::SlotId::new(id.as_str()).ok_or_else(|| {
         format!(
-            "vehicles {}: unit {}'s berths compartment '{id}' is not a simulation slot id",
-            def.id, def.unit
+            "vehicles {vid}: unit {unit}'s berths compartment '{id}' is not a simulation slot id"
         )
     })
 }
@@ -193,15 +226,12 @@ pub(crate) fn preflight(
     map: Option<&PortMap>,
 ) -> Result<usize, String> {
     let key = crate::port::port_map_key(pack, id);
-    let recorded: &[RigRow] = map
-        .and_then(|m| m.vehicles.as_ref())
-        .map_or(&[], |row| row.rigs.as_slice());
+    let recorded_all = map.map_or(0, |m| lessor_rigs(m).count());
     let Some(vehicles) = &def.vehicles else {
-        if !recorded.is_empty() {
+        if recorded_all > 0 {
             return Err(format!(
-                "{id}: the port map {key} records {} rigs but the entry has no vehicles block; \
-                 rigs are never retired by a port update",
-                recorded.len()
+                "{id}: the port map {key} records {recorded_all} rigs but the entry has no \
+                 vehicles block; rigs are never retired by a port update"
             ));
         }
         return Ok(0);
@@ -218,8 +248,34 @@ pub(crate) fn preflight(
     let economy = w
         .module_state::<EconomyStore>()
         .ok_or_else(|| format!("{id}: the economy is not composed on this world"))?;
-    let (interior, _, _) = template(store, vehicles).map_err(|e| format!("{id}: {e}"))?;
-    cab_slot(vehicles, interior).map_err(|e| format!("{id}: {e}"))?;
+    // Doc 32 cut CF.6c: a laid-up design keeps its index — designs are only appended.
+    let laid: &[crate::port::map::DesignRow] = map
+        .and_then(|m| m.vehicles.as_ref())
+        .map_or(&[], |row| row.designs.as_slice());
+    if laid.len() > vehicles.designs.len() {
+        return Err(format!(
+            "{id}: the port map {key} records {} further designs but the pool authors {}; \
+             designs are never retired by a port update",
+            laid.len(),
+            vehicles.designs.len()
+        ));
+    }
+    if let Some((row, authored)) = laid
+        .iter()
+        .zip(&vehicles.designs)
+        .find(|(row, authored)| row.word != authored.word)
+    {
+        return Err(format!(
+            "{id}: the port map {key} records design {} where the pool authors {}; designs are \
+             only ever appended",
+            row.word, authored.word
+        ));
+    }
+    for terms in vehicles.all_terms() {
+        let (interior, _, _) =
+            template_of(store, vid, terms.unit).map_err(|e| format!("{id}: {e}"))?;
+        cab_slot(vid, terms.unit, interior).map_err(|e| format!("{id}: {e}"))?;
+    }
     let registered = SystemPrincipalId::new(&vehicles.issuer)
         .is_some_and(|issuer| economy.is_title_issuer(&issuer));
     if !registered {
@@ -240,57 +296,65 @@ pub(crate) fn preflight(
         ));
     }
     let mut to_title = 0_usize;
-    for row in recorded {
-        let mark = &row.mark;
-        if row.n >= vehicles.pool {
-            return Err(format!(
-                "{id}: rig {mark} is in the port map {key} but the pool is {}; rigs are never \
-                 retired by a port update",
-                vehicles.pool
-            ));
-        }
-        let expected = registry_mark(&vehicles.registry_prefix, row.n);
-        if *mark != expected {
-            return Err(format!(
-                "{id}: rig {mark} in the port map {key} is not {expected}; registry marks are \
-                 never re-issued"
-            ));
-        }
-        let objects = std::iter::once(row.tv).chain(row.rooms.values().copied());
-        for obj in objects {
-            if !live(w, obj) {
+    let mut absent = 0_usize;
+    for terms in vehicles.all_terms() {
+        let (interior, _, _) =
+            template_of(store, vid, terms.unit).map_err(|e| format!("{id}: {e}"))?;
+        let recorded: &[RigRow] = map.map_or(&[], |m| rig_rows(m, RigRows::of(terms.design)));
+        for row in recorded {
+            let mark = &row.mark;
+            if row.n >= terms.pool {
                 return Err(format!(
-                    "{id}: rig {mark} in the port map {key} names #{obj}, which does not exist; it \
-                     is never re-created — repair the map by hand"
+                    "{id}: rig {mark} is in the port map {key} but the pool is {}; rigs are never \
+                 retired by a port update",
+                    terms.pool
                 ));
             }
-        }
-        if let Some(room) = row.rooms.keys().find(|room| interior.room(room).is_none()) {
-            return Err(format!(
-                "{id}: rig {mark} in the port map {key} records room {room}, which the template \
-                 does not author"
-            ));
-        }
-        if let Some(vault) = row.vault {
-            let ours = economy
-                .snapshot()
-                .vault(VaultId(vault))
-                .is_some_and(|v| Some(&v.owner) == owner.as_ref());
-            if !ours {
+            let expected = registry_mark(terms.registry_prefix, row.n);
+            if *mark != expected {
                 return Err(format!(
-                    "{id}: rig {mark} in the port map {key} names hopper vault #{vault}, which is \
+                    "{id}: rig {mark} in the port map {key} is not {expected}; registry marks are \
+                 never re-issued"
+                ));
+            }
+            let objects = std::iter::once(row.tv).chain(row.rooms.values().copied());
+            for obj in objects {
+                if !live(w, obj) {
+                    return Err(format!(
+                        "{id}: rig {mark} in the port map {key} names #{obj}, which does not exist; it \
+                     is never re-created — repair the map by hand"
+                    ));
+                }
+            }
+            if let Some(room) = row.rooms.keys().find(|room| interior.room(room).is_none()) {
+                return Err(format!(
+                    "{id}: rig {mark} in the port map {key} records room {room}, which the template \
+                 does not author"
+                ));
+            }
+            if let Some(vault) = row.vault {
+                let ours = economy
+                    .snapshot()
+                    .vault(VaultId(vault))
+                    .is_some_and(|v| Some(&v.owner) == owner.as_ref());
+                if !ours {
+                    return Err(format!(
+                        "{id}: rig {mark} in the port map {key} names hopper vault #{vault}, which is \
                      gone or not owned by {VEHICLES_PRINCIPAL}; it is never re-created — repair \
                      the map by hand"
-                ));
+                    ));
+                }
+            }
+            if economy.snapshot().asset(ObjId(row.tv)).is_none() {
+                to_title = to_title.saturating_add(1);
             }
         }
-        if economy.snapshot().asset(ObjId(row.tv)).is_none() {
-            to_title = to_title.saturating_add(1);
-        }
+        absent = absent.saturating_add(
+            (0..terms.pool)
+                .filter(|n| !recorded.iter().any(|row| row.n == *n))
+                .count(),
+        );
     }
-    let absent = (0..vehicles.pool)
-        .filter(|n| !recorded.iter().any(|row| row.n == *n))
-        .count();
     Ok(to_title.saturating_add(absent))
 }
 
@@ -303,6 +367,64 @@ pub(crate) enum RigRows {
     Pool,
     /// `map.site.yard.rigs`.
     Yard,
+    /// **Doc 32 cut CF.6c**: `map.vehicles.designs[i].rigs`, a further design's.
+    Design(u8),
+}
+
+impl RigRows {
+    /// The rows a lessor's `design` is laid up in.
+    #[must_use]
+    pub(crate) fn of(design: Design) -> RigRows {
+        match design {
+            Design::Rig => RigRows::Pool,
+            Design::Extra(i) => RigRows::Design(i),
+        }
+    }
+}
+
+/// **Every lessor rig row of a port map** (doc 32 cut CF.6c): the pool's own design's, then each
+/// further design's, in design order.
+pub(crate) fn lessor_rigs(map: &PortMap) -> impl Iterator<Item = &RigRow> {
+    map.vehicles.iter().flat_map(|row| {
+        row.rigs
+            .iter()
+            .chain(row.designs.iter().flat_map(|design| design.rigs.iter()))
+    })
+}
+
+/// **Which design a lessor rig is** (doc 32 cut CF.6c), from the port map row that holds it.
+#[must_use]
+pub(crate) fn design_of(map: &PortMap, tv: ObjId) -> Option<Design> {
+    let row = map.vehicles.as_ref()?;
+    if row.rigs.iter().any(|rig| rig.tv == tv.0) {
+        return Some(Design::Rig);
+    }
+    row.designs
+        .iter()
+        .position(|design| design.rigs.iter().any(|rig| rig.tv == tv.0))
+        .and_then(|i| u8::try_from(i).ok())
+        .map(Design::Extra)
+}
+
+/// **The tools a rig carries** (doc 32 cut CF.6c): a lessor rig its design's; a yard rig (no
+/// design holds it) the pool's own, as before.
+#[must_use]
+pub(crate) fn rig_tools(w: &World, tv: ObjId) -> Vec<CanonicalId> {
+    if let Some(terms) = rig_terms(w, tv) {
+        return terms.tools.to_vec();
+    }
+    crate::port::coop::programme_port(w)
+        .and_then(|port| port.def.vehicles.as_deref().map(|pool| pool.tools.clone()))
+        .unwrap_or_default()
+}
+
+/// **A lessor rig's design terms** (doc 32 cut CF.6c): the programme port's pool's terms for the
+/// design whose rows hold `tv`. `None` for a yard rig or a Thing no pool holds.
+#[must_use]
+pub(crate) fn rig_terms(w: &World, tv: ObjId) -> Option<crate::port::def::DesignTerms<'_>> {
+    let port = crate::port::coop::programme_port(w)?;
+    let design = design_of(port.map, tv)?;
+    port.def.vehicles.as_deref()?.terms(design)
 }
 
 /// The rig rows `which` names (empty when absent).
@@ -314,21 +436,33 @@ pub(crate) fn rig_rows(map: &PortMap, which: RigRows) -> &[RigRow] {
             .as_ref()
             .and_then(|site| site.yard.as_ref())
             .map_or(&[], |yard| yard.rigs.as_slice()),
+        RigRows::Design(i) => map
+            .vehicles
+            .as_ref()
+            .and_then(|row| row.designs.get(usize::from(i)))
+            .map_or(&[], |design| design.rigs.as_slice()),
     }
 }
 
-/// The rig rows `which` names, made when absent.
-pub(crate) fn rig_rows_mut(map: &mut PortMap, which: RigRows) -> &mut Vec<RigRow> {
+/// The rig rows `which` names, made when absent; `None` for a design whose row the lay-up has
+/// not made (it makes it, with its word, before the design's first rig).
+pub(crate) fn rig_rows_mut(map: &mut PortMap, which: RigRows) -> Option<&mut Vec<RigRow>> {
     match which {
-        RigRows::Pool => &mut map.vehicles.get_or_insert_with(VehiclesRow::default).rigs,
-        RigRows::Yard => {
+        RigRows::Pool => Some(&mut map.vehicles.get_or_insert_with(VehiclesRow::default).rigs),
+        RigRows::Yard => Some(
             &mut map
                 .site
                 .get_or_insert_with(crate::port::map::SiteRow::default)
                 .yard
                 .get_or_insert_with(crate::port::map::YardRow::default)
-                .rigs
-        }
+                .rigs,
+        ),
+        RigRows::Design(i) => map
+            .vehicles
+            .as_mut()?
+            .designs
+            .get_mut(usize::from(i))
+            .map(|design| &mut design.rigs),
     }
 }
 
@@ -381,7 +515,7 @@ pub(crate) fn lay_up(
         let (interior, spec, _) = template(store, def).map_err(|e| format!("{id}: {e}"))?;
         (interior.clone(), spec.clone())
     };
-    let slot = cab_slot(def, &interior).map_err(|e| format!("{id}: {e}"))?;
+    let slot = cab_slot(&def.id, &def.unit, &interior).map_err(|e| format!("{id}: {e}"))?;
     let issuer = SystemPrincipalId::new(&def.issuer).ok_or_else(|| {
         format!(
             "{id}: vehicles {}: the title issuer {} is not a system principal",
@@ -429,6 +563,56 @@ pub(crate) fn lay_up(
             .map(|rig| ObjId(rig.tv))
             .ok_or_else(|| format!("{id}: rig {n} has no map row"))?;
         place_and_title(ctx, id, tv, &RigPlace::Shed(shed), &issuer, &lessor)?;
+    }
+    // Doc 32 cut CF.6c: each further design, its row made with its word first, laid up in the
+    // same shed by the same steps.
+    for terms in def.all_terms() {
+        let Design::Extra(i) = terms.design else {
+            continue;
+        };
+        let designs = &mut map
+            .vehicles
+            .get_or_insert_with(VehiclesRow::default)
+            .designs;
+        if designs.len() == usize::from(i) {
+            designs.push(crate::port::map::DesignRow {
+                word: terms.word.unwrap_or_default().to_owned(),
+                rigs: Vec::new(),
+            });
+            put_port_map(ctx, map);
+        }
+        let (interior, spec) = {
+            let store = ctx
+                .w
+                .module_state::<TacsimStore>()
+                .ok_or_else(|| format!("{id}: the TacSim layer is not composed"))?;
+            let (interior, spec, _) =
+                template_of(store, &def.id, terms.unit).map_err(|e| format!("{id}: {e}"))?;
+            (interior.clone(), spec.clone())
+        };
+        let slot = cab_slot(&def.id, terms.unit, &interior).map_err(|e| format!("{id}: {e}"))?;
+        let which = RigRows::Design(i);
+        for n in 0..terms.pool {
+            lay_up_rig(
+                ctx,
+                id,
+                map,
+                &RigPlan {
+                    mark: registry_mark(terms.registry_prefix, n),
+                    rows: which,
+                    place: RigPlace::Shed(shed),
+                    interior: &interior,
+                    spec: &spec,
+                    slot: &slot,
+                    n,
+                },
+            )?;
+            let tv = rig_index(map, which, n)
+                .and_then(|index| rig_rows(map, which).get(index))
+                .map(|rig| ObjId(rig.tv))
+                .ok_or_else(|| format!("{id}: rig {n} has no map row"))?;
+            place_and_title(ctx, id, tv, &RigPlace::Shed(shed), &issuer, &lessor)?;
+        }
     }
     super::equipment::bootstrap(ctx, map, def)?;
     Ok(())
@@ -478,13 +662,15 @@ pub(crate) fn lay_up_rig(
             .w
             .create(ObjKind::Thing, &mark, ctx.actor, Some(place.room()))
             .map_err(|e| format!("{id}: rig {mark}: {e}"))?;
-        rig_rows_mut(map, which).push(RigRow {
-            n,
-            mark: mark.clone(),
-            tv: tv.0,
-            rooms: BTreeMap::new(),
-            vault: None,
-        });
+        rig_rows_mut(map, which)
+            .ok_or_else(|| format!("{id}: rig {mark}: its design has no map row"))?
+            .push(RigRow {
+                n,
+                mark: mark.clone(),
+                tv: tv.0,
+                rooms: BTreeMap::new(),
+                vault: None,
+            });
         put_port_map(ctx, map);
     }
     let index =
@@ -506,7 +692,7 @@ pub(crate) fn lay_up_rig(
                 .w
                 .create(ObjKind::Room, &room.name, ctx.actor, None)
                 .map_err(|e| format!("{id}: rig {mark} room {}: {e}", room.id))?;
-            if let Some(rig) = rig_rows_mut(map, which).get_mut(index) {
+            if let Some(rig) = rig_rows_mut(map, which).and_then(|rows| rows.get_mut(index)) {
                 rig.rooms.insert(room.id.clone(), obj.0);
             }
             put_port_map(ctx, map);
@@ -598,7 +784,7 @@ pub(crate) fn lay_up_rig(
                 revision: 1,
             },
         );
-        if let Some(rig) = rig_rows_mut(map, which).get_mut(index) {
+        if let Some(rig) = rig_rows_mut(map, which).and_then(|rows| rows.get_mut(index)) {
             rig.vault = Some(vault.0);
         }
         put_port_map(ctx, map);
@@ -691,64 +877,92 @@ pub(crate) fn vehicles_line(
         return missing(format!("{made} of {pool} are made."));
     }
     let shed = map.vehicles.as_ref().and_then(|row| row.shed);
-    let interior = template(store, vehicles)
-        .ok()
-        .map(|(interior, _, _)| interior);
     let spatial = w.module_state::<SpatialState>();
     let economy = w.module_state::<EconomyStore>();
     let lessor = map
         .orgs
         .get(&vehicles.org)
         .map(|row| PrincipalId::Organization(OrgId(row.org)));
-    let mut in_shed = 0_usize;
-    let mut leased = 0_usize;
-    for rig in rigs {
-        let mark = &rig.mark;
-        let gone = std::iter::once(rig.tv)
-            .chain(rig.rooms.values().copied())
-            .chain(shed)
-            .find(|obj| !live(w, *obj));
-        if let Some(obj) = gone {
-            return missing(format!("{mark} (#{obj}) does not exist."));
-        }
-        let complete = interior.is_some_and(|interior| {
-            interior
-                .rooms
-                .iter()
-                .all(|room| rig.rooms.contains_key(&room.id))
-                && [&interior.space, &interior.store].iter().all(|room| {
-                    rig.rooms.get(*room).is_some_and(|obj| {
-                        spatial.is_some_and(|st| st.spaces.contains_key(&ObjId(*obj)))
+    // Each design's rigs read alike (doc 32 cut CF.6c): how many are in the shed and leased, or
+    // the first failing check's sentence.
+    let tally = |rigs: &[RigRow], unit: &CanonicalId| -> Result<(usize, usize), String> {
+        let interior = template_of(store, &vehicles.id, unit)
+            .ok()
+            .map(|(interior, _, _)| interior);
+        let mut in_shed = 0_usize;
+        let mut leased = 0_usize;
+        for rig in rigs {
+            let mark = &rig.mark;
+            let gone = std::iter::once(rig.tv)
+                .chain(rig.rooms.values().copied())
+                .chain(shed)
+                .find(|obj| !live(w, *obj));
+            if let Some(obj) = gone {
+                return Err(format!("{mark} (#{obj}) does not exist."));
+            }
+            let complete = interior.is_some_and(|interior| {
+                interior
+                    .rooms
+                    .iter()
+                    .all(|room| rig.rooms.contains_key(&room.id))
+                    && [&interior.space, &interior.store].iter().all(|room| {
+                        rig.rooms.get(*room).is_some_and(|obj| {
+                            spatial.is_some_and(|st| st.spaces.contains_key(&ObjId(*obj)))
+                        })
                     })
-                })
-        });
-        if !complete {
-            return missing(format!("{mark}'s interior is incomplete."));
-        }
-        if !hopper_vault_ok(economy, rig.vault) {
-            return missing(format!("{mark} has no hopper vault."));
-        }
-        let tv = ObjId(rig.tv);
-        let titled = lessor
-            .as_ref()
-            .is_some_and(|lessor| crate::port::coop::titled_to(w, tv, lessor));
-        if !titled {
-            return missing(format!("{mark} is not titled to {org_name}."));
-        }
-        let parked = shed.is_some_and(|shed| {
-            spatial.is_some_and(|st| {
+            });
+            if !complete {
+                return Err(format!("{mark}'s interior is incomplete."));
+            }
+            if !hopper_vault_ok(economy, rig.vault) {
+                return Err(format!("{mark} has no hopper vault."));
+            }
+            let tv = ObjId(rig.tv);
+            let titled = lessor
+                .as_ref()
+                .is_some_and(|lessor| crate::port::coop::titled_to(w, tv, lessor));
+            if !titled {
+                return Err(format!("{mark} is not titled to {org_name}."));
+            }
+            let parked = shed.is_some_and(|shed| {
+                spatial.is_some_and(|st| {
                 matches!(st.parent_of(tv), SpatialParent::Interior { space, .. } if space.0 == shed)
             })
-        });
-        if parked {
-            in_shed = in_shed.saturating_add(1);
+            });
+            if parked {
+                in_shed = in_shed.saturating_add(1);
+            }
+            if lessor
+                .as_ref()
+                .and_then(|lessor| occator_lease_on(w, lessor, tv))
+                .is_some()
+            {
+                leased = leased.saturating_add(1);
+            }
         }
-        if lessor
-            .as_ref()
-            .and_then(|lessor| occator_lease_on(w, lessor, tv))
-            .is_some()
-        {
-            leased = leased.saturating_add(1);
+        Ok((in_shed, leased))
+    };
+    let (in_shed, leased) = match tally(rigs, &vehicles.unit) {
+        Ok(counts) => counts,
+        Err(text) => return missing(text),
+    };
+    // Doc 32 cut CF.6c: each further design, made in full, then tallied the same way.
+    let mut designs = String::new();
+    for terms in vehicles.all_terms() {
+        let (Some(word), Design::Extra(i)) = (terms.word, terms.design) else {
+            continue;
+        };
+        let rows = rig_rows(map, RigRows::Design(i));
+        let made = rows.iter().filter(|rig| rig.n < terms.pool).count();
+        let pool = terms.pool;
+        if made < usize::try_from(pool).unwrap_or(usize::MAX) {
+            return missing(format!("{word}: {made} of {pool} are made."));
+        }
+        match tally(rows, terms.unit) {
+            Ok((in_shed, leased)) => designs.push_str(&format!(
+                " {word}: {pool} of {pool} made; {in_shed} in the shed, {leased} leased."
+            )),
+            Err(text) => return missing(format!("{word}: {text}")),
         }
     }
     // Reviewer F13: the first programme hull, in row order, whose refit bay is not
@@ -766,7 +980,7 @@ pub(crate) fn vehicles_line(
         LineState::Ready,
         format!(
             "{entry} vehicles: {pool} of {pool} made and titled to {org_name}; {in_shed} in the \
-             shed, {leased} leased."
+             shed, {leased} leased.{designs}"
         ),
     ))
 }
@@ -871,10 +1085,7 @@ pub fn rig_row(w: &World, tv: ObjId) -> Option<(&PortMap, &RigRow)> {
     store
         .port_maps()
         .find_map(|map| {
-            map.vehicles
-                .as_ref()?
-                .rigs
-                .iter()
+            lessor_rigs(map)
                 .find(|rig| rig.tv == tv.0)
                 .map(|rig| (map, rig))
         })

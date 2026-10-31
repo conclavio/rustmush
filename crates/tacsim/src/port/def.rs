@@ -106,6 +106,10 @@ pub const MAX_VEHICLE_POOL: u32 = 64;
 pub const MAX_VEHICLE_TERM_IC_DAYS: u32 = 365;
 /// The most tools one rig pool may name (doc 20 cut SM.3a).
 pub const MAX_VEHICLE_TOOLS: usize = 8;
+/// The most further designs one rig lessor may author beside its pool's own (doc 32 cut CF.6c).
+pub const MAX_LEASE_DESIGNS: usize = 4;
+/// The longest design word (`escort`), bytes (doc 32 cut CF.6c).
+pub const MAX_DESIGN_WORD_BYTES: usize = 16;
 
 /// **One `port` entry** (doc 18 §4.7, D-18-20). Strict and integer-only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,6 +247,137 @@ pub struct VehiclesDef {
     /// [`crate::definitions::tools::tools_table`]: what every rig of the pool
     /// carries.
     pub tools: Vec<CanonicalId>,
+    /// **Doc 32 cut CF.6c**: further designs the same lessor leases from the same shed at the
+    /// same counter, each a pool of its own rigs (`+tv/lease <word>`), beside the pool's own
+    /// design above (`+tv/lease` alone). At most [`MAX_LEASE_DESIGNS`]; only ever appended, so
+    /// a laid-up design's rigs keep their rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub designs: Vec<LeaseDesignDef>,
+}
+
+/// **What gates a lease of one design** (doc 32 cut CF.6c).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseGate {
+    /// The prospecting licence, in force or in its grace (doc 20 cut SM.5): the rig pool's rule.
+    #[default]
+    Licence,
+    /// **The escort clearance** (doc 32 cut CF.6c): the prospecting licence in force (its grace
+    /// does not serve), no lease of the lessee's forfeit, no other armed lease of theirs live,
+    /// and none written off within [`crate::port::tv::WRITE_OFF_BAR_IC_DAYS`].
+    Escort,
+}
+
+/// **A further design of a rig lessor's pool** (doc 32 cut CF.6c): its own unit, rigs, marks,
+/// terms, tools and gate; the lessor, the issuer, the counter and the shed are the pool's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseDesignDef {
+    /// The word `+tv/lease <word>` names it by: lowercase `[a-z]`,
+    /// 1..=[`MAX_DESIGN_WORD_BYTES`] bytes, never `go`.
+    pub word: String,
+    /// The unit every rig of the design is bound to (`tacsim.unit.tv_escort`).
+    pub unit: CanonicalId,
+    /// How many rigs, `1..=`[`MAX_VEHICLE_POOL`].
+    pub pool: u32,
+    /// `[A-Z0-9-]`, 1..=16 bytes, never another design's.
+    pub registry_prefix: String,
+    /// One term's fee, major units.
+    pub fee_major: u64,
+    /// The deposit held while leased, major units.
+    pub deposit_major: u64,
+    /// One term, IC days, `1..=`[`MAX_VEHICLE_TERM_IC_DAYS`].
+    pub term_ic_days: u32,
+    /// What every rig of the design carries, as [`VehiclesDef::tools`].
+    pub tools: Vec<CanonicalId>,
+    /// What gates its lease.
+    #[serde(default)]
+    pub gate: LeaseGate,
+}
+
+/// **Which design of a lessor's pool** (doc 32 cut CF.6c): the pool's own, or
+/// [`VehiclesDef::designs`]' entry at an index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Design {
+    /// The pool's own design (`VehiclesDef.unit`).
+    Rig,
+    /// `VehiclesDef.designs[i]`.
+    Extra(u8),
+}
+
+/// **One design's terms, read alike for every design** (doc 32 cut CF.6c).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DesignTerms<'a> {
+    /// Which design.
+    pub design: Design,
+    /// Its word; `None` for the pool's own.
+    pub word: Option<&'a str>,
+    /// Its unit.
+    pub unit: &'a CanonicalId,
+    /// How many rigs.
+    pub pool: u32,
+    /// Its marks' prefix.
+    pub registry_prefix: &'a str,
+    /// One term's fee, major units.
+    pub fee_major: u64,
+    /// The deposit, major units.
+    pub deposit_major: u64,
+    /// One term, IC days.
+    pub term_ic_days: u32,
+    /// What its rigs carry.
+    pub tools: &'a [CanonicalId],
+    /// What gates its lease.
+    pub gate: LeaseGate,
+}
+
+impl VehiclesDef {
+    /// **`design`'s terms** (doc 32 cut CF.6c), `None` for an index past the designs.
+    #[must_use]
+    pub fn terms(&self, design: Design) -> Option<DesignTerms<'_>> {
+        match design {
+            Design::Rig => Some(DesignTerms {
+                design,
+                word: None,
+                unit: &self.unit,
+                pool: self.pool,
+                registry_prefix: &self.registry_prefix,
+                fee_major: self.fee_major,
+                deposit_major: self.deposit_major,
+                term_ic_days: self.term_ic_days,
+                tools: &self.tools,
+                gate: LeaseGate::Licence,
+            }),
+            Design::Extra(i) => self.designs.get(usize::from(i)).map(|d| DesignTerms {
+                design,
+                word: Some(d.word.as_str()),
+                unit: &d.unit,
+                pool: d.pool,
+                registry_prefix: &d.registry_prefix,
+                fee_major: d.fee_major,
+                deposit_major: d.deposit_major,
+                term_ic_days: d.term_ic_days,
+                tools: &d.tools,
+                gate: d.gate,
+            }),
+        }
+    }
+
+    /// **Every design's terms**, the pool's own first (doc 32 cut CF.6c).
+    pub fn all_terms(&self) -> impl Iterator<Item = DesignTerms<'_>> {
+        std::iter::once(Design::Rig)
+            .chain(
+                (0..self.designs.len())
+                    .filter_map(|i| u8::try_from(i).ok())
+                    .map(Design::Extra),
+            )
+            .filter_map(|design| self.terms(design))
+    }
+
+    /// **The design `+tv/lease <word>` names** (doc 32 cut CF.6c): no word is the pool's own.
+    #[must_use]
+    pub fn by_word(&self, word: Option<&str>) -> Option<DesignTerms<'_>> {
+        self.all_terms().find(|terms| terms.word == word)
+    }
 }
 
 /// The treasury a port that authors none capitalizes from (doc 20 cut SM.2).
@@ -1388,6 +1523,99 @@ impl PortDef {
                 return Err(format!("vehicles {vid}: tool {tool} is named twice"));
             }
         }
+        Self::check_designs(vehicles, &table)
+    }
+
+    /// **The further designs' bounds** (doc 32 cut CF.6c): at most [`MAX_LEASE_DESIGNS`]; each
+    /// word lowercase, never `go` and never twice; each unit, prefix and tool list bounded as
+    /// the pool's own, no unit or prefix another design's. Each sentence starts
+    /// `vehicles {id}: `.
+    fn check_designs(
+        vehicles: &VehiclesDef,
+        table: &BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>,
+    ) -> Result<(), String> {
+        let vid = &vehicles.id;
+        if vehicles.designs.len() > MAX_LEASE_DESIGNS {
+            return Err(format!(
+                "vehicles {vid}: designs names at most {MAX_LEASE_DESIGNS}, not {}",
+                vehicles.designs.len()
+            ));
+        }
+        let mut words: BTreeSet<&str> = BTreeSet::new();
+        let mut units: BTreeSet<&CanonicalId> = BTreeSet::from([&vehicles.unit]);
+        let mut prefixes: BTreeSet<&str> = BTreeSet::from([vehicles.registry_prefix.as_str()]);
+        for design in &vehicles.designs {
+            let word = &design.word;
+            if word.is_empty()
+                || word.len() > MAX_DESIGN_WORD_BYTES
+                || !word.bytes().all(|b| b.is_ascii_lowercase())
+                || word == "go"
+            {
+                return Err(format!(
+                    "vehicles {vid}: a design's word must be 1..={MAX_DESIGN_WORD_BYTES} bytes of \
+                     [a-z] and not `go`, not `{word}`"
+                ));
+            }
+            let fail = |detail: String| Err(format!("vehicles {vid}: design {word}: {detail}"));
+            if !words.insert(word) {
+                return fail("the word is named twice".to_owned());
+            }
+            if !units.insert(&design.unit) {
+                return fail(format!("unit {} is another design's", design.unit));
+            }
+            if design.pool == 0 || design.pool > MAX_VEHICLE_POOL {
+                return fail(format!(
+                    "pool must be 1..={MAX_VEHICLE_POOL}, not {}",
+                    design.pool
+                ));
+            }
+            let prefix = &design.registry_prefix;
+            if prefix.is_empty()
+                || prefix.len() > MAX_REGISTRY_PREFIX_BYTES
+                || !prefix
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+            {
+                return fail(format!(
+                    "registry_prefix must be 1..={MAX_REGISTRY_PREFIX_BYTES} bytes of [A-Z0-9-], \
+                     not `{prefix}`"
+                ));
+            }
+            if !prefixes.insert(prefix) {
+                return fail(format!("registry_prefix {prefix} is another design's"));
+            }
+            for (field, major) in [
+                ("fee_major", design.fee_major),
+                ("deposit_major", design.deposit_major),
+            ] {
+                if major == 0 || major > MAX_PORT_CAPITAL_MAJOR {
+                    return fail(format!(
+                        "{field} must be 1..={MAX_PORT_CAPITAL_MAJOR}, not {major}"
+                    ));
+                }
+            }
+            if design.term_ic_days == 0 || design.term_ic_days > MAX_VEHICLE_TERM_IC_DAYS {
+                return fail(format!(
+                    "term_ic_days must be 1..={MAX_VEHICLE_TERM_IC_DAYS}, not {}",
+                    design.term_ic_days
+                ));
+            }
+            if design.tools.is_empty() || design.tools.len() > MAX_VEHICLE_TOOLS {
+                return fail(format!(
+                    "tools names 1..={MAX_VEHICLE_TOOLS} tools, not {}",
+                    design.tools.len()
+                ));
+            }
+            let mut seen: BTreeSet<&CanonicalId> = BTreeSet::new();
+            for tool in &design.tools {
+                if !table.contains_key(tool) {
+                    return fail(format!("tool {tool} is not a shipped tool"));
+                }
+                if !seen.insert(tool) {
+                    return fail(format!("tool {tool} is named twice"));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1776,6 +2004,12 @@ fn check_yards(
             .map(|programme| programme.registry_prefix.as_str())
             .collect();
         taken.extend(pool_block.map(|pool| pool.registry_prefix.as_str()));
+        // Doc 32 cut CF.6c: the pool's further designs' marks are the pool's too.
+        taken.extend(
+            pool_block
+                .into_iter()
+                .flat_map(|pool| pool.designs.iter().map(|d| d.registry_prefix.as_str())),
+        );
         for (_, other) in &seen {
             taken.push(other.registry_prefix.as_str());
             taken.push(other.rig_prefix.as_str());

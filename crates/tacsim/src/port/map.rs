@@ -124,6 +124,21 @@ pub struct VehiclesRow {
     pub shed: Option<u32>,
     /// The rigs made so far, in pool order.
     pub rigs: Vec<RigRow>,
+    /// **Doc 32 cut CF.6c**: each further design's rigs, in `VehiclesDef.designs` order (an
+    /// index is the design's), laid up in the same shed. Skipped when empty, so a pool of one
+    /// design encodes as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub designs: Vec<DesignRow>,
+}
+
+/// **One further design's laid-up rigs** (doc 32 cut CF.6c).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignRow {
+    /// The design's word, as authored when it was laid up (`escort`).
+    pub word: String,
+    /// The rigs made so far, in pool order.
+    pub rigs: Vec<RigRow>,
 }
 
 /// **One laid-up rig** (doc 20 cut SM.3a; part h): the terrain vehicle Thing,
