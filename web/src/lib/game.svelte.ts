@@ -47,6 +47,8 @@ import { QuarryStore } from "./stores/quarry.svelte";
 import { HOLDINGS_FEED, MARKET_FEED, OFFLINE, PENDING, marketActionError } from "./market";
 import { MarketStore } from "./stores/market.svelte";
 import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
+import type { PixelModule } from "./pixel/wasm";
+
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
@@ -98,6 +100,9 @@ import { decodeBenchView } from "./mind-bench";
 import { WsClient, type EnvelopeOf, type WebSocketLike } from "./ws";
 import { parseResolutionOutcome } from "./view";
 
+/** Doc 31 cut UD.3b: the pulled feed of published unit designs' looks. */
+export const UNIT_LOOKS_FEED = "unit.looks";
+
 const TOKEN_KEY = "rustmush.token";
 const ACCOUNT_KEY = "rustmush.account";
 const CHARS_KEY = "rustmush.chars";
@@ -135,6 +140,8 @@ type PendingReq =
   | { kind: "chart" }
   | { kind: "site.map" }
   | { kind: "body.ground" }
+  // Doc 31 cut UD.3b: a page of published designs' looks, for the picture module.
+  | { kind: "unit.looks" }
   // 17g cut C3c: the market screen's two closed page reads (`requestMarket`), each stamped
   // with the market store's generation: an answer to an ask made before a reset (a
   // character switch on this socket) belongs to the store that was reset, never this one.
@@ -991,7 +998,10 @@ export class GameApp {
     pending: PendingReq | null,
     seq = 0,
   ): void {
-    if (d.feed === "arena.mind") {
+    if (d.feed === UNIT_LOOKS_FEED) {
+      // Doc 31 cut UD.3b: published designs' looks, for the picture module.
+      if (d.kind === "keyframe") this.#lookModule?.installLooks(d.data);
+    } else if (d.feed === "arena.mind") {
       this.mindTrace = decodeMindTrace(d.data);
     } else if (d.feed === "mind.bulk") {
       this.minds.proving = decodeProvingView(d.data);
@@ -1881,6 +1891,21 @@ export class GameApp {
     );
   }
 
+  /** The picture module the `unit.looks` answers go to (doc 31 cut UD.3b). */
+  #lookModule: PixelModule | null = null;
+
+  /** **Bind the page's picture module** (doc 31 cut UD.3b, D-31-16): the
+   * looks it asks for go out as `unit.looks` queries — where the hello's
+   * manifest carries the feed — and the answers come back to it. */
+  bindPixelModule(m: PixelModule): void {
+    if (this.#lookModule === m) return;
+    this.#lookModule = m;
+    m.askLooksWith((types) => {
+      if (!this.session.hasPanel(UNIT_LOOKS_FEED)) return;
+      this.#req({ kind: "unit.looks" }, { t: "panel_subscribe", d: { feed: UNIT_LOOKS_FEED, params: { types } } });
+    });
+  }
+
   /** Pull a `ground.draft.v1` document from `arena.map` for the Terrain Studio (`D-30-8`). */
   requestGroundDraft(id = "proving_ground"): void {
     this.#req(
@@ -1890,6 +1915,37 @@ export class GameApp {
         d: { feed: ARENA_MAP_FEED, params: { draft: id } },
       },
     );
+  }
+
+  /**
+   * Stage (and optionally apply) a `ground.draft.v1` JSON document into the live world
+   * via `@ground/stage` (`Q-30-5`). Automatically streams multi-chunk buffers when the
+   * payload exceeds 6,000 chars so full 256×256 drafts stay under the gateway 8 KiB line cap.
+   */
+  stageGroundDraft(draftJson: string, apply = true): boolean {
+    const compact = draftJson.replace(/\r?\n/g, " ").trim();
+    const MAX_CHUNK = 6000;
+    if (compact.length <= MAX_CHUNK) {
+      const verb = apply ? "@ground/stage/apply" : "@ground/stage";
+      const ok = this.client.sendLine(`${verb} ${compact}`);
+      if (!ok) {
+        this.#localNotice("Not connected — ground stage command dropped.");
+      }
+      return ok;
+    }
+    if (!this.client.sendLine("@ground/stage/begin")) {
+      this.#localNotice("Not connected — ground stage command dropped.");
+      return false;
+    }
+    for (let i = 0; i < compact.length; i += MAX_CHUNK) {
+      const slice = compact.slice(i, i + MAX_CHUNK);
+      if (!this.client.sendLine(`@ground/stage/chunk ${slice}`)) {
+        this.#localNotice("Connection lost while streaming ground draft chunks.");
+        return false;
+      }
+    }
+    const endVerb = apply ? "@ground/stage/end/apply" : "@ground/stage/end";
+    return this.client.sendLine(endVerb);
   }
 
   /** Re-subscribe every `.vitals` feed (the rolls screen's board, I6). A

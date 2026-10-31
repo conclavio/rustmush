@@ -290,7 +290,50 @@ pub fn game_modules(
     config: &Config,
     llm: &Arc<LlmService>,
 ) -> Result<Vec<Box<dyn GameModule>>, String> {
-    game_modules_with_optional_commerce(config, llm, None)
+    game_modules_with_optional_commerce(config, llm, None, Vec::new())
+}
+
+/// [`game_modules`] with the published unit designs' packs (doc 31 cut UD.3,
+/// D-31-9), which [`design_sources`] read from the store: what the booting
+/// engine composes.
+///
+/// # Errors
+///
+/// As [`game_modules`].
+pub fn game_modules_with_designs(
+    config: &Config,
+    llm: &Arc<LlmService>,
+    designs: Vec<tacsim::PackSource>,
+) -> Result<Vec<Box<dyn GameModule>>, String> {
+    game_modules_with_optional_commerce(config, llm, None, designs)
+}
+
+/// **The published unit designs' packs**, read from the store before any
+/// module registers (doc 31 cut UD.3, D-31-9): the `tacsim:design:` rows of
+/// the TacSim namespace, through [`tacsim::design::design_sources`].
+///
+/// # Errors
+///
+/// A store that cannot list or read the namespace.
+pub async fn design_sources(store: &dyn ObjectStore) -> Result<Vec<tacsim::PackSource>, String> {
+    let keys = store
+        .module_keys(tacsim::NS)
+        .await
+        .map_err(|e| format!("reading the unit design registry: {e}"))?;
+    let mut rows = Vec::new();
+    for key in keys
+        .into_iter()
+        .filter(|k| k.starts_with(tacsim::design::DESIGN_PREFIX))
+    {
+        if let Some(value) = store
+            .module_json_get(tacsim::NS, &key)
+            .await
+            .map_err(|e| format!("reading the unit design {key}: {e}"))?
+        {
+            rows.push((key, value));
+        }
+    }
+    Ok(tacsim::design::design_sources(&rows))
 }
 
 /// The existing production roster with a host-supplied, opaque commerce policy.
@@ -305,7 +348,7 @@ pub fn game_modules_with_mind_commerce(
     llm: &Arc<LlmService>,
     commerce: &modules::mind_commerce::MindCommerce,
 ) -> Result<Vec<Box<dyn GameModule>>, String> {
-    game_modules_with_optional_commerce(config, llm, Some(commerce))
+    game_modules_with_optional_commerce(config, llm, Some(commerce), Vec::new())
 }
 
 /// Shared host-only preflight. World owner identities and readiness are checked
@@ -337,10 +380,12 @@ fn game_modules_with_optional_commerce(
     config: &Config,
     llm: &Arc<LlmService>,
     commerce: Option<&modules::mind_commerce::MindCommerce>,
+    designs: Vec<tacsim::PackSource>,
 ) -> Result<Vec<Box<dyn GameModule>>, String> {
     // E7 cut 1: the TacSim layer's frozen block, read **host-side** and BEFORE the
     // module list, because `[tacsim.recovery]` is mapped into the built-ins below.
-    let tacsim = config_ext::tacsim_config(&config.tacsim)?;
+    // Doc 31 cut UD.3: with the published unit designs' packs beside the files.
+    let tacsim = config_ext::tacsim_config_with_designs(&config.tacsim, designs)?;
     if commerce.is_some() && config.tacsim.minds.launch_path.is_some() {
         return Err("choose one explicit mind commerce composition".into());
     }
@@ -390,13 +435,16 @@ fn game_modules_with_optional_commerce(
             commerce,
         )
         .map_err(|e| e.to_string())?,
-        (None, None) => modules::server_modules_with_tacsim(
+        // Doc 31 cut UD.3b: the tactics module's catalogue from the same packs
+        // the layer loads (the operator's and the published designs).
+        (None, None) => modules::server_modules_with_tacsim_units(
             weather,
             economy,
             atlas,
             &onboarding,
             &game,
             recovery,
+            tacsim::composition::tactics_catalog_with(&tacsim),
         ),
     };
     mods.push(modules::worldgen_module_with(
@@ -635,7 +683,13 @@ async fn build_engine_inner(
     );
     // The roster, and every stanza it reads, in the one place that states
     // the composition order.
-    let mods = game_modules(config, &llm)?;
+    // Doc 31 cut UD.3 (D-31-9): the published unit designs, read before any
+    // module registers, so they join the catalogue this boot freezes.
+    let designs = design_sources(&**store).await?;
+    if !designs.is_empty() {
+        tracing::info!(designs = designs.len(), "unit design registry read");
+    }
+    let mods = game_modules_with_designs(config, &llm, designs)?;
     // Compose and freeze every mechanics registry before any persisted world
     // record is loaded. Rules-bearing attrs must never be interpreted against
     // a half-built definition/bridge set (K1 / C1 boot ordering).

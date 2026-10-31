@@ -14,8 +14,15 @@
 //! would. A refusal is the loader's or the build's own sentence; a design that
 //! holds comes back as its finished pack, ready to commit.
 //!
-//! Nothing is stored and nothing in the world changes: a check is a read. The
-//! in-instance registry (publishing a design) is cut UD.3's.
+//! A check stores nothing. **Publishing** (cut UD.3, D-31-9) checks the same
+//! way and then keeps the design as a registry row, `tacsim:design:{id}@{version}`
+//! in this module's namespace: its finished pack and its look. The host reads
+//! those rows before this module registers ([`design_sources`]) and hands the
+//! packs in beside `[tacsim].pack_paths`, so a published design is fieldable
+//! after the next restart (Q-31-1) and the boot's own pack ledger records it as
+//! it records any operator pack. A version, once published, never changes; a
+//! design is withdrawn ([`DesignRecord::withdrawn`]), never deleted, because a
+//! hull or a match record may name it.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -26,7 +33,7 @@ use mush_core::{Ctx, ModError, Registrar};
 use mush_proto::{InvokeRequest, InvokeResult, UnitDesignRequest, UnitDesignResponse};
 use serde_json::{Value, json};
 
-use crate::config::LoadedPack;
+use crate::config::{LoadedPack, PackSource};
 use crate::definitions::Catalog;
 
 /// The invoke service's name.
@@ -35,8 +42,84 @@ pub const SERVICE: &str = "unit_design";
 /// The prefix every designed unit's id carries.
 pub const UNIT_PREFIX: &str = "tacsim.unit.";
 
+/// The prefix a **published** design's id carries (D-31-9: its own
+/// namespace, so a published design never shadows a unit shipped later).
+pub const DESIGN_UNIT_PREFIX: &str = "tacsim.unit.design.";
+
 /// The prefix of the pack a design ships in (`tacsim.pack.<slug>`).
 pub const PACK_PREFIX: &str = "tacsim.pack.";
+
+/// **The pulled feed a client asks for the looks of published designs on**
+/// (doc 31 cut UD.3b, D-31-16): `{"types": [<unit type>, …]}` (at most
+/// [`MAX_LOOK_TYPES`]) is answered `{"looks": {<type>: <look>}}` for each
+/// type that is a published design (its newest version's look); any other
+/// type is left out. A look is how a unit is drawn — label, doll, model — and
+/// never what a match holds, so a client may ask for any type it has seen.
+pub const LOOKS_FEED: &str = "unit.looks";
+
+/// The most types one `unit.looks` query names.
+pub const MAX_LOOK_TYPES: usize = 8;
+
+/// The prefix of a design registry row's key.
+pub const DESIGN_PREFIX: &str = "tacsim:design:";
+
+/// A design registry row's key, `tacsim:design:{id}@{version}`.
+#[must_use]
+pub fn design_key(id: &str, version: u32) -> smol_str::SmolStr {
+    smol_str::SmolStr::new(format!("{DESIGN_PREFIX}{id}@{version}"))
+}
+
+/// **One published design** (doc 31 cut UD.3): its id and version, the
+/// finished pack the server built when it was published, its look, and
+/// whether it is withdrawn.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignRecord {
+    /// The unit's definition id, `tacsim.unit.<slug>`.
+    pub id: String,
+    /// The pack's version.
+    pub version: u32,
+    /// The finished rules pack (`requires` and `digest` filled in).
+    pub pack: Value,
+    /// The look, as the designer sent it.
+    pub look: Value,
+    /// Withdrawn: still loaded (a hull built on it resolves), never offered
+    /// to a new match.
+    #[serde(default)]
+    pub withdrawn: bool,
+}
+
+/// **The packs of the published designs**, from this module's documents
+/// `(key, value)` — what the host hands in beside `[tacsim].pack_paths` before
+/// the module registers. A row that will not read, or whose key is not its
+/// own, is skipped loudly; withdrawn designs are included (a hull may name
+/// one). In key order, so a boot is deterministic.
+#[must_use]
+pub fn design_sources(rows: &[(String, Value)]) -> Vec<PackSource> {
+    let mut rows: Vec<&(String, Value)> = rows
+        .iter()
+        .filter(|(key, _)| key.starts_with(DESIGN_PREFIX))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = Vec::new();
+    for (key, value) in rows {
+        match serde_json::from_value::<DesignRecord>(value.clone()) {
+            Ok(record) if design_key(&record.id, record.version) == key.as_str() => {
+                match serde_json::to_string_pretty(&record.pack) {
+                    Ok(bytes) => out.push(PackSource {
+                        name: format!("<design {}@{}>", record.id, record.version),
+                        bytes,
+                    }),
+                    Err(error) => {
+                        tracing::warn!(%key, %error, "tacsim: a design's pack will not encode; skipped");
+                    }
+                }
+            }
+            _ => tracing::warn!(%key, "tacsim: a design row is unreadable; skipped"),
+        }
+    }
+    out
+}
 
 /// What a check found: the refusals (empty when the design holds) and, when it
 /// holds, the finished pack.
@@ -162,14 +245,21 @@ pub fn check(id: &str, version: u32, rules: &Value) -> DesignCheck {
         Ok(text) => text,
         Err(error) => return DesignCheck::refused(error.to_string()),
     };
-    let loaded = match crate::pack::load_pack(&text) {
-        Ok(loaded) => loaded,
-        Err(error) => return DesignCheck::refused(error.to_string()),
+    // The host's own verification, as a boot runs it over the design as an
+    // operator pack: the loader, the digest and the `requires` (against the
+    // shipped content), so a check never passes a pack a boot would refuse.
+    let cfg = crate::TacsimConfig {
+        enabled: true,
+        packs: vec![PackSource {
+            name: format!("<design {id}>"),
+            bytes: text,
+        }],
+        ..crate::TacsimConfig::default()
     };
-    let packs = [LoadedPack {
-        source: format!("<design {id}>"),
-        pack: loaded,
-    }];
+    let packs: Vec<LoadedPack> = match crate::verify_sources(&cfg) {
+        Ok(packs) => packs,
+        Err(error) => return DesignCheck::refused(error),
+    };
     match Catalog::build_fielded(&packs, crate::NS) {
         Ok(_) => DesignCheck {
             refusals: Vec::new(),
@@ -179,7 +269,8 @@ pub fn check(id: &str, version: u32, rules: &Value) -> DesignCheck {
     }
 }
 
-/// The `unit_design` invoke handler: staff only.
+/// The `unit_design` invoke handler: staff only. A check reads; a publish
+/// writes one registry row.
 struct DesignService;
 
 impl InvokeHandler for DesignService {
@@ -205,11 +296,216 @@ impl InvokeHandler for DesignService {
         if !crate::commands::is_staff(ctx.w, ctx.actor) {
             return error("staff", "The unit designer is for staff.");
         }
-        let UnitDesignRequest::Check { id, version, rules } = request;
-        let found = check(id, *version, rules);
-        InvokeResult::UnitDesign(UnitDesignResponse::Checked {
-            refusals: found.refusals,
-            pack: found.pack,
+        match request {
+            UnitDesignRequest::Check { id, version, rules } => {
+                let found = check(id, *version, rules);
+                InvokeResult::UnitDesign(UnitDesignResponse::Checked {
+                    refusals: found.refusals,
+                    pack: found.pack,
+                })
+            }
+            UnitDesignRequest::Publish {
+                id,
+                version,
+                rules,
+                look,
+            } => {
+                let refusals = publish(ctx, id, *version, rules, look);
+                InvokeResult::UnitDesign(UnitDesignResponse::Published {
+                    id: id.clone(),
+                    version: *version,
+                    refusals,
+                })
+            }
+        }
+    }
+}
+
+/// **Publish a design** (doc 31 cut UD.3, D-31-9): refused when the version
+/// is already published — as a design, or as a pack this world's ledger
+/// carries under the same id and version — or when the check refuses it;
+/// else its registry row is written. The refusals, empty when it was
+/// published.
+fn publish(ctx: &mut Ctx<'_>, id: &str, version: u32, rules: &Value, look: &Value) -> Vec<String> {
+    if !id.starts_with(DESIGN_UNIT_PREFIX) || id.len() == DESIGN_UNIT_PREFIX.len() {
+        return vec![format!(
+            "a published design's id is `{DESIGN_UNIT_PREFIX}<name>`, so it never shadows a shipped unit"
+        )];
+    }
+    let Some(store) = ctx.w.module_state::<crate::TacsimStore>() else {
+        return vec!["The TacSim layer is not enabled here.".into()];
+    };
+    if store.designs.contains_key(&(id.to_string(), version)) {
+        return vec![format!(
+            "{id}@{version} is already published; a published version never changes (publish {})",
+            version + 1
+        )];
+    }
+    if let Some(slug) = id.strip_prefix(UNIT_PREFIX) {
+        let pack_id = format!("{PACK_PREFIX}{slug}");
+        if store
+            .published_keys
+            .iter()
+            .any(|(p, v)| p.as_str() == pack_id && *v == version)
+        {
+            return vec![format!(
+                "{pack_id}@{version} is already on this world's pack ledger"
+            )];
+        }
+    }
+    let found = check(id, version, rules);
+    let Some(pack) = found.pack else {
+        return found.refusals;
+    };
+    crate::store::put_design(
+        ctx,
+        DesignRecord {
+            id: id.to_string(),
+            version,
+            pack,
+            look: look.clone(),
+            withdrawn: false,
+        },
+    );
+    Vec::new()
+}
+
+/// `@design`'s help.
+const DESIGN_HELP: &str = "@design/list                        (staff) every published unit design: \
+its id, version, and whether it is withdrawn.\n\
+@design/show <id>[@<version>]       (staff) one design: its pack, digest, requires and model.\n\
+@design/withdraw <id>[@<version>]   (staff) withdraw a design (every version, or one): it stays \
+loaded, so a hull built on it still resolves, but is no longer offered to a new match. Designs \
+are published from the web unit designer (doc 31); one becomes fieldable after the next restart.";
+
+/// `@design` — the registry from the line client (doc 31 cut UD.3).
+fn design_cmd(ctx: &mut Ctx<'_>) -> Result<(), mush_core::CmdError> {
+    crate::commands::require_staff(ctx)?;
+    let say = |ctx: &mut Ctx<'_>, line: String| {
+        let actor = ctx.actor;
+        ctx.out.sys_to_actor(actor, "tacsim", line);
+    };
+    let Some(store) = ctx.w.module_state::<crate::TacsimStore>() else {
+        return Err(mush_core::CmdError::msg(
+            "The TacSim layer is not enabled here.",
+        ));
+    };
+    let word = ctx.args.raw().trim().to_string();
+    let (want_id, want_version) = match word.split_once('@') {
+        Some((id, v)) => (id.to_string(), v.parse::<u32>().ok()),
+        None => (word.clone(), None),
+    };
+    let matches: Vec<DesignRecord> = store
+        .designs()
+        .filter(|d| d.id == want_id && want_version.is_none_or(|v| d.version == v))
+        .cloned()
+        .collect();
+    if ctx.switches.has("withdraw") {
+        if matches.is_empty() {
+            return Err(mush_core::CmdError::msg(format!("No such design: {word}.")));
+        }
+        for mut record in matches {
+            if !record.withdrawn {
+                record.withdrawn = true;
+                let line = format!("Withdrawn: {}@{}.", record.id, record.version);
+                crate::store::put_design(ctx, record);
+                say(ctx, line);
+            }
+        }
+        return Ok(());
+    }
+    if ctx.switches.has("show") {
+        if matches.is_empty() {
+            return Err(mush_core::CmdError::msg(format!("No such design: {word}.")));
+        }
+        for record in matches {
+            let manifest = &record.pack["manifest"];
+            let requires: Vec<String> = manifest["requires"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| Some(format!("{}@{}", r["id"].as_str()?, r["version"])))
+                .collect();
+            let line = format!(
+                "{}@{}{}  pack {}  digest {}  requires {}  model {}",
+                record.id,
+                record.version,
+                if record.withdrawn { " (withdrawn)" } else { "" },
+                manifest["id"].as_str().unwrap_or("?"),
+                manifest["digest"].as_str().unwrap_or("?"),
+                if requires.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    requires.join(", ")
+                },
+                record.look["model"].as_str().unwrap_or("none"),
+            );
+            say(ctx, line);
+        }
+        return Ok(());
+    }
+    let rows: Vec<String> = store
+        .designs()
+        .map(|d| {
+            format!(
+                "{}@{}{}",
+                d.id,
+                d.version,
+                if d.withdrawn { "  withdrawn" } else { "" }
+            )
+        })
+        .collect();
+    if rows.is_empty() {
+        say(ctx, "No unit design is published.".into());
+    }
+    for row in rows {
+        say(ctx, row);
+    }
+    Ok(())
+}
+
+/// `unit.looks`'s handler (see [`LOOKS_FEED`]).
+struct LooksQuery;
+
+/// The `unit.looks` keyframe for `params`, over `store`'s designs.
+#[must_use]
+pub fn looks_frame(store: Option<&crate::TacsimStore>, params: &Value) -> Value {
+    let mut looks = serde_json::Map::new();
+    let types = params
+        .get("types")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .take(MAX_LOOK_TYPES);
+    if let Some(store) = store {
+        for unit in types {
+            let newest = store
+                .designs()
+                .filter(|d| d.id == unit)
+                .max_by_key(|d| d.version);
+            if let Some(design) = newest {
+                looks.insert(unit.to_string(), design.look.clone());
+            }
+        }
+    }
+    json!({
+        "schema": { "id": LOOKS_FEED, "version": 1 },
+        "looks": looks,
+    })
+}
+
+impl mush_core::QueryHandler for LooksQuery {
+    fn query(
+        &self,
+        w: &mush_core::World,
+        _actor: mush_core::ObjId,
+        params: &Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        Ok(mush_proto::OutputEvent::Panel {
+            feed: smol_str::SmolStr::new_static(LOOKS_FEED),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: looks_frame(w.module_state::<crate::TacsimStore>(), params),
         })
     }
 }
@@ -220,7 +516,28 @@ impl InvokeHandler for DesignService {
 ///
 /// The registrar's, for a second registration.
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
-    reg.invoke_handler(SERVICE, Arc::new(DesignService))
+    reg.invoke_handler(SERVICE, Arc::new(DesignService))?;
+    // Doc 31 cut UD.3b (D-31-16): the pulled looks feed. Registered as a feed
+    // so it reaches the client manifest and a `PanelSubscribe` routes to its
+    // query; nothing is ever pushed on it.
+    drop(reg.panel_feed(LOOKS_FEED)?);
+    reg.query_handler(LOOKS_FEED, Arc::new(LooksQuery))?;
+    // `@design/withdraw` writes a registry row; the list and show only read.
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    reg.command(
+        mush_core::CommandSpec {
+            name: "@design".into(),
+            shape: mush_core::ArgShape::Raw,
+            switches: ["list", "show", "withdraw"]
+                .iter()
+                .copied()
+                .map(smol_str::SmolStr::new)
+                .collect(),
+            help: DESIGN_HELP.into(),
+            ..mush_core::CommandSpec::default()
+        },
+        Arc::new(design_cmd),
+    )
 }
 
 #[cfg(test)]
@@ -262,6 +579,19 @@ mod tests {
         want.sort_unstable();
         assert_eq!(got, want, "the same packs the shipped file requires");
         let text = serde_json::to_string_pretty(&pack).expect("text");
+        let cfg = crate::TacsimConfig {
+            enabled: true,
+            packs: vec![PackSource {
+                name: "design".into(),
+                bytes: text.clone(),
+            }],
+            ..crate::TacsimConfig::default()
+        };
+        assert!(
+            crate::verify_sources(&cfg).is_ok(),
+            "it verifies as an operator pack, its requires resolved against the shipped content: {:?}",
+            crate::verify_sources(&cfg).err()
+        );
         assert!(
             crate::pack::load_pack(&text).is_ok(),
             "it loads as a file would"

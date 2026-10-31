@@ -860,12 +860,42 @@ pub enum UnitDesignRequest {
         /// carries it under its entry.
         rules: serde_json::Value,
     },
+    /// Publish a design to the running instance (doc 31 cut UD.3, D-31-9):
+    /// checked as [`UnitDesignRequest::Check`] is, then kept as a registry
+    /// row; fieldable after the next restart (Q-31-1). A published version
+    /// never changes.
+    Publish {
+        /// The unit's definition id, `tacsim.unit.<slug>`.
+        id: String,
+        /// The pack's version, from 1.
+        version: u32,
+        /// The unit's `def` object.
+        rules: serde_json::Value,
+        /// Its look, as `crates/mush-pixel/looks/*.json` carries one.
+        look: serde_json::Value,
+    },
 }
 
 impl UnitDesignRequest {
     /// The request's own bounds, before the owner reads it.
     pub fn validate(&self) -> Result<(), &'static str> {
-        let Self::Check { id, version, rules } = self;
+        let (id, version, rules) = match self {
+            Self::Check { id, version, rules } => (id, version, rules),
+            Self::Publish {
+                id,
+                version,
+                rules,
+                look,
+            } => {
+                if !look.is_object()
+                    || serde_json::to_vec(look).map_err(|_| "invalid look")?.len()
+                        > MAX_UNIT_DESIGN_BYTES
+                {
+                    return Err("a design's look is an object of at most 128 KiB");
+                }
+                (id, version, rules)
+            }
+        };
         if id.is_empty() || id.len() > MAX_UNIT_DESIGN_ID_BYTES {
             return Err("invalid design id");
         }
@@ -897,6 +927,16 @@ pub enum UnitDesignResponse {
         refusals: Vec<String>,
         /// The finished pack, when it holds.
         pack: Option<serde_json::Value>,
+    },
+    /// The design was published (doc 31 cut UD.3): its registry row is
+    /// written, and it is fieldable after the next server restart.
+    Published {
+        /// The unit's definition id.
+        id: String,
+        /// The pack's version.
+        version: u32,
+        /// The refusals when it was not published (empty when it was).
+        refusals: Vec<String>,
     },
     /// The request was not answered (not staff, unavailable, too large).
     Error {

@@ -375,6 +375,7 @@ pub async fn serve(path: PathBuf) -> Result<()> {
             listen: "127.0.0.1:0".parse()?,
             host_key_path: host_key_path.clone(),
             banner: "Owned campaign rehearsal fixture".into(),
+            auth_deadline: mush_net_ssh::DEFAULT_AUTH_DEADLINE,
         },
         fixture,
     )

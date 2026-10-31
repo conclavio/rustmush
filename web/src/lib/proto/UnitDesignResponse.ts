@@ -12,7 +12,19 @@ refusals: Array<string>,
 /**
  * The finished pack, when it holds.
  */
-pack: JsonValue | null, } | { "status": "error",
+pack: JsonValue | null, } | { "status": "published",
+/**
+ * The unit's definition id.
+ */
+id: string,
+/**
+ * The pack's version.
+ */
+version: number,
+/**
+ * The refusals when it was not published (empty when it was).
+ */
+refusals: Array<string>, } | { "status": "error",
 /**
  * A short code.
  */

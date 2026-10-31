@@ -164,6 +164,7 @@ pub mod port_tick;
 pub(crate) mod procurement;
 pub mod quest;
 pub mod record;
+pub mod refit;
 pub mod relay_billing;
 pub mod relay_commerce;
 pub mod relay_content;
@@ -292,10 +293,18 @@ pub fn verify_sources_with(
     }
     // `requires` is resolved only once every file has parsed, so the order of
     // `pack_paths` never decides whether a dependency is satisfied.
-    let packs: BTreeMap<(mush_core::CanonicalId, u32), pack::RulesPack> = loaded
+    let mut packs: BTreeMap<(mush_core::CanonicalId, u32), pack::RulesPack> = loaded
         .iter()
         .map(|(key, value)| (key.clone(), value.pack.clone()))
         .collect();
+    // Doc 31 cut UD.3: and against the compiled-in, fielded content, so an
+    // operator pack — a published unit design above all — may require a
+    // shipped weapon, sensor or core pack. A configured pack under a shipped
+    // pack's id and version stays the one resolved; `Catalog::build_from`
+    // judges that collision.
+    for (key, shipped) in shipped_packs() {
+        packs.entry(key.clone()).or_insert_with(|| shipped.clone());
+    }
     for entry in loaded.values() {
         pack::check_requires(&entry.pack, &packs)
             .map_err(|error| format!("[tacsim] {}: {error}", entry.source))?;
@@ -309,6 +318,24 @@ pub fn verify_sources_with(
         return Err(format!("[tacsim]: a requires cycle: {cycle}"));
     }
     Ok(loaded.into_values().collect())
+}
+
+/// The compiled-in, fielded packs, parsed once (doc 31 cut UD.3): what an
+/// operator pack's `requires` may also name. A shipped pack that will not load
+/// is a build defect `tests/content.rs` catches; it is left out here.
+fn shipped_packs() -> &'static [((mush_core::CanonicalId, u32), pack::RulesPack)] {
+    static SHIPPED: std::sync::OnceLock<Vec<((mush_core::CanonicalId, u32), pack::RulesPack)>> =
+        std::sync::OnceLock::new();
+    SHIPPED.get_or_init(|| {
+        definitions::content::fielded_sources()
+            .iter()
+            .filter_map(|source| {
+                let pack = pack::load_pack(&source.bytes).ok()?;
+                let key = (pack.manifest().id().clone(), pack.manifest().version());
+                Some((key, pack))
+            })
+            .collect()
+    })
 }
 
 /// The first `requires` cycle, rendered as `a@1 -> b@1 -> a@1`, or `None`.

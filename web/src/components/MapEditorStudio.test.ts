@@ -47,12 +47,15 @@ describe("MapEditorStudio (WG.4 ground.draft.v1)", () => {
 
   function mockApp(groundDraftFrame: Record<string, unknown> | null = null) {
     const requestGroundDraft = vi.fn();
+    const stageGroundDraft = vi.fn(() => true);
     return {
       app: {
         requestGroundDraft,
+        stageGroundDraft,
         groundDraftFrame,
       } as unknown as GameApp,
       requestGroundDraft,
+      stageGroundDraft,
     };
   }
 
@@ -77,15 +80,21 @@ describe("MapEditorStudio (WG.4 ground.draft.v1)", () => {
     expect(screen.getByLabelText("live 3d preview canvas")).toBeTruthy();
   });
 
-  it("runs Relax Slopes, Despeckle, Auto-Route, and requests server draft via Load Server", async () => {
+  it("runs Relax Slopes, Despeckle, Auto-Route, and requests/stages server draft", async () => {
     const draft = exportGroundDraftJson(createEditorMap(64, 64, "mars", 8));
-    const { app, requestGroundDraft } = mockApp(draft as unknown as Record<string, unknown>);
+    const { app, requestGroundDraft, stageGroundDraft } = mockApp(
+      draft as unknown as Record<string, unknown>,
+    );
     render(MapEditorStudio, { app });
     await tick();
 
     const loadBtn = screen.getByRole("button", { name: /Load Server/i });
     await fireEvent.click(loadBtn);
     expect(requestGroundDraft).toHaveBeenCalled();
+
+    const stageBtn = screen.getByRole("button", { name: /Stage to Server/i });
+    await fireEvent.click(stageBtn);
+    expect(stageGroundDraft).toHaveBeenCalled();
 
     const relaxBtn = screen.getByRole("button", { name: /Relax Slopes/i });
     await fireEvent.click(relaxBtn);

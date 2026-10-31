@@ -546,6 +546,14 @@ pub struct PortFamilies {
     /// written only by `tacsim_voyage_epoch` in the bundle that carries its black box line.
     pub epochs:
         StateFamilyHandle<crate::port::epoch::EpochKey, crate::port::epoch::ShipEpochRecord>,
+    /// **`tacsim.field`** (doc 32 cut CF.1; Q-CF-24): one record per site, keyed by its port
+    /// entry — the units left on the ground, the non-unit objects, the field ordinal and the
+    /// promoted flag. CF.1's staff fixture writes it; CF.2's field host loads it at promotion
+    /// and writes it at demotion.
+    pub sites: StateFamilyHandle<
+        crate::surface::site_record::SiteKey,
+        crate::surface::site_record::SiteRecord,
+    >,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -601,6 +609,10 @@ pub struct PortHandles {
     /// house survey and a yard dispatcher's delivery, `crate::port::yard::DispatchProvider`);
     /// `Some` exactly when its provider registered (the inventory cell filled).
     pub dispatch: Option<mush_core::DefinitionRef>,
+    /// **Doc 32 cut CF.1**: the registered `tacsim_site_record` action, the staff fixture over
+    /// `tacsim.field` (`crate::surface::site_record::SiteRecordProvider`); registered on every
+    /// roster (it needs only its family).
+    pub site_record: Option<mush_core::DefinitionRef>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {
@@ -631,7 +643,8 @@ pub(crate) fn family_descriptor(
 /// `tacsim.excursion`; doc 20 cut SM.4a's `tacsim.chart`; doc 20 cut SM.6's
 /// `tacsim.pockets`; doc 20 cut SM.10's `tacsim.claims`; relay cut R9a's
 /// `tacsim.relay_fabrications`; doc 20 cut SM.12a's `tacsim.port_mill`; doc 20 cut SM.12b's
-/// `tacsim.dispatch`; doc 23 cut S.2's `tacsim.ship_epoch`), unconditionally.
+/// `tacsim.dispatch`; doc 23 cut S.2's `tacsim.ship_epoch`; doc 32 cut CF.1's `tacsim.field`),
+/// unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -870,6 +883,36 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
                 serde_json::to_value(value).map_err(|e| e.to_string())
             },
         )?;
+    // Doc 32 cut CF.1 (Q-CF-24): one site record per site, keyed by its port entry, its record
+    // cap set to `MAX_SITE_RECORD_BYTES`.
+    let site_descriptor = family_descriptor(
+        crate::surface::site_record::SITE_RECORD_FAMILY,
+        "tacsim.field_key.v1",
+        "tacsim.field",
+    )?;
+    let key_limit = site_descriptor.max_key_bytes();
+    let site_descriptor = site_descriptor
+        .with_limits(
+            key_limit,
+            crate::surface::site_record::MAX_SITE_RECORD_BYTES,
+        )
+        .map_err(|error| ModError::msg(error.to_string()))?;
+    let sites = reg.state_family::<
+        crate::surface::site_record::SiteKey,
+        crate::surface::site_record::SiteRecord,
+        _,
+        _,
+        _,
+        _,
+    >(
+        site_descriptor,
+        |key: &crate::surface::site_record::SiteKey| Ok(key.key_text()),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::surface::site_record::SiteRecord| value.check(),
+        |value: &crate::surface::site_record::SiteRecord| {
+            serde_json::to_value(value).map_err(|e| e.to_string())
+        },
+    )?;
     let (quests, quest_index) = crate::quest::registration::families(reg)?;
     let quest_survey_evidence = crate::quest::evidence::register_survey_family(reg)?;
     Ok(PortFamilies {
@@ -889,6 +932,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         mills,
         dispatch,
         epochs,
+        sites,
     })
 }
 

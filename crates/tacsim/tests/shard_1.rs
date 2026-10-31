@@ -51,5 +51,7 @@ mod sale;
 mod sheet;
 #[path = "shard_1/shipped_scale.rs"]
 mod shipped_scale;
+#[path = "shard_1/site_record.rs"]
+mod site_record;
 #[path = "shard_1/stations.rs"]
 mod stations;

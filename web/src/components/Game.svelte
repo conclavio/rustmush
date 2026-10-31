@@ -12,6 +12,7 @@
   import { isInteractiveControl, isTextField, navIntent } from "$lib/keys";
   import { storageGet, storageSet } from "$lib/storage";
   import { systemPrefersLight, toggledTheme } from "$lib/theme";
+  import { localCapable, pixelModule } from "$lib/pixel/local";
 
   import ActionsPanel from "./ActionsPanel.svelte";
   import ChannelTabs from "./ChannelTabs.svelte";
@@ -38,6 +39,24 @@
   import WorldgenPanel from "./WorldgenPanel.svelte";
 
   let { app }: { app: GameApp } = $props();
+
+  // Doc 31 cut UD.3b (D-31-16): the page's picture module asks the server for
+  // published designs' looks through the app, which hands the answers back.
+  $effect(() => {
+    if (!localCapable()) return;
+    let live = true;
+    pixelModule().then(
+      (m) => {
+        if (live) app.bindPixelModule(m);
+      },
+      () => {
+        // No picture module: the pictures fall back to the gateway's frames.
+      },
+    );
+    return () => {
+      live = false;
+    };
+  });
 
   // The one command box registers itself with the app so the shell's keys
   // can focus and prefill it (16b cut B.1, moved here from the scene

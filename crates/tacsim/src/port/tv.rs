@@ -2038,6 +2038,7 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             mind,
         } => {
             let rig = select(ctx, slot, kind).map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
             crate::surface::act::act_cmd(ctx, &rig, kind, quiet, go, mind.as_ref())
         }
         Act::Forget { name, go } => forget(ctx, &name, go),
@@ -2046,6 +2047,7 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Act::Drive { words, go } => {
             let rig = select(ctx, slot, crate::surface::excursion::ActKind::Drive)
                 .map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
             crate::surface::act::drive_cmd(ctx, &rig, &words, go)
         }
         Act::Map { site, family } => {
@@ -2055,6 +2057,7 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Act::Mine { family, cycles, go } => {
             let rig = select(ctx, slot, crate::surface::excursion::ActKind::Mine)
                 .map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
             let named = match family.as_deref() {
                 None => None,
                 Some(word) => Some(
@@ -2083,6 +2086,7 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Act::Unload { qty, go } => {
             let rig = select(ctx, slot, crate::surface::excursion::ActKind::Unload)
                 .map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
             crate::surface::act::unload_cmd(ctx, &rig, qty, go)
         }
         // Doc 20 cut SM.11 (§8 "Leaving it running", §10; the brief's 3.5).
