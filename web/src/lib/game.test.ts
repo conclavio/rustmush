@@ -1825,7 +1825,13 @@ describe("the cockpit feeds", () => {
       "utf8",
     );
     const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
-    expect([...reached].sort()).toEqual(["cockpit", "focusComposer", "mindReadoutOpen", "refreshMindTrace"]);
+    expect([...reached].sort()).toEqual([
+      "cockpit",
+      "focusComposer",
+      "helm",
+      "mindReadoutOpen",
+      "refreshMindTrace",
+    ]);
     // And nothing on this screen sends: the five ordering verbs prefill only.
     for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
       expect(src, `CockpitScreen calls ${send}`).not.toContain(send);

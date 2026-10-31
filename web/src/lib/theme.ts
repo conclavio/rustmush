@@ -4,7 +4,7 @@
 // removes the attribute so the media query decides. Persisted in
 // localStorage (try/catch via $lib/storage).
 
-import { storageDel, storageGet, storageSet } from "./storage";
+import { storageGet, storageSet } from "./storage";
 
 export type ThemeChoice = "dark" | "light" | "system";
 export type ResolvedTheme = "dark" | "light";
@@ -30,16 +30,12 @@ export function toggledTheme(current: ThemeChoice, systemPrefersLight: boolean):
 
 export function loadThemeChoice(): ThemeChoice {
   const stored = storageGet(KEY);
-  return isThemeChoice(stored) ? stored : "system";
+  return isThemeChoice(stored) ? stored : "dark";
 }
 
 /** Stamp the document and persist. Safe to call in non-DOM environments. */
 export function applyTheme(choice: ThemeChoice): void {
-  if (choice === "system") {
-    storageDel(KEY);
-  } else {
-    storageSet(KEY, choice);
-  }
+  storageSet(KEY, choice);
   const root = globalThis.document?.documentElement;
   if (!root) {
     return;

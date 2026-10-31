@@ -214,37 +214,37 @@ describe("CockpitScreen mounted", () => {
   it("shows the five panes and the legend once seated", async () => {
     await seated();
     const headings = [...document.querySelectorAll("h4")].map((h) => h.textContent);
-    expect(headings).toEqual(["status", "damage", "weapons", "contacts", "notices"]);
+    expect(headings).toEqual(["contacts", "status", "damage", "weapons", "notices"]);
     expect(document.querySelector(".legendline")?.textContent).toBe(
       "x BA  + RB  ? X3  ? X4  A The Ford  C The Woods",
     );
     expect(screen.queryByText(NOT_IN_A_COCKPIT)).toBeNull();
   });
 
-  it("puts `lock` and `scan` in the box from a contact, and sends nothing", async () => {
-    const { focusComposer } = await seated();
+  it("locks a contact on click and prefills `scan` from the scan button", async () => {
+    const { focusComposer, app } = await seated();
     const desigs = [...document.querySelectorAll("button.desig")];
     expect(desigs.map((b) => b.textContent)).toEqual(["BA", "RB", "X3", "X4"]);
     await fireEvent.click(desigs[0]!);
-    expect(focusComposer).toHaveBeenLastCalledWith("lock BA");
+    expect(app.helm).toHaveBeenLastCalledWith("LOCK BA");
     const scans = [...document.querySelectorAll("button.scanbtn")];
     expect(scans).toHaveLength(4);
     await fireEvent.click(scans[0]!);
     expect(focusComposer).toHaveBeenLastCalledWith("scan BA");
-    expect(focusComposer).toHaveBeenCalledTimes(2);
+    expect(focusComposer).toHaveBeenCalledTimes(1);
   });
 
-  it("prefills `lock <designator>` when a contact marker is clicked on the arena window canvas", async () => {
-    const { focusComposer, cockpit } = await seated();
+  it("locks `<designator>` when a contact marker is clicked on the arena window canvas", async () => {
+    const { app, cockpit } = await seated();
     const canvas = document.querySelector("canvas")!;
     // At 5 px a cell on the 96x64 window, BA at (36, 14) sits at (182.5, 247.5).
     await fireEvent.click(canvas, { clientX: 182, clientY: 247 });
-    expect(focusComposer).toHaveBeenLastCalledWith("lock BA");
+    expect(app.helm).toHaveBeenLastCalledWith("LOCK BA");
     // Clicking `@` at (6, 4) -> (32.5, 297.5) or spot `A` at (25, 3) -> (127.5, 302.5)
     // does not lock self or surveyed ground.
     await fireEvent.click(canvas, { clientX: 32, clientY: 297 });
     await fireEvent.click(canvas, { clientX: 127, clientY: 302 });
-    expect(focusComposer).toHaveBeenCalledTimes(1);
+    expect(app.helm).toHaveBeenCalledTimes(1);
     // Mars surface map uses the Mars biome palette on the offscreen terrain cache.
     resetLog();
     cockpit.applyMap({ ...json("arena_map.json"), surface: "proving_ground_mars" });
@@ -479,7 +479,7 @@ describe("CockpitScreen, 17b cut M5.5", () => {
     ]);
     // No section is added: the headings are the five they were.
     const headings = [...document.querySelectorAll("h4")].map((h) => h.textContent);
-    expect(headings).toEqual(["status", "damage", "weapons", "contacts", "notices"]);
+    expect(headings).toEqual(["contacts", "status", "damage", "weapons", "notices"]);
     // The profile row: a button for each profile the mind is not flying, the
     // flown one plain text (a switch to it is refused: the review's D4), and
     // the row's text the view model's own line.
@@ -534,7 +534,7 @@ describe("CockpitScreen, 17b cut M5.5", () => {
     ]);
     expect(screen.queryByText("(no weapon)")).toBeNull();
     const headings = [...document.querySelectorAll("h4")].map((h) => h.textContent);
-    expect(headings).toEqual(["status", "damage", "weapons", "contacts", "notices"]);
+    expect(headings).toEqual(["contacts", "status", "damage", "weapons", "notices"]);
     // A set of one offers no switch (line mode: `no other is sealed to switch
     // to`): its one profile is the flown one, plain text, and no button.
     expect(document.querySelector("p.profiles span.flown")?.textContent).toBe("Line");
@@ -570,6 +570,59 @@ describe("the doll", () => {
     expect(doll.getAttribute("viewBox")).toBe("0 0 24 16");
     // 24 x 16 less the gaps between the tracks and the hull.
     expect(doll.querySelectorAll("rect").length).toBe(24 * 16 - 2 * 16);
+  });
+});
+
+describe("interactive cockpit controls", () => {
+  it("shows Startup button when power is off and sends STARTUP", async () => {
+    const { cockpit, app } = await seated();
+    expect(screen.queryByRole("button", { name: "Startup" })).toBeNull();
+    cockpit.applyFrame({ ...json("cockpit_frame.json"), power: "off" });
+    await tick();
+    const btn = screen.getByRole("button", { name: "Startup" });
+    await fireEvent.click(btn);
+    expect(app.helm).toHaveBeenLastCalledWith("STARTUP");
+  });
+
+  it("toggles auto-target with LOCK nearest WHEN nolock", async () => {
+    const { app } = await seated();
+    const btn = screen.getByRole("button", { name: "Auto-target" });
+    await fireEvent.click(btn);
+    expect(app.helm).toHaveBeenLastCalledWith("LOCK nearest WHEN nolock");
+    await fireEvent.click(btn);
+    expect(app.helm).toHaveBeenLastCalledWith("MIND RULE 1 OFF");
+  });
+
+  it("sends FIRE ALL WHEN odds >= 60 from weapons free toggle and updates on weapon/odds change", async () => {
+    const { app } = await seated();
+    const toggle = screen.getByLabelText("weapons free toggle");
+    await fireEvent.click(toggle);
+    expect(app.helm).toHaveBeenLastCalledWith("FIRE ALL WHEN odds >= 60");
+
+    const select = screen.getByLabelText("weapons free weapon") as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "cannon" } });
+    expect(app.helm).toHaveBeenLastCalledWith("FIRE cannon WHEN odds >= 60");
+
+    const slider = screen.getByLabelText("weapons free odds") as HTMLInputElement;
+    await fireEvent.change(slider, { target: { value: "75" } });
+    expect(app.helm).toHaveBeenLastCalledWith("FIRE cannon WHEN odds >= 75");
+  });
+
+  it("orders SPEED <kph> QUIET when dragging the speed slider", async () => {
+    const { app } = await seated();
+    const slider = screen.getByLabelText("speed slider") as HTMLInputElement;
+    await fireEvent.input(slider, { target: { value: "35" } });
+    expect(app.helm).toHaveBeenLastCalledWith("SPEED 35 QUIET");
+  });
+
+  it("forces FIRE <weapon> when a weapon row is clicked", async () => {
+    const { app } = await seated();
+    const weaponBtns = [...document.querySelectorAll("button.weapon-btn")];
+    expect(weaponBtns).toHaveLength(2);
+    await fireEvent.click(weaponBtns[0]!);
+    expect(app.helm).toHaveBeenLastCalledWith("FIRE cannon");
+    await fireEvent.click(weaponBtns[1]!);
+    expect(app.helm).toHaveBeenLastCalledWith("FIRE machine_gun");
   });
 });
 

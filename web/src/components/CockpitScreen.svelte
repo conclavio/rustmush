@@ -48,6 +48,12 @@
     type Marker,
   } from "$lib/cockpit";
   import { biomeTerrainColours } from "$lib/stores/map.svelte";
+  import {
+    DEFAULT_MAX_SPEED_KPH,
+    DEFAULT_REVERSE_KPH,
+    gateWord,
+    speedLine,
+  } from "$lib/picture";
   import PictureView from "./PictureView.svelte";
   import DollView from "./DollView.svelte";
   import { lookFor } from "$lib/look";
@@ -120,15 +126,113 @@
     }
   }
 
-  /** Prefill the composer with an order; the player presses Enter. None of the
-   * five ordering verbs — nor (17b cut M5.5) `MIND PROFILE` — is ever SENT by
-   * this screen. */
+  /** Prefill the composer with an order; the player presses Enter. */
   function prefill(line: string): void {
     app.focusComposer(line);
   }
 
-  /** Clicking a contact marker on the arena window prefills `lock <designator>`,
-   * matching the contact list's designator buttons without sending anything. */
+  // -- speed drag slider, auto-target, and weapons-free rule controls --------
+
+  const maxKph = $derived(frame?.max_speed_kph ?? DEFAULT_MAX_SPEED_KPH);
+  const reverseKph = $derived(Math.abs(frame?.reverse_kph ?? DEFAULT_REVERSE_KPH));
+  let sliderKph = $state<number | null>(null);
+  const currentSliderKph = $derived(sliderKph ?? frame?.speed_kph ?? 0);
+
+  $effect(() => {
+    const f = frame;
+    if (!f) {
+      sliderKph = null;
+      return;
+    }
+    if (sliderKph !== null && f.speed_kph === sliderKph) {
+      sliderKph = null;
+    }
+  });
+
+  function onSpeedSlider(ev: Event): void {
+    const raw = Number((ev.currentTarget as HTMLInputElement).value);
+    if (!Number.isFinite(raw)) return;
+    const clamped = Math.max(-reverseKph, Math.min(maxKph, Math.round(raw)));
+    sliderKph = clamped;
+    app.helm(speedLine(clamped));
+  }
+
+  let autoTargetArmed = $state(false);
+
+  $effect(() => {
+    const f = frame;
+    if (!f) {
+      autoTargetArmed = false;
+      return;
+    }
+    if (f.rules.some((r) => r.action === "lock")) {
+      autoTargetArmed = true;
+    }
+  });
+
+  function toggleAutoTarget(): void {
+    const lockRule = frame?.rules.find((r) => r.action === "lock") ?? null;
+    if (autoTargetArmed || lockRule !== null) {
+      autoTargetArmed = false;
+      app.helm(`MIND RULE ${lockRule?.slot ?? 1} OFF`);
+    } else {
+      autoTargetArmed = true;
+      app.helm("LOCK nearest WHEN nolock");
+    }
+  }
+
+  let fireRuleWeapon = $state("ALL");
+  let fireRuleOdds = $state(60);
+  let fireRuleArmed = $state(false);
+
+  $effect(() => {
+    const f = frame;
+    if (!f) {
+      fireRuleArmed = false;
+      return;
+    }
+    if (fireRuleWeapon !== "ALL" && !f.weapons.some((w) => w.id === fireRuleWeapon)) {
+      fireRuleWeapon = "ALL";
+    }
+  });
+
+  function sendFireRule(): void {
+    fireRuleArmed = true;
+    if (frame?.weapons_free === false) {
+      app.helm("FIRE FREE");
+    }
+    app.helm(`FIRE ${fireRuleWeapon} WHEN odds >= ${fireRuleOdds}`);
+  }
+
+  function onFireWeaponChange(ev: Event): void {
+    fireRuleWeapon = (ev.currentTarget as HTMLSelectElement).value || "ALL";
+    sendFireRule();
+  }
+
+  function onFireOddsChange(ev: Event): void {
+    const raw = Number((ev.currentTarget as HTMLInputElement).value);
+    if (Number.isFinite(raw)) {
+      fireRuleOdds = Math.max(10, Math.min(100, Math.round(raw)));
+    }
+    sendFireRule();
+  }
+
+  function toggleFireRule(): void {
+    if (fireRuleArmed) {
+      fireRuleArmed = false;
+      app.helm(`FIRE ${fireRuleWeapon} OFF`);
+    } else {
+      sendFireRule();
+    }
+  }
+
+  function weaponForLine(line: string): string | null {
+    if (!frame) return null;
+    const found = frame.weapons.find((w) => line === w.id || line.startsWith(`${w.id}  `));
+    return found ? found.id : null;
+  }
+
+  /** Clicking a contact marker on the arena window locks that contact. */
   function onMapClick(ev: MouseEvent): void {
     const w = win;
     const c = canvas;
@@ -154,7 +258,7 @@
       }
     }
     if (best !== null) {
-      prefill(`lock ${best.designator}`);
+      app.helm(`LOCK ${best.designator}`);
     }
   }
 
@@ -292,36 +396,66 @@
   {#if frame === null || view === null}
     <p class="muted pad">{NOT_IN_A_COCKPIT}</p>
   {:else}
-    <!-- Doc 21 cut G.3c: the first-person picture top-left, the arena map flowing beside it. -->
+    <!-- Doc 21 cut G.3c: the first-person picture top-left, the arena map and contacts stacked beside it. -->
     <div class="top-deck">
       <PictureView {app} headingDeg={frame.heading_deg} {frame} {prefill} />
-      <section class="mapbox" aria-label="arena map">
-        <header>
-          <strong>{view.heading}</strong>
-          <span class="grow"></span>
-          <span class="dim">{cells} cells</span>
-          <!-- 16b cut B.1 (`B-60`): only the glyphs moved. The labels and the
-               handlers were always true — fewer cells IS zooming in — but the
-               button that zooms in wore a minus sign. -->
-          <button type="button" class="zoom" aria-label="zoom in" onclick={() => zoom(-1)}>+</button>
-          <button type="button" class="zoom" aria-label="zoom out" onclick={() => zoom(1)}>−</button>
-        </header>
-        {#if win === null}
-          <p class="muted">{WAITING_FOR_THE_MAP}</p>
-        {:else}
-          <div class="canvas-wrap">
-            <canvas
-              bind:this={canvas}
-              aria-label="arena window"
-              style="width: {win.w * cellPx}px; height: {win.h * cellPx}px"
-              onclick={onMapClick}
-            ></canvas>
-          </div>
-          {#if view.legend.length > 0}
-            <p class="legendline">{view.legend}</p>
+      <div class="side-column">
+        <section class="mapbox" aria-label="arena map">
+          <header>
+            <strong>{view.heading}</strong>
+            <span class="grow"></span>
+            <span class="dim">{cells} cells</span>
+            <!-- 16b cut B.1 (`B-60`): only the glyphs moved. The labels and the
+                 handlers were always true — fewer cells IS zooming in — but the
+                 button that zooms in wore a minus sign. -->
+            <button type="button" class="zoom" aria-label="zoom in" onclick={() => zoom(-1)}>+</button>
+            <button type="button" class="zoom" aria-label="zoom out" onclick={() => zoom(1)}>−</button>
+          </header>
+          {#if win === null}
+            <p class="muted">{WAITING_FOR_THE_MAP}</p>
+          {:else}
+            <div class="canvas-wrap">
+              <canvas
+                bind:this={canvas}
+                aria-label="arena window"
+                style="max-width: min(100%, {win.w * cellPx}px); max-height: 240px; aspect-ratio: {win.w} / {win.h}"
+                onclick={onMapClick}
+              ></canvas>
+            </div>
+            {#if view.legend.length > 0}
+              <p class="legendline">{view.legend}</p>
+            {/if}
           {/if}
-        {/if}
-      </section>
+        </section>
+
+        <section class="pane contacts-pane" aria-label="contacts">
+          <h4 class="pt">contacts</h4>
+          {#each view.contacts as row, i (i)}
+            <div class="contact">
+              <button
+                type="button"
+                class="desig"
+                title={contactText(row)}
+                onclick={() => app.helm(`LOCK ${row.designator}`)}>{row.designator}</button
+              >
+              <span class="detail">{row.detail}</span>
+              <button type="button" class="scanbtn" onclick={() => prefill(`scan ${row.designator}`)}
+                >scan</button
+              >
+            </div>
+            {#if row.chips.length > 0}
+              <p class="chips" title={scanText(row.chips)}>
+                {#each row.chips as chip, i (i)}
+                  <span class="chip" data-band={chip.band}>{chip.word}</span>
+                {/each}
+              </p>
+            {/if}
+          {/each}
+          {#if view.contacts.length === 0}
+            <p class="line">(no contacts)</p>
+          {/if}
+        </section>
+      </div>
     </div>
 
     <div class="panes">
@@ -348,7 +482,40 @@
       <section class="pane" aria-label="status">
         <h4 class="pt">status</h4>
         {#each view.status as line, i (i)}
-          <p class="line">{line}</p>
+          <div class="status-row">
+            <p class="line">{line}</p>
+            {#if i === 1 && frame.power === "off" && !frame.wreck}
+              <button
+                type="button"
+                class="inline-btn"
+                onclick={() => app.helm("STARTUP")}>Startup</button
+              >
+            {:else if i === view.status.length - 1}
+              <button
+                type="button"
+                class="inline-btn"
+                class:active={autoTargetArmed}
+                aria-pressed={autoTargetArmed}
+                title={autoTargetArmed ? "Disable auto-target" : "LOCK nearest WHEN nolock"}
+                onclick={toggleAutoTarget}>Auto-target</button
+              >
+            {/if}
+          </div>
+          {#if i === 2}
+            <div class="speed-control">
+              <input
+                type="range"
+                class="speed-slider"
+                aria-label="speed slider"
+                min={-reverseKph}
+                max={maxKph}
+                step="1"
+                value={currentSliderKph}
+                oninput={onSpeedSlider}
+                onchange={onSpeedSlider}
+              />
+            </div>
+          {/if}
         {/each}
       </section>
 
@@ -365,16 +532,10 @@
                 <span class="cond">{row.condition}</span>
                 <span class="frac">{row.internals}</span>
               </p>
-              <div class="bar" data-kind="inside">
-                <span class="fill" style="width: {row.pct}%"></span>
-              </div>
               <div class="facets">
                 {#each row.facets as facet, f (f)}
                   <div class="facet">
                     <span class="barlabel">{facet.id} {facet.armor}</span>
-                    <div class="bar" data-kind="armour">
-                      <span class="fill" style="width: {facet.pct}%"></span>
-                    </div>
                   </div>
                 {/each}
               </div>
@@ -389,8 +550,55 @@
       <section class="pane" aria-label="weapons">
         <h4 class="pt">weapons</h4>
         {#if frame?.mind}<button type="button" onclick={() => { app.mindReadoutOpen = true; app.refreshMindTrace(); }}>Card &amp; trace</button>{/if}
+        {#if frame.weapons.length > 0}
+          <div class="wf-controls" aria-label="weapons free controls">
+            <button
+              type="button"
+              class="inline-btn wf-toggle"
+              class:active={fireRuleArmed}
+              aria-pressed={fireRuleArmed}
+              aria-label="weapons free toggle"
+              title={fireRuleArmed
+                ? `FIRE ${fireRuleWeapon} OFF`
+                : `FIRE ${fireRuleWeapon} WHEN odds >= ${fireRuleOdds}`}
+              onclick={toggleFireRule}>{gateWord(frame.weapons_free)}</button
+            >
+            <select
+              class="wf-select"
+              aria-label="weapons free weapon"
+              value={fireRuleWeapon}
+              onchange={onFireWeaponChange}
+            >
+              <option value="ALL">ALL</option>
+              {#each frame.weapons as w (w.id)}
+                <option value={w.id}>{w.id}</option>
+              {/each}
+            </select>
+            <input
+              type="range"
+              class="wf-slider"
+              aria-label="weapons free odds"
+              min="10"
+              max="100"
+              step="5"
+              value={fireRuleOdds}
+              oninput={onFireOddsChange}
+              onchange={onFireOddsChange}
+            />
+            <span class="wf-odds">&gt;={fireRuleOdds}%</span>
+          </div>
+        {/if}
         {#each view.weapons as line, i (i)}
-          <p class="line">{line}</p>
+          {@const weaponId = weaponForLine(line)}
+          {#if weaponId !== null}
+            <p class="line"><button
+                type="button"
+                class="weapon-btn"
+                title={`FIRE ${weaponId}`}
+                onclick={() => app.helm(`FIRE ${weaponId}`)}>{line}</button></p>
+          {:else}
+            <p class="line">{line}</p>
+          {/if}
         {/each}
         <!-- 17b cut M5.5: the mind's four lines, the section's tail (in
              `(no weapon)`'s place on an unarmed hull). On the profile row each
@@ -413,34 +621,6 @@
             <p class="line mind">{line}</p>
           {/if}
         {/each}
-      </section>
-
-      <section class="pane wide" aria-label="contacts">
-        <h4 class="pt">contacts</h4>
-        {#each view.contacts as row, i (i)}
-          <div class="contact">
-            <button
-              type="button"
-              class="desig"
-              title={contactText(row)}
-              onclick={() => prefill(`lock ${row.designator}`)}>{row.designator}</button
-            >
-            <span class="detail">{row.detail}</span>
-            <button type="button" class="scanbtn" onclick={() => prefill(`scan ${row.designator}`)}
-              >scan</button
-            >
-          </div>
-          {#if row.chips.length > 0}
-            <p class="chips" title={scanText(row.chips)}>
-              {#each row.chips as chip, i (i)}
-                <span class="chip" data-band={chip.band}>{chip.word}</span>
-              {/each}
-            </p>
-          {/if}
-        {/each}
-        {#if view.contacts.length === 0}
-          <p class="line">(no contacts)</p>
-        {/if}
       </section>
 
       <section class="pane wide" aria-label="notices">
@@ -473,8 +653,16 @@
     gap: 0.5rem;
   }
 
+  .side-column {
+    flex: 1 1 18rem;
+    min-width: 15rem;
+    max-width: 28rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
   .mapbox {
-    flex: 1 1 20rem;
     min-width: 0;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -511,8 +699,10 @@
 
   .canvas-wrap {
     overflow: auto;
-    max-height: 44vh;
+    max-height: 260px;
     margin: 0.3rem 0;
+    display: flex;
+    justify-content: center;
   }
 
   canvas {
@@ -520,6 +710,8 @@
     display: block;
     background: var(--bg);
     cursor: pointer;
+    width: auto;
+    height: auto;
   }
 
   .legendline {
@@ -539,7 +731,7 @@
   .pane {
     display: flex;
     flex-direction: column;
-    gap: 0.12rem;
+    gap: 0.15rem;
     padding: 0.45rem 0.6rem;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -550,12 +742,16 @@
     overflow-x: auto;
   }
 
+  .contacts-pane {
+    max-height: 24vh;
+  }
+
   .pane.full {
     grid-column: 1 / -1;
   }
 
   .pane.wide {
-    grid-column: span 1;
+    grid-column: span 2;
   }
 
   .pt {
@@ -574,10 +770,100 @@
     white-space: pre;
   }
 
+  .status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.35rem;
+  }
+
+  .inline-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg-muted);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0.05rem 0.4rem;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .inline-btn:hover {
+    color: var(--fg);
+    border-color: var(--fg-muted);
+  }
+
+  .inline-btn.active {
+    color: var(--fg);
+    border-color: var(--accent, #6aa0ff);
+    background: var(--bg-input);
+  }
+
+  .speed-control {
+    display: flex;
+    align-items: center;
+    margin: 0.05rem 0 0.1rem;
+  }
+
+  .speed-slider {
+    width: 100%;
+    accent-color: var(--accent, #6aa0ff);
+    cursor: pointer;
+  }
+
+  .wf-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+    margin: 0.1rem 0 0.2rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+
+  .wf-select {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg);
+    font: inherit;
+    padding: 0.05rem 0.25rem;
+  }
+
+  .wf-slider {
+    flex: 1 1 3.5rem;
+    min-width: 3.5rem;
+    accent-color: var(--accent, #6aa0ff);
+    cursor: pointer;
+  }
+
+  .wf-odds {
+    color: var(--fg-muted);
+    min-width: 2.6rem;
+  }
+
+  .weapon-btn {
+    background: none;
+    border: none;
+    border-bottom: 1px dotted var(--border);
+    color: var(--fg);
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+    text-align: left;
+    white-space: pre;
+  }
+
+  .weapon-btn:hover {
+    color: var(--accent, #6aa0ff);
+  }
+
   .damage-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(7.2rem, 1fr));
-    gap: 0.25rem 0.45rem;
+    gap: 0.2rem 0.45rem;
   }
 
   .damage-section {
@@ -616,29 +902,10 @@
     color: var(--fg-muted);
   }
 
-  .bar {
-    height: 0.32rem;
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 2px;
-    overflow: hidden;
-    margin: 0 0 0.14rem;
-  }
-
-  .fill {
-    display: block;
-    height: 100%;
-    background: var(--accent);
-  }
-
-  .bar[data-kind="armour"] .fill {
-    background: var(--accent-dim);
-  }
-
   .facets {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.06rem 0.3rem;
+    gap: 0.04rem 0.3rem;
     margin-left: 0.15rem;
   }
 
