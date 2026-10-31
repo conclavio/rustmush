@@ -9,7 +9,7 @@
 //! line as its `rig` panel; `site.map` draws the field layer for a seated viewer and says why not
 //! for an unseated one; `+tv` status keeps answering for the rig. A ground object is an obstacle
 //! that hides what is behind it on the field's ground. After demotion each party remembers what
-//! it saw there (Q-CF-28) and a character who was never in the field does not. The frames' new
+//! it saw there (Q-CF-28) and a character whose units never had it in sight does not. The frames' new
 //! keys are the shape `web/src/lib/fixtures/cockpit/field_frame.json` pins for the TUI's, the
 //! web's and the pixel cockpit's own tests.
 
@@ -22,7 +22,9 @@ use tacsim::surface::site_record::{KnownItem, KnownWhat};
 use crate::driving::{
     Rig, command, launched, map_frame, on_pad, on_pad_as, run, stocked_tuned, to_cell, warm,
 };
-use crate::field_host::{armed, egress, pump, seat, second, site_record, task, tune, until};
+use crate::field_host::{
+    armed, egress, fragile, frame, pump, seat, second, site_record, task, tune, until, weapon_of,
+};
 use crate::site_record::{staff, staff_member};
 
 /// **The `arena.cockpit` keyframe `who` gets** through the feed's own query — the same payload a
@@ -90,9 +92,14 @@ fn same_shape(real: &Value, fixture: &Value, key: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers() {
-    let mut rig = stocked_tuned(tune);
+    // CF.2's fast field, with a longer quiet interval so the checks below run inside the field.
+    let mut rig = stocked_tuned(|cfg| {
+        tune(cfg);
+        cfg.field.disengage_s = 30;
+    });
     // A and B fly armed hulls; C's prospector works beside them and C sits in its cab; D's rig is
-    // out far to the east; E stays aboard with a rig in the bay and is never on the ground.
+    // out far to the east; E stays aboard with a rig in the bay. Every carrier on the pad is in
+    // the field too (CF.3), out of sight of the crate.
     let (a, _, _) = on_pad(&mut rig, 1);
     let (b, _, _) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);
     let (c, _, c_tvs) = on_pad_as(&mut rig, "Third", 3, "Lone Moth", 1);
@@ -107,12 +114,13 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     seat(&mut rig, hull_a, a);
     seat(&mut rig, hull_b, b);
     seat(&mut rig, c_tvs[0], c);
+    fragile(&mut rig, hull_b);
     // The ground: a crate beside the fight, another far beyond anyone's sight.
     let s = staff_member(&mut rig);
     staff(
         &mut rig,
         s,
-        "@tacsim/site ahuna_port drop crate 2 metal_ore 112,120",
+        "@tacsim/site ahuna_port drop crate 2 metal_ore 98,116",
     );
     staff(
         &mut rig,
@@ -130,7 +138,7 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     // sight, is a band and never an `o` or a distance (Q-CF-48's presence picture).
     let surface = map_frame(&mut rig, c, json!({ "view": "site" }));
     let words = surface["site"]["lines"].to_string();
-    assert_eq!(site_glyph(&surface, (112, 120)), Some('&'), "{words}");
+    assert_eq!(site_glyph(&surface, (98, 116)), Some('&'), "{words}");
     assert!(words.contains("Also on this map: & crate."), "{words}");
     assert!(words.contains("a crate of 2 metal_ore"), "{words}");
     assert!(words.contains("Presence: E 200-500 m"), "{words}");
@@ -163,7 +171,7 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
         .world()
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()
         .and_then(|registry| registry.arena_of(field))
-        .and_then(|ground| ground.terrain.get(112, 120).map(|cell| cell.class));
+        .and_then(|ground| ground.terrain.get(98, 116).map(|cell| cell.class));
     assert_eq!(class, Some(mush_atlas::TerrainClass::Wall));
 
     // (3) A's cockpit carries the campaign layer and holds the crate as a ground return.
@@ -180,7 +188,7 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     assert_eq!(campaign["site"], json!("Ahuna Flank"));
     let marks = campaign["marks"].as_array().expect("marks");
     assert!(
-        marks.iter().any(|mark| mark == &json!([112, 120, "&"])),
+        marks.iter().any(|mark| mark == &json!([98, 116, "&"])),
         "the crate on the campaign layer: {campaign}"
     );
     assert!(
@@ -200,7 +208,7 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
         .expect("A holds a ground return");
     assert_eq!(ground.len(), 1, "the far crate is beyond sight: {ground:?}");
     assert_eq!(ground[0]["what"], json!("crate"));
-    assert_eq!(ground[0]["cell"], json!([112, 120]));
+    assert_eq!(ground[0]["cell"], json!([98, 116]));
     assert!(
         frame_a.get("rig").is_none(),
         "an armed hull has no rig panel"
@@ -276,27 +284,33 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     same_shape(&frame_a, &fixture, "ground");
     same_shape(&frame_c, &fixture, "rig");
 
-    // (6) Both leaders make peace — two hostile parties parked in each other's weapons range
-    // never demote (doc 32 §7), and a party fired on stays hostile until it marks the shooter
-    // Friendly — and nobody fires any more: the field demotes, and each party remembers what it
-    // saw.
-    for (leader, other) in [(a, b), (b, a)] {
-        let theirs = run(&mut rig.tw, other, "+field");
-        let letter = theirs
-            .split("Your party is ")
-            .nth(1)
-            .and_then(|rest| rest.split(';').next())
-            .map(str::to_owned)
-            .unwrap_or_else(|| panic!("the other party's letter: {theirs}"));
-        let said = run(
-            &mut rig.tw,
-            leader,
-            &format!("+field/mark {letter}=friendly"),
-        );
-        assert!(!said.contains("Usage"), "{said}");
-    }
+    // (6) A fires on B's hull until it is a wreck — two hostile parties parked in each other's
+    // weapons range never demote (doc 32 §7) — and then nobody fires any more: the field demotes,
+    // and each party remembers what it saw.
+    let gun = weapon_of(&rig, hull_a);
+    let wrecked = until(&mut rig, &mut rx, &mut lines, 150, |rig, _| {
+        let target = frame(rig, a).and_then(|held| {
+            held.contacts
+                .iter()
+                .find(|contact| {
+                    contact
+                        .cell
+                        .is_some_and(|(x, y)| x.abs_diff(114) <= 2 && y.abs_diff(124) <= 2)
+                })
+                .map(|contact| (contact.id, contact.designator.to_string(), held.lock))
+        });
+        if let Some((id, designator, lock)) = target
+            && lock != Some(id)
+        {
+            let _ = run(&mut rig.tw, a, &format!("LOCK {designator}"));
+        }
+        let _ = run(&mut rig.tw, a, &format!("FIRE {gun}"));
+        frame(rig, b).is_some_and(|held| held.wreck)
+    })
+    .await;
+    assert!(wrecked, "B's hull is wrecked by A's fire");
     assert!(
-        until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
+        until(&mut rig, &mut rx, &mut lines, 90, |rig, _| {
             task(rig).is_none()
                 && site_record(rig).is_some_and(|record| record.open_field().is_none())
         })
@@ -305,14 +319,26 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     );
     pump(&mut rig, &mut rx, &mut lines);
     let record = site_record(&mut rig).expect("the record");
-    let crate_at = KnownItem(KnownWhat::Crate, 112, 120);
+    let crate_at = KnownItem(KnownWhat::Crate, 98, 116);
     assert!(record.known_by(a).contains(&crate_at), "{:?}", record.known);
     assert!(record.known_by(c).contains(&crate_at), "{:?}", record.known);
     assert!(
         !record.known_by(d).contains(&crate_at),
         "D's rig never had the crate in sight"
     );
-    assert!(record.known_by(e).is_empty(), "E was never on the ground");
+    assert!(
+        !record.known_by(e).contains(&crate_at),
+        "E's carrier on the pad never had the crate in sight"
+    );
+    // B's wreck, where it fell: its own party knows it, and so does A, who saw it fall.
+    let fell = record
+        .units
+        .iter()
+        .find(|left| left.unit == hull_b)
+        .map(|left| KnownItem(KnownWhat::Wreck, left.pose.cell().0, left.pose.cell().1))
+        .expect("B's hull is left on the ground");
+    assert!(record.known_by(b).contains(&fell), "{:?}", record.known);
+    assert!(record.known_by(a).contains(&fell), "{:?}", record.known);
     assert!(
         record
             .known
@@ -324,11 +350,10 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     // nothing there.
     let after = map_frame(&mut rig, a, json!({ "view": "site" }));
     let words = after["site"]["lines"].to_string();
-    assert_eq!(site_glyph(&after, (112, 120)), Some('&'), "{words}");
+    assert_eq!(site_glyph(&after, (98, 116)), Some('&'), "{words}");
     assert!(words.contains("a crate"), "{words}");
     assert!(words.contains("(remembered)"), "{words}");
     let never = map_frame(&mut rig, e, json!({ "view": "site" }));
-    assert_ne!(site_glyph(&never, (112, 120)), Some('&'));
-    assert!(!never["site"]["lines"].to_string().contains("remembered"));
-    let _ = (b, hull_b);
+    assert_ne!(site_glyph(&never, (98, 116)), Some('&'));
+    assert!(!never["site"]["lines"].to_string().contains("a crate"));
 }

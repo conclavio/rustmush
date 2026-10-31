@@ -119,7 +119,7 @@ pub(crate) fn seat(rig: &mut Rig, unit: ObjId, pilot: ObjId) {
 
 /// **Make `unit` fragile**: every armour plate at its floor and every section's internals one
 /// above it, so the next hits that land wreck it (a fixture, so the gate fights in seconds).
-fn fragile(rig: &mut Rig, unit: ObjId) {
+pub(crate) fn fragile(rig: &mut Rig, unit: ObjId) {
     staff_hand(rig, |ctx| {
         let cells = mush_tactics::module::unit_of(ctx.w, unit)
             .expect("the unit")
