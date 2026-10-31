@@ -256,7 +256,7 @@ fn the_kernel_runs_on_a_window_of_the_regions_own_side() {
         ],
         SEED,
     );
-    let side = tacsim::definitions::arena::MAX_WINDOW_SIDE;
+    let side = tacsim::definitions::arena::MAX_ARENA_SIDE;
     assert_eq!(side, 512);
     assert_ne!(side, tacsim::definitions::arena::DEFAULT_WINDOW_SIDE);
     let ground = tacsim::arena::state::TerrainCell {

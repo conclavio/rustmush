@@ -2729,10 +2729,18 @@ pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
         Some((w, h)) => (w, h.max(1), false, false),
         None => (COCKPIT_MAP_FALLBACK.0, COCKPIT_MAP_FALLBACK.1, true, true),
     };
+    let (ox, oy) = cell_pair(map.get("origin_cell")).unwrap_or((0, 0));
     let you = cell_pair(data.get("cell"));
-    let (x0, y0, w, h) =
-        mush_ansi::viewport(width, height, you, usize::from(grid_w), usize::from(grid_h));
-    let mut grid = mush_ansi::window_rows(rows, width, height, x0, y0, w, h);
+    let local_you = you.map(|(ux, uy)| (ux.saturating_sub(ox), uy.saturating_sub(oy)));
+    let (lx0, ly0, w, h) = mush_ansi::viewport(
+        width,
+        height,
+        local_you,
+        usize::from(grid_w),
+        usize::from(grid_h),
+    );
+    let mut grid = mush_ansi::window_rows(rows, width, height, lx0, ly0, w, h);
+    let (x0, y0) = (ox.saturating_add(lx0), oy.saturating_add(ly0));
     // Which marker wrote each window cell LAST (16b cut B.3): only a lookup,
     // never iterated, so the legend's order is the frame's and nothing else.
     // **16b cut V.1** keyed it by `MapOwner`, so a spot's index, the `@` and a

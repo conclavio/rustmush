@@ -35,8 +35,8 @@ use serde_json::Value;
 
 use crate::Frame;
 use crate::cockpit::{
-    ARENA_MAP_FEED, COCKPIT_FEED, contact_health, contact_kind, contact_party, map_from_feed,
-    terrain_from_feed,
+    ARENA_MAP_FEED, COCKPIT_FEED, MapStamp, contact_health, contact_kind, contact_party,
+    map_from_feed, map_stamp, terrain_from_feed,
 };
 use crate::frame::Rgb;
 use crate::heightfield::Terrain;
@@ -164,8 +164,8 @@ impl Placing {
 /// last scale.
 #[derive(Debug, Default)]
 pub struct OverheadPicture {
-    /// What `map` was built from: the held `arena.map`'s match.
-    built_for: Option<Option<i64>>,
+    /// What `map` was built from: the held `arena.map`'s [`MapStamp`].
+    built_for: Option<MapStamp>,
     /// The held map's cells, if any.
     map: Option<Map>,
     /// Its heights, when the feed carries them (G.7b).
@@ -177,7 +177,7 @@ pub struct OverheadPicture {
 /// What a drawn ground image was drawn from.
 #[derive(Clone, Debug, PartialEq)]
 struct GroundKey {
-    built_for: Option<i64>,
+    built_for: Option<MapStamp>,
     px_per_m: f64,
 }
 
@@ -224,8 +224,8 @@ impl OverheadPicture {
     }
 
     fn ensure_map(&mut self, map: Option<&Value>) {
-        let wanted = map.and_then(|m| m.get("match").and_then(Value::as_i64));
-        if self.built_for == Some(wanted) && (map.is_some() || wanted.is_none()) {
+        let wanted = map_stamp(map);
+        if self.built_for == Some(wanted) && (map.is_some() || wanted.0.is_none()) {
             return;
         }
         self.map = map.map(map_from_feed);
@@ -379,7 +379,7 @@ fn overhead_scene(
         match pl.turn {
             None => {
                 let key = GroundKey {
-                    built_for: pic.built_for.flatten(),
+                    built_for: pic.built_for,
                     px_per_m,
                 };
                 if pic.ground.as_ref().is_none_or(|(k, _)| *k != key) {

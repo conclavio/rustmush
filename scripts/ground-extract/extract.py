@@ -3,9 +3,29 @@
 
 Run in isolated mode (`python -I`, stdlib only):
 
-    python -I scripts/ground-extract/extract.py \
-        --unitypackage-dir "C:/Users/faeni/3d_assets" \
+1. Reproduce the stitched `winter_valley` arena draft from external `.unitypackage` archives:
+
+    python -I scripts/ground-extract/extract.py \\
+        --unitypackage-dir "C:/Users/faeni/3d_assets" \\
         --out crates/tacsim/content/ground/winter_valley.draft.json
+
+2. Inspect all Unity `TerrainData` assets inside a `.unitypackage` archive:
+
+    python -I scripts/ground-extract/extract.py \\
+        --list-assets "C:/Users/faeni/3d_assets/Package.unitypackage"
+
+3. Unpack any single `.unitypackage` `TerrainData` asset into a `ground.draft.v1` JSON
+   (plus optional raw `.le16` and `.rle` files):
+
+    python -I scripts/ground-extract/extract.py \\
+        --package "C:/Users/faeni/3d_assets/Package.unitypackage" \\
+        --asset-suffix "Terrain.asset" \\
+        --id custom_basin --label "Custom Basin" --biome mars --body mars \\
+        --out custom_basin.draft.json
+
+4. Run the built-in self-test (no external `.unitypackage` files required):
+
+    python -I scripts/ground-extract/extract.py --self-test
 
 Per doc 30 §9 and Q-30-9:
 - Reads external `.unitypackage` archives (or pre-extracted `.asset` files) outside the repo.
@@ -18,11 +38,13 @@ Per doc 30 §9 and Q-30-9:
 
 import argparse
 import base64
+import io
 import json
 import math
 import os
 import struct
 import tarfile
+import tempfile
 from pathlib import Path
 
 DRAFT_SCHEMA = "ground.draft.v1"
@@ -165,20 +187,83 @@ def parse_unity_heightmap(data, res):
     return struct.unpack(f"<{count}H", raw), res
 
 
+def detect_unity_heightmap(data):
+    """Auto-detect a Unity TerrainData heightmap (`(2^k + 1) x (2^k + 1)` u16 samples)."""
+    for res in (4097, 2049, 1025, 513, 257, 129, 65, 33):
+        count = res * res
+        if len(data) < count * 2 + 4:
+            continue
+        needle = struct.pack("<I", count)
+        pos = data.rfind(needle, 0, len(data) - count * 2 + 1)
+        if pos >= 0:
+            raw = data[pos + 4 : pos + 4 + count * 2]
+            return struct.unpack(f"<{count}H", raw), res
+    raise ValueError("Could not auto-detect Unity heightmap resolution in asset bytes")
+
+
 def parse_splat_rgba(data):
     pos = data.find(b"SplatAlpha")
     if pos < 0:
         raise ValueError("Could not find SplatAlpha in Unity TerrainData asset")
     window = data[pos : pos + 200]
-    for sz, w in ((1398100, 512), (5592404, 1024), (22369620, 2048)):
+    for sz, w in (
+        (1398100, 512),
+        (5592404, 1024),
+        (22369620, 2048),
+        (262144, 256),
+        (65536, 128),
+        (16384, 64),
+    ):
         needle = struct.pack("<I", sz)
         p1 = window.find(needle)
         if p1 != -1:
             p2 = window.find(needle, p1 + 4)
             if p2 != -1:
                 pix_start = pos + p2 + 4
-                return data[pix_start : pix_start + w * w * 4], w, w
+                if pix_start + w * w * 4 <= len(data):
+                    return data[pix_start : pix_start + w * w * 4], w, w
     raise ValueError("Could not locate SplatAlpha pixel buffer")
+
+
+def list_unitypackage_terrain_assets(pkg_path):
+    """Return a list of `(internal_path, hm_res, splat_dims)` for TerrainData assets in `pkg_path`."""
+    pathnames = {}
+    assets = {}
+    with tarfile.open(pkg_path, "r:gz") as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            parts = member.name.strip("./").split("/")
+            if len(parts) != 2:
+                continue
+            guid, leaf = parts
+            if leaf == "pathname":
+                f = tf.extractfile(member)
+                if f is not None:
+                    raw_path = f.read().decode("utf-8", errors="replace").splitlines()[0].strip()
+                    pathnames[guid] = raw_path
+            elif leaf == "asset":
+                assets[guid] = member
+
+        found = []
+        for guid, internal_path in sorted(pathnames.items(), key=lambda kv: kv[1]):
+            if not internal_path.lower().endswith(".asset") or guid not in assets:
+                continue
+            f = tf.extractfile(assets[guid])
+            if f is None:
+                continue
+            blob = f.read()
+            try:
+                _, hm_res = detect_unity_heightmap(blob)
+            except ValueError:
+                continue
+            try:
+                _, sw, sh = parse_splat_rgba(blob)
+                splat_info = f"{sw}x{sh}"
+            except ValueError:
+                splat_info = "none"
+            found.append((internal_path, hm_res, splat_info))
+        return found
 
 
 def sample_bilinear(grid, res, u, v):
@@ -601,27 +686,369 @@ def build_draft_dict(flat_classes, flat_elev):
     }
 
 
+def splat_to_biome_class(biome, r, g, b, a, norm_h):
+    """Map Unity SplatAlpha RGBA weights + normalized height to a §6 biome terrain class."""
+    if biome == "mars":
+        if r >= 180 and r >= g and r >= b:
+            return CLASS_ROCK
+        if b >= 170:
+            return CLASS_RUBBLE
+        if g >= 135 or norm_h < 0.35:
+            return CLASS_SAND
+        return CLASS_GROUND
+    if biome == "lunar":
+        if r >= 185:
+            return CLASS_ROCK
+        if b >= 165:
+            return CLASS_RUBBLE
+        if g >= 145:
+            return CLASS_GROUND
+        return CLASS_REGOLITH
+    if biome == "ice":
+        if b >= 195 and norm_h < 0.25:
+            return CLASS_WATER_DEEP
+        if r >= 180:
+            return CLASS_ROCK
+        if g >= 150:
+            return CLASS_GROUND
+        return CLASS_ICE
+    # temperate default
+    if b >= 195 and norm_h < 0.22:
+        return CLASS_WATER
+    if g >= 195:
+        return CLASS_WOODS_HEAVY if g >= 235 else CLASS_WOODS_LIGHT
+    if r >= 185:
+        return CLASS_RUBBLE if r >= 225 else CLASS_GROUND
+    return CLASS_GRASS
+
+
+def extract_single_package_draft(
+    pkg_path,
+    asset_suffix="",
+    draft_id="extracted_arena",
+    label="Extracted Arena",
+    biome="temperate",
+    body="luna",
+    cols=256,
+    rows=256,
+    origin_m=(35000, 35000),
+    elev_scale_m=60.0,
+    raw_out_dir="",
+):
+    """Unpack a single `.unitypackage` TerrainData asset into a `ground.draft.v1` dict."""
+    if not asset_suffix:
+        candidates = list_unitypackage_terrain_assets(pkg_path)
+        if not candidates:
+            raise FileNotFoundError(f"No TerrainData `.asset` found inside `{pkg_path}`")
+        asset_suffix = candidates[0][0]
+
+    blob = extract_asset_from_unitypackage(pkg_path, asset_suffix)
+    hm, hm_res = detect_unity_heightmap(blob)
+    try:
+        splat_bytes, sw, sh = parse_splat_rgba(blob)
+    except ValueError:
+        splat_bytes, sw, sh = None, 0, 0
+
+    base = build_draft_dict([CLASS_GRASS] * (SIDE * SIDE), [0] * (SIDE * SIDE))
+    road_class = CLASS_ROAD if biome in ("temperate", "mars") else CLASS_PAVED
+    sx = cols / float(SIDE)
+    sy = rows / float(SIDE)
+    zone_depth = max(8, int(round(16 * sx)))
+
+    flat_classes = []
+    flat_elev = []
+
+    for y in range(rows):
+        v = y / float(max(1, rows - 1))
+        by = min(SIDE - 1, int(y / sy))
+        for x in range(cols):
+            u = x / float(max(1, cols - 1))
+            bx = min(SIDE - 1, int(x / sx))
+
+            raw_h = sample_bilinear(hm, hm_res, u, v) / 32768.0
+            edge_dist = min(
+                max(0.0, x - float(zone_depth)),
+                max(0.0, float(cols - 1 - zone_depth) - x),
+            )
+            edge_w = smoothstep(edge_dist / max(4.0, 14.0 * sx))
+            elev_m = (raw_h - 0.25) * elev_scale_m * edge_w
+            if x < zone_depth or x >= cols - zone_depth:
+                q_cm = 0
+            else:
+                q_cm = int(round((elev_m * 100.0) / 50.0) * 50)
+            flat_elev.append(max(-32768, min(32767, q_cm)))
+
+            if (ROAD_EW[0] <= by <= ROAD_EW[1]) or (ROAD_NS[0] <= bx <= ROAD_NS[1]):
+                flat_classes.append(road_class)
+            elif x < zone_depth or x >= cols - zone_depth:
+                if biome == "mars":
+                    flat_classes.append(CLASS_SAND)
+                elif biome == "lunar":
+                    flat_classes.append(CLASS_REGOLITH)
+                elif biome == "ice":
+                    flat_classes.append(CLASS_ICE)
+                else:
+                    flat_classes.append(CLASS_GRASS)
+            elif splat_bytes is not None:
+                r, g, b, a = sample_splat_rgba(splat_bytes, sw, sh, u, v)
+                flat_classes.append(splat_to_biome_class(biome, r, g, b, a, raw_h))
+            else:
+                flat_classes.append(splat_to_biome_class(biome, 0, 0, 0, 0, raw_h))
+
+    if raw_out_dir:
+        raw_dir = Path(raw_out_dir)
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        le16_bytes = bytearray(len(flat_elev) * 2)
+        for i, val in enumerate(flat_elev):
+            struct.pack_into("<h", le16_bytes, i * 2, val)
+        (raw_dir / f"{draft_id}.le16").write_bytes(le16_bytes)
+        rle_b64 = encode_classes_rle(cols, rows, flat_classes)
+        (raw_dir / f"{draft_id}.rle").write_bytes(base64.b64decode(rle_b64))
+
+    def scale_xy(pt_x, pt_y):
+        return (
+            max(0, min(cols - 1, int(round(pt_x * sx)))),
+            max(0, min(rows - 1, int(round(pt_y * sy)))),
+        )
+
+    scaled_spots = []
+    for sp in base["key_spots"]:
+        nx, ny = scale_xy(sp["x"], sp["y"])
+        scaled_spots.append({"name": sp["name"], "x": nx, "y": ny})
+
+    scaled_nodes = []
+    for nd in base["waypoints"]["nodes"]:
+        nx, ny = scale_xy(nd["x"], nd["y"])
+        scaled_nodes.append({"id": nd["id"], "x": nx, "y": ny})
+
+    scaled_tanks = []
+    for tk in base["tanks"]:
+        nx, ny = scale_xy(tk["x"], tk["y"])
+        if tk["team"] == "red":
+            nx = min(zone_depth - 2, max(1, nx))
+        else:
+            nx = max(cols - zone_depth + 1, min(cols - 2, nx))
+        scaled_tanks.append(
+            {
+                "id": tk["id"],
+                "name": tk["name"],
+                "team": tk["team"],
+                "x": nx,
+                "y": ny,
+                "heading_mdeg": tk["heading_mdeg"],
+                "unit": tk["unit"],
+            }
+        )
+
+    pkg_name = Path(pkg_path).name
+    return {
+        "schema": DRAFT_SCHEMA,
+        "id": draft_id,
+        "label": label,
+        "biome": biome,
+        "body": body,
+        "origin_m": [int(origin_m[0]), int(origin_m[1])],
+        "cell_cm": CELL_CM,
+        "cols": cols,
+        "rows": rows,
+        "classes": encode_classes_rle(cols, rows, flat_classes),
+        "elev": encode_elev_le16(flat_elev),
+        "entry_zones": [
+            {"team": "red", "x0": 0, "y0": 0, "x1": zone_depth - 1, "y1": rows - 1},
+            {"team": "blue", "x0": cols - zone_depth, "y0": 0, "x1": cols - 1, "y1": rows - 1},
+        ],
+        "key_spots": scaled_spots,
+        "waypoints": {
+            "nodes": scaled_nodes,
+            "edges": base["waypoints"]["edges"],
+        },
+        "modes": base["modes"],
+        "tanks": scaled_tanks,
+        "provenance": {
+            "source": "extractor",
+            "version": "1.0",
+            "seed": 2350,
+            "inputs": [f"{pkg_name} ({asset_suffix}, {hm_res}x{hm_res})"],
+        },
+    }
+
+
+def build_synthetic_unitypackage(pkg_path, hm_res=65, splat_w=64):
+    """Build a synthetic `.unitypackage` archive in `pkg_path` for `--self-test`."""
+    count = hm_res * hm_res
+    hm_samples = []
+    for y in range(hm_res):
+        for x in range(hm_res):
+            wave = 0.25 + 0.15 * math.sin(x / 6.0) * math.cos(y / 6.0)
+            hm_samples.append(int(max(0, min(65535, round(wave * 32768.0)))))
+    hm_blob = struct.pack("<I", count) + struct.pack(f"<{count}H", *hm_samples)
+
+    splat_sz = 16384
+    splat_pixels = bytearray(splat_w * splat_w * 4)
+    for y in range(splat_w):
+        for x in range(splat_w):
+            off = (y * splat_w + x) * 4
+            splat_pixels[off] = 200 if x > splat_w * 3 // 4 else 40
+            splat_pixels[off + 1] = 210 if y > splat_w * 2 // 3 else 80
+            splat_pixels[off + 2] = 30
+            splat_pixels[off + 3] = 255
+    splat_header = (
+        b"SplatAlpha\x00\x00"
+        + struct.pack("<I", splat_sz)
+        + b"\x00\x00\x00\x00"
+        + struct.pack("<I", splat_sz)
+    )
+    asset_bytes = b"UnityTerrainAsset\x00" + splat_header + bytes(splat_pixels) + hm_blob
+
+    guid = "0123456789abcdef0123456789abcdef"
+    pathname_bytes = b"Assets/Terrains/SyntheticMarsTerrain.asset\n"
+
+    with tarfile.open(pkg_path, "w:gz") as tf:
+        p_info = tarfile.TarInfo(name=f"{guid}/pathname")
+        p_info.size = len(pathname_bytes)
+        tf.addfile(p_info, io.BytesIO(pathname_bytes))
+
+        a_info = tarfile.TarInfo(name=f"{guid}/asset")
+        a_info.size = len(asset_bytes)
+        tf.addfile(a_info, io.BytesIO(asset_bytes))
+
+
+def run_self_test():
+    """Verify `.unitypackage` asset listing, extraction, RLE/le16 encoding, and provenance."""
+    with tempfile.TemporaryDirectory() as tmp:
+        pkg_path = Path(tmp) / "SyntheticMars.unitypackage"
+        build_synthetic_unitypackage(pkg_path)
+
+        assets = list_unitypackage_terrain_assets(pkg_path)
+        assert len(assets) == 1, f"expected 1 TerrainData asset, got {assets!r}"
+        assert assets[0][0].endswith("SyntheticMarsTerrain.asset")
+        assert assets[0][1] == 65
+        assert assets[0][2] == "64x64"
+
+        raw_dir = Path(tmp) / "raw"
+        draft = extract_single_package_draft(
+            pkg_path,
+            draft_id="synth_mars",
+            label="Synthetic Mars",
+            biome="mars",
+            body="mars",
+            cols=128,
+            rows=128,
+            origin_m=(45000, 45000),
+            elev_scale_m=40.0,
+            raw_out_dir=str(raw_dir),
+        )
+        assert draft["schema"] == DRAFT_SCHEMA
+        assert draft["id"] == "synth_mars"
+        assert draft["biome"] == "mars"
+        assert draft["body"] == "mars"
+        assert draft["cols"] == 128 and draft["rows"] == 128
+        assert draft["provenance"]["source"] == "extractor"
+        assert "SyntheticMars.unitypackage" in draft["provenance"]["inputs"][0]
+        assert (raw_dir / "synth_mars.le16").stat().st_size == 128 * 128 * 2
+        assert (raw_dir / "synth_mars.rle").is_file()
+        print("extract.py --self-test passed")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Extract Unity heightmaps & splatmaps to ground.draft.v1 JSON.")
+    parser = argparse.ArgumentParser(
+        description="Extract Unity heightmaps & splatmaps to ground.draft.v1 JSON."
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run built-in synthetic .unitypackage unpacker test and exit.",
+    )
+    parser.add_argument(
+        "--list-assets",
+        default="",
+        help="List all TerrainData .asset entries inside a .unitypackage archive and exit.",
+    )
+    parser.add_argument(
+        "--package",
+        default="",
+        help="Single .unitypackage archive to unpack into a ground.draft.v1 JSON.",
+    )
+    parser.add_argument(
+        "--asset-suffix",
+        default="",
+        help="Target .asset suffix inside --package (auto-selects first TerrainData if omitted).",
+    )
+    parser.add_argument("--id", default="extracted_arena", help="Draft id for --package mode.")
+    parser.add_argument("--label", default="Extracted Arena", help="Draft label for --package mode.")
+    parser.add_argument(
+        "--biome",
+        default="temperate",
+        choices=("temperate", "mars", "lunar", "ice"),
+        help="Biome for --package mode.",
+    )
+    parser.add_argument("--body", default="luna", help="Parent body id for --package mode.")
+    parser.add_argument("--cols", type=int, default=256, help="Output grid columns (64..512).")
+    parser.add_argument("--rows", type=int, default=256, help="Output grid rows (64..512).")
+    parser.add_argument(
+        "--origin-m",
+        default="35000,35000",
+        help="Region origin_m as X,Y in metres for --package mode.",
+    )
+    parser.add_argument(
+        "--elev-scale-m",
+        type=float,
+        default=60.0,
+        help="Vertical elevation scale in metres for --package mode.",
+    )
+    parser.add_argument(
+        "--raw-out-dir",
+        default="",
+        help="Optional directory to also emit raw <id>.le16 and <id>.rle files.",
+    )
     parser.add_argument(
         "--unitypackage-dir",
         default=os.environ.get("UNITY_ASSETS_DIR", "C:/Users/faeni/3d_assets"),
-        help="Root directory containing external .unitypackage archives.",
+        help="Root directory containing external .unitypackage archives for winter_valley stitch.",
     )
     parser.add_argument(
         "--extracted-dir",
         default=os.environ.get("UNITY_EXTRACTED_DIR", ""),
-        help="Optional directory with pre-extracted .asset files.",
+        help="Optional directory with pre-extracted .asset files for winter_valley stitch.",
     )
     parser.add_argument(
         "--out",
-        required=True,
+        default="",
         help="Output path for the generated ground.draft.v1 JSON.",
     )
     args = parser.parse_args()
 
-    flat_classes, flat_elev = stitch_winter_valley(args.unitypackage_dir, args.extracted_dir)
-    draft = build_draft_dict(flat_classes, flat_elev)
+    if args.self_test:
+        run_self_test()
+        return
+
+    if args.list_assets:
+        for internal_path, hm_res, splat_info in list_unitypackage_terrain_assets(args.list_assets):
+            print(f"{internal_path}\theightmap={hm_res}x{hm_res}\tsplat={splat_info}")
+        return
+
+    if not args.out:
+        parser.error("--out is required unless --self-test or --list-assets is given")
+
+    if args.package:
+        ox_s, oy_s = args.origin_m.split(",", 1)
+        draft = extract_single_package_draft(
+            args.package,
+            asset_suffix=args.asset_suffix,
+            draft_id=args.id,
+            label=args.label,
+            biome=args.biome,
+            body=args.body,
+            cols=args.cols,
+            rows=args.rows,
+            origin_m=(int(ox_s), int(oy_s)),
+            elev_scale_m=args.elev_scale_m,
+            raw_out_dir=args.raw_out_dir,
+        )
+    else:
+        flat_classes, flat_elev = stitch_winter_valley(args.unitypackage_dir, args.extracted_dir)
+        draft = build_draft_dict(flat_classes, flat_elev)
+
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(draft, indent=2) + "\n", encoding="utf-8")

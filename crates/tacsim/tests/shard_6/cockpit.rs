@@ -9423,7 +9423,7 @@ async fn z4_a_pilot_on_their_net_under_a_stale_alias_is_joined_again_as_their_ca
 ///
 /// The case that matters is a **human seated by staff**: nothing inside `start`
 /// tells a lobby pilot from a staff-seated one (both are checked out with their
-/// unit, and every unit carries a `Designator::Slot`), so a join moved into
+/// unit, and every unit carries a `Designator::Unit`), so a join moved into
 /// `start` or `lobby::adopt` would put this pilot on `RedNet`. Pilot0 is seated
 /// on red 1's tank the way a staffer's `@spatial/station` and `@spatial/assign`
 /// seat one — the cockpit station declared and a seat activated through the

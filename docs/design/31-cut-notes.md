@@ -218,3 +218,40 @@ Built on `claude/ud3b-catalogue-looks`, stacked on UD.3a (PR #199).
 
 - **The launch and commerce compositions** keep the shipped tactics catalogue (above).
 - **Not seen live**: no dev2 restart drew a published design over SSH, kitty or the web.
+
+## UD.4a (2026-10-30) — the refit engine, D-31-14 and D-31-15 as amended
+
+Built on `claude/ud4-refit-bay` from `main`. UD.4 is split three ways (doc 31 §11): this cut is
+the pure engine; the authoritative bay order is UD.4b; the bay view and the industry driver UD.4c.
+
+- **The ruling**: refit families match by mount, not by slot ids (the owner, *"what if the next
+  mech has two of them?"*). Nothing is renamed: `"cannon"` has 1,030 uses in 103 files, Rhai unit
+  minds among them.
+- **`refit_component`** (`mush_tactics::unit::replacement`, beside `replace_component`): from an
+  exact registered root to another, remove at most one component and install at most one; when both,
+  on the same install point. Owner, unit cells, mobility and rules schema equal; sections equal but
+  for the caller's derivable section cells; every untouched component equal on everything but its
+  definition reference, which must name the same component (equal payload and references, read from
+  the registry) and is moved to the target's; capabilities not sourced by the moved components equal.
+  A derived cell on both sides keeps its value inside the new bounds; one only the target has starts
+  at its `init`. The journal (`RefitJournal`) keeps the removed component's state for custody. Pure:
+  no custody, availability, facility or economic authority, nothing written.
+- **Found on the way**: a component's definition is unit-scoped (`tacsim.unit.line_tank.machine_gun`
+  vs `tacsim.unit.line_tank_laser.machine_gun`), so no component is ever equal across two units;
+  the definition-equivalence rule above is what makes a cross-variant refit possible at all.
+- **`tacsim::refit`**: `DERIVED_CELLS` (the heat pair), `registry_of(catalog)`, `family(catalog,
+  registry, unit)` — every unit in the catalogue one admitted transition reaches, with what comes
+  out and what goes in — `fresh_component` (a new part, intact, cells at their starting values) and
+  `refit(..)`.
+- **Tests** (`tacsim::refit::tests`, on the shipped fielded content): the line tank's family holds
+  the laser variant (cannon out, laser in) and the ECM variant (a pod on), not the walker; tank →
+  laser adds the hull's heat pair and laser → tank drops it; the pod comes off again; armour damage
+  set by a real `SetCell` plan survives a refit of the turret weapon.
+
+**Not done here, and why.**
+
+- **The bay order (UD.4b)**: an IC hull is written only through the tactics IC custody participant
+  (`mush_tactics::ic_custody`, the fixed four-owner provider), whose close vocabulary admits cell and
+  condition changes and no change of definition. A refit or repair order is a new authoritative
+  action there, with its pending state on the IC clock — its own design pass.
+- **The bay view and the industry driver (UD.4c)**.

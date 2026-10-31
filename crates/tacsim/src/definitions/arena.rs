@@ -40,23 +40,22 @@ use crate::definitions::DefinitionError;
 use crate::definitions::unit::TRACKED;
 
 /// The most heightfield entries one arena may name. Four tile the 256 by 256
-/// window at C.1's 128 by 128 quadrants; sixteen is the same window at 64.
+/// window at C.1's 128 by 128 quadrants; sixteen tile a 512 by 512 ground at
+/// the same 128 by 128 quadrant side (doc 30 §7, §11 WG.6).
 pub const MAX_ARENA_TILES: usize = 16;
 
 /// **The window side a region gets when nothing says otherwise**, cells (doc 32
 /// Q-CF-51): 256 at 10 m, 2.56 km (D-16-16). Since doc 32 cut CF.0 the side is a
 /// per-region value — the region's own [`ArenaDef`] `cols` and `rows`, which its
-/// tiles already say — and this is only the shipped default the engine's
-/// stand-in window and the tests are built at. Nothing in the kernel names a
-/// side: it reads the window's own width and height.
+/// tiles already say, up to [`MAX_ARENA_SIDE`] — and this is only the shipped
+/// default the engine's stand-in window and the tests are built at. Nothing in
+/// the kernel names a side: it reads the window's own width and height.
 pub const DEFAULT_WINDOW_SIDE: u16 = 256;
 
-/// **The most cells a region's window may have along one side** (doc 30
-/// Q-30-6: the biggest authored map is 512 a side; doc 32 Q-CF-51). It is the
-/// window's bound, not a tile's: the window is composed of up to
-/// [`MAX_ARENA_TILES`] tiles, each under `mush_atlas::cells::MAX_TILE_SIDE`,
-/// which bounds one tile document and nothing else.
-pub const MAX_WINDOW_SIDE: u16 = 512;
+/// The widest or tallest an arena's ground may be, cells (doc 30 §7, §11 WG.6;
+/// `D-30-7`): four 128-cell quadrants a side (`4 × 128 = 512`, matching
+/// [`MAX_ARENA_TILES`] and [`crate::ground::QUAD`]).
+pub const MAX_ARENA_SIDE: u16 = 512;
 
 /// The most named key spots one arena may carry (doc 16 §3.2: *three or four*).
 ///
@@ -294,14 +293,14 @@ impl ArenaDef {
         crate::definitions::check_note(entry, &self.note)?;
         if self.cols == 0
             || self.rows == 0
-            || self.cols > MAX_WINDOW_SIDE
-            || self.rows > MAX_WINDOW_SIDE
+            || self.cols > MAX_ARENA_SIDE
+            || self.rows > MAX_ARENA_SIDE
         {
             return Err(DefinitionError::value(
                 entry,
                 format!(
-                    "an arena window is 1 to {} cells a side; {}×{} is not",
-                    MAX_WINDOW_SIDE, self.cols, self.rows
+                    "an arena window is 1 to {MAX_ARENA_SIDE} cells a side; {}×{} is not",
+                    self.cols, self.rows
                 ),
             ));
         }
@@ -848,7 +847,8 @@ pub fn arena_map_within_bound(
     terrain: &ArenaTerrain,
     spots: &[ArenaKeySpot],
 ) -> Result<usize, ArenaBuildError> {
-    let frame = crate::match_::cockpit::map_frame(WIDEST_MATCH, entry, terrain, spots);
+    let frame =
+        crate::match_::cockpit::map_frame_for_focus(WIDEST_MATCH, entry, terrain, spots, None);
     // A `Value` always encodes; `usize::MAX` would refuse rather than pass, which
     // is the fail-closed direction if it ever did not.
     let bytes = serde_json::to_vec(&frame).map_or(usize::MAX, |encoded| encoded.len());

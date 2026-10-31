@@ -213,6 +213,17 @@ pub enum ConfigError {
         /// The offending value.
         value: String,
     },
+    /// An `[ssh]` or `[ipguard]` gate knob is out of range or unparsable
+    /// (doc 29a §9).
+    #[error("invalid [{section}].{key}: {detail}")]
+    BadGate {
+        /// The section the key is in.
+        section: &'static str,
+        /// The offending key.
+        key: &'static str,
+        /// What is wrong with its value.
+        detail: String,
+    },
     /// `[store].receipt_policy` is not recognized.
     #[error("unknown store receipt policy {value:?} (expected applied or host_power_loss)")]
     BadStoreReceiptPolicy { value: String },
@@ -390,6 +401,11 @@ impl Default for StoreCfg {
 pub struct SshCfg {
     /// Listen address, e.g. `"0.0.0.0:2222"`.
     pub listen: String,
+    /// Seconds a freshly accepted connection has to authenticate, and then
+    /// again to open a session channel, before it is disconnected and cut
+    /// (doc 29a §9). Never applied to an in-game connection. Default `30`;
+    /// `0` refuses the boot.
+    pub auth_deadline_s: u64,
     /// Doc 29: the **trusted ingress** socket sshdoorway connects to, e.g.
     /// `"/run/rustmush-ssh/dev1.sock"`. Empty (the default) means no trusted
     /// ingress. Unix only: a non-empty value on another platform is a boot
@@ -402,8 +418,140 @@ impl Default for SshCfg {
     fn default() -> Self {
         SshCfg {
             listen: "0.0.0.0:2222".to_string(),
+            auth_deadline_s: 30,
             trusted_socket: String::new(),
         }
+    }
+}
+
+/// `[ipguard]` section (doc 29a §9): the public SSH port's abuse gates and
+/// the password tempban, the serialised form of
+/// [`IpGuardConfig`](crate::ipguard::IpGuardConfig). Every key defaults to
+/// what the guard was born with; the whole block may be left out. Durations
+/// are seconds (`_s`). A typo refuses the boot (`deny_unknown_fields`): a
+/// misspelt cap silently falling back to its default is exactly the kind of
+/// thing an operator cannot see.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct IpGuardCfg {
+    /// Wrong passwords within `window_s` that tempban the network. Default
+    /// `5`.
+    pub max_failures: u32,
+    /// The sliding window those failures are counted over. Default `600`.
+    pub window_s: u64,
+    /// How long the tempban lasts. Default `900`.
+    pub ban_s: u64,
+    /// Refused web bearer tokens within `token_window_s` that start a
+    /// cool-off (never a ban). Default `30`.
+    pub max_token_failures: u32,
+    /// The sliding window those refusals are counted over. Default `600`.
+    pub token_window_s: u64,
+    /// How long the token cool-off lasts. Default `60`.
+    pub token_cooloff_s: u64,
+    /// Concurrent connections per network, SSH and web together. Default
+    /// `8`.
+    pub max_conns: u32,
+    /// Prefix length an IPv4 address is folded to before it is counted.
+    /// Default `32` (one address, one budget).
+    pub v4_prefix: u8,
+    /// Prefix length an IPv6 address is folded to before it is counted.
+    /// Default `64` (the smallest block anyone is routed).
+    pub v6_prefix: u8,
+    /// New SSH connections one network may open per minute; the rest are
+    /// dropped at accept with no handshake. Default `20`.
+    pub per_ip_new_per_minute: u32,
+    /// SSH connections live at once in the whole process. Default `2048`.
+    pub global_connections: u32,
+    /// SSH connections live at once from one IPv6 /48, across its /64s.
+    /// Default `64`.
+    pub per_v6_48_connections: u32,
+    /// Networks (CIDR, or one address) exempt from the per-network caps:
+    /// `max_conns`, the rate and the /48 aggregate. Never from
+    /// `global_connections`, which bounds the process rather than the
+    /// player, and never from the tempban or the sitebans. The owner's bot
+    /// fleet from one home address is the case. Default
+    /// `["127.0.0.0/8", "::1/128"]`.
+    pub exempt_nets: Vec<String>,
+}
+
+impl Default for IpGuardCfg {
+    fn default() -> Self {
+        // One source of truth: the guard's own defaults.
+        let g = crate::ipguard::IpGuardConfig::default();
+        IpGuardCfg {
+            max_failures: g.max_failures,
+            window_s: g.window.as_secs(),
+            ban_s: g.ban.as_secs(),
+            max_token_failures: g.max_token_failures,
+            token_window_s: g.token_window.as_secs(),
+            token_cooloff_s: g.token_cooloff.as_secs(),
+            max_conns: g.max_conns,
+            v4_prefix: g.v4_prefix,
+            v6_prefix: g.v6_prefix,
+            per_ip_new_per_minute: g.per_ip_new_per_minute,
+            global_connections: g.global_connections,
+            per_v6_48_connections: g.per_v6_48_connections,
+            exempt_nets: g.exempt_nets.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
+impl IpGuardCfg {
+    /// The guard's configuration, validated: every cap at least `1` (a cap
+    /// of zero is a lockout, not a setting — doc 29a §8 C-13), the prefixes
+    /// within their families, every exempt network parsable.
+    pub fn guard_config(&self) -> Result<crate::ipguard::IpGuardConfig, ConfigError> {
+        let bad = |key: &'static str, detail: String| ConfigError::BadGate {
+            section: "ipguard",
+            key,
+            detail,
+        };
+        for (key, value) in [
+            ("max_failures", self.max_failures),
+            ("max_token_failures", self.max_token_failures),
+            ("max_conns", self.max_conns),
+            ("per_ip_new_per_minute", self.per_ip_new_per_minute),
+            ("global_connections", self.global_connections),
+            ("per_v6_48_connections", self.per_v6_48_connections),
+        ] {
+            if value == 0 {
+                return Err(bad(key, "must be at least 1".to_owned()));
+            }
+        }
+        if self.v4_prefix > 32 {
+            return Err(bad(
+                "v4_prefix",
+                format!("{} is longer than 32", self.v4_prefix),
+            ));
+        }
+        if self.v6_prefix > 128 {
+            return Err(bad(
+                "v6_prefix",
+                format!("{} is longer than 128", self.v6_prefix),
+            ));
+        }
+        let mut exempt_nets = Vec::with_capacity(self.exempt_nets.len());
+        for net in &self.exempt_nets {
+            exempt_nets.push(
+                net.parse::<crate::ipguard::IpNet>()
+                    .map_err(|e| bad("exempt_nets", e.to_string()))?,
+            );
+        }
+        Ok(crate::ipguard::IpGuardConfig {
+            max_failures: self.max_failures,
+            window: std::time::Duration::from_secs(self.window_s),
+            ban: std::time::Duration::from_secs(self.ban_s),
+            max_token_failures: self.max_token_failures,
+            token_window: std::time::Duration::from_secs(self.token_window_s),
+            token_cooloff: std::time::Duration::from_secs(self.token_cooloff_s),
+            max_conns: self.max_conns,
+            v4_prefix: self.v4_prefix,
+            v6_prefix: self.v6_prefix,
+            per_ip_new_per_minute: self.per_ip_new_per_minute,
+            global_connections: self.global_connections,
+            per_v6_48_connections: self.per_v6_48_connections,
+            exempt_nets,
+        })
     }
 }
 
@@ -2220,6 +2368,10 @@ pub struct Config {
     /// `[pixel]` — the terminal picture's clock, step-down and staff
     /// diagnostics (doc 21 cut G.1b). Defaults whole.
     pub pixel: PixelCfg,
+    /// `[ipguard]` — the public SSH port's abuse gates and the password
+    /// tempban (doc 29a §9). Defaults whole.
+    #[serde(default)]
+    pub ipguard: IpGuardCfg,
 }
 
 impl Default for Config {
@@ -2244,6 +2396,7 @@ impl Default for Config {
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
             pixel: PixelCfg::default(),
+            ipguard: IpGuardCfg::default(),
         }
     }
 }
@@ -2270,6 +2423,7 @@ const CONFIG_SECTIONS: &[&str] = &[
     "llm",
     "ipc",
     "pixel",
+    "ipguard",
 ];
 
 /// Levenshtein distance, only when it is at most two. The working row is bounded
@@ -2355,6 +2509,19 @@ impl Config {
                 addr: self.ssh.listen.clone(),
                 source,
             })
+    }
+
+    /// The validated `[ssh].auth_deadline_s` (doc 29a §9): at least a
+    /// second, or a connection could never authenticate at all.
+    pub fn ssh_auth_deadline(&self) -> Result<std::time::Duration, ConfigError> {
+        if self.ssh.auth_deadline_s == 0 {
+            return Err(ConfigError::BadGate {
+                section: "ssh",
+                key: "auth_deadline_s",
+                detail: "must be at least 1".to_owned(),
+            });
+        }
+        Ok(std::time::Duration::from_secs(self.ssh.auth_deadline_s))
     }
 
     /// The parsed and validated `[ipc].listen` boundary endpoint (M16b).
@@ -3035,6 +3202,105 @@ cap_permile = 400"
         let typo = toml::from_str::<Config>("[pixel]\nsixel_scale = 2\n")
             .expect_err("unknown [pixel] key refuses boot");
         assert!(typo.to_string().contains("sixel_scale"), "{typo}");
+    }
+
+    /// Doc 29a §9: `[ipguard]` and `[ssh].auth_deadline_s` — the block
+    /// defaults to the guard's own numbers, parses every key, refuses a
+    /// typo, and refuses a cap of zero, a bad prefix or an unparsable
+    /// exempt network at the preflight rather than at the first player.
+    #[test]
+    fn ipguard_section_defaults_to_the_guard_and_validates_its_gates() {
+        use crate::ipguard::{IpGuardConfig, IpNet};
+        use std::time::Duration;
+
+        let defaults = toml::from_str::<Config>("").expect("empty config parses");
+        assert_eq!(
+            defaults.ipguard.guard_config().expect("defaults validate"),
+            IpGuardConfig::default(),
+            "[ipguard] left out is the guard's own defaults"
+        );
+        assert_eq!(
+            defaults.ssh_auth_deadline().expect("default deadline"),
+            Duration::from_secs(30)
+        );
+
+        let set = toml::from_str::<Config>(
+            "[ssh]\nauth_deadline_s = 12\n\
+             [ipguard]\nmax_failures = 3\nwindow_s = 60\nban_s = 120\n\
+             max_token_failures = 10\ntoken_window_s = 30\ntoken_cooloff_s = 5\n\
+             max_conns = 4\nv4_prefix = 24\nv6_prefix = 56\n\
+             per_ip_new_per_minute = 7\nglobal_connections = 100\n\
+             per_v6_48_connections = 9\n\
+             exempt_nets = [\"127.0.0.0/8\", \"203.0.113.7\", \"2001:db8::/32\"]\n",
+        )
+        .expect("[ipguard] parses");
+        assert_eq!(
+            set.ssh_auth_deadline().expect("deadline"),
+            Duration::from_secs(12)
+        );
+        let guard = set.ipguard.guard_config().expect("validates");
+        assert_eq!(guard.max_failures, 3);
+        assert_eq!(guard.window, Duration::from_secs(60));
+        assert_eq!(guard.ban, Duration::from_secs(120));
+        assert_eq!(guard.max_token_failures, 10);
+        assert_eq!(guard.token_window, Duration::from_secs(30));
+        assert_eq!(guard.token_cooloff, Duration::from_secs(5));
+        assert_eq!(guard.max_conns, 4);
+        assert_eq!((guard.v4_prefix, guard.v6_prefix), (24, 56));
+        assert_eq!(guard.per_ip_new_per_minute, 7);
+        assert_eq!(guard.global_connections, 100);
+        assert_eq!(guard.per_v6_48_connections, 9);
+        assert_eq!(
+            guard.exempt_nets,
+            vec![
+                "127.0.0.0/8".parse::<IpNet>().expect("net"),
+                "203.0.113.7/32".parse::<IpNet>().expect("net"),
+                "2001:db8::/32".parse::<IpNet>().expect("net"),
+            ]
+        );
+
+        let typo = toml::from_str::<Config>("[ipguard]\nmax_conn = 2\n")
+            .expect_err("unknown [ipguard] key refuses boot");
+        assert!(typo.to_string().contains("max_conn"), "{typo}");
+
+        for (bad, key) in [
+            ("[ipguard]\nmax_conns = 0\n", "max_conns"),
+            (
+                "[ipguard]\nper_ip_new_per_minute = 0\n",
+                "per_ip_new_per_minute",
+            ),
+            ("[ipguard]\nglobal_connections = 0\n", "global_connections"),
+            ("[ipguard]\nv4_prefix = 33\n", "v4_prefix"),
+            ("[ipguard]\nv6_prefix = 129\n", "v6_prefix"),
+            (
+                "[ipguard]\nexempt_nets = [\"10.0.0.0/33\"]\n",
+                "exempt_nets",
+            ),
+            ("[ipguard]\nexempt_nets = [\"home\"]\n", "exempt_nets"),
+        ] {
+            let cfg = toml::from_str::<Config>(bad).expect("parses; validation refuses");
+            let err = cfg
+                .ipguard
+                .guard_config()
+                .expect_err("a zero cap or a bad network refuses");
+            let text = err.to_string();
+            assert!(
+                text.contains("[ipguard]") && text.contains(key),
+                "{bad:?}: {text}"
+            );
+        }
+        let zero = toml::from_str::<Config>("[ssh]\nauth_deadline_s = 0\n").expect("parses");
+        let err = zero.ssh_auth_deadline().expect_err("zero deadline refuses");
+        assert!(err.to_string().contains("[ssh].auth_deadline_s"), "{err}");
+
+        // A mistyped header is caught like every other section's.
+        let dir = std::env::temp_dir().join(format!("mush-ipguard-typo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("mushd.toml");
+        std::fs::write(&path, "[ipgaurd]\nmax_conns = 2\n").expect("write");
+        let err = Config::load(&path).expect_err("a mistyped [ipguard] header is refused");
+        assert!(err.to_string().contains("[ipguard]"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- E7 cut 1 independent verify fold ----

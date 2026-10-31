@@ -171,6 +171,13 @@ pub(crate) trait SurfaceReads {
         site: &CanonicalId,
         max: usize,
     ) -> Result<(Vec<ChartRecord>, bool), String>;
+    /// **A site's record** (doc 32 cut CF.1): its `tacsim.field` record, `None` when nothing was
+    /// ever left there and no field opened; a record whose key disagrees with its value reads
+    /// `None`.
+    fn site_record(
+        &self,
+        site: &CanonicalId,
+    ) -> Result<Option<crate::surface::site_record::SiteRecord>, String>;
 }
 
 /// The handles, or why not.
@@ -412,6 +419,19 @@ impl SurfaceReads for EngineReads<'_> {
             ))
         })
     }
+
+    fn site_record(
+        &self,
+        site: &CanonicalId,
+    ) -> Result<Option<crate::surface::site_record::SiteRecord>, String> {
+        let handles = handles_of(&self.0.world)?;
+        let key = crate::surface::site_record::SiteKey(site.clone());
+        self.0
+            .action_state()
+            .get(&handles.families.sites, &key)
+            .map(|found| found.cloned().filter(|record| record.key() == key))
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl SurfaceReads for Ctx<'_> {
@@ -518,6 +538,17 @@ impl SurfaceReads for Ctx<'_> {
                 page.next_after().cloned(),
             ))
         })
+    }
+
+    fn site_record(
+        &self,
+        site: &CanonicalId,
+    ) -> Result<Option<crate::surface::site_record::SiteRecord>, String> {
+        let handles = handles_of(self.w)?;
+        let key = crate::surface::site_record::SiteKey(site.clone());
+        self.action_state(&handles.families.sites, &key)
+            .map(|found| found.cloned().filter(|record| record.key() == key))
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -631,6 +662,17 @@ impl SurfaceReads for HookReadContext<'_> {
                 page.next_after().cloned(),
             ))
         })
+    }
+
+    fn site_record(
+        &self,
+        site: &CanonicalId,
+    ) -> Result<Option<crate::surface::site_record::SiteRecord>, String> {
+        let handles = handles_of(self.world())?;
+        let key = crate::surface::site_record::SiteKey(site.clone());
+        self.action_state(&handles.families.sites, &key)
+            .map(|found| found.cloned().filter(|record| record.key() == key))
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -876,6 +918,21 @@ fn place_of(
         crate::surface::act::Where::Ground { .. }
         | crate::surface::act::Where::Bay { .. }
         | crate::surface::act::Where::Elsewhere => Place::Away,
+    }
+}
+
+/// **A rig's cell on the site `entry`'s ground at `now`**, or `None` when it is not on that ground
+/// (doc 32 cut CF.1: [`place_of`]'s rule, for the presence picture the surface tick publishes).
+pub(crate) fn ground_cell(
+    w: &World,
+    record: Option<&RigRecord>,
+    tv: ObjId,
+    (entry, domain): (&CanonicalId, mush_sim::DomainId),
+    now: i64,
+) -> Option<(i64, i64)> {
+    match place_of(w, record, tv, (entry, domain), None, now) {
+        Place::Ground(cell) => Some(cell),
+        Place::Bay | Place::Away => None,
     }
 }
 
@@ -2043,6 +2100,52 @@ pub(crate) fn site_map_frame(
             if sounding { " (a sounding)" } else { "" }
         ));
     }
+    // Doc 32 cut CF.1 (Q-CF-15): the presence picture, seen from the viewer's nearest rig on the
+    // ground, else from the pad.
+    let observers: Vec<(u8, (i64, i64))> = on_ground
+        .iter()
+        .filter_map(|rig| match rig.place {
+            Place::Ground(cell) => Some((rig.rig.slot, cell)),
+            Place::Bay | Place::Away => None,
+        })
+        .collect();
+    // Rendered from the frame's own `others` (the tick's placement rule at the frame's instant), so
+    // the bands never lag the grid; the tick publishes the same rule as its book for CF.2.
+    let flights: Vec<crate::surface::presence::Flight> = others
+        .iter()
+        .map(|(tv, _, cell)| crate::surface::presence::Flight {
+            tv: *tv,
+            cell: *cell,
+            class: crate::surface::presence::hull_class(w, *tv),
+        })
+        .collect();
+    let seen = crate::surface::presence::seen_from(&flights, &mine, &observers, PAD_CELL);
+    let presence_line = crate::surface::presence::presence_line(&seen);
+    // Doc 32 cut CF.1 (Q-CF-30, Q-CF-28): the field open on the site, named; and what the record
+    // holds within sight of the viewer's own rigs on the ground — never the whole record.
+    let site_record = reads.site_record(&entry).ok().flatten();
+    let field_line = site_record
+        .as_ref()
+        .and_then(crate::surface::site_record::SiteRecord::open_field)
+        .map(|field| {
+            crate::surface::site_record::MAP_FIELD_OPEN
+                .replace("{ordinal}", &field.ordinal.to_string())
+                .replace("{site}", &berth.name)
+        });
+    let ground_seen: Vec<(u64, String, Value)> = site_record
+        .as_ref()
+        .map(|record| ground_in_sight(record, &observers))
+        .unwrap_or_default();
+    let ground_line = (!ground_seen.is_empty()).then(|| {
+        format!(
+            "On the ground: {}.",
+            ground_seen
+                .iter()
+                .map(|(_, words, _)| words.clone())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    });
     let hold_room = crate::port::ship::hold_unreserved_kg(
         w,
         &hull_view,
@@ -2083,6 +2186,12 @@ pub(crate) fn site_map_frame(
         lines.extend(wrap(&line));
     }
     if let Some(line) = &other_rigs {
+        lines.extend(wrap(line));
+    }
+    for line in [&presence_line, &ground_line, &field_line]
+        .into_iter()
+        .flatten()
+    {
         lines.extend(wrap(line));
     }
     let hold_line = hold_room.map(|kg| format!("Hold: {} t of room unreserved.", kg / 1_000));
@@ -2198,6 +2307,29 @@ pub(crate) fn site_map_frame(
     let print = site_map_lines(&frame);
     if let Some(block) = frame.get_mut("site").and_then(Value::as_object_mut) {
         block.insert("print".to_owned(), json!(print));
+        // Doc 32 cut CF.1: the presence picture, the ground in sight and the open field, each
+        // omitted when empty, so a frame with none of them is byte-identical to SM.10's.
+        if !seen.is_empty() {
+            block.insert(
+                "presence".to_owned(),
+                Value::Array(
+                    seen.iter()
+                        .map(crate::surface::presence::Seen::value)
+                        .collect(),
+                ),
+            );
+            block.insert("presence_line".to_owned(), json!(presence_line));
+        }
+        if !ground_seen.is_empty() {
+            block.insert(
+                "ground".to_owned(),
+                Value::Array(ground_seen.into_iter().map(|(_, _, row)| row).collect()),
+            );
+            block.insert("ground_line".to_owned(), json!(ground_line));
+        }
+        if let Some(line) = &field_line {
+            block.insert("field".to_owned(), json!(line));
+        }
         // Doc 20 cut SM.10 (D13): the live claims, omitted when there are none, so a frame with
         // no claim is byte-identical to SM.9's.
         if !claimed.is_empty() {
@@ -2216,6 +2348,54 @@ pub(crate) fn site_map_frame(
         }
     }
     Ok(frame)
+}
+
+/// **What the site record holds within sight of the viewer's rigs on the ground** (doc 32 cut
+/// CF.1; Q-CF-28: what a party sees, never the whole record): each left unit and object within
+/// [`crate::surface::presence::SIGHT_CELLS`] of the nearest observer, as `(metres, words, row)`,
+/// nearest first. A viewer with no rig on the ground sees none of it.
+fn ground_in_sight(
+    record: &crate::surface::site_record::SiteRecord,
+    observers: &[(u8, (i64, i64))],
+) -> Vec<(u64, String, Value)> {
+    use crate::surface::site_record::{GroundKind, object_words};
+    let near = |cell: (i64, i64)| {
+        observers
+            .iter()
+            .map(|(_, at)| (cells_apart(*at, cell), *at))
+            .min()
+            .filter(|(cells, _)| *cells <= crate::surface::presence::SIGHT_CELLS)
+    };
+    let mut out: Vec<(u64, String, Value)> = Vec::new();
+    for unit in &record.units {
+        let cell = unit.pose.cell();
+        if let Some((_, at)) = near(cell) {
+            let (m, dir) = bearing_words(at, cell);
+            let what = format!("a {}", unit.condition.word());
+            out.push((
+                m,
+                reading_line(&what, m, &dir),
+                json!({ "what": unit.condition.word(), "m": m, "dir": dir }),
+            ));
+        }
+    }
+    for object in &record.objects {
+        let cell = object.pose.cell();
+        if let Some((_, at)) = near(cell) {
+            let (m, dir) = bearing_words(at, cell);
+            let what = match &object.kind {
+                GroundKind::Remains { .. } => "remains".to_owned(),
+                GroundKind::Cargo { .. } => object_words(&object.kind),
+            };
+            out.push((
+                m,
+                reading_line(&what, m, &dir),
+                json!({ "what": object.kind.word(), "m": m, "dir": dir }),
+            ));
+        }
+    }
+    out.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    out
 }
 
 /// **The run clause of `tv`'s run** from its operator's own projection (doc 20 cut SM.9; the

@@ -91,6 +91,31 @@ key_dir = "__DATA_DIR__/resolution-keys"
 
 [ssh]
 listen = "__EXTERNAL_IP__:__SSH_PORT__"
+# Doc 29a §9: a connection must authenticate within this many seconds of
+# accept, and open a session channel within as many again, or it is
+# disconnected and cut. Never applied to a connection that is in the game.
+auth_deadline_s = 30
+
+# The public SSH port's abuse gates and the password tempban (doc 29a §9).
+# Every key here is the guard's own default, written out so an operator can
+# see what the box runs. Durations are seconds. `exempt_nets` skips the
+# per-network caps (max_conns, the rate, the /48 aggregate) — never the
+# global cap, which bounds the process, and never the tempban or the
+# sitebans: add the address a bot fleet or a staff box connects from.
+[ipguard]
+max_failures = 5
+window_s = 600
+ban_s = 900
+max_token_failures = 30
+token_window_s = 600
+token_cooloff_s = 60
+max_conns = 8
+v4_prefix = 32
+v6_prefix = 64
+per_ip_new_per_minute = 20
+global_connections = 2048
+per_v6_48_connections = 64
+exempt_nets = ["127.0.0.0/8", "::1/128"]
 
 # The SSH TUI's ^G picture (doc 21 G.1b): its clock, the step-down on a slow
 # link, and the staff diagnostics (the `u` key and the engineering numbers on

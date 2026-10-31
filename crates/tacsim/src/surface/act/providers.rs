@@ -29,6 +29,12 @@ pub(crate) struct SurfaceActProvider {
     pub charts: StateFamilyHandle<ChartKey, ChartRecord>,
     /// Doc 20 cut SM.7: the pocket cursors (`tacsim.pockets`) a run locks and draws.
     pub pockets: StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
+    /// Doc 32 cut CF.1 (Q-CF-30): the site records (`tacsim.field`) — a promoted site refuses
+    /// every act's start.
+    pub sites: StateFamilyHandle<
+        crate::surface::site_record::SiteKey,
+        crate::surface::site_record::SiteRecord,
+    >,
     pub inventory: InventoryFamilies,
     pub tools: Arc<BTreeMap<CanonicalId, ToolDef>>,
 }
@@ -850,6 +856,27 @@ impl SurfaceActProvider {
             return Err(port_error(
                 ActionErrorCode::ProviderRejected,
                 code_of_word(plan.code.as_deref().unwrap_or("tv_dark")),
+            ));
+        }
+        // Doc 32 cut CF.1 (Q-CF-30): every act on a promoted site is refused for the field's
+        // duration — a hand's, a plan's step, a queued unload, the idle return, a field crew's —
+        // read from the site's record in this very transaction.
+        if let Some(site) = plan.site.as_ref()
+            && crate::surface::site_record::open_field(
+                |key| txn.get(&self.sites, key).map(|found| found.cloned()),
+                site,
+            )
+            .map_err(|_| {
+                port_error(
+                    ActionErrorCode::Integrity,
+                    "the site records are unavailable",
+                )
+            })?
+            .is_some()
+        {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                crate::surface::site_record::FIELD_OPEN_CODE,
             ));
         }
         let work = self.task_work(

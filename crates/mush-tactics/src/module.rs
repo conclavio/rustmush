@@ -351,6 +351,9 @@ pub struct TacticsModule {
     /// crate did, because the trait is `mush-core`'s. Unwired arms nothing.
     sensors: mush_core::SensorPolicyHandle,
     replacement: Option<Arc<dyn crate::component_replacement::Installer>>,
+    /// Doc 31 cut UD.4b: the generalized refit participant, beside the core
+    /// replacement one (its own participant id; the core path is unchanged).
+    refit: Option<Arc<dyn crate::component_replacement::Installer>>,
     ic: Option<crate::ic_custody::IcCustodyConfig>,
     movement_custody_reads: bool,
 }
@@ -372,6 +375,7 @@ impl TacticsModule {
             ground_definition: None,
             sensors: mush_core::SensorPolicyHandle::unwired(),
             replacement: None,
+            refit: None,
             ic: None,
             movement_custody_reads: false,
         }
@@ -386,6 +390,7 @@ impl TacticsModule {
             current_record_definition: None,
             sensors: mush_core::SensorPolicyHandle::unwired(),
             replacement: None,
+            refit: None,
             ic: None,
             movement_custody_reads: false,
         }
@@ -421,6 +426,26 @@ impl TacticsModule {
     ) -> Self {
         self.replacement = Some(crate::component_replacement::installer(
             policy, action, component, roots,
+        ));
+        self
+    }
+
+    /// **Opt in the generalized refit participant** (doc 31 cut UD.4b): one
+    /// closed, composition-selected [`crate::component_refit::RefitPolicy`]
+    /// over `roots` (the registered units a hull may move between), with the
+    /// ruleset's derivable section cells. Like
+    /// [`TacticsModule::with_component_replacement`] it installs no public
+    /// action and no custody or economic authority.
+    #[must_use]
+    pub fn with_component_refit<P: crate::component_refit::RefitPolicy>(
+        mut self,
+        policy: P,
+        action: DefinitionRef,
+        roots: std::collections::BTreeSet<DefinitionRef>,
+        derived: Vec<crate::CellId>,
+    ) -> Self {
+        self.refit = Some(crate::component_refit::installer(
+            policy, action, roots, derived,
         ));
         self
     }
@@ -1168,6 +1193,9 @@ impl GameModule for TacticsModule {
         if let Some(replacement) = &self.replacement {
             owner_descriptors.push(replacement.descriptor(&v2)?);
         }
+        if let Some(refit) = &self.refit {
+            owner_descriptors.push(refit.descriptor(&v2)?);
+        }
         if self.ic.is_some() {
             owner_descriptors.push(crate::ic_custody::participant_descriptor()?);
         }
@@ -1193,6 +1221,9 @@ impl GameModule for TacticsModule {
         }
         if let Some(replacement) = &self.replacement {
             replacement.register(reg, &v2)?;
+        }
+        if let Some(refit) = &self.refit {
+            refit.register(reg, &v2)?;
         }
         if let Some(ic) = &self.ic {
             ic.register(reg, &v2)?;
@@ -1289,6 +1320,9 @@ impl GameModule for TacticsModule {
         }
         if let Some(replacement) = &self.replacement {
             replacement.loaded(ctx)?;
+        }
+        if let Some(refit) = &self.refit {
+            refit.loaded(ctx)?;
         }
         Ok(())
     }

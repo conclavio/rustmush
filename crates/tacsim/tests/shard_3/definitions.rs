@@ -942,8 +942,8 @@ fn q8_build_fielded_is_the_stock_game_plus_doc_16_s9s_five_items() {
     assert_eq!(stock.specs.len(), 1, "the stock game is one unit schema");
     assert_eq!(
         fielded.arenas.len(),
-        stock.arenas.len() + 1,
-        "winter_valley is the second shipped arena (doc 30 WG.5)"
+        stock.arenas.len() + 2,
+        "winter_valley and mars_canyon are shipped arenas beside proving_ground (doc 30 Q-30-7)"
     );
     assert!(
         fielded
@@ -951,6 +951,13 @@ fn q8_build_fielded_is_the_stock_game_plus_doc_16_s9s_five_items() {
             .keys()
             .any(|id| id.as_str() == content::WINTER_VALLEY),
         "winter_valley is in the fielded catalog"
+    );
+    assert!(
+        fielded
+            .arenas
+            .keys()
+            .any(|id| id.as_str() == content::MARS_CANYON),
+        "mars_canyon is in the fielded catalog"
     );
     assert_eq!(
         fielded.resolutions.len(),

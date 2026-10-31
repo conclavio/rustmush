@@ -50,6 +50,22 @@ receipt_policy = "applied"         # "applied" or strict AOF-fsync "host_power_l
 
 [ssh]
 listen = "0.0.0.0:2222"            # (M2)
+auth_deadline_s = 30               # (doc 29a §9) seconds to authenticate after accept, and again to open a channel; never applied in game
+
+[ipguard]                          # (doc 29a §9) the public SSH port's abuse gates and the password tempban; every key defaults
+max_failures = 5                   #   wrong passwords within window_s that tempban the network
+window_s = 600                     #   the window those failures are counted over
+ban_s = 900                        #   how long the tempban lasts
+max_token_failures = 30            #   refused web bearer tokens within token_window_s that start a cool-off (never a ban)
+token_window_s = 600               #   the window those refusals are counted over
+token_cooloff_s = 60               #   how long the token cool-off lasts
+max_conns = 8                      #   concurrent connections per network, SSH and web together (over it: told, refused, cut in 5 s)
+v4_prefix = 32                     #   prefix an IPv4 address is folded to before it is counted
+v6_prefix = 64                     #   prefix an IPv6 address is folded to before it is counted
+per_ip_new_per_minute = 20         #   new SSH connections per network per minute; the rest are dropped at accept, no handshake
+global_connections = 2048          #   SSH connections live at once in the whole process
+per_v6_48_connections = 64         #   SSH connections live at once from one IPv6 /48, across its /64s
+exempt_nets = ["127.0.0.0/8", "::1/128"]  # networks exempt from max_conns, the rate and the /48 cap — never from global_connections, the tempban or the sitebans
 
 [pixel]                            # (doc 21 G.1b, G.2b) the SSH TUI's pixel view
 frame_interval_ms = 50             #   the clock: 20 Hz

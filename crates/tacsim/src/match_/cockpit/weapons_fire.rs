@@ -1014,7 +1014,7 @@ pub(super) fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError>
 /// callsign — the team and slot the lobby fielded this tank from — and then the
 /// pod is asked for **its own tank by name**, because
 /// [`crate::arena::state::Arena`]'s `resolve_callsigns` gives *every* unit a
-/// `Designator::Slot`: the harness's three hundred and a staff `@arena/start`'s
+/// `Designator::Unit`: the harness's three hundred and a staff `@arena/start`'s
 /// two included. The designator alone therefore says nothing about where a tank
 /// came from, and without the second question a staff-fielded biped would be
 /// bracketed against the authored type of a centre pod it was never in. A unit
