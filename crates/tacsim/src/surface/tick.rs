@@ -180,6 +180,10 @@ pub struct SurfaceTickState {
     /// whose `WHY_MARKERS_QUEUED` line was told (said, or queued under the notice budget) this
     /// boot, `(tv, the queue's Queued::after)` — once per queue; pruned once the queue is gone.
     markers_told: BTreeSet<(u32, u32)>,
+    /// **Doc 32 cut CF.1** (Q-CF-15): the presence picture this fire published — every flight on
+    /// a site's ground, by site. RAM only, rebuilt by the first fire after a restart; read by
+    /// `+tv/map` through [`presence_book`].
+    presence: crate::surface::presence::PresenceBook,
 }
 
 /// **Test hook** (doc 20 cut SM.11; the brief's P1): the plan wait the tick has cached for `tv`,
@@ -256,6 +260,51 @@ pub fn last_surface_fire(w: &World) -> Option<SurfaceFireStats> {
 pub fn surface_fires(w: &World) -> u64 {
     w.module_state::<SurfaceTickState>()
         .map_or(0, |state| state.fires)
+}
+
+/// **The presence picture the last fire published** (doc 32 cut CF.1; Q-CF-15), `None` before the
+/// tick's slot is composed. Objective: a viewer reads it only through
+/// [`crate::surface::presence::seen_from`].
+#[must_use]
+pub fn presence_book(w: &World) -> Option<&crate::surface::presence::PresenceBook> {
+    w.module_state::<SurfaceTickState>()
+        .map(|state| &state.presence)
+}
+
+/// **The sites with a field open** (doc 32 cut CF.1; Q-CF-30), from a bounded scan of
+/// `tacsim.field`: the fire holds every start it would make for a rig on one of them — a queued
+/// unload, a plan's step, the idle return — and the plan resumes when the flag clears. An
+/// unreadable page reads as no site promoted: the start's own prepare refuses on the record.
+fn promoted_sites(ctx: &Ctx<'_>, handles: &PortHandles) -> BTreeSet<mush_core::CanonicalId> {
+    let mut out = BTreeSet::new();
+    let mut after: Option<String> = None;
+    for _ in 0..4 {
+        let Ok(page) = ctx.scan_action_state(&handles.families.sites, after.as_deref(), SCAN_PAGE)
+        else {
+            return out;
+        };
+        for entry in page.entries() {
+            if entry.value().promoted.is_some() {
+                out.insert(entry.value().site.clone());
+            }
+        }
+        match page.next_after() {
+            Some(next) => after = Some(next.to_string()),
+            None => break,
+        }
+    }
+    out
+}
+
+/// The site a rig's next start would act on: its open excursion's, else its queued unload's, else
+/// its plan's.
+fn record_site(record: &RigRecord) -> Option<&mush_core::CanonicalId> {
+    record
+        .excursion
+        .as_ref()
+        .map(|excursion| &excursion.site)
+        .or_else(|| record.queued.as_ref().map(|queued| &queued.site))
+        .or_else(|| record.plan.as_ref().map(|plan| &plan.site))
 }
 
 /// Whole microseconds since `started`, saturating (doc 20 cut SM.12c: no `as` cast).
@@ -784,6 +833,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     };
     let now = ctx.w.world_ic_now().at;
     let (records, complete) = scan(ctx, &handles, state);
+    // Doc 32 cut CF.1 (Q-CF-15): the presence picture, from this scan, before the records move.
+    state.presence = crate::surface::presence::publish(ctx.w, &records, now);
+    // Doc 32 cut CF.1 (Q-CF-30): a promoted site's starts wait for its flag to clear.
+    let promoted = promoted_sites(ctx, &handles);
     // Durable staff recovery shares this fire's work ceiling.
     crate::surface::recovery::tick(ctx, &handles, &records, &mut stats);
     // Doc 20 cut SM.7 (the lead's pre-commit round, item 5): a mining order whose start landed (or
@@ -953,6 +1006,15 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                     );
                 }
                 Step::Refused
+            }
+            // Doc 32 cut CF.1 (Q-CF-30): on a promoted site every start waits — a queued unload, a
+            // plan's step (the plan pauses, and resumes when the flag clears) and the idle return.
+            (None, _)
+                if (candidate.queued || candidate.plan || candidate.idle)
+                    && record_site(record).is_some_and(|site| promoted.contains(site)) =>
+            {
+                stats.passed_over = stats.passed_over.saturating_add(1);
+                Step::Held
             }
             // Doc 20 cut SM.8 (lead ruling 1; the brief's 3.9): a recover's queued unload, started
             // as the operator under its own key, by the attempt rule (a start that does not land
