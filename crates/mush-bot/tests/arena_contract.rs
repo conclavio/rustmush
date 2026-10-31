@@ -1818,9 +1818,9 @@ async fn live_centre() {
         callsign.len() == 2
             && callsign.starts_with('R')
             && callsign
-                .bytes()
-                .nth(1)
-                .is_some_and(|letter| tacsim::arena::PARTY_LETTERS.contains(&letter)),
+                .as_bytes()
+                .get(1)
+                .is_some_and(|letter| tacsim::arena::PARTY_LETTERS.contains(letter)),
         "{callsign}"
     );
     assert_eq!(own.name.as_deref(), Some("Red Tank 1"));
