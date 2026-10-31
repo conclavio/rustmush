@@ -457,7 +457,10 @@ impl RigAt {
             crew.operator == actor
                 && crate::detachment::planning::projection::physically_aboard(w, actor, self.tv)
         } else {
+            // Doc 32 cut CF.6c: the lessee works a rig from aboard its carrier or from the rig's
+            // own cab — an escort is flown from inside it, down the ramp and back.
             crate::port::voyage::aboard(w, self.hull, actor)
+                || crate::detachment::planning::projection::physically_aboard(w, actor, self.tv)
         }
     }
     pub(crate) fn mining_principal(&self, actor: ObjId) -> ObjId {

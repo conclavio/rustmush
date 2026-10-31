@@ -616,6 +616,18 @@ impl TacsimStore {
             })
     }
 
+    /// **Every readable rig lease record on `tv`** (doc 32 cut CF.6c), in lease order, any
+    /// status.
+    pub fn tv_leases_on(&self, tv: ObjId) -> impl Iterator<Item = &crate::port::tv::TvLease> {
+        self.tv_leases
+            .values()
+            .filter_map(move |state| match state {
+                crate::port::tv::TvLeaseState::Present(record) if record.tv == tv => Some(record),
+                crate::port::tv::TvLeaseState::Present(_)
+                | crate::port::tv::TvLeaseState::Unreadable { .. } => None,
+            })
+    }
+
     /// **The live rig lease record on `tv`** (doc 20 cut SM.3a; reviewer F2): the
     /// readable record naming the TV whose status is not `Returned` (Active or
     /// Forfeit). At most one by construction: a take refuses a rig with one.
@@ -3716,6 +3728,7 @@ mod tests {
             status: crate::port::tv::TvLeaseStatus::Active,
             ended_at_ic: None,
             repossessed: false,
+            written_off: false,
         };
         let docs = vec![
             (

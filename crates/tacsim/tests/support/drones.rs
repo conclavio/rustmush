@@ -5,6 +5,19 @@
 
 use serde_json::Value;
 
+/// Remove exactly what doc 32 cut CF.6c added to the lane — Occator's pool's further designs
+/// (`ceres_port.vehicles.designs`) — the v15 shape (idempotent; the manifest is the caller's).
+pub fn strip_designs(doc: &mut Value) {
+    if let Some(vehicles) = doc["entries"]
+        .as_object_mut()
+        .and_then(|entries| entries.get_mut("ceres_port"))
+        .and_then(|ceres| ceres["def"].get_mut("vehicles"))
+        .and_then(Value::as_object_mut)
+    {
+        vehicles.remove("designs");
+    }
+}
+
 /// Remove exactly what cut SM.12b added to the lane — `occator_port`'s `site.yard` (the Occator
 /// Yard, its two rigs and its dispatcher's blocks) — the v14 shape (idempotent; the manifest is
 /// the caller's).

@@ -32,6 +32,14 @@ once title has passed, you can lease them again.
   +licence                 your licence: in force, in its grace, or lapsed
   +coop/refit prospector   a Dray-P: a two-slot vehicle bay and a stern ramp
   +tv/lease [go]           lease a rig into a free bay slot
+  +tv/lease escort [go]    lease an escort line tank, armed, under the escort clearance
+
+Occator also leases an armed escort hull into the same bay (`+tv/lease escort`).
+It needs the escort clearance: a licence in force (its grace does not serve), no
+lease of yours forfeit, one armed hull at a time, and none written off in the
+last 28 IC days. You board it in the bay and fly it from its cab, which carries
+the helm, the sensors and the guns. A leased rig wrecked out of the bay is
+written off at the counter: the lease ends and Occator keeps the deposit.
 
 **2. Pick a body and a site.** `+chart` shows every site with the Registry's
 survey of its province (the same for everyone) and its tenure: commons, open,

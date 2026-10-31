@@ -1088,7 +1088,9 @@ ignored test to be run by a CI job, and an ignored test failing at its stop coul
   never reads an IC cockpit frame. Q-CF-47's second run has no pilot to fly it.
 - **G-5, the armed rig lease** (CF.6's deferral). The escort flies fixture hulls with hired NPCs
   seated. The delivered orders it fights under are proven by CF.6's transport gate in the
-  split-boundary harness, not by this story.
+  split-boundary harness, not by this story. **Built as cut CF.6c (§13):** `+tv/lease escort`
+  leases Occator's escort line tank, which a player flies out, fights from the line cockpit and
+  brings home.
 - **G-6, the hits.** "One escort mission-killed by an engine hit and one raider by a
   control-section hit" needs fixture-tuned sections; no player command aims at a section.
 - **G-7, the escort's map.** Q-CF-48's "the escort sees the worked block on its map" is the chart
@@ -1099,3 +1101,88 @@ ignored test to be run by a CI job, and an ignored test failing at its stop coul
 its own cut. G-4 is a later **bot cut**. G-5 stays CF.6's deferral. G-6 and G-7 are left for the
 story's finish. CF.7's story is finished, with its 256 and 512 a side runs and the bot's run,
 once CF.6b and the bot cut land.
+
+## 13. CF.6c as built (the armed rig lease, G-5)
+
+Built 2026-10-31 on `main` after CF.7, as G-5 (§12). It is doc 27b's FC.1 acquisition path for
+a player. What the cut had to decide where the rulings left it open, for the owner to object to:
+
+- **One lessor, several designs.** Occator's pool is no longer one design. The lane's
+  `vehicles` block keeps its own design (`+tv/lease` alone, the prospector) and gains `designs`:
+  further designs leased from the same shed at the same counter, each with its own unit, rigs,
+  registry prefix, terms, tools and gate (`+tv/lease <word>`). The port map's `VehiclesRow`
+  gains `designs`, one row of rigs per design in authored order. Designs are only ever
+  appended: the applier refuses a map whose laid-up designs differ from the authored ones. Every
+  reader that walked the pool's rows now walks every design's: the take, the readiness line, the
+  console boot, `rig_row`, the cap census, the registry-inspection hull set and the per-rig tool
+  lookups (a rig carries its own design's tools). The return, the repossession, the term settle
+  and the status lines read the lease record, which never needed the design.
+- **The armed design** (`tacsim.unit.tv_escort`, pack `tacsim.pack.tv_escort`): the arena's
+  stock line tank's combat profile verbatim (five sections, the 105 mm gun and the coaxial
+  machine gun, the stock sight, the line core, tracked), so it fights exactly as the simulator's
+  line tank and stands wherever a prospector drives. To be leasable it adds class `vehicle`
+  (never offered by the simulator lobby), an 8 t dry mass so it rides a Dray-P bay beside one
+  prospector, a one-seat cab and a small kit locker (never a hopper). Two of them, marks
+  `OWP-ES-01`/`02`, at Ceres Freeport, whose routes reach Ahuna Flank. Lane v16, relay seed v7
+  (re-signed to require it, entries unchanged).
+- **One console.** An armed rig's pilot console carries every cockpit channel (helm, sensors,
+  fire), so the seat `+tv/<n> board` takes drives, locks and fires; an unarmed rig's keeps the
+  helm alone. `+tv/<n> board` now finds the console that carries the helm rather than one that
+  carries only the helm.
+- **The lessee works a rig from its own cab.** `+tv` acts took the operator aboard the
+  carrier. A lessee physically in the rig's cab now works it too, as a crewed DT operator
+  already could, so the escort launches, drives and comes home from inside.
+- **The gate: the escort clearance** (`LeaseGate::Escort`, read before anything about the
+  hull). The prospecting licence must be in force; its grace does not serve. No lease of the
+  lessee's may be forfeit. One armed lease is live at a time. None may have been written off in
+  the last 28 IC days. Every fact comes from records the lease machinery already keeps; no new
+  licence family.
+- **Terms (provisional).** 2,500cr a term of 168 IC days and a 15,000cr deposit. A new First
+  Captain holds 22,500cr, so a fresh captain can lease an escort with fuel money left over.
+- **The write-off rule** (new). A leased rig wrecked out of its carrier's bay never comes back,
+  so it is written off: at the lessee's `+tv/<n> lease return go` (at the counter, wherever the
+  hull is) or at the charter's repossession. The lease ends. The deposit is captured to Occator
+  whatever the term. The record goes `Returned` with `written_off`. The wreck stays where it fell,
+  Occator's title, never pulled back to the shed. Its open excursion stays on the site and no
+  longer counts against any cap. A rig out on a site but not wrecked still holds the hull, as
+  doc 20 decision 13 has it. A damaged rig that comes home goes back with its damage. There is
+  no repair charge, which is provisional.
+- **Unchanged** (the bot cut can pin these): the line cockpit's sentences (`CONTACTS`, `LOCK`,
+  `FIRE`, `STATUS`, `DRIVE`); CF.2's promotion (`+field/fire`, `+field/mark`); CF.5's exit
+  (`+tv/<n> recover go` beside the ramp); Q-CF-17's `FIELD_OPEN` launch refusal; CF.3's
+  check-in. No doctrine, field-host promotion rule or bot file is touched.
+
+**The gate** (`tacsim/tests/shard_1/escort_lease.rs`) runs through the production command paths:
+
+1. A First Captain previews and signs `+tv/lease escort` at the Exchange, is refused a second
+   armed lease, and requests the operational loan (`+tv/1/permissions go`).
+2. They sail to Ahuna Flank, where a miner's prospector works. From the hold they enter the bay
+   (`+tv/bay in`) and board the escort, then `+focus` and `@station/handoff`. They launch it down
+   the ramp and drive it out beside the rig.
+3. They fire on an intruder's armed hull (`+field/fire E`). The site promotes; from the line
+   cockpit (`CONTACTS`, `STATUS`, `LOCK`, `FIRE`) their rounds land and the intruder's land on
+   them.
+4. They `DRIVE` to the ramp, `+tv/1 recover go` takes CF.5's exit and the recover into the bay,
+   and `+tv/1 launch go` is refused while the site is promoted (Q-CF-17). The damage is in the
+   hull's unit record (CF.3). The field demotes, they `+tv/1 leave`, lift for Ceres, walk ashore
+   and return the lease, deposit released.
+
+A second story wrecks the escort in a field. The lessee is extracted (`+sortie/extract`) and
+writes the wreck off at the counter. The wreck stays where it fell, and the clearance bars the
+next armed lease.
+
+**One stand-in.** The operational loan is the lessor's Org unit-grant action. tacsim's world
+harness cannot land it (a plain prospector's loan fails there the same way), and mush-server's
+`dt_preparation_plans` lands it in production composition. The story therefore asserts the
+loan's submission and the board's OperateCrew refusal, then makes the board's two writes by a
+staff hand (the cab, the helm billet).
+
+**Expensive to reverse:** the escort's registry marks (`OWP-ES-`, never re-issued once laid
+up), its pool of two (rigs are never retired, so it can grow but never shrink), the design word
+`escort` and its index (designs are only appended), and lane v16 with relay v7. The prices, the
+deposit, the 28-day bar and the dry mass are lane or code data and cheap to change.
+
+**Not built:** an armed hull for sale; repair of a returned hull's damage; Occator recovering a
+written-off wreck; a mixed bay's payload headroom check at lease time (an escort beside a
+prospector with a full hopper can exceed the Dray-P's ceiling, and the departure refuses as it
+would for any overload).

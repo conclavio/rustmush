@@ -11,6 +11,8 @@ use serde_json::Value;
 /// (idempotent; the manifest is the caller's). Doc 20 cut SM.12b: Occator's yard goes first
 /// (`super::drones::strip_yard`).
 pub fn strip_mill(doc: &mut Value) {
+    // Doc 32 cut CF.6c: v16's escort design first, so every strip chain rebuilds its older lane.
+    super::drones::strip_designs(doc);
     super::drones::strip_yard(doc);
     let Some(vendors) = doc["entries"]
         .as_object_mut()

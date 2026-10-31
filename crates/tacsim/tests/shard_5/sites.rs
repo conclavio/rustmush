@@ -1008,10 +1008,11 @@ fn sm2_the_lane_carries_six_sites() {
     // SM.5: v11 (the ore bids, the fixed references, the licence, Occator's raise; no new
     // entry). Doc 20 cut SM.10: v12 (the claim fees, the Pallas Syndicate org, Occator Rim's
     // paper; no new entry). Doc 20 cut SM.12a: v14 (the two mill rows; no new entry). Doc 20
-    // cut SM.12b: v15 (Occator Rim's yard; no new entry).
+    // cut SM.12b: v15 (Occator Rim's yard; no new entry). Doc 32 cut CF.6c: v16 (Occator's
+    // escort design; no new entry).
     assert_eq!(
-        LANE_VERSION, 15,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b"
+        LANE_VERSION, 16,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 15,
+    "version": 16,
     "kind": "campaign_seed",
-    "digest": "eeb95c7adc4db753041722854fcc9e312bd8c69c620d86dba3217adf870829b3",
+    "digest": "805579d06d0876d56228b93fba4d4b83418c07038c7c901688e5abffde0b7e25",
     "requires": []
   },
   "entries": {
@@ -2619,7 +2619,11 @@
         "vehicles": { "id": "occator.rig_lease", "org": "occator", "unit": "tacsim.unit.tv_prospector",
           "issuer": "tacsim.registry", "counter": "exchange", "shed": "Occator Vehicle Shed", "pool": 8,
           "registry_prefix": "OWP-TV-", "fee_major": 1400, "deposit_major": 5000, "term_ic_days": 168,
-          "tools": [ "tacsim.tool.drill_core_mk1", "tacsim.tool.scanner_mk1", "tacsim.tool.battery_mk1" ] },
+          "tools": [ "tacsim.tool.drill_core_mk1", "tacsim.tool.scanner_mk1", "tacsim.tool.battery_mk1" ],
+          "designs": [
+            { "word": "escort", "unit": "tacsim.unit.tv_escort", "pool": 2, "registry_prefix": "OWP-ES-",
+              "fee_major": 2500, "deposit_major": 15000, "term_ic_days": 168,
+              "tools": [ "tacsim.tool.battery_mk1" ], "gate": "escort" } ] },
         "licence": { "org": "freeport_registry", "fee_major": 2500, "term_ic_days": 168, "grace_ic_days": 3,
                      "claim_stake_major": 2000, "claim_term_major": 2000 }
       }
