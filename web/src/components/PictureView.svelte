@@ -786,9 +786,33 @@
   }
 
   function onCanvasClick(ev: MouseEvent): void {
-    if ((viewKind !== "iso25d" && viewKind !== "overhead") || !active || frame === null) return;
+    if (!active || frame === null) return;
     const coords = canvasNormCoords(ev);
     if (!coords) return;
+    if (viewKind === "cockpit") {
+      // HUD heading tape (`draw_tape` in `overlay.rs`): x = 0.20..0.80, y = 0.01..0.15, ±30° reach.
+      if (
+        coords.normX >= 0.2 &&
+        coords.normX <= 0.8 &&
+        coords.normY >= 0.01 &&
+        coords.normY <= 0.15
+      ) {
+        const now = Date.now();
+        const camMdeg = wrap360Mdeg(predictedHeadingMdeg(now) + app.picture.lookMdeg);
+        const rel = Math.max(-1, Math.min(1, (coords.normX - 0.5) / 0.3));
+        const targetMdeg = wrap360Mdeg(camMdeg + Math.round(rel * 30_000));
+        const deg = (((Math.round(targetMdeg / 1_000) % 360) + 360) % 360);
+        if (!hullStuck()) {
+          baseHeadingMdeg = predictedHeadingMdeg(now);
+          baseAtMs = now;
+          orderedHeadingMdeg = deg * 1_000;
+          orderedAtMs = now;
+        }
+        app.helm(helmLine(deg, 0));
+      }
+      return;
+    }
+    if (viewKind !== "iso25d" && viewKind !== "overhead") return;
     const rawCockpit = app.picture.cockpitData as { sight_m?: unknown } | null;
     const sightM = typeof rawCockpit?.sight_m === "number" ? rawCockpit.sight_m : 600;
     const desig = pickCanvasContact(
@@ -925,6 +949,43 @@
           >
         </span>
       {/if}
+      <span class="camera-pills" role="group" aria-label="camera view">
+        <button
+          type="button"
+          class="toggle cam-btn"
+          class:active={viewKind === "cockpit"}
+          aria-pressed={viewKind === "cockpit"}
+          title="First-person view (v)"
+          onclick={() => (app.picture.kind = "cockpit")}>1st</button
+        >
+        <button
+          type="button"
+          class="toggle cam-btn"
+          class:active={viewKind === "overhead"}
+          aria-pressed={viewKind === "overhead"}
+          title="Overhead view (v)"
+          onclick={() => (app.picture.kind = "overhead")}>Overhead</button
+        >
+        <button
+          type="button"
+          class="toggle cam-btn"
+          class:active={viewKind === "iso25d"}
+          aria-pressed={viewKind === "iso25d"}
+          title="2.5D tactical view (v)"
+          onclick={() => (app.picture.kind = "iso25d")}>2.5D</button
+        >
+        {#if app.picture.lookMdeg !== 0}
+          <button
+            type="button"
+            class="toggle cam-btn"
+            title="Centre look (c)"
+            onclick={() => {
+              lookTurn = 0;
+              lookTo(0);
+            }}>Centre</button
+          >
+        {/if}
+      </span>
       <span class="dim legend"
         >a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
         F1–F6 order</span
@@ -1080,6 +1141,23 @@
   .zoom-btn {
     padding: 0.05rem 0.35rem;
     font-size: 0.75rem;
+  }
+
+  .camera-pills {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+  }
+
+  .cam-btn {
+    padding: 0.05rem 0.4rem;
+    font-size: 0.74rem;
+  }
+
+  .cam-btn.active {
+    border-color: var(--accent, #6aa0ff);
+    color: var(--fg);
+    background: var(--bg-input);
   }
 
   .frame {

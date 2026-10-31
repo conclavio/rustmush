@@ -588,4 +588,30 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     expect(helm.mock.calls.at(-1)).toEqual(["HEADING 60 QUIET"]);
     unmount();
   });
+
+  it("switches camera modes via header pills and orders HEADING on HUD compass tape click", async () => {
+    const { picture, helm, unmount } = mount(fixtureFrame({ heading_deg: 90, power: "online" }));
+    await settle();
+    await frameTime();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Overhead" }));
+    expect(picture.kind).toBe("overhead");
+    await fireEvent.click(screen.getByRole("button", { name: "2.5D" }));
+    expect(picture.kind).toBe("iso25d");
+    await fireEvent.click(screen.getByRole("button", { name: "1st" }));
+    expect(picture.kind).toBe("cockpit");
+
+    const canvas = document.querySelector("canvas") as HTMLCanvasElement;
+    canvas.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        width: 1000,
+        height: 500,
+      }) as DOMRect;
+    // normX = 0.65 (halfway right on the 0.20..0.80 tape => +15° from HEADING=45° = 60°), normY = 0.05
+    await fireEvent.click(canvas, { clientX: 650, clientY: 25 });
+    expect(helm).toHaveBeenLastCalledWith("HEADING 60 QUIET");
+    unmount();
+  });
 });
