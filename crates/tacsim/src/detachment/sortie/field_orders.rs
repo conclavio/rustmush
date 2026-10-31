@@ -3,6 +3,7 @@ use super::model::OperationId;
 use mush_core::{ContactId, ObjId};
 use mush_tactics::detachment::{DetachmentRoster, Directive, OrderBook, OrderCheckpoint, Slot};
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +180,11 @@ pub enum FieldObjective {
     },
     Engage {
         contact: Option<ContactId>,
+        /// What the leader named besides a campaign contact (doc 32 cut CF.6): a presence row
+        /// on open ground, or a contact of the leader's own field observation. Absent on every
+        /// order written before CF.6.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<EngageAt>,
     },
     Withdraw,
     Screen {
@@ -192,6 +198,36 @@ pub enum FieldObjective {
         family: Option<crate::surface::geology::OreFamily>,
     },
 }
+/// **What an `ENGAGE` names** besides a campaign contact (doc 32 cut CF.6; Q-CF-7, Q-CF-15,
+/// §4a). Each is resolved by the recipient in its own observation when the order arrives, never
+/// handed over as a lock: a name the recipient cannot resolve is a lost contact, and the reply
+/// is NEGATIVE.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EngageAt {
+    /// A flight on the presence picture, by what the leader read (`NE`, `NE-near`): on open
+    /// ground the recipient finds the nearest flight that matches from its own unit, and the
+    /// order acts as the leader's Hostile mark on that flight's party (§4a).
+    Row {
+        /// The octant's abbreviation.
+        bearing: SmolStr,
+        /// The band's word, when the leader gave one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        band: Option<SmolStr>,
+    },
+    /// A contact in the leader's own observation inside a field (its designator when issued,
+    /// its row key in the leader's scope): the kernel re-keys it into the recipient's own
+    /// classified observations, or finds nothing there.
+    Contact {
+        /// The field's ordinal on its site.
+        ordinal: u32,
+        /// The row key in the leader's scope.
+        id: u64,
+        /// The designator the leader typed, for the report.
+        designator: SmolStr,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldPayload {

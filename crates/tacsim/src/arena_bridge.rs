@@ -5429,6 +5429,40 @@ fn offer_helm(
     }
 }
 
+/// **A roster's fence and one delivered order, offered to a field's task** (doc 32 cut CF.6;
+/// Q-CF-42): the DT.1b adapter's two messages — the control, then the command on the unit's
+/// `helm` channel — which the task applies at the head of its next pulse, fence first. Answers
+/// whether both were taken; a full or gone task takes neither and the host offers again.
+pub(crate) fn offer_field_detachment(
+    ctx: &mut Ctx<'_>,
+    task: MatchId,
+    control: crate::arena::detachment::DetachmentControl,
+    command: crate::arena::detachment::DetachmentCommand,
+) -> bool {
+    let unit = control.unit;
+    let Some(tasks) = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .filter(|registry| registry.match_of_unit(unit) == Some(task))
+        .map(|registry| registry.tasks.clone())
+    else {
+        return false;
+    };
+    if tasks
+        .offer(task, ArenaMsg::DetachmentControl(control))
+        .is_err()
+    {
+        return false;
+    }
+    offer_helm(
+        ctx,
+        task,
+        unit,
+        IntentKind::DetachmentCommand(Box::new(command)),
+    )
+    .is_ok()
+}
+
 /// Offer the current host fences before controller commands. A full queue keeps
 /// the pending message for the next tick. Queue delivery never claims execution.
 pub(crate) fn flush_detachment_dispatches(ctx: &mut Ctx<'_>) {

@@ -64,8 +64,10 @@ pub mod crew;
 pub(crate) mod exit;
 pub(crate) mod ground;
 pub(crate) mod known;
+pub(crate) mod orders;
 pub(crate) mod parties;
 pub mod provider;
+pub mod raiders;
 pub mod record;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -202,6 +204,15 @@ pub fn field_of_unit(w: &World, unit: ObjId) -> Option<CanonicalId> {
     CanonicalId::new(field.site.as_str()).ok()
 }
 
+/// **The live record of the field running on `site`** (doc 32 cut CF.6: what CF.7 and the
+/// stories read to name a party), when one runs.
+#[must_use]
+pub fn live_on(w: &World, site: &CanonicalId) -> Option<FieldLive> {
+    w.module_state::<FieldBook>()?
+        .hosted(site)
+        .map(|hosted| hosted.live.clone())
+}
+
 /// The `[tacsim.field]` the server runs under.
 #[must_use]
 pub(crate) fn config(w: &World) -> crate::config::FieldConfig {
@@ -257,6 +268,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(exit::ExitBook::default());
     reg.state(exit::OwedExits::default());
     reg.state(crew::CrewBook::default());
+    reg.state(orders::Offered::default());
     // `+field` submits the host's authoritative action: the cockpit's command lane, then the
     // module's own default restored for whatever registers after.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
@@ -271,6 +283,8 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(commands::command),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // Staff seed a fixture raider (doc 32 cut CF.6, Q-CF-44): a world write, post-image.
+    reg.command(raiders::spec(), Arc::new(raiders::command))?;
     reg.tick(
         FIELD_TICK,
         TickCadence::Coarse(FIELD_TICK_PERIOD),

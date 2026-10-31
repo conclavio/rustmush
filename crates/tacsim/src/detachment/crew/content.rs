@@ -176,6 +176,14 @@ mod tests {
             leader.terms.mission_scope,
             super::super::NpcMissionScope::DetachmentCommander
         );
+        // Doc 32 cut CF.6 (doc 27b FC.1): the escort's offer is a combat contract alone.
+        let escort_role = id("crew.rook_adeyemi");
+        let escort = definition(&pack, &escort_role, pack.entry(&escort_role).unwrap()).unwrap();
+        assert_ne!(escort.npc, worker.npc);
+        assert_eq!(
+            escort.terms.duties,
+            std::collections::BTreeSet::from([super::super::CrewDuty::Combat])
+        );
     }
     #[test]
     fn malformed_or_duplicate_consent_refuses_before_content_creates_people() {

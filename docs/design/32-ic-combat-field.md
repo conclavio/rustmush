@@ -956,3 +956,69 @@ any encoded state; the site record and the voyage document gain optional fields,
 
 Not built in CF.5: **towing** a casualty home (FO-13; 27a H2); **ejection, capture and treatment**
 (Q-CF-38 rules them out of the first version); a carrier departing **during** a field (F-6; CF.3 refuses it, `InField`, and that refusal stands ahead of the bay gate).
+
+## 11. CF.6 as built (NPC pilots and raiders)
+
+Built 2026-10-31 on `main` at `d4d81c89`. What the cut had to decide where the rulings left it
+open, for the owner to object to:
+
+- **A hired NPC keeps its seat; its hull is the mind's.** At admission a unit whose seated
+  occupant is an NPC opens `Controller::Mind`, flown by its ROM seal's doctrine, while the NPC
+  stays bound to its station. The arena therefore builds the NPC's own frame, and the host reads
+  every answer off what the NPC sees, never off the kernel's truth (Q-CF-42). A resume re-binds
+  the seat and never hands it the controls.
+- **The executor is the DT.1b adapter, fed from the roster's own book.** A delivered order whose
+  unit stands in a field reaches the kernel as the adapter's two messages (the fence, then the
+  command), applied at the head of the next pulse (`field::orders`). The fence epoch is derived
+  from the roster's revision and command term, so a restart re-offers the same fence and the
+  kernel refuses the duplicate. An IC deadline becomes an arena deadline at the world's rate.
+- **When the NPC answers.** WILCO once its frame shows the order standing on its own order row;
+  NEGATIVE when the order named a contact and the re-keyed objective holds none (a lost contact
+  is uncertainty, never a guessed lock), and at once for what a field cannot execute: a mining
+  run, a campaign-sensor contact, a presence row, a contact from another field, support for a
+  unit outside the field or the party. A cancellation is answered WILCO once the kernel takes
+  it. The surface executor stays surface-only.
+- **How a leader names a target.** Inside a field `ENGAGE <designator>` names a contact of the
+  leader's own cockpit (Q-CF-11's field-wide designator); the order carries the row key in the
+  leader's scope and the kernel re-keys it into the recipient's classified rows. On open ground
+  `ENGAGE <octant>` or `ENGAGE <octant>-<band>` names a presence row, resolved by the recipient
+  from its own unit. A campaign contact's key prefix keeps working where the campaign sensors
+  hold one. New optional `at` on `FieldObjective::Engage`; old orders read unchanged.
+- **ENGAGE on open ground is the leader's mark** (§4a): the recipient resolves the row and calls
+  `field::mark_from_order` as the order's issuer; the WILCO follows the mark. A row that finds no
+  flight, or a mark the host refuses, is NEGATIVE.
+- **HOLD at launch** (Q-CF-41): `FieldHost.weapons_hold`, true for the IC host, opens every seat
+  at weapons hold; the simulator keeps FREE. The gate binds only a pilot's `FIRE … WHEN` rules,
+  as G.12a built it; doctrine obeys a delivered `HOLD FIRE` (`Arena::holds_fire`) from the pulse
+  the command lands.
+- **Jamming reaches the roster's transport.** A detachment message and its reply settle only
+  between two units at one place; a declared jamming level at that place now holds them there
+  as it holds any envelope (`mush-propagation`'s pass, R4: delivery-affecting only, never lost).
+  Before this cut `@prop/jam` could not touch a field order at all.
+- **The raider** (Q-CF-44) is content, `content/field/raiders.json`: an NPC leader and its armed
+  hulls at a named site, seeded by staff (`@field/raiders <id>`), refused while any of its hulls
+  stands (no respawn). A staff-owned attribute on each hull keys them into one party
+  (`PartyKey::Fixture { leader }`) whose leader holds a standing Hostile mark on every other
+  party, so the raider fights whoever it finds with no player connected. Its hulls fly their ROM
+  doctrine. Doctrine never opens a field: the leader marks through the ordinary door. The shipped
+  raider is two line tanks at Ahuna Flank (provisional; Q-CF-45 budgets six).
+- **The combat-duty offer** is a third Slack Line person, Rook Adeyemi, under a combat contract
+  alone (`tacsim.crew.ceres` version 2). The surface host admits a combat roster beside a mining
+  one, and the contract must name the roster's own duty; a combat roster never mines.
+
+Not built in CF.6: **the armed rig lease** (doc 27b FC.1's acquisition path). Occator's lease
+machinery is one pool of one design at one programme port; a second, armed design needs the
+pool, the shed, the take, the return, the repossession and the status lines generalized, which
+is its own cut. Until then the escort flies a staff- or fixture-made armed hull, as every DT
+story before it did. An ordered WITHDRAW in a field is the kernel's Withdraw (break off, hold
+fire); it does not yet drive the NPC to its ramp and take CF.5's exit, and the fixture raider
+has no ramp of its own, so a raider still leaves a field by dying.
+
+**Found while building, for CF.7:** with a carrier admitted (CF.3), the shipped raider never
+fires. The stock doctrine's stand (`stock_mind.rs`) takes the single best-ranked Hostile and fires
+only if it has a line to it, never falling back to the next one; a carrier on its pad ranks first
+from where the raider stands, has no line, and holds every raider gun silent for the whole field.
+The raider gate therefore takes the prospector's carrier off the ground before the raid. Ranking
+only the hostiles with a line is a kernel change that can move the OOC practice hashes, so it is
+left to its own cut rather than slipped in here; CF.7's story, where the miners' carrier stands
+on the pad, needs it first.

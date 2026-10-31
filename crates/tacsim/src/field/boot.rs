@@ -189,6 +189,11 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
             {
                 registry.bind_pilot(*pilot, task, row.unit);
             }
+            // A hired NPC's hull stays the doctrine's (doc 32 cut CF.6): bound for its frame,
+            // never handed the seat's control.
+            if super::orders::is_npc(ctx.w, *pilot) {
+                continue;
+            }
             crate::arena_bridge::reseat(ctx, row.unit, *pilot);
             ctx.out.sys_to_actor(
                 *pilot,

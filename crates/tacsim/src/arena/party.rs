@@ -401,6 +401,11 @@ pub struct FieldHost {
     /// is in its field. `false` is the OOC range's roster rule: a match fields armour, walkers
     /// and drones only (doc 18 D-18-29), capped per side by `[tacsim.arena].max_units_by_class`.
     pub every_class: bool,
+    /// **Every seat opens at weapons hold** (doc 32 cut CF.6; Q-CF-41): the IC host's rule, so
+    /// an accidental first shot never declares hostility; the pilot sets FREE. Doctrine and NPC
+    /// pilots are untouched by the gate and obey a delivered `HOLD FIRE` instead
+    /// ([`crate::arena::state::Arena::holds_fire`]). `false` is the simulator's FREE (Q-21-9).
+    pub weapons_hold: bool,
 }
 
 impl FieldHost {
@@ -414,6 +419,7 @@ impl FieldHost {
             friends: Vec::new(),
             end: EndCondition::Elimination,
             every_class: false,
+            weapons_hold: false,
         }
     }
 

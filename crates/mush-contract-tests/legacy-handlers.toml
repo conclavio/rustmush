@@ -541,6 +541,12 @@ family = "faction.registry"
 note = "Staff faction administration (@faction): creates, destroys, configures, binds, or inspects bounded faction:<id>, member:<faction>:<char>, and control:<region> documents on the faction module's compatibility post-image lane."
 
 [[handler]]
+name = "@field"
+category = "legacy-post-image"
+family = "tacsim.field.raider"
+note = "doc 32 cut CF.6 (Q-CF-44): staff (SIM_ADMIN or Royalty) seed a fixture raider authored as content (content/field/raiders.json). A bare @field/raiders lists the authored raiders and writes nothing. @field/raiders <id> makes the raider's NPC leader and each armed hull (a Thing, its tactics.unit through mush_tactics::module::create_unit, placed on the named site's domain through mush_sim::place) and stamps one GOD-owned TACSIM.FIELD.RAIDER attribute on each hull naming the raider and its leader -- the whole of the raider's state, read by the field host's admission to key the hulls into one party. Refused while any hull of that raider stands (no respawn). It takes no part in authority or prepared mechanics: no action, no offer, no legality reads it; a field opens only through +field's authoritative door. The declared family is where the raider's membership moves when fixtures become typed records."
+
+[[handler]]
 name = "@find"
 category = "read-only"
 note = "Object name search (@find): lists objects matching a substring or glob pattern; no durable mutation."

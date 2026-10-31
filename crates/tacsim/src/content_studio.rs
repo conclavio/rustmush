@@ -2308,7 +2308,7 @@ mod tests {
             catalog
                 .get("npcs")
                 .and_then(Value::as_array)
-                .is_some_and(|a| a.len() == 56)
+                .is_some_and(|a| a.len() == 57)
         );
         check!(
             catalog

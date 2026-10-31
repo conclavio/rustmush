@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "brief": "Doc 32 Q-CF-44: fixture-seeded opposing forces, authored as content. A raider is a party of armed hulls one NPC leader stands behind, seeded on a named frontier site by staff (@field/raiders <id>). It flies the kernel's doctrine (each hull's ROM seal, Standard Doctrine) and its leader holds a standing Hostile mark on every other party in any field it is admitted to. No generator, no respawn, no patrol: a seeded raider stays until it is destroyed, and seeding it again is refused while any of its hulls stands.",
+  "raiders": [
+    {
+      "id": "tacsim.raider.ahuna_skulks",
+      "label": "Skulk raiders",
+      "leader": "Varga Teodor",
+      "site": "ahuna_port",
+      "units": [
+        { "unit": "tacsim.unit.line_tank", "name": "Skulk One", "cell": [160, 124], "heading_mdeg": 270000 },
+        { "unit": "tacsim.unit.line_tank", "name": "Skulk Two", "cell": [160, 128], "heading_mdeg": 270000 }
+      ]
+    }
+  ]
+}

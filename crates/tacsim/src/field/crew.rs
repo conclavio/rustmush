@@ -314,6 +314,8 @@ fn organizer_of(w: &World, site: &CanonicalId, unit: ObjId) -> Option<ObjId> {
         .and_then(|row| match row.key {
             super::PartyKey::Operation { operation } => Some(operation.organizer),
             super::PartyKey::Unit { .. } => row.leader,
+            // A fixture raider's hulls stand behind its NPC leader (doc 32 cut CF.6).
+            super::PartyKey::Fixture { leader } => Some(leader),
         })
 }
 

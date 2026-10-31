@@ -155,15 +155,77 @@ fn visit(
         Directive::Objective(p) => Some(&p.objective),
         Directive::Cancel => None,
     };
-    let supported = matches!(
-        objective,
-        None | Some(
-            FieldObjective::Hold
-                | FieldObjective::Advance { .. }
-                | FieldObjective::Withdraw
-                | FieldObjective::Mine { .. }
-        )
-    );
+    // Doc 32 cut CF.6: a unit standing in a field flies the doctrine under its order; the
+    // field's executor offers it to the kernel and reads the answer off the NPC's own frame.
+    if let Some(site) = crate::field::field_of_unit(ctx.w, unit) {
+        if !valid || negative {
+            return Step::Idle;
+        }
+        let step = crate::field::orders::step(ctx, &site, (unit, actor), &roster, &delivered);
+        return match step {
+            crate::field::orders::Step::Idle => Step::Idle,
+            crate::field::orders::Step::Waiting => Step::Held,
+            crate::field::orders::Step::Reply(response) => answer(
+                ctx,
+                fire,
+                walk,
+                (h, &op),
+                (unit, actor, slot, sequence),
+                response,
+            ),
+        };
+    }
+    // §4a: a delivered ENGAGE naming a presence row on open ground is its leader's Hostile
+    // mark on that flight's party, seen from this unit; the answer follows the mark.
+    if valid
+        && !negative
+        && delivered.acknowledgement.is_none()
+        && let Some(engage @ FieldObjective::Engage { at: Some(_), .. }) = objective
+        && record
+            .as_ref()
+            .is_none_or(|r| r.act.is_none() && r.queued.is_none() && r.run.is_none())
+    {
+        if walk
+            .replies
+            .get(&unit)
+            .is_some_and(|(seq, until)| *seq == sequence && *until > now)
+        {
+            return Step::Held;
+        }
+        let marked = crate::field::orders::surface_mark(
+            ctx,
+            &flight.site,
+            unit,
+            delivered.order.issuer,
+            engage,
+        );
+        if let Err(error) = &marked {
+            tracing::debug!(unit = unit.0, %error, "NPC surface ENGAGE refused");
+        }
+        let response = if matches!(marked, Ok(true)) {
+            Response::Wilco
+        } else {
+            Response::Negative
+        };
+        return answer(
+            ctx,
+            fire,
+            walk,
+            (h, &op),
+            (unit, actor, slot, sequence),
+            response,
+        );
+    }
+    // A mining run is a mining roster's (a combat contract never mines, doc 27b FC.1).
+    let mines = op.roster.duty == crate::detachment::crew::CrewDuty::Mining;
+    let supported = match objective {
+        None
+        | Some(FieldObjective::Hold | FieldObjective::Advance { .. } | FieldObjective::Withdraw) => {
+            true
+        }
+        Some(FieldObjective::Mine { .. }) => mines,
+        Some(_) => false,
+    };
     let stop = !valid
         || negative
         || failed
@@ -292,6 +354,42 @@ fn visit(
                 Ok(true)
             }
         }
+    })
+}
+
+/// **One reply on the transport**, once per order sequence while it is in flight: the NPC's
+/// WILCO or NEGATIVE, submitted as the NPC.
+fn answer(
+    ctx: &mut Ctx<'_>,
+    fire: &mut Fire,
+    walk: &mut Walk,
+    (h, op): (&SortieHandles, &super::OperationRecord),
+    (unit, actor, slot, sequence): (ObjId, ObjId, mush_tactics::detachment::Slot, u64),
+    response: Response,
+) -> Step {
+    let now = ctx.w.world_ic_now().at;
+    if walk
+        .replies
+        .get(&unit)
+        .is_some_and(|(seq, until)| *seq == sequence && *until > now)
+    {
+        return Step::Held;
+    }
+    walk.replies
+        .insert(unit, (sequence, now.saturating_add(60)));
+    dispatch(ctx, fire, unit, actor, |ctx| {
+        let request = field_orders::request(
+            ctx,
+            h,
+            op,
+            actor,
+            field_orders::Act::Respond {
+                slot,
+                sequence,
+                response,
+            },
+        )?;
+        runtime::submit(ctx, runtime::Command::Message(Box::new(request)))
     })
 }
 
