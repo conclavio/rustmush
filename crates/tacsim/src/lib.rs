@@ -164,6 +164,7 @@ pub mod port_tick;
 pub(crate) mod procurement;
 pub mod quest;
 pub mod record;
+pub mod refit;
 pub mod relay_billing;
 pub mod relay_commerce;
 pub mod relay_content;
