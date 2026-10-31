@@ -4243,6 +4243,58 @@ fn watched_ground(
 /// (`crate::match_::replay::ground_for`), so the first `SIM REPLAY` of a
 /// remembered match after a boot is what makes its map answerable. The map is
 /// still pulled and never pushed.
+/// Parse an optional `"window"` parameter on `arena.map`: either `[x0, y0, w, h]`
+/// or `{"x": x0, "y": y0, "width": w, "height": h}` (doc 16 §11; doc 30 §7,
+/// §11 WG.6; `D-30-7`, `Q-30-6`).
+fn parse_map_window(params: &serde_json::Value) -> Option<(u16, u16, u16, u16)> {
+    let win = params.get("window")?;
+    if let Some(arr) = win.as_array()
+        && arr.len() == 4
+    {
+        let x0 = u16::try_from(arr[0].as_u64()?).ok()?;
+        let y0 = u16::try_from(arr[1].as_u64()?).ok()?;
+        let w = u16::try_from(arr[2].as_u64()?).ok()?;
+        let h = u16::try_from(arr[3].as_u64()?).ok()?;
+        return Some((x0, y0, w, h));
+    }
+    if let Some(obj) = win.as_object() {
+        let x0 = u16::try_from(obj.get("x").or_else(|| obj.get("x0"))?.as_u64()?).ok()?;
+        let y0 = u16::try_from(obj.get("y").or_else(|| obj.get("y0"))?.as_u64()?).ok()?;
+        let w = u16::try_from(obj.get("width").or_else(|| obj.get("w"))?.as_u64()?).ok()?;
+        let h = u16::try_from(obj.get("height").or_else(|| obj.get("h"))?.as_u64()?).ok()?;
+        return Some((x0, y0, w, h));
+    }
+    None
+}
+
+/// Build an `arena.map` answer for `ground`, honoring an explicit `window` when
+/// supplied or focusing on `focus` (the pilot's cell or the arena's centre) when
+/// a 512×512 or steep 256×256 ground needs windowing to stay within
+/// [`crate::match_::cockpit::MAP_MAX_BYTES`] (doc 30 §7, §11 WG.6; `D-30-7`).
+fn map_answer(
+    match_id: MatchId,
+    ground: &crate::arena::state::ArenaDefinition,
+    window: Option<(u16, u16, u16, u16)>,
+    focus: Option<(u16, u16)>,
+) -> serde_json::Value {
+    match window {
+        Some(win) => crate::match_::cockpit::map_frame_window_bounded(
+            match_id,
+            ground.id.as_str(),
+            &ground.terrain,
+            &ground.key_spots,
+            win,
+        ),
+        None => crate::match_::cockpit::map_frame_for_focus(
+            match_id,
+            ground.id.as_str(),
+            &ground.terrain,
+            &ground.key_spots,
+            focus,
+        ),
+    }
+}
+
 struct MapQuery;
 
 impl mush_core::QueryHandler for MapQuery {
@@ -4280,33 +4332,27 @@ impl mush_core::QueryHandler for MapQuery {
                 data,
             });
         }
+        let requested_window = parse_map_window(params);
         let data = match seated_ground(w, actor) {
             // (1) 16b cut V.1: the ground's named spots ride the map, because
             // they are surveyed ground exactly as the terrain is.
-            Some((match_id, ground)) => crate::match_::cockpit::map_frame(
-                match_id,
-                ground.id.as_str(),
-                &ground.terrain,
-                &ground.key_spots,
-            ),
+            Some((match_id, ground)) => {
+                let focus = w
+                    .module_state::<ArenaRegistry>()
+                    .and_then(|reg| reg.last_frame(actor))
+                    .and_then(|held| held.frame.cell);
+                map_answer(match_id, ground, requested_window, focus)
+            }
             // (2) **16b cut I.4**: a watcher (still staff) is answered the
             // ground of the match they watch, under that match's id.
             None => match watched_ground(w, actor) {
-                Some((match_id, ground)) => crate::match_::cockpit::map_frame(
-                    match_id,
-                    ground.id.as_str(),
-                    &ground.terrain,
-                    &ground.key_spots,
-                ),
+                Some((match_id, ground)) => map_answer(match_id, ground, requested_window, None),
                 // (3) 16b cut I.1: the finished match the actor's replay cursor
                 // names, drawn on the ground it was fought on.
                 None => match crate::match_::replay::cursor_ground(w, actor) {
-                    Some((match_id, ground)) => crate::match_::cockpit::map_frame(
-                        match_id,
-                        ground.id.as_str(),
-                        &ground.terrain,
-                        &ground.key_spots,
-                    ),
+                    Some((match_id, ground)) => {
+                        map_answer(match_id, &ground, requested_window, None)
+                    }
                     // (4) Nothing about any match: not its id, not its ground,
                     // not whether one is running at all.
                     None => crate::match_::cockpit::map_unseated(),

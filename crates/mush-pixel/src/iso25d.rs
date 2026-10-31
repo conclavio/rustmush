@@ -49,7 +49,8 @@ use crate::bake::{self, material_from_code};
 #[cfg(feature = "encode")]
 use crate::caps::CellSize;
 use crate::cockpit::{
-    ARENA_MAP_FEED, COCKPIT_FEED, contact_health, contact_kind, map_from_feed, terrain_from_feed,
+    ARENA_MAP_FEED, COCKPIT_FEED, MapStamp, contact_health, contact_kind, map_from_feed, map_stamp,
+    terrain_from_feed,
 };
 use crate::frame::{Frame, Rgb};
 use crate::heightfield::Terrain;
@@ -1233,7 +1234,7 @@ fn pick_iso_size(look: usize, proj: IsoProj, screen_y: i32, vp_h: usize) -> u8 {
 /// Stateful 2.5D tactical producer and retained Kitty graphics compositor.
 #[derive(Debug)]
 pub struct Iso25DPicture {
-    match_id: Option<Option<i64>>,
+    match_id: Option<MapStamp>,
     map: Map,
     terrain: Option<Terrain>,
     canvas: Option<TerrainCanvas>,
@@ -1366,20 +1367,24 @@ impl Iso25DPicture {
     }
 
     /// Synchronise the cached heightfield terrain from `feeds` (`arena.map`),
-    /// re-baking only when the match ID changes or no map was loaded yet.
+    /// re-baking only when the [`MapStamp`] (`match`, `origin_cell`, `size`)
+    /// changes or no map was loaded yet.
     pub fn sync_map(&mut self, feeds: &dyn Feeds) {
         let raw_map = feeds.feed(ARENA_MAP_FEED);
-        let wanted = raw_map.and_then(|m| m.get("match").and_then(Value::as_i64));
-        let keep = self.match_id == Some(wanted) && (raw_map.is_some() || wanted.is_none());
+        let wanted = map_stamp(raw_map);
+        let keep = self.match_id == Some(wanted) && (raw_map.is_some() || wanted.0.is_none());
         if !keep {
+            let same_match = self.match_id.is_some_and(|prev| prev.0 == wanted.0);
             self.map = raw_map.map_or_else(|| Map::new(512, 512, 1000), map_from_feed);
             self.terrain = raw_map.and_then(terrain_from_feed);
             self.match_id = Some(wanted);
             self.canvas = None;
-            self.contact_pids.clear();
-            self.next_contact_pid = PLACEMENT_UNIT_BASE + 1;
-            self.last_fx_t_ms = None;
-            self.active_fx.clear();
+            if !same_match {
+                self.contact_pids.clear();
+                self.next_contact_pid = PLACEMENT_UNIT_BASE + 1;
+                self.last_fx_t_ms = None;
+                self.active_fx.clear();
+            }
             #[cfg(feature = "encode")]
             {
                 self.terrain_uploaded = false;
@@ -1416,7 +1421,7 @@ impl Iso25DPicture {
     pub fn set_map(&mut self, map: Map) {
         self.map = map;
         self.terrain = None;
-        self.match_id = Some(None);
+        self.match_id = Some((None, (0, 0), (0, 0)));
         self.canvas = None;
         self.contact_pids.clear();
         self.next_contact_pid = PLACEMENT_UNIT_BASE + 1;
@@ -3597,6 +3602,198 @@ mod tests {
                 assert_ne!(iso_hashes.get(i), iso_hashes.get(j));
                 assert_ne!(fp_hashes.get(i), fp_hashes.get(j));
             }
+        }
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn wg6_windowed_512_arena_map_and_eight_tanks_in_a_row_draw_across_all_three_views() {
+        use crate::cockpit::CockpitPicture;
+        use crate::overhead::OverheadPicture;
+        use std::collections::HashMap;
+
+        struct MapFeeds(HashMap<String, Value>);
+        impl Feeds for MapFeeds {
+            fn feed(&self, name: &str) -> Option<&Value> {
+                self.0.get(name)
+            }
+        }
+
+        // 256×256 window at origin_cell [128, 128] inside a 512×512 arena (`extent: [512, 512]`).
+        let make_window = |ox: u32, oy: u32, biome: &str| -> Value {
+            json!({
+                "match": 77,
+                "surface": "tacsim.arena.mega_ground",
+                "biome": biome,
+                "width": 256,
+                "height": 256,
+                "origin_cell": [ox, oy],
+                "extent": [512, 512],
+                "cell_cm": 1000,
+                "elev": encode_test_elev(256, 256),
+                "legend": [["\"", "grass"], ["=", "road"], [".", "ground"]],
+                "spots": [
+                    { "letter": "A", "name": "Centre Hub", "cell": [256, 256] },
+                    { "letter": "B", "name": "South Gate", "cell": [64, 64] }
+                ],
+                "rows": (0..256)
+                    .map(|y| {
+                        if y == 128 {
+                            json!([["=", 256]])
+                        } else {
+                            json!([["\"", 256]])
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        // 8 contacts in a row + own unit = 9 units sharing one model sheet (`line_tank`)
+        // via distinct `p=` placements (`p=100` for own unit, `p=101..=108` for the 8 contacts).
+        let contacts: Vec<Value> = (0..8)
+            .map(|i| {
+                let dx_m = -105.0 + (i as f64) * 30.0;
+                let dy_m = 40.0;
+                let range_m = (dx_m * dx_m + dy_m * dy_m).sqrt();
+                let bearing_deg = (300.0 + (i as f64) * 15.0) % 360.0;
+                json!({
+                    "id": format!("c-{i}"),
+                    "designator": format!("R{}", (b'A' + i as u8) as char),
+                    "class": "red",
+                    "unit_type": "tacsim.unit.line_tank",
+                    "friendly": false,
+                    "bearing_deg": bearing_deg,
+                    "range_m": range_m,
+                    "cell": [(256 + (dx_m / 10.0).round() as i64), 260],
+                    "facing": "front",
+                    "moving": true,
+                    "health": "intact"
+                })
+            })
+            .collect();
+
+        let cockpit = json!({
+            "match": 77,
+            "seated": true,
+            "team": "blue",
+            "callsign": "BA",
+            "unit_type": "tacsim.unit.line_tank",
+            "cell": [256, 256],
+            "x_cm": 256_500,
+            "y_cm": 256_500,
+            "z_cm": 600,
+            "heading_mdeg": 0,
+            "speed_cms": 800,
+            "power": "online",
+            "sight_m": 600,
+            "contacts": contacts
+        });
+
+        let mut feeds = MapFeeds(HashMap::new());
+        feeds.0.insert(COCKPIT_FEED.to_string(), cockpit);
+        feeds.0.insert(
+            ARENA_MAP_FEED.to_string(),
+            make_window(128, 128, "temperate"),
+        );
+        let look = Look::default();
+
+        // 1. First-person (`CockpitPicture`), Overhead (`OverheadPicture`), and 2.5D (`Iso25DPicture`)
+        //    all render at world coordinates `(256_500, 256_500)` cm on the 512×512 map.
+        let mut fp = CockpitPicture::new();
+        let mut fp_frame = Frame::new(320, 200);
+        assert!(fp.draw(&mut fp_frame, &feeds, &look));
+        let fp_hash_center = fp_frame.hash();
+
+        let mut ov = OverheadPicture::new();
+        let mut ov_frame = Frame::new(320, 200);
+        assert!(ov.draw(&mut ov_frame, &feeds, &look));
+        let ov_hash_center = ov_frame.hash();
+
+        let mut iso = Iso25DPicture::new();
+        let mut iso_frame = Frame::new(320, 200);
+        assert!(iso.draw(&mut iso_frame, &feeds, &look));
+        let iso_hash_center = iso_frame.hash();
+
+        // 2. Kitty retained compositor (`draw_kitty`): 8+ tanks in a row share one `SheetKey`
+        //    upload for `line_tank` Red and place all 8 contacts via `p=101..=108` + own unit `p=100`.
+        let mut kitty_iso = Iso25DPicture::new();
+        let area = (0, 0, 80, 24);
+        let cell = Some(CellSize {
+            width: 8,
+            height: 16,
+        });
+        let (_vp, bytes_1) = kitty_iso
+            .draw_kitty(&feeds, &look, area, cell, false)
+            .expect("first kitty tick");
+        let text_1 = String::from_utf8_lossy(&bytes_1);
+        assert!(text_1.contains("a=p,i=100,p=1,"), "terrain placement p=1");
+        assert!(text_1.contains("p=100,"), "own unit placement p=100");
+        for pid in 101..=108 {
+            assert!(
+                text_1.contains(&format!("p={pid},")),
+                "contact placement p={pid} present"
+            );
+        }
+        // Only two unit sheets uploaded (1 Blue for own unit + 1 Red shared by all 8 Red tanks).
+        assert_eq!(kitty_iso.uploaded_sheets.len(), 2);
+
+        // Steady-state scroll tick stays well within doc 21 §5's SSH byte budget (< 4 KiB/tick).
+        let look_scroll = Look {
+            dx_cm: 120,
+            dy_cm: 80,
+            ..Look::default()
+        };
+        let (_vp, bytes_2) = kitty_iso
+            .draw_kitty(&feeds, &look_scroll, area, cell, false)
+            .expect("second kitty tick");
+        let text_2 = String::from_utf8_lossy(&bytes_2);
+        assert!(
+            !text_2.contains("a=t,"),
+            "scrolling re-uploads zero terrain or unit sheets"
+        );
+        assert!(
+            bytes_2.len() < 4_096,
+            "steady-state tick stays well within SSH byte budget: {} B",
+            bytes_2.len()
+        );
+
+        // 3. Shifting the `arena.map` window (`origin_cell: [0, 0]`) within the same match
+        //    triggers a rebake in all three views while keeping contact `placement_id`s stable.
+        feeds
+            .0
+            .insert(ARENA_MAP_FEED.to_string(), make_window(0, 0, "mars"));
+        assert!(fp.draw(&mut fp_frame, &feeds, &look));
+        assert_ne!(
+            fp_frame.hash(),
+            fp_hash_center,
+            "FP rebaked on window shift"
+        );
+        assert!(ov.draw(&mut ov_frame, &feeds, &look));
+        assert_ne!(
+            ov_frame.hash(),
+            ov_hash_center,
+            "Overhead rebaked on window shift"
+        );
+        assert!(iso.draw(&mut iso_frame, &feeds, &look));
+        assert_ne!(
+            iso_frame.hash(),
+            iso_hash_center,
+            "2.5D rebaked on window shift"
+        );
+        let (_vp, bytes_3) = kitty_iso
+            .draw_kitty(&feeds, &look, area, cell, false)
+            .expect("window shift kitty tick");
+        let text_3 = String::from_utf8_lossy(&bytes_3);
+        assert!(
+            text_3.contains("a=t,"),
+            "window shift re-uploads the terrain canvas"
+        );
+        for pid in 101..=108 {
+            assert_eq!(
+                kitty_iso.contact_pids.get(&format!("c-{}", pid - 101)),
+                Some(&pid),
+                "contact placement_id stays stable across window shifts"
+            );
         }
     }
 }

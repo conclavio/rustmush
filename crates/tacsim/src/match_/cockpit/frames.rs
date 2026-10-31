@@ -859,14 +859,58 @@ pub(crate) fn terrain_rows(
 /// pilot at check-out), and they name no unit. A spot past [`SPOT_LETTERS`] —
 /// which the load-time cap refuses — is left out rather than drawn with no
 /// letter. [`MAP_VERSION`] stays `1`: a field added is not a version.
+/// Candidate square window sides (cells) tried by [`map_frame_for_focus`] when a
+/// whole arena exceeds [`mush_atlas::cells::MAX_TILE_SIDE`] or [`MAP_MAX_BYTES`]
+/// (doc 30 §7, §11 WG.6; `D-30-7`, `Q-30-6`).
+pub const MAP_WINDOW_SIDES: [u16; 6] = [256, 192, 160, 128, 96, 64];
+
+/// Maximum encoded byte length of `"rows"` alone on a 256×256 arena before it
+/// is treated as an unwindowable pathological RLE grid rather than a valid
+/// ground whose relief (`"elev"`) pushed it past [`MAP_MAX_BYTES`].
+const MAX_WINDOWABLE_ROWS_BYTES: usize = 64 * 1024;
+
+/// Center a square window of `side` cells on `focus`, clamped to `terrain`.
 #[must_use]
-pub fn map_frame(
+pub fn window_centered_on(
+    terrain: &ArenaTerrain,
+    side: u16,
+    focus: (u16, u16),
+) -> (u16, u16, u16, u16) {
+    let w = side.max(1).min(terrain.width());
+    let h = side.max(1).min(terrain.height());
+    let x0 = focus
+        .0
+        .saturating_sub(w / 2)
+        .min(terrain.width().saturating_sub(w));
+    let y0 = focus
+        .1
+        .saturating_sub(h / 2)
+        .min(terrain.height().saturating_sub(h));
+    (x0, y0, w, h)
+}
+
+/// **The `arena.map` keyframe for an explicit `[x0, y0, w, h]` cell window**
+/// (doc 16 §11; doc 30 §7, §11 WG.6; `D-30-7`, `Q-30-6`).
+///
+/// When the window covers the whole arena (`origin_cell == [0, 0]` and
+/// `(w, h) == (terrain.width(), terrain.height())`), the payload is identical
+/// to [`map_frame`]. When it is a sub-window, `"origin_cell"` is `[x0, y0]`,
+/// `"width"` and `"height"` are the window's dimensions `w` and `h`, and
+/// `"extent": [terrain.width(), terrain.height()]` carries the full arena's
+/// dimensions so renderers can place the window in arena coordinates.
+#[must_use]
+pub fn map_frame_window(
     match_id: MatchId,
     surface: &str,
     terrain: &ArenaTerrain,
     spots: &[KeySpot],
+    window: (u16, u16, u16, u16),
 ) -> serde_json::Value {
-    let (rows, classes) = terrain_rows(terrain, (0, 0), (terrain.width(), terrain.height()));
+    let w = window.2.max(1).min(terrain.width());
+    let h = window.3.max(1).min(terrain.height());
+    let x0 = window.0.min(terrain.width().saturating_sub(w));
+    let y0 = window.1.min(terrain.height().saturating_sub(h));
+    let (rows, classes) = terrain_rows(terrain, (x0, y0), (w, h));
     let legend: Vec<serde_json::Value> = classes
         .iter()
         .map(|class| serde_json::json!([class.glyph().to_string(), class.label()]))
@@ -882,7 +926,7 @@ pub fn map_frame(
             })
         })
         .collect();
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "schema": {
             "id": MAP_SCHEMA,
             "version": MAP_VERSION,
@@ -893,20 +937,112 @@ pub fn map_frame(
         "surface": surface,
         "biome": terrain.biome(),
         "cell_cm": terrain.cell_cm(),
-        "width": terrain.width(),
-        "height": terrain.height(),
-        // Always the arena's own corner today. It is in the payload because it
-        // is what a windowed map would carry: doc 16 §11's 10 km path would
-        // answer a `window` parameter with a slice of the same shape, and a
-        // renderer written against this key keeps working when it does.
-        "origin_cell": [0, 0],
+        "width": w,
+        "height": h,
+        // Always the arena's own corner when unwindowed; the slice's south-west
+        // cell when windowed (doc 16 §11; doc 30 §7 D-30-7).
+        "origin_cell": [x0, y0],
         "rows": rows,
         "legend": legend,
         "spots": spots,
         // Doc 21 cut G.7b: the ground's relief, so the picture draws the
         // hills the sim already sees with (a field added, not a version).
-        "elev": elev_field(terrain),
-    })
+        "elev": elev_field_window(terrain, (x0, y0), (w, h)),
+    });
+    if ((x0, y0) != (0, 0) || (w, h) != (terrain.width(), terrain.height()))
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert(
+            "extent".to_owned(),
+            serde_json::json!([terrain.width(), terrain.height()]),
+        );
+    }
+    payload
+}
+
+/// **The `arena.map` keyframe for an explicit window, shrunk if needed to stay
+/// within [`MAP_MAX_BYTES`]** (doc 30 §7, §11 WG.6; `D-30-7`).
+#[must_use]
+pub fn map_frame_window_bounded(
+    match_id: MatchId,
+    surface: &str,
+    terrain: &ArenaTerrain,
+    spots: &[KeySpot],
+    window: (u16, u16, u16, u16),
+) -> serde_json::Value {
+    let w = window.2.max(1).min(terrain.width());
+    let h = window.3.max(1).min(terrain.height());
+    let x0 = window.0.min(terrain.width().saturating_sub(w));
+    let y0 = window.1.min(terrain.height().saturating_sub(h));
+    if w <= mush_atlas::cells::MAX_TILE_SIDE && h <= mush_atlas::cells::MAX_TILE_SIDE {
+        let candidate = map_frame_window(match_id, surface, terrain, spots, (x0, y0, w, h));
+        let bytes = serde_json::to_vec(&candidate).map_or(usize::MAX, |v| v.len());
+        if bytes <= MAP_MAX_BYTES {
+            return candidate;
+        }
+    }
+    let focus = (x0.saturating_add(w / 2), y0.saturating_add(h / 2));
+    map_frame_for_focus(match_id, surface, terrain, spots, Some(focus))
+}
+
+/// **The `arena.map` keyframe for a focus cell (or the arena's centre)**,
+/// automatically windowing grounds larger than 256×256 or steep 256×256 grounds
+/// whose elevation deltas push the unwindowed frame past [`MAP_MAX_BYTES`]
+/// (doc 30 §7, §11 WG.6; `D-30-7`, `Q-30-6`).
+#[must_use]
+pub fn map_frame_for_focus(
+    match_id: MatchId,
+    surface: &str,
+    terrain: &ArenaTerrain,
+    spots: &[KeySpot],
+    focus: Option<(u16, u16)>,
+) -> serde_json::Value {
+    let center = focus.unwrap_or((terrain.width() / 2, terrain.height() / 2));
+    if terrain.width() <= mush_atlas::cells::MAX_TILE_SIDE
+        && terrain.height() <= mush_atlas::cells::MAX_TILE_SIDE
+    {
+        let full = map_frame(match_id, surface, terrain, spots);
+        let full_bytes = serde_json::to_vec(&full).map_or(usize::MAX, |v| v.len());
+        if full_bytes <= MAP_MAX_BYTES {
+            return full;
+        }
+        let rows_bytes = full
+            .get("rows")
+            .and_then(|r| serde_json::to_vec(r).ok())
+            .map_or(usize::MAX, |v| v.len());
+        if rows_bytes > MAX_WINDOWABLE_ROWS_BYTES {
+            return full;
+        }
+    }
+    for side in MAP_WINDOW_SIDES {
+        if side > terrain.width() && side > terrain.height() {
+            continue;
+        }
+        let win = window_centered_on(terrain, side, center);
+        let candidate = map_frame_window(match_id, surface, terrain, spots, win);
+        let bytes = serde_json::to_vec(&candidate).map_or(usize::MAX, |v| v.len());
+        if bytes <= MAP_MAX_BYTES {
+            return candidate;
+        }
+    }
+    let smallest = window_centered_on(terrain, 64, center);
+    map_frame_window(match_id, surface, terrain, spots, smallest)
+}
+
+#[must_use]
+pub fn map_frame(
+    match_id: MatchId,
+    surface: &str,
+    terrain: &ArenaTerrain,
+    spots: &[KeySpot],
+) -> serde_json::Value {
+    map_frame_window(
+        match_id,
+        surface,
+        terrain,
+        spots,
+        (0, 0, terrain.width(), terrain.height()),
+    )
 }
 
 /// The encoding [`elev_field`] writes.
@@ -920,10 +1056,25 @@ pub const ELEV_ENCODING: &str = "zigzag-leb128-delta";
 /// runs of zero bytes. `{"encoding", "unit_cm", "data"}`, `unit_cm` always 1.
 #[must_use]
 pub fn elev_field(terrain: &ArenaTerrain) -> serde_json::Value {
-    let mut bytes: Vec<u8> = Vec::with_capacity(terrain.cells().len());
+    elev_field_window(terrain, (0, 0), (terrain.width(), terrain.height()))
+}
+
+/// **The terrain's elevations for a sub-window `(origin, size)`** (doc 30 §7,
+/// §11 WG.6; `D-30-7`).
+#[must_use]
+pub fn elev_field_window(
+    terrain: &ArenaTerrain,
+    origin: (u16, u16),
+    size: (u16, u16),
+) -> serde_json::Value {
+    let x_end = origin.0.saturating_add(size.0).min(terrain.width());
+    let y_end = origin.1.saturating_add(size.1).min(terrain.height());
+    let cap = usize::from(x_end.saturating_sub(origin.0))
+        .saturating_mul(usize::from(y_end.saturating_sub(origin.1)));
+    let mut bytes: Vec<u8> = Vec::with_capacity(cap);
     let mut last: i32 = 0;
-    for y in 0..terrain.height() {
-        for x in 0..terrain.width() {
+    for y in origin.1..y_end {
+        for x in origin.0..x_end {
             let elev = i32::from(terrain.get(x, y).map_or(0, |cell| cell.elev_cm));
             let delta = elev - last;
             last = elev;

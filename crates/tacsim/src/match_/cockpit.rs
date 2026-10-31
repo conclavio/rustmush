@@ -873,9 +873,10 @@ pub(crate) use self::frames::terrain_rows;
 use self::frames::*;
 pub use self::frames::{
     ELEV_ENCODING, FRAME_SCHEMA, FRAME_VERSION, MAP_MAX_BYTES, MAP_SCHEMA, MAP_SHAPE, MAP_VERSION,
-    RETAIN_LATEST, beyond_window_line, cockpit_cleared, contact_health, contact_markers,
-    elev_field, map_frame, map_unseated, mind_json, status_frame, status_frame_held, view_frame,
-    view_frame_held, view_window,
+    MAP_WINDOW_SIDES, RETAIN_LATEST, beyond_window_line, cockpit_cleared, contact_health,
+    contact_markers, elev_field, elev_field_window, map_frame, map_frame_for_focus,
+    map_frame_window, map_frame_window_bounded, map_unseated, mind_json, status_frame,
+    status_frame_held, view_frame, view_frame_held, view_window, window_centered_on,
 };
 #[allow(unused_imports)]
 use self::notices::*;
