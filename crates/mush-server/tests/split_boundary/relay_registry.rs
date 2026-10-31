@@ -4578,7 +4578,8 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     packs.retain(|p| {
         !matches!(
             p.manifest().id().as_str(),
-            "tacsim.passengers.stickney"
+            tacsim::definitions::content::CAST_CERES_PACK
+                | "tacsim.passengers.stickney"
                 | "tacsim.passengers.ceres"
                 | "tacsim.crew.ceres"
                 | "tacsim.quests.first_steps"
