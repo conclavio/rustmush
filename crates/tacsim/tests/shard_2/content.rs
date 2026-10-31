@@ -98,7 +98,7 @@ const PACK_FILES: [&str; 9] = [
 /// consequence words (`destroy_core` on the turret, and its note's M.4
 /// sentence shortened to fit the 1,024-byte bound; version 4). Was
 /// `2cdf945e…` at version 3.
-const DIGESTS: [(&str, &str); 12] = [
+const DIGESTS: [(&str, &str); 14] = [
     (
         "tacsim.pack.he_105",
         "c377ca63e4385d29ed4ce63c78fcd1c9e626e1944da4c2aca819c09b6acb67e2",
@@ -149,6 +149,15 @@ const DIGESTS: [(&str, &str); 12] = [
         "tacsim.winter_valley",
         "9fa52657db62ee87412d452755fb7429a1cbed85565346a43d10575c9d530a5f",
     ),
+    // Doc 30 Q-30-7: the first non-temperate biome arena (`mars_canyon`).
+    (
+        "tacsim.pack.mars_canyon",
+        "bcbe050c8c14ae15891dd2449465ff181bb09337fbfd04fd01e18a209d015767",
+    ),
+    (
+        "tacsim.mars_canyon",
+        "993a507ffe1211ddb5e3811f4aaef1529970858f95c460e149280cad13424108",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -157,24 +166,26 @@ const DIGESTS: [(&str, &str); 12] = [
 
 #[test]
 fn the_shipped_draft_is_this_generators_output() {
-    // Doc 30 §4 & cut WG.1 (half 2, preset -> draft): `ground-pack gen proving_ground`
-    // reproduces the checked-in draft byte for byte.
-    let draft = tacsim::ground::generate("proving_ground", 2350, None)
-        .expect("the proving_ground preset generates");
-    let json = draft.to_json_pretty().expect("the draft serializes");
-    pin_file("ground/proving_ground.draft.json", &json);
+    // Doc 30 §4 & cut WG.1 / Q-30-7 (half 2, preset -> draft): `ground-pack gen <preset>`
+    // reproduces each generator-authored checked-in draft byte for byte.
+    for preset in ["proving_ground", "mars_canyon"] {
+        let draft =
+            tacsim::ground::generate(preset, 2350, None).expect("the shipped preset generates");
+        let json = draft.to_json_pretty().expect("the draft serializes");
+        pin_file(&format!("ground/{preset}.draft.json"), &json);
+    }
 }
 
 #[test]
 fn every_shipped_ground_pack_is_the_writers_output_over_its_draft() {
-    // Doc 30 §4 & cuts WG.1 / WG.5 (half 1, draft -> packs): `ground-pack build` over
+    // Doc 30 §4 & cuts WG.1 / WG.5 / Q-30-7 (half 1, draft -> packs): `ground-pack build` over
     // each checked-in draft reproduces both shipped packs byte for byte.
-    for id in ["proving_ground", "winter_valley"] {
+    for id in ["proving_ground", "winter_valley", "mars_canyon"] {
         let draft_rel = format!("ground/{id}.draft.json");
         let draft_path = content_dir().join(&draft_rel);
-        if writing() && !draft_path.exists() && id == "proving_ground" {
-            let generated = tacsim::ground::generate("proving_ground", 2350, None)
-                .expect("the proving_ground preset generates")
+        if writing() && !draft_path.exists() && matches!(id, "proving_ground" | "mars_canyon") {
+            let generated = tacsim::ground::generate(id, 2350, None)
+                .expect("the preset generates")
                 .to_json_pretty()
                 .expect("the draft serializes");
             pin_file(&draft_rel, &generated);
@@ -267,8 +278,10 @@ fn the_pinned_digests_are_the_shipped_ones() {
     for json in [
         content::WINTER_VALLEY_JSON,
         content::WINTER_VALLEY_ATLAS_JSON,
+        content::MARS_CANYON_JSON,
+        content::MARS_CANYON_ATLAS_JSON,
     ] {
-        let pack = mush_content::load_pack(json).expect("the winter_valley pack verifies");
+        let pack = mush_content::load_pack(json).expect("the shipped arena pack verifies");
         let id = pack.manifest().id().to_string();
         assert_eq!(
             pinned.get(id.as_str()).copied(),
@@ -1102,12 +1115,12 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     // SM.3a: and the terrain vehicle and the Dray-P after it (was `+ 20`).
     assert_eq!(
         fielded.len(),
-        stock.len() + 25,
-        "nine shipped packs and twenty-five extension files: doc 16 section 9's ten, \
+        stock.len() + 26,
+        "nine shipped packs and twenty-six extension files: doc 16 section 9's ten, \
          the range's target, 16b cut AE.2's two weapons and their two rounds, \
          16b cut AE.1's three chassis, 16b cut AE.3's drone, doc 18 cut IC2's Dray and \
-         doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser and \
-         doc 30 cut WG.5's winter_valley arena"
+         doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, \
+         doc 30 cut WG.5's winter_valley arena and doc 30 Q-30-7's mars_canyon arena"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");

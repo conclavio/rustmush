@@ -1,0 +1,110 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.mars_canyon",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "bcbe050c8c14ae15891dd2449465ff181bb09337fbfd04fd01e18a209d015767",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.arena.mars_canyon": {
+      "kind": "arena",
+      "def": {
+        "label": "Mars Canyon",
+        "pack": "tacsim.mars_canyon",
+        "region": "region.mars_canyon",
+        "tiles": ["field.q0_0", "field.q1_0", "field.q0_1", "field.q1_1"],
+        "origin_m": [40000, 40000],
+        "cols": 256,
+        "rows": 256,
+        "cell_cm": 1000,
+        "entry_zones": [
+          { "team": "red", "x0": 0, "y0": 0, "x1": 15, "y1": 255 },
+          { "team": "blue", "x0": 240, "y0": 0, "x1": 255, "y1": 255 }
+        ],
+        "key_spots": [
+          { "name": "The Ford", "x": 64, "y": 97 },
+          { "name": "The Crossroads", "x": 129, "y": 97 },
+          { "name": "North Barn", "x": 106, "y": 194 },
+          { "name": "East Compound", "x": 208, "y": 148 },
+          { "name": "The Bluff", "x": 144, "y": 111 }
+        ],
+        "waypoints": {
+          "nodes": [
+            { "id": "ew_008", "x": 8, "y": 97 },
+            { "id": "ew_032", "x": 32, "y": 97 },
+            { "id": "ew_056", "x": 56, "y": 97 },
+            { "id": "ew_064", "x": 64, "y": 97 },
+            { "id": "ew_080", "x": 80, "y": 97 },
+            { "id": "ew_104", "x": 104, "y": 97 },
+            { "id": "xroads", "x": 129, "y": 97 },
+            { "id": "ew_152", "x": 152, "y": 97 },
+            { "id": "ew_176", "x": 176, "y": 97 },
+            { "id": "ew_200", "x": 200, "y": 97 },
+            { "id": "ew_224", "x": 224, "y": 97 },
+            { "id": "ew_248", "x": 248, "y": 97 },
+            { "id": "ns_008", "x": 129, "y": 8 },
+            { "id": "ns_032", "x": 129, "y": 32 },
+            { "id": "ns_056", "x": 129, "y": 56 },
+            { "id": "ns_080", "x": 129, "y": 80 },
+            { "id": "ns_120", "x": 129, "y": 120 },
+            { "id": "ns_144", "x": 129, "y": 144 },
+            { "id": "ns_168", "x": 129, "y": 168 },
+            { "id": "ns_192", "x": 129, "y": 192 },
+            { "id": "ns_216", "x": 129, "y": 216 },
+            { "id": "ns_248", "x": 129, "y": 248 },
+            { "id": "barn", "x": 106, "y": 194 },
+            { "id": "compound", "x": 208, "y": 148 },
+            { "id": "muster_red", "x": 6, "y": 105 },
+            { "id": "muster_blue", "x": 249, "y": 105 }
+          ],
+          "edges": [
+            ["ew_008", "ew_032"],
+            ["ew_032", "ew_056"],
+            ["ew_056", "ew_064"],
+            ["ew_064", "ew_080"],
+            ["ew_080", "ew_104"],
+            ["ew_104", "xroads"],
+            ["xroads", "ew_152"],
+            ["ew_152", "ew_176"],
+            ["ew_176", "ew_200"],
+            ["ew_200", "ew_224"],
+            ["ew_224", "ew_248"],
+            ["ns_008", "ns_032"],
+            ["ns_032", "ns_056"],
+            ["ns_056", "ns_080"],
+            ["ns_080", "xroads"],
+            ["xroads", "ns_120"],
+            ["ns_120", "ns_144"],
+            ["ns_144", "ns_168"],
+            ["ns_168", "ns_192"],
+            ["ns_192", "ns_216"],
+            ["ns_216", "ns_248"],
+            ["ns_192", "barn"],
+            ["ew_200", "compound"],
+            ["ew_008", "muster_red"],
+            ["ew_248", "muster_blue"]
+          ]
+        },
+        "modes": [
+          { "mode": "hold", "spot": "The Crossroads", "radius_cells": 6, "hold_ms": 120000 }
+        ],
+        "tanks": [
+          { "id": "red_1", "name": "Red Tank 1", "team": "red", "x": 6, "y": 97, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_2", "name": "Red Tank 2", "team": "red", "x": 6, "y": 95, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_3", "name": "Red Tank 3", "team": "red", "x": 6, "y": 99, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_4", "name": "Red Tank 4", "team": "red", "x": 6, "y": 93, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_1", "name": "Blue Tank 1", "team": "blue", "x": 249, "y": 97, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_2", "name": "Blue Tank 2", "team": "blue", "x": 249, "y": 95, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_3", "name": "Blue Tank 3", "team": "blue", "x": 249, "y": 99, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_4", "name": "Blue Tank 4", "team": "blue", "x": 249, "y": 93, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_5", "name": "Red Tank 5", "team": "red", "x": 6, "y": 101, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_6", "name": "Red Tank 6", "team": "red", "x": 4, "y": 94, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_5", "name": "Blue Tank 5", "team": "blue", "x": 249, "y": 101, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_6", "name": "Blue Tank 6", "team": "blue", "x": 251, "y": 94, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" }
+        ],
+        "note": "ground-pack check (256x256, 4 tiles, map 144210/262144 B): passable tracked 100% / wheeled 95% / legged 100%; zones tracked=true wheeled=true legged=true; key_spots_wheeled=true; waypoints=true; max_grade=80% road_grade=2% entry_step=0cm; passed=true."
+      }
+    }
+  }
+}
