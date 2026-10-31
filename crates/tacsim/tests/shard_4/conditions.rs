@@ -665,6 +665,7 @@ fn definition() -> ArenaDefinition {
         key_spots: Vec::new(),
         waypoints: tacsim::arena::state::Waypoints::default(),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 

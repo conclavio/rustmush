@@ -673,7 +673,9 @@ fn engage_orders(view, row, ceiling, p) {
 
 // **A stand** (T1's `stand`): the best hostile inside `release_cm` — and,
 // for a screen, inside `sector[1]` of `sector[0]` off the row's whole-degree
-// bearing — with a line; `()` with nothing to fire.
+// bearing — with a line; `()` with nothing to fire. Since doc 32 cut CF.6b,
+// when the best has no line, the best nearer than it that the same admission
+// takes, if that one has (T1's `nearer_in_line`; two traces, Class I's cap).
 fn stand(view, card, p, sector) {
     // `p.dry`: this view's `is_dry`, read once by `standing_order`.
     if p.dry {
@@ -690,16 +692,33 @@ fn stand(view, card, p, sector) {
         return ();
     }
     let row = contact(view, id);
-    if row == () || !line_to(view, id) {
+    if row == () {
         return ();
     }
-    row
+    if line_to(view, id) {
+        return row;
+    }
+    let nearer = min(ceiling, range_cm(row) - 1);
+    if nearer < 0 {
+        return ();
+    }
+    let next = if sector == () {
+        best_hostile(view, w[0], w[1], w[2], p.health, hint(p.order), nearer, (), ())
+    } else {
+        best_hostile(view, w[0], w[1], w[2], p.health, hint(p.order), nearer, sector[0], sector[1])
+    };
+    if next == () || !line_to(view, next) {
+        return ();
+    }
+    contact(view, next)
 }
 
 // **Whether a withdrawing hull is cornered, and by which row** (T1's
 // `withdraw_stand`): never with nothing to fire or under `hold_fire`; the
 // best hostile, inside `release_cm` once home and `stand_cm` (and the card's
-// `stand_min_permille` of health) en route, with a line.
+// `stand_min_permille` of health) en route, with a line — and, since doc 32
+// cut CF.6b, when the best has no line, the best nearer than it inside the
+// same reach (T1's `nearer_in_line`).
 fn withdraw_stand(view, card, p, home) {
     if p.dry || (p.order != () && p.order.hold_fire) {
         return ();
@@ -720,7 +739,19 @@ fn withdraw_stand(view, card, p, home) {
     if !home && p.health < card.stand_min_permille {
         return ();
     }
-    if !line_to(view, id) {
+    if line_to(view, id) {
+        return row;
+    }
+    let reach = range_cm(row);
+    if reach <= 0 {
+        return ();
+    }
+    let next = best_hostile(view, w[0], w[1], w[2], p.health, (), reach - 1, (), ());
+    if next == () {
+        return ();
+    }
+    let row = contact(view, next);
+    if range_cm(row) > max(ceiling, 1) || !line_to(view, next) {
         return ();
     }
     row

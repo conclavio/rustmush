@@ -246,6 +246,7 @@ fn definition_painted(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         key_spots: Vec::new(),
         waypoints: graph(),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 

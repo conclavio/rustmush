@@ -2201,9 +2201,13 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// the held row's range inline — a reviewer of this digest's history
 /// re-reads those four helm-half functions too. Was
 /// `95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd` (17b
-/// cut M2.5, the helm half).
+/// cut M2.5, the helm half). **Re-blessed by doc 32 cut CF.6b**: when the
+/// best hostile has no line, `stand` and `withdraw_stand` fire on the best
+/// nearer than it that has one, as `NativeStockMind` does (`nearer_in_line`,
+/// `STAND_TRIES`); was
+/// `a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336`.
 const STANDARD_DOCTRINE_SHA256: &str =
-    "a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336";
+    "3837c3456fbf1e3b8e012375a3d4e4cfcc2645d024fe203eef9359de1473a316";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):

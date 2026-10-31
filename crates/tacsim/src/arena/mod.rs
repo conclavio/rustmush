@@ -735,6 +735,7 @@ pub(crate) mod test_support {
                 &[(SmolStr::new("west"), SmolStr::new("east"))],
             ),
             modes: Vec::new(),
+            homes: Vec::new(),
         }
     }
 

@@ -1070,6 +1070,13 @@ pub struct ArenaDefinition {
     /// modes would move every recorded digest for a ground whose cells, zones,
     /// spots and graph did not change.
     pub modes: Vec<ArenaMode>,
+    /// **Where each party goes home** (doc 32 cut CF.6b; Q-CF-18): the cells a `Withdraw`
+    /// drives to for a party that has no entry zone ([`crate::arena::motor::entry_cell`]). An
+    /// IC field has no entry zones (Q-CF-17: promotion is the only entry), so a home is its
+    /// party's own carrier's ramp, one cell each; every authored arena holds none. Nothing
+    /// else reads them: the hunt and its fan read the entry zones alone, so a home is never a
+    /// place another party is sent to look.
+    pub homes: Vec<EntryZone>,
 }
 
 impl ArenaDefinition {
@@ -1178,6 +1185,19 @@ impl ArenaDefinition {
             sha.update((neighbours.len() as u64).to_le_bytes());
             for neighbour in neighbours {
                 sha.update(neighbour.to_le_bytes());
+            }
+        }
+        // Doc 32 cut CF.6b: the homes are ground a withdrawal reads, folded only when there are
+        // any, so every authored arena (none) digests exactly as it did.
+        if !self.homes.is_empty() {
+            sha.update(b"homes");
+            sha.update((self.homes.len() as u64).to_le_bytes());
+            for home in &self.homes {
+                sha.update([home.team.code()]);
+                sha.update(home.x0.to_le_bytes());
+                sha.update(home.y0.to_le_bytes());
+                sha.update(home.x1.to_le_bytes());
+                sha.update(home.y1.to_le_bytes());
             }
         }
         sha.finalize().into()
@@ -6234,6 +6254,7 @@ mod tests {
                 &[(SmolStr::new("west"), SmolStr::new("east"))],
             ),
             modes: Vec::new(),
+            homes: Vec::new(),
         };
         assert_eq!(base.digest(), base.clone().digest());
 

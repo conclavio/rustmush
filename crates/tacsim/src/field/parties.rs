@@ -46,6 +46,9 @@ pub(crate) struct Entrant {
     pub epoch: Option<SortieId>,
     /// Everyone physically aboard it at admission, when it is a carrier (Q-CF-38).
     pub aboard: Vec<ObjId>,
+    /// **The carrier it came from and goes home to** (doc 32 cut CF.6b): its DT flight's, its
+    /// rig lease's hull, or its raider's fixture carrier.
+    pub carrier: Option<ObjId>,
 }
 
 /// **The site's passive domain** (its port map's), when it is a lane site.
@@ -167,7 +170,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                 return carrier_entrant(ctx, *unit, &flights);
             }
             let pilot = seated(ctx.w, *unit);
-            if let Some((_, (operation, epoch, leader, organizer, _))) =
+            if let Some((_, (operation, epoch, leader, organizer, carrier))) =
                 flights.iter().find(|(flier, _)| flier == unit)
             {
                 return Entrant {
@@ -180,6 +183,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     pilot,
                     epoch: *epoch,
                     aboard: Vec::new(),
+                    carrier: Some(*carrier),
                 };
             }
             // A fixture raider's hull: its leader's party (doc 32 cut CF.6, Q-CF-44).
@@ -192,6 +196,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     pilot,
                     epoch: None,
                     aboard: Vec::new(),
+                    carrier: super::raiders::carrier_of(ctx.w, *unit),
                 };
             }
             let record = rig_record(ctx, *unit);
@@ -209,6 +214,9 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     .as_ref()
                     .and_then(|record| record.sortie.as_ref().map(|open| open.id)),
                 aboard: Vec::new(),
+                carrier: record
+                    .as_ref()
+                    .and_then(|record| record.excursion.as_ref().map(|out| out.hull)),
             }
         })
         .collect()
@@ -242,6 +250,7 @@ fn carrier_entrant(ctx: &Ctx<'_>, carrier: ObjId, flights: &[(ObjId, FlightFacts
         pilot: None,
         epoch: super::carrier::open_epoch(ctx, carrier),
         aboard: super::carrier::souls_aboard(ctx.w, carrier),
+        carrier: None,
     }
 }
 
@@ -327,6 +336,7 @@ mod tests {
             pilot: None,
             epoch: None,
             aboard: Vec::new(),
+            carrier: None,
         }
     }
 
