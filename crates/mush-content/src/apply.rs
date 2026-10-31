@@ -223,10 +223,7 @@ pub fn plan(pack: &Pack, previous: Option<&Applied>) -> Result<Plan, ApplyError>
 /// when a `tacsim.cast.<station>` pack is applied for the first time over a kept
 /// world that previously latched those `npc.*` and `lore.*` entries in the
 /// neighborhood pack (doc 34 cut CS.0b, D-34-3).
-fn adopted_donor_previous(
-    latches: &Latches,
-    pack: &Pack,
-) -> Option<(CanonicalId, Applied)> {
+fn adopted_donor_previous(latches: &Latches, pack: &Pack) -> Option<(CanonicalId, Applied)> {
     let pack_id = pack.manifest().id();
     if latches.applied(pack_id).is_some() || !pack_id.as_str().starts_with("tacsim.cast.") {
         return None;
@@ -241,10 +238,7 @@ fn adopted_donor_previous(
         let adopted: BTreeMap<CanonicalId, AppliedEntry> = donor
             .entries()
             .iter()
-            .filter(|(id, applied)| {
-                pack.entry(id)
-                    .is_some_and(|e| e.kind() == applied.kind())
-            })
+            .filter(|(id, applied)| pack.entry(id).is_some_and(|e| e.kind() == applied.kind()))
             .map(|(id, applied)| (id.clone(), applied.clone()))
             .collect();
         if !adopted.is_empty()
