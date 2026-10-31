@@ -255,3 +255,69 @@ the pure engine; the authoritative bay order is UD.4b; the bay view and the indu
   condition changes and no change of definition. A refit or repair order is a new authoritative
   action there, with its pending state on the IC clock — its own design pass.
 - **The bay view and the industry driver (UD.4c)**.
+
+## UD.4b PR-B (2026-10-30) — the bay flow and the sibling `bay_refit` kernel protocol
+
+Built on `claude/ud4b-kernel-refit`, on PR-A (#210, the generalized `component_refit` Tactics
+participant). The owner's rulings for UD.4b: build it on the full core-refit pipeline (industry
+work order, economy payment, inventory parts, the tactics participant), parts from inventory lots,
+launch-only like cores, and the kernel layer as a **sibling** terminal-capacity protocol beside
+`core_refit` (one protocol per paid flow, as the kernel has it). The core refit path is untouched.
+Order of the remaining PRs (owner): this one defines the flow and the kernel audits it; then
+Economy and Inventory; then TacSim.
+
+- **The flow** (`mush_industry::bay_refit`): six actions — Industry's own `initialize_bay_refit`
+  and `offer_bay_refit`, and the four the kernel pins, `accept_bay_refit`, `advance_bay_refit`,
+  `install_bay_refit`, `cancel_bay_refit`. Accept holds the fee, a slot in the bay, the hull and the
+  part's lot; Advance runs one work unit an IC hour (at most 167); Install captures the fee, refits
+  the hull, consumes the part's lot and returns the part taken out to the same stores as a new lot;
+  Cancel releases all of it. `WRITE_SETS` is each action's exact write set, owner by owner, with
+  when each write happens (always, a part in, a part out, either).
+- **The families**: Industry's `industry_bay_orders`, `industry_bay_hulls`, `industry_bay_schedule`,
+  `industry_bay_schedule_order`, `industry_bay_deployment` and `industry_bay_offers`, plus the shared
+  `industry_facility_slots` / `industry_facility_book` and `industry_capacity_index`; Inventory's
+  `inventory_bay_parts` (the part's custody for the order: held → consumed or released),
+  `inventory_bay_part_heads` and `inventory_bay_part_census` (as `inventory_core_inputs` does for
+  core integration), and the shared `inventory_lots` / `inventory_lot_census`.
+- **The kernel** (`mush_core::action_state::terminal_capacity::bay_refit`, beside `core_refit`):
+  `Protocol::new` pins the participants `industry/bay_refit` v1, `economy/initial_filing` v1 and
+  `tactics/component_refit` v1 and the four actions; Install and Cancel are closed descriptors.
+  Registered with `Registrar::bay_refit_capacity`, the fifteenth slot in `StateFamilyRegistryBuilder`
+  (fingerprint domain `state_family_registry.v18` when present); `ResolutionCtx` gains
+  `reserve_bay_refit_completion` / `advance_bay_refit_completion`. It reserves terminal room at
+  Accept (the returned lot as a `Create` target, so no other order can take its key), checks every
+  paid action's mutation set exactly, joins the installed refit to the offer (hull, revision, the
+  roots before and after, what came out and went in), and on a cold boot audits every order, its
+  slot, hull head, schedule and part custody and refuses orphans. A hull held in a bay, or pending a
+  core refit, cannot be accepted into another bay.
+- **The order row's wire**, as the kernel joins it: `{format, sequence, accepted, action, intent,
+  funding, capacity, progress, terminal, installation}`; the intent `{order, offer, payer,
+  accepted_at, expires_at}` (a 7-day IC reservation); the offer names `operation`, `requester`,
+  `hull`, `unit_revision`, `before` and `target` (the two roots), `remove` and `install` (component
+  ids, either may be null, not both), `facility` (one of the policy's bays), `stores` (the bay's
+  Inventory endpoint), `part` (the lot fitted, iff `install`), `returned` (the lot the part taken
+  out becomes, iff `remove`), `recipe.work_units` and `policy` `{format, recipe, facilities}`.
+  Funding and terminal are Economy's receipts (`commit`, `action`, `journal_seq`; the terminal adds
+  `posted_at`, `at` and `result.outcome` `installed` with the refit's digest, or `cancelled`); the
+  installation is `{refit, participants, at_utc}`. Inventory's part custody is `{format, order, lot,
+  stores, accepted, state, terminal}`; the hull head `{format, hull, operation, pending}`.
+- **One source of truth**: the kernel exports `mush_core::bay_refit_protocol` — the pinned action
+  ids and descriptors and every family's descriptor — and Industry builds its paid action
+  definitions and registers its families from it, so the two can never drift.
+- **Tests**: six in the kernel over inert typed rows (the pins; a retained order verifies and
+  reserves the returned lot; what comes out and goes in must match the lots; the cold boot audit
+  and its orphans; Accept's exact set; Install's census and the returned lot) and three in Industry
+  (the policy names the kernel's actions; the write sets name exactly the kernel's families; the
+  hull head is the kernel's shape).
+
+**Not done here, and why.**
+
+- **The typed order, offer and admission census, the provider, the owner participant and the
+  schedule source**: the order row carries Economy's funding and terminal receipts, which the next
+  PR defines; the order row's wire above is what that PR fills.
+- **Repair and rearm** without a component change: `refit_component` moves at least one part; a
+  repair is a different transition (cells and condition only) and gets its own action.
+- **A core refit accepted while the hull is in a bay**: the core path is untouched, so it does not
+  read the bay's hull heads. The Tactics revision fence settles it: whichever installs first moves
+  the hull's revision and the other's Install is refused, leaving it to be cancelled and refunded.
+

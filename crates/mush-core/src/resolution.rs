@@ -492,6 +492,44 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Doc 31 UD.4b: hold the bay order's terminal room at Accept.
+    pub fn reserve_bay_refit_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<(), crate::ActionStateError> {
+        self.bay_refit_completion(txn, order, true)
+    }
+    /// Retain through scheduled Advance; release only on Install/Cancel.
+    pub fn advance_bay_refit_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<(), crate::ActionStateError> {
+        self.bay_refit_completion(txn, order, false)
+    }
+    fn bay_refit_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+        admission: bool,
+    ) -> Result<(), crate::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.bay_refit_completion(base, provider, self.commit_token, order, admission)
+            }
+            _ => Err(crate::ActionStateError::TerminalCapacity(
+                "bay refit preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
     pub fn reserve_core_refit_completion(
         &mut self,
         txn: &mut crate::ActionTxn<'_>,

@@ -3924,6 +3924,27 @@ impl<'a> Registrar<'a> {
             .map_err(|e| ModError::msg(e.to_string()))
     }
 
+    /// Doc 31 UD.4b: the closed bay refit, participants Industry/Economy/Tactics and actions
+    /// Accept/Advance/Install/Cancel, the sibling of [`Self::core_refit_capacity`].
+    pub fn bay_refit_capacity(
+        &mut self,
+        participants: [crate::DefinitionRef; 3],
+        actions: [crate::DefinitionRef; 4],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "industry" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "bay refit capacity requires unfrozen Industry registrar",
+            ));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .bay_refit_capacity(&owner, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     pub fn core_integration_capacity(
         &mut self,
         participants: [crate::DefinitionRef; 2],
